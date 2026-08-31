@@ -490,6 +490,54 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
         Err(e) => p.check("[WL7m] monolith register for the starter grant", false, format!("{e:#}")),
     }
 
+    // --- Notifications parity: the player read and the wallet fan-in, all Local. The split
+    // proves the seams ([NT1]-[NT6]); these two prove the SAME code answers identically when
+    // the producer, the consumer and the front door share one process — the fan-in still
+    // travels the durable log, it just never leaves the process.
+    match create_guest(ctx, &m).await {
+        Ok((code, guest)) => {
+            let (list_code, items, cursor) = inbox_page(ctx, &m, &guest.token, "", 0).await?;
+            p.check(
+                "[NT1m] monolith POST /notifications/list (fresh guest) -> 200 + empty page",
+                code == 201 && list_code == 200 && items.is_empty() && cursor.is_empty(),
+                format!("guest={code} code={list_code} items={}", items.len()),
+            );
+        }
+        Err(e) => p.check("[NT1m] monolith create_guest for the inbox read", false, format!("{e:#}")),
+    }
+
+    let nt4m_player: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
+        .fetch_one(pool)
+        .await?;
+    let (nt4m_csrf, nt4m_idem, _) = wallet_form(&jar, &m).await?;
+    let nt4m = jar
+        .post(format!("{m}/admin/wallet"))
+        .form(&[
+            ("_csrf", nt4m_csrf.as_str()),
+            ("_idem_grant", nt4m_idem.as_str()),
+            ("_action", "grant"),
+            ("player_id", nt4m_player.as_str()),
+            ("currency", "gold"),
+            ("amount", "70"),
+            ("reason", "splitproof monolith notification fan-in"),
+        ])
+        .send()
+        .await?;
+    let nt4m_code = nt4m.status().as_u16();
+    let nt4m_row = poll_count(
+        pool,
+        "SELECT count(*) FROM notifications.messages \
+          WHERE player_id::text = $1 AND kind = 'wallet.credit'",
+        &nt4m_player,
+        1,
+    )
+    .await;
+    p.check(
+        "[NT4m] monolith grant -> wallet.changed -> inbox row (same durable path, one process)",
+        nt4m_code == 303 && nt4m_row,
+        format!("grant={nt4m_code} inbox_row={nt4m_row} pid={nt4m_player}"),
+    );
+
     federated_assertions(ctx, pool, &m, idp, p, "m").await?;
 
     // [W2] graceful shutdown: a native Ctrl-Break (Windows) / SIGTERM (unix) must drain
@@ -908,6 +956,126 @@ async fn wallet_form(client: &reqwest::Client, base: &str) -> Result<(String, St
             .unwrap_or_default()
     };
     Ok((pick("_csrf"), pick("_idem_grant"), pick("_idem_revoke")))
+}
+
+/// One render of the `/admin/inbox` operator-mail form as `(csrf, idem_send)`. The
+/// `_idem_send` key is minted per RENDER (`admin::mint_idempotency_key`), so a second
+/// message needs a SECOND render — replaying one key is the dedup arm, not a delivery.
+/// The URL carries the page's slug, not its item id; see [NT2] for why that is a proof
+/// obligation rather than a spelling detail.
+async fn inbox_form(client: &reqwest::Client, base: &str) -> Result<(String, String)> {
+    let page = client
+        .get(format!("{base}/admin/inbox"))
+        .send()
+        .await?
+        .text()
+        .await
+        .unwrap_or_default();
+    let fields = extract_form_fields(&page);
+    let pick = |name: &str| {
+        fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+    Ok((pick("_csrf"), pick("_idem_send")))
+}
+
+/// `POST /notifications/list` as one player through a front door, answering
+/// `(status, items, next_cursor)`. A non-200 yields an empty page so a caller asserts the
+/// status instead of unwrapping. Retries past the gateway's always-on 429 exactly as
+/// `register_capture` does.
+async fn inbox_page(
+    ctx: &Ctx,
+    base: &str,
+    token: &str,
+    cursor: &str,
+    limit: i64,
+) -> Result<(u16, Vec<serde_json::Value>, String)> {
+    for _ in 0..15 {
+        let r = ctx
+            .http
+            .post(format!("{base}/notifications/list"))
+            .header("X-Api-Key", "dev-key-client")
+            .header("Authorization", format!("Bearer {token}"))
+            .json(&serde_json::json!({"cursor": cursor, "limit": limit}))
+            .send()
+            .await?;
+        let code = r.status().as_u16();
+        if code == 429 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        let body: serde_json::Value = r.json().await.unwrap_or(serde_json::Value::Null);
+        let items = body
+            .get("items")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let next = body
+            .get("next_cursor")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        return Ok((code, items, next));
+    }
+    bail!("notifications.list rate-limited out")
+}
+
+/// The status of one bodiless, player-authenticated inbox call (`mark_read`, `delete`).
+/// Both ops answer 204 and carry no body, so the code IS the contract — including the
+/// second `delete`'s 404.
+async fn inbox_status(
+    ctx: &Ctx,
+    base: &str,
+    token: &str,
+    method: reqwest::Method,
+    path: &str,
+) -> Result<u16> {
+    for _ in 0..15 {
+        let r = ctx
+            .http
+            .request(method.clone(), format!("{base}{path}"))
+            .header("X-Api-Key", "dev-key-client")
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await?;
+        let code = r.status().as_u16();
+        if code == 429 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        return Ok(code);
+    }
+    bail!("{path} rate-limited out")
+}
+
+/// Seeds `n` inbox rows for one player straight into `notifications.messages` and answers
+/// their ids, newest first — the order [`inbox_page`] must reproduce. Every third row
+/// shares its `created_at` with the two before it, so the walk that reads them back is
+/// forced through the keyset's `id DESC` tie-break rather than a `created_at`-only compare.
+/// The seed is a FIXTURE for the paging read path; the write paths are proven by [NT2] and
+/// [NT4]/[NT6].
+async fn seed_inbox_rows(pool: &PgPool, player_id: &str, n: i64) -> Result<Vec<String>> {
+    sqlx::query(
+        "INSERT INTO notifications.messages (id, player_id, kind, title, body, created_at) \
+         SELECT gen_random_uuid(), $1::uuid, 'splitproof.page', 'Page row ' || i, 'seeded', \
+                now() - (((i / 3)::int) || ' seconds')::interval \
+           FROM generate_series(1, $2::int) AS i",
+    )
+    .bind(player_id)
+    .bind(n)
+    .execute(pool)
+    .await?;
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id::text FROM notifications.messages WHERE player_id = $1::uuid \
+          ORDER BY created_at DESC, id DESC",
+    )
+    .bind(player_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(ids)
 }
 
 /// Undoes [`seed_wallet_starter_config`], restoring wallet's COMPILED default (the grant is
@@ -2299,6 +2467,374 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         }
         Err(e) => p.check("[WL7] register a player for the starter grant", false, format!("{e:#}")),
     }
+
+    // --- Notifications inbox ---------------------------------------------------------
+    // The module consumes only — nothing it shows is produced in its own process — so the
+    // topology at risk is exactly the one this harness boots. [NT1]-[NT3] drive the player
+    // ops through gateway-svc and the operator write through the /admin passthrough;
+    // [NT4] and [NT6] are the two durable fan-ins, each crossing from a DIFFERENT producer
+    // process (wallet-svc, accounts-svc) into notifications-svc.
+    //
+    // Every inbox assertion is driven by a GUEST: a guest receives no starter grant
+    // ([WL8]), so a fresh guest's inbox is empty BY CONSTRUCTION and stays empty. The same
+    // assertion on a registered player would merely be racing that player's own grant
+    // notification, and would pass for the wrong reason.
+    let (nt_guest_code, nt_guest) = create_guest(ctx, &g).await?;
+
+    // [NT1] the read op itself, end to end: gateway-svc verifies the bearer and the
+    // player-facing api key, dispatches `notifications.list` Remote over the mTLS edge, and
+    // notifications-svc answers its own store. An empty page must be `items: []` WITH an
+    // empty `next_cursor` — a non-empty cursor on an empty page is the paging bug that
+    // makes a client loop forever.
+    let (nt1_code, nt1_items, nt1_cursor) = inbox_page(ctx, &g, &nt_guest.token, "", 0).await?;
+    p.check(
+        "[NT1] POST /notifications/list (fresh guest) -> 200 + empty page, empty cursor",
+        nt_guest_code == 201 && nt1_code == 200 && nt1_items.is_empty() && nt1_cursor.is_empty(),
+        format!(
+            "guest={nt_guest_code} code={nt1_code} items={} cursor={nt1_cursor:?}",
+            nt1_items.len()
+        ),
+    );
+
+    // [NT2] operator mail over the REMOTE submit path: gateway-svc (/admin passthrough) ->
+    // admin-svc (session + CSRF, form rendered from `admin.adminData`) -> `admin.adminSubmit`
+    // over QUIC -> notifications-svc, which owns the only insert. The row is asserted in
+    // `notifications.messages` because the durable half is the point of the write.
+    //
+    // The URL is `/admin/inbox`, NOT `/admin/notifications`: the portal routes a page on
+    // `slugify(label)`, and `slugify` is private to `modules/admin`, so the module's
+    // `ADMIN_SLUG` has NO mechanical pin anywhere in the tree — a live request on the real
+    // URL is the only thing that can catch it drifting. The Players row-menu href is
+    // checked from the SAME render for the same reason: a self-link built from the item id
+    // would 404 and no gate would say so.
+    let nt2_title = format!("Operator mail {suffix}");
+    let (nt2_csrf, nt2_idem) = inbox_form(&cfg, &g).await?;
+    let nt2 = cfg
+        .post(format!("{g}/admin/inbox"))
+        .form(&[
+            ("_csrf", nt2_csrf.as_str()),
+            ("_idem_send", nt2_idem.as_str()),
+            ("_action", "send-mail"),
+            ("player_id", nt_guest.player_id.as_str()),
+            ("title", nt2_title.as_str()),
+            ("body", "sent by splitproof"),
+        ])
+        .send()
+        .await?;
+    let nt2_code = nt2.status().as_u16();
+    // The submit is synchronous (the 303 follows the committed write), so this is a direct
+    // read, never a poll: polling here would let a write that lands LATE still pass.
+    let nt2_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM notifications.messages \
+          WHERE player_id = $1::uuid AND kind = 'operator.mail' AND title = $2",
+    )
+    .bind(&nt_guest.player_id)
+    .bind(&nt2_title)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(-1);
+    let nt2_players = cfg
+        .get(format!("{g}/admin/players"))
+        .send()
+        .await?
+        .text()
+        .await
+        .unwrap_or_default();
+    let nt2_href = nt2_players.contains("View Inbox")
+        && nt2_players.contains("href=\"/admin/inbox?player=");
+    let nt2_page = cfg
+        .get(format!("{g}/admin/inbox?player={}", nt_guest.player_id))
+        .send()
+        .await?;
+    let (nt2_page_code, nt2_page_body) =
+        (nt2_page.status().as_u16(), nt2_page.text().await.unwrap_or_default());
+    p.check(
+        "[NT2] remote operator mail -> 303 + notifications.messages row; /admin/inbox slug resolves",
+        nt2_code == 303
+            && nt2_rows == 1
+            && nt2_href
+            && nt2_page_code == 200
+            && nt2_page_body.contains(&nt2_title),
+        format!(
+            "submit={nt2_code} rows={nt2_rows} players_href={nt2_href} \
+             drilldown={nt2_page_code} shows_title={}",
+            nt2_page_body.contains(&nt2_title)
+        ),
+    );
+
+    // [NT2b] the REJECTION half of the remote submit, which is different code from the local
+    // one: `Rejection::into_local` builds an `adminapi::SubmitError`, `Rejection::into_ops`
+    // builds a typed `opsapi::Error` that crosses the edge and is re-classified by admin-svc.
+    // Only the split runs the second mapping, and only the status CLASS proves it: the
+    // portal turns `Status::NotFound` into 405 "not editable" (its graceful-absent contract
+    // for a peer with no write surface), so a rejection that collapsed to `NotFound` would
+    // silently degrade this page to read-only while hiding the domain verdict. Resubmitting
+    // THIS render's key with an EDITED body is `Sent::KeyReused` -> `Rejection::Stale` ->
+    // `Error::conflict`; 409 with the stale-form card is the only answer that is neither the
+    // read-only degradation nor a masked success. Run before [NT3] deletes the row: the
+    // reused key must find its original message still there to compare against.
+    let nt2b = cfg
+        .post(format!("{g}/admin/inbox"))
+        .form(&[
+            ("_csrf", nt2_csrf.as_str()),
+            ("_idem_send", nt2_idem.as_str()),
+            ("_action", "send-mail"),
+            ("player_id", nt_guest.player_id.as_str()),
+            ("title", nt2_title.as_str()),
+            ("body", "edited after sending"),
+        ])
+        .send()
+        .await?;
+    let nt2b_code = nt2b.status().as_u16();
+    let nt2b_body = nt2b.text().await.unwrap_or_default();
+    let nt2b_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM notifications.messages \
+          WHERE player_id = $1::uuid AND kind = 'operator.mail'",
+    )
+    .bind(&nt_guest.player_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(-1);
+    p.check(
+        "[NT2b] remote resubmit of an edited form -> 409 stale card (not 405 read-only), no second row",
+        nt2b_code == 409
+            && nt2b_body.contains("This form is stale. Reload the page and try again.")
+            && nt2b_rows == 1,
+        format!("code={nt2b_code} stale_card={} rows={nt2b_rows}",
+            nt2b_body.contains("This form is stale. Reload the page and try again.")),
+    );
+
+    // [NT2c] the operator half of the tolerant `::uuid` cast, over the wire. A mistyped
+    // player id reaches the insert authority, comes back `22P02` and is mapped to
+    // `Rejection::Rejected` -> `Error::invalid`, which admin-svc renders as the page's error
+    // card carrying the DOMAIN message — 405 would mean the rejection collapsed to
+    // `NotFound`, and a missing message would mean the operator was told nothing actionable.
+    // KNOWN GAP: `Status::Invalid` and `Status::Internal` are indistinguishable at this
+    // surface — the portal renders both as the same card — so this pins the message and the
+    // absence of a row, not the 400-vs-500 split, which nothing observable carries.
+    let nt2c_title = format!("Bad player id {suffix}");
+    let (nt2c_csrf, nt2c_idem) = inbox_form(&cfg, &g).await?;
+    let nt2c = cfg
+        .post(format!("{g}/admin/inbox"))
+        .form(&[
+            ("_csrf", nt2c_csrf.as_str()),
+            ("_idem_send", nt2c_idem.as_str()),
+            ("_action", "send-mail"),
+            ("player_id", "oops"),
+            ("title", nt2c_title.as_str()),
+            ("body", "should never be stored"),
+        ])
+        .send()
+        .await?;
+    let nt2c_code = nt2c.status().as_u16();
+    let nt2c_body = nt2c.text().await.unwrap_or_default();
+    let nt2c_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM notifications.messages WHERE title = $1")
+            .bind(&nt2c_title)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(-1);
+    let nt2c_card = nt2c_body.contains("save failed: player_id is not a valid uuid");
+    p.check(
+        "[NT2c] remote submit with a malformed player_id -> domain error card, no row",
+        nt2c_code == 200 && nt2c_card && nt2c_rows == 0,
+        format!("code={nt2c_code} card={nt2c_card} rows={nt2c_rows}"),
+    );
+
+    // [NT3] the player's own lifecycle on that row: list (it is unread), mark it read, then
+    // delete it twice. The SECOND delete is the assertion that matters — `delete` is
+    // deliberately NOT `#[retry_safe]`, so a replay after a successful delete must be a 404,
+    // and a handler that answered 204 for an absent row would be indistinguishable from a
+    // working one without it.
+    let (nt3_code, nt3_items, _) = inbox_page(ctx, &g, &nt_guest.token, "", 0).await?;
+    let nt3_id = nt3_items
+        .first()
+        .and_then(|i| i.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let nt3_unread = nt3_items
+        .first()
+        .and_then(|i| i.get("read_at"))
+        .and_then(|v| v.as_str())
+        == Some("");
+    let (nt3_read, nt3_read_at, nt3_del1, nt3_del2, nt3_gone) = if nt3_id.is_empty() {
+        (0, 0, 0, 0, -1)
+    } else {
+        let read = inbox_status(
+            ctx,
+            &g,
+            &nt_guest.token,
+            reqwest::Method::POST,
+            &format!("/notifications/{nt3_id}/read"),
+        )
+        .await?;
+        let read_at: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM notifications.messages WHERE id = $1::uuid AND read_at IS NOT NULL",
+        )
+        .bind(&nt3_id)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(-1);
+        let del1 = inbox_status(
+            ctx,
+            &g,
+            &nt_guest.token,
+            reqwest::Method::DELETE,
+            &format!("/notifications/{nt3_id}"),
+        )
+        .await?;
+        let del2 = inbox_status(
+            ctx,
+            &g,
+            &nt_guest.token,
+            reqwest::Method::DELETE,
+            &format!("/notifications/{nt3_id}"),
+        )
+        .await?;
+        let gone: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM notifications.messages WHERE id = $1::uuid")
+                .bind(&nt3_id)
+                .fetch_one(pool)
+                .await
+                .unwrap_or(-1);
+        (read, read_at, del1, del2, gone)
+    };
+    p.check(
+        "[NT3] list -> unread row; markRead 204 + read_at set; delete 204 then 404, row gone",
+        nt3_code == 200
+            && nt3_items.len() == 1
+            && nt3_unread
+            && nt3_read == 204
+            && nt3_read_at == 1
+            && nt3_del1 == 204
+            && nt3_del2 == 404
+            && nt3_gone == 0,
+        format!(
+            "list={nt3_code} items={} unread={nt3_unread} read={nt3_read} read_at_rows={nt3_read_at} \
+             delete={nt3_del1} replay={nt3_del2} remaining={nt3_gone}",
+            nt3_items.len()
+        ),
+    );
+
+    // [NT4] THE cross-process fan-in. An operator grant on the wallet page is applied by
+    // wallet-svc, which appends `wallet.changed` to the shared log inside its own
+    // transaction; notifications-svc — a different OS process, with its own subscription
+    // cursor — pulls it and writes the inbox row in the DELIVERY transaction. Neither
+    // process knows the other exists. A synthetic player id keeps this independent of
+    // [WL3]/[WL4]'s balances, and the wait is a bounded poll on the ROW, never a sleep.
+    let nt4_player: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
+        .fetch_one(pool)
+        .await?;
+    let (nt4_csrf, nt4_idem, _) = wallet_form(&cfg, &g).await?;
+    let nt4 = cfg
+        .post(format!("{g}/admin/wallet"))
+        .form(&[
+            ("_csrf", nt4_csrf.as_str()),
+            ("_idem_grant", nt4_idem.as_str()),
+            ("_action", "grant"),
+            ("player_id", nt4_player.as_str()),
+            ("currency", "gold"),
+            ("amount", "70"),
+            ("reason", "splitproof notification fan-in"),
+        ])
+        .send()
+        .await?;
+    let nt4_code = nt4.status().as_u16();
+    let nt4_row = poll_count(
+        pool,
+        "SELECT count(*) FROM notifications.messages \
+          WHERE player_id::text = $1 AND kind = 'wallet.credit'",
+        &nt4_player,
+        1,
+    )
+    .await;
+    p.check(
+        "[NT4] wallet-svc grant -> wallet.changed -> notifications-svc inbox row (cross-process)",
+        nt4_code == 303 && nt4_row,
+        format!("grant={nt4_code} inbox_row={nt4_row} pid={nt4_player}"),
+    );
+
+    // [NT5] the keyset walk through the production read path. Rows are SEEDED in SQL (the
+    // write paths are [NT2]/[NT4]'s job) at more than DEFAULT_PAGE_LIMIT, in colliding
+    // `created_at` groups of three, then walked with a page size that divides neither the
+    // total nor the groups. The proof is the exact sequence: equality with the DB's own
+    // keyset order catches a duplicate, a dropped row and a re-ordered tie in one compare,
+    // and termination is on an EMPTY cursor, with a page cap so a cursor that never
+    // exhausts fails loudly instead of hanging.
+    const NT5_ROWS: i64 = 30;
+    const NT5_LIMIT: i64 = 7;
+    const NT5_MAX_PAGES: usize = 12;
+    let (nt5_guest_code, nt5_guest) = create_guest(ctx, &g).await?;
+    let nt5_seeded = seed_inbox_rows(pool, &nt5_guest.player_id, NT5_ROWS).await?;
+    let mut nt5_seen: Vec<String> = Vec::new();
+    let mut nt5_cursor = String::new();
+    let mut nt5_pages = 0usize;
+    let mut nt5_exhausted = false;
+    let mut nt5_bad_code: Option<u16> = None;
+    while nt5_pages < NT5_MAX_PAGES {
+        let (code, items, next) =
+            inbox_page(ctx, &g, &nt5_guest.token, &nt5_cursor, NT5_LIMIT).await?;
+        nt5_pages += 1;
+        if code != 200 {
+            nt5_bad_code = Some(code);
+            break;
+        }
+        nt5_seen.extend(
+            items
+                .iter()
+                .filter_map(|i| i.get("id").and_then(|v| v.as_str()).map(str::to_string)),
+        );
+        if next.is_empty() {
+            nt5_exhausted = true;
+            break;
+        }
+        nt5_cursor = next;
+    }
+    let mut nt5_unique = nt5_seen.clone();
+    nt5_unique.sort();
+    nt5_unique.dedup();
+    p.check(
+        "[NT5] cursor walk over 30 rows -> every id exactly once, in keyset order, cursor exhausts",
+        nt5_guest_code == 201
+            && nt5_bad_code.is_none()
+            && nt5_exhausted
+            && nt5_seen.len() == NT5_ROWS as usize
+            && nt5_unique.len() == nt5_seen.len()
+            && nt5_seen == nt5_seeded,
+        format!(
+            "pages={nt5_pages} exhausted={nt5_exhausted} bad_code={nt5_bad_code:?} \
+             seen={} unique={} seeded={} order_matches={}",
+            nt5_seen.len(),
+            nt5_unique.len(),
+            nt5_seeded.len(),
+            nt5_seen == nt5_seeded
+        ),
+    );
+
+    // [NT6] the SECOND fan-in topic, which otherwise ships with no split proof at all. A
+    // guest linking its first real identity makes accounts-svc emit durable
+    // `player.promoted` inside the link transaction; notifications-svc pulls it on a
+    // SEPARATE subscription from [NT4]'s and writes the welcome row. Two topics, two
+    // producer processes, one consumer — proving [NT4] alone would leave this half
+    // monolith-only by omission.
+    let (nt6_guest_code, nt6_guest) = create_guest(ctx, &g).await?;
+    let nt6_credential = idp.token(&format!("nt6-epic-{suffix}"))?;
+    let (nt6_link, _) =
+        link_identity(ctx, &g, &nt6_guest.token, "epic", &nt6_credential).await?;
+    let nt6_row = poll_count(
+        pool,
+        "SELECT count(*) FROM notifications.messages \
+          WHERE player_id::text = $1 AND kind = 'account.promoted'",
+        &nt6_guest.player_id,
+        1,
+    )
+    .await;
+    p.check(
+        "[NT6] accounts-svc promotion -> player.promoted -> notifications-svc inbox row",
+        nt6_guest_code == 201 && nt6_link == 200 && nt6_row,
+        format!("guest={nt6_guest_code} link={nt6_link} inbox_row={nt6_row} pid={}", nt6_guest.player_id),
+    );
 
     // --- Federated providers, guest promotion and refresh rotation, through gateway-svc
     // (G -> accounts-svc over the mTLS edge; the promotion's durable event crosses to
