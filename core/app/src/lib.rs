@@ -49,7 +49,7 @@ const DEFAULT_PLAYER_CONN_RATE_LIMIT_BURST: u32 = 20;
 
 /// Default `PgPool` max_connections when `DATABASE_POOL_MAX_CONNECTIONS` is unset —
 /// sqlx's own default, so an unconfigured process behaves exactly as before this knob
-/// existed. The split fleet lowers it per-process (12 DB-backed processes must share
+/// existed. The split fleet lowers it per-process (13 DB-backed processes must share
 /// one local Postgres) via `tools/processctl`, which also holds the fleet-wide
 /// session-budget invariant. A process/topology knob read HERE in `core/app`.
 const DEFAULT_DB_POOL_MAX: u32 = 10;

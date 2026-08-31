@@ -23,7 +23,7 @@ slugs, trailers, and plan-file paths.
 - `.agents/shared/planning-dispatch.md` — plan writing, implementation lanes,
   `core-reviewer`, Fix the Authority, refactor safety.
 - `.agents/shared/gamebackend.md` — architecture: three seams, hard constraints,
-  12 fortresses + gateway including wallet, commands, one-rollout, wipe, layout.
+  13 fortresses + gateway including wallet, commands, one-rollout, wipe, layout.
 
 Adapters (one per runtime) live under `.agents/adapters/` and map shared lanes
 to that runtime's tools and trailers.

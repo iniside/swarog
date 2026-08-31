@@ -125,7 +125,7 @@ impl Drop for FakeRun {
 ///   proof IN-PROCESS by design, so there is no binary boundary to fake at;
 /// * staging a fixture `weles` only moves the failure to
 ///   `prep::Layout::discover` on a `deploy/` nothing deployed; faking that too
-///   leads to a mock 13-service fleet, i.e. a second implementation of the very
+///   leads to a mock 14-service fleet, i.e. a second implementation of the very
 ///   contract the stage exists to check;
 /// * a fixture/skip mode inside the stage is the green-SKIP-wearing-a-PASS shape
 ///   its own module doc refuses to copy, and it would hollow out the live proof

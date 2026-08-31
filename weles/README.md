@@ -43,7 +43,7 @@ weles down                    # stop the fleet it owns
 ```
 
 `weles` has no concept of monolith/split — it supervises *a fleet*, and monolith
-vs split is just a fleet of one process vs thirteen. The fleet definition is a
+vs split is just a fleet of one process vs fourteen. The fleet definition is a
 hand-authored, strict `fleet.toml` (`#[serde(deny_unknown_fields)]`, no
 layering, no templating): per-service ports/peers plus fleet-level `[[prepare]]`
 hooks (opaque commands run once before the fleet boots — e.g. minting the edge

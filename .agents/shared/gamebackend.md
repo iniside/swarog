@@ -214,7 +214,7 @@ last-writer-wins overwrite.
    split. `topiccheck` validates the subscription graph per deployment
    profile.
 
-## Domain modules (12 fortresses + gateway)
+## Domain modules (13 fortresses + gateway)
 
 - **accounts** — identity: one `player_id`, many identities
   (`provider`,`subject`), opaque DB sessions: 60-minute access tokens plus
@@ -361,6 +361,27 @@ last-writer-wins overwrite.
   operator's catalog edit survives a restart. Admin page "Wallet" is a
   remotely-editable configurator (create-currency/grant/revoke) under
   Economy.
+- **notifications** — per-player inbox (schema `notifications`, table
+  `messages`), the first module whose job is to *consume* other modules'
+  durable events. Two content subscriptions, both `AfterRegistration`
+  (`Genesis` would replay retained history into every existing inbox):
+  `notifications.wallet-changed.v1` (only when `delta > 0`) and
+  `notifications.player-promoted.v1` (a welcome row); plus
+  `notifications.prune-on-scheduler.v1` reacting to
+  `scheduler.fired{notifications-prune}`. Player face: `POST
+  /notifications/list` (opaque keyset cursor in the request BODY — the
+  `#[http]` grammar has no query-parameter source), `POST
+  /notifications/{id}/read` (idempotent, keeps the first `read_at`), `DELETE
+  /notifications/{id}` (not `#[retry_safe]` — a replay is 404). Another
+  player's row is `NotFound`, never `Forbidden` — a 403 is an enumeration
+  oracle. Admin page "Inbox" under a new "Player Support" section (remotely
+  editable via `admin.adminSubmit`); operator mail's idempotency key shares
+  the `source_event_id` column with event dedup, disjoint by an
+  `admin-send-mail-` prefix, and a resubmit with an edited body is 409,
+  never a silent success. `NOTIFICATIONS_RETENTION_DAYS` (default 30, range
+  1..=3650) — unset takes the default, anything present but unusable FAILS
+  STARTUP. Known gap: `match.finished` produces no inbox row, because its
+  `winner`/`loser` are opaque contestant strings, not `player_id`s.
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote
   purely by slot presence; peer addresses are injected by `cmd/*` via
   `remote::Stub` → `opsapi::PEER_SLOT` contributions — the gateway module
@@ -517,7 +538,8 @@ The blocking **split-proof** stage uses the cross-platform Rust harness in
 inventory :8081/:9001, gateway :8082 + player-QUIC :9100, config :8083/:9002,
 accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler :8087/:9005,
 match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008, apikeys
-:8091/:9009, wallet :8092/:9010. The fleet is spawned with a typed
+:8091/:9009, wallet :8092/:9010, notifications :8093/:9011. The fleet is
+spawned with a typed
 environment and owned process containment plus a kill-on-drop guard,
 health-checked over reqwest, DB-asserted via sqlx, and the player QUIC front
 driven through the `edge` crate as a library. It asserts the same named
@@ -602,7 +624,7 @@ api/<name>/                # contract surface per domain
   <name>api/               #   pure #[rpc] traits + ops/bindings (transport-free)
   <name>events/            #   bus::define descriptors + payloads
   <name>rpc/               #   generated glue (Client/register_server/factories)
-modules/                   # private impls — 12 fortresses + gateway (see above)
+modules/                   # private impls — 13 fortresses + gateway (see above)
 demos/                     # non-shipping demo crates (webui) — cmd/server only
 weles/                     # standalone mini-orchestrator (zero-sharing; deploy/ artifacts,
                            # restart-on-crash supervisor; see Commands)

@@ -78,7 +78,7 @@ pub const SPLITPROOF_ASSERTION_POOL_MAX: u32 = 4;
 /// leaderboard-svc — cloned from the canonical spec, so it reserves exactly what any
 /// DB-backed split service does — alongside the whole fleet. It is deliberately not a
 /// fleet member (that would trip the fleet-drift preflight), so the budget must charge
-/// it here or the real peak is 13 DB-backed processes against a 12-process model.
+/// it here or the real peak is 14 DB-backed processes against a 13-process model.
 pub const SPLITPROOF_REPLICA_SESSIONS: u32 = SPLIT_SERVICE_POOL_MAX + PLANE_DEDICATED_SESSIONS;
 
 /// Sessions the local Postgres reserves for dev tooling running ALONGSIDE the fleet,
@@ -144,8 +144,8 @@ pub(crate) const AE_TRANSIENT_POISON_SESSIONS: u32 = 2;
 const PLANE_DEDICATED_SESSIONS: u32 =
     AE_WORKERS + AE_WAKEUP_SESSIONS + INVALIDATION_LISTEN_SESSIONS;
 
-/// Per-DB-process pooled-connection cap in the SPLIT. Low by necessity: 12 DB-backed
-/// processes plus splitproof's `[REPLICAS]` 13th share one local Postgres, so each gets a
+/// Per-DB-process pooled-connection cap in the SPLIT. Low by necessity: 13 DB-backed
+/// processes plus splitproof's `[REPLICAS]` 14th share one local Postgres, so each gets a
 /// small slice within [`PG_SESSION_BUDGET`]. This sits exactly AT core/app's migrate floor
 /// (`MIN_DB_POOL_MAX = 2`), which is sufficient because boot is sequential: the two-phase
 /// migrate holds the schema-lock connection plus at most ONE module connection, and HTTP

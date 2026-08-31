@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-08-31-0032**
+**Last update: 2026-08-31-1230**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -40,7 +40,7 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 | 1 | Virtual currency wallet + ledger | ✅ | [2026-07-28-2125-wallet-module-plan.md](../plans/2026-07-28-2125-wallet-module-plan.md) |
 | 2a | Federated-provider seam + Google OIDC + guest/device | ✅ | [2026-07-30-2230-accounts-federated-providers-plan.md](../plans/2026-07-30-2230-accounts-federated-providers-plan.md) |
 | 2b | Apple OIDC + identity link/unlink | ❌ | — |
-| 3a | Notifications: in-app player inbox | 📝 | [2026-08-31-0032-notifications-inbox-3a-plan.md](../plans/2026-08-31-0032-notifications-inbox-3a-plan.md) |
+| 3a | Notifications: in-app player inbox | ✅ | [2026-08-31-0032-notifications-inbox-3a-plan.md](../plans/2026-08-31-0032-notifications-inbox-3a-plan.md) |
 | 3b | Outbound email channel | ❌ | — |
 | 3c | Push notifications (FCM/APNs) | ❌ | — |
 | 4 | Self-registration promoted to production (email verify, password reset) | ❌ | — |
@@ -198,8 +198,8 @@ balances and is its own feature.
 
 | Feature | Status | Module(s) | Landed | Notes |
 |---|:--:|---|---|---|
-| In-app notifications | 📝 | — | — | **Seq #3a**, [plan](../plans/2026-08-31-0032-notifications-inbox-3a-plan.md). New fortress, per-player inbox rows fanned in from durable events; player-facing list + mark-read + delete. |
-| Player mail (1:1 inbox) | 📝 | — | — | Seq #3a, same module and plan — operator 1:1 mail fans into the same inbox. |
+| In-app notifications | ✅ | notifications, notificationsapi, notificationsrpc, notifications-svc | `ecbefae`..`b991f8a`, 2026-08-31 | **Seq #3a**, [plan](../plans/2026-08-31-0032-notifications-inbox-3a-plan.md). 13th fortress, per-player inbox (schema `notifications`) fanned in from two durable subscriptions (`wallet.changed` when credited, `player.promoted`), both `AfterRegistration`. Player-facing `list` (keyset cursor in the POST body)/`mark_read`/`delete`; another player's row is `NotFound`, never `Forbidden`. Scheduled pruning via `notifications.prune-on-scheduler.v1`. Proven in both topologies: `[NT1]`-`[NT6]` + `[NT1m]`/`[NT4m]` in split-proof. Known gap: `match.finished` produces no inbox row — its `winner`/`loser` are opaque contestant strings, not `player_id`s. |
+| Player mail (1:1 inbox) | ✅ | notifications | `ecbefae`..`b991f8a`, 2026-08-31 | Seq #3a, same module and plan — operator 1:1 mail through the admin "Inbox" page (new "Player Support" section), sharing the `source_event_id` dedup column with the durable fan-in via a disjoint `admin-send-mail-` prefix; a resubmit with an edited body is 409, never a silent success. |
 | Outbound email channel (verification, reset) | ❌ | — | — | **Not in the source gap doc — added 2026-07-28.** Seq #3b. Hard prerequisite for seq #4; owned by the notifications module as an outbound channel. |
 | Push notifications (FCM/APNs) | ❌ | — | — | Seq #3c. Later channel on the notifications module. |
 | Generic storage objects / player cloud-save (KV+OCC) | ❌ | — | — | P1#7. Self-contained new fortress. |
@@ -228,6 +228,21 @@ balances and is its own feature.
 
 ## Change log
 
+- **2026-08-31** — Seq #3a (notifications in-app inbox) **landed**,
+  `ecbefae`..`b991f8a`. `cargo test -p notifications` 35/35, conformance
+  `OK: 14 modules × 4 conventions`, and split-proof 134/134 on the real 14-process
+  fleet plus the monolith parity re-run (`[NT1]`-`[NT6]`, `[NT2b]`, `[NT2c]`,
+  `[NT1m]`, `[NT4m]`). The gates lied again, in the familiar shape: a proof audit
+  found `cmd/gateway-svc/tests/boots.rs`'s `PEER_SLOT` assertion iterated a
+  hand-written literal and had gone vacuous for the 13th module — its `PEER_SLOT`
+  entry is the module's ONLY reachability path in split, since it registers as a
+  zero-factory `describe_peer`, so deleting that line would have left the test
+  green while every `/notifications` op was unroutable through the front door
+  (fixed by deriving the provider set from `opscatalog::OPERATIONS`). Separately,
+  `deliver_or_skip`'s infrastructure-failure arm had zero coverage at Step 8 time, so
+  swapping it to `Ok(())` — which would silently LOSE events on an infra error
+  rather than back off and pause the subscription — passed all 33 tests at the
+  time; closed before landing (Step 8 closing round, `b991f8a`).
 - **2026-08-31** — Seq #3 **split into 3a/3b/3c** (in-app inbox / outbound email / push);
   the single row bundled three items with unrelated risk — the inbox is durable-plane
   consumer work (a 13th fortress fanning inbox rows in from existing events), the mail

@@ -751,3 +751,28 @@ mail) found the following:
     `menu_icon` macro has no arm for the `"mail"` icon key, so the row-menu entry
     renders label-only. Wallet's `"wallet"` key has the same gap. Not swept in this
     rollout.
+
+A fifth adversarial review, of Step 9's landed split-proof assertions, found the
+Step 9 text (above) insufficient as originally written:
+
+23. **`[NT2]` as specified would have stayed green through a broken
+    `Rejection::into_ops`.** Step 9(c) described `[NT2]` as asserting only "the row
+    appears" in `notifications.messages` after an operator send-mail submit. That
+    proves the happy path but not the REMOTE rejection mapping: a collapse of
+    `Rejection::Stale`/`Rejection::Rejected` into `NotFound` renders a 405 "not
+    editable" card and silently degrades the whole admin page to read-only, and
+    nothing in the originally-specified `[NT2]` would have caught it. `[NT2b]`
+    (stale resubmit ⇒ 409, not 405) and `[NT2c]` (a genuinely bad field ⇒ 400/its
+    real status, not 405) were added mid-flight to close this.
+24. **`[NT2]`'s dependence on the correct admin slug was demonstrated, not merely
+    argued.** Finding 16 above adjudicated `ADMIN_SLUG = "inbox"` correct against
+    the plan's original `"notifications"`. That was proven by mutation: reverting
+    `ADMIN_SLUG` to `"notifications"` and re-running split-proof produced
+    `133 passed, 1 failed — FAILED: [NT2]`, and the mutation was then reverted
+    byte-identically.
+25. **Honest limit found while writing `[NT2b]`/`[NT2c]`:** `Status::Invalid` vs
+    `Status::Internal` is NOT observable through the admin portal. The portal
+    returns HTTP 200 with a "save failed" card for every `SubmitError::Other`
+    regardless of the underlying `opsapi::Status` — only `NotFound` (405) and
+    `Conflict` (409) render distinct HTTP statuses. `[NT2c]` can therefore assert
+    the failure card, not the status code, for that arm.

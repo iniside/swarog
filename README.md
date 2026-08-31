@@ -3,7 +3,7 @@
 A for-fun game backend in **Rust** (Cargo workspace), built as a **modular monolith
 with a proven split**: one repo, one `cmd/server` binary running everything — and
 every domain module *also* compiles and boots as its own `cmd/<name>-svc` process.
-Both topologies are first-class, continuously proven by a live 12-process
+Both topologies are first-class, continuously proven by a live 14-process
 integration suite.
 
 The design goal is **Open/Closed at the architecture level**: features are added by
@@ -84,7 +84,7 @@ public-API checks protect the surfaces that cross those boundaries.
 
 ## Domain modules
 
-12 fortresses plus the gateway:
+13 fortresses plus the gateway:
 
 - **accounts** — identity: one `player_id`, many identities, 60-minute access tokens
   plus rotating 30-day refresh-token families with reuse detection; federated login
@@ -107,6 +107,9 @@ public-API checks protect the surfaces that cross those boundaries.
 - **wallet** — virtual currency: operator catalog, per-player balances, ledger;
   wire-only credit/debit; starter grant on `player.promoted` and non-guest
   `player.registered`.
+- **notifications** — per-player inbox fanned in from other modules' durable
+  events (`wallet.changed` when credited, `player.promoted`) plus operator 1:1
+  mail; player list/mark-read/delete, scheduled pruning.
 - **gateway** — the single public front door: HTTP op routing (local vs remote
   purely by slot presence), authenticated player-QUIC plane, passthroughs, rate
   limiting. Domain services never host it; they serve ops only over the internal
@@ -195,7 +198,7 @@ weles has no concept of monolith/split: the fleet is a hand-authored, strict
 `fleet.toml` (services, ports, peers, and `[[prepare]]` hooks like minting the
 edge CA or seeding the admin account) that `deploy --fleet` stamps into the
 generation and `up` reads back — monolith is just a fleet of one process, split a
-fleet of twelve.
+fleet of fourteen.
 
 It shares the same `run/rollout.lock` as `devctl`/`verifyctl`, so it can never run
 a fleet concurrently with them. See [`weles/README.md`](weles/README.md) and the

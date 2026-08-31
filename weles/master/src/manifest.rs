@@ -446,13 +446,13 @@ fn peer_addr(fleet: &[ServiceDef], consumer: &str, provider: &str, kind: AddrKin
 /// # Why the monolith is empty, without a topology `if`
 ///
 /// The map is keyed on [`ServiceDef::provider`], which is `None` for the
-/// monolith: one process hosting all 12 domains is nameable as none of them. So
+/// monolith: one process hosting all 13 domains is nameable as none of them. So
 /// `PeerAddrs::from_fleet(&[monolith()])` is EMPTY and every `resolve` under the
 /// monolith 404s — a property of the data, not a branch. That is the correct
 /// answer, not a degradation: a monolith has no peers to resolve
 /// (`weles-design.md`, "the monolith satisfies this trivially"). A map built
 /// from `split_fleet()` regardless of topology would instead hand out addresses
-/// for thirteen processes that are not running.
+/// for fourteen processes that are not running.
 ///
 /// # Shape
 ///
@@ -464,7 +464,7 @@ fn peer_addr(fleet: &[ServiceDef], consumer: &str, provider: &str, kind: AddrKin
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PeerAddrs {
     /// `(provider, kind, addr)`. A Vec, not a map: multiple instances of one
-    /// provider are the eventual shape, and at thirteen services a scan is not a
+    /// provider are the eventual shape, and at fourteen services a scan is not a
     /// data structure worth having an opinion about.
     entries: Vec<(String, AddrKind, String)>,
 }

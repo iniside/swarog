@@ -2,7 +2,7 @@
 //!
 //! The shell harnesses are structurally fragile on Windows (PowerShell native-arg
 //! quote-stripping, MSYS `wait` hangs, winctrl exit-code false-throws). This harness
-//! removes the shell entirely: the 13-service fleet is spawned via `processctl`
+//! removes the shell entirely: the 14-service fleet is spawned via `processctl`
 //! with a TYPED env map and a kill-on-drop guard, health-checked over `reqwest`,
 //! DB-asserted via `sqlx`, and the player QUIC front driven through the `edge` crate as
 //! a library. No `curl.exe`, no `psql.exe`, no `playercli.exe`, no `winctrl`.
@@ -3141,11 +3141,11 @@ async fn replicas_exactly_once(
     const N: u32 = 20;
     const M: u32 = 10;
     // Distinct bind ports for the second instance — collide with nothing in the fleet
-    // (http 8080-8092, edge 9000-9010, player 9100). Same executable + same DATABASE_URL as
+    // (http 8080-8093, edge 9000-9011, player 9100). Same executable + same DATABASE_URL as
     // the base instance, so both run a durable worker holding the SAME subscription id; only
     // the bind ports differ. Its Postgres sessions are charged to the budget as
     // `processctl`'s `SPLITPROOF_REPLICA_SESSIONS` — the fleet model would otherwise miss
-    // this 13th DB-backed process entirely.
+    // this 14th DB-backed process entirely.
     const REPLICA_HTTP: u16 = 8190;
     const REPLICA_EDGE: u16 = 9108;
 

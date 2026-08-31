@@ -151,7 +151,7 @@ use crate::model::Outcome;
 use crate::runner::{self, Context};
 use crate::stages::fake_http;
 
-/// How long the whole 13-service fleet gets to answer the gateway's `/readyz`.
+/// How long the whole 14-service fleet gets to answer the gateway's `/readyz`.
 ///
 /// Generous on purpose, and NOT a performance assertion: weles gates each
 /// service on its own `HEALTH_DEADLINE` (30s) sequentially and mints a CA before
@@ -160,7 +160,7 @@ use crate::stages::fake_http;
 const BOOT_DEADLINE: Duration = Duration::from_secs(300);
 
 /// Teardown budget for `weles up`: Ctrl-Break/SIGTERM, then force. The graceful
-/// half must exceed weles's own worst-case teardown (13 services × its 5s+5s
+/// half must exceed weles's own worst-case teardown (14 services × its 5s+5s
 /// stop budget) so a clean stop is not force-killed by this stage's impatience.
 const FLEET_SHUTDOWN: ShutdownPolicy = ShutdownPolicy {
     graceful_timeout: Duration::from_secs(150),
@@ -349,7 +349,7 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
     let observed = observed?;
     let mut findings = findings(&observed);
     if let Err(error) = stopped {
-        // An orphaned 13-service fleet would poison every rollout after this one:
+        // An orphaned 14-service fleet would poison every rollout after this one:
         // it is a stage failure even if all three assertions passed.
         findings.push(format!(
             "weles up could not be stopped ({error}) — the fleet may be orphaned against the \
