@@ -191,6 +191,10 @@ fn supervise(
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| DEFAULT_DB.to_string());
+    // Before the build, the CA, the seed and every spawn: a cluster too small for the
+    // fleet's session reservation is refused here rather than discovered as connection
+    // exhaustion somewhere in the middle of a boot.
+    processctl::require_pg_session_floor(&db_url)?;
     let ca_cert = run_dir.join("edge-ca.crt");
     let ca_key = run_dir.join("edge-ca.key");
     let services = service_specs(topology, &db_url, &ca_cert, &ca_key, &environment);

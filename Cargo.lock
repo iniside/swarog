@@ -2900,7 +2900,9 @@ dependencies = [
  "scheduler",
  "serde",
  "serde_json",
+ "sqlx",
  "thiserror 1.0.69",
+ "tokio",
  "windows-sys 0.59.0",
 ]
 
@@ -4938,6 +4940,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sqlx",
  "tokio",
  "toml",
  "weles-master",

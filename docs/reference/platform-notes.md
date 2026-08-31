@@ -78,6 +78,22 @@ PGPASSWORD=gamebackend "/c/Program Files/PostgreSQL/18/bin/psql.exe" -U gameback
 PGPASSWORD=gamebackend /opt/homebrew/opt/postgresql@18/bin/psql -U gamebackend -h localhost -d gamebackend         # macOS (Homebrew)
 ```
 
+**`max_connections >= 150`** is a provisioning requirement of every rollout, not a
+suggestion: the fleet's session budget (`tools/processctl/src/fleet.rs`) is derived
+from 147 sessions usable by ordinary roles — 150 minus
+`superuser_reserved_connections = 3` — which a stock cluster's 100 cannot supply.
+`devctl up`, `splitproof` and `weles up` each query `SHOW max_connections` before
+spawning anything and abort with this remedy:
+
+```
+ALTER SYSTEM SET max_connections = 150;
+```
+
+`max_connections` is postmaster-context, so the server must be RESTARTED afterwards —
+`pg_reload_conf()` does not apply it. Same on all three platforms (Windows: restart the
+`postgresql-x64-18` service; Homebrew macOS: `brew services restart postgresql@18`;
+Linux: `systemctl restart postgresql`).
+
 **Paired scripts** — same behaviour, one file per shell: `install.sh` /
 `install.ps1` (adminctl user seeding), `scripts/memory-sync.sh` /
 `scripts/memory-sync.ps1` (agent-memory mirror).

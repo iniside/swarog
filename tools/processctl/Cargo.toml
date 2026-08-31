@@ -10,6 +10,15 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+# The `max_connections` preflight (fleet.rs) — the only I/O these two deps serve.
+# Pinned LOCALLY rather than `.workspace = true`: the workspace sqlx pin carries
+# `tls-rustls`, whose `ring` build is C/asm and would put processctl out of reach of
+# verifyctl's `supported-targets` cross-check (that stage checks processctl and weles
+# precisely because they are ring-free in their normal deps). The dev cluster is
+# loopback plaintext, so dropping TLS costs the probe nothing.
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "io-util"] }
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",

@@ -25,6 +25,7 @@ pub mod cli;
 pub mod control;
 pub mod health;
 pub mod lock;
+pub mod pgfloor;
 pub mod platform;
 pub mod prep;
 pub mod supervisor;

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(windows)]
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use thiserror::Error;
 
@@ -105,12 +106,22 @@ pub(crate) const HARNESS_RESERVE: u32 = SPLITPROOF_ASSERTION_POOL_MAX
     + AE_TRANSIENT_POISON_SESSIONS
     + 2;
 
-/// Postgres sessions available to ordinary roles on the dev cluster: stock
-/// `max_connections = 100` minus `superuser_reserved_connections = 3` (both verified
-/// against the local cluster, 2026-07-29). BOTH are PG-side configurable — an operator
-/// who raised `max_connections` has strictly MORE headroom, so this is a conservative
-/// floor, not a hard platform limit.
-pub(crate) const USABLE_PG_SESSIONS: u32 = 97;
+/// Sessions the cluster withholds from ordinary roles for superuser access
+/// (`superuser_reserved_connections`, verified against the local cluster 2026-07-29).
+pub(crate) const SUPERUSER_RESERVED_CONNECTIONS: u32 = 3;
+
+/// `max_connections` the dev cluster must be RUNNING with. It is above a stock
+/// cluster's 100, so it is a provisioning requirement rather than an observed
+/// default, and nothing in Postgres enforces it — [`require_pg_session_floor`] asks
+/// the live cluster before a rollout spawns anything.
+pub const REQUIRED_MAX_CONNECTIONS: u32 = 150;
+
+/// Postgres sessions available to ordinary roles on the dev cluster:
+/// [`REQUIRED_MAX_CONNECTIONS`] minus [`SUPERUSER_RESERVED_CONNECTIONS`]. An operator
+/// who provisioned MORE than the requirement has strictly more headroom; one who
+/// provisioned less is refused a rollout rather than run into exhaustion.
+pub(crate) const USABLE_PG_SESSIONS: u32 =
+    REQUIRED_MAX_CONNECTIONS - SUPERUSER_RESERVED_CONNECTIONS;
 
 /// Usable Postgres sessions the whole fleet + monolith must fit within.
 /// [`HARNESS_RESERVE`] is subtracted so the fleet is charged only its own share.
@@ -144,10 +155,10 @@ pub(crate) const AE_TRANSIENT_POISON_SESSIONS: u32 = 2;
 const PLANE_DEDICATED_SESSIONS: u32 =
     AE_WORKERS + AE_WAKEUP_SESSIONS + INVALIDATION_LISTEN_SESSIONS;
 
-/// Per-DB-process pooled-connection cap in the SPLIT. Low by necessity: 13 DB-backed
-/// processes plus splitproof's `[REPLICAS]` 14th share one local Postgres, so each gets a
-/// small slice within [`PG_SESSION_BUDGET`]. This sits exactly AT core/app's migrate floor
-/// (`MIN_DB_POOL_MAX = 2`), which is sufficient because boot is sequential: the two-phase
+/// Per-DB-process pooled-connection cap in the SPLIT: every DB-backed process plus
+/// splitproof's `[REPLICAS]` extra one share a single local Postgres. It sits exactly AT
+/// core/app's migrate floor (`MIN_DB_POOL_MAX = 2`) — the smallest cap the two-phase
+/// migrate can run with, which is sufficient because boot is sequential: the two-phase
 /// migrate holds the schema-lock connection plus at most ONE module connection, and HTTP
 /// serves only after `start`. The pool's concurrent users — the retention GC sweep, the
 /// metrics/invalidation poll refreshes, the `/readyz` DB ping, the HTTP/edge handlers —
@@ -307,6 +318,69 @@ pub enum FleetError {
         #[source]
         source: std::io::Error,
     },
+    #[error(
+        "Postgres max_connections is {observed}, below the {required} this rollout requires \
+         ({usable} usable sessions + {reserved} reserved for superusers). Raise the cluster:\
+         \n    ALTER SYSTEM SET max_connections = {required};\
+         \nthen RESTART the Postgres server — max_connections is postmaster-context, so \
+         pg_reload_conf() does NOT apply it.",
+        required = REQUIRED_MAX_CONNECTIONS,
+        usable = USABLE_PG_SESSIONS,
+        reserved = SUPERUSER_RESERVED_CONNECTIONS,
+    )]
+    PgSessionFloor { observed: u32 },
+    #[error("read max_connections from the configured DATABASE_URL: {0}")]
+    PgSessionProbe(String),
+}
+
+/// How long the probe waits for the cluster to answer before the rollout is refused.
+const PG_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Refuses the rollout unless the cluster at `database_url` is running with at least
+/// [`REQUIRED_MAX_CONNECTIONS`]. Blocking (it owns a current-thread runtime) because
+/// the supervisors that boot a fleet are synchronous; an async caller queries with its
+/// own connection and applies [`check_pg_session_floor`] to the answer.
+///
+/// Call it BEFORE spawning anything: a cluster that never got the provisioning step
+/// fails here, loudly, instead of exhausting connections part-way through a boot.
+pub fn require_pg_session_floor(database_url: &str) -> Result<(), FleetError> {
+    check_pg_session_floor(read_max_connections(database_url)?)
+}
+
+/// The verdict over an already-observed `max_connections`, with no I/O of its own, so
+/// the blocking and async callers reach one conclusion carrying one remedy.
+pub fn check_pg_session_floor(max_connections: u32) -> Result<(), FleetError> {
+    if max_connections >= REQUIRED_MAX_CONNECTIONS {
+        return Ok(());
+    }
+    Err(FleetError::PgSessionFloor {
+        observed: max_connections,
+    })
+}
+
+fn read_max_connections(database_url: &str) -> Result<u32, FleetError> {
+    use sqlx::Connection as _;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|source| FleetError::PgSessionProbe(source.to_string()))?;
+    let raw = runtime.block_on(async {
+        tokio::time::timeout(PG_PROBE_TIMEOUT, async {
+            let mut connection = sqlx::PgConnection::connect(database_url).await?;
+            let raw: String = sqlx::query_scalar("SHOW max_connections")
+                .fetch_one(&mut connection)
+                .await?;
+            connection.close().await?;
+            Ok::<String, sqlx::Error>(raw)
+        })
+        .await
+        .map_err(|_| FleetError::PgSessionProbe(format!("no answer within {PG_PROBE_TIMEOUT:?}")))?
+        .map_err(|source| FleetError::PgSessionProbe(source.to_string()))
+    })?;
+    raw.trim()
+        .parse()
+        .map_err(|_| FleetError::PgSessionProbe(format!("max_connections is not a number: {raw}")))
 }
 
 impl FleetSpec {

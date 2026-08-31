@@ -19,6 +19,12 @@ serde_json.workspace = true
 rand.workspace = true
 sha2.workspace = true
 
+# The Postgres session-floor preflight (src/pgfloor.rs). Pinned LOCALLY with NO tls
+# feature, which keeps rustls/ring/aws-lc-rs out of weles's resolve exactly as the
+# tokio pin below does, and keeps weles cross-compilable without a per-target C
+# toolchain. Zero-sharing is untouched: sqlx is an external crate, not a workspace one.
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio"] }
+
 # Strict TOML parsing for the operator-authored `fleet.toml` (src/fleet_toml.rs).
 # Pinned LOCALLY, not via `.workspace = true`: there is no `toml` entry in the
 # workspace [dependencies] pin, and adding one would widen the build graph for

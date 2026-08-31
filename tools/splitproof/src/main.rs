@@ -22,10 +22,10 @@ use processctl::{
     game_backend_fleet_with_environment, game_backend_monolith, rollout_lock_path, EnvironmentSnapshot, BorrowedLease, FleetFlavor,
     FleetInputs, FleetSpec, OutputDestination, OwnedChild, OwnedLease, ProcessGroupPolicy,
     RolloutLock, ServiceSpec, ShutdownOutcome, ShutdownPolicy, SpawnSpec, WorkspaceLayout,
-    SPLITPROOF_ASSERTION_POOL_MAX,
+    REQUIRED_MAX_CONNECTIONS, SPLITPROOF_ASSERTION_POOL_MAX,
 };
 use sqlx::postgres::PgPoolOptions;
-use sqlx::{PgPool, Row};
+use sqlx::{Connection as _, PgPool, Row};
 use splitproof::{fleet_liveness, Running};
 
 use crate::idp::Idp;
@@ -691,7 +691,7 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
 
     // Fleet-drift tripwire: the centralized processctl fleet must equal
     // cmd/*-svc on disk.
-    preflight_fleet(&root, &ctx)?;
+    preflight_fleet(&root, &ctx).await?;
 
     // Build the fleet (svcs + monolith + adminctl) so a bare `cargo run -p splitproof`
     // is self-contained — no dependency on a prior verify stage having built them.
@@ -873,12 +873,30 @@ fn build_fleet(ctx: &Ctx, root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn preflight_fleet(root: &Path, ctx: &Ctx) -> Result<()> {
+async fn preflight_fleet(root: &Path, ctx: &Ctx) -> Result<()> {
     ctx.fleet.validate_disk(&root.join("cmd"))?;
     println!(
         "[splitproof] fleet preflight OK: {} svcs == cmd/*-svc on disk",
         ctx.fleet.services().len()
     );
+    // The session-budget half of the same preflight: the fleet's reservation is only
+    // valid on a cluster provisioned for it, so ask before spawning. The query is local
+    // (this harness is already async, so it never enters processctl's blocking twin);
+    // the verdict and its remedy come from processctl, the budget's authority.
+    let mut connection = sqlx::PgConnection::connect(&ctx.db_url)
+        .await
+        .context("connect to DATABASE_URL for the max_connections preflight")?;
+    let observed: String = sqlx::query_scalar("SHOW max_connections")
+        .fetch_one(&mut connection)
+        .await
+        .context("read max_connections")?;
+    connection.close().await.ok();
+    let observed: u32 = observed
+        .trim()
+        .parse()
+        .with_context(|| format!("max_connections is not a number: {observed}"))?;
+    processctl::check_pg_session_floor(observed)?;
+    println!("[splitproof] Postgres preflight OK: max_connections {observed} >= {REQUIRED_MAX_CONNECTIONS}");
     Ok(())
 }
 

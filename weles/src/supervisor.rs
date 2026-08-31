@@ -39,6 +39,7 @@ use crate::control::ControlServer;
 use crate::health::{self, ProbeResult};
 use crate::lock;
 use crate::manifest::{self, Port, ServiceDef};
+use crate::pgfloor;
 use crate::platform::{self, Outcome, OwnedProc, SpawnSpec};
 use crate::prep;
 use crate::state::{self, FleetState, FleetStatus, ProcessIdentity, Readiness, ServiceState, Status};
@@ -795,6 +796,11 @@ fn run_fleet(prepared: PreparedFleet) -> Result<()> {
     let packages = prep::deploy_packages(deployed);
     prep::validate_binaries(&layout, &packages)
         .context("validate deployed fleet binaries")?;
+
+    // Before the prepare hooks and every spawn: a cluster too small for this fleet's
+    // per-service pools is refused here, not discovered as connection exhaustion
+    // part-way through a boot the supervisor would then keep restarting.
+    pgfloor::require_pg_session_floor(&deployed.passthrough)?;
 
     // Run the fleet's declared `[[prepare]]` hooks (CA mint, admin seed) — in
     // declared order, BEFORE any service is spawned. A nonzero exit or timeout
