@@ -15,6 +15,7 @@
 mod address;
 mod admin;
 pub mod config;
+pub mod conformance;
 mod projection;
 pub mod providers;
 mod service;

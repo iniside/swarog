@@ -108,7 +108,7 @@ pub fn drift_findings(
 /// `checkmodules::split_fleet_matches_cmd_dirs`): it is diffed against `modules/*/src/**`
 /// before any assertion runs, and every module on it must carry an EXECUTABLE
 /// `Convention::InputByteCaps` fixture rather than a sentence.
-pub const ADMIN_SUBMIT_MODULES: &[&str] = &["apikeys", "notifications", "wallet"];
+pub const ADMIN_SUBMIT_MODULES: &[&str] = &["apikeys", "mail", "notifications", "wallet"];
 
 /// Phase 1b — the `AdminSubmit` drift tripwire. `on_disk` is the scanned set of modules
 /// implementing the trait; every difference from [`ADMIN_SUBMIT_MODULES`] is its own line

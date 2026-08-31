@@ -42,6 +42,7 @@ pub fn entries() -> Vec<Entry> {
         gateway(),
         inventory(),
         leaderboard(),
+        mail(),
         match_module(),
         notifications(),
         rating(),
@@ -75,7 +76,7 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("admin.adminData", "params.<value>", Wire), Opaque { rationale: "read-path only, and nothing on this path writes it. Two consumer shapes, both bounded by construction: a lookup value reaching SQL is a bound parameter behind a uuid parse (characters/inventory `owner`, wallet `player`), where an over-long value fails the parse or matches no row; and a DISPLAY value that never reaches a statement at all (characters::admin/inventory::admin `owner_name`, which only titles the drill-down page and is HTML-escaped by the portal's minijinja autoescape)" }),
         (key("admin.adminSubmit", "id", Wire), Opaque { rationale: "the provider's own admin slug (adminapi::Item::id), selected by the portal from its resolved item set rather than parsed from operator text" }),
         (key("admin.adminSubmit", "params.<key>", Wire), Opaque { rationale: "the key set is NOT closed — admin::collect_submit_params copies the form's own declared Field/HiddenField names, then accepts ANY submitted name starting with the reserved _expected_ prefix, so the suffix is operator-authored and unbounded. It is opaque because no consumer ever iterates these keys: every provider reads the map by a name it constructed itself (adminapi::param / the module's own _expected_<field> literal), so an unrecognized key is inert — never persisted, interpolated or echoed" }),
-        (key("admin.adminSubmit", "params.<value>", Wire), Validated { cap: apikeys::conformance::MAX_POLICY_BYTES, basis: "every module exposing adminapi::AdminSubmit constrains its declared form values in Rust before any SQL runs, mostly as byte caps mirroring a column CHECK: wallet via admin::CATALOG_CAPS + the currencies_*_len_check constraints (widest 64) and its validate_movement caps, apikeys via store::COLUMN_CAPS + the roles_/keys_*_len_check constraints — MAX_NAME_BYTES (128) on every role/key name and MAX_POLICY_BYTES (4096, the widest declared form value ANY implementor posts) on a role policy — and notifications via service::validate_new inside its single insert authority, MAX_TITLE_BYTES (200) and MAX_BODY_BYTES (4000) against notifications_title_len_check/notifications_body_len_check and, on its hidden _idem_send field, an EXACT shape rather than a ceiling — admin::rendered_key admits only the 48-byte minted key (admin-send-mail- + 32 hex) before any SQL, and service::send_operator_mail re-checks it at the insert authority so the shared dedup column's two key spaces stay disjoint. Its sibling bound, MAX_DEDUP_KEY_BYTES (128) in validate_new, is NOT a submit-path cap and no form input can exercise it: it covers the OTHER half of that shared column, the fan-in's event_id, and is the only level that can word a verdict there because a btree index key has no column CHECK beneath it, so an over-long value would be an unmappable 54000 rather than a 23514. The 23514 mapping is NOT uniform and the difference is deliberate: wallet and apikeys map the CHECK back to the SAME operator-facing verdict because their writes can reach it, while notifications runs both caps in the same function that issues the INSERT, so nothing passing them reaches the CHECK and it stands only as the class fail-safe under them. Two declared form values carry no Rust byte cap. notifications' player_id is operator text bounded by the column's $1::uuid cast instead — the 22P02 comes back as Status::Invalid, never a row nobody owns. The other is the _action discriminant, and it is uncapped in ALL THREE implementors by the same argument rather than by oversight: collect_submit_params takes it from the POSTED value, but every apply_submit matches it against a closed set of literal actions, and a value outside that set is never persisted, never interpolated into SQL and never forwarded — its only reach is being echoed back into the operator-facing rejection message. Its LENGTH rests on axum's default request-body limit, which the admin POST's axum::body::Bytes extractor honours and which nothing under core/ or modules/admin disables — a whole-request bound the HTTP layer owes every form field, not a per-module cap three modules should each grow. Two of the three claims are executable HERE: checks::ADMIN_SUBMIT_MODULES is diffed against modules/*/src before any assertion runs, so the implementor list cannot go stale, and every listed module must carry an input-byte-caps CapCase whose probe calls its real validator (today wallet::conformance -> validate_movement and apikeys::conformance -> store::validate_name/validate_policy), so the caps themselves are exercised. The third — that the cap runs on the SUBMIT path, pre-SQL, rather than only as the column CHECK — is NOT decided by this gate: it is pinned by each module's own tests (wallet's direct admin::check_catalog_caps/check_decimals_range tests, apikeys' store_tests over_cap_* writers), because in those two, through apply_submit, the Rust verdict and the CHECK's mapping are byte-identical and no input can separate them" }),
+        (key("admin.adminSubmit", "params.<value>", Wire), Validated { cap: apikeys::conformance::MAX_POLICY_BYTES, basis: "every module exposing adminapi::AdminSubmit constrains its declared form values in Rust before any statement carrying that value runs, mostly as byte caps mirroring a column CHECK: wallet via admin::CATALOG_CAPS + the currencies_*_len_check constraints (widest 64) and its validate_movement caps, apikeys via store::COLUMN_CAPS + the roles_/keys_*_len_check constraints — MAX_NAME_BYTES (128) on every role/key name and MAX_POLICY_BYTES (4096, the widest declared form value ANY implementor posts) on a role policy — and notifications via service::validate_new inside its single insert authority, MAX_TITLE_BYTES (200) and MAX_BODY_BYTES (4000) against notifications_title_len_check/notifications_body_len_check and, on its hidden _idem_send field, an EXACT shape rather than a ceiling — admin::rendered_key admits only the 48-byte minted key (admin-send-mail- + 32 hex) before any SQL, and service::send_operator_mail re-checks it at the insert authority so the shared dedup column's two key spaces stay disjoint — and mail via service::validate_new inside its single enqueue authority, store::COLUMN_CAPS against mail_outbox_*_len_check, plus two EXACT shapes rather than ceilings: admin::is_outbox_id on the selected row id (36 bytes, the uuid spelling the selector rendered) and admin::rendered_key on the hidden _idem_test field (48 bytes, admin-send-test- + 32 hex), both refused before the value reaches a statement, the key re-checked at Service::enqueue_from_admin so a hand-posted one is refused by the authority rather than by whichever caller remembered to look. Mail is the one implementor whose caps run with a transaction already open: enqueue_from_admin checks out a bounded tx before validate_new, but that tx has issued only SET LOCAL statement_timeout, so no operator value has reached a statement. Its sibling bound, MAX_DEDUP_KEY_BYTES (128) in validate_new, is NOT a submit-path cap and no form input can exercise it: it covers the OTHER half of that shared column, the fan-in's event_id, and is the only level that can word a verdict there because a btree index key has no column CHECK beneath it, so an over-long value would be an unmappable 54000 rather than a 23514. The 23514 mapping is NOT uniform and the difference is deliberate: wallet and apikeys map the CHECK back to the SAME operator-facing verdict because their writes can reach it, while notifications runs both caps in the same function that issues the INSERT, so nothing passing them reaches the CHECK and it stands only as the class fail-safe under them. Two declared form values carry no Rust byte cap. notifications' player_id is operator text bounded by the column's $1::uuid cast instead — the 22P02 comes back as Status::Invalid, never a row nobody owns. The other is the _action discriminant, and it is uncapped in ALL FOUR implementors by the same argument rather than by oversight: collect_submit_params takes it from the POSTED value, but every apply_submit matches it against a closed set of literal actions, and a value outside that set is never persisted, never interpolated into SQL and never forwarded — its only reach is being echoed back into the operator-facing rejection message. Its LENGTH rests on axum's default request-body limit, which the admin POST's axum::body::Bytes extractor honours and which nothing under core/ or modules/admin disables — a whole-request bound the HTTP layer owes every form field, not a per-module cap four modules should each grow. Two of the three claims are executable HERE: checks::ADMIN_SUBMIT_MODULES is diffed against modules/*/src before any assertion runs, so the implementor list cannot go stale, and every listed module must carry an input-byte-caps CapCase whose probe calls its real validator (today wallet::conformance -> validate_movement, apikeys::conformance -> store::validate_name/validate_policy, and mail::conformance -> service::validate_new), so the caps themselves are exercised. The third — that the cap runs on the SUBMIT path, pre-SQL, rather than only as the column CHECK — is NOT decided by this gate: it is pinned by each module's own tests (wallet's direct admin::check_catalog_caps/check_decimals_range tests, apikeys' store_tests over_cap_* writers), because in those two, through apply_submit, the Rust verdict and the CHECK's mapping are byte-identical and no input can separate them. Mail's two shape cases are the exception: they drive admin::apply_submit ITSELF against a store that cannot connect and discriminate on the verdict, so for those two the submit-path claim IS decided here" }),
         (key("apikeys.lookupKey", "key", Wire), Validated { cap: apikeysapi::MAX_KEY_BYTES, basis: "gateway::RealKeyVerifier::lookup rejects a presented key over apikeysapi::MAX_KEY_BYTES before any store round-trip; secrets are server-generated, so there is no caller-supplied creation path to cap" }),
         (key("characters.create", "class", External), Validated { cap: 64, basis: "characters::class_within_cap validates the defaulted persisted class before SQL" }),
         (key("characters.create", "name", External), Validated { cap: 128, basis: "characters::name_within_cap validates the persisted name before SQL" }),
@@ -472,6 +473,164 @@ fn leaderboard() -> Entry {
         "leaderboard takes no player-supplied free-text field",
         "leaderboard has no credential verifier",
     )
+}
+
+fn mail() -> Entry {
+    Entry {
+        module: "mail",
+        stances: vec![
+            (
+                Convention::EnvValidation,
+                // One case per MAIL_* variable, each set ALONE by the harness. Blank rather
+                // than empty because std::env::set_var("") REMOVES the variable on Windows,
+                // where the case would then assert the unset path — which is the compiled
+                // default, not a failure.
+                //
+                // The five MAIL_SMTP_* cases carry VALID values on purpose: with one
+                // variable set, MAIL_PROVIDER is never `smtp`, so what they execute is the
+                // group refusal — a relay setting an operator believes is configured must
+                // not boot into a channel that ignores it. Each names its own variable, so a
+                // key dropped from config::SMTP_VARS turns only its own case red. The smtp
+                // arm's per-field parses (host shape, port range, TLS mode) need two
+                // variables at once and are unreachable from this harness by construction.
+                Stance::Applies(Fixture::EnvValidation(vec![
+                    EnvCase {
+                        var: "MAIL_PROVIDER",
+                        bad_value: "postbox",
+                        expect: "invalid MAIL_PROVIDER: unknown provider",
+                    },
+                    EnvCase {
+                        var: "MAIL_FROM",
+                        bad_value: "ops@",
+                        expect: "invalid MAIL_FROM: is not a routable address",
+                    },
+                    // The cross-field rule, which no per-field parse can reach: a valid
+                    // address with no provider is a channel that enqueues and never drains.
+                    EnvCase {
+                        var: "MAIL_FROM",
+                        bad_value: "ops@example.com",
+                        expect: "MAIL_FROM is set but MAIL_PROVIDER is not",
+                    },
+                    EnvCase {
+                        var: "MAIL_SEND_TIMEOUT_MS",
+                        bad_value: "   ",
+                        expect: "invalid MAIL_SEND_TIMEOUT_MS: must be a whole number",
+                    },
+                    // The ceiling, derived from the drain's backoff cap: a send budget
+                    // allowed to outlast the longest gap the retry ladder waits inverts the
+                    // ladder, and the same value becomes a statement_timeout. The value is
+                    // far above any plausible budget, so the case pins the bound's EXISTENCE
+                    // rather than its current number.
+                    EnvCase {
+                        var: "MAIL_SEND_TIMEOUT_MS",
+                        bad_value: "99999999999",
+                        expect: "invalid MAIL_SEND_TIMEOUT_MS: must be between 1 and",
+                    },
+                    EnvCase {
+                        var: "MAIL_MAX_ATTEMPTS",
+                        bad_value: "   ",
+                        expect: "invalid MAIL_MAX_ATTEMPTS: must be a whole number",
+                    },
+                    EnvCase {
+                        var: "MAIL_MAX_ATTEMPTS",
+                        bad_value: "0",
+                        expect: "invalid MAIL_MAX_ATTEMPTS: must be between 1 and",
+                    },
+                    EnvCase {
+                        var: "MAIL_RETENTION_DAYS",
+                        bad_value: "   ",
+                        expect: "invalid MAIL_RETENTION_DAYS: must be a whole number",
+                    },
+                    EnvCase {
+                        var: "MAIL_RETENTION_DAYS",
+                        bad_value: "99999999",
+                        expect: "invalid MAIL_RETENTION_DAYS: must be between 1 and",
+                    },
+                    EnvCase {
+                        var: "MAIL_SMTP_HOST",
+                        bad_value: "relay.example.com",
+                        expect: "MAIL_SMTP_HOST is set but MAIL_PROVIDER is not smtp",
+                    },
+                    EnvCase {
+                        var: "MAIL_SMTP_PORT",
+                        bad_value: "587",
+                        expect: "MAIL_SMTP_PORT is set but MAIL_PROVIDER is not smtp",
+                    },
+                    EnvCase {
+                        var: "MAIL_SMTP_USERNAME",
+                        bad_value: "mailer",
+                        expect: "MAIL_SMTP_USERNAME is set but MAIL_PROVIDER is not smtp",
+                    },
+                    EnvCase {
+                        var: "MAIL_SMTP_PASSWORD",
+                        bad_value: "unused",
+                        expect: "MAIL_SMTP_PASSWORD is set but MAIL_PROVIDER is not smtp",
+                    },
+                    EnvCase {
+                        var: "MAIL_SMTP_TLS",
+                        bad_value: "starttls",
+                        expect: "MAIL_SMTP_TLS is set but MAIL_PROVIDER is not smtp",
+                    },
+                ])),
+            ),
+            (
+                Convention::InputByteCaps,
+                // The first four drive service::validate_new, the one input policy the
+                // enqueue authority runs for BOTH callers (the durable ingress and the
+                // operator form) before any statement carries the value. The last two drive
+                // admin::apply_submit itself — mail's contribution to the shared
+                // `admin.adminSubmit params.<value>` verdict — against a store that cannot
+                // connect, so an admitted length answers Internal and only the guard's own
+                // verdict counts as a rejection.
+                //
+                // recipient has no case, which is a finding rather than an omission: its
+                // 320-byte cap cannot be separated from lettre::Address under it (local part
+                // 64 + domain 254 = 319 is the longest address that parses), so no input
+                // exists that one accepts and the other rejects. The cap changes the
+                // operator's message, never the verdict.
+                Stance::Applies(Fixture::InputByteCaps(vec![
+                    CapCase {
+                        name: "mail request idempotency key",
+                        cap: mailevents::MAX_IDEMPOTENCY_KEY_BYTES,
+                        probe: Arc::new(mail::conformance::conformance_idempotency_key_rejected),
+                    },
+                    CapCase {
+                        name: "mail request subject",
+                        cap: mailevents::MAX_SUBJECT_BYTES,
+                        probe: Arc::new(mail::conformance::conformance_subject_rejected),
+                    },
+                    CapCase {
+                        name: "mail request body",
+                        cap: mailevents::MAX_BODY_BYTES,
+                        probe: Arc::new(mail::conformance::conformance_body_rejected),
+                    },
+                    CapCase {
+                        name: "mail request kind",
+                        cap: mailevents::MAX_KIND_BYTES,
+                        probe: Arc::new(mail::conformance::conformance_kind_rejected),
+                    },
+                    CapCase {
+                        name: "mail admin send-test key",
+                        cap: mail::conformance::TEST_KEY_BYTES,
+                        probe: Arc::new(mail::conformance::conformance_test_key_rejected),
+                    },
+                    CapCase {
+                        name: "mail admin selected message id",
+                        cap: mail::conformance::OUTBOX_ID_SHAPE_BYTES,
+                        probe: Arc::new(mail::conformance::conformance_outbox_id_rejected),
+                    },
+                ])),
+            ),
+            (
+                Convention::InfraOutage503,
+                na("mail publishes no synchronous op — no #[http] route, no capability trait — so it has no request whose answer could be a 503: its ingress is a durable subscription, where infrastructure trouble propagates and the plane retries, and a relay it cannot reach is a queued retry ending in a parked row an operator requeues"),
+            ),
+            (
+                Convention::ArgonParity,
+                na("mail performs no password hashing: MAIL_SMTP_PASSWORD is a credential it PRESENTS to a relay, held in memory and sent, never a stored verifier"),
+            ),
+        ],
+    }
 }
 
 fn match_module() -> Entry {

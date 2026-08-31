@@ -45,19 +45,19 @@ const MAX_BULK_REQUEUE: i64 = 1_000;
 /// How much of a `last_error` a cell shows, in characters.
 const ERROR_CHARS: usize = 80;
 
-const ACTION_FIELD: &str = "_action";
-const ACTION_REQUEUE: &str = "requeue";
+pub(crate) const ACTION_FIELD: &str = "_action";
+pub(crate) const ACTION_REQUEUE: &str = "requeue";
 const ACTION_REQUEUE_ALL: &str = "requeue-all-parked";
 const ACTION_CANCEL: &str = "cancel";
-const ACTION_SEND_TEST: &str = "send-test";
+pub(crate) const ACTION_SEND_TEST: &str = "send-test";
 
-const MAIL_ID_FIELD: &str = "mail_id";
-const TEST_TO_FIELD: &str = "test_to";
+pub(crate) const MAIL_ID_FIELD: &str = "mail_id";
+pub(crate) const TEST_TO_FIELD: &str = "test_to";
 
 /// The idempotency key minted at RENDER time and round-tripped as a hidden input. Minting
 /// it at submit time would give every resubmit of one rendered form a fresh key, so a
 /// double-click would enqueue the test message twice — the exact defect the key prevents.
-const IDEM_TEST_FIELD: &str = "_idem_test";
+pub(crate) const IDEM_TEST_FIELD: &str = "_idem_test";
 
 /// The `kind` an operator test send carries, so the table can name it. Producers choose
 /// their own `kind` freely, so this names the sender by convention, not by reservation.
@@ -262,11 +262,14 @@ fn mint_test_key() -> String {
     format!("{TEST_KEY_PREFIX}{hex}")
 }
 
+/// The length of the canonical uuid spelling, hyphens included.
+pub(crate) const OUTBOX_ID_BYTES: usize = 36;
+
 /// The canonical uuid spelling the row selector renders. Checked before any statement so a
 /// hand-edited value is a stated rejection rather than a `22P02` from the `$1::uuid` cast.
 fn is_outbox_id(value: &str) -> bool {
     let bytes = value.as_bytes();
-    bytes.len() == 36
+    bytes.len() == OUTBOX_ID_BYTES
         && bytes.iter().enumerate().all(|(i, b)| match i {
             8 | 13 | 18 | 23 => *b == b'-',
             _ => b.is_ascii_hexdigit(),

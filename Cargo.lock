@@ -1030,6 +1030,8 @@ dependencies = [
  "checkmodules",
  "gateway",
  "lifecycle",
+ "mail",
+ "mailevents",
  "match_module",
  "notifications",
  "notificationsapi",
