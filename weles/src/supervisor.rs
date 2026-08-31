@@ -797,10 +797,10 @@ fn run_fleet(prepared: PreparedFleet) -> Result<()> {
     prep::validate_binaries(&layout, &packages)
         .context("validate deployed fleet binaries")?;
 
-    // Before the prepare hooks and every spawn: a cluster too small for this fleet's
-    // per-service pools is refused here, not discovered as connection exhaustion
+    // Before the prepare hooks and every spawn: a cluster too small for what THIS
+    // fleet's services reserve is refused here, not discovered as connection exhaustion
     // part-way through a boot the supervisor would then keep restarting.
-    pgfloor::require_pg_session_floor(&deployed.passthrough)?;
+    pgfloor::require_pg_session_floor(deployed)?;
 
     // Run the fleet's declared `[[prepare]]` hooks (CA mint, admin seed) — in
     // declared order, BEFORE any service is spawned. A nonzero exit or timeout

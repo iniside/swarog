@@ -191,13 +191,19 @@ fn supervise(
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
         .unwrap_or_else(|| DEFAULT_DB.to_string());
-    // Before the build, the CA, the seed and every spawn: a cluster too small for the
-    // fleet's session reservation is refused here rather than discovered as connection
-    // exhaustion somewhere in the middle of a boot.
-    processctl::require_pg_session_floor(&db_url)?;
     let ca_cert = run_dir.join("edge-ca.crt");
     let ca_key = run_dir.join("edge-ca.key");
     let services = service_specs(topology, &db_url, &ca_cert, &ca_key, &environment);
+    // Before the build, the CA, the seed and every spawn: a cluster too small for what
+    // THIS topology reserves is refused here rather than discovered as connection
+    // exhaustion somewhere in the middle of a boot. devctl hosts no assertion harness
+    // and its adminctl seed runs to completion before the first spawn, so the fleet's
+    // own reservation is the whole peak.
+    let required: u32 = services
+        .iter()
+        .map(|service| service.pool_budget.sessions())
+        .sum();
+    processctl::require_pg_session_floor(&db_url, required)?;
     let endpoint = control_endpoint(run_dir, &run_id);
     let mut initial = FleetState::new(&run_id, topology.name())?;
     initial.set_supervisor(observe_process_identity(std::process::id())?);

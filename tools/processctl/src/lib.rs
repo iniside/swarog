@@ -81,9 +81,10 @@ pub(crate) fn fork_flock_serial() -> std::sync::MutexGuard<'static, ()> {
 }
 pub use fleet::{
     build_environment, check_pg_session_floor, game_backend_fleet,
-    game_backend_fleet_with_environment, game_backend_monolith, require_pg_session_floor,
-    runtime_environment, EnvironmentSnapshot, FleetError, FleetFlavor,
-    FleetInputs, FleetSpec, PoolBudget, ServiceSpec, BUILD_ENV_ALLOWLIST, PG_SESSION_BUDGET,
+    game_backend_fleet_with_environment, game_backend_monolith, read_pg_session_capacity,
+    require_pg_session_floor, runtime_environment, EnvironmentSnapshot, FleetError, FleetFlavor,
+    FleetInputs, FleetSpec, PgSessionCapacity, PoolBudget, ServiceSpec, BUILD_ENV_ALLOWLIST,
+    HARNESS_RESERVE, PG_SESSION_BUDGET, PG_SESSION_CAPACITY_SQL, PLANE_DEDICATED_SESSIONS,
     proof_oidc_port, PROOF_OIDC_CLIENT_ID, PROOF_OIDC_ISSUER, PROOF_OIDC_JWKS_URL,
     REQUIRED_MAX_CONNECTIONS, SERVICE_ENV_ALLOWLIST, SPLITPROOF_ASSERTION_POOL_MAX,
     SPLITPROOF_REPLICA_SESSIONS,

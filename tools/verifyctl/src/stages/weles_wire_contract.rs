@@ -61,6 +61,11 @@
 //!   `deny_unknown_fields` is what makes the request direction bite.
 //! * **The `resolve` path** ([`path_diffs`]) — weles's `route` match arm against
 //!   the URL remote's `format!` actually builds.
+//! * **weles's Postgres session-floor copies** ([`session_floor_diffs`]) — the
+//!   provisioning requirement, the per-process dedicated-session count and the
+//!   capacity SQL, against `tools/processctl/src/fleet.rs`, which owns the budget
+//!   derivation. Not a wire, like the borrow marker below it; the same hand-copy
+//!   between the same two crates, so it is answered in the same one place.
 //! * **The `AddrKind` pairing itself**, end to end and with no column this stage
 //!   hand-copied in between: [`contract_diffs`] drives remote's real `Serialize`
 //!   into weles's real `Deserialize` once per variant. This is the check that
@@ -333,6 +338,50 @@ fn borrow_marker_diffs(weles: &str, processctl: &str) -> Vec<String> {
 /// possibility and would otherwise be invisible, since `Edge` and `Http` render
 /// identically-shaped bytes. Composing them is what turns two exhaustive matches
 /// into an actual bijection.
+/// The Postgres session-floor constants weles hand-copies from processctl.
+///
+/// Same seam as [`borrow_marker_diffs`] and here for the same reason: weles is
+/// zero-sharing, so `weles::pgfloor` re-declares processctl's provisioning
+/// requirement, the per-process dedicated-session count and the capacity query.
+/// Nothing else can see both copies, and a drift is silent — each crate's tests
+/// exercise its own number, so weles would keep refusing (or admitting) fleets by
+/// an arithmetic the budget's authority no longer uses.
+///
+/// The `reserved_connections` half of the SQL is the live trap: it is read through
+/// `current_setting(..., true)` because the setting only exists from PostgreSQL 16,
+/// and a copy that dropped the missing-ok argument would fail every preflight on an
+/// older cluster — in weles only.
+fn session_floor_diffs() -> Vec<String> {
+    let pairs: [(&str, String, String); 3] = [
+        (
+            "the provisioning requirement named by the refusal remedy",
+            weles::pgfloor::REQUIRED_MAX_CONNECTIONS.to_string(),
+            processctl::REQUIRED_MAX_CONNECTIONS.to_string(),
+        ),
+        (
+            "the dedicated sessions charged per DB-backed process",
+            weles::pgfloor::PLANE_DEDICATED_SESSIONS.to_string(),
+            processctl::PLANE_DEDICATED_SESSIONS.to_string(),
+        ),
+        (
+            "the session-capacity query",
+            weles::pgfloor::CAPACITY_SQL.to_string(),
+            processctl::PG_SESSION_CAPACITY_SQL.to_string(),
+        ),
+    ];
+    pairs
+        .iter()
+        .filter(|(_, weles, processctl)| weles != processctl)
+        .map(|(what, weles, processctl)| {
+            format!(
+                "Postgres session floor, {what}: weles::pgfloor says {weles:?}, \
+                 tools/processctl/src/fleet.rs says {processctl:?} — the two preflights \
+                 would refuse different fleets on the same cluster"
+            )
+        })
+        .collect()
+}
+
 fn bijection_diffs(pairs: &[(WAddrKind, RAddrKind)]) -> Vec<String> {
     let mut diffs = Vec::new();
     for (weles, remote) in pairs {
@@ -576,6 +625,7 @@ fn contract_diffs() -> Vec<String> {
         weles::lock::BORROWED_LEASE_ARG,
         processctl::BORROWED_LEASE_ARG,
     ));
+    diffs.extend(session_floor_diffs());
 
     // --- AddrKind: bytes, both sides, every variant.
     diffs.extend(bijection_diffs(&addr_kind_pairs()));
@@ -677,10 +727,13 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
         eprintln!("  {diff}");
         ctx.note(diff)?;
     }
-    let scope = "the two copies are `weles::{manifest::AddrKind, agentapi::{ErrorCode, \
+    let scope = "the copies are `weles::{manifest::AddrKind, agentapi::{ErrorCode, \
                  RESOLVE_PATH, ResolveRequest, ResolveResponse, ErrorResponse}}` and \
                  `remote::resolve::{AddrKind, ErrorCode, RESOLVE_PATH, ResolveRequest, \
-                 ResolveResponse, ErrorEnvelope}`. Zero-sharing forbids sharing the types, so \
+                 ResolveResponse, ErrorEnvelope}`, plus weles's `lock::BORROWED_LEASE_ARG` \
+                 and `pgfloor::{REQUIRED_MAX_CONNECTIONS, PLANE_DEDICATED_SESSIONS, \
+                 CAPACITY_SQL}` against their processctl originals. Zero-sharing forbids \
+                 sharing the types, so \
                  the fix is to make the two agree — never to relax this stage. This is the EARLY \
                  gate on that contract: the blocking `weles-managed-gateway` stage drives the \
                  same contract over a socket against a real fleet, so a drift left in place \

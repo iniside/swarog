@@ -22,7 +22,7 @@ use processctl::{
     game_backend_fleet_with_environment, game_backend_monolith, rollout_lock_path, EnvironmentSnapshot, BorrowedLease, FleetFlavor,
     FleetInputs, FleetSpec, OutputDestination, OwnedChild, OwnedLease, ProcessGroupPolicy,
     RolloutLock, ServiceSpec, ShutdownOutcome, ShutdownPolicy, SpawnSpec, WorkspaceLayout,
-    REQUIRED_MAX_CONNECTIONS, SPLITPROOF_ASSERTION_POOL_MAX,
+    PgSessionCapacity, HARNESS_RESERVE, SPLITPROOF_ASSERTION_POOL_MAX,
 };
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Connection as _, PgPool, Row};
@@ -880,23 +880,31 @@ async fn preflight_fleet(root: &Path, ctx: &Ctx) -> Result<()> {
         ctx.fleet.services().len()
     );
     // The session-budget half of the same preflight: the fleet's reservation is only
-    // valid on a cluster provisioned for it, so ask before spawning. The query is local
-    // (this harness is already async, so it never enters processctl's blocking twin);
-    // the verdict and its remedy come from processctl, the budget's authority.
+    // valid on a cluster that offers that many sessions, so ask before spawning. The
+    // query is local (this harness is already async, so it never enters processctl's
+    // blocking twin); the SQL, the verdict and its remedy come from processctl, the
+    // budget's authority. HARNESS_RESERVE is charged because this harness IS the
+    // tooling that reserve itemizes — its assertion pool and its `[REPLICAS]` second
+    // leaderboard-svc run alongside the fleet.
     let mut connection = sqlx::PgConnection::connect(&ctx.db_url)
         .await
-        .context("connect to DATABASE_URL for the max_connections preflight")?;
-    let observed: String = sqlx::query_scalar("SHOW max_connections")
-        .fetch_one(&mut connection)
-        .await
-        .context("read max_connections")?;
+        .context("connect to DATABASE_URL for the session-capacity preflight")?;
+    let (max_connections, superuser_reserved, reserved): (i32, i32, i32) =
+        sqlx::query_as(processctl::PG_SESSION_CAPACITY_SQL)
+            .fetch_one(&mut connection)
+            .await
+            .context("read the Postgres session settings")?;
     connection.close().await.ok();
-    let observed: u32 = observed
-        .trim()
-        .parse()
-        .with_context(|| format!("max_connections is not a number: {observed}"))?;
-    processctl::check_pg_session_floor(observed)?;
-    println!("[splitproof] Postgres preflight OK: max_connections {observed} >= {REQUIRED_MAX_CONNECTIONS}");
+    let capacity = PgSessionCapacity {
+        max_connections: max_connections.max(0) as u32,
+        reserved: (superuser_reserved.max(0) + reserved.max(0)) as u32,
+    };
+    let required = ctx.fleet.pg_session_reservation() + HARNESS_RESERVE;
+    processctl::check_pg_session_floor(capacity, required)?;
+    println!(
+        "[splitproof] Postgres preflight OK: {} usable sessions >= {required} reserved",
+        capacity.usable()
+    );
     Ok(())
 }
 

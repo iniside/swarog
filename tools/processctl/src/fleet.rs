@@ -99,27 +99,28 @@ pub const SPLITPROOF_REPLICA_SESSIONS: u32 = SPLIT_SERVICE_POOL_MAX + PLANE_DEDI
 ///
 /// The assertion-pool, replica and poison-burst terms are the consts the real mechanisms
 /// are built from, so those lines track behavior; the other items are hand-estimated.
-pub(crate) const HARNESS_RESERVE: u32 = SPLITPROOF_ASSERTION_POOL_MAX
+pub const HARNESS_RESERVE: u32 = SPLITPROOF_ASSERTION_POOL_MAX
     + SPLITPROOF_REPLICA_SESSIONS
     + 1
     + 1
     + AE_TRANSIENT_POISON_SESSIONS
     + 2;
 
-/// Sessions the cluster withholds from ordinary roles for superuser access
+/// Sessions a stock cluster withholds from ordinary roles
 /// (`superuser_reserved_connections`, verified against the local cluster 2026-07-29).
+/// It sizes the RECOMMENDED provisioning below; it is never assumed of a live cluster,
+/// which reports its own reserved settings to [`PgSessionCapacity`].
 pub(crate) const SUPERUSER_RESERVED_CONNECTIONS: u32 = 3;
 
-/// `max_connections` the dev cluster must be RUNNING with. It is above a stock
-/// cluster's 100, so it is a provisioning requirement rather than an observed
-/// default, and nothing in Postgres enforces it — [`require_pg_session_floor`] asks
-/// the live cluster before a rollout spawns anything.
+/// The `max_connections` this repo asks an operator to provision — enough for
+/// [`USABLE_PG_SESSIONS`] beside a stock reservation. Nothing in Postgres enforces
+/// it, so [`require_pg_session_floor`] asks the live cluster what it actually offers
+/// before a rollout spawns anything.
 pub const REQUIRED_MAX_CONNECTIONS: u32 = 150;
 
-/// Postgres sessions available to ordinary roles on the dev cluster:
-/// [`REQUIRED_MAX_CONNECTIONS`] minus [`SUPERUSER_RESERVED_CONNECTIONS`]. An operator
-/// who provisioned MORE than the requirement has strictly more headroom; one who
-/// provisioned less is refused a rollout rather than run into exhaustion.
+/// Postgres sessions the FULL split fleet plus [`HARNESS_RESERVE`] is derived within.
+/// A rollout is charged its OWN reservation rather than this number, so a smaller
+/// topology runs on a smaller cluster.
 pub(crate) const USABLE_PG_SESSIONS: u32 =
     REQUIRED_MAX_CONNECTIONS - SUPERUSER_RESERVED_CONNECTIONS;
 
@@ -152,7 +153,7 @@ pub(crate) const AE_TRANSIENT_POISON_SESSIONS: u32 = 2;
 /// mirror test; what needs a human re-audit is a plane growing a new session CATEGORY
 /// (that is exactly how the transient-poison headroom arose) — a new category means a
 /// new exported const, a new mirror, and a new term here or in the reserve.
-const PLANE_DEDICATED_SESSIONS: u32 =
+pub const PLANE_DEDICATED_SESSIONS: u32 =
     AE_WORKERS + AE_WAKEUP_SESSIONS + INVALIDATION_LISTEN_SESSIONS;
 
 /// Per-DB-process pooled-connection cap in the SPLIT: every DB-backed process plus
@@ -226,6 +227,13 @@ pub struct PoolBudget {
     /// exported session constants of the real crates — see the module-level
     /// `AE_*`/`INVALIDATION_*`/`SCHEDULER_*` mirrors and their anti-drift test.
     pub dedicated: u32,
+}
+
+impl PoolBudget {
+    /// Sessions this process holds against the one local Postgres.
+    pub fn sessions(self) -> u32 {
+        self.pool_max + self.dedicated
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -318,70 +326,115 @@ pub enum FleetError {
         #[source]
         source: std::io::Error,
     },
-    #[error(
-        "Postgres max_connections is {observed}, below the {required} this rollout requires \
-         ({usable} usable sessions + {reserved} reserved for superusers). Raise the cluster:\
-         \n    ALTER SYSTEM SET max_connections = {required};\
-         \nthen RESTART the Postgres server — max_connections is postmaster-context, so \
-         pg_reload_conf() does NOT apply it.",
-        required = REQUIRED_MAX_CONNECTIONS,
-        usable = USABLE_PG_SESSIONS,
-        reserved = SUPERUSER_RESERVED_CONNECTIONS,
-    )]
-    PgSessionFloor { observed: u32 },
-    #[error("read max_connections from the configured DATABASE_URL: {0}")]
+    #[error("{}", pg_session_floor_message(*.capacity, *.required))]
+    PgSessionFloor {
+        capacity: PgSessionCapacity,
+        required: u32,
+    },
+    #[error("read the Postgres session settings from the configured DATABASE_URL: {0}")]
     PgSessionProbe(String),
+}
+
+/// What a live cluster actually offers, as the cluster itself reports it — never
+/// assumed from [`SUPERUSER_RESERVED_CONNECTIONS`], which an operator is free to raise
+/// alongside `max_connections` and thereby hand the fleet fewer sessions than the same
+/// `max_connections` implied here.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PgSessionCapacity {
+    pub max_connections: u32,
+    /// `superuser_reserved_connections` plus PostgreSQL 16+'s `reserved_connections`
+    /// (the reservation for `pg_use_reserved_connections`), both withheld from the
+    /// fleet's ordinary role.
+    pub reserved: u32,
+}
+
+impl PgSessionCapacity {
+    /// Sessions an ordinary role can actually open.
+    pub fn usable(self) -> u32 {
+        self.max_connections.saturating_sub(self.reserved)
+    }
 }
 
 /// How long the probe waits for the cluster to answer before the rollout is refused.
 const PG_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Refuses the rollout unless the cluster at `database_url` is running with at least
-/// [`REQUIRED_MAX_CONNECTIONS`]. Blocking (it owns a current-thread runtime) because
-/// the supervisors that boot a fleet are synchronous; an async caller queries with its
-/// own connection and applies [`check_pg_session_floor`] to the answer.
+/// Refuses the rollout unless the cluster at `database_url` offers `required` sessions
+/// to ordinary roles. Blocking (it owns a current-thread runtime) because the
+/// supervisors that boot a fleet are synchronous; an async caller reads the same three
+/// settings itself and applies [`check_pg_session_floor`] to the answer.
 ///
-/// Call it BEFORE spawning anything: a cluster that never got the provisioning step
-/// fails here, loudly, instead of exhausting connections part-way through a boot.
-pub fn require_pg_session_floor(database_url: &str) -> Result<(), FleetError> {
-    check_pg_session_floor(read_max_connections(database_url)?)
+/// `required` is the CALLER's own reservation — the fleet it is about to spawn, plus
+/// [`HARNESS_RESERVE`] where the harness runs alongside it — so a monolith rollout is
+/// not refused for a split fleet's needs.
+///
+/// Call it BEFORE spawning anything: a cluster too small for the rollout fails here,
+/// loudly, instead of exhausting connections part-way through a boot.
+pub fn require_pg_session_floor(database_url: &str, required: u32) -> Result<(), FleetError> {
+    check_pg_session_floor(read_pg_session_capacity(database_url)?, required)
 }
 
-/// The verdict over an already-observed `max_connections`, with no I/O of its own, so
-/// the blocking and async callers reach one conclusion carrying one remedy.
-pub fn check_pg_session_floor(max_connections: u32) -> Result<(), FleetError> {
-    if max_connections >= REQUIRED_MAX_CONNECTIONS {
+/// The verdict over an already-observed capacity, with no I/O of its own, so the
+/// blocking and async callers reach one conclusion carrying one remedy.
+pub fn check_pg_session_floor(
+    capacity: PgSessionCapacity,
+    required: u32,
+) -> Result<(), FleetError> {
+    if capacity.usable() >= required {
         return Ok(());
     }
-    Err(FleetError::PgSessionFloor {
-        observed: max_connections,
-    })
+    Err(FleetError::PgSessionFloor { capacity, required })
 }
 
-fn read_max_connections(database_url: &str) -> Result<u32, FleetError> {
+/// The remedy names the recommended provisioning, or more where the operator's own
+/// reservations put [`REQUIRED_MAX_CONNECTIONS`] out of reach of this rollout.
+fn pg_session_floor_message(capacity: PgSessionCapacity, required: u32) -> String {
+    let suggested = REQUIRED_MAX_CONNECTIONS.max(required + capacity.reserved);
+    format!(
+        "Postgres offers {usable} sessions to ordinary roles (max_connections {max}, \
+         {reserved} reserved), below the {required} this rollout reserves. Raise the \
+         cluster:\n    ALTER SYSTEM SET max_connections = {suggested};\nthen RESTART the \
+         Postgres server — max_connections is postmaster-context, so pg_reload_conf() does \
+         NOT apply it.",
+        usable = capacity.usable(),
+        max = capacity.max_connections,
+        reserved = capacity.reserved,
+    )
+}
+
+/// Reads `max_connections` and BOTH reservation settings in one round-trip.
+/// `reserved_connections` exists only from PostgreSQL 16, so it is read through the
+/// missing-ok form and counts as zero on an older cluster.
+pub fn read_pg_session_capacity(database_url: &str) -> Result<PgSessionCapacity, FleetError> {
     use sqlx::Connection as _;
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|source| FleetError::PgSessionProbe(source.to_string()))?;
-    let raw = runtime.block_on(async {
+    let (max_connections, superuser_reserved, reserved) = runtime.block_on(async {
         tokio::time::timeout(PG_PROBE_TIMEOUT, async {
             let mut connection = sqlx::PgConnection::connect(database_url).await?;
-            let raw: String = sqlx::query_scalar("SHOW max_connections")
+            let row: (i32, i32, i32) = sqlx::query_as(PG_SESSION_CAPACITY_SQL)
                 .fetch_one(&mut connection)
                 .await?;
             connection.close().await?;
-            Ok::<String, sqlx::Error>(raw)
+            Ok::<(i32, i32, i32), sqlx::Error>(row)
         })
         .await
         .map_err(|_| FleetError::PgSessionProbe(format!("no answer within {PG_PROBE_TIMEOUT:?}")))?
         .map_err(|source| FleetError::PgSessionProbe(source.to_string()))
     })?;
-    raw.trim()
-        .parse()
-        .map_err(|_| FleetError::PgSessionProbe(format!("max_connections is not a number: {raw}")))
+    Ok(PgSessionCapacity {
+        max_connections: max_connections.max(0) as u32,
+        reserved: (superuser_reserved.max(0) + reserved.max(0)) as u32,
+    })
 }
+
+/// Shared with the async twin in `tools/splitproof`, which reads the same three
+/// settings over its own connection.
+pub const PG_SESSION_CAPACITY_SQL: &str = "SELECT current_setting('max_connections')::int, \
+     current_setting('superuser_reserved_connections')::int, \
+     coalesce(current_setting('reserved_connections', true)::int, 0)";
 
 impl FleetSpec {
     pub(crate) fn new(services: Vec<ServiceSpec>) -> Result<Self, FleetError> {
@@ -421,7 +474,7 @@ impl FleetSpec {
         // pool size are one number.
         let total: u32 = services
             .iter()
-            .map(|service| service.pool_budget.pool_max + service.pool_budget.dedicated)
+            .map(|service| service.pool_budget.sessions())
             .sum();
         if total > PG_SESSION_BUDGET {
             return Err(FleetError::PoolBudgetExceeded {
@@ -434,6 +487,17 @@ impl FleetSpec {
 
     pub fn services(&self) -> &[ServiceSpec] {
         &self.services
+    }
+
+    /// The Postgres sessions this fleet reserves — the same sum [`FleetSpec::new`]
+    /// charges against [`PG_SESSION_BUDGET`], so what a caller preflights against a
+    /// live cluster and what the budget invariant admits are one number. A caller that
+    /// also runs the harness adds [`HARNESS_RESERVE`].
+    pub fn pg_session_reservation(&self) -> u32 {
+        self.services
+            .iter()
+            .map(|service| service.pool_budget.sessions())
+            .sum()
     }
 
     pub fn service(&self, name: &str) -> Result<&ServiceSpec, FleetError> {
