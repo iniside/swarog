@@ -938,10 +938,13 @@ names its peers by count is correct and Step 7 already carried it.
    driven without a cluster; **Step 10 is extended to cover them**, and this is the plan
    defect that made the omission possible — a step touching testable production code needs
    a named test step, and Step 1's was missing.
-6. **Observed, unexplained:** one `cargo test -p processctl --lib` run during Step 1
-   reported `46 passed; 1 failed` without naming the test; five subsequent runs were 47/47.
-   The suite forks and holds `flock`s and carries an explicit `fork_flock_serial` guard for
-   that interaction. Not reproduced, not diagnosed, recorded rather than called clean.
+6. **Observed, intermittent, now NAMED:** one `cargo test -p processctl --lib` run during
+   Step 1 reported `46 passed; 1 failed` without naming the test; five subsequent runs were
+   47/47. It recurred at Step 7 and this time named itself:
+   **`guardian::darwin_tests::setsid_escapee_survives_group_kill`**, which passed when
+   re-run alone. The suite forks and holds `flock`s and carries an explicit
+   `fork_flock_serial` guard for that interaction. Still not diagnosed; recorded with its
+   name rather than called clean, and it is unrelated to every diff in this rollout.
 
 7. **Step 2 — the durable payload carries a secret, and the topic's retention was too
    long.** `SendRequested.body` holds the rendered message, which for seq #4 is a
@@ -1105,3 +1108,16 @@ names its peers by count is correct and Step 7 already carried it.
 25. **Owed at Step 12, beyond the two baselines already recorded:**
    `docs/reference/public-api-baseline/adminapi.txt` — `adminapi` gained `pub fn slug` and
    `SubmitOutcome::notice`, both ADDITIVE.
+26. **Step 7 — `weles/fleet.monolith.toml` had to gain the dev provider env too.** The
+   step named only `fleet.split.toml`. That fixture boots `cmd/server`, which has hosted
+   the `mail` module since Step 3b, and mail's no-provider readiness check is permanent —
+   so without `MAIL_PROVIDER`/`MAIL_FROM` the monolith fleet never reports healthy and
+   `weles up` cannot bring it up at all. A blocker, not a discrepancy, closed in the same
+   step.
+27. **Known gap for Step 13 (`[docs]`): a wider stale-count comment class.** Step 7
+   corrected the three "14 process" comments the plan named, but the same literal survives
+   in `weles/master/src/fleet_toml.rs:641`, `weles/master/src/manifest.rs:455,467`,
+   `weles/src/agentapi.rs:162`, `weles/src/agentapi_tests.rs:288,621,626`,
+   `weles/src/lib.rs:57` and `weles/src/lock.rs:378,1062`. Left deliberately rather than
+   swelling an implementation step into a prose sweep — but named here so it is not
+   discovered later as a silent twin.
