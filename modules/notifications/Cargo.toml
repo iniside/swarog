@@ -1,0 +1,26 @@
+[package]
+name = "notifications"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The notifications impl module: owns schema `notifications` (the per-player in-app
+# inbox) and provides the player-facing `Player` capability (list/mark_read/delete).
+# [`Service::deliver_on`] is the single insert authority — it runs on a CALLER-OWNED
+# connection and never touches transaction control, so operator mail and the durable
+# fan-in share one implementation instead of growing two ways to address a player.
+# An impl crate — no OTHER module imports it; consumers would use `notificationsapi`.
+# `notificationsrpc` is its OWN glue (sanctioned): the edge register_server faces.
+[dependencies]
+lifecycle = { workspace = true }
+registry = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+notificationsapi = { workspace = true }
+notificationsrpc = { workspace = true }
+sqlx = { workspace = true }
+# The opaque paging cursor is base64url-no-pad over `"{created_at}|{id}"`.
+base64 = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
