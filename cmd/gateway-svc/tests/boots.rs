@@ -1,11 +1,9 @@
 //! The at-risk path the D2 in-process gateway tests MISSED: gateway-svc's REAL module set
 //! (`gateway_svc::modules`) must actually BOOT — `register` (phase 1) then `init` (phase 2) —
-//! without the zero-factory `Stub::register` bail killing it. The D2 wiring first built the
-//! four route-provider stubs with `Stub::new(p, a, Vec::new())`; `Stub::register` bailed on the
-//! empty factory list, so gateway-svc never started in the real split (build passed — build ≠
-//! run; the `-p gateway` unit tests passed — they use in-process fakes, not `modules()`'s real
-//! register path). This test drives the real two-phase build and asserts every `#[http]`
-//! provider lands its `PEER_SLOT` entry, so the describe fetch reaches it.
+//! without a zero-factory `Stub::register` bail killing it. A `-p gateway` unit test cannot
+//! catch that: it uses in-process fakes, not `modules()`'s real register path. This test drives
+//! the real two-phase build and asserts every stub lands its `PEER_SLOT` entry, so the describe
+//! fetch reaches it.
 
 use lifecycle::{Context, Module, ProcessWiring};
 
@@ -40,9 +38,26 @@ fn gateway_svc_module_set_boots_and_every_http_provider_lands_in_peer_slot() {
     let peers: Vec<opsapi::PeerAddr> = ctx.contributions(opsapi::PEER_SLOT);
     let providers: std::collections::BTreeSet<&str> =
         peers.iter().map(|p| p.provider.as_str()).collect();
-    // PEER_SLOT is a superset of the `#[http]` set — capability-only stubs (apikeys, config)
-    // contribute an entry without owning a route — so this is containment over a DERIVED set,
-    // never equality against a literal.
+    // Every stub in the real module set must land a peer entry. `Stub::name()` IS the provider
+    // name, so the expectation is derived from `modules()` itself: this covers capability-only
+    // providers (apikeys) that own no route and so never appear in `opscatalog`, and it does not
+    // rest on phase-2 `init` failing — that path has an env escape (`APIKEYS_DEV_ALLOW`).
+    for m in &mods {
+        if m.name() == "metrics" || m.name() == "gateway" {
+            continue;
+        }
+        assert!(
+            providers.contains(m.name()),
+            "the stub {:?} registered but contributed no PEER_SLOT entry, so the describe \
+             fetch cannot reach it; got {providers:?}",
+            m.name()
+        );
+    }
+
+    // The check above cannot see a provider whose stub was never registered at all, so pair it
+    // with the `#[http]` set derived from `opscatalog::OPERATIONS` (generated from `api/*/api`
+    // and byte-diffed by the blocking codegen-freshness stage). PEER_SLOT is a superset of that
+    // set — apikeys owns capabilities but no route — so this is containment, never equality.
     let http_providers: std::collections::BTreeSet<&str> = opscatalog::OPERATIONS
         .iter()
         .filter_map(|op| op.method.split_once('.').map(|(provider, _)| provider))
