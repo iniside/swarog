@@ -109,6 +109,18 @@ pub const PROOF_OIDC_ISSUER: &str = proof_oidc_origin!();
 pub const PROOF_OIDC_JWKS_URL: &str = concat!(proof_oidc_origin!(), "/jwks");
 pub const PROOF_OIDC_CLIENT_ID: &str = "splitproof-epic-client";
 
+/// The provider every fleet flavor configures `mail` with, and the value
+/// `tools/splitproof` asserts a delivered row was sent BY. The harness reads this
+/// const rather than repeating the string, so re-pointing a fleet at another provider
+/// cannot leave the proof asserting a value nothing writes. `log` renders the message
+/// to the service log and never dials a relay — a verification run must not send real
+/// outbound mail.
+pub const PROOF_MAIL_PROVIDER: &str = "log";
+
+/// The envelope sender the fleet pins alongside [`PROOF_MAIL_PROVIDER`]. `mail` FAILS
+/// STARTUP on a provider without a from-address, so the pair is written together.
+pub const PROOF_MAIL_FROM: &str = "dev@localhost";
+
 /// The port [`PROOF_OIDC_ISSUER`] names, for the harness to bind.
 pub fn proof_oidc_port() -> u16 {
     PROOF_OIDC_ISSUER
@@ -863,8 +875,8 @@ pub fn game_backend_fleet_with_environment(
     wallet.env.insert("WALLET_DEV_SEED".into(), "1".into());
     // Without these the channel is UNDRAINED (`MailConfig::provider == None`) and
     // `/readyz` is red by design — the no-provider readiness check is permanent.
-    mail.env.insert("MAIL_PROVIDER".into(), "log".into());
-    mail.env.insert("MAIL_FROM".into(), "dev@localhost".into());
+    mail.env.insert("MAIL_PROVIDER".into(), PROOF_MAIL_PROVIDER.into());
+    mail.env.insert("MAIL_FROM".into(), PROOF_MAIL_FROM.into());
 
     for service in
         [&mut accounts, &mut apikeys, &mut scheduler, &mut inventory, &mut admin, &mut wallet,
@@ -906,8 +918,8 @@ pub fn game_backend_fleet_with_environment(
             for key in PROOF_CLEARED_MAIL_SMTP_ENV {
                 mail.env.remove(*key);
             }
-            mail.env.insert("MAIL_PROVIDER".into(), "log".into());
-            mail.env.insert("MAIL_FROM".into(), "dev@localhost".into());
+            mail.env.insert("MAIL_PROVIDER".into(), PROOF_MAIL_PROVIDER.into());
+            mail.env.insert("MAIL_FROM".into(), PROOF_MAIL_FROM.into());
     }
 
     FleetSpec::new(vec![
@@ -941,8 +953,8 @@ pub fn game_backend_monolith(
         ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32".into()),
         // Without these the channel is UNDRAINED (`MailConfig::provider == None`) and
         // `/readyz` is red by design — the no-provider readiness check is permanent.
-        ("MAIL_PROVIDER", "log".into()),
-        ("MAIL_FROM", "dev@localhost".into()),
+        ("MAIL_PROVIDER", PROOF_MAIL_PROVIDER.into()),
+        ("MAIL_FROM", PROOF_MAIL_FROM.into()),
     ] { env.insert(key.into(), value); }
     let overrideable_env = MONOLITH_OVERRIDEABLE_ENV;
     for key in overrideable_env {
@@ -965,8 +977,8 @@ pub fn game_backend_monolith(
         env.insert("APIKEYS_DEV_SEED".into(), "1".into());
         env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
         env.insert("WALLET_DEV_SEED".into(), "1".into());
-        env.insert("MAIL_PROVIDER".into(), "log".into());
-        env.insert("MAIL_FROM".into(), "dev@localhost".into());
+        env.insert("MAIL_PROVIDER".into(), PROOF_MAIL_PROVIDER.into());
+        env.insert("MAIL_FROM".into(), PROOF_MAIL_FROM.into());
     }
     ServiceSpec {
         name: "monolith", executable_package: "server", http_port: 8080,

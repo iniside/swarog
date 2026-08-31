@@ -536,6 +536,12 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
         format!("grant={nt4m_code} inbox_row={nt4m_row} pid={nt4m_player}"),
     );
 
+    // --- Mail parity: [ML1]-[ML4b] again with the producer, the consumer, the outbox and
+    // the portal all in ONE process. The event still travels the durable log and the
+    // operator faces still run the same `build_content`/`apply_submit`, in-process instead
+    // of over the edge — the topology is the only difference.
+    mail_assertions(ctx, pool, p, &m, &m, &jar, "m").await?;
+
     federated_assertions(ctx, pool, &m, idp, p, "m").await?;
 
     // [W2] graceful shutdown: a native Ctrl-Break (Windows) / SIGTERM (unix) must drain
@@ -1100,6 +1106,362 @@ async fn seed_inbox_rows(pool: &PgPool, player_id: &str, n: i64) -> Result<Vec<S
     .fetch_all(pool)
     .await?;
     Ok(ids)
+}
+
+/// Appends one `mail.send_requested` straight onto the durable plane through
+/// `asyncevents.append_event` — the plane's single writer, the same SQL entry point
+/// `config`'s row trigger uses. That makes the harness a REAL producer: no `mail` code runs
+/// in this process, and in the split the consumer is a different OS process, so nothing
+/// here can pass by sharing an address space with the module under test. The topic and
+/// version are literals for the same reason every other topic in this file is (the harness
+/// imports no `api/` crate); a contract-version bump therefore surfaces as [ML1] never
+/// seeing a row, not as a silently skipped assertion.
+async fn append_send_requested(
+    pool: &PgPool,
+    key: &str,
+    to: &str,
+    subject: &str,
+    kind: &str,
+) -> Result<String> {
+    let payload = serde_json::json!({
+        "idempotency_key": key,
+        "to": to,
+        "subject": subject,
+        "body": "queued by splitproof",
+        "kind": kind,
+    });
+    let (event_id,): (String,) =
+        sqlx::query_as("SELECT asyncevents.append_event($1, $2, $3::jsonb)")
+            .bind("mail.send_requested")
+            .bind(1i32)
+            .bind(payload.to_string())
+            .fetch_one(pool)
+            .await?;
+    Ok(event_id)
+}
+
+/// One unlabelled prometheus counter as scraped from the process that OWNS it. `None` means
+/// the scrape itself failed; `Some(0.0)` means the counter is absent, which is the honest
+/// zero for `mail`'s conflict counter — it is registered on FIRST use, so before the first
+/// conflict it exists nowhere.
+async fn counter_value(ctx: &Ctx, base: &str, name: &str) -> Option<f64> {
+    let body = ctx
+        .http
+        .get(format!("{base}/metrics"))
+        .send()
+        .await
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix(name) {
+            if let Some(value) = rest.strip_prefix(' ') {
+                return value.trim().parse().ok();
+            }
+        }
+    }
+    Some(0.0)
+}
+
+/// Polls `name` until it rises above `floor`, answering the observed value. The counter is
+/// incremented by the DELIVERY of an event this harness appended, so this is the
+/// happens-after signal for that delivery — never a sleep.
+async fn poll_counter_above(ctx: &Ctx, base: &str, name: &str, floor: f64) -> Option<f64> {
+    for _ in 0..30 {
+        if let Some(v) = counter_value(ctx, base, name).await {
+            if v > floor {
+                return Some(v);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    counter_value(ctx, base, name).await
+}
+
+/// The `_csrf` + render-minted `_idem_test` pair from one render of the Mail page. The test
+/// key is minted PER RENDER (`admin::mint_test_key`), so a second test send needs a second
+/// render — replaying one key is the dedup arm, not a delivery.
+async fn mail_form(client: &reqwest::Client, base: &str) -> Result<(String, String)> {
+    let page = client
+        .get(format!("{base}/admin/mail"))
+        .send()
+        .await?
+        .text()
+        .await
+        .unwrap_or_default();
+    let fields = extract_form_fields(&page);
+    let pick = |name: &str| {
+        fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
+    Ok((pick("_csrf"), pick("_idem_test")))
+}
+
+/// `[ML1]`-`[ML4b]`, run once per topology.
+///
+/// `front` is the process serving `/admin` (gateway-svc's passthrough in the split, the
+/// monolith itself in parity), `metrics` is the process that OWNS the outbox counters
+/// (mail-svc / the monolith), `jar` is an already-authenticated operator session, and `tag`
+/// suffixes every name and every idempotency key so the two topologies neither collide in
+/// the outbox nor report indistinguishable verdicts.
+async fn mail_assertions(
+    ctx: &Ctx,
+    pool: &PgPool,
+    p: &mut Proof,
+    front: &str,
+    metrics: &str,
+    jar: &reqwest::Client,
+    tag: &str,
+) -> Result<()> {
+    let nonce = format!("{}{tag}", std::process::id());
+    // Every `splitproof-` key is this harness's by construction, so clearing ALL of them —
+    // not just this nonce's — is what makes the outbox's own state a fixture rather than an
+    // input: a recycled pid cannot let a previous run's row stand in for this one's, and
+    // [ML4b]'s whole-table bulk verb cannot inherit a parked row from a run that failed
+    // before requeuing it.
+    sqlx::query("DELETE FROM mail.outbox WHERE idempotency_key LIKE 'splitproof-%'")
+        .execute(pool)
+        .await
+        .ok();
+
+    // [ML1] THE cross-process proof of the durable ingress. The event is appended by THIS
+    // process through the plane's own writer; mail-svc — which the harness never calls —
+    // pulls it on its own subscription cursor, enqueues the outbox row in the delivery
+    // transaction, and its drain sends it. Both halves are asserted separately so an
+    // ingress failure and a drain failure are distinguishable, and the stored recipient /
+    // subject / kind are compared against what was APPENDED so the row cannot be some
+    // other message. `body` is deliberately not compared: a delivered row's body is
+    // blanked by design.
+    let ml1_key = format!("splitproof-ml1-{nonce}");
+    let ml1_to = format!("ml1-{nonce}@example.com");
+    let ml1_subject = format!("Split-proof durable ingress {nonce}");
+    let ml1_kind = "splitproof.delivery";
+    let ml1_event =
+        append_send_requested(pool, &ml1_key, &ml1_to, &ml1_subject, ml1_kind).await?;
+    let ml1_enqueued = poll_count(
+        pool,
+        "SELECT count(*) FROM mail.outbox WHERE idempotency_key = $1",
+        &ml1_key,
+        1,
+    )
+    .await;
+    let ml1_sent = ml1_enqueued
+        && poll_count(
+            pool,
+            &format!(
+                "SELECT count(*) FROM mail.outbox WHERE idempotency_key = $1 \
+                   AND state = 'sent' AND provider = '{}' AND sent_at IS NOT NULL",
+                processctl::PROOF_MAIL_PROVIDER
+            ),
+            &ml1_key,
+            1,
+        )
+        .await;
+    let ml1_row: Option<(String, String, String)> = sqlx::query_as(
+        "SELECT recipient, subject, kind FROM mail.outbox WHERE idempotency_key = $1",
+    )
+    .bind(&ml1_key)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let ml1_payload = ml1_row
+        .as_ref()
+        .is_some_and(|(to, subject, kind)| {
+            to == &ml1_to && subject == &ml1_subject && kind.as_str() == ml1_kind
+        });
+    p.check(
+        &format!(
+            "[ML1{tag}] harness-appended mail.send_requested -> outbox row -> state=sent, \
+             provider={}",
+            processctl::PROOF_MAIL_PROVIDER
+        ),
+        ml1_enqueued && ml1_sent && ml1_payload,
+        format!(
+            "event={ml1_event} enqueued={ml1_enqueued} sent={ml1_sent} payload={ml1_payload} \
+             row={ml1_row:?}"
+        ),
+    );
+
+    // [ML2] the enqueue authority's idempotency, driven from the durable side. Three events
+    // under ONE key: two identical, then one with a different subject. The third is a
+    // producer bug the module must refuse WITHOUT dropping the stored message, and its
+    // counter is also the happens-after signal for the first two — delivery is ordered per
+    // subscription, so a conflict counted means both earlier events were already applied.
+    // Without that ordering this assertion would need a sleep and would pass on an
+    // enqueue that lands late.
+    let ml2_key = format!("splitproof-ml2-{nonce}");
+    let ml2_to = format!("ml2-{nonce}@example.com");
+    let ml2_subject = format!("Split-proof idempotent {nonce}");
+    let ml2_before = counter_value(ctx, metrics, "mail_enqueue_conflicts_total").await;
+    for _ in 0..2 {
+        append_send_requested(pool, &ml2_key, &ml2_to, &ml2_subject, "splitproof.dedup").await?;
+    }
+    append_send_requested(
+        pool,
+        &ml2_key,
+        &ml2_to,
+        &format!("{ml2_subject} EDITED"),
+        "splitproof.dedup",
+    )
+    .await?;
+    let ml2_after = match ml2_before {
+        Some(floor) => poll_counter_above(ctx, metrics, "mail_enqueue_conflicts_total", floor).await,
+        None => None,
+    };
+    let ml2_moved = matches!((ml2_before, ml2_after), (Some(b), Some(a)) if a > b);
+    let ml2_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mail.outbox WHERE idempotency_key = $1")
+            .bind(&ml2_key)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(-1);
+    let ml2_subject_kept: Option<String> =
+        sqlx::query_scalar("SELECT subject FROM mail.outbox WHERE idempotency_key = $1")
+            .bind(&ml2_key)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    p.check(
+        &format!(
+            "[ML2{tag}] one key, three events -> exactly one outbox row; the edited replay \
+             is counted, never stored"
+        ),
+        ml2_rows == 1 && ml2_subject_kept.as_deref() == Some(ml2_subject.as_str()) && ml2_moved,
+        format!(
+            "rows={ml2_rows} subject_kept={} conflicts={ml2_before:?}->{ml2_after:?}",
+            ml2_subject_kept.as_deref() == Some(ml2_subject.as_str())
+        ),
+    );
+
+    // [ML3] the operator READ face. In the split this render is `admin.adminData` over the
+    // mTLS edge: the portal in admin-svc holds no outbox and no mail code, so every value
+    // on the page crossed the wire from mail-svc. The URL is `/admin/mail` — the portal
+    // routes on `adminapi::slug(ADMIN_LABEL)`, so a drifted label 404s here and nothing
+    // else in the tree would say so — and [ML1]'s recipient is the payload assertion: a
+    // page that rendered but showed nothing from the outbox would otherwise pass.
+    let ml3 = jar.get(format!("{front}/admin/mail")).send().await?;
+    let (ml3_code, ml3_body) = (ml3.status().as_u16(), ml3.text().await.unwrap_or_default());
+    let ml3_shows_row = ml3_body.contains(&ml1_to);
+    let ml3_is_outbox = ml3_body.contains("Outbox") && ml3_body.contains("PENDING");
+    p.check(
+        &format!("[ML3{tag}] GET /admin/mail -> 200 outbox page carrying [ML1{tag}]'s row"),
+        ml3_code == 200 && ml3_shows_row && ml3_is_outbox,
+        format!("code={ml3_code} shows_row={ml3_shows_row} outbox_page={ml3_is_outbox}"),
+    );
+
+    // [ML4] the operator WRITE face — in the split, `admin.adminSubmit` over the edge into
+    // mail-svc, which owns the only insert. The submit is synchronous behind its 303, so
+    // the row is a DIRECT read: polling here would let a write that lands late still pass.
+    let ml4_to = format!("ml4-{nonce}@example.com");
+    let (ml4_csrf, ml4_idem) = mail_form(jar, front).await?;
+    let ml4 = jar
+        .post(format!("{front}/admin/mail"))
+        .form(&[
+            ("_csrf", ml4_csrf.as_str()),
+            ("_idem_test", ml4_idem.as_str()),
+            ("_action", "send-test"),
+            ("test_to", ml4_to.as_str()),
+        ])
+        .send()
+        .await?;
+    let ml4_code = ml4.status().as_u16();
+    let ml4_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM mail.outbox WHERE recipient = $1 AND kind = 'admin.test'",
+    )
+    .bind(&ml4_to)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(-1);
+    p.check(
+        &format!("[ML4{tag}] remote send-test submit -> 303 + mail.outbox row (kind=admin.test)"),
+        ml4_code == 303 && ml4_rows == 1,
+        format!("submit={ml4_code} rows={ml4_rows} to={ml4_to}"),
+    );
+
+    // [ML4b] the same remote write driving `requeue-all-parked`, the ONE verb whose result
+    // is a `SubmitOutcome::notice` — a channel that exists nowhere else and whose whole
+    // path is at risk in the split: the count is computed in mail-svc, crosses the edge in
+    // the submit response, is stashed one-shot by admin-svc and is rendered by the
+    // FOLLOW-UP GET of the post-redirect-get. A parked row is SEEDED (the drain never parks
+    // under the `log` provider, so the recovery verb would otherwise be asserted against an
+    // empty set and report "0"), and the row's own state proves the requeue re-entered
+    // delivery instead of only reporting that it had.
+    let ml4b_key = format!("splitproof-ml4park-{nonce}");
+    sqlx::query(
+        "INSERT INTO mail.outbox (idempotency_key, recipient, subject, body, kind, state, \
+                                  attempts, last_error) \
+         VALUES ($1, $2, $3, 'parked by splitproof', 'splitproof.parked', 'parked', 5, \
+                 'seeded parked by splitproof')",
+    )
+    .bind(&ml4b_key)
+    .bind(format!("ml4b-{nonce}@example.com"))
+    .bind(format!("Split-proof parked {nonce}"))
+    .execute(pool)
+    .await?;
+    // The bulk verb is whole-table, so the count it must report is READ, never assumed:
+    // asserting a literal would make this assertion a hostage to anything else that parked
+    // a row. The seed above is what keeps it above zero.
+    let ml4b_parked: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM mail.outbox WHERE state = 'parked'")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(-1);
+    let (ml4b_csrf, _) = mail_form(jar, front).await?;
+    let ml4b = jar
+        .post(format!("{front}/admin/mail"))
+        .form(&[
+            ("_csrf", ml4b_csrf.as_str()),
+            ("_action", "requeue-all-parked"),
+        ])
+        .send()
+        .await?;
+    let ml4b_code = ml4b.status().as_u16();
+    let ml4b_location = ml4b
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let ml4b_flash = ml4b_location.contains("/admin/mail?reveal=");
+    let ml4b_notice = if ml4b_flash {
+        jar.get(format!("{front}{ml4b_location}"))
+            .send()
+            .await?
+            .text()
+            .await
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let ml4b_reported = ml4b_parked >= 1
+        && ml4b_notice.contains(&format!("Requeued {ml4b_parked} parked message(s)"));
+    let ml4b_state: Option<String> =
+        sqlx::query_scalar("SELECT state FROM mail.outbox WHERE idempotency_key = $1")
+            .bind(&ml4b_key)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    let ml4b_unparked = ml4b_state.as_deref().is_some_and(|s| s != "parked");
+    p.check(
+        &format!(
+            "[ML4b{tag}] remote requeue-all-parked -> 303 ?reveal -> notice survives the \
+             edge hop and the PRG; the seeded row leaves 'parked'"
+        ),
+        ml4b_code == 303 && ml4b_flash && ml4b_reported && ml4b_unparked,
+        format!(
+            "submit={ml4b_code} flash={ml4b_flash} parked_before={ml4b_parked} \
+             reported={ml4b_reported} state={ml4b_state:?}"
+        ),
+    );
+
+    Ok(())
 }
 
 /// Undoes [`seed_wallet_starter_config`], restoring wallet's COMPILED default (the grant is
@@ -2859,6 +3221,22 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         nt6_guest_code == 201 && nt6_link == 200 && nt6_row,
         format!("guest={nt6_guest_code} link={nt6_link} inbox_row={nt6_row} pid={}", nt6_guest.player_id),
     );
+
+    // --- Outbound mail ---------------------------------------------------------------
+    // The durable ingress is the seam at risk: the producer is anything at all (here, this
+    // harness, through the plane's own SQL writer) and the consumer is mail-svc, a process
+    // that shares nothing with it. [ML3]/[ML4] add the operator faces, which in the split
+    // are `admin.adminData`/`admin.adminSubmit` hops from admin-svc into mail-svc.
+    mail_assertions(
+        ctx,
+        pool,
+        p,
+        &g,
+        &format!("http://127.0.0.1:{}", ctx.http_port("mail-svc")),
+        &cfg,
+        "",
+    )
+    .await?;
 
     // --- Federated providers, guest promotion and refresh rotation, through gateway-svc
     // (G -> accounts-svc over the mTLS edge; the promotion's durable event crosses to
