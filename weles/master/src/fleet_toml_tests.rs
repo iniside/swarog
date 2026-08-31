@@ -865,7 +865,7 @@ replicas = 0
 fn the_split_fixture_parses_and_validates() {
     let fleet = super::load_split_fixture();
     validate(&fleet).expect("weles/fleet.split.toml must validate");
-    assert_eq!(fleet.services.len(), 13, "the split fleet is 13 processes");
+    assert_eq!(fleet.services.len(), 14, "the split fleet is 14 processes");
     // The CA-first ordering the D-PREPARE contract requires, and the argv the
     // hooks were recovered with (44b653c prep.rs).
     assert_eq!(fleet.prepare.len(), 2, "edge-ca then admin-seed");
