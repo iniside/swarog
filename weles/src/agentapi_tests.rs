@@ -285,7 +285,7 @@ const FAULT_BURST: usize = 200;
 fn the_accept_loop_recovers_from_a_burst_of_accept_failures() {
     let _guard = agent_guard();
     // A burst of accept() failures is an ambient transient — fd pressure while
-    // weles spawns a 14-service fleet with stdio pipes, which is exactly what
+    // weles spawns a 15-service fleet with stdio pipes, which is exactly what
     // happens right after this endpoint binds. It clears in milliseconds, so
     // the endpoint must RECOVER, never give up: an agent deleted for the rest
     // of the run is a far worse outcome than a few retried accepts.
@@ -618,12 +618,12 @@ fn both_404s_are_told_apart_by_code_not_by_prose() {
 
 /// THE topology branch. Under the monolith, `resolve` answers NOTHING — and it
 /// does so because `monolith()`'s `provider` is `None` (one process hosting all
-/// 14 domains is nameable as none of them), so the map is empty as a property of
+/// 15 domains is nameable as none of them), so the map is empty as a property of
 /// the DATA. There is no `if topology` anywhere on this path.
 ///
 /// The branch that used to be wrong, and that this pins: a map built from
 /// `split_fleet()` regardless of the booting topology would hand out addresses
-/// for fourteen processes that do not exist — and every one of those answers would
+/// for fifteen processes that do not exist — and every one of those answers would
 /// look perfectly well-formed.
 #[test]
 fn under_the_monolith_every_resolve_404s() {

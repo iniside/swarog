@@ -2,7 +2,7 @@
 //!
 //! The shell harnesses are structurally fragile on Windows (PowerShell native-arg
 //! quote-stripping, MSYS `wait` hangs, winctrl exit-code false-throws). This harness
-//! removes the shell entirely: the 14-service fleet is spawned via `processctl`
+//! removes the shell entirely: the 15-service fleet is spawned via `processctl`
 //! with a TYPED env map and a kill-on-drop guard, health-checked over `reqwest`,
 //! DB-asserted via `sqlx`, and the player QUIC front driven through the `edge` crate as
 //! a library. No `curl.exe`, no `psql.exe`, no `playercli.exe`, no `winctrl`.

@@ -93,7 +93,7 @@ fn proof_fleet_is_the_canonical_fifteen_service_snapshot() {
     ];
 
     // Per-service diff, the shape `FleetSpec::validate_names` reports drift in: a reader
-    // gets the service that moved, not two 14-element vectors to align by eye.
+    // gets the service that moved, not two 15-element vectors to align by eye.
     let mut drift: Vec<String> = Vec::new();
     for want in &expected {
         match actual.iter().find(|got| got.0 == want.0) {

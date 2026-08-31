@@ -151,21 +151,33 @@ use crate::model::Outcome;
 use crate::runner::{self, Context};
 use crate::stages::fake_http;
 
-/// How long the whole 14-service fleet gets to answer the gateway's `/readyz`.
+/// How long the whole fleet gets to answer the gateway's `/readyz` — DERIVED from the
+/// loaded fleet's service count so a fleet that grows cannot silently outrun a
+/// hand-copied literal the way `BOOT_DEADLINE` already did once (fixed at 300s against
+/// a then-14-service, 420s sequential worst case).
 ///
-/// Generous on purpose, and NOT a performance assertion: weles gates each
-/// service on its own `HEALTH_DEADLINE` (30s) sequentially and mints a CA before
-/// the first spawn. This bound exists so a wedged boot fails the stage instead of
-/// hanging the run — it is a hang guard with headroom, never a stopwatch.
-const BOOT_DEADLINE: Duration = Duration::from_secs(300);
+/// Generous on purpose, and NOT a performance assertion: weles gates each service on
+/// its own `weles::supervisor::HEALTH_DEADLINE` sequentially and mints a CA before the
+/// first spawn. This bound exists so a wedged boot fails the stage instead of hanging
+/// the run — it is a hang guard with headroom, never a stopwatch.
+fn boot_deadline(service_count: usize) -> Duration {
+    Duration::from_secs(service_count as u64 * weles::supervisor::HEALTH_DEADLINE.as_secs())
+        + Duration::from_secs(60)
+}
 
-/// Teardown budget for `weles up`: Ctrl-Break/SIGTERM, then force. The graceful
-/// half must exceed weles's own worst-case teardown (14 services × its 5s+5s
-/// stop budget) so a clean stop is not force-killed by this stage's impatience.
-const FLEET_SHUTDOWN: ShutdownPolicy = ShutdownPolicy {
-    graceful_timeout: Duration::from_secs(150),
-    force_timeout: Duration::from_secs(30),
-};
+/// Teardown budget for `weles up`: Ctrl-Break/SIGTERM, then force. DERIVED from the
+/// loaded fleet's service count and weles's own per-service stop budget
+/// (`weles::supervisor::{STOP_GRACE, STOP_FORCE}`) — services stop SEQUENTIALLY in
+/// reverse order — with margin, so a clean stop is not force-killed by this stage's
+/// impatience and a fleet that grows cannot silently eat the headroom the way the
+/// hand-copied `150s` literal already did once (exactly consumed at 15 services).
+fn fleet_shutdown_policy(service_count: usize) -> ShutdownPolicy {
+    let per_service = weles::supervisor::STOP_GRACE + weles::supervisor::STOP_FORCE;
+    ShutdownPolicy {
+        graceful_timeout: per_service * service_count as u32 + Duration::from_secs(30),
+        force_timeout: Duration::from_secs(30),
+    }
+}
 
 /// How long the doomed decoy gateway gets to die. It fails before any bind, so
 /// this is pure headroom (`remote`'s own resolve timeout is 5s).
@@ -310,7 +322,8 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
         })?;
-        let readyz = wait_ready(&mut fleet, &runtime, &client, &base)?;
+        let readyz =
+            wait_ready(&mut fleet, &runtime, &client, &base, boot_deadline(fleet_def.services.len()))?;
         // Only ask the rest if the fleet is up: probing a fleet that never
         // booted produces three findings for one fact.
         let (leaderboard, passthrough, swap) = if readyz == Ok(200) {
@@ -343,13 +356,13 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
         };
         Ok(Observed { decoy, readyz, leaderboard, passthrough, swap })
     })();
-    let stopped = fleet.shutdown(FLEET_SHUTDOWN);
+    let stopped = fleet.shutdown(fleet_shutdown_policy(fleet_def.services.len()));
     drop(fleet);
 
     let observed = observed?;
     let mut findings = findings(&observed);
     if let Err(error) = stopped {
-        // An orphaned 14-service fleet would poison every rollout after this one:
+        // An orphaned fleet would poison every rollout after this one:
         // it is a stage failure even if all three assertions passed.
         findings.push(format!(
             "weles up could not be stopped ({error}) — the fleet may be orphaned against the \
@@ -1010,18 +1023,20 @@ fn dead_udp_port() -> Result<u16> {
     Ok(port)
 }
 
-/// Polls `/readyz` until it answers 200, the fleet dies, or [`BOOT_DEADLINE`].
+/// Polls `/readyz` until it answers 200, the fleet dies, or `deadline` elapses (the
+/// caller's [`boot_deadline`], sized to the fleet actually being booted).
 ///
 /// A weles that EXITED is reported as its own failure rather than as a timeout:
 /// "the supervisor is gone" and "the gateway is slow" are different facts, and
-/// only one of them is worth waiting five minutes for.
+/// only one of them is worth waiting the whole boot budget for.
 fn wait_ready(
     fleet: &mut processctl::BorrowedChild<'_>,
     runtime: &tokio::runtime::Runtime,
     client: &reqwest::Client,
     base: &str,
+    deadline: Duration,
 ) -> Result<Probe> {
-    let deadline = Instant::now() + BOOT_DEADLINE;
+    let deadline = Instant::now() + deadline;
     loop {
         if let Some(status) = fleet.try_wait()? {
             return Ok(Err(format!(
@@ -1035,16 +1050,16 @@ fn wait_ready(
             return Ok(Ok(200));
         }
         if Instant::now() >= deadline {
-            return Ok(Err(format!(
-                "the gateway did not answer /readyz within {BOOT_DEADLINE:?}"
-            )));
+            return Ok(Err(
+                "the gateway did not answer /readyz within its boot deadline".into()
+            ));
         }
         std::thread::sleep(PROBE_INTERVAL);
     }
 }
 
 /// Polls EVERY fleet service's own `/readyz` until all answer 200, the fleet
-/// dies, or [`BOOT_DEADLINE`].
+/// dies, or [`boot_deadline`] (sized to `services.len()`) elapses.
 ///
 /// [`wait_ready`] gates only on the gateway's `/readyz`, which is a plain 200
 /// (`without_db`) that says nothing about the two passthrough origins the
@@ -1073,7 +1088,7 @@ fn wait_fleet_serving(
         .iter()
         .map(|svc| format!("http://127.0.0.1:{}", svc.http_port))
         .collect();
-    let deadline = Instant::now() + BOOT_DEADLINE;
+    let deadline = Instant::now() + boot_deadline(services.len());
     loop {
         if fleet.try_wait()?.is_some() || runner::interrupted() {
             // The fleet is gone or the run was interrupted — stop waiting and let

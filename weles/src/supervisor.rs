@@ -67,8 +67,10 @@ const READINESS_PROBE_INTERVAL: Duration = Duration::from_millis(250);
 /// promptly (join before teardown) without a probe-length wait.
 const READINESS_STOP_POLL: Duration = Duration::from_millis(50);
 /// Teardown per-service shutdown budget (graceful, then force).
-const STOP_GRACE: Duration = Duration::from_secs(5);
-const STOP_FORCE: Duration = Duration::from_secs(5);
+/// Public because `tools/verifyctl`'s weles-managed-gateway stage derives its
+/// own teardown headroom from this authority rather than a hand-copied literal.
+pub const STOP_GRACE: Duration = Duration::from_secs(5);
+pub const STOP_FORCE: Duration = Duration::from_secs(5);
 /// A not-yet-healthy service that blew its deadline gets no graceful
 /// patience — it already proved unresponsive.
 const HUNG_GRACE: Duration = Duration::from_secs(0);

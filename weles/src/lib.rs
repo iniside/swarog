@@ -54,7 +54,7 @@ pub use weles_master::{fleet_toml, manifest, state, store};
 pub(crate) mod test_fixtures {
     use crate::fleet_toml::{self, Fleet};
 
-    /// Loads `weles/fleet.split.toml` — the committed 14-process split fixture.
+    /// Loads `weles/fleet.split.toml` — the committed 15-process split fixture.
     pub(crate) fn load_split_fixture() -> Fleet {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fleet.split.toml");
         fleet_toml::load(&path).expect("weles/fleet.split.toml must load")

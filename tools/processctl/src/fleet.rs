@@ -29,27 +29,50 @@ const ACCOUNTS_OVERRIDEABLE_ENV: &[&str] = &[
     "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL",
 ];
 
-/// The monolith's twin of [`ACCOUNTS_OVERRIDEABLE_ENV`] plus the process-wide knobs:
-/// one process hosts accounts, so the provider keys are read from the same env map.
-const MONOLITH_OVERRIDEABLE_ENV: &[&str] = &[
-    "APIKEYS_DEV_SEED", "ACCOUNTS_DEV_AUTH", "INVENTORY_DEV_GRANT", "WALLET_DEV_SEED",
-    "ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS", "NOTIFICATIONS_RETENTION_DAYS",
-    "EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX", "EPIC_CLIENT_SECRET",
-    "EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL",
-    "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL",
+/// Every `MAIL_*` key an operator's shell may reach `mail-svc` with — the SOLE source
+/// list for both the split `mail-svc` and (composed below into
+/// [`MONOLITH_OVERRIDEABLE_ENV`]) the monolith, so a new mail knob added here reaches
+/// both topologies by construction rather than by remembering to edit two lists.
+const MAIL_OVERRIDEABLE_ENV: &[&str; 10] = &[
     "MAIL_PROVIDER", "MAIL_FROM", "MAIL_SEND_TIMEOUT_MS", "MAIL_MAX_ATTEMPTS",
     "MAIL_SMTP_HOST", "MAIL_SMTP_PORT", "MAIL_SMTP_USERNAME", "MAIL_SMTP_PASSWORD",
     "MAIL_SMTP_TLS", "MAIL_RETENTION_DAYS",
 ];
 
-/// [`MAIL_OVERRIDEABLE_ENV`]'s split-fleet twin: every `MAIL_*` key an operator's shell
-/// may reach `mail-svc` with (the same list [`MONOLITH_OVERRIDEABLE_ENV`] carries for the
-/// one-process topology).
-const MAIL_OVERRIDEABLE_ENV: &[&str] = &[
-    "MAIL_PROVIDER", "MAIL_FROM", "MAIL_SEND_TIMEOUT_MS", "MAIL_MAX_ATTEMPTS",
-    "MAIL_SMTP_HOST", "MAIL_SMTP_PORT", "MAIL_SMTP_USERNAME", "MAIL_SMTP_PASSWORD",
-    "MAIL_SMTP_TLS", "MAIL_RETENTION_DAYS",
+/// The monolith's twin of [`ACCOUNTS_OVERRIDEABLE_ENV`] plus the process-wide knobs
+/// other than mail's — one process hosts accounts, so the provider keys are read from
+/// the same env map. [`MONOLITH_OVERRIDEABLE_ENV`] appends [`MAIL_OVERRIDEABLE_ENV`] to
+/// this at compile time, so the mail keys themselves are written out exactly once.
+const MONOLITH_BASE_ENV: &[&str; 16] = &[
+    "APIKEYS_DEV_SEED", "ACCOUNTS_DEV_AUTH", "INVENTORY_DEV_GRANT", "WALLET_DEV_SEED",
+    "ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS", "NOTIFICATIONS_RETENTION_DAYS",
+    "EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX", "EPIC_CLIENT_SECRET",
+    "EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL",
+    "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL",
 ];
+
+/// Concatenates [`MONOLITH_BASE_ENV`] (16 keys) and [`MAIL_OVERRIDEABLE_ENV`] (10 keys)
+/// at compile time into [`MONOLITH_OVERRIDEABLE_ENV_ARR`] — const generics cannot
+/// express `N + M` as an array length on stable Rust (no `generic_const_exprs`), so this
+/// is monomorphic to the two callers' concrete sizes rather than generic; a length
+/// mismatch at either input is a compile error here, never a silent truncation.
+const fn concat_env_16_10(a: &[&'static str; 16], b: &[&'static str; 10]) -> [&'static str; 26] {
+    let mut out = [""; 26];
+    let mut i = 0;
+    while i < 16 {
+        out[i] = a[i];
+        i += 1;
+    }
+    let mut j = 0;
+    while j < 10 {
+        out[16 + j] = b[j];
+        j += 1;
+    }
+    out
+}
+
+const MONOLITH_OVERRIDEABLE_ENV_ARR: [&str; 26] = concat_env_16_10(MONOLITH_BASE_ENV, MAIL_OVERRIDEABLE_ENV);
+const MONOLITH_OVERRIDEABLE_ENV: &[&str] = &MONOLITH_OVERRIDEABLE_ENV_ARR;
 
 /// Provider keys the `Proof` overlay CLEARS before pinning its own. `google` is the
 /// split-proof fleet's deliberately unconfigured provider: it is the only way to execute
@@ -57,6 +80,19 @@ const MAIL_OVERRIDEABLE_ENV: &[&str] = &[
 /// configured here" (503), so an ambient `GOOGLE_CLIENT_IDS` would silently delete an
 /// assertion rather than fail one.
 const PROOF_UNCONFIGURED_PROVIDER_ENV: &[&str] = &["GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL"];
+
+/// The `MAIL_SMTP_*` group the `Proof` overlay CLEARS from `mail`'s OWN env (never
+/// `accounts.env` — a distinct list from [`PROOF_UNCONFIGURED_PROVIDER_ENV`], whose
+/// removal loop only touches `accounts.env`, so reusing that const here would silently
+/// clear nothing). Proof always pins `MAIL_PROVIDER=log` afterward, so this is not about
+/// exercising an unconfigured-provider arm: it is about never letting an operator's
+/// ambient SMTP credentials (developing against a real relay) survive into the
+/// verification fleet — a partial ambient `MAIL_SMTP_*` group would otherwise either dial
+/// a live relay under `smtp` or, once re-pinned to `log`, fail startup outright (`mail`'s
+/// config refuses any `MAIL_SMTP_*` value set while the provider is not `smtp`).
+const PROOF_CLEARED_MAIL_SMTP_ENV: &[&str] = &[
+    "MAIL_SMTP_HOST", "MAIL_SMTP_PORT", "MAIL_SMTP_USERNAME", "MAIL_SMTP_PASSWORD", "MAIL_SMTP_TLS",
+];
 
 /// The loopback OIDC fixture `tools/splitproof` stands up so a FEDERATED credential is
 /// mintable without a live identity provider, and the `epic` configuration the `Proof`
@@ -867,6 +903,11 @@ pub fn game_backend_fleet_with_environment(
             scheduler.env.insert("SCHEDULER_ENABLED".into(), "1".into());
             inventory.env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
             wallet.env.insert("WALLET_DEV_SEED".into(), "1".into());
+            for key in PROOF_CLEARED_MAIL_SMTP_ENV {
+                mail.env.remove(*key);
+            }
+            mail.env.insert("MAIL_PROVIDER".into(), "log".into());
+            mail.env.insert("MAIL_FROM".into(), "dev@localhost".into());
     }
 
     FleetSpec::new(vec![
@@ -914,6 +955,9 @@ pub fn game_backend_monolith(
         for key in PROOF_UNCONFIGURED_PROVIDER_ENV {
             env.remove(*key);
         }
+        for key in PROOF_CLEARED_MAIL_SMTP_ENV {
+            env.remove(*key);
+        }
         env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
         env.insert("EPIC_CLIENT_ID".into(), PROOF_OIDC_CLIENT_ID.into());
         env.insert("EPIC_JWKS_URL".into(), PROOF_OIDC_JWKS_URL.into());
@@ -921,6 +965,8 @@ pub fn game_backend_monolith(
         env.insert("APIKEYS_DEV_SEED".into(), "1".into());
         env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
         env.insert("WALLET_DEV_SEED".into(), "1".into());
+        env.insert("MAIL_PROVIDER".into(), "log".into());
+        env.insert("MAIL_FROM".into(), "dev@localhost".into());
     }
     ServiceSpec {
         name: "monolith", executable_package: "server", http_port: 8080,
