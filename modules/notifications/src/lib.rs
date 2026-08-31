@@ -32,9 +32,10 @@ use registry::key;
 /// durable delivery is already exactly-once for a `TransactionalPg` consumer, so its job
 /// there is to make an operator re-drive (`eventctl`) idempotent rather than duplicate a
 /// player's inbox, and operator mail rides the same column under the render-time
-/// `admin-send-mail-` key prefix that keeps the two key spaces disjoint. It is PARTIAL so
-/// that an absent key (NULL) opts a row out of dedup instead of colliding with every other
-/// keyless row.
+/// `admin-send-mail-` key prefix that keeps the two key spaces disjoint — a prefix a
+/// `gen_random_uuid()::text` `event_id` cannot contain. It is PARTIAL as the class fail-safe
+/// under `service::validate_new`, which admits no keyless write today: were one ever made, a
+/// NULL opts that row out of dedup instead of colliding with every other keyless row.
 ///
 /// `notifications_created_at_idx` exists for the retention sweep alone: `created_at` is not
 /// the leading column of the inbox index, so without it the daily prune seq-scans the whole

@@ -158,9 +158,12 @@ impl Store {
     /// `WHERE` clause is repeated verbatim from the index because Postgres cannot infer a
     /// PARTIAL unique index without it.
     ///
-    /// An empty `source_event_id` is stored as NULL (operator mail), which the partial index
-    /// ignores — two hand-sent messages are two rows, as they should be. A `player_id` that
-    /// is not a uuid is 22P02 here, NOT a silently-written row; the caller
+    /// Both writers supply a key — the fan-in its `event_id`, the operator form its minted
+    /// one — so two hand-sent messages are two rows because two renders mint two keys, not
+    /// because either is keyless. `NULLIF` survives as the class fail-safe under
+    /// [`crate::service::validate_new`]: a keyless row opts out of dedup rather than
+    /// colliding with every other keyless row. A `player_id` that is not a uuid is 22P02
+    /// here, NOT a silently-written row; the caller
     /// ([`crate::service::Service::deliver_on`]) turns it into a data-quality rejection.
     pub(crate) async fn insert_tx(
         &self,
@@ -209,17 +212,12 @@ impl Store {
             .collect())
     }
 
-    /// `(messages, unread, players)` over the whole table.
-    pub(crate) async fn stats(&self) -> Result<(i64, i64, i64), sqlx::Error> {
-        sqlx::query_as::<_, (i64, i64, i64)>(
-            "SELECT count(*), count(*) FILTER (WHERE read_at IS NULL), count(DISTINCT player_id) \
-               FROM notifications.messages",
-        )
-        .fetch_one(&self.pool)
-        .await
-    }
-
-    /// `(messages, unread)` for one player. A `player_id` the cast rejects is an EMPTY inbox,
+    /// `(messages, unread)` for one player. The only counted view: `notifications_inbox_idx`
+    /// leads with `player_id`, so both aggregates read one player's rows — the cross-player
+    /// overview has no counts precisely because those would be whole-table scans, run on
+    /// EVERY portal request (`admin::resolve_items` fetches every item's data per request).
+    ///
+    /// A `player_id` the cast rejects is an EMPTY inbox,
     /// matching [`Store::page_by_player`] — the two halves of the drill-down must not
     /// disagree about whether the player exists.
     pub(crate) async fn player_stats(&self, player_id: &str) -> Result<(i64, i64), sqlx::Error> {
@@ -235,5 +233,36 @@ impl Store {
             Err(e) if is_invalid_uuid(&e) => Ok((0, 0)),
             Err(e) => Err(e),
         }
+    }
+
+    /// True iff the row `source_event_id` already holds is the message the caller just tried
+    /// to write. `player_id` is compared THROUGH the same `::uuid` cast the insert used, so a
+    /// resubmit spelling the id differently still matches the row it produced.
+    ///
+    /// Answers the question `ON CONFLICT DO NOTHING` erases: a repeat of one form and an
+    /// edited form resubmitted under its old key are the same SQL outcome and must not be
+    /// the same operator outcome.
+    pub(crate) async fn matches_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        kind: &str,
+        title: &str,
+        body: &str,
+        source_event_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let row = sqlx::query_scalar::<_, i32>(
+            "SELECT 1 FROM notifications.messages \
+              WHERE source_event_id = $5 AND player_id = $1::uuid \
+                AND kind = $2 AND title = $3 AND body = $4",
+        )
+        .bind(player_id)
+        .bind(kind)
+        .bind(title)
+        .bind(body)
+        .bind(source_event_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(row.is_some())
     }
 }

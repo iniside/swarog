@@ -76,6 +76,40 @@ pub(crate) fn is_uuid_text(s: &str) -> bool {
         })
 }
 
+/// The dedup column's byte ceiling, enforced for BOTH write paths. It is a module const,
+/// not a contract one: no wire field carries a dedup key — the durable half is minted by
+/// the event plane and the operator half by `admin::mint_idempotency_key`. The value is
+/// wallet's (`MAX_IDEMPOTENCY_KEY_BYTES`), far above the two real shapes (a 36-char
+/// `event_id`, a 48-char operator key) and far below the ~2704-byte btree tuple limit that
+/// `notifications_source_event_idx` would otherwise raise 54000 on.
+pub(crate) const MAX_DEDUP_KEY_BYTES: usize = 128;
+
+/// The prefix every operator dedup key carries. A durable `event_id` is
+/// `gen_random_uuid()::text` (`asyncevents.events.event_id`'s DEFAULT, and
+/// `asyncevents.append_event` takes no caller-supplied id), so it is hex and hyphens and can
+/// never contain these letters — which is what keeps the two key spaces in the one shared
+/// column disjoint.
+pub(crate) const OPERATOR_DEDUP_PREFIX: &str = "admin-send-mail-";
+
+/// The random half of an operator dedup key, in hex characters.
+pub(crate) const OPERATOR_DEDUP_HEX: usize = 32;
+
+pub(crate) const MALFORMED_DEDUP_KEY: &str = "dedup key is not an operator key";
+
+/// True iff `s` is EXACTLY the shape `admin::mint_idempotency_key` mints. Checked at the
+/// operator entry point rather than at the form, so no caller of the pub authority can
+/// address a row in the durable half of the dedup column.
+pub(crate) fn is_operator_dedup_key(s: &str) -> bool {
+    match s.strip_prefix(OPERATOR_DEDUP_PREFIX) {
+        Some(hex) => hex.len() == OPERATOR_DEDUP_HEX && hex.bytes().all(|c| c.is_ascii_hexdigit()),
+        None => false,
+    }
+}
+
+pub(crate) fn dedup_key_within_cap(key: &str) -> bool {
+    key.len() <= MAX_DEDUP_KEY_BYTES
+}
+
 pub(crate) fn title_within_cap(title: &str) -> bool {
     title.len() <= MAX_TITLE_BYTES
 }
@@ -143,13 +177,25 @@ pub(crate) fn resolve_limit(limit: i64) -> Result<i64, Error> {
 /// is the durable `event_id` for the fan-in and the admin form's render-time
 /// `admin-send-mail-<hex>` key for operator mail; EMPTY opts out of dedup entirely — see
 /// [`Store::insert_tx`]. The two key spaces are kept disjoint by that prefix, which
-/// `admin::rendered_key` requires, so a posted key can never pre-empt a real event's row.
+/// [`Service::send_operator_mail`] requires of every operator send, so no caller of the
+/// operator entry can pre-empt a real event's row.
 pub struct NewNotification<'a> {
     pub player_id: &'a str,
     pub kind: &'a str,
     pub title: &'a str,
     pub body: &'a str,
     pub source_event_id: &'a str,
+}
+
+/// What the dedup index did with one operator send.
+pub enum Sent {
+    /// Appended.
+    Appended,
+    /// This key already produced an IDENTICAL message — the double-submit the key exists for.
+    Duplicate,
+    /// This key already produced a DIFFERENT message: the posted form is stale and its
+    /// message was NOT written.
+    KeyReused,
 }
 
 /// THE input policy, enforced INSIDE the insert authority so no caller — operator form or
@@ -175,6 +221,13 @@ fn validate_new(n: &NewNotification<'_>) -> Result<(), Error> {
     if !body_within_cap(n.body) {
         return Err(Error::invalid(format!(
             "body exceeds {MAX_BODY_BYTES} bytes"
+        )));
+    }
+    // The one cap with no column CHECK under it: `source_event_id` is a btree INDEX key, so
+    // an over-long value is 54000 (an unmappable 500), not a 23514 this module could word.
+    if !dedup_key_within_cap(n.source_event_id) {
+        return Err(Error::invalid(format!(
+            "dedup key exceeds {MAX_DEDUP_KEY_BYTES} bytes"
         )));
     }
     Ok(())
@@ -228,11 +281,38 @@ impl Service {
     /// Operator mail: the SAME [`Service::deliver_on`] policy, run on a pool connection, so
     /// the admin form cannot acquire an input rule the durable fan-in does not have.
     ///
-    /// `false` is the dedup index answering that this form's render-time key already produced
-    /// a row — a double-submit sends once.
-    pub async fn send_operator_mail(&self, n: &NewNotification<'_>) -> Result<bool, Error> {
+    /// The key's shape is enforced HERE, not at the form: this is the pub entry point, so
+    /// refusing anything but an operator key is what stops any caller from claiming a row in
+    /// the durable half of the shared dedup column and silently suppressing that event's
+    /// notification.
+    ///
+    /// A key that already holds a row is NOT reported as sent on its own: `ON CONFLICT DO
+    /// NOTHING` collapses "the same form submitted twice" and "an edited form resubmitted
+    /// under its old key" into one outcome, and only the first may answer success — the
+    /// second discarded an operator's correction.
+    pub async fn send_operator_mail(&self, n: &NewNotification<'_>) -> Result<Sent, Error> {
+        if !is_operator_dedup_key(n.source_event_id) {
+            return Err(Error::invalid(MALFORMED_DEDUP_KEY));
+        }
         let mut conn = self.store.pool.acquire().await.map_err(internal)?;
-        self.deliver_on(&mut conn, n).await
+        if self.deliver_on(&mut conn, n).await? {
+            return Ok(Sent::Appended);
+        }
+        // The row the key holds may since have been pruned or deleted by its owner; the key
+        // is spent either way, so "cannot be confirmed identical" is stale, never sent.
+        let same = self
+            .store
+            .matches_tx(
+                &mut conn,
+                n.player_id,
+                n.kind,
+                n.title,
+                n.body,
+                n.source_event_id,
+            )
+            .await
+            .map_err(internal)?;
+        Ok(if same { Sent::Duplicate } else { Sent::KeyReused })
     }
 }
 

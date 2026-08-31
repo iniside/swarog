@@ -17,11 +17,18 @@
 
 use std::sync::Arc;
 
-use crate::service::{is_uuid_text, NewNotification};
+use crate::service::{
+    is_operator_dedup_key, is_uuid_text, NewNotification, Sent, OPERATOR_DEDUP_HEX,
+    OPERATOR_DEDUP_PREFIX,
+};
 use crate::store::InboxRow;
 use crate::Service;
 
 pub(crate) const ADMIN_ITEM_ID: &str = "notifications";
+/// The URL this page answers on. The portal derives a page's slug from `slugify(LABEL)`, NOT
+/// from the item id (`admin::resolve_items`), so every self-link must be built from THIS —
+/// a link built from the id 404s whenever the two differ, as they do here.
+pub(crate) const ADMIN_SLUG: &str = "inbox";
 /// A NEW sidebar section: the shipped ones are Platform / Identity / Game Content /
 /// Economy & Store, and operator mail belongs to none of them.
 pub(crate) const ADMIN_SECTION: &str = "Player Support";
@@ -54,12 +61,6 @@ const IDEM_SEND_FIELD: &str = "_idem_send";
 /// Operator mail's `kind`, distinct from every fan-in kind so the table can say who sent it.
 pub(crate) const KIND_OPERATOR_MAIL: &str = "operator.mail";
 
-/// Operator keys share the `source_event_id` column with the durable fan-in's `event_id`s,
-/// which is what makes ONE dedup index cover both paths. The prefix keeps the two key spaces
-/// disjoint: without it a posted key equal to a real `event_id` would claim that event's row
-/// and the player would silently never receive it.
-const OPERATOR_DEDUP_PREFIX: &str = "admin-send-mail-";
-
 // ============================================================================
 // Read view
 // ============================================================================
@@ -73,7 +74,7 @@ pub(crate) fn extension_entries() -> Vec<adminapi::ExtensionEntry> {
         point: accountsapi::admin::PLAYERS_ROW_MENU.id.into(),
         label: "View Inbox".into(),
         icon: "mail".into(),
-        link: format!("{ADMIN_ITEM_ID}?{PARAM_PLAYER}={{id}}"),
+        link: format!("{ADMIN_SLUG}?{PARAM_PLAYER}={{id}}"),
         present: adminapi::Present::Navigate,
         priority: 0,
     }]
@@ -83,18 +84,22 @@ pub(crate) fn extension_entries() -> Vec<adminapi::ExtensionEntry> {
 /// the drill-down param is present.
 ///
 /// A malformed `player` renders an error card, NEVER an `Err` — the portal forwards every
-/// page's params to every provider, so an `Err` here would poison an unrelated page in a
-/// split. The strict uuid check is the READ path's: a rendered drill-down link always carries
-/// the DB-canonical spelling, while the send form deliberately stays tolerant.
+/// page's params to every provider and resolves every item on every request, so in a split an
+/// `Err` raised by ANOTHER page's param would degrade this item to an error card in its
+/// sidebar. The strict uuid check is the READ path's: a rendered drill-down link always
+/// carries the DB-canonical spelling, while the send form deliberately stays tolerant.
 pub(crate) async fn build_content(
     svc: &Service,
     params: &adminapi::Params,
 ) -> anyhow::Result<adminapi::Content> {
     let raw = adminapi::param(params, PARAM_PLAYER).trim();
     if raw.is_empty() {
-        let (total, unread, players) = svc.store.stats().await?;
-        let rows = svc.store.recent(PAGE).await?;
-        return Ok(overview_content(total, unread, players, &rows));
+        // One row past the page decides "older exist" — the same idiom `Player::list` uses,
+        // and the reason this view carries no counts.
+        let mut rows = svc.store.recent(PAGE + 1).await?;
+        let truncated = rows.len() as i64 > PAGE;
+        rows.truncate(PAGE as usize);
+        return Ok(overview_content(&rows, truncated));
     }
     let player_id = raw.strip_prefix(PLAYER_REF_PREFIX).unwrap_or(raw);
     if !is_uuid_text(player_id) {
@@ -105,13 +110,12 @@ pub(crate) async fn build_content(
     Ok(player_content(player_id, total, unread, &messages))
 }
 
-/// The cross-player overview: three KPIs, the newest messages, and the send form.
-fn overview_content(
-    total: i64,
-    unread: i64,
-    players: i64,
-    rows: &[InboxRow],
-) -> adminapi::Content {
+/// The cross-player overview: the newest messages and the send form.
+///
+/// Its KPIs count the LISTED rows only, and say so. A true unread total would be a
+/// whole-table aggregate, and `admin::resolve_items` re-fetches every item on every portal
+/// request — the per-player totals live on the drill-down, where an index covers them.
+fn overview_content(rows: &[InboxRow], truncated: bool) -> adminapi::Content {
     let mut table = adminapi::Table {
         columns: vec![
             "WHEN".into(),
@@ -129,7 +133,7 @@ fn overview_content(
             adminapi::Cell {
                 text: short_uuid(&r.player_id).into(),
                 mono: true,
-                link: format!("{ADMIN_ITEM_ID}?{PARAM_PLAYER}={}", r.player_id),
+                link: format!("{ADMIN_SLUG}?{PARAM_PLAYER}={}", r.player_id),
                 ..Default::default()
             },
             kind_cell(&r.message.kind),
@@ -141,19 +145,18 @@ fn overview_content(
     adminapi::Content {
         kpis: vec![
             adminapi::Kpi {
-                label: "Messages".into(),
-                value: total.to_string(),
-                sub: page_note(total, rows.len()),
+                label: "Listed".into(),
+                value: rows.len().to_string(),
+                sub: page_note(truncated).into(),
             },
             adminapi::Kpi {
-                label: "Unread".into(),
-                value: unread.to_string(),
-                sub: String::new(),
-            },
-            adminapi::Kpi {
-                label: "Players with mail".into(),
-                value: players.to_string(),
-                sub: String::new(),
+                label: "Unread here".into(),
+                value: rows
+                    .iter()
+                    .filter(|r| r.message.read_at.is_empty())
+                    .count()
+                    .to_string(),
+                sub: "of the listed rows".into(),
             },
         ],
         table: Some(table),
@@ -199,7 +202,7 @@ fn player_content(
             avatar_color_key: palette(player_id),
             title: short.to_string(),
             subtitle_mono: format!("{PLAYER_REF_PREFIX}{player_id}"),
-            right_note: page_note(total, messages.len()),
+            right_note: page_note(total > messages.len() as i64).into(),
         }),
         kpis: vec![
             adminapi::Kpi {
@@ -274,13 +277,14 @@ fn build_form(player_prefill: &str) -> adminapi::Form {
     }
 }
 
-/// A fresh dedup key. `OsRng`, not a clock: two deliberate messages rendered within one clock
-/// tick must not collide into a silent "duplicate" that delivers only the first.
+/// A fresh dedup key, in the exact shape [`is_operator_dedup_key`] admits. `OsRng`, not a
+/// clock: two deliberate messages rendered within one clock tick must not collide into a
+/// silent "duplicate" that delivers only the first.
 fn mint_idempotency_key() -> String {
     use rand::RngCore;
-    let mut bytes = [0u8; 16];
+    let mut bytes = [0u8; OPERATOR_DEDUP_HEX / 2];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
-    let mut hex = String::with_capacity(32);
+    let mut hex = String::with_capacity(OPERATOR_DEDUP_HEX);
     for b in bytes {
         hex.push_str(&format!("{b:02x}"));
     }
@@ -329,8 +333,9 @@ pub(crate) fn admin_render(
 /// [`Rejection::Internal`] both collapse into `Other`), and the wire needs the distinction:
 /// an operator's bad input is not a server fault.
 pub(crate) enum Rejection {
-    /// The posted form did not come from a render of this page, so it carries no usable
-    /// dedup key — the operator must reload (a fresh render mints a fresh key).
+    /// The posted form cannot be applied as written: its dedup key is not one this page
+    /// minted, or that key has already produced a DIFFERENT message. Both remedies are the
+    /// same reload — a fresh render mints a fresh key — and both must NOT read as sent.
     Stale,
     /// The operator's input, or the insert authority's verdict on it (an unparseable player
     /// id, an over-long title or body): 400-class, and the MESSAGE is the point.
@@ -387,12 +392,13 @@ fn required<'a>(
     Ok(v)
 }
 
-/// The render-time dedup key. Absent — or not carrying [`OPERATOR_DEDUP_PREFIX`] — means the
-/// posted form did not come from a render of THIS page: applying it would either mint no
-/// dedup at all or write into the durable fan-in's key space, so it is refused.
+/// The render-time dedup key. Anything but the exact minted shape means the posted form did
+/// not come from a render of THIS page, and the remedy is a reload — which is why the same
+/// rule maps to `Stale` here and to `Status::Invalid` in the authority that re-checks it: the
+/// operator gets "reload", a programmatic caller gets a rejection.
 fn rendered_key(values: &adminapi::Params) -> Result<&str, Rejection> {
     let key = adminapi::param(values, IDEM_SEND_FIELD).trim();
-    if key.len() <= OPERATOR_DEDUP_PREFIX.len() || !key.starts_with(OPERATOR_DEDUP_PREFIX) {
+    if !is_operator_dedup_key(key) {
         return Err(Rejection::Stale);
     }
     Ok(key)
@@ -412,18 +418,22 @@ pub(crate) async fn apply_submit(
             let title = required(&values, TITLE_FIELD, ACTION_SEND_MAIL)?;
             let body = required(&values, BODY_FIELD, ACTION_SEND_MAIL)?;
             let dedup = rendered_key(&values)?;
-            // `false` is this form's key already having produced a row: the resubmit is a
-            // no-op, which is a success for the operator, not a conflict.
-            svc.send_operator_mail(&NewNotification {
-                player_id,
-                kind: KIND_OPERATOR_MAIL,
-                title,
-                body,
-                source_event_id: dedup,
-            })
-            .await
-            .map_err(mail_rejection)?;
-            Ok(adminapi::SubmitOutcome::default())
+            let sent = svc
+                .send_operator_mail(&NewNotification {
+                    player_id,
+                    kind: KIND_OPERATOR_MAIL,
+                    title,
+                    body,
+                    source_event_id: dedup,
+                })
+                .await
+                .map_err(mail_rejection)?;
+            match sent {
+                Sent::Appended | Sent::Duplicate => Ok(adminapi::SubmitOutcome::default()),
+                // An edited form resubmitted under its old key: the correction was NOT
+                // written, so the operator is told to reload rather than shown a success.
+                Sent::KeyReused => Err(Rejection::Stale),
+            }
         }
         "" => Err(Rejection::Rejected(
             "notifications: no action posted — reload the page and try again".into(),
@@ -476,13 +486,13 @@ impl adminapi::AdminSubmit for Service {
 // Presentation helpers
 // ============================================================================
 
-/// The note beside a count whose table is capped: a truncated list MUST say so, since the
-/// page has no cursor and a bare count beside 50 rows reads as the whole story.
-fn page_note(total: i64, shown: usize) -> String {
-    if total > shown as i64 {
-        format!("newest {shown} shown")
+/// A capped table MUST say it is capped: the page has no cursor, so a row count beside 50
+/// rows otherwise reads as the whole story.
+fn page_note(truncated: bool) -> &'static str {
+    if truncated {
+        "newest only — older rows not shown"
     } else {
-        format!("{shown} shown — all of them")
+        "all of them"
     }
 }
 
