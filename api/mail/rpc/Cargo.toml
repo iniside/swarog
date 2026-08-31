@@ -1,0 +1,19 @@
+[package]
+name = "mailrpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# `mailrpc` — mail's minimal <name>rpc glue crate. mail is a domain with no sync
+# capability of its own (no `api/mail/api` — see the plan's "why not a sync
+# mailapi::Mailer capability"), so this crate exists for ONE reason: to re-export the
+# cross-cutting admin fan-out's server-side `register_admin` AND `register_admin_submit`
+# (the Mail page is remotely editable), so the `mail` MODULE registers its
+# `admin.adminData`/`admin.adminSubmit` edge handlers through its OWN <name>rpc crate
+# rather than importing `adminrpc` directly (archcheck forbids a module->foreign-rpc
+# edge; the module->own-rpc->adminrpc chain is sanctioned, exactly the
+# characters/inventory pattern). Impl-tier: reached only by the `mail` module + `cmd/*`,
+# never by a domain consumer.
+[dependencies]
+adminrpc = { workspace = true }

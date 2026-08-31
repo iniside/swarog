@@ -1,0 +1,18 @@
+[package]
+name = "mailevents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The published event vocabulary of the mail domain: the SendRequested payload + its
+# topic descriptor. `mail` DEFINES this topic but is also its own consumer (a
+# deliberate deviation from "publisher owns the event" — see the plan's finding D):
+# any sending module appends `mail.send_requested` without a sync dependency on
+# `mail`. It rides the DURABLE plane (bus::emit_tx, exactly-once enqueue keyed by
+# `idempotency_key`), so the payload is serde (the transport collapses it to JSON at
+# the emit_tx/on_tx boundary). Imports only the `bus` leaf.
+[dependencies]
+bus = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
