@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-08-30-2333**
+**Last update: 2026-08-31-0032**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -40,7 +40,9 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 | 1 | Virtual currency wallet + ledger | ✅ | [2026-07-28-2125-wallet-module-plan.md](../plans/2026-07-28-2125-wallet-module-plan.md) |
 | 2a | Federated-provider seam + Google OIDC + guest/device | ✅ | [2026-07-30-2230-accounts-federated-providers-plan.md](../plans/2026-07-30-2230-accounts-federated-providers-plan.md) |
 | 2b | Apple OIDC + identity link/unlink | ❌ | — |
-| 3 | Notifications + player mail (in-app, durable) | ❌ | — |
+| 3a | Notifications: in-app player inbox | 📝 | [2026-08-31-0032-notifications-inbox-3a-plan.md](../plans/2026-08-31-0032-notifications-inbox-3a-plan.md) |
+| 3b | Outbound email channel | ❌ | — |
+| 3c | Push notifications (FCM/APNs) | ❌ | — |
 | 4 | Self-registration promoted to production (email verify, password reset) | ❌ | — |
 | 5 | Leaderboard seasons / reset / rotation | ❌ | — |
 | 6 | Steam auth (ticket verifier) | ❌ | — |
@@ -70,6 +72,12 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 - **Seasons after wallet, not first** — the gap doc ranks seasons #1 as the cheapest
   "toy vs. real" tell, but seasons without rewards are half a feature. After wallet they
   cost the same and ship complete.
+- **#3 split into 3a/3b/3c (decided 2026-08-31)** — the original single row bundled three
+  items with unrelated risk profiles. 3a is durable-plane consumer work (a new fortress
+  fanning inbox rows in from existing events); 3b is outbound I/O to the world with
+  operator secrets and a different error model, and the hard prerequisite for #4; 3c is a
+  third-party push transport. Splitting keeps 3a's plan from being hostage to the mail
+  provider decision.
 
 ### Open decisions — settled by seq #2a (landed 2026-08-30)
 
@@ -128,7 +136,7 @@ now resolved — see the Identity & accounts table below for the landed shape.
 | Anonymous / guest / device auth | ✅ | accounts | 2026-08-30 | `POST /accounts/guest` mints a player + a show-once device ticket; replayed through `login_federated("guest", …)`. Open decision 3 resolved by moving the wallet starter grant onto `player.promoted` — a guest is granted only when it gains a real identity. |
 | Account linking / unlinking | ⚠️ | accounts | 2026-08-30 | `POST /accounts/link` ships (verified credential → identity attached to the caller's player; a foreign identity is 409, no merge). **Unlink is still missing** — seq #2b. |
 | Session + refresh-token model | ✅ | accounts | 2026-08-30 | 60-minute opaque access tokens + rotating 30-day refresh-token families: reuse detection, a 30s grace window for a lost response, family-scoped revocation (never all the player's devices), and a hard family life a rotation cannot extend. Open decision 4 resolved inside #2a. |
-| Self-registration (production-grade) | ⚠️ | accounts | — | `POST /accounts/register` + `/accounts/login` exist (`api/accounts/api/src/lib.rs:79,85`, argon2id) but gated behind `ACCOUNTS_DEV_AUTH` (default OFF). Missing: email verification, password reset, per-IP/per-account throttling, password policy, email-as-identity uniqueness, **and an outbound mail channel**. Seq #4, depends on #3. |
+| Self-registration (production-grade) | ⚠️ | accounts | — | `POST /accounts/register` + `/accounts/login` exist (`api/accounts/api/src/lib.rs:79,85`, argon2id) but gated behind `ACCOUNTS_DEV_AUTH` (default OFF). Missing: email verification, password reset, per-IP/per-account throttling, password policy, email-as-identity uniqueness, **and an outbound mail channel**. Seq #4, depends on #3b. |
 | Account self-delete + GDPR export | ❌ | accounts | — | Only server-side prune today. |
 | User metadata / profile (display name, avatar, lang) | ❌ | — | — | Only `player_id` + identities. |
 
@@ -190,10 +198,10 @@ balances and is its own feature.
 
 | Feature | Status | Module(s) | Landed | Notes |
 |---|:--:|---|---|---|
-| In-app notifications | ❌ | — | — | **Seq #3.** New fortress, per-player inbox rows fanned in from durable events; player-facing list + delete. |
-| Player mail (1:1 inbox) | ❌ | — | — | Seq #3, same module. |
-| Outbound email channel (verification, reset) | ❌ | — | — | **Not in the source gap doc — added 2026-07-28.** Hard prerequisite for seq #4; owned by the notifications module as an outbound channel. |
-| Push notifications (FCM/APNs) | ❌ | — | — | Later channel on the notifications module. |
+| In-app notifications | 📝 | — | — | **Seq #3a**, [plan](../plans/2026-08-31-0032-notifications-inbox-3a-plan.md). New fortress, per-player inbox rows fanned in from durable events; player-facing list + mark-read + delete. |
+| Player mail (1:1 inbox) | 📝 | — | — | Seq #3a, same module and plan — operator 1:1 mail fans into the same inbox. |
+| Outbound email channel (verification, reset) | ❌ | — | — | **Not in the source gap doc — added 2026-07-28.** Seq #3b. Hard prerequisite for seq #4; owned by the notifications module as an outbound channel. |
+| Push notifications (FCM/APNs) | ❌ | — | — | Seq #3c. Later channel on the notifications module. |
 | Generic storage objects / player cloud-save (KV+OCC) | ❌ | — | — | P1#7. Self-contained new fortress. |
 | Server-side custom logic / RPC hooks | ✅ | (architecture) | pre-existing | Our module registry **is** this. Scripting runtimes explicitly rejected — see gap doc "Explicit non-recommendations". |
 | Remote config / feature flags | ⚠️ | config | pre-existing | Live-reload delivery half exists (revision + NOTIFY + invalidation); **no targeting**. |
@@ -219,6 +227,21 @@ balances and is its own feature.
 ---
 
 ## Change log
+
+- **2026-08-31** — Seq #3 **split into 3a/3b/3c** (in-app inbox / outbound email / push);
+  the single row bundled three items with unrelated risk — the inbox is durable-plane
+  consumer work (a 13th fortress fanning inbox rows in from existing events), the mail
+  channel is outbound I/O to the world with operator secrets and a different error model,
+  and push is a third-party transport. Three contract decisions were settled before
+  writing 3a's plan: the keyset cursor for the inbox list is carried in the `POST` body,
+  not a query parameter, because the `#[http]` grammar has no query-parameter source and
+  the hard-cap list shape is on module-reference's do-NOT-copy list; the inbox fans in
+  from operator 1:1 mail plus durable `wallet.changed` and `player.promoted`; and the
+  player marks an item read or deletes it, while the scheduler prunes. One finding is
+  carried forward rather than worked around: `match.finished`'s `winner`/`loser` fields
+  are opaque contestant strings, not `player_id`s, so match results cannot feed the inbox
+  without a name→player lookup this rollout does not add — recorded as a known gap.
+  Plan: [2026-08-31-0032-notifications-inbox-3a-plan.md](../plans/2026-08-31-0032-notifications-inbox-3a-plan.md).
 
 - **2026-08-30** — Federated providers (seq #2a) **landed**, all 16 steps,
   `cargo run -p verifyctl -- --fast` 15/15 blocking stages green and split-proof 124/124
