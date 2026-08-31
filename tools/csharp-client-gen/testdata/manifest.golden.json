@@ -292,6 +292,61 @@
       "ret": "Unit"
     },
     {
+      "provider": "notifications",
+      "wire_method": "notifications.delete",
+      "verb": "DELETE",
+      "path": "/notifications/{id}",
+      "auth": "player",
+      "success": 204,
+      "args": [
+        {
+          "name": "notification_id",
+          "wire_name": "notification_id",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    },
+    {
+      "provider": "notifications",
+      "wire_method": "notifications.list",
+      "verb": "POST",
+      "path": "/notifications/list",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "cursor",
+          "wire_name": "cursor",
+          "ty": "String"
+        },
+        {
+          "name": "limit",
+          "wire_name": "limit",
+          "ty": "I64"
+        }
+      ],
+      "ret": {
+        "Struct": "Page"
+      }
+    },
+    {
+      "provider": "notifications",
+      "wire_method": "notifications.markRead",
+      "verb": "POST",
+      "path": "/notifications/{id}/read",
+      "auth": "player",
+      "success": 204,
+      "args": [
+        {
+          "name": "notification_id",
+          "wire_name": "notification_id",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    },
+    {
       "provider": "wallet",
       "wire_method": "wallet.listCurrencies",
       "verb": "GET",
@@ -487,6 +542,60 @@
               "Struct": "IdentityRef"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "Notification",
+      "fields": [
+        {
+          "name": "id",
+          "wire_name": "id",
+          "ty": "String"
+        },
+        {
+          "name": "kind",
+          "wire_name": "kind",
+          "ty": "String"
+        },
+        {
+          "name": "title",
+          "wire_name": "title",
+          "ty": "String"
+        },
+        {
+          "name": "body",
+          "wire_name": "body",
+          "ty": "String"
+        },
+        {
+          "name": "created_at",
+          "wire_name": "created_at",
+          "ty": "String"
+        },
+        {
+          "name": "read_at",
+          "wire_name": "read_at",
+          "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "Page",
+      "fields": [
+        {
+          "name": "items",
+          "wire_name": "items",
+          "ty": {
+            "Vec": {
+              "Struct": "Notification"
+            }
+          }
+        },
+        {
+          "name": "next_cursor",
+          "wire_name": "next_cursor",
+          "ty": "String"
         }
       ]
     },

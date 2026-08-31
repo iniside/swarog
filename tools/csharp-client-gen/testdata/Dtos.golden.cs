@@ -58,6 +58,20 @@ public sealed record MeView(
     [property: JsonPropertyName("display_name")] string DisplayName,
     [property: JsonPropertyName("identities")] IdentityRef[] Identities);
 
+/// <summary>The <c>Notification</c> DTO.</summary>
+public sealed record Notification(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("body")] string Body,
+    [property: JsonPropertyName("created_at")] string CreatedAt,
+    [property: JsonPropertyName("read_at")] string ReadAt);
+
+/// <summary>The <c>Page</c> DTO.</summary>
+public sealed record Page(
+    [property: JsonPropertyName("items")] Notification[] Items,
+    [property: JsonPropertyName("next_cursor")] string NextCursor);
+
 /// <summary>The <c>Score</c> DTO.</summary>
 public sealed record Score(
     [property: JsonPropertyName("player")] string Player,

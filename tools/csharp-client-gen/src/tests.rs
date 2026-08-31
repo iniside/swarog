@@ -45,11 +45,11 @@ fn manifest_matches_golden() {
 
 #[test]
 fn golden_covers_the_known_surface() {
-    // A structural sanity check independent of the string golden: exactly the 17
-    // player-reachable methods and the 9 reachable DTOs.
+    // A structural sanity check independent of the string golden: exactly the 20
+    // player-reachable methods and the 11 reachable DTOs.
     let m: Manifest = serde_json::from_str(GOLDEN).unwrap();
-    assert_eq!(m.methods.len(), 17, "expected 17 #[http] methods");
-    assert_eq!(m.dtos.len(), 9, "expected 9 reachable DTOs");
+    assert_eq!(m.methods.len(), 20, "expected 20 #[http] methods");
+    assert_eq!(m.dtos.len(), 11, "expected 11 reachable DTOs");
     assert_eq!(m.statuses.len(), 8, "expected 8 Status variants");
 
     // Set EQUALITY, not inclusion: an added method that is counted and re-blessed
@@ -68,6 +68,9 @@ fn golden_covers_the_known_surface() {
             "characters.create",
             "characters.list",
             "characters.delete",
+            "notifications.list",
+            "notifications.markRead",
+            "notifications.delete",
             "inventory.listMine",
             "inventory.listCharacter",
             "inventory.grant",
@@ -87,6 +90,8 @@ fn golden_covers_the_known_surface() {
             "GuestSession",
             "IdentityRef",
             "MeView",
+            "Notification",
+            "Page",
             "Character",
             "Holding",
             "Score",
