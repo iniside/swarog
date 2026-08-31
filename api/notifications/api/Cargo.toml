@@ -1,0 +1,24 @@
+[package]
+name = "notificationsapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The notifications module's PURE, transport-free contract: the player-facing `Player`
+# capability (list/mark_read/delete), the `Notification`/`Page` wire types and the input
+# byte caps. `#[rpc]` generates the transport-FREE surface (wire envelopes, METHOD_*
+# consts, operations()/route_bindings()) into child `*_rpc` modules, plus the
+# metadata-callback macro the sibling `notificationsrpc` glue crate expands into the
+# edge-dependent glue. NO `edge`/`remote`/transport dependency (archcheck's
+# FORBIDDEN_API_DEPS).
+#
+# Deliberately NO `adminapi`: the module CONSUMES an extension point rather than
+# declaring one, and the `adminapi::Item` that does so is built inside the impl crate,
+# which imports `adminapi` directly.
+[dependencies]
+opsapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

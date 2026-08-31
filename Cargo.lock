@@ -2513,6 +2513,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "notificationsapi"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "opsapi",
+ "rpc-macro",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "notificationsrpc"
+version = "0.1.0"
+dependencies = [
+ "adminrpc",
+ "async-trait",
+ "edge",
+ "notificationsapi",
+ "opsapi",
+ "registry",
+ "rpc-macro",
+ "serde_json",
+]
+
+[[package]]
 name = "nu-ansi-term"
 version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
