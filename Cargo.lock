@@ -2516,16 +2516,24 @@ dependencies = [
 name = "notifications"
 version = "0.1.0"
 dependencies = [
+ "accountsevents",
  "anyhow",
  "async-trait",
  "base64",
+ "bus",
  "edge",
+ "futures",
  "lifecycle",
  "notificationsapi",
  "notificationsrpc",
  "opsapi",
  "registry",
+ "schedulerevents",
+ "serde",
+ "serde_json",
  "sqlx",
+ "tracing",
+ "walletevents",
 ]
 
 [[package]]

@@ -166,6 +166,9 @@ INSERT INTO scheduler.schedules (name, interval_seconds)
 	ON CONFLICT (name) DO NOTHING;
 INSERT INTO scheduler.schedules (name, interval_seconds)
 	VALUES ('accounts-sessions-prune', 86400)
+	ON CONFLICT (name) DO NOTHING;
+INSERT INTO scheduler.schedules (name, interval_seconds)
+	VALUES ('notifications-prune', 86400)
 	ON CONFLICT (name) DO NOTHING;"#
     )
 });

@@ -19,7 +19,17 @@ opsapi = { workspace = true }
 edge = { workspace = true }
 notificationsapi = { workspace = true }
 notificationsrpc = { workspace = true }
+bus = { workspace = true }
 sqlx = { workspace = true }
+# The two fan-in EVENT contracts and the scheduler one (events crates are importable by any
+# module; the impl crates are not).
+walletevents = { workspace = true }
+accountsevents = { workspace = true }
+schedulerevents = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures = { workspace = true }
+tracing = { workspace = true }
 # The opaque paging cursor is base64url-no-pad over `"{created_at}|{id}"`.
 base64 = { workspace = true }
 anyhow = { workspace = true }

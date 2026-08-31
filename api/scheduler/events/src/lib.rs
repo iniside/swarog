@@ -59,4 +59,8 @@ pub mod schedule_names {
     /// `expires_at <= now()`). The scheduler seeds this schedule (86400s); accounts
     /// reacts to `scheduler.fired{name}` matching it.
     pub const SESSIONS_PRUNE: &str = "accounts-sessions-prune";
+    /// The daily cadence on which `notifications` prunes inbox rows past
+    /// `NOTIFICATIONS_RETENTION_DAYS`. The scheduler seeds this schedule (86400s);
+    /// notifications reacts to `scheduler.fired{name}` matching it.
+    pub const NOTIFICATIONS_PRUNE: &str = "notifications-prune";
 }

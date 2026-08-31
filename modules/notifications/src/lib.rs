@@ -6,6 +6,7 @@
 //! pool-owned transaction) and the durable fan-in (the event plane's handed delivery
 //! transaction) share one implementation and one input policy.
 
+mod projection;
 mod service;
 mod store;
 
@@ -125,7 +126,44 @@ impl Module for NotificationsModule {
     }
 
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
+        // Validated before anything else so a typo stops the process: a non-positive
+        // retention would delete every player's inbox on the next prune tick.
+        let retention_days = projection::env_int(
+            "NOTIFICATIONS_RETENTION_DAYS",
+            projection::DEFAULT_RETENTION_DAYS,
+        );
+        if retention_days <= 0 {
+            anyhow::bail!(
+                "notifications: NOTIFICATIONS_RETENTION_DAYS must be > 0 (got {retention_days}) \
+                 — a non-positive retention would delete every inbox; unset it for the default {}",
+                projection::DEFAULT_RETENTION_DAYS
+            );
+        }
         let svc = self.svc();
+
+        // Three INDEPENDENT subscriptions, each with its own checkpoint (audit's shape): one
+        // topic's poison event must never stall another's cursor.
+        let credit_svc = svc.clone();
+        ctx.bus().on_tx(
+            projection::WALLET_CHANGED_SUB,
+            &walletevents::CHANGED,
+            move |delivery, e: walletevents::Changed| {
+                projection::on_wallet_changed(credit_svc.clone(), delivery, e)
+            },
+        );
+
+        let promoted_svc = svc.clone();
+        ctx.bus().on_tx(
+            projection::PLAYER_PROMOTED_SUB,
+            &accountsevents::PLAYER_PROMOTED,
+            move |delivery, e: accountsevents::PlayerPromoted| {
+                projection::on_player_promoted(promoted_svc.clone(), delivery, e)
+            },
+        );
+
+        let prune: Arc<dyn bus::TxHandler> = Arc::new(projection::PruneHandler { retention_days });
+        ctx.bus()
+            .on_tx_raw(projection::PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
 
         for op in notificationsapi::player_rpc::operations(svc.clone()) {
             ctx.contribute(opsapi::SLOT, op.operation);

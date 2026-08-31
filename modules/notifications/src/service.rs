@@ -67,7 +67,7 @@ fn is_cursor_time(s: &str) -> bool {
 }
 
 /// True iff `s` is the canonical hyphenated 36-character layout, hex digits case-insensitive.
-fn is_uuid_text(s: &str) -> bool {
+pub(crate) fn is_uuid_text(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() == 36
         && b.iter().enumerate().all(|(i, c)| match i {

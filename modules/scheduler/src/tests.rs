@@ -242,6 +242,7 @@ fn seeded_schedule_names_are_contract() {
     for name in [
         schedulerevents::schedule_names::AUDIT_PRUNE,
         schedulerevents::schedule_names::SESSIONS_PRUNE,
+        schedulerevents::schedule_names::NOTIFICATIONS_PRUNE,
     ] {
         assert!(
             SCHEMA_DDL.contains(&format!("('{name}',")),
