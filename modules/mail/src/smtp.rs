@@ -1,13 +1,15 @@
 //! The `smtp` provider: a real relay behind the same [`Sender`] face the dev sink
 //! implements.
 //!
-//! Two bounds, not one. An SMTP delivery is a multi-round-trip dialogue (banner, EHLO,
-//! STARTTLS, AUTH, MAIL/RCPT/DATA, the final status), so a single whole-send deadline
-//! cannot tell a relay that stalled mid-dialogue from one that is simply slow: the
-//! transport carries a PER-I/O-STEP timeout here, and the drain wraps the whole attempt
-//! in the same budget as the aggregate backstop (`modules/gateway/src/proxy.rs` records
-//! the same reasoning for the passthrough client). Both are derived from
-//! `MAIL_SEND_TIMEOUT_MS` — there is no second knob.
+//! **The drain's aggregate `MAIL_SEND_TIMEOUT_MS` is the only bound on the dialogue.**
+//! lettre's tokio transport applies its `timeout` around each candidate address's TCP
+//! connect and NOWHERE else (`client/async_net.rs`'s `connect_tokio1`); the per-socket
+//! read/write timeouts exist only on its blocking transport, so DNS, the TLS handshake,
+//! the banner, EHLO, STARTTLS, AUTH and MAIL/RCPT/DATA are each unbounded here. A relay
+//! that connects in 50ms and then trickles the banner is stopped by the drain's
+//! `tokio::time::timeout` and by nothing else. The connect bound is still worth setting —
+//! it is applied PER RESOLVED ADDRESS, so an MX with N records could otherwise spend N
+//! times as long in the connect phase alone.
 
 use std::time::Duration;
 
@@ -16,8 +18,9 @@ use lettre::message::header::ContentType;
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::extension::ClientId;
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 
+use crate::address::parse_address;
 use crate::providers::{Outgoing, SendError, Sender, SMTP};
 
 /// How the connection is encrypted. There is no plaintext arm: this channel carries
@@ -85,12 +88,9 @@ pub struct SmtpSettings {
 
 /// The domain an EHLO announces. Derived from the envelope sender because lettre's
 /// default without the `hostname` feature is the literal `localhost`, which strict relays
-/// reject.
-fn hello_domain(from: &str) -> String {
-    match from.rsplit_once('@') {
-        Some((_, domain)) if !domain.is_empty() => domain.to_string(),
-        _ => from.to_string(),
-    }
+/// reject. The address is already parsed, so a domain always exists.
+fn hello_domain(from: &Address) -> String {
+    from.domain().to_string()
 }
 
 /// Whether a relay verdict is permanent. Taken as DATA rather than as the lettre error so
@@ -107,6 +107,11 @@ pub(crate) fn classify(permanent: bool, detail: anyhow::Error) -> SendError {
 
 pub struct SmtpSender {
     transport: AsyncSmtpTransport<Tokio1Executor>,
+    /// Parsed ONCE, at construction. Parsing it per message instead would turn an
+    /// unroutable `MAIL_FROM` into a permanent rejection of EVERY row — the whole channel
+    /// parked behind a green readiness probe, with no recovery verb — rather than the
+    /// boot failure this module's configuration authority promises.
+    from: Mailbox,
 }
 
 impl SmtpSender {
@@ -116,16 +121,18 @@ impl SmtpSender {
     pub fn new(
         settings: &SmtpSettings,
         from: &str,
-        per_step_timeout: Duration,
+        connect_timeout: Duration,
     ) -> anyhow::Result<SmtpSender> {
+        let from = parse_address(from)
+            .map_err(|reason| anyhow::anyhow!("the envelope sender {reason}"))?;
         let mut builder = match settings.tls {
             TlsMode::StartTls => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&settings.host),
             TlsMode::Implicit => AsyncSmtpTransport::<Tokio1Executor>::relay(&settings.host),
         }?;
         builder = builder
             .port(settings.port)
-            .timeout(Some(per_step_timeout))
-            .hello_name(ClientId::Domain(hello_domain(from)));
+            .timeout(Some(connect_timeout))
+            .hello_name(ClientId::Domain(hello_domain(&from)));
         if let Some((username, password)) = &settings.credentials {
             builder = builder.credentials(Credentials::new(
                 username.clone(),
@@ -134,6 +141,7 @@ impl SmtpSender {
         }
         Ok(SmtpSender {
             transport: builder.build(),
+            from: Mailbox::new(None, from),
         })
     }
 }
@@ -145,7 +153,7 @@ impl Sender for SmtpSender {
     }
 
     async fn send(&self, m: &Outgoing<'_>) -> Result<(), SendError> {
-        let message = build_message(m).map_err(SendError::Rejected)?;
+        let message = self.build_message(m).map_err(SendError::Rejected)?;
         self.transport
             .send(message)
             .await
@@ -154,21 +162,19 @@ impl Sender for SmtpSender {
     }
 }
 
-/// An address or header the message builder refuses will never be accepted by any relay,
-/// so the caller maps this to the permanent arm.
-fn build_message(m: &Outgoing<'_>) -> anyhow::Result<Message> {
-    let from: Mailbox = m
-        .from
-        .parse()
-        .map_err(|e| anyhow::anyhow!("envelope sender is not a mailbox: {e}"))?;
-    let to: Mailbox = m
-        .to
-        .parse()
-        .map_err(|e| anyhow::anyhow!("recipient is not a mailbox: {e}"))?;
-    Ok(Message::builder()
-        .from(from)
-        .to(to)
-        .subject(m.subject)
-        .header(ContentType::TEXT_PLAIN)
-        .body(m.body.to_string())?)
+impl SmtpSender {
+    /// The only address parsed here is the recipient, through the SAME parser that refused
+    /// it at ingress — so this can fail only for a row enqueued before that rule existed.
+    /// Such a row will never be accepted by any relay, which is why the caller maps this to
+    /// the permanent arm.
+    fn build_message(&self, m: &Outgoing<'_>) -> anyhow::Result<Message> {
+        let to = parse_address(m.to)
+            .map_err(|reason| anyhow::anyhow!("recipient {reason}"))?;
+        Ok(Message::builder()
+            .from(self.from.clone())
+            .to(Mailbox::new(None, to))
+            .subject(m.subject)
+            .header(ContentType::TEXT_PLAIN)
+            .body(m.body.to_string())?)
+    }
 }

@@ -112,14 +112,14 @@ impl Provider {
     pub fn sender(
         &self,
         from: &str,
-        per_step_timeout: Duration,
+        connect_timeout: Duration,
     ) -> anyhow::Result<Arc<dyn Sender>> {
         match self {
             Provider::Log => Ok(Arc::new(LogSender)),
             Provider::Smtp(settings) => Ok(Arc::new(SmtpSender::new(
                 settings,
                 from,
-                per_step_timeout,
+                connect_timeout,
             )?)),
         }
     }

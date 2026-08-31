@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use crate::address::check_address;
+use crate::address::parse_address;
 use crate::providers::{Provider, ProviderKind, KNOWN_PROVIDERS, SMTP};
 use crate::smtp::{Secret, SmtpSettings, TlsMode};
 
@@ -51,6 +51,15 @@ const MAIL_VARS: &[&str] = &[
 ];
 
 pub const DEFAULT_SEND_TIMEOUT_MS: u64 = 10_000;
+
+/// The send budget's ceiling, DERIVED from the drain's backoff cap
+/// (the drain's `BACKOFF_MAX_SECS`) rather than picked: an attempt allowed to outlast
+/// the longest gap the retry ladder ever waits inverts the ladder. A ceiling is not
+/// optional here — the value also sets the pass budget (which becomes a Postgres
+/// `statement_timeout`, an int32 count of milliseconds) and the readiness stall threshold,
+/// so an absurd value would make every pass fail before it claimed a row while `/readyz`
+/// stayed green for weeks.
+pub const MAX_SEND_TIMEOUT_MS: u64 = crate::worker::BACKOFF_MAX_SECS * 1_000;
 pub const DEFAULT_MAX_ATTEMPTS: i32 = 20;
 pub const MAX_MAX_ATTEMPTS: i32 = 1_000;
 pub const DEFAULT_SMTP_PORT: u16 = 587;
@@ -237,15 +246,20 @@ fn checked_provider(raw: &str) -> anyhow::Result<ProviderKind> {
 }
 
 /// The envelope sender, held to the SAME shape rule as the recipient it will be sent
-/// alongside ([`crate::address::check_address`]) — one policy, two callers.
+/// alongside ([`crate::address::parse_address`]) — one policy, two callers. The parsed
+/// value is dropped here and re-derived by the transport from this same string, which is
+/// safe only because both go through that one parser.
 fn checked_address(key: &str, raw: &str) -> anyhow::Result<String> {
     let value = raw.trim();
-    check_address(value).map_err(|reason| anyhow::anyhow!("invalid {key}: {reason}"))?;
+    parse_address(value).map_err(|reason| anyhow::anyhow!("invalid {key}: {reason}"))?;
     Ok(value.to_string())
 }
 
-/// `0` is rejected with everything else out of range: a zero deadline is a send that can
-/// never succeed, which would burn every attempt of every row before parking it.
+/// Range-checked at BOTH ends. `0` leaves no time for any send, which would burn every
+/// attempt of every row before parking it; past [`MAX_SEND_TIMEOUT_MS`] the value stops
+/// being a send budget and becomes a way to make the whole drain inert — it is also the
+/// pass budget and the readiness stall threshold, so an unchecked ceiling buys a channel
+/// that claims nothing while `/readyz` reports healthy.
 fn parse_send_timeout_ms(raw: Option<&String>) -> anyhow::Result<u64> {
     let Some(raw) = raw else {
         return Ok(DEFAULT_SEND_TIMEOUT_MS);
@@ -256,10 +270,10 @@ fn parse_send_timeout_ms(raw: Option<&String>) -> anyhow::Result<u64> {
              unset it for the default {DEFAULT_SEND_TIMEOUT_MS}"
         )
     })?;
-    if ms == 0 {
+    if !(1..=MAX_SEND_TIMEOUT_MS).contains(&ms) {
         anyhow::bail!(
-            "invalid {SEND_TIMEOUT_ENV}: 0 leaves no time for any send; unset it for the \
-             default {DEFAULT_SEND_TIMEOUT_MS}"
+            "invalid {SEND_TIMEOUT_ENV}: must be between 1 and {MAX_SEND_TIMEOUT_MS} \
+             milliseconds (got {ms}); unset it for the default {DEFAULT_SEND_TIMEOUT_MS}"
         );
     }
     Ok(ms)

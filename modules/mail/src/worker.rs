@@ -11,8 +11,12 @@
 //! COMMITTED update that bumps `attempts` and pushes `next_attempt_at` out by
 //! [`claim_lease`], so a process that dies mid-send leaves the row due again when the
 //! lease expires, at the cost of one burnt attempt — fail-closed toward parking rather
-//! than toward an unbounded resend loop. The lease is 3x the send budget so the status
-//! write always lands inside it on a healthy pass.
+//! than toward an unbounded resend loop. The lease is 3x the send budget, and
+//! [`write_budget`] spends the remainder, so on a healthy pass the status write lands
+//! inside the lease whenever `MAIL_SEND_TIMEOUT_MS >= ACQUIRE_DEADLINE`. Below that the
+//! checkout floor wins and a re-claim can overlap a send in flight: the CAS keeps the row
+//! state correct (the loser's write matches nothing and is counted), at the cost of a
+//! duplicate delivery — which is the at-least-once contract, not a new failure mode.
 //!
 //! ## Why the pool connection is not held across a send
 //! A split service's pool is 2 connections (`SPLIT_SERVICE_POOL_MAX`). Holding one idle
@@ -76,21 +80,38 @@ pub(crate) fn stall_max(send_timeout: Duration) -> Duration {
 }
 
 const BACKOFF_MIN_SECS: f64 = 1.0;
-const BACKOFF_MAX_SECS: f64 = 300.0;
+
+/// The backoff ceiling, and with it the longest gap the retry ladder ever waits. Also the
+/// authority for [`crate::config::MAX_SEND_TIMEOUT_MS`]: an attempt allowed to run longer
+/// than the longest gap between attempts inverts the ladder, and `MAIL_MAX_ATTEMPTS` stops
+/// bounding anything useful.
+pub(crate) const BACKOFF_MAX_SECS: u64 = 300;
 
 /// Exponential backoff, 1s doubling per burnt attempt, capped at 5m — the shape of
 /// `core/asyncevents/src/worker.rs`'s. The `clamp` and `saturating_pow` are overflow
 /// guards, not style: `attempts` comes from a column an operator can edit.
 pub(crate) fn backoff_secs(attempts: i32) -> f64 {
     let exp = (attempts - 1).clamp(0, 30) as u32;
-    (BACKOFF_MIN_SECS * f64::from(2u32.saturating_pow(exp))).min(BACKOFF_MAX_SECS)
+    (BACKOFF_MIN_SECS * f64::from(2u32.saturating_pow(exp))).min(BACKOFF_MAX_SECS as f64)
 }
 
-/// How far out a claim pushes the row it just took. 3x the send budget: the send plus its
-/// status write always fit inside it on a healthy pass, so the lease only ever expires on
-/// a process that actually died.
+/// How far out a claim pushes the row it just took. 3x the send budget, which is what
+/// [`write_budget`] then divides up so the whole send-plus-status-write fits inside it.
 pub(crate) fn claim_lease(send_timeout: Duration) -> Duration {
     send_timeout.saturating_mul(3)
+}
+
+/// The `statement_timeout` for a status write. DERIVED from the lease, not from what is
+/// left of the pass: a write cut short by an exhausted pass would lose an attempt's
+/// outcome, and a write that runs past the lease lets another replica re-claim a row this
+/// pass already sent. What remains of the lease after the send's own budget and one
+/// checkout is exactly the room the write may take; [`ACQUIRE_DEADLINE`] is the floor, so
+/// a send budget under it trades the lease guarantee for a usable write window.
+pub(crate) fn write_budget(send_timeout: Duration) -> Duration {
+    claim_lease(send_timeout)
+        .saturating_sub(send_timeout)
+        .saturating_sub(ACQUIRE_DEADLINE)
+        .max(ACQUIRE_DEADLINE)
 }
 
 /// The row write one attempt implies. Pure and total over the send taxonomy, so every
@@ -282,18 +303,22 @@ async fn bounded_tx(
             )
         })??;
     // `SET` takes no bind parameters; the value is a locally computed integer (ms).
+    // Clamped to Postgres's int32 ms domain: an out-of-range value is refused by the
+    // SERVER, which would make every pass fail before it claimed a row — the drain silent
+    // for a reason that has nothing to do with mail.
     sqlx::query(&format!(
         "SET LOCAL statement_timeout = {}",
-        budget.as_millis().max(1)
+        budget.as_millis().clamp(1, i32::MAX as u128)
     ))
     .execute(&mut *tx)
     .await?;
     Ok(tx)
 }
 
-/// One send attempt, bounded as an AGGREGATE. The transport also bounds each I/O step by
-/// the same budget (see [`crate::smtp`]); this is the backstop that guarantees the whole
-/// multi-round-trip dialogue fits inside the claim's lease. An elapsed budget is
+/// One send attempt under the SOLE bound on the dialogue. An SMTP delivery is
+/// multi-round-trip, and lettre's tokio transport bounds only the TCP connect (see
+/// [`crate::smtp`]) — everything after it is unbounded, so this aggregate deadline is what
+/// keeps a stalled relay from holding a claimed row past its lease. An elapsed budget is
 /// infrastructure, never a rejection — the message may well be deliverable.
 async fn attempt(drain: &Drain, row: &Claimed) -> Result<(), SendError> {
     let outgoing = Outgoing {
@@ -354,12 +379,7 @@ pub(crate) async fn drain_pass(
         }
         let disposition = disposition(result, row.attempts, drain.max_attempts);
 
-        // The status write gets a floor even on an exhausted pass: losing an attempt's
-        // outcome would leave the row to re-send the same message when its lease expires.
-        let write_budget = pass_deadline
-            .saturating_duration_since(Instant::now())
-            .max(ACQUIRE_DEADLINE);
-        let mut tx = bounded_tx(&drain.pool, write_budget).await?;
+        let mut tx = bounded_tx(&drain.pool, write_budget(drain.send_timeout)).await?;
         let matched = store
             .finish_tx(&mut tx, &row, &disposition, drain.sender.name())
             .await?;

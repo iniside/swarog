@@ -1,7 +1,7 @@
 use opsapi::Error;
 use sqlx::PgConnection;
 
-use crate::address::check_address;
+use crate::address::parse_address;
 use crate::store::{cap_from_db_error, Enqueued, Store, BODY, IDEMPOTENCY_KEY, KIND, SUBJECT};
 
 /// One request to enqueue, borrowed from whichever caller raised it — a durable payload or
@@ -33,7 +33,7 @@ pub(crate) fn validate_new(m: &NewMail<'_>) -> Result<(), Error> {
         return Err(Error::invalid("mail: idempotency_key is required"));
     }
     IDEMPOTENCY_KEY.check(m.idempotency_key)?;
-    check_address(m.recipient)
+    parse_address(m.recipient)
         .map_err(|reason| Error::invalid(format!("mail: recipient {reason}")))?;
     SUBJECT.check(m.subject)?;
     // A subject is a message HEADER too, so it carries the recipient's injection rule.
