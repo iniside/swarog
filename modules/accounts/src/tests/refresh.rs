@@ -258,10 +258,12 @@ async fn unknown_refresh_token_is_byte_identical_to_expired() {
 /// predicate (`used_at IS NULL`) is the whole concurrency story — exactly one wins
 /// the rotation, the loser serializes behind it on the row lock and falls into the
 /// grace branch (its own `now()` is its own earlier transaction start, well inside
-/// the 30s window). Both return 200 with the SAME refresh_token and DIFFERENT access
-/// tokens; counting `Ok`s would prove nothing, so this asserts the persisted row
-/// state plus a measured row-lock wait to prove genuine contention, not two dials
-/// that merely ran one after another.
+/// the 30s window). The contention is CAUSED, never hoped for: the test opens its own
+/// transaction and takes `FOR UPDATE` on the refresh row first, so both dials park in
+/// that row's lock queue before either can touch it; releasing the barrier hands the
+/// row to one dial and leaves the other waiting on that dial's transaction. Both
+/// return 200 with the SAME refresh_token and DIFFERENT access tokens; counting `Ok`s
+/// would prove nothing, so this asserts the persisted row state.
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_refreshes_produce_exactly_one_rotation() {
     let Some(pool) = test_pool().await else { return };
@@ -271,6 +273,22 @@ async fn concurrent_refreshes_produce_exactly_one_rotation() {
     let pid = sess.player_id.clone();
     let family = refresh_row(&pool, &sess.refresh_token).await.unwrap().family_id;
 
+    // The barrier: a test-owned transaction holding the very row both dials will
+    // UPDATE. Its backend pid is what the queue is measured against below.
+    let mut barrier = pool.begin().await.unwrap();
+    let barrier_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *barrier)
+        .await
+        .unwrap();
+    let held: String = sqlx::query_scalar(
+        "SELECT token FROM accounts.refresh_tokens WHERE token = $1 FOR UPDATE",
+    )
+    .bind(&sess.refresh_token)
+    .fetch_one(&mut *barrier)
+    .await
+    .unwrap();
+    assert_eq!(held, sess.refresh_token, "the barrier must hold the row under test");
+
     let svc_a = svc.clone();
     let svc_b = svc.clone();
     let t1 = sess.refresh_token.clone();
@@ -278,35 +296,52 @@ async fn concurrent_refreshes_produce_exactly_one_rotation() {
     let handle_a = tokio::spawn(async move { svc_a.refresh(t1).await });
     let handle_b = tokio::spawn(async move { svc_b.refresh(t2).await });
 
-    // The loser's UPDATE waits on the winner's uncommitted xid — a row-level
-    // "transactionid" lock wait in pg_stat_activity. Observing it is the proof the
-    // two dials actually contended on one row rather than running sequentially.
-    let mut contended = false;
-    for _ in 0..500 {
+    let mut queued = false;
+    for _ in 0..1000 {
+        // Two waiters on one row queue in two different shapes: the first blocks on
+        // the barrier's `transactionid`, the second on the `tuple` lock the first now
+        // holds. Both are counted by tracing the block chain two levels back to the
+        // barrier's pid.
         let waiting: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pg_stat_activity \
-             WHERE datname = current_database() \
-               AND wait_event_type = 'Lock' AND wait_event = 'transactionid'",
+            "WITH direct AS ( \
+                 SELECT pid FROM pg_stat_activity \
+                  WHERE datname = current_database() \
+                    AND wait_event_type = 'Lock' \
+                    AND $1::int = ANY(pg_blocking_pids(pid)) \
+             ) \
+             SELECT count(*) FROM pg_stat_activity a \
+              WHERE a.datname = current_database() \
+                AND a.wait_event_type = 'Lock' \
+                AND ($1::int = ANY(pg_blocking_pids(a.pid)) \
+                     OR EXISTS (SELECT 1 FROM direct d WHERE d.pid = ANY(pg_blocking_pids(a.pid))))",
         )
+        .bind(barrier_pid)
         .fetch_one(&pool)
         .await
         .unwrap();
-        if waiting >= 1 {
-            contended = true;
+        if waiting >= 2 {
+            queued = true;
             break;
         }
+        // Neither dial can complete while the barrier holds the row, so this only
+        // trips when the barrier itself failed to take the lock.
         if handle_a.is_finished() && handle_b.is_finished() {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(2)).await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
+
+    // Releasing the barrier grants the row to exactly one dial; the other is still in
+    // the queue and now waits on THAT dial's transaction.
+    barrier.rollback().await.unwrap();
 
     let r_a = handle_a.await.unwrap().unwrap();
     let r_b = handle_b.await.unwrap().unwrap();
 
     assert!(
-        contended,
-        "the two refresh dials never contended on the same row — the race wasn't exercised"
+        queued,
+        "the barrier never parked BOTH dials in the row's lock queue — the fixture failed to \
+         serialize them, so the assertions below would not be about a contended row"
     );
     assert_eq!(r_a.refresh_token, r_b.refresh_token, "both callers must converge on one successor");
     assert_ne!(r_a.token, r_b.token, "two distinct access sessions must be minted");
