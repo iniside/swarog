@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    game_backend_fleet, game_backend_fleet_with_environment, game_backend_monolith,
-    EnvironmentSnapshot, FleetError, FleetFlavor, FleetInputs, FleetSpec, PoolBudget, ServiceSpec,
+    check_pg_session_floor, game_backend_fleet, game_backend_fleet_with_environment,
+    game_backend_monolith, EnvironmentSnapshot, FleetError, FleetFlavor, FleetInputs, FleetSpec,
+    PgSessionCapacity, PoolBudget, ServiceSpec, HARNESS_RESERVE, PG_SESSION_BUDGET,
+    REQUIRED_MAX_CONNECTIONS,
 };
 #[cfg(windows)]
 use crate::build_environment;
@@ -345,4 +347,101 @@ fn sanitized_build_path_contains_the_discovered_msvc_linker() {
         "sanitized build LIB must contain the Windows SDK libraries"
     );
     assert!(env.contains_key("INCLUDE"));
+}
+
+// ============================================================================
+// The Postgres session preflight's PURE verdict. It is `pub` so it can be driven without a
+// cluster; the probe that feeds it is the only part that needs one.
+// ============================================================================
+
+fn capacity(max_connections: u32, reserved: u32) -> PgSessionCapacity {
+    PgSessionCapacity { max_connections, reserved }
+}
+
+#[test]
+fn a_cluster_at_or_above_the_rollout_reservation_admits_it() {
+    // Exactly at the floor: the comparison is `>=`, so a rollout that fits precisely runs.
+    check_pg_session_floor(capacity(100, 3), 97).expect("97 usable sessions admit 97 reserved");
+    check_pg_session_floor(capacity(150, 3), 98).expect("headroom admits");
+    check_pg_session_floor(capacity(1, 1), 0).expect("a reservation of zero always fits");
+}
+
+/// The refusal happens BEFORE anything is spawned, so its message is the operator's only
+/// instrument. `pg_reload_conf()` silently does NOT apply `max_connections`, which is
+/// postmaster-context — a remedy that omits the restart sends the operator round twice.
+#[test]
+fn a_cluster_below_the_rollout_reservation_is_refused_with_both_halves_of_the_remedy() {
+    let error = check_pg_session_floor(capacity(100, 3), 101)
+        .expect_err("97 usable sessions cannot carry a 101-session rollout");
+    let message = error.to_string();
+    assert!(message.contains("97"), "the observed usable count: {message}");
+    assert!(message.contains("100"), "the observed max_connections: {message}");
+    assert!(message.contains("3 reserved"), "the observed reservation: {message}");
+    assert!(message.contains("101"), "what this rollout reserves: {message}");
+    assert!(
+        message.contains(&format!(
+            "ALTER SYSTEM SET max_connections = {REQUIRED_MAX_CONNECTIONS};"
+        )),
+        "the remedy must be a copyable statement: {message}"
+    );
+    assert!(
+        message.to_lowercase().contains("restart"),
+        "a reload does NOT apply max_connections — the restart must be named: {message}"
+    );
+    assert!(
+        matches!(error, FleetError::PgSessionFloor { required: 101, .. }),
+        "the verdict carries what was asked for"
+    );
+}
+
+/// Where the operator's OWN reservations put the recommended provisioning out of reach, the
+/// remedy must name a bigger number than the recommendation — otherwise following it
+/// verbatim leaves the next rollout refused for the same reason.
+#[test]
+fn the_remedy_outgrows_the_recommendation_when_the_reservation_demands_it() {
+    let required = REQUIRED_MAX_CONNECTIONS + 10;
+    let message = check_pg_session_floor(capacity(100, 20), required)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        message.contains(&format!("max_connections = {};", required + 20)),
+        "the suggestion must cover the reservation PLUS what the cluster withholds: {message}"
+    );
+}
+
+#[test]
+fn usable_sessions_never_underflow_a_larger_reservation() {
+    assert_eq!(capacity(10, 25).usable(), 0);
+    check_pg_session_floor(capacity(10, 25), 1).expect_err("no sessions carries no rollout");
+}
+
+/// The verdict is taken against the CALLER's own reservation, not against the whole split's:
+/// a monolith rollout must not be refused for a fleet it is not spawning. The split fleet
+/// plus the harness is the largest reservation any entry point takes, and the recommended
+/// provisioning is what it is derived within.
+#[test]
+fn the_recommended_provisioning_admits_the_largest_reservation_any_entry_point_takes() {
+    let split = game_backend_fleet(&inputs(), FleetFlavor::Development).pg_session_reservation();
+    let monolith_total = game_backend_monolith(
+        &inputs(),
+        FleetFlavor::Development,
+        &EnvironmentSnapshot::from_values([]),
+    )
+    .pool_budget
+    .sessions();
+    let stock = capacity(REQUIRED_MAX_CONNECTIONS, 3);
+
+    check_pg_session_floor(stock, split + HARNESS_RESERVE)
+        .expect("the recommended provisioning must admit the split fleet beside the harness");
+    check_pg_session_floor(stock, monolith_total)
+        .expect("and the monolith, which reserves far less");
+    assert!(
+        monolith_total < split,
+        "a monolith rollout must be charged less than the split it is not spawning"
+    );
+    assert!(
+        split <= PG_SESSION_BUDGET,
+        "the split fleet reserves {split}, above the {PG_SESSION_BUDGET} budget it is \
+         derived within"
+    );
 }

@@ -47,3 +47,8 @@ metrics = { workspace = true }
 prometheus = { workspace = true }
 # The `smtp` provider's transport. rustls/ring, no native-tls, no connection pool.
 lettre = { workspace = true }
+
+[dev-dependencies]
+# The durable plane, driven by hand: `asyncevents::testing::TestTransport` gives the ingress
+# and prune tests a REAL append + delivery pass with no background workers and no clock.
+asyncevents = { workspace = true }

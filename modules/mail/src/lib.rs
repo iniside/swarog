@@ -23,6 +23,20 @@ pub mod smtp;
 mod store;
 mod worker;
 
+// ============================================================================
+// Tests target the local Postgres (the test DB) and SKIP cleanly when it is
+// unreachable. In-crate so they can drive the private `Service`/`Store`/`Drain`
+// directly.
+// ============================================================================
+#[cfg(test)]
+mod config_tests;
+#[cfg(test)]
+mod projection_tests;
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod worker_tests;
+
 use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;

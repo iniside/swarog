@@ -224,3 +224,7 @@ fn read_capacity(dsn: &str) -> Result<PgSessionCapacity> {
         reserved: (superuser_reserved.max(0) + reserved.max(0)) as u32,
     })
 }
+
+#[cfg(test)]
+#[path = "pgfloor_tests.rs"]
+mod pgfloor_tests;

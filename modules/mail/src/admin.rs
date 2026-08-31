@@ -31,7 +31,7 @@ pub(crate) const ADMIN_LABEL: &str = "Mail";
 /// The state filter. It exists because the table is capped: a parked row older than the
 /// newest [`PAGE`] rows is otherwise neither visible nor selectable, which would leave the
 /// `PARKED` count pointing at rows the operator cannot act on one at a time.
-const PARAM_STATE: &str = "state";
+pub(crate) const PARAM_STATE: &str = "state";
 
 /// How many rows the table lists. Unpaged — the operator narrows by state, not by walking.
 const PAGE: i64 = 50;
@@ -47,8 +47,8 @@ const ERROR_CHARS: usize = 80;
 
 pub(crate) const ACTION_FIELD: &str = "_action";
 pub(crate) const ACTION_REQUEUE: &str = "requeue";
-const ACTION_REQUEUE_ALL: &str = "requeue-all-parked";
-const ACTION_CANCEL: &str = "cancel";
+pub(crate) const ACTION_REQUEUE_ALL: &str = "requeue-all-parked";
+pub(crate) const ACTION_CANCEL: &str = "cancel";
 pub(crate) const ACTION_SEND_TEST: &str = "send-test";
 
 pub(crate) const MAIL_ID_FIELD: &str = "mail_id";

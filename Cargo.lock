@@ -2398,6 +2398,7 @@ dependencies = [
  "adminapi",
  "anyhow",
  "async-trait",
+ "asyncevents",
  "bus",
  "edge",
  "futures",
