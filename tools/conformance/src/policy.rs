@@ -43,6 +43,7 @@ pub fn entries() -> Vec<Entry> {
         inventory(),
         leaderboard(),
         match_module(),
+        notifications(),
         rating(),
         scheduler(),
         wallet(),
@@ -85,6 +86,9 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("match.report", "Loser", External), Validated { cap: 128, basis: "match_module::validate_participant is called for every new loser before rating or SQL" }),
         (key("match.report", "ReportId", External), Validated { cap: 128, basis: "match_module::validate_report_id is called before the replay lookup" }),
         (key("match.report", "Winner", External), Validated { cap: 128, basis: "match_module::validate_participant is called for every new winner before rating or SQL" }),
+        (key("notifications.delete", "notification_id", External), Opaque { rationale: "opaque notification UUID, bound as $1::uuid in the DELETE's own predicate alongside the caller's player_id; a value that is not a uuid raises 22P02, which notifications::is_invalid_uuid folds into the same 404 an unknown id gets, so it is never persisted, interpolated or echoed" }),
+        (key("notifications.list", "cursor", External), Validated { cap: notificationsapi::MAX_CURSOR_BYTES, basis: "notifications::service::decode_cursor applies MAX_CURSOR_BYTES as its first check after the empty-cursor arm — before the base64 decode, before the keyset halves are parsed and before any store read — and notificationsapi::Player::list calls it ahead of Store::page_by_player. The \"notifications list cursor\" CapCase drives that op ITSELF against a pool that cannot connect, and discriminates on the VERDICT rather than the status because both arms are Status::Invalid: at the cap the value cannot be a well-formed keyset and answers the malformed-cursor verdict, over the cap the cap verdict answers first. Delete the cap and the over-cap value falls through to malformed; delete the decode_cursor call and both arms reach the dead store and answer Internal — either way the case goes red" }),
+        (key("notifications.markRead", "notification_id", External), Opaque { rationale: "opaque notification UUID, bound as $1::uuid in the UPDATE's own predicate alongside the caller's player_id; a value that is not a uuid raises 22P02, which notifications::is_invalid_uuid folds into the same 404 an unknown id gets, so it is never persisted, interpolated or echoed" }),
         (key("rating.mmr", "player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
         (key("wallet.balances", "player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
         (key("wallet.credit", "movement.idempotency_key", Wire), Validated { cap: walletapi::MAX_IDEMPOTENCY_KEY_BYTES, basis: "wallet::idempotency_key_within_cap runs inside validate_movement, called by every credit/debit before ledger SQL" }),
@@ -501,6 +505,85 @@ fn match_module() -> Entry {
             (
                 Convention::InfraOutage503,
                 na("match has no credential verifier"),
+            ),
+            (
+                Convention::ArgonParity,
+                na("this module performs no password hashing"),
+            ),
+        ],
+    }
+}
+
+fn notifications() -> Entry {
+    Entry {
+        module: "notifications",
+        stances: vec![
+            (
+                Convention::EnvValidation,
+                Stance::Applies(Fixture::EnvValidation(vec![
+                    // Only an UNSET variable takes the compiled default
+                    // (notifications::projection::retention_days_from_env, the
+                    // ASYNCEVENTS_HANDLER_TIMEOUT convention). A blank value is the
+                    // divergence worth executing: `NOTIFICATIONS_RETENTION_DAYS=${RETENTION_DAYS}`
+                    // with the outer variable unset expands to one, and audit's env_int would
+                    // silently take its default here. Blank rather than empty because
+                    // std::env::set_var("") REMOVES the variable on Windows, where the case
+                    // would then assert nothing.
+                    EnvCase {
+                        var: "NOTIFICATIONS_RETENTION_DAYS",
+                        bad_value: "   ",
+                        expect: "NOTIFICATIONS_RETENTION_DAYS must be a whole number of days",
+                    },
+                    EnvCase {
+                        var: "NOTIFICATIONS_RETENTION_DAYS",
+                        bad_value: "0",
+                        expect: "NOTIFICATIONS_RETENTION_DAYS must be between 1 and",
+                    },
+                    // The ceiling, which audit's twin does not have: a retention beyond the
+                    // range make_interval can subtract from now() passes startup and then
+                    // raises 22008 on every delivery, pausing the subscription. The value is
+                    // far above any plausible ceiling so the case pins the bound's EXISTENCE
+                    // rather than its current number.
+                    EnvCase {
+                        var: "NOTIFICATIONS_RETENTION_DAYS",
+                        bad_value: "99999999",
+                        expect: "NOTIFICATIONS_RETENTION_DAYS must be between 1 and",
+                    },
+                ])),
+            ),
+            (
+                Convention::InputByteCaps,
+                Stance::Applies(Fixture::InputByteCaps(vec![
+                    CapCase {
+                        name: "notifications message title",
+                        cap: notificationsapi::MAX_TITLE_BYTES,
+                        probe: Arc::new(notifications::conformance::conformance_title_rejected),
+                    },
+                    CapCase {
+                        name: "notifications message body",
+                        cap: notificationsapi::MAX_BODY_BYTES,
+                        probe: Arc::new(notifications::conformance::conformance_body_rejected),
+                    },
+                    CapCase {
+                        name: "notifications message kind",
+                        cap: notificationsapi::MAX_KIND_BYTES,
+                        probe: Arc::new(notifications::conformance::conformance_kind_rejected),
+                    },
+                    CapCase {
+                        name: "notifications dedup key",
+                        cap: notifications::conformance::MAX_DEDUP_KEY_BYTES,
+                        probe: Arc::new(notifications::conformance::conformance_dedup_key_rejected),
+                    },
+                    CapCase {
+                        name: "notifications list cursor",
+                        cap: notificationsapi::MAX_CURSOR_BYTES,
+                        probe: Arc::new(notifications::conformance::conformance_cursor_rejected),
+                    },
+                ])),
+            ),
+            (
+                Convention::InfraOutage503,
+                na("notifications has no external verifier to classify an outage of: its only dependency is the shared Postgres, where a failed read or write is a 500"),
             ),
             (
                 Convention::ArgonParity,

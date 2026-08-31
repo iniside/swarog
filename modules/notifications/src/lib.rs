@@ -7,6 +7,7 @@
 //! transaction) share one implementation and one input policy.
 
 mod admin;
+pub mod conformance;
 mod projection;
 mod service;
 mod store;

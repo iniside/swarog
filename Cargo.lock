@@ -1024,6 +1024,8 @@ dependencies = [
  "gateway",
  "lifecycle",
  "match_module",
+ "notifications",
+ "notificationsapi",
  "rpc-contract-model",
  "sqlx",
  "syn",

@@ -25,6 +25,9 @@ inventory.listCharacter	character_id	external
 match.report	Loser	external
 match.report	ReportId	external
 match.report	Winner	external
+notifications.delete	notification_id	external
+notifications.list	cursor	external
+notifications.markRead	notification_id	external
 rating.mmr	player_id	wire
 wallet.balances	player_id	wire
 wallet.credit	movement.currency	wire

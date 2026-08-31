@@ -202,7 +202,7 @@ pub(crate) enum Sent {
 /// THE input policy, enforced INSIDE the insert authority so no caller — operator form or
 /// durable handler — can route around it. The byte caps mirror the table's column CHECKs:
 /// without them a 23514 that nothing maps reaches the operator as a 500.
-fn validate_new(n: &NewNotification<'_>) -> Result<(), Error> {
+pub(crate) fn validate_new(n: &NewNotification<'_>) -> Result<(), Error> {
     if n.player_id.trim().is_empty() {
         return Err(Error::invalid("player_id is required"));
     }

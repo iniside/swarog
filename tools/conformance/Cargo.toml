@@ -33,5 +33,7 @@ apikeysapi = { workspace = true }
 characters = { workspace = true }
 gateway = { workspace = true }
 match_module = { workspace = true }
+notifications = { workspace = true }
+notificationsapi = { workspace = true }
 wallet = { workspace = true }
 walletapi = { workspace = true }
