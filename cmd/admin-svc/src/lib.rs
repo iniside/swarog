@@ -34,5 +34,6 @@ pub fn modules(wiring: &ProcessWiring) -> Vec<Box<dyn Module>> {
         admin_stub("apikeys", wiring, "127.0.0.1:9009"),
         admin_stub("wallet", wiring, "127.0.0.1:9010"),
         admin_stub("notifications", wiring, "127.0.0.1:9011"),
+        admin_stub("mail", wiring, "127.0.0.1:9012"),
     ]
 }

@@ -37,6 +37,18 @@ const MONOLITH_OVERRIDEABLE_ENV: &[&str] = &[
     "EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX", "EPIC_CLIENT_SECRET",
     "EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL",
     "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL",
+    "MAIL_PROVIDER", "MAIL_FROM", "MAIL_SEND_TIMEOUT_MS", "MAIL_MAX_ATTEMPTS",
+    "MAIL_SMTP_HOST", "MAIL_SMTP_PORT", "MAIL_SMTP_USERNAME", "MAIL_SMTP_PASSWORD",
+    "MAIL_SMTP_TLS", "MAIL_RETENTION_DAYS",
+];
+
+/// [`MAIL_OVERRIDEABLE_ENV`]'s split-fleet twin: every `MAIL_*` key an operator's shell
+/// may reach `mail-svc` with (the same list [`MONOLITH_OVERRIDEABLE_ENV`] carries for the
+/// one-process topology).
+const MAIL_OVERRIDEABLE_ENV: &[&str] = &[
+    "MAIL_PROVIDER", "MAIL_FROM", "MAIL_SEND_TIMEOUT_MS", "MAIL_MAX_ATTEMPTS",
+    "MAIL_SMTP_HOST", "MAIL_SMTP_PORT", "MAIL_SMTP_USERNAME", "MAIL_SMTP_PASSWORD",
+    "MAIL_SMTP_TLS", "MAIL_RETENTION_DAYS",
 ];
 
 /// Provider keys the `Proof` overlay CLEARS before pinning its own. `google` is the
@@ -79,7 +91,7 @@ pub const SPLITPROOF_ASSERTION_POOL_MAX: u32 = 4;
 /// leaderboard-svc — cloned from the canonical spec, so it reserves exactly what any
 /// DB-backed split service does — alongside the whole fleet. It is deliberately not a
 /// fleet member (that would trip the fleet-drift preflight), so the budget must charge
-/// it here or the real peak is 14 DB-backed processes against a 13-process model.
+/// it here or the real peak is 15 DB-backed processes against a 14-process model.
 pub const SPLITPROOF_REPLICA_SESSIONS: u32 = SPLIT_SERVICE_POOL_MAX + PLANE_DEDICATED_SESSIONS;
 
 /// Sessions the local Postgres reserves for dev tooling running ALONGSIDE the fleet,
@@ -733,6 +745,7 @@ pub fn game_backend_fleet_with_environment(
     let mut wallet = service("wallet-svc", 8092, Some(9010), vec!["config-svc"]);
     peer(&mut wallet.env, "CONFIG", 9002);
     let mut notifications = service("notifications-svc", 8093, Some(9011), vec![]);
+    let mut mail = service("mail-svc", 8094, Some(9012), vec![]);
 
     let mut gateway_env = environment.runtime_environment();
     gateway_env.insert("EDGE_CA_CERT".into(), cert.clone());
@@ -777,7 +790,7 @@ pub fn game_backend_fleet_with_environment(
         None,
         vec![
             "characters-svc", "inventory-svc", "config-svc", "accounts-svc", "audit-svc",
-            "scheduler-svc", "apikeys-svc", "wallet-svc", "notifications-svc",
+            "scheduler-svc", "apikeys-svc", "wallet-svc", "notifications-svc", "mail-svc",
         ],
     );
     for (name, port) in [
@@ -790,6 +803,7 @@ pub fn game_backend_fleet_with_environment(
         ("APIKEYS", 9009),
         ("WALLET", 9010),
         ("NOTIFICATIONS", 9011),
+        ("MAIL", 9012),
     ] {
         peer(&mut admin.env, name, port);
     }
@@ -805,15 +819,20 @@ pub fn game_backend_fleet_with_environment(
     admin.overrideable_env = &["ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS"];
     wallet.overrideable_env = &["WALLET_DEV_SEED"];
     notifications.overrideable_env = &["NOTIFICATIONS_RETENTION_DAYS"];
+    mail.overrideable_env = MAIL_OVERRIDEABLE_ENV;
 
     accounts.env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
     apikeys.env.insert("APIKEYS_DEV_SEED".into(), "1".into());
     inventory.env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
     wallet.env.insert("WALLET_DEV_SEED".into(), "1".into());
+    // Without these the channel is UNDRAINED (`MailConfig::provider == None`) and
+    // `/readyz` is red by design — the no-provider readiness check is permanent.
+    mail.env.insert("MAIL_PROVIDER".into(), "log".into());
+    mail.env.insert("MAIL_FROM".into(), "dev@localhost".into());
 
     for service in
         [&mut accounts, &mut apikeys, &mut scheduler, &mut inventory, &mut admin, &mut wallet,
-         &mut notifications]
+         &mut notifications, &mut mail]
     {
         for key in service.overrideable_env {
             if let Some(value) = environment.value(key) {
@@ -852,7 +871,7 @@ pub fn game_backend_fleet_with_environment(
 
     FleetSpec::new(vec![
         accounts, apikeys, audit, scheduler, rating, leaderboard, matches, config, characters,
-        inventory, wallet, notifications, gateway, admin,
+        inventory, wallet, notifications, mail, gateway, admin,
     ])
     .expect("the built-in game backend fleet is internally valid")
 }
@@ -879,6 +898,10 @@ pub fn game_backend_monolith(
         ("TLS_MODE", "off".into()),
         ("ADMIN_COOKIE_SECURE", "0".into()),
         ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32".into()),
+        // Without these the channel is UNDRAINED (`MailConfig::provider == None`) and
+        // `/readyz` is red by design — the no-provider readiness check is permanent.
+        ("MAIL_PROVIDER", "log".into()),
+        ("MAIL_FROM", "dev@localhost".into()),
     ] { env.insert(key.into(), value); }
     let overrideable_env = MONOLITH_OVERRIDEABLE_ENV;
     for key in overrideable_env {
