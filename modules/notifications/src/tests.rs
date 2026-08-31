@@ -185,20 +185,64 @@ async fn cleanup(pool: &PgPool, players: &[&str]) {
 /// plus a backoff here (`worker::record_failure`), and at 20 it flips `state` to `paused` —
 /// taking EVERY player's inbox offline. "No row was written" alone is satisfied by a
 /// poisoned handler; this is not.
-async fn assert_subscription_unpoisoned(pool: &PgPool, id: &str) {
-    let (state, failures, last_error): (String, i32, Option<String>) = sqlx::query_as(
+async fn subscription_health(pool: &PgPool, id: &str) -> (String, i32, Option<String>) {
+    sqlx::query_as(
         "SELECT state, consecutive_failures, last_error FROM asyncevents.subscriptions \
           WHERE subscription_id = $1",
     )
     .bind(id)
     .fetch_one(pool)
     .await
-    .unwrap();
+    .unwrap()
+}
+
+async fn assert_subscription_unpoisoned(pool: &PgPool, id: &str) {
+    let (state, failures, last_error) = subscription_health(pool, id).await;
     assert_eq!(state, "active", "{id} must still be active");
     assert_eq!(
         failures, 0,
         "a data-quality verdict must return Ok(()), never Err; last_error = {last_error:?}"
     );
+}
+
+/// Clears a subscription's recorded failure AND its backoff, so a follow-up `deliver_all`
+/// retries immediately. Explicit persisted state, never a wait on `next_attempt_at`'s real
+/// clock.
+async fn clear_backoff(pool: &PgPool, id: &str) {
+    sqlx::query(
+        "UPDATE asyncevents.subscriptions \
+            SET consecutive_failures = 0, last_error = NULL, next_attempt_at = NULL \
+          WHERE subscription_id = $1",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// A `CHECK (false) NOT VALID` that makes EVERY new row fail with 23514 — an
+/// infrastructure-class failure (not the 22P02 the insert authority maps to
+/// `Status::Invalid`), raised INSIDE the plane's delivery transaction where the handler's
+/// error class decides between a retry and a lost event.
+const INSERT_BARRIER_ADD: &str = "ALTER TABLE notifications.messages \
+     ADD CONSTRAINT notifications_test_insert_barrier CHECK (false) NOT VALID";
+const INSERT_BARRIER_DROP: &str = "ALTER TABLE notifications.messages \
+     DROP CONSTRAINT IF EXISTS notifications_test_insert_barrier";
+
+/// Adds/removes the barrier under a bounded lock wait: `ALTER TABLE` takes ACCESS EXCLUSIVE,
+/// so without `lock_timeout` a concurrent long transaction would turn this into a HANG
+/// instead of a failure (`core/asyncevents/src/worker.rs` bounds the same class).
+async fn set_insert_barrier(pool: &PgPool, on: bool) {
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::raw_sql("SET LOCAL lock_timeout = '5s'; SET LOCAL statement_timeout = '30s';")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query(if on { INSERT_BARRIER_ADD } else { INSERT_BARRIER_DROP })
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
 }
 
 async fn emit_changed(ctx: &Context, pool: &PgPool, player_id: &str, delta: i64) {
@@ -436,31 +480,26 @@ fn the_input_policy_caps_every_column_the_ddl_checks() {
         body: "b",
         source_event_id: key,
     };
-    let over_title = "t".repeat(MAX_TITLE_BYTES + 1);
-    let over_body = "b".repeat(MAX_BODY_BYTES + 1);
-    let over_kind = "k".repeat(MAX_KIND_BYTES + 1);
+    // DRIVEN BY `DDL_CAPS`, not by a hand-written trio: a cap added to that list (and to the
+    // DDL) with no matching `*_within_cap` line in `validate_new` fails HERE, where a
+    // list-to-list anti-drift test alone would stay green while the column CHECK became the
+    // only enforcement — i.e. a 500 instead of a 400.
+    for (constraint, column, max_bytes) in DDL_CAPS {
+        let over = "x".repeat(max_bytes + 1);
+        let n = over_cap_notification(column, &over, &base);
+        assert_eq!(
+            validate_new(&n).unwrap_err().status,
+            Status::Invalid,
+            "{constraint}: `validate_new` must refuse a {column} of {} bytes itself — left to \
+             the column CHECK it is a 23514 nothing maps (a 500)",
+            max_bytes + 1
+        );
+        let at_cap = "x".repeat(*max_bytes);
+        validate_new(&over_cap_notification(column, &at_cap, &base)).unwrap_or_else(|e| {
+            panic!("{constraint}: exactly {max_bytes} bytes must be ACCEPTED, got {e:?}")
+        });
+    }
     for (n, why) in [
-        (
-            NewNotification {
-                title: &over_title,
-                ..base
-            },
-            "title",
-        ),
-        (
-            NewNotification {
-                body: &over_body,
-                ..base
-            },
-            "body",
-        ),
-        (
-            NewNotification {
-                kind: &over_kind,
-                ..base
-            },
-            "kind",
-        ),
         (
             NewNotification {
                 player_id: "  ",
@@ -468,10 +507,7 @@ fn the_input_policy_caps_every_column_the_ddl_checks() {
             },
             "player_id",
         ),
-        (
-            NewNotification { kind: "", ..base },
-            "empty kind",
-        ),
+        (NewNotification { kind: "", ..base }, "empty kind"),
     ] {
         assert_eq!(
             validate_new(&n).unwrap_err().status,
@@ -493,6 +529,50 @@ const DDL_CAPS: &[(&str, &str, usize)] = &[
     ("notifications_body_len_check", "body", MAX_BODY_BYTES),
     ("notifications_kind_len_check", "kind", MAX_KIND_BYTES),
 ];
+
+/// Every `octet_length(<column>) <= <bytes>` the DDL declares, as `(column, bytes)`. The
+/// inventory is derived from the CHECK EXPRESSION, not from a constraint-name suffix: a
+/// column capped by a constraint someone named `notifications_subject_bound` would be
+/// invisible to a `_len_check` filter, ship with no Rust twin, and answer 23514 (a 500)
+/// where a 400 belongs.
+fn ddl_octet_caps() -> Vec<(String, usize)> {
+    let flat = SCHEMA_DDL.split_whitespace().collect::<Vec<_>>().join(" ");
+    let marker = "octet_length(";
+    flat.match_indices(marker)
+        .map(|(index, _)| {
+            let rest = &flat[index + marker.len()..];
+            let (column, tail) = rest.split_once(')').expect("octet_length( with no close");
+            let bytes = tail
+                .trim_start()
+                .strip_prefix("<= ")
+                .and_then(|t| t.split(')').next())
+                .and_then(|n| n.trim().parse::<usize>().ok())
+                .unwrap_or_else(|| {
+                    panic!("SCHEMA_DDL caps {column} with an expression this test cannot read: {tail}")
+                });
+            (column.to_string(), bytes)
+        })
+        .collect()
+}
+
+/// The over-cap value for one capped column, as a whole [`NewNotification`]. The `match` is
+/// TOTAL by panic: a column added to [`DDL_CAPS`] with no arm here — and therefore possibly
+/// no `*_within_cap` line in `validate_new` — fails instead of silently testing nothing.
+fn over_cap_notification<'a>(
+    column: &str,
+    over: &'a str,
+    base: &NewNotification<'a>,
+) -> NewNotification<'a> {
+    match column {
+        "title" => NewNotification { title: over, ..*base },
+        "body" => NewNotification { body: over, ..*base },
+        "kind" => NewNotification { kind: over, ..*base },
+        other => panic!(
+            "DDL_CAPS names column {other:?} with no arm here — add one, and check \
+             `validate_new` refuses it at all"
+        ),
+    }
+}
 
 fn ddl_clause(constraint: &str) -> String {
     let flat = SCHEMA_DDL.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -527,27 +607,35 @@ fn every_contract_cap_matches_its_check_constraint_in_the_ddl() {
     }
 }
 
-/// The reverse leg: a `*_len_check` in the DDL that no cap names has no Rust twin, so its
-/// 23514 reaches the caller as an unmapped `Internal`.
+/// The reverse leg: a column the DDL caps that no contract cap names has no Rust twin, so
+/// its 23514 reaches the caller as an unmapped `Internal` — an operator sees a 500 where a
+/// 400 belongs. Derived from the CHECK expression, so a constraint whose NAME breaks the
+/// house `_len_check` convention is caught too.
 #[test]
-fn every_len_check_in_the_ddl_is_mapped_by_a_contract_cap() {
-    let flat = SCHEMA_DDL.split_whitespace().collect::<Vec<_>>().join(" ");
-    let declared: Vec<&str> = flat
-        .match_indices("CONSTRAINT ")
-        .map(|(index, marker)| {
-            flat[index + marker.len()..]
-                .split_whitespace()
-                .next()
-                .unwrap_or_default()
-        })
-        .filter(|name| name.ends_with("_len_check"))
-        .collect();
-    assert!(!declared.is_empty(), "SCHEMA_DDL declares no length CHECK");
-    for name in declared {
+fn every_octet_cap_in_the_ddl_is_mapped_by_a_contract_cap() {
+    let declared = ddl_octet_caps();
+    assert!(!declared.is_empty(), "SCHEMA_DDL declares no octet_length CHECK");
+    for (column, bytes) in &declared {
+        let mapped = DDL_CAPS
+            .iter()
+            .find(|(_, capped, _)| *capped == column.as_str())
+            .unwrap_or_else(|| {
+                panic!(
+                    "SCHEMA_DDL caps `{column}` at {bytes} octets but no notificationsapi cap \
+                     names it — its 23514 stays an unmapped Internal error instead of a 400"
+                )
+            });
+        assert_eq!(
+            mapped.2, *bytes,
+            "the DDL caps `{column}` at {bytes} octets, the contract at {}",
+            mapped.2
+        );
+    }
+    for (constraint, column, _) in DDL_CAPS {
         assert!(
-            DDL_CAPS.iter().any(|(constraint, _, _)| *constraint == name),
-            "SCHEMA_DDL declares `CONSTRAINT {name}` that no notificationsapi cap names — its \
-             23514 stays an unmapped Internal error instead of a 400"
+            declared.iter().any(|(capped, _)| capped.as_str() == *column),
+            "{constraint}: the contract caps `{column}`, but SCHEMA_DDL declares no \
+             `octet_length({column})` CHECK under it"
         );
     }
 }
@@ -940,6 +1028,62 @@ async fn operator_mail_refuses_a_key_that_is_not_an_operator_key() {
     cleanup(&pool, &[&pid]).await;
 }
 
+/// The `22P02 ⇒ Status::Invalid` arm of the insert authority and the TOLERANT cast under it —
+/// neither reachable from the durable path, which never gets near the cast
+/// (`deliverable_player_id` is why), so the operator form is the only caller that executes
+/// them. Without the first, a mistyped id renders a 500 card instead of the rejection that
+/// tells the operator what to change; without the second, a pasted Windows-style `{ABC…}` id
+/// would write a row its owner can never read.
+#[tokio::test]
+async fn an_operator_id_is_cast_tolerantly_and_a_typo_is_a_rejection() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+
+    let typo_key = operator_key(&pool).await;
+    let typo = apply_submit(&svc, send_params("oops", "Hello", "b", &typo_key))
+        .await
+        .expect_err("a player_id the DB cannot parse must be refused");
+    match typo {
+        Rejection::Rejected(msg) => assert!(
+            msg.contains("uuid"),
+            "the operator must be told WHAT to change, got {msg:?}"
+        ),
+        Rejection::Stale => panic!("a typo is not a stale form"),
+        Rejection::Internal(msg) => {
+            panic!("a mistyped id is operator input (400), not a server fault: {msg}")
+        }
+    }
+
+    // The tolerant half: a braced, uppercase spelling of the SAME id folds onto one player.
+    let key = operator_key(&pool).await;
+    let braced = format!("{{{}}}", pid.to_uppercase());
+    assert!(
+        apply_submit(&svc, send_params(&braced, "Hello", "b", &key))
+            .await
+            .is_ok(),
+        "a braced/uppercase id is one spelling of a real player, not a rejection"
+    );
+    assert_eq!(
+        rows_of(&pool, &pid).await.len(),
+        1,
+        "the row must land on the CANONICAL player, who is the one who reads the inbox"
+    );
+
+    // And the conflict re-read compares THROUGH the same cast: a resubmit spelling the id
+    // differently is the same message, not an edited one.
+    assert!(
+        apply_submit(&svc, send_params(&pid, "Hello", "b", &key))
+            .await
+            .is_ok(),
+        "a resubmit spelling the id differently must read as the duplicate it is, never Stale"
+    );
+    assert_eq!(rows_of(&pool, &pid).await.len(), 1);
+
+    cleanup(&pool, &[&pid]).await;
+}
+
 /// `admin_render` bridges the async store reads into the synchronous `RenderFn` with
 /// `block_in_place`, which PANICS on a current-thread runtime — so the local page is only
 /// exercised on the multi-thread flavour the monolith actually runs.
@@ -1111,6 +1255,65 @@ async fn a_non_canonical_player_id_is_skipped_without_pausing_the_subscription()
     assert_eq!(n, m, "neither malformed payload may have written a row");
 
     let _ = asyncevents::testing::cleanup_events(&pool, "player_id", bogus).await;
+    cleanup(&pool, &[&pid]).await;
+}
+
+/// The OTHER half of `deliver_or_skip`'s verdict, and the only one no `Ok(())` proves:
+/// anything that is NOT `Status::Invalid` is infrastructure and MUST propagate. Swallowed
+/// into `Ok(())` it advances the checkpoint over an event that was never applied — the event
+/// is LOST FOREVER, with no backoff and no `last_error` to find it by. `delivered == 0` plus
+/// a recorded failure is what a retry looks like, and the decoy test proves both can move.
+///
+/// The failure is a 23514 raised INSIDE the delivery transaction by a `CHECK (false)` added
+/// for the duration — 23514 is not the 22P02 the insert authority maps to `Invalid`, so it
+/// takes exactly the arm under test. Nothing asserts between the two barrier calls: a panic
+/// there would leave the shared table refusing every insert.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_infrastructure_failure_faults_the_delivery_and_keeps_the_event() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (ctx, _svc, transport) = wired_for_delivery(&pool).await;
+    let pid = unique_player(&pool).await;
+    emit_changed(&ctx, &pool, &pid, 120).await;
+
+    set_insert_barrier(&pool, false).await;
+    set_insert_barrier(&pool, true).await;
+    let delivered = transport.deliver_all().await;
+    let health = subscription_health(&pool, WALLET_CHANGED_SUB.id).await;
+    let rows = rows_of(&pool, &pid).await.len();
+    set_insert_barrier(&pool, false).await;
+
+    assert_eq!(
+        delivered.unwrap(),
+        0,
+        "an infrastructure failure must NOT be counted as a delivery — a counted one means \
+         the checkpoint moved past an event that was never applied"
+    );
+    assert_eq!(rows, 0, "the barrier refused the insert");
+    assert_eq!(
+        health.1, 1,
+        "the failure must be RECORDED so the plane retries and an operator can see it; \
+         state = {:?}, last_error = {:?}",
+        health.0, health.2
+    );
+    assert!(health.2.is_some(), "the failure must carry its error, not be swallowed");
+    assert_eq!(health.0, "active", "one failure backs off, it does not pause yet");
+
+    // The event was RETAINED, not skipped. The backoff is cleared as explicit state rather
+    // than waited out on a real clock.
+    clear_backoff(&pool, WALLET_CHANGED_SUB.id).await;
+    assert_eq!(
+        transport.deliver_all().await.unwrap(),
+        1,
+        "with the barrier gone the SAME event must still be there to deliver"
+    );
+    assert_eq!(
+        rows_of(&pool, &pid).await.len(),
+        1,
+        "the retry lands the row the faulted attempt could not — nothing was lost"
+    );
+    assert_subscription_unpoisoned(&pool, WALLET_CHANGED_SUB.id).await;
+
     cleanup(&pool, &[&pid]).await;
 }
 
@@ -1349,7 +1552,12 @@ async fn one_fire_loops_batched_deletes_and_never_exceeds_the_batch_per_statemen
 
     let mut tx = pool.begin().await.unwrap();
     sqlx::raw_sql(
-        "CREATE TEMP TABLE prune_probe (seq serial, n bigint) ON COMMIT DROP; \
+        // `CREATE TRIGGER` takes SHARE ROW EXCLUSIVE on `notifications.messages`: unbounded,
+        // a concurrent long transaction turns this test into a HANG that blocks every other
+        // writer instead of a failure (`core/asyncevents/src/worker.rs` bounds the same
+        // class).
+        "SET LOCAL lock_timeout = '5s'; SET LOCAL statement_timeout = '60s'; \
+         CREATE TEMP TABLE prune_probe (seq serial, n bigint) ON COMMIT DROP; \
          CREATE FUNCTION pg_temp.prune_probe_log() RETURNS trigger LANGUAGE plpgsql AS $fn$ \
            BEGIN INSERT INTO prune_probe (n) SELECT count(*) FROM removed; RETURN NULL; END $fn$; \
          CREATE TRIGGER notifications_prune_probe AFTER DELETE ON notifications.messages \
@@ -1422,12 +1630,17 @@ async fn one_fire_loops_batched_deletes_and_never_exceeds_the_batch_per_statemen
     assert_eq!(left, 0, "the fire must leave no stale row behind");
 
     tx.rollback().await.unwrap();
-    let (left,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM notifications.messages WHERE player_id = $1::uuid",
-    )
-    .bind(&pid)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(left, 0, "the probe transaction rolled back — nothing persists");
+    // The rows cannot show the rollback — they were inserted AND deleted inside it, so the
+    // count is 0 either way. The TRIGGER can: it is the artifact that would hurt the shared
+    // database if this probe ever leaked, and it exists only if the transaction committed.
+    let (triggers,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM pg_trigger WHERE tgname = $1")
+            .bind("notifications_prune_probe")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        triggers, 0,
+        "the probe transaction rolled back — its trigger must not survive on the shared table"
+    );
 }
