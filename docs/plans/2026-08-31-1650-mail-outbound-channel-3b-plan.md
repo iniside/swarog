@@ -771,6 +771,17 @@ keeps this lane cheap.
   to `Ok(())` — which silently loses events — passed every test at the time.
 - `stalled_from(..)` as a pure predicate: never-seeded sentinel, stopping, over-age.
 - The no-provider readiness check fails, with `MAIL_PROVIDER` named in its message.
+- **The branches the conformance gate provably does NOT cover** (from Step 8's proof
+  audit — each was verified green after the guard was deleted, so none is hypothetical):
+  the authority-level `is_test_key` re-check in `enqueue_from_admin` (a hand-posted body
+  or a future second caller); `validate_new`'s non-length rules — empty/whitespace
+  `idempotency_key`, empty `kind`, control characters in `subject` (the header-injection
+  guard), and every `parse_address` branch; `config::from_vars`' `set but empty` bail,
+  which the fixture's `"   "` spelling deliberately routes around; the whole `smtp` arm of
+  `from_env` (~10 startup branches needing two variables at once, unreachable from a
+  one-variable harness but trivial against `from_vars`, which was shaped to take vars as
+  data for exactly this); and `apply_submit`'s `requeue-all-parked`, `cancel`, empty and
+  unknown-action arms plus `build_content`'s `PARAM_STATE` read path.
 
 **(d) Dispatch.** `[test-author]` at `model:"sonnet"` — these follow patterns already in
 `modules/notifications/src/tests.rs` and `modules/accounts/src/providers_tests.rs`.
@@ -1145,3 +1156,20 @@ names its peers by count is correct and Step 7 already carried it.
    three refuse before spawning anything, with the correct remedy. `devctl up split` (85)
    and `up monolith` (25) still admit. The raise is Step 1's documented operator action and
    is due before Step 9.
+31. **Step 8 — the one field with a written excuse instead of a probe was the one that
+   needed it.** `recipient`'s 320-byte cap shipped with a paragraph arguing no separating
+   input exists, because `email_address` caps the local part at 64 and the domain at 254.
+   That holds only for ASCII: `lettre::Address::check_domain` falls back to
+   `domain_to_ascii` and validates the PUNYCODE form while the module's cap counts raw
+   UTF-8, and repeated non-ASCII code points compress about 2.8:1 — measured, a 368-byte
+   and a 503-byte address both parse. A case at exactly the cap is constructible, and
+   deleting `MAX_ADDRESS_BYTES` left `conformancecheck` printing `OK: 15 modules x 4
+   conventions`. This is the seq #2a failure mode — an unexecuted sentence standing in for
+   a probe — reproduced in the commit written to prevent it. Closed with a seventh CapCase.
+32. **Step 8 — `OK: 15 modules x 4 conventions` is 60 cells of which 16 execute.** The
+   remaining 44 are `n/a`. For `mail` the sentence certifies exactly two things: 14
+   single-variable env values fail `App::build` with the right message, and 7 byte/shape
+   caps are enforced at their exact boundary. It certifies nothing about outage
+   classification, the argon posture (asserted, though independently verified true), the
+   non-length input rules, the smtp config arm, or the enqueue authority's own key
+   re-check. Recorded so the headline is never read as more than it is.
