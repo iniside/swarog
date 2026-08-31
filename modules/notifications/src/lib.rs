@@ -37,10 +37,12 @@ use registry::key;
 /// table inside a delivery transaction bounded by `ASYNCEVENTS_HANDLER_TIMEOUT`.
 ///
 /// `player_id` is a plain id column (no cross-module FK) but a `uuid`, matching every other
-/// module that carries one, and every statement binds `$n::uuid`: that folds an uppercase,
-/// braced or unhyphenated spelling onto ONE player, so an operator pasting a Windows-style
-/// `{ABC…}` id from the send-mail form addresses the inbox its owner reads instead of
-/// writing a row nobody can ever see. A genuine typo is then a loud 22P02, not silence.
+/// module that carries one, and every statement binds `$n::uuid`. That cast is TOLERANT — an
+/// uppercase, braced or unhyphenated spelling folds onto one player — which serves the
+/// operator send-mail form: a pasted Windows-style `{ABC…}` id addresses the inbox its owner
+/// reads instead of writing a row nobody can ever see, and a genuine typo is a loud 22P02.
+/// The DURABLE path is deliberately stricter and never reaches the cast: see
+/// `projection::deliverable_player_id` for why a delivery transaction cannot afford one.
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS notifications;
 

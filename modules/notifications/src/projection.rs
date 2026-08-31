@@ -32,35 +32,45 @@ pub(crate) const DEFAULT_RETENTION_DAYS: i32 = 30;
 
 pub(crate) const RETENTION_ENV: &str = "NOTIFICATIONS_RETENTION_DAYS";
 
-/// One fire deletes at most this many rows, so the sweep cannot outgrow
-/// `ASYNCEVENTS_HANDLER_TIMEOUT` on a large inbox: a timed-out delete makes no partial
-/// progress, so an unbounded one would time out identically on every retry until the
-/// subscription pauses and retention stops running altogether.
+/// Rows per statement. The sweep LOOPS these until a short batch, so the batching bounds
+/// each statement without capping the fire: a cap would leave retention permanently behind
+/// any inflow above one batch per day, since this schedule fires once every 86400s.
 pub(crate) const PRUNE_BATCH: i64 = 256;
 
-/// A PRESENT but unusable value fails startup rather than silently falling back — the
-/// `ASYNCEVENTS_HANDLER_TIMEOUT` convention. An operator writing `90d` means 90 days, and
-/// booting at the compiled 30 would prune inboxes a third of the way in with nobody told.
-/// Only unset (or empty) is the default.
+/// The whole sweep's wall-clock budget, comfortably under the default 10s
+/// `ASYNCEVENTS_HANDLER_TIMEOUT`. Exhausting it ends the fire with the batches so far
+/// KEPT (they commit with the checkpoint); a handler that instead ran into the timeout
+/// would have its whole delivery rolled back to the plane's savepoint and make no
+/// progress at all, on every retry, until the subscription paused.
+pub(crate) const PRUNE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Ten years: far past any inbox policy, and far inside the timestamp range `make_interval`
+/// can subtract from `now()`. Without the ceiling an out-of-range value passes startup and
+/// then raises `22008` on EVERY delivery — the present-but-unusable failure moved from boot
+/// to the plane, where it pauses the subscription instead of stopping the process.
+pub(crate) const MAX_RETENTION_DAYS: i32 = 3650;
+
+/// ONLY an unset variable takes the compiled default. Anything PRESENT is parsed and must
+/// be usable, the `ASYNCEVENTS_HANDLER_TIMEOUT` convention (`core/asyncevents/src/worker.rs`,
+/// where `parse_duration` rejects an empty value): `NOTIFICATIONS_RETENTION_DAYS=${RETENTION_DAYS}`
+/// with the outer variable unset expands to empty, and defaulting it would prune a 90-day
+/// inbox two thirds early with nobody told.
 pub(crate) fn retention_days_from_env() -> anyhow::Result<i32> {
     let raw = match std::env::var(RETENTION_ENV) {
         Ok(v) => v,
         Err(_) => return Ok(DEFAULT_RETENTION_DAYS),
     };
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return Ok(DEFAULT_RETENTION_DAYS);
-    }
-    let days: i32 = raw.parse().map_err(|_| {
+    let trimmed = raw.trim();
+    let days: i32 = trimmed.parse().map_err(|_| {
         anyhow::anyhow!(
             "notifications: {RETENTION_ENV} must be a whole number of days (got {raw:?}); \
              unset it for the default {DEFAULT_RETENTION_DAYS}"
         )
     })?;
-    if days <= 0 {
+    if !(1..=MAX_RETENTION_DAYS).contains(&days) {
         anyhow::bail!(
-            "notifications: {RETENTION_ENV} must be > 0 (got {days}) — a non-positive \
-             retention would delete every inbox; unset it for the default {DEFAULT_RETENTION_DAYS}"
+            "notifications: {RETENTION_ENV} must be between 1 and {MAX_RETENTION_DAYS} (got \
+             {days}); unset it for the default {DEFAULT_RETENTION_DAYS}"
         );
     }
     Ok(days)
@@ -94,10 +104,13 @@ async fn deliver_or_skip(
     }
 }
 
-/// A `player_id` the `$n::uuid` cast would reject must be caught BEFORE the insert runs: a
-/// 22P02 aborts the plane's delivery transaction, and the checkpoint `UPDATE` that follows an
-/// `Ok(())` would then fail with 25P02 — the rejection has to cost no statement at all. So
-/// `Service::deliver_on`'s own 22P02 arm is unreachable from here.
+/// The DURABLE path's id policy, stricter than the column's tolerant `$n::uuid` cast: only
+/// the canonical hyphenated spelling is delivered, because a 22P02 aborts the plane's
+/// delivery transaction and the checkpoint `UPDATE` that follows an `Ok(())` would then fail
+/// with 25P02 — a skip here has to cost no statement at all. Producers mint canonical ids, so
+/// a payload that fails this is a producer bug, logged and dropped rather than replayed
+/// forever. The operator path keeps the tolerant cast (see `SCHEMA_DDL`'s prose) and answers
+/// a bad id 400 through `Service::deliver_on`'s own 22P02 arm, which is unreachable from here.
 fn deliverable_player_id(player_id: &str) -> bool {
     if is_uuid_text(player_id) {
         return true;
@@ -202,20 +215,33 @@ impl TxHandler for PruneHandler {
                 "PruneHandler constructed with non-positive retention_days: {}",
                 self.retention_days
             );
-            sqlx::query(
-                "WITH stale AS ( \
-                   SELECT ctid FROM notifications.messages \
-                    WHERE created_at < now() - make_interval(days => $1) \
-                    ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED \
-                 ) \
-                 DELETE FROM notifications.messages m USING stale WHERE m.ctid = stale.ctid",
-            )
-            .bind(self.retention_days)
-            .bind(PRUNE_BATCH)
-            .execute(&mut *conn)
-            .await
-            .map_err(BusError::transport)?;
-            Ok(())
+            let started = std::time::Instant::now();
+            loop {
+                let deleted = sqlx::query(
+                    "WITH stale AS ( \
+                       SELECT ctid FROM notifications.messages \
+                        WHERE created_at < now() - make_interval(days => $1) \
+                        ORDER BY created_at LIMIT $2 FOR UPDATE SKIP LOCKED \
+                     ) \
+                     DELETE FROM notifications.messages m USING stale WHERE m.ctid = stale.ctid",
+                )
+                .bind(self.retention_days)
+                .bind(PRUNE_BATCH)
+                .execute(&mut *conn)
+                .await
+                .map_err(BusError::transport)?
+                .rows_affected();
+                if deleted < PRUNE_BATCH as u64 {
+                    return Ok(());
+                }
+                if started.elapsed() >= PRUNE_BUDGET {
+                    tracing::warn!(
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "notifications: retention sweep hit its budget — resuming next fire"
+                    );
+                    return Ok(());
+                }
+            }
         })
     }
 }
