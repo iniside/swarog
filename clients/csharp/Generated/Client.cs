@@ -94,6 +94,19 @@ public sealed record MatchReportRequest(
     [property: JsonPropertyName("Winner")] string Winner,
     [property: JsonPropertyName("Loser")] string Loser);
 
+/// <summary>Request for <c>notifications.delete</c>.</summary>
+public sealed record NotificationsDeleteRequest(
+    [property: JsonPropertyName("notification_id")] string NotificationId);
+
+/// <summary>Request for <c>notifications.list</c>.</summary>
+public sealed record NotificationsListRequest(
+    [property: JsonPropertyName("cursor")] string Cursor,
+    [property: JsonPropertyName("limit")] long Limit);
+
+/// <summary>Request for <c>notifications.markRead</c>.</summary>
+public sealed record NotificationsMarkReadRequest(
+    [property: JsonPropertyName("notification_id")] string NotificationId);
+
 /// <summary>Request for <c>wallet.listCurrencies</c> (no arguments — serializes to <c>{}</c>).</summary>
 public sealed record WalletListCurrenciesRequest();
 
@@ -285,6 +298,36 @@ public sealed class GameBackendClient(IPlayerTransport transport)
         var request = new MatchReportRequest(reportId, winner, loser);
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
         PlayerResponse resp = await transport.CallAsync("match.report", null, payload, ct).ConfigureAwait(false);
+        Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>notifications.delete</c> (requires a bearer token).</summary>
+    public async Task NotificationsDeleteAsync(string token, string notificationId, CancellationToken ct = default)
+    {
+        var request = new NotificationsDeleteRequest(notificationId);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("notifications.delete", token, payload, ct).ConfigureAwait(false);
+        Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>notifications.list</c> (requires a bearer token).</summary>
+    public async Task<Page> NotificationsListAsync(string token, string cursor, long limit, CancellationToken ct = default)
+    {
+        var request = new NotificationsListRequest(cursor, limit);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("notifications.list", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<Page>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>notifications.markRead</c> (requires a bearer token).</summary>
+    public async Task NotificationsMarkReadAsync(string token, string notificationId, CancellationToken ct = default)
+    {
+        var request = new NotificationsMarkReadRequest(notificationId);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("notifications.markRead", token, payload, ct).ConfigureAwait(false);
         Unwrap(resp);
     }
 

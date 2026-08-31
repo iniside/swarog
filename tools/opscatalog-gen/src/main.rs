@@ -79,6 +79,7 @@ fn rpc_modules() -> Vec<(&'static str, Vec<opsapi::RouteBinding>)> {
         ("ratingapi::mmr_reader_rpc", ratingapi::mmr_reader_rpc::route_bindings()),
         ("walletapi::wallet_rpc", walletapi::wallet_rpc::route_bindings()),
         ("walletapi::player_rpc", walletapi::player_rpc::route_bindings()),
+        ("notificationsapi::player_rpc", notificationsapi::player_rpc::route_bindings()),
     ]
 }
 

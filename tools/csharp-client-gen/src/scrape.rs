@@ -33,7 +33,9 @@ use crate::model::{ArgDef, DtoDef, FieldDef, Manifest, MethodDef, TypeRef};
 /// `#[rpc]` trait carrying `#[http]` methods — must be listed here AND wired into
 /// [`phase_a`]. Adding an `#[http]` method to an EXISTING provider needs no edit; adding
 /// a NEW provider module without editing this list is caught by the completeness gate.
-const PROVIDERS: &[&str] = &["characters", "inventory", "accounts", "match", "leaderboard", "wallet"];
+const PROVIDERS: &[&str] = &[
+    "characters", "inventory", "accounts", "match", "leaderboard", "wallet", "notifications",
+];
 
 /// Phase A: the authoritative reachable set + transport facts, straight from the
 /// generated `route_bindings()`. Each entry pairs a provider prefix with its route
@@ -47,6 +49,7 @@ fn phase_a() -> Vec<(&'static str, Vec<opsapi::RouteBinding>)> {
         ("match", matchapi::match_rpc::route_bindings()),
         ("leaderboard", leaderboardapi::leaderboard_rpc::route_bindings()),
         ("wallet", walletapi::player_rpc::route_bindings()),
+        ("notifications", notificationsapi::player_rpc::route_bindings()),
     ]
 }
 

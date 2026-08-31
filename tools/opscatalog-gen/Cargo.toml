@@ -24,6 +24,7 @@ leaderboardapi = { workspace = true }
 matchapi = { workspace = true }
 ratingapi = { workspace = true }
 walletapi = { workspace = true }
+notificationsapi = { workspace = true }
 anyhow = { workspace = true }
 rpc-contract-model = { workspace = true }
 

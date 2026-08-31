@@ -85,7 +85,7 @@ fn expected(pairs: &[(&str, &str)]) -> BTreeMap<OsString, OsString> {
 }
 
 /// ONE table-driven golden over the COMPLETE composed env (modulo the allowlist
-/// strip) for ALL 13 split services + the monolith — composed from the SHIPPED
+/// strip) for ALL 14 split services + the monolith — composed from the SHIPPED
 /// `fleet.split.toml` / `fleet.monolith.toml`, not a Rust table. Deliberately
 /// verbose: every expected map is written out in full, so ANY drifted key or
 /// value — added, removed, or changed — fails this test by name.
@@ -223,6 +223,16 @@ fn full_fleet_env_goldens() {
             ],
         ),
         (
+            "notifications-svc",
+            &[
+                ("PORT", ":8093"),
+                ("EDGE_ADDR", ":9011"),
+                ("DATABASE_POOL_MAX_CONNECTIONS", "3"),
+                ("EDGE_CA_CERT", CA_CERT),
+                ("EDGE_CA_KEY", CA_KEY),
+            ],
+        ),
+        (
             // Pure-transport front door (`Addrs::Asks`): no EDGE_ADDR of its own,
             // no pool cap, but it DOES carry the CA (dials every peer's edge) and
             // gets ORCHESTRATOR_URL — none of the address keys it used to
@@ -252,6 +262,7 @@ fn full_fleet_env_goldens() {
                 ("SCHEDULER_EDGE_ADDR", "127.0.0.1:9005"),
                 ("APIKEYS_EDGE_ADDR", "127.0.0.1:9009"),
                 ("WALLET_EDGE_ADDR", "127.0.0.1:9010"),
+                ("NOTIFICATIONS_EDGE_ADDR", "127.0.0.1:9011"),
                 ("ADMIN_COOKIE_SECURE", "0"),
                 ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32"),
             ],

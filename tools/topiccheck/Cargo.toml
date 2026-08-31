@@ -56,6 +56,7 @@ leaderboardapi = { workspace = true }
 matchapi = { workspace = true }
 ratingapi = { workspace = true }
 walletapi = { workspace = true }
+notificationsapi = { workspace = true }
 
 # The SUBSCRIBE sites — the full monolith module set, single-sourced (Step 3,
 # abstraction-leak closures) so this tool and requirecheck can't silently diverge on

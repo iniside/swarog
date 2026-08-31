@@ -206,6 +206,13 @@ fn rpc_modules() -> Vec<RpcModule> {
             walletapi::player_rpc::body_shapes(),
             walletapi::player_rpc::describe().ops,
         ),
+        (
+            "notificationsapi::player_rpc",
+            notificationsapi::player_rpc::route_bindings(),
+            notificationsapi::player_rpc::wire_ops(),
+            notificationsapi::player_rpc::body_shapes(),
+            notificationsapi::player_rpc::describe().ops,
+        ),
     ]
 }
 

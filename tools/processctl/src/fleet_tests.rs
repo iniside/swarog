@@ -51,10 +51,16 @@ fn inherited_windows_baseline_lookup_is_case_insensitive() {
     assert_eq!(runtime.get("SYSTEMROOT").map(String::as_str), Some("typed-root"));
 }
 
+/// One service as this snapshot pins it: name, package, ports, and hard dependencies.
+type ServiceRow = (&'static str, &'static str, u16, Option<u16>, Option<u16>, Vec<&'static str>);
+
+/// The canonical fleet, hand-written: deriving it from `FleetSpec` would make the test
+/// tautological. The per-service diff below is what a whole-vector `assert_eq!` cannot
+/// give — a mismatch that names the service that moved.
 #[test]
-fn proof_fleet_is_the_canonical_thirteen_service_snapshot() {
+fn proof_fleet_is_the_canonical_fourteen_service_snapshot() {
     let fleet = game_backend_fleet(&inputs(), FleetFlavor::Proof);
-    let snapshot: Vec<_> = fleet
+    let actual: Vec<ServiceRow> = fleet
         .services()
         .iter()
         .map(|service| {
@@ -68,7 +74,7 @@ fn proof_fleet_is_the_canonical_thirteen_service_snapshot() {
             )
         })
         .collect();
-    assert_eq!(snapshot, vec![
+    let expected: Vec<ServiceRow> = vec![
         ("accounts-svc", "accounts-svc", 8084, Some(9003), None, vec![]),
         ("apikeys-svc", "apikeys-svc", 8091, Some(9009), None, vec![]),
         ("audit-svc", "audit-svc", 8086, Some(9004), None, vec![]),
@@ -80,9 +86,50 @@ fn proof_fleet_is_the_canonical_thirteen_service_snapshot() {
         ("characters-svc", "characters-svc", 8080, Some(9000), None, vec!["config-svc"]),
         ("inventory-svc", "inventory-svc", 8081, Some(9001), None, vec!["characters-svc", "config-svc"]),
         ("wallet-svc", "wallet-svc", 8092, Some(9010), None, vec!["config-svc"]),
-        ("gateway-svc", "gateway-svc", 8082, None, Some(9100), vec!["characters-svc", "inventory-svc", "accounts-svc", "match-svc", "leaderboard-svc", "apikeys-svc", "wallet-svc"]),
-        ("admin-svc", "admin-svc", 8085, None, None, vec!["characters-svc", "inventory-svc", "config-svc", "accounts-svc", "audit-svc", "scheduler-svc", "apikeys-svc", "wallet-svc"]),
-    ]);
+        ("notifications-svc", "notifications-svc", 8093, Some(9011), None, vec![]),
+        ("gateway-svc", "gateway-svc", 8082, None, Some(9100), vec!["characters-svc", "inventory-svc", "accounts-svc", "match-svc", "leaderboard-svc", "apikeys-svc", "wallet-svc", "notifications-svc"]),
+        ("admin-svc", "admin-svc", 8085, None, None, vec!["characters-svc", "inventory-svc", "config-svc", "accounts-svc", "audit-svc", "scheduler-svc", "apikeys-svc", "wallet-svc", "notifications-svc"]),
+    ];
+
+    // Per-service diff, the shape `FleetSpec::validate_names` reports drift in: a reader
+    // gets the service that moved, not two 14-element vectors to align by eye.
+    let mut drift: Vec<String> = Vec::new();
+    for want in &expected {
+        match actual.iter().find(|got| got.0 == want.0) {
+            None => drift.push(format!(
+                "{}: in this snapshot, ABSENT from the fleet -- removed from \
+                 game_backend_fleet without updating the snapshot?",
+                want.0
+            )),
+            Some(got) if got != want => {
+                drift.push(format!("{}: snapshot says {want:?}, fleet says {got:?}", want.0))
+            }
+            Some(_) => {}
+        }
+    }
+    for got in &actual {
+        if !expected.iter().any(|want| want.0 == got.0) {
+            drift.push(format!(
+                "{}: in the fleet, ABSENT from this snapshot -- a new service must be \
+                 written into this list (and into every other hand-maintained one)",
+                got.0
+            ));
+        }
+    }
+    if drift.is_empty() {
+        // Order is part of the claim: it is the start order, and `FleetSpec::new` rejects
+        // a dependency that is not earlier.
+        let got: Vec<&str> = actual.iter().map(|row| row.0).collect();
+        let want: Vec<&str> = expected.iter().map(|row| row.0).collect();
+        if got != want {
+            drift.push(format!("start order drifted: snapshot {want:?}, fleet {got:?}"));
+        }
+    }
+    assert!(
+        drift.is_empty(),
+        "the proof fleet drifted from the canonical snapshot:\n  {}",
+        drift.join("\n  ")
+    );
 }
 
 #[test]

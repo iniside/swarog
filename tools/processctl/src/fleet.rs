@@ -32,7 +32,7 @@ const ACCOUNTS_OVERRIDEABLE_ENV: &[&str] = &[
 /// one process hosts accounts, so the provider keys are read from the same env map.
 const MONOLITH_OVERRIDEABLE_ENV: &[&str] = &[
     "APIKEYS_DEV_SEED", "ACCOUNTS_DEV_AUTH", "INVENTORY_DEV_GRANT", "WALLET_DEV_SEED",
-    "ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS",
+    "ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS", "NOTIFICATIONS_RETENTION_DAYS",
     "EPIC_CLIENT_ID", "EPIC_JWKS_URL", "EPIC_ISSUER_PREFIX", "EPIC_CLIENT_SECRET",
     "EPIC_REDIRECT_URI", "EPIC_AUTHORIZE_URL", "EPIC_TOKEN_URL",
     "GOOGLE_CLIENT_IDS", "GOOGLE_JWKS_URL",
@@ -587,6 +587,7 @@ pub fn game_backend_fleet_with_environment(
     // boot-fill-or-fail-startup — wallet-svc cannot come up before config-svc.
     let mut wallet = service("wallet-svc", 8092, Some(9010), vec!["config-svc"]);
     peer(&mut wallet.env, "CONFIG", 9002);
+    let mut notifications = service("notifications-svc", 8093, Some(9011), vec![]);
 
     let mut gateway_env = environment.runtime_environment();
     gateway_env.insert("EDGE_CA_CERT".into(), cert.clone());
@@ -602,6 +603,7 @@ pub fn game_backend_fleet_with_environment(
         ("LEADERBOARD", 9008),
         ("APIKEYS", 9009),
         ("WALLET", 9010),
+        ("NOTIFICATIONS", 9011),
     ] {
         peer(&mut gateway_env, name, port);
     }
@@ -615,7 +617,7 @@ pub fn game_backend_fleet_with_environment(
         player_port: Some(9100),
         dependencies: vec![
             "characters-svc", "inventory-svc", "accounts-svc", "match-svc",
-            "leaderboard-svc", "apikeys-svc", "wallet-svc",
+            "leaderboard-svc", "apikeys-svc", "wallet-svc", "notifications-svc",
         ],
         env: gateway_env,
         overrideable_env: &[],
@@ -630,7 +632,7 @@ pub fn game_backend_fleet_with_environment(
         None,
         vec![
             "characters-svc", "inventory-svc", "config-svc", "accounts-svc", "audit-svc",
-            "scheduler-svc", "apikeys-svc", "wallet-svc",
+            "scheduler-svc", "apikeys-svc", "wallet-svc", "notifications-svc",
         ],
     );
     for (name, port) in [
@@ -642,6 +644,7 @@ pub fn game_backend_fleet_with_environment(
         ("SCHEDULER", 9005),
         ("APIKEYS", 9009),
         ("WALLET", 9010),
+        ("NOTIFICATIONS", 9011),
     ] {
         peer(&mut admin.env, name, port);
     }
@@ -656,6 +659,7 @@ pub fn game_backend_fleet_with_environment(
     inventory.overrideable_env = &["INVENTORY_DEV_GRANT"];
     admin.overrideable_env = &["ADMIN_COOKIE_SECURE", "TRUSTED_PROXY_CIDRS"];
     wallet.overrideable_env = &["WALLET_DEV_SEED"];
+    notifications.overrideable_env = &["NOTIFICATIONS_RETENTION_DAYS"];
 
     accounts.env.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
     apikeys.env.insert("APIKEYS_DEV_SEED".into(), "1".into());
@@ -663,7 +667,8 @@ pub fn game_backend_fleet_with_environment(
     wallet.env.insert("WALLET_DEV_SEED".into(), "1".into());
 
     for service in
-        [&mut accounts, &mut apikeys, &mut scheduler, &mut inventory, &mut admin, &mut wallet]
+        [&mut accounts, &mut apikeys, &mut scheduler, &mut inventory, &mut admin, &mut wallet,
+         &mut notifications]
     {
         for key in service.overrideable_env {
             if let Some(value) = environment.value(key) {
@@ -702,7 +707,7 @@ pub fn game_backend_fleet_with_environment(
 
     FleetSpec::new(vec![
         accounts, apikeys, audit, scheduler, rating, leaderboard, matches, config, characters,
-        inventory, wallet, gateway, admin,
+        inventory, wallet, notifications, gateway, admin,
     ])
     .expect("the built-in game backend fleet is internally valid")
 }

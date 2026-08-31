@@ -93,6 +93,9 @@ rpc module=inventoryapi::holdings_rpc method=inventory.listCharacter verb=GET pa
 rpc module=inventoryapi::holdings_rpc method=inventory.listMine verb=GET path=/inventory/me auth=Player success=200 retry=OnceAfterReconnect
 rpc module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores verb=GET path=/leaderboard auth=None success=200 retry=OnceAfterReconnect
 rpc module=matchapi::match_rpc method=match.report verb=POST path=/match/report auth=None success=202 retry=OnceAfterReconnect
+rpc module=notificationsapi::player_rpc method=notifications.delete verb=DELETE path=/notifications/{id} auth=Player success=204 retry=Never
+rpc module=notificationsapi::player_rpc method=notifications.list verb=POST path=/notifications/list auth=Player success=200 retry=OnceAfterReconnect
+rpc module=notificationsapi::player_rpc method=notifications.markRead verb=POST path=/notifications/{id}/read auth=Player success=204 retry=OnceAfterReconnect
 rpc module=walletapi::player_rpc method=wallet.listCurrencies verb=GET path=/wallet/currencies auth=Player success=200 retry=OnceAfterReconnect
 rpc module=walletapi::player_rpc method=wallet.myBalances verb=GET path=/wallet/me auth=Player success=200 retry=OnceAfterReconnect
 rpc-arg module=accountsapi::auth_rpc method=accounts.link param=credential wire_key=credential source=body
@@ -114,6 +117,10 @@ rpc-arg module=inventoryapi::holdings_rpc method=inventory.listCharacter param=c
 rpc-arg module=matchapi::match_rpc method=match.report param=loser wire_key=Loser source=body
 rpc-arg module=matchapi::match_rpc method=match.report param=report_id wire_key=ReportId source=body
 rpc-arg module=matchapi::match_rpc method=match.report param=winner wire_key=Winner source=body
+rpc-arg module=notificationsapi::player_rpc method=notifications.delete param=notification_id wire_key=notification_id source=path:id
+rpc-arg module=notificationsapi::player_rpc method=notifications.list param=cursor wire_key=cursor source=body
+rpc-arg module=notificationsapi::player_rpc method=notifications.list param=limit wire_key=limit source=body
+rpc-arg module=notificationsapi::player_rpc method=notifications.markRead param=notification_id wire_key=notification_id source=path:id
 rpc-body module=accountsapi::auth_rpc method=accounts.createGuest body:object{}
 rpc-body module=accountsapi::auth_rpc method=accounts.link body.credential:string
 rpc-body module=accountsapi::auth_rpc method=accounts.link body.provider:string
@@ -138,6 +145,10 @@ rpc-body module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores bod
 rpc-body module=matchapi::match_rpc method=match.report body.Loser:string
 rpc-body module=matchapi::match_rpc method=match.report body.ReportId:string
 rpc-body module=matchapi::match_rpc method=match.report body.Winner:string
+rpc-body module=notificationsapi::player_rpc method=notifications.delete body:object{}
+rpc-body module=notificationsapi::player_rpc method=notifications.list body.cursor:string
+rpc-body module=notificationsapi::player_rpc method=notifications.list body.limit:number
+rpc-body module=notificationsapi::player_rpc method=notifications.markRead body:object{}
 rpc-body module=walletapi::player_rpc method=wallet.listCurrencies body:object{}
 rpc-body module=walletapi::player_rpc method=wallet.myBalances body:object{}
 wire module=accountsapi::auth_rpc method=accounts.createGuest retry=Never
@@ -161,6 +172,9 @@ wire module=inventoryapi::holdings_rpc method=inventory.listCharacter retry=Once
 wire module=inventoryapi::holdings_rpc method=inventory.listMine retry=OnceAfterReconnect
 wire module=leaderboardapi::leaderboard_rpc method=leaderboard.topScores retry=OnceAfterReconnect
 wire module=matchapi::match_rpc method=match.report retry=OnceAfterReconnect
+wire module=notificationsapi::player_rpc method=notifications.delete retry=Never
+wire module=notificationsapi::player_rpc method=notifications.list retry=OnceAfterReconnect
+wire module=notificationsapi::player_rpc method=notifications.markRead retry=OnceAfterReconnect
 wire module=ratingapi::mmr_reader_rpc method=rating.mmr retry=OnceAfterReconnect
 wire module=walletapi::player_rpc method=wallet.listCurrencies retry=OnceAfterReconnect
 wire module=walletapi::player_rpc method=wallet.myBalances retry=OnceAfterReconnect
