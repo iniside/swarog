@@ -18,8 +18,6 @@ use rand::RngCore as _;
 use crate::cli::{Command, Topology, USAGE};
 use crate::control::{self, ControlServer};
 
-const DEFAULT_DB: &str =
-    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWN_TIMEOUT: Duration = Duration::from_secs(130);
 const BUILD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -190,7 +188,7 @@ fn supervise(
         .value("DATABASE_URL")
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
-        .unwrap_or_else(|| DEFAULT_DB.to_string());
+        .unwrap_or_else(|| processctl::DEFAULT_DATABASE_URL.to_string());
     let ca_cert = run_dir.join("edge-ca.crt");
     let ca_key = run_dir.join("edge-ca.key");
     let services = service_specs(topology, &db_url, &ca_cert, &ca_key, &environment);

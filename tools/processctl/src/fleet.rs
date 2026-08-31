@@ -355,6 +355,13 @@ impl PgSessionCapacity {
     }
 }
 
+/// The DSN every rollout tool falls back to when `DATABASE_URL` is unset — and the one
+/// `core/app` itself defaults to, so a fleet spawned without the variable connects HERE.
+/// A preflight that skipped the probe on a missing `DATABASE_URL` would be probing the
+/// one case where the fleet still opens every session it reserved.
+pub const DEFAULT_DATABASE_URL: &str =
+    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
+
 /// How long the probe waits for the cluster to answer before the rollout is refused.
 const PG_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 

@@ -35,8 +35,6 @@ mod idp;
 #[cfg(test)]
 mod tests;
 
-const DEFAULT_DB: &str =
-    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
 struct Ctx {
     layout: WorkspaceLayout,
@@ -661,7 +659,7 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     // Locate built binaries via the SAME frozen build env the fleet is built with
     // (honors CARGO_TARGET_DIR); cwd stays `root` so build and lookup agree.
     let layout = WorkspaceLayout::from_root(root.clone(), &environment.build_environment());
-    let db_url = environment.value("DATABASE_URL").map(str::to_owned).unwrap_or_else(|| DEFAULT_DB.to_string());
+    let db_url = environment.value("DATABASE_URL").map(str::to_owned).unwrap_or_else(|| processctl::DEFAULT_DATABASE_URL.to_string());
     let fleet = game_backend_fleet_with_environment(
         &FleetInputs {
             database_url: db_url.clone(),

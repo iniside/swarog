@@ -213,11 +213,15 @@ fn fleet_session_budget_is_enforced() {
     );
 
     // The real peak is not the fleet alone: splitproof runs its `[REPLICAS]` second
-    // leaderboard-svc and its own sqlx pool WHILE the whole fleet is up, so the fleet plus
-    // every itemized harness term must still fit the sessions Postgres actually offers.
+    // leaderboard-svc and its own sqlx pool WHILE the whole fleet is up. This pins the
+    // DERIVATION's internal consistency — the fleet plus every itemized harness term
+    // stays inside the provisioning `USABLE_PG_SESSIONS` is derived from — not
+    // exhaustion on a live cluster, which no constant can know: that is the
+    // `require_pg_session_floor` probe's job, against what the cluster reports.
     assert!(
         total + crate::fleet::HARNESS_RESERVE <= crate::fleet::USABLE_PG_SESSIONS,
-        "fleet {total} + harness reserve {} exceeds {} usable Postgres sessions",
+        "fleet {total} + harness reserve {} exceeds the {} sessions the recommended \
+         provisioning is derived to offer",
         crate::fleet::HARNESS_RESERVE,
         crate::fleet::USABLE_PG_SESSIONS
     );

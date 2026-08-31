@@ -58,7 +58,14 @@ then `weles up`.
 `weles` participates in the canonical `run/rollout.lock` **bit-compatibly** with
 `devctl`/`verifyctl` — the three can never run fleets concurrently against the one
 shared local Postgres (see the one-rollout-at-a-time rule in
-[`CLAUDE.md`](../CLAUDE.md)). Its runtime state — `state.json`, per-service logs,
+[`CLAUDE.md`](../CLAUDE.md)). Sharing that one cluster is also why `up` refuses to boot
+a fleet whose services reserve more Postgres sessions than the cluster offers: it reads
+`max_connections` and both reservation settings from the fleet's `DATABASE_URL` (or the
+default DSN the processes themselves fall back to) before the first prepare hook, and
+aborts with the remedy — see
+[platform notes](../docs/reference/platform-notes.md).
+
+Its runtime state — `state.json`, per-service logs,
 and the operator control endpoint — lives under `run/weles/`. The operator control
 path authenticates a **local OS caller** (owner DACL on Windows, UDS peer-cred on
 Unix incl. macOS `LOCAL_PEERCRED`), a separate trust domain from the service edge.

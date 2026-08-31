@@ -62,9 +62,9 @@
 //! * **The `resolve` path** ([`path_diffs`]) — weles's `route` match arm against
 //!   the URL remote's `format!` actually builds.
 //! * **weles's Postgres session-floor copies** ([`session_floor_diffs`]) — the
-//!   provisioning requirement, the per-process dedicated-session count and the
-//!   capacity SQL, against `tools/processctl/src/fleet.rs`, which owns the budget
-//!   derivation. Not a wire, like the borrow marker below it; the same hand-copy
+//!   provisioning requirement, the per-process dedicated-session count, the default
+//!   DSN and the capacity SQL, against `tools/processctl/src/fleet.rs`, which owns the
+//!   budget derivation. Not a wire, like the borrow marker below it; the same hand-copy
 //!   between the same two crates, so it is answered in the same one place.
 //! * **The `AddrKind` pairing itself**, end to end and with no column this stage
 //!   hand-copied in between: [`contract_diffs`] drives remote's real `Serialize`
@@ -347,12 +347,17 @@ fn borrow_marker_diffs(weles: &str, processctl: &str) -> Vec<String> {
 /// exercise its own number, so weles would keep refusing (or admitting) fleets by
 /// an arithmetic the budget's authority no longer uses.
 ///
+/// The default DSN is the sharpest of the four: it is the cluster a fleet spawned
+/// without `DATABASE_URL` actually opens its sessions against (`core/app` defaults to
+/// it), so a weles copy pointing elsewhere would probe a cluster the fleet never
+/// touches and admit a boot into exhaustion on the one it does.
+///
 /// The `reserved_connections` half of the SQL is the live trap: it is read through
 /// `current_setting(..., true)` because the setting only exists from PostgreSQL 16,
 /// and a copy that dropped the missing-ok argument would fail every preflight on an
 /// older cluster — in weles only.
 fn session_floor_diffs() -> Vec<String> {
-    let pairs: [(&str, String, String); 3] = [
+    let pairs: [(&str, String, String); 4] = [
         (
             "the provisioning requirement named by the refusal remedy",
             weles::pgfloor::REQUIRED_MAX_CONNECTIONS.to_string(),
@@ -362,6 +367,11 @@ fn session_floor_diffs() -> Vec<String> {
             "the dedicated sessions charged per DB-backed process",
             weles::pgfloor::PLANE_DEDICATED_SESSIONS.to_string(),
             processctl::PLANE_DEDICATED_SESSIONS.to_string(),
+        ),
+        (
+            "the DSN a fleet falls back to when DATABASE_URL is unset",
+            weles::pgfloor::DEFAULT_DATABASE_URL.to_string(),
+            processctl::DEFAULT_DATABASE_URL.to_string(),
         ),
         (
             "the session-capacity query",
@@ -732,7 +742,7 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
                  `remote::resolve::{AddrKind, ErrorCode, RESOLVE_PATH, ResolveRequest, \
                  ResolveResponse, ErrorEnvelope}`, plus weles's `lock::BORROWED_LEASE_ARG` \
                  and `pgfloor::{REQUIRED_MAX_CONNECTIONS, PLANE_DEDICATED_SESSIONS, \
-                 CAPACITY_SQL}` against their processctl originals. Zero-sharing forbids \
+                 DEFAULT_DATABASE_URL, CAPACITY_SQL}` against their processctl originals. Zero-sharing forbids \
                  sharing the types, so \
                  the fix is to make the two agree — never to relax this stage. This is the EARLY \
                  gate on that contract: the blocking `weles-managed-gateway` stage drives the \

@@ -85,10 +85,14 @@ and the split fleet plus the split-proof harness already reserves nearly all of 
 headroom that only a raised cluster has.
 
 `devctl up`, `splitproof` and `weles up` each read `max_connections`,
-`superuser_reserved_connections` and (PostgreSQL 16+) `reserved_connections` before
-spawning anything, and refuse the rollout when what the cluster offers ordinary roles
-is below what THAT rollout reserves — so a monolith, which is one process, still boots
-on a stock cluster. The refusal names the observed numbers and this remedy:
+`superuser_reserved_connections` and (PostgreSQL 16+) `reserved_connections` from
+`DATABASE_URL` — or, when it is unset, from the default DSN above, which is where the
+processes themselves connect — before spawning anything, and refuse the rollout when
+what the cluster offers ordinary roles is below what THAT rollout reserves. So a
+monolith, which is one process, still boots on a stock cluster, and an unreachable
+cluster aborts the rollout instead of passing unverified. (`weles up` probes only when
+the fleet it deployed declares a pooled service; a fleet that reserves no sessions has
+nothing to check.) The refusal names the observed numbers and this remedy:
 
 ```
 ALTER SYSTEM SET max_connections = 150;
