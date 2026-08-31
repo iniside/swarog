@@ -7,6 +7,17 @@
 //! the topic is a *command* ("send this"), not a *fact* about another domain, and the
 //! alternative (one topic per sending module) would mean editing `mail` for every new
 //! sender.
+//!
+//! **Accepted risk: `body` carries rendered content, which may be a secret.** "The sender
+//! renders, mail transports" (no template registry here) means a caller filling in a
+//! password-reset link or verification token puts that plaintext into the durable log —
+//! `eventctl` prints it verbatim, and retention governs only already-consumed events, so
+//! it survives at least as long as the slowest subscriber. The mitigation lives on the
+//! storage side, not the contract: `mail`'s outbox blanks `body` once a row reaches `sent`,
+//! and `SEND_REQUESTED`'s history policy is the minimum residency the delivery plane needs,
+//! not an archival window. A future template-reference field would remove the plaintext
+//! from this payload but push every sender's data shape into the transport — the coupling
+//! this crate exists to avoid — so it is deferred, not silently assumed away.
 
 use std::sync::LazyLock;
 
@@ -21,20 +32,14 @@ pub const MAX_BODY_BYTES: usize = 65_536;
 pub const MAX_KIND_BYTES: usize = 64;
 pub const MAX_IDEMPOTENCY_KEY_BYTES: usize = 128;
 
-/// Provider names a sender is registered under. The name arrives from `MAIL_PROVIDER` at
-/// boot, never from an anonymous caller over the wire.
-pub mod providers {
-    pub const LOG: &str = "log";
-    pub const SMTP: &str = "smtp";
-}
-
-/// A request to send one email, keyed by `idempotency_key` for exactly-once enqueue.
-/// Delivery to the recipient is at-least-once — see the plan's "delivery contract" note.
+/// A request to send one email. Enqueue is exactly-once per `idempotency_key`; delivery to
+/// the recipient is at-least-once — a crash between the provider accepting the message and
+/// the status commit re-sends, so `body` must be safe for the recipient to receive twice.
 ///
-/// Evolve additively (constraint #6): add fields or a `SendRequestedV2`, never reshape —
-/// the retained durable JSON is the contract. No `Option<…>` field, deliberately: every
-/// field is always meaningful, and contract-golden requires a second `None`-populated
-/// sample for any optional one.
+/// Evolve additively (constraint #6): a new field needs `#[serde(default)]` or must be
+/// `Option` (owing a second `None`-populated golden sample) — a retained pre-change event
+/// has no key for it, so a bare required field fails `decode` and pauses every subscription
+/// on this topic. Anything that can't satisfy that is a `SendRequestedV2`, not a field add.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SendRequested {
     pub idempotency_key: String,
@@ -44,16 +49,14 @@ pub struct SendRequested {
     pub kind: String,
 }
 
-/// `MinRetention { days: 7 }`: the durable log is the DELIVERY path, not the archive —
-/// the authority for what was sent is `mail.outbox`. The history policy is IMMUTABLE
-/// after the first emit.
-pub static SEND_REQUESTED: LazyLock<EventType<SendRequested>> = LazyLock::new(|| {
-    define(
-        "mail.send_requested",
-        1,
-        HistoryPolicy::MinRetention { days: 7 },
-    )
-});
+/// `MinRetention { days: 1 }`: the minimum secret residency the delivery plane needs, not
+/// an archival window — see the crate doc's accepted-risk paragraph. Retention is
+/// checkpoint-coupled (governs only already-consumed events), so this bounds how long a
+/// delivered event's plaintext body can still be sitting unconsumed, not how long a
+/// consumed one is kept. The authority for what was sent is `mail.outbox`. The history
+/// policy is IMMUTABLE after the first emit.
+pub static SEND_REQUESTED: LazyLock<EventType<SendRequested>> =
+    LazyLock::new(|| define("mail.send_requested", 1, HistoryPolicy::MinRetention { days: 1 }));
 
 /// Fully-POPULATED wire sample per defined `(topic, version)`: every field set, so serde's
 /// actual JSON keys land in the golden and a silent `#[serde(rename)]` or a reshaped field

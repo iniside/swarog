@@ -4,7 +4,7 @@
 //! server-side [`register_admin`]. The `audit` MODULE registers its `admin.adminData`
 //! edge handler through THIS crate (its OWN `<name>rpc`) instead of importing
 //! `adminrpc` directly — archcheck forbids a module → foreign-rpc edge, but the
-//! module → own-rpc → adminrpc chain is sanctioned (rule 5), exactly the
+//! module → own-rpc → adminrpc chain is sanctioned (rule 3), exactly the
 //! characters/inventory pattern.
 
 /// The admin fan-out's server-side registration (`register_admin(server, svc)`),
