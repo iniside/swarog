@@ -808,7 +808,10 @@ active fleet, then run exactly one. Redirect to a file and capture `$?` explicit
 piped `| tail` reports the pipe's exit status, which twice during 3a made a failing stage
 look green. Three blessings are expected and each is read before it is accepted:
 `--bless-contract-golden` (the new topic's golden), `--bless-input-golden` (the admin
-form's new input fields), and `--bless-public-api` (the `mailevents` baseline).
+form's new input fields), and `--bless-public-api` (**two** baselines to read, not one:
+`mailevents.txt` for the new contract crate, and `schedulerevents.txt`, which gains
+`MAIL_PRUNE` from Step 5 — an ADDITIVE diff, but one that must be read rather than waved
+through).
 
 **(d) Dispatch.** `[inline]` — this is the gate, not a code change.
 
@@ -1060,3 +1063,7 @@ names its peers by count is correct and Step 7 already carried it.
    `SET LOCAL statement_timeout` argument is clamped to `1..=i32::MAX`, so an out-of-range
    budget can never be *why* a statement fails — without both, a large value made every
    pass error before claiming a row while `stall_max` kept `/readyz` green for weeks.
+20. **Step 5 — the public-api bless covers two baselines, not one.** Step 12 named only
+   `mailevents`. Step 5's `mail-prune` schedule name is a const in `schedulerevents`, so
+   `docs/reference/public-api-baseline/schedulerevents.txt` also changes. Corrected in
+   Step 12's text.
