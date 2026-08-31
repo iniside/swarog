@@ -50,7 +50,8 @@ mod tests;
 
 use checks::{
     admin_submit_findings, argon_parity_findings, completeness_findings, conv_label,
-    credential_cap_findings, drift_findings, eval_cap_probe, input_policy_prose_findings,
+    coverage_boundary_findings, credential_cap_findings, drift_findings, eval_cap_probe,
+    input_policy_prose_findings, COVERAGE_BOUNDARIES,
 };
 use model::{ArgonParams, Convention, EnvCase, Fixture, InputPolicy, OutageClass, Stance};
 
@@ -399,6 +400,10 @@ fn main() {
     if !completeness.is_empty() {
         fail_phase("completeness matrix", &completeness);
     }
+    let boundaries = coverage_boundary_findings(&entries);
+    if !boundaries.is_empty() {
+        fail_phase("coverage boundaries", &boundaries);
+    }
 
     // ---- Phase 3: executors --------------------------------------------------
     let n_conv = Convention::ALL.len();
@@ -519,6 +524,17 @@ fn main() {
         .iter()
         .map(|&c| conv_label(c).len().max(4))
         .collect();
+
+    if !COVERAGE_BOUNDARIES.is_empty() {
+        println!(
+            "conformancecheck: declared coverage boundaries — these conventions EXECUTE, \
+             and this is what their cases cannot reach:"
+        );
+        for (module, convention, why) in COVERAGE_BOUNDARIES {
+            println!("  [{module} × {}] {why}", conv_label(*convention));
+        }
+        println!();
+    }
 
     let mut header = format!("{:module_w$}", "module");
     for (j, &c) in Convention::ALL.iter().enumerate() {

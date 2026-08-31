@@ -273,6 +273,52 @@ pub fn input_policy_prose_findings(policies: &[(InputKey, InputPolicy)]) -> Vec<
         .collect()
 }
 
+/// Declared coverage boundaries: what an EXECUTED convention's fixture provably cannot
+/// reach, per (module, convention). A `Stance::KnownGap` is the wrong shape for this — it
+/// replaces the fixture, so declaring one would trade fourteen executing cases for a label
+/// — and an inline comment is invisible to everyone reading the matrix. The report prints
+/// these beside the table, and [`coverage_boundary_findings`] keeps them from rotting.
+pub const COVERAGE_BOUNDARIES: &[(&str, Convention, &str)] = &[(
+    "mail",
+    Convention::EnvValidation,
+    "run_env_case sets exactly ONE variable per case, so the smtp arm's per-field parses — \
+     the host shape, the port range, the TLS mode name, the missing-TLS bail and the \
+     both-or-neither credential rule — cannot be reached here: each needs MAIL_PROVIDER=smtp \
+     and a second MAIL_SMTP_* value set at the same time. The arm's entry branch \
+     (MAIL_SMTP_HOST required under MAIL_PROVIDER=smtp) IS executed. The rest are reachable \
+     only through MailConfig::from_vars, which takes the variables as data",
+)];
+
+/// Phase 1d — the boundary list's own self-check. A boundary must name a module the policy
+/// carries, qualify a convention that actually EXECUTES there (a boundary on a
+/// `NotApplicable` cell says nothing), and carry a reviewer-checkable sentence.
+pub fn coverage_boundary_findings(entries: &[Entry]) -> Vec<String> {
+    let mut findings = Vec::new();
+    for (module, convention, why) in COVERAGE_BOUNDARIES {
+        let label = conv_label(*convention);
+        if why.trim().is_empty() {
+            findings.push(format!(
+                "coverage boundary {module} × {label}: empty reason — a reviewer-checkable \
+                 sentence is required"
+            ));
+        }
+        let Some(entry) = entries.iter().find(|entry| entry.module == *module) else {
+            findings.push(format!(
+                "coverage boundary names {module}, which has no conformance entry"
+            ));
+            continue;
+        };
+        if !matches!(entry.stance(*convention), Some(Stance::Applies(_))) {
+            findings.push(format!(
+                "coverage boundary {module} × {label} qualifies a convention {module} does \
+                 not execute — a boundary describes what running cases cannot reach, so \
+                 remove it or give {label} an Applies fixture"
+            ));
+        }
+    }
+    findings
+}
+
 /// Phase 2 — the completeness matrix. Every entry must declare exactly one
 /// stance for every [`Convention::ALL`]; a `NotApplicable` needs a non-empty
 /// `why`; an `Applies` must carry the matching fixture variant with at least
