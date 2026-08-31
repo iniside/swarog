@@ -17,12 +17,17 @@ pub mod config;
 mod projection;
 pub mod providers;
 mod service;
+pub mod smtp;
 mod store;
+mod worker;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use lifecycle::{Context, Module};
+use sqlx::PgPool;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
 
 pub use config::MailConfig;
 pub use service::Service;
@@ -99,6 +104,15 @@ pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
 pub struct MailModule {
     svc: OnceLock<Arc<Service>>,
     cfg: OnceLock<Arc<MailConfig>>,
+    pool: OnceLock<PgPool>,
+    /// `Some` iff a provider is configured. Built in `register`, so an unbuildable
+    /// provider is a startup failure rather than a per-message one.
+    sender: OnceLock<Arc<dyn providers::Sender>>,
+    /// Drain health for the `"mail"` `/readyz` check — cloned into both the `init`-time
+    /// check and the `start`-time supervision wrapper.
+    liveness: worker::Liveness,
+    stop_tx: Mutex<Option<watch::Sender<bool>>>,
+    tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl Default for MailModule {
@@ -112,6 +126,11 @@ impl MailModule {
         MailModule {
             svc: OnceLock::new(),
             cfg: OnceLock::new(),
+            pool: OnceLock::new(),
+            sender: OnceLock::new(),
+            liveness: worker::Liveness::default(),
+            stop_tx: Mutex::new(None),
+            tasks: Mutex::new(Vec::new()),
         }
     }
 
@@ -148,14 +167,28 @@ impl Module for MailModule {
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
         // Fail at BUILD rather than at the first migrate statement: a process that lists
         // mail without a DB has no outbox to write to.
-        if ctx.db().is_none() {
-            anyhow::bail!("mail requires a DB pool");
-        }
+        let pool = ctx
+            .db()
+            .ok_or_else(|| anyhow::anyhow!("mail requires a DB pool"))?
+            .clone();
+        self.pool
+            .set(pool)
+            .map_err(|_| anyhow::anyhow!("mail.register ran twice"))?;
         self.svc
             .set(Arc::new(Service::new()))
             .map_err(|_| anyhow::anyhow!("mail.register ran twice"))?;
+        let cfg = MailConfig::from_env()?;
+        // The transport is built HERE, not in `start`: construction is pure (no socket,
+        // no DNS), and a host the transport cannot represent must fail the boot rather
+        // than every send.
+        if let Some(settings) = &cfg.provider {
+            let sender = settings
+                .provider
+                .sender(&settings.from, cfg.send_timeout)?;
+            let _ = self.sender.set(sender);
+        }
         self.cfg
-            .set(Arc::new(MailConfig::from_env()?))
+            .set(Arc::new(cfg))
             .map_err(|_| anyhow::anyhow!("mail.register ran twice"))?;
         Ok(())
     }
@@ -182,6 +215,9 @@ impl Module for MailModule {
             },
         );
 
+        // The two arms of ONE `/readyz` check, mutually exclusive by construction: an
+        // unconfigured channel is permanently not-ready, a configured one reports its
+        // drain's health.
         if self.cfg().provider.is_none() {
             tracing::warn!("mail: {NO_PROVIDER_READY}");
             ctx.contribute(
@@ -190,7 +226,60 @@ impl Module for MailModule {
                     Err(NO_PROVIDER_READY.to_string())
                 }),
             );
+        } else {
+            let liveness = self.liveness.clone();
+            let stall_max = worker::stall_max(self.cfg().send_timeout);
+            ctx.contribute(
+                httpmw::READINESS_SLOT,
+                httpmw::ReadyCheck::new("mail", move || {
+                    let liveness = liveness.clone();
+                    async move { liveness.check(stall_max) }
+                }),
+            );
         }
+        Ok(())
+    }
+
+    /// Launches the drain on a FRESH `tokio::spawn` task (not tied to the `start` ctx), so
+    /// a short start deadline cannot kill the loop. A process with no provider configured
+    /// starts nothing — its `/readyz` already says the channel is undrained.
+    async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
+        let cfg = self.cfg();
+        let Some(settings) = cfg.provider.as_ref() else {
+            return Ok(());
+        };
+        // Never a silent return: a configured provider whose sender is missing would leave
+        // the channel undrained behind a readiness check that reports drain health.
+        let sender = self.sender.get().ok_or_else(|| {
+            anyhow::anyhow!("mail.register must build a sender for a configured provider")
+        })?;
+        let drain = worker::Drain {
+            pool: self
+                .pool
+                .get()
+                .expect("mail.register must run before start")
+                .clone(),
+            sender: sender.clone(),
+            from: settings.from.clone(),
+            send_timeout: cfg.send_timeout,
+            max_attempts: cfg.max_attempts,
+        };
+        let (stop_tx, stop_rx) = watch::channel(false);
+        let task = worker::spawn(drain, store::Store, self.liveness.clone(), stop_rx);
+        *self.stop_tx.lock().unwrap() = Some(stop_tx);
+        self.tasks.lock().unwrap().push(task);
+        Ok(())
+    }
+
+    /// Signals the drain and awaits its exit, bounded by the worker's stop grace with an
+    /// abort fallback — see the drain worker's `stop_tasks`.
+    async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
+        // Before signalling, so the supervision wrapper reads a controlled exit and the
+        // readiness probe never counts a stopping process as stalled.
+        self.liveness.set_stopping();
+        let stop_tx = self.stop_tx.lock().unwrap().take();
+        let tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
+        worker::stop_tasks(stop_tx, tasks).await;
         Ok(())
     }
 }

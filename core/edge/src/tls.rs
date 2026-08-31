@@ -14,9 +14,10 @@
 //!    the client dials with `ServerName = "localhost"` (see `client::Client::dial`).
 //! 4. One [`rustls::RootCertStore`] containing EXACTLY the dev CA — no
 //!    webpki/system-roots fallback on either side.
-//! 5. TLS 1.3 only (`with_protocol_versions(&[&TLS13])`, and the `tls12` rustls
-//!    feature is not compiled in) with the correct server-auth vs client-auth EKU on
-//!    the leaves.
+//! 5. TLS 1.3 only (`with_protocol_versions(&[&TLS13])` — the sole authority; rustls's
+//!    `tls12` feature IS compiled in, unified into the workspace by reqwest/sqlx/lettre,
+//!    so the explicit version list is what keeps 1.2 off this plane) with the correct
+//!    server-auth vs client-auth EKU on the leaves.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, OnceLock};

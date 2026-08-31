@@ -7,22 +7,22 @@
 //! contract's public-api baseline.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
+
+use crate::smtp::{SmtpSender, SmtpSettings};
 
 /// The development sink: it renders the send decision into the log and delivers nothing.
 pub const LOG: &str = "log";
 
-/// The real relay. It is NOT in [`KNOWN_PROVIDERS`] yet — the name joins the list in the
-/// same commit that ships its sender, so a boot-time failure never names a provider this
-/// build cannot construct (`accounts` paid for learning that with a permanent,
-/// operator-unfixable 503 on `apple`).
+/// The real relay ([`crate::smtp`]).
 pub const SMTP: &str = "smtp";
 
 /// Every provider name this build can construct a sender for. The list is what an unknown
 /// `MAIL_PROVIDER` is reported against, and [`ProviderKind::from_name`] is what actually
 /// resolves one; a name in one and not the other is the drift the module tests pin.
-pub const KNOWN_PROVIDERS: &[&str] = &[LOG];
+pub const KNOWN_PROVIDERS: &[&str] = &[LOG, SMTP];
 
 /// One message as a sender sees it, borrowed from the outbox row being drained.
 pub struct Outgoing<'a> {
@@ -58,12 +58,15 @@ pub trait Sender: Send + Sync {
     async fn send(&self, m: &Outgoing<'_>) -> Result<(), SendError>;
 }
 
-/// The resolved provider. An enum rather than a registry map: mail configures exactly ONE
+/// A provider NAME. An enum rather than a registry map: mail configures exactly ONE
 /// provider per process, and the type makes a duplicate registration unrepresentable
-/// instead of a panic to remember.
+/// instead of a panic to remember. It carries no settings — naming is decided before the
+/// provider's own variables are read, so an unknown name is reported as an unknown name
+/// rather than as a missing host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProviderKind {
     Log,
+    Smtp,
 }
 
 impl ProviderKind {
@@ -72,6 +75,7 @@ impl ProviderKind {
     pub fn from_name(name: &str) -> Option<ProviderKind> {
         match name {
             LOG => Some(ProviderKind::Log),
+            SMTP => Some(ProviderKind::Smtp),
             _ => None,
         }
     }
@@ -79,15 +83,44 @@ impl ProviderKind {
     pub fn name(self) -> &'static str {
         match self {
             ProviderKind::Log => LOG,
+            ProviderKind::Smtp => SMTP,
+        }
+    }
+}
+
+/// The RESOLVED provider: a kind PLUS everything that kind needs to send. Built only by
+/// [`crate::config`], which is why [`Provider::sender`] is total — a kind whose settings
+/// were never read is unrepresentable here, rather than an invariant to remember.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Provider {
+    Log,
+    Smtp(SmtpSettings),
+}
+
+impl Provider {
+    pub fn kind(&self) -> ProviderKind {
+        match self {
+            Provider::Log => ProviderKind::Log,
+            Provider::Smtp(_) => ProviderKind::Smtp,
         }
     }
 
     /// Construction is PURE — no socket, no DNS, no I/O (constraint #8): a provider that
-    /// cannot be built from validated configuration alone is a configuration error the
-    /// parse must have already refused.
-    pub fn sender(self) -> Arc<dyn Sender> {
+    /// cannot be built from validated configuration alone is a configuration error, and
+    /// this runs in `register` so it is a startup failure rather than a per-message one
+    /// the drain discovers hours later.
+    pub fn sender(
+        &self,
+        from: &str,
+        per_step_timeout: Duration,
+    ) -> anyhow::Result<Arc<dyn Sender>> {
         match self {
-            ProviderKind::Log => Arc::new(LogSender),
+            Provider::Log => Ok(Arc::new(LogSender)),
+            Provider::Smtp(settings) => Ok(Arc::new(SmtpSender::new(
+                settings,
+                from,
+                per_step_timeout,
+            )?)),
         }
     }
 }

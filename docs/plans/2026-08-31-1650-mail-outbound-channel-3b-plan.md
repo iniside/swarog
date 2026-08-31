@@ -1001,3 +1001,34 @@ names its peers by count is correct and Step 7 already carried it.
    stayed in Step 7. The implementing agent found this by tracing rather than reaching for
    the `ALLOW_UNSUBSCRIBED` entry the step forbade, which would have been a stale allowance
    the moment Step 7 landed.
+
+16. **Step 4 deviations, recorded here rather than only in a commit message.**
+   (a) `DRAIN_DEADLINE` became a FLOOR, not the budget: the pass budget is
+   `pass_budget(send_timeout) = max(DRAIN_DEADLINE, send_timeout + ACQUIRE_DEADLINE)`, and
+   `DRAIN_STALL_MAX` follows as `stall_max() = 2 × pass_budget`. With the plan's literals,
+   a `MAIL_SEND_TIMEOUT_MS` above 30s would make the "no room for a full attempt" guard
+   true on the FIRST row of every pass — the drain would claim nothing, forever, while
+   every pass still stamped healthy and `/readyz` stayed green. Two constants that can
+   disagree is the defect the derivation rule exists to prevent; the same rule applies to
+   both, not only to the stall threshold.
+   (b) `MAIL_SMTP_USERNAME`/`_PASSWORD` are both-or-neither, not unconditionally required:
+   an internal MTA that authorizes by network legitimately has no credential, and the
+   alternative forces an operator to invent one. Half a credential FAILS STARTUP.
+   `MAIL_SMTP_HOST` and `MAIL_SMTP_TLS` ARE required under `MAIL_PROVIDER=smtp` (a wrong
+   TLS mode is a connection that silently never completes), `MAIL_SMTP_PORT` defaults to
+   587, and any `MAIL_SMTP_*` set while `MAIL_PROVIDER` is not `smtp` FAILS STARTUP — the
+   `MAIL_FROM`-without-`MAIL_PROVIDER` precedent from errata 13.
+   (c) A pass takes a BOUNDED checkout per DB step instead of holding one connection for
+   its length. A split service's pool is 2 (`SPLIT_SERVICE_POOL_MAX`), so holding one idle
+   across a third-party SMTP dialogue would leave the process one connection for
+   everything else. The gauges are still refreshed once per pass, inside the pass, never
+   on a separate timer.
+   (d) `ProviderKind` split in two: it stays the NAMING authority (`KNOWN_PROVIDERS`,
+   `from_name`, `name`), and a new `Provider` enum carries the resolved settings, so
+   `Provider::sender` is total — "an `Smtp` kind always has `SmtpSettings`" is a type,
+   not an invariant to remember.
+   (e) **Found, not introduced:** `core/edge/src/tls.rs`'s TLS-1.3 note claimed rustls's
+   `tls12` feature "is not compiled in". `reqwest` and `sqlx-core` already enable it and
+   resolver-2 unifies it workspace-wide, so the clause was false before `lettre` arrived.
+   Corrected in the same rollout: `with_protocol_versions(&[&TLS13])` is the sole
+   authority, and it is intact.

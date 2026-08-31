@@ -16,6 +16,8 @@ bus = { workspace = true }
 opsapi = { workspace = true }
 mailevents = { workspace = true }
 sqlx = { workspace = true }
+# The drain loop: a spawned task, a watch stop channel, and every DB/send bound.
+tokio = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
@@ -27,3 +29,5 @@ httpmw = { workspace = true }
 # GET /metrics as every plane counter.
 metrics = { workspace = true }
 prometheus = { workspace = true }
+# The `smtp` provider's transport. rustls/ring, no native-tls, no connection pool.
+lettre = { workspace = true }

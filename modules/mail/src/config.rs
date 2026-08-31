@@ -12,28 +12,55 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::address::check_address;
-use crate::providers::{ProviderKind, KNOWN_PROVIDERS};
+use crate::providers::{Provider, ProviderKind, KNOWN_PROVIDERS, SMTP};
+use crate::smtp::{Secret, SmtpSettings, TlsMode};
 
 pub const PROVIDER_ENV: &str = "MAIL_PROVIDER";
 pub const FROM_ENV: &str = "MAIL_FROM";
 pub const SEND_TIMEOUT_ENV: &str = "MAIL_SEND_TIMEOUT_MS";
 pub const MAX_ATTEMPTS_ENV: &str = "MAIL_MAX_ATTEMPTS";
+pub const SMTP_HOST_ENV: &str = "MAIL_SMTP_HOST";
+pub const SMTP_PORT_ENV: &str = "MAIL_SMTP_PORT";
+pub const SMTP_USERNAME_ENV: &str = "MAIL_SMTP_USERNAME";
+pub const SMTP_PASSWORD_ENV: &str = "MAIL_SMTP_PASSWORD";
+pub const SMTP_TLS_ENV: &str = "MAIL_SMTP_TLS";
+
+/// Every variable that belongs to the `smtp` provider. Read as a group so a provider that
+/// is not `smtp` can refuse them as a group.
+const SMTP_VARS: &[&str] = &[
+    SMTP_HOST_ENV,
+    SMTP_PORT_ENV,
+    SMTP_USERNAME_ENV,
+    SMTP_PASSWORD_ENV,
+    SMTP_TLS_ENV,
+];
 
 /// Every variable this parse reads — the authority [`MailConfig::from_env`] collects, so
 /// the process-env read stays narrow (a test harness mutating `set_var` has a smaller
 /// unsound window) and a new knob is added in one place.
-const MAIL_VARS: &[&str] = &[PROVIDER_ENV, FROM_ENV, SEND_TIMEOUT_ENV, MAX_ATTEMPTS_ENV];
+const MAIL_VARS: &[&str] = &[
+    PROVIDER_ENV,
+    FROM_ENV,
+    SEND_TIMEOUT_ENV,
+    MAX_ATTEMPTS_ENV,
+    SMTP_HOST_ENV,
+    SMTP_PORT_ENV,
+    SMTP_USERNAME_ENV,
+    SMTP_PASSWORD_ENV,
+    SMTP_TLS_ENV,
+];
 
 pub const DEFAULT_SEND_TIMEOUT_MS: u64 = 10_000;
 pub const DEFAULT_MAX_ATTEMPTS: i32 = 20;
 pub const MAX_MAX_ATTEMPTS: i32 = 1_000;
+pub const DEFAULT_SMTP_PORT: u16 = 587;
 
 /// A configured provider and the envelope address it sends as. The two travel together
 /// because neither is usable alone: a provider with no `From` cannot address a message,
 /// and an address with no provider drains nothing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderSettings {
-    pub kind: ProviderKind,
+    pub provider: Provider,
     pub from: String,
 }
 
@@ -85,13 +112,29 @@ impl MailConfig {
             Some(raw) => Some(checked_provider(raw)?),
             None => None,
         };
+        let resolved = match kind {
+            Some(ProviderKind::Log) => Some(Provider::Log),
+            Some(ProviderKind::Smtp) => Some(Provider::Smtp(smtp_settings(vars)?)),
+            None => None,
+        };
+        // An operator who set a relay host believes mail is configured; the same refusal
+        // FROM_ENV gets below, for the same reason.
+        if resolved.as_ref().map(Provider::kind) != Some(ProviderKind::Smtp) {
+            if let Some(key) = SMTP_VARS.iter().find(|key| vars.contains_key(**key)) {
+                anyhow::bail!(
+                    "{key} is set but {PROVIDER_ENV} is not {SMTP} — set \
+                     {PROVIDER_ENV}={SMTP}, or unset the {SMTP_HOST_ENV}/{SMTP_PORT_ENV}/\
+                     {SMTP_USERNAME_ENV}/{SMTP_PASSWORD_ENV}/{SMTP_TLS_ENV} group"
+                );
+            }
+        }
 
-        let provider = match (kind, from) {
-            (Some(kind), Some(from)) => Some(ProviderSettings { kind, from }),
-            (Some(kind), None) => anyhow::bail!(
+        let provider = match (resolved, from) {
+            (Some(provider), Some(from)) => Some(ProviderSettings { provider, from }),
+            (Some(provider), None) => anyhow::bail!(
                 "{PROVIDER_ENV}={} but {FROM_ENV} is not set — a provider cannot address a \
                  message without an envelope sender",
-                kind.name()
+                provider.kind().name()
             ),
             // An operator who set an address believes mail is configured; leaving the
             // channel undrained under that belief is the failure this refuses.
@@ -108,6 +151,83 @@ impl MailConfig {
             max_attempts,
         })
     }
+}
+
+/// The `smtp` arm's own parse. `MAIL_SMTP_HOST` and `MAIL_SMTP_TLS` are REQUIRED: the
+/// port has a default because 587 is the submission port every relay agrees on, while a
+/// wrong TLS mode is a connection that silently never completes — an operator who picked
+/// port 465 and left the mode implicit-by-default would watch every row back off with a
+/// timeout. Credentials are both-or-neither: an internal MTA that authorizes by network
+/// legitimately has none, but half a credential is a typo, not a configuration.
+fn smtp_settings(vars: &BTreeMap<String, String>) -> anyhow::Result<SmtpSettings> {
+    let host = match vars.get(SMTP_HOST_ENV) {
+        Some(raw) => checked_host(raw.trim())?,
+        None => anyhow::bail!("{PROVIDER_ENV}={SMTP} but {SMTP_HOST_ENV} is not set"),
+    };
+    let port = parse_port(vars.get(SMTP_PORT_ENV))?;
+    let tls = match vars.get(SMTP_TLS_ENV) {
+        Some(raw) => TlsMode::from_name(raw.trim()).ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid {SMTP_TLS_ENV}: unknown mode {raw:?} (known: {:?})",
+                TlsMode::NAMES
+            )
+        })?,
+        None => anyhow::bail!(
+            "{PROVIDER_ENV}={SMTP} but {SMTP_TLS_ENV} is not set — set it to one of {:?}",
+            TlsMode::NAMES
+        ),
+    };
+    let credentials = match (vars.get(SMTP_USERNAME_ENV), vars.get(SMTP_PASSWORD_ENV)) {
+        (Some(username), Some(password)) => {
+            Some((username.to_string(), Secret::new(password.to_string())))
+        }
+        (None, None) => None,
+        (Some(_), None) => anyhow::bail!(
+            "{SMTP_USERNAME_ENV} is set but {SMTP_PASSWORD_ENV} is not — set both, or \
+             neither for an unauthenticated relay"
+        ),
+        (None, Some(_)) => anyhow::bail!(
+            "{SMTP_PASSWORD_ENV} is set but {SMTP_USERNAME_ENV} is not — set both, or \
+             neither for an unauthenticated relay"
+        ),
+    };
+    Ok(SmtpSettings {
+        host,
+        port,
+        tls,
+        credentials,
+    })
+}
+
+/// The host is a TLS certificate name and an EHLO target, so it carries the same
+/// no-control-characters rule the addresses do, plus no embedded whitespace.
+fn checked_host(value: &str) -> anyhow::Result<String> {
+    if value.is_empty() {
+        anyhow::bail!("invalid {SMTP_HOST_ENV}: is required");
+    }
+    if value.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        anyhow::bail!("invalid {SMTP_HOST_ENV}: must not contain whitespace or control characters");
+    }
+    Ok(value.to_string())
+}
+
+fn parse_port(raw: Option<&String>) -> anyhow::Result<u16> {
+    let Some(raw) = raw else {
+        return Ok(DEFAULT_SMTP_PORT);
+    };
+    let port: u16 = raw.trim().parse().map_err(|_| {
+        anyhow::anyhow!(
+            "invalid {SMTP_PORT_ENV}: must be a TCP port between 1 and 65535 (got {raw:?}); \
+             unset it for the default {DEFAULT_SMTP_PORT}"
+        )
+    })?;
+    if port == 0 {
+        anyhow::bail!(
+            "invalid {SMTP_PORT_ENV}: 0 is not a TCP port; unset it for the default \
+             {DEFAULT_SMTP_PORT}"
+        );
+    }
+    Ok(port)
 }
 
 fn checked_provider(raw: &str) -> anyhow::Result<ProviderKind> {
