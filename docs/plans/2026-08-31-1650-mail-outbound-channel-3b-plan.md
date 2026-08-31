@@ -856,3 +856,38 @@ The plan review returned REJECT with 22 findings. Every one is addressed:
 
 One finding was checked and left as-is: the review's note that `admin-svc` doc prose
 names its peers by count is correct and Step 7 already carried it.
+
+---
+
+## Errata (corrections found while implementing)
+
+1. **Step 2 — `HistoryPolicy::Days(7)` does not exist.** The *Contract shape* section
+   named a variant `core/bus` does not have: `HistoryPolicy` (`core/bus/src/lib.rs:632-638`)
+   is `MinRetention { days: u32 }` or `KeepForever`. Landed as
+   `HistoryPolicy::MinRetention { days: 7 }`, which is what the plan meant. Same class as
+   3a's `Status::InvalidArgument` — a plan naming an API that is not there.
+2. **Step 1 — the preflight compares the caller's own reservation, not
+   `USABLE_PG_SESSIONS + 3`.** The step's text said the latter, which would have refused
+   `devctl up monolith` (25 sessions) on a cluster offering 97. Landed as: each entry point
+   sums the `PoolBudget`s of the fleet it is about to spawn (plus `HARNESS_RESERVE` where
+   the harness runs alongside), and the verdict is `usable >= that sum`. Recorded in
+   `344399e`'s commit message.
+3. **Step 1 — the probe reads three settings, not one.** `max_connections` alone would
+   have let the refusal message assert a `superuser_reserved_connections` value it never
+   read. It now reads `superuser_reserved_connections` and PostgreSQL 16+'s
+   `reserved_connections` in the same round-trip and reports the observed values.
+4. **Step 1 — weles needed its own anti-drift pin.** Every other hand-copied
+   weles↔processctl constant is pinned by `verifyctl`'s `weles-wire-contract` stage; the
+   step did not say so, and the first implementation shipped an unpinned copy. Four
+   constants are now pinned there.
+5. **Step 1 has no test coverage and the plan has no step that covers it.** Step 10's
+   `[test-author]` scope is the `mail` module only. The preflight's pure verdicts
+   (`processctl::check_pg_session_floor`, `weles::pgfloor::{check_pg_session_floor,
+   fleet_session_reservation, fleet_dsn}`) are zero-I/O and `pub` precisely so they can be
+   driven without a cluster; **Step 10 is extended to cover them**, and this is the plan
+   defect that made the omission possible — a step touching testable production code needs
+   a named test step, and Step 1's was missing.
+6. **Observed, unexplained:** one `cargo test -p processctl --lib` run during Step 1
+   reported `46 passed; 1 failed` without naming the test; five subsequent runs were 47/47.
+   The suite forks and holds `flock`s and carries an explicit `fork_flock_serial` guard for
+   that interaction. Not reproduced, not diagnosed, recorded rather than called clean.
