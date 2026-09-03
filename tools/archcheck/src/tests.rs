@@ -1080,7 +1080,7 @@ fn contribs_own_bare_constructor_test_seam_is_not_flagged() {
 
 #[test]
 fn every_canonical_slot_owner_may_construct_slots() {
-    assert_eq!(super::SLOT_OWNER_FILES.len(), 6);
+    assert_eq!(super::SLOT_OWNER_FILES.len(), 7);
     for owner in super::SLOT_OWNER_FILES {
         let findings = super::slot_constructor_violations(
             owner,

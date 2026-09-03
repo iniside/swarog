@@ -1,0 +1,19 @@
+[package]
+name = "push"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# `push` — the server→client delivery model (hub shape, SignalR-derived). A LEAF: it
+# owns the vocabulary (`ConnId`/`Target`/`Message`), the backplane batch codec, the
+# `Sink` seam and the `Push` handle, and it interprets no payload. `core/remote`
+# encodes the batch, `modules/gateway` decodes it and owns the sockets — so the codec
+# lives here rather than being written twice and drifting.
+[dependencies]
+contrib = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

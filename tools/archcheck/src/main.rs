@@ -57,13 +57,14 @@ const GATEWAY_CRATE: &str = "gateway";
 const CONFORMANCE_POLICY_PACKAGE: &str = "conformancecheck";
 const SLOT_CONSTRUCTOR: &str = "contrib::Slot::new(";
 const BARE_SLOT_CONSTRUCTOR: &str = "Slot::new(";
-const SLOT_OWNER_FILES: [&str; 6] = [
+const SLOT_OWNER_FILES: [&str; 7] = [
     "api/admin/api/src/lib.rs",
     "core/opsapi/src/lib.rs",
     "core/edge/src/reg.rs",
     "core/httpmw/src/readiness.rs",
     "core/httpmw/src/layer.rs",
     "core/remote/src/lib.rs",
+    "core/push/src/lib.rs",
 ];
 /// The `cmd/<dir>` crates permitted to host the front door: the dedicated front process
 /// and the monolith. Every other `cmd/*-svc` serves ops only over the internal edge.

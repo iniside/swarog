@@ -3076,6 +3076,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "push"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "contrib",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
