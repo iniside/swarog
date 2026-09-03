@@ -90,6 +90,7 @@ fn forbidden_api_deps_include_edge_and_remote() {
     assert!(FORBIDDEN_API_DEPS.contains(&"edge"));
     assert!(FORBIDDEN_API_DEPS.contains(&"remote"));
     assert!(FORBIDDEN_API_DEPS.contains(&"tokio"));
+    assert!(FORBIDDEN_API_DEPS.contains(&"push"));
 }
 
 #[test]

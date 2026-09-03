@@ -3079,7 +3079,6 @@ dependencies = [
 name = "push"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "contrib",
  "serde",
  "serde_json",

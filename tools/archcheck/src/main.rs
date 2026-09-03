@@ -109,10 +109,12 @@ const DEMO_HOST: &str = "server";
 
 /// Crate names a `<name>api` contract crate must never depend on (non-dev). The
 /// workspace routes transport through the `edge`/`remote` core crates — those are the
-/// realistic regression vector for a contract crate; the raw transport crates are
-/// forbidden too as future-proofing (fact 6).
+/// realistic regression vector for a contract crate; the raw transport crates, and the
+/// `push` delivery seam they would reach a socket through, are forbidden too as
+/// future-proofing (fact 6).
 const FORBIDDEN_API_DEPS: &[&str] = &[
     "tokio", "quinn", "axum", "hyper", "sqlx", "tonic", "reqwest", "tower", "edge", "remote",
+    "push",
 ];
 
 /// The Rust workspace source dirs the two pull-plane bans (below) scan. Docs

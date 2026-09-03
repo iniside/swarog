@@ -12,7 +12,6 @@ publish = false
 # lives here rather than being written twice and drifting.
 [dependencies]
 contrib = { workspace = true }
-async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }

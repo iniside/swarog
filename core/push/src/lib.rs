@@ -1,6 +1,6 @@
 //! `push` — the server→client delivery model: what a message IS, who it is addressed
-//! to, and the one seam a producer calls. A foundation leaf (`contrib` + serde only);
-//! it owns no socket, no transport and no schedule.
+//! to, and the one seam a producer calls. A foundation leaf (`contrib` + serde,
+//! `thiserror` and `tracing`); it owns no socket, no transport and no schedule.
 //!
 //! **The shape, taken from SignalR's hub/lifetime-manager split.** A producer never
 //! learns where a player's connections live: it addresses a [`Target`] and hands a
@@ -19,14 +19,15 @@
 //! **The payload is opaque bytes here.** This crate never parses, validates or
 //! re-encodes it; only the producer and the client agree on its shape.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
-/// The contrib slot a transport contributes its [`Sink`] to during module `init`;
-/// `app::run` drains it after the module build and installs the single contribution
-/// on the process's [`Push`] handle.
+/// The contrib slot a transport contributes its [`Sink`] to during module `init`. The
+/// composition layer (`core/app`, after the module build — contributions do not exist
+/// before then) MUST drain this slot and install AT MOST ONE contribution via
+/// [`Push::install`]; zero is legal and leaves the sinkless handle below.
 pub const SINK_SLOT: contrib::Slot<Arc<dyn Sink>> = contrib::Slot::new("push.sink");
 
 /// The server-minted identity of one client connection.
@@ -46,6 +47,12 @@ impl ConnId {
     /// Mints the next id for this process. The one minting authority, so uniqueness
     /// within the process is structural rather than a convention each accept site
     /// re-implements.
+    ///
+    /// A sequential counter is sound ONLY while an id confers nothing: no [`Target`]
+    /// variant selects a connection, and no client-supplied id is ever honoured. Adding
+    /// either (a `Conn` target, a resume or kick verb naming an id) makes this a
+    /// guessable authority over someone else's socket, and the counter must become a
+    /// CSPRNG value in that same change.
     pub fn mint() -> ConnId {
         ConnId(NEXT_CONN_ID.fetch_add(1, Ordering::Relaxed))
     }
@@ -94,31 +101,40 @@ impl Message {
 
 /// One addressed message on the backplane wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Delivery {
+pub struct Envelope {
     pub target: Target,
     pub msg: Message,
 }
 
-impl Delivery {
-    pub fn new(target: Target, msg: Message) -> Delivery {
-        Delivery { target, msg }
+impl Envelope {
+    pub fn new(target: Target, msg: Message) -> Envelope {
+        Envelope { target, msg }
     }
 }
 
-/// Encodes an ORDERED batch of deliveries for the backplane.
+/// Encodes an ORDERED batch of addressed messages for the backplane.
 ///
 /// Order is the contract, not an implementation detail: the backplane sends a whole
 /// batch in ONE call precisely so frames cannot invert between the split and the
 /// monolith, and both this encoding and [`decode_batch`] preserve the slice order.
 ///
-/// The encoding is JSON, so a byte payload rides as an array of numbers — compact it
-/// is not; single-definition and dependency-free it is.
-pub fn encode_batch(batch: &[Delivery]) -> Result<Vec<u8>, Error> {
+/// **The output is already-encoded JSON.** It belongs in `edge::Client::call_raw`'s
+/// `payload`, which relays those bytes verbatim into the request envelope. Handing it
+/// to generated RPC glue as a typed `Vec<u8>` argument instead would JSON-encode it a
+/// SECOND time — each byte becoming a decimal number in an array, on top of the
+/// numeric array this encoding already produces for [`Message::payload`].
+///
+/// **Nothing here bounds a message or a batch, and the sender must.** The internal
+/// edge rejects an oversized frame whole, so one too-large batch discards every
+/// unrelated small message travelling with it — the opposite of what
+/// one-ordered-batch-per-call is for. A batching sink caps its own batch against the
+/// transport's frame limit and splits into several ordered calls.
+pub fn encode_batch(batch: &[Envelope]) -> Result<Vec<u8>, Error> {
     serde_json::to_vec(batch).map_err(|e| Error::Codec(e.to_string()))
 }
 
 /// Decodes a batch produced by [`encode_batch`], preserving its order.
-pub fn decode_batch(bytes: &[u8]) -> Result<Vec<Delivery>, Error> {
+pub fn decode_batch(bytes: &[u8]) -> Result<Vec<Envelope>, Error> {
     serde_json::from_slice(bytes).map_err(|e| Error::Codec(e.to_string()))
 }
 
@@ -138,21 +154,23 @@ pub enum Delivered {
 
 /// The one seam between a producer and a transport.
 ///
-/// Implementations MUST return promptly: a caller may be holding a database
-/// transaction's connection (the durable-event handler that nudges an inbox is the
-/// motivating case), so a sink hands off to its own queue and returns [`Delivered::Queued`]
-/// rather than awaiting a network round-trip. A full queue is [`Error::Backlogged`] —
-/// dropped and counted, never blocked on.
-#[async_trait::async_trait]
+/// **Synchronous on purpose.** A caller may hold a database transaction's connection —
+/// the durable-event handler that nudges an inbox is the motivating case, and a handler
+/// that exceeds `ASYNCEVENTS_HANDLER_TIMEOUT` pauses its whole subscription. A sink
+/// therefore cannot await anything: it resolves against an in-memory registry or
+/// non-blockingly offers to its own queue and returns [`Delivered::Queued`]. A full
+/// queue is [`Error::Backlogged`] — dropped, never blocked on, and the sink owning that
+/// queue is the one that must count the drops.
 pub trait Sink: Send + Sync + 'static {
-    async fn send(&self, target: &Target, msg: &Message) -> Result<Delivered, Error>;
+    fn send(&self, target: &Target, msg: &Message) -> Result<Delivered, Error>;
 }
 
-/// The process-wide push handle, reachable from every module through the lifecycle
-/// `Context`. Always present; the [`Sink`] behind it is optional and installed once.
+/// The process-wide push handle. Always present; the [`Sink`] behind it is optional and
+/// installed at most once, by the composition layer.
 #[derive(Default)]
 pub struct Push {
     sink: OnceLock<Arc<dyn Sink>>,
+    no_sink_logged: AtomicBool,
 }
 
 impl Push {
@@ -170,26 +188,28 @@ impl Push {
         }
     }
 
-    pub fn has_sink(&self) -> bool {
-        self.sink.get().is_some()
-    }
-
     /// Sends `msg` to `target` through the installed sink.
     ///
-    /// With no sink installed this is [`Error::NoSink`] AND an `error!` log — a
-    /// process that pushes without a transport is a wiring mistake we want in the logs
-    /// of the process that made it. Deliberately not a panic (it would kill a request
-    /// or a durable-delivery path over a best-effort concern) and deliberately not a
-    /// silent no-op.
-    pub async fn send(&self, target: &Target, msg: &Message) -> Result<Delivered, Error> {
+    /// With no sink installed this is [`Error::NoSink`] — deliberately not a panic (it
+    /// would kill a request or a durable-delivery path over a best-effort concern) and
+    /// deliberately not a silent no-op. The mistake is logged at `error!` ONCE per
+    /// process and at `debug!` thereafter: a sinkless process pushing once per durable
+    /// event would otherwise bury every other line in the log, and the per-call signal
+    /// callers act on is the returned error, not the log.
+    pub fn send(&self, target: &Target, msg: &Message) -> Result<Delivered, Error> {
         let Some(sink) = self.sink.get() else {
-            tracing::error!(
-                topic = %msg.topic,
-                "push: no sink installed in this process; message dropped"
-            );
+            if self.no_sink_logged.swap(true, Ordering::Relaxed) {
+                tracing::debug!(topic = %msg.topic, "push: no sink installed; message dropped");
+            } else {
+                tracing::error!(
+                    topic = %msg.topic,
+                    "push: no sink installed in this process; message dropped (further \
+                     occurrences log at debug)"
+                );
+            }
             return Err(Error::NoSink);
         };
-        sink.send(target, msg).await
+        sink.send(target, msg)
     }
 }
 
