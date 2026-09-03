@@ -66,6 +66,11 @@ use tokio::task::JoinHandle;
 // [`Reconnecting`] conn or [`Pool`] re-resolves live without a consumer restart.
 // ---------------------------------------------------------------------------
 pub mod resolve;
+
+/// The push backplane sender: a bounded queue, its drain task and the `Module` that owns
+/// both. Separate file — it is a sender built ON the pool, not part of the swap.
+mod push_backplane;
+pub use push_backplane::PushSender;
 pub use resolve::{resolve_peer, AddrKind, ErrorCode, ResolveError};
 
 /// Fetches a peer's `#[http]` op manifest by calling the reserved
@@ -646,6 +651,14 @@ pub type PeerListResolver =
 /// drive a background refresh; the throttle makes the two idempotent.
 const POOL_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
+/// Upper bound on ONE instance's [`Pool::deliver_all`] call. The pool's request path has
+/// no timeout of its own — a `Reconnecting` call is bounded only by the edge's dial
+/// deadline and the peer's own stream grace — which is right for a capability call whose
+/// caller is waiting for the answer. A fan-out is not that: it holds a batch of
+/// best-effort messages, so one front that accepts the connection and then stalls must
+/// cost that batch a bounded delay, not the drain loop's liveness.
+const FANOUT_CALL_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Per-instance health, stamped by that instance's own [`probe_loop`] and READ (zero
 /// I/O) by pool selection + the pool's `/readyz`. One of these PER instance — the
 /// fan-out of the single-`Stub` verdict cache. Reuses [`readiness_verdict`] so the
@@ -985,6 +998,105 @@ impl Pool {
             (inst.close)().await;
         }
     }
+
+    /// The zero-I/O state a best-effort FAN-OUT sender needs before deciding whether to
+    /// hold a message or drop it. Distinct from [`readyz`](Pool::readyz), which answers a
+    /// health question over COMPLETED probes; this one separates "the list has never been
+    /// resolved" from "the list resolved and nothing is selectable", because a sender must
+    /// react to those oppositely.
+    pub fn fanout_state(&self) -> FanoutState {
+        let now = coarse_now_secs();
+        let g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
+        // Read under the set lock: `applied_gen` is written there by `refresh_once`, so the
+        // generation and the set it produced can never be observed apart.
+        if self.applied_gen.load(Ordering::SeqCst) == 0 {
+            return FanoutState::Unresolved;
+        }
+        match g.iter().filter(|i| i.health.is_selectable(now)).count() {
+            0 => FanoutState::NoTarget,
+            n => FanoutState::Ready(n),
+        }
+    }
+
+    /// Calls EVERY currently-selectable instance concurrently and answers how many
+    /// accepted — the fan-out counterpart of [`call`](Caller::call)'s round-robin
+    /// select-one. A backplane broadcast must reach every front that might own the
+    /// addressed sockets, so "pick one instance" is the wrong shape for it.
+    ///
+    /// Best-effort by construction: it NEVER returns `Err`. An instance that is dead,
+    /// rejects the call, or does not answer within [`FANOUT_CALL_TIMEOUT`] is one
+    /// undelivered message logged at `debug!` and excluded from the count — a
+    /// server→client message has no durable copy to redeliver and no checkpoint to pause,
+    /// so a dead front must never turn into a caller-visible error.
+    ///
+    /// Every call goes out with [`RetryMode::Never`]: a replayed best-effort frame is
+    /// worse than a dropped one (the client would see it twice with no id to dedup on),
+    /// and the pool's cross-instance failover would additionally deliver it to a front
+    /// this fan-out is already calling directly.
+    pub async fn deliver_all(&self, method: &str, payload: &[u8]) -> usize {
+        self.refresh().await;
+        let now = coarse_now_secs();
+        // Clone the callers out and drop the std guard before awaiting — the same
+        // clone-then-await shape `call` uses (a std guard must never cross an `.await`).
+        let targets: Vec<(Arc<dyn Caller>, String)> = {
+            let g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
+            g.iter()
+                .filter(|i| i.health.is_selectable(now))
+                .map(|i| (i.caller.clone(), i.addr.clone()))
+                .collect()
+        };
+        if targets.is_empty() {
+            return 0;
+        }
+        let calls = targets.into_iter().map(|(caller, addr)| {
+            let method = method.to_string();
+            async move {
+                let call = caller.call(&method, None, payload, RetryMode::Never);
+                match tokio::time::timeout(FANOUT_CALL_TIMEOUT, call).await {
+                    Ok(Ok(_)) => true,
+                    Ok(Err(e)) => {
+                        tracing::debug!(
+                            instance = %addr,
+                            method = %method,
+                            error = %e,
+                            "remote fan-out: instance did not accept the message"
+                        );
+                        false
+                    }
+                    Err(_) => {
+                        tracing::debug!(
+                            instance = %addr,
+                            method = %method,
+                            timeout = ?FANOUT_CALL_TIMEOUT,
+                            "remote fan-out: instance timed out"
+                        );
+                        false
+                    }
+                }
+            }
+        });
+        futures::future::join_all(calls)
+            .await
+            .into_iter()
+            .filter(|accepted| *accepted)
+            .count()
+    }
+}
+
+/// What [`Pool::fanout_state`] answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FanoutState {
+    /// No resolve has APPLIED yet, so the empty instance set means "not looked up",
+    /// not "nothing alive". A sender must WAIT here: dropping now discards every
+    /// message produced between `start` spawning the refresh loop and its first
+    /// resolve landing.
+    Unresolved,
+    /// A resolve applied and left nothing selection may route to — an empty address
+    /// list, or every instance probed dead. A best-effort sender short-circuits: there
+    /// is nowhere to deliver, and holding the messages only grows the backlog.
+    NoTarget,
+    /// `n` instances are currently selectable.
+    Ready(usize),
 }
 
 #[async_trait]

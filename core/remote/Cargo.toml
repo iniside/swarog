@@ -17,6 +17,9 @@ publish = false
 [dependencies]
 contrib = { workspace = true }
 edge = { workspace = true }
+# The push backplane sender (`PushSender`) lives here because it is a SENDER built on
+# `Pool`, whose instance types are crate-private. core→core: `push` is a foundation leaf.
+push = { workspace = true }
 opsapi = { workspace = true }
 lifecycle = { workspace = true }
 # Readiness slot: each `Stub` contributes an `httpmw::ReadyCheck` so a stub-holding

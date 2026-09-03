@@ -3397,6 +3397,7 @@ dependencies = [
  "httpmw",
  "lifecycle",
  "opsapi",
+ "push",
  "registry",
  "reqwest",
  "serde",
