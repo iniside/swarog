@@ -28,9 +28,11 @@ use tokio::task::JoinHandle;
 
 use crate::{pool_refresh_loop, FanoutState, PeerListResolver, PeerSource, Pool};
 
-/// The wire method one batch travels as. A front's receiving half MUST register under
-/// exactly this name; a mismatch is an `edge::Error::UnknownMethod`, which this path
-/// cannot distinguish from a dead front — it is one more silent drop.
+/// The wire method one batch travels as. Nothing links this constant to the front's
+/// registration, so the two names are a hand-maintained contract: a mismatch answers
+/// `edge::Error::UnknownMethod` on every batch, which [`Pool::deliver_all`] logs at
+/// `debug!` and counts as a rejection — a total outage that looks exactly like every front
+/// being down, and never fails a boot.
 const DELIVER_METHOD: &str = "push.deliver";
 
 /// How many messages the sink holds before it starts dropping. Depth is a memory bound on
@@ -269,6 +271,25 @@ impl Module for PushSender {
     }
 }
 
+/// Closes the queue and counts everything still in it, plus the `held` messages the caller
+/// was carrying — the drain's exit accounting.
+///
+/// Without this a shutdown discards up to a full queue with no record, and a drop total
+/// that is wrong by an order of magnitude is worse than no total: it is the number an
+/// operator uses to decide whether a push outage happened. Closing first also converts
+/// every later producer call into the sink's own counted `drain-stopped` drop, instead of
+/// leaving messages to disappear into a receiver nobody polls.
+fn record_stop_loss(rx: &mut mpsc::Receiver<Envelope>, drops: &Drops, held: u64) {
+    rx.close();
+    let mut lost = held;
+    while rx.try_recv().is_ok() {
+        lost += 1;
+    }
+    if lost > 0 {
+        drops.record(lost, "stopping");
+    }
+}
+
 /// Pops a batch, waits for the pool to have an answer, and forwards the batch as ordered
 /// `push.deliver` calls until the stop signal fires.
 async fn drain_loop(
@@ -282,9 +303,13 @@ async fn drain_loop(
     loop {
         let first = tokio::select! {
             biased;
-            _ = stop.changed() => return,
+            _ = stop.changed() => {
+                record_stop_loss(&mut rx, &drops, 0);
+                return;
+            }
             msg = rx.recv() => match msg {
                 Some(msg) => msg,
+                // Every sender is gone; there is nothing left to account for.
                 None => return,
             },
         };
@@ -301,11 +326,14 @@ async fn drain_loop(
         if !resolve_waited {
             resolve_waited = true;
             if !wait_for_resolve(&pool, &mut stop).await {
-                drops.record(batch.len() as u64, "stopping");
+                record_stop_loss(&mut rx, &drops, batch.len() as u64);
                 return;
             }
         }
+        // `send_batch` has already accounted for the batch it was holding; what remains
+        // unaccounted is the queue behind it.
         if !send_batch(&pool, batch, &drops, &mut stop).await {
+            record_stop_loss(&mut rx, &drops, 0);
             return;
         }
     }

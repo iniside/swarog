@@ -150,11 +150,23 @@ contribute none, and none contributes one until Step 4 lands); two is a loud sta
 One installation authority, not two.
 
 **Step 3 — `core/remote`: the backplane sender.** `[opus]` core-implementer.
-A fan-out-to-all-selectable-instances call beside the existing round-robin (it must live inside
+A fan-out-to-all-resolved-instances call beside the existing round-robin (it must live inside
 the crate — the instance types are private), plus a small `Module` that owns a bounded queue and
 its drain task and stops them. The drain sends **one ordered batch per pass** (constraint 7) and
-must distinguish "pool never resolved" from "pool resolved, nothing alive" so startup does not
+must distinguish "pool never resolved" from "pool resolved to no addresses" so startup does not
 discard the first messages. It must not copy `remote::Stub`'s `PEER_SLOT` contribution.
+
+*Errata (2026-09-03, review rounds 1–2 on `55809eb`/`95f8188`):* this step originally said
+*selectable* instances and *"resolved, nothing alive"*. Both were reversed during review and the
+text above now describes the code. A probe verdict may not decide WHETHER a best-effort message
+is attempted — `probe_peer`'s 1s dial permanently condemns a front that handshakes in 1.2s but
+serves `push.deliver` perfectly, and an unattempted send is more fail-closed than the request
+path this borrows from. Health instead sets the per-instance DEADLINE (`FANOUT_CALL_TIMEOUT` vs
+the much shorter `FANOUT_UNHEALTHY_TIMEOUT`), which keeps the unconditional attempt without
+letting one listed corpse — `join_all` completes on the slowest, batches are awaited
+sequentially — tax every batch to every live front until the queue overflows. Consequently
+`FanoutState` has no "resolved, nothing alive" variant: that is `Ready(n)`, and only a resolve
+returning zero addresses (`Empty`) short-circuits.
 
 **Step 4 — gateway: the WebSocket transport.** `[opus]` core-implementer.
 Enable axum's `ws` feature; add `GET /push` ahead of the gateway's fallback; handshake with the
@@ -183,13 +195,23 @@ Covers Steps 1–3. Must execute, at minimum: `Push::install` panicking on a sec
 the latched `NoSink` log (first `error!`, then `debug!`) and its `Err`; `encode_batch`/
 `decode_batch` preserving order; and `app::select_push_sink` over 0, 1 and 2 sinks — the
 two-sink `bail!` is otherwise reachable only by booting a real fleet.
-Plus the two branches Step 3 (`55809eb` + its review follow-up) made once-wrong, both in
-`core/remote`: `Pool::fanout_state` answering `Unresolved` before any resolve versus `Empty`
-after a resolve that returned no addresses — reachable only by driving `refresh_once`, whose
-resolver-`Err` early return never stamps `applied_gen` and is the trap; and
-`push_backplane::split_batch` at the byte boundary — an element that exactly fits, an element
-that cannot fit alone (dropped and counted, not carried forward), and order preserved across
-the resulting chunks.
+Plus the branches Step 3 (`55809eb`, `95f8188` and its round-2 follow-up) made once-wrong, all
+in `core/remote` and all reachable with the existing `Pool::with_factory` fake-instance fixture
+plus a paused clock:
+- `Pool::fanout_state` answering `Unresolved` before any resolve versus `Empty` after a resolve
+  that returned no addresses — reachable only by driving `refresh_once`, whose resolver-`Err`
+  early return never stamps `applied_gen` and is the trap.
+- `push_backplane::split_batch` at the byte boundary — an element that exactly fits, an element
+  that cannot fit alone (dropped and counted, not carried forward), and order preserved across
+  the resulting chunks.
+- `Pool::deliver_all` ATTEMPTING an instance that is not `is_selectable`, with the short
+  `FANOUT_UNHEALTHY_TIMEOUT` rather than the full one. Nothing else pins this, so a later reader
+  "restores" the health gate and silently re-opens the condemned-slow-front bug.
+- The `resolve_waited` latch: the second batch must not wait again. A regression to the
+  per-batch wait is invisible except as a 5s-per-batch throttle.
+- `send_batch` returning `false` on a stop observed DURING `deliver_all`, and `drain_loop`'s
+  `record_stop_loss` counting the queue behind it — the counted-exit property. Asserting only
+  that the drain ends would pass from the abort path this replaced.
 
 **Step 9a — `core/app`: the upgrade survives the layer stack.** `[test-author]`, `model:"opus"`.
 The plan's one unproven claim — that the whole-request timeout bounds response-*start* and not

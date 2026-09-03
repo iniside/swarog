@@ -662,6 +662,15 @@ const POOL_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// liveness.
 const FANOUT_CALL_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// [`Pool::deliver_all`]'s bound for an instance whose probe has COMPLETED and failed (or
+/// gone stale) — the one place a probe verdict is allowed to influence a fan-out. It must
+/// stay ABOVE [`probe_peer`]'s own 1s dial: a front condemned for handshaking in 1.2s is
+/// exactly the case the unconditional attempt exists for, and matching the probe's bound
+/// would condemn it a second time. It must stay far BELOW [`FANOUT_CALL_TIMEOUT`]: a peer
+/// that is listed but gone answers a UDP dial with silence, and the sender awaits its
+/// batches sequentially, so this is what a corpse costs every batch to every live front.
+const FANOUT_UNHEALTHY_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Per-instance health, stamped by that instance's own [`probe_loop`] and READ (zero
 /// I/O) by pool selection + the pool's `/readyz`. One of these PER instance — the
 /// fan-out of the single-`Stub` verdict cache. Reuses [`readiness_verdict`] so the
@@ -707,6 +716,22 @@ struct ProbeHandle {
     task: JoinHandle<()>,
 }
 
+/// The leak net for the probe task, on the handle that OWNS it rather than on any of its
+/// holders: `JoinHandle`'s own `Drop` DETACHES the task, so every path that drops a handle
+/// without joining it would otherwise leave a probe dialing forever. Holders are several
+/// and each has its own way of skipping teardown — an `Instance` dropped from a `Pool` that
+/// was never stopped, the `removed` vec of a reconcile whose detached teardown task is cut
+/// short, and the frame of a `stop_probe` cancelled by a truncated module `stop` (where the
+/// handle is a local, out of reach of any holder's `Drop`). Aborting here covers all of
+/// them. Abort is sync-safe and `Drop` must never block/await, so only the task is stopped
+/// (the connection closes as its `Arc`s drop), and aborting an already-joined task is a
+/// no-op — so the graceful [`Instance::stop_probe`] path stays authoritative.
+impl Drop for ProbeHandle {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 /// Closes an instance's underlying edge connection on teardown. Boxed because [`Pool`]
 /// holds each instance's caller as `Arc<dyn Caller>` (for fake-injectability) and
 /// `Caller` has no `close` — the edge factory captures the concrete `Reconnecting` in
@@ -728,15 +753,14 @@ impl Instance {
     /// Grace-then-abort the probe task (mirrors [`Stub::stop`]) — called when this
     /// instance is dropped from the set (scaled away) or the whole pool stops.
     async fn stop_probe(&mut self) {
-        if let Some(p) = self.probe.take() {
+        if let Some(mut p) = self.probe.take() {
             let _ = p.stop.send(true);
-            let mut task = p.task;
-            match tokio::time::timeout(PROBE_STOP_GRACE, &mut task).await {
-                Ok(_) => {}
-                Err(_) => {
-                    task.abort();
-                    let _ = task.await;
-                }
+            // The handle stays INSIDE `ProbeHandle` (its `Drop` cannot be partially moved
+            // out of), which is also what makes a cancellation here safe: the local `p`
+            // drops and aborts.
+            if tokio::time::timeout(PROBE_STOP_GRACE, &mut p.task).await.is_err() {
+                p.task.abort();
+                let _ = (&mut p.task).await;
             }
         }
     }
@@ -1032,20 +1056,31 @@ impl Pool {
     /// broadcast must reach every front that might own the addressed sockets, so "pick one
     /// instance" is the wrong shape for it.
     ///
-    /// **Health does NOT gate a target here, unlike `call`.** `call` must choose ONE
-    /// instance and would otherwise route part of the traffic to a corpse; a fan-out
-    /// chooses none, so skipping an instance can only SUBTRACT a delivery. A probe verdict
-    /// is a 1s dial away from flapping (see [`probe_peer`]), and a front answering
-    /// `push.deliver` perfectly well while handshaking slower than that must still be
-    /// attempted — an unattempted send is more fail-closed than the request path, which is
-    /// the wrong direction for a best-effort channel. The cost of being wrong is one
-    /// bounded [`FANOUT_CALL_TIMEOUT`], paid concurrently with the live instances.
+    /// **Health does NOT gate a target here, unlike `call` — it sets that target's
+    /// DEADLINE.** `call` must choose ONE instance and would otherwise route part of the
+    /// traffic to a corpse; a fan-out chooses none, so skipping an instance can only
+    /// SUBTRACT a delivery. A probe verdict is a 1s dial away from flapping (see
+    /// [`probe_peer`]), and a front answering `push.deliver` perfectly well while
+    /// handshaking slower than that must still be attempted — an unattempted send is more
+    /// fail-closed than the request path, which is the wrong direction for a best-effort
+    /// channel.
+    ///
+    /// Attempting unconditionally is not free either, and the cost lands on the WRONG
+    /// instances: this future completes on the slowest target, the sender awaits its
+    /// batches sequentially, and a crashed-but-still-listed peer answers a UDP dial with
+    /// nothing at all — so one corpse on the full bound would tax every batch to every
+    /// LIVE front, until the sender's queue overflows and starts dropping messages
+    /// addressed to fronts that are up. So the probe verdict picks the bound instead of
+    /// the target: [`FANOUT_CALL_TIMEOUT`] for a never-probed or healthy instance,
+    /// [`FANOUT_UNHEALTHY_TIMEOUT`] for one whose probe has completed and failed (or gone
+    /// stale). A condemned instance still gets its attempt, and a condemned CORPSE costs
+    /// the batch a fraction of what a gate would have cost the healthy fronts.
     ///
     /// Best-effort by construction: it NEVER returns `Err`. An instance that is dead,
-    /// rejects the call, or does not answer within [`FANOUT_CALL_TIMEOUT`] is one
-    /// undelivered message logged at `debug!` and excluded from the count — a
-    /// server→client message has no durable copy to redeliver and no checkpoint to pause,
-    /// so a dead front must never turn into a caller-visible error.
+    /// rejects the call, or does not answer within its bound is one undelivered message
+    /// logged at `debug!` and excluded from the count — a server→client message has no
+    /// durable copy to redeliver and no checkpoint to pause, so a dead front must never
+    /// turn into a caller-visible error.
     ///
     /// Every call goes out with [`RetryMode::Never`], which here suppresses
     /// [`Reconnecting`]'s own redial-and-replay to the SAME instance: a replayed
@@ -1054,22 +1089,32 @@ impl Pool {
     /// it lives in [`Caller::call`], which this path never enters.)
     pub(crate) async fn deliver_all(&self, method: &str, payload: &[u8]) -> usize {
         self.refresh().await;
+        let now = coarse_now_secs();
         // Clone the callers out and drop the std guard before awaiting — the same
         // clone-then-await shape `call` uses (a std guard must never cross an `.await`).
-        let targets: Vec<(Arc<dyn Caller>, String)> = {
+        // The health read happens HERE, under the same lock, so the bound belongs to the
+        // instance it was read from even if a reconcile lands mid-fan-out.
+        let targets: Vec<(Arc<dyn Caller>, String, Duration)> = {
             let g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
             g.iter()
-                .map(|i| (i.caller.clone(), i.addr.clone()))
+                .map(|i| {
+                    let budget = if i.health.is_selectable(now) {
+                        FANOUT_CALL_TIMEOUT
+                    } else {
+                        FANOUT_UNHEALTHY_TIMEOUT
+                    };
+                    (i.caller.clone(), i.addr.clone(), budget)
+                })
                 .collect()
         };
         if targets.is_empty() {
             return 0;
         }
-        let calls = targets.into_iter().map(|(caller, addr)| {
+        let calls = targets.into_iter().map(|(caller, addr, budget)| {
             let method = method.to_string();
             async move {
                 let call = caller.call(&method, None, payload, RetryMode::Never);
-                match tokio::time::timeout(FANOUT_CALL_TIMEOUT, call).await {
+                match tokio::time::timeout(budget, call).await {
                     Ok(Ok(_)) => true,
                     Ok(Err(e)) => {
                         tracing::debug!(
@@ -1084,7 +1129,7 @@ impl Pool {
                         tracing::debug!(
                             instance = %addr,
                             method = %method,
-                            timeout = ?FANOUT_CALL_TIMEOUT,
+                            timeout = ?budget,
                             "remote fan-out: instance timed out"
                         );
                         false
@@ -1255,26 +1300,6 @@ impl Caller for Pool {
         };
         // Bounded to ONE cross-instance attempt: J's result (success or error) is final.
         second_caller.call(method, identity, payload, retry_mode).await
-    }
-}
-
-/// Safety net for the leak class: an [`Instance`] dropped WITHOUT
-/// [`stop_probe`](Instance::stop_probe) would otherwise leave its probe `JoinHandle`
-/// running detached — `JoinHandle`'s own `Drop` DETACHES the task, it does not abort it.
-/// This aborts it instead. Abort is sync-safe and `Drop` must never block/await, so only
-/// the task is stopped (the connection closes as its `Arc`s drop);
-/// [`stop_probe`](Instance::stop_probe) stays the graceful grace-then-abort path and
-/// leaves `probe` as `None`, so a stopped instance's drop does nothing.
-///
-/// It lives on the instance rather than on [`Pool`] because that is where ownership is:
-/// a `Pool::drop` loop covers only the instances still IN the set, and misses exactly the
-/// ones a `stop` truncated mid-teardown or a reconcile handed to the detached
-/// vanished-instance task.
-impl Drop for Instance {
-    fn drop(&mut self) {
-        if let Some(p) = self.probe.as_ref() {
-            p.task.abort();
-        }
     }
 }
 
