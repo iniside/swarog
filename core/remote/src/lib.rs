@@ -651,13 +651,16 @@ pub type PeerListResolver =
 /// drive a background refresh; the throttle makes the two idempotent.
 const POOL_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Upper bound on ONE instance's [`Pool::deliver_all`] call. The pool's request path has
-/// no timeout of its own — a `Reconnecting` call is bounded only by the edge's dial
-/// deadline and the peer's own stream grace — which is right for a capability call whose
-/// caller is waiting for the answer. A fan-out is not that: it holds a batch of
-/// best-effort messages, so one front that accepts the connection and then stalls must
-/// cost that batch a bounded delay, not the drain loop's liveness.
-const FANOUT_CALL_TIMEOUT: Duration = Duration::from_secs(2);
+/// Upper bound on ONE instance's [`Pool::deliver_all`] call, covering BOTH halves of that
+/// future: the lazy dial a cold [`Reconnecting`] performs inside it and the call that
+/// follows. It must stay ABOVE `edge`'s own 5s dial deadline. Below it, a front whose QUIC
+/// handshake is merely slow (cross-host RTT, loaded box, cold rustls) is cancelled
+/// mid-dial, caches no connection, and is re-cancelled on every later batch — permanently
+/// undeliverable over a link an ordinary capability call succeeds on. Above it, the dial
+/// keeps its own deadline and this bound catches only the case it is for: a front that
+/// connected and then stalled must cost one batch a bounded delay, never the drain's
+/// liveness.
+const FANOUT_CALL_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Per-instance health, stamped by that instance's own [`probe_loop`] and READ (zero
 /// I/O) by pool selection + the pool's `/readyz`. One of these PER instance — the
@@ -987,41 +990,56 @@ impl Pool {
     }
 
     /// Tears down every instance (probe task + connection) — the pool's `stop`, wired by
-    /// the owning `Stub` in C2.
+    /// the owning [`Stub`] / [`PushSender`] in C2.
+    ///
+    /// Instances are torn down CONCURRENTLY, so the whole call costs about one
+    /// [`PROBE_STOP_GRACE`] rather than N of them. Sequentially it did not fit inside a
+    /// module's `MODULE_STOP_GRACE_MS` past two instances, and a truncated `stop` is the
+    /// worst outcome available: the instances taken out of the set here would drop without
+    /// their teardown running.
     pub async fn stop(&self) {
         let taken: Vec<Instance> = {
             let mut g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *g)
         };
-        for mut inst in taken {
+        futures::future::join_all(taken.into_iter().map(|mut inst| async move {
             inst.stop_probe().await;
             (inst.close)().await;
-        }
+        }))
+        .await;
     }
 
     /// The zero-I/O state a best-effort FAN-OUT sender needs before deciding whether to
-    /// hold a message or drop it. Distinct from [`readyz`](Pool::readyz), which answers a
-    /// health question over COMPLETED probes; this one separates "the list has never been
-    /// resolved" from "the list resolved and nothing is selectable", because a sender must
-    /// react to those oppositely.
-    pub fn fanout_state(&self) -> FanoutState {
-        let now = coarse_now_secs();
+    /// hold a message or drop it. It answers a SET question — has the list been resolved,
+    /// and did it resolve to anything — deliberately NOT the health question
+    /// [`readyz`](Pool::readyz) answers: an instance's probe verdict must not decide
+    /// whether a best-effort message is attempted (see [`deliver_all`](Pool::deliver_all)).
+    pub(crate) fn fanout_state(&self) -> FanoutState {
         let g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
         // Read under the set lock: `applied_gen` is written there by `refresh_once`, so the
         // generation and the set it produced can never be observed apart.
         if self.applied_gen.load(Ordering::SeqCst) == 0 {
             return FanoutState::Unresolved;
         }
-        match g.iter().filter(|i| i.health.is_selectable(now)).count() {
-            0 => FanoutState::NoTarget,
+        match g.len() {
+            0 => FanoutState::Empty,
             n => FanoutState::Ready(n),
         }
     }
 
-    /// Calls EVERY currently-selectable instance concurrently and answers how many
-    /// accepted — the fan-out counterpart of [`call`](Caller::call)'s round-robin
-    /// select-one. A backplane broadcast must reach every front that might own the
-    /// addressed sockets, so "pick one instance" is the wrong shape for it.
+    /// Calls EVERY resolved instance concurrently and answers how many accepted — the
+    /// fan-out counterpart of [`call`](Caller::call)'s round-robin select-one. A backplane
+    /// broadcast must reach every front that might own the addressed sockets, so "pick one
+    /// instance" is the wrong shape for it.
+    ///
+    /// **Health does NOT gate a target here, unlike `call`.** `call` must choose ONE
+    /// instance and would otherwise route part of the traffic to a corpse; a fan-out
+    /// chooses none, so skipping an instance can only SUBTRACT a delivery. A probe verdict
+    /// is a 1s dial away from flapping (see [`probe_peer`]), and a front answering
+    /// `push.deliver` perfectly well while handshaking slower than that must still be
+    /// attempted — an unattempted send is more fail-closed than the request path, which is
+    /// the wrong direction for a best-effort channel. The cost of being wrong is one
+    /// bounded [`FANOUT_CALL_TIMEOUT`], paid concurrently with the live instances.
     ///
     /// Best-effort by construction: it NEVER returns `Err`. An instance that is dead,
     /// rejects the call, or does not answer within [`FANOUT_CALL_TIMEOUT`] is one
@@ -1029,19 +1047,18 @@ impl Pool {
     /// server→client message has no durable copy to redeliver and no checkpoint to pause,
     /// so a dead front must never turn into a caller-visible error.
     ///
-    /// Every call goes out with [`RetryMode::Never`]: a replayed best-effort frame is
-    /// worse than a dropped one (the client would see it twice with no id to dedup on),
-    /// and the pool's cross-instance failover would additionally deliver it to a front
-    /// this fan-out is already calling directly.
-    pub async fn deliver_all(&self, method: &str, payload: &[u8]) -> usize {
+    /// Every call goes out with [`RetryMode::Never`], which here suppresses
+    /// [`Reconnecting`]'s own redial-and-replay to the SAME instance: a replayed
+    /// best-effort frame is worse than a dropped one, because the client would see it
+    /// twice with no id to dedup on. (The pool's cross-instance failover is not in play —
+    /// it lives in [`Caller::call`], which this path never enters.)
+    pub(crate) async fn deliver_all(&self, method: &str, payload: &[u8]) -> usize {
         self.refresh().await;
-        let now = coarse_now_secs();
         // Clone the callers out and drop the std guard before awaiting — the same
         // clone-then-await shape `call` uses (a std guard must never cross an `.await`).
         let targets: Vec<(Arc<dyn Caller>, String)> = {
             let g = self.instances.lock().unwrap_or_else(|e| e.into_inner());
             g.iter()
-                .filter(|i| i.health.is_selectable(now))
                 .map(|i| (i.caller.clone(), i.addr.clone()))
                 .collect()
         };
@@ -1085,17 +1102,18 @@ impl Pool {
 
 /// What [`Pool::fanout_state`] answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FanoutState {
+pub(crate) enum FanoutState {
     /// No resolve has APPLIED yet, so the empty instance set means "not looked up",
-    /// not "nothing alive". A sender must WAIT here: dropping now discards every
+    /// not "nothing there". A sender must WAIT here: dropping now discards every
     /// message produced between `start` spawning the refresh loop and its first
     /// resolve landing.
     Unresolved,
-    /// A resolve applied and left nothing selection may route to — an empty address
-    /// list, or every instance probed dead. A best-effort sender short-circuits: there
-    /// is nowhere to deliver, and holding the messages only grows the backlog.
-    NoTarget,
-    /// `n` instances are currently selectable.
+    /// A resolve applied and returned no addresses. This is the ONLY state a
+    /// best-effort sender may short-circuit on: there is demonstrably nowhere to
+    /// deliver. An instance that merely looks unhealthy is NOT this — it is still
+    /// attempted (see [`Pool::deliver_all`]).
+    Empty,
+    /// `n` instances are resolved.
     Ready(usize),
 }
 
@@ -1240,19 +1258,22 @@ impl Caller for Pool {
     }
 }
 
-/// Safety net for the leak class: a `Pool` dropped WITHOUT [`stop`](Pool::stop) (the
-/// graceful path C2 wires) would otherwise leave every per-instance probe `JoinHandle`
-/// running detached. Drop ABORTS them synchronously — abort is sync-safe and Drop must
-/// never block/await, so this only aborts the tasks (connections close as their `Arc`s
-/// drop); [`stop`](Pool::stop) stays the graceful grace-then-abort path.
-impl Drop for Pool {
+/// Safety net for the leak class: an [`Instance`] dropped WITHOUT
+/// [`stop_probe`](Instance::stop_probe) would otherwise leave its probe `JoinHandle`
+/// running detached — `JoinHandle`'s own `Drop` DETACHES the task, it does not abort it.
+/// This aborts it instead. Abort is sync-safe and `Drop` must never block/await, so only
+/// the task is stopped (the connection closes as its `Arc`s drop);
+/// [`stop_probe`](Instance::stop_probe) stays the graceful grace-then-abort path and
+/// leaves `probe` as `None`, so a stopped instance's drop does nothing.
+///
+/// It lives on the instance rather than on [`Pool`] because that is where ownership is:
+/// a `Pool::drop` loop covers only the instances still IN the set, and misses exactly the
+/// ones a `stop` truncated mid-teardown or a reconcile handed to the detached
+/// vanished-instance task.
+impl Drop for Instance {
     fn drop(&mut self) {
-        if let Ok(g) = self.instances.get_mut() {
-            for inst in g.iter() {
-                if let Some(p) = inst.probe.as_ref() {
-                    p.task.abort();
-                }
-            }
+        if let Some(p) = self.probe.as_ref() {
+            p.task.abort();
         }
     }
 }

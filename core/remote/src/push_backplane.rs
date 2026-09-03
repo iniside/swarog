@@ -26,12 +26,11 @@ use push::{Delivered, Envelope, Message, Target};
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
-use crate::{
-    pool_refresh_loop, FanoutState, PeerListResolver, PeerSource, Pool, PROBE_STOP_GRACE,
-};
+use crate::{pool_refresh_loop, FanoutState, PeerListResolver, PeerSource, Pool};
 
-/// The wire method the fronts serve for a backplane batch (`modules/gateway` registers the
-/// receiving half under this same name).
+/// The wire method one batch travels as. A front's receiving half MUST register under
+/// exactly this name; a mismatch is an `edge::Error::UnknownMethod`, which this path
+/// cannot distinguish from a dead front — it is one more silent drop.
 const DELIVER_METHOD: &str = "push.deliver";
 
 /// How many messages the sink holds before it starts dropping. Depth is a memory bound on
@@ -52,11 +51,19 @@ const BATCH_MAX_MESSAGES: usize = 128;
 /// keys), which is tens of bytes.
 const BATCH_BYTE_BUDGET: usize = edge::MAX_FRAME - 1024;
 
-/// How long the drain waits for the pool's FIRST resolve before giving up on a batch, and
-/// how often it re-checks. Bounded so a permanently unresolvable peer cannot pin the drain
-/// (and with it the queue) forever.
+/// How long the drain waits for the pool's FIRST resolve, ONCE per process (see
+/// [`wait_for_resolve`]), and how often it re-checks while waiting.
 const RESOLVE_WAIT: Duration = Duration::from_secs(5);
 const RESOLVE_POLL: Duration = Duration::from_millis(50);
+
+/// Shared deadline for joining BOTH background loops in `stop`. The drain observes the stop
+/// signal between chunks and during a delivery, so it exits within it; the refresh loop can
+/// be inside a resolve of unknown length, which is what the abort after this deadline is
+/// for. Sized against `core/app`'s `MODULE_STOP_GRACE_MS` (default 5000ms), which bounds
+/// this whole `stop`: 1s here, then a concurrent [`Pool::stop`] costing about one
+/// `PROBE_STOP_GRACE` (2s) whatever the instance count, leaves headroom. Being truncated
+/// there is what strands probe tasks and edge connections past teardown.
+const STOP_JOIN_GRACE: Duration = Duration::from_secs(1);
 
 /// Counts and logs dropped messages. The first drop is a `warn!`, every later one a
 /// `debug!` carrying the running total: a front outage would otherwise emit one warning per
@@ -156,12 +163,18 @@ impl PushSender {
         PushSender::with_capacity(peer, QUEUE_CAPACITY)
     }
 
-    /// [`PushSender::new`] with an explicit queue depth.
-    pub fn with_capacity(peer: impl Into<PeerSource>, capacity: usize) -> PushSender {
+    /// [`PushSender::new`] with an explicit queue depth — the in-crate seam for reaching
+    /// the full-queue branch without producing [`QUEUE_CAPACITY`] messages.
+    pub(crate) fn with_capacity(peer: impl Into<PeerSource>, capacity: usize) -> PushSender {
         let list = match peer.into() {
             PeerSource::Pooled { list, .. } => list,
-            // A single-address source still fans out — over one instance. Wrapping its
-            // resolver keeps the live re-resolve the source promised.
+            // A single-address source becomes a pool of one. Two differences from
+            // `Backing::Single` matter and both are accounted for: the source's live
+            // re-resolve is preserved by wrapping its resolver, and the pool's per-instance
+            // health — which `Backing::Single` has no equivalent of — never gates a
+            // delivery, because `Pool::deliver_all` attempts every resolved instance. So a
+            // single-address sender attempts its one front exactly as unconditionally as a
+            // `Reconnecting` caller would.
             PeerSource::Single { resolver, .. } => {
                 let list: PeerListResolver = Arc::new(move || {
                     let resolver = resolver.clone();
@@ -226,18 +239,27 @@ impl Module for PushSender {
         Ok(())
     }
 
-    /// Signals and joins both loops (grace, then abort) BEFORE stopping the pool: the pool
-    /// tears down every instance's probe task and connection, and a drain still running
-    /// past that would re-dial one through its next `deliver_all` — leaving the process
-    /// with a probing edge connection nothing owns.
+    /// Signals and joins both loops BEFORE stopping the pool: the pool tears down every
+    /// instance's probe task and connection, and a drain still running past that would
+    /// re-dial one through its next `deliver_all` — leaving the process with a probing edge
+    /// connection nothing owns.
+    ///
+    /// The two joins share ONE [`STOP_JOIN_GRACE`] and run concurrently. Sequential graces
+    /// plus a per-instance pool teardown do not fit inside `MODULE_STOP_GRACE_MS`, and
+    /// being truncated there is what strands tasks and connections.
     async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
         if let Some(tx) = self.stop.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = tx.send(true);
         }
         // Take the handles into a local so the std guard is dropped before the awaits.
-        let tasks = std::mem::take(&mut *self.tasks.lock().unwrap_or_else(|e| e.into_inner()));
-        for mut task in tasks {
-            if tokio::time::timeout(PROBE_STOP_GRACE, &mut task).await.is_err() {
+        let mut tasks =
+            std::mem::take(&mut *self.tasks.lock().unwrap_or_else(|e| e.into_inner()));
+        let joined = {
+            let joins = futures::future::join_all(tasks.iter_mut());
+            tokio::time::timeout(STOP_JOIN_GRACE, joins).await.is_ok()
+        };
+        if !joined {
+            for task in &mut tasks {
                 task.abort();
                 let _ = task.await;
             }
@@ -255,6 +277,8 @@ async fn drain_loop(
     mut stop: watch::Receiver<bool>,
     drops: Arc<Drops>,
 ) {
+    // The startup wait happens at most ONCE per drain, whatever its outcome.
+    let mut resolve_waited = false;
     loop {
         let first = tokio::select! {
             biased;
@@ -274,29 +298,38 @@ async fn drain_loop(
                 Err(_) => break,
             }
         }
-        if !wait_for_resolve(&pool, &mut stop).await {
-            drops.record(batch.len() as u64, "stopping");
+        if !resolve_waited {
+            resolve_waited = true;
+            if !wait_for_resolve(&pool, &mut stop).await {
+                drops.record(batch.len() as u64, "stopping");
+                return;
+            }
+        }
+        if !send_batch(&pool, batch, &drops, &mut stop).await {
             return;
         }
-        send_batch(&pool, batch, &drops).await;
     }
 }
 
 /// Blocks the drain while the pool has NEVER resolved, up to [`RESOLVE_WAIT`]; returns
 /// `false` only when the stop signal fired.
 ///
-/// This is the startup window: `start` spawns the refresh loop and the drain together, so
-/// the first messages routinely arrive before the first resolve lands. Treating that empty
-/// instance set as "nothing alive" would drop them, and a producer has no way to tell that
-/// from a real outage. A pool that HAS resolved is not waited on — a dead front is a
-/// dropped message by design, not something to hold a queue for.
+/// This covers ONE window: `start` spawns the refresh loop and the drain together, so the
+/// first messages routinely arrive before the first resolve lands, and treating that empty
+/// instance set as "nothing there" would drop them — a producer cannot tell that from a
+/// real outage. The caller runs this at most once, which is what makes it a startup window
+/// rather than a per-batch tax: a list resolver that fails permanently never applies a
+/// generation, so `fanout_state` stays [`FanoutState::Unresolved`] forever and a per-batch
+/// wait would throttle the drain to one batch per [`RESOLVE_WAIT`] for the process
+/// lifetime. A pool that HAS resolved is never waited on — a dead front is a dropped
+/// message by design.
 async fn wait_for_resolve(pool: &Pool, stop: &mut watch::Receiver<bool>) -> bool {
     let started = std::time::Instant::now();
     while pool.fanout_state() == FanoutState::Unresolved {
         if started.elapsed() >= RESOLVE_WAIT {
-            tracing::debug!(
+            tracing::warn!(
                 waited = ?RESOLVE_WAIT,
-                "push backplane: peer list still unresolved; delivering anyway"
+                "push backplane: peer list did not resolve; delivering without waiting from now on"
             );
             return true;
         }
@@ -310,15 +343,32 @@ async fn wait_for_resolve(pool: &Pool, stop: &mut watch::Receiver<bool>) -> bool
 }
 
 /// Encodes `batch` into as few ordered calls as the byte budget allows and issues them
-/// SEQUENTIALLY, so a batch that had to be split still arrives in produced order.
-async fn send_batch(pool: &Pool, batch: Vec<Envelope>, drops: &Drops) {
-    if pool.fanout_state() == FanoutState::NoTarget {
-        drops.record(batch.len() as u64, "no-live-front");
-        return;
+/// SEQUENTIALLY, so a batch that had to be split still arrives in produced order. Returns
+/// `false` when the stop signal fired — the caller must not start another batch.
+///
+/// The stop signal is honoured BETWEEN chunks and DURING a delivery: a fan-out call can
+/// take up to [`FANOUT_CALL_TIMEOUT`] against a stalled front, which is longer than
+/// `stop`'s join grace, so waiting it out would get the drain aborted instead — and an
+/// aborted drain reports none of the messages it was holding.
+async fn send_batch(
+    pool: &Pool,
+    batch: Vec<Envelope>,
+    drops: &Drops,
+    stop: &mut watch::Receiver<bool>,
+) -> bool {
+    if pool.fanout_state() == FanoutState::Empty {
+        drops.record(batch.len() as u64, "no-resolved-front");
+        return true;
     }
-    for chunk in split_batch(batch, drops) {
+    let chunks = split_batch(batch, drops);
+    for (i, chunk) in chunks.iter().enumerate() {
+        let remaining = || chunks[i..].iter().map(|c| c.len() as u64).sum::<u64>();
+        if *stop.borrow_and_update() {
+            drops.record(remaining(), "stopping");
+            return false;
+        }
         let count = chunk.len() as u64;
-        let bytes = match push::encode_batch(&chunk) {
+        let bytes = match push::encode_batch(chunk) {
             Ok(bytes) => bytes,
             Err(e) => {
                 tracing::debug!(error = %e, "push backplane: batch encode failed");
@@ -326,10 +376,19 @@ async fn send_batch(pool: &Pool, batch: Vec<Envelope>, drops: &Drops) {
                 continue;
             }
         };
-        if pool.deliver_all(DELIVER_METHOD, &bytes).await == 0 {
+        let delivered = tokio::select! {
+            biased;
+            _ = stop.changed() => {
+                drops.record(remaining(), "stopping");
+                return false;
+            }
+            n = pool.deliver_all(DELIVER_METHOD, &bytes) => n,
+        };
+        if delivered == 0 {
             drops.record(count, "no-front-accepted");
         }
     }
+    true
 }
 
 /// Splits `batch` into chunks whose encoded form fits [`BATCH_BYTE_BUDGET`], preserving

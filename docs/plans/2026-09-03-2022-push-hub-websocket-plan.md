@@ -183,6 +183,13 @@ Covers Steps 1–3. Must execute, at minimum: `Push::install` panicking on a sec
 the latched `NoSink` log (first `error!`, then `debug!`) and its `Err`; `encode_batch`/
 `decode_batch` preserving order; and `app::select_push_sink` over 0, 1 and 2 sinks — the
 two-sink `bail!` is otherwise reachable only by booting a real fleet.
+Plus the two branches Step 3 (`55809eb` + its review follow-up) made once-wrong, both in
+`core/remote`: `Pool::fanout_state` answering `Unresolved` before any resolve versus `Empty`
+after a resolve that returned no addresses — reachable only by driving `refresh_once`, whose
+resolver-`Err` early return never stamps `applied_gen` and is the trap; and
+`push_backplane::split_batch` at the byte boundary — an element that exactly fits, an element
+that cannot fit alone (dropped and counted, not carried forward), and order preserved across
+the resulting chunks.
 
 **Step 9a — `core/app`: the upgrade survives the layer stack.** `[test-author]`, `model:"opus"`.
 The plan's one unproven claim — that the whole-request timeout bounds response-*start* and not
