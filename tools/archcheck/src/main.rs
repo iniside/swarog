@@ -85,6 +85,12 @@ const INVALID_REQUEST_BODY_MARKER: &str = "InvalidRequestBody";
 /// anywhere — comment lines are exempt from the scan.
 const INVALID_REQUEST_BODY_OWNERS: [&str; 2] = ["core/edge/", "tools/rpc-macro/"];
 
+/// The only place permitted to install a process's push sink. `Context::push()` hands
+/// every module the process handle and `Push::install` is `pub`, so without this rule a
+/// module could install its own sink from `init` and bypass `app::run`'s at-most-one
+/// check on `push::SINK_SLOT` — the composition layer would never see the second wiring.
+const PUSH_INSTALL_OWNERS: [&str; 1] = ["core/app/"];
+
 /// The DERIVED exception to the gateway-crate rule (Step 10): `tools/checkmodules`
 /// builds BOTH deployment profiles by importing the `cmd/gateway-svc`/`cmd/server`
 /// LIBS (each constructs `gateway::Gateway` internally to hand back the real module
@@ -443,6 +449,7 @@ fn main() {
     // Same shape as rule 19 and for the same reason: an invariant whose whole value is
     // "exactly one construction site" must be gated, not merely documented.
     violations.extend(grep_foreign_invalid_request_body(&root_dir));
+    violations.extend(grep_foreign_push_install(&root_dir));
 
     // --- 6: every cmd/*-svc + the monolith main lists `metrics` ---------------
     // CLAUDE.md: "every main lists metrics::Metrics::new() for GET /metrics." The
@@ -628,7 +635,7 @@ fn main() {
     }
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every #[http( domain is stubbed in cmd/gateway-svc, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every #[http( domain is stubbed in cmd/gateway-svc, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -1363,6 +1370,44 @@ fn invalid_request_body_violations(rel: &str, text: &str) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// Flags a `Push::install` call outside [`PUSH_INSTALL_OWNERS`]. Comment lines are
+/// exempt so the rule can be documented anywhere; the token is matched in both spellings
+/// a caller can reach it by (`Push::install(` and the `.push().install(` accessor chain).
+fn push_install_violations(rel: &str, text: &str) -> Vec<String> {
+    if PUSH_INSTALL_OWNERS.iter().any(|owner| rel.starts_with(owner)) {
+        return Vec::new();
+    }
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| {
+            let t = line.trim_start();
+            !t.starts_with("//") && (t.contains("Push::install(") || t.contains(".install("))
+        })
+        .filter(|(_, line)| line.contains("push") || line.contains("Push::install("))
+        .map(|(line, _)| {
+            format!(
+                "{rel}:{}: installs a push sink outside `core/app` — a sink reaches the \
+                 process through `push::SINK_SLOT`, which `app::run` drains and checks for \
+                 at-most-one. Installing directly bypasses that check and makes a second \
+                 wiring invisible; contribute to the slot instead",
+                line + 1
+            )
+        })
+        .collect()
+}
+
+fn grep_foreign_push_install(root: &Path) -> Vec<String> {
+    let mut findings = Vec::new();
+    for path in workspace_rs_files(root, &[BAN_SELF_EXCLUDE]) {
+        let rel = workspace_rel(root, &path);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        findings.extend(push_install_violations(&rel, &text));
+    }
+    findings
 }
 
 fn grep_foreign_invalid_request_body(root: &Path) -> Vec<String> {

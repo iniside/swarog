@@ -1287,3 +1287,32 @@ let ok = 1;";
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert!(findings[0].contains("modules/match/src/lib.rs:2"), "{findings:?}");
 }
+
+#[test]
+fn push_install_is_flagged_outside_core_app() {
+    let call = "        ctx.push().install(my_sink);\n";
+    assert!(super::push_install_violations("core/app/src/lib.rs", call).is_empty());
+    let flagged = super::push_install_violations("modules/gateway/src/lib.rs", call);
+    assert_eq!(flagged.len(), 1, "a module installing its own sink must be flagged");
+    assert!(flagged[0].contains("bypasses"));
+}
+
+#[test]
+fn push_install_rule_ignores_documentation_and_unrelated_installs() {
+    // The mechanism must stay documentable, and an unrelated `.install(` (a metrics
+    // recorder, a crypto provider) must not be swept up by the token match.
+    assert!(
+        super::push_install_violations(
+            "modules/gateway/src/lib.rs",
+            "        // never call push().install( here — contribute to SINK_SLOT\n",
+        )
+        .is_empty()
+    );
+    assert!(
+        super::push_install_violations(
+            "cmd/gateway-svc/src/main.rs",
+            "    provider.install(Default::default());\n",
+        )
+        .is_empty()
+    );
+}

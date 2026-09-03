@@ -432,6 +432,27 @@ fn validate_pool_max(db_pool_max: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Picks the one sink a process installs on its [`push::Push`] handle, or `None`.
+///
+/// Split out from `run` so the decision has a zero-I/O authority the tests execute
+/// directly (same reason as [`validate_pool_max`]): the two-sink arm is otherwise
+/// reachable only by booting a real fleet. Zero is legal and common — most split
+/// processes host neither the front door's local sink nor a backplane sender, and their
+/// `send` answers `NoSink`. Two is a wiring bug with no right answer, so it fails
+/// startup instead of silently picking one.
+fn select_push_sink(
+    sinks: Vec<Arc<dyn push::Sink>>,
+) -> anyhow::Result<Option<Arc<dyn push::Sink>>> {
+    if sinks.len() > 1 {
+        anyhow::bail!(
+            "{} push sinks contributed to push::SINK_SLOT; a process resolves a target one \
+             way — host the front door's local sink or a backplane sender, never both",
+            sinks.len()
+        );
+    }
+    Ok(sinks.into_iter().next())
+}
+
 /// Parses one optional rate without applying a surface-specific fallback. Unset and
 /// blank values are absent; malformed, non-finite, negative, and policy-rejected zero
 /// values are invalid.
@@ -767,6 +788,13 @@ pub async fn run(
         app.add(m);
     }
     app.build().context("startup failed")?;
+
+    // 4b. Install the process's push sink. It can only happen HERE: a sink reaches
+    //     `push::SINK_SLOT` from a module's `init`, so the slot is empty before Build,
+    //     and a module's `start` may already push, so it must be live before step 6.
+    if let Some(sink) = select_push_sink(ctx.contributions(push::SINK_SLOT))? {
+        ctx.push().install(sink);
+    }
 
     // The plane's worker-health probe joins `/readyz`: a process whose pull
     // workers died (panic) OR whose workers are alive but persistently failing

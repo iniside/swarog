@@ -14,6 +14,7 @@ opsapi = { workspace = true }
 bus = { workspace = true }
 asyncevents = { workspace = true }
 invalidation = { workspace = true }
+push = { workspace = true }
 # Registers the invalidation plane's collectors (it must not depend on core/metrics — a
 # cycle, since metrics is a lifecycle::Module and lifecycle depends on invalidation).
 metrics = { workspace = true }

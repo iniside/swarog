@@ -5,6 +5,7 @@ use axum::Router;
 use bus::Bus;
 use contrib::{Slot, Slots};
 use invalidation::Invalidation;
+use push::Push;
 use registry::Registry;
 use sqlx::PgPool;
 
@@ -37,6 +38,13 @@ pub struct Context {
     /// `app::run` swaps in the plane-backed handle via [`Context::with_invalidation`]
     /// for a DB-backed process; the default is a standalone one nothing drains.
     invalidation: Arc<Invalidation>,
+    /// The server→client push handle. Always present, like the bus and the
+    /// invalidation handle, so a producer is topology-blind: it addresses a
+    /// `push::Target` and never learns whether the sockets live in this process. The
+    /// sink behind it is installed once by `app::run` after the module build (a
+    /// module contributes it to `push::SINK_SLOT` during `init`, so it cannot exist
+    /// earlier); a process that installs none answers `push::Error::NoSink`.
+    push: Arc<Push>,
 }
 
 impl Context {
@@ -49,6 +57,7 @@ impl Context {
             router: Mutex::new(Router::new()),
             db: None,
             invalidation: Arc::new(Invalidation::new()),
+            push: Arc::new(Push::new()),
         }
     }
 
@@ -90,6 +99,12 @@ impl Context {
     /// authoritative refresh callback here during `init` (see `core/invalidation`).
     pub fn invalidation(&self) -> &Arc<Invalidation> {
         &self.invalidation
+    }
+
+    /// The server→client push handle: a producer calls `send` here; whether that
+    /// resolves against local sockets or a backplane is the installed sink's business.
+    pub fn push(&self) -> &Arc<Push> {
+        &self.push
     }
 
     pub fn registry(&self) -> &Arc<Registry> {
