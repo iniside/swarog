@@ -240,7 +240,15 @@ the upgraded socket. It must run against the **real** `app::run` assembly; `modu
 `oneshot` harness carries no upgrade extension, so no upgrade can happen there at all.
 
 **Step 9 — unit tests: the WebSocket hub.** `[test-author]`, `model:"opus"`.
-Covers Steps 4–5 and 7, against a real bound server. Must execute, at minimum, the branches
+Covers Steps 4–5 and 7, against a real bound server. From Step 4's review, these branches
+are known-unexecuted and must be included: the **post-grace abort collection** (a connection
+whose task attaches its handle after `closing` is set and then fails to drain — the leak that
+review found); the `Notified::enable` window (a slot released between the `live()` check and
+the await); `KeyCheck::PresenceOnly` vs `Policy` inside the one `check_api_key` (a key whose
+policy names nothing is admitted on `/push` and `Forbidden` on an op); and
+`PushLimits::from_values` over unset → default, `"0"` → error naming the var, garbage →
+error, valid → parsed, malformed CIDR → error (a value-taking parser, so no test touches
+process env). Must also execute, at minimum, the branches
 behind constraints 2, 5, 6, 9 and 10 — a forged `X-Forwarded-For`, an unavailable verifier, a
 revoked session on the re-verify tick, queue overflow, and a **typed close** observed by the
 client (asserting merely that connections end would pass from the cancel alone). Plus the
