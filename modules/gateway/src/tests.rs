@@ -140,57 +140,57 @@ async fn sessions_verifier_caps_before_local_or_remote_capability_dispatch() {
 }
 
 // The always-unavailable [`SessionVerifier`] fixture now lives in the always-compiled
-// `conformance` module (the harness probes it through the real `authenticate`); the
+// `conformance` module (the harness probes it through the real `verify_bearer`); the
 // tests re-import it from there.
 use super::conformance::UnavailableVerifier;
 
+/// The HTTP status a bearer denial renders as — the mapping the front door applies to
+/// every plane's denial.
+fn denial_status(denial: &AdmissionDenial) -> StatusCode {
+    admission_denial_response(denial).status()
+}
+
 #[tokio::test]
-async fn authenticate_paths() {
+async fn verify_bearer_paths() {
     let v = DevSessionVerifier::new();
 
     // Valid bearer → identity threaded.
-    let mut h = HeaderMap::new();
-    h.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer dev-alice"));
-    let id = authenticate(&h, &v).await.unwrap();
+    let id = match verify_bearer(&v, Some("dev-alice"), AuthReq::Player).await {
+        Ok(id) => id,
+        Err(denial) => panic!("expected an identity, got {}", denial.message()),
+    };
     assert_eq!(id.player_id(), Some("alice"));
 
-    // Missing header → 401.
-    let empty = HeaderMap::new();
-    let resp = authenticate(&empty, &v).await.unwrap_err();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    // Missing bearer → 401.
+    let denial = verify_bearer(&v, None, AuthReq::Player).await.expect_err("denied");
+    assert_eq!(denial_status(&denial), StatusCode::UNAUTHORIZED);
 
     // Invalid token → 401.
-    let mut bad = HeaderMap::new();
-    bad.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer nope"));
-    let resp = authenticate(&bad, &v).await.unwrap_err();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let denial = verify_bearer(&v, Some("nope"), AuthReq::Player).await.expect_err("denied");
+    assert_eq!(denial_status(&denial), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn authenticate_verifier_outage_is_503_not_401() {
+async fn verify_bearer_verifier_outage_is_503_not_401() {
     // A verifier that cannot reach accounts must surface as 503 SERVICE_UNAVAILABLE —
     // NOT 401 (which would mass-log-out players the moment accounts blips). The token
     // is well-formed; only the dependency is down.
-    let v = UnavailableVerifier;
-    let mut h = HeaderMap::new();
-    h.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer dev-alice"));
-    let resp = authenticate(&h, &v).await.unwrap_err();
-    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let denial = verify_bearer(&UnavailableVerifier, Some("dev-alice"), AuthReq::Player)
+        .await
+        .expect_err("an unavailable verifier denies");
+    assert_eq!(denial_status(&denial), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
-async fn authenticate_overlong_token_is_401_without_capability_dispatch() {
+async fn verify_bearer_overlong_token_is_401_without_capability_dispatch() {
     let sessions = Arc::new(CountingSessions::default());
     let verifier = SessionsVerifier::new(sessions.clone());
     let token = "x".repeat(accountsapi::MAX_SESSION_TOKEN_BYTES + 1);
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {token}")).unwrap(),
-    );
 
-    let resp = authenticate(&headers, &verifier).await.unwrap_err();
-    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    let denial = verify_bearer(&verifier, Some(&token), AuthReq::Player)
+        .await
+        .expect_err("an over-long token is denied");
+    assert_eq!(denial_status(&denial), StatusCode::UNAUTHORIZED);
     assert_eq!(sessions.calls.load(Ordering::SeqCst), 0);
 }
 

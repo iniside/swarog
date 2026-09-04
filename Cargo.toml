@@ -198,7 +198,12 @@ async-trait = "0.1"
 anyhow = "1"
 thiserror = "1"
 tracing = "0.1"
-axum = "0.7"
+# `ws`: the push hub's `GET /push` WebSocket upgrade on the gateway front door.
+# DEFAULT FEATURES STAY ON — `ws` needs axum's own `tokio` feature, and dropping the
+# defaults would also drop `http1`/`json`/`query`/`form`, which every route here uses.
+# It pulls tokio-tungstenite + sha1 + base64 and NO TLS stack (the WebSocket rides the
+# already-terminated HTTP connection), so the ring-only rustls pin is untouched.
+axum = { version = "0.7", features = ["ws"] }
 sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }

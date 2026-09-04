@@ -121,18 +121,34 @@ pub(crate) async fn check_api_key(
     key: Option<&str>,
     method: &str,
 ) -> Result<(), KeyDenial> {
-    let Some(key) = key else {
-        return Err(KeyDenial::Missing);
-    };
-    let record = match verifier.lookup(key).await {
-        Ok(Some(record)) => record,
-        Ok(None) => return Err(KeyDenial::Invalid),
-        Err(LookupUnavailable) => return Err(KeyDenial::Unavailable),
-    };
+    let record = check_api_key_valid(verifier, key).await?;
     if !policy_allows(&record.policy, method) {
         return Err(KeyDenial::Forbidden);
     }
     Ok(())
+}
+
+/// The presence-and-validity half of [`check_api_key`], without the policy match: a key
+/// must be presented and must resolve to a live record, but nothing is compared against
+/// a wire method.
+///
+/// This is a MODE of the one key authority, not a second path — [`check_api_key`] is
+/// this function plus [`policy_allows`], so the missing/invalid/unavailable verdicts and
+/// their [`KeyDenial`] mapping cannot drift between a fixed route and an operation. It
+/// exists for the front's `/push` WebSocket, which has no wire method to match a policy
+/// against; nothing is added to any key's policy for it.
+pub(crate) async fn check_api_key_valid(
+    verifier: &dyn KeyVerifier,
+    key: Option<&str>,
+) -> Result<KeyRecord, KeyDenial> {
+    let Some(key) = key else {
+        return Err(KeyDenial::Missing);
+    };
+    match verifier.lookup(key).await {
+        Ok(Some(record)) => Ok(record),
+        Ok(None) => Err(KeyDenial::Invalid),
+        Err(LookupUnavailable) => Err(KeyDenial::Unavailable),
+    }
 }
 
 /// Evaluates a key policy against a wire method (Decision 4): the literal string

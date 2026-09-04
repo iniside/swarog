@@ -44,6 +44,12 @@
 //! A player-QUIC request runs the same match/auth/dispatch, minus the HTTP
 //! translation — see [`FrontDoor::player_handler`] for the pinned response grammar.
 //!
+//! Beside the fallback the router carries ONE fixed route, `GET /push`: the server→client
+//! WebSocket (see `push_ws`). It is credentialed through the same authorities — the api
+//! key is checked for presence and validity, the bearer through the same verifier — but
+//! answers a typed close instead of an HTTP status, because a client only ever sees the
+//! socket.
+//!
 //! ## Lazy route table (the init-ordering sidestep) + eager startup validation
 //! Modules contribute their `OpSet`s during their own `init`, and the gateway's
 //! `init` may run first. So the SERVING table is NOT built during `init`: the
@@ -76,6 +82,7 @@ mod backend;
 pub mod conformance;
 mod keys;
 mod proxy;
+mod push_ws;
 mod verifier;
 
 use std::collections::HashMap;
@@ -97,10 +104,12 @@ use opsapi::{
 use serde_json::value::RawValue;
 
 pub use backend::{LocalBackend, OperationBackend, RemoteBackend};
+pub use push_ws::PushLimits;
 pub use keys::{AllowAllKeyVerifier, KeyVerifier, LookupUnavailable, RealKeyVerifier};
 pub use verifier::{DevSessionVerifier, SessionVerifier, SessionsVerifier, VerifyUnavailable};
 
-use keys::{check_api_key, KeyDenial};
+use keys::{check_api_key, check_api_key_valid, KeyDenial};
+use push_ws::PushHub;
 
 /// Caps the request body the gateway buffers before decoding an operation, so a
 /// hostile client cannot make the front-handler allocate without bound. 1 MiB is
@@ -196,16 +205,17 @@ const DESCRIBE_FETCH_CONCURRENCY: usize = 16;
 /// INVARIANT (the WHOLE `stop`, not just this grace): `lifecycle::App` wraps each module in
 /// `timeout(MODULE_STOP_GRACE_MS, m.stop())` and DROPS the future on elapse, so the SUM of
 /// everything `Gateway::stop` awaits must stay strictly under it. `Gateway::stop` has exactly
-/// two sequential awaits, each separately bounded:
+/// three sequential awaits, each separately bounded:
 ///
 /// ```text
-///   DESCRIBE_STOP_GRACE  2000ms   (task join, then abort)
+///   PUSH_STOP_GRACE       500ms   (typed close flushed to every live socket, then abort)
+/// + DESCRIBE_STOP_GRACE  2000ms   (task join, then abort)
 /// + POOL_STOP_BUDGET     2000ms   (concurrent dispatch-pool teardown)
-/// = 4000ms  <  5000ms = MODULE_STOP_GRACE_MS (default)   → 1000ms headroom
+/// = 4500ms  <  5000ms = MODULE_STOP_GRACE_MS (default)   → 500ms headroom
 /// ```
 ///
-/// Adding a third awaited step to `stop`, or raising either constant, requires re-checking
-/// that sum. If it exceeded the budget the app would abandon `stop` mid-flight — the very
+/// Adding a fourth awaited step to `stop`, or raising any of the three constants, requires
+/// re-checking that sum. If it exceeded the budget the app would abandon `stop` mid-flight — the very
 /// leak this ownership exists to close, plus (for pools) a teardown strictly worse than none
 /// at all (see [`RouteTable::stop_pools`]).
 ///
@@ -298,6 +308,11 @@ pub struct Gateway {
     /// `None` (the [`Gateway::new`] default) leaves the [`FrontDoor`] on
     /// [`DEFAULT_ADMISSION_BUDGET`]. Topology/env lives in `cmd/*`, never read here.
     admission_budget: Option<Duration>,
+    /// The `/push` WebSocket bounds the composition root parsed from env (via
+    /// [`Gateway::with_push_limits`]). `None` (the [`Gateway::new`] default) leaves the
+    /// [`FrontDoor`] on [`PushLimits::default`]. Topology/env lives in `cmd/*`, never
+    /// read here.
+    push_limits: Option<PushLimits>,
     /// D2 routing-as-data: when set (by the managed `cmd/gateway-svc` via
     /// [`Gateway::with_describe_routing`]), the route table is NOT built from the process
     /// slots (which carry no `Operation`s in that process) but from each peer's runtime
@@ -336,6 +351,7 @@ impl Gateway {
             player_edge: None,
             passthroughs: Vec::new(),
             admission_budget: None,
+            push_limits: None,
             describe_routing: false,
             front_door: OnceLock::new(),
             stop_tx: Mutex::new(None),
@@ -352,6 +368,7 @@ impl Gateway {
             player_edge: None,
             passthroughs: Vec::new(),
             admission_budget: None,
+            push_limits: None,
             describe_routing: false,
             front_door: OnceLock::new(),
             stop_tx: Mutex::new(None),
@@ -395,6 +412,15 @@ impl Gateway {
     /// [`FrontDoor`] stays on [`DEFAULT_ADMISSION_BUDGET`]. See [`FrontDoor::admit`].
     pub fn with_admission_budget(mut self, budget: Duration) -> Self {
         self.admission_budget = Some(budget);
+        self
+    }
+
+    /// Overrides the `/push` WebSocket bounds (builder-style, mirrors
+    /// [`Gateway::with_admission_budget`]). The composition root parses the `PUSH_*`
+    /// knobs and the trusted-proxy set and calls this; absent the call the front door
+    /// stays on [`PushLimits::default`].
+    pub fn with_push_limits(mut self, limits: PushLimits) -> Self {
+        self.push_limits = Some(limits);
         self
     }
 
@@ -452,6 +478,9 @@ impl Module for Gateway {
         if let Some(budget) = self.admission_budget {
             front_door = front_door.with_admission_budget(budget);
         }
+        if let Some(limits) = &self.push_limits {
+            front_door = front_door.with_push_limits(limits.clone());
+        }
         if self.describe_routing {
             // D2: the table is swapped in by the `start`-driven describe refresh, not built
             // lazily from the (op-less) slots. Seeded empty → un-routable (404) until the
@@ -508,8 +537,13 @@ impl Module for Gateway {
         Ok(())
     }
 
-    /// Tears down BOTH background resources this module owns, in this order:
+    /// Tears down every background resource this module owns, in this order:
     ///
+    /// 0. the live `/push` WebSocket connections (`PushHub::shutdown`) — each upgraded
+    ///    socket runs in a task the module spawned and OUTLIVES the HTTP drain, so
+    ///    nothing else would ever end them. They are flushed a typed close within
+    ///    `PUSH_STOP_GRACE` and then aborted; that grace is part of the arithmetic on
+    ///    [`DESCRIBE_STOP_GRACE`], which now sums three awaited steps, not two;
     /// 1. the D2 describe-refresh task (grace-then-abort, mirroring `remote::Stub::stop`):
     ///    signal, join within [`DESCRIBE_STOP_GRACE`], else abort and await the abort so the
     ///    task is not leaked;
@@ -532,6 +566,9 @@ impl Module for Gateway {
     /// ran has neither): the `Option::take`/`drain` guards leave nothing behind, so a second
     /// `stop` is a no-op.
     async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
+        if let Some(front_door) = self.front_door.get() {
+            front_door.push_hub().shutdown().await;
+        }
         if let Some(tx) = self.stop_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = tx.send(true);
         }
@@ -581,6 +618,10 @@ pub struct FrontDoor {
     /// process slots (monolith/standalone), or an externally-refreshed swappable table
     /// (managed describe gateway, D2).
     table: TableCell,
+    /// The `/push` WebSocket connections this process owns, with the bounds they are
+    /// admitted under. Always present — the route behaves identically in both
+    /// topologies, so nothing here is conditional on how the process was composed.
+    push: Arc<PushHub>,
     /// The HTTP reverse-proxy passthrough for non-operation routes (`/admin`,
     /// `/accounts/epic`), built from the routes the composition root wired via
     /// [`Gateway::with_passthrough`]. Empty when nothing is configured, so an
@@ -605,6 +646,7 @@ impl FrontDoor {
             verifier,
             key_verifier,
             admission_budget: DEFAULT_ADMISSION_BUDGET,
+            push: Arc::new(PushHub::new(PushLimits::default())),
             table: TableCell::Slots(OnceLock::new()),
             proxy: proxy::ProxyTable::from_routes(passthroughs),
         }
@@ -617,6 +659,19 @@ impl FrontDoor {
     pub fn with_admission_budget(mut self, budget: Duration) -> FrontDoor {
         self.admission_budget = budget;
         self
+    }
+
+    /// Overrides the `/push` bounds (builder-style). Called by [`Gateway::init`] when the
+    /// composition root parsed the `PUSH_*` knobs; the unit tests use it to pin small
+    /// caps and deadlines.
+    pub fn with_push_limits(mut self, limits: PushLimits) -> FrontDoor {
+        self.push = Arc::new(PushHub::new(limits));
+        self
+    }
+
+    /// This process's push connection registry.
+    pub(crate) fn push_hub(&self) -> Arc<PushHub> {
+        self.push.clone()
     }
 
     /// Switches the table to the D2 dynamic mode (builder-style): a swappable
@@ -699,12 +754,28 @@ impl FrontDoor {
         // (`into_make_service_with_connect_info` in `app::run`), so the passthrough can
         // set `X-Forwarded-For`; the unit tests call `oneshot` without it → `None`,
         // and the proxy simply omits the direct-peer hop.
-        Router::new().fallback(
-            move |peer: Option<ConnectInfo<SocketAddr>>, req: Request| {
-                let front = front.clone();
-                async move { handle(front, peer.map(|c| c.0), req).await }
-            },
-        )
+        // `/push` is a REAL route, added ahead of the fallback: the fallback only sees
+        // otherwise-unmatched requests, and an operation can never claim this path (the
+        // route table is matched inside the fallback, below this one).
+        let push_front = self.clone();
+        Router::new()
+            .route(
+                "/push",
+                axum::routing::get(
+                    move |peer: Option<ConnectInfo<SocketAddr>>,
+                          headers: axum::http::HeaderMap,
+                          ws: axum::extract::ws::WebSocketUpgrade| {
+                        let front = push_front.clone();
+                        async move { push_ws::upgrade(front, peer, headers, ws).await }
+                    },
+                ),
+            )
+            .fallback(
+                move |peer: Option<ConnectInfo<SocketAddr>>, req: Request| {
+                    let front = front.clone();
+                    async move { handle(front, peer.map(|c| c.0), req).await }
+                },
+            )
     }
 
     /// The player-plane dispatch handler, installed on an [`edge::PlayerServer`].
@@ -846,19 +917,87 @@ impl FrontDoor {
 
         // (b) Auth-once: the single trust boundary. For a player-auth op the bearer is
         // required and verified; only the VERIFIED player_id becomes the identity.
-        match auth {
-            AuthReq::Player => {
-                let Some(token) = bearer else {
-                    return Err(AdmissionDenial::MissingBearer);
-                };
-                match self.verifier.verify(token).await {
-                    Ok(Some(pid)) => Ok(Identity::player(pid)),
-                    Ok(None) => Err(AdmissionDenial::InvalidSession),
-                    Err(VerifyUnavailable) => Err(AdmissionDenial::SessionUnavailable),
-                }
-            }
-            AuthReq::None => Ok(Identity::none()),
+        verify_bearer(&*self.verifier, bearer, auth).await
+    }
+
+    /// Credential admission for `GET /push`: the api key must be PRESENT and VALID (no
+    /// policy match — a fixed route has no wire method to match one against), then the
+    /// bearer is verified. Both halves are the same authorities `admit_inner` runs
+    /// ([`check_api_key_valid`], [`verify_bearer`]) and denials render through the same
+    /// [`AdmissionDenial`], so an outage cannot classify differently here than on an op.
+    ///
+    /// The budget is applied HERE rather than being inherited: [`FrontDoor::admit`]'s
+    /// single `timeout` covers exactly its own two awaits, and this call site covers its
+    /// own two the same way.
+    pub(crate) async fn admit_push(
+        &self,
+        api_key: Option<&str>,
+        bearer: Option<&str>,
+    ) -> Result<Identity, AdmissionDenial> {
+        match tokio::time::timeout(self.admission_budget, self.admit_push_inner(api_key, bearer))
+            .await
+        {
+            Ok(result) => result,
+            Err(_elapsed) => Err(AdmissionDenial::Timeout),
         }
+    }
+
+    async fn admit_push_inner(
+        &self,
+        api_key: Option<&str>,
+        bearer: Option<&str>,
+    ) -> Result<Identity, AdmissionDenial> {
+        check_api_key_valid(&*self.key_verifier, api_key)
+            .await
+            .map_err(AdmissionDenial::Key)?;
+        verify_bearer(&*self.verifier, bearer, AuthReq::Player).await
+    }
+
+    /// Re-verifies a live push connection's bind-time bearer, bounded by the same
+    /// admission budget. The api key is NOT re-checked: it authorizes the client class at
+    /// admission, while a revoked SESSION is what must not survive on an open socket.
+    ///
+    /// The caller decides what each denial means for the connection — in particular
+    /// [`AdmissionDenial::SessionUnavailable`]/[`AdmissionDenial::Timeout`] must not end
+    /// it, or an accounts blip would disconnect every player at once.
+    pub(crate) async fn reverify_push(&self, bearer: &str) -> Result<Identity, AdmissionDenial> {
+        match tokio::time::timeout(
+            self.admission_budget,
+            verify_bearer(&*self.verifier, Some(bearer), AuthReq::Player),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_elapsed) => Err(AdmissionDenial::Timeout),
+        }
+    }
+}
+
+/// The ONE bearer admission: for an `AuthReq::Player` op (or a `/push` dial) the token is
+/// required and verified, and only the VERIFIED player_id becomes an [`Identity`];
+/// `AuthReq::None` runs with [`Identity::none`].
+///
+/// UNBUDGETED on purpose. [`FrontDoor::admit`] wraps its key check and this call in ONE
+/// `timeout` so a hung key lookup and a hung session verify share a single deadline; a
+/// timeout of its own here would nest a second deadline inside that one and break the
+/// invariant. Every other caller applies the budget at its own call site.
+pub(crate) async fn verify_bearer(
+    verifier: &dyn SessionVerifier,
+    bearer: Option<&str>,
+    auth: AuthReq,
+) -> Result<Identity, AdmissionDenial> {
+    match auth {
+        AuthReq::Player => {
+            let Some(token) = bearer else {
+                return Err(AdmissionDenial::MissingBearer);
+            };
+            match verifier.verify(token).await {
+                Ok(Some(pid)) => Ok(Identity::player(pid)),
+                Ok(None) => Err(AdmissionDenial::InvalidSession),
+                Err(VerifyUnavailable) => Err(AdmissionDenial::SessionUnavailable),
+            }
+        }
+        AuthReq::None => Ok(Identity::none()),
     }
 }
 
@@ -1877,25 +2016,6 @@ async fn dispatch_matched_op(
 fn stamp_route_pattern(resp: &mut Response, pattern: Option<String>) {
     if let Some(p) = pattern {
         resp.extensions_mut().insert(httpmw::RoutePattern::new(p));
-    }
-}
-
-/// Verifies the request's bearer via the [`SessionVerifier`], returning the caller
-/// [`Identity`] or the failure [`Response`] to write (401 on a missing/invalid token).
-async fn authenticate(
-    headers: &HeaderMap,
-    verifier: &dyn SessionVerifier,
-) -> Result<Identity, Response> {
-    let Some(token) = bearer(headers) else {
-        return Err(error_response(StatusCode::UNAUTHORIZED, "unauthorized"));
-    };
-    match verifier.verify(&token).await {
-        Ok(Some(pid)) => Ok(Identity::player(pid)),
-        Ok(None) => Err(error_response(StatusCode::UNAUTHORIZED, "unauthorized")),
-        Err(VerifyUnavailable) => Err(error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "session verification unavailable",
-        )),
     }
 }
 

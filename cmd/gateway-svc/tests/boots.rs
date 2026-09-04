@@ -19,7 +19,7 @@ use lifecycle::{Context, Module, ProcessWiring};
 #[test]
 fn gateway_svc_module_set_boots_and_every_http_provider_lands_in_peer_slot() {
     let wiring = ProcessWiring::new();
-    let mods: Vec<Box<dyn Module>> = gateway_svc::modules(&wiring, None, None);
+    let mods: Vec<Box<dyn Module>> = gateway_svc::modules(&wiring, None, None, None);
     let ctx = Context::new();
 
     // Phase 1 — register all. This is where `Stub::new(p, a, vec![])` used to bail and abort

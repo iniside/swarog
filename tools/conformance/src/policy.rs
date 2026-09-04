@@ -431,7 +431,7 @@ fn gateway() -> Entry {
                         }),
                     },
                     OutageCase {
-                        name: "gateway authenticate over a failing session verifier",
+                        name: "gateway bearer admission over a failing session verifier",
                         probe: Arc::new(|| {
                             Box::pin(async {
                                 match gateway::conformance::conformance_session_outage_status()

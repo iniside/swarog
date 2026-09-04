@@ -25,7 +25,7 @@ fn checker_wiring() -> ProcessWiring {
 /// the lib itself; `cmd/server`'s own `main.rs` is the only place that adds it back)
 /// and with no player-edge socket allocated.
 pub fn monolith_modules() -> Vec<Box<dyn Module>> {
-    server::modules(&checker_wiring(), None)
+    server::modules(&checker_wiring(), None, None)
 }
 
 /// Every split process paired with its module set.
@@ -37,7 +37,7 @@ fn split_process_modules() -> Vec<(&'static str, Vec<Box<dyn Module>>)> {
     vec![
         ("characters-svc", characters_svc::modules(&w)),
         ("inventory-svc", inventory_svc::modules(&w)),
-        ("gateway-svc", gateway_svc::modules(&w, None, None)),
+        ("gateway-svc", gateway_svc::modules(&w, None, None, None)),
         ("config-svc", config_svc::modules(&w)),
         ("apikeys-svc", apikeys_svc::modules(&w)),
         ("accounts-svc", accounts_svc::modules(&w)),

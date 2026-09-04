@@ -46,6 +46,10 @@ pub fn modules(
     // re-resolving the live instance LIST. `None` in standalone and in the `checkmodules`
     // harness — a single fixed conn, no pool, no re-resolve.
     edge_list_resolver: Option<&dyn Fn(&'static str) -> remote::PeerListResolver>,
+    // The `/push` WebSocket bounds `main.rs` parsed from env. `None` in the
+    // `checkmodules` harness — the module then applies its own defaults, and no checker
+    // ever models the developer's ambient shell.
+    push_limits: Option<gateway::PushLimits>,
 ) -> Vec<Box<dyn Module>> {
     // D2 routing-as-data: this front door builds its op route table from each peer's runtime
     // `__describe` manifest (re-fetched periodically), NOT from a compile-time `<name>rpc`
@@ -64,6 +68,9 @@ pub fn modules(
     // `main.rs` like the passthrough origins; unset leaves the module's 5s default.
     if let Some(budget) = wiring.admission_budget() {
         gw = gw.with_admission_budget(budget);
+    }
+    if let Some(limits) = push_limits {
+        gw = gw.with_push_limits(limits);
     }
 
     vec![

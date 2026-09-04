@@ -64,6 +64,62 @@ fn admission_budget_from_value(raw: Option<&str>) -> anyhow::Result<Option<std::
     }
 }
 
+/// Parses the `/push` WebSocket bounds — the aggregate caps and deadlines of the
+/// server→client surface. Env is read HERE in the composition root (the gateway module
+/// never reads env); unset knobs keep `gateway::PushLimits`'s defaults.
+///
+/// Each front main (`cmd/server` and `cmd/gateway-svc`) keeps its OWN copy of this fn per
+/// the repo's env-in-main convention — there is no shared config crate for `cmd/*` roots.
+///
+/// A value that is PRESENT but unusable (unparseable, or `0` for a cap or a deadline that
+/// cannot mean "disabled") FAILS STARTUP: silently falling back to a default would leave
+/// an operator believing a bound they typed is in force.
+fn push_limits_from_env() -> anyhow::Result<gateway::PushLimits> {
+    fn count(name: &str, current: usize) -> anyhow::Result<usize> {
+        match std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+            None => Ok(current),
+            Some(v) => match v.parse::<usize>() {
+                Ok(0) | Err(_) => anyhow::bail!(
+                    "{name}={v:?} is invalid: expected a positive integer (unset it for the \
+                     default of {current})"
+                ),
+                Ok(n) => Ok(n),
+            },
+        }
+    }
+    fn ms(name: &str, current: std::time::Duration) -> anyhow::Result<std::time::Duration> {
+        match std::env::var(name).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) {
+            None => Ok(current),
+            Some(v) => match v.parse::<u64>() {
+                Ok(0) | Err(_) => anyhow::bail!(
+                    "{name}={v:?} is invalid: expected a positive number of milliseconds \
+                     (unset it for the default of {}ms)",
+                    current.as_millis()
+                ),
+                Ok(n) => Ok(std::time::Duration::from_millis(n)),
+            },
+        }
+    }
+
+    let d = gateway::PushLimits::new();
+    let limits = gateway::PushLimits {
+        max_connections: count("PUSH_MAX_CONNECTIONS", d.max_connections)?,
+        max_per_ip: count("PUSH_MAX_CONNECTIONS_PER_IP", d.max_per_ip)?,
+        max_per_player: count("PUSH_MAX_CONNECTIONS_PER_PLAYER", d.max_per_player)?,
+        queue_depth: count("PUSH_QUEUE_DEPTH", d.queue_depth)?,
+        max_frame_bytes: count("PUSH_MAX_FRAME_BYTES", d.max_frame_bytes)?,
+        handshake_grace: ms("PUSH_HANDSHAKE_TIMEOUT_MS", d.handshake_grace)?,
+        write_deadline: ms("PUSH_WRITE_TIMEOUT_MS", d.write_deadline)?,
+        reverify_interval: ms("PUSH_REVERIFY_INTERVAL_MS", d.reverify_interval)?,
+        max_stale: ms("PUSH_MAX_STALE_MS", d.max_stale)?,
+        ..d
+    };
+    // The SAME trusted-proxy set `core/app`'s rate limiter resolves a client IP against:
+    // a per-IP cap that honoured an untrusted peer's `X-Forwarded-For` would be defeated
+    // by a forged header.
+    limits.with_trusted_proxies(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())
+}
+
 #[cfg(test)]
 mod admission_budget_tests;
 
@@ -144,7 +200,12 @@ async fn main() -> anyhow::Result<()> {
     let edge_mk_ref: Option<&dyn Fn(&'static str) -> remote::PeerListResolver> = edge_mk
         .as_ref()
         .map(|f| f as &dyn Fn(&'static str) -> remote::PeerListResolver);
-    let mods = gateway_svc::modules(&wiring, Some(player.clone()), edge_mk_ref);
+    let mods = gateway_svc::modules(
+        &wiring,
+        Some(player.clone()),
+        edge_mk_ref,
+        Some(push_limits_from_env()?),
+    );
 
     // No edge server: this process serves no provider over the internal mTLS edge, it
     // only DIALS peers (via the stubs). `without_db`: a pure-transport process owns no

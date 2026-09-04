@@ -29,6 +29,10 @@ use lifecycle::{Module, ProcessWiring};
 pub fn modules(
     wiring: &ProcessWiring,
     player: Option<Arc<Mutex<edge::PlayerServer>>>,
+    // The `/push` WebSocket bounds `main.rs` parsed from env. `None` in the
+    // `checkmodules` harness — the module then applies its own defaults, and no checker
+    // ever models the developer's ambient shell.
+    push_limits: Option<gateway::PushLimits>,
 ) -> Vec<Box<dyn Module>> {
     let mut gw = gateway::Gateway::new();
     if let Some(p) = player {
@@ -36,6 +40,9 @@ pub fn modules(
     }
     if let Some(budget) = wiring.admission_budget() {
         gw = gw.with_admission_budget(budget);
+    }
+    if let Some(limits) = push_limits {
+        gw = gw.with_push_limits(limits);
     }
 
     vec![

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::http::StatusCode;
 
 use crate::verifier::{SessionVerifier, VerifyUnavailable};
 use crate::{KeyVerifier as _, LookupUnavailable, RealKeyVerifier};
@@ -40,15 +40,19 @@ pub async fn conformance_key_outage(
         .await
 }
 
+/// Drives the front door's ONE bearer admission (`crate::verify_bearer`, the same
+/// function `admit_inner` and `/push` call) over a verifier that cannot answer, and
+/// reports the HTTP status the denial renders as.
 #[doc(hidden)]
 pub async fn conformance_session_outage_status() -> StatusCode {
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        header::AUTHORIZATION,
-        HeaderValue::from_static("Bearer conformance-probe-token"),
-    );
-    match crate::authenticate(&headers, &UnavailableVerifier).await {
+    match crate::verify_bearer(
+        &UnavailableVerifier,
+        Some("conformance-probe-token"),
+        opsapi::AuthReq::Player,
+    )
+    .await
+    {
         Ok(_) => StatusCode::OK,
-        Err(response) => response.status(),
+        Err(denial) => crate::admission_denial_response(&denial).status(),
     }
 }

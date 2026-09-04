@@ -23,10 +23,16 @@ edge = { workspace = true }
 # no `api/` crate, no cycle.
 remote = { workspace = true }
 contrib = { workspace = true }
+# The push hub MODEL (`ConnId`) — a foundation leaf owning no transport; this module owns
+# the socket that carries it.
+push = { workspace = true }
 # The shared route-pattern label seam (`httpmw::RoutePattern`): the front door stamps a
 # matched op's route pattern onto the response so `core/metrics` labels op traffic by
 # pattern instead of the fixed "unmatched". A core leaf (no cycle: httpmw imports no module).
 httpmw = { workspace = true }
+# `IpNet`: the trusted-proxy set the `/push` per-IP cap resolves a client address against,
+# parsed by `httpmw::parse_cidrs` and carried in the limits the composition root injects.
+ipnet = { workspace = true }
 axum = { workspace = true }
 # The HTTP reverse-proxy passthrough (Go's httpproxy): reqwest is the workspace client
 # already used by accounts (Epic OIDC/OAuth); the `stream` feature streams the
