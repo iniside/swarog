@@ -174,6 +174,27 @@ bearer from either the header or the first frame (never the query string); the c
 registry and its per-connection tasks; the limits builder and its two composition-root call
 sites. Carries constraints 1–6, 9, 10.
 
+*Errata (2026-09-04, implementation + review round 1 on `5e19621`):* three decisions this
+step made that the text above does not describe.
+- **The presence-only key mode is a parameter, not a second body.** The first landing added
+  `admit_push`/`admit_push_inner` beside `admit`/`admit_inner` — substantively one authority
+  (one key check, one `verify_bearer`, one `AdmissionDenial` map) but structurally a copy,
+  with the budget wrapper in three places and nothing pinning the two bodies equal. It was
+  folded back into constraint 4's shape: `keys::KeyCheck::{Policy,PresenceOnly}` threaded
+  through `check_api_key` → `admit_inner` → `admit`, and `/push` calls `admit`. The one
+  extraction that stayed is `verify_bearer`, the free function `admit_inner` and the
+  re-verify tick share (constraint 3's deleted `authenticate` is what it replaces).
+- **`reverify_push` is a SECOND budget site,** deliberately: there is no key check to share
+  a deadline with, and re-running one would consult the apikeys store once per tick per
+  connection for a decision already made at admission.
+- **The `PUSH_*` PARSE policy lives in `gateway::PushLimits::from_values`,** not in the two
+  mains. Env is still read only in `cmd/server/src/main.rs` and `cmd/gateway-svc/src/main.rs`
+  (one line each, over the `pub const` knob names), but the nine knobs' fail-startup rules
+  are one value-taking function rather than a 50-line block copied into both roots with
+  nothing detecting drift — and, unlike `admission_budget_from_value`, it is reachable in a
+  test without mutating process env. Its policy diverges from that precedent: garbage FAILS
+  STARTUP here rather than falling back to the default.
+
 **Step 5 — gateway: the hub.** `[opus]` core-implementer.
 `Target` resolution over the registry, client-driven group join/leave, and the presence emitter
 (default off — it is O(connections) per event and exists as the acceptance vehicle, not a

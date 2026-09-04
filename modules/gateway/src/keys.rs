@@ -112,43 +112,43 @@ impl KeyDenial {
     }
 }
 
+/// What the key check must prove about a presented key, beside its validity.
+///
+/// The MODE of the one key authority, not a second path: both variants share the
+/// missing/invalid/unavailable verdicts and their [`KeyDenial`] mapping, so a fixed route
+/// and an operation cannot classify the same key differently.
+#[derive(Clone, Copy)]
+pub(crate) enum KeyCheck<'a> {
+    /// The key's policy must allow this wire method (every op-dispatched request).
+    Policy(&'a str),
+    /// Presence and validity only. A fixed route (`GET /push`) has no wire method to
+    /// match a policy against, so nothing is added to any key's policy for it.
+    PresenceOnly,
+}
+
 /// The key check both planes run after their route/method match: missing →
-/// [`KeyDenial::Missing`], unknown/revoked → [`KeyDenial::Invalid`], policy miss →
-/// [`KeyDenial::Forbidden`], verifier outage/shed → [`KeyDenial::Unavailable`], else
-/// `Ok(())` and the request proceeds to session auth.
+/// [`KeyDenial::Missing`], unknown/revoked → [`KeyDenial::Invalid`], policy miss (under
+/// [`KeyCheck::Policy`]) → [`KeyDenial::Forbidden`], verifier outage/shed →
+/// [`KeyDenial::Unavailable`], else `Ok(())` and the request proceeds to session auth.
 pub(crate) async fn check_api_key(
     verifier: &dyn KeyVerifier,
     key: Option<&str>,
-    method: &str,
+    check: KeyCheck<'_>,
 ) -> Result<(), KeyDenial> {
-    let record = check_api_key_valid(verifier, key).await?;
-    if !policy_allows(&record.policy, method) {
-        return Err(KeyDenial::Forbidden);
-    }
-    Ok(())
-}
-
-/// The presence-and-validity half of [`check_api_key`], without the policy match: a key
-/// must be presented and must resolve to a live record, but nothing is compared against
-/// a wire method.
-///
-/// This is a MODE of the one key authority, not a second path — [`check_api_key`] is
-/// this function plus [`policy_allows`], so the missing/invalid/unavailable verdicts and
-/// their [`KeyDenial`] mapping cannot drift between a fixed route and an operation. It
-/// exists for the front's `/push` WebSocket, which has no wire method to match a policy
-/// against; nothing is added to any key's policy for it.
-pub(crate) async fn check_api_key_valid(
-    verifier: &dyn KeyVerifier,
-    key: Option<&str>,
-) -> Result<KeyRecord, KeyDenial> {
     let Some(key) = key else {
         return Err(KeyDenial::Missing);
     };
-    match verifier.lookup(key).await {
-        Ok(Some(record)) => Ok(record),
-        Ok(None) => Err(KeyDenial::Invalid),
-        Err(LookupUnavailable) => Err(KeyDenial::Unavailable),
+    let record = match verifier.lookup(key).await {
+        Ok(Some(record)) => record,
+        Ok(None) => return Err(KeyDenial::Invalid),
+        Err(LookupUnavailable) => return Err(KeyDenial::Unavailable),
+    };
+    if let KeyCheck::Policy(method) = check {
+        if !policy_allows(&record.policy, method) {
+            return Err(KeyDenial::Forbidden);
+        }
     }
+    Ok(())
 }
 
 /// Evaluates a key policy against a wire method (Decision 4): the literal string

@@ -1102,7 +1102,7 @@ async fn global_semaphore_shed_is_unavailable_not_invalid() {
     // The 65th distinct key is shed — through check_api_key it must map to
     // Unavailable/503, never Invalid/401.
     assert!(matches!(v.lookup("valid-but-uncached").await, Err(LookupUnavailable)));
-    let denial = check_api_key(&*v, Some("valid-but-uncached"), "demo.echo").await.unwrap_err();
+    let denial = check_api_key(&*v, Some("valid-but-uncached"), KeyCheck::Policy("demo.echo")).await.unwrap_err();
     assert!(matches!(denial, KeyDenial::Unavailable), "a shed is not a key verdict");
     assert!(matches!(denial.status(), Status::Unavailable));
     assert_eq!(denial.status().http(), 503);
@@ -1120,12 +1120,12 @@ async fn check_api_key_maps_lookup_outcomes() {
     let v = RealKeyVerifier::with_ttl(ScriptedKeys::new(vec![Ok(None)]), Duration::from_secs(60));
 
     // (b) A definitively unknown key stays Invalid → 401.
-    let denial = check_api_key(&v, Some("nope"), "demo.echo").await.unwrap_err();
+    let denial = check_api_key(&v, Some("nope"), KeyCheck::Policy("demo.echo")).await.unwrap_err();
     assert!(matches!(denial, KeyDenial::Invalid));
     assert_eq!(denial.status().http(), 401);
 
     // (c) An oversize key is definitively NOT a key: Invalid → 401, not a 503.
-    let denial = check_api_key(&v, Some(&"x".repeat(257)), "demo.echo").await.unwrap_err();
+    let denial = check_api_key(&v, Some(&"x".repeat(257)), KeyCheck::Policy("demo.echo")).await.unwrap_err();
     assert!(matches!(denial, KeyDenial::Invalid));
     assert_eq!(denial.status().http(), 401);
 }

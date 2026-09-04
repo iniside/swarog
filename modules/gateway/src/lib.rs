@@ -108,7 +108,7 @@ pub use push_ws::PushLimits;
 pub use keys::{AllowAllKeyVerifier, KeyVerifier, LookupUnavailable, RealKeyVerifier};
 pub use verifier::{DevSessionVerifier, SessionVerifier, SessionsVerifier, VerifyUnavailable};
 
-use keys::{check_api_key, check_api_key_valid, KeyDenial};
+use keys::{check_api_key, KeyCheck, KeyDenial};
 use push_ws::PushHub;
 
 /// Caps the request body the gateway buffers before decoding an operation, so a
@@ -846,7 +846,12 @@ impl FrontDoor {
         // pinned `Unavailable` envelope, never a leaked handler. The denial renders
         // through the SAME `{status, err}` grammar as before — no new status.
         let identity = match self
-            .admit(api_key.as_deref(), token.as_deref(), route.op.auth, &route.op.method)
+            .admit(
+                api_key.as_deref(),
+                token.as_deref(),
+                route.op.auth,
+                KeyCheck::Policy(&route.op.method),
+            )
             .await
         {
             Ok(id) => id,
@@ -885,11 +890,11 @@ impl FrontDoor {
         api_key: Option<&str>,
         bearer: Option<&str>,
         auth: AuthReq,
-        method: &str,
+        key: KeyCheck<'_>,
     ) -> Result<Identity, AdmissionDenial> {
         match tokio::time::timeout(
             self.admission_budget,
-            self.admit_inner(api_key, bearer, auth, method),
+            self.admit_inner(api_key, bearer, auth, key),
         )
         .await
         {
@@ -908,49 +913,18 @@ impl FrontDoor {
         api_key: Option<&str>,
         bearer: Option<&str>,
         auth: AuthReq,
-        method: &str,
+        key: KeyCheck<'_>,
     ) -> Result<Identity, AdmissionDenial> {
-        // (a) API-key check — post-match, pre-auth (Decision 5's exact three-way).
-        check_api_key(&*self.key_verifier, api_key, method)
+        // (a) API-key check — post-match, pre-auth (Decision 5's exact three-way), in the
+        // mode the caller's surface can prove: a policy match for an op, presence and
+        // validity for a fixed route.
+        check_api_key(&*self.key_verifier, api_key, key)
             .await
             .map_err(AdmissionDenial::Key)?;
 
         // (b) Auth-once: the single trust boundary. For a player-auth op the bearer is
         // required and verified; only the VERIFIED player_id becomes the identity.
         verify_bearer(&*self.verifier, bearer, auth).await
-    }
-
-    /// Credential admission for `GET /push`: the api key must be PRESENT and VALID (no
-    /// policy match — a fixed route has no wire method to match one against), then the
-    /// bearer is verified. Both halves are the same authorities `admit_inner` runs
-    /// ([`check_api_key_valid`], [`verify_bearer`]) and denials render through the same
-    /// [`AdmissionDenial`], so an outage cannot classify differently here than on an op.
-    ///
-    /// The budget is applied HERE rather than being inherited: [`FrontDoor::admit`]'s
-    /// single `timeout` covers exactly its own two awaits, and this call site covers its
-    /// own two the same way.
-    pub(crate) async fn admit_push(
-        &self,
-        api_key: Option<&str>,
-        bearer: Option<&str>,
-    ) -> Result<Identity, AdmissionDenial> {
-        match tokio::time::timeout(self.admission_budget, self.admit_push_inner(api_key, bearer))
-            .await
-        {
-            Ok(result) => result,
-            Err(_elapsed) => Err(AdmissionDenial::Timeout),
-        }
-    }
-
-    async fn admit_push_inner(
-        &self,
-        api_key: Option<&str>,
-        bearer: Option<&str>,
-    ) -> Result<Identity, AdmissionDenial> {
-        check_api_key_valid(&*self.key_verifier, api_key)
-            .await
-            .map_err(AdmissionDenial::Key)?;
-        verify_bearer(&*self.verifier, bearer, AuthReq::Player).await
     }
 
     /// Re-verifies a live push connection's bind-time bearer, bounded by the same
@@ -960,6 +934,11 @@ impl FrontDoor {
     /// The caller decides what each denial means for the connection — in particular
     /// [`AdmissionDenial::SessionUnavailable`]/[`AdmissionDenial::Timeout`] must not end
     /// it, or an accounts blip would disconnect every player at once.
+    ///
+    /// It applies the budget itself rather than going through [`FrontDoor::admit`]: there
+    /// is no key check to share the deadline with, and re-running one would consult the
+    /// apikeys store once per tick per connection for a decision that was made at
+    /// admission.
     pub(crate) async fn reverify_push(&self, bearer: &str) -> Result<Identity, AdmissionDenial> {
         match tokio::time::timeout(
             self.admission_budget,
@@ -1970,7 +1949,7 @@ async fn dispatch_matched_op(
             api_key_header(&headers).as_deref(),
             bearer(&headers).as_deref(),
             op.auth,
-            &op.method,
+            KeyCheck::Policy(&op.method),
         )
         .await
     {

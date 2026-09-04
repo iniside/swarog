@@ -33,7 +33,7 @@ use push::ConnId;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 
-use crate::keys::KeyDenial;
+use crate::keys::{KeyCheck, KeyDenial};
 use crate::{AdmissionDenial, FrontDoor};
 
 /// Grace [`PushHub::shutdown`] gives every live connection to write its typed close
@@ -63,8 +63,8 @@ pub struct PushLimits {
     pub max_connections: usize,
     /// Sockets one resolved client IP may hold (see [`PushLimits::trusted_proxies`]).
     pub max_per_ip: usize,
-    /// Sockets one player may hold across devices. The OLDEST is closed when a new one
-    /// would exceed this, so a player's newest device always connects.
+    /// Sockets one player may hold across devices. The longest-bound one is closed when a
+    /// new one would exceed this, so a player's newest device always connects.
     pub max_per_player: usize,
     /// Frames one connection may have pending before the queue starts dropping its
     /// OLDEST message.
@@ -113,14 +113,93 @@ impl PushLimits {
 
     /// Parses a `TRUSTED_PROXY_CIDRS`-shaped list into [`PushLimits::trusted_proxies`]
     /// through `httpmw`'s parser — the same authority `core/app`'s rate limiter uses, so
-    /// the two cannot disagree about which peers may forward a client address. The
-    /// composition root reads the env var; a malformed entry is a startup failure there.
+    /// the two cannot disagree about which peers may forward a client address.
     pub fn with_trusted_proxies(mut self, csv: &str) -> anyhow::Result<PushLimits> {
         self.trusted_proxies = httpmw::parse_cidrs(csv)
             .map_err(|e| anyhow::anyhow!("push: parse trusted proxy CIDRs: {e}"))?;
         Ok(self)
     }
+
+    /// Builds the limits from configuration VALUES, `get` returning what the composition
+    /// root found for each name. It takes a lookup rather than reading the environment so
+    /// the module never touches env (a checker builds these with no wiring at all) and so
+    /// the failure branches below are reachable without mutating process env — the
+    /// `admission_budget_from_value` precedent, which each front main also drives from a
+    /// raw value.
+    ///
+    /// A name that is ABSENT or blank keeps this build's default. A name that is PRESENT
+    /// but unusable — unparseable, or `0` for a cap or a deadline where zero cannot mean
+    /// "disabled" — FAILS STARTUP naming the offender. **This is deliberately stricter
+    /// than the precedent it borrows its shape from**: `admission_budget_from_value` falls
+    /// back to its default on garbage, whereas a bound an operator typed and got silently
+    /// dropped is a cap they believe is in force and is not.
+    pub fn from_values(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<PushLimits> {
+        fn value(raw: Option<String>) -> Option<String> {
+            raw.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+        }
+        fn count(name: &str, raw: Option<String>, current: usize) -> anyhow::Result<usize> {
+            match value(raw) {
+                None => Ok(current),
+                Some(v) => match v.parse::<usize>() {
+                    Ok(0) | Err(_) => anyhow::bail!(
+                        "{name}={v:?} is invalid: expected a positive integer (unset it \
+                         for the default of {current})"
+                    ),
+                    Ok(n) => Ok(n),
+                },
+            }
+        }
+        fn ms(name: &str, raw: Option<String>, current: Duration) -> anyhow::Result<Duration> {
+            match value(raw) {
+                None => Ok(current),
+                Some(v) => match v.parse::<u64>() {
+                    Ok(0) | Err(_) => anyhow::bail!(
+                        "{name}={v:?} is invalid: expected a positive number of \
+                         milliseconds (unset it for the default of {}ms)",
+                        current.as_millis()
+                    ),
+                    Ok(n) => Ok(Duration::from_millis(n)),
+                },
+            }
+        }
+
+        let d = PushLimits::default();
+        let limits = PushLimits {
+            max_connections: count(
+                MAX_CONNECTIONS,
+                get(MAX_CONNECTIONS),
+                d.max_connections,
+            )?,
+            max_per_ip: count(MAX_PER_IP, get(MAX_PER_IP), d.max_per_ip)?,
+            max_per_player: count(MAX_PER_PLAYER, get(MAX_PER_PLAYER), d.max_per_player)?,
+            queue_depth: count(QUEUE_DEPTH, get(QUEUE_DEPTH), d.queue_depth)?,
+            max_frame_bytes: count(MAX_FRAME_BYTES, get(MAX_FRAME_BYTES), d.max_frame_bytes)?,
+            handshake_grace: ms(HANDSHAKE_MS, get(HANDSHAKE_MS), d.handshake_grace)?,
+            write_deadline: ms(WRITE_MS, get(WRITE_MS), d.write_deadline)?,
+            reverify_interval: ms(REVERIFY_MS, get(REVERIFY_MS), d.reverify_interval)?,
+            max_stale: ms(MAX_STALE_MS, get(MAX_STALE_MS), d.max_stale)?,
+            ..d
+        };
+        // The SAME trusted-proxy set `core/app`'s rate limiter resolves a client IP
+        // against: a per-IP cap that honoured an untrusted peer's `X-Forwarded-For` would
+        // be defeated by a forged header.
+        limits.with_trusted_proxies(&get(TRUSTED_PROXIES).unwrap_or_default())
+    }
 }
+
+/// The names [`PushLimits::from_values`] looks up. Public so a composition root reads the
+/// environment under exactly these names and cannot drift from the parser.
+pub const MAX_CONNECTIONS: &str = "PUSH_MAX_CONNECTIONS";
+pub const MAX_PER_IP: &str = "PUSH_MAX_CONNECTIONS_PER_IP";
+pub const MAX_PER_PLAYER: &str = "PUSH_MAX_CONNECTIONS_PER_PLAYER";
+pub const QUEUE_DEPTH: &str = "PUSH_QUEUE_DEPTH";
+pub const MAX_FRAME_BYTES: &str = "PUSH_MAX_FRAME_BYTES";
+pub const HANDSHAKE_MS: &str = "PUSH_HANDSHAKE_TIMEOUT_MS";
+pub const WRITE_MS: &str = "PUSH_WRITE_TIMEOUT_MS";
+pub const REVERIFY_MS: &str = "PUSH_REVERIFY_INTERVAL_MS";
+pub const MAX_STALE_MS: &str = "PUSH_MAX_STALE_MS";
+/// Shared with `core/app`'s rate limiter — the one trusted-proxy set per process.
+pub const TRUSTED_PROXIES: &str = "TRUSTED_PROXY_CIDRS";
 
 // ---------------------------------------------------------------------------
 // The wire frames
@@ -412,8 +491,12 @@ struct HubState {
     /// passed the test register into an already-drained map and never be closed.
     closing: bool,
     conns: HashMap<ConnId, Conn>,
-    /// Connections per player in ACCEPT order, so the per-player cap evicts the oldest
-    /// by taking the front.
+    /// Connections per player in BIND order — [`PushHub::bind`] is the only writer, and
+    /// it runs after the handshake, so this is not accept order: a socket that spent its
+    /// whole handshake grace binds behind one that upgraded later and bound immediately.
+    /// The cap evicts the front, i.e. the connection that has been a live PLAYER
+    /// connection longest, which is the one this ordering is meant to name; an unbound
+    /// socket carries no player identity and is bounded by the handshake grace instead.
     by_player: HashMap<String, VecDeque<ConnId>>,
     per_ip: HashMap<IpAddr, usize>,
     /// Group membership, filled by the hub's join/leave verbs. Cleared per connection
@@ -506,7 +589,8 @@ impl PushHub {
     }
 
     /// Binds a verified player to an accepted connection, enforcing the per-player cap by
-    /// evicting the OLDEST. Returns the evicted connection's queue (if any) for the
+    /// evicting the longest-bound one (see [`HubState::by_player`] on why that is not the
+    /// same as the earliest-accepted one). Returns the evicted connection's queue (if any) for the
     /// caller to close AFTER the guard is dropped.
     fn bind(&self, id: ConnId, player: &str) -> Option<Arc<ConnQueue>> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -532,27 +616,39 @@ impl PushHub {
     /// removes itself through its [`Slot`] guard on EVERY exit path, so an empty registry
     /// is the honest "everyone is gone" signal, and a task that ignores its queue is
     /// covered by the abort.
+    ///
+    /// The abort handles are collected AFTER the grace, not before it. A connection
+    /// accepted just before this runs attaches its handle from its own task, which may not
+    /// have been scheduled yet when the flag is set — snapshotting the handles up front
+    /// would leave exactly that connection in nobody's list, and a peer that stopped
+    /// reading would then keep the task (and the socket) alive past module stop.
     pub(crate) async fn shutdown(&self) {
-        let aborts: Vec<AbortHandle> = {
+        {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.closing = true;
             for conn in state.conns.values() {
                 conn.queue.close(CloseCode::Shutdown);
             }
-            state.conns.values().filter_map(|c| c.abort.clone()).collect()
-        };
+        }
         let deadline = tokio::time::Instant::now() + PUSH_STOP_GRACE;
         loop {
-            // Registered BEFORE the emptiness check: a connection releasing its slot in
-            // between would otherwise notify nobody and this wait would run the full grace.
+            // `enable()` performs the registration a bare `notified()` only does on its
+            // FIRST POLL: without it, a last `Slot::drop` landing between the check below
+            // and the await would notify nobody and this would burn the whole grace.
             let drained = self.drained.notified();
+            tokio::pin!(drained);
+            drained.as_mut().enable();
             if self.live() == 0 {
-                break;
+                return;
             }
             if tokio::time::timeout_at(deadline, drained).await.is_err() {
                 break;
             }
         }
+        let aborts: Vec<AbortHandle> = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.conns.values().filter_map(|c| c.abort.clone()).collect()
+        };
         for abort in aborts {
             abort.abort();
         }
@@ -646,8 +742,9 @@ pub(crate) async fn upgrade(
             // `on_upgrade` spawns a DETACHED task and drops its `JoinHandle`, so the task
             // below — not this one — is the connection, and its abort handle is what
             // `shutdown` can act on. The handle is delivered through a oneshot the task
-            // awaits FIRST, so it is registered before the connection can do anything a
-            // shutdown would need to interrupt.
+            // awaits FIRST, so it is attached before the connection reads a frame; a
+            // shutdown that races the spawn still sees it, because `shutdown` collects the
+            // handles after its grace rather than up front.
             let (abort_tx, abort_rx) = oneshot::channel();
             let task = tokio::spawn(async move {
                 let Ok(abort) = abort_rx.await else { return };
@@ -705,7 +802,14 @@ async fn run(
     };
 
     let identity = match front
-        .admit_push(creds.api_key.as_deref(), creds.bearer.as_deref())
+        .admit(
+            creds.api_key.as_deref(),
+            creds.bearer.as_deref(),
+            opsapi::AuthReq::Player,
+            // Presence and validity only: a fixed route has no wire method to match a
+            // policy against.
+            KeyCheck::PresenceOnly,
+        )
         .await
     {
         Ok(identity) => identity,
@@ -713,8 +817,8 @@ async fn run(
             return write_close(&mut socket, close_for(&denial), limits.write_deadline).await
         }
     };
-    // `admit_push` admits against `AuthReq::Player`, which denies a missing bearer and
-    // resolves an identity only from a verified session, so both are `Some` here.
+    // Admitted against `AuthReq::Player`, which denies a missing bearer and resolves an
+    // identity only from a verified session, so both are `Some` here.
     let (Some(player), Some(bearer)) = (identity.player_id().map(str::to_string), creds.bearer)
     else {
         return write_close(&mut socket, CloseCode::Unauthorized, limits.write_deadline).await;
@@ -766,7 +870,15 @@ async fn handshake(
                 // the grace of a stopping process.
                 out = slot.queue.recv(wake) => match out {
                     Some(Outbound::Close(code)) => return Err(Some(code)),
-                    _ => continue,
+                    // Nothing addresses a connection before it binds a player, so a frame
+                    // here would mean the hub resolved a target against an unauthenticated
+                    // socket — a routing defect, not a frame to swallow.
+                    Some(Outbound::Text(_)) => {
+                        unreachable!("nothing is queued to a connection before it binds")
+                    }
+                    // The queue's sender lives in the registry entry this connection still
+                    // holds, so this is unreachable; ending is the safe answer either way.
+                    None => return Err(None),
                 },
                 msg = socket.recv() => match msg {
                     None | Some(Err(_)) | Some(Ok(WsMessage::Close(_))) => return Err(None),
