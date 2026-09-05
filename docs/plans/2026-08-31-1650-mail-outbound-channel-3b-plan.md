@@ -1209,3 +1209,24 @@ names its peers by count is correct and Step 7 already carried it.
    `audit`, `notifications` and now `mail` all prune on a `scheduler.fired` subscription;
    `leaderboard` has no such subscription and no retention path at all. Its table grows
    without bound. That is a decision to take on its own, not inside this rollout.
+38. **Step 11 — "keep the fixture plaintext" and the asserted list were incompatible, and
+   the first fix was to declare the list impossible.** `smtp.rs` has no plaintext arm by
+   design, and both `TlsMode` arms abandon a plaintext peer at EHLO, so `MAIL FROM`,
+   `RCPT TO`, `DATA` and a `250` acceptance are unreachable by a plaintext fixture built on
+   `SmtpSender::new`. The first Step 11 commit (`de0338a`) recorded those as gaps of the
+   DESIGN. They are not: the review pointed out that the same commit had already widened
+   `worker::attempt` to `pub(crate)` for testability, and that a `#[cfg(test)]
+   pub(crate) fn SmtpSender::plaintext_for_tests` adds no production surface and no third
+   `TlsMode` arm. It landed, and with it the whole dialogue — envelope, recipient, subject
+   and body asserted on the wire, `250` mapping to `Ok`/`sent`, and a `550` at `RCPT`
+   mapping to `Rejected`/`parked`. **Reachable only behind a `cfg(test)` constructor, which
+   we added** — not impossible. Step 13's gap list must not say otherwise.
+39. **Step 11 — the remaining gaps, exactly.** (a) A TLS handshake is never COMPLETED, so
+   the STARTTLS upgrade, the certificate/trust check and SMTP `AUTH` are unproven; the
+   `webpki-roots` trust store is also why a self-signed loopback TLS fixture cannot stand in
+   for one. What IS pinned is the `relay`-vs-`starttls_relay` choice and that an implicit
+   dial emits no cleartext SMTP command. (b) A relay that answers `5xx` and then goes silent
+   has its permanent verdict downgraded to `Infra`: lettre's `abort()` sends `QUIT` and
+   blocks in an unbounded `read_response`, so `worker::attempt`'s budget is what returns,
+   and the row burns its whole attempt ladder before parking with a `"send exceeded …"`
+   reason instead of the relay's own `550`. Absorbed, not a hang — a reporting gap.

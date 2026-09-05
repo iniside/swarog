@@ -144,6 +144,36 @@ impl SmtpSender {
             from: Mailbox::new(None, from),
         })
     }
+
+    /// A PLAINTEXT transport for the loopback-relay tests. `#[cfg(test)]`, so it adds no
+    /// production surface and gives [`TlsMode`] no third arm: the deployed sender still
+    /// cannot be talked out of TLS. Without it nothing past the upgrade — `MAIL FROM`,
+    /// `RCPT TO`, `DATA`, and a `250` acceptance — is reachable by any test, because both
+    /// `TlsMode` arms abandon a plaintext peer at EHLO and `webpki-roots` will not validate
+    /// a loopback certificate.
+    ///
+    /// It repeats [`SmtpSender::new`]'s port/timeout/hello chain rather than sharing it,
+    /// because the branch under test is what `new` does with `settings.tls` — a helper both
+    /// called would test the helper.
+    #[cfg(test)]
+    pub(crate) fn plaintext_for_tests(
+        host: &str,
+        port: u16,
+        from: &str,
+        connect_timeout: Duration,
+    ) -> anyhow::Result<SmtpSender> {
+        let from = parse_address(from)
+            .map_err(|reason| anyhow::anyhow!("the envelope sender {reason}"))?;
+        let transport = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
+            .port(port)
+            .timeout(Some(connect_timeout))
+            .hello_name(ClientId::Domain(hello_domain(&from)))
+            .build();
+        Ok(SmtpSender {
+            transport,
+            from: Mailbox::new(None, from),
+        })
+    }
 }
 
 #[async_trait]
