@@ -13,7 +13,10 @@ use std::time::Duration;
 
 use super::*;
 
+use accountsapi::admin::PLAYERS_ROW_MENU;
 use accountsapi::{Directory, PlayerSummary};
+use adminapi::AdminData as _;
+use bus::Bus;
 use friendsapi::{
     Player as _, DEFAULT_PAGE_LIMIT, MAX_CURSOR_BYTES, MAX_PAGE_LIMIT, MAX_PENDING_OUTSTANDING,
     STATE_ACCEPTED, STATE_PENDING,
@@ -1062,3 +1065,410 @@ async fn request_rolls_back_the_row_and_the_event_when_the_append_fails() {
 // "delete then re-insert", which would prove only what the unique index already
 // guarantees.
 // ============================================================================
+
+// ============================================================================
+// Step 9 — the admin page (Step 8, fe1af16 / 6fa8224): `admin_data` must never return
+// `Err`, on every branch `build_content` has.
+// ============================================================================
+
+/// An unroutable DSN behind a short `acquire_timeout` (the `accounts::guest` tests'
+/// `dead_guest_service` precedent): sqlx's acquire loop otherwise retries
+/// ConnectionRefused as "server starting up" for its 30s default deadline.
+const DEAD_DSN: &str = "postgres://gamebackend:gamebackend@127.0.0.1:1/friends-admin-dead";
+
+fn dead_service(directory: Arc<dyn Directory>) -> Arc<Service> {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(Duration::from_millis(200))
+        .connect_lazy(DEAD_DSN)
+        .unwrap();
+    let svc = Arc::new(Service::new(pool, Arc::new(Bus::new())));
+    svc.directory.set(directory).ok().expect("directory set once");
+    svc
+}
+
+/// Bypasses `svc.request`/`accept` — both call `Service::directory()`, which PANICS
+/// when unresolved (item 6 needs the OnceLock left unset), and `request` additionally
+/// needs a directory `find_by_handle` hit for the OTHER side (item 7's whole point is
+/// that side is a directory MISS). A raw insert reaches the same `friends.edges` row
+/// shape the service produces without touching the directory at all.
+async fn insert_edge_raw(pool: &PgPool, a: &str, b: &str, requester: &str, state: &str) -> String {
+    let row: (String,) = sqlx::query_as(
+        "INSERT INTO friends.edges (id, low_id, high_id, requester_id, state) \
+         VALUES (gen_random_uuid(), least($1::uuid, $2::uuid), greatest($1::uuid, $2::uuid), \
+                 $3::uuid, $4) \
+         RETURNING id::text",
+    )
+    .bind(a)
+    .bind(b)
+    .bind(requester)
+    .bind(state)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    row.0
+}
+
+/// `admin::short_uuid` is private (not `pub(crate)`); the test's own copy matches it
+/// exactly (`admin.rs`'s definition), since it is the id-degradation contract's whole
+/// point that a row NAMES the short form, not that it re-exposes admin's helper.
+fn short_uuid(uuid: &str) -> &str {
+    uuid.split('-').next().unwrap_or(uuid)
+}
+
+fn kpi_labels(data: &adminapi::ItemData) -> Vec<(String, String)> {
+    data.content.kpis.iter().map(|k| (k.label.clone(), k.value.clone())).collect()
+}
+
+fn error_kpi(data: &adminapi::ItemData) -> Option<&adminapi::Kpi> {
+    data.content.kpis.iter().find(|k| k.label == "Error")
+}
+
+fn directory_kpi(data: &adminapi::ItemData) -> Option<&adminapi::Kpi> {
+    data.content.kpis.iter().find(|k| k.label == "Directory")
+}
+
+// ---- items 1-2: foreign / missing / empty params reach the overview, never an error ----
+
+#[tokio::test]
+async fn admin_data_with_a_foreign_pages_params_is_the_overview_not_an_error() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir).await;
+
+    let mut params = adminapi::Params::new();
+    params.insert("owner".into(), "character:123".into());
+    params.insert("namespace".into(), "wallet".into());
+
+    let data = svc.admin_data(params).await.expect("admin_data must never return Err");
+    assert!(
+        error_kpi(&data).is_none(),
+        "another page's params must render friends' normal overview, not an error card \
+         that collapses this page's own section/label to its id"
+    );
+    assert_eq!(data.id, admin::ADMIN_ITEM_ID);
+    assert_eq!(data.section, admin::ADMIN_SECTION);
+    assert_eq!(data.label, admin::ADMIN_LABEL);
+}
+
+#[tokio::test]
+async fn admin_data_missing_player_param_is_the_overview() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir).await;
+
+    let data = svc.admin_data(adminapi::Params::new()).await.unwrap();
+    assert!(error_kpi(&data).is_none());
+    assert!(data.content.header.is_none(), "the overview has no per-player header");
+}
+
+#[tokio::test]
+async fn admin_data_blank_player_param_is_the_overview() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir).await;
+
+    let mut params = adminapi::Params::new();
+    params.insert("player".into(), "   ".into());
+    let data = svc.admin_data(params).await.unwrap();
+    assert!(error_kpi(&data).is_none(), "whitespace-only must trim to empty, same as absent");
+    assert!(data.content.header.is_none());
+}
+
+// ---- item 3: malformed `player` shapes are an error card, still Ok. The DEAD pool
+// proves the validation guard runs BEFORE any store call: if `is_uuid_text`/the prefix
+// strip were ever bypassed, these would reach `player_view`'s store call instead and
+// surface the DIFFERENT "Could not read the social graph" message against the dead
+// pool — so the exact message pins which branch ran. ----
+
+async fn assert_rejected_before_reaching_the_dead_store(raw_player: &str) {
+    let dir: Arc<dyn Directory> = Arc::new(FakeDirectory::new());
+    let svc = dead_service(dir);
+    let mut params = adminapi::Params::new();
+    params.insert("player".into(), raw_player.into());
+    let data = svc.admin_data(params).await.expect("admin_data must never return Err");
+    let error = error_kpi(&data)
+        .unwrap_or_else(|| panic!("expected an error card for player={raw_player:?}, got {:?}", kpi_labels(&data)));
+    assert_eq!(
+        error.value, "Invalid player — expected a uuid.",
+        "a malformed player must be rejected by validation, never reach the (dead) store"
+    );
+}
+
+#[tokio::test]
+async fn admin_data_rejects_a_braced_uuid() {
+    assert_rejected_before_reaching_the_dead_store("{00000000-0000-4000-8000-000000000000}").await;
+}
+
+#[tokio::test]
+async fn admin_data_rejects_a_non_canonical_shape() {
+    assert_rejected_before_reaching_the_dead_store("not-a-uuid-at-all").await;
+}
+
+#[tokio::test]
+async fn admin_data_rejects_the_bare_player_prefix_with_nothing_after_it() {
+    assert_rejected_before_reaching_the_dead_store("player:").await;
+}
+
+/// `is_uuid_text` (service.rs) checks length and dash positions and accepts any ASCII
+/// hex digit — same as Postgres's own `::uuid` cast, which is case-insensitive — so an
+/// uppercase-but-canonical id is NOT malformed for this page: it must reach
+/// `player_view`'s store call (and, against the dead pool, that DIFFERENT "Could not
+/// read" message), not the "Invalid player" validation card.
+#[tokio::test]
+async fn admin_data_treats_an_uppercase_canonical_uuid_as_valid_not_malformed() {
+    let dir: Arc<dyn Directory> = Arc::new(FakeDirectory::new());
+    let svc = dead_service(dir);
+    let mut params = adminapi::Params::new();
+    params.insert("player".into(), "00000000-0000-4000-8000-00000000000A".into());
+    let data = svc.admin_data(params).await.unwrap();
+    let error = error_kpi(&data).expect("still a card — the dead store must fail");
+    assert!(
+        error.value.starts_with("Could not read the social graph"),
+        "an uppercase-but-canonical uuid must reach the STORE call, not the validation guard: got {}",
+        error.value
+    );
+}
+
+// ---- item 4: a store failure is an error card, never `Err` ----
+
+#[tokio::test]
+async fn admin_data_overview_store_failure_is_an_error_card_not_err() {
+    let dir: Arc<dyn Directory> = Arc::new(FakeDirectory::new());
+    let svc = dead_service(dir);
+    let data = svc
+        .admin_data(adminapi::Params::new())
+        .await
+        .expect("admin_data must never return Err even against a dead store");
+    let error = error_kpi(&data).expect("expected an error card");
+    assert!(error.value.starts_with("Could not read the social graph"));
+}
+
+#[tokio::test]
+async fn admin_data_player_view_store_failure_is_an_error_card_not_err() {
+    let dir: Arc<dyn Directory> = Arc::new(FakeDirectory::new());
+    let svc = dead_service(dir);
+    let mut params = adminapi::Params::new();
+    params.insert("player".into(), fixed_uuid(0x11));
+    let data = svc.admin_data(params).await.unwrap();
+    let error = error_kpi(&data).expect("expected an error card");
+    assert!(error.value.starts_with("Could not read the social graph"));
+}
+
+// ---- item 5: a directory OUTAGE (a non-Unavailable error, so the assertion can't be
+// satisfied by the fake's own status) degrades but keeps the rows, and flags itself ----
+
+#[tokio::test]
+async fn admin_player_view_directory_outage_degrades_but_keeps_the_row_and_flags_it() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+
+    let (a, b) = (low_uuid(), high_uuid());
+    dir.insert(&a, "Alpha#0001");
+    dir.insert(&b, "Beta#0002");
+
+    let ids = vec![a.clone(), b.clone()];
+    let (aa, bb, d) = (a, b, dir.clone());
+    with_cleanup(&pool, ids, async move {
+        let f = svc.request(Identity::player(&aa), "Beta#0002".into()).await.unwrap();
+        svc.accept(Identity::player(&bb), f.edge_id.clone()).await.unwrap();
+
+        d.set_failing(true); // non-Unavailable (see FakeDirectory's doc comment)
+
+        let mut params = adminapi::Params::new();
+        params.insert("player".into(), aa.clone());
+        let data = svc.admin_data(params).await.expect("a directory outage must stay Ok");
+
+        assert!(
+            error_kpi(&data).is_none(),
+            "a directory outage is a degraded overview, not an error card"
+        );
+        let dir_kpi = directory_kpi(&data)
+            .expect("the degraded KPI must be present when the directory call itself failed");
+        assert_eq!(dir_kpi.value, "unavailable");
+
+        let table = data.content.table.expect("rows must still render");
+        assert_eq!(table.rows.len(), 1, "the relation must not be dropped by the outage");
+        assert_eq!(
+            table.rows[0][1].text,
+            short_uuid(&bb),
+            "the OTHER PLAYER cell must degrade to a short uuid, never an empty/blank name"
+        );
+        let header = data.content.header.expect("the drill-down still renders a header");
+        assert_eq!(header.title, short_uuid(&aa), "the page's own title also degrades to the id");
+    })
+    .await;
+}
+
+// ---- item 6: the directory OnceLock left unset degrades the same way, no panic ----
+
+#[tokio::test]
+async fn admin_player_view_directory_unset_degrades_without_panicking() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    // `Service::directory()` PANICS when unresolved; the admin page reads the raw
+    // OnceLock instead (`svc.directory.get()`) — this Service never calls `.set`.
+    let svc = Arc::new(Service::new(pool.clone(), Arc::new(Bus::new())));
+
+    let (a, b) = (low_uuid(), high_uuid());
+    let ids = vec![a.clone(), b.clone()];
+    let (p, aa, bb) = (pool.clone(), a.clone(), b.clone());
+    with_cleanup(&pool, ids, async move {
+        insert_edge_raw(&p, &aa, &bb, &aa, STATE_PENDING).await;
+
+        let mut params = adminapi::Params::new();
+        params.insert("player".into(), aa.clone());
+        let data = svc
+            .admin_data(params)
+            .await
+            .expect("an unresolved directory must degrade the page, never panic or Err");
+
+        let dir_kpi = directory_kpi(&data).expect("degraded KPI expected for an unset directory");
+        assert_eq!(dir_kpi.value, "unavailable");
+        let table = data.content.table.unwrap();
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(table.rows[0][1].text, short_uuid(&bb));
+    })
+    .await;
+}
+
+// ---- item 7: a directory MISS (id absent from the reply) keeps the row and does NOT
+// set the degraded KPI — a miss is not an outage ----
+
+#[tokio::test]
+async fn admin_player_view_directory_miss_shows_short_uuid_without_flagging_an_outage() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+
+    let (a, b) = (low_uuid(), high_uuid());
+    dir.insert(&a, "Alpha#0001");
+    // `b` is deliberately absent from the directory — a genuine miss, not an outage.
+
+    let ids = vec![a.clone(), b.clone()];
+    let (p, aa, bb) = (pool.clone(), a.clone(), b.clone());
+    with_cleanup(&pool, ids, async move {
+        insert_edge_raw(&p, &aa, &bb, &aa, STATE_PENDING).await;
+
+        let mut params = adminapi::Params::new();
+        params.insert("player".into(), aa.clone());
+        let data = svc.admin_data(params).await.unwrap();
+
+        assert!(
+            directory_kpi(&data).is_none(),
+            "a miss for one id is not an outage — the degraded KPI must not appear"
+        );
+        let table = data.content.table.expect("the row must not be dropped");
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(table.rows[0][1].text, short_uuid(&bb));
+    })
+    .await;
+}
+
+// ---- item 8: the drill-down is scoped to the drilled-into player, both in the row
+// count and in the KPI subtitle wording ----
+
+#[tokio::test]
+async fn admin_player_view_is_scoped_to_the_drilled_into_player() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+
+    let (a, b) = (low_uuid(), high_uuid());
+    let (c, d) = (low_uuid(), high_uuid());
+    dir.insert(&a, "A#0001");
+    dir.insert(&b, "B#0002");
+    dir.insert(&c, "C#0003");
+    dir.insert(&d, "D#0004");
+
+    let ids = vec![a.clone(), b.clone(), c.clone(), d.clone()];
+    let (p, aa, bb, cc, dd) = (pool.clone(), a.clone(), b.clone(), c.clone(), d.clone());
+    with_cleanup(&pool, ids, async move {
+        insert_edge_raw(&p, &aa, &bb, &aa, STATE_ACCEPTED).await;
+        insert_edge_raw(&p, &cc, &dd, &cc, STATE_ACCEPTED).await;
+
+        let mut params = adminapi::Params::new();
+        params.insert("player".into(), aa.clone());
+        let data = svc.admin_data(params).await.unwrap();
+
+        let table = data.content.table.expect("a table must render");
+        assert_eq!(
+            table.rows.len(),
+            1,
+            "the drill-down must show ONLY this player's pair, never the other pair"
+        );
+
+        let relations = data
+            .content
+            .kpis
+            .iter()
+            .find(|k| k.label == "Relations")
+            .expect("Relations KPI");
+        assert_eq!(relations.value, "1");
+        assert_eq!(
+            relations.sub, "every pair this player is in",
+            "a scoped view must not claim it covers every pair on record"
+        );
+    })
+    .await;
+}
+
+// ---- item 9: the PLAYERS_ROW_MENU extension entry round-trips through build_content ----
+
+#[tokio::test]
+async fn players_row_menu_entry_round_trips_into_the_player_param_build_content_consumes() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+
+    let ctx = Context::with_db(pool.clone());
+    let module = Friends::new();
+    module.register(&ctx).unwrap();
+
+    let dir: Arc<dyn Directory> = Arc::new(FakeDirectory::new());
+    ctx.registry().provide::<dyn Directory>(key("accounts", "directory"), dir);
+    module.init(&ctx).unwrap();
+
+    // The producer: the LOCAL Item's extensions must be the SAME vec `admin_data`
+    // (REMOTE) ships — this is what `6fa8224` added a producer for.
+    let items: Vec<adminapi::Item> = ctx.contributions(adminapi::SLOT);
+    let item = items
+        .iter()
+        .find(|i| i.id == admin::ADMIN_ITEM_ID)
+        .expect("friends must contribute its admin Item");
+    assert_eq!(
+        item.extensions,
+        admin::extension_entries(),
+        "the LOCAL Item must carry the SAME entries admin_data ships REMOTE — they cannot drift"
+    );
+
+    let entry = &item.extensions[0];
+    assert_eq!(entry.point, PLAYERS_ROW_MENU.id);
+    assert!(entry.link.contains("{id}"), "the link must interpolate the point's promised `id` key");
+
+    // Mirror the producer PLAYERS_ROW_MENU already has (accounts::admin) exactly: it
+    // supplies `id` as `"player:<uuid>"`, never a bare uuid.
+    let target = fixed_uuid(0x22);
+    let interpolated = entry.link.replace("{id}", &format!("player:{target}"));
+    let (_slug, query) = interpolated.split_once('?').expect("link must be slug?query");
+    let player_param = query
+        .strip_prefix("player=")
+        .expect("the drill-down param must be named exactly `player`");
+    assert_eq!(player_param, format!("player:{target}"));
+
+    // The consumer: build_content must strip that EXACT spelling and treat the
+    // remainder as the player id, landing in player_view — not the malformed-param
+    // error card.
+    let svc = module.svc.get().unwrap().clone();
+    let mut params = adminapi::Params::new();
+    params.insert("player".into(), player_param.to_string());
+    let content = admin::build_content(&svc, &params).await;
+    assert!(
+        !content.kpis.iter().any(|k| k.label == "Error"),
+        "the round-tripped player:<uuid> must reach the valid branch, not the malformed-param card"
+    );
+    assert!(
+        content.header.is_some(),
+        "player_view (not overview) is the only branch that scaffolds a header — proves \
+         this exact params map reached it"
+    );
+}
