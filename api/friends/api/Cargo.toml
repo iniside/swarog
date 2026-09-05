@@ -1,0 +1,24 @@
+[package]
+name = "friendsapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The friends module's PURE, transport-free contract: the player-facing `Player`
+# capability (request/accept/decline/remove/list/pending), the `Friend`/`Page` wire types
+# and the paging + outstanding-request bounds. `#[rpc]` generates the transport-FREE
+# surface (wire envelopes, METHOD_* consts, operations()/route_bindings()) into the child
+# `player_rpc` module, plus the metadata-callback macro the sibling `friendsrpc` glue
+# crate expands into the edge-dependent glue. NO `edge`/`remote`/transport dependency
+# (archcheck's FORBIDDEN_API_DEPS).
+#
+# Deliberately NO `accountsapi`: the friends wire carries its OWN `Friend` DTO rather
+# than re-exporting `accountsapi::PlayerSummary`, so the directory capability's shape and
+# the friends list's shape evolve independently.
+[dependencies]
+opsapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

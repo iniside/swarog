@@ -1455,6 +1455,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "friendsapi"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "opsapi",
+ "rpc-macro",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "friendsevents"
+version = "0.1.0"
+dependencies = [
+ "bus",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "friendsrpc"
+version = "0.1.0"
+dependencies = [
+ "adminrpc",
+ "async-trait",
+ "edge",
+ "friendsapi",
+ "opsapi",
+ "registry",
+ "rpc-macro",
+ "serde_json",
+]
+
+[[package]]
 name = "fs-err"
 version = "3.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
