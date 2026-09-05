@@ -743,6 +743,26 @@ snapshot (whose gateway and admin rows carry their own dependency lists) and
 so the cost was a subagent's budget rather than correctness — but the table claimed to
 be a complete checklist and was not. Added above.
 
+**16 — Step 10 was short in three ways, and one of them was a latent contract defect**
+(found by its implementer, 2026-09-05):
+
+- **`friendsapi::Page` collided with `notificationsapi::Page`.** `csharp-client-gen`
+  keeps a **flat, cross-crate DTO registry**, so two contract crates may not both export
+  a type called `Page` — a hard `bail!`, not a warning. Nothing caught it until this
+  step wired `friends` into the generator: `rustc` is happy, both names are locally
+  correct, and no earlier gate looks across crates. Renamed to `friendsapi::FriendPage`
+  at the authority. This is the same class errata for Step 3 closed once for
+  `PlayerSummary`/`Friend` and missed for `Page`. **A new contract crate must check its
+  exported type names against every other `api/*` crate**, not only against its own.
+  Recorded rather than smuggled: because `friendsapi` had never been baselined, the
+  rename ships inside the *first* `friendsapi.txt` and appears in no diff as a rename.
+- **`csharp-client-gen`'s `phase_a()` needs the same edit as `PROVIDERS`.** Errata 8 and
+  Step 10 both named only `PROVIDERS`; the completeness gate's own error message names
+  both.
+- **There is a THIRD hand-copied golden**, `testdata/Client.golden.cs`, beyond the two
+  errata 3 named. `emitted_client_matches_golden` byte-compares it under the blocking
+  `test` stage.
+
 **8 — Step 10 misses a THIRD `csharp-client-gen` test.** Beyond the two
 `*_matches_golden` goldens named in errata 3, `PROVIDERS` (`scrape.rs:36`) is a
 hand-list guarded by a completeness gate that fires on a new `api/` provider module
