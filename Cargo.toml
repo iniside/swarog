@@ -145,6 +145,7 @@ members = [
     "modules/wallet",
     "modules/notifications",
     "modules/mail",
+    "modules/friends",
     # Generated, dependency-free ops catalog (Faza C): the (method, verb, path, auth) rows
     # of every #[http]-bound op, produced by tools/opscatalog-gen. A neutral leaf data
     # crate importable by any module (like opsapi); imports nothing itself.
@@ -372,6 +373,7 @@ leaderboard = { path = "modules/leaderboard" }
 wallet = { path = "modules/wallet" }
 notifications = { path = "modules/notifications" }
 mail = { path = "modules/mail" }
+friends = { path = "modules/friends" }
 # ---- Demo crates (demos/): non-shipping, importable ONLY by cmd/server (archcheck). ----
 webui = { path = "demos/webui" }
 

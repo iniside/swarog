@@ -1455,6 +1455,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "friends"
+version = "0.1.0"
+dependencies = [
+ "accountsapi",
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bus",
+ "edge",
+ "friendsapi",
+ "friendsevents",
+ "friendsrpc",
+ "lifecycle",
+ "opsapi",
+ "registry",
+ "sqlx",
+]
+
+[[package]]
 name = "friendsapi"
 version = "0.1.0"
 dependencies = [

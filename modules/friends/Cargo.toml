@@ -1,0 +1,30 @@
+[package]
+name = "friends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The friends impl module: owns schema `friends` (one row per player PAIR, canonically
+# ordered) and provides the player-facing `Player` capability
+# (request/accept/decline/remove/list/pending). It CONSUMES `accountsapi::Directory` to
+# resolve an invite target's handle and to hydrate a page's names — a contract crate, so
+# the accounts impl is never reached. An impl crate: no other module imports it.
+# `friendsrpc` is its OWN glue (sanctioned): the edge register_server faces.
+[dependencies]
+lifecycle = { workspace = true }
+registry = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+friendsapi = { workspace = true }
+friendsrpc = { workspace = true }
+friendsevents = { workspace = true }
+# The directory capability's CONTRACT (`Directory`, `PlayerSummary`) plus the byte cap on a
+# handle — the one authority for that bound, so friends declares no second const.
+accountsapi = { workspace = true }
+bus = { workspace = true }
+sqlx = { workspace = true }
+# The opaque paging cursor is base64url-no-pad over `"{created_at}|{id}"`.
+base64 = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
