@@ -1316,3 +1316,18 @@ fn push_install_rule_ignores_documentation_and_unrelated_installs() {
         .is_empty()
     );
 }
+
+#[test]
+fn push_install_rule_exempts_test_files() {
+    // Steps 8/9 install a sink to exercise the seam; a test file cannot reach the
+    // production wiring path, so flagging it would forbid proving the rule's subject.
+    let call = "        push.install(sink);\n";
+    assert!(super::push_install_violations("core/push/src/tests.rs", call).is_empty());
+    assert!(super::push_install_violations("modules/notifications/src/tests.rs", call).is_empty());
+    assert!(super::push_install_violations("modules/gateway/src/push_ws_tests.rs", call).is_empty());
+    // A non-test file in the same module is still flagged.
+    assert_eq!(
+        super::push_install_violations("modules/notifications/src/service.rs", call).len(),
+        1
+    );
+}

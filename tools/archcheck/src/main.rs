@@ -1379,6 +1379,15 @@ fn push_install_violations(rel: &str, text: &str) -> Vec<String> {
     if PUSH_INSTALL_OWNERS.iter().any(|owner| rel.starts_with(owner)) {
         return Vec::new();
     }
+    // Test files are exempt: the rule protects the PRODUCTION wiring path, and a
+    // `tests.rs` is not compiled into a shipping binary, so it cannot bypass
+    // `app::run`'s at-most-one check. Exercising the seam is what pins it (Step 8/9).
+    // The same file-name convention the inline-test-module rule routes to.
+    if let Some(name) = rel.rsplit('/').next() {
+        if name == "tests.rs" || name.ends_with("_tests.rs") {
+            return Vec::new();
+        }
+    }
     text.lines()
         .enumerate()
         .filter(|(_, line)| {
