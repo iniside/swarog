@@ -44,6 +44,9 @@ pub(crate) enum StoreError {
     /// A `(provider, subject)` unique violation on registration/linking.
     #[error("identity already registered")]
     Taken,
+    /// Every minting attempt for this display name collided on the handle index.
+    #[error("no free handle for this display name")]
+    HandleExhausted,
     #[error(transparent)]
     Db(#[from] sqlx::Error),
 }
@@ -58,6 +61,60 @@ fn is_unique_violation(e: &sqlx::Error) -> bool {
 /// the request — treated as not-found rather than a 500.
 fn is_invalid_uuid(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
+}
+
+/// How many discriminators one display name may try before minting fails. The unique
+/// index `accounts_handle_idx` is the ONLY freeness authority: each attempt INSERTs and
+/// reads back whether the index accepted it, so there is no window between a check and
+/// the write for a concurrent registration to slip through.
+const HANDLE_MINT_ATTEMPTS: usize = 8;
+
+/// One four-digit discriminator candidate, `"0000"`..=`"9999"`.
+fn new_discriminator() -> String {
+    format!("{:04}", rand::rngs::OsRng.next_u32() % 10_000)
+}
+
+/// True for the canonical 8-4-4-4-12 hex spelling — a STRICT subset of what the uuid
+/// cast parses, so an id rejected here is one Postgres could still have parsed (a
+/// braced spelling), never the reverse. The batch lookup filters with this before
+/// binding: ONE malformed element fails the whole statement (22P02), which would turn
+/// a caller's stale id into an error instead of an omission.
+fn is_canonical_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
+}
+
+/// Splits `"Name#1234"` into its name and discriminator halves. The LAST `'#'` divides
+/// them — a display name may contain one. `None` for anything that is not a name plus
+/// exactly four digits.
+fn split_handle(handle: &str) -> Option<(&str, &str)> {
+    let (name, disc) = handle.rsplit_once('#')?;
+    if name.is_empty() || disc.len() != 4 || !disc.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((name, disc))
+}
+
+/// The one projection every [`accountsapi::PlayerSummary`] read shares: the summary
+/// columns plus the newest live session's expiry, rendered RFC3339 (empty when none).
+/// `max(...)` over a join FILTERED to live sessions, so one statement answers for a
+/// whole batch — never a per-player follow-up query.
+const SUMMARY_SELECT: &str = "SELECT p.id::text, p.display_name, p.discriminator, \
+     coalesce(to_char(max(s.expires_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), '') \
+       FROM accounts.players p \
+       LEFT JOIN accounts.sessions s ON s.player_id = p.id AND s.expires_at > now() ";
+
+fn summary_of(row: (String, String, String, String)) -> accountsapi::PlayerSummary {
+    let (player_id, display_name, discriminator, online_until) = row;
+    accountsapi::PlayerSummary {
+        handle: format!("{display_name}#{discriminator}"),
+        player_id,
+        display_name,
+        online_until,
+    }
 }
 
 /// Domain-separated stable FNV-1a key for serializing every writer of one external
@@ -211,12 +268,26 @@ impl Store {
         display_name: &str,
         secret_hash: Option<&str>,
     ) -> Result<Player, StoreError> {
-        let (id, display_name): (String, String) = sqlx::query_as(
-            "INSERT INTO accounts.players (display_name) VALUES ($1) RETURNING id::text, display_name",
-        )
-        .bind(display_name)
-        .fetch_one(&mut *conn)
-        .await?;
+        let mut minted: Option<(String, String)> = None;
+        for _ in 0..HANDLE_MINT_ATTEMPTS {
+            // ON CONFLICT DO NOTHING, not a caught 23505: a raised unique violation would
+            // abort the caller's whole transaction, leaving nothing to retry into.
+            minted = sqlx::query_as(
+                "INSERT INTO accounts.players (display_name, discriminator) VALUES ($1, $2) \
+                 ON CONFLICT (lower(display_name), discriminator) DO NOTHING \
+                 RETURNING id::text, display_name",
+            )
+            .bind(display_name)
+            .bind(new_discriminator())
+            .fetch_optional(&mut *conn)
+            .await?;
+            if minted.is_some() {
+                break;
+            }
+        }
+        let Some((id, display_name)) = minted else {
+            return Err(StoreError::HandleExhausted);
+        };
         let res = sqlx::query(
             "INSERT INTO accounts.identities (provider, subject, player_id, secret_hash) \
              VALUES ($1, $2, $3::uuid, $4)",
@@ -589,6 +660,56 @@ impl Store {
             Err(e) if is_invalid_uuid(&e) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// The summaries for `ids` in ONE statement, for the batched
+    /// [`accountsapi::Directory::players_by_id`]. Ids that name no player are simply
+    /// absent from the result, so the caller gets a short vector, never an error;
+    /// non-canonical spellings are filtered out before binding and read as unknown.
+    /// The `text[]` half of `$1::text[]::uuid[]` is spelled out so the bound array's
+    /// type never depends on parameter inference.
+    pub async fn players_by_id(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<accountsapi::PlayerSummary>, sqlx::Error> {
+        let ids: Vec<&str> = ids
+            .iter()
+            .map(String::as_str)
+            .filter(|id| is_canonical_uuid(id))
+            .collect();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(String, String, String, String)> = sqlx::query_as(&format!(
+            "{SUMMARY_SELECT} WHERE p.id = ANY($1::text[]::uuid[]) \
+              GROUP BY p.id, p.display_name, p.discriminator ORDER BY p.id"
+        ))
+        .bind(ids)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(summary_of).collect())
+    }
+
+    /// The player one `"Name#1234"` handle names, matched case-insensitively on the name
+    /// half — the same `(lower(display_name), discriminator)` pair the unique index
+    /// mints against, so exactly one row can ever match. A handle that does not parse is
+    /// `Ok(None)`, indistinguishable from an unknown one.
+    pub async fn player_by_handle(
+        &self,
+        handle: &str,
+    ) -> Result<Option<accountsapi::PlayerSummary>, sqlx::Error> {
+        let Some((name, discriminator)) = split_handle(handle) else {
+            return Ok(None);
+        };
+        let row: Option<(String, String, String, String)> = sqlx::query_as(&format!(
+            "{SUMMARY_SELECT} WHERE lower(p.display_name) = lower($1) AND p.discriminator = $2 \
+              GROUP BY p.id, p.display_name, p.discriminator"
+        ))
+        .bind(name)
+        .bind(discriminator)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(summary_of))
     }
 
     /// Every credential mapping of a player, ordered for a stable `me` body.

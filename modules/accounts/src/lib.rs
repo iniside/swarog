@@ -16,6 +16,9 @@
 //!   - `accounts.auth` ([`accountsapi::Auth`]) — register/login/loginFederated/
 //!     createGuest/refresh/me/link, all seven contributed as gateway operations
 //!     UNCONDITIONALLY — the dev/provider gating lives at the impl (see `ops.rs`).
+//!   - `accounts.directory` ([`accountsapi::Directory`]) — wire-only player lookup by
+//!     id or `Name#1234` handle, for a consumer that renders or validates a player
+//!     other than its own caller.
 //!   - Epic web OAuth — two HTTP-NATIVE browser routes (`POST /accounts/epic/start`,
 //!     `GET /accounts/epic/callback`) mounted on the shared router when
 //!     `EPIC_CLIENT_SECRET` is configured.
@@ -53,12 +56,12 @@ use crate::store::{LinkOutcome, Player, Store, StoreError};
 
 /// Input caps enforced before any expensive verifier, Argon2, RPC, or database work.
 /// Email follows RFC 5321's total-address maximum; password is capped at 1 KiB
-/// because Argon2 cost scales with input length. The remaining values are private
-/// accounts-domain policy except for the session-token cap, which is shared with
-/// the gateway through `accountsapi` for cross-layer fast rejection.
+/// because Argon2 cost scales with input length. Email, password and the provider name
+/// are private accounts-domain policy; the display-name, handle and session-token caps
+/// live in `accountsapi`, shared with the gateway and with directory consumers for
+/// cross-layer fast rejection.
 const MAX_EMAIL_BYTES: usize = 320;
 const MAX_PASSWORD_BYTES: usize = 1024;
-const MAX_DISPLAY_NAME_BYTES: usize = 128;
 pub const MAX_PROVIDER_NAME_BYTES: usize = 64;
 
 /// The SHARED cap checks — the register/login handlers and factual conformance probes
@@ -75,7 +78,11 @@ pub(crate) fn password_within_cap(password: &str) -> bool {
 }
 
 pub(crate) fn display_name_within_cap(display_name: &str) -> bool {
-    display_name.len() <= MAX_DISPLAY_NAME_BYTES
+    display_name.len() <= accountsapi::MAX_DISPLAY_NAME_BYTES
+}
+
+pub(crate) fn handle_within_cap(handle: &str) -> bool {
+    handle.len() <= accountsapi::MAX_HANDLE_BYTES
 }
 
 pub(crate) fn provider_name_within_cap(provider: &str) -> bool {
@@ -98,16 +105,21 @@ pub(crate) fn session_token_within_cap(token: &str) -> bool {
 const DECOY_CANDIDATE: &str = "accounts-invalid-credentials";
 
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
-/// Idempotent. Verbatim from Go's `schemaDDL`: the identities/sessions FKs are
-/// INTERNAL to the accounts schema (allowed; the ban is on cross-module FKs).
+/// Idempotent. The identities/sessions FKs are INTERNAL to the accounts schema
+/// (allowed; the ban is on cross-module FKs).
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS accounts;
 
 CREATE TABLE IF NOT EXISTS accounts.players (
-	id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	display_name text        NOT NULL,
-	created_at   timestamptz NOT NULL DEFAULT now()
+	id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	display_name  text        NOT NULL,
+	discriminator text        NOT NULL,
+	created_at    timestamptz NOT NULL DEFAULT now()
 );
+-- The handle authority: display names are NOT unique, so `Name#1234` is what addresses
+-- a player. Minting INSERTs against this index and retries what it rejects.
+CREATE UNIQUE INDEX IF NOT EXISTS accounts_handle_idx
+	ON accounts.players (lower(display_name), discriminator);
 
 CREATE TABLE IF NOT EXISTS accounts.identities (
 	provider    text NOT NULL,
@@ -267,6 +279,10 @@ impl Service {
                 tx.rollback().await.map_err(internal)?;
                 return Err(Error::conflict("email already registered"));
             }
+            Err(StoreError::HandleExhausted) => {
+                tx.rollback().await.map_err(internal)?;
+                return Err(Error::conflict("display name has no free handle"));
+            }
             Err(StoreError::Db(e)) => {
                 tx.rollback().await.ok();
                 tracing::error!(err = %e, "register failed");
@@ -333,6 +349,10 @@ impl Service {
             Err(StoreError::Taken) => {
                 tx.rollback().await.ok();
                 return Err(Error::internal("identity was taken while its writer lock was held"));
+            }
+            Err(StoreError::HandleExhausted) => {
+                tx.rollback().await.ok();
+                return Err(Error::conflict("display name has no free handle"));
             }
             Err(StoreError::Db(e)) => {
                 tx.rollback().await.ok();
@@ -441,6 +461,11 @@ impl Service {
             Err(StoreError::Taken) => {
                 tx.rollback().await.ok();
                 return Err(Error::conflict("identity already linked to another player"));
+            }
+            // Linking writes no player row, so the handle mint is not on this path.
+            Err(StoreError::HandleExhausted) => {
+                tx.rollback().await.ok();
+                return Err(Error::internal("link cannot exhaust a handle"));
             }
             Err(StoreError::Db(e)) => {
                 tx.rollback().await.ok();
@@ -555,6 +580,33 @@ impl Service {
             )
             .await
             .map_err(internal)
+    }
+}
+
+#[async_trait]
+impl accountsapi::Directory for Service {
+    /// The summaries for `ids`, omitting every id that names no player. Over
+    /// [`accountsapi::MAX_LOOKUP_IDS`] ids is `Invalid` — the batch bound is refused,
+    /// never silently truncated to a result the caller would read as complete.
+    async fn players_by_id(
+        &self,
+        ids: Vec<String>,
+    ) -> Result<Vec<accountsapi::PlayerSummary>, Error> {
+        if ids.len() > accountsapi::MAX_LOOKUP_IDS {
+            return Err(Error::invalid("too many ids"));
+        }
+        self.store.players_by_id(&ids).await.map_err(internal)
+    }
+
+    /// The player a `"Name#1234"` handle names, or `Ok(None)` for a miss.
+    async fn find_by_handle(
+        &self,
+        handle: String,
+    ) -> Result<Option<accountsapi::PlayerSummary>, Error> {
+        if !handle_within_cap(&handle) {
+            return Err(Error::invalid("handle too long"));
+        }
+        self.store.player_by_handle(&handle).await.map_err(internal)
     }
 }
 
@@ -954,9 +1006,9 @@ impl Module for Accounts {
     }
 
     /// Phase 1, BEFORE any `init`: builds the store-backed service and offers it
-    /// under BOTH capability keys — `accounts.sessions` (the gateway's verifier
-    /// resolves it) and `accounts.auth` — so a dependent's `require` resolves
-    /// regardless of registration order.
+    /// under all three capability keys — `accounts.sessions` (the gateway's verifier
+    /// resolves it), `accounts.auth` and `accounts.directory` — so a dependent's
+    /// `require` resolves regardless of registration order.
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
         let pool = ctx
             .db()
@@ -985,7 +1037,11 @@ impl Module for Accounts {
             svc.clone(),
         );
         ctx.registry()
-            .provide::<dyn accountsapi::Auth>(registry::key("accounts", "auth"), svc);
+            .provide::<dyn accountsapi::Auth>(registry::key("accounts", "auth"), svc.clone());
+        ctx.registry().provide::<dyn accountsapi::Directory>(
+            registry::key("accounts", "directory"),
+            svc,
+        );
         Ok(())
     }
 
@@ -1109,6 +1165,7 @@ impl Module for Accounts {
                 // The admin fan-out face (`admin.adminData`), via this module's OWN
                 // glue crate's re-export (no foreign rpc import).
                 accountsrpc::register_admin(server, svc.clone());
+                accountsrpc::directory_rpc::register_server(server, svc.clone());
                 accountsrpc::auth_rpc::register_server(server, svc);
             }),
         );
@@ -1117,13 +1174,15 @@ impl Module for Accounts {
         // pure DATA, contributed UNCONDITIONALLY (topology-blind). `app::run` concats
         // every module's manifest and serves the union under the ONE reserved
         // `__describe` op iff this process serves an edge. `auth_rpc` carries the
-        // register/login/loginFederated/me HTTP ops; `sessions_rpc` is wire-only (empty
-        // `describe()`) — concatenated so a future `#[http]` op on either flows through.
+        // register/login/loginFederated/me HTTP ops; `sessions_rpc` and `directory_rpc`
+        // are wire-only (empty `describe()`) — concatenated so a future `#[http]` op on
+        // any of them flows through.
         ctx.contribute(
             opsapi::DESCRIBE_SLOT,
             opsapi::DescribeManifest::concat([
                 accountsrpc::auth_rpc::describe(),
                 accountsrpc::sessions_rpc::describe(),
+                accountsrpc::directory_rpc::describe(),
             ]),
         );
         Ok(())

@@ -23,6 +23,7 @@ use opsapi::{Error, Identity};
 
 accountsapi::accounts_sessions_meta!(rpc_macro::generate_glue);
 accountsapi::accounts_auth_meta!(rpc_macro::generate_glue);
+accountsapi::accounts_directory_meta!(rpc_macro::generate_glue);
 
 /// The admin fan-out's server-side registration, re-exported from `adminrpc` so the
 /// `accounts` module registers `admin.adminData` through its OWN glue crate (never a
@@ -39,10 +40,13 @@ pub use adminrpc::register_admin;
 ///     accounts-svc (closing the `DevSessionVerifier` trust hole in the split),
 ///   - `accounts.auth` — the [`Auth`] client, PLUS the auth ops'
 ///     `route_bindings()` into the gateway slots (no `LOCAL_SLOT` — no in-process
-///     invoker exists, so the front dispatches every `Auth` op remotely).
+///     invoker exists, so the front dispatches every `Auth` op remotely),
+///   - `accounts.directory` — the [`Directory`] client, the wire-only player lookup a
+///     social consumer resolves; it contributes no route bindings (no `#[http]` method).
 pub fn remote_factories() -> Vec<remote::RemoteFactory> {
     vec![
         Box::new(|ctx, caller| sessions_rpc::provide_remote(ctx.registry(), caller)),
+        Box::new(|ctx, caller| directory_rpc::provide_remote(ctx.registry(), caller)),
         Box::new(|ctx, caller| {
             auth_rpc::provide_remote(ctx.registry(), caller);
             for rb in auth_rpc::route_bindings() {

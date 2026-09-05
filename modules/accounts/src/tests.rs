@@ -403,7 +403,11 @@ fn new_accounts_caps_count_utf8_bytes_at_boundary() {
         );
     }
 
-    assert_cap("display name", MAX_DISPLAY_NAME_BYTES, display_name_within_cap);
+    assert_cap(
+        "display name",
+        accountsapi::MAX_DISPLAY_NAME_BYTES,
+        display_name_within_cap,
+    );
     assert_cap("provider name", MAX_PROVIDER_NAME_BYTES, provider_name_within_cap);
     assert_cap(
         "session token",
@@ -441,8 +445,8 @@ async fn register_rejects_effective_display_cap_before_argon_or_db() {
     let svc = lazy_service();
     svc.argon_permits.close();
 
-    let over_cap_display = format!("{}a", "é".repeat(MAX_DISPLAY_NAME_BYTES / 2));
-    assert_eq!(over_cap_display.len(), MAX_DISPLAY_NAME_BYTES + 1);
+    let over_cap_display = format!("{}a", "é".repeat(accountsapi::MAX_DISPLAY_NAME_BYTES / 2));
+    assert_eq!(over_cap_display.len(), accountsapi::MAX_DISPLAY_NAME_BYTES + 1);
     let e = svc
         .register("a@x.io".into(), "pw".into(), over_cap_display)
         .await
@@ -453,9 +457,9 @@ async fn register_rejects_effective_display_cap_before_argon_or_db() {
         "explicit display must reject before the closed Argon semaphore or DB"
     );
 
-    let fallback_display = format!("{}@x.io", "a".repeat(MAX_DISPLAY_NAME_BYTES + 1));
+    let fallback_display = format!("{}@x.io", "a".repeat(accountsapi::MAX_DISPLAY_NAME_BYTES + 1));
     assert!(fallback_display.len() <= MAX_EMAIL_BYTES);
-    assert!(fallback_display.len() > MAX_DISPLAY_NAME_BYTES);
+    assert!(fallback_display.len() > accountsapi::MAX_DISPLAY_NAME_BYTES);
     let e = svc
         .register(fallback_display, "pw".into(), String::new())
         .await

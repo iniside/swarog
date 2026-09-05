@@ -1,12 +1,13 @@
 //! `accountsapi` — the accounts module's PURE, transport-free capability contract
 //! (port of Go's `api/accounts/accountsapi`). It declares the capabilities accounts
-//! exposes and applies `#[rpc(prefix = "accounts")]` to the two wire capabilities so
+//! exposes and applies `#[rpc(prefix = "accounts")]` to each wire capability so
 //! the transport-FREE surface (per-method wire envelopes, `METHOD_*` consts, and —
 //! for `#[http]` methods — `operations()`/`route_bindings()`) is GENERATED into
 //! child `*_rpc` modules. The edge-dependent glue (`Client`, `register_server`,
 //! `provide_remote`) lives in the sibling `accountsrpc` crate, which expands this
 //! crate's metadata-callback macros (`accounts_sessions_meta!` /
-//! `accounts_auth_meta!`) — so THIS crate never depends on `edge`.
+//! `accounts_auth_meta!` / `accounts_directory_meta!`) — so THIS crate never depends
+//! on `edge`.
 //!
 //! The gateway's verifier adapter imports this crate ONLY to name `dyn Sessions`
 //! for `registry::require` (rule 4); it never imports the `accounts` impl crate.
@@ -22,6 +23,19 @@ use serde::{Deserialize, Serialize};
 /// bounding lookup and internal-RPC work from attacker-controlled input at every
 /// topology's auth boundary.
 pub const MAX_SESSION_TOKEN_BYTES: usize = 128;
+
+/// Maximum accepted `display_name` size in bytes — the cap accounts' registration
+/// guard enforces, published here so a consumer sizing a handle input cannot drift
+/// from what the register/link handlers actually accept.
+pub const MAX_DISPLAY_NAME_BYTES: usize = 128;
+
+/// Maximum accepted handle size in bytes: a display name, `'#'`, and the four-digit
+/// discriminator.
+pub const MAX_HANDLE_BYTES: usize = MAX_DISPLAY_NAME_BYTES + 5;
+
+/// Maximum number of ids one [`Directory::players_by_id`] call may carry — the bound
+/// on the work a single batched lookup can ask of the store.
+pub const MAX_LOOKUP_IDS: usize = 256;
 
 /// The result of a successful register/login/refresh: the caller's product-scoped
 /// `player_id`, the short-lived opaque bearer token minted for it, and the refresh
@@ -76,6 +90,43 @@ pub struct MeView {
     pub player_id: String,
     pub display_name: String,
     pub identities: Vec<IdentityRef>,
+}
+
+/// One player as the rest of the backend sees it: the product-scoped `player_id`, the
+/// chosen `display_name`, the globally unique `handle` (`"Name#1234"` — a display name
+/// alone is NOT unique) and, as an RFC3339 instant, when the player's longest-lived
+/// live session expires. `online_until` is EMPTY when no session is live; it is a
+/// session fact, not socket presence — nothing here observes a connected client.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerSummary {
+    pub player_id: String,
+    pub display_name: String,
+    pub handle: String,
+    pub online_until: String,
+}
+
+/// Resolves players for a consumer that holds ids or a handle — the capability a
+/// social feature renders its lists and validates an invite target through. WIRE-ONLY
+/// on purpose: no `#[http]` on either method, so a player can never walk the directory
+/// through the front door; a consuming module decides what its own caller may ask for.
+/// Both methods are pure reads, hence `#[retry_safe]`.
+#[rpc(prefix = "accounts")]
+#[async_trait]
+pub trait Directory: Send + Sync {
+    /// The summaries for `ids`, in ONE batched lookup. An id that names no player —
+    /// including one that is not a canonical uuid — is OMITTED from the result: the
+    /// answer is a short vector, never an error, so a caller holding a stale id still
+    /// renders the rest of its list. Order does not follow `ids`. More than
+    /// [`MAX_LOOKUP_IDS`] ids is `Invalid` (400).
+    #[retry_safe]
+    async fn players_by_id(&self, ids: Vec<String>) -> Result<Vec<PlayerSummary>, Error>;
+
+    /// The player whose `"Name#1234"` handle matches, case-insensitively on the name
+    /// half. `Ok(None)` is a genuine miss — an unknown handle and a malformed one are
+    /// the same answer, so the method is not a grammar oracle. Over
+    /// [`MAX_HANDLE_BYTES`] is `Invalid` (400).
+    #[retry_safe]
+    async fn find_by_handle(&self, handle: String) -> Result<Option<PlayerSummary>, Error>;
 }
 
 /// Resolves a bearer token to its player — the capability the gateway's auth-once
