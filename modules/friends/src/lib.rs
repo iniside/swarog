@@ -160,7 +160,8 @@ impl Module for Friends {
                 Arc::new(move |params: &adminapi::Params| {
                     admin::admin_render(&render_svc, params)
                 }),
-            ),
+            )
+            .with_extensions(admin::extension_entries()),
         );
         Ok(())
     }

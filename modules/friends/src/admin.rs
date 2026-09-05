@@ -47,9 +47,21 @@ fn drill_link(player_id: &str) -> String {
     format!("{}?{PARAM_PLAYER}={player_id}", admin_slug())
 }
 
-// ============================================================================
-// The page
-// ============================================================================
+/// This module's cross-page contribution: a "View Friends" drill-down on each Players row.
+/// The link interpolates `{id}` — a key `PLAYERS_ROW_MENU` DECLARES, and the value it
+/// supplies is the `player:<uuid>` entity ref [`build_content`] strips. LOCAL
+/// `Item::with_extensions` and REMOTE `ItemData::extensions` carry this SAME vec, so the two
+/// cannot drift.
+pub(crate) fn extension_entries() -> Vec<adminapi::ExtensionEntry> {
+    vec![adminapi::ExtensionEntry {
+        point: accountsapi::admin::PLAYERS_ROW_MENU.id.into(),
+        label: "View Friends".into(),
+        icon: "users".into(),
+        link: format!("{}?{PARAM_PLAYER}={{id}}", admin_slug()),
+        present: adminapi::Present::Navigate,
+        priority: 0,
+    }]
+}
 
 /// The page, LOCAL and REMOTE alike. It is INFALLIBLE by construction: a malformed param, a
 /// store failure and a directory outage each render a card. The portal forwards every page's
@@ -109,7 +121,7 @@ async fn overview(svc: &Service) -> adminapi::Content {
     }
 
     adminapi::Content {
-        kpis: kpis(counts, rows.len(), truncated, &names),
+        kpis: kpis(counts, rows.len(), truncated, false, &names),
         table: Some(table),
         ..Default::default()
     }
@@ -165,7 +177,7 @@ async fn player_view(svc: &Service, player_id: &str) -> adminapi::Content {
             subtitle_mono: format!("{PLAYER_REF_PREFIX}{player_id}"),
             right_note: page_note(truncated).into(),
         }),
-        kpis: kpis(counts, rows.len(), truncated, &names),
+        kpis: kpis(counts, rows.len(), truncated, true, &names),
         table: Some(table),
         ..Default::default()
     }
@@ -175,16 +187,29 @@ async fn player_view(svc: &Service, player_id: &str) -> adminapi::Content {
 /// directory is down — a page that silently swapped every handle for a uuid would read as a
 /// graph of deleted accounts.
 ///
-/// The counts are whole-table (or whole-player) aggregates while `listed` counts the rows
-/// below them, which is why they carry different subtitles: a capped table beside an
-/// uncapped total otherwise reads as one number disagreeing with itself.
-fn kpis(counts: (i64, i64, i64), listed: usize, truncated: bool, names: &Names) -> Vec<adminapi::Kpi> {
+/// The counts are aggregates while `listed` counts the rows below them, which is why they
+/// carry different subtitles: a capped table beside an uncapped total otherwise reads as one
+/// number disagreeing with itself. `scoped` is the same rule applied to the OTHER axis — the
+/// drill-down's totals cover one player, so a subtitle claiming the whole record would assert
+/// a scope the number does not have.
+fn kpis(
+    counts: (i64, i64, i64),
+    listed: usize,
+    truncated: bool,
+    scoped: bool,
+    names: &Names,
+) -> Vec<adminapi::Kpi> {
     let (total, pending, accepted) = counts;
     let mut kpis = vec![
         adminapi::Kpi {
             label: "Relations".into(),
             value: total.to_string(),
-            sub: "every pair on record".into(),
+            sub: if scoped {
+                "every pair this player is in"
+            } else {
+                "every pair on record"
+            }
+            .into(),
         },
         adminapi::Kpi {
             label: "Pending".into(),
@@ -236,10 +261,6 @@ fn other_side<'a>(row: &'a AdminEdgeRow, player_id: &str) -> &'a str {
         &row.requester_id
     }
 }
-
-// ============================================================================
-// Handles
-// ============================================================================
 
 /// The rendered names for one page's players.
 ///
@@ -301,10 +322,6 @@ impl Names {
     }
 }
 
-// ============================================================================
-// Cells
-// ============================================================================
-
 /// The mockup's player cell: an avatar chip plus the name, the whole thing a drill-down
 /// anchor. `Cell` renders one line, so the mockup's second `#uid` line lives on the
 /// drill-down's context header instead.
@@ -351,10 +368,6 @@ fn direction_cell(requested_by_this_player: bool) -> adminapi::Cell {
     }
 }
 
-// ============================================================================
-// Render paths
-// ============================================================================
-
 /// The synchronous LOCAL render: the store reads are async, the `RenderFn` contract is not,
 /// so it bridges via `block_in_place` (requires the multi-thread rt).
 pub(crate) fn admin_render(
@@ -382,14 +395,10 @@ impl adminapi::AdminData for Service {
             section: ADMIN_SECTION.into(),
             label: ADMIN_LABEL.into(),
             content: build_content(self, &params).await,
-            ..Default::default()
+            extensions: extension_entries(),
         })
     }
 }
-
-// ============================================================================
-// Presentation helpers
-// ============================================================================
 
 /// A capped table MUST say it is capped: the page has no cursor, so a row count beside 50
 /// rows otherwise reads as the whole story.
@@ -401,12 +410,10 @@ fn page_note(truncated: bool) -> &'static str {
     }
 }
 
-/// A rendered RFC3339 timestamp truncated to minutes for display.
 fn short_ts(ts: &str) -> &str {
     ts.get(..16).unwrap_or(ts)
 }
 
-/// The first hex group of a uuid.
 fn short_uuid(uuid: &str) -> &str {
     uuid.split('-').next().unwrap_or(uuid)
 }
@@ -419,11 +426,9 @@ fn initial(label: &str) -> String {
         .unwrap_or_else(|| "?".into())
 }
 
-/// Deterministic avatar-palette key (`.av-0`…`.av-5`), so one player always draws the same
-/// colour. Explicit-width arithmetic — the palette must not depend on the pointer width.
+/// Deterministic avatar-palette key (`.av-0`…`.av-5`). Byte-identical to the same helper in
+/// characters/inventory/notifications/wallet ON PURPOSE: one player must draw the same colour
+/// on every page of the portal, which a differently-mixed hash would silently break.
 fn palette(seed: &str) -> String {
-    let n = seed
-        .bytes()
-        .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
-    format!("av-{}", n % 6)
+    format!("av-{}", seed.bytes().map(|b| b as usize).sum::<usize>() % 6)
 }
