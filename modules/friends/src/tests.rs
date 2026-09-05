@@ -151,18 +151,21 @@ where
 }
 
 /// An in-memory `accountsapi::Directory` — never the real `accounts` impl crate (fortress
-/// rule: a module never imports another module's impl). `fail` flips every method to the
-/// directory-unreachable answer this module maps to `Status::Unavailable`.
+/// rule: a module never imports another module's impl). The two `fail_*` flags are
+/// independent so a test can fail exactly ONE of the two calls `request` makes
+/// (`find_by_handle` then `players_by_id`) and pin each call site separately.
 struct FakeDirectory {
     players: Mutex<HashMap<String, PlayerSummary>>,
-    fail: AtomicBool,
+    fail_lookup: AtomicBool,
+    fail_handle: AtomicBool,
 }
 
 impl FakeDirectory {
     fn new() -> Self {
         FakeDirectory {
             players: Mutex::new(HashMap::new()),
-            fail: AtomicBool::new(false),
+            fail_lookup: AtomicBool::new(false),
+            fail_handle: AtomicBool::new(false),
         }
     }
 
@@ -182,24 +185,39 @@ impl FakeDirectory {
         self.players.lock().unwrap().remove(id);
     }
 
+    /// Fails BOTH methods — the coarse switch most tests want.
     fn set_failing(&self, failing: bool) {
-        self.fail.store(failing, Ordering::SeqCst);
+        self.fail_lookup.store(failing, Ordering::SeqCst);
+        self.fail_handle.store(failing, Ordering::SeqCst);
+    }
+
+    fn set_failing_lookup(&self, failing: bool) {
+        self.fail_lookup.store(failing, Ordering::SeqCst);
+    }
+
+    fn set_failing_handle(&self, failing: bool) {
+        self.fail_handle.store(failing, Ordering::SeqCst);
     }
 }
 
 #[async_trait]
 impl Directory for FakeDirectory {
+    // Deliberately NOT Error::unavailable: production's directory_unavailable mapping
+    // (service.rs) is the ONLY thing allowed to produce Status::Unavailable, so the
+    // fake must inject a DIFFERENT status here — otherwise a test asserting Unavailable
+    // would stay green even if that mapping were deleted and the fake's own status
+    // propagated untouched through a bare `?`.
     async fn players_by_id(&self, ids: Vec<String>) -> Result<Vec<PlayerSummary>, Error> {
-        if self.fail.load(Ordering::SeqCst) {
-            return Err(Error::unavailable("fake directory down"));
+        if self.fail_lookup.load(Ordering::SeqCst) {
+            return Err(Error::internal("fake directory down"));
         }
         let players = self.players.lock().unwrap();
         Ok(ids.iter().filter_map(|id| players.get(id).cloned()).collect())
     }
 
     async fn find_by_handle(&self, handle: String) -> Result<Option<PlayerSummary>, Error> {
-        if self.fail.load(Ordering::SeqCst) {
-            return Err(Error::unavailable("fake directory down"));
+        if self.fail_handle.load(Ordering::SeqCst) {
+            return Err(Error::internal("fake directory down"));
         }
         let players = self.players.lock().unwrap();
         Ok(players.values().find(|p| p.handle.eq_ignore_ascii_case(&handle)).cloned())
@@ -399,6 +417,18 @@ async fn accept_by_third_party_is_not_found() {
         assert_eq!(err.status, Status::NotFound);
         assert_eq!(state_of(&p, &f.edge_id).await, STATE_PENDING);
 
+        // The party clause exists TWICE (view_edge's pre-read AND accept_tx's own
+        // WHERE) — drive Store::accept_tx directly so this defence layer is pinned on
+        // its own, independent of view_edge's.
+        let mut probe = p.begin().await.unwrap();
+        let direct = svc
+            .store
+            .accept_tx(&mut probe, &f.edge_id, &tp, STATE_PENDING, STATE_ACCEPTED)
+            .await
+            .unwrap();
+        assert_eq!(direct, None, "accept_tx's own party clause must independently refuse a third party");
+        probe.rollback().await.unwrap();
+
         // sanity: the real addressee can still accept afterwards.
         svc.accept(Identity::player(&hi), f.edge_id.clone()).await.unwrap();
         assert_eq!(state_of(&p, &f.edge_id).await, STATE_ACCEPTED);
@@ -444,6 +474,55 @@ async fn duplicate_own_pending_request_is_noop_and_emits_nothing() {
             .await
             .unwrap();
         assert_eq!(accepted, 0, "a duplicate own request must never auto-accept or emit friend.accepted");
+    })
+    .await;
+}
+
+// ============================================================================
+// Item — `request`'s OWN two `directory_unavailable` call sites (service.rs's
+// `find_by_handle` and the caller's `players_by_id`), distinct from `list`/`pending`'s.
+// ============================================================================
+
+#[tokio::test]
+async fn request_directory_failure_on_handle_lookup_is_unavailable() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+
+    let (me, target) = (low_uuid(), high_uuid());
+    dir.insert(&me, "Me#0001");
+    dir.insert(&target, "Target#0002");
+    dir.set_failing_handle(true);
+
+    let ids = vec![me.clone(), target.clone()];
+    let (p, m, t) = (pool.clone(), me, target);
+    with_cleanup(&pool, ids, async move {
+        let err = svc.request(Identity::player(&m), "Target#0002".into()).await.unwrap_err();
+        assert_eq!(err.status, Status::Unavailable);
+        assert_eq!(row_count_for_pair(&p, &m, &t).await, 0, "a failed handle lookup must write nothing");
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn request_directory_failure_on_caller_lookup_is_unavailable() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+
+    let (me, target) = (low_uuid(), high_uuid());
+    dir.insert(&me, "Me#0001");
+    dir.insert(&target, "Target#0002");
+    // `find_by_handle` (the target) must still succeed; only the CALLER's own
+    // `players_by_id` lookup fails.
+    dir.set_failing_lookup(true);
+
+    let ids = vec![me.clone(), target.clone()];
+    let (p, m, t) = (pool.clone(), me, target);
+    with_cleanup(&pool, ids, async move {
+        let err = svc.request(Identity::player(&m), "Target#0002".into()).await.unwrap_err();
+        assert_eq!(err.status, Status::Unavailable);
+        assert_eq!(row_count_for_pair(&p, &m, &t).await, 0, "a failed caller lookup must write nothing");
     })
     .await;
 }
@@ -502,8 +581,12 @@ async fn crossing_case(first_requester_is_low: bool) {
         let repeat_by_second = svc.request(Identity::player(&s), second_handle_of(&dir, &f)).await.unwrap();
         assert_eq!(repeat_by_second.state, STATE_ACCEPTED);
 
+        // Keyed on `edge_id`, NOT `requester_id`: a spurious no-op emission that (wrongly)
+        // stamps `requester_id` as the CALLER rather than the original requester would
+        // still count as 1 here if we kept keying on `requester_id` — the field whose
+        // wrongness the bug this test guards against actually is.
         let accepted_count_after =
-            asyncevents::testing::events_count(&p, "friend.accepted", "requester_id", &f).await.unwrap();
+            asyncevents::testing::events_count(&p, "friend.accepted", "edge_id", &f1.edge_id).await.unwrap();
         assert_eq!(accepted_count_after, 1, "an already-accepted edge must never emit a second friend.accepted");
     })
     .await;
@@ -585,6 +668,13 @@ async fn decline_by_third_party_is_not_found() {
         let err = svc.decline(Identity::player(&tp), f.edge_id.clone()).await.unwrap_err();
         assert_eq!(err.status, Status::NotFound);
         assert_eq!(state_of(&p, &f.edge_id).await, STATE_PENDING, "a third party's decline must not touch the row");
+
+        // Same double-defence pin as accept: decline_tx's OWN party clause, independent
+        // of view_edge's pre-read.
+        let mut probe = p.begin().await.unwrap();
+        let direct = svc.store.decline_tx(&mut probe, &f.edge_id, &tp, STATE_PENDING).await.unwrap();
+        assert_eq!(direct, None, "decline_tx's own party clause must independently refuse a third party");
+        probe.rollback().await.unwrap();
     })
     .await;
 }
@@ -609,6 +699,13 @@ async fn remove_by_third_party_is_not_found() {
         let err = svc.remove(Identity::player(&tp), f.edge_id.clone()).await.unwrap_err();
         assert_eq!(err.status, Status::NotFound);
         assert_eq!(state_of(&p, &f.edge_id).await, STATE_ACCEPTED, "a third party's remove must not touch the row");
+
+        // Same double-defence pin as accept/decline: delete_tx's OWN party clause,
+        // independent of view_edge's pre-read.
+        let mut probe = p.begin().await.unwrap();
+        let direct = svc.store.delete_tx(&mut probe, &f.edge_id, &tp).await.unwrap();
+        assert_eq!(direct, None, "delete_tx's own party clause must independently refuse a third party");
+        probe.rollback().await.unwrap();
     })
     .await;
 }
@@ -626,22 +723,45 @@ async fn outstanding_cap_refuses_new_request_but_a_repeat_stays_201() {
 
     let me = low_uuid();
     dir.insert(&me, "CapMe#0001");
-    let targets: Vec<String> = (0..MAX_PENDING_OUTSTANDING)
-        .map(|i| {
-            let id = high_uuid();
-            dir.insert(&id, &format!("CapTarget{i}#0001"));
-            id
-        })
-        .collect();
+    // 99 rows seeded DIRECTLY (bulk insert), not through 99 real `request` calls: the
+    // boundary this test proves only needs the 100th and 101st calls to run through
+    // production. Both extra fixtures are minted BEFORE `with_cleanup` and folded into
+    // its id list, so a panic mid-body (e.g. under a reverted cap) still cleans them up.
+    let seeded_targets: Vec<String> = (0..MAX_PENDING_OUTSTANDING - 1).map(|_| high_uuid()).collect();
+    let hundredth_target = high_uuid();
+    let overflow_target = high_uuid();
+    dir.insert(&hundredth_target, "CapHundredth#0001");
+    dir.insert(&overflow_target, "CapOverflow#0001");
 
-    let mut ids = vec![me.clone()];
-    ids.extend(targets.iter().cloned());
-    let (p, m, ts) = (pool.clone(), me.clone(), targets.clone());
+    let mut ids = vec![me.clone(), hundredth_target, overflow_target.clone()];
+    ids.extend(seeded_targets.iter().cloned());
+    let (p, m, seeded, overflow) = (pool.clone(), me.clone(), seeded_targets, overflow_target);
     with_cleanup(&pool, ids, async move {
-        for i in 0..ts.len() {
-            let handle = format!("CapTarget{i}#0001");
-            svc.request(Identity::player(&m), handle).await.unwrap();
-        }
+        sqlx::query(
+            "INSERT INTO friends.edges (id, low_id, high_id, requester_id, state) \
+             SELECT gen_random_uuid(), least($1::uuid, t), greatest($1::uuid, t), $1::uuid, 'pending' \
+               FROM unnest($2::uuid[]) AS t",
+        )
+        .bind(&m)
+        .bind(&seeded)
+        .execute(&p)
+        .await
+        .unwrap();
+
+        let outstanding_before: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM friends.edges WHERE requester_id = $1::uuid AND state = $2",
+        )
+        .bind(&m)
+        .bind(STATE_PENDING)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+        assert_eq!(outstanding_before, MAX_PENDING_OUTSTANDING - 1, "fixture must seed one row BELOW the cap");
+
+        // The 100th request, driven through production, must succeed and land the caller
+        // EXACTLY at the cap.
+        let hundredth = svc.request(Identity::player(&m), "CapHundredth#0001".into()).await.unwrap();
+        assert_eq!(hundredth.state, STATE_PENDING);
         let outstanding: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM friends.edges WHERE requester_id = $1::uuid AND state = $2",
         )
@@ -650,24 +770,15 @@ async fn outstanding_cap_refuses_new_request_but_a_repeat_stays_201() {
         .fetch_one(&p)
         .await
         .unwrap();
-        assert_eq!(outstanding, MAX_PENDING_OUTSTANDING, "fixture must land the caller EXACTLY at the cap");
+        assert_eq!(outstanding, MAX_PENDING_OUTSTANDING, "the 100th request must land the caller EXACTLY at the cap");
 
-        // A brand-new (N+1)th target must be refused.
-        let overflow_target = high_uuid();
-        dir.insert(&overflow_target, "CapOverflow#0001");
-        let err = svc
-            .request(Identity::player(&m), "CapOverflow#0001".into())
-            .await
-            .unwrap_err();
+        // The 101st (a brand-new target) must be refused.
+        let err = svc.request(Identity::player(&m), "CapOverflow#0001".into()).await.unwrap_err();
         assert_eq!(err.status, Status::Conflict, "the request that would exceed the cap must be refused");
-        assert_eq!(row_count_for_pair(&p, &m, &overflow_target).await, 0, "the refused request must not be written");
-        cleanup_ids(&p, &[overflow_target]).await;
+        assert_eq!(row_count_for_pair(&p, &m, &overflow).await, 0, "the refused request must not be written");
 
         // A REPEAT of an existing pending request must still be 201, never 409.
-        let repeat = svc
-            .request(Identity::player(&m), "CapTarget0#0001".into())
-            .await
-            .unwrap();
+        let repeat = svc.request(Identity::player(&m), "CapHundredth#0001".into()).await.unwrap();
         assert_eq!(repeat.state, STATE_PENDING, "a repeat at the cap must never be reported as a conflict");
     })
     .await;
@@ -778,59 +889,72 @@ async fn list_page_boundary_ties_break_on_id_and_both_union_branches_return() {
     let dir = Arc::new(FakeDirectory::new());
     let (_ctx, svc) = wired(&pool, dir.clone()).await;
 
+    // FOUR tied rows, not two: with only two, an outer sort that dropped the `id`
+    // tie-break key would still pass about half the time (Postgres' order for equal
+    // keys is implementation-defined but not adversarial). Four rows in a fixed
+    // fetch order make accidental agreement on the full DESC sequence ~1-in-24.
     let caller = fixed_uuid(0x50);
-    let fr_low_side = fixed_uuid(0x10); // caller is the HIGH side of this relation.
-    let fr_high_side = fixed_uuid(0x90); // caller is the LOW side of this relation.
+    let fr_a = fixed_uuid(0x10); // caller is the HIGH side of this relation.
+    let fr_b = fixed_uuid(0x20); // caller is the HIGH side of this relation.
+    let fr_c = fixed_uuid(0x90); // caller is the LOW side of this relation.
+    let fr_d = fixed_uuid(0xa0); // caller is the LOW side of this relation.
     dir.insert(&caller, "Caller#0001");
-    dir.insert(&fr_low_side, "FrA#0002");
-    dir.insert(&fr_high_side, "FrB#0003");
+    dir.insert(&fr_a, "FrA#0002");
+    dir.insert(&fr_b, "FrB#0003");
+    dir.insert(&fr_c, "FrC#0004");
+    dir.insert(&fr_d, "FrD#0005");
 
-    let ids = vec![caller.clone(), fr_low_side.clone(), fr_high_side.clone()];
-    let (p, c, a, b) = (pool.clone(), caller, fr_low_side, fr_high_side);
+    let ids = vec![caller.clone(), fr_a.clone(), fr_b.clone(), fr_c.clone(), fr_d.clone()];
+    let (p, c, a, b, cc, d) = (pool.clone(), caller, fr_a, fr_b, fr_c, fr_d);
     with_cleanup(&pool, ids, async move {
         let f1 = svc.request(Identity::player(&a), "Caller#0001".into()).await.unwrap();
         svc.accept(Identity::player(&c), f1.edge_id.clone()).await.unwrap();
-        let f2 = svc.request(Identity::player(&c), "FrB#0003".into()).await.unwrap();
-        svc.accept(Identity::player(&b), f2.edge_id.clone()).await.unwrap();
+        let f2 = svc.request(Identity::player(&b), "Caller#0001".into()).await.unwrap();
+        svc.accept(Identity::player(&c), f2.edge_id.clone()).await.unwrap();
+        let f3 = svc.request(Identity::player(&c), "FrC#0004".into()).await.unwrap();
+        svc.accept(Identity::player(&cc), f3.edge_id.clone()).await.unwrap();
+        let f4 = svc.request(Identity::player(&c), "FrD#0005".into()).await.unwrap();
+        svc.accept(Identity::player(&d), f4.edge_id.clone()).await.unwrap();
 
+        let edge_ids = vec![f1.edge_id.clone(), f2.edge_id.clone(), f3.edge_id.clone(), f4.edge_id.clone()];
         // Force an exact tie on created_at: ordering can then ONLY be decided by id.
-        sqlx::query(
-            "UPDATE friends.edges SET created_at = now() WHERE id = ANY($1::uuid[])",
-        )
-        .bind(vec![f1.edge_id.clone(), f2.edge_id.clone()])
-        .execute(&p)
-        .await
-        .unwrap();
+        sqlx::query("UPDATE friends.edges SET created_at = now() WHERE id = ANY($1::uuid[])")
+            .bind(edge_ids.clone())
+            .execute(&p)
+            .await
+            .unwrap();
 
-        let expected_first = std::cmp::max(f1.edge_id.clone(), f2.edge_id.clone());
-        let expected_second = std::cmp::min(f1.edge_id.clone(), f2.edge_id.clone());
+        let mut expected = edge_ids.clone();
+        expected.sort();
+        expected.reverse();
 
-        let page1 = svc.list(Identity::player(&c), String::new(), 1).await.unwrap();
-        assert_eq!(page1.items.len(), 1);
-        assert_eq!(page1.items[0].edge_id, expected_first, "a tie must break DESC on id");
-        assert!(!page1.next_cursor.is_empty());
-
-        let page2 = svc.list(Identity::player(&c), page1.next_cursor.clone(), 1).await.unwrap();
-        assert_eq!(page2.items.len(), 1);
+        let mut cursor = String::new();
+        let mut observed = Vec::new();
+        for _ in 0..4 {
+            let page = svc.list(Identity::player(&c), cursor.clone(), 1).await.unwrap();
+            assert_eq!(page.items.len(), 1, "each page must carry exactly one of the 4 tied rows");
+            observed.push(page.items[0].edge_id.clone());
+            cursor = page.next_cursor;
+        }
+        assert_eq!(cursor, "", "the last page carries no cursor");
         assert_eq!(
-            page2.items[0].edge_id, expected_second,
-            "the second page must neither repeat nor skip the tied row"
+            observed, expected,
+            "a tie must break DESC on id across the WHOLE sequence, not just a coin-flip pair"
         );
-        assert_eq!(page2.next_cursor, "", "the last page carries no cursor");
 
-        let is_low_1: bool = sqlx::query_scalar("SELECT low_id = $1::uuid FROM friends.edges WHERE id = $2::uuid")
+        let is_low_a: bool = sqlx::query_scalar("SELECT low_id = $1::uuid FROM friends.edges WHERE id = $2::uuid")
             .bind(&c)
             .bind(&f1.edge_id)
             .fetch_one(&p)
             .await
             .unwrap();
-        let is_low_2: bool = sqlx::query_scalar("SELECT low_id = $1::uuid FROM friends.edges WHERE id = $2::uuid")
+        let is_low_c: bool = sqlx::query_scalar("SELECT low_id = $1::uuid FROM friends.edges WHERE id = $2::uuid")
             .bind(&c)
-            .bind(&f2.edge_id)
+            .bind(&f3.edge_id)
             .fetch_one(&p)
             .await
             .unwrap();
-        assert_ne!(is_low_1, is_low_2, "the caller must be low_id in one relation and high_id in the other");
+        assert_ne!(is_low_a, is_low_c, "the caller must be low_id in one relation and high_id in the other");
     })
     .await;
 }
@@ -928,10 +1052,13 @@ async fn request_rolls_back_the_row_and_the_event_when_the_append_fails() {
 
 // ============================================================================
 // Item — the raced retry branch in `request` (removed pair between the conflicting
-// insert and the re-read) needs TWO CONCURRENT connections to reach: our single-session
-// transaction reads its own uncommitted insert at REPEATABLE READ isolation, and any
-// interleaved delete from a second session is a genuine timing race, which the
-// timing-sensitive-tests doctrine forbids proving via a real clock. NOT exercised here —
-// recorded as a known gap rather than faked with a single-session "delete then
-// re-insert", which would prove only what the unique index already guarantees.
+// insert and the re-read) needs TWO CONCURRENT connections to reach: within ONE
+// transaction, `insert_pending_tx`'s `ON CONFLICT DO NOTHING` needs the pair PRESENT
+// and the following `find_pair_tx` needs it ABSENT — production exposes no hook to
+// interleave a second session's commit between those two statements, and pool.begin()
+// (service.rs) issues a plain `BEGIN`, i.e. READ COMMITTED (as modules/wallet's store
+// states outright), not an isolation level that would make this unreachable on its own.
+// NOT exercised here — recorded as a known gap rather than faked with a single-session
+// "delete then re-insert", which would prove only what the unique index already
+// guarantees.
 // ============================================================================
