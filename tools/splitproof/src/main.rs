@@ -736,7 +736,7 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
         .await
         .context("connect DB")?;
     reset_config_baseline(&pool).await?;
-    reset_scoreboard_baseline(&pool).await;
+    reset_scoreboard_baseline(&pool).await?;
     // [WL7]'s starter-grant knobs, written BEFORE wallet-svc spawns: its `CachedConfig` is
     // boot-fill-or-fail-startup, so a post-boot write would race an invalidation refresh
     // against the registration under test. On a DB that has never booted the fleet the
@@ -961,6 +961,32 @@ async fn reset_config_baseline(pool: &PgPool) -> Result<()> {
     Ok(())
 }
 
+/// Every prefix this harness may name a `/match/report` contestant with. ONE authority for
+/// two directions: `harness_player` refuses to mint a name outside it, and
+/// `reset_scoreboard_baseline` sweeps exactly it — so the delete predicate cannot drift
+/// behind a new scenario's names the way it already had ([K4]'s `k4-w`, unswept since the
+/// day it was written).
+const HARNESS_PLAYER_PREFIXES: [&str; 5] = ["champ-", "chump-", "replicas-", "k3-", "k4-"];
+
+/// A contestant name for a `/match/report`. Panics on anything the reset cannot sweep:
+/// `leaderboard.scores`/`rating.ratings` retain a row forever, so an unsweepable name is a
+/// permanent addition to a table two assertions read absolute values out of.
+#[track_caller]
+fn harness_player(name: &str) -> String {
+    assert_harness_player(name);
+    name.to_string()
+}
+
+#[track_caller]
+fn assert_harness_player(name: &str) {
+    assert!(
+        HARNESS_PLAYER_PREFIXES.iter().any(|prefix| name.starts_with(prefix)),
+        "match-report contestant {name:?} is outside HARNESS_PLAYER_PREFIXES: its \
+         `leaderboard.scores`/`rating.ratings` rows are retained forever and \
+         `reset_scoreboard_baseline` would never sweep them",
+    );
+}
+
 /// The `leaderboard.scores` / `rating.ratings` rows this harness's own match reports leave
 /// behind. Prefix-scoped over the WHOLE history, not this run's names: both projections are
 /// permanently retained and the harness's player names are keyed by pid, which the OS
@@ -968,14 +994,34 @@ async fn reset_config_baseline(pool: &PgPool) -> Result<()> {
 /// from a non-zero tally, and a prior `champ-{pid}` makes `[MT2]`/`[MT5]` unreachable. Run
 /// START, not end of scenario: every scenario returns `?`, so a trailing delete skips
 /// exactly the failing run whose rows then break the next one.
-async fn reset_scoreboard_baseline(pool: &PgPool) {
-    const HARNESS_PLAYERS: &str =
-        "player LIKE 'champ-%' OR player LIKE 'chump-%' OR player LIKE 'replicas-%'";
-    // Two statements → two query() calls; either schema may be absent on a fresh DB.
-    sqlx::query(&format!("DELETE FROM leaderboard.scores WHERE {HARNESS_PLAYERS}"))
-        .execute(pool).await.ok();
-    sqlx::query(&format!("DELETE FROM rating.ratings WHERE {HARNESS_PLAYERS}"))
-        .execute(pool).await.ok();
+///
+/// Only `42P01` is tolerated (the schema a first-ever run has not migrated yet). Every other
+/// failure ABORTS: this reset is the precondition [MT5] and [REPLICAS-3] read absolute
+/// values against, and a swallowed delete would let a prior run's 1030/970 satisfy [MT5]
+/// before this run has delivered anything.
+async fn reset_scoreboard_baseline(pool: &PgPool) -> Result<()> {
+    let predicate = HARNESS_PLAYER_PREFIXES
+        .iter()
+        .map(|prefix| format!("player LIKE '{prefix}%'"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    for table in ["leaderboard.scores", "rating.ratings"] {
+        match sqlx::query(&format!("DELETE FROM {table} WHERE {predicate}"))
+            .execute(pool)
+            .await
+        {
+            Ok(_) => {}
+            Err(e) if is_undefined_table(&e) => {}
+            Err(e) => {
+                return Err(e).with_context(|| format!("clear the harness-owned {table} rows"))
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_undefined_table(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(db) if db.code().as_deref() == Some("42P01"))
 }
 
 /// The two `wallet` starter-grant knobs [WL7] depends on. Data, not env: the feature is
@@ -2165,7 +2211,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         .http
         .post(format!("{g}/match/report"))
         .header("X-Api-Key", "dev-key-client")
-        .json(&serde_json::json!({"ReportId": format!("k3-{suffix}"), "Winner": "k3-w", "Loser": "k3-l"}))
+        .json(&serde_json::json!({"ReportId": format!("k3-{suffix}"), "Winner": harness_player("k3-w"), "Loser": harness_player("k3-l")}))
         .send()
         .await?;
     p.check("[K3] client key on match.report -> 403", k3.status().as_u16() == 403, k3.status());
@@ -2174,7 +2220,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         .http
         .post(format!("{g}/match/report"))
         .header("X-Api-Key", "dev-key-server")
-        .json(&serde_json::json!({"ReportId": format!("k4-{suffix}"), "Winner": "k4-w", "Loser": "k4-l"}))
+        .json(&serde_json::json!({"ReportId": format!("k4-{suffix}"), "Winner": harness_player("k4-w"), "Loser": harness_player("k4-l")}))
         .send()
         .await?;
     p.check("[K4] server key on match.report -> 202", k4.status().as_u16() == 202, k4.status());
@@ -2372,8 +2418,8 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     }
 
     // --- Match / rating / leaderboard: durable match.finished projection + idempotency. ---
-    let winner = format!("champ-{suffix}");
-    let loser = format!("chump-{suffix}");
+    let winner = harness_player(&format!("champ-{suffix}"));
+    let loser = harness_player(&format!("chump-{suffix}"));
     let mt1_rid = format!("mt1-{suffix}");
     let mt4_rid = format!("mt4-{suffix}");
     // [MT1] report -> 202 (AuthNone, capitalized body keys; emits durable match.finished).
@@ -4101,8 +4147,8 @@ async fn replicas_exactly_once(
         format!("base={base_rdy} replica={repl_rdy}"),
     );
 
-    let winner = format!("replicas-{}", std::process::id());
-    let loser = format!("replicas-loser-{}", std::process::id());
+    let winner = harness_player(&format!("replicas-{}", std::process::id()));
+    let loser = harness_player(&format!("replicas-loser-{}", std::process::id()));
     let g = format!("http://127.0.0.1:{}", ctx.http_port("gateway-svc"));
 
     // Phase (a): enqueue the batch of N events (concurrently, so a backlog piles into the
@@ -4162,6 +4208,8 @@ async fn replicas_exactly_once(
 /// each retrying past a transient gateway 429 (mirrors `report`). Returns the count accepted
 /// (202). A concurrent burst piles a real backlog into the shared event log.
 async fn drive_reports(ctx: &Ctx, g: &str, winner: &str, loser: &str, id_prefix: &str, count: u32) -> u32 {
+    assert_harness_player(winner);
+    assert_harness_player(loser);
     let mut handles = Vec::new();
     for i in 0..count {
         let http = ctx.http.clone();
@@ -4826,6 +4874,8 @@ fn find_id(v: &serde_json::Value) -> Option<String> {
 /// POST a match report (server key) and return the HTTP status. Retries past a
 /// transient gateway 429 (see `create_character`).
 async fn report(ctx: &Ctx, g: &str, rid: &str, winner: &str, loser: &str) -> u16 {
+    assert_harness_player(winner);
+    assert_harness_player(loser);
     for _ in 0..15 {
         let code = match ctx
             .http
