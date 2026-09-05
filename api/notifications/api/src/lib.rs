@@ -37,6 +37,16 @@ pub const MAX_PAGE_LIMIT: i64 = 100;
 /// The page size [`Player::list`] uses when `limit == 0`.
 pub const DEFAULT_PAGE_LIMIT: i64 = 25;
 
+/// The `topic` of the server->client push frame this module sends when a row lands in a
+/// player's inbox. Its meaning is exactly "your inbox changed, call [`Player::list`]": the
+/// frame carries no row id, and a client that receives it may still read an unchanged list
+/// (the durable write path sends before its transaction commits).
+///
+/// It lives in the contract crate, not the impl, because the string reaches a client as the
+/// frame's dispatch key. A rename on one side alone is silent — the frame still arrives and
+/// is simply ignored — so both sides spell it from here.
+pub const PUSH_NEW_TOPIC: &str = "notifications.new";
+
 /// One inbox row, addressed to exactly one player.
 ///
 /// `kind` is the classifier the client renders on (`"wallet.credit"`,

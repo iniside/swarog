@@ -335,3 +335,17 @@ sequenced state rather than an event. `/push` checks api-key presence but no pol
 unmetered by the HTTP rate limiter, which charges the upgrade once — the per-connection queue and
 the aggregate caps are the only bounds. A fixed `/push` route is invisible to `routecheck`, so a
 future `#[http]` op at the same path would shadow it with no gate noticing.
+
+**A `notifications.new` nudge can lose a race with its own commit (Step 7, review round 1).**
+Constraint 8 reasons about a rollback; the same structure also creates an ordering gap it does
+not name. On the durable path the nudge reaches the sink INSIDE the plane's delivery
+transaction, before the checkpoint `UPDATE` and the `COMMIT` — there is no post-commit hook to
+move it behind, which is the same fact constraint 8 rests on. So a client that receives the
+frame and immediately calls `POST /notifications/list` can read a snapshot from before that
+commit, see nothing, and never be nudged again for that event: redelivery happens only when the
+handler FAILS, and this one succeeded. The client contract is therefore "a nudge is a hint to
+re-read, not a promise the read will differ" — a client must tolerate an empty refetch and fall
+back to its ordinary poll, and must not treat a nudge as an unread-count increment. Closing it
+properly needs a post-commit hook in `core/asyncevents`, which is a plane change, not a
+notifications one. Recorded in `modules/notifications/src/service.rs` on `PUSH_NEW_PAYLOAD` and
+documented for clients by Step 12.

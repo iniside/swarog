@@ -149,8 +149,13 @@ impl Store {
         }
     }
 
-    /// Appends one row and returns its DB-canonical id, or `None` when the partial unique
-    /// index already holds `source_event_id`.
+    /// Appends one row and returns its DB-canonical `(id, player_id)`, or `None` when the
+    /// partial unique index already holds `source_event_id`.
+    ///
+    /// `player_id` comes BACK from the statement rather than being echoed from the argument
+    /// because `$1::uuid` is a tolerant cast: an uppercase, braced or unhyphenated spelling
+    /// addresses the same row, and only the value the column holds is the canonical one
+    /// every other process spells the player by.
     ///
     /// `ON CONFLICT` is not defensive: without it an operator re-drive raises 23505, the
     /// durable handler returns `Err`, and the plane backs off and PAUSES the subscription —
@@ -174,13 +179,13 @@ impl Store {
         title: &str,
         body: &str,
         source_event_id: &str,
-    ) -> Result<Option<String>, sqlx::Error> {
-        sqlx::query_scalar(
+    ) -> Result<Option<(String, String)>, sqlx::Error> {
+        sqlx::query_as(
             "INSERT INTO notifications.messages \
                  (id, player_id, kind, title, body, source_event_id) \
              VALUES (gen_random_uuid(), $1::uuid, $2, $3, $4, NULLIF($5, '')) \
              ON CONFLICT (source_event_id) WHERE source_event_id IS NOT NULL DO NOTHING \
-             RETURNING id::text",
+             RETURNING id::text, player_id::text",
         )
         .bind(player_id)
         .bind(kind)

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use notificationsapi::{
     Notification, Page, Player, DEFAULT_PAGE_LIMIT, MAX_BODY_BYTES, MAX_CURSOR_BYTES,
-    MAX_KIND_BYTES, MAX_PAGE_LIMIT, MAX_TITLE_BYTES,
+    MAX_KIND_BYTES, MAX_PAGE_LIMIT, MAX_TITLE_BYTES, PUSH_NEW_TOPIC,
 };
 use opsapi::{Error, Identity};
 use push::{Message, Push, Target};
@@ -243,17 +243,18 @@ pub(crate) fn validate_new(n: &NewNotification<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// The topic a nudged client dispatches on. It means "your inbox changed, refetch the
-/// list" and nothing else — see [`PUSH_NEW_PAYLOAD`].
-pub(crate) const PUSH_NEW_TOPIC: &str = "notifications.new";
-
 /// The nudge's whole payload: an empty JSON object.
 ///
 /// It carries NO row id, and cannot: the durable half of [`Service::deliver_on`] runs
 /// INSIDE the plane's delivery transaction, which commits after the handler returns, so a
 /// pushed id would name a row that a rollback plus the at-least-once redelivery never
-/// commits — and `Player::list`/`mark_read` answer `NotFound` for it. An id-free nudge
-/// costs the client one idempotent list call against a durable inbox instead.
+/// commits — and `Player::mark_read`/`delete` answer `NotFound` for it. An id-free nudge
+/// costs the client one idempotent `Player::list` call against a durable inbox instead.
+///
+/// That list call can also LOSE a race, and the client must tolerate it: on the durable
+/// path this message reaches the sink inside the delivery transaction, so a refetch that
+/// arrives before the commit reads a snapshot without the row and is never nudged again
+/// for that event. A nudge is a hint to re-read, not a promise that the read will differ.
 ///
 /// It is an object rather than empty bytes so a client already parsing it as JSON keeps
 /// parsing it if a field is ever added.
@@ -272,10 +273,16 @@ impl Service {
         }
     }
 
-    /// Tells a player's live connections that their inbox changed. Best-effort by
-    /// construction and DROPPED whatever it answers: a durable handler that returned `Err`
-    /// here would back off and pause the whole subscription — for every player — until an
-    /// operator runs `eventctl`, so a gateway outage must never reach the inbox writes.
+    /// Tells a player's live connections that their inbox changed.
+    ///
+    /// `player_id` must be the DB-canonical spelling: the front indexes its connections by
+    /// the session's `player_id` in a `HashMap`, so an uppercase or braced id addresses
+    /// nobody and answers the same `Local(0)` an offline player does.
+    ///
+    /// Best-effort by construction and DROPPED whatever it answers: a durable handler that
+    /// returned `Err` here would back off and pause the whole subscription — for every
+    /// player — until an operator runs `eventctl`, so a gateway outage must never reach the
+    /// inbox writes.
     ///
     /// `push::Sink::send` is synchronous and non-blocking, which is what makes it callable
     /// while holding the delivery transaction's connection.
@@ -299,7 +306,11 @@ impl Service {
     ///
     /// A row that is APPENDED also nudges the player's live sockets ([`Service::nudge`]),
     /// placed inside the authority so no writer can add a row without one and no dedup
-    /// no-op can announce mail that already arrived.
+    /// no-op can announce mail that already arrived. The nudge is addressed to the
+    /// `player_id` the STATEMENT returned, never the caller's spelling of it: `$1::uuid`
+    /// accepts an uppercase, braced or unhyphenated id (the operator form deliberately
+    /// shape-checks nothing), while a session's `player_id` — what the front keys a
+    /// connection by — is always the canonical lowercase text.
     ///
     /// `false` is the dedup index answering "this event already produced a row" — a normal
     /// outcome, not an error, because a handler that returned `Err` here would back off and
@@ -316,7 +327,7 @@ impl Service {
         n: &NewNotification<'_>,
     ) -> Result<bool, Error> {
         validate_new(n)?;
-        let id = self
+        let appended = self
             .store
             .insert_tx(conn, n.player_id, n.kind, n.title, n.body, n.source_event_id)
             .await
@@ -327,10 +338,10 @@ impl Service {
                     internal(e)
                 }
             })?;
-        if id.is_some() {
-            self.nudge(n.player_id);
+        if let Some((_id, player_id)) = &appended {
+            self.nudge(player_id);
         }
-        Ok(id.is_some())
+        Ok(appended.is_some())
     }
 
     /// Operator mail: the SAME [`Service::deliver_on`] policy, run on a pool connection, so

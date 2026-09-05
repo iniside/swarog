@@ -151,6 +151,7 @@ pub const notificationsapi::MAX_CURSOR_BYTES: usize
 pub const notificationsapi::MAX_KIND_BYTES: usize
 pub const notificationsapi::MAX_PAGE_LIMIT: i64
 pub const notificationsapi::MAX_TITLE_BYTES: usize
+pub const notificationsapi::PUSH_NEW_TOPIC: &str
 pub trait notificationsapi::Player: core::marker::Send + core::marker::Sync
 pub fn notificationsapi::Player::delete<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn notificationsapi::Player::list<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, i64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<notificationsapi::Page, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
