@@ -84,7 +84,7 @@ public-API checks protect the surfaces that cross those boundaries.
 
 ## Domain modules
 
-13 fortresses plus the gateway:
+14 fortresses plus the gateway:
 
 - **accounts** — identity: one `player_id`, many identities, 60-minute access tokens
   plus rotating 30-day refresh-token families with reuse detection; federated login
@@ -110,6 +110,10 @@ public-API checks protect the surfaces that cross those boundaries.
 - **notifications** — per-player inbox fanned in from other modules' durable
   events (`wallet.changed` when credited, `player.promoted`) plus operator 1:1
   mail; player list/mark-read/delete, scheduled pruning.
+- **mail** — outbound email: a durable outbox drained against a provider
+  registry (`log` dev sink, real `smtp`), retried with backoff, pruned on a
+  schedule. Ingress is `mail.send_requested`, which `mail` both defines and
+  subscribes to (a command topic, not a fact about another domain).
 - **gateway** — the single public front door: HTTP op routing (local vs remote
   purely by slot presence), authenticated player-QUIC plane, passthroughs, rate
   limiting. Domain services never host it; they serve ops only over the internal

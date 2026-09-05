@@ -202,7 +202,7 @@ never a silent last-writer-wins overwrite.
    pull from their checkpoint — the same code in monolith and split. `topiccheck`
    validates the subscription graph per deployment profile.
 
-## Domain modules (13 fortresses + gateway)
+## Domain modules (14 fortresses + gateway)
 
 - **accounts** — identity: one `player_id`, many identities (`provider`,`subject`),
   opaque DB sessions: 60-minute access tokens plus rotating 30-day refresh-token
@@ -355,6 +355,25 @@ never a silent last-writer-wins overwrite.
   unset takes the default, anything present but unusable FAILS STARTUP. Known
   gap: `match.finished` produces no inbox row, because its `winner`/`loser` are
   opaque contestant strings, not `player_id`s.
+- **mail** — the backend's first outbound-to-the-world channel: a durable outbox
+  (schema `mail`, table `outbox`) drained by a retry worker against a configured
+  provider (`log` dev sink or real `smtp` via `lettre`; `MAIL_PROVIDER`/`MAIL_FROM`
+  required together, and an unconfigured channel still enqueues while its
+  `/readyz` reports permanently not-ready). Ingress is the durable
+  `mail.send_requested` topic, which `mail` both defines and subscribes to — a
+  deliberate deviation from "publisher owns the event, consumer owns the
+  subscription": the topic is a *command* ("send this"), not a fact about another
+  domain. Enqueue is exactly-once per `idempotency_key`; delivery to the
+  recipient is at-least-once (a crash between the relay's `250` and the status
+  commit re-sends). Scheduled pruning via `mail.prune-on-scheduler.v1`
+  (`MAIL_RETENTION_DAYS`, default 30). Admin page "Mail" under Platform, remotely
+  editable via `admin.adminSubmit` (send/cancel/requeue/`requeue-all-parked`),
+  though a remote submit produces no `admin.action` row yet. Known gaps: TLS
+  negotiation (the STARTTLS upgrade, certificate/trust check, `AUTH`) is unproven
+  by any automated test; `mail` stores no address, so nothing resolves a
+  `player_id` to a recipient — seq #4 (`accounts`) is the intended producer, with
+  no in-tree producer until then; and `cancel` cannot recall a message the relay
+  already accepted.
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote purely by
   slot presence; peer addresses are injected by `cmd/*` via `remote::Stub` →
   `opsapi::PEER_SLOT` contributions — the gateway module itself never reads env),
@@ -513,7 +532,8 @@ The blocking **split-proof** stage uses the cross-platform Rust harness in
 :9013 (the inbound `push.deliver` face), config
 :8083/:9002, accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler
 :8087/:9005, match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008,
-apikeys :8091/:9009, wallet :8092/:9010, notifications :8093/:9011. The fleet
+apikeys :8091/:9009, wallet :8092/:9010, notifications :8093/:9011,
+mail :8094/:9012. The fleet
 is spawned with a typed
 environment and owned process containment plus a kill-on-drop guard,
 health-checked over reqwest, DB-asserted via sqlx, and the player QUIC front
@@ -597,7 +617,7 @@ api/<name>/                # contract surface per domain
   <name>api/               #   pure #[rpc] traits + ops/bindings (transport-free)
   <name>events/            #   bus::define descriptors + payloads
   <name>rpc/               #   generated glue (Client/register_server/factories)
-modules/                   # private impls — 13 fortresses + gateway (see above)
+modules/                   # private impls — 14 fortresses + gateway (see above)
 demos/                     # non-shipping demo crates (webui) — cmd/server only
 weles/                     # standalone mini-orchestrator (zero-sharing; deploy/ artifacts,
                            # restart-on-crash supervisor; see Commands)

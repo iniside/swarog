@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-09-05-2022**
+**Last update: 2026-09-05-2200**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -41,7 +41,7 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 | 2a | Federated-provider seam + Google OIDC + guest/device | ✅ | [2026-07-30-2230-accounts-federated-providers-plan.md](../plans/2026-07-30-2230-accounts-federated-providers-plan.md) |
 | 2b | Apple OIDC + identity link/unlink | ❌ | — |
 | 3a | Notifications: in-app player inbox | ✅ | [2026-08-31-0032-notifications-inbox-3a-plan.md](../plans/2026-08-31-0032-notifications-inbox-3a-plan.md) |
-| 3b | Outbound email channel | ❌ | — |
+| 3b | Outbound email channel | ✅ | [2026-08-31-1650-mail-outbound-channel-3b-plan.md](../plans/2026-08-31-1650-mail-outbound-channel-3b-plan.md) |
 | 3c | Push notifications (FCM/APNs) | ❌ | — |
 | 4 | Self-registration promoted to production (email verify, password reset) | ❌ | — |
 | 5 | Leaderboard seasons / reset / rotation | ❌ | — |
@@ -201,7 +201,7 @@ balances and is its own feature.
 |---|:--:|---|---|---|
 | In-app notifications | ✅ | notifications, notificationsapi, notificationsrpc, notifications-svc | `ecbefae`..`b991f8a`, 2026-08-31 | **Seq #3a**, [plan](../plans/2026-08-31-0032-notifications-inbox-3a-plan.md). 13th fortress, per-player inbox (schema `notifications`) fanned in from two durable subscriptions (`wallet.changed` when credited, `player.promoted`), both `AfterRegistration`. Player-facing `list` (keyset cursor in the POST body)/`mark_read`/`delete`; another player's row is `NotFound`, never `Forbidden`. Scheduled pruning via `notifications.prune-on-scheduler.v1`. Proven in both topologies: `[NT1]`-`[NT6]` + `[NT1m]`/`[NT4m]` in split-proof. Known gap: `match.finished` produces no inbox row — its `winner`/`loser` are opaque contestant strings, not `player_id`s. |
 | Player mail (1:1 inbox) | ✅ | notifications | `ecbefae`..`b991f8a`, 2026-08-31 | Seq #3a, same module and plan — operator 1:1 mail through the admin "Inbox" page (new "Player Support" section), sharing the `source_event_id` dedup column with the durable fan-in via a disjoint `admin-send-mail-` prefix; a resubmit with an edited body is 409, never a silent success. |
-| Outbound email channel (verification, reset) | ❌ | — | — | **Not in the source gap doc — added 2026-07-28.** Seq #3b. Hard prerequisite for seq #4; owned by the notifications module as an outbound channel. |
+| Outbound email channel (verification, reset) | ✅ | mail, mailevents, mailrpc, mail-svc | `d97503f`..`88e26fd`, 2026-08-31–2026-09-05 | **Seq #3b**, [plan](../plans/2026-08-31-1650-mail-outbound-channel-3b-plan.md). 14th fortress — a separate module from `notifications` (different key: a literal address, not `player_id`; different consumer: `accounts`; different failure surface: outbound SMTP with operator secrets). Durable outbox (`mail.outbox`) drained by a retry worker against a provider registry (`log` dev sink, `smtp` via `lettre`); ingress is `mail.send_requested`, which `mail` both defines and consumes (a deliberate deviation — the topic is a command, not a fact about another domain). Enqueue is exactly-once per `idempotency_key`; delivery to the recipient is at-least-once. Scheduled pruning via `mail.prune-on-scheduler.v1` (`MAIL_RETENTION_DAYS`, default 30). Admin page "Mail" under Platform, remotely editable via `admin.adminSubmit`. Known gaps: TLS negotiation (upgrade, cert/trust check, `AUTH`) is unproven by any automated test; the command topic has no in-tree producer until seq #4; `mail` stores no address, so nothing resolves a `player_id` to a recipient; a remote admin submit produces no `admin.action` row (closure deferred to a `mail.operator_sent` topic); `cancel` cannot recall a message the relay already accepted. |
 | Push notifications (FCM/APNs) | ❌ | — | — | Seq #3c. Later channel on the notifications module. |
 | Generic storage objects / player cloud-save (KV+OCC) | ❌ | — | — | P1#7. Self-contained new fortress. |
 | Server-side custom logic / RPC hooks | ✅ | (architecture) | pre-existing | Our module registry **is** this. Scripting runtimes explicitly rejected — see gap doc "Explicit non-recommendations". |
@@ -229,6 +229,26 @@ balances and is its own feature.
 
 ## Change log
 
+- **2026-09-05** — Outbound email channel (seq #3b) **landed**, all 13 steps,
+  `d97503f`..`88e26fd`. `mail` is a new, 14th fortress rather than a channel inside
+  `notifications` — the tracker's own prior answer, corrected above: the recipient
+  key (a literal address, not `player_id`), the consumer (`accounts`, not the
+  inbox), and the failure surface (outbound SMTP with operator secrets) each mark a
+  fortress-shaped seam, not a home for a new subscription on an existing one.
+  `mail.send_requested` is a **consumer-defined command topic** — `mail` both
+  defines and subscribes to it, the one deliberate deviation from "publisher owns
+  the event, consumer owns the subscription", because the topic names an
+  imperative ("send this") rather than a fact about another domain. Provisioning
+  the 14th DB-backed process also raised the cluster's usable-session floor from
+  97 to 147 (`REQUIRED_MAX_CONNECTIONS` 150 minus the 3-session superuser
+  reservation), preflighted against the live cluster rather than assumed. Known
+  gaps carried forward rather than worked around: TLS negotiation (the STARTTLS
+  upgrade, the certificate/trust check, `AUTH`) is unproven by any automated
+  test — a `cfg(test)` plaintext constructor pins the full SMTP dialogue instead,
+  since `webpki-roots` rules out a self-signed loopback fixture standing in for
+  one; the command topic has no in-tree producer until seq #4; `mail` stores no
+  address; and a remote admin submit produces no `admin.action` row, closure
+  deferred to a `mail.operator_sent` topic.
 - **2026-09-05** — Push hub (row 8, not from the original gap matrix — appended
   during implementation) **landed**: a `GET /push` WebSocket hub on the gateway,
   SignalR-shaped (server-minted connection id, `Target::Player|Group|All`,

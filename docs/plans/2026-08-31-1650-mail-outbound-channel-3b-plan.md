@@ -1230,3 +1230,10 @@ names its peers by count is correct and Step 7 already carried it.
    blocks in an unbounded `read_response`, so `worker::attempt`'s budget is what returns,
    and the row burns its whole attempt ladder before parking with a `"send exceeded …"`
    reason instead of the relay's own `550`. Absorbed, not a hang — a reporting gap.
+40. **Step 13 — the false "owned by the notifications module" clause was one line later
+   than named.** The dispatch pointed at `feature-tracker.md:203`; by the time this step
+   ran, an intervening edit had shifted it to line 204 (row 203 is the correct, unrelated
+   "Player mail (1:1 inbox)" row). Corrected by content match, not by line number. Two
+   more copies of the same "13 fortresses + gateway" comment — beyond the three named
+   lines — were found and fixed as siblings while the count was loaded: `CLAUDE.md:620`'s
+   `modules/` tree comment and `.agents/shared/gamebackend.md:657`'s twin of it.
