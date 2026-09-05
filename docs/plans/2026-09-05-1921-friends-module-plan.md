@@ -408,6 +408,14 @@ The previously-wrong branches this must execute, named:
 - A directory id omitted from the batch keeps its row.
 - Emit shares the store tx: roll the tx back, assert no `asyncevents.events` row.
 
+**Added after the Step 4 follow-up (errata 13):** `request`'s raced branch — the pair
+removed between the conflicting insert and the re-read, which now retries the insert
+once — **needs two concurrent connections to reach**. A single-session "delete then
+re-insert" proves nothing the unique index does not already guarantee. Either build the
+two-connection fixture or record the branch as unexercised; do not let it pass as
+covered. A second `None` after the retry answers `Internal`, deliberately not `Conflict`
+(the cap's) and not `Unavailable` (the directory's).
+
 ## Step 6 — consumers: `audit` sinks + `notifications` inbox rows `[sonnet]`
 
 **(a) What.** `modules/audit/src/lib.rs`: append the three topics to `DURABLE_TOPICS`
@@ -549,9 +557,17 @@ in this plan.
 `find_by_handle` being wire-only does **not** close the existence oracle:
 `POST /friends/requests` returns 201 vs 404 through the front door. Exact-handle
 matching removes the *bulk* oracle (one prefix → many names per call), not the oracle
-itself. What bounds it is the gateway rate limit (20 rps) plus Step 4's outstanding-request
-cap. The discriminator also means guessing a handle requires the name *and* four digits.
-This is a reduction in throughput, not a closure, and the plan does not claim otherwise.
+itself. The discriminator also means guessing a handle requires the name *and* four
+digits.
+
+**Corrected (errata 12) — the outstanding-request cap does NOT bound probing**, and
+this section claimed it did. `request` resolves the handle *before* the cap is
+consulted, so a caller sitting at the maximum still reads 404-versus-201 without limit;
+the cap can only turn a successful probe's 201 into a 409, which is still a positive
+answer. The same false clause shipped in the contract doc and was struck there by the
+Step 4 review. **The only bound is the gateway rate limit (20 rps).** A section written
+to be honest about a residual risk is the last place that should over-credit its
+mitigation.
 
 ## Known gaps this plan deliberately does not close
 
