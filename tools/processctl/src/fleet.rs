@@ -829,7 +829,7 @@ pub fn game_backend_fleet_with_environment(
     }
     gateway_env.insert("ADMIN_HTTP_ADDR".into(), "127.0.0.1:8085".into());
     gateway_env.insert("ACCOUNTS_HTTP_ADDR".into(), "127.0.0.1:8084".into());
-    let gateway = ServiceSpec {
+    let mut gateway = ServiceSpec {
         name: "gateway-svc",
         executable_package: "gateway-svc",
         http_port: 8082,
@@ -904,6 +904,14 @@ pub fn game_backend_fleet_with_environment(
     }
 
     if flavor == FleetFlavor::Proof {
+            // `[PH5]` drives the presence transitions, which ship DEFAULT OFF because each
+            // one is an O(connections) broadcast the front cannot narrow. The proof profile
+            // turns them on for the harness ONLY — never the Development fleet, and never
+            // the module's own default: a knob weakened to make a proof pass would be
+            // proving a configuration nobody runs. The name's authority is
+            // `gateway::PRESENCE`, spelled out here because only the two front composition
+            // roots may depend on the `gateway` crate (archcheck's single-front-door rule).
+            gateway.env.insert("PUSH_PRESENCE".into(), "1".into());
             for key in PROOF_UNCONFIGURED_PROVIDER_ENV {
                 accounts.env.remove(*key);
             }

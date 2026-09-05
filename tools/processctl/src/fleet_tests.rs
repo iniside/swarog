@@ -150,6 +150,15 @@ fn proof_overlay_is_explicit_and_name_lookup_is_stable() {
         Some("http://127.0.0.1:8082/accounts/epic/callback")
     );
     assert_eq!(proof.service("scheduler-svc").unwrap().env.get("SCHEDULER_ENABLED").map(String::as_str), Some("1"));
+    // `PUSH_PRESENCE` is default-off in `gateway::PushLimits` and stays off for the
+    // Development fleet; only the Proof overlay turns it on, for `[PH5]`. Pinned both
+    // ways so neither the knob nor the default can be quietly widened to make the
+    // assertion pass.
+    assert_eq!(
+        proof.service("gateway-svc").unwrap().env.get("PUSH_PRESENCE").map(String::as_str),
+        Some("1")
+    );
+    assert!(!development.service("gateway-svc").unwrap().env.contains_key("PUSH_PRESENCE"));
     assert!(matches!(proof.service("missing"), Err(FleetError::UnknownService(_))));
 }
 

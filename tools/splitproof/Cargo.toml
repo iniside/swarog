@@ -32,6 +32,22 @@ axum = { workspace = true }
 jsonwebtoken = { workspace = true }
 rand = { workspace = true }
 rsa = { version = "0.9", features = ["pem"] }
+# The `[PH*]` push-hub assertions. `tokio-tungstenite` is in the tree only
+# TRANSITIVELY (axum's `ws` feature pulls it), and a transitive dependency is not a
+# usable one — the harness needs its own entry to drive `GET /push` as a CLIENT. Pinned
+# to the version axum 0.7 already resolves, default features off plus the two the dial
+# needs, so no TLS stack (and therefore no `aws-lc-rs`) can enter through it: the
+# WebSocket rides plain loopback HTTP.
+tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect", "handshake"] }
+futures = { workspace = true }
+# The hub model itself: [PH4] addresses a `push::Target::Group` by encoding a batch with
+# the SAME `push::encode_batch` `core/remote` uses, so a codec change breaks the proof
+# instead of silently reshaping the wire.
+push = { workspace = true }
+# `notificationsapi::PUSH_NEW_TOPIC` — the frame's dispatch key lives in the contract
+# crate precisely so the module and this harness cannot drift; re-typing the literal here
+# would defeat the reason it was moved there.
+notificationsapi = { workspace = true }
 
 # The fleet-liveness tests drive processctl's production spawn path, which on unix
 # re-execs `current_exe --__processctl-guardian-v1`; only a `harness = false`

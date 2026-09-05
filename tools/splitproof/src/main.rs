@@ -29,8 +29,10 @@ use sqlx::{Connection as _, PgPool, Row};
 use splitproof::{fleet_liveness, Running};
 
 use crate::idp::Idp;
+use crate::pushws::{Frame, PushClient};
 
 mod idp;
+mod pushws;
 
 #[cfg(test)]
 mod tests;
@@ -541,6 +543,15 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     // operator faces still run the same `build_content`/`apply_submit`, in-process instead
     // of over the edge — the topology is the only difference.
     mail_assertions(ctx, pool, p, &m, &m, &jar, "m").await?;
+
+    // --- Push parity: `[PH1m]`/`[PH3m]`. The monolith hosts no internal edge and needs
+    // none — the producer and the sockets are the same process, so `ctx.push()` resolves
+    // through `push_ws::LocalSink` and the backplane never runs. THAT is the point of the
+    // pair and the limit of it: it proves the HUB (upgrade, handshake, ack, the nudge from
+    // inside a durable delivery transaction, the addressed frame) behaves identically with
+    // no transport in between. It proves NOTHING about fan-out; `[PH3]` above is the only
+    // assertion that crosses a process, and no monolith run can substitute for it.
+    push_assertions(ctx, pool, p, &m, &jar, None, "m").await?;
 
     federated_assertions(ctx, pool, &m, idp, p, "m").await?;
 
@@ -1573,6 +1584,365 @@ async fn clear_wallet_starter_config(pool: &PgPool) {
     {
         println!("[splitproof] WARN: could not clear the wallet starter knobs: {e}");
     }
+}
+
+/// The `[PH*]` push-hub proof — the one part of this feature that crosses a process
+/// boundary, and therefore the only place its wiring is executed at all.
+///
+/// Everything else about the hub is pinned by unit tests inside one process: the model
+/// and the codec (`core/push`), the backplane queue and its fan-out (`core/remote`), the
+/// handshake, the caps, the groups and the teardown (`modules/gateway`). What NO unit
+/// test can reach is the composition: `notifications-svc` holding a `remote::PushSender`
+/// aimed at `GATEWAY_EDGE_ADDR`, `gateway-svc` serving an internal edge at all, and the
+/// batch encoded in one process being decoded in another. `[PH3]` is that proof; a
+/// mistake in any one of those three is invisible everywhere else and shows up here as a
+/// frame that never arrives.
+///
+/// `edge` is the front's internal-edge address when there IS one (the split). On the
+/// monolith it is `None`: the producer and the sockets share a process, `LocalSink`
+/// answers directly, and no backplane exists to prove. The parity pair therefore proves
+/// the HUB is topology-independent, NOT that the fan-out works — which is why it is a
+/// pair and not a re-run of the whole set.
+async fn push_assertions(
+    ctx: &Ctx,
+    pool: &PgPool,
+    p: &mut Proof,
+    base: &str,
+    admin: &reqwest::Client,
+    edge: Option<std::net::SocketAddr>,
+    tag: &str,
+) -> Result<()> {
+    let split = edge.is_some();
+    // The upgrade is a plain-HTTP request on the same port; only the scheme differs.
+    let ws = format!("ws://{}", base.trim_start_matches("http://"));
+    let suffix = format!("{}{tag}", std::process::id());
+    let ca_cert = ctx.ca_cert.to_str().context("CA cert path not UTF-8")?.to_string();
+    let ca_key = ctx.ca_key.to_str().context("CA key path not UTF-8")?.to_string();
+    let deliver = |batch: Vec<push::Envelope>| {
+        let (cert, key) = (ca_cert.clone(), ca_key.clone());
+        async move {
+            let addr = edge.context("the backplane injector needs an internal edge")?;
+            pushws::deliver_batch(addr, &cert, &key, &batch).await
+        }
+    };
+
+    // Every push assertion is driven by a GUEST, for the reason `[NT1]` gives: a guest
+    // receives no starter grant, so its inbox is empty BY CONSTRUCTION and the only
+    // `notifications.new` frame it can ever see is the one this proof causes. A
+    // registered player would be racing its own starter-grant nudge, and `[PH3]` would
+    // pass for the wrong reason.
+    let (ph1_code, ph1_guest) = create_guest(ctx, base).await?;
+    let mut ph1 = PushClient::connect(&ws, &ph1_guest.token, "dev-key-client").await;
+    let ph1_ack = match ph1.as_mut() {
+        Ok(client) => client.next_frame(Duration::from_secs(10)).await.ok().flatten(),
+        Err(_) => None,
+    };
+    p.check(
+        &format!(
+            "[PH1{tag}] GET /push with bearer + api key -> upgrade + ack carrying a connection id"
+        ),
+        ph1_code == 201
+            && matches!(&ph1_ack, Some(Frame::Ack { connection_id }) if *connection_id > 0),
+        format!(
+            "guest={ph1_code} upgrade={} first_frame={ph1_ack:?}",
+            ph1.as_ref().map(|_| "ok").unwrap_or("failed")
+        ),
+    );
+
+    if split {
+        // [PH2] the credential refusal, which is NOT an HTTP status: a browser never sees
+        // one on a WebSocket dial, so the front upgrades first and then closes with a
+        // typed frame. The ack is the ONLY evidence a connection was registered, so a
+        // close arriving as the FIRST frame is what "nothing registered" looks like from
+        // the outside; `retryable: false` is the half a client acts on — a bad token that
+        // reported itself retryable would make every rejected client reconnect forever.
+        let mut ph2 = PushClient::connect(&ws, &format!("bogus-{suffix}"), "dev-key-client").await;
+        let ph2_first = match ph2.as_mut() {
+            Ok(client) => client.next_frame(Duration::from_secs(10)).await.ok().flatten(),
+            Err(_) => None,
+        };
+        let ph2_ended = match ph2.as_mut() {
+            Ok(client) => matches!(client.next_frame(Duration::from_secs(10)).await, Ok(None)),
+            Err(_) => false,
+        };
+        p.check(
+            &format!("[PH2{tag}] a bad bearer -> typed close (unauthorized, not retryable), no ack"),
+            matches!(
+                &ph2_first,
+                Some(Frame::Close { code, retryable }) if code == "unauthorized" && !*retryable
+            ) && ph2_ended,
+            format!("first_frame={ph2_first:?} socket_ended={ph2_ended}"),
+        );
+    }
+
+    // [PH3] THE cross-process proof. An operator grant is applied by wallet-svc, which
+    // appends `wallet.changed` to the shared log in its own transaction; notifications-svc
+    // — a third process — pulls it, writes the inbox row in the delivery transaction and
+    // nudges `ctx.push()`, which in this process is the BACKPLANE sender; the batch
+    // crosses the internal edge to gateway-svc, which owns the socket. Nothing here is
+    // reachable from a unit test: a wrong `GATEWAY_EDGE_ADDR`, a front that serves no
+    // inbound edge, or a batch codec that disagrees across the wire all look identical
+    // from inside one process and all fail this assertion.
+    //
+    // The client connects BEFORE the grant on purpose: push is best-effort with no
+    // redelivery, so a frame produced while nobody is listening is gone.
+    let (ph3_code, ph3_guest) = create_guest(ctx, base).await?;
+    let mut ph3 = PushClient::connect(&ws, &ph3_guest.token, "dev-key-client").await;
+    let ph3_ack = match ph3.as_mut() {
+        Ok(client) => matches!(
+            client.next_frame(Duration::from_secs(10)).await,
+            Ok(Some(Frame::Ack { .. }))
+        ),
+        Err(_) => false,
+    };
+    let (ph3_csrf, ph3_idem, _) = wallet_form(admin, base).await?;
+    let ph3_grant = admin
+        .post(format!("{base}/admin/wallet"))
+        .form(&[
+            ("_csrf", ph3_csrf.as_str()),
+            ("_idem_grant", ph3_idem.as_str()),
+            ("_action", "grant"),
+            ("player_id", ph3_guest.player_id.as_str()),
+            ("currency", "gold"),
+            ("amount", "55"),
+            ("reason", "splitproof push nudge"),
+        ])
+        .send()
+        .await?;
+    let ph3_grant_code = ph3_grant.status().as_u16();
+    let ph3_frame = match ph3.as_mut() {
+        Ok(client) => {
+            client
+                .await_topic(notificationsapi::PUSH_NEW_TOPIC, Duration::from_secs(30))
+                .await
+        }
+        Err(_) => None,
+    };
+    // The nudge carries NO row id (constraint 8: it is sent inside the delivery
+    // transaction, so an id would name a row a rollback plus redelivery never commits).
+    // Asserting the absence here is what keeps a future "helpful" id from being added
+    // without the post-commit hook that would make it true.
+    let ph3_id_free = match &ph3_frame {
+        Some(Frame::Message { payload, .. }) => serde_json::from_slice::<serde_json::Value>(payload)
+            .map(|v| v.is_object() && v.get("id").is_none())
+            .unwrap_or(false),
+        _ => false,
+    };
+    let ph3_row = poll_count(
+        pool,
+        "SELECT count(*) FROM notifications.messages \
+          WHERE player_id::text = $1 AND kind = 'wallet.credit'",
+        &ph3_guest.player_id,
+        1,
+    )
+    .await;
+    p.check(
+        &format!(
+            "[PH3{tag}] durable wallet.changed -> notifications-svc inbox row -> id-free \
+             `{}` frame at a client on the front",
+            notificationsapi::PUSH_NEW_TOPIC
+        ),
+        ph3_code == 201
+            && ph3_ack
+            && ph3_grant_code == 303
+            && ph3_frame.is_some()
+            && ph3_id_free
+            && ph3_row,
+        format!(
+            "guest={ph3_code} ack={ph3_ack} grant={ph3_grant_code} frame={} id_free={ph3_id_free} \
+             inbox_row={ph3_row} pid={}",
+            ph3_frame.is_some(),
+            ph3_guest.player_id
+        ),
+    );
+
+    let mut ph5_watcher: Option<PushClient> = None;
+    if split {
+        // [PH4] groups. NOTHING in the fleet produces a group-addressed message — a group
+        // is a client-built audience, so the resolution path would ship with nothing
+        // executing it — and the batch is therefore injected straight into the front's
+        // inbound `push.deliver` face over the internal mTLS edge, which is exactly what
+        // `core/remote`'s sender does. Only the producer is the harness; the codec, the
+        // wire method and the handler are production.
+        //
+        // The non-member's negative is proven BY CONSTRUCTION, not by absence: after it
+        // fails to see the group message, the SAME socket is addressed with `Target::All`
+        // and must receive that one. A dead or unread socket would fail the second half,
+        // so silence on the first half can only mean it was not addressed.
+        let group = format!("splitproof-{suffix}");
+        let group_topic = format!("splitproof.group.{suffix}");
+        let all_topic = format!("splitproof.all.{suffix}");
+        let (_, ga) = create_guest(ctx, base).await?;
+        let (_, gb) = create_guest(ctx, base).await?;
+        let (_, gc) = create_guest(ctx, base).await?;
+        let mut a = PushClient::connect(&ws, &ga.token, "dev-key-client").await?;
+        let mut b = PushClient::connect(&ws, &gb.token, "dev-key-client").await?;
+        let mut c = PushClient::connect(&ws, &gc.token, "dev-key-client").await?;
+        let acks = matches!(
+            a.next_frame(Duration::from_secs(10)).await,
+            Ok(Some(Frame::Ack { .. }))
+        ) && matches!(
+            b.next_frame(Duration::from_secs(10)).await,
+            Ok(Some(Frame::Ack { .. }))
+        ) && matches!(
+            c.next_frame(Duration::from_secs(10)).await,
+            Ok(Some(Frame::Ack { .. }))
+        );
+        a.join(&group).await?;
+        b.join(&group).await?;
+        // A join is silent by design (there is no join ack), so the batch is RE-SENT until
+        // both members have seen one rather than slept-then-checked: nothing orders the
+        // verb against a delivery that started in another process.
+        let mut got_a = false;
+        let mut got_b = false;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline && !(got_a && got_b) {
+            deliver(vec![push::Envelope::new(
+                push::Target::Group(group.clone()),
+                push::Message::new(group_topic.clone(), b"grouped".to_vec()),
+            )])
+            .await?;
+            if !got_a {
+                got_a = a.await_topic(&group_topic, Duration::from_millis(750)).await.is_some();
+            }
+            if !got_b {
+                got_b = b.await_topic(&group_topic, Duration::from_millis(750)).await.is_some();
+            }
+        }
+        let c_group = c.await_topic(&group_topic, Duration::from_secs(3)).await;
+        deliver(vec![push::Envelope::new(
+            push::Target::All,
+            push::Message::new(all_topic.clone(), b"broadcast".to_vec()),
+        )])
+        .await?;
+        let c_all = c.await_topic(&all_topic, Duration::from_secs(15)).await;
+        p.check(
+            &format!(
+                "[PH4{tag}] two joiners receive a Target::Group batch; a non-member does not, \
+                 yet takes the next Target::All on the same socket"
+            ),
+            acks && got_a && got_b && c_group.is_none() && c_all.is_some(),
+            format!(
+                "acks={acks} member_a={got_a} member_b={got_b} nonmember_group={} \
+                 nonmember_all={}",
+                c_group.is_some(),
+                c_all.is_some()
+            ),
+        );
+        a.disconnect().await;
+        b.disconnect().await;
+        c.disconnect().await;
+
+        // [PH5] presence, which the Proof fleet turns on with `PUSH_PRESENCE=1`
+        // (default-off in `gateway::PushLimits` and left off for the Development fleet —
+        // see tools/processctl/src/fleet.rs). The watcher must observe BOTH edges: an
+        // arrival it did not cause, and the departure of that same connection. A proof of
+        // only the first half would pass while `Slot::drop`'s announcement — the one that
+        // runs on an aborted or panicked task — never fired at all.
+        let (_, gw) = create_guest(ctx, base).await?;
+        let (_, gv) = create_guest(ctx, base).await?;
+        let mut watcher = PushClient::connect(&ws, &gw.token, "dev-key-client").await?;
+        let watcher_ack = matches!(
+            watcher.next_frame(Duration::from_secs(10)).await,
+            Ok(Some(Frame::Ack { .. }))
+        );
+        let mut visitor = PushClient::connect(&ws, &gv.token, "dev-key-client").await?;
+        let visitor_ack = matches!(
+            visitor.next_frame(Duration::from_secs(10)).await,
+            Ok(Some(Frame::Ack { .. }))
+        );
+        let online = watcher
+            .await_presence(&gv.player_id, true, Duration::from_secs(15))
+            .await;
+        visitor.disconnect().await;
+        let offline = watcher
+            .await_presence(&gv.player_id, false, Duration::from_secs(15))
+            .await;
+        p.check(
+            &format!("[PH5{tag}] PUSH_PRESENCE=1: a second client's arrival AND its departure reach the first"),
+            watcher_ack && visitor_ack && online && offline,
+            format!(
+                "watcher_ack={watcher_ack} visitor_ack={visitor_ack} online={online} \
+                 offline={offline} visitor={}",
+                gv.player_id
+            ),
+        );
+        ph5_watcher = Some(watcher);
+    }
+
+    if split {
+        // [PH6] best-effort, proven with NOTHING connected: every socket this proof opened
+        // is closed first and the grant names a player nobody ever authenticated as, so
+        // the nudge reaches zero connections on the only front there is.
+        //
+        // The domain outcome must be untouched — and the subscription must still be
+        // `active` with no consecutive failures, which is the half that matters: the nudge
+        // runs INSIDE the durable delivery transaction, and a handler that returned `Err`
+        // over a best-effort concern would back off and pause the subscription for EVERY
+        // player until an operator ran `eventctl` (constraint 12).
+        if let Ok(client) = ph1 {
+            client.disconnect().await;
+        }
+        if let Ok(client) = ph3 {
+            client.disconnect().await;
+        }
+        if let Some(client) = ph5_watcher {
+            client.disconnect().await;
+        }
+        let ph6_player: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
+            .fetch_one(pool)
+            .await?;
+        let (ph6_csrf, ph6_idem, _) = wallet_form(admin, base).await?;
+        let ph6_grant = admin
+            .post(format!("{base}/admin/wallet"))
+            .form(&[
+                ("_csrf", ph6_csrf.as_str()),
+                ("_idem_grant", ph6_idem.as_str()),
+                ("_action", "grant"),
+                ("player_id", ph6_player.as_str()),
+                ("currency", "gold"),
+                ("amount", "13"),
+                ("reason", "splitproof push best-effort"),
+            ])
+            .send()
+            .await?;
+        let ph6_grant_code = ph6_grant.status().as_u16();
+        let ph6_row = poll_count(
+            pool,
+            "SELECT count(*) FROM notifications.messages \
+              WHERE player_id::text = $1 AND kind = 'wallet.credit'",
+            &ph6_player,
+            1,
+        )
+        .await;
+        let ph6_sub: Option<(String, i32)> = sqlx::query_as(
+            "SELECT state, consecutive_failures FROM asyncevents.subscriptions \
+              WHERE subscription_id = 'notifications.wallet-changed.v1'",
+        )
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None);
+        let ph6_healthy = matches!(&ph6_sub, Some((state, failures)) if state == "active" && *failures == 0);
+        p.check(
+            &format!(
+                "[PH6{tag}] with nobody connected the grant still commits, the inbox row lands \
+                 and the subscription stays active"
+            ),
+            ph6_grant_code == 303 && ph6_row && ph6_healthy,
+            format!(
+                "grant={ph6_grant_code} inbox_row={ph6_row} subscription={ph6_sub:?} pid={ph6_player}"
+            ),
+        );
+    } else {
+        if let Ok(client) = ph1 {
+            client.disconnect().await;
+        }
+        if let Ok(client) = ph3 {
+            client.disconnect().await;
+        }
+    }
+
+    Ok(())
 }
 
 async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Result<()> {
@@ -3352,6 +3722,27 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     )
     .await?;
     mail_prune_assertion(pool, p).await?;
+
+    // --- The push hub. Runs BEFORE the rate-limit burst below: `[PH4]`/`[PH5]` open six
+    // sockets through the front door, and `[RL1]`'s deliberate 60-request burst would
+    // otherwise still be draining the shared 127.0.0.1 bucket when they upgrade.
+    push_assertions(
+        ctx,
+        pool,
+        p,
+        &g,
+        &cfg,
+        Some(
+            format!(
+                "127.0.0.1:{}",
+                ctx.service("gateway-svc").edge_port.context("gateway edge port")?
+            )
+            .parse()
+            .context("gateway edge address")?,
+        ),
+        "",
+    )
+    .await?;
 
     // --- Federated providers, guest promotion and refresh rotation, through gateway-svc
     // (G -> accounts-svc over the mTLS edge; the promotion's durable event crosses to

@@ -4079,8 +4079,11 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "edge",
+ "futures",
  "jsonwebtoken",
+ "notificationsapi",
  "processctl",
+ "push",
  "rand 0.8.6",
  "reqwest",
  "rsa",
@@ -4088,6 +4091,7 @@ dependencies = [
  "sha2",
  "sqlx",
  "tokio",
+ "tokio-tungstenite",
 ]
 
 [[package]]
