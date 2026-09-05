@@ -220,16 +220,16 @@ fn observe_profile(profile: &DeploymentProfile) -> anyhow::Result<Vec<ProcessRou
         // process. `EdgeReg::apply` is one-shot across clones, which is fine: each
         // process is built once per config run.
         //
-        // ONLY for processes that actually host an internal edge — every split svc,
-        // gateway-svc INCLUDED: `cmd/gateway-svc` passes a real `edge::Server` so the
-        // gateway module's `push.deliver` face is served there (the push backplane's
-        // inbound half). The monolith "server" passes `None`, so `app::run` silently
-        // drops its contributions; and since `edge::Server` panics on a duplicate method
-        // name, applying the monolith's co-hosted contributions (every admin-page module
-        // registers `admin.adminData` for ITS OWN svc's edge) to one Server would
-        // manufacture a collision no real process ever sees. Modeling reality exactly:
-        // only the edge-less monolith gets an empty served set.
-        let hosts_internal_edge = process_id != "server";
+        // ONLY for the processes whose main actually passes `Some(edge::Server)` —
+        // every domain svc, plus gateway-svc since it serves the push backplane's
+        // inbound `push.deliver` face. The two that pass `None` are listed here because
+        // `app::run` SILENTLY DROPS an edge-less process's contributions: modelling one
+        // of them as edge-serving would let a face landed there feed the SERVE-PARITY
+        // union and pass, while the split front 503s. `cmd/server/src/main.rs` (the
+        // monolith — where applying every co-hosted `admin.adminData` to one Server
+        // would also manufacture a duplicate-method panic no real process sees) and
+        // `cmd/admin-svc/src/main.rs` (a pure aggregator: DB, stubs, no edge of its own).
+        let hosts_internal_edge = process_id != "server" && process_id != "admin-svc";
         let edge_methods: BTreeSet<String> = if hosts_internal_edge {
             let mut server = edge::Server::new();
             for reg in ctx.contributions::<edge::EdgeReg>(edge::EDGE_SLOT) {

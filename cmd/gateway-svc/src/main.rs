@@ -164,8 +164,10 @@ async fn main() -> anyhow::Result<()> {
     // gateway module's `push.deliver`, so a producer process's backplane sender can reach
     // the WebSocket connections this front owns. Every other direction is still outbound —
     // it DIALS its peers through the stubs and serves no provider op here.
-    // `without_db`: a pure-transport process owns no
-    // schema, so `app::run` skips `PgPool::connect` and `/readyz` answers a plain 200.
+    // `without_db`: a pure-transport process owns no schema, so `app::run` skips
+    // `PgPool::connect` — `/readyz` has no DB ping. It is not a plain 200 either: it is
+    // the AND of this process's eight `stub:*` checks — one per `remote::Stub` in
+    // `gateway_svc::modules` — so a peer this front cannot reach makes it unready.
     // The `metrics` module in `mods` gives the front door `GET /metrics` + the record
     // layer, so its op traffic IS measured now (the old `without_metrics` Go-parity
     // exemption lost its rationale once peers stopped fronting HTTP; ops dispatch through

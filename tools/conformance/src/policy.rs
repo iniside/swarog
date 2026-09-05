@@ -411,20 +411,32 @@ fn gateway() -> Entry {
             ),
             (
                 Convention::InputByteCaps,
-                Stance::Applies(Fixture::InputByteCaps(vec![CapCase {
-                    // The one attacker-supplied field the gateway itself both NAMES and
-                    // BOUNDS: an authenticated `/push` client picks its own group names,
-                    // and each accepted one is stored per connection and per process.
-                    // The hello frame's `token`/`api_key` are NOT cases here — the
-                    // gateway bounds them only through the whole-frame transport guard
-                    // (`PUSH_MAX_FRAME_BYTES`), not with a field-level cap, so a CapCase
-                    // naming one would assert a cap that does not exist.
-                    name: "gateway push group name",
-                    cap: 128,
-                    probe: Arc::new(|len| {
-                        gateway::conformance::conformance_group_name_rejected(len)
-                    }),
-                }])),
+                Stance::Applies(Fixture::InputByteCaps(vec![
+                    // The front's OWN enforcement of the two credential caps, which no
+                    // other case executes: accounts' and apikeys' own cases probe their
+                    // store-side checks, and apikeys' restates the comparison
+                    // arithmetically. Both are reached from every credentialed request on
+                    // both planes AND from the `/push` handshake frame, where the values
+                    // arrive from a client that cannot set headers.
+                    CapCase {
+                        name: "gateway presented bearer",
+                        cap: accountsapi::MAX_SESSION_TOKEN_BYTES,
+                        probe: Arc::new(gateway::conformance::conformance_session_token_rejected),
+                    },
+                    CapCase {
+                        name: "gateway presented api key",
+                        cap: apikeysapi::MAX_KEY_BYTES,
+                        probe: Arc::new(gateway::conformance::conformance_api_key_rejected),
+                    },
+                    // The field the gateway both NAMES and BOUNDS itself: an
+                    // authenticated `/push` client picks its own group names, and each
+                    // accepted one is stored per connection and per process.
+                    CapCase {
+                        name: "gateway push group name",
+                        cap: gateway::conformance::MAX_GROUP_NAME_BYTES,
+                        probe: Arc::new(gateway::conformance::conformance_group_name_rejected),
+                    },
+                ])),
             ),
             (
                 Convention::InfraOutage503,

@@ -207,6 +207,40 @@ the gateway peer address. Every authority in the table above is updated here exc
 (Step 1). No domain service declares a fleet dependency on the gateway — push is best-effort and
 the fleet forbids the cycle anyway.
 
+*Errata (2026-09-05, implementation + review round 1 on `69187c9`):* five things this
+step's text got wrong or never named.
+- **`[[service.peer]]` cannot express notifications→gateway in weles, and the address is a
+  literal instead.** `fleet_toml::validate` requires an `Edge` peer's provider to appear
+  strictly EARLIER in the file, and `supervisor::boot` walks that same order blocking on
+  each service's `/readyz` — while gateway-svc's `/readyz` is the AND of its eight
+  `stub:*` checks, one of which is `stub:notifications`. Gateway-first blocks on a service
+  that has not spawned; gateway-later fails the validator. It is the same cycle the
+  processctl fleet forbids, so `GATEWAY_EDGE_ADDR` is a literal in notifications-svc's
+  `[service.env]`, with the reason recorded there, in the composed-env golden, and here.
+- **The gateway's `InputByteCaps` stance is `Applies` with THREE cases, and the reason the
+  plan gave for the first two was backwards.** The step says the gateway owns caps on the
+  hello frame's `token`/`api_key`; it owns caps on the PRESENTED credentials, on every
+  request of both planes and of which the hello frame is one source —
+  `verifier.rs`'s `MAX_SESSION_TOKEN_BYTES` and `keys.rs`'s `MAX_KEY_BYTES`. Nothing
+  executed either before: accounts' and apikeys' own cases probe their store-side checks,
+  and apikeys' `conformance_key_rejected` restates the comparison arithmetically. Both new
+  cases drive the real path against a dependency that can only fail (the dead-pool shape
+  `accounts refresh token` uses), so the verdict they assert is reachable only ahead of the
+  call; deleting either guard turns that case red and leaves every other module's green.
+  Not covered: `PUSH_MAX_FRAME_BYTES`, which bounds the whole inbound frame, not a field.
+- **`routecheck`'s edge-serving predicate is `!= "server" && != "admin-svc"`, not
+  `!= "server"`.** Adding only gateway-svc left admin-svc modelled as edge-serving while
+  `cmd/admin-svc/src/main.rs` passes `None` — `app::run` would silently drop any face
+  landed there while the gate fed it into the SERVE-PARITY union and passed.
+- **`tools/verifyctl/src/stages/weles_managed_gateway.rs` is an authority this plan's table
+  never named.** Its `swap_probe` spawns its own gateway-svc beside the booted fleet with
+  only `PORT`/`PLAYER_EDGE_ADDR` set; once the front serves an edge it would take the
+  `:9000` default and collide with characters-svc. It now takes its own `dead_udp_port()`.
+  Swept: no other gateway-svc spawn site needs one.
+- **`tools/splitproof/Cargo.toml` (the table's last row) is NOT in this step.** Its
+  `tokio-tungstenite` dependency has no consumer until the `[PH*]` assertions exist, so it
+  lands with Step 10.
+
 **Step 7 — notifications: the first producer.** `[opus]` core-implementer.
 All three insert paths funnel through one helper that inserts and then nudges. Carries
 constraint 8.

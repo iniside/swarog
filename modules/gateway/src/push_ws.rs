@@ -235,7 +235,7 @@ pub const TRUSTED_PROXIES: &str = "TRUSTED_PROXY_CIDRS";
 /// process allocate, which the connection cap already bounds in aggregate, and a client
 /// that hits either is misusing a seam whose whole membership it rebuilds on the next
 /// reconnect anyway.
-const MAX_GROUP_NAME_BYTES: usize = 128;
+pub const MAX_GROUP_NAME_BYTES: usize = 128;
 const MAX_GROUPS_PER_CONN: usize = 32;
 
 /// Inbound verb frames one connection may spend per [`PushLimits::reverify_interval`],
