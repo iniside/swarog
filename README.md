@@ -133,6 +133,7 @@ cmd/            composition roots — the ONLY topology-aware code
 core/           foundations — never import modules or api/ crates
   app/ bus/ registry/ contrib/ lifecycle/ opsapi/
   edge/           internal mTLS QUIC + player plane
+  push/           push hub model (Target/Message/Sink), transport-free
   asyncevents/    the durable event plane
   remote/ metrics/ httpmw/
 api/<name>/     contract surface per domain (api / events / rpc)

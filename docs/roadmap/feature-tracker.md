@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-08-31-1230**
+**Last update: 2026-09-05-2022**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -47,6 +47,7 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 | 5 | Leaderboard seasons / reset / rotation | ❌ | — |
 | 6 | Steam auth (ticket verifier) | ❌ | — |
 | 7 | Store + IAP receipt validation | ❌ | — |
+| 8 | Real-time push hub (`GET /push` WebSocket, SignalR-shaped) | ✅ | [2026-09-03-2022-push-hub-websocket-plan.md](../plans/2026-09-03-2022-push-hub-websocket-plan.md) |
 
 **Why this order (not the gap doc's):**
 
@@ -228,6 +229,19 @@ balances and is its own feature.
 
 ## Change log
 
+- **2026-09-05** — Push hub (row 8, not from the original gap matrix — appended
+  during implementation) **landed**: a `GET /push` WebSocket hub on the gateway,
+  SignalR-shaped (server-minted connection id, `Target::Player|Group|All`,
+  ephemeral non-authorizing groups, front-local presence default off), backed by
+  a transport-free model crate (`core/push`) and a backplane fan-out over the
+  existing internal mTLS edge (`core/remote`'s `PushSender`/`Pool::deliver_all`,
+  wire method `push.deliver`) so a producer in any process reaches sockets a
+  different front owns. `notifications` is the first producer, nudging
+  `notifications.new` on every inbox insert. See
+  [docs/reference/push-hub.md](../reference/push-hub.md) for the wire contract
+  and the carried gaps (RPC-only C# fixture, no per-message rate limiting, no
+  `routecheck` coverage of the fixed route, and a nudge that can lose a race
+  with its own commit).
 - **2026-08-31** — Seq #3a (notifications in-app inbox) **landed**,
   `ecbefae`..`b991f8a`. `cargo test -p notifications` 35/35, conformance
   `OK: 14 modules × 4 conventions`, and split-proof 134/134 on the real 14-process

@@ -74,11 +74,13 @@ never a silent last-writer-wins overwrite.
 ## Hard constraints (do not violate without discussing)
 
 1. **Foundations (`core/*`) never depend on a module or an `api/` crate.**
-   Dependency only ever points module → core. (`core/` = app, bus, contrib, edge,
+   Dependency only ever points module → core. (`core/` = app, bus, contrib, edge, push,
    lifecycle, opsapi, registry, asyncevents, invalidation, remote, metrics, httpmw —
    `asyncevents` (durable event log + pull workers) and `invalidation` (broadcast
    cache refresh) are app-owned planes (DB ⇒ plane), NOT modules; remote/metrics/
-   httpmw are process infrastructure, not domains. Module SQL may call the plane's
+   httpmw are process infrastructure, not domains; `push` is the server→client
+   delivery model (`Target`/`Message`/`Sink`), transport-free — the socket-owning
+   transport lives in `modules/gateway`. Module SQL may call the plane's
    SQL functions (`asyncevents.append_event`, `asyncevents.ensure_history_contract`)
    but never touch plane tables — archcheck-enforced.)
 2. **Fortress rule.** Every folder in `modules/` is a fortress: it never imports
@@ -356,6 +358,11 @@ never a silent last-writer-wins overwrite.
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote purely by
   slot presence; peer addresses are injected by `cmd/*` via `remote::Stub` →
   `opsapi::PEER_SLOT` contributions — the gateway module itself never reads env),
+  a `GET /push` WebSocket hub (SignalR-shaped: server-minted connection id,
+  `Target::Player|Group|All`, ephemeral non-authorizing groups, front-local
+  presence default off) resolving `push::Target`s against the sockets it owns
+  and contributing the inbound `push.deliver` face to `edge::EDGE_SLOT` so a
+  producer elsewhere in the split can reach them (`docs/reference/push-hub.md`),
   player-QUIC plane (bearer-in-envelope, exact-method allow-list), HTTP passthrough
   (`/admin`, `/accounts/epic` → origins passed in by `cmd/gateway-svc` via
   `Gateway::with_passthrough`, env read in the main, not the module), always-on
@@ -502,7 +509,8 @@ closed.
 
 The blocking **split-proof** stage uses the cross-platform Rust harness in
 `tools/splitproof`. It boots the real split — characters
-:8080/:9000, inventory :8081/:9001, gateway :8082 + player-QUIC :9100, config
+:8080/:9000, inventory :8081/:9001, gateway :8082 + player-QUIC :9100 + edge
+:9013 (the inbound `push.deliver` face), config
 :8083/:9002, accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler
 :8087/:9005, match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008,
 apikeys :8091/:9009, wallet :8092/:9010, notifications :8093/:9011. The fleet
@@ -578,10 +586,11 @@ core/                      # foundations — never import modules or api/ crates
   bus/ registry/ contrib/  #   async bus, sync capability registry, slots
   lifecycle/ opsapi/       #   Module/Context/two-phase build; typed ops + slots
   edge/                    #   internal mTLS QUIC + player plane + EDGE_SLOT
+  push/                    #   ConnId/Target/Message/Sink — the push hub's model, transport-free
   asyncevents/             #   app-owned durable plane: XID-ordered event log +
                            #   pull workers + retention (+ eventctl operator CLI)
   invalidation/            #   app-owned broadcast cache-refresh plane (LISTEN/NOTIFY)
-  remote/                  #   generic Stub (factories injected by cmd roots)
+  remote/                  #   generic Stub (factories injected by cmd roots) + push backplane
   metrics/                 #   infra Module: GET /metrics + record layer — list in every main
   httpmw/                  #   rate limit + XFF + readyz + LAYER_SLOT (HTTP layer drain)
 api/<name>/                # contract surface per domain

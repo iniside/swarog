@@ -87,6 +87,29 @@ UUIDs never recur so a tombstone is permanent truth.
 
 ---
 
+## Sending a push notification
+
+Not part of the characters/inventory pair, but the smallest producer to copy:
+`notifications` is the first (and so far only) module that sends one. A
+producer never touches sockets or topology — it resolves `ctx.push()` (always
+present, `core/lifecycle/src/context.rs:106`) and calls `Push::send` with a
+`push::Target` and a `push::Message`.
+
+| What | Anchor |
+|---|---|
+| Resolve the handle at `register` | `modules/notifications/src/lib.rs:127` (`Service::new(pool, ctx.push().clone())`) |
+| Send: synchronous, non-blocking, best-effort | `modules/notifications/src/service.rs:292-300` (`nudge`) |
+| The topic constant lives in the producer's own api crate | `api/notifications/api/src/lib.rs:48` (`PUSH_NEW_TOPIC`) |
+| The payload is id-free and why | `modules/notifications/src/service.rs:246-261` (doc on `PUSH_NEW_PAYLOAD`) |
+
+`Push::send` never awaits: it is called from inside a durable-event handler
+holding the delivery transaction's connection, and an `Err` (`NoSink`,
+`Backlogged`) is dropped, never bubbled into a handler failure — a gateway
+outage must not pause the subscription. See `docs/reference/push-hub.md` for
+the wire contract a client sees on the other end.
+
+---
+
 ## Do NOT copy
 
 The single most important section. These four are shipped, working, and
