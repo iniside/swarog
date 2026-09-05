@@ -125,6 +125,7 @@ inapplicable — it lists *gating env vars*, and `friends` introduces none.
 | `clients/csharp/Generated` + `opscatalog/src/generated.rs` | **regenerate**, not bless | loud (codegen-freshness) |
 | `modules/audit/src/lib.rs` | 3 topics + 3 spec ids, same indices | loud (its own tests) |
 | `tools/conformance/src/policy.rs` | `friends()` + `input_policies()` rows | loud |
+| `modules/apikeys` `DEV_CLIENT_POLICY` | every player-facing op, or an entry in `DEV_CLIENT_EXCLUDED` with a reason | loud (errata 18) |
 | `tools/processctl/src/fleet_tests.rs` | the canonical N-service fleet snapshot — the new row **plus** gateway's and admin's dependency lists inside it | loud (errata 14) |
 | `weles/master/src/fleet_toml_tests.rs` | the `services.len()` assertion on the split fixture | loud (errata 14) |
 
@@ -777,6 +778,18 @@ be a complete checklist and was not. Added above.
   by `emitted_status_matches_golden`. It legitimately needed no change here (friends
   adds no `Status` variant), but the count in errata 16 was one short — the third time
   a hand-written count in this plan has been wrong.
+
+**18 — a fifth missing authority, found by finally RUNNING the workspace tests.**
+`modules/apikeys/src/tests.rs:126` requires every player-facing catalog op to appear in
+`DEV_CLIENT_POLICY` or in `DEV_CLIENT_EXCLUDED` with a reason. Friends' six ops were in
+neither. The consequence reaches past a red test: `dev-key-client` could not call them,
+so **Step 12's `[FR1]`–`[FR8]` would have failed with 403** and the diagnosis would have
+looked like a key-policy bug rather than a missing entry.
+
+This is the direct payoff of the errata-17 lesson. Four attempts to assemble the
+authority table by *reading* produced four incomplete tables; one `cargo test
+--workspace --no-fail-fast` produced the missing entry in ten minutes. The table is a
+hand-maintained list about hand-maintained lists — the tests are the authority.
 
 **17 — `split-proof` is NOT "red by design" for friends; it is GREEN and friends-blind.**
 I asserted repeatedly that the split-proof stage stays red until Step 12. There is no
