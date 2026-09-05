@@ -597,6 +597,14 @@ mitigation.
   own section and changes its slug. A DB blip on the audit page therefore breaks the
   audit page in a way its own tests cannot see, split-only. Not fixed here: two other
   modules, out of this rollout's scope. Sibling of the class Step 8 closed.
+- **The `PLAYERS_ROW_MENU` ordering is unpinned across topologies.** `notifications`,
+  `characters`, `wallet` and now `friends` all contribute `priority: 0`; only
+  `inventory` uses `10`. Ties therefore fall to contribution order, which is the
+  `cmd/*` module-list order — and that differs between `cmd/server` and admin-svc's
+  stub list. So the row menu can render in a different order in the two topologies with
+  every gate green. Pre-existing, found while adding the fourth zero-priority entry;
+  closing it means an explicit priority ladder across four modules, which is its own
+  rollout.
 - **The Friends admin page has NOT been compared against a live render.** Templates are
   `include_str!`-embedded and no fleet was booted during Step 8. The visual loop closes
   only against a running portal — do it during Step 13 (`devctl up monolith`, then
