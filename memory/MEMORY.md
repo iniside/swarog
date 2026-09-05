@@ -1,6 +1,7 @@
 # Memory Index
 
 ## Process / discipline / behavior
+- [pgrep check must GATE, not decorate](pgrep-check-must-gate-not-decorate.md) — `pgrep …; cargo …` in ONE bash call is not a check: the cargo is already dispatched; run the check as its own call and read it first (violated 2026-09-05, second cargo started beside another agent's test). Also: after any `--bless-*`, diff the baseline dir and restore files the current change did not cause
 - [Adversarial subagent review](adversarial-subagent-review.md) — try to break a diff at its OWN new seams (method in `.agents/shared/planning-dispatch.md` / `core-reviewer` prosecutor persona); ONE pass, default REJECT, class list required for PASS; NEVER inline even for "trivial" diffs — review = core-reviewer subagent; proof-auditor when the proof/gate is the risk surface
 - [Live acceptance: report, don't fix](live-acceptance-report-dont-fix.md) — awaria w fazie akceptacji na żywo = stop + diagnoza + raport z opcjami, NIGDY pętla fixów; przedwczesny fix utrwala złą warstwę (dowód: linker weles → design "orchestrator never builds")
 - [No inline ad-hoc fixes](no-inline-adhoc-fixes.md) — ad-hoc/untagged work ⇒ ASK for the dispatch lane BEFORE editing; complex fixes default to a subagent lane, inline needs explicit consent; post-review tweaks go through the lane too (repeat offense 2026-07-14)
