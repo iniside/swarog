@@ -56,3 +56,8 @@ anyhow = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "test-util"] }
 tower = { version = "0.5", features = ["util"] }
 futures = { workspace = true }
+# The `/push` proofs need a real RFC 6455 client against a bound listener: the suite's
+# `oneshot` requests carry no `hyper::upgrade::OnUpgrade`, so no upgrade can happen off a
+# socket. Same 0.24 line axum's `ws` feature already locks (and `core/app`'s Step 9a proof
+# uses), default features — no TLS stack, no new lock entries.
+tokio-tungstenite = "0.24"

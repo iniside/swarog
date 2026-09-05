@@ -1644,3 +1644,108 @@ async fn one_fire_loops_batched_deletes_and_never_exceeds_the_batch_per_statemen
         "the probe transaction rolled back — its trigger must not survive on the shared table"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The inbox nudge (Step 7): addressed by the ROW's player id, and only on an append
+// ---------------------------------------------------------------------------
+
+/// Records every `push::Sink::send` this process makes, so a test can assert WHAT was
+/// addressed instead of that something was.
+struct RecordingSink {
+    sent: std::sync::Mutex<Vec<(push::Target, String, Vec<u8>)>>,
+}
+
+impl push::Sink for RecordingSink {
+    fn send(
+        &self,
+        target: &push::Target,
+        msg: &push::Message,
+    ) -> Result<push::Delivered, push::Error> {
+        self.sent
+            .lock()
+            .unwrap()
+            .push((target.clone(), msg.topic.clone(), msg.payload.clone()));
+        // The count a front with none of this player's devices answers — the nudge must
+        // treat it as normal, not as a failure worth propagating.
+        Ok(push::Delivered::Local(0))
+    }
+}
+
+/// `wired`, plus a recording push sink installed on the context the service is built
+/// from — the same seam `app::run` installs the gateway's `LocalSink` through.
+async fn wired_with_sink(pool: &PgPool) -> (Arc<Service>, Arc<RecordingSink>) {
+    ensure_schema(pool).await;
+    let ctx = Context::with_db(pool.clone());
+    let sink = Arc::new(RecordingSink { sent: std::sync::Mutex::new(Vec::new()) });
+    ctx.push().install(sink.clone());
+    let m = NotificationsModule::new();
+    m.register(&ctx).unwrap();
+    (m.svc(), sink)
+}
+
+/// The nudge is addressed to the player id the STATEMENT returned, never the caller's
+/// spelling of it.
+///
+/// `$1::uuid` is a tolerant cast — an uppercase, braced or unhyphenated id addresses the
+/// same row — while the front keys its connections by the session's `player_id`, which
+/// accounts mints as `id::text` and is therefore always canonical lowercase. Nudging the
+/// caller's spelling (an operator pastes an unchecked id into the send-mail form) resolved
+/// to zero queues and answered `Local(0)`: indistinguishable from an offline player, and
+/// invisible to any test that only asserts a nudge happened.
+#[tokio::test]
+async fn the_inbox_nudge_is_addressed_by_the_rows_canonical_player_id() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (svc, sink) = wired_with_sink(&pool).await;
+    let canonical = unique_player(&pool).await;
+    let shouted = canonical.to_ascii_uppercase();
+    assert_ne!(shouted, canonical, "the fixture must actually differ in spelling");
+
+    let key = operator_key(&pool).await;
+    let sent = svc
+        .send_operator_mail(&NewNotification {
+            player_id: &shouted,
+            kind: "operator.mail",
+            title: "Hello",
+            body: "first",
+            source_event_id: &key,
+        })
+        .await
+        .expect("the cast accepts an uppercase uuid, so the row lands");
+    assert!(matches!(sent, Sent::Appended));
+
+    let recorded = sink.sent.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1, "one appended row is one nudge");
+    assert_eq!(
+        recorded[0].0,
+        push::Target::Player(canonical.clone()),
+        "the nudge must name the id the row holds, not the one the operator typed"
+    );
+    assert_eq!(recorded[0].1, notificationsapi::PUSH_NEW_TOPIC);
+    assert_eq!(
+        recorded[0].2,
+        crate::service::PUSH_NEW_PAYLOAD.to_vec(),
+        "an id-free payload: the row is not committed yet, so it cannot be named"
+    );
+
+    // A dedup no-op announces nothing — mail that already arrived must not be announced
+    // twice by an operator re-drive.
+    let again = svc
+        .send_operator_mail(&NewNotification {
+            player_id: &shouted,
+            kind: "operator.mail",
+            title: "Hello",
+            body: "first",
+            source_event_id: &key,
+        })
+        .await
+        .expect("a re-drive is a no-op, not an error");
+    assert!(matches!(again, Sent::Duplicate));
+    assert_eq!(
+        sink.sent.lock().unwrap().len(),
+        1,
+        "the nudge lives inside the insert authority, so only an APPEND announces"
+    );
+
+    cleanup(&pool, &[canonical.as_str()]).await;
+}

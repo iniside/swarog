@@ -1410,3 +1410,7 @@ async fn write(socket: &mut WebSocket, msg: WsMessage, deadline: Duration) -> Re
         Ok(Err(_)) | Err(_) => Err(()),
     }
 }
+
+#[cfg(test)]
+#[path = "push_ws_tests.rs"]
+mod tests;
