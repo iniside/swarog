@@ -215,7 +215,15 @@ impl Directory for FakeDirectory {
             return Err(Error::internal("fake directory down"));
         }
         let players = self.players.lock().unwrap();
-        Ok(ids.iter().filter_map(|id| players.get(id).cloned()).collect())
+        // Case-INSENSITIVE, matching the real directory's Postgres `::uuid` cast (both
+        // spellings parse to the same 16 bytes) — a byte-exact `HashMap::get` here would
+        // make the fake reject an uppercase id the real accounts service accepts.
+        Ok(ids
+            .iter()
+            .filter_map(|id| {
+                players.iter().find(|(k, _)| k.eq_ignore_ascii_case(id)).map(|(_, v)| v.clone())
+            })
+            .collect())
     }
 
     async fn find_by_handle(&self, handle: String) -> Result<Option<PlayerSummary>, Error> {
@@ -1148,6 +1156,7 @@ async fn admin_data_with_a_foreign_pages_params_is_the_overview_not_an_error() {
     assert_eq!(data.id, admin::ADMIN_ITEM_ID);
     assert_eq!(data.section, admin::ADMIN_SECTION);
     assert_eq!(data.label, admin::ADMIN_LABEL);
+    assert!(data.content.header.is_none(), "the overview branch ran, not the per-player one");
 }
 
 #[tokio::test]
@@ -1227,6 +1236,58 @@ async fn admin_data_treats_an_uppercase_canonical_uuid_as_valid_not_malformed() 
         "an uppercase-but-canonical uuid must reach the STORE call, not the validation guard: got {}",
         error.value
     );
+}
+
+/// The dead-pool test above proves only "reached the store" — the interesting question
+/// once uppercase is established as VALID is whether it actually RESOLVES. Against a
+/// LIVE pool: a text-comparison scoping bug (`store.rs`'s `$2::uuid IN (low_id, high_id)`
+/// degrading to a plain string compare) or a dropped `.to_ascii_lowercase()` in
+/// `Names::resolve`/`label` would each let this drill-down render an empty or
+/// uuid-only page instead of the SAME relation/handle the lowercase spelling gets —
+/// which would stay green under an assertion that only checks "no error card".
+#[tokio::test]
+async fn admin_player_view_resolves_the_same_player_via_an_uppercase_spelling() {
+    let Some(pool) = test_pool().await else { return };
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+
+    let (a, b) = (low_uuid(), high_uuid());
+    dir.insert(&a, "Alpha#0001");
+    dir.insert(&b, "Beta#0002");
+
+    let ids = vec![a.clone(), b.clone()];
+    let (p, aa, bb) = (pool.clone(), a.clone(), b.clone());
+    with_cleanup(&pool, ids, async move {
+        insert_edge_raw(&p, &aa, &bb, &aa, STATE_ACCEPTED).await;
+
+        let mut lower_params = adminapi::Params::new();
+        lower_params.insert("player".into(), aa.clone());
+        let lower = svc.admin_data(lower_params).await.unwrap();
+
+        let mut upper_params = adminapi::Params::new();
+        upper_params.insert("player".into(), aa.to_uppercase());
+        let upper = svc.admin_data(upper_params).await.unwrap();
+
+        assert!(
+            error_kpi(&upper).is_none(),
+            "an uppercase-but-canonical uuid must resolve, not error, against a live pool"
+        );
+        let upper_table = upper.content.table.expect("a row must render for the uppercase spelling");
+        assert_eq!(
+            upper_table.rows.len(),
+            1,
+            "the uppercase spelling must find the SAME single relation the lowercase one does"
+        );
+
+        let lower_header = lower.content.header.expect("lowercase drill-down renders a header");
+        let upper_header = upper.content.header.expect("uppercase drill-down renders a header");
+        assert_eq!(
+            upper_header.title, lower_header.title,
+            "the uppercase drill-down must resolve to the SAME handle as the lowercase spelling"
+        );
+        assert_eq!(upper_header.title, "Alpha#0001");
+    })
+    .await;
 }
 
 // ---- item 4: a store failure is an error card, never `Err` ----
@@ -1333,7 +1394,9 @@ async fn admin_player_view_directory_unset_degrades_without_panicking() {
 }
 
 // ---- item 7: a directory MISS (id absent from the reply) keeps the row and does NOT
-// set the degraded KPI — a miss is not an outage ----
+// set the degraded KPI — a miss is not an outage. The SUCCESS arm is asserted on the
+// SAME page (the drilled-into player IS in the directory), so "one id missed" and "the
+// directory was never consulted" render differently. ----
 
 #[tokio::test]
 async fn admin_player_view_directory_miss_shows_short_uuid_without_flagging_an_outage() {
@@ -1360,7 +1423,22 @@ async fn admin_player_view_directory_miss_shows_short_uuid_without_flagging_an_o
         );
         let table = data.content.table.expect("the row must not be dropped");
         assert_eq!(table.rows.len(), 1);
-        assert_eq!(table.rows[0][1].text, short_uuid(&bb));
+        assert_eq!(
+            table.rows[0][1].text,
+            short_uuid(&bb),
+            "the MISSED id must degrade to a short uuid"
+        );
+        // The HIT is asserted on the SAME page as the miss, or "miss" and "the
+        // directory was never consulted at all" would be indistinguishable: if
+        // `Names::resolve`'s `Ok` arm stopped populating `by_id` (or dropped its
+        // `.to_ascii_lowercase()`), every name on this page would degrade to a uuid
+        // and every other test in this file — all of which only assert the
+        // DEGRADED spelling — would stay green.
+        let header = data.content.header.expect("the drill-down still renders a header");
+        assert_eq!(
+            header.title, "Alpha#0001",
+            "the drilled-into player IS in the directory — its real handle must render,              not its short uuid"
+        );
     })
     .await;
 }
@@ -1427,6 +1505,7 @@ async fn players_row_menu_entry_round_trips_into_the_player_param_build_content_
     let dir: Arc<dyn Directory> = Arc::new(FakeDirectory::new());
     ctx.registry().provide::<dyn Directory>(key("accounts", "directory"), dir);
     module.init(&ctx).unwrap();
+    let svc = module.svc.get().unwrap().clone();
 
     // The producer: the LOCAL Item's extensions must be the SAME vec `admin_data`
     // (REMOTE) ships — this is what `6fa8224` added a producer for.
@@ -1439,6 +1518,17 @@ async fn players_row_menu_entry_round_trips_into_the_player_param_build_content_
         item.extensions,
         admin::extension_entries(),
         "the LOCAL Item must carry the SAME entries admin_data ships REMOTE — they cannot drift"
+    );
+
+    // The REMOTE half of the SAME claim: `ItemData::extensions` (the wire form a split
+    // peer actually reads) must equal what the LOCAL Item carries — a forgotten
+    // `.with_extensions(...)` in `lib.rs`'s `init` would leave `item.extensions` empty
+    // while `admin_data` still shipped the entry (or vice versa), and comparing only
+    // one side against `admin::extension_entries()` twice would never catch that.
+    let remote = svc.admin_data(adminapi::Params::new()).await.unwrap();
+    assert_eq!(
+        remote.extensions, item.extensions,
+        "LOCAL Item.extensions and REMOTE ItemData.extensions must be the exact same vec"
     );
 
     let entry = &item.extensions[0];
@@ -1458,7 +1548,6 @@ async fn players_row_menu_entry_round_trips_into_the_player_param_build_content_
     // The consumer: build_content must strip that EXACT spelling and treat the
     // remainder as the player id, landing in player_view — not the malformed-param
     // error card.
-    let svc = module.svc.get().unwrap().clone();
     let mut params = adminapi::Params::new();
     params.insert("player".into(), player_param.to_string());
     let content = admin::build_content(&svc, &params).await;
