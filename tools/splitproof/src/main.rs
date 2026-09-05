@@ -951,14 +951,38 @@ fn seed_admin(ctx: &Ctx, user: &str, pass: &str) -> Result<()> {
     Ok(())
 }
 
+/// A run-start baseline `DELETE` whose success is a PRECONDITION of a later assertion, so
+/// only `42P01` is tolerated — the schema a first-ever run has not migrated yet. Every other
+/// failure aborts the run rather than leaving a prior run's row to satisfy an assertion that
+/// reads an absolute value.
+async fn clear_baseline(pool: &PgPool, sql: &str, what: &str) -> Result<()> {
+    match sqlx::query(sql).execute(pool).await {
+        Ok(_) => Ok(()),
+        Err(e) if is_undefined_table(&e) => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("clear {what}")),
+    }
+}
+
+fn is_undefined_table(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Database(db) if db.code().as_deref() == Some("42P01"))
+}
+
 async fn reset_config_baseline(pool: &PgPool) -> Result<()> {
     // Inventory's starter must default to starter_sword so a later live change proves a
     // reload; proof.* rows from a prior run must not leak into assertions.
     // Two statements → two query() calls (sqlx's extended protocol runs only one each).
-    sqlx::query("DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item'")
-        .execute(pool).await.ok(); // config schema may not exist yet on a fresh DB — best-effort.
-    sqlx::query("DELETE FROM config.settings WHERE namespace='proof'").execute(pool).await.ok();
-    Ok(())
+    clear_baseline(
+        pool,
+        "DELETE FROM config.settings WHERE namespace='inventory' AND key='starter_item'",
+        "the inventory starter_item override",
+    )
+    .await?;
+    clear_baseline(
+        pool,
+        "DELETE FROM config.settings WHERE namespace='proof'",
+        "the proof.* config rows",
+    )
+    .await
 }
 
 /// Every prefix this harness may name a `/match/report` contestant with. ONE authority for
@@ -966,7 +990,8 @@ async fn reset_config_baseline(pool: &PgPool) -> Result<()> {
 /// `reset_scoreboard_baseline` sweeps exactly it — so the delete predicate cannot drift
 /// behind a new scenario's names the way it already had ([K4]'s `k4-w`, unswept since the
 /// day it was written).
-const HARNESS_PLAYER_PREFIXES: [&str; 5] = ["champ-", "chump-", "replicas-", "k3-", "k4-"];
+const HARNESS_PLAYER_PREFIXES: [&str; 6] =
+    ["champ-", "chump-", "replicas-", "k3-", "k4-", "ad6-"];
 
 /// A contestant name for a `/match/report`. Panics on anything the reset cannot sweep:
 /// `leaderboard.scores`/`rating.ratings` retain a row forever, so an unsweepable name is a
@@ -995,10 +1020,8 @@ fn assert_harness_player(name: &str) {
 /// START, not end of scenario: every scenario returns `?`, so a trailing delete skips
 /// exactly the failing run whose rows then break the next one.
 ///
-/// Only `42P01` is tolerated (the schema a first-ever run has not migrated yet). Every other
-/// failure ABORTS: this reset is the precondition [MT5] and [REPLICAS-3] read absolute
-/// values against, and a swallowed delete would let a prior run's 1030/970 satisfy [MT5]
-/// before this run has delivered anything.
+/// A swallowed delete here would let a prior run's 1030/970 satisfy [MT5] before this run has
+/// delivered anything, so it goes through `clear_baseline` rather than `.ok()`.
 async fn reset_scoreboard_baseline(pool: &PgPool) -> Result<()> {
     let predicate = HARNESS_PLAYER_PREFIXES
         .iter()
@@ -1006,22 +1029,10 @@ async fn reset_scoreboard_baseline(pool: &PgPool) -> Result<()> {
         .collect::<Vec<_>>()
         .join(" OR ");
     for table in ["leaderboard.scores", "rating.ratings"] {
-        match sqlx::query(&format!("DELETE FROM {table} WHERE {predicate}"))
-            .execute(pool)
-            .await
-        {
-            Ok(_) => {}
-            Err(e) if is_undefined_table(&e) => {}
-            Err(e) => {
-                return Err(e).with_context(|| format!("clear the harness-owned {table} rows"))
-            }
-        }
+        let sql = format!("DELETE FROM {table} WHERE {predicate}");
+        clear_baseline(pool, &sql, &format!("the harness-owned {table} rows")).await?;
     }
     Ok(())
-}
-
-fn is_undefined_table(error: &sqlx::Error) -> bool {
-    matches!(error, sqlx::Error::Database(db) if db.code().as_deref() == Some("42P01"))
 }
 
 /// The two `wallet` starter-grant knobs [WL7] depends on. Data, not env: the feature is
@@ -3094,7 +3105,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
             .http
             .post(format!("{g}/match/report"))
             .header("X-Api-Key", secret.as_str())
-            .json(&serde_json::json!({"ReportId": format!("ad6-{suffix}"), "Winner": "w", "Loser": "l"}))
+            .json(&serde_json::json!({"ReportId": format!("ad6-{suffix}"), "Winner": harness_player("ad6-w"), "Loser": harness_player("ad6-l")}))
             .send()
             .await?
             .status()
