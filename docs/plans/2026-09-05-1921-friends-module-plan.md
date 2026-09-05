@@ -81,8 +81,16 @@ deliver.
    only because the contracts are v1.*
 2. **`(id, topic, version, start)` is immutable** — `spec_hash` mismatch fails startup
    (`core/asyncevents/src/catalog.rs:92-107`). Start positions below are decided once.
-3. **A payload field cannot be added later** without a v2 contract. Everything a
-   consumer needs must be in the v1 payload — see Step 3's denormalization.
+3. **CORRECTED (errata 9) — a payload field CAN be added later**, as
+   `#[serde(default)]` or `Option`, and reads as the default on every retained
+   pre-change event. `spec_hash` covers `(id, topic, version, start)` only
+   (`core/asyncevents/src/catalog.rs:78-107`) — **not** the payload shape — and decode is
+   a plain `serde_json::from_slice` (`core/bus/src/lib.rs:485-487`). Only a field that
+   cannot satisfy that (a required field with no default, a changed type) forces a v2
+   contract with new subscription ids. Revision 2 stated the opposite; the denormalized
+   handles in Step 3 remain right, but for the real reasons: `cmd/notifications-svc`
+   holds no accounts stub, and a cross-process RPC inside the open delivery transaction
+   would pause every inbox on an accounts blip.
 4. **No `bool` on any `#[http]`-reachable DTO.** `UNMODELLED_SCALARS` in
    `tools/csharp-client-gen/src/scrape.rs:399-402` makes `bool` a hard error, and
    `codegen-freshness` is blocking. Scalars are `i64` and `String`.
@@ -597,6 +605,68 @@ no coverage in any step.
 
 **5 — `MAX_HANDLE_BYTES` is written as `MAX_DISPLAY_NAME_BYTES + 5`**, not the literal
 133, so the arithmetic cannot drift from the cap it derives from.
+
+**7 — Step 3 was under-specified in five ways** (found by its implementer, 2026-09-05).
+All five bind Step 4, so they are recorded rather than left in a subagent transcript:
+
+- **`Page` was used and never defined.** Adopted `notificationsapi::Page`'s shape:
+  `items` + an opaque `next_cursor`, empty = last page.
+- **The page-limit consts had no stated rule**, which makes them meaningless as
+  written. Adopted `notifications`' semantics and documented them on the contract:
+  `limit == 0` ⇒ `DEFAULT_PAGE_LIMIT`; above `MAX_PAGE_LIMIT` ⇒ **clamped, not
+  rejected**; negative ⇒ 400; a cursor over `MAX_CURSOR_BYTES` ⇒ 400 before decode.
+  **Step 4 must implement exactly this, or the shipped doc comment becomes a lie.**
+- **`pending` could not distinguish incoming from outgoing requests**, so a client
+  could not tell which rows carry an Accept button — and accepting an outgoing request
+  is a 404 by Step 4's own predicate. A `direction: String` (`"incoming"`/`"outgoing"`;
+  `bool` is banned by constraint 4) is added in the Step 3 follow-up. Additive on the
+  HTTP surface, so not frozen, but doing it now avoids a second regeneration pass.
+- **Two error statuses were unpinned.** `request` with an unresolvable handle ⇒
+  `NotFound` (already implied by "the oracle we accept"). `request` with the caller's
+  own handle ⇒ `Invalid` (400). Step 4 must not pick differently.
+- **`target_handle` deliberately has NO cap const in `friendsapi`.**
+  `accountsapi::MAX_HANDLE_BYTES` is the existing authority and a second const would be
+  a second decider for one value. Step 4's `request` rejects over that cap **before**
+  calling `find_by_handle`, and Step 11's row for `friends.request/targetHandle` cites
+  the `accountsapi` const — friends owns three of the four, not four.
+
+**9 — Constraint 3 was factually wrong.** Corrected in place above: an event payload
+field IS addable as `#[serde(default)]`/`Option`. I asserted the opposite in revision 2
+and repeated it in the Step 3 dispatch, and it reached the shipped contract — the
+`friendsevents` crate doc states my wrong rule while each struct below states the right
+one. The Step 3 follow-up fixes the crate doc.
+
+**10 — Two BLOCKING gates go red at Step 3 and clear only at Step 7**, not Step 10.
+`archcheck` rule 17 (`tools/archcheck/src/main.rs:599-634`) requires a
+`Stub::describe_peer("friends", …)` in `cmd/gateway-svc/src/lib.rs` the moment any
+`api/friends/api/src/**` file carries a non-comment `#[http(`; the same rule is
+independently enforced by `tools/checkmodules/src/tests.rs:125-165` under the blocking
+`test` stage. Steps 4, 5 and 6 would each land on a red `fortress` **and** a red `test`.
+**My first resolution was wrong and was refused, correctly.** I told the Step 3
+implementer to pull just the gateway stub forward. `remote::Stub::init` unconditionally
+contributes a fail-closed `httpmw::ReadyCheck` named `stub:friends`
+(`core/remote/src/lib.rs:1672-1721`), and its own doc states that an unreachable peer
+flipping the process unready **is the intended semantics**. Nothing listens on `:9014`
+until Step 7, so gateway-svc's `/readyz` would be a permanent 503 — and
+`tools/splitproof/src/main.rs:89-100` polls `/readyz` *until success*, so the blocking
+split-proof stage would hang rather than fail, and `devctl up split` would break for
+three steps. That trades two loud static FAILs, each printing its own remedy, for a
+hung gate. The repo already decided this the other way: `processctl` injects
+`MAIL_PROVIDER`/`MAIL_FROM` (`fleet.rs:891,977`) precisely so no service is
+"`/readyz` red by design".
+
+**Actual resolution: Step 7 executes immediately after Step 4**, before Steps 5 and 6.
+The stub, `cmd/friends-svc`, the `processctl` fleet entry and `weles/fleet.split.toml`
+are one atomic change — the stub and the process it dials cannot be separated. This
+closes both blocking gates one step after they can possibly be closed, keeps the split
+bootable throughout, and still respects the tests-after-implementation rule (Step 5
+follows Step 4's landed code either way). Step numbering is unchanged; only the
+execution order moves. Also corrected: `conformance` clears at Step 11, not Step 10.
+
+**8 — Step 10 misses a THIRD `csharp-client-gen` test.** Beyond the two
+`*_matches_golden` goldens named in errata 3, `PROVIDERS` (`scrape.rs:36`) is a
+hand-list guarded by a completeness gate that fires on a new `api/` provider module
+discovered on disk. Step 10 must add `friends` to it.
 
 ## What revision 2 changed
 
