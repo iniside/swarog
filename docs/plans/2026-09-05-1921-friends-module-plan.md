@@ -663,6 +663,31 @@ bootable throughout, and still respects the tests-after-implementation rule (Ste
 follows Step 4's landed code either way). Step numbering is unchanged; only the
 execution order moves. Also corrected: `conformance` clears at Step 11, not Step 10.
 
+**11 — Step 4 was wrong or short in five places** (found by its implementer, 2026-09-05):
+
+- **The plan's `request` SQL contradicted the plan's own design paragraph.** It passed
+  pre-computed `low`/`high` bindings — canonicalization in Rust — two lines under
+  "gives symmetry and pair-uniqueness in the database rather than in application code".
+  `least($1,$2)`/`greatest($1,$2)` now live in every statement, and the id is minted by
+  `gen_random_uuid()` in the INSERT.
+- **Step 4 never said how `accept`/`decline`/`remove` obtain the handles their events
+  require.** `friendsevents` mandates both parties' handles in every payload, but the
+  only hydration sentence covered the *page*. That forces real structure: a pre-read of
+  the edge, a batched `players_by_id` for both parties, and only then the transaction —
+  discovered otherwise at the point of least freedom, inside the tx, where an RPC is
+  exactly what the plan forbids.
+- **The cap ordering contradicted the shipped contract doc.** "counted in the same
+  transaction" read literally is count-then-insert, which 409s a caller at exactly the
+  cap who merely *repeats* an existing request — while `Player::request`'s doc says a
+  repeat is never a Conflict. The count runs after the insert so only a genuinely new
+  relation can be refused. **The contract wins over the plan.**
+- **No reason value covered "the addressee `remove`s a still-pending edge"**, although
+  `remove` explicitly admits either party in either state. Emitting `REASON_DECLINED`
+  satisfies that const's wording; plan and contract both stopped one case short of the
+  surface they define.
+- **The third `request` branch has a fourth outcome** — the row removed between the
+  conflicting insert and the re-read. Answered `Conflict`.
+
 **8 — Step 10 misses a THIRD `csharp-client-gen` test.** Beyond the two
 `*_matches_golden` goldens named in errata 3, `PROVIDERS` (`scrape.rs:36`) is a
 hand-list guarded by a completeness gate that fires on a new `api/` provider module
