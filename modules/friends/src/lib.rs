@@ -1,15 +1,15 @@
 //! `friends` — the social graph. One row per player PAIR, canonically ordered
-//! (`low_id < high_id`), so symmetry and pair-uniqueness are database facts rather than
-//! application conventions: either player addresses the SAME row, and the unique index —
-//! not a read-then-write — is what makes a crossing pair of requests one relation.
+//! (`low_id < high_id`), so symmetry and pair-uniqueness are database facts: either player
+//! addresses the SAME row, and the unique index — not a read-then-write — is what makes a
+//! crossing pair of requests one relation.
 //!
-//! `requester_id` is a separate column because the pair is symmetric while the TRANSITIONS
-//! are not: only the party who did not author a pending request may accept or decline it.
-//! Which side of the pair that is depends on uuid ordering, so every consent predicate
-//! tests `requester_id`, never `high_id`.
+//! `requester_id` is separate because the pair is symmetric while the TRANSITIONS are not:
+//! only the party who did not author a pending request may answer it. Which side of the pair
+//! that is depends on uuid ordering, so every consent predicate tests `requester_id`, never
+//! `high_id`.
 //!
-//! The domain write and its durable event append commit in ONE transaction
-//! (`bus::emit_tx` on the store's own tx) — the event is durable iff the relation change is.
+//! The domain write and its durable event append commit in ONE transaction — the event is
+//! durable iff the relation change is.
 
 mod service;
 mod store;
@@ -25,15 +25,13 @@ use lifecycle::{Context, Module};
 use registry::key;
 
 /// `CHECK (low_id < high_id)` plus `friends_pair_idx` are the pair authority: the ordered
-/// pair is computed in SQL (`least`/`greatest`) by every statement, so a caller's spelling
-/// of an id can never decide which column it lands in, and one pair can never own two rows.
+/// pair is computed in SQL (`least`/`greatest`) by every statement, so a caller's spelling of
+/// an id can never decide which column it lands in.
 ///
-/// `low_id`/`high_id`/`requester_id` are plain `uuid` columns with no cross-module FK
-/// (constraint #10); every statement binds `$n::uuid`.
+/// The two side indexes serve the two branches of the paged UNION ALL; a single `low_id = $1
+/// OR high_id = $1` is a BitmapOr plus a sort that `LIMIT n+1` does not bound.
 ///
-/// The two side indexes exist to serve the two branches of the paged UNION ALL: a single
-/// `low_id = $1 OR high_id = $1` predicate is a BitmapOr plus a sort, which `LIMIT n+1`
-/// does not bound, so the keyset guarantee would not hold.
+/// Plain `uuid` columns, no cross-module FK (constraint #10).
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS friends;
 CREATE TABLE IF NOT EXISTS friends.edges (

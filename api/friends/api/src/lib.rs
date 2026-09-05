@@ -50,9 +50,10 @@ pub const DIRECTION_OUTGOING: &str = "outgoing";
 /// awaiting an answer. A [`Player::request`] that would exceed it is
 /// [`opsapi::Status::Conflict`] (409) — the same answer `characters::create` gives when
 /// its per-player cap is reached, and not a 400, because the request itself is
-/// well-formed and becomes acceptable again once the caller's queue drains. It bounds
-/// both the table's growth and the rate at which one caller can probe for which handles
-/// exist.
+/// well-formed and becomes acceptable again once the caller's queue drains. It bounds the
+/// table's growth, and NOTHING else: the target handle is resolved before the cap is
+/// consulted, so a caller holding the maximum still reads 404-versus-201 for a handle it
+/// guesses. The existence oracle is bounded by the gateway's rate limit alone.
 pub const MAX_PENDING_OUTSTANDING: i64 = 100;
 
 /// One entry of the caller's social graph: the OTHER player, plus the relation itself.
@@ -124,7 +125,9 @@ pub trait Player: Send + Sync {
     /// An unresolvable handle is [`opsapi::Status::NotFound`] (404), the caller's own
     /// handle is [`opsapi::Status::Invalid`] (400), and a caller already holding
     /// [`MAX_PENDING_OUTSTANDING`] unanswered requests is [`opsapi::Status::Conflict`]
-    /// (409).
+    /// (409). The `accounts` directory being unreachable is
+    /// [`opsapi::Status::Unavailable`] (503) and NOTHING is written: the handle is what
+    /// this op resolves, and the events it emits carry both parties' handles.
     #[http(verb = "POST", path = "/friends/requests", auth = "player", success = 201)]
     async fn request(&self, identity: Identity, target_handle: String) -> Result<Friend, Error>;
 
@@ -136,12 +139,18 @@ pub trait Player: Send + Sync {
     /// once it is declined or removed it is gone. Only a pending edge answers 204, which
     /// is why this is not `#[retry_safe]` — a replay after an ambiguous failure cannot be
     /// told apart from an accept of an edge the caller never had.
+    ///
+    /// Like [`Player::list`], the `accounts` directory being unreachable is
+    /// [`opsapi::Status::Unavailable`] (503) and the edge is NOT accepted: the
+    /// `friend.accepted` event carries both parties' handles, so it cannot be emitted —
+    /// and the relation must not change — while they are unresolvable.
     #[http(verb = "POST", path = "/friends/requests/{id}/accept", auth = "player",
            success = 204, path_args(edge_id = "id"))]
     async fn accept(&self, identity: Identity, edge_id: String) -> Result<(), Error>;
 
     /// Refuses the pending request named by `edge_id`, dropping the relation. Same party
-    /// rule, same replay behaviour and same 404 as [`Player::accept`].
+    /// rule, same replay behaviour, same 404 and same directory-outage 503 as
+    /// [`Player::accept`].
     #[http(verb = "POST", path = "/friends/requests/{id}/decline", auth = "player",
            success = 204, path_args(edge_id = "id"))]
     async fn decline(&self, identity: Identity, edge_id: String) -> Result<(), Error>;
@@ -149,7 +158,8 @@ pub trait Player: Send + Sync {
     /// Drops the relation named by `edge_id`. EITHER party may remove, in either state,
     /// so this also withdraws a request the caller itself authored. NOT `#[retry_safe]`:
     /// a replay after a successful removal is a [`opsapi::Status::NotFound`] (404),
-    /// exactly like `notificationsapi::Player::delete`.
+    /// exactly like `notificationsapi::Player::delete`. Same directory-outage 503 as
+    /// [`Player::accept`], and for the same reason.
     #[http(verb = "DELETE", path = "/friends/{id}", auth = "player",
            success = 204, path_args(edge_id = "id"))]
     async fn remove(&self, identity: Identity, edge_id: String) -> Result<(), Error>;

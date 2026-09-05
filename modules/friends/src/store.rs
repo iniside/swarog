@@ -1,10 +1,8 @@
 use sqlx::{PgConnection, PgPool};
 
-/// "Invalid text representation": the pair columns are `uuid` while the contract carries
-/// `String`, so a malformed id arrives as this SQLSTATE from the `$n::uuid` cast rather
-/// than as a match failure. The edge-addressed statements fold it into "no such row" (a
-/// client-supplied id that cannot name one); the pair-addressed write path propagates it
-/// and its caller answers `Status::Invalid`.
+/// "Invalid text representation": a malformed id arrives as this SQLSTATE from the
+/// `$n::uuid` cast, not as a match failure. Edge-addressed statements fold it into "no such
+/// row"; the pair-addressed write path propagates it and its caller answers 400.
 pub(crate) fn is_invalid_uuid(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
 }
@@ -15,10 +13,8 @@ pub(crate) fn is_invalid_uuid(e: &sqlx::Error) -> bool {
 const CREATED_TEXT: &str =
     r#"to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')"#;
 
-/// One relation as the CALLER sees it: `other_id` is the party that is not the caller and
-/// `requester_is_caller` is what the contract's `direction` is computed from. Both are
-/// decided in SQL against `$1::uuid`, so neither depends on how the caller spelled its own
-/// id, and `player_id` never has to be compared in Rust.
+/// One relation as the CALLER sees it. `other_id` and `requester_is_caller` are decided in
+/// SQL against `$1::uuid`, so neither depends on how the caller spelled its own id.
 pub(crate) struct EdgeRow {
     pub(crate) edge_id: String,
     pub(crate) other_id: String,
@@ -27,24 +23,19 @@ pub(crate) struct EdgeRow {
     pub(crate) requester_is_caller: bool,
 }
 
-/// The pair-addressed shape of [`EdgeRow`]: the caller already knows the other player, so
-/// the row only has to say which relation exists and who authored it.
 pub(crate) struct PairRow {
     pub(crate) edge_id: String,
     pub(crate) state: String,
     pub(crate) requester_is_caller: bool,
 }
 
-/// Per-REQUESTER transaction-scoped advisory-lock key for `request`'s outstanding cap: two
-/// concurrent requests by one player must serialize their insert-then-count, or both count
-/// below the cap (neither committed yet, READ COMMITTED) and both land past it. FNV-1a over
-/// a DISTINCT namespace prefix so the key can never collide with characters' or scheduler's
-/// keys — a collision would only over-serialize, never break correctness.
+/// Per-REQUESTER lock key for `request`'s outstanding cap: without it two concurrent
+/// requests by one player both count below the cap (neither committed yet, READ COMMITTED)
+/// and both land past it. The namespace prefix keeps it from colliding with characters' or
+/// scheduler's keys — a collision would only over-serialize.
 ///
-/// The id is normalized to Postgres's uuid-EQUALITY form before hashing (the same
-/// discipline as `characters::player_lock_key`, deliberately duplicated across the two
-/// fortresses — friends cannot import that impl crate): the row SQL is `$1::uuid`, so a
-/// differently-spelled but DB-equal id must yield the SAME lock.
+/// The id is normalized to Postgres's uuid-EQUALITY form before hashing, because the row SQL
+/// is `$1::uuid`: a differently-spelled but DB-equal id must yield the SAME lock.
 fn requester_lock_key(player_id: &str) -> i64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -69,8 +60,7 @@ pub(crate) struct Store {
 }
 
 impl Store {
-    /// Serializes one requester's concurrent `request` calls for the life of the
-    /// transaction. Taken ON THE TX CONNECTION — a separate pool connection would lose the
+    /// Taken ON THE TX CONNECTION — a separate pool connection would lose the
     /// serialization — and released at commit/rollback.
     pub(crate) async fn lock_requester_tx(
         &self,
@@ -84,14 +74,12 @@ impl Store {
         Ok(())
     }
 
-    /// Branch 1 of `request`: the pair has no row yet. `least`/`greatest` is the ordered
-    /// pair's ONE authority, so the caller's side of it never depends on which argument it
-    /// passed, and `ON CONFLICT DO NOTHING` answers "a row already exists" as zero rows
-    /// instead of an exception — a duplicate key here has three distinct causes and only a
+    /// `least`/`greatest` is the ordered pair's ONE authority: the caller's side of the pair
+    /// never depends on which argument it passed. `DO NOTHING` answers a duplicate key as
+    /// zero rows rather than an exception — the key has three distinct causes and only a
     /// second statement can tell them apart.
     ///
-    /// Returns the row's id and the requester's id as the DATABASE spells them — an event
-    /// must never carry the caller's spelling of an id.
+    /// Returns both ids as the DATABASE spells them; an event must never carry the caller's.
     pub(crate) async fn insert_pending_tx(
         &self,
         conn: &mut PgConnection,
@@ -113,7 +101,6 @@ impl Store {
         .await
     }
 
-    /// The caller's OUTSTANDING requests: rows they authored that are still unanswered.
     pub(crate) async fn count_authored_pending_tx(
         &self,
         conn: &mut PgConnection,
@@ -130,12 +117,9 @@ impl Store {
         .await
     }
 
-    /// Branch 2 of `request`: the OTHER player already asked, so this request answers it.
-    /// `requester_id <> $1::uuid` is what keeps it from turning a caller's own duplicate
-    /// request into an acceptance of itself — the consent bypass a blind
-    /// conflict-means-accept would open with a double POST.
-    ///
-    /// Returns the row's id and the CALLER's id as the database spells it.
+    /// The OTHER player already asked, so this request answers it. `requester_id <>
+    /// $1::uuid` is what stops a caller's own duplicate request from accepting itself — the
+    /// consent bypass a blind conflict-means-accept opens with a double POST.
     pub(crate) async fn accept_crossing_tx(
         &self,
         conn: &mut PgConnection,
@@ -160,8 +144,6 @@ impl Store {
         .await
     }
 
-    /// Branch 3 of `request`: the relation the two preceding statements declined to touch —
-    /// the caller's own pending request, or one already accepted.
     pub(crate) async fn find_pair_tx(
         &self,
         conn: &mut PgConnection,
@@ -184,15 +166,13 @@ impl Store {
         }))
     }
 
-    /// The relation `edge_id` names, as the caller sees it — for HYDRATION only: it names
-    /// the other party so their handle can be resolved BEFORE a transaction opens, since a
-    /// directory RPC issued while holding one would pin a connection and the row's locks
-    /// across the network. Every consent decision is re-made by the mutating statement
-    /// itself, which is why this read may be stale without being wrong.
+    /// For HYDRATION only: it names the other party so their handle can be resolved BEFORE a
+    /// transaction opens — a directory RPC issued while holding one would pin a connection
+    /// and the row's locks across the network. Every consent decision is re-made by the
+    /// mutating statement, which is why this read may be stale without being wrong.
     ///
-    /// A row the caller is not party to, and an id that is not a uuid at all, are both
-    /// `None` — the contract's one answer for "no such edge" and "not yours" (a 403 would
-    /// confirm the id names a real relation).
+    /// "Not yours", "no such edge" and "not a uuid" are all `None`: a 403 would confirm the
+    /// id names a real relation.
     pub(crate) async fn view_edge(
         &self,
         edge_id: &str,
@@ -216,11 +196,9 @@ impl Store {
         }
     }
 
-    /// Accepts the pending request `edge_id` names. The predicate is the whole consent
-    /// rule: only while pending, only by a party of the pair, and only by the party that
-    /// did NOT author it — `requester_id`, never `high_id`, because which column holds the
-    /// addressee depends on uuid ordering. Returns the row's OWN id and the other party's,
-    /// both DB-canonical — an event must never carry the caller's spelling of an id.
+    /// The predicate is the whole consent rule: only while pending, only by a party of the
+    /// pair, and only by the one that did NOT author it — `requester_id`, never `high_id`,
+    /// because which column holds the addressee depends on uuid ordering.
     pub(crate) async fn accept_tx(
         &self,
         conn: &mut PgConnection,
@@ -249,8 +227,8 @@ impl Store {
         }
     }
 
-    /// Declines the pending request `edge_id` names — the same consent predicate as
-    /// [`Store::accept_tx`], so a replay after either answer is the same "no such edge".
+    /// The same consent predicate as [`Store::accept_tx`], so a replay after either answer
+    /// is the same "no such edge".
     pub(crate) async fn decline_tx(
         &self,
         conn: &mut PgConnection,
@@ -277,11 +255,9 @@ impl Store {
         }
     }
 
-    /// Drops the relation `edge_id` names: EITHER party, in EITHER state, so no
-    /// `requester_id` clause. The returned `state`/`requester_is_caller` are the DELETED
-    /// row's, not a prior read's — which ending the removal is (`withdrawn` / `declined` /
-    /// `unfriended`) is decided from them, so a state that changed underneath the caller
-    /// cannot mislabel the emitted event.
+    /// EITHER party, in EITHER state, so no `requester_id` clause. The returned
+    /// `state`/`requester_is_caller` are the DELETED row's, not a prior read's: a state that
+    /// changed underneath the caller must not mislabel the emitted event's reason.
     pub(crate) async fn delete_tx(
         &self,
         conn: &mut PgConnection,
@@ -306,27 +282,20 @@ impl Store {
         }
     }
 
-    /// One page of the caller's relations in `state`, newest first.
+    /// A UNION ALL of the two SIDE branches, not one `low_id = $1 OR high_id = $1`: the
+    /// `OR` is a BitmapOr plus a sort of every matching row, which the outer `LIMIT` does
+    /// not bound — the keyset would stop being a keyset as a player's graph grows. Each
+    /// branch has its own index and its own `LIMIT`, so the merge sorts at most `2 * limit`.
     ///
-    /// A UNION ALL of the two SIDE branches, not one `low_id = $1 OR high_id = $1`
-    /// predicate: the `OR` is a BitmapOr plus a sort of every matching row, which the outer
-    /// `LIMIT` does not bound, so the keyset would stop being a keyset as a player's graph
-    /// grows. Each branch is served by its own index and is itself bounded, and the outer
-    /// merge sorts at most `2 * limit` rows.
+    /// The outer ORDER BY reads the RAW `created_at`/`id` (carried out as
+    /// `sort_at`/`sort_id`), never the rendered text: sorting a UNION's OUTPUT columns would
+    /// order uuids by text collation while the branches' keyset compares them as uuids.
     ///
-    /// The outer ORDER BY reads the RAW `created_at`/`id` (carried out of the subquery as
-    /// `sort_at`/`sort_id`), never the rendered text: sorting a UNION's output columns would
-    /// order uuids by their text collation while the branches' keyset predicate compares
-    /// them as uuids.
-    ///
-    /// `after` is the previous page's last `(created_at, id)`; the tuple comparison is what
-    /// keeps paging correct while rows are removed underneath the client, and it breaks the
-    /// tie on rows sharing a timestamp that a bare `created_at <` would skip or repeat. The
-    /// caller asks for `limit + 1` — the surplus row IS the "has more" answer, with no
-    /// second COUNT.
+    /// The keyset tuple breaks the tie on rows sharing a timestamp that a bare `created_at
+    /// <` would skip or repeat.
     ///
     /// A `player_id` that is not a uuid is an EMPTY page, not a 500: a non-uuid identity is
-    /// party to no relation, which is the answer the statement would give if it could run.
+    /// party to no relation.
     pub(crate) async fn page(
         &self,
         me: &str,
