@@ -16,11 +16,12 @@
 //! durable), and the transport hands the raw JSON and runs the ledger insert inside its
 //! per-`(event_id,"audit")` delivery tx (effect + checkpoint commit together) —
 //! exactly-once in BOTH topologies. The
-//! producers already emit all eight durably by their respective steps (characters today;
-//! config Step 5; accounts Step 6; match Step 10; wallet Step 3 of the wallet-module plan
-//! — `match.finished` and `wallet.changed` each have a real producer: the owning module
-//! emit_tx's it atomic with its own domain write, landing it in the shared event log, and
-//! audit's own pull subscription drains it from its checkpoint — no relay, no HTTP hop).
+//! producers each emit durably by their respective steps (characters today; config
+//! Step 5; accounts Step 6; match Step 10; wallet Step 3 of the wallet-module plan;
+//! friends Step 3 of the friends-module plan) — every topic in [`DURABLE_TOPICS`] has
+//! a real producer: the owning module `emit_tx`'s it atomic with its own domain write,
+//! landing it in the shared event log, and audit's own pull subscription drains it
+//! from its checkpoint — no relay, no HTTP hop.
 //!
 //! Retention is enforced by REACTING to `scheduler.fired{name:"audit-prune"}` on the
 //! durable plane (Step 9 seeds the schedule). audit subscribes to `scheduler.fired`
@@ -52,6 +53,9 @@ const DURABLE_TOPICS: &[&str] = &[
     "match.finished",
     "admin.action",
     "wallet.changed",
+    "friend.requested",
+    "friend.accepted",
+    "friend.removed",
 ];
 
 /// The per-topic subscription ids, zipped positionally with [`DURABLE_TOPICS`]:
@@ -67,6 +71,9 @@ const DURABLE_SPEC_IDS: &[&str] = &[
     "audit.match-finished.v1",
     "audit.admin-action.v1",
     "audit.wallet-changed.v1",
+    "audit.friend-requested.v1",
+    "audit.friend-accepted.v1",
+    "audit.friend-removed.v1",
 ];
 
 /// The `scheduler.fired` `name` audit prunes on. Shared vocabulary (a string, like a

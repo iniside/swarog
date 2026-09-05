@@ -8,6 +8,8 @@ use crate::service::{is_uuid_text, NewNotification, Service};
 
 pub(crate) const KIND_WALLET_CREDIT: &str = "wallet.credit";
 pub(crate) const KIND_ACCOUNT_PROMOTED: &str = "account.promoted";
+pub(crate) const KIND_FRIEND_REQUESTED: &str = "friend.requested";
+pub(crate) const KIND_FRIEND_ACCEPTED: &str = "friend.accepted";
 
 pub(crate) const WALLET_CHANGED_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
     id: "notifications.wallet-changed.v1",
@@ -18,6 +20,19 @@ pub(crate) const WALLET_CHANGED_SUB: bus::SubscriptionSpec = bus::SubscriptionSp
 
 pub(crate) const PLAYER_PROMOTED_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
     id: "notifications.player-promoted.v1",
+    start: bus::StartPosition::AfterRegistration,
+};
+
+/// `Genesis` would replay every retained friendship into every existing inbox on this
+/// module's first boot — the reason `WALLET_CHANGED_SUB` already gives.
+pub(crate) const FRIEND_REQUESTED_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
+    id: "notifications.friend-requested.v1",
+    start: bus::StartPosition::AfterRegistration,
+};
+
+/// As [`FRIEND_REQUESTED_SUB`].
+pub(crate) const FRIEND_ACCEPTED_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
+    id: "notifications.friend-accepted.v1",
     start: bus::StartPosition::AfterRegistration,
 };
 
@@ -150,6 +165,14 @@ pub(crate) fn promoted_body(e: &accountsevents::PlayerPromoted) -> String {
     )
 }
 
+pub(crate) fn friend_requested_body(e: &friendsevents::Requested) -> String {
+    format!("{} sent you a friend request.", e.requester_handle)
+}
+
+pub(crate) fn friend_accepted_body(e: &friendsevents::Accepted) -> String {
+    format!("{} accepted your friend request.", e.addressee_handle)
+}
+
 /// One inbox row per CREDIT. A debit moves the player's money away from them, which the
 /// wallet page already shows; only an incoming amount is news.
 pub(crate) fn on_wallet_changed<'a>(
@@ -194,6 +217,56 @@ pub(crate) fn on_player_promoted<'a>(
                 kind: KIND_ACCOUNT_PROMOTED,
                 title: "Welcome — your account is permanent",
                 body: &promoted_body(&e),
+                source_event_id: event_id,
+            },
+        )
+        .await
+    })
+}
+
+/// Recipient is the ADDRESSEE — the party who received the ask and can act on it.
+pub(crate) fn on_friend_requested<'a>(
+    svc: Arc<Service>,
+    mut delivery: Delivery<'a>,
+    e: friendsevents::Requested,
+) -> BoxFuture<'a, Result<(), BusError>> {
+    Box::pin(async move {
+        let event_id = delivery.event_id;
+        let conn = delivery.tx.downcast::<PgConnection>()?;
+        deliver_or_skip(
+            &svc,
+            conn,
+            &NewNotification {
+                player_id: &e.addressee_id,
+                kind: KIND_FRIEND_REQUESTED,
+                title: "New friend request",
+                body: &friend_requested_body(&e),
+                source_event_id: event_id,
+            },
+        )
+        .await
+    })
+}
+
+/// Recipient is the original REQUESTER — the party who waited for an answer. The
+/// auto-accept branch (`friends`' reverse-pending path) preserves these roles from the
+/// original request, so this addressing is correct there too.
+pub(crate) fn on_friend_accepted<'a>(
+    svc: Arc<Service>,
+    mut delivery: Delivery<'a>,
+    e: friendsevents::Accepted,
+) -> BoxFuture<'a, Result<(), BusError>> {
+    Box::pin(async move {
+        let event_id = delivery.event_id;
+        let conn = delivery.tx.downcast::<PgConnection>()?;
+        deliver_or_skip(
+            &svc,
+            conn,
+            &NewNotification {
+                player_id: &e.requester_id,
+                kind: KIND_FRIEND_ACCEPTED,
+                title: "Friend request accepted",
+                body: &friend_accepted_body(&e),
                 source_event_id: event_id,
             },
         )

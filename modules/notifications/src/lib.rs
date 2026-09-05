@@ -146,7 +146,7 @@ impl Module for NotificationsModule {
         let retention_days = projection::retention_days_from_env()?;
         let svc = self.svc();
 
-        // Three INDEPENDENT subscriptions, each with its own checkpoint (audit's shape): one
+        // Independent subscriptions, each with its own checkpoint (audit's shape): one
         // topic's poison event must never stall another's cursor.
         let credit_svc = svc.clone();
         ctx.bus().on_tx(
@@ -163,6 +163,24 @@ impl Module for NotificationsModule {
             &accountsevents::PLAYER_PROMOTED,
             move |delivery, e: accountsevents::PlayerPromoted| {
                 projection::on_player_promoted(promoted_svc.clone(), delivery, e)
+            },
+        );
+
+        let requested_svc = svc.clone();
+        ctx.bus().on_tx(
+            projection::FRIEND_REQUESTED_SUB,
+            &friendsevents::REQUESTED,
+            move |delivery, e: friendsevents::Requested| {
+                projection::on_friend_requested(requested_svc.clone(), delivery, e)
+            },
+        );
+
+        let accepted_svc = svc.clone();
+        ctx.bus().on_tx(
+            projection::FRIEND_ACCEPTED_SUB,
+            &friendsevents::ACCEPTED,
+            move |delivery, e: friendsevents::Accepted| {
+                projection::on_friend_accepted(accepted_svc.clone(), delivery, e)
             },
         );
 

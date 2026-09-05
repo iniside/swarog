@@ -36,6 +36,7 @@ sqlx = { workspace = true }
 # module; the impl crates are not).
 walletevents = { workspace = true }
 accountsevents = { workspace = true }
+friendsevents = { workspace = true }
 schedulerevents = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

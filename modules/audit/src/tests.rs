@@ -99,6 +99,9 @@ fn durable_topics_match_events() {
         matchevents::FINISHED.topic(),
         adminevents::ACTION.topic(),
         walletevents::CHANGED.topic(),
+        friendsevents::REQUESTED.topic(),
+        friendsevents::ACCEPTED.topic(),
+        friendsevents::REMOVED.topic(),
     ]
     .into_iter()
     .collect();
