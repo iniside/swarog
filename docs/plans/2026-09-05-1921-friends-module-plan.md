@@ -199,6 +199,18 @@ distinct handles and both are resolvable; `find_by_handle` miss returns `None`;
 a live session and **empty** for one whose `expires_at` is in the past (insert the
 expired row explicitly — never sleep against a real clock).
 
+**Extended after the Step 1 follow-up landed (errata 4):** the follow-up swapped
+`me_view` from a two-column select onto `SUMMARY_SELECT`'s `LEFT JOIN … GROUP BY`, and
+nothing in the tree reads `MeView.handle`. Add:
+
+- `GET /accounts/me` returns exactly the `"Name#1234"` that `find_by_handle` resolves
+  back to the same `player_id` — one assertion pinning both sides of the single
+  render/parse authority.
+- `player_summary` succeeds for a player with **no** session row at all. This is the
+  branch the swap newly introduced and the one `me`'s own callers can never reach,
+  since a caller of `me` always holds a live session. If the `LEFT JOIN` were ever an
+  inner join, only this test would catch it.
+
 ## Step 3 — `friends` contracts `[opus]`
 
 **(a) What.** `api/friends/api/` (`friendsapi`), `api/friends/events/` (`friendsevents`),
@@ -463,12 +475,29 @@ bless — `codegen-freshness` byte-diffs the committed tree), then `--bless-publ
 and `--bless-contract-golden`, **reading each diff** and restoring any baseline file
 this change did not cause.
 
+**Corrected after the Step 1 follow-up (errata 3):** the regeneration list above was
+incomplete, and no `--bless-*` flow covers the missing files.
+`tools/csharp-client-gen/testdata/manifest.golden.json` and
+`tools/csharp-client-gen/testdata/Dtos.golden.cs` are **hand-copied** from the
+regenerated output by the procedure documented in `tools/csharp-client-gen/src/tests.rs`,
+and `manifest_matches_golden` / `emitted_dtos_matches_golden` byte-compare them against
+a live scrape under the **blocking `test` stage**. `MeView.handle` already reddened both.
+Name them here, or the sequence ends with two red unit tests nothing closes — an
+unnamed file is never found. While in that file, also fix its stale header prose
+("the 16 methods, 9 DTOs" against a list of 20 and 11) — pre-existing, but this is the
+step that touches it.
+
 ## Step 11 — conformance `[sonnet]`
 
 `tools/conformance/src/policy.rs`: a `friends()` entry with an explicit stance for all
-four conventions, plus `input_policies()` rows for every new wire field — Step 1's
-`ids`/`handle`, Step 3's `target_handle`/`cursor`/`limit`/`edge_id`, each pointing at
-the named const. Non-applicability needs a concrete architectural reason, never
+four conventions, plus `input_policies()` rows for every new wire field.
+
+**Corrected after Step 1 landed (errata 1):** the input inventory scans **wire-only**
+traits too, so `accounts.playersById/ids` and `accounts.findByHandle/handle` each need
+their own `input_policies()` row and `input-fields.golden.tsv` line. Revision 2 scoped
+this step to `friends()` alone, which would have left the blocking conformance stage
+permanently red. The rows are: Step 1's `accounts` pair, and Step 3's
+`target_handle`/`cursor`/`limit`/`edge_id`, each pointing at the named const. Non-applicability needs a concrete architectural reason, never
 `na("n/a")`. Then `--bless-input-golden`.
 
 ## Step 12 — splitproof assertions `[test-author]`, `model:"opus"`
@@ -517,6 +546,48 @@ This is a reduction in throughput, not a closure, and the plan does not claim ot
   its own feature and would need the discriminator re-minted.
 - **`notifications` has no command topic**, so every new module wanting an inbox row
   edits `notifications`. `mail` closed this for itself; `notifications` has not.
+
+## Errata
+
+**1 — Step 11 was scoped too narrowly** (found by the Step 1 implementer, 2026-09-05).
+Corrected in place above: the conformance input inventory covers wire-only traits, so
+`accounts`' two new fields need their own policy rows.
+
+**2 — `MeView` does not carry the handle**, so a player cannot read their own
+`Name#1234` to give to a friend. `Directory` is wire-only by design, so no front-door
+path exposes it: a player can be *resolved* by a handle they have no way to learn.
+Discovery is the reason handles exist, so Step 1's premise is unmet without it. Fixed
+as a Step 1 follow-up — an additive `handle: String` on an existing `#[http]` response,
+absorbed by Step 10's public-api and C# regeneration.
+
+**2b — WITHDRAWN: the "blank `display_name` yields an unaddressable `#1234`" gap does
+not exist.** It was disclosed by the Step 1 implementer and I recorded it here as a
+defect to fix **without verifying it**. The review enumerated all four creation paths:
+`OidcCredentials::verify` (`modules/accounts/src/providers.rs:267`) never reads an IdP
+name claim, it *synthesizes* `provider:short_id`; `guest.rs:149` and
+`epic_oauth.rs:392` do the same; `register` rejects an empty email first and then
+substitutes it. No production path can reach the store with an empty name.
+
+Recorded because the near-miss is the lesson: the planned fix — "the mint normalizes a
+blank name" — would have installed a **second normalization authority** in the store
+beside `register`'s existing fallback, guarding a branch nothing can execute, and no
+test could have covered it. A disclosed gap is a lead, not a citation. If a store-level
+guard is ever wanted as a structural invariant it is defensible, but it must be labelled
+defensive-and-unreachable and must name `register`'s fallback as the other decider.
+
+**3 — Step 10's regeneration list was incomplete.** Corrected in place above: the two
+`tools/csharp-client-gen/testdata/*.golden.*` files are hand-copied, covered by no
+`--bless-*` flow, and byte-compared under the blocking `test` stage. The Step 1
+follow-up's commit message claims "Step 10 owns the regeneration" — true for
+`clients/csharp/Generated`, **false for the testdata goldens**, which Step 10 did not
+name. The claim is corrected here rather than by rewriting history.
+
+**4 — Step 2's must-exercise list was incomplete.** Corrected in place above:
+`MeView.handle` and the no-session `LEFT JOIN` branch introduced by the follow-up had
+no coverage in any step.
+
+**5 — `MAX_HANDLE_BYTES` is written as `MAX_DISPLAY_NAME_BYTES + 5`**, not the literal
+133, so the arithmetic cannot drift from the cap it derives from.
 
 ## What revision 2 changed
 
