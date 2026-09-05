@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use base64::Engine;
 use notificationsapi::{
@@ -5,6 +7,7 @@ use notificationsapi::{
     MAX_KIND_BYTES, MAX_PAGE_LIMIT, MAX_TITLE_BYTES,
 };
 use opsapi::{Error, Identity};
+use push::{Message, Push, Target};
 use sqlx::{PgConnection, PgPool};
 
 use crate::{internal, Store};
@@ -240,14 +243,52 @@ pub(crate) fn validate_new(n: &NewNotification<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// The topic a nudged client dispatches on. It means "your inbox changed, refetch the
+/// list" and nothing else — see [`PUSH_NEW_PAYLOAD`].
+pub(crate) const PUSH_NEW_TOPIC: &str = "notifications.new";
+
+/// The nudge's whole payload: an empty JSON object.
+///
+/// It carries NO row id, and cannot: the durable half of [`Service::deliver_on`] runs
+/// INSIDE the plane's delivery transaction, which commits after the handler returns, so a
+/// pushed id would name a row that a rollback plus the at-least-once redelivery never
+/// commits — and `Player::list`/`mark_read` answer `NotFound` for it. An id-free nudge
+/// costs the client one idempotent list call against a durable inbox instead.
+///
+/// It is an object rather than empty bytes so a client already parsing it as JSON keeps
+/// parsing it if a field is ever added.
+pub(crate) const PUSH_NEW_PAYLOAD: &[u8] = b"{}";
+
 pub struct Service {
     pub(crate) store: Store,
+    push: Arc<Push>,
 }
 
 impl Service {
-    pub fn new(pool: PgPool) -> Service {
+    pub fn new(pool: PgPool, push: Arc<Push>) -> Service {
         Service {
             store: Store { pool },
+            push,
+        }
+    }
+
+    /// Tells a player's live connections that their inbox changed. Best-effort by
+    /// construction and DROPPED whatever it answers: a durable handler that returned `Err`
+    /// here would back off and pause the whole subscription — for every player — until an
+    /// operator runs `eventctl`, so a gateway outage must never reach the inbox writes.
+    ///
+    /// `push::Sink::send` is synchronous and non-blocking, which is what makes it callable
+    /// while holding the delivery transaction's connection.
+    ///
+    /// `NoSink` is silent: it is the normal answer in a process with no front and no
+    /// backplane, and `Push` itself logs the first occurrence.
+    fn nudge(&self, player_id: &str) {
+        let target = Target::Player(player_id.to_string());
+        let msg = Message::new(PUSH_NEW_TOPIC, PUSH_NEW_PAYLOAD);
+        if let Err(e) = self.push.send(&target, &msg) {
+            if !matches!(e, push::Error::NoSink) {
+                tracing::debug!(reason = %e, "notifications: inbox nudge not delivered");
+            }
         }
     }
 
@@ -255,6 +296,10 @@ impl Service {
     /// commits or rolls back, so the durable fan-in's handed delivery transaction commits
     /// the row and its checkpoint together while operator mail runs the identical policy on
     /// a pool connection.
+    ///
+    /// A row that is APPENDED also nudges the player's live sockets ([`Service::nudge`]),
+    /// placed inside the authority so no writer can add a row without one and no dedup
+    /// no-op can announce mail that already arrived.
     ///
     /// `false` is the dedup index answering "this event already produced a row" — a normal
     /// outcome, not an error, because a handler that returned `Err` here would back off and
@@ -282,6 +327,9 @@ impl Service {
                     internal(e)
                 }
             })?;
+        if id.is_some() {
+            self.nudge(n.player_id);
+        }
         Ok(id.is_some())
     }
 

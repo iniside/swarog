@@ -105,7 +105,7 @@ pub fn conformance_cursor_rejected(len: usize) -> bool {
         .expect("current-thread runtime");
     let svc = {
         let _guard = rt.enter();
-        Service::new(dead_pool())
+        Service::new(dead_pool(), std::sync::Arc::new(push::Push::new()))
     };
     let outcome = rt.block_on(svc.list(
         Identity::player("conformance-cursor-probe"),

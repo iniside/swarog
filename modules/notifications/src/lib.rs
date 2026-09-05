@@ -124,7 +124,7 @@ impl Module for NotificationsModule {
             .db()
             .ok_or_else(|| anyhow::anyhow!("notifications requires a DB pool"))?
             .clone();
-        let svc = Arc::new(Service::new(pool));
+        let svc = Arc::new(Service::new(pool, ctx.push().clone()));
         self.svc
             .set(svc.clone())
             .map_err(|_| anyhow::anyhow!("notifications.register ran twice"))?;

@@ -2663,6 +2663,7 @@ dependencies = [
  "notificationsapi",
  "notificationsrpc",
  "opsapi",
+ "push",
  "rand 0.8.6",
  "registry",
  "schedulerevents",

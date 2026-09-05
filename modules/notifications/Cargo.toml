@@ -20,6 +20,10 @@ edge = { workspace = true }
 notificationsapi = { workspace = true }
 notificationsrpc = { workspace = true }
 bus = { workspace = true }
+# The server->client push MODEL: the inbox nudges a player's live sockets after a row lands.
+# A foundation leaf owning no socket — whether this process holds the sockets, hands the
+# message to the backplane or has no sink at all is `app::run`'s wiring, never this module's.
+push = { workspace = true }
 # The admin CONTRACT (widgets + the AdminData/AdminSubmit traits) and the accounts api crate
 # for the `PLAYERS_ROW_MENU` extension-point const the "View Inbox" entry targets — contract
 # crates, importable by any module; neither impl is ever reached.
