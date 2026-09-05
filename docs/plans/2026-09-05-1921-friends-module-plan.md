@@ -748,20 +748,47 @@ be a complete checklist and was not. Added above.
 
 - **`friendsapi::Page` collided with `notificationsapi::Page`.** `csharp-client-gen`
   keeps a **flat, cross-crate DTO registry**, so two contract crates may not both export
-  a type called `Page` — a hard `bail!`, not a warning. Nothing caught it until this
-  step wired `friends` into the generator: `rustc` is happy, both names are locally
-  correct, and no earlier gate looks across crates. Renamed to `friendsapi::FriendPage`
-  at the authority. This is the same class errata for Step 3 closed once for
-  `PlayerSummary`/`Friend` and missed for `Page`. **A new contract crate must check its
-  exported type names against every other `api/*` crate**, not only against its own.
-  Recorded rather than smuggled: because `friendsapi` had never been baselined, the
-  rename ships inside the *first* `friendsapi.txt` and appears in no diff as a rename.
+  a type called `Page` — a hard `bail!`. Renamed to `friendsapi::FriendPage` at the
+  authority. Recorded rather than smuggled: because `friendsapi` had never been
+  baselined, the rename ships inside the *first* `friendsapi.txt` and appears in no diff
+  as a rename.
+
+  **CORRECTED (errata 17) — my first explanation of this was false**, and the false
+  version is the more dangerous artefact. I wrote that "nothing caught it until this
+  step" and that "no earlier gate looks across crates", and drew the lesson that a new
+  contract crate must **manually** check its type names against every other `api/*`
+  crate. The code says otherwise: `parse_all_api_crates` reads every `api/*` directory
+  unconditionally and the duplicate `bail!` in `parse_sources` runs **before** any
+  `PROVIDERS` filtering. The mechanism was already automatic and loud. What actually
+  happened is that `scrape()` had been returning `Err` since `959ea86`, so **two
+  blocking gates — `codegen-freshness` and `test` — were red for seven commits and
+  nobody observed it**, because I told every implementer to expect red gates and gave
+  them a list from the plan that was shorter than reality. The manual convention I
+  recorded would have converted a working automated gate into a human checklist item —
+  the exact class this repo keeps losing to. The real remedy is to run the blocking
+  gates between steps, or to require each step to report the gate state it *observed*
+  rather than the one I predicted.
 - **`csharp-client-gen`'s `phase_a()` needs the same edit as `PROVIDERS`.** Errata 8 and
   Step 10 both named only `PROVIDERS`; the completeness gate's own error message names
   both.
 - **There is a THIRD hand-copied golden**, `testdata/Client.golden.cs`, beyond the two
   errata 3 named. `emitted_client_matches_golden` byte-compares it under the blocking
-  `test` stage.
+  `test` stage. **And a FOURTH (errata 17):** `testdata/Status.golden.cs`, byte-compared
+  by `emitted_status_matches_golden`. It legitimately needed no change here (friends
+  adds no `Status` variant), but the count in errata 16 was one short — the third time
+  a hand-written count in this plan has been wrong.
+
+**17 — `split-proof` is NOT "red by design" for friends; it is GREEN and friends-blind.**
+I asserted repeatedly that the split-proof stage stays red until Step 12. There is no
+mechanism that makes it red: `grep -c friends tools/splitproof/src/main.rs` is **0**, and
+Step 7 already satisfied the only friends-sensitive tripwire (`preflight_fleet`'s
+disk-vs-fleet check). So the blocking stage boots `friends-svc` and asserts nothing
+about it — worse than red, because a PASS currently proves nothing while looking like
+proof. Until Step 12 lands, a green split-proof must not be read as evidence about
+friends. Everything it would currently wave through is split-only: a broken `EDGE_SLOT`
+registration, a wrong `:9014` peer address, a stub that never resolves
+`accountsapi::Directory` over the edge, the `friend.accepted` → audit/notifications
+chain working in-process but not cross-process, and `[FR8]`'s admin path.
 
 **8 — Step 10 misses a THIRD `csharp-client-gen` test.** Beyond the two
 `*_matches_golden` goldens named in errata 3, `PROVIDERS` (`scrape.rs:36`) is a
