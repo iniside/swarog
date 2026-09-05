@@ -22,7 +22,12 @@ pub fn clippy(ctx: &mut Context<'_>) -> Result<Outcome> {
 }
 
 pub fn test(ctx: &mut Context<'_>) -> Result<Outcome> {
-    let workspace = ctx.cargo("test", &["test", "--workspace", "--exclude", "verifyctl"])?;
+    // `--no-fail-fast`: without it cargo stops at the first failing test binary, so one red
+    // crate silently leaves every alphabetically-later workspace package unexecuted.
+    let workspace = ctx.cargo(
+        "test",
+        &["test", "--workspace", "--exclude", "verifyctl", "--no-fail-fast"],
+    )?;
     if workspace != Outcome::Pass {
         return Ok(workspace);
     }

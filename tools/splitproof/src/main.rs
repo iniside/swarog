@@ -736,6 +736,7 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
         .await
         .context("connect DB")?;
     reset_config_baseline(&pool).await?;
+    reset_scoreboard_baseline(&pool).await;
     // [WL7]'s starter-grant knobs, written BEFORE wallet-svc spawns: its `CachedConfig` is
     // boot-fill-or-fail-startup, so a post-boot write would race an invalidation refresh
     // against the registration under test. On a DB that has never booted the fleet the
@@ -958,6 +959,23 @@ async fn reset_config_baseline(pool: &PgPool) -> Result<()> {
         .execute(pool).await.ok(); // config schema may not exist yet on a fresh DB — best-effort.
     sqlx::query("DELETE FROM config.settings WHERE namespace='proof'").execute(pool).await.ok();
     Ok(())
+}
+
+/// The `leaderboard.scores` / `rating.ratings` rows this harness's own match reports leave
+/// behind. Prefix-scoped over the WHOLE history, not this run's names: both projections are
+/// permanently retained and the harness's player names are keyed by pid, which the OS
+/// reuses — so a prior run's `replicas-{pid}` row makes `[REPLICAS-3]`'s `wins == N` start
+/// from a non-zero tally, and a prior `champ-{pid}` makes `[MT2]`/`[MT5]` unreachable. Run
+/// START, not end of scenario: every scenario returns `?`, so a trailing delete skips
+/// exactly the failing run whose rows then break the next one.
+async fn reset_scoreboard_baseline(pool: &PgPool) {
+    const HARNESS_PLAYERS: &str =
+        "player LIKE 'champ-%' OR player LIKE 'chump-%' OR player LIKE 'replicas-%'";
+    // Two statements → two query() calls; either schema may be absent on a fresh DB.
+    sqlx::query(&format!("DELETE FROM leaderboard.scores WHERE {HARNESS_PLAYERS}"))
+        .execute(pool).await.ok();
+    sqlx::query(&format!("DELETE FROM rating.ratings WHERE {HARNESS_PLAYERS}"))
+        .execute(pool).await.ok();
 }
 
 /// The two `wallet` starter-grant knobs [WL7] depends on. Data, not env: the feature is
@@ -4851,8 +4869,8 @@ async fn send_status_retrying_429(req: reqwest::RequestBuilder) -> u16 {
 }
 
 /// Poll `leaderboard.scores` until `winner`'s row holds exactly `wins`. Reads the ROW, not
-/// the `GET /leaderboard` top-100 projection: that list is truncated (`LIMIT 100`) and the
-/// table is never pruned, so a freshly reported champion at wins=1 can be a real, correct row
+/// the `GET /leaderboard` top-100 projection: that list is truncated (`LIMIT 100`) and holds
+/// rows this harness does not own, so a freshly reported champion at wins=1 can be a real, correct row
 /// that is simply outside the served page. Bounded and fail-closed — a value that never lands
 /// returns `false` rather than waiting.
 async fn poll_leaderboard_wins(pool: &PgPool, winner: &str, wins: i64) -> bool {

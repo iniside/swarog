@@ -244,7 +244,7 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .contains("cargo-audit audit --ignore RUSTSEC-2023-0071"));
     let record = std::fs::read_to_string(&pass.record).unwrap();
     assert!(record.contains("cargo build --workspace --exclude verifyctl"));
-    assert!(record.contains("cargo test --workspace --exclude verifyctl"));
+    assert!(record.contains("cargo test --workspace --exclude verifyctl --no-fail-fast"));
     assert!(record.contains("cargo test -p verifyctl --target-dir"));
     assert!(record.contains(
         &pass
