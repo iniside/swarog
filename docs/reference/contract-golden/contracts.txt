@@ -41,6 +41,9 @@ event topic=admin.action version=1 history=min-retention:30d
 event topic=character.created version=1 history=min-retention:7d
 event topic=character.deleted version=1 history=min-retention:7d
 event topic=config.changed version=1 history=min-retention:7d
+event topic=friend.accepted version=1 history=min-retention:30d
+event topic=friend.removed version=1 history=min-retention:30d
+event topic=friend.requested version=1 history=min-retention:30d
 event topic=mail.send_requested version=1 history=min-retention:1d
 event topic=match.finished version=1 history=min-retention:7d
 event topic=player.promoted version=1 history=min-retention:7d
@@ -63,6 +66,22 @@ payload topic=config.changed version=1 payload.operation:string
 payload topic=config.changed version=1 payload.revision:number
 payload topic=config.changed version=1 payload.value:null
 payload topic=config.changed version=1 payload.value:string
+payload topic=friend.accepted version=1 payload.addressee_handle:string
+payload topic=friend.accepted version=1 payload.addressee_id:string
+payload topic=friend.accepted version=1 payload.edge_id:string
+payload topic=friend.accepted version=1 payload.requester_handle:string
+payload topic=friend.accepted version=1 payload.requester_id:string
+payload topic=friend.removed version=1 payload.actor_handle:string
+payload topic=friend.removed version=1 payload.actor_id:string
+payload topic=friend.removed version=1 payload.edge_id:string
+payload topic=friend.removed version=1 payload.other_handle:string
+payload topic=friend.removed version=1 payload.other_id:string
+payload topic=friend.removed version=1 payload.reason:string
+payload topic=friend.requested version=1 payload.addressee_handle:string
+payload topic=friend.requested version=1 payload.addressee_id:string
+payload topic=friend.requested version=1 payload.edge_id:string
+payload topic=friend.requested version=1 payload.requester_handle:string
+payload topic=friend.requested version=1 payload.requester_id:string
 payload topic=mail.send_requested version=1 payload.body:string
 payload topic=mail.send_requested version=1 payload.idempotency_key:string
 payload topic=mail.send_requested version=1 payload.kind:string
@@ -94,6 +113,12 @@ rpc module=accountsapi::auth_rpc method=accounts.register verb=POST path=/accoun
 rpc module=charactersapi::player_rpc method=characters.create verb=POST path=/characters auth=Player success=201 retry=Never
 rpc module=charactersapi::player_rpc method=characters.delete verb=DELETE path=/characters/{id} auth=Player success=204 retry=Never
 rpc module=charactersapi::player_rpc method=characters.list verb=GET path=/characters auth=Player success=200 retry=OnceAfterReconnect
+rpc module=friendsapi::player_rpc method=friends.accept verb=POST path=/friends/requests/{id}/accept auth=Player success=204 retry=Never
+rpc module=friendsapi::player_rpc method=friends.decline verb=POST path=/friends/requests/{id}/decline auth=Player success=204 retry=Never
+rpc module=friendsapi::player_rpc method=friends.list verb=POST path=/friends/list auth=Player success=200 retry=OnceAfterReconnect
+rpc module=friendsapi::player_rpc method=friends.pending verb=POST path=/friends/requests/list auth=Player success=200 retry=OnceAfterReconnect
+rpc module=friendsapi::player_rpc method=friends.remove verb=DELETE path=/friends/{id} auth=Player success=204 retry=Never
+rpc module=friendsapi::player_rpc method=friends.request verb=POST path=/friends/requests auth=Player success=201 retry=Never
 rpc module=inventoryapi::holdings_rpc method=inventory.grant verb=POST path=/inventory/me/grant auth=Player success=200 retry=Never
 rpc module=inventoryapi::holdings_rpc method=inventory.listCharacter verb=GET path=/inventory/character/{id} auth=Player success=200 retry=OnceAfterReconnect
 rpc module=inventoryapi::holdings_rpc method=inventory.listMine verb=GET path=/inventory/me auth=Player success=200 retry=OnceAfterReconnect
@@ -117,6 +142,14 @@ rpc-arg module=accountsapi::auth_rpc method=accounts.register param=password wir
 rpc-arg module=charactersapi::player_rpc method=characters.create param=class wire_key=class source=body
 rpc-arg module=charactersapi::player_rpc method=characters.create param=name wire_key=name source=body
 rpc-arg module=charactersapi::player_rpc method=characters.delete param=character_id wire_key=character_id source=path:id
+rpc-arg module=friendsapi::player_rpc method=friends.accept param=edge_id wire_key=edge_id source=path:id
+rpc-arg module=friendsapi::player_rpc method=friends.decline param=edge_id wire_key=edge_id source=path:id
+rpc-arg module=friendsapi::player_rpc method=friends.list param=cursor wire_key=cursor source=body
+rpc-arg module=friendsapi::player_rpc method=friends.list param=limit wire_key=limit source=body
+rpc-arg module=friendsapi::player_rpc method=friends.pending param=cursor wire_key=cursor source=body
+rpc-arg module=friendsapi::player_rpc method=friends.pending param=limit wire_key=limit source=body
+rpc-arg module=friendsapi::player_rpc method=friends.remove param=edge_id wire_key=edge_id source=path:id
+rpc-arg module=friendsapi::player_rpc method=friends.request param=target_handle wire_key=target_handle source=body
 rpc-arg module=inventoryapi::holdings_rpc method=inventory.grant param=item_id wire_key=item_id source=body
 rpc-arg module=inventoryapi::holdings_rpc method=inventory.grant param=qty wire_key=qty source=body
 rpc-arg module=inventoryapi::holdings_rpc method=inventory.listCharacter param=character_id wire_key=character_id source=path:id
@@ -143,6 +176,14 @@ rpc-body module=charactersapi::player_rpc method=characters.create body.class:st
 rpc-body module=charactersapi::player_rpc method=characters.create body.name:string
 rpc-body module=charactersapi::player_rpc method=characters.delete body:object{}
 rpc-body module=charactersapi::player_rpc method=characters.list body:object{}
+rpc-body module=friendsapi::player_rpc method=friends.accept body:object{}
+rpc-body module=friendsapi::player_rpc method=friends.decline body:object{}
+rpc-body module=friendsapi::player_rpc method=friends.list body.cursor:string
+rpc-body module=friendsapi::player_rpc method=friends.list body.limit:number
+rpc-body module=friendsapi::player_rpc method=friends.pending body.cursor:string
+rpc-body module=friendsapi::player_rpc method=friends.pending body.limit:number
+rpc-body module=friendsapi::player_rpc method=friends.remove body:object{}
+rpc-body module=friendsapi::player_rpc method=friends.request body.target_handle:string
 rpc-body module=inventoryapi::holdings_rpc method=inventory.grant body.item_id:string
 rpc-body module=inventoryapi::holdings_rpc method=inventory.grant body.qty:number
 rpc-body module=inventoryapi::holdings_rpc method=inventory.listCharacter body:object{}
@@ -164,6 +205,8 @@ wire module=accountsapi::auth_rpc method=accounts.loginFederated retry=Never
 wire module=accountsapi::auth_rpc method=accounts.me retry=OnceAfterReconnect
 wire module=accountsapi::auth_rpc method=accounts.refresh retry=Never
 wire module=accountsapi::auth_rpc method=accounts.register retry=Never
+wire module=accountsapi::directory_rpc method=accounts.findByHandle retry=OnceAfterReconnect
+wire module=accountsapi::directory_rpc method=accounts.playersById retry=OnceAfterReconnect
 wire module=accountsapi::sessions_rpc method=accounts.verifySession retry=OnceAfterReconnect
 wire module=adminapi::admin_data_rpc method=admin.adminData retry=OnceAfterReconnect
 wire module=adminapi::admin_submit_rpc method=admin.adminSubmit retry=Never
@@ -173,6 +216,12 @@ wire module=charactersapi::player_rpc method=characters.create retry=Never
 wire module=charactersapi::player_rpc method=characters.delete retry=Never
 wire module=charactersapi::player_rpc method=characters.list retry=OnceAfterReconnect
 wire module=configapi::config_snapshot_rpc method=config.snapshot retry=OnceAfterReconnect
+wire module=friendsapi::player_rpc method=friends.accept retry=Never
+wire module=friendsapi::player_rpc method=friends.decline retry=Never
+wire module=friendsapi::player_rpc method=friends.list retry=OnceAfterReconnect
+wire module=friendsapi::player_rpc method=friends.pending retry=OnceAfterReconnect
+wire module=friendsapi::player_rpc method=friends.remove retry=Never
+wire module=friendsapi::player_rpc method=friends.request retry=Never
 wire module=inventoryapi::holdings_rpc method=inventory.grant retry=Never
 wire module=inventoryapi::holdings_rpc method=inventory.listCharacter retry=OnceAfterReconnect
 wire module=inventoryapi::holdings_rpc method=inventory.listMine retry=OnceAfterReconnect

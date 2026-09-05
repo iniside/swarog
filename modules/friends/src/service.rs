@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use bus::{AnyTx, Bus};
 use friendsapi::{
-    Friend, Page, Player, DEFAULT_PAGE_LIMIT, DIRECTION_INCOMING, DIRECTION_OUTGOING,
+    Friend, FriendPage, Player, DEFAULT_PAGE_LIMIT, DIRECTION_INCOMING, DIRECTION_OUTGOING,
     MAX_CURSOR_BYTES, MAX_PAGE_LIMIT, MAX_PENDING_OUTSTANDING, STATE_ACCEPTED, STATE_PENDING,
 };
 use friendsevents::{REASON_DECLINED, REASON_UNFRIENDED, REASON_WITHDRAWN};
@@ -301,7 +301,7 @@ impl Service {
         cursor: String,
         limit: i64,
         state: &str,
-    ) -> Result<Page, Error> {
+    ) -> Result<FriendPage, Error> {
         let me = Service::caller(&identity)?;
         let limit = resolve_limit(limit)?;
         let after = decode_cursor(&cursor)?;
@@ -347,7 +347,7 @@ impl Service {
                 other,
             ));
         }
-        Ok(Page { items, next_cursor })
+        Ok(FriendPage { items, next_cursor })
     }
 }
 
@@ -599,11 +599,11 @@ impl Player for Service {
     }
 
     /// The player id comes from `identity` (gateway-verified), NEVER from a body field.
-    async fn list(&self, identity: Identity, cursor: String, limit: i64) -> Result<Page, Error> {
+    async fn list(&self, identity: Identity, cursor: String, limit: i64) -> Result<FriendPage, Error> {
         self.page(identity, cursor, limit, STATE_ACCEPTED).await
     }
 
-    async fn pending(&self, identity: Identity, cursor: String, limit: i64) -> Result<Page, Error> {
+    async fn pending(&self, identity: Identity, cursor: String, limit: i64) -> Result<FriendPage, Error> {
         self.page(identity, cursor, limit, STATE_PENDING).await
     }
 }

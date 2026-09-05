@@ -201,6 +201,9 @@ fn defined_topics() -> Vec<Contract> {
         of(adminevents::ACTION.contract()),
         of(walletevents::CHANGED.contract()),
         of(mailevents::SEND_REQUESTED.contract()),
+        of(friendsevents::REQUESTED.contract()),
+        of(friendsevents::ACCEPTED.contract()),
+        of(friendsevents::REMOVED.contract()),
     ]
 }
 

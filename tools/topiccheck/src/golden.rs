@@ -123,6 +123,13 @@ fn rpc_modules() -> Vec<RpcModule> {
             accountsapi::sessions_rpc::describe().ops,
         ),
         (
+            "accountsapi::directory_rpc",
+            accountsapi::directory_rpc::route_bindings(),
+            accountsapi::directory_rpc::wire_ops(),
+            accountsapi::directory_rpc::body_shapes(),
+            accountsapi::directory_rpc::describe().ops,
+        ),
+        (
             "adminapi::admin_data_rpc",
             adminapi::admin_data_rpc::route_bindings(),
             adminapi::admin_data_rpc::wire_ops(),
@@ -213,6 +220,13 @@ fn rpc_modules() -> Vec<RpcModule> {
             notificationsapi::player_rpc::body_shapes(),
             notificationsapi::player_rpc::describe().ops,
         ),
+        (
+            "friendsapi::player_rpc",
+            friendsapi::player_rpc::route_bindings(),
+            friendsapi::player_rpc::wire_ops(),
+            friendsapi::player_rpc::body_shapes(),
+            friendsapi::player_rpc::describe().ops,
+        ),
     ]
 }
 
@@ -250,6 +264,7 @@ fn event_samples_by_crate() -> Vec<CrateSamples> {
         ("admin", adminevents::golden_samples()),
         ("wallet", walletevents::golden_samples()),
         ("mail", mailevents::golden_samples()),
+        ("friends", friendsevents::golden_samples()),
     ]
 }
 

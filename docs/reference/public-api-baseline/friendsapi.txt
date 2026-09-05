@@ -1,0 +1,256 @@
+# cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
+pub mod friendsapi
+pub mod friendsapi::player_rpc
+pub struct friendsapi::player_rpc::AcceptRequest
+pub friendsapi::player_rpc::AcceptRequest::edge_id: alloc::string::String
+impl core::default::Default for friendsapi::player_rpc::AcceptRequest
+pub fn friendsapi::player_rpc::AcceptRequest::default() -> friendsapi::player_rpc::AcceptRequest
+impl serde_core::ser::Serialize for friendsapi::player_rpc::AcceptRequest
+pub fn friendsapi::player_rpc::AcceptRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::player_rpc::AcceptRequest where friendsapi::player_rpc::AcceptRequest: core::default::Default
+pub fn friendsapi::player_rpc::AcceptRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::player_rpc::AcceptRequest
+impl core::marker::Send for friendsapi::player_rpc::AcceptRequest
+impl core::marker::Sync for friendsapi::player_rpc::AcceptRequest
+impl core::marker::Unpin for friendsapi::player_rpc::AcceptRequest
+impl core::marker::UnsafeUnpin for friendsapi::player_rpc::AcceptRequest
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::player_rpc::AcceptRequest
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::player_rpc::AcceptRequest
+pub struct friendsapi::player_rpc::AcceptResponse
+pub friendsapi::player_rpc::AcceptResponse::err: alloc::string::String
+pub friendsapi::player_rpc::AcceptResponse::status: opsapi::Status
+impl serde_core::ser::Serialize for friendsapi::player_rpc::AcceptResponse
+pub fn friendsapi::player_rpc::AcceptResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::player_rpc::AcceptResponse
+pub fn friendsapi::player_rpc::AcceptResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::player_rpc::AcceptResponse
+impl core::marker::Send for friendsapi::player_rpc::AcceptResponse
+impl core::marker::Sync for friendsapi::player_rpc::AcceptResponse
+impl core::marker::Unpin for friendsapi::player_rpc::AcceptResponse
+impl core::marker::UnsafeUnpin for friendsapi::player_rpc::AcceptResponse
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::player_rpc::AcceptResponse
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::player_rpc::AcceptResponse
+pub struct friendsapi::player_rpc::DeclineRequest
+pub friendsapi::player_rpc::DeclineRequest::edge_id: alloc::string::String
+impl core::default::Default for friendsapi::player_rpc::DeclineRequest
+pub fn friendsapi::player_rpc::DeclineRequest::default() -> friendsapi::player_rpc::DeclineRequest
+impl serde_core::ser::Serialize for friendsapi::player_rpc::DeclineRequest
+pub fn friendsapi::player_rpc::DeclineRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::player_rpc::DeclineRequest where friendsapi::player_rpc::DeclineRequest: core::default::Default
+pub fn friendsapi::player_rpc::DeclineRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::player_rpc::DeclineRequest
+impl core::marker::Send for friendsapi::player_rpc::DeclineRequest
+impl core::marker::Sync for friendsapi::player_rpc::DeclineRequest
+impl core::marker::Unpin for friendsapi::player_rpc::DeclineRequest
+impl core::marker::UnsafeUnpin for friendsapi::player_rpc::DeclineRequest
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::player_rpc::DeclineRequest
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::player_rpc::DeclineRequest
+pub struct friendsapi::player_rpc::DeclineResponse
+pub friendsapi::player_rpc::DeclineResponse::err: alloc::string::String
+pub friendsapi::player_rpc::DeclineResponse::status: opsapi::Status
+impl serde_core::ser::Serialize for friendsapi::player_rpc::DeclineResponse
+pub fn friendsapi::player_rpc::DeclineResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::player_rpc::DeclineResponse
+pub fn friendsapi::player_rpc::DeclineResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::player_rpc::DeclineResponse
+impl core::marker::Send for friendsapi::player_rpc::DeclineResponse
+impl core::marker::Sync for friendsapi::player_rpc::DeclineResponse
+impl core::marker::Unpin for friendsapi::player_rpc::DeclineResponse
+impl core::marker::UnsafeUnpin for friendsapi::player_rpc::DeclineResponse
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::player_rpc::DeclineResponse
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::player_rpc::DeclineResponse
+pub struct friendsapi::player_rpc::ListRequest
+pub friendsapi::player_rpc::ListRequest::cursor: alloc::string::String
+pub friendsapi::player_rpc::ListRequest::limit: i64
+impl core::default::Default for friendsapi::player_rpc::ListRequest
+pub fn friendsapi::player_rpc::ListRequest::default() -> friendsapi::player_rpc::ListRequest
+impl serde_core::ser::Serialize for friendsapi::player_rpc::ListRequest
+pub fn friendsapi::player_rpc::ListRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::player_rpc::ListRequest where friendsapi::player_rpc::ListRequest: core::default::Default
+pub fn friendsapi::player_rpc::ListRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::player_rpc::ListRequest
+impl core::marker::Send for friendsapi::player_rpc::ListRequest
+impl core::marker::Sync for friendsapi::player_rpc::ListRequest
+impl core::marker::Unpin for friendsapi::player_rpc::ListRequest
+impl core::marker::UnsafeUnpin for friendsapi::player_rpc::ListRequest
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::player_rpc::ListRequest
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::player_rpc::ListRequest
+pub struct friendsapi::player_rpc::ListResponse
+pub friendsapi::player_rpc::ListResponse::err: alloc::string::String
+pub friendsapi::player_rpc::ListResponse::status: opsapi::Status
+pub friendsapi::player_rpc::ListResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for friendsapi::player_rpc::ListResponse
+pub fn friendsapi::player_rpc::ListResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::player_rpc::ListResponse
+pub fn friendsapi::player_rpc::ListResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::player_rpc::ListResponse
+impl core::marker::Send for friendsapi::player_rpc::ListResponse
+impl core::marker::Sync for friendsapi::player_rpc::ListResponse
+impl core::marker::Unpin for friendsapi::player_rpc::ListResponse
+impl core::marker::UnsafeUnpin for friendsapi::player_rpc::ListResponse
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::player_rpc::ListResponse
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::player_rpc::ListResponse
+pub struct friendsapi::player_rpc::PendingRequest
+pub friendsapi::player_rpc::PendingRequest::cursor: alloc::string::String
+pub friendsapi::player_rpc::PendingRequest::limit: i64
+impl core::default::Default for friendsapi::player_rpc::PendingRequest
+pub fn friendsapi::player_rpc::PendingRequest::default() -> friendsapi::player_rpc::PendingRequest
+impl serde_core::ser::Serialize for friendsapi::player_rpc::PendingRequest
+pub fn friendsapi::player_rpc::PendingRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::player_rpc::PendingRequest where friendsapi::player_rpc::PendingRequest: core::default::Default
+pub fn friendsapi::player_rpc::PendingRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::player_rpc::PendingRequest
+impl core::marker::Send for friendsapi::player_rpc::PendingRequest
+impl core::marker::Sync for friendsapi::player_rpc::PendingRequest
+impl core::marker::Unpin for friendsapi::player_rpc::PendingRequest
+impl core::marker::UnsafeUnpin for friendsapi::player_rpc::PendingRequest
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::player_rpc::PendingRequest
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::player_rpc::PendingRequest
+pub struct friendsapi::player_rpc::PendingResponse
+pub friendsapi::player_rpc::PendingResponse::err: alloc::string::String
+pub friendsapi::player_rpc::PendingResponse::status: opsapi::Status
+pub friendsapi::player_rpc::PendingResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for friendsapi::player_rpc::PendingResponse
+pub fn friendsapi::player_rpc::PendingResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::player_rpc::PendingResponse
+pub fn friendsapi::player_rpc::PendingResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::player_rpc::PendingResponse
+impl core::marker::Send for friendsapi::player_rpc::PendingResponse
+impl core::marker::Sync for friendsapi::player_rpc::PendingResponse
+impl core::marker::Unpin for friendsapi::player_rpc::PendingResponse
+impl core::marker::UnsafeUnpin for friendsapi::player_rpc::PendingResponse
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::player_rpc::PendingResponse
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::player_rpc::PendingResponse
+pub struct friendsapi::player_rpc::RemoveRequest
+pub friendsapi::player_rpc::RemoveRequest::edge_id: alloc::string::String
+impl core::default::Default for friendsapi::player_rpc::RemoveRequest
+pub fn friendsapi::player_rpc::RemoveRequest::default() -> friendsapi::player_rpc::RemoveRequest
+impl serde_core::ser::Serialize for friendsapi::player_rpc::RemoveRequest
+pub fn friendsapi::player_rpc::RemoveRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::player_rpc::RemoveRequest where friendsapi::player_rpc::RemoveRequest: core::default::Default
+pub fn friendsapi::player_rpc::RemoveRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::player_rpc::RemoveRequest
+impl core::marker::Send for friendsapi::player_rpc::RemoveRequest
+impl core::marker::Sync for friendsapi::player_rpc::RemoveRequest
+impl core::marker::Unpin for friendsapi::player_rpc::RemoveRequest
+impl core::marker::UnsafeUnpin for friendsapi::player_rpc::RemoveRequest
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::player_rpc::RemoveRequest
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::player_rpc::RemoveRequest
+pub struct friendsapi::player_rpc::RemoveResponse
+pub friendsapi::player_rpc::RemoveResponse::err: alloc::string::String
+pub friendsapi::player_rpc::RemoveResponse::status: opsapi::Status
+impl serde_core::ser::Serialize for friendsapi::player_rpc::RemoveResponse
+pub fn friendsapi::player_rpc::RemoveResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::player_rpc::RemoveResponse
+pub fn friendsapi::player_rpc::RemoveResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::player_rpc::RemoveResponse
+impl core::marker::Send for friendsapi::player_rpc::RemoveResponse
+impl core::marker::Sync for friendsapi::player_rpc::RemoveResponse
+impl core::marker::Unpin for friendsapi::player_rpc::RemoveResponse
+impl core::marker::UnsafeUnpin for friendsapi::player_rpc::RemoveResponse
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::player_rpc::RemoveResponse
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::player_rpc::RemoveResponse
+pub struct friendsapi::player_rpc::RequestRequest
+pub friendsapi::player_rpc::RequestRequest::target_handle: alloc::string::String
+impl core::default::Default for friendsapi::player_rpc::RequestRequest
+pub fn friendsapi::player_rpc::RequestRequest::default() -> friendsapi::player_rpc::RequestRequest
+impl serde_core::ser::Serialize for friendsapi::player_rpc::RequestRequest
+pub fn friendsapi::player_rpc::RequestRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::player_rpc::RequestRequest where friendsapi::player_rpc::RequestRequest: core::default::Default
+pub fn friendsapi::player_rpc::RequestRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::player_rpc::RequestRequest
+impl core::marker::Send for friendsapi::player_rpc::RequestRequest
+impl core::marker::Sync for friendsapi::player_rpc::RequestRequest
+impl core::marker::Unpin for friendsapi::player_rpc::RequestRequest
+impl core::marker::UnsafeUnpin for friendsapi::player_rpc::RequestRequest
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::player_rpc::RequestRequest
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::player_rpc::RequestRequest
+pub struct friendsapi::player_rpc::RequestResponse
+pub friendsapi::player_rpc::RequestResponse::err: alloc::string::String
+pub friendsapi::player_rpc::RequestResponse::status: opsapi::Status
+pub friendsapi::player_rpc::RequestResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for friendsapi::player_rpc::RequestResponse
+pub fn friendsapi::player_rpc::RequestResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::player_rpc::RequestResponse
+pub fn friendsapi::player_rpc::RequestResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::player_rpc::RequestResponse
+impl core::marker::Send for friendsapi::player_rpc::RequestResponse
+impl core::marker::Sync for friendsapi::player_rpc::RequestResponse
+impl core::marker::Unpin for friendsapi::player_rpc::RequestResponse
+impl core::marker::UnsafeUnpin for friendsapi::player_rpc::RequestResponse
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::player_rpc::RequestResponse
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::player_rpc::RequestResponse
+pub const friendsapi::player_rpc::METHOD_ACCEPT: &str
+pub const friendsapi::player_rpc::METHOD_DECLINE: &str
+pub const friendsapi::player_rpc::METHOD_LIST: &str
+pub const friendsapi::player_rpc::METHOD_PENDING: &str
+pub const friendsapi::player_rpc::METHOD_REMOVE: &str
+pub const friendsapi::player_rpc::METHOD_REQUEST: &str
+pub fn friendsapi::player_rpc::describe() -> opsapi::DescribeManifest
+pub fn friendsapi::player_rpc::operations(alloc::sync::Arc<(dyn friendsapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn friendsapi::player_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn friendsapi::player_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub struct friendsapi::Friend
+pub friendsapi::Friend::direction: alloc::string::String
+pub friendsapi::Friend::display_name: alloc::string::String
+pub friendsapi::Friend::edge_id: alloc::string::String
+pub friendsapi::Friend::handle: alloc::string::String
+pub friendsapi::Friend::online_until: alloc::string::String
+pub friendsapi::Friend::player_id: alloc::string::String
+pub friendsapi::Friend::state: alloc::string::String
+impl core::clone::Clone for friendsapi::Friend
+pub fn friendsapi::Friend::clone(&self) -> friendsapi::Friend
+impl core::cmp::Eq for friendsapi::Friend
+impl core::cmp::PartialEq for friendsapi::Friend
+pub fn friendsapi::Friend::eq(&self, &friendsapi::Friend) -> bool
+impl core::fmt::Debug for friendsapi::Friend
+pub fn friendsapi::Friend::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for friendsapi::Friend
+impl serde_core::ser::Serialize for friendsapi::Friend
+pub fn friendsapi::Friend::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::Friend
+pub fn friendsapi::Friend::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::Friend
+impl core::marker::Send for friendsapi::Friend
+impl core::marker::Sync for friendsapi::Friend
+impl core::marker::Unpin for friendsapi::Friend
+impl core::marker::UnsafeUnpin for friendsapi::Friend
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::Friend
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::Friend
+pub struct friendsapi::FriendPage
+pub friendsapi::FriendPage::items: alloc::vec::Vec<friendsapi::Friend>
+pub friendsapi::FriendPage::next_cursor: alloc::string::String
+impl core::clone::Clone for friendsapi::FriendPage
+pub fn friendsapi::FriendPage::clone(&self) -> friendsapi::FriendPage
+impl core::cmp::Eq for friendsapi::FriendPage
+impl core::cmp::PartialEq for friendsapi::FriendPage
+pub fn friendsapi::FriendPage::eq(&self, &friendsapi::FriendPage) -> bool
+impl core::fmt::Debug for friendsapi::FriendPage
+pub fn friendsapi::FriendPage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for friendsapi::FriendPage
+impl serde_core::ser::Serialize for friendsapi::FriendPage
+pub fn friendsapi::FriendPage::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for friendsapi::FriendPage
+pub fn friendsapi::FriendPage::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for friendsapi::FriendPage
+impl core::marker::Send for friendsapi::FriendPage
+impl core::marker::Sync for friendsapi::FriendPage
+impl core::marker::Unpin for friendsapi::FriendPage
+impl core::marker::UnsafeUnpin for friendsapi::FriendPage
+impl core::panic::unwind_safe::RefUnwindSafe for friendsapi::FriendPage
+impl core::panic::unwind_safe::UnwindSafe for friendsapi::FriendPage
+pub const friendsapi::DEFAULT_PAGE_LIMIT: i64
+pub const friendsapi::DIRECTION_INCOMING: &str
+pub const friendsapi::DIRECTION_OUTGOING: &str
+pub const friendsapi::MAX_CURSOR_BYTES: usize
+pub const friendsapi::MAX_PAGE_LIMIT: i64
+pub const friendsapi::MAX_PENDING_OUTSTANDING: i64
+pub const friendsapi::STATE_ACCEPTED: &str
+pub const friendsapi::STATE_PENDING: &str
+pub trait friendsapi::Player: core::marker::Send + core::marker::Sync
+pub fn friendsapi::Player::accept<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn friendsapi::Player::decline<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn friendsapi::Player::list<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, i64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<friendsapi::FriendPage, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn friendsapi::Player::pending<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, i64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<friendsapi::FriendPage, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn friendsapi::Player::remove<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn friendsapi::Player::request<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<friendsapi::Friend, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

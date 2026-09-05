@@ -31,6 +31,21 @@ public sealed record Currency(
     [property: JsonPropertyName("kind")] string Kind,
     [property: JsonPropertyName("decimals")] int Decimals);
 
+/// <summary>The <c>Friend</c> DTO.</summary>
+public sealed record Friend(
+    [property: JsonPropertyName("player_id")] string PlayerId,
+    [property: JsonPropertyName("display_name")] string DisplayName,
+    [property: JsonPropertyName("handle")] string Handle,
+    [property: JsonPropertyName("online_until")] string OnlineUntil,
+    [property: JsonPropertyName("edge_id")] string EdgeId,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("direction")] string Direction);
+
+/// <summary>The <c>FriendPage</c> DTO.</summary>
+public sealed record FriendPage(
+    [property: JsonPropertyName("items")] Friend[] Items,
+    [property: JsonPropertyName("next_cursor")] string NextCursor);
+
 /// <summary>The <c>GuestSession</c> DTO.</summary>
 public sealed record GuestSession(
     [property: JsonPropertyName("player_id")] string PlayerId,
@@ -56,6 +71,7 @@ public sealed record IdentityRef(
 public sealed record MeView(
     [property: JsonPropertyName("player_id")] string PlayerId,
     [property: JsonPropertyName("display_name")] string DisplayName,
+    [property: JsonPropertyName("handle")] string Handle,
     [property: JsonPropertyName("identities")] IdentityRef[] Identities);
 
 /// <summary>The <c>Notification</c> DTO.</summary>

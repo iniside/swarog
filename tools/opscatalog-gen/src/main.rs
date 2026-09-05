@@ -67,6 +67,7 @@ fn rpc_modules() -> Vec<(&'static str, Vec<opsapi::RouteBinding>)> {
     vec![
         ("accountsapi::auth_rpc", accountsapi::auth_rpc::route_bindings()),
         ("accountsapi::sessions_rpc", accountsapi::sessions_rpc::route_bindings()),
+        ("accountsapi::directory_rpc", accountsapi::directory_rpc::route_bindings()),
         ("adminapi::admin_data_rpc", adminapi::admin_data_rpc::route_bindings()),
         ("adminapi::admin_submit_rpc", adminapi::admin_submit_rpc::route_bindings()),
         ("apikeysapi::keys_rpc", apikeysapi::keys_rpc::route_bindings()),
@@ -80,6 +81,7 @@ fn rpc_modules() -> Vec<(&'static str, Vec<opsapi::RouteBinding>)> {
         ("walletapi::wallet_rpc", walletapi::wallet_rpc::route_bindings()),
         ("walletapi::player_rpc", walletapi::player_rpc::route_bindings()),
         ("notificationsapi::player_rpc", notificationsapi::player_rpc::route_bindings()),
+        ("friendsapi::player_rpc", friendsapi::player_rpc::route_bindings()),
     ]
 }
 

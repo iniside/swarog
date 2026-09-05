@@ -227,6 +227,69 @@ pub fn accountsapi::auth_rpc::describe() -> opsapi::DescribeManifest
 pub fn accountsapi::auth_rpc::operations(alloc::sync::Arc<(dyn accountsapi::Auth + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn accountsapi::auth_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn accountsapi::auth_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub mod accountsapi::directory_rpc
+pub struct accountsapi::directory_rpc::FindByHandleRequest
+pub accountsapi::directory_rpc::FindByHandleRequest::handle: alloc::string::String
+impl serde_core::ser::Serialize for accountsapi::directory_rpc::FindByHandleRequest
+pub fn accountsapi::directory_rpc::FindByHandleRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::directory_rpc::FindByHandleRequest
+pub fn accountsapi::directory_rpc::FindByHandleRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsapi::directory_rpc::FindByHandleRequest
+impl core::marker::Send for accountsapi::directory_rpc::FindByHandleRequest
+impl core::marker::Sync for accountsapi::directory_rpc::FindByHandleRequest
+impl core::marker::Unpin for accountsapi::directory_rpc::FindByHandleRequest
+impl core::marker::UnsafeUnpin for accountsapi::directory_rpc::FindByHandleRequest
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::directory_rpc::FindByHandleRequest
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::directory_rpc::FindByHandleRequest
+pub struct accountsapi::directory_rpc::FindByHandleResponse
+pub accountsapi::directory_rpc::FindByHandleResponse::err: alloc::string::String
+pub accountsapi::directory_rpc::FindByHandleResponse::status: opsapi::Status
+pub accountsapi::directory_rpc::FindByHandleResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for accountsapi::directory_rpc::FindByHandleResponse
+pub fn accountsapi::directory_rpc::FindByHandleResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::directory_rpc::FindByHandleResponse
+pub fn accountsapi::directory_rpc::FindByHandleResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsapi::directory_rpc::FindByHandleResponse
+impl core::marker::Send for accountsapi::directory_rpc::FindByHandleResponse
+impl core::marker::Sync for accountsapi::directory_rpc::FindByHandleResponse
+impl core::marker::Unpin for accountsapi::directory_rpc::FindByHandleResponse
+impl core::marker::UnsafeUnpin for accountsapi::directory_rpc::FindByHandleResponse
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::directory_rpc::FindByHandleResponse
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::directory_rpc::FindByHandleResponse
+pub struct accountsapi::directory_rpc::PlayersByIdRequest
+pub accountsapi::directory_rpc::PlayersByIdRequest::ids: alloc::vec::Vec<alloc::string::String>
+impl serde_core::ser::Serialize for accountsapi::directory_rpc::PlayersByIdRequest
+pub fn accountsapi::directory_rpc::PlayersByIdRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::directory_rpc::PlayersByIdRequest
+pub fn accountsapi::directory_rpc::PlayersByIdRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsapi::directory_rpc::PlayersByIdRequest
+impl core::marker::Send for accountsapi::directory_rpc::PlayersByIdRequest
+impl core::marker::Sync for accountsapi::directory_rpc::PlayersByIdRequest
+impl core::marker::Unpin for accountsapi::directory_rpc::PlayersByIdRequest
+impl core::marker::UnsafeUnpin for accountsapi::directory_rpc::PlayersByIdRequest
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::directory_rpc::PlayersByIdRequest
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::directory_rpc::PlayersByIdRequest
+pub struct accountsapi::directory_rpc::PlayersByIdResponse
+pub accountsapi::directory_rpc::PlayersByIdResponse::err: alloc::string::String
+pub accountsapi::directory_rpc::PlayersByIdResponse::status: opsapi::Status
+pub accountsapi::directory_rpc::PlayersByIdResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for accountsapi::directory_rpc::PlayersByIdResponse
+pub fn accountsapi::directory_rpc::PlayersByIdResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::directory_rpc::PlayersByIdResponse
+pub fn accountsapi::directory_rpc::PlayersByIdResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsapi::directory_rpc::PlayersByIdResponse
+impl core::marker::Send for accountsapi::directory_rpc::PlayersByIdResponse
+impl core::marker::Sync for accountsapi::directory_rpc::PlayersByIdResponse
+impl core::marker::Unpin for accountsapi::directory_rpc::PlayersByIdResponse
+impl core::marker::UnsafeUnpin for accountsapi::directory_rpc::PlayersByIdResponse
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::directory_rpc::PlayersByIdResponse
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::directory_rpc::PlayersByIdResponse
+pub const accountsapi::directory_rpc::METHOD_FIND_BY_HANDLE: &str
+pub const accountsapi::directory_rpc::METHOD_PLAYERS_BY_ID: &str
+pub fn accountsapi::directory_rpc::describe() -> opsapi::DescribeManifest
+pub fn accountsapi::directory_rpc::operations(alloc::sync::Arc<(dyn accountsapi::Directory + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn accountsapi::directory_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn accountsapi::directory_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub mod accountsapi::sessions_rpc
 pub struct accountsapi::sessions_rpc::VerifySessionRequest
 pub accountsapi::sessions_rpc::VerifySessionRequest::token: alloc::string::String
@@ -314,6 +377,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::IdentityRef
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::IdentityRef
 pub struct accountsapi::MeView
 pub accountsapi::MeView::display_name: alloc::string::String
+pub accountsapi::MeView::handle: alloc::string::String
 pub accountsapi::MeView::identities: alloc::vec::Vec<accountsapi::IdentityRef>
 pub accountsapi::MeView::player_id: alloc::string::String
 impl core::clone::Clone for accountsapi::MeView
@@ -337,6 +401,32 @@ impl core::marker::Unpin for accountsapi::MeView
 impl core::marker::UnsafeUnpin for accountsapi::MeView
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::MeView
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::MeView
+pub struct accountsapi::PlayerSummary
+pub accountsapi::PlayerSummary::display_name: alloc::string::String
+pub accountsapi::PlayerSummary::handle: alloc::string::String
+pub accountsapi::PlayerSummary::online_until: alloc::string::String
+pub accountsapi::PlayerSummary::player_id: alloc::string::String
+impl core::clone::Clone for accountsapi::PlayerSummary
+pub fn accountsapi::PlayerSummary::clone(&self) -> accountsapi::PlayerSummary
+impl core::cmp::Eq for accountsapi::PlayerSummary
+impl core::cmp::PartialEq for accountsapi::PlayerSummary
+pub fn accountsapi::PlayerSummary::eq(&self, &accountsapi::PlayerSummary) -> bool
+impl core::default::Default for accountsapi::PlayerSummary
+pub fn accountsapi::PlayerSummary::default() -> accountsapi::PlayerSummary
+impl core::fmt::Debug for accountsapi::PlayerSummary
+pub fn accountsapi::PlayerSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for accountsapi::PlayerSummary
+impl serde_core::ser::Serialize for accountsapi::PlayerSummary
+pub fn accountsapi::PlayerSummary::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsapi::PlayerSummary
+pub fn accountsapi::PlayerSummary::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsapi::PlayerSummary
+impl core::marker::Send for accountsapi::PlayerSummary
+impl core::marker::Sync for accountsapi::PlayerSummary
+impl core::marker::Unpin for accountsapi::PlayerSummary
+impl core::marker::UnsafeUnpin for accountsapi::PlayerSummary
+impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::PlayerSummary
+impl core::panic::unwind_safe::UnwindSafe for accountsapi::PlayerSummary
 pub struct accountsapi::Session
 pub accountsapi::Session::access_expires_in_secs: i64
 pub accountsapi::Session::player_id: alloc::string::String
@@ -363,6 +453,9 @@ impl core::marker::Unpin for accountsapi::Session
 impl core::marker::UnsafeUnpin for accountsapi::Session
 impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::Session
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::Session
+pub const accountsapi::MAX_DISPLAY_NAME_BYTES: usize
+pub const accountsapi::MAX_HANDLE_BYTES: usize
+pub const accountsapi::MAX_LOOKUP_IDS: usize
 pub const accountsapi::MAX_SESSION_TOKEN_BYTES: usize
 pub trait accountsapi::Auth: core::marker::Send + core::marker::Sync
 pub fn accountsapi::Auth::create_guest<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::GuestSession, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -372,5 +465,8 @@ pub fn accountsapi::Auth::login_federated<'life0, 'async_trait>(&'life0 self, al
 pub fn accountsapi::Auth::me<'life0, 'async_trait>(&'life0 self, opsapi::Identity) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::MeView, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::refresh<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn accountsapi::Auth::register<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<accountsapi::Session, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait accountsapi::Directory: core::marker::Send + core::marker::Sync
+pub fn accountsapi::Directory::find_by_handle<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<accountsapi::PlayerSummary>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn accountsapi::Directory::players_by_id<'life0, 'async_trait>(&'life0 self, alloc::vec::Vec<alloc::string::String>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<accountsapi::PlayerSummary>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait accountsapi::Sessions: core::marker::Send + core::marker::Sync
 pub fn accountsapi::Sessions::verify_session<'life0, 'async_trait>(&'life0 self, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::string::String>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

@@ -25,6 +25,7 @@ matchapi = { workspace = true }
 ratingapi = { workspace = true }
 walletapi = { workspace = true }
 notificationsapi = { workspace = true }
+friendsapi = { workspace = true }
 anyhow = { workspace = true }
 rpc-contract-model = { workspace = true }
 

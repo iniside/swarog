@@ -193,6 +193,118 @@
       }
     },
     {
+      "provider": "friends",
+      "wire_method": "friends.accept",
+      "verb": "POST",
+      "path": "/friends/requests/{id}/accept",
+      "auth": "player",
+      "success": 204,
+      "args": [
+        {
+          "name": "edge_id",
+          "wire_name": "edge_id",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    },
+    {
+      "provider": "friends",
+      "wire_method": "friends.decline",
+      "verb": "POST",
+      "path": "/friends/requests/{id}/decline",
+      "auth": "player",
+      "success": 204,
+      "args": [
+        {
+          "name": "edge_id",
+          "wire_name": "edge_id",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    },
+    {
+      "provider": "friends",
+      "wire_method": "friends.list",
+      "verb": "POST",
+      "path": "/friends/list",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "cursor",
+          "wire_name": "cursor",
+          "ty": "String"
+        },
+        {
+          "name": "limit",
+          "wire_name": "limit",
+          "ty": "I64"
+        }
+      ],
+      "ret": {
+        "Struct": "FriendPage"
+      }
+    },
+    {
+      "provider": "friends",
+      "wire_method": "friends.pending",
+      "verb": "POST",
+      "path": "/friends/requests/list",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "cursor",
+          "wire_name": "cursor",
+          "ty": "String"
+        },
+        {
+          "name": "limit",
+          "wire_name": "limit",
+          "ty": "I64"
+        }
+      ],
+      "ret": {
+        "Struct": "FriendPage"
+      }
+    },
+    {
+      "provider": "friends",
+      "wire_method": "friends.remove",
+      "verb": "DELETE",
+      "path": "/friends/{id}",
+      "auth": "player",
+      "success": 204,
+      "args": [
+        {
+          "name": "edge_id",
+          "wire_name": "edge_id",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    },
+    {
+      "provider": "friends",
+      "wire_method": "friends.request",
+      "verb": "POST",
+      "path": "/friends/requests",
+      "auth": "player",
+      "success": 201,
+      "args": [
+        {
+          "name": "target_handle",
+          "wire_name": "target_handle",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "Friend"
+      }
+    },
+    {
       "provider": "inventory",
       "wire_method": "inventory.grant",
       "verb": "POST",
@@ -447,6 +559,65 @@
       ]
     },
     {
+      "name": "Friend",
+      "fields": [
+        {
+          "name": "player_id",
+          "wire_name": "player_id",
+          "ty": "String"
+        },
+        {
+          "name": "display_name",
+          "wire_name": "display_name",
+          "ty": "String"
+        },
+        {
+          "name": "handle",
+          "wire_name": "handle",
+          "ty": "String"
+        },
+        {
+          "name": "online_until",
+          "wire_name": "online_until",
+          "ty": "String"
+        },
+        {
+          "name": "edge_id",
+          "wire_name": "edge_id",
+          "ty": "String"
+        },
+        {
+          "name": "state",
+          "wire_name": "state",
+          "ty": "String"
+        },
+        {
+          "name": "direction",
+          "wire_name": "direction",
+          "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "FriendPage",
+      "fields": [
+        {
+          "name": "items",
+          "wire_name": "items",
+          "ty": {
+            "Vec": {
+              "Struct": "Friend"
+            }
+          }
+        },
+        {
+          "name": "next_cursor",
+          "wire_name": "next_cursor",
+          "ty": "String"
+        }
+      ]
+    },
+    {
       "name": "GuestSession",
       "fields": [
         {
@@ -532,6 +703,11 @@
         {
           "name": "display_name",
           "wire_name": "display_name",
+          "ty": "String"
+        },
+        {
+          "name": "handle",
+          "wire_name": "handle",
           "ty": "String"
         },
         {

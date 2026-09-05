@@ -89,12 +89,15 @@ pub struct Friend {
     pub direction: String,
 }
 
-/// One page of [`Player::list`] or [`Player::pending`], newest first.
+/// One page of [`Player::list`] or [`Player::pending`], newest first. Named `FriendPage`,
+/// not the generic `Page`, because `csharp-client-gen`'s cross-crate DTO registry is
+/// flat-namespaced across every `api/*/api` crate and `notificationsapi` already owns
+/// `Page` — a same-named struct in two crates is a hard `bail!` there (`rename one`).
 ///
 /// `next_cursor` is opaque and EMPTY when the page is the last one — a caller pages until
 /// it is empty, never on a short page.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Page {
+pub struct FriendPage {
     pub items: Vec<Friend>,
     pub next_cursor: String,
 }
@@ -179,7 +182,7 @@ pub trait Player: Send + Sync {
     /// friend list with nothing reporting the outage.
     #[http(verb = "POST", path = "/friends/list", auth = "player", success = 200)]
     #[retry_safe]
-    async fn list(&self, identity: Identity, cursor: String, limit: i64) -> Result<Page, Error>;
+    async fn list(&self, identity: Identity, cursor: String, limit: i64) -> Result<FriendPage, Error>;
 
     /// The caller's PENDING relations — every unanswered request they are party to,
     /// whichever side authored it — [`Friend::direction`] is what separates the ones the
@@ -188,5 +191,5 @@ pub trait Player: Send + Sync {
     /// [`Player::list`].
     #[http(verb = "POST", path = "/friends/requests/list", auth = "player", success = 200)]
     #[retry_safe]
-    async fn pending(&self, identity: Identity, cursor: String, limit: i64) -> Result<Page, Error>;
+    async fn pending(&self, identity: Identity, cursor: String, limit: i64) -> Result<FriendPage, Error>;
 }

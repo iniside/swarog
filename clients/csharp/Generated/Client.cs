@@ -73,6 +73,32 @@ public sealed record CharactersDeleteRequest(
 /// <summary>Request for <c>characters.list</c> (no arguments — serializes to <c>{}</c>).</summary>
 public sealed record CharactersListRequest();
 
+/// <summary>Request for <c>friends.accept</c>.</summary>
+public sealed record FriendsAcceptRequest(
+    [property: JsonPropertyName("edge_id")] string EdgeId);
+
+/// <summary>Request for <c>friends.decline</c>.</summary>
+public sealed record FriendsDeclineRequest(
+    [property: JsonPropertyName("edge_id")] string EdgeId);
+
+/// <summary>Request for <c>friends.list</c>.</summary>
+public sealed record FriendsListRequest(
+    [property: JsonPropertyName("cursor")] string Cursor,
+    [property: JsonPropertyName("limit")] long Limit);
+
+/// <summary>Request for <c>friends.pending</c>.</summary>
+public sealed record FriendsPendingRequest(
+    [property: JsonPropertyName("cursor")] string Cursor,
+    [property: JsonPropertyName("limit")] long Limit);
+
+/// <summary>Request for <c>friends.remove</c>.</summary>
+public sealed record FriendsRemoveRequest(
+    [property: JsonPropertyName("edge_id")] string EdgeId);
+
+/// <summary>Request for <c>friends.request</c>.</summary>
+public sealed record FriendsRequestRequest(
+    [property: JsonPropertyName("target_handle")] string TargetHandle);
+
 /// <summary>Request for <c>inventory.grant</c>.</summary>
 public sealed record InventoryGrantRequest(
     [property: JsonPropertyName("item_id")] string ItemId,
@@ -242,6 +268,69 @@ public sealed class GameBackendClient(IPlayerTransport transport)
         JsonNode value = envelope["value"]
             ?? throw new GameBackendTransportException("Ok response missing 'value'");
         return value.Deserialize<Character[]>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>friends.accept</c> (requires a bearer token).</summary>
+    public async Task FriendsAcceptAsync(string token, string edgeId, CancellationToken ct = default)
+    {
+        var request = new FriendsAcceptRequest(edgeId);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("friends.accept", token, payload, ct).ConfigureAwait(false);
+        Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>friends.decline</c> (requires a bearer token).</summary>
+    public async Task FriendsDeclineAsync(string token, string edgeId, CancellationToken ct = default)
+    {
+        var request = new FriendsDeclineRequest(edgeId);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("friends.decline", token, payload, ct).ConfigureAwait(false);
+        Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>friends.list</c> (requires a bearer token).</summary>
+    public async Task<FriendPage> FriendsListAsync(string token, string cursor, long limit, CancellationToken ct = default)
+    {
+        var request = new FriendsListRequest(cursor, limit);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("friends.list", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<FriendPage>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>friends.pending</c> (requires a bearer token).</summary>
+    public async Task<FriendPage> FriendsPendingAsync(string token, string cursor, long limit, CancellationToken ct = default)
+    {
+        var request = new FriendsPendingRequest(cursor, limit);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("friends.pending", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<FriendPage>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>friends.remove</c> (requires a bearer token).</summary>
+    public async Task FriendsRemoveAsync(string token, string edgeId, CancellationToken ct = default)
+    {
+        var request = new FriendsRemoveRequest(edgeId);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("friends.remove", token, payload, ct).ConfigureAwait(false);
+        Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>friends.request</c> (requires a bearer token).</summary>
+    public async Task<Friend> FriendsRequestAsync(string token, string targetHandle, CancellationToken ct = default)
+    {
+        var request = new FriendsRequestRequest(targetHandle);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("friends.request", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<Friend>(JsonOpts)!;
     }
 
     /// <summary>Invokes <c>inventory.grant</c> (requires a bearer token).</summary>
