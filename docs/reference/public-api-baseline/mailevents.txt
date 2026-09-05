@@ -1,0 +1,33 @@
+# cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
+pub mod mailevents
+pub struct mailevents::SendRequested
+pub mailevents::SendRequested::body: alloc::string::String
+pub mailevents::SendRequested::idempotency_key: alloc::string::String
+pub mailevents::SendRequested::kind: alloc::string::String
+pub mailevents::SendRequested::subject: alloc::string::String
+pub mailevents::SendRequested::to: alloc::string::String
+impl core::clone::Clone for mailevents::SendRequested
+pub fn mailevents::SendRequested::clone(&self) -> mailevents::SendRequested
+impl core::cmp::Eq for mailevents::SendRequested
+impl core::cmp::PartialEq for mailevents::SendRequested
+pub fn mailevents::SendRequested::eq(&self, &mailevents::SendRequested) -> bool
+impl core::fmt::Debug for mailevents::SendRequested
+pub fn mailevents::SendRequested::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for mailevents::SendRequested
+impl serde_core::ser::Serialize for mailevents::SendRequested
+pub fn mailevents::SendRequested::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for mailevents::SendRequested
+pub fn mailevents::SendRequested::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for mailevents::SendRequested
+impl core::marker::Send for mailevents::SendRequested
+impl core::marker::Sync for mailevents::SendRequested
+impl core::marker::Unpin for mailevents::SendRequested
+impl core::marker::UnsafeUnpin for mailevents::SendRequested
+impl core::panic::unwind_safe::RefUnwindSafe for mailevents::SendRequested
+impl core::panic::unwind_safe::UnwindSafe for mailevents::SendRequested
+pub const mailevents::MAX_ADDRESS_BYTES: usize
+pub const mailevents::MAX_BODY_BYTES: usize
+pub const mailevents::MAX_IDEMPOTENCY_KEY_BYTES: usize
+pub const mailevents::MAX_KIND_BYTES: usize
+pub const mailevents::MAX_SUBJECT_BYTES: usize
+pub static mailevents::SEND_REQUESTED: std::sync::lazy_lock::LazyLock<bus::EventType<mailevents::SendRequested>>
