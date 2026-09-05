@@ -411,7 +411,20 @@ fn gateway() -> Entry {
             ),
             (
                 Convention::InputByteCaps,
-                na("gateway owns transport guards; field-level caps belong to operation owners"),
+                Stance::Applies(Fixture::InputByteCaps(vec![CapCase {
+                    // The one attacker-supplied field the gateway itself both NAMES and
+                    // BOUNDS: an authenticated `/push` client picks its own group names,
+                    // and each accepted one is stored per connection and per process.
+                    // The hello frame's `token`/`api_key` are NOT cases here — the
+                    // gateway bounds them only through the whole-frame transport guard
+                    // (`PUSH_MAX_FRAME_BYTES`), not with a field-level cap, so a CapCase
+                    // naming one would assert a cap that does not exist.
+                    name: "gateway push group name",
+                    cap: 128,
+                    probe: Arc::new(|len| {
+                        gateway::conformance::conformance_group_name_rejected(len)
+                    }),
+                }])),
             ),
             (
                 Convention::InfraOutage503,

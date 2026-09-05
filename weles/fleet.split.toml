@@ -155,13 +155,18 @@ env = { WALLET_DEV_SEED = "1", DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT
   provider = "config"
   kind = "edge"
 
+# GATEWAY_EDGE_ADDR is a LITERAL, not a `[[service.peer]]`: an Edge peer's provider must
+# appear strictly earlier in this file (fleet_toml::validate) and boot is readyz-gated,
+# but gateway-svc's own `/readyz` covers its notifications stub — so the peer form would
+# demand an order that deadlocks the boot. Push is best-effort and one-way, so the
+# literal is the honest shape here. Track it against gateway-svc's edge_port below.
 [[service]]
 name = "notifications-svc"
 pkg = "notifications-svc"
 provider = "notifications"
 http_port = 8093
 edge_port = 9011
-env = { DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+env = { GATEWAY_EDGE_ADDR = "127.0.0.1:9013", DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
 
 [[service]]
 name = "mail-svc"
@@ -173,13 +178,17 @@ env = { MAIL_PROVIDER = "log", MAIL_FROM = "dev@localhost", DATABASE_POOL_MAX_CO
 
 # The managed front door: `resolve = "asks"` — it asks the agent where its
 # peers are (ORCHESTRATOR_URL) instead of being told, so it declares NO peers.
-# It serves no internal edge (no edge_port) but dials every peer's, so it still
-# needs the CA. PLAYER_EDGE_ADDR is its OWN player-plane bind, not a peer.
+# It dials every peer's edge, so it needs the CA; it also SERVES one face on its own
+# (`edge_port = 9013`): the push backplane's `push.deliver`, which a producer process
+# calls to reach the WebSocket connections this front owns. Stating the port is
+# load-bearing — `app::run`'s EDGE_ADDR default is `:9000`, characters-svc's.
+# PLAYER_EDGE_ADDR is its OWN player-plane bind, not a peer.
 [[service]]
 name = "gateway-svc"
 pkg = "gateway-svc"
 provider = "gateway"
 http_port = 8082
+edge_port = 9013
 player_port = 9100
 resolve = "asks"
 env = { PLAYER_EDGE_ADDR = ":9100", TLS_MODE = "off", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }

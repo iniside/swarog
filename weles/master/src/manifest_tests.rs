@@ -223,10 +223,15 @@ fn full_fleet_env_goldens() {
             ],
         ),
         (
+            // GATEWAY_EDGE_ADDR is a literal in `[service.env]`, not a composed peer: the
+            // push backplane's target, wired the one direction an Edge peer block cannot
+            // express here (its provider would have to boot first, and gateway-svc's
+            // readyz waits on this very service).
             "notifications-svc",
             &[
                 ("PORT", ":8093"),
                 ("EDGE_ADDR", ":9011"),
+                ("GATEWAY_EDGE_ADDR", "127.0.0.1:9013"),
                 ("DATABASE_POOL_MAX_CONNECTIONS", "3"),
                 ("EDGE_CA_CERT", CA_CERT),
                 ("EDGE_CA_KEY", CA_KEY),
@@ -245,13 +250,15 @@ fn full_fleet_env_goldens() {
             ],
         ),
         (
-            // Pure-transport front door (`Addrs::Asks`): no EDGE_ADDR of its own,
-            // no pool cap, but it DOES carry the CA (dials every peer's edge) and
-            // gets ORCHESTRATOR_URL — none of the address keys it used to
-            // carry, only the URL it asks each of them for.
+            // Pure-transport front door (`Addrs::Asks`): no pool cap, but it DOES carry
+            // the CA (dials every peer's edge) and gets ORCHESTRATOR_URL — none of the
+            // address keys it used to carry, only the URL it asks each of them for. Its
+            // own EDGE_ADDR is here because it serves ONE inbound face, the push
+            // backplane's `push.deliver`.
             "gateway-svc",
             &[
                 ("PORT", ":8082"),
+                ("EDGE_ADDR", ":9013"),
                 ("EDGE_CA_CERT", CA_CERT),
                 ("EDGE_CA_KEY", CA_KEY),
                 ("PLAYER_EDGE_ADDR", ":9100"),

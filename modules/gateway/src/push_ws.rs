@@ -773,6 +773,17 @@ impl PushHub {
         true
     }
 
+    /// Whether a group name of `len` bytes is refused by the real [`PushHub::join`], over a
+    /// hub with one accepted connection — the executable body of the conformance gate's
+    /// input-byte-cap case for [`MAX_GROUP_NAME_BYTES`].
+    pub(crate) fn conformance_group_name_rejected(len: usize) -> bool {
+        let hub = Arc::new(PushHub::new(PushLimits::default()));
+        let (slot, _wake) = hub
+            .accept(IpAddr::V4(Ipv4Addr::LOCALHOST))
+            .unwrap_or_else(|_| panic!("a fresh hub accepts its first connection"));
+        !hub.join(slot.id, &"g".repeat(len))
+    }
+
     /// Removes `id` from group `name`. `false` when it was not a member — the client's
     /// view of its own membership is advisory, so this is not an error.
     fn leave(&self, id: ConnId, name: &str) -> bool {
@@ -993,6 +1004,45 @@ impl push::Sink for LocalSink {
     fn send(&self, target: &Target, msg: &Message) -> Result<push::Delivered, push::Error> {
         Ok(push::Delivered::Local(self.hub.deliver(target, msg)))
     }
+}
+
+// ---------------------------------------------------------------------------
+// The inbound backplane face
+// ---------------------------------------------------------------------------
+
+/// The wire method a backplane batch arrives as.
+///
+/// `core/remote`'s sender declares the SAME string in its own constant; nothing links the
+/// two, so a rename on either side answers `edge::Error::UnknownMethod` on every batch —
+/// a total push outage that looks exactly like every front being down and fails no boot.
+const DELIVER_METHOD: &str = "push.deliver";
+
+/// The registration `Gateway::init` contributes to `edge::EDGE_SLOT`, unconditionally.
+///
+/// `app::run` applies it only where the process serves an internal edge, so the monolith —
+/// whose producers reach these same sockets through [`LocalSink`] — never installs it, and
+/// this module never learns which topology it is in.
+pub(crate) fn deliver_registration(hub: Arc<PushHub>) -> edge::EdgeReg {
+    edge::EdgeReg::new(move |server: &mut edge::Server| {
+        let handler: edge::Handler = Arc::new(move |req: Vec<u8>| {
+            let hub = hub.clone();
+            Box::pin(async move { deliver_batch(&hub, &req) })
+        });
+        server.handle(DELIVER_METHOD, handler);
+    })
+}
+
+/// Replays one encoded batch into the local hub IN ORDER — the property the sender pays
+/// for by batching (one call, sequentially awaited) instead of issuing a call per message.
+///
+/// A message addressed to nobody on this front is a normal `0`, not a failure: every front
+/// receives every batch and filters locally, which is what keeps the design neutral to how
+/// many fronts the fleet runs.
+fn deliver_batch(hub: &PushHub, req: &[u8]) -> edge::HandlerResult {
+    for envelope in push::decode_batch(req)? {
+        hub.deliver(&envelope.target, &envelope.msg);
+    }
+    Ok(Vec::new())
 }
 
 // ---------------------------------------------------------------------------

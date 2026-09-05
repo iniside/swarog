@@ -11,10 +11,12 @@ publish = false
 # `admin.adminSubmit`. notifications owns schema `notifications` + three durable
 # subscriptions (wallet.changed, player.promoted, scheduler.fired-prune), so it needs
 # a DB pool and thus hosts the durable-events plane (app-owned, DB ⇒ plane). It
-# dials NO peer: `requires()` is empty (retention is `NOTIFICATIONS_RETENTION_DAYS`,
-# not a synchronous capability), so it hosts no `remote::Stub` beyond what `metrics`
-# brings. It hosts NO gateway (FrontDoor) — the single public front door lives only
-# in gateway-svc + the monolith.
+# dials no peer for a CAPABILITY: `requires()` is empty (retention is
+# `NOTIFICATIONS_RETENTION_DAYS`, not a synchronous capability), so it hosts no
+# `remote::Stub`. It does hold `remote::PushSender` — the push backplane's outbound half,
+# forwarding `ctx.push()` to gateway-svc's `push.deliver` (GATEWAY_EDGE_ADDR, :9013).
+# It hosts NO gateway (FrontDoor) — the single public front door lives only in
+# gateway-svc + the monolith.
 [[bin]]
 name = "notifications-svc"
 path = "src/main.rs"
@@ -25,6 +27,10 @@ edge = { workspace = true }
 lifecycle = { workspace = true }
 metrics = { workspace = true }
 notifications = { workspace = true }
+# `remote::PushSender` — the push backplane's outbound half: this process produces push
+# messages and owns no socket, so its `ctx.push()` sink is the queue that fans out to the
+# front(s) over the internal edge.
+remote = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }
 tracing-subscriber = { workspace = true }

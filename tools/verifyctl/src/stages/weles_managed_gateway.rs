@@ -832,15 +832,20 @@ fn swap_probe(input: &SwapInput) -> Result<SwapProbe> {
 
     let http_port = dead_port()?;
     let player_port = dead_udp_port()?;
+    let edge_port = dead_udp_port()?;
     let base = format!("http://127.0.0.1:{http_port}");
     let mut environment = input.environment.clone();
     environment.insert(
         "ORCHESTRATOR_URL".into(),
         format!("http://127.0.0.1:{}", agent.port()),
     );
-    // Its OWN ports: the fleet's gateway holds 8082 and the player plane's 9100.
+    // Its OWN ports: the fleet's gateway holds 8082, the player plane's 9100, and — since
+    // the front serves the push backplane's inbound face — the internal edge's 9013.
+    // EDGE_ADDR must be stated: its default is `:9000`, which characters-svc is holding in
+    // the fleet this probe runs alongside.
     environment.insert("PORT".into(), format!(":{http_port}"));
     environment.insert("PLAYER_EDGE_ADDR".into(), format!(":{player_port}"));
+    environment.insert("EDGE_ADDR".into(), format!(":{edge_port}"));
     environment.insert("TLS_MODE".into(), "off".into());
     // The mTLS material weles minted for this fleet — without it the stubs cannot
     // dial the real peers, and the key check would never reach apikeys-svc.

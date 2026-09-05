@@ -37,7 +37,10 @@
 //!    (an op without a binding is a silently skipped route); in the monolith, every
 //!    op method also has a `LocalOp` invoker (nothing dispatches Remote there).
 //! 3. **SPLIT SERVE-PARITY** — every method gateway-svc fronts is actually served on
-//!    some domain svc's internal edge (`methods(ops(gateway-svc)) ⊆ ⋃ edge(svc)`),
+//!    some DOMAIN svc's internal edge (`methods(ops(gateway-svc)) ⊆ ⋃ edge(svc)`;
+//!    gateway-svc's own edge is excluded from the union — it serves the push
+//!    backplane's `push.deliver` and no `#[http]` op, and the front must not front a
+//!    route to itself),
 //!    catching "gate only the front" half-fixes. This is set-membership only —
 //!    routecheck no longer needs to (and does not) check for a DUPLICATE edge
 //!    method across a process's registrations, because that uniqueness is now a
@@ -217,15 +220,16 @@ fn observe_profile(profile: &DeploymentProfile) -> anyhow::Result<Vec<ProcessRou
         // process. `EdgeReg::apply` is one-shot across clones, which is fine: each
         // process is built once per config run.
         //
-        // ONLY for processes that actually host an internal edge — every split
-        // domain svc. The monolith "server" and split "gateway-svc" never call
-        // `apply_edge_registrations` (their contributions are silently dropped by
-        // `app::run`), and `edge::Server` panics on a duplicate method name — so
-        // applying the monolith's co-hosted contributions (every admin-page module
+        // ONLY for processes that actually host an internal edge — every split svc,
+        // gateway-svc INCLUDED: `cmd/gateway-svc` passes a real `edge::Server` so the
+        // gateway module's `push.deliver` face is served there (the push backplane's
+        // inbound half). The monolith "server" passes `None`, so `app::run` silently
+        // drops its contributions; and since `edge::Server` panics on a duplicate method
+        // name, applying the monolith's co-hosted contributions (every admin-page module
         // registers `admin.adminData` for ITS OWN svc's edge) to one Server would
-        // manufacture a collision no real process ever sees. Modeling reality
-        // exactly: edge-less processes get an empty served set.
-        let hosts_internal_edge = process_id != "server" && process_id != "gateway-svc";
+        // manufacture a collision no real process ever sees. Modeling reality exactly:
+        // only the edge-less monolith gets an empty served set.
+        let hosts_internal_edge = process_id != "server";
         let edge_methods: BTreeSet<String> = if hosts_internal_edge {
             let mut server = edge::Server::new();
             for reg in ctx.contributions::<edge::EdgeReg>(edge::EDGE_SLOT) {
@@ -363,8 +367,9 @@ fn check(label: &str, monolith: &[ProcessRoutes], split: &[ProcessRoutes]) -> Ve
     // ops at register/init (its route table is built at start from these very manifests), so
     // `gateway.ops`/`gateway.op_methods` are empty — they are NOT the split front set here.
     // The union is over `process != "gateway-svc"` (the domain svcs that serve `__describe`);
-    // gateway-svc itself serves none. This is exactly what the runtime split front door
-    // fronts, so it is the faithful SPLIT side of every front-door invariant below (1/3/4).
+    // gateway-svc describes no op of its own (it contributes nothing to `DESCRIBE_SLOT`).
+    // This is exactly what the runtime split front door fronts, so it is the faithful
+    // SPLIT side of every front-door invariant below (1/3/4).
     let split_front_ops: Vec<Operation> = split
         .iter()
         .filter(|p| p.process != "gateway-svc")
@@ -420,7 +425,10 @@ fn check(label: &str, monolith: &[ProcessRoutes], split: &[ProcessRoutes]) -> Ve
     }
 
     // 3. SPLIT SERVE-PARITY — every fronted method is served on some domain svc's
-    // internal edge.
+    // internal edge. gateway-svc's OWN edge is excluded from the served union on
+    // purpose: it serves one face there (`push.deliver`, the push backplane's inbound
+    // half) and no `#[http]` op, and the front door must never satisfy this invariant by
+    // dispatching a fronted route to itself.
     let served: BTreeSet<&String> = split
         .iter()
         .filter(|p| p.process != "gateway-svc")
@@ -452,10 +460,12 @@ fn check(label: &str, monolith: &[ProcessRoutes], split: &[ProcessRoutes]) -> Ve
 
     // 5. DESCRIBE-COMPLETE — every edge-serving process serves its whole `#[http]`
     // surface under the ONE reserved `__describe` op (routing-as-data SERVE side, the
-    // forget-guard). Checked ONLY on the SPLIT processes: the monolith and gateway-svc
-    // serve no internal edge, so their DESCRIBE_SLOT contributions are never registered
-    // (`app::run` gates on the edge, exactly as `edge_methods` is empty for them here) —
-    // asserting on them would flag inert data. The monolith's aggregation is proven by
+    // forget-guard). Checked ONLY on the SPLIT processes: the monolith serves no
+    // internal edge, so its DESCRIBE_SLOT contributions are never registered
+    // (`app::run` gates on the edge, exactly as `edge_methods` is empty for it here) —
+    // asserting on it would flag inert data. gateway-svc IS checked and passes
+    // vacuously: its one edge face is not an `#[http]` op, so `served_http` is empty and
+    // it describes nothing. The monolith's aggregation is proven by
     // app's unit tests; here every real edge-serving svc must describe exactly what it
     // serves. `global_http` (the set of #[http] methods) is the monolith front door's op
     // set — the monolith fronts every #[http] op locally — used to filter each svc's

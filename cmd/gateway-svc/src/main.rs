@@ -159,8 +159,12 @@ async fn main() -> anyhow::Result<()> {
         Some(push_limits_from_env()?),
     );
 
-    // No edge server: this process serves no provider over the internal mTLS edge, it
-    // only DIALS peers (via the stubs). `without_db`: a pure-transport process owns no
+    // The internal mTLS edge (`EDGE_ADDR`, set explicitly by the fleet — the default
+    // `:9000` is characters-svc's): this process serves exactly ONE face on it, the
+    // gateway module's `push.deliver`, so a producer process's backplane sender can reach
+    // the WebSocket connections this front owns. Every other direction is still outbound —
+    // it DIALS its peers through the stubs and serves no provider op here.
+    // `without_db`: a pure-transport process owns no
     // schema, so `app::run` skips `PgPool::connect` and `/readyz` answers a plain 200.
     // The `metrics` module in `mods` gives the front door `GET /metrics` + the record
     // layer, so its op traffic IS measured now (the old `without_metrics` Go-parity
@@ -177,7 +181,7 @@ async fn main() -> anyhow::Result<()> {
             .with_rate_limit_default(20.0, 40)
             .with_tls(tls),
         mods,
-        None,
+        Some(Arc::new(Mutex::new(edge::Server::new()))),
         Some(player),
     )
     .await

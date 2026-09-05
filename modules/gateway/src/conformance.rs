@@ -56,3 +56,10 @@ pub async fn conformance_session_outage_status() -> StatusCode {
         Err(denial) => crate::admission_denial_response(&denial).status(),
     }
 }
+
+/// Drives the real `/push` group-verb name cap (`MAX_GROUP_NAME_BYTES`) over a hub with
+/// one accepted connection: `true` when a name of `len` bytes is refused.
+#[doc(hidden)]
+pub fn conformance_group_name_rejected(len: usize) -> bool {
+    crate::push_ws::PushHub::conformance_group_name_rejected(len)
+}

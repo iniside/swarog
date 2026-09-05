@@ -2684,6 +2684,7 @@ dependencies = [
  "lifecycle",
  "metrics",
  "notifications",
+ "remote",
  "tokio",
  "tracing-subscriber",
 ]

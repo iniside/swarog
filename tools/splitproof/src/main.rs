@@ -3658,7 +3658,7 @@ async fn replicas_exactly_once(
     const N: u32 = 20;
     const M: u32 = 10;
     // Distinct bind ports for the second instance — collide with nothing in the fleet
-    // (http 8080-8094, edge 9000-9012, player 9100). Same executable + same DATABASE_URL as
+    // (http 8080-8094, edge 9000-9013, player 9100). Same executable + same DATABASE_URL as
     // the base instance, so both run a durable worker holding the SAME subscription id; only
     // the bind ports differ. Its Postgres sessions are charged to the budget as
     // `processctl`'s `SPLITPROOF_REPLICA_SESSIONS` — the fleet model would otherwise miss

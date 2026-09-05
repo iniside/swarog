@@ -462,7 +462,8 @@ impl Module for Gateway {
     /// fallback).
     ///
     /// It also contributes this process's push sink (`push_ws::LocalSink`) to
-    /// `push::SINK_SLOT`, which `app::run` installs on `ctx.push()` after Build.
+    /// `push::SINK_SLOT`, which `app::run` installs on `ctx.push()` after Build, and the
+    /// inbound `push.deliver` edge face to `edge::EDGE_SLOT`.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let verifier = match &self.verifier {
             Some(v) => v.clone(),
@@ -499,6 +500,15 @@ impl Module for Gateway {
         ctx.contribute(
             push::SINK_SLOT,
             Arc::new(push_ws::LocalSink::new(front_door.push_hub())) as Arc<dyn push::Sink>,
+        );
+        // The inbound half of the backplane: a producer process's sender fans one ordered
+        // batch out to every front over `push.deliver`, and this replays it into the same
+        // hub the local sink writes to. Contributed unconditionally; `app::run` installs it
+        // only where the process serves an internal edge, so the monolith (whose producers
+        // are already local) never applies it.
+        ctx.contribute(
+            edge::EDGE_SLOT,
+            push_ws::deliver_registration(front_door.push_hub()),
         );
         if let Some(shared) = &self.player_edge {
             shared.lock().unwrap().set_handler(front_door.player_handler());

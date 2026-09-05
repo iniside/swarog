@@ -436,7 +436,7 @@ fn resolve_answers_exactly_what_each_service_composes_as_its_own_bind() {
         let Some(provider) = def.provider.as_deref() else { continue };
         let env = compose_env_with_fleet(def, &[], &fleet);
         for kind in [AddrKind::Edge, AddrKind::Http] {
-            // The kinds this service HAS. `edge_port: None` (admin, gateway) is
+            // The kinds this service HAS. `edge_port: None` (admin) is
             // a 404 instead — proven by `resolve_404s_for_a_provider_that_serves_
             // no_edge`, which is why it is not re-asserted here.
             if kind == AddrKind::Edge && def.edge_port.is_none() {

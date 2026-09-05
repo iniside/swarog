@@ -714,6 +714,11 @@ fn newest_directory(parent: &Path) -> Option<OsString> {
     directories.pop()
 }
 
+/// The front door's internal-edge port. It serves ONE inbound face there — the push
+/// backplane's `push.deliver` — so a producer process can reach the WebSocket connections
+/// it owns. 9013 continues the split's 9000-block; 9012 is mail-svc's.
+const GATEWAY_EDGE_PORT: u16 = 9013;
+
 pub fn game_backend_fleet(inputs: &FleetInputs, flavor: FleetFlavor) -> FleetSpec {
     game_backend_fleet_with_environment(inputs, flavor, &EnvironmentSnapshot::capture())
 }
@@ -793,12 +798,21 @@ pub fn game_backend_fleet_with_environment(
     let mut wallet = service("wallet-svc", 8092, Some(9010), vec!["config-svc"]);
     peer(&mut wallet.env, "CONFIG", 9002);
     let mut notifications = service("notifications-svc", 8093, Some(9011), vec![]);
+    // The push backplane's one address: notifications-svc fans `ctx.push()` out to the
+    // front's `push.deliver`. NOT a fleet dependency — gateway-svc already depends on
+    // notifications-svc, and push is best-effort, so this process must start and run with
+    // no front door present.
+    peer(&mut notifications.env, "GATEWAY", GATEWAY_EDGE_PORT);
     let mut mail = service("mail-svc", 8094, Some(9012), vec![]);
 
     let mut gateway_env = environment.runtime_environment();
     gateway_env.insert("EDGE_CA_CERT".into(), cert.clone());
     gateway_env.insert("EDGE_CA_KEY".into(), key.clone());
     gateway_env.insert("PORT".into(), ":8082".into());
+    // Explicit because this spec is built inline and never goes through `service()`, which
+    // is where every other svc gets its `EDGE_ADDR`. Without it `app::run` falls back to
+    // its `:9000` default — characters-svc's port.
+    gateway_env.insert("EDGE_ADDR".into(), format!(":{GATEWAY_EDGE_PORT}"));
     gateway_env.insert("PLAYER_EDGE_ADDR".into(), ":9100".into());
     gateway_env.insert("TLS_MODE".into(), "off".into());
     for (name, port) in [
@@ -819,7 +833,7 @@ pub fn game_backend_fleet_with_environment(
         name: "gateway-svc",
         executable_package: "gateway-svc",
         http_port: 8082,
-        edge_port: None,
+        edge_port: Some(GATEWAY_EDGE_PORT),
         player_port: Some(9100),
         dependencies: vec![
             "characters-svc", "inventory-svc", "accounts-svc", "match-svc",
