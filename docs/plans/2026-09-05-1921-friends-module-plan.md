@@ -530,6 +530,14 @@ edge registration** (this is the assertion that would have caught the silent F2)
 another player's edge id is 404 not 403; both-sides-request auto-accepts.
 `model:"opus"` — the harness shape is novel (two registered players, two bearers).
 
+**Added after Step 8 (errata 15): `[FR8]` — the admin page through the front door.**
+Step 8's own rationale is "before the proof step, which asserts the page through the
+front door", but the `[FR1]`–`[FR7]` list contained no admin assertion. Nothing would
+prove the Friends page renders in split — which is exactly where the `register_admin`
+edge registration and the admin-svc peer address can silently be wrong, with every gate
+green. `GET /admin/friends` through admin-svc, **with a foreign query param attached**,
+so foreign-param tolerance is proven cross-process rather than only in a unit test.
+
 **Added after the Step 2 review (errata 6):** widen the existing `[A3]` assertion
 (`tools/splitproof/src/main.rs:2077`), which today reads `GET /accounts/me` over the
 wire and only checks the body contains the `player_id`. It must also parse `handle` and
@@ -581,6 +589,18 @@ mitigation.
   its own feature and would need the discriminator re-minted.
 - **`notifications` has no command topic**, so every new module wanting an inbox row
   edits `notifications`. `mail` closed this for itself; `notifications` has not.
+- **`audit` and `notifications` both `.map_err(internal)` in `admin_data`** (found while
+  building Step 8's page, which deliberately does not). `adminapi` states the contract:
+  an `Err` is forbidden because the portal forwards every page's params to every
+  provider. Worse than a broken card — `modules/admin/src/lib.rs:1495-1510` collapses a
+  remote-fetch `Err`'s section *and* label to the item id, so the page also leaves its
+  own section and changes its slug. A DB blip on the audit page therefore breaks the
+  audit page in a way its own tests cannot see, split-only. Not fixed here: two other
+  modules, out of this rollout's scope. Sibling of the class Step 8 closed.
+- **The Friends admin page has NOT been compared against a live render.** Templates are
+  `include_str!`-embedded and no fleet was booted during Step 8. The visual loop closes
+  only against a running portal — do it during Step 13 (`devctl up monolith`, then
+  `/admin/friends`), not by reading the HTML.
 
 ## Errata
 
