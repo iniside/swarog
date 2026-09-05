@@ -250,6 +250,17 @@ fn full_fleet_env_goldens() {
             ],
         ),
         (
+            "friends-svc",
+            &[
+                ("PORT", ":8095"),
+                ("EDGE_ADDR", ":9014"),
+                ("DATABASE_POOL_MAX_CONNECTIONS", "3"),
+                ("EDGE_CA_CERT", CA_CERT),
+                ("EDGE_CA_KEY", CA_KEY),
+                ("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
+            ],
+        ),
+        (
             // Pure-transport front door (`Addrs::Asks`): no pool cap, but it DOES carry
             // the CA (dials every peer's edge) and gets ORCHESTRATOR_URL — none of the
             // address keys it used to carry, only the URL it asks each of them for. Its
@@ -283,6 +294,7 @@ fn full_fleet_env_goldens() {
                 ("WALLET_EDGE_ADDR", "127.0.0.1:9010"),
                 ("NOTIFICATIONS_EDGE_ADDR", "127.0.0.1:9011"),
                 ("MAIL_EDGE_ADDR", "127.0.0.1:9012"),
+                ("FRIENDS_EDGE_ADDR", "127.0.0.1:9014"),
                 ("ADMIN_COOKIE_SECURE", "0"),
                 ("TRUSTED_PROXY_CIDRS", "127.0.0.1/32"),
             ],

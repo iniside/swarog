@@ -131,5 +131,14 @@ pub fn modules(
             "notifications",
             edge_peer(wiring, edge_list_resolver, "notifications", "127.0.0.1:9011"),
         )),
+        // friends is pure-HTTP from this front door's point of view (request/accept/
+        // decline/remove/list/pending, routes arriving via `__describe`); the gateway
+        // consumes no friends capability of its own. `describe_peer`, never `Stub::new`
+        // — `friendsrpc` deliberately exposes no `remote_factories()`, and `Stub::new`
+        // with an empty factory list `anyhow::bail!`s in `register`.
+        Box::new(remote::Stub::describe_peer(
+            "friends",
+            edge_peer(wiring, edge_list_resolver, "friends", "127.0.0.1:9014"),
+        )),
     ]
 }

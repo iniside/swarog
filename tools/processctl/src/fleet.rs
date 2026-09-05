@@ -804,6 +804,8 @@ pub fn game_backend_fleet_with_environment(
     // no front door present.
     peer(&mut notifications.env, "GATEWAY", GATEWAY_EDGE_PORT);
     let mut mail = service("mail-svc", 8094, Some(9012), vec![]);
+    let mut friends = service("friends-svc", 8095, Some(9014), vec!["accounts-svc"]);
+    peer(&mut friends.env, "ACCOUNTS", 9003);
 
     let mut gateway_env = environment.runtime_environment();
     gateway_env.insert("EDGE_CA_CERT".into(), cert.clone());
@@ -824,6 +826,7 @@ pub fn game_backend_fleet_with_environment(
         ("APIKEYS", 9009),
         ("WALLET", 9010),
         ("NOTIFICATIONS", 9011),
+        ("FRIENDS", 9014),
     ] {
         peer(&mut gateway_env, name, port);
     }
@@ -838,6 +841,7 @@ pub fn game_backend_fleet_with_environment(
         dependencies: vec![
             "characters-svc", "inventory-svc", "accounts-svc", "match-svc",
             "leaderboard-svc", "apikeys-svc", "wallet-svc", "notifications-svc",
+            "friends-svc",
         ],
         env: gateway_env,
         overrideable_env: &[],
@@ -853,6 +857,7 @@ pub fn game_backend_fleet_with_environment(
         vec![
             "characters-svc", "inventory-svc", "config-svc", "accounts-svc", "audit-svc",
             "scheduler-svc", "apikeys-svc", "wallet-svc", "notifications-svc", "mail-svc",
+            "friends-svc",
         ],
     );
     for (name, port) in [
@@ -866,6 +871,7 @@ pub fn game_backend_fleet_with_environment(
         ("WALLET", 9010),
         ("NOTIFICATIONS", 9011),
         ("MAIL", 9012),
+        ("FRIENDS", 9014),
     ] {
         peer(&mut admin.env, name, port);
     }
@@ -946,7 +952,7 @@ pub fn game_backend_fleet_with_environment(
 
     FleetSpec::new(vec![
         accounts, apikeys, audit, scheduler, rating, leaderboard, matches, config, characters,
-        inventory, wallet, notifications, mail, gateway, admin,
+        inventory, wallet, notifications, mail, friends, gateway, admin,
     ])
     .expect("the built-in game backend fleet is internally valid")
 }

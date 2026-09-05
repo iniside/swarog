@@ -1,0 +1,29 @@
+[package]
+name = "friends-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The friends fortress process: hosts friends and fills its `accounts` dependency
+# (`accountsapi::Directory`) with a `remote::Stub` dialing accounts-svc over the QUIC
+# edge. It hosts NO gateway (FrontDoor) — the single public front door lives only in
+# gateway-svc + the monolith. It imports neither the accounts IMPL crate nor
+# `friendsrpc`'s remote factories (friends has none: nothing consumes its capability
+# remotely), only `accountsrpc` glue (passed into the stub, rule 5).
+[[bin]]
+name = "friends-svc"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+lifecycle = { workspace = true }
+metrics = { workspace = true }
+edge = { workspace = true }
+friends = { workspace = true }
+remote = { workspace = true }
+accountsrpc = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
