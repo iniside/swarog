@@ -33,6 +33,8 @@ mod config_tests;
 #[cfg(test)]
 mod projection_tests;
 #[cfg(test)]
+mod smtp_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod worker_tests;

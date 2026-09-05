@@ -324,7 +324,7 @@ pub(crate) async fn bounded_tx(
 /// [`crate::smtp`]) — everything after it is unbounded, so this aggregate deadline is what
 /// keeps a stalled relay from holding a claimed row past its lease. An elapsed budget is
 /// infrastructure, never a rejection — the message may well be deliverable.
-async fn attempt(drain: &Drain, row: &Claimed) -> Result<(), SendError> {
+pub(crate) async fn attempt(drain: &Drain, row: &Claimed) -> Result<(), SendError> {
     let outgoing = Outgoing {
         from: &drain.from,
         to: &row.recipient,
