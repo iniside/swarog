@@ -229,3 +229,9 @@ pub enum Error {
     #[error("push transport: {0}")]
     Transport(String),
 }
+
+// The model's own tests (separate file per the tests-in-separate-files rule): the
+// sinkless `NoSink` latch, the second-install panic, `Delivered`'s two kinds, and the
+// backplane batch codec.
+#[cfg(test)]
+mod tests;

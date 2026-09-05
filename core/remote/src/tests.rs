@@ -2206,3 +2206,240 @@ async fn describe_round_trips_over_a_live_edge_returning_every_op() {
     assert!(methods.contains(&"match.report".to_string()), "{methods:?}");
     assert!(methods.contains(&"characters.create".to_string()), "{methods:?}");
 }
+
+// ===========================================================================
+// The push fan-out (Step 3): `Pool::deliver_all` and `Pool::fanout_state`.
+//
+// Both are best-effort-sender seams with no `Err` to observe, so every property here
+// is proven by construction with fake instances: WHICH instances were attempted
+// (per-instance call counters), WHICH answers were counted (the returned number), and
+// WHICH bound each attempt got (a paused clock plus a per-call delay parked between
+// `FANOUT_UNHEALTHY_TIMEOUT` and `FANOUT_CALL_TIMEOUT`).
+// ===========================================================================
+
+/// The three health shapes `deliver_all` must tell apart: a completed-OK probe, a
+/// completed-FAILED one (the condemned instance), and one that has never completed
+/// (the optimistic cold start).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FakeHealth {
+    Healthy,
+    Condemned,
+    NeverProbed,
+}
+
+/// A fake per-instance caller that takes `delay` on the TOKIO clock before accepting.
+/// The delay is the whole instrument: with the clock paused, a delay between the two
+/// fan-out bounds makes "which bound did this instance get" a boolean the test reads
+/// off the returned count.
+struct SlowCaller {
+    addr: String,
+    calls: Arc<AtomicUsize>,
+    delay: Duration,
+    reachable: bool,
+}
+
+#[async_trait]
+impl Caller for SlowCaller {
+    async fn call(
+        &self,
+        _method: &str,
+        _identity: Option<&str>,
+        _payload: &[u8],
+        _retry_mode: RetryMode,
+    ) -> Result<Vec<u8>, Error> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep(self.delay).await;
+        if self.reachable {
+            Ok(self.addr.clone().into_bytes())
+        } else {
+            Err(Error::new(opsapi::Status::Unavailable, "fake: front is gone"))
+        }
+    }
+}
+
+/// Instances whose caller takes `delay` and whose probe state comes from `health`
+/// (absent = healthy). No QUIC, no probe task.
+fn fanout_factory(
+    recorder: Recorder,
+    delay: Duration,
+    reachable: bool,
+    health: std::collections::HashMap<String, FakeHealth>,
+) -> InstanceFactory {
+    Arc::new(move |addr: &str| {
+        let addr = addr.to_string();
+        recorder.note_build(&addr);
+        let calls = recorder.call_counter(&addr);
+        let caller: Arc<dyn Caller> = Arc::new(SlowCaller {
+            addr: addr.clone(),
+            calls,
+            delay,
+            reachable,
+        });
+        let state = health.get(&addr).copied().unwrap_or(FakeHealth::Healthy);
+        let h = Arc::new(InstanceHealth::seed());
+        match state {
+            FakeHealth::Healthy => {
+                *h.verdict.lock().unwrap() = Ok(());
+                h.last_probe_at.store(coarse_now_secs().max(1), Ordering::SeqCst);
+            }
+            FakeHealth::Condemned => {
+                *h.verdict.lock().unwrap() = Err("preset dead".to_string());
+                h.last_probe_at.store(coarse_now_secs().max(1), Ordering::SeqCst);
+            }
+            // The seed IS never-probed: a pending verdict and a `0` stamp.
+            FakeHealth::NeverProbed => {}
+        }
+        let close: InstanceCloser = Arc::new(|| Box::pin(async {}));
+        Instance {
+            addr,
+            caller,
+            health: h,
+            probe: None,
+            close,
+        }
+    })
+}
+
+fn health_map(pairs: &[(&str, FakeHealth)]) -> std::collections::HashMap<String, FakeHealth> {
+    pairs.iter().map(|(a, h)| ((*a).to_string(), *h)).collect()
+}
+
+/// Health picks the DEADLINE, never the target (the round-2 reversal). With every
+/// instance taking 4s — between [`FANOUT_UNHEALTHY_TIMEOUT`] (2s) and
+/// [`FANOUT_CALL_TIMEOUT`] (8s) — the condemned instance is still ATTEMPTED (its call
+/// counter moves) but times out on the short bound, while the healthy and the
+/// never-probed instance are both counted on the long one.
+///
+/// Restoring the health GATE turns this into `hits(B) == 0`: the condemned front is
+/// never dialled, which is the condemned-slow-front bug this shape closed.
+#[tokio::test(start_paused = true)]
+async fn deliver_all_gives_a_condemned_instance_the_short_bound_and_still_attempts_it() {
+    let recorder = Recorder::default();
+    let pool = Pool::with_factory(
+        list_of(&["A", "B", "C"]),
+        fanout_factory(
+            recorder.clone(),
+            Duration::from_secs(4),
+            true,
+            health_map(&[
+                ("A", FakeHealth::Healthy),
+                ("B", FakeHealth::Condemned),
+                ("C", FakeHealth::NeverProbed),
+            ]),
+        ),
+    );
+
+    let delivered = pool.deliver_all("push.deliver", b"[]").await;
+
+    assert_eq!(recorder.hits("B"), 1, "a condemned instance is still attempted");
+    assert_eq!(recorder.hits("A"), 1);
+    assert_eq!(recorder.hits("C"), 1);
+    assert_eq!(
+        delivered, 2,
+        "the healthy and never-probed instances get the long bound; the condemned one \
+         is cut at the short bound"
+    );
+}
+
+/// The other half of the same knob: at 1s every instance answers INSIDE the short
+/// bound, so the condemned one is counted too. Without this the test above would also
+/// pass with a gate that skipped B outright.
+#[tokio::test(start_paused = true)]
+async fn deliver_all_counts_a_condemned_instance_that_answers_within_the_short_bound() {
+    let recorder = Recorder::default();
+    let pool = Pool::with_factory(
+        list_of(&["A", "B", "C"]),
+        fanout_factory(
+            recorder.clone(),
+            Duration::from_secs(1),
+            true,
+            health_map(&[
+                ("A", FakeHealth::Healthy),
+                ("B", FakeHealth::Condemned),
+                ("C", FakeHealth::NeverProbed),
+            ]),
+        ),
+    );
+
+    assert_eq!(
+        pool.deliver_all("push.deliver", b"[]").await,
+        3,
+        "a condemned front that still serves the method delivers"
+    );
+    assert_eq!(recorder.hits("B"), 1);
+}
+
+/// No resolved instance is `0`, not a panic and not an error — the sender treats it as
+/// "nobody accepted" and drops the batch.
+#[tokio::test]
+async fn deliver_all_on_an_empty_instance_set_is_zero() {
+    let recorder = Recorder::default();
+    let pool = Pool::with_factory(
+        list_of(&[]),
+        fanout_factory(recorder.clone(), Duration::ZERO, true, health_map(&[])),
+    );
+
+    assert_eq!(pool.deliver_all("push.deliver", b"[]").await, 0);
+}
+
+/// Every instance unreachable is still `0` rather than an error surfacing at the
+/// producer: a server→client message has no durable copy to redeliver, so a dead front
+/// must never become a caller-visible failure. Both instances ARE attempted.
+#[tokio::test]
+async fn deliver_all_never_fails_when_no_instance_accepts() {
+    let recorder = Recorder::default();
+    let pool = Pool::with_factory(
+        list_of(&["A", "B"]),
+        fanout_factory(recorder.clone(), Duration::ZERO, false, health_map(&[])),
+    );
+
+    assert_eq!(pool.deliver_all("push.deliver", b"[]").await, 0);
+    assert_eq!(recorder.hits("A"), 1);
+    assert_eq!(recorder.hits("B"), 1);
+}
+
+/// `Unresolved` (never looked up) and `Empty` (looked up, nothing there) are different
+/// answers, and the trap is between them: a resolver ERROR returns from `refresh_once`
+/// BEFORE stamping `applied_gen`, so a pool whose agent is down stays `Unresolved` —
+/// which is what keeps the sender waiting once rather than discarding messages, and
+/// what makes the drain's one-shot wait latch necessary.
+#[tokio::test]
+async fn fanout_state_separates_never_resolved_from_resolved_to_nothing() {
+    let recorder = Recorder::default();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let a = attempts.clone();
+    // Resolve #1 errors, #2 answers [], #3 answers [A].
+    let list: PeerListResolver = Arc::new(move || {
+        let n = a.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            match n {
+                0 => Err("agent unreachable".to_string()),
+                1 => Ok(Vec::new()),
+                _ => Ok(vec!["A".to_string()]),
+            }
+        })
+    });
+    let pool = Pool::with_factory(
+        list,
+        fanout_factory(recorder, Duration::ZERO, true, health_map(&[])),
+    );
+
+    assert_eq!(pool.fanout_state(), FanoutState::Unresolved, "before any resolve");
+
+    pool.refresh_once().await;
+    assert_eq!(
+        pool.fanout_state(),
+        FanoutState::Unresolved,
+        "a resolver error must NOT count as a resolve: the set is unknown, not empty"
+    );
+
+    pool.refresh_once().await;
+    assert_eq!(
+        pool.fanout_state(),
+        FanoutState::Empty,
+        "a resolve returning no addresses is the one state a sender may short-circuit on"
+    );
+
+    pool.refresh_once().await;
+    assert_eq!(pool.fanout_state(), FanoutState::Ready(1));
+}

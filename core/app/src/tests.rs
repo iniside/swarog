@@ -477,6 +477,64 @@ fn db_pool_max_below_floor_fails_startup() {
 }
 
 // ============================================================================
+// `select_push_sink` (push hub, Step 2): the ONE authority deciding which sink a
+// process installs on `ctx.push()`. Zero/one/two are three different startup
+// outcomes and the two-sink arm is otherwise reachable only by booting a fleet
+// mis-wired with both a front-door sink and a backplane sender.
+// ============================================================================
+
+/// A sink that answers without a transport — `select_push_sink` never calls it; the
+/// tests only need distinguishable `Arc` identities.
+struct CountingSink(std::sync::atomic::AtomicUsize);
+
+impl push::Sink for CountingSink {
+    fn send(
+        &self,
+        _target: &push::Target,
+        _msg: &push::Message,
+    ) -> Result<push::Delivered, push::Error> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(push::Delivered::Queued)
+    }
+}
+
+fn counting_sink() -> Arc<dyn push::Sink> {
+    Arc::new(CountingSink(std::sync::atomic::AtomicUsize::new(0)))
+}
+
+#[test]
+fn no_contributed_push_sink_is_legal_and_installs_nothing() {
+    // The common split process: it hosts neither the front door's local sink nor a
+    // backplane sender, so `ctx.push().send` answers `NoSink` rather than failing boot.
+    assert!(select_push_sink(Vec::new()).unwrap().is_none());
+}
+
+#[test]
+fn one_contributed_push_sink_is_the_one_installed() {
+    let sink = counting_sink();
+    let picked = select_push_sink(vec![sink.clone()])
+        .unwrap()
+        .expect("a single contribution installs");
+    assert!(
+        Arc::ptr_eq(&picked, &sink),
+        "the contributed sink itself is installed, not a substitute"
+    );
+}
+
+#[test]
+fn two_contributed_push_sinks_fail_startup_naming_the_count() {
+    // A process resolving a target two ways has no right answer; silently picking one
+    // would make the losing wiring invisible. The count is in the message so an
+    // operator can tell a double-contribution from a missing one.
+    let Err(err) = select_push_sink(vec![counting_sink(), counting_sink()]) else {
+        panic!("two sinks must fail startup");
+    };
+    let msg = err.to_string();
+    assert!(msg.contains('2'), "the failure names how many were contributed: {msg}");
+    assert!(msg.contains("push::SINK_SLOT"), "{msg}");
+}
+
+// ============================================================================
 // `env_rate_pair` (Step 13 / DEFECT 1): the single decision authority resolving a
 // `(rps, burst)` pair together, closing the gap where a bare `RATE_LIMIT_BURST=0`
 // alongside an always-on gateway `rps>0` silently mounted a capacity-0 bucket.

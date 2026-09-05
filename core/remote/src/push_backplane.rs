@@ -477,3 +477,10 @@ fn separator_len(chunk: &[Envelope]) -> usize {
         1
     }
 }
+
+// The backplane sender's tests (separate file per the tests-in-separate-files rule;
+// same module so they reach the private drain, its byte-boundary split, and the pool's
+// fake-instance seam).
+#[cfg(test)]
+#[path = "push_backplane_tests.rs"]
+mod tests;

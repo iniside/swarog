@@ -50,4 +50,6 @@ registry = { workspace = true }
 # `net`/`io-util` are for `resolve_tests`'s OWN fake agent (a raw TCP HTTP/1.1 canner):
 # `remote` is in the SHIPPING graph, so it may never dev-dep `weles` to test against the
 # real server — see `resolve::resolve_peer`'s doc. `time` bounds the tests' hang guards.
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time"] }
+# `test-util`: the fan-out bound tests run a paused clock, so "which deadline did this
+# instance get" is a decided answer rather than a race with a real 2s/8s timer.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net", "io-util", "time", "test-util"] }
