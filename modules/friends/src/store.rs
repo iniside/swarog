@@ -23,6 +23,16 @@ pub(crate) struct EdgeRow {
     pub(crate) requester_is_caller: bool,
 }
 
+/// One relation as the ADMIN sees it: the pair spelled requester-then-addressee, with no
+/// caller to be relative to.
+pub(crate) struct AdminEdgeRow {
+    pub(crate) edge_id: String,
+    pub(crate) requester_id: String,
+    pub(crate) addressee_id: String,
+    pub(crate) state: String,
+    pub(crate) created_at: String,
+}
+
 pub(crate) struct PairRow {
     pub(crate) edge_id: String,
     pub(crate) state: String,
@@ -333,6 +343,80 @@ impl Store {
             Err(e) if is_invalid_uuid(&e) => Ok(Vec::new()),
             Err(e) => Err(e),
         }
+    }
+
+    /// The admin page's three counts in ONE statement: three separate `count(*)`s would
+    /// report a total no single instant of the table ever had. `player_id` scopes every
+    /// count to the relations that player is party to.
+    pub(crate) async fn admin_counts(
+        &self,
+        player_id: Option<&str>,
+        pending: &str,
+        accepted: &str,
+    ) -> Result<(i64, i64, i64), sqlx::Error> {
+        let sql = format!(
+            "SELECT count(*), \
+                    count(*) FILTER (WHERE state = $1), \
+                    count(*) FILTER (WHERE state = $2) \
+               FROM friends.edges{}",
+            match player_id {
+                Some(_) => " WHERE $3::uuid IN (low_id, high_id)",
+                None => "",
+            }
+        );
+        let q = sqlx::query_as::<_, (i64, i64, i64)>(&sql).bind(pending).bind(accepted);
+        let res = match player_id {
+            Some(id) => q.bind(id).fetch_one(&self.pool).await,
+            None => q.fetch_one(&self.pool).await,
+        };
+        match res {
+            Ok(counts) => Ok(counts),
+            Err(e) if is_invalid_uuid(&e) => Ok((0, 0, 0)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The newest relations, either across the table or scoped to one player. Unlike
+    /// [`Store::page`] this is NOT caller-relative: the admin sees the pair as the database
+    /// holds it, requester first, so a row means the same thing whichever player it lists.
+    pub(crate) async fn admin_recent(
+        &self,
+        player_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<AdminEdgeRow>, sqlx::Error> {
+        let sql = format!(
+            "SELECT id::text, requester_id::text, \
+                    CASE WHEN low_id = requester_id THEN high_id ELSE low_id END::text, \
+                    state, {CREATED_TEXT} \
+               FROM friends.edges{} \
+              ORDER BY created_at DESC, id DESC LIMIT $1",
+            match player_id {
+                Some(_) => " WHERE $2::uuid IN (low_id, high_id)",
+                None => "",
+            }
+        );
+        let q =
+            sqlx::query_as::<_, (String, String, String, String, String)>(&sql).bind(limit);
+        let res = match player_id {
+            Some(id) => q.bind(id).fetch_all(&self.pool).await,
+            None => q.fetch_all(&self.pool).await,
+        };
+        match res {
+            Ok(rows) => Ok(rows.into_iter().map(row_to_admin_edge).collect()),
+            Err(e) if is_invalid_uuid(&e) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+fn row_to_admin_edge(row: (String, String, String, String, String)) -> AdminEdgeRow {
+    let (edge_id, requester_id, addressee_id, state, created_at) = row;
+    AdminEdgeRow {
+        edge_id,
+        requester_id,
+        addressee_id,
+        state,
+        created_at,
     }
 }
 

@@ -22,13 +22,18 @@ friendsevents = { workspace = true }
 # The directory capability's CONTRACT (`Directory`, `PlayerSummary`) plus the byte cap on a
 # handle — the one authority for that bound, so friends declares no second const.
 accountsapi = { workspace = true }
+# The admin CONTRACT (widgets + the read-only `AdminData` trait) — a contract crate,
+# importable by any module; the admin impl is never reached.
+adminapi = { workspace = true }
 bus = { workspace = true }
 sqlx = { workspace = true }
 # The opaque paging cursor is base64url-no-pad over `"{created_at}|{id}"`.
 base64 = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+# The admin `RenderFn` is synchronous while the page's store reads are not: the local render
+# bridges through `block_in_place` on the multi-thread runtime.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [dev-dependencies]
 asyncevents = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
