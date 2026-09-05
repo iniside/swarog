@@ -57,12 +57,6 @@ fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"))
 }
 
-/// `true` for a Postgres "invalid text representation" (22P02) — a malformed uuid in
-/// the request — treated as not-found rather than a 500.
-fn is_invalid_uuid(e: &sqlx::Error) -> bool {
-    matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
-}
-
 /// How many discriminators one display name may try before minting fails. The unique
 /// index `accounts_handle_idx` is the ONLY freeness authority: each attempt INSERTs and
 /// reads back whether the index accepted it, so there is no window between a check and
@@ -647,21 +641,6 @@ impl Store {
         Ok(res.rows_affected())
     }
 
-    /// One player by id. A malformed id (22P02) is `Ok(None)`, like a genuine miss.
-    pub async fn get_player(&self, id: &str) -> Result<Option<Player>, sqlx::Error> {
-        let res: Result<Option<(String, String)>, sqlx::Error> = sqlx::query_as(
-            "SELECT id::text, display_name FROM accounts.players WHERE id = $1::uuid",
-        )
-        .bind(id)
-        .fetch_optional(&self.pool)
-        .await;
-        match res {
-            Ok(row) => Ok(row.map(|(id, display_name)| Player { id, display_name })),
-            Err(e) if is_invalid_uuid(&e) => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
     /// The summaries for `ids` in ONE statement, for the batched
     /// [`accountsapi::Directory::players_by_id`]. Ids that name no player are simply
     /// absent from the result, so the caller gets a short vector, never an error;
@@ -688,6 +667,17 @@ impl Store {
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(summary_of).collect())
+    }
+
+    /// One player by id, as the SAME summary the batch answers with — `me` reads its
+    /// own handle through this, so no second site renders `"Name#1234"`. A malformed id
+    /// is `Ok(None)`, like a genuine miss.
+    pub async fn player_summary(
+        &self,
+        id: &str,
+    ) -> Result<Option<accountsapi::PlayerSummary>, sqlx::Error> {
+        let ids = [id.to_owned()];
+        Ok(self.players_by_id(&ids).await?.into_iter().next())
     }
 
     /// The player one `"Name#1234"` handle names, matched case-insensitively on the name

@@ -503,19 +503,21 @@ impl Service {
             .map_err(internal)
     }
 
-    /// The `{player_id, display_name, identities}` view of one player — shared by
-    /// `me` and `link` so both answer with the same read.
+    /// The `{player_id, display_name, handle, identities}` view of one player — shared
+    /// by `me` and `link` so both answer with the same read. The handle comes from the
+    /// summary projection the directory serves, never a second rendering.
     async fn me_view(&self, player_id: &str) -> Result<accountsapi::MeView, Error> {
         let p = self
             .store
-            .get_player(player_id)
+            .player_summary(player_id)
             .await
             .map_err(internal)?
             .ok_or_else(|| Error::not_found("player not found"))?;
         let identities = self.store.identities_of(player_id).await.map_err(internal)?;
         Ok(accountsapi::MeView {
-            player_id: p.id,
+            player_id: p.player_id,
             display_name: p.display_name,
+            handle: p.handle,
             identities,
         })
     }

@@ -83,12 +83,14 @@ pub struct IdentityRef {
 }
 
 /// The single return of [`Auth::me`]: the caller's own player plus the identities
-/// list, flattened to the exact `{player_id, display_name, identities}` external
-/// body Go's `MeView` (embedded `Player`) produced.
+/// list. `handle` is the ONLY front-door read of the caller's own `"Name#1234"` —
+/// [`Directory`] is wire-only, so without this field a player could be resolved by a
+/// handle it had no way to learn.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MeView {
     pub player_id: String,
     pub display_name: String,
+    pub handle: String,
     pub identities: Vec<IdentityRef>,
 }
 
