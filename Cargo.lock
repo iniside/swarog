@@ -1462,6 +1462,7 @@ dependencies = [
  "accountsapi",
  "anyhow",
  "async-trait",
+ "asyncevents",
  "base64 0.22.1",
  "bus",
  "edge",
@@ -1472,6 +1473,7 @@ dependencies = [
  "opsapi",
  "registry",
  "sqlx",
+ "tokio",
 ]
 
 [[package]]

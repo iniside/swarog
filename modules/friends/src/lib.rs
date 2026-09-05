@@ -13,6 +13,8 @@
 
 mod service;
 mod store;
+#[cfg(test)]
+mod tests;
 
 pub use service::Service;
 
