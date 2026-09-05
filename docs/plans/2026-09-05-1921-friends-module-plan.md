@@ -512,6 +512,15 @@ edge registration** (this is the assertion that would have caught the silent F2)
 another player's edge id is 404 not 403; both-sides-request auto-accepts.
 `model:"opus"` — the harness shape is novel (two registered players, two bearers).
 
+**Added after the Step 2 review (errata 6):** widen the existing `[A3]` assertion
+(`tools/splitproof/src/main.rs:2077`), which today reads `GET /accounts/me` over the
+wire and only checks the body contains the `player_id`. It must also parse `handle` and
+require the `<display_name>#<4 digits>` shape. `MeView.handle` exists *solely* to be
+readable through the front door, yet it is asserted only in-process — and the wire-shape
+gates that would otherwise catch a drift (contract-golden, the C# surface) are red until
+Step 10. "No HTTP logic sits in front of the handler, therefore it is covered" is a
+mechanism argument, not an observation.
+
 ## Step 13 — verify `[inline]`
 
 `cargo run -p verifyctl -- --fast`, then `--all --strict`. Output to a file with
