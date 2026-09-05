@@ -23,9 +23,13 @@ edge = { workspace = true }
 # no `api/` crate, no cycle.
 remote = { workspace = true }
 contrib = { workspace = true }
-# The push hub MODEL (`ConnId`) — a foundation leaf owning no transport; this module owns
-# the socket that carries it.
+# The push hub MODEL (`ConnId`/`Target`/`Message`/`Sink`) — a foundation leaf owning no
+# transport; this module owns the socket that carries it and resolves a target against
+# the connections it holds.
 push = { workspace = true }
+# The client-facing frame carries a producer's OPAQUE payload bytes, base64-encoded so a
+# non-UTF-8 payload survives a JSON frame (the same crate accounts/apikeys already use).
+base64 = { workspace = true }
 # The shared route-pattern label seam (`httpmw::RoutePattern`): the front door stamps a
 # matched op's route pattern onto the response so `core/metrics` labels op traffic by
 # pattern instead of the fixed "unmatched". A core leaf (no cycle: httpmw imports no module).

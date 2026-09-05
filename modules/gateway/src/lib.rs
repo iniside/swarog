@@ -460,6 +460,9 @@ impl Module for Gateway {
     /// this process was wired for it. Absent capability + no explicit
     /// `ACCOUNTS_DEV_AUTH`/`APIKEYS_DEV_ALLOW` fails startup loudly (no silent dev
     /// fallback).
+    ///
+    /// It also contributes this process's push sink (`push_ws::LocalSink`) to
+    /// `push::SINK_SLOT`, which `app::run` installs on `ctx.push()` after Build.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let verifier = match &self.verifier {
             Some(v) => v.clone(),
@@ -489,6 +492,14 @@ impl Module for Gateway {
         }
         let front_door = Arc::new(front_door);
         ctx.mount(front_door.router());
+        // The process's one push sink: `app::run` drains this slot after Build and installs
+        // it on `ctx.push()`, so every producer in this process resolves its targets against
+        // the sockets `/push` owns. Contributed unconditionally — the module does not know
+        // (and must not decide) whether it is the monolith or the split front.
+        ctx.contribute(
+            push::SINK_SLOT,
+            Arc::new(push_ws::LocalSink::new(front_door.push_hub())) as Arc<dyn push::Sink>,
+        );
         if let Some(shared) = &self.player_edge {
             shared.lock().unwrap().set_handler(front_door.player_handler());
         }

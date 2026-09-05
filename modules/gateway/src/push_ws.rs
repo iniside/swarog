@@ -1,10 +1,12 @@
 //! `GET /push` — the WebSocket transport half of the push hub: the upgrade, the
 //! credential handshake, the per-connection registry and the per-connection task.
 //!
-//! It owns SOCKETS, not the hub model (`core/push` owns `ConnId`/`Target`/`Message`) and
-//! not target resolution. What lives here is everything that would otherwise be spread
-//! across an accept path: the aggregate bounds, the one place a connection is inserted
-//! and removed, and the task that reads/writes one socket.
+//! It owns SOCKETS and their addressing, not the hub model (`core/push` owns
+//! `ConnId`/`Target`/`Message`). What lives here is everything that would otherwise be
+//! spread across an accept path: the aggregate bounds, the one place a connection is
+//! inserted and removed, the task that reads/writes one socket, and — through
+//! [`LocalSink`] — the resolution of a `push::Target` against the connections this
+//! process owns.
 //!
 //! **Auth happens AFTER the upgrade, deliberately.** A browser cannot set headers on a
 //! WebSocket dial, so a bearer must also be accepted as the first frame; and a refusal
@@ -28,8 +30,9 @@ use axum::extract::ws::{CloseFrame, Message as WsMessage, WebSocket, WebSocketUp
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use base64::Engine;
 use ipnet::IpNet;
-use push::ConnId;
+use push::{ConnId, Message, Target};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::AbortHandle;
 
@@ -87,6 +90,11 @@ pub struct PushLimits {
     /// `X-Forwarded-For` from an UNTRUSTED direct peer is ignored, so a forged header
     /// cannot mint a fresh bucket per connection.
     pub trusted_proxies: Vec<IpNet>,
+    /// Whether a bind and a last-disconnect broadcast `push.presence` to every bound
+    /// connection on this front. OFF by default: each transition is O(connections) here
+    /// and the front has no friends graph to narrow the audience with, so the fan-out is
+    /// quadratic in a population that does not care about most of it.
+    pub presence: bool,
 }
 
 impl Default for PushLimits {
@@ -102,6 +110,7 @@ impl Default for PushLimits {
             reverify_interval: Duration::from_secs(60),
             max_stale: Duration::from_secs(900),
             trusted_proxies: Vec::new(),
+            presence: false,
         }
     }
 }
@@ -163,6 +172,20 @@ impl PushLimits {
             }
         }
 
+        fn flag(name: &str, raw: Option<String>, current: bool) -> anyhow::Result<bool> {
+            match value(raw) {
+                None => Ok(current),
+                Some(v) => match v.to_ascii_lowercase().as_str() {
+                    "1" | "true" | "on" | "yes" => Ok(true),
+                    "0" | "false" | "off" | "no" => Ok(false),
+                    _ => anyhow::bail!(
+                        "{name}={v:?} is invalid: expected 1/0, true/false, on/off or \
+                         yes/no (unset it for the default of {current})"
+                    ),
+                },
+            }
+        }
+
         let d = PushLimits::default();
         let limits = PushLimits {
             max_connections: count(
@@ -178,6 +201,7 @@ impl PushLimits {
             write_deadline: ms(WRITE_MS, get(WRITE_MS), d.write_deadline)?,
             reverify_interval: ms(REVERIFY_MS, get(REVERIFY_MS), d.reverify_interval)?,
             max_stale: ms(MAX_STALE_MS, get(MAX_STALE_MS), d.max_stale)?,
+            presence: flag(PRESENCE, get(PRESENCE), d.presence)?,
             ..d
         };
         // The SAME trusted-proxy set `core/app`'s rate limiter resolves a client IP
@@ -198,12 +222,24 @@ pub const HANDSHAKE_MS: &str = "PUSH_HANDSHAKE_TIMEOUT_MS";
 pub const WRITE_MS: &str = "PUSH_WRITE_TIMEOUT_MS";
 pub const REVERIFY_MS: &str = "PUSH_REVERIFY_INTERVAL_MS";
 pub const MAX_STALE_MS: &str = "PUSH_MAX_STALE_MS";
+pub const PRESENCE: &str = "PUSH_PRESENCE";
 /// Shared with `core/app`'s rate limiter — the one trusted-proxy set per process.
 pub const TRUSTED_PROXIES: &str = "TRUSTED_PROXY_CIDRS";
 
 // ---------------------------------------------------------------------------
 // The wire frames
 // ---------------------------------------------------------------------------
+
+/// The longest group name a join is accepted for, and the most groups one connection may
+/// hold. Fixed rather than [`PushLimits`] knobs: they bound what ONE socket can make this
+/// process allocate, which the connection cap already bounds in aggregate, and a client
+/// that hits either is misusing a seam whose whole membership it rebuilds on the next
+/// reconnect anyway.
+const MAX_GROUP_NAME_BYTES: usize = 128;
+const MAX_GROUPS_PER_CONN: usize = 32;
+
+/// The topic a presence transition is published under (see [`PushHub::announce`]).
+const PRESENCE_TOPIC: &str = "push.presence";
 
 /// A client→server frame. An unknown `type` deserializes into [`ClientFrame::Other`],
 /// which a LIVE connection ignores (a newer client speaking a verb this build does not
@@ -219,8 +255,24 @@ enum ClientFrame {
         #[serde(default)]
         api_key: Option<String>,
     },
+    /// Adds this connection to a group, addressable as `push::Target::Group`.
+    ///
+    /// A join is NOT permission-checked and is not meant to be: any authenticated client
+    /// may name any group, so a group addresses an audience, never a privilege. Nothing
+    /// only some players may see can be addressed by group alone.
+    Join { group: String },
+    /// Removes this connection from a group. Membership also dies with the connection —
+    /// it is per-process, is not restored on a reconnect, and the client rejoins.
+    Leave { group: String },
     #[serde(other)]
     Other,
+}
+
+/// The presence payload published on [`PRESENCE_TOPIC`].
+#[derive(serde::Serialize)]
+struct Presence<'a> {
+    player_id: &'a str,
+    online: bool,
 }
 
 /// A server→client frame.
@@ -229,6 +281,11 @@ enum ClientFrame {
 enum ServerFrame<'a> {
     /// The handshake succeeded; the connection is registered under this id.
     Ack { connection_id: ConnId },
+    /// One delivered [`push::Message`]. `payload` is base64 (standard alphabet): the
+    /// producer's bytes are opaque to every layer between it and the client, so they are
+    /// carried in the one JSON-safe encoding that survives non-UTF-8 content instead of
+    /// being re-interpreted here.
+    Message { topic: &'a str, payload: String },
     /// The connection is ending, and why.
     Close {
         code: CloseCode,
@@ -386,11 +443,15 @@ impl ConnQueue {
     /// Offers one frame, dropping the OLDEST pending one when the queue is full.
     /// Synchronous and non-blocking by contract: a producer may be holding a database
     /// transaction's connection.
-    fn push(&self, text: String) {
+    ///
+    /// `false` means the connection is already closing and the frame was not queued —
+    /// what [`PushHub::deliver`] counts, so a `Delivered::Local(n)` counts connections
+    /// the frame actually reached.
+    fn push(&self, text: String) -> bool {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.close.is_some() {
-                return;
+                return false;
             }
             while state.ring.len() >= self.capacity {
                 state.ring.pop_front();
@@ -399,6 +460,7 @@ impl ConnQueue {
             state.ring.push_back(text);
         }
         let _ = self.wake.try_send(());
+        true
     }
 
     /// Ends the connection with `code`. Idempotent — the FIRST reason wins, so a
@@ -504,6 +566,42 @@ struct HubState {
     groups: HashMap<String, HashSet<ConnId>>,
 }
 
+impl HubState {
+    /// Every queue `target` names, cloned out so the caller can drop the registry guard
+    /// before it writes to any of them.
+    ///
+    /// `All` means every BOUND connection, not every socket: a connection that has not
+    /// finished its handshake has no identity to address, must not learn who else is
+    /// online, and its task treats a queued frame as a routing defect
+    /// ([`handshake`]'s queue branch).
+    fn resolve(&self, target: &Target) -> Vec<Arc<ConnQueue>> {
+        match target {
+            Target::Player(player) => self
+                .by_player
+                .get(player)
+                .map(|ids| ids.iter().filter_map(|id| self.addressable(id)).collect())
+                .unwrap_or_default(),
+            Target::Group(name) => self
+                .groups
+                .get(name)
+                .map(|ids| ids.iter().filter_map(|id| self.addressable(id)).collect())
+                .unwrap_or_default(),
+            Target::All => self
+                .conns
+                .values()
+                .filter(|conn| conn.player.is_some())
+                .map(|conn| conn.queue.clone())
+                .collect(),
+        }
+    }
+
+    fn addressable(&self, id: &ConnId) -> Option<Arc<ConnQueue>> {
+        let conn = self.conns.get(id)?;
+        conn.player.as_ref()?;
+        Some(conn.queue.clone())
+    }
+}
+
 struct Conn {
     /// `None` until the handshake binds an identity to the socket.
     player: Option<String>,
@@ -512,6 +610,16 @@ struct Conn {
     /// down a task that will not observe its queue.
     abort: Option<AbortHandle>,
     groups: HashSet<String>,
+}
+
+/// What [`PushHub::bind`] observed, for the caller to act on once the registry guard is
+/// released.
+struct Bound {
+    /// This is the player's FIRST bound connection on this front — the offline→online
+    /// transition a presence announcement reports.
+    first: bool,
+    /// The connection the per-player cap evicted, to be closed by the caller.
+    evicted: Option<Arc<ConnQueue>>,
 }
 
 /// Why an upgrade was refused before it happened.
@@ -590,9 +698,9 @@ impl PushHub {
 
     /// Binds a verified player to an accepted connection, enforcing the per-player cap by
     /// evicting the longest-bound one (see [`HubState::by_player`] on why that is not the
-    /// same as the earliest-accepted one). Returns the evicted connection's queue (if any) for the
-    /// caller to close AFTER the guard is dropped.
-    fn bind(&self, id: ConnId, player: &str) -> Option<Arc<ConnQueue>> {
+    /// same as the earliest-accepted one). Everything the caller must act on happens AFTER
+    /// the guard is dropped, so [`Bound`] carries it out rather than this doing it here.
+    fn bind(&self, id: ConnId, player: &str) -> Option<Bound> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         {
             // A `None` here means the slot was released underneath us; the task is about
@@ -602,11 +710,100 @@ impl PushHub {
         }
         let ids = state.by_player.entry(player.to_string()).or_default();
         ids.push_back(id);
-        if ids.len() <= self.limits.max_per_player {
-            return None;
+        let first = ids.len() == 1;
+        let over_cap = ids.len() > self.limits.max_per_player;
+        let evicted_id = if over_cap { ids.pop_front() } else { None };
+        let evicted =
+            evicted_id.and_then(|id| state.conns.get(&id).map(|conn| conn.queue.clone()));
+        Some(Bound { first, evicted })
+    }
+
+    /// Adds `id` to group `name`, refusing an over-long name and a connection already
+    /// holding [`MAX_GROUPS_PER_CONN`] groups. Idempotent: re-joining a group the
+    /// connection already holds succeeds and consumes no further quota.
+    ///
+    /// A join is deliberately NOT permission-checked — see [`ClientFrame::Join`].
+    fn join(&self, id: ConnId, name: &str) -> bool {
+        if name.is_empty() || name.len() > MAX_GROUP_NAME_BYTES {
+            return false;
         }
-        let evicted = ids.pop_front()?;
-        state.conns.get(&evicted).map(|conn| conn.queue.clone())
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(conn) = state.conns.get_mut(&id) else {
+            return false;
+        };
+        if !conn.groups.contains(name) && conn.groups.len() >= MAX_GROUPS_PER_CONN {
+            return false;
+        }
+        conn.groups.insert(name.to_string());
+        state.groups.entry(name.to_string()).or_default().insert(id);
+        true
+    }
+
+    /// Removes `id` from group `name`. `false` when it was not a member — the client's
+    /// view of its own membership is advisory, so this is not an error.
+    fn leave(&self, id: ConnId, name: &str) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(conn) = state.conns.get_mut(&id) else {
+            return false;
+        };
+        if !conn.groups.remove(name) {
+            return false;
+        }
+        if let Some(members) = state.groups.get_mut(name) {
+            members.remove(&id);
+            if members.is_empty() {
+                state.groups.remove(name);
+            }
+        }
+        true
+    }
+
+    /// Resolves `target` against this process's connections and enqueues `msg` to each,
+    /// answering how many accepted it.
+    ///
+    /// The registry guard covers the resolution ONLY: the addressed queues are cloned out
+    /// and the guard dropped before anything is enqueued, so this never blocks, never
+    /// awaits, and cannot deadlock against a connection task editing the registry. That is
+    /// the whole reason `push::Sink::send` is synchronous — a caller may be a durable-event
+    /// handler holding its delivery transaction's connection.
+    fn deliver(&self, target: &Target, msg: &Message) -> usize {
+        let frame = serde_json::to_string(&ServerFrame::Message {
+            topic: &msg.topic,
+            payload: base64::engine::general_purpose::STANDARD.encode(&msg.payload),
+        })
+        .expect("message frame serialization cannot fail");
+        let queues = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.resolve(target)
+        };
+        queues.into_iter().filter(|queue| queue.push(frame.clone())).count()
+    }
+
+    /// Broadcasts one presence transition to every bound connection.
+    ///
+    /// `Target::All` because this front has no friends graph to narrow the audience with:
+    /// with one, presence would address a group. Callers gate this on
+    /// [`PushLimits::presence`], and MUST call it with no registry guard held — it takes
+    /// the same non-reentrant lock.
+    fn announce(&self, player: &str, online: bool) {
+        // A stopping front announces nothing: every queue already carries its close, so
+        // each departing connection would walk every other one to deliver zero frames.
+        if self.state.lock().unwrap_or_else(|e| e.into_inner()).closing {
+            return;
+        }
+        let payload = serde_json::to_vec(&Presence { player_id: player, online })
+            .expect("presence payload serialization cannot fail");
+        self.deliver(&Target::All, &Message::new(PRESENCE_TOPIC, payload));
+    }
+
+    /// Whether this player still holds a bound connection here. Read AFTER a [`Slot`] has
+    /// released its entry, so a `false` means the last device left.
+    fn player_online(&self, player: &str) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .by_player
+            .contains_key(player)
     }
 
     /// Signals every live connection to close, waits (bounded) for their tasks to write
@@ -702,6 +899,36 @@ impl Drop for Slot {
         // Unconditional: `shutdown` waits on this, so an exit path that skipped it would
         // make the stop grace elapse in full.
         self.hub.drained.notify_waiters();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The sink
+// ---------------------------------------------------------------------------
+
+/// This process's [`push::Sink`]: it answers a [`Target`] from the connections the front
+/// door owns, which is what makes the monolith need no backplane at all.
+///
+/// Contributed to `push::SINK_SLOT` by `Gateway::init` and installed by `app::run` after
+/// Build, so `ctx.push()` in a gateway-hosting process resolves locally while a process
+/// without a front door answers `push::Error::NoSink` until a backplane sender is wired
+/// into it.
+pub(crate) struct LocalSink {
+    hub: Arc<PushHub>,
+}
+
+impl LocalSink {
+    pub(crate) fn new(hub: Arc<PushHub>) -> LocalSink {
+        LocalSink { hub }
+    }
+}
+
+impl push::Sink for LocalSink {
+    /// Never blocks and never awaits (see [`PushHub::deliver`]). The count is connections
+    /// the frame was ENQUEUED to; a socket that dies before its queue drains is still
+    /// counted, which is as much as any best-effort sink can honestly claim.
+    fn send(&self, target: &Target, msg: &Message) -> Result<push::Delivered, push::Error> {
+        Ok(push::Delivered::Local(self.hub.deliver(target, msg)))
     }
 }
 
@@ -824,7 +1051,9 @@ async fn run(
         return write_close(&mut socket, CloseCode::Unauthorized, limits.write_deadline).await;
     };
 
-    if let Some(evicted) = slot.hub.bind(slot.id, &player) {
+    let bound = slot.hub.bind(slot.id, &player);
+    let first = bound.as_ref().is_some_and(|bound| bound.first);
+    if let Some(evicted) = bound.and_then(|bound| bound.evicted) {
         evicted.close(CloseCode::Replaced);
     }
     // Queued, not written directly: every server->client frame leaves through the one
@@ -836,7 +1065,23 @@ async fn run(
         .expect("ack serialization cannot fail"),
     );
 
+    // After the bind guard is gone: `announce` resolves `Target::All` against the same
+    // non-reentrant registry lock.
+    if limits.presence && first {
+        slot.hub.announce(&player, true);
+    }
+
     serve(front, &slot, &mut wake, &mut socket, &player, &bearer, &limits).await;
+
+    // Dropping the slot FIRST removes this connection from every index, so the check below
+    // asks whether the player has another device left rather than seeing the one that is
+    // leaving — and the announcement cannot re-create the entry the release just removed
+    // (`deliver` only reads the registry).
+    let hub = slot.hub.clone();
+    drop(slot);
+    if limits.presence && !hub.player_online(&player) {
+        hub.announce(&player, false);
+    }
 }
 
 struct Credentials {
@@ -870,9 +1115,9 @@ async fn handshake(
                 // the grace of a stopping process.
                 out = slot.queue.recv(wake) => match out {
                     Some(Outbound::Close(code)) => return Err(Some(code)),
-                    // Nothing addresses a connection before it binds a player, so a frame
-                    // here would mean the hub resolved a target against an unauthenticated
-                    // socket — a routing defect, not a frame to swallow.
+                    // `HubState::resolve` never names a connection with no player, so a
+                    // frame here would mean the hub addressed an unauthenticated socket —
+                    // a routing defect, not a frame to swallow.
                     Some(Outbound::Text(_)) => {
                         unreachable!("nothing is queued to a connection before it binds")
                     }
@@ -907,6 +1152,12 @@ fn parse_hello(bytes: &[u8]) -> Result<Credentials, Option<CloseCode>> {
             bearer: token,
             api_key,
         }),
+        // A group verb before the handshake is as wrong as an unknown one: the first frame
+        // is the one place a client must speak this build's grammar, and nothing can be
+        // joined by a connection with no identity.
+        Ok(ClientFrame::Join { .. }) | Ok(ClientFrame::Leave { .. }) => {
+            Err(Some(CloseCode::Protocol))
+        }
         Ok(ClientFrame::Other) | Err(_) => Err(Some(CloseCode::Protocol)),
     }
 }
@@ -945,8 +1196,10 @@ async fn serve(
             },
             msg = socket.recv() => match msg {
                 None | Some(Err(_)) | Some(Ok(WsMessage::Close(_))) => break,
-                // Step 4 serves no client verb; the hub's join/leave land here. An
-                // unknown frame is ignored rather than fatal so a newer client stays up.
+                Some(Ok(WsMessage::Text(text))) => on_client_frame(slot, text.as_bytes()),
+                Some(Ok(WsMessage::Binary(bytes))) => on_client_frame(slot, &bytes),
+                // Ping/Pong: axum answers a ping itself, and a pong is the reply to the
+                // liveness ping written on the re-verify tick.
                 Some(Ok(_)) => {}
             },
             _ = reverify.tick() => {
@@ -983,6 +1236,32 @@ async fn serve(
     }
     if let Some(code) = close {
         write_close(socket, code, limits.write_deadline).await;
+    }
+}
+
+/// Applies one frame from a LIVE connection: the group verbs, and nothing else.
+///
+/// Every rejection — an unknown verb, a second `hello`, malformed JSON, an over-long or
+/// over-quota group — is ignored rather than fatal. A newer client speaking a verb this
+/// build does not have must stay connected, and a refused join costs the client only the
+/// membership it asked for.
+fn on_client_frame(slot: &Slot, bytes: &[u8]) {
+    match serde_json::from_slice::<ClientFrame>(bytes) {
+        Ok(ClientFrame::Join { group }) => {
+            if !slot.hub.join(slot.id, &group) {
+                // The name itself is attacker-supplied and unbounded up to the frame cap,
+                // so only its length is logged.
+                tracing::debug!(
+                    conn = %slot.id,
+                    group_len = group.len(),
+                    "push: group join refused"
+                );
+            }
+        }
+        Ok(ClientFrame::Leave { group }) => {
+            slot.hub.leave(slot.id, &group);
+        }
+        Ok(ClientFrame::Hello { .. }) | Ok(ClientFrame::Other) | Err(_) => {}
     }
 }
 

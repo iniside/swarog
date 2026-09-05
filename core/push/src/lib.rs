@@ -78,7 +78,9 @@ pub enum Target {
     /// Every connection that joined this group. Groups are ephemeral, host-owned and
     /// die with the connection; membership is not authorization.
     Group(String),
-    /// Every connection on the front.
+    /// Every connection on the front that has completed its handshake. A connection with
+    /// no identity yet is not addressable — it is not a participant, and it must not be
+    /// told about the ones that are.
     All,
 }
 
