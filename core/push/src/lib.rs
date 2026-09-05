@@ -78,9 +78,9 @@ pub enum Target {
     /// Every connection that joined this group. Groups are ephemeral, host-owned and
     /// die with the connection; membership is not authorization.
     Group(String),
-    /// Every connection on the front that has completed its handshake. A connection with
-    /// no identity yet is not addressable — it is not a participant, and it must not be
-    /// told about the ones that are.
+    /// Every connection with an established identity, on every front this process's sink
+    /// reaches. A connection that has not yet authenticated is not addressable — it is not
+    /// a participant, and it must not be told about the ones that are.
     All,
 }
 
@@ -144,9 +144,12 @@ pub fn decode_batch(bytes: &[u8]) -> Result<Vec<Envelope>, Error> {
 /// and must never be collapsed into one number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Delivered {
-    /// The sink resolved the target against connections this process owns and wrote to
-    /// `0..n` of them. `0` is a normal answer (nobody addressed is connected here), not
-    /// a failure.
+    /// The sink resolved the target against connections this process owns and ACCEPTED
+    /// the message for delivery on `n` of them. Not a write: a sink queues per connection,
+    /// so a counted connection may still lose the frame to a dying socket or to its own
+    /// bound queue. `0` is a normal answer (nobody addressed is connected here), not a
+    /// failure — and a sink that refuses a message outright may also answer `0`, so this
+    /// number is never evidence that a target set was empty.
     Local(usize),
     /// The sink accepted the message for fan-out and has not written it to any
     /// connection yet. Nothing is promised about how many connections will receive it,

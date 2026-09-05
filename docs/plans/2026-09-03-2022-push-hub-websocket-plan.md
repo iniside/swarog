@@ -247,8 +247,22 @@ review found); the `Notified::enable` window (a slot released between the `live(
 the await); `KeyCheck::PresenceOnly` vs `Policy` inside the one `check_api_key` (a key whose
 policy names nothing is admitted on `/push` and `Forbidden` on an op); and
 `PushLimits::from_values` over unset → default, `"0"` → error naming the var, garbage →
-error, valid → parsed, malformed CIDR → error (a value-taking parser, so no test touches
-process env). Must also execute, at minimum, the branches
+error, valid → parsed, malformed CIDR → error, and `PUSH_PRESENCE` over its own grammar
+(unset → off, `1`/`true`/`on`/`yes` → on, `0`/`false`/`off`/`no` → off, garbage → error) —
+a value-taking parser, so no test touches process env.
+From Step 5 (`a440650` + its review follow-up), four more that nothing else pins:
+**all three `Target` variants resolving to ZERO queues for an accepted-but-unbound
+connection** — the `unreachable!` in the handshake's queue branch is true only because of
+one `filter` and one `?` in `HubState::resolve`/`addressable`, in a different function
+from the panic, so an edit there turns a routing change into a panicking public-facing
+connection task (and a panicked task latches that player's presence `online` forever);
+the **presence transition decided inside the mutation** — a disconnect racing the same
+player's reconnect must not end with `offline` latched on a connected player, which a
+test that only connects-then-disconnects cannot see; the **outbound payload cap**
+(`MAX_PAYLOAD_BYTES`) dropping-and-counting instead of allocating per addressed
+connection; and the **per-connection verb budget** refilling on the re-verify tick, since
+an unbudgeted `leave` for a never-joined group is an attacker-paced acquisition of the
+one registry lock `deliver` also takes. Must also execute, at minimum, the branches
 behind constraints 2, 5, 6, 9 and 10 — a forged `X-Forwarded-For`, an unavailable verifier, a
 revoked session on the re-verify tick, queue overflow, and a **typed close** observed by the
 client (asserting merely that connections end would pass from the cancel alone). Plus the
@@ -278,7 +292,12 @@ tracker, and a new `docs/reference/push-hub.md`.
 The C# fixture stays RPC-only. Presence is front-local, default off, with no store — a global
 view needs a friends graph and persistence, both out of scope. Group membership and in-flight
 messages are lost on reconnect; the client rejoins. Ordering holds within one connection, not
-across a reconnect. `/push` checks api-key presence but no policy. Per-message traffic is
+across a reconnect. Presence transitions are DECIDED under the registry guard that
+performs the bind/removal, but the two announcements are enqueued independently
+afterwards, so a disconnect racing the same player's reconnect can still deliver
+`online` and `offline` to an observer in either order; the frames carry no sequence or
+timestamp for the client to reorder them by, and closing that needs presence to be
+sequenced state rather than an event. `/push` checks api-key presence but no policy. Per-message traffic is
 unmetered by the HTTP rate limiter, which charges the upgrade once — the per-connection queue and
 the aggregate caps are the only bounds. A fixed `/push` route is invisible to `routecheck`, so a
 future `#[http]` op at the same path would shadow it with no gate noticing.

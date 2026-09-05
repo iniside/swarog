@@ -238,8 +238,32 @@ pub const TRUSTED_PROXIES: &str = "TRUSTED_PROXY_CIDRS";
 const MAX_GROUP_NAME_BYTES: usize = 128;
 const MAX_GROUPS_PER_CONN: usize = 32;
 
+/// Inbound verb frames one connection may spend per [`PushLimits::reverify_interval`],
+/// refilled on that tick.
+///
+/// A group verb is the only client input that reaches the process-wide registry `Mutex` —
+/// the same lock every `accept`, `bind`, release and `deliver` serializes on, and
+/// `deliver` runs inside durable-event handlers holding a transaction. Without a budget an
+/// authenticated client sets that lock's acquisition rate by spamming `leave` for a group
+/// it never joined (the quota check, and every `leave`, are past the cheap name-length
+/// rejection). A client's whole legitimate membership is a handful of joins per
+/// reconnect, so 64 per interval is far above real use and bounded regardless of the
+/// interval an operator picks.
+const MAX_VERBS_PER_INTERVAL: u32 = 64;
+
 /// The topic a presence transition is published under (see [`PushHub::announce`]).
 const PRESENCE_TOPIC: &str = "push.presence";
+
+/// The largest `push::Message` payload this front will broadcast, dropped-and-counted
+/// above it.
+///
+/// NOT [`PushLimits::max_frame_bytes`], which bounds what a CLIENT may send into the
+/// upgrade. This bounds what a PRODUCER can make the front hold: an addressed message is
+/// enqueued on every connection the target resolves to, so its size is multiplied by the
+/// fan-out, and `push::Sink::send` is called synchronously — a durable-event handler
+/// holding its delivery transaction's connection pays that cost inline. A push message
+/// says "refetch", so 32 KiB is far above any legitimate one.
+const MAX_PAYLOAD_BYTES: usize = 32 * 1024;
 
 /// A client→server frame. An unknown `type` deserializes into [`ClientFrame::Other`],
 /// which a LIVE connection ignores (a newer client speaking a verb this build does not
@@ -400,8 +424,13 @@ fn close_for(denial: &AdmissionDenial) -> CloseCode {
 // ---------------------------------------------------------------------------
 
 /// What the connection task pulls out of its queue.
+///
+/// The frame is a SHARED handle, not a `String`: one broadcast enqueues the same bytes to
+/// every addressed connection, and [`PushHub::deliver`] runs synchronously on the
+/// producer's thread — a per-connection copy there would let one message allocate its size
+/// times the front's whole connection count before the producer's call returns.
 enum Outbound {
-    Text(String),
+    Text(Arc<str>),
     Close(CloseCode),
 }
 
@@ -420,7 +449,7 @@ struct ConnQueue {
 }
 
 struct QueueState {
-    ring: VecDeque<String>,
+    ring: VecDeque<Arc<str>>,
     /// Set once; preempts any pending frame — a close is the one frame worth blocking
     /// the queue's backlog for.
     close: Option<CloseCode>,
@@ -447,7 +476,7 @@ impl ConnQueue {
     /// `false` means the connection is already closing and the frame was not queued —
     /// what [`PushHub::deliver`] counts, so a `Delivered::Local(n)` counts connections
     /// the frame actually reached.
-    fn push(&self, text: String) -> bool {
+    fn push(&self, text: Arc<str>) -> bool {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.close.is_some() {
@@ -455,7 +484,7 @@ impl ConnQueue {
             }
             while state.ring.len() >= self.capacity {
                 state.ring.pop_front();
-                DROPS.record();
+                DROPS.record("connection queue full, oldest evicted");
             }
             state.ring.push_back(text);
         }
@@ -498,13 +527,12 @@ impl ConnQueue {
     }
 }
 
-/// The process-wide drop counter. A drop is invisible by construction — nobody is
-/// waiting on the frame — so counting it here, at the one place a frame is discarded, is
-/// the only signal an operator gets.
-static DROPS: Drops = Drops {
-    total: AtomicU64::new(0),
-    warned: AtomicBool::new(false),
-};
+/// The process-wide drop counters, one per REASON a frame is discarded. A drop is
+/// invisible by construction — nobody is waiting on the frame — so counting it at the one
+/// place it happens is the only signal an operator gets, and separate counters keep a
+/// stalled reader from hiding a producer that is over the payload cap.
+static DROPS: Drops = Drops::new();
+static OVERSIZE: Drops = Drops::new();
 
 /// Counts dropped frames. The first drop warns, every later one logs at `debug!` with the
 /// running total: a stalled client would otherwise emit one warning per produced message.
@@ -514,15 +542,21 @@ struct Drops {
 }
 
 impl Drops {
-    fn record(&self) {
+    const fn new() -> Drops {
+        Drops {
+            total: AtomicU64::new(0),
+            warned: AtomicBool::new(false),
+        }
+    }
+
+    fn record(&self, why: &str) {
         let total = self.total.fetch_add(1, Ordering::Relaxed) + 1;
         if self.warned.swap(true, Ordering::Relaxed) {
-            tracing::debug!(dropped_total = total, "push: dropped the oldest queued frame");
+            tracing::debug!(dropped_total = total, "push: dropped a frame ({why})");
         } else {
             tracing::warn!(
                 dropped_total = total,
-                "push: connection queue full, dropped the oldest frame (further \
-                 occurrences log at debug)"
+                "push: dropped a frame ({why}); further occurrences log at debug"
             );
         }
     }
@@ -762,30 +796,51 @@ impl PushHub {
     /// answering how many accepted it.
     ///
     /// The registry guard covers the resolution ONLY: the addressed queues are cloned out
-    /// and the guard dropped before anything is enqueued, so this never blocks, never
-    /// awaits, and cannot deadlock against a connection task editing the registry. That is
-    /// the whole reason `push::Sink::send` is synchronous — a caller may be a durable-event
-    /// handler holding its delivery transaction's connection.
+    /// and the guard dropped before anything is enqueued, so this never awaits and cannot
+    /// deadlock against a connection task editing the registry. That is the whole reason
+    /// `push::Sink::send` is synchronous — a caller may be a durable-event handler holding
+    /// its delivery transaction's connection.
+    ///
+    /// What that caller pays is bounded in BOTH dimensions: one frame allocation per call
+    /// regardless of fan-out (the ring holds a shared handle), and a payload over
+    /// [`MAX_PAYLOAD_BYTES`] delivered to nobody and counted — the `0` it then answers is
+    /// a drop, not an empty target set.
     fn deliver(&self, target: &Target, msg: &Message) -> usize {
-        let frame = serde_json::to_string(&ServerFrame::Message {
-            topic: &msg.topic,
-            payload: base64::engine::general_purpose::STANDARD.encode(&msg.payload),
-        })
-        .expect("message frame serialization cannot fail");
+        if msg.payload.len() > MAX_PAYLOAD_BYTES {
+            OVERSIZE.record("payload over the outbound cap");
+            return 0;
+        }
+        let frame: Arc<str> = Arc::from(
+            serde_json::to_string(&ServerFrame::Message {
+                topic: &msg.topic,
+                payload: base64::engine::general_purpose::STANDARD.encode(&msg.payload),
+            })
+            .expect("message frame serialization cannot fail"),
+        );
         let queues = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.resolve(target)
         };
+        // `frame.clone()` is a refcount bump: the bytes are allocated ONCE per call, not
+        // once per addressed connection.
         queues.into_iter().filter(|queue| queue.push(frame.clone())).count()
     }
 
     /// Broadcasts one presence transition to every bound connection.
     ///
-    /// `Target::All` because this front has no friends graph to narrow the audience with:
-    /// with one, presence would address a group. Callers gate this on
-    /// [`PushLimits::presence`], and MUST call it with no registry guard held — it takes
-    /// the same non-reentrant lock.
+    /// The ONE gate on [`PushLimits::presence`], so neither emission site can be enabled
+    /// without the other. `Target::All` because this front has no friends graph to narrow
+    /// the audience with: with one, presence would address a group.
+    ///
+    /// MUST be called with no registry guard held — it takes the same non-reentrant lock.
+    /// A caller must also have DECIDED the transition under the guard that performed the
+    /// mutation ([`PushHub::bind`] for online, [`Slot::drop`] for offline); re-reading the
+    /// registry here to decide would let a reconnect land in between and latch a stale
+    /// verdict.
     fn announce(&self, player: &str, online: bool) {
+        if !self.limits.presence {
+            return;
+        }
         // A stopping front announces nothing: every queue already carries its close, so
         // each departing connection would walk every other one to deliver zero frames.
         if self.state.lock().unwrap_or_else(|e| e.into_inner()).closing {
@@ -794,16 +849,6 @@ impl PushHub {
         let payload = serde_json::to_vec(&Presence { player_id: player, online })
             .expect("presence payload serialization cannot fail");
         self.deliver(&Target::All, &Message::new(PRESENCE_TOPIC, payload));
-    }
-
-    /// Whether this player still holds a bound connection here. Read AFTER a [`Slot`] has
-    /// released its entry, so a `false` means the last device left.
-    fn player_online(&self, player: &str) -> bool {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .by_player
-            .contains_key(player)
     }
 
     /// Signals every live connection to close, waits (bounded) for their tasks to write
@@ -869,7 +914,12 @@ struct Slot {
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        {
+        // The removal DECIDES the online→offline transition, under the same guard that
+        // performs it: exactly one removal can empty a player's deque. Deciding afterwards
+        // — by re-reading the registry — would let the player's reconnect bind in between,
+        // announce itself online, and then be overwritten by this connection's stale
+        // offline, latching "offline" on a player who is connected.
+        let departed = {
             let mut state = self.hub.state.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(count) = state.per_ip.get_mut(&self.ip) {
                 *count -= 1;
@@ -877,12 +927,14 @@ impl Drop for Slot {
                     state.per_ip.remove(&self.ip);
                 }
             }
+            let mut departed = None;
             if let Some(conn) = state.conns.remove(&self.id) {
                 if let Some(player) = conn.player {
                     if let Some(ids) = state.by_player.get_mut(&player) {
                         ids.retain(|id| *id != self.id);
                         if ids.is_empty() {
                             state.by_player.remove(&player);
+                            departed = Some(player);
                         }
                     }
                 }
@@ -895,10 +947,16 @@ impl Drop for Slot {
                     }
                 }
             }
-        }
+            departed
+        };
         // Unconditional: `shutdown` waits on this, so an exit path that skipped it would
         // make the stop grace elapse in full.
         self.hub.drained.notify_waiters();
+        // Announced from the release path, not from the connection task, so a connection
+        // that was aborted or panicked still reports its player's departure.
+        if let Some(player) = departed {
+            self.hub.announce(&player, false);
+        }
     }
 }
 
@@ -924,9 +982,14 @@ impl LocalSink {
 }
 
 impl push::Sink for LocalSink {
-    /// Never blocks and never awaits (see [`PushHub::deliver`]). The count is connections
-    /// the frame was ENQUEUED to; a socket that dies before its queue drains is still
-    /// counted, which is as much as any best-effort sink can honestly claim.
+    /// Awaits nothing and performs no I/O (see [`PushHub::deliver`]). What the caller's
+    /// thread does pay is one frame allocation plus, per addressed connection, a refcount
+    /// bump and one uncontended-in-practice queue mutex; a payload over
+    /// [`MAX_PAYLOAD_BYTES`] is refused before any of it.
+    ///
+    /// The count is connections the frame was ENQUEUED to. A socket that dies before its
+    /// queue drains, or whose ring later evicts the frame under a newer one, is still
+    /// counted — which is as much as any best-effort sink can honestly claim.
     fn send(&self, target: &Target, msg: &Message) -> Result<push::Delivered, push::Error> {
         Ok(push::Delivered::Local(self.hub.deliver(target, msg)))
     }
@@ -1058,30 +1121,22 @@ async fn run(
     }
     // Queued, not written directly: every server->client frame leaves through the one
     // bounded queue, so the ack cannot jump a backlog or bypass the write deadline.
-    slot.queue.push(
+    slot.queue.push(Arc::from(
         serde_json::to_string(&ServerFrame::Ack {
             connection_id: slot.id,
         })
         .expect("ack serialization cannot fail"),
-    );
+    ));
 
-    // After the bind guard is gone: `announce` resolves `Target::All` against the same
-    // non-reentrant registry lock.
-    if limits.presence && first {
+    // `first` was decided inside `bind`, under the guard that pushed this connection onto
+    // the player's deque; announcing here, with that guard gone, is the emission only.
+    if first {
         slot.hub.announce(&player, true);
     }
 
+    // The matching offline announcement belongs to `Slot::drop`, which runs when this
+    // returns — and on the paths this never returns from.
     serve(front, &slot, &mut wake, &mut socket, &player, &bearer, &limits).await;
-
-    // Dropping the slot FIRST removes this connection from every index, so the check below
-    // asks whether the player has another device left rather than seeing the one that is
-    // leaving — and the announcement cannot re-create the entry the release just removed
-    // (`deliver` only reads the registry).
-    let hub = slot.hub.clone();
-    drop(slot);
-    if limits.presence && !hub.player_online(&player) {
-        hub.announce(&player, false);
-    }
 }
 
 struct Credentials {
@@ -1176,6 +1231,7 @@ async fn serve(
     reverify.tick().await; // the first tick fires immediately; the bearer was just verified
     let mut last_ok = Instant::now();
     let mut close: Option<CloseCode> = None;
+    let mut verbs = MAX_VERBS_PER_INTERVAL;
 
     loop {
         // Deliberately UNBIASED. A close preempts inside the queue branch already (the
@@ -1188,7 +1244,8 @@ async fn serve(
                     break;
                 }
                 Some(Outbound::Text(text)) => {
-                    if write(socket, WsMessage::Text(text), limits.write_deadline).await.is_err() {
+                    let frame = WsMessage::Text(text.to_string());
+                    if write(socket, frame, limits.write_deadline).await.is_err() {
                         break;
                     }
                 }
@@ -1196,13 +1253,27 @@ async fn serve(
             },
             msg = socket.recv() => match msg {
                 None | Some(Err(_)) | Some(Ok(WsMessage::Close(_))) => break,
-                Some(Ok(WsMessage::Text(text))) => on_client_frame(slot, text.as_bytes()),
-                Some(Ok(WsMessage::Binary(bytes))) => on_client_frame(slot, &bytes),
+                // Over budget the frame is DROPPED, not fatal: the cost this refuses is
+                // the registry lock, and a client that overspends is throttled rather
+                // than disconnected.
+                Some(Ok(WsMessage::Text(text))) => {
+                    if verbs > 0 {
+                        verbs -= 1;
+                        on_client_frame(slot, text.as_bytes());
+                    }
+                }
+                Some(Ok(WsMessage::Binary(bytes))) => {
+                    if verbs > 0 {
+                        verbs -= 1;
+                        on_client_frame(slot, &bytes);
+                    }
+                }
                 // Ping/Pong: axum answers a ping itself, and a pong is the reply to the
                 // liveness ping written on the re-verify tick.
                 Some(Ok(_)) => {}
             },
             _ = reverify.tick() => {
+                verbs = MAX_VERBS_PER_INTERVAL;
                 if write(socket, WsMessage::Ping(Vec::new()), limits.write_deadline).await.is_err() {
                     break;
                 }
