@@ -125,6 +125,8 @@ inapplicable — it lists *gating env vars*, and `friends` introduces none.
 | `clients/csharp/Generated` + `opscatalog/src/generated.rs` | **regenerate**, not bless | loud (codegen-freshness) |
 | `modules/audit/src/lib.rs` | 3 topics + 3 spec ids, same indices | loud (its own tests) |
 | `tools/conformance/src/policy.rs` | `friends()` + `input_policies()` rows | loud |
+| `tools/processctl/src/fleet_tests.rs` | the canonical N-service fleet snapshot — the new row **plus** gateway's and admin's dependency lists inside it | loud (errata 14) |
+| `weles/master/src/fleet_toml_tests.rs` | the `services.len()` assertion on the split fixture | loud (errata 14) |
 
 ---
 
@@ -703,6 +705,15 @@ execution order moves. Also corrected: `conformance` clears at Step 11, not Step
   surface they define.
 - **The third `request` branch has a fourth outcome** — the row removed between the
   conflicting insert and the re-read. Answered `Conflict`.
+
+**14 — the authority table was incomplete, again** (found by the Step 7 implementer by
+*running* the test binaries rather than reading). Two hand-written fleet snapshots
+assert the whole fleet and its count, independently of the `manifest_tests.rs` golden
+the table already named: `tools/processctl/src/fleet_tests.rs`'s canonical N-service
+snapshot (whose gateway and admin rows carry their own dependency lists) and
+`weles/master/src/fleet_toml_tests.rs`'s `services.len()` assertion. Both fail loudly,
+so the cost was a subagent's budget rather than correctness — but the table claimed to
+be a complete checklist and was not. Added above.
 
 **8 — Step 10 misses a THIRD `csharp-client-gen` test.** Beyond the two
 `*_matches_golden` goldens named in errata 3, `PROVIDERS` (`scrape.rs:36`) is a
