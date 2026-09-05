@@ -1752,3 +1752,164 @@ fn retention_readiness_message_preserves_plane_threshold_precision() {
         "asyncevents retention sweep has not succeeded in >1.5s"
     );
 }
+
+// ============================================================================
+// Step 9a — the WebSocket upgrade OUTLIVES the HTTP layer stack. The push hub's one
+// load-bearing premise: `TimeoutLayer` (and every layer around it) bounds
+// request-received → response-STARTED, so the `101` resolves the timed service future
+// and the upgraded socket lives on OUTSIDE it. `modules/gateway`'s suite cannot see
+// this — its `oneshot` requests carry no `hyper::upgrade::OnUpgrade` extension, so no
+// upgrade happens there at all — and a hand-built router with its own `TimeoutLayer`
+// would prove a replica of the stack, not the stack. So this boots the real `run` on a
+// bound listener, with the SAME assembly a front process serves: the per-IP rate
+// limiter, the timeout layer, and a contributed `LAYER_SLOT` layer (`metrics`).
+// ============================================================================
+
+/// Mounts a WebSocket echo route and a slow plain route on ONE router, so the upgraded
+/// socket and an ordinary request meet the SAME layer stack in the same process.
+struct UpgradeAndSlowRoutes {
+    slow_ms: u64,
+}
+
+#[async_trait::async_trait]
+impl Module for UpgradeAndSlowRoutes {
+    fn name(&self) -> &str {
+        "upgradeandslowroutes"
+    }
+
+    fn init(&self, ctx: &Context) -> anyhow::Result<()> {
+        use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+
+        let slow_ms = self.slow_ms;
+        let router = axum::Router::new()
+            .route(
+                "/ws-echo",
+                get(|ws: WebSocketUpgrade| async move {
+                    ws.on_upgrade(|mut socket: WebSocket| async move {
+                        while let Some(Ok(msg)) = socket.recv().await {
+                            if let Message::Text(text) = msg {
+                                if socket.send(Message::Text(text)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                    })
+                }),
+            )
+            .route(
+                "/plain-slow",
+                get(move || async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(slow_ms)).await;
+                    "slow"
+                }),
+            );
+        ctx.mount(router);
+        Ok(())
+    }
+}
+
+/// Round-trips one text frame, bounded by a hang guard with generous headroom (the
+/// assertion is correctness — the echo comes back — never latency).
+async fn ws_echo_roundtrip(
+    ws: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    payload: &str,
+) {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    ws.send(Message::Text(payload.to_string()))
+        .await
+        .unwrap_or_else(|e| panic!("send {payload:?} on the upgraded socket: {e}"));
+    let frame = match tokio::time::timeout(std::time::Duration::from_secs(10), ws.next()).await {
+        Ok(frame) => frame,
+        Err(_) => panic!("no echo of {payload:?} within the hang guard"),
+    };
+    let echoed = match frame {
+        Some(Ok(msg)) => msg,
+        Some(Err(e)) => panic!("socket errored before echoing {payload:?}: {e}"),
+        None => panic!("socket closed before echoing {payload:?}"),
+    };
+    assert_eq!(echoed, Message::Text(payload.to_string()));
+}
+
+/// The claim, both halves on ONE booted router:
+///
+/// 1. a WebSocket route mounted through the real `run` path upgrades (`101`) and its
+///    socket still exchanges frames FAR past `http_request_timeout` — the timeout
+///    bounds response-start, not the upgraded connection;
+/// 2. an ordinary slow route on that SAME router still gets its `408` — so the layer
+///    is provably present and armed. Without (2) a regression that deleted the timeout
+///    layer outright would make (1) pass vacuously.
+#[tokio::test(flavor = "multi_thread")]
+async fn run_websocket_upgrade_outlives_the_request_timeout_layer() {
+    let port = free_port();
+    let timeout = std::time::Duration::from_millis(300);
+    let mut cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None)
+        .without_db()
+        // The front-door shape: an always-on per-IP limiter (set high enough that this
+        // test never trips it) wraps the surface UNDER the timeout layer.
+        .with_rate_limit_default(1000.0, 2000);
+    cfg.listen_addr = format!("127.0.0.1:{port}");
+    cfg.http_request_timeout = Some(timeout);
+
+    // Driven via `select!` on this task, not `tokio::spawn` — see
+    // `run_with_tls_files_serves_https` for why.
+    tokio::select! {
+        res = run(
+            cfg,
+            vec![
+                // Contributes the recording layer to `httpmw::LAYER_SLOT`, so the
+                // upgrade also has to survive `apply_http_layers`, not just the timeout.
+                Box::new(metrics::Metrics::new()),
+                // Far past the 300ms budget, but short enough that a regression which
+                // deleted the layer fails the 408 assertion in seconds, not a minute.
+                Box::new(UpgradeAndSlowRoutes { slow_ms: 5_000 }),
+            ],
+            None,
+            None,
+        ) => panic!("server exited early: {res:?}"),
+        _ = async {
+            let client = reqwest::Client::new();
+            let up = get_when_up(&client, &format!("http://127.0.0.1:{port}/healthz")).await;
+            assert_eq!(up.status(), reqwest::StatusCode::OK);
+
+            let (mut ws, resp) =
+                tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{port}/ws-echo"))
+                    .await
+                    .expect("websocket upgrade through the real run assembly");
+            let upgraded_at = std::time::Instant::now();
+            assert_eq!(resp.status().as_u16(), 101, "upgrade must be a 101");
+
+            // Alive immediately after the handshake — the baseline the later frame is
+            // compared against.
+            ws_echo_roundtrip(&mut ws, "before-the-deadline").await;
+
+            // (2) The SAME router, an ordinary request: the layer is armed and trips at
+            // 300ms with the deliberate 408 (never 504 — see the layer-site comment in
+            // `run`). The handler sleeps 60s, so this can only be the layer answering.
+            let slow = client
+                .get(format!("http://127.0.0.1:{port}/plain-slow"))
+                .send()
+                .await
+                .expect("slow request");
+            assert_eq!(slow.status(), reqwest::StatusCode::REQUEST_TIMEOUT);
+
+            // (1) Hold the socket well past the budget — 4x, and asserted from a real
+            // `Instant` rather than assumed, so the frame below is unambiguously sent
+            // after the deadline the plain request just died on.
+            let past_deadline = timeout * 4;
+            if let Some(rest) = past_deadline.checked_sub(upgraded_at.elapsed()) {
+                tokio::time::sleep(rest).await;
+            }
+            assert!(
+                upgraded_at.elapsed() > timeout,
+                "the socket must outlive the request timeout to prove anything"
+            );
+
+            // Still a live, bidirectional socket long after response-start was bounded.
+            ws_echo_roundtrip(&mut ws, "after-the-deadline").await;
+        } => {}
+    }
+}

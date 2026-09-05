@@ -317,6 +317,7 @@ dependencies = [
  "sqlx",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-tungstenite",
  "tower-http",
  "tracing",
 ]

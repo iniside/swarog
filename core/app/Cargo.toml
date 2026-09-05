@@ -49,3 +49,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 rcgen = { workspace = true }
 reqwest = { workspace = true }
 rustls = { workspace = true }
+# The Step 9a WebSocket-upgrade proof needs a real client speaking RFC 6455 against a
+# bound listener (`oneshot` carries no `hyper::upgrade::OnUpgrade`, so no upgrade can
+# happen off-socket). Same 0.24 line axum's `ws` feature already locks, default
+# features (`connect` + `handshake`) — no TLS stack, no new lock entries.
+tokio-tungstenite = "0.24"
