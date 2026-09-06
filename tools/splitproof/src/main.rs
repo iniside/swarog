@@ -1673,8 +1673,13 @@ async fn friends_player(
         .get("handle")
         .and_then(|v| v.as_str())
         .map(str::to_string)
-        .filter(|h| !h.is_empty())
-        .with_context(|| format!("no handle from accounts/me for {email}"))?;
+        .filter(|h| handle_shape_ok(h) && h.starts_with(&format!("{display_name}#")))
+        .with_context(|| {
+            format!(
+                "accounts/me for {email} returned no {display_name}#<4 digits> handle: {:?}",
+                body.get("handle")
+            )
+        })?;
     Ok(FriendPlayer { player_id, token, handle })
 }
 
@@ -1752,7 +1757,7 @@ async fn edge_state(pool: &PgPool, edge_id: &str) -> Option<String> {
         .flatten()
 }
 
-/// `[FR1]`-`[FR8]`, run once per topology.
+/// `[FR1]`-`[FR9]`, run once per topology.
 ///
 /// `front` serves both the player ops and `/admin` — gateway-svc in the split, where every
 /// friends op is a Remote dispatch over the mTLS edge, the names on a friend list come from
@@ -1767,7 +1772,29 @@ async fn edge_state(pool: &PgPool, edge_id: &str) -> Option<String> {
 /// an absolute `friends.edges` count the way `[MT5]`/`[REPLICAS-3]` read `leaderboard.scores`
 /// — and `friends.edges` carries no harness-ownership marker to scope a sweep by, only
 /// player uuids, with no FK to `accounts` by design.
+/// [`friends_checks`] with its transport errors converted into ONE named failing check. The
+/// parity pass runs BEFORE `[W2]`, and an `Err` out of `monolith_parity` collapses into a
+/// single `[M0-M3b]` failure — so a friends 429 or a dropped connection would delete the
+/// graceful-shutdown proof from the run and point the diagnosis at the wrong assertion.
 async fn friends_assertions(
+    ctx: &Ctx,
+    pool: &PgPool,
+    p: &mut Proof,
+    front: &str,
+    jar: &reqwest::Client,
+    tag: &str,
+) -> Result<()> {
+    if let Err(e) = friends_checks(ctx, pool, p, front, jar, tag).await {
+        p.check(
+            &format!("[FR0{tag}] the friends pass ran to completion"),
+            false,
+            format!("{e:#}"),
+        );
+    }
+    Ok(())
+}
+
+async fn friends_checks(
     ctx: &Ctx,
     pool: &PgPool,
     p: &mut Proof,
@@ -2059,6 +2086,50 @@ async fn friends_assertions(
         &format!("[FR8{tag}] GET /admin/friends?owner=character:123 -> 200 rendered page, no error card"),
         fr8_code == 200 && fr8_kpis && fr8_table && !fr8_error_card,
         format!("code={fr8_code} kpis={fr8_kpis} table={fr8_table} error_card={fr8_error_card}"),
+    );
+
+    // [FR9] the pending page — the ONLY op that puts `Friend::direction` on the wire, and the
+    // field that makes the page actionable, since only an INCOMING request can be accepted.
+    // Read as `c`, the addressee of the edge [FR3] deliberately left pending.
+    let (fr9_code, fr9_body) = friends_call(
+        ctx,
+        front,
+        &c.token,
+        reqwest::Method::POST,
+        "/friends/requests/list",
+        Some(serde_json::json!({ "cursor": "", "limit": 0 })),
+    )
+    .await?;
+    let fr9_item = fr9_body
+        .get("items")
+        .and_then(|v| v.as_array())
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|i| i.get("edge_id").and_then(|v| v.as_str()) == Some(ac_edge.as_str()))
+        })
+        .cloned();
+    let fr9_field = |key: &str| {
+        fr9_item
+            .as_ref()
+            .and_then(|i| i.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let (fr9_direction, fr9_state, fr9_handle) =
+        (fr9_field("direction"), fr9_field("state"), fr9_field("handle"));
+    p.check(
+        &format!("[FR9{tag}] pending -> the unanswered edge as direction=incoming, with the requester's handle"),
+        fr9_code == 200
+            && fr9_direction == "incoming"
+            && fr9_state == "pending"
+            && fr9_handle == a.handle,
+        format!(
+            "code={fr9_code} edge={ac_edge} direction={fr9_direction:?} state={fr9_state:?} \
+             handle={fr9_handle:?} expect={:?}",
+            a.handle
+        ),
     );
 
     Ok(())
@@ -2491,13 +2562,21 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         let (me_code, me_body) = accounts_me(ctx, &g, tok).await?;
         let me_player = me_body.get("player_id").and_then(|v| v.as_str()).unwrap_or_default();
         let me_handle = me_body.get("handle").and_then(|v| v.as_str()).unwrap_or_default();
+        let me_display = me_body.get("display_name").and_then(|v| v.as_str()).unwrap_or_default();
+        // The NAME half is compared against the registered display name: a handle of the right
+        // shape read off the wrong column, off the email, or off another player's summary
+        // satisfies `handle_shape_ok` on its own.
         let ok = me_code == 200
             && player_id.as_deref() == Some(me_player)
-            && handle_shape_ok(me_handle);
+            && handle_shape_ok(me_handle)
+            && !me_display.is_empty()
+            && me_handle.starts_with(&format!("{me_display}#"));
         p.check(
             "[A3] me (Bearer) -> 200 with player + <display_name>#<4 digits> handle",
             ok,
-            format!("code={me_code} player_id={me_player} handle={me_handle}"),
+            format!(
+                "code={me_code} player_id={me_player} display_name={me_display} handle={me_handle}"
+            ),
         );
     }
 
@@ -3198,17 +3277,24 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     // proven here. Params now cross the wire too, so a remote drill-down renders SCOPED.
     //
     // [ADX1] /admin/players (accounts page, slug = slugify("Players")) -> 200 carrying
-    // BOTH extension labels — "View Characters" (from characters-svc) and "View
-    // Inventory" (from inventory-svc) — proving extensions travel the edge into the
-    // owner's row `⋯` menu.
+    // ALL THREE extension labels — "View Characters" (characters-svc), "View Inventory"
+    // (inventory-svc) and "View Friends" (friends-svc) — proving extensions travel the
+    // edge into the owner's row `⋯` menu. The REMOTE path (`ItemData::extensions`) is
+    // a different one from the local `Item::with_extensions`, so an entry lost in the glue,
+    // an empty `extension_entries()`, or a link built from the item id instead of
+    // `slug(LABEL)` is visible ONLY here.
     let adx1 = admin.get(format!("{g}/admin/players")).send().await?;
     let (adx1_code, adx1_body) = (adx1.status().as_u16(), adx1.text().await.unwrap_or_default());
     let adx1_chars = adx1_body.contains("View Characters");
     let adx1_inv = adx1_body.contains("View Inventory");
+    let adx1_friends = adx1_body.contains("View Friends");
     p.check(
         "[ADX1] /admin/players -> 200 + cross-process row-menu extensions",
-        adx1_code == 200 && adx1_chars && adx1_inv,
-        format!("code={adx1_code} view_characters={adx1_chars} view_inventory={adx1_inv}"),
+        adx1_code == 200 && adx1_chars && adx1_inv && adx1_friends,
+        format!(
+            "code={adx1_code} view_characters={adx1_chars} view_inventory={adx1_inv} \
+             view_friends={adx1_friends}"
+        ),
     );
 
     // [ADX2] scoped remote render: register a SECOND player + character (every character
