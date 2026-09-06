@@ -1237,3 +1237,32 @@ names its peers by count is correct and Step 7 already carried it.
    more copies of the same "13 fortresses + gateway" comment — beyond the three named
    lines — were found and fixed as siblings while the count was loaded: `CLAUDE.md:620`'s
    `modules/` tree comment and `.agents/shared/gamebackend.md:657`'s twin of it.
+41. **Proof-audit follow-up (post-Step 13) — four gaps in Step 10's tests, closed.**
+   (a) The drain's LOOP-level failure half was pinned by nothing: adding
+   `liveness.mark_pass_ok()` to `run_loop`'s `Err` arm left all 80 tests green, so the
+   discipline `worker.rs`'s own header explains ("why `/readyz` needs a stamp, not just a
+   died flag") was unguarded. Closed with a paused-clock test over a CLOSED pool. It
+   required one production change, recorded rather than smuggled: `worker::coarse_now_secs`
+   now reads TOKIO's monotonic clock instead of `std`'s. Outside a paused runtime the two
+   ARE the same clock, so production behaviour is unchanged — but with `std`'s, the
+   staleness stamp could only be aged by waiting out 60 real seconds, which is exactly the
+   race the function's own doc comment says a test must not run.
+   (b) `a_requeue_landing_mid_send_survives_the_pass_status_write_and_is_counted` claimed to
+   pin the `generation` leg and did not: its mutating sender left `attempts = 0` while the
+   in-flight claim held `1`, so an `attempts`-based CAS missed too and the test stayed green
+   under the regression it named. It now requeues **and re-claims** through the production
+   authorities (`Service::requeue_parked`, `Store::claim_due_tx`), which rewrites `attempts`
+   back to the superseded attempt's own value — errata 21's real scenario, where only
+   `generation` separates them. Verified by swapping `finish_tx`'s legs to `attempts`: both
+   CAS tests then go red.
+   (c) `worker::stop_tasks` was uncovered and the recorded reason — unreachable without
+   racing a real clock — was wrong. `#[tokio::test(start_paused = true)]` auto-advances
+   `tokio::time::timeout`, so the grace path, the abort-then-await path (proven by a drop
+   recorder inside the aborted task) and the `Ok(Err(JoinError))` arm are all provable with
+   no wall clock.
+   (d) The fixtures' `cleanup(...)`/`cleanup_event(...)` were TRAILING CALLS, so a panicking
+   assertion stranded `mailtest-` rows in the one shared Postgres — and a stranded `pending`
+   row is claimable by any live drain, which is why `quarantine_foreign_pending` had to
+   exist. Both are drop guards now. The event twin was found by observing it: two outbox
+   rows kept reappearing after a clean run, re-created by three `mail.send_requested` events
+   an earlier red run had left in the log.

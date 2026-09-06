@@ -73,6 +73,10 @@ struct MutatingSender {
     pool: PgPool,
     key: String,
     statements: Vec<&'static str>,
+    /// The operator's own requeue, then a fresh claim — both through the production
+    /// authorities, so the row the in-flight attempt returns to is exactly the one a live
+    /// drain would have left behind.
+    requeue_and_reclaim: Option<(Arc<crate::Service>, String)>,
 }
 
 #[async_trait]
@@ -90,6 +94,20 @@ impl Sender for MutatingSender {
                 .await
                 .expect("the mid-send mutation must apply");
         }
+        if let Some((svc, id)) = &self.requeue_and_reclaim {
+            assert_eq!(
+                svc.requeue_parked(id).await.unwrap(),
+                1,
+                "the mid-send requeue must move the row"
+            );
+            let mut tx = bounded_tx(&self.pool, Duration::from_secs(5)).await.unwrap();
+            Store
+                .claim_due_tx(&mut tx, 30.0)
+                .await
+                .unwrap()
+                .expect("a requeued row is due, so the drain re-claims it");
+            tx.commit().await.unwrap();
+        }
         Ok(())
     }
 }
@@ -102,6 +120,30 @@ fn mutating(pool: &PgPool, key: &str, statements: Vec<&'static str>) -> (Arc<dyn
             pool: pool.clone(),
             key: key.to_string(),
             statements,
+            requeue_and_reclaim: None,
+        }),
+        calls,
+    )
+}
+
+/// The same sender, plus the two production moves that make `attempts` useless as a CAS
+/// leg: the operator requeue resets it to 0 and the fresh claim writes it straight back to
+/// the value the in-flight attempt is holding.
+fn mutating_then_requeueing(
+    pool: &PgPool,
+    key: &str,
+    statements: Vec<&'static str>,
+    svc: &Arc<crate::Service>,
+    id: &str,
+) -> (Arc<dyn Sender>, Arc<AtomicUsize>) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    (
+        Arc::new(MutatingSender {
+            calls: calls.clone(),
+            pool: pool.clone(),
+            key: key.to_string(),
+            statements,
+            requeue_and_reclaim: Some((svc.clone(), id.to_string())),
         }),
         calls,
     )
@@ -314,6 +356,7 @@ async fn a_claim_burns_an_attempt_bumps_the_generation_and_pushes_the_lease_out(
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "claim").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     quarantine_foreign_pending(&pool, &key).await;
 
@@ -349,8 +392,6 @@ async fn a_claim_burns_an_attempt_bumps_the_generation_and_pushes_the_lease_out(
     assert_eq!(again.id, row.id);
     assert_eq!(again.attempts, 2, "the re-claim burns a second attempt");
     assert_eq!(again.generation, 2, "and the ABA guard is monotone");
-
-    cleanup(&pool, &[&key]).await;
 }
 
 /// `FOR UPDATE SKIP LOCKED` makes replicas a consumer group by CONSTRUCTION. Two
@@ -362,6 +403,7 @@ async fn two_concurrent_claims_of_one_due_row_yield_one_winner() {
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "exclusive").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     quarantine_foreign_pending(&pool, &key).await;
     let id = id_of(&pool, &key).await;
@@ -389,8 +431,6 @@ async fn two_concurrent_claims_of_one_due_row_yield_one_winner() {
     let (_, _, attempts, generation, _) = row_of(&pool, &key).await;
     assert_eq!(attempts, 1, "the loser must not burn a second attempt");
     assert_eq!(generation, 1);
-
-    cleanup(&pool, &[&key]).await;
 }
 
 // ============================================================================
@@ -410,6 +450,7 @@ async fn a_status_write_from_a_superseded_attempt_matches_no_row_and_is_counted(
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "cas-generation").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     quarantine_foreign_pending(&pool, &key).await;
     let id = id_of(&pool, &key).await;
@@ -456,8 +497,6 @@ async fn a_status_write_from_a_superseded_attempt_matches_no_row_and_is_counted(
     let (state, body, _, _, _) = row_of(&pool, &key).await;
     assert_eq!(state, STATE_SENT);
     assert_eq!(body, "", "a delivered row's rendered body is blanked");
-
-    cleanup(&pool, &[&key]).await;
 }
 
 /// THE state leg, on the REAL path: the cancel lands DURING the dialogue, and the pass's own
@@ -473,6 +512,7 @@ async fn a_cancel_landing_mid_send_survives_the_pass_status_write_and_is_counted
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "cas-state").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     quarantine_foreign_pending(&pool, &key).await;
 
@@ -493,44 +533,46 @@ async fn a_cancel_landing_mid_send_survives_the_pass_status_write_and_is_counted
         before + 1,
         "a status write that matched nothing is a NAMED outcome the pass counts"
     );
-
-    cleanup(&pool, &[&key]).await;
 }
 
-/// THE generation leg, on the REAL path: an operator requeue lands during the dialogue, which
-/// resets `attempts` to 0 and hands the row back to the drain. The in-flight attempt's write
-/// must lose — CAS'ing on `attempts` instead would flip a row that is queued for a fresh
-/// delivery to `sent` and blank a body still in flight.
+/// THE generation leg, on the REAL path: an operator parks and requeues the row DURING the
+/// dialogue and the drain re-claims it, so the row the in-flight attempt is about to write
+/// belongs to a later claim. Both counters are what the requeue-then-claim sequence leaves:
+/// `attempts` is back at the value the superseded attempt itself holds — the ABA the errata
+/// records — so `generation` is the ONLY leg that can separate them, and the in-flight
+/// write must lose.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_requeue_landing_mid_send_survives_the_pass_status_write_and_is_counted() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "cas-generation-pass").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     quarantine_foreign_pending(&pool, &key).await;
+    let id = id_of(&pool, &key).await;
 
-    let (sender, calls) = mutating(
+    let (sender, calls) = mutating_then_requeueing(
         &pool,
         &key,
-        vec![
-            "UPDATE mail.outbox SET state = 'parked' WHERE idempotency_key = $1",
-            "UPDATE mail.outbox SET state = 'pending', attempts = 0, \
-                    generation = generation + 1, next_attempt_at = now() + interval '1 hour' \
-              WHERE idempotency_key = $1 AND state = 'parked'",
-        ],
+        vec!["UPDATE mail.outbox SET state = 'parked' WHERE idempotency_key = $1"],
+        &svc,
+        &id,
     );
     let before = send_cas_misses().get();
     one_pass(&drain_with(&pool, sender, 20)).await;
 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    let (state, body, attempts, _, _) = row_of(&pool, &key).await;
-    assert_eq!(state, STATE_PENDING, "the requeued row is still queued for delivery");
-    assert_eq!(attempts, 0, "the requeue's reset must survive the superseded write");
+    let (state, body, attempts, generation, _) = row_of(&pool, &key).await;
+    assert_eq!(state, STATE_PENDING, "the re-claimed row is still queued for delivery");
+    assert_eq!(
+        attempts, 1,
+        "the fresh claim rewrote `attempts` to exactly what the superseded attempt holds — \
+         a CAS on it would match, which is why the leg is `generation`"
+    );
+    assert_eq!(generation, 3, "claim, requeue and re-claim each bumped the monotone leg");
     assert_eq!(body, "hello", "a message queued for a fresh delivery keeps its body");
     assert_eq!(send_cas_misses().get(), before + 1);
-
-    cleanup(&pool, &[&key]).await;
 }
 
 async fn park_row(pool: &PgPool, key: &str) {
@@ -551,6 +593,7 @@ async fn a_successful_pass_delivers_the_row_and_blanks_its_body() {
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "pass-ok").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     quarantine_foreign_pending(&pool, &key).await;
 
@@ -570,8 +613,6 @@ async fn a_successful_pass_delivers_the_row_and_blanks_its_body() {
             .await
             .unwrap();
     assert_eq!(provider.as_deref(), Some("fake"));
-
-    cleanup(&pool, &[&key]).await;
 }
 
 /// A permanent refusal parks on attempt ONE. Retrying it hammers a relay that will never
@@ -582,6 +623,7 @@ async fn a_rejected_send_parks_the_row_on_its_first_attempt() {
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "park-rejected").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     quarantine_foreign_pending(&pool, &key).await;
 
@@ -599,8 +641,6 @@ async fn a_rejected_send_parks_the_row_on_its_first_attempt() {
     // A parked row is out of the drain's reach: a second pass must not touch it.
     one_pass(&drain).await;
     assert_eq!(calls.load(Ordering::SeqCst), 1, "a parked row is not re-attempted");
-
-    cleanup(&pool, &[&key]).await;
 }
 
 /// The infrastructure ladder, walked to its end: every attempt below `MAIL_MAX_ATTEMPTS`
@@ -613,6 +653,7 @@ async fn an_infrastructure_failure_backs_off_and_parks_only_at_the_attempt_ceili
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "park-infra").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     quarantine_foreign_pending(&pool, &key).await;
 
@@ -647,8 +688,6 @@ async fn an_infrastructure_failure_backs_off_and_parks_only_at_the_attempt_ceili
     assert_eq!(body, "hello", "a parked body survives for the operator's requeue");
     assert!(last_error.contains("connection refused"), "got {last_error:?}");
     assert_eq!(calls.load(Ordering::SeqCst) as i32, MAX_ATTEMPTS);
-
-    cleanup(&pool, &[&key]).await;
 }
 
 /// The operator's recovery path, end to end on the SAME row: a requeue restarts the ladder,
@@ -659,6 +698,7 @@ async fn a_requeued_parked_row_is_delivered_by_the_next_pass() {
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "requeue-drain").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     quarantine_foreign_pending(&pool, &key).await;
 
@@ -676,8 +716,6 @@ async fn a_requeued_parked_row_is_delivered_by_the_next_pass() {
     assert_eq!(state, STATE_SENT);
     assert_eq!(body, "");
     assert_eq!(attempts, 1, "the requeue restarted the ladder");
-
-    cleanup(&pool, &[&key]).await;
 }
 
 /// A cancelled row is not the drain's, and a pass must not attempt it — the send would be a
@@ -688,6 +726,7 @@ async fn a_cancelled_row_is_never_attempted() {
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "cancelled-drain").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     quarantine_foreign_pending(&pool, &key).await;
     let id = id_of(&pool, &key).await;
@@ -698,8 +737,6 @@ async fn a_cancelled_row_is_never_attempted() {
 
     assert_eq!(calls.load(Ordering::SeqCst), 0, "a cancelled row is not due");
     assert_eq!(row_of(&pool, &key).await.0, STATE_CANCELLED);
-
-    cleanup(&pool, &[&key]).await;
 }
 
 /// A stop signalled between rows ends the pass at a ROW BOUNDARY with nothing claimed —
@@ -710,6 +747,7 @@ async fn a_stopped_pass_claims_nothing() {
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "stopped").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     quarantine_foreign_pending(&pool, &key).await;
 
@@ -726,8 +764,6 @@ async fn a_stopped_pass_claims_nothing() {
     assert_eq!(state, STATE_PENDING);
     assert_eq!(attempts, 0, "a stop before the claim must not burn an attempt");
     assert_eq!(generation, 0);
-
-    cleanup(&pool, &[&key]).await;
 }
 
 /// The `statement_timeout` argument is clamped into Postgres's int32 millisecond domain: an
@@ -755,4 +791,130 @@ async fn the_statement_budget_is_clamped_into_the_int32_millisecond_domain() {
         assert_ne!(applied, "0", "{budget:?} must leave a real bound in place");
         tx.commit().await.unwrap();
     }
+}
+
+// ============================================================================
+// 5. The failure half of the LOOP, and the stop path.
+// ============================================================================
+
+/// The reason `/readyz` needs a stamp and not just a died flag: a loop that is alive but
+/// fails EVERY pass never exits, so `dead` stays false while the channel delivers nothing.
+/// Every pass fails by construction — a CLOSED pool errors on the first checkout, no relay
+/// and no timeout involved — and the clock is ADVANCED past the derived threshold rather
+/// than waited out, so the only way the stamp can still read fresh is the loop marking a
+/// FAILED pass healthy.
+#[tokio::test(start_paused = true)]
+async fn a_drain_that_errors_every_pass_goes_stale_while_the_loop_is_still_alive() {
+    let pool = PgPool::connect_lazy(DEFAULT_DSN).unwrap();
+    pool.close().await;
+    let liveness = Liveness::default();
+    let (_stop_tx, stop_rx) = watch::channel(false);
+    let task = tokio::spawn(crate::worker::run_loop(
+        drain_with(&pool, faking(Verdict::Ok).0, 20),
+        Store,
+        liveness.clone(),
+        Duration::from_secs(1),
+        stop_rx,
+    ));
+    tokio::task::yield_now().await;
+    liveness
+        .check(stall_max(SEND_TIMEOUT))
+        .expect("the loop seeds the stamp at entry — a cold boot is not a stall");
+
+    tokio::time::advance(stall_max(SEND_TIMEOUT) + Duration::from_secs(5)).await;
+    // The failing passes run AT the advanced clock: a loop that stamped its `Err` arm would
+    // refresh the stamp here and read green below.
+    for _ in 0..64 {
+        tokio::task::yield_now().await;
+    }
+
+    let reason = liveness
+        .check(stall_max(SEND_TIMEOUT))
+        .expect_err("a drain that has not completed a healthy pass in >2 budgets is not ready");
+    assert!(
+        reason.contains("no healthy mail drain pass"),
+        "the STALL must be what flips readiness, not the loop dying: got {reason:?}"
+    );
+    assert!(!task.is_finished(), "the loop is alive — `dead` alone would keep /readyz green");
+    task.abort();
+}
+
+/// A guard that records its own drop, so "the aborted task's state was released" is an
+/// assertion rather than an absence of errors.
+struct DropRecorder(Arc<AtomicUsize>);
+
+impl Drop for DropRecorder {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// The grace path: a loop honouring the signal exits on the SIGNAL, inside the grace, and
+/// is never aborted. The clock is paused, so the 4s grace is elapsed virtually if the
+/// signal is ever missed — no wall-clock wait either way.
+#[tokio::test(start_paused = true)]
+async fn stop_tasks_stops_a_cooperating_loop_on_the_signal() {
+    let (stop_tx, mut stop_rx) = watch::channel(false);
+    let observed = Arc::new(AtomicUsize::new(0));
+    let seen = observed.clone();
+    let task = tokio::spawn(async move {
+        stop_rx.changed().await.expect("the stop sender outlives the signal");
+        seen.fetch_add(1, Ordering::SeqCst);
+    });
+
+    crate::worker::stop_tasks(Some(stop_tx), vec![task]).await;
+
+    assert_eq!(
+        observed.load(Ordering::SeqCst),
+        1,
+        "the loop must exit because it OBSERVED the signal, not because the grace aborted it"
+    );
+}
+
+/// The abort path: a loop that never observes the signal is aborted at the grace, and the
+/// abort is AWAITED — dropping the task's state (in production, its pool connection)
+/// before `stop_tasks` returns rather than detaching it into shutdown.
+#[tokio::test(start_paused = true)]
+async fn a_loop_that_ignores_the_stop_signal_is_aborted_and_awaited() {
+    let (stop_tx, _stop_rx) = watch::channel(false);
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let recorder = DropRecorder(dropped.clone());
+    let task = tokio::spawn(async move {
+        let _held = recorder;
+        std::future::pending::<()>().await;
+    });
+    tokio::task::yield_now().await;
+    assert_eq!(dropped.load(Ordering::SeqCst), 0, "the task holds its state while it runs");
+
+    crate::worker::stop_tasks(Some(stop_tx), vec![task]).await;
+
+    assert_eq!(
+        dropped.load(Ordering::SeqCst),
+        1,
+        "an aborted task whose handle was awaited has released its state"
+    );
+}
+
+/// The `Ok(Err(JoinError))` arm: the supervision wrapper catches pass panics, so a join
+/// error means the wrapper itself died. `stop_tasks` must report it and CARRY ON — a
+/// propagated panic or an early return would leave every later task unstopped.
+#[tokio::test(start_paused = true)]
+async fn a_task_that_died_is_reported_and_the_remaining_loops_are_still_stopped() {
+    let (stop_tx, mut stop_rx) = watch::channel(false);
+    let died = tokio::spawn(async { panic!("the supervision wrapper itself died") });
+    let observed = Arc::new(AtomicUsize::new(0));
+    let seen = observed.clone();
+    let alive = tokio::spawn(async move {
+        stop_rx.changed().await.expect("the stop sender outlives the signal");
+        seen.fetch_add(1, Ordering::SeqCst);
+    });
+    tokio::task::yield_now().await;
+
+    crate::worker::stop_tasks(Some(stop_tx), vec![died, alive]).await;
+
+    assert_eq!(
+        observed.load(Ordering::SeqCst),
+        1,
+        "a JoinError on the first handle must not stop the loop over the rest"
+    );
 }

@@ -224,10 +224,12 @@ fn oldest_pending_gauge() -> &'static Gauge {
 
 /// Coarse monotonic seconds since the first call in this process. Deliberately not
 /// wall-clock: a clock jump must not flap `/readyz`, and a test must not race a real
-/// clock. Same shape as `scheduler`'s and `asyncevents`', private to each owner.
+/// clock. Same shape as `scheduler`'s and `asyncevents`', private to each owner. It reads
+/// TOKIO's clock, which outside a paused runtime IS the std monotonic clock — so the
+/// failure-half proof advances past [`stall_max`] instead of waiting out 60 real seconds.
 fn coarse_now_secs() -> u64 {
-    static BASE: OnceLock<Instant> = OnceLock::new();
-    BASE.get_or_init(Instant::now).elapsed().as_secs()
+    static BASE: OnceLock<tokio::time::Instant> = OnceLock::new();
+    BASE.get_or_init(tokio::time::Instant::now).elapsed().as_secs()
 }
 
 /// Pure staleness predicate behind [`Liveness::check`]. `last_ok_secs == 0` means the loop

@@ -147,12 +147,40 @@ pub(crate) async fn expire_lease(pool: &PgPool, key: &str) {
     .unwrap();
 }
 
-pub(crate) async fn cleanup(pool: &PgPool, keys: &[&str]) {
-    for key in keys {
-        let _ = sqlx::query("DELETE FROM mail.outbox WHERE idempotency_key = $1")
-            .bind(key)
-            .execute(pool)
-            .await;
+/// Deletes this test's outbox rows when the test ENDS — including through a panicking
+/// assertion, which a trailing call never reaches. The database is shared and a stranded
+/// `pending` row is claimable by any live drain, so a leak from a red test is a leak into
+/// every fleet that boots afterwards.
+#[must_use = "the rows are deleted when this guard drops — binding it to `_` drops it at once"]
+pub(crate) fn cleanup(pool: &PgPool, keys: &[&str]) -> Cleanup {
+    Cleanup {
+        pool: pool.clone(),
+        keys: keys.iter().map(|k| (*k).to_string()).collect(),
+    }
+}
+
+pub(crate) struct Cleanup {
+    pool: PgPool,
+    keys: Vec<String>,
+}
+
+impl Drop for Cleanup {
+    /// `Drop` cannot await, and a spawned task would be dropped with the test's runtime
+    /// before it ran — so the delete blocks on the current runtime. Every test that holds
+    /// a guard is `flavor = "multi_thread"`, which is what `block_in_place` requires.
+    fn drop(&mut self) {
+        let pool = self.pool.clone();
+        let keys = std::mem::take(&mut self.keys);
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                for key in &keys {
+                    let _ = sqlx::query("DELETE FROM mail.outbox WHERE idempotency_key = $1")
+                        .bind(key)
+                        .execute(&pool)
+                        .await;
+                }
+            })
+        });
     }
 }
 
@@ -254,6 +282,7 @@ async fn a_new_key_inserts_and_an_identical_replay_deduplicates() {
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "dedup").await;
+    let _cleanup = cleanup(&pool, &[&key]);
 
     let first = enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     assert!(matches!(first, Enqueued::Inserted(_)), "got {first:?}");
@@ -267,8 +296,6 @@ async fn a_new_key_inserts_and_an_identical_replay_deduplicates() {
         .await
         .unwrap();
     assert_eq!(n, 1, "the unique key must collapse the replay onto one row");
-
-    cleanup(&pool, &[&key]).await;
 }
 
 /// A bare `ON CONFLICT DO NOTHING` would discard the corrected message and report success;
@@ -280,6 +307,7 @@ async fn the_same_key_holding_a_different_message_is_a_conflict() {
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "conflict").await;
+    let _cleanup = cleanup(&pool, &[&key]);
 
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     assert_eq!(
@@ -289,8 +317,6 @@ async fn the_same_key_holding_a_different_message_is_a_conflict() {
     let (state, body, _, _, _) = row_of(&pool, &key).await;
     assert_eq!(state, STATE_PENDING);
     assert_eq!(body, "hello", "the first message must survive untouched");
-
-    cleanup(&pool, &[&key]).await;
 }
 
 // ============================================================================
@@ -324,6 +350,7 @@ async fn a_column_check_violation_resolves_to_the_cap_that_should_have_refused_i
     let _serialized = DB_LOCK.lock().await;
     ensure_schema(&pool).await;
     let key = unique_key(&pool, "cap").await;
+    let _cleanup = cleanup(&pool, &[&key]);
 
     for cap in COLUMN_CAPS {
         let over = "a".repeat(cap.max_bytes + 1);
@@ -352,8 +379,6 @@ async fn a_column_check_violation_resolves_to_the_cap_that_should_have_refused_i
         assert_eq!(resolved.what, cap.what);
         assert_eq!(resolved.constraint, cap.constraint);
     }
-
-    cleanup(&pool, &[&key]).await;
 }
 
 #[test]
@@ -487,6 +512,7 @@ async fn an_operator_send_carrying_a_key_this_page_never_minted_is_refused() {
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let forged = unique_key(&pool, "forged").await;
+    let _forged_cleanup = cleanup(&pool, &[&forged]);
 
     let e = svc
         .enqueue_from_admin(&mail_of(&forged, "hello"))
@@ -504,10 +530,9 @@ async fn an_operator_send_carrying_a_key_this_page_never_minted_is_refused() {
     // The positive control on the SAME path: a minted key IS accepted, so the refusal above
     // is not "the admin path never enqueues".
     let minted = minted_test_key(&pool).await;
+    let _cleanup = cleanup(&pool, &[&minted]);
     let ok = svc.enqueue_from_admin(&mail_of(&minted, "hello")).await.unwrap();
     assert!(matches!(ok, Enqueued::Inserted(_)), "got {ok:?}");
-
-    cleanup(&pool, &[&forged, &minted]).await;
 }
 
 // ============================================================================
@@ -538,6 +563,7 @@ async fn requeue_returns_one_parked_row_and_a_stale_selection_is_not_success() {
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "requeue").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     park(&pool, &key).await;
     let id = id_of(&pool, &key).await;
@@ -557,8 +583,6 @@ async fn requeue_returns_one_parked_row_and_a_stale_selection_is_not_success() {
     let again = apply_submit(&svc, params(&[(ACTION_FIELD, ACTION_REQUEUE), (MAIL_ID_FIELD, &id)]))
         .await;
     assert!(matches!(again, Err(Rejection::Stale)), "a zero-row requeue must be Stale");
-
-    cleanup(&pool, &[&key]).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -568,6 +592,7 @@ async fn requeue_all_parked_reports_what_it_moved_and_what_it_left() {
     let svc = wired(&pool).await;
     let a = unique_key(&pool, "bulk-a").await;
     let b = unique_key(&pool, "bulk-b").await;
+    let _cleanup = cleanup(&pool, &[&a, &b]);
     for key in [&a, &b] {
         enqueue(&svc, &pool, &mail_of(key, "hello")).await;
         park(&pool, key).await;
@@ -586,8 +611,6 @@ async fn requeue_all_parked_reports_what_it_moved_and_what_it_left() {
     for key in [&a, &b] {
         assert_eq!(row_of(&pool, key).await.0, STATE_PENDING);
     }
-
-    cleanup(&pool, &[&a, &b]).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -596,6 +619,7 @@ async fn cancel_takes_a_pending_row_out_of_the_drain_and_keeps_its_body() {
     let _serialized = DB_LOCK.lock().await;
     let svc = wired(&pool).await;
     let key = unique_key(&pool, "cancel").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     enqueue(&svc, &pool, &mail_of(&key, "hello")).await;
     let id = id_of(&pool, &key).await;
 
@@ -613,8 +637,6 @@ async fn cancel_takes_a_pending_row_out_of_the_drain_and_keeps_its_body() {
     let again = apply_submit(&svc, params(&[(ACTION_FIELD, ACTION_CANCEL), (MAIL_ID_FIELD, &id)]))
         .await;
     assert!(matches!(again, Err(Rejection::Stale)), "a zero-row cancel must be Stale");
-
-    cleanup(&pool, &[&key]).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

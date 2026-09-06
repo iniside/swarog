@@ -49,6 +49,9 @@ prometheus = { workspace = true }
 lettre = { workspace = true }
 
 [dev-dependencies]
+# test-util: the drain's failure-half proof advances a paused clock past `stall_max`
+# rather than waiting out 60 real seconds, and the stop-grace proof advances past STOP_GRACE.
+tokio = { workspace = true, features = ["test-util"] }
 # The durable plane, driven by hand: `asyncevents::testing::TestTransport` gives the ingress
 # and prune tests a REAL append + delivery pass with no background workers and no clock.
 asyncevents = { workspace = true }

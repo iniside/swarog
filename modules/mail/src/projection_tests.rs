@@ -138,8 +138,33 @@ async fn set_insert_barrier(pool: &PgPool, on: bool) {
     tx.commit().await.unwrap();
 }
 
-async fn cleanup_event(pool: &PgPool, key: &str) {
-    let _ = asyncevents::testing::cleanup_events(pool, "idempotency_key", key).await;
+/// The event-log twin of [`cleanup`], and a guard for the same reason: a `mail.send_requested`
+/// event that survives a panicking test is re-delivered by the NEXT run's pass, which
+/// re-creates the very outbox row that run then cleans up — the leak reappears as somebody
+/// else's row.
+#[must_use = "the events are deleted when this guard drops — binding it to `_` drops it at once"]
+fn cleanup_event(pool: &PgPool, key: &str) -> CleanupEvents {
+    CleanupEvents {
+        pool: pool.clone(),
+        key: key.to_string(),
+    }
+}
+
+struct CleanupEvents {
+    pool: PgPool,
+    key: String,
+}
+
+impl Drop for CleanupEvents {
+    fn drop(&mut self) {
+        let pool = self.pool.clone();
+        let key = std::mem::take(&mut self.key);
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async move {
+                let _ = asyncevents::testing::cleanup_events(&pool, "idempotency_key", &key).await;
+            })
+        });
+    }
 }
 
 // ============================================================================
@@ -152,15 +177,14 @@ async fn a_durable_request_becomes_one_outbox_row() {
     let _serialized = DB_LOCK.lock().await;
     let (ctx, _svc, transport) = wired_for_delivery(&pool).await;
     let key = unique_key(&pool, "ingress").await;
+    let _cleanup = cleanup(&pool, &[&key]);
+    let _cleanup_events = cleanup_event(&pool, &key);
 
     emit_send_requested(&ctx, &pool, &key, "player@example.com", "hello").await;
     assert_eq!(transport.deliver_all().await.unwrap(), 1);
 
     assert_eq!(rows_for(&pool, &key).await, vec![(STATE_PENDING.to_string(), "hello".to_string())]);
     assert_unpoisoned(&pool, SEND_REQUESTED_SUB.id).await;
-
-    cleanup_event(&pool, &key).await;
-    cleanup(&pool, &[&key]).await;
 }
 
 /// Delivery is at-least-once per subscription, so the SAME request arriving twice must
@@ -172,6 +196,8 @@ async fn a_repeated_request_is_deduplicated_without_faulting_the_subscription() 
     let _serialized = DB_LOCK.lock().await;
     let (ctx, _svc, transport) = wired_for_delivery(&pool).await;
     let key = unique_key(&pool, "ingress-dup").await;
+    let _cleanup = cleanup(&pool, &[&key]);
+    let _cleanup_events = cleanup_event(&pool, &key);
 
     emit_send_requested(&ctx, &pool, &key, "player@example.com", "hello").await;
     emit_send_requested(&ctx, &pool, &key, "player@example.com", "hello").await;
@@ -179,9 +205,6 @@ async fn a_repeated_request_is_deduplicated_without_faulting_the_subscription() 
 
     assert_eq!(rows_for(&pool, &key).await.len(), 1);
     assert_unpoisoned(&pool, SEND_REQUESTED_SUB.id).await;
-
-    cleanup_event(&pool, &key).await;
-    cleanup(&pool, &[&key]).await;
 }
 
 /// A reused key holding a DIFFERENT message is a producer bug and a message that was never
@@ -193,6 +216,8 @@ async fn a_reused_key_holding_a_different_message_is_counted_and_skipped() {
     let _serialized = DB_LOCK.lock().await;
     let (ctx, _svc, transport) = wired_for_delivery(&pool).await;
     let key = unique_key(&pool, "ingress-conflict").await;
+    let _cleanup = cleanup(&pool, &[&key]);
+    let _cleanup_events = cleanup_event(&pool, &key);
 
     emit_send_requested(&ctx, &pool, &key, "player@example.com", "hello").await;
     assert_eq!(transport.deliver_all().await.unwrap(), 1);
@@ -212,9 +237,6 @@ async fn a_reused_key_holding_a_different_message_is_counted_and_skipped() {
         "the first message must survive untouched"
     );
     assert_unpoisoned(&pool, SEND_REQUESTED_SUB.id).await;
-
-    cleanup_event(&pool, &key).await;
-    cleanup(&pool, &[&key]).await;
 }
 
 /// One message's data quality answers `Ok(())`: an `Err` would pause the subscription and
@@ -226,6 +248,7 @@ async fn an_unroutable_request_is_refused_counted_and_skipped() {
     let _serialized = DB_LOCK.lock().await;
     let (ctx, _svc, transport) = wired_for_delivery(&pool).await;
     let key = unique_key(&pool, "ingress-invalid").await;
+    let _cleanup_events = cleanup_event(&pool, &key);
     let before = enqueue_rejected().get();
 
     emit_send_requested(&ctx, &pool, &key, "not-an-address", "hello").await;
@@ -234,8 +257,6 @@ async fn an_unroutable_request_is_refused_counted_and_skipped() {
     assert_eq!(enqueue_rejected().get(), before + 1);
     assert!(rows_for(&pool, &key).await.is_empty(), "a refused request writes no row");
     assert_unpoisoned(&pool, SEND_REQUESTED_SUB.id).await;
-
-    cleanup_event(&pool, &key).await;
 }
 
 /// The arm no `Ok(())` proves: anything that is NOT `Status::Invalid` is infrastructure and
@@ -252,6 +273,8 @@ async fn an_infrastructure_failure_faults_the_delivery_and_keeps_the_event() {
     let _serialized = DB_LOCK.lock().await;
     let (ctx, _svc, transport) = wired_for_delivery(&pool).await;
     let key = unique_key(&pool, "ingress-infra").await;
+    let _cleanup = cleanup(&pool, &[&key]);
+    let _cleanup_events = cleanup_event(&pool, &key);
     emit_send_requested(&ctx, &pool, &key, "player@example.com", "hello").await;
 
     set_insert_barrier(&pool, false).await;
@@ -285,9 +308,6 @@ async fn an_infrastructure_failure_faults_the_delivery_and_keeps_the_event() {
     );
     assert_eq!(rows_for(&pool, &key).await.len(), 1, "nothing was lost");
     assert_unpoisoned(&pool, SEND_REQUESTED_SUB.id).await;
-
-    cleanup_event(&pool, &key).await;
-    cleanup(&pool, &[&key]).await;
 }
 
 /// The instrument itself, proven by construction: a decoy subscription on the SAME topic
@@ -326,6 +346,8 @@ async fn a_faulting_handler_is_uncounted_and_backed_off() {
     transport.deliver_all().await.unwrap();
 
     let key = unique_key(&pool, "decoy").await;
+    let _cleanup = cleanup(&pool, &[&key]);
+    let _cleanup_events = cleanup_event(&pool, &key);
     emit_send_requested(&ctx, &pool, &key, "player@example.com", "hello").await;
     assert_eq!(
         transport.deliver_all().await.unwrap(),
@@ -346,8 +368,6 @@ async fn a_faulting_handler_is_uncounted_and_backed_off() {
     assert!(last_error.is_some(), "the failure is recorded, not swallowed");
 
     reset_subscription(&pool, DECOY_SUB).await;
-    cleanup_event(&pool, &key).await;
-    cleanup(&pool, &[&key]).await;
 }
 
 // ============================================================================
@@ -409,6 +429,7 @@ async fn a_scheduler_fire_prunes_delivered_rows_and_leaves_parked_ones_alone() {
         old_pending.as_str(),
         fresh_sent.as_str(),
     ];
+    let _cleanup = cleanup(&pool, &all);
     assert_eq!(states_of(&pool, &all).await.len(), 5);
 
     emit_fired(&ctx, &pool, PRUNE_SCHEDULE_NAME).await;
@@ -432,8 +453,6 @@ async fn a_scheduler_fire_prunes_delivered_rows_and_leaves_parked_ones_alone() {
          still has to act on"
     );
     assert_unpoisoned(&pool, PRUNE_SUB.id).await;
-
-    cleanup(&pool, &all).await;
 }
 
 /// The subscription is a RAW sink on the whole `scheduler.fired` topic, so the name guard is
@@ -444,6 +463,7 @@ async fn a_foreign_schedule_name_prunes_nothing() {
     let _serialized = DB_LOCK.lock().await;
     let (ctx, _svc, transport) = wired_for_delivery(&pool).await;
     let key = unique_key(&pool, "prune-foreign").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     seed_aged(&pool, &key, STATE_SENT, crate::config::DEFAULT_RETENTION_DAYS + 5).await;
 
     emit_fired(&ctx, &pool, "audit-prune").await;
@@ -459,8 +479,6 @@ async fn a_foreign_schedule_name_prunes_nothing() {
     assert_eq!(transport.deliver_all().await.unwrap(), 1);
     assert!(states_of(&pool, &[&key]).await.is_empty());
     assert_unpoisoned(&pool, PRUNE_SUB.id).await;
-
-    cleanup(&pool, &[&key]).await;
 }
 
 /// The watermarked LOOP, with a statement-level probe as the instrument: every DELETE this
@@ -579,6 +597,7 @@ async fn a_payload_without_a_schedule_name_faults_rather_than_pruning() {
     let _serialized = DB_LOCK.lock().await;
     ensure_schema(&pool).await;
     let key = unique_key(&pool, "prune-malformed").await;
+    let _cleanup = cleanup(&pool, &[&key]);
     seed_aged(&pool, &key, STATE_SENT, crate::config::DEFAULT_RETENTION_DAYS + 5).await;
 
     let handler = PruneHandler {
@@ -597,6 +616,4 @@ async fn a_payload_without_a_schedule_name_faults_rather_than_pruning() {
     tx.rollback().await.unwrap();
     assert!(result.is_err(), "a payload with no name must not be silently swept over");
     assert_eq!(states_of(&pool, &[&key]).await.len(), 1);
-
-    cleanup(&pool, &[&key]).await;
 }
