@@ -722,8 +722,7 @@ impl Drop for EnvRestore {
 /// `InvalidationPlane::new` called in isolation — fails startup on an explicit
 /// `INVALIDATION_POLL_INTERVAL_MS=0`, because the plane is constructed inside `run`
 /// (DB ⇒ plane) and its `Result` is threaded with `?`. The plane only exists when a
-/// pool was opened, so this needs a live Postgres and skips cleanly (the invalidation
-/// crate's DB-test pattern) when unreachable. Awaited directly on this task (not
+/// pool was opened, so this needs a live Postgres. Awaited directly on this task (not
 /// `tokio::spawn` — no `Send` proof of `run`'s future required or wanted, same as the
 /// other `run()` tests), with a select! deadline as the safety net: a regression that
 /// silently swallows the construction error would otherwise boot a full server here
@@ -736,16 +735,10 @@ impl Drop for EnvRestore {
 // worker pool the way the lint guards against.
 #[allow(clippy::await_holding_lock)]
 async fn run_fails_startup_when_invalidation_poll_interval_is_zero() {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let probe = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        sqlx::PgPool::connect(&dsn),
-    )
-    .await;
-    if !matches!(probe, Ok(Ok(_))) {
-        eprintln!("SKIP: postgres unreachable at {dsn} — run()-level invalidation env test skipped");
+    let Some(_probe) = testdb::test_pool().await else {
         return;
-    }
+    };
+    let dsn = testdb::dsn();
 
     // This test mutates the REAL var name `run()` reads, so it must serialize.
     let _guard = RUN_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -1646,18 +1639,9 @@ async fn durable_delivery_starts_only_after_invalidation_first_refresh() {
     use std::sync::Arc;
 
     let _env_guard = RUN_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        sqlx::PgPool::connect(&dsn),
-    )
-    .await
-    {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — startup-order test skipped");
-            return;
-        }
+    let dsn = testdb::dsn();
+    let Some(pool) = testdb::test_pool().await else {
+        return;
     };
 
     fn leak(s: String) -> &'static str {

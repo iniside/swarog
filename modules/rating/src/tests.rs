@@ -4,24 +4,12 @@
 //! and `mmr` reads the projection back. Live tests SKIP cleanly when the local DB is
 //! unreachable.
 
-use std::time::Duration;
 
 use super::*;
 
-const DEFAULT_DSN: &str =
-    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
-
-/// Opens the local Postgres and ensures the schema; `None` (with a printed SKIP) when
-/// unreachable, so the live tests early-return instead of failing.
+/// The rating schema on top of the shared pool.
 async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — rating DB tests skipped");
-            return None;
-        }
-    };
+    let pool = testdb::test_pool().await?;
     // `CREATE SCHEMA IF NOT EXISTS` is not atomic against concurrent creation — parallel
     // tests can race to a unique-violation. One retry suffices: the loser re-runs the
     // fully-idempotent DDL once the winner has created the schema.

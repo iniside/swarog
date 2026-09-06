@@ -40,6 +40,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+testdb = { workspace = true }
 # Inventory's config-read tests inject a fake `configapi::Config` under the registry
 # key the real `config` module would use — no module->module dev-dep needed. The
 # end-to-end live-reload path (SQL write -> trigger NOTIFY -> invalidation refresh) is

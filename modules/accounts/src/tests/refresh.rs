@@ -1,8 +1,7 @@
 //! Refresh-token rotation and reuse detection: `Auth::refresh` and its single
 //! authority, `store::classify_presentation`. A child of `tests` so it reuses that
 //! module's live-DB harness (`test_pool`/`wired`/`suffix`/`cleanup_player`) and its
-//! once-per-binary schema serialization. Live-DB tests SKIP cleanly when Postgres is
-//! unreachable.
+//! once-per-binary schema serialization.
 
 use super::*;
 

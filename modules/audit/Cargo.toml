@@ -33,6 +33,7 @@ serde_json = { workspace = true }
 futures = { workspace = true }
 
 [dev-dependencies]
+testdb = { workspace = true }
 # The anti-drift test imports the producers' event contracts to diff the audited topic
 # set against their declared topics — a rename on either side fails the build.
 charactersevents = { workspace = true }

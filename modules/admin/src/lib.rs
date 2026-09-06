@@ -2127,7 +2127,7 @@ struct PageData {
 // ============================================================================
 // Tests. Pure helpers (adminapi::slug, build_groups, resolve_items, templates) run with
 // no DB; the session/lockout/CSRF/durable-emit matrix targets the local Postgres
-// (the test DB) and SKIPs cleanly when it is unreachable.
+// (the test DB) through `testdb`, which FAILS the run when it is unreachable.
 // ============================================================================
 #[cfg(test)]
 mod tests;

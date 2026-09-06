@@ -2,7 +2,7 @@
 //! templates) run with no DB, no network (LOCAL renders + REMOTE fetches are plain
 //! closures). The session-auth matrix — login/lockout/CSRF/logout/cookie flags plus
 //! the durable `admin.action` emits — targets the local Postgres (the test DB) and
-//! SKIPs cleanly when it is unreachable, accounts-harness style.
+//! gets its pool from `testdb`: an unreachable cluster FAILS the run.
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -1036,19 +1036,7 @@ fn password_roundtrip() {
 // tests never share a lockout subject.
 // ============================================================================
 
-/// Opens the local Postgres; returns `None` (printing a skip line) when unreachable,
-/// so the suite RUNS but SKIPs cleanly with no DB.
-async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — admin DB tests skipped");
-            return None;
-        }
-    };
-    Some(pool)
-}
+use testdb::test_pool;
 
 /// Migrates BOTH the asyncevents plane and the admin schema EXACTLY ONCE per test
 /// binary — concurrent idempotent DDL across parallel tests can deadlock on catalog

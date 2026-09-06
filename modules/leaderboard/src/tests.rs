@@ -5,24 +5,12 @@
 //! `record_win` directly.
 
 use std::future::Future;
-use std::time::Duration;
 
 use super::*;
 
-const DEFAULT_DSN: &str =
-    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
-
-/// Opens the local Postgres and ensures the schema; `None` (with a printed SKIP) when
-/// unreachable, so the live tests early-return instead of failing.
+/// The leaderboard schema on top of the shared pool.
 async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — leaderboard DB tests skipped");
-            return None;
-        }
-    };
+    let pool = testdb::test_pool().await?;
     sqlx::raw_sql(SCHEMA_DDL)
         .execute(&pool)
         .await

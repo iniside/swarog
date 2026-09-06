@@ -6,22 +6,13 @@
 use super::*;
 use std::time::Duration;
 
-const DEFAULT_DSN: &str =
-    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
-
 async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — eventctl tests skipped");
-            return None;
-        }
-    };
-    if let Err(err) = asyncevents::Plane::new(pool.clone(), dsn).unwrap().migrate().await {
-        eprintln!("SKIP: asyncevents migrate failed: {err}");
-        return None;
-    }
+    let pool = testdb::test_pool().await?;
+    asyncevents::Plane::new(pool.clone(), testdb::dsn())
+        .unwrap()
+        .migrate()
+        .await
+        .expect("migrate the asyncevents plane");
     Some(pool)
 }
 

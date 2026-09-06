@@ -31,47 +31,8 @@ pub(crate) const DEFAULT_DSN: &str =
 /// `--test-threads=1`.
 pub(crate) static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// How long a connect may take before the suite decides Postgres is not there.
-const CONNECT_BOUND: Duration = Duration::from_secs(3);
-
-/// Opens the local Postgres; returns `None` (printing a skip line) when unreachable, so the
-/// suite RUNS but SKIPs cleanly with no DB.
-///
-/// Two mechanisms, because this crate arms `test-util` and a `start_paused` runtime
-/// auto-advances every virtual timer the moment it idles (`runtime/time/mod.rs`'s
-/// `park_thread_timeout` parks for zero and jumps the clock — being blocked on a socket does
-/// not stop it), which would report a HEALTHY cluster as unreachable and make every DB test
-/// early-return green having tested nothing:
-///
-/// 1. A live `spawn_blocking` task spans the connect. On a current-thread runtime — the only
-///    flavour `start_paused` allows — that inhibits auto-advance for its lifetime
-///    (`runtime/blocking/schedule.rs`), which is what keeps SQLX's own internal acquire
-///    timeout from elapsing instantly. Without it the connect returns `PoolTimedOut` in
-///    microseconds against a running Postgres.
-/// 2. The outer bound is a REAL thread timer rather than `tokio::time`, so the decision that
-///    the cluster is absent can never be made by the virtual clock either.
-pub(crate) async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let (release, released) = std::sync::mpsc::channel::<()>();
-    let inhibitor = tokio::task::spawn_blocking(move || {
-        let _ = released.recv();
-    });
-    let (bound_tx, bound) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        std::thread::sleep(CONNECT_BOUND);
-        let _ = bound_tx.send(());
-    });
-    let pool = tokio::select! {
-        connected = PgPool::connect(&dsn) => connected.ok(),
-        _ = bound => None,
-    };
-    let _ = release.send(());
-    let _ = inhibitor.await;
-    if pool.is_none() {
-        eprintln!("SKIP: postgres unreachable at {dsn} — mail DB tests skipped");
-    }
-    pool
-}
+pub(crate) use testdb::test_pool;
+use testdb::CONNECT_BOUND;
 
 /// Migrates BOTH the durable plane and this module's schema EXACTLY ONCE per test binary —
 /// concurrent idempotent DDL can deadlock on catalog locks.
@@ -234,19 +195,19 @@ pub(crate) fn cleanup(pool: &PgPool, keys: &[&str]) -> DbGuard {
 // 0. The fixtures themselves.
 // ============================================================================
 
-/// The skip decision must never ride the VIRTUAL clock. This crate arms `test-util`, so a
+/// The connect bound must never ride the VIRTUAL clock. This crate arms `test-util`, so a
 /// `tokio::time` bound inside a paused test is auto-advanced the moment the runtime idles —
-/// `test_pool` would then report a healthy cluster as unreachable and every DB test would
-/// early-return GREEN having tested nothing. Under a paused clock the decision must either
-/// be a connection, or take the real bound to reach.
+/// `test_pool` would then report a healthy cluster as absent and fail every DB test in this
+/// crate against a working Postgres. Under a paused clock the decision must either be a
+/// connection, or take the real bound to reach. `testdb` owns the mechanism; this is the
+/// proof in the crate that actually arms the feature.
 #[tokio::test(start_paused = true)]
 async fn the_connect_bound_does_not_ride_the_virtual_clock() {
     let started = std::time::Instant::now();
     let pool = test_pool().await;
     assert!(
         pool.is_some() || started.elapsed() >= CONNECT_BOUND,
-        "a paused test decided postgres was unreachable in {:?} — the bound is virtual, and \
-         every DB test in this crate now skips green against a healthy cluster",
+        "a paused test decided postgres was absent in {:?} — the bound is virtual",
         started.elapsed()
     );
 }

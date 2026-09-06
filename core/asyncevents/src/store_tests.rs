@@ -56,23 +56,13 @@ CREATE TABLE IF NOT EXISTS asyncevents.t (id int);
 pub(crate) static WRITER_LOCK_CHOREOGRAPHY: tokio::sync::Mutex<()> =
     tokio::sync::Mutex::const_new(());
 
-/// Opens the local Postgres and ensures the V2 schema; returns `None` (printing a
-/// skip line) when it's unreachable, so the suite degrades to a no-op without a DB.
-/// Guards run only in their dedicated test — a guard failure mid-suite must not
-/// silently skip unrelated tests.
+/// The plane's V2 schema on top of the shared pool. Guards run only in their dedicated
+/// test — a guard failure mid-suite must not silently skip unrelated tests.
 async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — asyncevents store tests skipped");
-            return None;
-        }
-    };
-    if let Err(err) = ensure_schema(&pool).await {
-        eprintln!("SKIP: asyncevents V2 migrate failed: {err}");
-        return None;
-    }
+    let pool = testdb::test_pool().await?;
+    ensure_schema(&pool)
+        .await
+        .expect("migrate the asyncevents V2 schema");
     Some(pool)
 }
 

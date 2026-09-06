@@ -333,7 +333,8 @@ fn dev_seed_explicitly_on() -> bool {
 
 // ============================================================================
 // Tests. Unit tests need no DB; integration tests target the local Postgres (the test
-// DB) and SKIP cleanly when it is unreachable. In-crate so they can drive the private
+// DB) through `testdb`, which FAILS the run when it is unreachable. In-crate so they
+// can drive the private
 // `Service`/`Store` directly. Fixtures use `test-`-prefixed key names and clean up
 // their own rows — the shared local Postgres must never have the harness's dev rows
 // poisoned by a test.

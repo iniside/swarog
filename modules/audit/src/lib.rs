@@ -428,7 +428,8 @@ impl Module for Audit {
 // shape messaging's consume uses — an insert/prune inside a tx that then commits), so
 // they exercise the ledger SQL + atomicity without the transport internals. The
 // anti-drift topic-set test needs no DB. In-crate so they can drive the private
-// handlers. Live-Postgres tests SKIP cleanly when the local DB is unreachable.
+// handlers. The live-Postgres tests take their pool from `testdb`, which FAILS the run
+// when the local DB is unreachable.
 // ============================================================================
 #[cfg(test)]
 mod tests;

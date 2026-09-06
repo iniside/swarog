@@ -1,5 +1,5 @@
 //! match tests. Unit tests validate `report`'s durable write shape; the live-Postgres
-//! integration tests target the local Postgres (the test DB) and SKIP cleanly when it is
+//! integration tests target the local Postgres (the test DB) and FAIL (via `testdb`) when it is
 //! unreachable. The `validate_requires` test proves match fails loud without `rating`.
 //! In-crate so they can drive the private `Service` directly.
 
@@ -16,19 +16,7 @@ use super::*;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
-/// Opens the local Postgres; returns `None` (printing a skip line) when unreachable, so
-/// the suite RUNS but SKIPs cleanly with no DB.
-async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — match DB tests skipped");
-            return None;
-        }
-    };
-    Some(pool)
-}
+use testdb::test_pool;
 
 /// Migrates BOTH the asyncevents (durable plane's event log) and match schemas EXACTLY
 /// ONCE per test binary — concurrent idempotent DDL across parallel tests can deadlock on
@@ -529,8 +517,8 @@ async fn read_mmr_folds_every_rating_status_into_unavailable() {
 /// The same fold, proven THROUGH the public op: a fresh `ReportId` walks the whole
 /// `report` path (validate -> replay lookup -> `read_mmr`) and the rating `Invalid`
 /// surfaces to the caller as `Unavailable`/503, with no match row and no event written.
-/// Needs the DB for the replay lookup, so it SKIPs cleanly without Postgres — the
-/// DB-free `read_mmr` test above is the always-running proof of the same branch.
+/// Needs the DB for the replay lookup — the DB-free `read_mmr` test above is the proof
+/// of the same branch that runs without a cluster.
 #[tokio::test]
 async fn report_surfaces_unavailable_when_rating_answers_invalid() {
     let Some(pool) = test_pool().await else { return };

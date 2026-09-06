@@ -22,6 +22,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }
 
 [dev-dependencies]
+testdb = { workspace = true }
 # Tests migrate the plane (Plane::migrate) and append real events to set up
 # skip/retry scenarios against live Postgres.
 bus = { workspace = true }

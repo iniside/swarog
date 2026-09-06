@@ -5,18 +5,8 @@
 //! unique username and deletes its own rows, so concurrent runs never collide.
 
 use super::*;
-use std::time::Duration;
 
-async fn test_pool() -> Option<PgPool> {
-    let dsn = dsn();
-    match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => Some(p),
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — adminctl tests skipped");
-            None
-        }
-    }
-}
+use testdb::test_pool;
 
 /// A per-call unique username (nanos + pid derived) so concurrent test binaries never
 /// contend on the same `admin.users` PK.

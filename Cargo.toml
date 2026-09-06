@@ -36,6 +36,9 @@ members = [
     "tools/playercli",
     # Exact, handle-owned child-process lifecycle used by dev/test tooling.
     "tools/processctl",
+    # Live-Postgres test support (dev-dependency only): owns the connect bound and the
+    # strict-vs-skip decision every DB test used to hand-copy.
+    "tools/testdb",
     "tools/devctl",
     "tools/verifyctl",
     # Cross-platform split-proof harness (replaces split-proof.sh/.ps1 + tools/winctrl):
@@ -314,6 +317,9 @@ httpmw = { path = "core/httpmw" }
 rpc-macro = { path = "tools/rpc-macro" }
 rpc-contract-model = { path = "tools/rpc-contract-model" }
 checkmodules = { path = "tools/checkmodules" }
+# Test support, dev-dependency ONLY: the single authority deciding whether an
+# unreachable Postgres skips a test (strict by default) or fails the run.
+testdb = { path = "tools/testdb" }
 
 # ---- Contract surfaces (api/<name>/): shared by modules, import no module.
 # `<name>api` is the PURE contract a domain consumer may import (rule 4);

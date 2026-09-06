@@ -1223,8 +1223,8 @@ fn env_bool(key: &str, default: bool) -> bool {
 // ============================================================================
 // Tests. Unit tests (argon2, tokens, validation) need no DB; the OIDC/OAuth tests
 // mint their own JWTs against a LOCAL JWKS fixture (no live Epic); integration
-// tests target the local Postgres (the test DB) and SKIP cleanly when it is
-// unreachable. In-crate so they can drive the private `Service`/`Store` directly.
+// tests target the local Postgres (the test DB) through `testdb`, which FAILS the run
+// when it is unreachable. In-crate so they can drive the private `Service`/`Store`.
 // ============================================================================
 #[cfg(test)]
 mod oidc_tests;

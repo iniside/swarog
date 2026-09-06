@@ -19,4 +19,5 @@ sqlx = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
+testdb = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }

@@ -27,6 +27,7 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
+testdb = { workspace = true }
 # The durable plane under test (Step 7): config's write trigger appends `config.changed`
 # via `asyncevents.append_event`, so the integration tests migrate the plane schema, and
 # the writer-parity contract test drives `asyncevents::store::append` directly alongside

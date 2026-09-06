@@ -39,6 +39,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+testdb = { workspace = true }
 async-trait = { workspace = true }
 # The startup-order integration test (invalidation first refresh BEFORE durable
 # delivery) emits/subscribes a throwaway JSON event through the real boot path.

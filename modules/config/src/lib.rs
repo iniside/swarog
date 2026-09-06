@@ -759,8 +759,8 @@ impl Module for Config {
 
 // ============================================================================
 // Tests. Unit tests need no DB; integration tests target the local Postgres (the
-// test DB) and SKIP cleanly (early return + message) when it is unreachable. In-crate
-// so they can drive the private `Service`/`load_snapshot`/`refresh` directly.
+// test DB) through `testdb`, which FAILS the run when it is unreachable. In-crate so
+// they can drive the private `Service`/`load_snapshot`/`refresh` directly.
 // ============================================================================
 #[cfg(test)]
 mod tests;

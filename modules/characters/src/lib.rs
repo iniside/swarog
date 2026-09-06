@@ -230,8 +230,8 @@ impl Module for Characters {
 
 // ============================================================================
 // Tests. Unit tests need no DB (validation runs before any DB work); integration
-// tests target the local Postgres (the test DB) and SKIP cleanly when it is
-// unreachable. In-crate so they can drive the private `Service`/`Store` directly.
+// tests target the local Postgres (the test DB) through `testdb`, which FAILS the run
+// when it is unreachable. In-crate so they can drive the private `Service`/`Store`.
 // ============================================================================
 #[cfg(test)]
 mod tests;

@@ -627,9 +627,9 @@ pub mod testing {
 }
 
 // ============================================================================
-// Integration tests — live Postgres (the local DB is the test DB). Each guarded
-// by a `test_pool` that SKIPs (early-returns with a message) when Postgres is
-// down. In-crate (not `tests/`) so they can drive the private worker/catalog.
+// Integration tests — live Postgres (the local DB is the test DB). Each takes its
+// pool from `testdb`, which FAILS the run when Postgres is down. In-crate (not
+// `tests/`) so they can drive the private worker/catalog.
 // ============================================================================
 #[cfg(test)]
 mod tests;

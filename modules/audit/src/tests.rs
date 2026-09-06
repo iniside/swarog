@@ -2,8 +2,8 @@
 //! same shape the asyncevents plane's `consume` uses — an insert/prune inside a tx that commits),
 //! so they exercise the ledger SQL + tx atomicity without pulling in the transport
 //! internals (asyncevents' own tests cover the delivery-tx checkpointing). The anti-drift topic-set
-//! test needs no DB. Live-Postgres tests SKIP cleanly (early-return) when the local DB
-//! is unreachable, so `cargo test` never hard-fails on a machine without it.
+//! test needs no DB. The live-Postgres tests get their pool from `testdb`, so an
+//! unreachable local DB FAILS the run unless `TESTDB_ALLOW_SKIP=1`.
 
 use std::collections::HashSet;
 
@@ -12,23 +12,13 @@ use super::*;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
-/// Connects to the test DB and ensures the schema; `None` (with a printed SKIP) when
-/// Postgres is unreachable, so the live tests early-return instead of failing.
 async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    match PgPool::connect(&dsn).await {
-        Ok(pool) => {
-            sqlx::raw_sql(SCHEMA_DDL)
-                .execute(&pool)
-                .await
-                .expect("migrate audit schema");
-            Some(pool)
-        }
-        Err(e) => {
-            eprintln!("SKIP audit live test: postgres unreachable: {e}");
-            None
-        }
-    }
+    let pool = testdb::test_pool().await?;
+    sqlx::raw_sql(SCHEMA_DDL)
+        .execute(&pool)
+        .await
+        .expect("migrate audit schema");
+    Some(pool)
 }
 
 /// A run-unique marker topic so assertions/cleanup never collide on the shared DB.

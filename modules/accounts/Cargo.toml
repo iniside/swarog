@@ -52,6 +52,7 @@ url = { workspace = true }
 sha2 = { workspace = true }
 
 [dev-dependencies]
+testdb = { workspace = true }
 # The durable plane under test: registration emits player.registered via emit_tx,
 # so the integration tests install asyncevents' `bus::Transport` and assert the
 # durable event append (asyncevents is a core crate, not an api/ crate — no boundary violation).

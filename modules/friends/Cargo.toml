@@ -36,4 +36,5 @@ async-trait = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [dev-dependencies]
+testdb = { workspace = true }
 asyncevents = { workspace = true }

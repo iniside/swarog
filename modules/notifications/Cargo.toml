@@ -51,6 +51,7 @@ async-trait = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [dev-dependencies]
+testdb = { workspace = true }
 # The durable plane, driven by hand: `asyncevents::testing::TestTransport` gives the fan-in
 # tests a REAL append + delivery pass with no background workers and no clock.
 asyncevents = { workspace = true }

@@ -32,6 +32,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "testdb",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -116,6 +117,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "testdb",
  "tokio",
  "tower",
  "tracing",
@@ -174,6 +176,7 @@ dependencies = [
  "admin",
  "anyhow",
  "sqlx",
+ "testdb",
  "tokio",
 ]
 
@@ -244,6 +247,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "testdb",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -315,6 +319,7 @@ dependencies = [
  "rustls-acme",
  "serde_json",
  "sqlx",
+ "testdb",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite",
@@ -494,6 +499,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
 ]
@@ -537,6 +543,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
  "walletevents",
@@ -831,6 +838,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
 ]
@@ -962,6 +970,7 @@ dependencies = [
  "registry",
  "serde_json",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
 ]
@@ -1394,6 +1403,7 @@ dependencies = [
  "asyncevents",
  "bus",
  "sqlx",
+ "testdb",
  "tokio",
 ]
 
@@ -1478,6 +1488,7 @@ dependencies = [
  "opsapi",
  "registry",
  "sqlx",
+ "testdb",
  "tokio",
 ]
 
@@ -2130,6 +2141,7 @@ dependencies = [
  "anyhow",
  "prometheus",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
 ]
@@ -2156,6 +2168,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
 ]
@@ -2317,6 +2330,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
 ]
@@ -2436,6 +2450,7 @@ dependencies = [
  "push",
  "registry",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
 ]
@@ -2503,6 +2518,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "testdb",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
@@ -2575,6 +2591,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
 ]
@@ -2751,6 +2768,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
  "walletevents",
@@ -3378,6 +3396,7 @@ dependencies = [
  "ratingrpc",
  "registry",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
 ]
@@ -3842,6 +3861,7 @@ dependencies = [
  "schedulerrpc",
  "serde_json",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
 ]
@@ -4448,6 +4468,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "testdb"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
+ "tokio",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4988,6 +5016,7 @@ dependencies = [
  "rand 0.8.6",
  "registry",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
  "walletapi",

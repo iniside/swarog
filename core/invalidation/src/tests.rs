@@ -77,20 +77,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use sqlx::PgPool;
 
-/// Fallback DSN when `DATABASE_URL` is unset — the same default the rest of the workspace uses.
-const DEFAULT_DSN: &str =
-    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
-
-/// Opens the local Postgres; returns `None` (printing a skip line) when unreachable.
+/// The shared pool plus the DSN the LISTEN/NOTIFY worker needs.
 async fn test_pool() -> Option<(PgPool, String)> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => Some((p, dsn)),
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — invalidation DB tests skipped");
-            None
-        }
-    }
+    let pool = testdb::test_pool().await?;
+    Some((pool, testdb::dsn()))
 }
 
 fn nanos() -> u128 {

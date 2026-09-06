@@ -179,17 +179,7 @@ fn validate_quantity_boundaries() {
 
 // ---- Live Postgres integration ----------------------------------------
 
-async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — inventory DB tests skipped");
-            return None;
-        }
-    };
-    Some(pool)
-}
+use testdb::test_pool;
 
 /// Migrates asyncevents (durable plane's event log) + inventory schemas EXACTLY
 /// ONCE per test binary — concurrent idempotent DDL across parallel tests can

@@ -24,9 +24,9 @@ mod store;
 mod worker;
 
 // ============================================================================
-// Tests target the local Postgres (the test DB) and SKIP cleanly when it is
-// unreachable. In-crate so they can drive the private `Service`/`Store`/`Drain`
-// directly.
+// Tests target the local Postgres (the test DB) through `testdb`, which FAILS the run
+// when it is unreachable. In-crate so they can drive the private
+// `Service`/`Store`/`Drain` directly.
 // ============================================================================
 #[cfg(test)]
 mod config_tests;

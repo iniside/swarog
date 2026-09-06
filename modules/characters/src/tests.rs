@@ -1,6 +1,5 @@
 use super::*;
 use opsapi::Status;
-use std::time::Duration;
 
 /// Fallback DSN for the lazy-pool unit tests (the live tests read `DATABASE_URL`).
 const DEFAULT_DSN: &str =
@@ -118,19 +117,7 @@ async fn list_and_delete_require_identity() {
 
 // ---- Live Postgres integration (the local DB is the test DB) ----------
 
-/// Opens the local Postgres; returns `None` (printing a skip line) when
-/// unreachable, so the suite RUNS but SKIPs cleanly with no DB.
-async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — characters DB tests skipped");
-            return None;
-        }
-    };
-    Some(pool)
-}
+use testdb::test_pool;
 
 /// Migrates BOTH the asyncevents (durable plane's event log) and characters schemas
 /// EXACTLY ONCE per test binary. Concurrent `CREATE INDEX`/`CREATE OR REPLACE

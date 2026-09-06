@@ -19,6 +19,7 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 
 [dev-dependencies]
+testdb = { workspace = true }
 # The Plane is not a Module, so `lifecycle` is test-only: the transport-liveness
 # test drives Context::with_db_and_transport the way app::run does.
 lifecycle = { workspace = true }

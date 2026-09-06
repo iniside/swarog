@@ -8,11 +8,6 @@
 use super::*;
 use crate::store::{Store, WriteError};
 use sqlx::PgPool;
-use std::time::Duration;
-
-/// Fallback DSN when `DATABASE_URL` is unset (matches the other modules' tests).
-const DEFAULT_DSN: &str =
-    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
 static DB_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -20,21 +15,13 @@ pub(crate) async fn db_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
     DB_TEST_LOCK.lock().await
 }
 
-/// Opens the local Postgres, migrates the apikeys schema, and returns `None` (printing a
-/// skip line) when it's unreachable.
+/// The apikeys schema on top of the shared pool.
 pub(crate) async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — apikeys DB tests skipped");
-            return None;
-        }
-    };
-    if let Err(err) = sqlx::raw_sql(SCHEMA_DDL).execute(&pool).await {
-        eprintln!("SKIP: apikeys migrate failed: {err}");
-        return None;
-    }
+    let pool = testdb::test_pool().await?;
+    sqlx::raw_sql(SCHEMA_DDL)
+        .execute(&pool)
+        .await
+        .expect("migrate apikeys schema");
     Some(pool)
 }
 

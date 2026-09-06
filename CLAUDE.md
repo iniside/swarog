@@ -601,6 +601,14 @@ Integration tests target this local Postgres directly (no Docker/testcontainers)
 (Admin/superuser credentials for provisioning are in local agent memory, not
 committed.)
 
+**A DB test that cannot reach Postgres FAILS the run.** Every live-DB test takes its
+pool from the one authority, `tools/testdb` (`testdb::test_pool`, a dev-dependency),
+which panics when the cluster is unreachable — a green `cargo test --workspace` can
+never mean "the database tests silently did not run". The single opt-out is
+`TESTDB_ALLOW_SKIP=1` (explicitly truthy, unset = strict, warns loudly per skip), for
+working without a cluster. `testdb`'s own suite scans the workspace and fails if any
+crate grows a second skip authority.
+
 **No data migrations — wipe is the migration strategy (current phase).** This is
 pre-production with no persistent users yet: when a schema or event-contract
 change would need a data migration, DROP the affected schemas (or the whole DB)
@@ -645,7 +653,7 @@ modules/                   # private impls — 15 fortresses + gateway (see abov
 demos/                     # non-shipping demo crates (webui) — cmd/server only
 weles/                     # standalone mini-orchestrator (zero-sharing; deploy/ artifacts,
                            # restart-on-crash supervisor; see Commands)
-tools/                     # devctl/verifyctl/processctl/splitproof, rpc-macro,
+tools/                     # devctl/verifyctl/processctl/splitproof, testdb, rpc-macro,
                            # architecture checkers, generators, edgeca, playercli
 experiments/               # archived sketches: go-sketch (the ported original),
                            # jvm-kotlin-sketch, jvm-quarkus-sketch — reference only

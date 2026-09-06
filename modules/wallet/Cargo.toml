@@ -43,5 +43,6 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 
 [dev-dependencies]
+testdb = { workspace = true }
 asyncevents = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

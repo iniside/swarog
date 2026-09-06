@@ -127,7 +127,6 @@ async fn ops_contributed_unconditionally_while_guard_rejects() {
 /// `verify_session` is unaffected by the dev-auth gate: a dev-auth-OFF service still
 /// resolves a bearer minted by a normal (gate-on) service over the same pool — the
 /// gateway's auth-once verifier keeps working even where register/login are withheld.
-/// Live-DB; SKIPs cleanly when Postgres is unreachable.
 #[tokio::test]
 async fn verify_session_unaffected_by_dev_auth_gate() {
     let Some(pool) = test_pool().await else { return };

@@ -193,24 +193,16 @@ async fn ensure_asyncevents_schema(pool: &PgPool) {
         .await;
 }
 
-/// Opens the local Postgres and migrates BOTH the asyncevents plane (so the config
-/// trigger's `asyncevents.append_event` call resolves on every `config.settings` write)
-/// and the config schema; returns `None` (printing a skip line) when Postgres is
-/// unreachable.
+/// Migrates BOTH the asyncevents plane (so the config trigger's
+/// `asyncevents.append_event` call resolves on every `config.settings` write) and the
+/// config schema, on top of the shared pool.
 async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — config DB tests skipped");
-            return None;
-        }
-    };
+    let pool = testdb::test_pool().await?;
     ensure_asyncevents_schema(&pool).await;
-    if let Err(err) = sqlx::raw_sql(SCHEMA_DDL).execute(&pool).await {
-        eprintln!("SKIP: config migrate failed: {err}");
-        return None;
-    }
+    sqlx::raw_sql(SCHEMA_DDL)
+        .execute(&pool)
+        .await
+        .expect("migrate config schema");
     Some(pool)
 }
 

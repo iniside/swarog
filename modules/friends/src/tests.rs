@@ -30,17 +30,7 @@ use crate::service::{decode_cursor, is_uuid_text, resolve_limit};
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
-async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — friends DB tests skipped");
-            return None;
-        }
-    };
-    Some(pool)
-}
+use testdb::test_pool;
 
 /// Migrates BOTH the asyncevents plane and the friends schema EXACTLY ONCE per test
 /// binary — concurrent idempotent DDL across parallel tests can deadlock on catalog locks.

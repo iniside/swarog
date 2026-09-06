@@ -4,8 +4,7 @@
 //! shape the asyncevents plane's consume runs the handler in), so these exercise the
 //! DELETE + name-filter without the transport internals. A child of `tests` so it reuses
 //! that module's live-DB harness (`test_pool`/`wired`/`suffix`/`cleanup_player`) and its
-//! once-per-binary schema serialization. Live-DB tests SKIP cleanly when Postgres is
-//! unreachable.
+//! once-per-binary schema serialization.
 
 use super::*;
 

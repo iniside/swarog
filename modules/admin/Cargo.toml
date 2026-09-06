@@ -48,6 +48,7 @@ httpmw = { workspace = true }
 ipnet = { workspace = true }
 
 [dev-dependencies]
+testdb = { workspace = true }
 tokio = { workspace = true }
 # The sanctioned test-wiring pattern: the durable plane stays app-owned at runtime
 # (never a normal dep — archcheck rule 10); tests install its transport directly.

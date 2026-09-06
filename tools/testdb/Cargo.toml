@@ -1,0 +1,15 @@
+[package]
+name = "testdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Dev-dependency-only test support: the ONE place that decides whether a DB test may
+# be skipped. It is never a runtime dependency of any shipping crate.
+[dependencies]
+sqlx = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

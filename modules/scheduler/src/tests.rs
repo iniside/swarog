@@ -33,22 +33,13 @@ fn dsn() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string())
 }
 
-/// Connects to the test DB and ensures the schema; `None` (with a printed SKIP) when
-/// Postgres is unreachable, so the live tests early-return instead of failing.
 async fn test_pool() -> Option<PgPool> {
-    match PgPool::connect(&dsn()).await {
-        Ok(pool) => {
-            sqlx::raw_sql(&SCHEMA_DDL)
-                .execute(&pool)
-                .await
-                .expect("migrate scheduler schema");
-            Some(pool)
-        }
-        Err(e) => {
-            eprintln!("SKIP scheduler live test: postgres unreachable: {e}");
-            None
-        }
-    }
+    let pool = testdb::test_pool().await?;
+    sqlx::raw_sql(&SCHEMA_DDL)
+        .execute(&pool)
+        .await
+        .expect("migrate scheduler schema");
+    Some(pool)
 }
 
 /// A run-unique schedule name so assertions/cleanup never collide on the shared DB.

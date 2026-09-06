@@ -214,23 +214,7 @@ async fn start_unwind_abandons_a_hung_stop_and_continues() {
     );
 }
 
-/// Fallback DSN when `DATABASE_URL` is unset — the same default `core/app` uses.
-const DEFAULT_DSN: &str =
-    "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
-
-/// Opens the local Postgres; returns `None` (printing a skip line) when
-/// unreachable, so the suite degrades to a no-op where there's no DB — the same
-/// convention as `asyncevents`' live tests.
-async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => Some(p),
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — lifecycle DB tests skipped");
-            None
-        }
-    }
-}
+use testdb::test_pool;
 
 /// Serializes the tests that take the GLOBAL `MODULE_MIGRATE_LOCK_KEY` advisory
 /// lock on the shared DB — the `763f1d9` choreography lesson (asyncevents' two

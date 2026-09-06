@@ -31,6 +31,7 @@ httpmw = { workspace = true }
 futures = { workspace = true }
 
 [dev-dependencies]
+testdb = { workspace = true }
 # The exactly-once concurrency test installs a fake bus transport that records the
 # durable emits, and drives `fire` against the live local Postgres (advisory lock +
 # stillDue re-check). serde_json decodes the recorded `Fired` payloads.

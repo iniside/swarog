@@ -1,7 +1,6 @@
 use super::*;
 
 use std::collections::HashMap;
-use std::time::Duration;
 
 use base64::Engine as _;
 use bus::{AnyTx, TxHandler};
@@ -35,19 +34,7 @@ const DEFAULT_DSN: &str =
 /// caller having passed `--test-threads=1`.
 static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Opens the local Postgres; returns `None` (printing a skip line) when unreachable, so the
-/// suite RUNS but SKIPs cleanly with no DB.
-async fn test_pool() -> Option<PgPool> {
-    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — notifications DB tests skipped");
-            return None;
-        }
-    };
-    Some(pool)
-}
+use testdb::test_pool;
 
 /// Migrates BOTH the durable plane and this module's schema EXACTLY ONCE per test binary —
 /// concurrent idempotent DDL can deadlock on catalog locks.
