@@ -839,6 +839,64 @@ async fn a_drain_that_errors_every_pass_goes_stale_while_the_loop_is_still_alive
     task.abort();
 }
 
+/// The positive control the failure half needs: nothing in the test above asserts that a
+/// pass ever RAN — a wedged `select!` or a `drain_pass` returning before its first checkout
+/// would age the stamp out just as well. Here the same loop over a HEALTHY pool must keep
+/// the stamp fresh, which only an executing `Ok` arm can do.
+///
+/// Deliberately NOT `start_paused`: tokio's auto-advance parks for zero and jumps the clock
+/// whenever the runtime is idle, INCLUDING while a real query is in flight
+/// (`runtime/time/mod.rs`'s `park_thread_timeout`), so a paused control would fire
+/// `bounded_tx`'s own checkout bound mid-statement and go red on its instrument. It polls for
+/// a STREAK of un-stalled reads past the seed window instead — the shape `core/asyncevents`'
+/// retention control uses: inside the window the entry seed alone reads healthy, past it only
+/// an ACTIVE re-mark can.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_healthy_drain_keeps_the_readiness_stamp_fresh() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    crate::tests::ensure_schema(&pool).await;
+    // Nothing due: every pass is then a healthy no-op that delivers nobody's row.
+    quarantine_foreign_pending(&pool, "").await;
+
+    let liveness = Liveness::default();
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let task = tokio::spawn(crate::worker::run_loop(
+        drain_with(&pool, faking(Verdict::Ok).0, 20),
+        Store,
+        liveness.clone(),
+        Duration::from_millis(50),
+        stop_rx,
+    ));
+
+    const STALE_AFTER: Duration = Duration::from_secs(1);
+    let start = std::time::Instant::now();
+    let mut streak = 0;
+    let mut healthy = false;
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if liveness.check(STALE_AFTER).is_err() {
+            streak = 0;
+        } else {
+            streak += 1;
+            // Past 3x the threshold the entry seed has long aged out, so an un-stalled read
+            // can ONLY come from a pass that completed and stamped.
+            if streak >= 5 && start.elapsed() >= STALE_AFTER * 3 {
+                healthy = true;
+                break;
+            }
+        }
+    }
+    let _ = stop_tx.send(true);
+    task.abort();
+
+    assert!(
+        healthy,
+        "a drain completing healthy passes must keep re-stamping — without that, the stall \
+         above proves only that a stamp can age, not that the loop runs passes at all"
+    );
+}
+
 /// A guard that records its own drop, so "the aborted task's state was released" is an
 /// assertion rather than an absence of errors.
 struct DropRecorder(Arc<AtomicUsize>);

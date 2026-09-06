@@ -31,18 +31,46 @@ pub(crate) const DEFAULT_DSN: &str =
 /// `--test-threads=1`.
 pub(crate) static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// How long a connect may take before the suite decides Postgres is not there.
+const CONNECT_BOUND: Duration = Duration::from_secs(3);
+
 /// Opens the local Postgres; returns `None` (printing a skip line) when unreachable, so the
 /// suite RUNS but SKIPs cleanly with no DB.
+///
+/// Two mechanisms, because this crate arms `test-util` and a `start_paused` runtime
+/// auto-advances every virtual timer the moment it idles (`runtime/time/mod.rs`'s
+/// `park_thread_timeout` parks for zero and jumps the clock — being blocked on a socket does
+/// not stop it), which would report a HEALTHY cluster as unreachable and make every DB test
+/// early-return green having tested nothing:
+///
+/// 1. A live `spawn_blocking` task spans the connect. On a current-thread runtime — the only
+///    flavour `start_paused` allows — that inhibits auto-advance for its lifetime
+///    (`runtime/blocking/schedule.rs`), which is what keeps SQLX's own internal acquire
+///    timeout from elapsing instantly. Without it the connect returns `PoolTimedOut` in
+///    microseconds against a running Postgres.
+/// 2. The outer bound is a REAL thread timer rather than `tokio::time`, so the decision that
+///    the cluster is absent can never be made by the virtual clock either.
 pub(crate) async fn test_pool() -> Option<PgPool> {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let pool = match tokio::time::timeout(Duration::from_secs(3), PgPool::connect(&dsn)).await {
-        Ok(Ok(p)) => p,
-        _ => {
-            eprintln!("SKIP: postgres unreachable at {dsn} — mail DB tests skipped");
-            return None;
-        }
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let inhibitor = tokio::task::spawn_blocking(move || {
+        let _ = released.recv();
+    });
+    let (bound_tx, bound) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        std::thread::sleep(CONNECT_BOUND);
+        let _ = bound_tx.send(());
+    });
+    let pool = tokio::select! {
+        connected = PgPool::connect(&dsn) => connected.ok(),
+        _ = bound => None,
     };
-    Some(pool)
+    let _ = release.send(());
+    let _ = inhibitor.await;
+    if pool.is_none() {
+        eprintln!("SKIP: postgres unreachable at {dsn} — mail DB tests skipped");
+    }
+    pool
 }
 
 /// Migrates BOTH the durable plane and this module's schema EXACTLY ONCE per test binary —
@@ -147,41 +175,99 @@ pub(crate) async fn expire_lease(pool: &PgPool, key: &str) {
     .unwrap();
 }
 
-/// Deletes this test's outbox rows when the test ENDS — including through a panicking
-/// assertion, which a trailing call never reaches. The database is shared and a stranded
-/// `pending` row is claimable by any live drain, so a leak from a red test is a leak into
-/// every fleet that boots afterwards.
-#[must_use = "the rows are deleted when this guard drops — binding it to `_` drops it at once"]
-pub(crate) fn cleanup(pool: &PgPool, keys: &[&str]) -> Cleanup {
-    Cleanup {
-        pool: pool.clone(),
-        keys: keys.iter().map(|k| (*k).to_string()).collect(),
-    }
+/// Runs `f` when the guard drops — including through a panicking assertion, which a trailing
+/// call never reaches. Every fixture that mutates the SHARED database undoes itself through
+/// this one mechanism: a stranded `pending` row is claimable by any live drain, a stranded
+/// event is re-delivered into the next run, and a stranded CHECK constraint refuses every
+/// later insert in the cluster.
+#[must_use = "the cleanup runs when this guard drops — binding it to `_` drops it at once"]
+pub(crate) fn on_drop<F, Fut>(f: F) -> DbGuard
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    DbGuard(Some(Box::new(move || Box::pin(f()))))
 }
 
-pub(crate) struct Cleanup {
-    pool: PgPool,
-    keys: Vec<String>,
-}
+pub(crate) struct DbGuard(
+    Option<Box<dyn FnOnce() -> futures::future::BoxFuture<'static, ()> + Send>>,
+);
 
-impl Drop for Cleanup {
+impl Drop for DbGuard {
     /// `Drop` cannot await, and a spawned task would be dropped with the test's runtime
-    /// before it ran — so the delete blocks on the current runtime. Every test that holds
-    /// a guard is `flavor = "multi_thread"`, which is what `block_in_place` requires.
+    /// before it ran — so the cleanup blocks on the current runtime, which `block_in_place`
+    /// allows only on a MULTI-THREAD one. On any other flavour it DEGRADES to a warning:
+    /// panicking here during an unwind aborts the whole test binary, which would trade one
+    /// legible failure for none. A misused guard must cost the leak, never the report.
     fn drop(&mut self) {
-        let pool = self.pool.clone();
-        let keys = std::mem::take(&mut self.keys);
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                for key in &keys {
-                    let _ = sqlx::query("DELETE FROM mail.outbox WHERE idempotency_key = $1")
-                        .bind(key)
-                        .execute(&pool)
-                        .await;
-                }
-            })
-        });
+        let Some(f) = self.0.take() else { return };
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            eprintln!("WARN: mail fixture cleanup SKIPPED — no tokio runtime in scope");
+            return;
+        };
+        if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::MultiThread {
+            eprintln!(
+                "WARN: mail fixture cleanup SKIPPED — a guard needs `flavor = \"multi_thread\"`"
+            );
+            return;
+        }
+        tokio::task::block_in_place(|| handle.block_on(f()));
     }
+}
+
+/// Deletes this test's outbox rows when the test ENDS. A stranded `pending` row is claimable
+/// by any live drain, which is why `quarantine_foreign_pending` has to exist at all.
+pub(crate) fn cleanup(pool: &PgPool, keys: &[&str]) -> DbGuard {
+    let pool = pool.clone();
+    let keys: Vec<String> = keys.iter().map(|k| (*k).to_string()).collect();
+    on_drop(move || async move {
+        for key in &keys {
+            let _ = sqlx::query("DELETE FROM mail.outbox WHERE idempotency_key = $1")
+                .bind(key)
+                .execute(&pool)
+                .await;
+        }
+    })
+}
+
+// ============================================================================
+// 0. The fixtures themselves.
+// ============================================================================
+
+/// The skip decision must never ride the VIRTUAL clock. This crate arms `test-util`, so a
+/// `tokio::time` bound inside a paused test is auto-advanced the moment the runtime idles —
+/// `test_pool` would then report a healthy cluster as unreachable and every DB test would
+/// early-return GREEN having tested nothing. Under a paused clock the decision must either
+/// be a connection, or take the real bound to reach.
+#[tokio::test(start_paused = true)]
+async fn the_connect_bound_does_not_ride_the_virtual_clock() {
+    let started = std::time::Instant::now();
+    let pool = test_pool().await;
+    assert!(
+        pool.is_some() || started.elapsed() >= CONNECT_BOUND,
+        "a paused test decided postgres was unreachable in {:?} — the bound is virtual, and \
+         every DB test in this crate now skips green against a healthy cluster",
+        started.elapsed()
+    );
+}
+
+/// `block_in_place` panics on a current-thread runtime, and a panic inside `Drop` during an
+/// unwind aborts the test binary — one legible failure traded for none. A guard that cannot
+/// run must DEGRADE to the leak it was there to prevent.
+#[tokio::test]
+async fn a_guard_that_cannot_block_degrades_instead_of_aborting() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let ran = Arc::new(AtomicUsize::new(0));
+    let counted = ran.clone();
+    drop(on_drop(move || async move {
+        counted.fetch_add(1, Ordering::SeqCst);
+    }));
+    assert_eq!(
+        ran.load(Ordering::SeqCst),
+        0,
+        "the cleanup is SKIPPED on this flavour — reaching this assertion at all is the point"
+    );
 }
 
 // ============================================================================

@@ -16,7 +16,7 @@ use crate::projection::{
     SEND_REQUESTED_SUB,
 };
 use crate::store::{STATE_CANCELLED, STATE_PARKED, STATE_PENDING, STATE_SENT};
-use crate::tests::{cleanup, ensure_schema, test_pool, unique_key, DB_LOCK};
+use crate::tests::{cleanup, ensure_schema, on_drop, test_pool, unique_key, DbGuard, DB_LOCK};
 use crate::{Context, MailModule, Module, Service};
 
 async fn reset_subscription(pool: &PgPool, id: &str) {
@@ -118,24 +118,43 @@ async fn clear_backoff(pool: &PgPool, id: &str) {
     .unwrap();
 }
 
-/// A `CHECK (false) NOT VALID` that makes EVERY new outbox row fail with 23514 — an
+/// One simple-query round trip against the POOL, not a `&mut PgConnection` inside a
+/// transaction handle: the drop guard's future has to be `Send + 'static`, and the borrowed
+/// connection executor is what stops it from being. The bounds still apply — `SET LOCAL`
+/// needs the explicit `BEGIN`/`COMMIT` around it to have any effect.
+async fn alter_barrier(pool: PgPool, statement: &'static str) -> Result<(), sqlx::Error> {
+    sqlx::raw_sql(&format!(
+        "BEGIN; SET LOCAL lock_timeout = '5s'; SET LOCAL statement_timeout = '30s'; \
+         {statement}; COMMIT;"
+    ))
+    .execute(&pool)
+    .await
+    .map(|_| ())
+}
+
+/// Adds a `CHECK (false) NOT VALID` that makes EVERY new outbox row fail with 23514 — an
 /// infrastructure-class failure raised INSIDE the plane's delivery transaction, where the
-/// handler's error class decides between a retry and a lost event.
-async fn set_insert_barrier(pool: &PgPool, on: bool) {
-    let mut tx = pool.begin().await.unwrap();
-    sqlx::raw_sql("SET LOCAL lock_timeout = '5s'; SET LOCAL statement_timeout = '30s';")
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-    sqlx::query(if on {
-        "ALTER TABLE mail.outbox ADD CONSTRAINT mail_test_insert_barrier CHECK (false) NOT VALID"
-    } else {
-        "ALTER TABLE mail.outbox DROP CONSTRAINT IF EXISTS mail_test_insert_barrier"
-    })
-    .execute(&mut *tx)
+/// handler's error class decides between a retry and a lost event — and DROPS it when the
+/// returned guard falls. A guard rather than a trailing call because this one is worse than
+/// a stray row: a panic while the barrier is up leaves every later insert in the shared
+/// cluster failing with 23514, for this suite and for any live fleet, until someone drops
+/// the constraint by hand.
+#[must_use = "the barrier is dropped when this guard drops — binding it to `_` drops it at once"]
+async fn arm_insert_barrier(pool: &PgPool) -> DbGuard {
+    const DROP: &str = "ALTER TABLE mail.outbox DROP CONSTRAINT IF EXISTS mail_test_insert_barrier";
+    alter_barrier(pool.clone(), DROP).await.unwrap();
+    alter_barrier(
+        pool.clone(),
+        "ALTER TABLE mail.outbox ADD CONSTRAINT mail_test_insert_barrier CHECK (false) NOT VALID",
+    )
     .await
     .unwrap();
-    tx.commit().await.unwrap();
+    let pool = pool.clone();
+    on_drop(move || async move {
+        alter_barrier(pool, DROP)
+            .await
+            .expect("the insert barrier MUST come off — it refuses every later insert");
+    })
 }
 
 /// The event-log twin of [`cleanup`], and a guard for the same reason: a `mail.send_requested`
@@ -143,28 +162,12 @@ async fn set_insert_barrier(pool: &PgPool, on: bool) {
 /// re-creates the very outbox row that run then cleans up — the leak reappears as somebody
 /// else's row.
 #[must_use = "the events are deleted when this guard drops — binding it to `_` drops it at once"]
-fn cleanup_event(pool: &PgPool, key: &str) -> CleanupEvents {
-    CleanupEvents {
-        pool: pool.clone(),
-        key: key.to_string(),
-    }
-}
-
-struct CleanupEvents {
-    pool: PgPool,
-    key: String,
-}
-
-impl Drop for CleanupEvents {
-    fn drop(&mut self) {
-        let pool = self.pool.clone();
-        let key = std::mem::take(&mut self.key);
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let _ = asyncevents::testing::cleanup_events(&pool, "idempotency_key", &key).await;
-            })
-        });
-    }
+fn cleanup_event(pool: &PgPool, key: &str) -> DbGuard {
+    let pool = pool.clone();
+    let key = key.to_string();
+    on_drop(move || async move {
+        let _ = asyncevents::testing::cleanup_events(&pool, "idempotency_key", &key).await;
+    })
 }
 
 // ============================================================================
@@ -277,12 +280,15 @@ async fn an_infrastructure_failure_faults_the_delivery_and_keeps_the_event() {
     let _cleanup_events = cleanup_event(&pool, &key);
     emit_send_requested(&ctx, &pool, &key, "player@example.com", "hello").await;
 
-    set_insert_barrier(&pool, false).await;
-    set_insert_barrier(&pool, true).await;
-    let delivered = transport.deliver_all().await;
-    let health = subscription_health(&pool, SEND_REQUESTED_SUB.id).await;
-    let rows = rows_for(&pool, &key).await.len();
-    set_insert_barrier(&pool, false).await;
+    let delivered;
+    let health;
+    let rows;
+    {
+        let _barrier = arm_insert_barrier(&pool).await;
+        delivered = transport.deliver_all().await;
+        health = subscription_health(&pool, SEND_REQUESTED_SUB.id).await;
+        rows = rows_for(&pool, &key).await.len();
+    }
 
     assert_eq!(
         delivered.unwrap(),
@@ -323,6 +329,13 @@ async fn a_faulting_handler_is_uncounted_and_backed_off() {
     reset_subscription(&pool, SEND_REQUESTED_SUB.id).await;
     reset_subscription(&pool, PRUNE_SUB.id).await;
     reset_subscription(&pool, DECOY_SUB).await;
+    // The decoy is a subscription this test INVENTS in the shared plane: left behind with its
+    // backoff it shows up in `eventctl` and in any audit of the subscription graph. The reset
+    // at the top of the next run is luck, not a cleanup.
+    let _decoy = {
+        let pool = pool.clone();
+        on_drop(move || async move { reset_subscription(&pool, DECOY_SUB).await })
+    };
 
     let transport = asyncevents::testing::transport(pool.clone());
     let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
@@ -366,8 +379,6 @@ async fn a_faulting_handler_is_uncounted_and_backed_off() {
          assertions elsewhere are not vacuous"
     );
     assert!(last_error.is_some(), "the failure is recorded, not swallowed");
-
-    reset_subscription(&pool, DECOY_SUB).await;
 }
 
 // ============================================================================

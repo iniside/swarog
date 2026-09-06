@@ -222,16 +222,6 @@ fn oldest_pending_gauge() -> &'static Gauge {
 // unconfigured process contributes a permanently-failing check under the same name).
 // ============================================================================
 
-/// Coarse monotonic seconds since the first call in this process. Deliberately not
-/// wall-clock: a clock jump must not flap `/readyz`, and a test must not race a real
-/// clock. Same shape as `scheduler`'s and `asyncevents`', private to each owner. It reads
-/// TOKIO's clock, which outside a paused runtime IS the std monotonic clock — so the
-/// failure-half proof advances past [`stall_max`] instead of waiting out 60 real seconds.
-fn coarse_now_secs() -> u64 {
-    static BASE: OnceLock<tokio::time::Instant> = OnceLock::new();
-    BASE.get_or_init(tokio::time::Instant::now).elapsed().as_secs()
-}
-
 /// Pure staleness predicate behind [`Liveness::check`]. `last_ok_secs == 0` means the loop
 /// never seeded the stamp (no provider, or `start` not reached) — never a stall; a
 /// controlled stop is not a stall either.
@@ -244,22 +234,44 @@ pub(crate) fn stalled_from(
     !stopping && last_ok_secs != 0 && now_secs.saturating_sub(last_ok_secs) > max_age.as_secs()
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct Liveness {
     dead: Arc<AtomicBool>,
     stopping: Arc<AtomicBool>,
     /// Coarse-clock second of the last fully-healthy pass; `0` = never seeded.
     last_ok_secs: Arc<AtomicU64>,
+    /// This instance's clock origin, shared by its clones. Coarse monotonic, deliberately not
+    /// wall-clock: a clock jump must not flap `/readyz`. It reads TOKIO's clock, which outside
+    /// a paused runtime IS the std monotonic clock — so the drain's failure-half proof
+    /// advances past [`stall_max`] instead of waiting out 60 real seconds. Per-instance rather
+    /// than a process-wide static because two tests pausing their own runtimes would otherwise
+    /// share one origin and measure each other's advances.
+    base: Arc<tokio::time::Instant>,
+}
+
+impl Default for Liveness {
+    fn default() -> Self {
+        Self {
+            dead: Arc::default(),
+            stopping: Arc::default(),
+            last_ok_secs: Arc::default(),
+            base: Arc::new(tokio::time::Instant::now()),
+        }
+    }
 }
 
 impl Liveness {
+    fn now_secs(&self) -> u64 {
+        self.base.elapsed().as_secs()
+    }
+
     pub(crate) fn check(&self, stall_max: Duration) -> Result<(), String> {
         if self.dead.load(Ordering::SeqCst) {
             return Err("mail drain loop task died".to_string());
         }
         let last = self.last_ok_secs.load(Ordering::SeqCst);
         let stopping = self.stopping.load(Ordering::SeqCst);
-        if stalled_from(last, coarse_now_secs(), stopping, stall_max) {
+        if stalled_from(last, self.now_secs(), stopping, stall_max) {
             return Err(format!("no healthy mail drain pass in >{}s", stall_max.as_secs()));
         }
         Ok(())
@@ -270,7 +282,7 @@ impl Liveness {
     /// `max(1)` because `0` is the never-seeded sentinel.
     fn mark_pass_ok(&self) {
         self.last_ok_secs
-            .store(coarse_now_secs().max(1), Ordering::SeqCst);
+            .store(self.now_secs().max(1), Ordering::SeqCst);
     }
 
     pub(crate) fn set_stopping(&self) {

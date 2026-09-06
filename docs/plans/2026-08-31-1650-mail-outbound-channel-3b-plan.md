@@ -1266,3 +1266,32 @@ names its peers by count is correct and Step 7 already carried it.
    exist. Both are drop guards now. The event twin was found by observing it: two outbox
    rows kept reappearing after a clean run, re-created by three `mail.send_requested` events
    an earlier red run had left in the log.
+42. **Review of errata 41 — six findings, and one that was live rather than theoretical.**
+   (a) Arming `test-util` turned `test_pool`'s 3s connect bound into a VIRTUAL bound. The
+   regression test written for the finding failed on the spot: under `start_paused` the
+   connect returned `PoolTimedOut` in 437µs against a running Postgres, because SQLX's own
+   internal acquire timeout is auto-advanced too — every DB test in the crate would have
+   skipped GREEN. Closed with two mechanisms: a live `spawn_blocking` task spans the connect
+   (which inhibits auto-advance on a current-thread runtime — `runtime/blocking/schedule.rs`)
+   and the outer bound is a real thread timer, so neither half of the decision can be made by
+   the virtual clock. Pinned by `the_connect_bound_does_not_ride_the_virtual_clock`.
+   (b) The insert barrier was a strictly worse twin of the leak errata 41(d) closed: two
+   `unwrap()`s sat between arming a `CHECK (false) NOT VALID` on `mail.outbox` and taking it
+   off, so a panic there left every later insert in the shared cluster failing with 23514.
+   Now a guard. Proven by panicking inside the armed window: `pg_constraint` holds no
+   `mail_test_insert_barrier` afterwards.
+   (c) The stall test asserted nothing about passes ever RUNNING — a wedged loop ages the
+   stamp out identically. A healthy-pool positive control now pins the `Ok` arm; with
+   `Ok(()) => {}` in `run_loop` it goes red while the stall test stays green. It is
+   deliberately NOT `start_paused`: tokio's auto-advance parks for zero and jumps the clock
+   while a real query is in flight, so a paused control would fire `bounded_tx`'s own checkout
+   bound mid-statement and go red on its instrument.
+   (d) `reset_subscription(&pool, DECOY_SUB)` was a third trailing call, stranding an invented
+   subscription with its backoff in `asyncevents.subscriptions`. Now a guard.
+   (e) The guards' `block_in_place` would PANIC on a current-thread runtime — inside `Drop`,
+   during an unwind, aborting the whole test binary. One shared `on_drop`/`DbGuard` now backs
+   all four fixtures and degrades to a printed warning off the multi-thread flavour: a misuse
+   costs the leak, never the report.
+   (f) The staleness clock's origin was a process-wide `OnceLock` seeded by whichever test
+   touched the stamp first. It is now a per-`Liveness` field seeded at construction, so two
+   tests pausing their own runtimes cannot measure each other's advances.
