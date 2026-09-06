@@ -108,7 +108,8 @@ characters.create,characters.list,characters.delete,\
 inventory.grant,inventory.listMine,inventory.listCharacter,\
 leaderboard.topScores,\
 wallet.myBalances,wallet.listCurrencies,\
-notifications.list,notifications.markRead,notifications.delete";
+notifications.list,notifications.markRead,notifications.delete,\
+friends.request,friends.accept,friends.decline,friends.remove,friends.list,friends.pending";
 
 /// The well-known dev ROLES: `(name, policy)`. Seeded (FK order) BEFORE the keys.
 const DEV_SEED_ROLES: &[(&str, &str)] = &[

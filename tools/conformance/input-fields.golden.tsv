@@ -1,10 +1,12 @@
 wire_method	wire_field_name	exposure
+accounts.findByHandle	handle	wire
 accounts.link	credential	external
 accounts.link	provider	external
 accounts.login	email	external
 accounts.login	password	external
 accounts.loginFederated	credential	external
 accounts.loginFederated	provider	external
+accounts.playersById	ids	wire
 accounts.refresh	refresh_token	external
 accounts.register	displayName	external
 accounts.register	email	external
@@ -20,6 +22,12 @@ characters.create	class	external
 characters.create	name	external
 characters.delete	character_id	external
 characters.ownerOf	character_id	wire
+friends.accept	edge_id	external
+friends.decline	edge_id	external
+friends.list	cursor	external
+friends.pending	cursor	external
+friends.remove	edge_id	external
+friends.request	target_handle	external
 inventory.grant	item_id	external
 inventory.listCharacter	character_id	external
 match.report	Loser	external

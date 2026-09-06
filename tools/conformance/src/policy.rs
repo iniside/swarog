@@ -39,6 +39,7 @@ pub fn entries() -> Vec<Entry> {
         audit(),
         characters(),
         config(),
+        friends(),
         gateway(),
         inventory(),
         leaderboard(),
@@ -61,12 +62,14 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         exposure,
     };
     vec![
+        (key("accounts.findByHandle", "handle", Wire), Validated { cap: accountsapi::MAX_HANDLE_BYTES, basis: "accounts::handle_within_cap runs as the FIRST statement of Directory::find_by_handle, before the store round-trip — the same authority friends::Player::request checks before resolving a target and the one input_policies() names for friends' target_handle, so a caller of either op meets the identical bound" }),
         (key("accounts.link", "credential", External), Validated { cap: widest_credential_cap(), basis: "the same single authority loginFederated traverses: accounts::Service::verify_credential applies the RESOLVED provider's own CredentialVerifier::max_credential_bytes through accounts::credential_within_cap, before any verifier, JWKS or database work. The number stated is the maximum of the cap map the registry accounts really builds; the per-provider caps are exercised by the CapCases below, which call that same shared path, and the \"accounts link guest credential\" case drives accountsapi::Auth::link ITSELF against the resolved guest verifier's own bound, so deleting link's guards turns this row red" }),
         (key("accounts.link", "provider", External), Validated { cap: accounts::conformance::MAX_PROVIDER_NAME_BYTES, basis: "accounts::provider_name_within_cap runs first in accounts::Service::verify_credential — the one helper link and loginFederated share — before the provider name is used as a registry lookup key. The \"accounts link provider name\" CapCase executes it through accountsapi::Auth::link itself, not through the helper below the guard" }),
         (key("accounts.login", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production login path" }),
         (key("accounts.login", "password", External), Validated { cap: 1024, basis: "accounts::password_within_cap is called by the production login path" }),
         (key("accounts.loginFederated", "credential", External), Validated { cap: widest_credential_cap(), basis: "there is no single cap here: this ONE wire field carries every provider's credential and the bound applied is the RESOLVED provider's own CredentialVerifier::max_credential_bytes, checked by accounts::credential_within_cap inside accounts::Service::verify_credential (shared with link) after the (already length-capped) provider name resolves in the registry and before any verifier, JWKS or database work. The number stated is the maximum of the cap map the registry accounts really builds, computed here rather than written down, so it cannot name a bound no provider states. The per-provider caps are the SUBJECT of checks::CREDENTIAL_CAPS, which is diffed against that same registry before any assertion runs and requires each provider's own cap to be executed by its own CapCase below" }),
         (key("accounts.loginFederated", "provider", External), Validated { cap: accounts::conformance::MAX_PROVIDER_NAME_BYTES, basis: "accounts::provider_name_within_cap runs first in accounts::Service::verify_credential — the one helper login_federated and link share — before the provider name is used as a registry lookup key" }),
+        (key("accounts.playersById", "ids", Wire), Validated { cap: accountsapi::MAX_LOOKUP_IDS, basis: "Directory::players_by_id refuses a batch over accountsapi::MAX_LOOKUP_IDS before the store round-trip; the cap bounds ITEM COUNT rather than a single field's byte length, the only field-level policy row of that shape" }),
         (key("accounts.refresh", "refresh_token", External), Validated { cap: accountsapi::MAX_SESSION_TOKEN_BYTES, basis: "accounts::session_token_within_cap runs as the FIRST statement of accountsapi::Auth::refresh, before the rotation transaction is opened — the same contract cap verifySession applies to the access token, because one mint function produces both. The \"accounts refresh token\" CapCase drives the op itself against a pool that cannot connect, so the 401 it asserts is reachable only ahead of the store: with the guard deleted the over-cap case reaches the rotation and answers Internal instead" }),
         (key("accounts.register", "displayName", External), Validated { cap: accountsapi::MAX_DISPLAY_NAME_BYTES, basis: "accounts::display_name_within_cap validates the effective persisted display before Argon or SQL" }),
         (key("accounts.register", "email", External), Validated { cap: 320, basis: "accounts::email_within_cap is called by the production register path" }),
@@ -82,6 +85,12 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("characters.create", "name", External), Validated { cap: 128, basis: "characters::name_within_cap validates the persisted name before SQL" }),
         (key("characters.delete", "character_id", External), Opaque { rationale: "opaque character UUID resolved by the characters store, not player-authored free text" }),
         (key("characters.ownerOf", "character_id", Wire), Opaque { rationale: "opaque character UUID passed between domain capabilities" }),
+        (key("friends.accept", "edge_id", External), Opaque { rationale: "opaque relation-edge UUID, bound as $1::uuid alongside the caller's player_id in store::view_edge/accept_tx; a value that is not a uuid raises 22P02, which friends::store::is_invalid_uuid folds into the same 404 an unknown edge id gets, so it is never persisted, interpolated or echoed" }),
+        (key("friends.decline", "edge_id", External), Opaque { rationale: "opaque relation-edge UUID, bound as $1::uuid alongside the caller's player_id in store::view_edge/decline_tx; a value that is not a uuid raises 22P02, folded by friends::store::is_invalid_uuid into the same 404 an unknown edge id gets" }),
+        (key("friends.list", "cursor", External), Validated { cap: friendsapi::MAX_CURSOR_BYTES, basis: "friends::service::decode_cursor checks MAX_CURSOR_BYTES before the base64 decode, before the keyset halves are parsed and before any store read, and Player::list/pending both call it ahead of Store::page. The \"friends list/pending cursor\" CapCase drives Player::list itself against a pool that cannot connect and discriminates on the VERDICT, both arms being Status::Invalid: at the cap the value cannot be a well-formed keyset and answers the malformed-cursor verdict, over the cap the cap verdict answers first" }),
+        (key("friends.pending", "cursor", External), Validated { cap: friendsapi::MAX_CURSOR_BYTES, basis: "friends::service::decode_cursor is the SAME authority Player::list's row states — Player::pending calls the identical helper before any store read, so the cursor cap and its verdict discrimination are shared, not restated" }),
+        (key("friends.remove", "edge_id", External), Opaque { rationale: "opaque relation-edge UUID, bound as $1::uuid alongside the caller's player_id in store::view_edge/delete_tx; a value that is not a uuid raises 22P02, folded by friends::store::is_invalid_uuid into the same 404 an unknown edge id gets" }),
+        (key("friends.request", "target_handle", External), Validated { cap: accountsapi::MAX_HANDLE_BYTES, basis: "friends deliberately owns no second const for this bound: Player::request checks target_handle.len() against accountsapi::MAX_HANDLE_BYTES — the SAME authority accounts::handle_within_cap enforces for Directory::find_by_handle — before ever calling the directory. The \"friends request target handle\" CapCase drives Player::request itself against a resolved-but-failing Directory, discriminating on status: an at-cap handle reaches (and is refused by) the directory and answers Unavailable, never Invalid, so only the cap's own rejection registers as Invalid" }),
         (key("inventory.grant", "item_id", External), Opaque { rationale: "opaque catalog identifier accepted only when it exactly resolves to an existing inventory item" }),
         (key("inventory.listCharacter", "character_id", External), Opaque { rationale: "opaque character UUID authorized through characters::Ownership" }),
         (key("match.report", "Loser", External), Validated { cap: 128, basis: "match_module::validate_participant is called for every new loser before rating or SQL" }),
@@ -399,6 +408,71 @@ fn config() -> Entry {
         "config values are operator input, not player-facing free text",
         "config has no credential verifier",
     )
+}
+
+fn friends() -> Entry {
+    Entry {
+        module: "friends",
+        stances: vec![
+            (
+                Convention::EnvValidation,
+                na("friends parses no process environment"),
+            ),
+            (
+                Convention::InputByteCaps,
+                Stance::Applies(Fixture::InputByteCaps(vec![
+                    // `accountsapi::MAX_HANDLE_BYTES` is friends' one borrowed cap — see
+                    // the input_policies() row for why friends owns no second const for
+                    // it. Driven through `Player::request` itself, discriminated by
+                    // status against a resolved-but-failing directory so an at-cap value
+                    // reaches (and is refused by) the directory, never the cap.
+                    CapCase {
+                        name: "friends request target handle",
+                        cap: accountsapi::MAX_HANDLE_BYTES,
+                        probe: Arc::new(friends::conformance::conformance_target_handle_rejected),
+                    },
+                    CapCase {
+                        name: "friends list/pending cursor",
+                        cap: friendsapi::MAX_CURSOR_BYTES,
+                        probe: Arc::new(friends::conformance::conformance_cursor_rejected),
+                    },
+                ])),
+            ),
+            (
+                Convention::InfraOutage503,
+                // The directory IS friends' one synchronous external dependency: every
+                // mutating op resolves it before any write. `directory_unavailable`
+                // (modules/friends/src/service.rs) folds ANY directory error into
+                // Status::Unavailable, never a page of blank names — this is the ONE
+                // outage story friends has, and it is genuine, unlike a module with no
+                // synchronous op at all (mail's na() explains that distinct case).
+                Stance::Applies(Fixture::InfraOutage503(vec![OutageCase {
+                    name: "friends request over a failing accounts directory capability",
+                    probe: Arc::new(|| {
+                        Box::pin(async {
+                            match friends::conformance::conformance_directory_outage().await {
+                                Err(error) if error.status.http() == 503 => {
+                                    OutageClass::Unavailable
+                                }
+                                Err(error) => OutageClass::Other(format!(
+                                    "unexpected error status {:?}: {}",
+                                    error.status, error.msg
+                                )),
+                                Ok(_) => OutageClass::Other(
+                                    "request succeeded with the directory capability down"
+                                        .into(),
+                                ),
+                            }
+                        })
+                    }),
+                }])),
+            ),
+            (
+                Convention::ArgonParity,
+                na("friends performs no password hashing"),
+            ),
+        ],
+    }
 }
 
 fn gateway() -> Entry {

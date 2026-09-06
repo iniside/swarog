@@ -12,6 +12,7 @@
 //! durable iff the relation change is.
 
 mod admin;
+pub mod conformance;
 mod service;
 mod store;
 #[cfg(test)]

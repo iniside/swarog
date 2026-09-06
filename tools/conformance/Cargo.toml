@@ -31,6 +31,8 @@ admin = { workspace = true }
 apikeys = { workspace = true }
 apikeysapi = { workspace = true }
 characters = { workspace = true }
+friends = { workspace = true }
+friendsapi = { workspace = true }
 gateway = { workspace = true }
 mail = { workspace = true }
 mailevents = { workspace = true }

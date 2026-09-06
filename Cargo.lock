@@ -1035,6 +1035,8 @@ dependencies = [
  "bus",
  "characters",
  "checkmodules",
+ "friends",
+ "friendsapi",
  "gateway",
  "lifecycle",
  "mail",
