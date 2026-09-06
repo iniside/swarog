@@ -471,7 +471,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
         format!("grant={wl6m_grant_code} revoke={wl6m_code} balance={wl6m_balance:?}"),
     );
 
-    match register_capture(ctx, &m, &format!("wallet-mono-{suffix}@test.local")).await {
+    match register_capture(ctx, &m, &format!("wallet-mono-{suffix}@test.local"), "W").await {
         Ok((pid, _)) => {
             let credited = poll_count(
                 pool,
@@ -554,6 +554,12 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     push_assertions(ctx, pool, p, &m, &jar, None, "m").await?;
 
     federated_assertions(ctx, pool, &m, idp, p, "m").await?;
+
+    // --- Friends parity: the same eight assertions with the ops, the directory, both durable
+    // consumers and the portal in ONE process. It proves the request/accept/consent/paging
+    // code answers identically with no transport in between, and NOTHING about the four seams
+    // the split's `[FR1]`-`[FR8]` cross.
+    friends_assertions(ctx, pool, p, &m, &jar, "m").await?;
 
     // [W2] graceful shutdown: a native Ctrl-Break (Windows) / SIGTERM (unix) must drain
     // in-flight work and exit 0 within the grace window — no force-kill. This is the
@@ -1250,10 +1256,10 @@ async fn counter_value(ctx: &Ctx, base: &str, name: &str) -> Option<f64> {
     Some(0.0)
 }
 
-/// A per-pass random nonce, NOT the pid: pids recycle, and an outbox row left behind by an
-/// aborted run under a recycled pid could otherwise satisfy [ML1] with no event consumed at
-/// all.
-fn mail_nonce(tag: &str) -> String {
+/// A per-pass random nonce, NOT the pid: pids recycle, and a row left behind by an aborted
+/// run under a recycled pid could otherwise satisfy an assertion with no work done at all —
+/// [ML1]'s outbox row with no event consumed, [FR1]'s player already holding a friendship.
+fn pass_nonce(tag: &str) -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 8];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
@@ -1302,7 +1308,7 @@ async fn mail_assertions(
     jar: &reqwest::Client,
     tag: &str,
 ) -> Result<()> {
-    let nonce = mail_nonce(tag);
+    let nonce = pass_nonce(tag);
     // Every `splitproof-` key and every `admin-send-test-` key is this harness's by
     // construction, so clearing ALL of them — not just this pass's — is what makes the
     // outbox's own state a fixture rather than an input: [ML4b]'s whole-table bulk verb
@@ -1600,7 +1606,7 @@ async fn mail_assertions(
 /// every schedule, deletes the stale row exactly as a working one does and would pass on
 /// the first half alone.
 async fn mail_prune_assertion(pool: &PgPool, p: &mut Proof) -> Result<()> {
-    let nonce = mail_nonce("prune");
+    let nonce = pass_nonce("prune");
     let stale_key = format!("splitproof-ml6stale-{nonce}");
     let fresh_key = format!("splitproof-ml6fresh-{nonce}");
     sqlx::query(
@@ -1640,6 +1646,421 @@ async fn mail_prune_assertion(pool: &PgPool, p: &mut Proof) -> Result<()> {
         swept && kept == 1,
         format!("swept={swept} kept={kept}"),
     );
+    Ok(())
+}
+
+struct FriendPlayer {
+    player_id: String,
+    token: String,
+    handle: String,
+}
+
+/// Registers, logs in, and reads the handle back off `GET /accounts/me`. The handle is never
+/// composed here: its four-digit discriminator is minted by `accounts` and the friends ops
+/// address a target by exactly the string `accounts` returned.
+async fn friends_player(
+    ctx: &Ctx,
+    base: &str,
+    email: &str,
+    display_name: &str,
+) -> Result<FriendPlayer> {
+    let (player_id, token) = register_capture(ctx, base, email, display_name).await?;
+    let (code, body) = accounts_me(ctx, base, &token).await?;
+    if code != 200 {
+        bail!("accounts/me for {email} answered {code}");
+    }
+    let handle = body
+        .get("handle")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .filter(|h| !h.is_empty())
+        .with_context(|| format!("no handle from accounts/me for {email}"))?;
+    Ok(FriendPlayer { player_id, token, handle })
+}
+
+/// `GET /accounts/me` with a bearer, answering `(status, body)`. Retries past the gateway's
+/// always-on 429 exactly as `inbox_page` does.
+async fn accounts_me(ctx: &Ctx, base: &str, token: &str) -> Result<(u16, serde_json::Value)> {
+    for _ in 0..15 {
+        let r = ctx
+            .http
+            .get(format!("{base}/accounts/me"))
+            .header("X-Api-Key", "dev-key-client")
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await?;
+        let code = r.status().as_u16();
+        if code == 429 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        return Ok((code, r.json().await.unwrap_or(serde_json::Value::Null)));
+    }
+    bail!("accounts.me rate-limited out")
+}
+
+/// True for the `<display_name>#<4 digits>` shape `accounts` mints. The LAST `'#'` divides,
+/// because a display name may itself contain one.
+fn handle_shape_ok(handle: &str) -> bool {
+    match handle.rsplit_once('#') {
+        Some((name, disc)) => {
+            !name.is_empty() && disc.len() == 4 && disc.bytes().all(|b| b.is_ascii_digit())
+        }
+        None => false,
+    }
+}
+
+/// One friends op through a front door as one player, answering `(status, body)`. A 204
+/// carries no body and lands as `Value::Null`, so its caller asserts the code. Retries past
+/// the gateway's always-on 429 exactly as `inbox_page` does.
+async fn friends_call(
+    ctx: &Ctx,
+    base: &str,
+    token: &str,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> Result<(u16, serde_json::Value)> {
+    for _ in 0..15 {
+        let mut req = ctx
+            .http
+            .request(method.clone(), format!("{base}{path}"))
+            .header("X-Api-Key", "dev-key-client")
+            .header("Authorization", format!("Bearer {token}"));
+        if let Some(body) = &body {
+            req = req.json(body);
+        }
+        let r = req.send().await?;
+        let code = r.status().as_u16();
+        if code == 429 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            continue;
+        }
+        return Ok((code, r.json().await.unwrap_or(serde_json::Value::Null)));
+    }
+    bail!("{path} rate-limited out")
+}
+
+/// The `state` of one `friends.edges` row, `None` when the row is gone. `id::text = $1`
+/// rather than a uuid bind: the harness holds the id as the string the wire returned.
+async fn edge_state(pool: &PgPool, edge_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT state FROM friends.edges WHERE id::text = $1")
+        .bind(edge_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// `[FR1]`-`[FR8]`, run once per topology.
+///
+/// `front` serves both the player ops and `/admin` — gateway-svc in the split, where every
+/// friends op is a Remote dispatch over the mTLS edge, the names on a friend list come from
+/// an `accountsapi::Directory` stub that is a second edge hop, and the admin page is fetched
+/// from friends-svc by admin-svc; the monolith itself in parity, where all three are
+/// in-process calls. `jar` is an already-authenticated operator session and `tag` suffixes
+/// every name and every email so the two passes neither collide nor report
+/// indistinguishable verdicts.
+///
+/// No baseline reset, unlike `reset_scoreboard_baseline`: every predicate below is keyed by
+/// an `edge_id` or by a player minted from this pass's random nonce, so none of them reads
+/// an absolute `friends.edges` count the way `[MT5]`/`[REPLICAS-3]` read `leaderboard.scores`
+/// — and `friends.edges` carries no harness-ownership marker to scope a sweep by, only
+/// player uuids, with no FK to `accounts` by design.
+async fn friends_assertions(
+    ctx: &Ctx,
+    pool: &PgPool,
+    p: &mut Proof,
+    front: &str,
+    jar: &reqwest::Client,
+    tag: &str,
+) -> Result<()> {
+    let nonce = pass_nonce(tag);
+    let a = friends_player(ctx, front, &format!("fr-a-{nonce}@test.local"), &format!("FrA{nonce}")).await?;
+    let b = friends_player(ctx, front, &format!("fr-b-{nonce}@test.local"), &format!("FrB{nonce}")).await?;
+    let c = friends_player(ctx, front, &format!("fr-c-{nonce}@test.local"), &format!("FrC{nonce}")).await?;
+    let d = friends_player(ctx, front, &format!("fr-d-{nonce}@test.local"), &format!("FrD{nonce}")).await?;
+
+    // [FR1] the request is addressed by HANDLE, so it only resolves if the directory answered
+    // — in the split, from accounts-svc over the edge. The row, not the 201, is the assertion:
+    // its state and its author are what every later branch is decided on.
+    let (fr1_code, fr1_body) = friends_call(
+        ctx,
+        front,
+        &a.token,
+        reqwest::Method::POST,
+        "/friends/requests",
+        Some(serde_json::json!({ "target_handle": b.handle })),
+    )
+    .await?;
+    let ab_edge = fr1_body
+        .get("edge_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let fr1_state = fr1_body.get("state").and_then(|v| v.as_str()).unwrap_or_default();
+    let fr1_row: Option<(String, String)> =
+        sqlx::query_as("SELECT state, requester_id::text FROM friends.edges WHERE id::text = $1")
+            .bind(&ab_edge)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    p.check(
+        &format!("[FR1{tag}] request by handle -> 201 + a pending friends.edges row authored by the caller"),
+        fr1_code == 201
+            && fr1_state == "pending"
+            && fr1_row
+                .as_ref()
+                .is_some_and(|(state, requester)| state == "pending" && requester == &a.player_id),
+        format!(
+            "code={fr1_code} state={fr1_state} target={} edge={ab_edge} row={fr1_row:?} requester={}",
+            b.handle, a.player_id
+        ),
+    );
+
+    // [FR2] only the addressee can accept.
+    let (fr2_code, _) = friends_call(
+        ctx,
+        front,
+        &b.token,
+        reqwest::Method::POST,
+        &format!("/friends/requests/{ab_edge}/accept"),
+        None,
+    )
+    .await?;
+    let fr2_row: Option<(String, bool)> = sqlx::query_as(
+        "SELECT state, accepted_at IS NOT NULL FROM friends.edges WHERE id::text = $1",
+    )
+    .bind(&ab_edge)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    p.check(
+        &format!("[FR2{tag}] accept by the ADDRESSEE -> 204 + state=accepted"),
+        fr2_code == 204
+            && fr2_row
+                .as_ref()
+                .is_some_and(|(state, accepted_at)| state == "accepted" && *accepted_at),
+        format!("code={fr2_code} row={fr2_row:?} edge={ab_edge}"),
+    );
+
+    // [FR3] the consent bypass the whole design guards, proven over the wire on a SECOND
+    // still-pending edge (the one [FR2] accepted answers 404 to everyone). The author of a
+    // request must not be able to answer it, and the edge must be untouched afterwards — a
+    // 404 with the row flipped would be the bypass wearing the right status code.
+    let (fr3_req_code, fr3_req_body) = friends_call(
+        ctx,
+        front,
+        &a.token,
+        reqwest::Method::POST,
+        "/friends/requests",
+        Some(serde_json::json!({ "target_handle": c.handle })),
+    )
+    .await?;
+    let ac_edge = fr3_req_body
+        .get("edge_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let (fr3_code, _) = friends_call(
+        ctx,
+        front,
+        &a.token,
+        reqwest::Method::POST,
+        &format!("/friends/requests/{ac_edge}/accept"),
+        None,
+    )
+    .await?;
+    let fr3_state = edge_state(pool, &ac_edge).await;
+    p.check(
+        &format!("[FR3{tag}] accept by the REQUESTER -> 404, edge still pending"),
+        fr3_req_code == 201 && fr3_code == 404 && fr3_state.as_deref() == Some("pending"),
+        format!("request={fr3_req_code} accept={fr3_code} edge={ac_edge} state={fr3_state:?}"),
+    );
+
+    // [FR4] the durable chain, which no monolith run substitutes for: friends-svc emitted
+    // `friend.accepted` inside the accept transaction, audit-svc and notifications-svc pulled
+    // it on their own subscriptions in two other processes. The inbox body is checked for the
+    // HANDLE and against the uuid — the payload denormalization exists precisely because
+    // notifications-svc holds no accounts stub and could not resolve an id if it wanted to.
+    let fr4_audit = poll_count(
+        pool,
+        "SELECT count(*) FROM audit.log WHERE topic='friend.accepted' AND payload->>'edge_id'=$1",
+        &ab_edge,
+        1,
+    )
+    .await;
+    let fr4_inbox = poll_count(
+        pool,
+        "SELECT count(*) FROM notifications.messages \
+          WHERE player_id::text = $1 AND kind = 'friend.accepted'",
+        &a.player_id,
+        1,
+    )
+    .await;
+    let fr4_body: Option<String> = sqlx::query_scalar(
+        "SELECT body FROM notifications.messages \
+          WHERE player_id::text = $1 AND kind = 'friend.accepted'",
+    )
+    .bind(&a.player_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let fr4_handle = fr4_body
+        .as_deref()
+        .is_some_and(|body| body.contains(&b.handle) && !body.contains(&b.player_id));
+    p.check(
+        &format!("[FR4{tag}] friend.accepted -> audit.log row + inbox row carrying the handle, not a uuid"),
+        fr4_audit && fr4_inbox && fr4_handle,
+        format!(
+            "audit={fr4_audit} inbox={fr4_inbox} handle_in_body={fr4_handle} \
+             expect_handle={} uuid={} body={fr4_body:?}",
+            b.handle, b.player_id
+        ),
+    );
+
+    // [FR5] a blank handle here is the silent failure mode: the row exists, the page is 200,
+    // and every name is empty because the `accountsapi::Directory` stub never resolved over
+    // the edge. `online_until` is the session-derived presence field, non-empty because this
+    // pass logged the friend in.
+    let (fr5_code, fr5_body) = friends_call(
+        ctx,
+        front,
+        &a.token,
+        reqwest::Method::POST,
+        "/friends/list",
+        Some(serde_json::json!({ "cursor": "", "limit": 0 })),
+    )
+    .await?;
+    let fr5_item = fr5_body
+        .get("items")
+        .and_then(|v| v.as_array())
+        .and_then(|items| {
+            items
+                .iter()
+                .find(|i| i.get("player_id").and_then(|v| v.as_str()) == Some(b.player_id.as_str()))
+        })
+        .cloned();
+    let fr5_field = |key: &str| {
+        fr5_item
+            .as_ref()
+            .and_then(|i| i.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let (fr5_handle, fr5_online, fr5_state) =
+        (fr5_field("handle"), fr5_field("online_until"), fr5_field("state"));
+    p.check(
+        &format!("[FR5{tag}] list -> the friend with a directory-resolved handle and a non-empty online_until"),
+        fr5_code == 200
+            && fr5_handle == b.handle
+            && !fr5_online.is_empty()
+            && fr5_state == "accepted",
+        format!(
+            "code={fr5_code} handle={fr5_handle:?} expect={:?} online_until={fr5_online:?} \
+             state={fr5_state:?}",
+            b.handle
+        ),
+    );
+
+    // [FR6] a 403 would confirm the edge is real and someone else's — an enumeration oracle.
+    // The stranger is a player party to NO edge with either side, so the only thing that can
+    // answer is the "not yours" branch, and the edge must survive the attempt.
+    let (fr6_code, _) = friends_call(
+        ctx,
+        front,
+        &d.token,
+        reqwest::Method::DELETE,
+        &format!("/friends/{ab_edge}"),
+        None,
+    )
+    .await?;
+    let fr6_state = edge_state(pool, &ab_edge).await;
+    p.check(
+        &format!("[FR6{tag}] a stranger's DELETE of someone else's edge -> 404 (never 403), edge intact"),
+        fr6_code == 404 && fr6_state.as_deref() == Some("accepted"),
+        format!("code={fr6_code} edge={ab_edge} state={fr6_state:?}"),
+    );
+
+    // [FR7] the crossing-requests branch: the second request answers 201 with the SAME edge
+    // already accepted, and emits exactly ONE `friend.accepted`. The exact count is the
+    // assertion — a branch that emitted twice would leave both consumers correct-looking while
+    // double-counting, and one that emitted none would leave the relation silently unannounced.
+    let (fr7_first_code, fr7_first) = friends_call(
+        ctx,
+        front,
+        &c.token,
+        reqwest::Method::POST,
+        "/friends/requests",
+        Some(serde_json::json!({ "target_handle": d.handle })),
+    )
+    .await?;
+    let cd_edge = fr7_first
+        .get("edge_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let (fr7_second_code, fr7_second) = friends_call(
+        ctx,
+        front,
+        &d.token,
+        reqwest::Method::POST,
+        "/friends/requests",
+        Some(serde_json::json!({ "target_handle": c.handle })),
+    )
+    .await?;
+    let fr7_state = fr7_second.get("state").and_then(|v| v.as_str()).unwrap_or_default();
+    let fr7_same_edge =
+        fr7_second.get("edge_id").and_then(|v| v.as_str()) == Some(cd_edge.as_str());
+    let fr7_row_state = edge_state(pool, &cd_edge).await;
+    let fr7_events: Option<i64> = sqlx::query_scalar(
+        "SELECT count(*) FROM asyncevents.events \
+          WHERE topic='friend.accepted' AND payload->>'edge_id' = $1",
+    )
+    .bind(&cd_edge)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    p.check(
+        &format!("[FR7{tag}] both sides request -> auto-accept on the same edge, exactly one friend.accepted event"),
+        fr7_first_code == 201
+            && fr7_second_code == 201
+            && fr7_state == "accepted"
+            && fr7_same_edge
+            && fr7_row_state.as_deref() == Some("accepted")
+            && fr7_events == Some(1),
+        format!(
+            "first={fr7_first_code} second={fr7_second_code} state={fr7_state} \
+             same_edge={fr7_same_edge} edge={cd_edge} row_state={fr7_row_state:?} \
+             accepted_events={fr7_events:?}"
+        ),
+    );
+
+    // [FR8] the operator page, with a param belonging to ANOTHER page attached: the portal
+    // forwards every page's params to every resolved provider, so tolerating a foreign one is
+    // a cross-process obligation, not a unit-test detail. In the split the KPI labels and the
+    // table header below were built in friends-svc and crossed the edge as `admin.adminData` —
+    // a missing `register_admin` face or a wrong :9014 peer renders the error card instead,
+    // with the item's section and label collapsed to its id.
+    let fr8 = jar
+        .get(format!("{front}/admin/friends?owner=character:123"))
+        .send()
+        .await?;
+    let (fr8_code, fr8_page) = (fr8.status().as_u16(), fr8.text().await.unwrap_or_default());
+    let fr8_error_card = fr8_page.contains("<div class=\"kpi-label\">Error</div>");
+    let fr8_kpis = fr8_page.contains("Relations");
+    let fr8_table = fr8_page.contains("REQUESTER") && fr8_page.contains("ADDRESSEE");
+    p.check(
+        &format!("[FR8{tag}] GET /admin/friends?owner=character:123 -> 200 rendered page, no error card"),
+        fr8_code == 200 && fr8_kpis && fr8_table && !fr8_error_card,
+        format!("code={fr8_code} kpis={fr8_kpis} table={fr8_table} error_card={fr8_error_card}"),
+    );
+
     Ok(())
 }
 
@@ -2063,20 +2484,21 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         format!("code={login_code} token={}", token.is_some()),
     );
 
-    // [A3] me with the real bearer -> 200 (auth-once verified over the edge).
+    // [A3] me with the real bearer -> 200 (auth-once verified over the edge), carrying the
+    // player AND the minted handle. `MeView.handle` exists solely to be readable through the
+    // front door, so this is the only place its wire shape is observed.
     if let Some(tok) = &token {
-        let me = ctx
-            .http
-            .get(format!("{g}/accounts/me"))
-            .header("X-Api-Key", "dev-key-client")
-            .header("Authorization", format!("Bearer {tok}"))
-            .send()
-            .await?;
-        let me_code = me.status();
-        let me_body = me.text().await.unwrap_or_default();
-        let ok = me_code.as_u16() == 200
-            && player_id.as_deref().map(|id| me_body.contains(id)).unwrap_or(false);
-        p.check("[A3] me (Bearer) -> 200 with player", ok, format!("code={me_code}"));
+        let (me_code, me_body) = accounts_me(ctx, &g, tok).await?;
+        let me_player = me_body.get("player_id").and_then(|v| v.as_str()).unwrap_or_default();
+        let me_handle = me_body.get("handle").and_then(|v| v.as_str()).unwrap_or_default();
+        let ok = me_code == 200
+            && player_id.as_deref() == Some(me_player)
+            && handle_shape_ok(me_handle);
+        p.check(
+            "[A3] me (Bearer) -> 200 with player + <display_name>#<4 digits> handle",
+            ok,
+            format!("code={me_code} player_id={me_player} handle={me_handle}"),
+        );
     }
 
     // [K5] key-verifier under distinct-key spam: every response 401/403/429, never a
@@ -3385,7 +3807,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     // wallet-svc's subscription consumes it, reads the config knobs seeded pre-spawn and
     // credits inside the DELIVERY transaction. One assertion, three seams.
     let wl7_email = format!("wallet-{suffix}@test.local");
-    match register_capture(ctx, &g, &wl7_email).await {
+    match register_capture(ctx, &g, &wl7_email, "W").await {
         Ok((wl7_pid, _)) => {
             let credited = poll_count(
                 pool,
@@ -3823,6 +4245,12 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     // (G -> accounts-svc over the mTLS edge; the promotion's durable event crosses to
     // audit-svc and wallet-svc). Re-run verbatim against the monolith below.
     federated_assertions(ctx, pool, &g, idp, p, "").await?;
+
+    // --- The social graph. Four seams in one flow, all of them split-only: the ops are
+    // Remote-dispatched to friends-svc, its `accountsapi::Directory` stub is a second edge
+    // hop, `friend.accepted` fans out to audit-svc and notifications-svc through the durable
+    // log, and admin-svc renders the page from friends-svc over `admin.adminData`.
+    friends_assertions(ctx, pool, p, &g, &cfg, "").await?;
 
     // --- Metrics ---
     // [MX1] characters-svc /metrics -> 200 + http_requests_total (one recorded hit first).
@@ -4358,15 +4786,22 @@ async fn register_login(ctx: &Ctx, g: &str, email: &str) -> Result<String> {
 
 /// Register + login a player, returning `(player_id, bearer)`. [WL7] must DB-assert a
 /// grant keyed by the player id, which `register_login` (token only) cannot supply.
+/// `display_name` is a parameter because a player's handle is `<display_name>#<4 digits>`
+/// and the friends ops address a target by that handle.
 /// Retries past the gateway's always-on 429 exactly as `register_login` does.
-async fn register_capture(ctx: &Ctx, base: &str, email: &str) -> Result<(String, String)> {
+async fn register_capture(
+    ctx: &Ctx,
+    base: &str,
+    email: &str,
+    display_name: &str,
+) -> Result<(String, String)> {
     let mut player_id: Option<String> = None;
     for _ in 0..15 {
         let reg = ctx
             .http
             .post(format!("{base}/accounts/register"))
             .header("X-Api-Key", "dev-key-client")
-            .json(&serde_json::json!({"email": email, "password": "pw", "displayName": "W"}))
+            .json(&serde_json::json!({"email": email, "password": "pw", "displayName": display_name}))
             .send()
             .await?;
         if reg.status().as_u16() == 429 {
