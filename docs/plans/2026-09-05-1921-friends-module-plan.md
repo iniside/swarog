@@ -519,7 +519,7 @@ permanently red. The rows are: Step 1's `accounts` pair, and Step 3's
 `target_handle`/`cursor`/`limit`/`edge_id`, each pointing at the named const. Non-applicability needs a concrete architectural reason, never
 `na("n/a")`. Then `--bless-input-golden`.
 
-## Step 12 — splitproof assertions `[test-author]`, `model:"opus"`
+## Step 12 — splitproof assertions `[opus]` (core-implementer), `model:"opus"`
 
 `[FR1]`–`[FR7]`, through gateway-svc, plus a monolith-parity pass. Minimum: request →
 `pending` row (DB-asserted); accept by the addressee → `accepted`; accept by the
@@ -790,6 +790,28 @@ This is the direct payoff of the errata-17 lesson. Four attempts to assemble the
 authority table by *reading* produced four incomplete tables; one `cargo test
 --workspace --no-fail-fast` produced the missing entry in ten minutes. The table is a
 hand-maintained list about hand-maintained lists — the tests are the authority.
+
+**19 — my `[FR3]` specification was vacuous as written** (found by its implementer while
+running it). "Accept by the requester → 404" passes with the consent guard **entirely
+removed** if it runs on the edge `[FR2]` just accepted: every caller gets 404 on an edge
+that is no longer `pending`, so the assertion would measure state rather than permission.
+It must run on a SECOND, still-pending edge, and re-read the row afterwards to rule out a
+bypass wearing the right status code. That is what landed.
+
+Two further gaps in Step 12, recorded rather than closed: `[FR8]` has **no negative
+control** — it proves the admin page renders, not that it would fail with a wrong peer;
+the `[I-GATE]`/`[RDY-DEAD]` pattern (respawn a service with its peer stripped) is what
+would close it, as its own assertion. And `[FR5]`'s `online_until` non-emptiness is
+session-derived and therefore time-coupled: it holds because the pass logs in seconds
+earlier against 60-minute tokens, which is ample headroom but is the one predicate in the
+set that is not purely structural.
+
+Step 12 also said nothing about `friends.edges` growth. The implementer decided against a
+reset arm and recorded why: no `[FR*]` predicate reads a global count, there is no
+harness-ownership marker on the table to scope a `DELETE` by (all columns are run-minted
+uuids and there is deliberately no FK to `accounts`), and the real hazard — a recycled pid
+handing a rerun a player that already holds friendships — was closed at the key instead,
+by switching the run nonce from `std::process::id()` to a random value.
 
 **17 — `split-proof` is NOT "red by design" for friends; it is GREEN and friends-blind.**
 I asserted repeatedly that the split-proof stage stays red until Step 12. There is no
