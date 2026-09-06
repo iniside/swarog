@@ -813,6 +813,33 @@ uuids and there is deliberately no FK to `accounts`), and the real hazard — a 
 handing a rerun a player that already holds friendships — was closed at the key instead,
 by switching the run nonce from `std::process::id()` to a random value.
 
+**20 — the Step 12 follow-up closed three more proof gaps, one of them on the seam the
+step itself created.** `[A3]`'s label promised `<display_name>#<4 digits>` while its
+predicate accepted `<anything>#<4 digits>` — it would have waved through a handle
+rendered from the wrong column, an email local-part, a constant, or **another player's**
+summary. Same shape as this rollout's other prose-vs-code findings: the label is what a
+reader trusts, and nothing confronted it with the assertion.
+
+`[ADX1]` enumerates the Players row-menu entries and was written when there were two.
+Friends contributes a third through two distinct paths, and the **remote**
+(`ItemData::extensions`) one was unasserted — so the entry could vanish in split with
+`[FR8]` still green and `admincheck` only advisory. The step whose purpose was to close
+"a new module invisible to a hand-maintained list" had fallen into that class on the
+adjacent list. That is the **fifth** hand-maintained list this rollout found incomplete,
+after the plan's own authority table, `defined_topics()`, the two `rpc_modules()`, and
+`DEV_CLIENT_POLICY` — every one found by running something, none by reading.
+
+`[FR9]` closes `pending`, the only wire observation of `Friend::direction`. `decline`
+stays unasserted **as a decision**: its party predicate and replay-is-404 are the code
+paths `[FR2]`/`[FR3]` already drive, and its one distinct effect has no consumer writing
+an assertable row — the assertion worth writing would be an audit-row one beside `[FR4]`.
+
+Two hazards recorded, not closed: a transient inside a monolith-parity group could delete
+a later assertion from the run entirely (fixed for friends via a named `[FR0]` failure
+check; **still open for the mail, push and federated groups**), and `[FR8]`'s error-card
+probe matches a template-shaped string, so a change to `admin.html.tmpl`'s KPI markup
+would make that conjunct vacuously true — the assertion survives on its other two halves.
+
 **17 — `split-proof` is NOT "red by design" for friends; it is GREEN and friends-blind.**
 I asserted repeatedly that the split-proof stage stays red until Step 12. There is no
 mechanism that makes it red: `grep -c friends tools/splitproof/src/main.rs` is **0**, and
