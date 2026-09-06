@@ -857,6 +857,19 @@ chain working in-process but not cross-process, and `[FR8]`'s admin path.
 hand-list guarded by a completeness gate that fires on a new `api/` provider module
 discovered on disk. Step 10 must add `friends` to it.
 
+**21 — Step 14 landed the docs pass and closes this plan.** `cargo run -p verifyctl
+-- --fast` was 15/15 blocking PASS and `--all --strict` was 19 PASS + 1 SKIP
+(`csharp-client`, no `dotnet` on this docs-writer's platform), both `EXIT=0`;
+split-proof reported 172 assertions, 0 failed, including `[FR1]`-`[FR9]` in both
+topologies. A live monolith render confirmed `/admin/friends` 200 with working
+drill-down and the "View Friends" row-menu entry. `README.md`, `CLAUDE.md`,
+`.agents/shared/gamebackend.md` and `docs/roadmap/feature-tracker.md` were updated
+to 15 fortresses / 16 total processes and `friends :8095/:9014`; none of the known
+gaps recorded above (no socket presence, no v1 blocking, the unclosed
+handle-existence oracle, `audit`/`notifications`' `admin_data` `.map_err(internal)`,
+the unpinned `PLAYERS_ROW_MENU` order, `decline` unasserted) were closed by the docs
+step — they are carried forward as documented gaps, not fixed here.
+
 ## What revision 2 changed
 
 Revision 1 was reviewed and returned **not implementable**. The corrections, so the

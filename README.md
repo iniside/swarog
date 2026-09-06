@@ -3,7 +3,7 @@
 A for-fun game backend in **Rust** (Cargo workspace), built as a **modular monolith
 with a proven split**: one repo, one `cmd/server` binary running everything — and
 every domain module *also* compiles and boots as its own `cmd/<name>-svc` process.
-Both topologies are first-class, continuously proven by a live 14-process
+Both topologies are first-class, continuously proven by a live 16-process
 integration suite.
 
 The design goal is **Open/Closed at the architecture level**: features are added by
@@ -84,7 +84,7 @@ public-API checks protect the surfaces that cross those boundaries.
 
 ## Domain modules
 
-14 fortresses plus the gateway:
+15 fortresses plus the gateway:
 
 - **accounts** — identity: one `player_id`, many identities, 60-minute access tokens
   plus rotating 30-day refresh-token families with reuse detection; federated login
@@ -114,6 +114,12 @@ public-API checks protect the surfaces that cross those boundaries.
   registry (`log` dev sink, real `smtp`), retried with backoff, pruned on a
   schedule. Ingress is `mail.send_requested`, which `mail` both defines and
   subscribes to (a command topic, not a fact about another domain).
+- **friends** — social graph: a canonical ordered pair per relationship (DB
+  CHECK, so symmetry and pair-uniqueness live in the schema, not application
+  code), `pending`/`accepted` states, request/accept/decline/remove/list over
+  handles (`Name#1234`, minted in `accounts`); another player's edge is
+  `NotFound`, never `Forbidden`. Presence is session-derived (`online_until`),
+  not socket presence.
 - **gateway** — the single public front door: HTTP op routing (local vs remote
   purely by slot presence), authenticated player-QUIC plane, passthroughs, rate
   limiting. Domain services never host it; they serve ops only over the internal

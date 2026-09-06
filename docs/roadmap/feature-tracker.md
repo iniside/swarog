@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-09-05-2200**
+**Last update: 2026-09-06-1231**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -139,7 +139,7 @@ now resolved — see the Identity & accounts table below for the landed shape.
 | Session + refresh-token model | ✅ | accounts | 2026-08-30 | 60-minute opaque access tokens + rotating 30-day refresh-token families: reuse detection, a 30s grace window for a lost response, family-scoped revocation (never all the player's devices), and a hard family life a rotation cannot extend. Open decision 4 resolved inside #2a. |
 | Self-registration (production-grade) | ⚠️ | accounts | — | `POST /accounts/register` + `/accounts/login` exist (`api/accounts/api/src/lib.rs:79,85`, argon2id) but gated behind `ACCOUNTS_DEV_AUTH` (default OFF). Missing: email verification, password reset, per-IP/per-account throttling, password policy, email-as-identity uniqueness, **and an outbound mail channel**. Seq #4, depends on #3b. |
 | Account self-delete + GDPR export | ❌ | accounts | — | Only server-side prune today. |
-| User metadata / profile (display name, avatar, lang) | ❌ | — | — | Only `player_id` + identities. |
+| User metadata / profile (display name, avatar, lang) | ⚠️ | accounts | `922cc63`, 2026-09-06 | Handles landed as part of P0#4 (friends): `accounts.players` gained a `discriminator` + a unique index on `(lower(display_name), discriminator)`, and `MeView` carries the caller's own `handle` (`Name#1234`). Discovery of another player is wire-only (`accountsapi::Directory`), never front-door. Still missing: avatar, language, and any player-editable profile field. |
 
 **Known gaps carried out of seq #2a** (deliberate, not oversights): `accounts` still parses
 its provider environment inside the module rather than in `cmd/*`, so it is the one module
@@ -155,9 +155,9 @@ balances and is its own feature.
 
 | Feature | Status | Module(s) | Landed | Notes |
 |---|:--:|---|---|---|
-| Friends (add/remove/block, states) | ❌ | — | — | P0#4. New fortress, sync `Friends` capability + durable events. |
+| Friends (add/remove/block, states) | ✅ | friends, friendsapi, friendsevents, friendsrpc, friends-svc | `922cc63`..`0b4d85a`, 2026-09-05–2026-09-06 | **P0#4**, [plan](../plans/2026-09-05-1921-friends-module-plan.md). 15th fortress: schema `friends`, one `edges` table with a canonical ordered pair (`low_id < high_id` CHECK, symmetry/pair-uniqueness live in the schema) plus `requester_id` for the asymmetric transitions; `pending`/`accepted` states, no blocking in v1. Six `#[http]` ops (request by handle/accept/decline/remove/list/pending); another player's edge is `NotFound`, never `Forbidden`. `request` resolves a target via the new wire-only `accountsapi::Directory` against a minted handle (`Name#1234`); the handle-existence oracle is **not** closed (201 vs 404), only rate-limited at the gateway. Three durable topics (`friend.requested/accepted/removed`, 30-day retention, both parties' handles denormalized) consumed by `audit` (3 new raw sinks) and `notifications` (2 `AfterRegistration` subscriptions). Read-only admin page "Friends" under Player Support + a "View Friends" row-menu entry. Proven in both topologies: `[FR1]`-`[FR9]` in split-proof (`decline` deliberately unasserted). Known gaps: **no socket presence** (`online_until` is session-derived only — gateway has no DB, presence is per-process RAM, the offline transition runs in a `Drop` that cannot `await`, no fan-in primitive); no blocking in v1; the handle-existence oracle; `audit`/`notifications` both violate `adminapi`'s never-`Err` `admin_data` contract (pre-existing, recorded not fixed); `PLAYERS_ROW_MENU` ordering is unpinned across topologies. |
 | Groups / guilds / clans | ❌ | — | — | P1#8. Depends on friends + notifications. |
-| Presence / online status / follow | ❌ | — | — | P2 — needs client push. |
+| Presence / online status / follow | ⚠️ | friends | `922cc63`..`0b4d85a`, 2026-09-06 | Session-derived presence shipped as part of P0#4: `online_until` (RFC3339, empty = no live session) computed from `accounts.sessions`, deliberately a timestamp rather than a socket-backed bool — a quit player reads a future value for up to an hour (60-minute access tokens). **Socket presence did not ship**: gateway has no DB, presence is per-process RAM with no accessor, the offline transition runs in a `Drop` that cannot `await`, and there is no fan-in primitive across gateway instances. Still needs client push for socket presence/follow. |
 | Realtime chat | ❌ | — | — | P2 — gated on the realtime decision (#14). |
 | Parties | ❌ | — | — | P2 — gated on the realtime decision (#14). |
 
@@ -229,6 +229,24 @@ balances and is its own feature.
 
 ## Change log
 
+- **2026-09-06** — Friends (P0#4) **landed**, `922cc63`..`0b4d85a`. 15th
+  fortress: `friends` (schema `friends`, canonical-ordered-pair `edges` table,
+  `pending`/`accepted` states), a new wire-only `accountsapi::Directory` and
+  minted player handles (`Name#1234`, a `discriminator` + unique index added
+  to `accounts.players`) as the addressing scheme. Six `#[http]` ops; three
+  durable topics at 30-day retention consumed by `audit` and `notifications`.
+  `cargo run -p verifyctl -- --fast` 15/15 blocking PASS,
+  `--all --strict` 19 PASS + 1 SKIP (`csharp-client`, no `dotnet` on this
+  platform), split-proof 172 assertions / 0 failed including `[FR1]`-`[FR9]`
+  in both topologies. Known gaps carried forward: no socket presence (four
+  code-verified obstacles — gateway has no DB, presence is per-process RAM,
+  the offline transition runs in a `Drop` that cannot `await`, no fan-in
+  primitive); no blocking in v1 (a future state on the same edge, not a new
+  table); the handle-existence oracle is not closed by `request` (201 vs
+  404), only rate-limited at the gateway; `audit` and `notifications` both
+  violate `adminapi`'s never-`Err` `admin_data` contract (pre-existing,
+  recorded not fixed); `PLAYERS_ROW_MENU` ordering is unpinned across
+  topologies; `decline` has no split-proof assertion, as a stated decision.
 - **2026-09-05** — Outbound email channel (seq #3b) **landed**, all 13 steps,
   `d97503f`..`88e26fd`. `mail` is a new, 14th fortress rather than a channel inside
   `notifications` — the tracker's own prior answer, corrected above: the recipient
