@@ -1,8 +1,12 @@
 # `groups` — membership, roles and invites (the 16th fortress)
 
-Revision 1 · 2026-09-06 · first half of the chat/groups pair the user asked for in the
+Revision 2 · 2026-09-06 · first half of the chat/groups pair the user asked for in the
 Nakama shape. `chat` gets its own plan after this lands, because its channel table's
 shape depends on what membership actually ships.
+
+Revision 2 answers a REJECT verdict with twenty findings; the punch list and what each
+changed are recorded in *Review response* at the end. Two of them were holes that made
+`invite` and `decide` unreachable as specified.
 
 Delivers a social-group fortress: a group, its members, two roles, three membership
 states, and a **wire-only** `role_of` capability that `chat` will consume to authorize a
@@ -79,13 +83,15 @@ session); `groups` and `chat` take it to 103. weles' fixture goes 105 → 119 ag
 usable. Next free pairs: **HTTP 8096 / edge 9015** for `groups`, 8097/9016 reserved for
 `chat`.
 
-**F. `friends` broke a precedent silently and this plan should not inherit it.**
-Every other `__describe`-routed module — `wallet`, `notifications` — has a
-`<NAME>_EDGE_ADDR` row in `cmd/gateway-svc/src/addrs.rs`'s `ADDR_SPECS`. `friends` has
-none; its boot address is a hardcoded literal in `lib.rs` that happens to match
-processctl's port choice. Nothing fails, and an operator's env override is silently
-ignored in standalone mode. Step 7 adds `groups` **and** closes friends' gap, because
-leaving a known twin is what the sweep rule forbids.
+**F. `friends` is missing from the gateway's address table, and it is worse than cosmetic.**
+`friends` is the only one of the eight `#[http(` domains with no `<NAME>_EDGE_ADDR` row in
+`cmd/gateway-svc/src/addrs.rs`'s `ADDR_SPECS`; the gateway falls back to the literal
+`127.0.0.1:9014` at `cmd/gateway-svc/src/lib.rs:141`. `cmd/admin-svc/src/main.rs:54` does
+read the variable — only the gateway drops it. Two live consequences, not one: `processctl`
+actively sets `FRIENDS_EDGE_ADDR` for the gateway (`fleet.rs:829`) and it is **discarded**;
+and in **managed** mode `ADDR_SPECS` is the only thing the agent is asked to resolve, so a
+managed gateway never resolves friends at all and dials loopback on whatever host it runs
+on. Step 7 adds `groups` **and** closes friends' gap.
 
 ---
 
@@ -124,6 +130,9 @@ in a literal.
 
 ### The player face
 
+Nine ops, not seven. Revision 1 had a group with no way to accept an invitation and no
+way for an admin to see a pending request — see *Review response* 1 and 2.
+
 ```rust
 #[rpc(prefix = "groups")]
 #[async_trait]
@@ -132,15 +141,28 @@ pub trait Player: Send + Sync {
     async fn create(&self, identity: Identity, name: String, join_policy: String)
         -> Result<GroupSummary, Error>;
 
+    /// Every group the caller holds ANY row in — `member`, `invited` and `requested`
+    /// alike, each carrying its own state. This is also the invitation inbox: without
+    /// pending rows here an invited player has no way to discover the invitation.
     #[http(verb = "POST", path = "/groups/list", auth = "player", success = 200)]
     #[retry_safe]
     async fn list_mine(&self, identity: Identity, cursor: String, limit: i64)
         -> Result<GroupPage, Error>;
 
+    /// `member` rows only. Any member of the group may read it.
     #[http(verb = "POST", path = "/groups/{id}/members/list", auth = "player",
            success = 200, path_args(group_id = "id"))]
     #[retry_safe]
     async fn members(&self, identity: Identity, group_id: String, cursor: String, limit: i64)
+        -> Result<MemberPage, Error>;
+
+    /// `requested` and `invited` rows. ADMIN ONLY — a plain member reading the pending
+    /// roster is a different decision, and this is the op that hands an admin the
+    /// `subject_id` that `decide` needs.
+    #[http(verb = "POST", path = "/groups/{id}/pending/list", auth = "player",
+           success = 200, path_args(group_id = "id"))]
+    #[retry_safe]
+    async fn pending(&self, identity: Identity, group_id: String, cursor: String, limit: i64)
         -> Result<MemberPage, Error>;
 
     #[http(verb = "POST", path = "/groups/{id}/join", auth = "player", success = 200,
@@ -151,11 +173,23 @@ pub trait Player: Send + Sync {
            path_args(group_id = "id"))]
     async fn leave(&self, identity: Identity, group_id: String) -> Result<(), Error>;
 
+    /// ADMIN ONLY. Creates an `invited` row for the named player.
     #[http(verb = "POST", path = "/groups/{id}/invites", auth = "player", success = 201,
            path_args(group_id = "id"))]
     async fn invite(&self, identity: Identity, group_id: String, target_handle: String)
         -> Result<(), Error>;
 
+    /// The SUBJECT's verdict on its OWN `invited` row. `decision` is `accept` or
+    /// `reject`.
+    #[http(verb = "POST", path = "/groups/{id}/respond", auth = "player", success = 204,
+           path_args(group_id = "id"))]
+    async fn respond(&self, identity: Identity, group_id: String, decision: String)
+        -> Result<(), Error>;
+
+    /// An ADMIN's verdict on somebody else's `requested` row, and the only way to remove
+    /// another member: `accept` promotes a `requested` row to `member`, `reject` deletes
+    /// whatever row the subject holds — which is a decline for a pending row and a kick
+    /// for a `member` row.
     #[http(verb = "POST", path = "/groups/{id}/decide", auth = "player", success = 204,
            path_args(group_id = "id"))]
     async fn decide(&self, identity: Identity, group_id: String, subject_id: String,
@@ -163,18 +197,87 @@ pub trait Player: Send + Sync {
 }
 ```
 
-`decide` is the one op that carries an admin's verdict on a pending row —
-`decision ∈ {"accept","reject"}` — and it is also how a member is removed (`reject` on a
-`member` row is a kick). One op rather than three keeps the authorization check in one
-place; the plan deliberately does not ship promote/demote, so the only role transition is
-the creator's `admin` at create time.
+**The authorization matrix is part of the contract, not a Step 2 detail.** Every cell:
+
+| op | caller must be | subject row must be | effect |
+|---|---|---|---|
+| `create` | any player | — | group + creator's `member`/`admin` row |
+| `list_mine` | any player | own rows | all three states |
+| `members` | `member` of the group | — | `member` rows |
+| `pending` | `admin` of the group | — | `invited` + `requested` rows |
+| `join`, policy `open` | non-member | none | `member`/`member` |
+| `join`, policy `request` | non-member | none | `requested`/`''` |
+| `join`, policy `invite` | non-member | none | `Conflict` — only an invite admits |
+| `join` | already holds a row | any | `Conflict`, never a silent second row |
+| `leave` | holds any row | own | row deleted; see the last-admin rule |
+| `invite` | `admin` | subject holds no row | `invited`/`''` |
+| `invite` | `admin` | subject already holds a row | `Conflict` |
+| `respond` | the subject | own row is `invited` | `accept` ⇒ `member`/`member`; `reject` ⇒ deleted |
+| `decide` | `admin` | subject is `requested` | `accept` ⇒ `member`/`member`; `reject` ⇒ deleted |
+| `decide` | `admin` | subject is `member` | `accept` ⇒ `Conflict`; `reject` ⇒ deleted (kick) |
+| `decide` | `admin` | subject is the caller | `Conflict` — use `leave` |
+
+Anything the caller may not see answers `NotFound`, never `Forbidden`: a non-member's
+`members`, a non-admin's `pending`/`invite`/`decide`, and every op naming a group that
+does not exist all give the same verdict. A 403 would confirm the id names a real group.
+
+**Errors that are otherwise a 500.** `join_policy` outside the three consts and `decision`
+outside `{accept, reject}` are validated in the service and answer `Status::Invalid`; left
+to the CHECK constraint they raise `23514`, which has no mapping and surfaces as an
+internal error. `MAX_NAME_BYTES` is enforced in the service before the statement, with the
+column CHECK as the backstop — the `COLUMN_CAPS` pairing `mail` uses.
+
+**The last-admin and last-member rules**, because "promote/demote is a non-goal" makes
+both reachable:
+- The **only** member leaving deletes the group row in the same transaction. Nobody is
+  stranded and no zombie row survives — `groups.groups` has no other collector.
+- The last **admin** leaving a group that still has other members is `Conflict` with a
+  message naming the reason. Without this the group freezes forever: no accepts, no
+  invites, no kicks, and no delete.
 
 **None of the mutating ops is `#[retry_safe]`.** A replay of `join`/`leave`/`invite`/
-`decide` after an ambiguous failure is indistinguishable from a second, intentional call
-on a row the caller may no longer have — the reason `friends::accept` and
-`notifications::delete` decline the attribute too. `create` is not retry-safe either: it
-mints a fresh group id, so a replay would create a second group. Only the two reads carry
-it.
+`respond`/`decide` after an ambiguous failure cannot be told apart from a second,
+intentional call on a row the caller may no longer hold — the reason `friends::accept` and
+`notifications::delete` decline it too. `create` mints a fresh id, so a replay would make a
+second group. Only the four reads carry it.
+
+### The DTOs
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupSummary {
+    pub id: String,
+    pub name: String,
+    pub join_policy: String,
+    pub created_at: String,   // RFC3339
+    pub my_state: String,     // STATE_MEMBER | STATE_INVITED | STATE_REQUESTED
+    pub my_role: String,      // ROLE_ADMIN | ROLE_MEMBER, empty unless my_state is member
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberSummary {
+    pub player_id: String,
+    pub handle: String,       // "Name#1234", empty when accounts has no row for the id
+    pub state: String,
+    pub role: String,
+    pub joined_at: String,    // RFC3339
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupPage { pub items: Vec<GroupSummary>, pub next_cursor: String }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberPage { pub items: Vec<MemberSummary>, pub next_cursor: String }
+```
+
+**Handles are resolved once per page, not once per row.** `accountsapi::Directory::players_by_id`
+takes up to 256 ids in one call and omits misses rather than erroring, which is exactly
+what `friends`' pages do. A missing id yields an empty `handle` — the row still lists,
+because a member whose account row vanished must not make the whole page fail.
+
+**No `member_count` on `GroupSummary`.** It would cost a count per row on every page, and
+the width question (`i64` — `u32` is banned) is the smaller half of the problem. Recorded
+as a non-goal.
 
 ### The wire-only face — what `chat` will consume
 
@@ -190,10 +293,12 @@ pub trait Membership: Send + Sync {
 }
 ```
 
-Provided under `registry::key("groups", "membership")`. One index probe. It answers
-`""` for "not a member", never an error, so a caller cannot distinguish "no such group"
-from "not your group" — the same non-oracle discipline the `NotFound` rule enforces on
-the player face.
+Provided under `registry::key("groups", "membership")`. One index probe. It answers `""` for "not a member" and, deliberately, the
+same `""` for "no such group" — **because `chat` wants the same behaviour for both**: a
+channel requested for a phantom group and one requested for a group the caller is not in
+must both answer `NotFound`, so a second method distinguishing them would only give `chat`
+a distinction it must then discard. Stated here rather than left to be discovered, since
+retrofitting a second method is a contract change.
 
 ### Schema
 
@@ -217,7 +322,8 @@ CREATE TABLE IF NOT EXISTS groups.memberships (
     PRIMARY KEY (group_id, player_id),
     CONSTRAINT memberships_state_check CHECK (state IN ('member','invited','requested')),
     CONSTRAINT memberships_role_check
-        CHECK ((state = 'member' AND role IN ('admin','member')) OR role = '')
+        CHECK ((state = 'member') = (role <> '')
+               AND (role = '' OR role IN ('admin','member')))
 );
 CREATE INDEX IF NOT EXISTS memberships_player_idx
     ON groups.memberships (player_id, state, created_at DESC, group_id DESC);
@@ -232,9 +338,12 @@ a malformed one folds to an empty page rather than a 500, the `22P02` handling
 `notifications` and `friends` both carry. The composite primary key is what makes a
 double `join` one row: there is no read-then-write anywhere in this module.
 
-The `memberships_role_check` constraint is the schema-level statement of the invariant the
-contract's consts describe — a `requested` row can never carry a role, so `role_of`
-reading a non-empty role is proof of membership without a second predicate.
+The `memberships_role_check` constraint is an **equivalence, not an implication**: a
+`member` row must carry a role AND a non-`member` row must not. Revision 1 wrote only the
+forward half, which admitted `state='member' AND role=''` — an accept that updated `state`
+and forgot `role` would commit, `role_of` would answer `""` for a real member, and `chat`
+would deny a member its own group channel: the exact failure the capability exists to
+prevent.
 
 `memberships_pending_idx` is partial and exists for Step 5's sweep alone; without it the
 prune seq-scans a table whose live rows dominate.
@@ -247,9 +356,15 @@ prune seq-scans a table whose live rows dominate.
 |---|---|
 | `group.created` | `{group_id, name, creator_id, join_policy}` |
 | `group.member_joined` | `{group_id, player_id, role}` |
-| `group.member_left` | `{group_id, player_id, reason}` — `reason ∈ {"left","kicked","declined"}` |
+| `group.member_left` | `{group_id, player_id, actor_id, reason}` — `reason ∈ {"left","kicked","declined"}` |
 
-`reason` is an open vocabulary on purpose: `friendsevents` records the rule that an
+`create` emits **both** `group.created` and a `group.member_joined` for the creator's
+`admin` row, in the same transaction. Without the second, the ledger shows a group whose
+only admin never joined and a later `member_left` for the creator has no matching join.
+
+`actor_id` is on `member_left` because `friendsevents::Removed` carries one and a kick is
+otherwise unattributable in a ledger that retains 30 days. `reason` is an open vocabulary
+on purpose: `friendsevents` records the rule that an
 unrecognised value must be treated as the plain case, so a future ending is an additive
 change rather than a new topic.
 
@@ -280,11 +395,20 @@ three descriptors plus the `#[doc(hidden)] golden_samples()` the contract golden
 `tools/topiccheck/src/tests.rs:281` scans for the topic literal on the `define(` line and
 panics otherwise, which turned a blocking stage red in the mail rollout.
 
-**(d) Dispatch.** `[sonnet]` — three crates from three named templates.
+**Also in this step, and it is not optional:** add the two `#[rpc]` traits to
+`tools/topiccheck/src/golden.rs`'s `rpc_modules()`. `rpc_modules_from_fs`
+(`golden.rs:488-510`) scans `api/*/api/src` for every `#[rpc]` trait and **bails with a
+per-entry fix** — not a diff — the moment the hand-list drifts, so landing the contract
+crate without it turns the blocking contract-golden stage red for every step until Step 8.
+Unlike the durable topics, this entry depends on no consumer, so it belongs here.
+
+**(d) Dispatch.** `[sonnet]` — three crates from three named templates plus one list entry.
 
 ## Step 2 — the module: schema, store, service, player ops  `[opus]`
 
-**(a) What.** `modules/groups/{Cargo.toml,src/{lib,store,service,admin_placeholder}.rs}`.
+**(a) What.** `modules/groups/{Cargo.toml,src/{lib,store,service}.rs}`. No admin module
+yet — Step 6 creates `admin.rs`, and a placeholder that Step 6 must remember to delete is
+a rail with no stated death.
 
 **(b) Why now.** The row and the seven ops are what every later step acts on.
 
@@ -301,7 +425,16 @@ panics otherwise, which turned a blocking stage red in the mail rollout.
   **before** the base64 decode.
 - `resolve_limit`: `0` means unspecified (the contract has no `Option`), over-ask is
   clamped, only a negative is rejected.
-- `MAX_MEMBERS` is enforced in the same statement that inserts, not by a count-then-insert.
+- **`MAX_MEMBERS` needs a per-group advisory lock, not a clever statement.** An
+  `INSERT … WHERE (SELECT count(*)) < 500` is a count-then-insert however it is spelled:
+  under READ COMMITTED two concurrent joins both see 499 and both commit. The precedent
+  says so verbatim — `modules/friends/src/store.rs:42-49`: *"without it two concurrent
+  requests by one player both count below the cap (neither committed yet, READ COMMITTED)
+  and both land past it"* — and friends therefore takes a `pg_advisory_xact_lock`. Take one
+  keyed on the group, namespaced the way friends namespaces its requester key.
+- Validate `join_policy`, `decision` and `MAX_NAME_BYTES` **in the service**, before the
+  statement; the CHECK constraints are the backstop, and a `23514` reaching a caller is a
+  500 with no mapping.
 - `invite` resolves `target_handle` through `accountsapi::Directory::find_by_handle`, so
   `groups::requires()` is `vec!["accounts".into()]` — the same dependency `friends` has.
 
@@ -405,7 +538,12 @@ prose, which becomes false either way.
 
 **(a) What.** `tools/topiccheck/src/{main,golden}.rs`; `modules/audit` (three raw sinks);
 `tools/conformance/src/{policy,checks}.rs`; `modules/groups/src/conformance.rs`;
-`tools/opscatalog-gen`; `tools/csharp-client-gen`; `modules/apikeys`'s `DEV_CLIENT_POLICY`.
+`tools/opscatalog-gen/src/main.rs`; `tools/csharp-client-gen/src/scrape.rs` **and**
+`tools/csharp-client-gen/src/tests.rs:60-100` (a hand-written wire-method set AND DTO set
+that fails on the new ops); `modules/apikeys`'s `DEV_CLIENT_POLICY`; and the two generated
+artifacts themselves — `clients/csharp/Generated/` and `opscatalog/src/generated.rs`,
+both regenerated and diffed by the blocking `codegen-freshness` stage
+(`tools/verifyctl/src/stages/codegen.rs:17-81`).
 
 **(b) Why now.** These are the blocking stages that fail *because* Steps 1–6 landed, and
 each needs a judgement the mechanical lane should not make.
@@ -476,6 +614,20 @@ suite that skipped every DB test is the repo's recorded false-green shape.
 
 **(d) Dispatch.** `[test-author]` at `model:"sonnet"` — these follow landed patterns.
 
+## A note on lanes, and one explicit carve-out
+
+CLAUDE.md's Implementation Mode says tests are never `[sonnet]` and are their own later
+step. Steps 5, 7 and 8 each extend an **existing hand-maintained list assertion** with the
+new service's row — `seeded_schedule_names_are_contract`, `fleet_tests.rs`'s canonical
+snapshot, `fleet_toml_tests.rs`' service count, `manifest_tests.rs`' env goldens, audit's
+anti-drift list and `csharp-client-gen/src/tests.rs`' method set. Those edits are the
+assertion half of the registration data the same step adds; splitting them out means
+deliberately landing a knowingly-red blocking gate and carrying it across steps, which is
+the sequencing defect this plan already corrects twice. So: **extending an existing list
+assertion travels with its registration; authoring any NEW assertion remains
+`[test-author]`** — Steps 9 and 10 own every new test in this rollout. Recorded as a
+deviation rather than taken silently.
+
 ## Step 11 — acceptance  `[inline]`
 
 `cargo run -p verifyctl -- --fast`, then `--all --strict`. One rollout at a time: check
@@ -483,14 +635,18 @@ suite that skipped every DB test is the repo's recorded false-green shape.
 capture `$?` — a piped `| tail` reports the pipe's status, which produced a false green
 twice in this repo. Blessings expected: `--bless-public-api` (`groupsapi.txt`,
 `groupsevents.txt`, and `schedulerevents.txt` for the new schedule const),
-`--bless-contract-golden`, and `--bless-input-golden` for the admin form's fields. Read
-each diff before accepting it.
+`--bless-contract-golden`, and `--bless-input-golden` for the admin form's fields, plus
+regenerating both codegen artifacts with `cargo run -p opscatalog-gen` and
+`cargo run -p csharp-client-gen`. Read each diff before accepting it.
 
 ## Step 12 — documentation  `[docs]`, `model:"sonnet"`
 
 `docs/roadmap/feature-tracker.md` (a new row and a dated decisions entry), `README.md`,
 `CLAUDE.md` (the module list, the fortress count, and the split-proof port sentence),
-`.agents/shared/gamebackend.md` (which mirrors all three of those claims), and this plan's
+`.agents/shared/gamebackend.md` (which mirrors all three of those claims), `AGENTS.md`
+(a `docs-current` ROOT_DOCUMENT, `tools/verifyctl/src/stages/docs_current.rs:6`),
+`docs/reference/game-backend-feature-gaps.md:87,200-201` (whose "Groups / guilds / clans ❌"
+row and "P1#8 — new `groups` fortress" recommendation both become false), and this plan's
 errata. Name every file with its line — an unnamed file is never found. The gap list must
 be complete or it is silence implying coverage: no push nudge, no promote/demote, no
 group rename, `join_policy` immutable after create, and `chat`'s dependency on `role_of`
@@ -512,3 +668,64 @@ unexercised until `chat` lands.
 - **Blocking** — recorded in the friends plan as belonging to `friends` as a third edge
   state. `groups` must not grow a second authority for "may these two interact".
 - **A push nudge on membership change** — additive later; nothing consumes it yet.
+- **`member_count` on a group summary** — a count per row on every page, for a number the
+  client can get from `members`' page. Additive later if a screen needs it.
+- **A group-delete op.** The only collection is the last-member rule above: a group whose
+  last member leaves is deleted in that transaction. An admin cannot delete a group that
+  still has members, and that is deliberate — deleting other people's membership wholesale
+  is a moderation action, and moderation is not this rollout.
+- **A swept invitation emits nothing.** Step 5's prune deletes stale `invited`/`requested`
+  rows without a `group.member_left`, so a player is never told an invitation expired.
+  Recorded as a decision rather than discovered later; a notification needs `notifications`
+  to consume a topic that does not exist yet.
+
+
+---
+
+## Review response (revision 1 → 2)
+
+The plan review returned REJECT with twenty findings. The five blocking ones were real
+holes, not nits:
+
+- **`invite` was a dead op** (1). An invited player had no way to see the invitation and no
+  way to accept it: `list_mine` was "the caller's groups", `join` was refused under the
+  invite policy, and `decide` was an admin verb. The invitation would sit until Step 5's
+  prune swept it. Closed by making `list_mine` the invitation inbox — it returns all three
+  states — and by adding `respond`, the subject's verdict on its own row.
+- **`decide` on a request was equally unreachable** (2): with `members` returning only
+  `member` rows, an admin could never learn a pending `subject_id`. Closed with `pending`,
+  an admin-only read, mirroring `friends`' own `list`/`pending` split.
+- **`decide` was three ops in a trenchcoat** (3). It carried an admin's accept, an admin's
+  reject, and a kick that acts on a `member` row — while its doc claimed "a verdict on a
+  pending row", already false. The subject-side accept would have made it a fourth, under a
+  different authority. Split: `respond` (subject) and `decide` (admin), with the full
+  authorization matrix now written into the contract instead of deferred.
+- **The role CHECK admitted the row it was meant to forbid** (4). It was an implication
+  where the invariant is an equivalence, so `state='member' AND role=''` was legal — an
+  accept that set the state and forgot the role would commit, and `role_of` would answer
+  `""` for a real member. Fixed as `(state='member') = (role <> '')`.
+- **`MAX_MEMBERS` cannot be enforced in one statement** (5), and the precedent this plan
+  cites says so verbatim: `friends` takes a `pg_advisory_xact_lock` precisely because two
+  concurrent joins both read below the cap under READ COMMITTED. A per-group lock is now a
+  named non-negotiable in Step 2, and Step 10's concurrency test would otherwise have been
+  rewritten into something that proves nothing.
+
+Also closed: the four DTOs are defined field by field with an explicit stance on handle
+resolution (one batched `Directory` call per page, not an N+1) (6); the unstated
+authorization and error mapping is now the matrix table (7); the last-admin freeze and the
+zombie-group problem have explicit rules (8, 9); `codegen-freshness`' two generated artifacts
+and `csharp-client-gen`'s hand-written test lists are named in Steps 8 and 11 (10); the
+lane question has an argued carve-out rather than a silent violation (11); `rpc_modules()`
+moved into Step 1, because its self-check **bails** rather than diffs and would have been
+red from Step 1 to Step 8 (12); the admin placeholder is gone (13); `member_left` gains
+`actor_id` and `create` is stated to emit the creator's join (14, 15); Step 12 names
+`AGENTS.md` and the feature-gap doc (16); finding F is restated with its real
+consequence — a managed gateway never resolves friends at all (17); `role_of`'s single
+answer for both cases is argued from what `chat` needs (18); `[GR4]`'s plane and the
+existing edge-dialling precedent are named (19); and the silently-swept invitation is a
+recorded non-goal (20).
+
+One finding was checked and left as-is: the review's note that the topics stay unsubscribed
+until Step 8 is correct but is **not** the mail rollout's defect — `defined_topics()` is
+hand-listed, so the `group.*` topics are invisible to `--durability-strict` until that
+entry lands *together with* audit's sinks. There is no red window there.
