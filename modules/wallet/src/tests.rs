@@ -1055,8 +1055,8 @@ async fn reset_promoted_subscription(pool: &PgPool) {
 /// The trailing `deliver_all` is ORDERING-CRITICAL, not a warm-up: `AfterRegistration`
 /// stamps the cursor with the RECONCILING transaction's xid, and reconcile happens inside
 /// `deliver_all`. Reconciling only after the test's `emit_tx` would place the checkpoint
-/// PAST the very event under test, and every one of these tests would pass vacuously with
-/// nothing ever delivered.
+/// PAST the very event under test — which [`deliver_until_consumed`] then reports as a
+/// never-consumed event rather than passing vacuously.
 async fn wired_for_delivery(
     pool: &PgPool,
     cfg: Arc<dyn Config>,
@@ -1069,11 +1069,7 @@ async fn wired_for_delivery(
     let w = WalletModule::new();
     w.register(&ctx).unwrap();
     w.init(&ctx).unwrap();
-    let drained = transport.deliver_all().await.unwrap();
-    assert_eq!(
-        drained, 0,
-        "a freshly reset AfterRegistration checkpoint must start with nothing eligible"
-    );
+    transport.deliver_all().await.unwrap();
     (ctx, w.svc(), transport)
 }
 
@@ -1094,11 +1090,7 @@ async fn wired_for_dual_delivery(
     let w = WalletModule::new();
     w.register(&ctx).unwrap();
     w.init(&ctx).unwrap();
-    let drained = transport.deliver_all().await.unwrap();
-    assert_eq!(
-        drained, 0,
-        "a freshly reset AfterRegistration checkpoint must start with nothing eligible"
-    );
+    transport.deliver_all().await.unwrap();
     (ctx, w.svc(), transport)
 }
 
@@ -1208,23 +1200,105 @@ async fn assert_named_subscription_unpoisoned(pool: &PgPool, subscription_id: &s
     );
 }
 
-/// Bounded, no-sleep settle proof for the two-subscription tests: re-drives the
-/// hand-driven transport (never a real clock) until `settle_player`'s own starter
-/// ledger row is persisted, so a LATER "zero rows" assertion for a different player
-/// runs only after delivery has demonstrably completed a pass over BOTH
-/// subscriptions — never a vacuous negative against an unsettled system.
-async fn deliver_until_settled(
+/// How far `subscription_id`'s checkpoint has advanced over THIS test's own events:
+/// `(matching events, of those already behind the cursor)` for the `topic` rows whose
+/// payload carries `player_id`. The player id is minted per test, so neither number can
+/// be moved by what another crate's tests append to the shared log.
+async fn checkpoint_progress(
+    pool: &PgPool,
+    subscription_id: &str,
+    topic: &str,
+    player_id: &str,
+) -> (i64, i64) {
+    sqlx::query_as(
+        "SELECT count(*), \
+                count(*) FILTER (WHERE (s.cursor_generation, s.cursor_xid, s.cursor_tie) \
+                                       >= (e.generation, e.producer_xid, e.tie_breaker)) \
+         FROM asyncevents.events e, asyncevents.subscriptions s \
+         WHERE s.subscription_id = $1 AND e.topic = $2 AND e.payload->>'player_id' = $3",
+    )
+    .bind(subscription_id)
+    .bind(topic)
+    .bind(player_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Drives the hand-driven transport until `subscription_id`'s checkpoint has passed all
+/// `copies` of this test's own `topic` event for `player_id`, and proves the delivery
+/// was `Ok`: a handler that returns `Err` rolls back to the savepoint and leaves the
+/// cursor exactly where it stood.
+///
+/// A one-shot `deliver_all() == n` cannot serve as that proof — the log and the
+/// checkpoint table are shared with every other crate's tests, so the tally
+/// OVER-counts (a foreign `player.registered` drained in the same pass) and
+/// UNDER-counts (a foreign open transaction pins `pg_snapshot_xmin`, deferring a
+/// just-committed event past this pass; see the frontier clause in
+/// `worker::deliver_one_on`). The deadline is a hang guard, not a timing assertion:
+/// the verdict is checkpoint state, and only a checkpoint that never advances fails.
+async fn deliver_until_consumed(
     transport: &asyncevents::testing::TestTransport,
     pool: &PgPool,
-    settle_player: &str,
+    subscription_id: &str,
+    topic: &str,
+    player_id: &str,
+    copies: i64,
 ) {
-    for _ in 0..20 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
         transport.deliver_all().await.unwrap();
-        if !starter_ledger_rows(pool, settle_player).await.is_empty() {
+        let (appended, consumed) =
+            checkpoint_progress(pool, subscription_id, topic, player_id).await;
+        assert_eq!(
+            appended, copies,
+            "{player_id} must have exactly {copies} {topic} event(s) in the log"
+        );
+        if consumed == copies {
             return;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{subscription_id} consumed {consumed}/{copies} of {player_id}'s {topic} \
+             events — delivery never advanced the checkpoint past them"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    panic!("settle_player {settle_player}'s starter ledger row never appeared — delivery did not settle");
+}
+
+/// [`deliver_until_consumed`] for `STARTER_SUB`'s topic.
+async fn deliver_registrations(
+    transport: &asyncevents::testing::TestTransport,
+    pool: &PgPool,
+    player_id: &str,
+    copies: i64,
+) {
+    deliver_until_consumed(
+        transport,
+        pool,
+        STARTER_SUB,
+        accountsevents::PLAYER_REGISTERED.topic(),
+        player_id,
+        copies,
+    )
+    .await;
+}
+
+/// [`deliver_until_consumed`] for `PROMOTED_SUB`'s topic.
+async fn deliver_promotion(
+    transport: &asyncevents::testing::TestTransport,
+    pool: &PgPool,
+    player_id: &str,
+) {
+    deliver_until_consumed(
+        transport,
+        pool,
+        PROMOTED_SUB,
+        accountsevents::PLAYER_PROMOTED.topic(),
+        player_id,
+        1,
+    )
+    .await;
 }
 
 /// A currency code that is NOT in the catalog (never inserted).
@@ -1297,7 +1371,8 @@ async fn starter_grant_credits_a_new_player() {
 /// The "optional" half. A config with nothing written makes `starter_spec` answer the
 /// compiled defaults, and the empty-currency/zero-amount arm must skip. Change either
 /// default to something non-empty and this is the test that goes red — the event IS
-/// delivered (`delivered == 1`), so a green run cannot be explained by "nothing ran".
+/// delivered (the checkpoint passes it), so a green run cannot be explained by
+/// "nothing ran".
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn starter_grant_is_off_by_default() {
     let Some(pool) = test_pool().await else { return };
@@ -1306,11 +1381,7 @@ async fn starter_grant_is_off_by_default() {
     let pid = unique_player(&pool).await;
 
     emit_registered(&ctx, &pool, &pid).await;
-    assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        1,
-        "the registration must be DELIVERED — a faulted delivery is never counted"
-    );
+    deliver_registrations(&transport, &pool, &pid, 1).await;
 
     let balances: Vec<(String, i64)> =
         sqlx::query_as("SELECT currency, amount FROM wallet.balances WHERE player_id = $1::uuid")
@@ -1390,11 +1461,7 @@ async fn starter_grant_skips_an_absurd_configured_amount_without_poisoning() {
     let sane = unique_player(&pool).await;
 
     emit_registered(&ctx, &pool, &absurd).await;
-    assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        1,
-        "an out-of-range starter_amount must still DELIVER the event (Ok), not fault it"
-    );
+    deliver_registrations(&transport, &pool, &absurd, 1).await;
     assert!(
         balance_of(&pool, &absurd, &currency).await.is_none(),
         "an out-of-range starter_amount must grant nothing"
@@ -1404,11 +1471,7 @@ async fn starter_grant_skips_an_absurd_configured_amount_without_poisoning() {
 
     *cfg.amount.lock().unwrap() = 40;
     emit_registered(&ctx, &pool, &sane).await;
-    assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        1,
-        "the NEXT player must still be delivered — a backed-off subscription delivers nothing"
-    );
+    deliver_registrations(&transport, &pool, &sane, 1).await;
     assert_eq!(
         balance_of(&pool, &sane, &currency).await,
         Some(40),
@@ -1436,11 +1499,7 @@ async fn starter_grant_skips_unknown_currency_without_poisoning() {
     let later = unique_player(&pool).await;
 
     emit_registered(&ctx, &pool, &early).await;
-    assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        1,
-        "an uncatalogued starter_currency must still DELIVER the event (Ok), not fault it"
-    );
+    deliver_registrations(&transport, &pool, &early, 1).await;
     assert!(
         balance_of(&pool, &early, &absent).await.is_none(),
         "an uncatalogued starter_currency must grant nothing"
@@ -1451,11 +1510,7 @@ async fn starter_grant_skips_unknown_currency_without_poisoning() {
     let currency = unique_currency(&pool).await;
     *cfg.currency.lock().unwrap() = currency.clone();
     emit_registered(&ctx, &pool, &later).await;
-    assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        1,
-        "the NEXT player must still be delivered — a backed-off subscription delivers nothing"
-    );
+    deliver_registrations(&transport, &pool, &later, 1).await;
     assert_eq!(
         balance_of(&pool, &later, &currency).await,
         Some(75),
@@ -1480,15 +1535,14 @@ async fn starter_grant_skips_a_malformed_player_id_without_poisoning() {
     let currency = unique_currency(&pool).await;
     let (ctx, _svc, transport) =
         wired_for_delivery(&pool, FakeConfig::new(&currency, 90) as Arc<dyn Config>).await;
-    let malformed = "not-a-uuid";
+    // Unique per run, and still not uuid-shaped: a fixed literal would leave this test
+    // reading log rows its own earlier runs appended.
+    let malformed = format!("not-a-uuid-{}", unique_player(&pool).await);
+    let malformed = malformed.as_str();
     let sane = unique_player(&pool).await;
 
     emit_registered(&ctx, &pool, malformed).await;
-    assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        1,
-        "a non-uuid player_id must still DELIVER the event (Ok), not fault it"
-    );
+    deliver_registrations(&transport, &pool, malformed, 1).await;
     let (balances,): (i64,) =
         sqlx::query_as("SELECT count(*) FROM wallet.balances WHERE player_id::text = $1")
             .bind(malformed)
@@ -1500,18 +1554,14 @@ async fn starter_grant_skips_a_malformed_player_id_without_poisoning() {
     assert_subscription_unpoisoned(&pool).await;
 
     emit_registered(&ctx, &pool, &sane).await;
-    assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        1,
-        "the NEXT player must still be delivered — a backed-off subscription delivers nothing"
-    );
+    deliver_registrations(&transport, &pool, &sane, 1).await;
     assert_eq!(
         balance_of(&pool, &sane, &currency).await,
         Some(90),
         "one malformed payload must not cost every later player their grant"
     );
 
-    cleanup(&pool, &[&sane], &[&currency]).await;
+    cleanup(&pool, &[malformed, &sane], &[&currency]).await;
 }
 
 // ---- 11.4: at-least-once redelivery ---------------------------------------
@@ -1520,8 +1570,9 @@ async fn starter_grant_skips_a_malformed_player_id_without_poisoning() {
 /// end to end rather than by calling `grant_starter` twice by hand. The deterministic
 /// `starter:{player_id}` key must collapse the second into `Outcome::Duplicate`: one
 /// ledger row, a single-application balance, and NO second `wallet.changed` (a consumer
-/// of that topic would otherwise see a credit that never happened). Both deliveries are
-/// counted, so the duplicate is proven to have run and returned `Ok`.
+/// of that topic would otherwise see a credit that never happened). The checkpoint is
+/// required to pass BOTH copies, so the duplicate is proven to have run and returned
+/// `Ok` rather than to have been skipped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn starter_grant_is_idempotent_across_redelivery() {
     let Some(pool) = test_pool().await else { return };
@@ -1533,11 +1584,7 @@ async fn starter_grant_is_idempotent_across_redelivery() {
 
     emit_registered(&ctx, &pool, &pid).await;
     emit_registered(&ctx, &pool, &pid).await;
-    assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        2,
-        "BOTH copies must be delivered Ok — a duplicate that Err'd would fault instead"
-    );
+    deliver_registrations(&transport, &pool, &pid, 2).await;
 
     assert_eq!(
         balance_of(&pool, &pid, &currency).await,
@@ -1565,16 +1612,18 @@ async fn starter_grant_is_idempotent_across_redelivery() {
 
 /// A second, TEST-ONLY subscription on the same topic whose handler always returns `Err`,
 /// delivered in the same pass as wallet's. It is the decoy that proves the instrument:
-/// without it, `deliver_all() == 1` and `consecutive_failures == 0` are assertions nobody
-/// has shown can fail, and every skip test above would be "green by absence of errors".
+/// without it, "the checkpoint passed my event" and `consecutive_failures == 0` are
+/// assertions nobody has shown can fail, and every skip test above would be "green by
+/// absence of errors".
 ///
-/// It pins all three mechanics the skip tests rest on: a faulting handler is NOT counted
-/// by `deliver_all`, it DOES leave `consecutive_failures = 1` + a `last_error`, and it
-/// stops receiving on the next pass (the backoff that would withhold the grant from every
-/// later player). Wallet's own subscription runs alongside and is unaffected — the two
-/// checkpoints are independent, which is why one module's poison is one module's problem.
+/// It pins all three mechanics the skip tests rest on: a faulting handler does NOT move
+/// its checkpoint past the event it failed, it DOES leave a `consecutive_failures` +
+/// `last_error` trail, and it stops receiving while backed off (the backoff that would
+/// withhold the grant from every later player). Wallet's own subscription consumes the
+/// same event alongside it — the two checkpoints are independent, which is why one
+/// module's poison is one module's problem.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_faulting_handler_is_uncounted_backed_off_and_visible_in_the_catalog() {
+async fn a_faulting_handler_does_not_advance_its_checkpoint_and_backs_off() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
     ensure_schema(&pool).await;
@@ -1609,15 +1658,23 @@ async fn a_faulting_handler_is_uncounted_backed_off_and_visible_in_the_catalog()
         },
     );
     // Reconciles BOTH checkpoints before anything is emitted.
-    assert_eq!(transport.deliver_all().await.unwrap(), 0);
+    transport.deliver_all().await.unwrap();
 
     let first = unique_player(&pool).await;
     emit_registered(&ctx, &pool, &first).await;
+    deliver_registrations(&transport, &pool, &first, 1).await;
+    let (_, decoyed) = checkpoint_progress(
+        &pool,
+        DECOY_SUB,
+        accountsevents::PLAYER_REGISTERED.topic(),
+        &first,
+    )
+    .await;
     assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        1,
-        "one event, two subscriptions: only wallet's Ok delivery is counted — the decoy's \
-         Err is not, which is exactly what `delivered == 1` asserts in the skip tests"
+        decoyed, 0,
+        "one event, two subscriptions: wallet's Ok delivery moved its checkpoint past it \
+         and the decoy's Err did not — which is exactly what the skip tests read as \
+         `delivered`"
     );
     assert_eq!(balance_of(&pool, &first, &currency).await, Some(60));
     assert_subscription_unpoisoned(&pool).await;
@@ -1631,8 +1688,8 @@ async fn a_faulting_handler_is_uncounted_backed_off_and_visible_in_the_catalog()
     .await
     .unwrap();
     assert_eq!(state, "active", "one failure backs off, it does not pause yet");
-    assert_eq!(
-        failures, 1,
+    assert!(
+        failures >= 1,
         "a handler that returns Err DOES move consecutive_failures — so the `== 0` \
          assertions above are not vacuous"
     );
@@ -1640,11 +1697,19 @@ async fn a_faulting_handler_is_uncounted_backed_off_and_visible_in_the_catalog()
 
     let second = unique_player(&pool).await;
     emit_registered(&ctx, &pool, &second).await;
+    deliver_registrations(&transport, &pool, &second, 1).await;
+    let (_, decoyed) = checkpoint_progress(
+        &pool,
+        DECOY_SUB,
+        accountsevents::PLAYER_REGISTERED.topic(),
+        &second,
+    )
+    .await;
     assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        1,
-        "the SECOND player reaches wallet but NOT the backed-off decoy — the mechanism \
-         that would have cost every later player their grant had the handler Err'd"
+        decoyed, 0,
+        "the SECOND player reaches wallet but NOT the decoy, still stuck on the event it \
+         failed — the mechanism that would have cost every later player their grant had \
+         the handler Err'd"
     );
     assert_eq!(balance_of(&pool, &second, &currency).await, Some(60));
 
@@ -1671,12 +1736,12 @@ async fn starter_grant_reflects_a_live_config_change() {
     let second = unique_player(&pool).await;
 
     emit_registered(&ctx, &pool, &first).await;
-    assert_eq!(transport.deliver_all().await.unwrap(), 1);
+    deliver_registrations(&transport, &pool, &first, 1).await;
     assert_eq!(balance_of(&pool, &first, &currency).await, Some(100));
 
     *cfg.amount.lock().unwrap() = 300;
     emit_registered(&ctx, &pool, &second).await;
-    assert_eq!(transport.deliver_all().await.unwrap(), 1);
+    deliver_registrations(&transport, &pool, &second, 1).await;
     assert_eq!(
         balance_of(&pool, &second, &currency).await,
         Some(300),
@@ -1699,8 +1764,8 @@ async fn starter_grant_reflects_a_live_config_change() {
 // Both use the deterministic `starter:{player_id}` key.
 
 /// The branch decision 3 exists for: a GUEST registration must grant nothing, proven
-/// AFTER delivery has demonstrably run — not by an assertion that merely hasn't seen
-/// anything happen yet. Deleting the `e.provider == accountsevents::providers::GUEST`
+/// AFTER the subscription's checkpoint has demonstrably passed this player's own
+/// registration event — not by an assertion that merely hasn't seen anything happen yet. Deleting the `e.provider == accountsevents::providers::GUEST`
 /// skip in `WalletModule::init` is exactly what turns this red: the guest player would
 /// then carry a `starter:{guest}` ledger row.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1711,21 +1776,9 @@ async fn guest_registration_grants_nothing_even_after_delivery_settles() {
     let (ctx, _svc, transport) =
         wired_for_dual_delivery(&pool, FakeConfig::new(&currency, 200) as Arc<dyn Config>).await;
     let guest = unique_player(&pool).await;
-    // A DIFFERENT player, promoted rather than registered — its own ledger row is the
-    // settle-proof that delivery ran a full pass over both subscriptions before the
-    // guest's "zero rows" is asserted below.
-    let settle_witness = unique_player(&pool).await;
 
     emit_registered_as(&ctx, &pool, &guest, accountsevents::providers::GUEST).await;
-    emit_promoted(
-        &ctx,
-        &pool,
-        &settle_witness,
-        accountsevents::providers::GUEST,
-        accountsevents::providers::EPIC,
-    )
-    .await;
-    deliver_until_settled(&transport, &pool, &settle_witness).await;
+    deliver_registrations(&transport, &pool, &guest, 1).await;
 
     assert!(
         balance_of(&pool, &guest, &currency).await.is_none(),
@@ -1737,7 +1790,7 @@ async fn guest_registration_grants_nothing_even_after_delivery_settles() {
     );
     assert_subscription_unpoisoned(&pool).await;
 
-    cleanup(&pool, &[&guest, &settle_witness], &[&currency]).await;
+    cleanup(&pool, &[&guest], &[&currency]).await;
 }
 
 /// `player.promoted` grants exactly one ledger row at the configured amount — the new
@@ -1760,11 +1813,7 @@ async fn promotion_grants_the_starter_amount() {
         accountsevents::providers::EPIC,
     )
     .await;
-    assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        1,
-        "the promotion must be delivered Ok"
-    );
+    deliver_promotion(&transport, &pool, &pid).await;
 
     assert_eq!(balance_of(&pool, &pid, &currency).await, Some(300));
     assert_eq!(
@@ -1791,11 +1840,7 @@ async fn direct_registration_with_a_real_provider_is_still_granted() {
     let pid = unique_player(&pool).await;
 
     emit_registered_as(&ctx, &pool, &pid, accountsevents::providers::EPIC).await;
-    assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        1,
-        "a real-provider registration must be delivered Ok"
-    );
+    deliver_registrations(&transport, &pool, &pid, 1).await;
 
     assert_eq!(balance_of(&pool, &pid, &currency).await, Some(150));
     assert_eq!(
@@ -1833,11 +1878,8 @@ async fn a_player_who_registers_as_guest_then_gets_promoted_is_granted_once() {
         accountsevents::providers::GOOGLE,
     )
     .await;
-    assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        2,
-        "both the guest registration and the promotion must be delivered Ok"
-    );
+    deliver_registrations(&transport, &pool, &pid, 1).await;
+    deliver_promotion(&transport, &pool, &pid).await;
 
     assert_eq!(balance_of(&pool, &pid, &currency).await, Some(80));
     assert_eq!(
@@ -1876,11 +1918,8 @@ async fn the_starter_key_is_shared_across_both_subscriptions() {
         accountsevents::providers::EPIC,
     )
     .await;
-    assert_eq!(
-        transport.deliver_all().await.unwrap(),
-        2,
-        "both deliveries must succeed — a second grant attempt is a Duplicate no-op, not an Err"
-    );
+    deliver_registrations(&transport, &pool, &pid, 1).await;
+    deliver_promotion(&transport, &pool, &pid).await;
 
     assert_eq!(
         balance_of(&pool, &pid, &currency).await,
