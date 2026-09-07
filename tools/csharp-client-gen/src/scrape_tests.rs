@@ -2,7 +2,7 @@
 //! `tests.rs` can only reach `pub(crate)` items). Kept in a SEPARATE file per CLAUDE.md
 //! hard constraint 10, wired from `scrape.rs` with `#[cfg(test)] #[path = …] mod`.
 
-use super::{discover_api_sources, parse_all_api_crates};
+use super::{discover_api_sources, parse_all_api_crates, served_http_prefixes};
 use std::path::{Path, PathBuf};
 
 /// A synthetic workspace root nested under a path that itself contains an ADJACENT
@@ -72,6 +72,48 @@ fn a_sources_domain_comes_from_the_api_dir_walk_not_its_own_path() {
     assert!(
         parsed.traits.iter().all(|t| !t.http_methods.is_empty()),
         "the fixture traits must carry the #[http( methods the completeness gate counts"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+fn plain_root(label: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "csharp-scrape-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    root
+}
+
+/// The retarget's proof, independent of what is on disk in this repo (the real-tree
+/// completeness gate only distinguishes "filtered" from "unfiltered" while some
+/// contract-only domain happens to exist under `api/` -- the day `modules/groups`
+/// lands, deleting the served filter from `served_http_prefixes` would break no
+/// committed test). Builds a synthetic root with a served `#[http]`-bearing domain and
+/// a contract-only one (contracts under `api/`, no `modules/` dir), and pins that only
+/// the served domain's prefix comes back.
+#[test]
+fn a_contract_only_domains_http_trait_is_excluded_from_served_prefixes() {
+    let root = plain_root("served-prefixes");
+    write_domain(&root, "served", "served");
+    write_domain(&root, "contractonly", "contractonly");
+    std::fs::create_dir_all(root.join("modules").join("served")).unwrap();
+    std::fs::write(root.join("modules").join("served").join("Cargo.toml"), "").unwrap();
+
+    let parsed = parse_all_api_crates(&root).unwrap();
+    let prefixes = served_http_prefixes(&root, &parsed).unwrap();
+
+    assert_eq!(
+        prefixes,
+        vec!["served".to_string()],
+        "only the served domain's #[http] trait prefix must be reachable; contractonly \
+         must not appear: {prefixes:?}"
     );
 
     let _ = std::fs::remove_dir_all(root);
