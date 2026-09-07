@@ -13,9 +13,8 @@
 //! process's registry entry, and no other process consumes one today: gateway-svc
 //! contributes groups' HTTP routes through `remote::Stub::describe_peer`, admin-svc pulls
 //! the admin page through `adminrpc::admin_remote_factory`, and the monolith hosts the
-//! real service. The first [`groupsapi::Membership`] consumer is what adds one — the way
-//! `accountsrpc::remote_factories` grew its `accounts.directory` entry when `friends`
-//! needed `Directory`.
+//! real service. Adding it now would pin a public symbol nothing calls; the first
+//! [`groupsapi::Membership`] consumer adds it.
 
 // The glue's method signatures re-resolve at THIS invocation site (the metadata
 // travels as tokens), so `groupsapi`'s domain types and the identity/error types must

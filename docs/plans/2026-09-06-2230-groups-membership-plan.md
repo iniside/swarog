@@ -729,3 +729,29 @@ One finding was checked and left as-is: the review's note that the topics stay u
 until Step 8 is correct but is **not** the mail rollout's defect — `defined_topics()` is
 hand-listed, so the `group.*` topics are invisible to `--durability-strict` until that
 entry lands *together with* audit's sinks. There is no red window there.
+
+## Errata
+
+**1 — Step 4(a) dropped `groupsrpc::remote_factories()`.** Not landed in commit
+`0957e39`: the aggregator's job is to turn a peer's capability into ANOTHER process's
+registry entry, and no process consumes `Membership` until `chat`, so shipping it now
+would pin a public contract-crate symbol nothing calls. The first `Membership` consumer
+adds it — recorded here so Steps 8/11 and the `chat` plan do not assume it exists.
+
+**2 — Step 2(b)'s "seven ops" is stale from revision 1.** The player trait that shipped
+in Step 1 (`api/groups/api/src/lib.rs`) has nine: `create`, `list_mine`, `members`,
+`pending`, `join`, `leave`, `invite`, `respond`, `decide` — the count *Review response*
+item 1/2 already corrected in the trait section above was never carried into Step 2's
+own text.
+
+**3 — "There is no red window there" (just above) is false.** Commit `b9b942448` (which
+registered `group.*` in `topiccheck::defined_topics()` and gave it audit sinks) titles
+itself "Closes the contract-surface half of the red window commit 7c7ee12 opened" — a
+direct admission that landing the contract crate in Step 1 without a matching topiccheck
+entry did leave a red window, not merely an unsubscribed-but-green topic. A related but
+distinct red window (five gates keyed on `api/<domain>` rather than `modules/<domain>`,
+so a contract crate landing ahead of its module made a *hypothetical* `modules/groups`
+turn all five red) is what commits `a5c8398`/`6c09bea` closed by splitting the served
+surface from the contract surface and introducing the `CONTRACT_ONLY` exemption list
+(`tools/rpc-contract-model`). Both are corrections to this plan's Step 1 sequencing, not
+new drift at HEAD.

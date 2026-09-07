@@ -18,7 +18,7 @@ publish = false
 # `remote`/`lifecycle` dependency: no OTHER process consumes a groups CAPABILITY today
 # (gateway-svc contributes groups' routes via `Stub::describe_peer`, admin-svc via
 # `adminrpc::admin_remote_factory`, and the monolith is local), so an aggregator would
-# be dead code naming those crates for nothing. The first `Membership` consumer adds one.
+# pin a public symbol nothing calls. The first `Membership` consumer adds it.
 [dependencies]
 groupsapi = { workspace = true }
 # The cross-cutting admin fan-out glue, re-exported (`register_admin` /

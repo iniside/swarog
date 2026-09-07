@@ -857,8 +857,9 @@ impl Player for Service {
         };
         // Both sides are the DATABASE's spelling of the id, never the two the CALLER
         // supplied: `subject_id` and the identity are independent texts that can be
-        // uuid-EQUAL while differing byte for byte (braced, urn-prefixed, unhyphenated),
-        // so comparing them directly lets an admin kick itself through `decide`. The
+        // uuid-EQUAL while differing byte for byte (braced or hyphen-shifted -- not
+        // case, which the prior `eq_ignore_ascii_case` guard already covered), so
+        // comparing them directly lets an admin kick itself through `decide`. The
         // subject's row was found by `player_id = $2::uuid`, so it is the same row the
         // admin probe answered `actor_id` from.
         if subject_canonical == actor_id {
