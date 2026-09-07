@@ -59,3 +59,28 @@ deploy), not a test artifact. Lesson: when a "flaky" test class has a varying vi
 each run, suspect ONE shared-lock/lock-order root cause before assuming N independent
 timing races — reproduce wide (`cargo test -p <crate>` 15-30×), diagnose, then fix the
 authority.
+
+## Count what is YOURS, never a global tally (2026-09-07)
+
+Same doctrine, a second axis: a test asserting a **global quantity on shared
+infrastructure** is order-dependent and flakes the moment the neighbours actually run.
+Making an unreachable Postgres FAIL rather than skip green (`f5e30c8`) instantly turned two
+`modules/wallet` tests red — both reading `TestTransport::deliver_all()`, a tally over the
+shared event log and shared checkpoints — and they failed in OPPOSITE directions, which is
+the signature:
+
+- **over-count**: `modules/accounts` appended `player.registered` while wallet's
+  `AfterRegistration` subscription drained, so a foreign event was legitimately delivered
+  and counted inside the window;
+- **under-count**: the worker's eligibility clause is
+  `producer_xid < pg_snapshot_xmin(pg_current_snapshot())`, so ANY open transaction
+  anywhere in the cluster pins `xmin` below a just-committed event and one `deliver_all()`
+  sees nothing. Its own doc comment already said round-trip tests must poll.
+
+Fix shape: drain until **this test's own checkpoint passed this test's own rows**, matched
+on a per-test key, deadline as a hang guard not a timing assertion. Still latent at 16
+sites in `modules/notifications/src/tests.rs` and 13 in `modules/mail/src/projection_tests.rs`.
+
+**The meta-lesson:** silently skipping tests do not merely fail to prove things — they
+**hide the isolation defects of the tests that do run**. A suite is only as isolated as its
+least-skipped configuration. Related: [[a-green-signal-that-never-ran-the-thing]].
