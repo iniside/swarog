@@ -47,9 +47,9 @@ pub(crate) struct GroupCounts {
 /// Per-GROUP lock key: `MAX_MEMBERS` cannot be enforced by one statement, because
 /// `INSERT … WHERE (SELECT count(*)) < 500` is a count-then-insert however it is spelled —
 /// under READ COMMITTED two concurrent joins both read 499 (neither committed yet) and
-/// both land past the cap. Every mutating op takes this lock before reading the group, so
-/// the cap, the last-admin rule and the last-member teardown all decide on a roster no
-/// concurrent writer can change under them.
+/// both land past the cap. Every op that decides from the group's roster takes this lock
+/// before reading it, so the cap, the last-admin rule and the last-member teardown all
+/// decide on a roster no concurrent writer can change under them.
 ///
 /// The namespace prefix keeps it from colliding with friends' requester key or
 /// scheduler's; a collision would only over-serialize. The id is normalized to Postgres's
@@ -105,7 +105,7 @@ impl Store {
         member: &str,
         required_role: &str,
     ) -> Result<Option<String>, sqlx::Error> {
-        let res = sqlx::query_scalar::<_, String>(VISIBLE_ROLE_SQL)
+        let res = sqlx::query_as::<_, (String, String)>(VISIBLE_ROLE_SQL)
             .bind(group_id)
             .bind(player_id)
             .bind(member)
@@ -113,7 +113,7 @@ impl Store {
             .fetch_optional(&self.pool)
             .await;
         match res {
-            Ok(row) => Ok(row),
+            Ok(row) => Ok(row.map(|(role, _)| role)),
             Err(e) if is_invalid_uuid(&e) => Ok(None),
             Err(e) => Err(e),
         }
@@ -121,7 +121,8 @@ impl Store {
 
     /// [`Store::visible_role`] re-asked inside the transaction, under the group lock: the
     /// pool read is only ever a pre-check, and a role that changed in between must not
-    /// authorize the write.
+    /// authorize the write. Answers `(role, canonical player id)` — the write that
+    /// follows may put the caller's id in an event payload.
     pub(crate) async fn visible_role_tx(
         &self,
         conn: &mut PgConnection,
@@ -129,8 +130,8 @@ impl Store {
         player_id: &str,
         member: &str,
         required_role: &str,
-    ) -> Result<Option<String>, sqlx::Error> {
-        let res = sqlx::query_scalar::<_, String>(VISIBLE_ROLE_SQL)
+    ) -> Result<Option<(String, String)>, sqlx::Error> {
+        let res = sqlx::query_as::<_, (String, String)>(VISIBLE_ROLE_SQL)
             .bind(group_id)
             .bind(player_id)
             .bind(member)
@@ -317,20 +318,26 @@ impl Store {
     /// The last-member teardown: the group row AND every remaining pending row it owns.
     /// `groups.groups` has no other collector, and a `groups.memberships` row pointing at
     /// a deleted group is unreachable by every op in the contract.
+    ///
+    /// Returns the removed rows' player ids as the DATABASE spells them: each one is a
+    /// pending relation that ends here, and its caller owes the log a terminal event.
     pub(crate) async fn delete_group_tx(
         &self,
         conn: &mut PgConnection,
         group_id: &str,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM groups.memberships WHERE group_id = $1::uuid")
-            .bind(group_id)
-            .execute(&mut *conn)
-            .await?;
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let removed = sqlx::query_as::<_, (String,)>(
+            "DELETE FROM groups.memberships WHERE group_id = $1::uuid \
+             RETURNING player_id::text",
+        )
+        .bind(group_id)
+        .fetch_all(&mut *conn)
+        .await?;
         sqlx::query("DELETE FROM groups.groups WHERE id = $1::uuid")
             .bind(group_id)
             .execute(&mut *conn)
             .await?;
-        Ok(())
+        Ok(removed.into_iter().map(|(id,)| id).collect())
     }
 
     /// Every group the caller holds ANY row in, newest RELATION first. The keyset tuple
@@ -424,7 +431,11 @@ impl Store {
 
 /// `$3` empty means "any member"; a required role is compared IN the predicate, so a
 /// non-admin and a nonexistent group leave by the same door.
-const VISIBLE_ROLE_SQL: &str = "SELECT role FROM groups.memberships \
+///
+/// Selects the id as the DATABASE spells it alongside the role: the predicate is
+/// `player_id = $2::uuid`, so a uuid-EQUAL but differently-spelled caller id authorizes
+/// fine — and an id that goes on to reach an event payload must be the canonical one.
+const VISIBLE_ROLE_SQL: &str = "SELECT role, player_id::text FROM groups.memberships \
       WHERE group_id = $1::uuid AND player_id = $2::uuid AND state = $3 \
         AND ($4::text = '' OR role = $4::text)";
 

@@ -1,13 +1,13 @@
 //! `groups` — social groups: one row per group, one per membership, two roles and three
-//! membership states. A group is durable social state that outlives every message in it;
-//! the wire-only `Membership` capability is what lets another module authorize against it
-//! without paging a roster.
+//! membership states.
 //!
-//! The composite primary key `(group_id, player_id)` is what makes a double `join` one
-//! row: there is no read-then-write anywhere in this module. Every mutating op takes the
-//! group's advisory lock first, because `MAX_MEMBERS`, the last-admin rule and the
-//! last-member teardown each decide from a count that a concurrent writer would
-//! invalidate.
+//! The composite primary key `(group_id, player_id)` is what makes a DOUBLE JOIN one row —
+//! that case alone. Every other decision is a read-then-write UNDER the group's advisory
+//! lock: the ops that decide from a count (`join`, `invite`, `leave`) and the ones that
+//! decide from the subject's state (`respond`, `decide`) all take it before their read,
+//! because a concurrent writer would invalidate what they read. `create` takes no lock,
+//! and that is not an omission: the group id it mints is unreachable by any other caller
+//! until the transaction commits, so there is nothing to serialize against.
 //!
 //! The domain write and its durable event append commit in ONE transaction — the event is
 //! durable iff the membership change is.
@@ -28,10 +28,11 @@ use registry::key;
 /// `memberships_role_check` is an EQUIVALENCE, not an implication: a `member` row must
 /// carry a role AND a non-`member` row must not. The forward half alone would admit
 /// `state='member' AND role=''`, so an accept that updated the state and forgot the role
-/// would commit and `Membership::role_of` would answer `""` for a real member.
+/// would commit and leave a real member carrying no role at all.
 ///
-/// `memberships_pending_idx` is partial and serves the retention sweep alone; without it
-/// the prune seq-scans a table whose live rows dominate.
+/// `memberships_pending_idx` is partial and serves no reader yet: it exists for the
+/// retention sweep that plan Step 5 adds, which would otherwise seq-scan a table whose
+/// live rows dominate.
 ///
 /// Plain `uuid` columns, no cross-module FK (constraint #10).
 const SCHEMA_DDL: &str = r#"

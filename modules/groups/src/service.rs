@@ -606,12 +606,14 @@ impl Player for Service {
         // The last MEMBER leaving takes the group with it, along with whatever pending
         // rows it still owned: they name a group that no longer exists, and
         // `groups.groups` has no other collector.
-        if wire_state(&deleted_state)? == STATE_MEMBER && counts.members == 1 {
+        let swept = if wire_state(&deleted_state)? == STATE_MEMBER && counts.members == 1 {
             self.store
                 .delete_group_tx(&mut tx, &group_id)
                 .await
-                .map_err(internal)?;
-        }
+                .map_err(internal)?
+        } else {
+            Vec::new()
+        };
         let reason = if wire_state(&deleted_state)? == STATE_MEMBER {
             REASON_LEFT
         } else {
@@ -622,14 +624,32 @@ impl Player for Service {
                 AnyTx::new(&mut *tx),
                 &groupsevents::MEMBER_LEFT,
                 &groupsevents::MemberLeft {
-                    group_id,
+                    group_id: group_id.clone(),
                     player_id: player_id.clone(),
-                    actor_id: player_id,
+                    actor_id: player_id.clone(),
                     reason: reason.to_string(),
                 },
             )
             .await
             .map_err(internal)?;
+        // A pending row the teardown removed ends the same way a reject ends it, so the
+        // log carries a terminal event for every relation it ever announced. Bounded by
+        // `MAX_MEMBERS`, and the group lock is held either way.
+        for swept_id in swept {
+            self.bus
+                .emit_tx(
+                    AnyTx::new(&mut *tx),
+                    &groupsevents::MEMBER_LEFT,
+                    &groupsevents::MemberLeft {
+                        group_id: group_id.clone(),
+                        player_id: swept_id,
+                        actor_id: player_id.clone(),
+                        reason: REASON_DECLINED.to_string(),
+                    },
+                )
+                .await
+                .map_err(internal)?;
+        }
         tx.commit().await.map_err(internal)?;
         Ok(())
     }
@@ -807,17 +827,21 @@ impl Player for Service {
             .await
             .map_err(internal)?;
         // Authorization first: a non-admin learns nothing about the group, not even
-        // whether the subject holds a row in it.
-        if self
+        // whether the subject holds a row in it. The probe also answers the actor id as
+        // the DATABASE spells it — `me` carries the caller's own spelling, which is
+        // uuid-equal but need not be textually canonical.
+        let actor_id = match self
             .store
             .visible_role_tx(&mut tx, &group_id, &me, STATE_MEMBER, ROLE_ADMIN)
             .await
             .map_err(internal)?
-            .is_none()
         {
-            tx.rollback().await.map_err(internal)?;
-            return Err(Error::not_found(NOT_FOUND));
-        }
+            Some((_, actor_id)) => actor_id,
+            None => {
+                tx.rollback().await.map_err(internal)?;
+                return Err(Error::not_found(NOT_FOUND));
+            }
+        };
         if subject_id.eq_ignore_ascii_case(&me) {
             tx.rollback().await.map_err(internal)?;
             return Err(Error::conflict("use leave to end your own membership"));
@@ -904,7 +928,7 @@ impl Player for Service {
                     &groupsevents::MemberLeft {
                         group_id,
                         player_id,
-                        actor_id: me,
+                        actor_id,
                         reason: reason.to_string(),
                     },
                 )
