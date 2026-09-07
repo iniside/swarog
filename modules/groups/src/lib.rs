@@ -21,7 +21,7 @@ use std::sync::{Arc, OnceLock};
 
 use accountsapi::Directory;
 use async_trait::async_trait;
-use groupsapi::Player;
+use groupsapi::{Membership, Player};
 use lifecycle::{Context, Module};
 use registry::key;
 
@@ -119,6 +119,8 @@ impl Module for Groups {
             .map_err(|_| anyhow::anyhow!("groups.register ran twice"))?;
 
         ctx.registry()
+            .provide::<dyn Membership>(key("groups", "membership"), svc.clone());
+        ctx.registry()
             .provide::<dyn Player>(key("groups", "player"), svc);
         Ok(())
     }
@@ -153,10 +155,21 @@ impl Module for Groups {
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
                 groupsrpc::player_rpc::register_server(server, svc.clone());
+                // The wire-only roster predicate: reachable ONLY here, on the internal
+                // mTLS edge, never from the front door.
+                groupsrpc::membership_rpc::register_server(server, svc.clone());
             }),
         );
 
-        ctx.contribute(opsapi::DESCRIBE_SLOT, groupsrpc::player_rpc::describe());
+        // `membership_rpc` is wire-only, so its `describe()` is empty; concatenated anyway
+        // so a future `#[http]` op on either contract flows through with no edit here.
+        ctx.contribute(
+            opsapi::DESCRIBE_SLOT,
+            opsapi::DescribeManifest::concat([
+                groupsrpc::player_rpc::describe(),
+                groupsrpc::membership_rpc::describe(),
+            ]),
+        );
         Ok(())
     }
 }

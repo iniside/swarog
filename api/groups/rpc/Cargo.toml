@@ -14,11 +14,11 @@ publish = false
 # (its own glue is sanctioned) and `cmd/*` — NEVER by a domain consumer (they import
 # `groupsapi`, rule 4).
 #
-# Deliberately NO `remote_factories()`/`provide_factories()` aggregator, hence no
-# `remote`/`lifecycle` dependency: nothing consumes a groups CAPABILITY remotely
+# No `remote_factories()`/`provide_factories()` aggregator YET, hence no
+# `remote`/`lifecycle` dependency: no OTHER process consumes a groups CAPABILITY today
 # (gateway-svc contributes groups' routes via `Stub::describe_peer`, admin-svc via
-# `adminrpc::admin_remote_factory`, and the monolith is local), so the aggregators
-# would be dead code naming those crates for nothing.
+# `adminrpc::admin_remote_factory`, and the monolith is local), so an aggregator would
+# be dead code naming those crates for nothing. The first `Membership` consumer adds one.
 [dependencies]
 groupsapi = { workspace = true }
 # The cross-cutting admin fan-out glue, re-exported (`register_admin` /

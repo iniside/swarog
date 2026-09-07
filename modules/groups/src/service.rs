@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use base64::Engine;
 use bus::{AnyTx, Bus};
 use groupsapi::{
-    GroupPage, GroupSummary, MemberPage, MemberSummary, Player, DEFAULT_PAGE_LIMIT, JOIN_INVITE,
+    GroupPage, GroupSummary, MemberPage, MemberSummary, Membership, Player, DEFAULT_PAGE_LIMIT,
+    JOIN_INVITE,
     JOIN_OPEN, JOIN_REQUEST, MAX_CURSOR_BYTES, MAX_MEMBERS, MAX_NAME_BYTES, MAX_PAGE_LIMIT,
     ROLE_ADMIN, ROLE_MEMBER, STATE_INVITED, STATE_MEMBER, STATE_REQUESTED,
 };
@@ -569,7 +570,7 @@ impl Player for Service {
             .membership_tx(&mut tx, &group_id, &me)
             .await
             .map_err(internal)?;
-        let (state, role) = match mine {
+        let (state, role, _) = match mine {
             Some(row) => row,
             None => {
                 tx.rollback().await.map_err(internal)?;
@@ -741,7 +742,7 @@ impl Player for Service {
         // A row in any other state — and no row at all — is the same `NotFound`: only an
         // invitation is the subject's to answer.
         match mine {
-            Some((state, _)) if state == STATE_INVITED => {}
+            Some((state, _, _)) if state == STATE_INVITED => {}
             _ => {
                 tx.rollback().await.map_err(internal)?;
                 return Err(Error::not_found(NOT_FOUND));
@@ -842,22 +843,28 @@ impl Player for Service {
                 return Err(Error::not_found(NOT_FOUND));
             }
         };
-        if subject_id.eq_ignore_ascii_case(&me) {
-            tx.rollback().await.map_err(internal)?;
-            return Err(Error::conflict("use leave to end your own membership"));
-        }
         let subject = self
             .store
             .membership_tx(&mut tx, &group_id, &subject_id)
             .await
             .map_err(internal)?;
-        let (state, _) = match subject {
+        let (state, _, subject_canonical) = match subject {
             Some(row) => row,
             None => {
                 tx.rollback().await.map_err(internal)?;
                 return Err(Error::not_found(NOT_FOUND));
             }
         };
+        // Both sides are the DATABASE's spelling of the id, never the two the CALLER
+        // supplied: `subject_id` and the identity are independent texts that can be
+        // uuid-EQUAL while differing byte for byte (braced, urn-prefixed, unhyphenated),
+        // so comparing them directly lets an admin kick itself through `decide`. The
+        // subject's row was found by `player_id = $2::uuid`, so it is the same row the
+        // admin probe answered `actor_id` from.
+        if subject_canonical == actor_id {
+            tx.rollback().await.map_err(internal)?;
+            return Err(Error::conflict("use leave to end your own membership"));
+        }
         let state = wire_state(&state)?;
 
         if decision == DECISION_ACCEPT {
@@ -937,5 +944,25 @@ impl Player for Service {
         }
         tx.commit().await.map_err(internal)?;
         Ok(())
+    }
+}
+
+/// Wire-only, server-to-server: no `Identity`, so this trait decides nothing about a
+/// caller — its authorization is the internal mTLS edge it is registered on. Nothing
+/// routes it from the front door: `operations()`/`route_bindings()`/`describe()` are
+/// emitted for `#[http]` methods only, and the player-QUIC plane matches against that
+/// same table, so `groups.roleOf` is `NotFound` on both player planes.
+#[async_trait]
+impl Membership for Service {
+    async fn role_of(&self, group_id: String, player_id: String) -> Result<String, Error> {
+        // The empty role is the ONE answer for a non-member, a pending row, a group that
+        // does not exist and an id that is not a uuid — the contract's promise, and the
+        // same predicate the player face's visibility gate uses.
+        Ok(self
+            .store
+            .visible_role(&group_id, &player_id, STATE_MEMBER, ANY_ROLE)
+            .await
+            .map_err(internal)?
+            .unwrap_or_default())
     }
 }

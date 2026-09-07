@@ -243,14 +243,19 @@ impl Store {
 
     /// The subject's row, whatever state it holds. Read under the group lock, so the
     /// state it reports is the one the following write acts on.
+    ///
+    /// Answers `(state, role, canonical player id)`. The id is the DATABASE's spelling:
+    /// the predicate is `player_id = $2::uuid`, so two textually different but uuid-EQUAL
+    /// spellings both find this row, and a caller comparing subjects must compare what
+    /// the column holds rather than what it was handed.
     pub(crate) async fn membership_tx(
         &self,
         conn: &mut PgConnection,
         group_id: &str,
         player_id: &str,
-    ) -> Result<Option<(String, String)>, sqlx::Error> {
-        let res = sqlx::query_as::<_, (String, String)>(
-            "SELECT state, role FROM groups.memberships \
+    ) -> Result<Option<(String, String, String)>, sqlx::Error> {
+        let res = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT state, role, player_id::text FROM groups.memberships \
               WHERE group_id = $1::uuid AND player_id = $2::uuid",
         )
         .bind(group_id)
