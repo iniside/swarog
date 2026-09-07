@@ -81,6 +81,10 @@ type StructFields = Vec<(String, String, Type)>;
 /// One parsed `#[rpc(prefix = ...)]` trait.
 struct ParsedTrait {
     prefix: String,
+    /// The `api/<domain>/` directory the trait was parsed from, or `None` when the source
+    /// path is not of that shape (a synthetic fixture). `None` is treated as served, so an
+    /// unrecognised path fails the completeness gate closed rather than skipping it.
+    domain: Option<String>,
     /// The `#[http]` methods (wire-only methods without `#[http]` are excluded).
     http_methods: Vec<ParsedHttpMethod>,
 }
@@ -106,11 +110,18 @@ pub fn scrape() -> Result<Manifest> {
     // the provider types).
     let parsed = parse_all_api_crates(&root)?;
 
-    // --- Gate 2: provider-completeness (scan ALL api crates) ---
+    // --- Gate 2: provider-completeness (scan every SERVED api crate) ---
+    // A domain with contracts but no `modules/<name>` has nothing to answer a call, so its
+    // provider is not required here until the module's commit; `rpc_contract_model::
+    // served_domains` errors rather than returning an empty set, so the gate cannot go
+    // vacuous.
+    let served = rpc_contract_model::served_domains(&root)
+        .with_context(|| format!("list served domains under {}/modules", root.display()))?;
     let http_trait_prefixes: Vec<String> = parsed
         .traits
         .iter()
         .filter(|t| !t.http_methods.is_empty())
+        .filter(|t| t.domain.as_ref().is_none_or(|d| served.contains(d)))
         .map(|t| t.prefix.clone())
         .collect();
     check_completeness(&http_trait_prefixes, PROVIDERS)
@@ -288,9 +299,9 @@ pub(crate) fn parse_sources(files: &[(PathBuf, String)]) -> Result<Parsed> {
                     let prefix = rpc_contract_model::trait_prefix(&t)
                         .with_context(|| format!("parse #[rpc] on {} in {}", t.ident, file.display()))?;
                     if let Some(prefix) = prefix {
-                        traits.push(parse_trait(&t, &prefix).with_context(|| {
-                            format!("parse trait {} in {}", t.ident, file.display())
-                        })?);
+                        traits.push(parse_trait(&t, &prefix, domain_of(file)).with_context(
+                            || format!("parse trait {} in {}", t.ident, file.display()),
+                        )?);
                     }
                 }
                 Item::Struct(s) => {
@@ -315,8 +326,20 @@ pub(crate) fn parse_sources(files: &[(PathBuf, String)]) -> Result<Parsed> {
     Ok(Parsed { traits, structs })
 }
 
+/// The `api/<domain>/api/src/...` directory a contract source belongs to. Anchored on the
+/// `api/src` pair so the component before it is the domain even when the workspace itself
+/// lives under a path containing an `api` segment.
+pub(crate) fn domain_of(path: &Path) -> Option<String> {
+    let parts: Vec<&str> = path.components().filter_map(|c| c.as_os_str().to_str()).collect();
+    parts
+        .windows(2)
+        .position(|w| w == ["api", "src"])
+        .filter(|i| *i >= 1)
+        .map(|i| parts[i - 1].to_owned())
+}
+
 /// Parses a `#[rpc]` trait's `#[http]` methods (wire-only methods are skipped).
-fn parse_trait(t: &ItemTrait, prefix: &str) -> Result<ParsedTrait> {
+fn parse_trait(t: &ItemTrait, prefix: &str, domain: Option<String>) -> Result<ParsedTrait> {
     let mut syntax = t.clone();
     let methods = rpc_contract_model::build_methods(&mut syntax)
         .with_context(|| format!("parse RPC methods of {}", t.ident))?;
@@ -344,7 +367,7 @@ fn parse_trait(t: &ItemTrait, prefix: &str) -> Result<ParsedTrait> {
             .with_context(|| format!("parse return of {name}"))?;
         http_methods.push(ParsedHttpMethod { wire, args, ret });
     }
-    Ok(ParsedTrait { prefix: prefix.to_string(), http_methods })
+    Ok(ParsedTrait { prefix: prefix.to_string(), domain, http_methods })
 }
 
 /// Parses a `pub struct Name { ... }` into (name, [(field, wire key, type)]). Returns

@@ -117,10 +117,14 @@ fn each_svc_constructs_its_own_module() {
 /// "manifest-completeness" half is routecheck invariant 5, DESCRIBE-COMPLETE) to
 /// archcheck's textual rule-17 tripwire: that one greps gateway-svc's lib.rs for
 /// `Stub::new("<name>"`; this one builds gateway-svc's REAL module list and asserts
-/// `Module::name()` (== the provider name a `remote::Stub` carries) covers every
+/// `Module::name()` (== the provider name a `remote::Stub` carries) covers every SERVED
 /// `#[http(`-bearing domain dir. The scan is the same lower-tech filesystem walk as
 /// `monolith_hosts_every_modules_dir`. Checked as a SUBSET (http domains ⊆ gateway names):
 /// extra stubs (apikeys, stubbed for the API-key capability) are fine -- only a gap fails.
+///
+/// "Served" is `rpc_contract_model::served_domains`: a domain whose contracts have landed
+/// ahead of its `modules/<name>` has nothing to answer a call, so it is not yet required in
+/// gateway-svc's stub list -- the requirement starts with the module's commit.
 #[test]
 fn gateway_stubs_every_http_domain() {
     let gateway_names: BTreeSet<String> = gateway_svc::modules(&checker_wiring(), None, None, None)
@@ -128,7 +132,11 @@ fn gateway_stubs_every_http_domain() {
         .map(|m| m.name().to_string())
         .collect();
 
-    let api_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../api");
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let served = rpc_contract_model::served_domains(&workspace_root)
+        .unwrap_or_else(|e| panic!("failed to list served domains: {e}"));
+
+    let api_dir = workspace_root.join("api");
     let http_domains: BTreeSet<String> = std::fs::read_dir(&api_dir)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", api_dir.display()))
         .filter_map(|entry| {
@@ -137,6 +145,9 @@ fn gateway_stubs_every_http_domain() {
                 return None;
             }
             let domain = entry.file_name().to_string_lossy().into_owned();
+            if !served.contains(&domain) {
+                return None;
+            }
             let src = entry.path().join("api").join("src");
             if !src.is_dir() {
                 return None;

@@ -162,15 +162,31 @@ fn to_snake(pascal: &str) -> String {
     out
 }
 
-/// Every `#[rpc]`-annotated trait under `api/*/api/src/`, as `"<crate>::<snake>_rpc"`
-/// labels — the source of truth the [`rpc_modules`] hand-list must match. The file set
-/// comes from [`rpc_contract_model::contract_sources`], so a trait moved out of `lib.rs`
-/// into a sibling module is still seen.
+/// Every `#[rpc]`-annotated trait of a SERVED domain under `api/*/api/src/`, as
+/// `"<crate>::<snake>_rpc"` labels — the source of truth the [`rpc_modules`] hand-list must
+/// match. The file set comes from [`rpc_contract_model::contract_sources`], so a trait moved
+/// out of `lib.rs` into a sibling module is still seen.
+///
+/// "Served" is [`rpc_contract_model::served_domains`]: the catalog projects the ops a
+/// process actually fronts, so a domain whose contracts landed ahead of its
+/// `modules/<name>` contributes no rows and is not required in the hand-list until the
+/// module's commit.
 fn rpc_modules_from_fs() -> Result<BTreeSet<String>> {
-    let api_root = workspace_root().join("api");
+    let root = workspace_root();
+    let served = rpc_contract_model::served_domains(&root)
+        .with_context(|| format!("list served domains under {}/modules", root.display()))?;
+    let api_root = root.join("api");
     let mut expected = BTreeSet::new();
     for entry in std::fs::read_dir(&api_root)? {
         let dir = entry?.path();
+        let domain = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        if !served.contains(&domain) {
+            continue;
+        }
         let cargo = dir.join("api").join("Cargo.toml");
         let src_dir = dir.join("api").join("src");
         if !cargo.is_file() || !src_dir.is_dir() {
@@ -234,3 +250,7 @@ fn self_check_rpc_list(listed: &[&'static str]) -> Result<()> {
         bail!("opscatalog-gen: rpc-module hand-list drifted from api/*/api:\n  {}", drift.join("\n  "))
     }
 }
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;

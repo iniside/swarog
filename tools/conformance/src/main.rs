@@ -288,7 +288,7 @@ fn deny_gaps_fails(deny_gaps: bool, gap_count: usize) -> bool {
 }
 
 fn discovered_inputs() -> BTreeSet<input_inventory::InputKey> {
-    input_inventory::discover(&input_inventory::api_root())
+    input_inventory::discover(&input_inventory::workspace_root())
         .unwrap_or_else(|error| fail_phase("input discovery", &[format!("{error:#}")]))
 }
 

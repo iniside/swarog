@@ -84,9 +84,26 @@ pub const OPAQUE_REQUEST_TYPES: &[OpaqueType] = &[OpaqueType {
 /// so both legs are recorded under the reserved `<key>`/`<value>` suffixes.
 const STRING_MAP_TYPES: &[&str] = &["BTreeMap", "HashMap"];
 
-pub fn discover(api_root: &Path) -> Result<BTreeSet<InputKey>> {
+/// The string-bearing request fields of every SERVED domain's contracts.
+///
+/// "Served" is [`rpc_contract_model::served_domains`]: the input policy exists to classify
+/// text a caller can actually send, so a domain whose contracts landed ahead of its
+/// `modules/<name>` contributes no keys and needs no policy entries until the module's
+/// commit. `served_domains` errors rather than returning an empty set, so this cannot go
+/// vacuous.
+pub fn discover(workspace_root: &Path) -> Result<BTreeSet<InputKey>> {
+    let served = rpc_contract_model::served_domains(workspace_root)
+        .with_context(|| format!("list served domains under {}/modules", workspace_root.display()))?;
+    let api_root = &workspace_root.join("api");
     let mut out = BTreeSet::new();
     for domain in sorted_dirs(api_root)? {
+        let is_served = domain
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| served.contains(name));
+        if !is_served {
+            continue;
+        }
         let src = domain.join("api/src");
         if !src.is_dir() {
             continue;
@@ -486,8 +503,8 @@ pub fn render_golden(keys: &BTreeSet<InputKey>) -> String {
     out
 }
 
-pub fn api_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../api")
+pub fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 pub fn golden_path() -> PathBuf {

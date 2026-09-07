@@ -680,7 +680,7 @@ fn real_entries_match_disk_and_monolith() {
 
 #[test]
 fn real_rpc_input_inventory_is_exactly_covered_and_matches_golden() {
-    let discovered = crate::input_inventory::discover(&crate::input_inventory::api_root()).unwrap();
+    let discovered = crate::input_inventory::discover(&crate::input_inventory::workspace_root()).unwrap();
     let policies = crate::policy::input_policies();
     let policy_keys = policies
         .iter()

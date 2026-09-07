@@ -628,7 +628,7 @@ fn main() {
         root.join("cmd").join("gateway-svc").join("src").join("lib.rs"),
     )
     .unwrap_or_default();
-    let (http_domains, http_scan_errors) = http_op_domains(&root.join("api"));
+    let (http_domains, http_scan_errors) = http_op_domains(&root);
     violations.extend(http_scan_errors);
     for line in gateway_stub_coverage_violations(&http_domains, &gateway_lib) {
         violations.push(line);
@@ -762,10 +762,15 @@ fn svc_lib_references_module(lib_path: &Path, module: &str) -> bool {
     })
 }
 
-/// Every domain whose contract crate declares at least one [`HTTP_OP_MARKER`] (`#[http(`)
-/// on a NON-comment line (boundary-checked, same style as the other grep tripwires) — i.e.
-/// the domain exposes player-facing HTTP ops. The domain name is the `api/<name>` DIR
-/// name, which IS the provider/stub name (see [`HTTP_OP_MARKER`]).
+/// Every SERVED domain whose contract crate declares at least one [`HTTP_OP_MARKER`]
+/// (`#[http(`) on a NON-comment line (boundary-checked, same style as the other grep
+/// tripwires) — i.e. the domain exposes player-facing HTTP ops. The domain name is the
+/// `api/<name>` DIR name, which IS the provider/stub name (see [`HTTP_OP_MARKER`]).
+///
+/// "Served" is [`rpc_contract_model::served_domains`]: a domain with contracts but no
+/// `modules/<name>` has nothing to answer a call, so requiring a gateway stub for it would
+/// force the module into the contracts' commit. The stub is required from the commit that
+/// adds the module.
 ///
 /// Scans EVERY contract source under `api/<name>/api/src` (`rpc_contract_model::
 /// contract_sources`, the walker the other contract scanners share), not just `lib.rs`:
@@ -775,9 +780,21 @@ fn svc_lib_references_module(lib_path: &Path, module: &str) -> bool {
 ///
 /// Returns `(domains, errors)`. An unreadable source is an ERROR line, never a silently
 /// absent domain — a permission blip must not turn this rule vacuous.
-fn http_op_domains(api_root: &Path) -> (Vec<String>, Vec<String>) {
+fn http_op_domains(root: &Path) -> (Vec<String>, Vec<String>) {
     let mut domains = Vec::new();
     let mut errors = Vec::new();
+    let served = match rpc_contract_model::served_domains(root) {
+        Ok(served) => served,
+        Err(e) => {
+            errors.push(format!(
+                "cannot list served domains under {}/modules: {e} — the `#[http(` domain \
+                 scan (rule 17) cannot run",
+                root.display()
+            ));
+            return (domains, errors);
+        }
+    };
+    let api_root = &root.join("api");
     let Ok(entries) = std::fs::read_dir(api_root) else {
         errors.push(format!(
             "cannot read {} — the `#[http(` domain scan (rule 17) cannot run",
@@ -795,6 +812,9 @@ fn http_op_domains(api_root: &Path) -> (Vec<String>, Vec<String>) {
         let Some(domain) = dir.file_name().and_then(|n| n.to_str()).map(String::from) else {
             continue;
         };
+        if !served.contains(&domain) {
+            continue;
+        }
         let src = dir.join("api").join("src");
         if !src.is_dir() {
             continue;

@@ -14,11 +14,11 @@
 
 use std::collections::BTreeSet;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::emit::{emit_client, emit_dtos, emit_status};
 use crate::model::{Manifest, TypeRef};
-use crate::scrape::{check_completeness, check_drift, map_type, parse_sources, scrape};
+use crate::scrape::{check_completeness, check_drift, domain_of, map_type, parse_sources, scrape};
 
 /// The committed golden manifest — regenerate with
 /// `cargo run -p csharp-client-gen -- --emit-manifest testdata/manifest.golden.json`.
@@ -294,4 +294,22 @@ fn unmodelled_scalar_bails_naming_the_lattice_not_a_missing_dto() {
         map_type(&syn::parse_str::<syn::Type>("Wallet").unwrap()).unwrap(),
         TypeRef::Struct("Wallet".into())
     );
+}
+
+// --- Which api/ directory a contract source belongs to ----------------------
+
+/// The completeness gate skips a domain whose contracts landed ahead of its module, so it
+/// must attribute each parsed trait to the right `api/<domain>/`. Anchoring on the
+/// `api/src` pair keeps that right when the workspace itself sits under an `api` segment.
+#[test]
+fn domain_of_reads_the_api_directory_name() {
+    assert_eq!(
+        domain_of(Path::new("api/characters/api/src/lib.rs")).as_deref(),
+        Some("characters")
+    );
+    assert_eq!(
+        domain_of(Path::new("/home/api/dev/swarog/api/groups/api/src/ops.rs")).as_deref(),
+        Some("groups")
+    );
+    assert_eq!(domain_of(Path::new("some/other/file.rs")), None);
 }

@@ -5,9 +5,9 @@
 
 use super::{
     classify, cmd_is_a_main, contains_boundary_checked, core_bus_sqlx_violations,
-    cross_schema_fk_violations, forbidden_api_deps, has_non_dev_dep, is_inline_test_mod,
-    missing_svc_violations, mod_test_ident_end, module_import_violations, Kind, DEMO_HOST,
-    FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE, SVC_EXEMPT_MODULES,
+    cross_schema_fk_violations, forbidden_api_deps, has_non_dev_dep, http_op_domains,
+    is_inline_test_mod, missing_svc_violations, mod_test_ident_end, module_import_violations,
+    Kind, DEMO_HOST, FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE, SVC_EXEMPT_MODULES,
 };
 
 #[test]
@@ -921,17 +921,20 @@ fn all_http_domains_stubbed_is_clean() {
 #[test]
 fn http_op_domains_scans_api_dirs_and_skips_comments() {
     let root = unique_temp_dir();
-    std::fs::create_dir_all(root.join("characters/api/src")).unwrap();
-    std::fs::create_dir_all(root.join("rating/api/src")).unwrap();
+    for domain in ["characters", "rating"] {
+        std::fs::create_dir_all(root.join("api").join(domain).join("api/src")).unwrap();
+        std::fs::create_dir_all(root.join("modules").join(domain)).unwrap();
+        std::fs::write(root.join("modules").join(domain).join("Cargo.toml"), "").unwrap();
+    }
     // characters exposes an #[http( op; rating is wire-only — the ONLY `#[http(` there is
     // in a comment, which must be skipped.
     std::fs::write(
-        root.join("characters/api/src/lib.rs"),
+        root.join("api/characters/api/src/lib.rs"),
         "#[rpc]\ntrait Characters {\n    #[http(post, \"/create\")]\n    fn create();\n}\n",
     )
     .unwrap();
     std::fs::write(
-        root.join("rating/api/src/lib.rs"),
+        root.join("api/rating/api/src/lib.rs"),
         "// wire-only; no #[http( ops here\n#[rpc]\ntrait Mmr { fn get(); }\n",
     )
     .unwrap();
@@ -949,17 +952,21 @@ fn http_op_domains_scans_api_dirs_and_skips_comments() {
 #[test]
 fn http_op_domains_sees_a_non_lib_contract_source_but_not_a_test_file() {
     let root = unique_temp_dir();
-    std::fs::create_dir_all(root.join("foo/api/src")).unwrap();
-    std::fs::create_dir_all(root.join("bar/api/src")).unwrap();
-    std::fs::write(root.join("foo/api/src/lib.rs"), "pub mod ops;\n").unwrap();
+    for domain in ["foo", "bar"] {
+        std::fs::create_dir_all(root.join("api").join(domain).join("api/src")).unwrap();
+        std::fs::create_dir_all(root.join("modules").join(domain)).unwrap();
+        std::fs::write(root.join("modules").join(domain).join("Cargo.toml"), "").unwrap();
+    }
+    std::fs::write(root.join("api/foo/api/src/lib.rs"), "pub mod ops;\n").unwrap();
     std::fs::write(
-        root.join("foo/api/src/ops.rs"),
+        root.join("api/foo/api/src/ops.rs"),
         "#[rpc]\ntrait Foo {\n    #[http(post, \"/foo\")]\n    fn go();\n}\n",
     )
     .unwrap();
-    std::fs::write(root.join("bar/api/src/lib.rs"), "#[rpc]\ntrait Bar { fn go(); }\n").unwrap();
+    std::fs::write(root.join("api/bar/api/src/lib.rs"), "#[rpc]\ntrait Bar { fn go(); }\n")
+        .unwrap();
     std::fs::write(
-        root.join("bar/api/src/tests.rs"),
+        root.join("api/bar/api/src/tests.rs"),
         "#[http(post, \"/fixture\")]\nfn fixture() {}\n",
     )
     .unwrap();
@@ -972,11 +979,14 @@ fn http_op_domains_sees_a_non_lib_contract_source_but_not_a_test_file() {
 /// An unreadable api root is an ERROR line, not a vacuously clean scan.
 #[test]
 fn http_op_domains_reports_an_unreadable_api_root() {
-    let root = unique_temp_dir().join("does-not-exist");
+    let root = unique_temp_dir();
+    std::fs::create_dir_all(root.join("modules/served")).unwrap();
+    std::fs::write(root.join("modules/served/Cargo.toml"), "").unwrap();
     let (domains, errors) = super::http_op_domains(&root);
     assert!(domains.is_empty(), "{domains:?}");
     assert_eq!(errors.len(), 1, "{errors:?}");
     assert!(errors[0].contains("cannot read"), "{errors:?}");
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 // --- Rule 18: conformancecheck stays out of shipping dependency graphs --------
@@ -1330,4 +1340,53 @@ fn push_install_rule_exempts_test_files() {
         super::push_install_violations("modules/notifications/src/service.rs", call).len(),
         1
     );
+}
+
+// --- Rule 17: which domains the stub-coverage requirement applies to ------------
+
+/// Writes `api/<domain>/api/src/lib.rs` with one `#[http(` method, and `modules/<domain>/
+/// Cargo.toml` only when `served`.
+fn write_domain(root: &std::path::Path, domain: &str, served: bool) {
+    let src = root.join("api").join(domain).join("api/src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        "#[http(verb = \"POST\", path = \"/x\", auth = \"none\", success = 200)]\n",
+    )
+    .unwrap();
+    if served {
+        let module = root.join("modules").join(domain);
+        std::fs::create_dir_all(&module).unwrap();
+        std::fs::write(module.join("Cargo.toml"), "").unwrap();
+    }
+}
+
+/// The branch the retarget introduces AND the one it must not weaken: a domain with a
+/// module still demands a gateway stub; a domain whose contracts landed ahead of its
+/// module does not.
+#[test]
+fn only_a_domain_with_a_module_needs_a_gateway_stub() {
+    let root = unique_temp_dir();
+    std::fs::create_dir_all(root.join("modules")).unwrap();
+    write_domain(&root, "served", true);
+    write_domain(&root, "contractonly", false);
+
+    let (domains, errors) = http_op_domains(&root);
+    assert_eq!(domains, vec!["served".to_string()]);
+    assert!(errors.is_empty(), "errors were: {errors:?}");
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// A root whose `modules/` cannot be scanned must produce an ERROR line, never a silent
+/// empty domain list — a vacuous rule 17 would pass green over an unreachable domain.
+#[test]
+fn an_unscannable_modules_dir_is_an_error_not_an_empty_domain_list() {
+    let root = unique_temp_dir();
+    write_domain(&root, "served", false);
+
+    let (domains, errors) = http_op_domains(&root);
+    assert!(domains.is_empty());
+    assert_eq!(errors.len(), 1, "errors were: {errors:?}");
+    assert!(errors[0].contains("rule 17"), "errors were: {errors:?}");
+    let _ = std::fs::remove_dir_all(root);
 }

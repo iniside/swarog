@@ -4,7 +4,7 @@
 //! traversal and target-language models. This crate only gives those consumers one
 //! interpretation of RPC prefixes, methods, identity, retry and HTTP argument mapping.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use syn::{
@@ -46,6 +46,50 @@ fn is_contract_source(path: &Path) -> bool {
     path.file_stem()
         .and_then(|stem| stem.to_str())
         .is_some_and(|stem| stem != "tests" && !stem.ends_with("_tests"))
+}
+
+/// Every domain that has a module implementation under `<workspace_root>/modules/` —
+/// the single answer the repository's gates share to "does this domain SERVE ops in some
+/// process?".
+///
+/// The two questions are deliberately different. A domain's *contract* exists the moment
+/// `api/<domain>/` exists, so contract-surface gates (topiccheck, contract-golden,
+/// public-api) keep keying on `api/<domain>`. A domain's *served surface* — a gateway
+/// stub, an ops-catalog row, a generated client provider, an input-policy entry — only
+/// exists once something can answer the call, i.e. once `modules/<domain>` exists. Keying
+/// a served-surface gate on `api/<domain>` forces the module to land in the same commit as
+/// its contracts.
+///
+/// A directory counts when it holds a `Cargo.toml` (the filesystem's own answer to "which
+/// crates live under `modules/`", independent of workspace-member registration). `gateway`
+/// is included and simply never intersects a domain list, since it has no `api/gateway`.
+///
+/// An EMPTY result is an error, never an empty set: every workspace has modules, so
+/// "nothing is served" can only mean the scan ran against the wrong root — and a silent
+/// empty set would make every caller's gate vacuous instead of loud.
+pub fn served_domains(workspace_root: &Path) -> std::io::Result<BTreeSet<String>> {
+    let modules_root = workspace_root.join("modules");
+    let mut domains = BTreeSet::new();
+    for entry in std::fs::read_dir(&modules_root)? {
+        let path = entry?.path();
+        if !path.join("Cargo.toml").is_file() {
+            continue;
+        }
+        if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+            domains.insert(name.to_owned());
+        }
+    }
+    if domains.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!(
+                "no module crate directory under {} — every served-surface gate keyed on \
+                 this answer would be vacuous, so the empty scan is reported as a failure",
+                modules_root.display()
+            ),
+        ));
+    }
+    Ok(domains)
 }
 
 /// The parsed arguments of `#[rpc(prefix = "...")]`.

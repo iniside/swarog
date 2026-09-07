@@ -348,3 +348,67 @@ fn missing_or_orphan_or_duplicate_policy_is_a_finding() {
         .iter()
         .any(|finding| finding.contains("duplicate input policy")));
 }
+
+// --- Which domains contribute input keys ------------------------------------
+
+fn scratch_root(label: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!(
+        "conformance-served-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("modules")).unwrap();
+    root
+}
+
+fn write_domain(root: &Path, domain: &str, prefix: &str, served: bool) {
+    let src = root.join("api").join(domain).join("api/src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        src.join("lib.rs"),
+        format!(
+            r#"
+                #[rpc(prefix = "{prefix}")]
+                pub trait Demo {{ async fn send(&self, note: String) -> Result<(), Error>; }}
+            "#
+        ),
+    )
+    .unwrap();
+    if served {
+        let module = root.join("modules").join(domain);
+        std::fs::create_dir_all(&module).unwrap();
+        std::fs::write(module.join("Cargo.toml"), "").unwrap();
+    }
+}
+
+/// The retarget's branch: a served domain's request fields still demand an input policy;
+/// a domain whose contracts landed ahead of its module contributes none yet.
+#[test]
+fn only_a_served_domain_contributes_input_keys() {
+    let root = scratch_root("split");
+    write_domain(&root, "served", "served", true);
+    write_domain(&root, "contractonly", "contractonly", false);
+
+    let discovered = discover(&root).unwrap();
+    let methods: BTreeSet<&str> = discovered
+        .iter()
+        .map(|key| key.wire_method.as_str())
+        .collect();
+    assert_eq!(methods, BTreeSet::from(["served.send"]));
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// An unscannable `modules/` must fail the discovery, never yield an empty inventory that
+/// would match an empty policy and pass green.
+#[test]
+fn an_unscannable_modules_dir_fails_discovery() {
+    let root = scratch_root("vacuous");
+    write_domain(&root, "served", "served", true);
+    std::fs::remove_dir_all(root.join("modules")).unwrap();
+    assert!(discover(&root).is_err());
+    let _ = std::fs::remove_dir_all(root);
+}
