@@ -112,19 +112,7 @@ pub fn scrape() -> Result<Manifest> {
     let parsed = parse_all_api_crates(&root)?;
 
     // --- Gate 2: provider-completeness (scan every SERVED api crate) ---
-    // A domain with contracts but no `modules/<name>` has nothing to answer a call, so its
-    // provider is not required here until the module's commit; `rpc_contract_model::
-    // served_domains` errors rather than returning an empty set, so the gate cannot go
-    // vacuous.
-    let served = rpc_contract_model::served_domains(&root)
-        .with_context(|| format!("list served domains under {}/modules", root.display()))?;
-    let http_trait_prefixes: Vec<String> = parsed
-        .traits
-        .iter()
-        .filter(|t| !t.http_methods.is_empty())
-        .filter(|t| served.contains(&t.domain))
-        .map(|t| t.prefix.clone())
-        .collect();
+    let http_trait_prefixes = served_http_prefixes(&root, &parsed)?;
     check_completeness(&http_trait_prefixes, PROVIDERS)
         .map_err(|e| anyhow!("provider-completeness gate FAILED: {e}"))?;
 
@@ -189,6 +177,26 @@ pub fn scrape() -> Result<Manifest> {
     let statuses = parse_status_variants(&root)?;
 
     Ok(Manifest { methods, dtos, statuses })
+}
+
+/// The provider prefixes the completeness gate is answerable for: every parsed `#[http]`-
+/// bearing trait whose domain is SERVED under `<root>/modules`.
+///
+/// A domain with contracts but no `modules/<name>` has nothing to answer a call, so its
+/// provider is not required in [`PROVIDERS`] until the module's commit;
+/// [`rpc_contract_model::served_domains`] errors rather than returning an empty set, so the
+/// gate cannot go vacuous. The root is a parameter so the served filter is exercisable
+/// against a synthetic tree instead of only whatever state the real repo is in.
+pub(crate) fn served_http_prefixes(root: &Path, parsed: &Parsed) -> Result<Vec<String>> {
+    let served = rpc_contract_model::served_domains(root)
+        .with_context(|| format!("list served domains under {}/modules", root.display()))?;
+    Ok(parsed
+        .traits
+        .iter()
+        .filter(|t| !t.http_methods.is_empty())
+        .filter(|t| served.contains(&t.domain))
+        .map(|t| t.prefix.clone())
+        .collect())
 }
 
 // ---------------------------------------------------------------------------

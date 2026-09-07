@@ -2,7 +2,7 @@ use super::{rpc_modules, self_check_rpc_list};
 
 /// The retarget must not weaken the didn't-forget check for a SERVED domain: dropping one
 /// real entry from the hand-list still dies, naming it. Runs against the real `api/` tree,
-/// so it also proves `rpc_modules_from_fs` still sees every served domain's traits.
+/// so it also proves `rpc_modules_from_fs_at` still sees every served domain's traits.
 #[test]
 fn a_served_domain_dropped_from_the_hand_list_still_fails() {
     let all: Vec<&'static str> = rpc_modules().iter().map(|(label, _)| *label).collect();

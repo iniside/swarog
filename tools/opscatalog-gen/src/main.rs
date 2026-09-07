@@ -162,7 +162,7 @@ fn to_snake(pascal: &str) -> String {
     out
 }
 
-/// Every `#[rpc]`-annotated trait of a SERVED domain under `api/*/api/src/`, as
+/// Every `#[rpc]`-annotated trait of a SERVED domain under `<root>/api/*/api/src/`, as
 /// `"<crate>::<snake>_rpc"` labels — the source of truth the [`rpc_modules`] hand-list must
 /// match. The file set comes from [`rpc_contract_model::contract_sources`], so a trait moved
 /// out of `lib.rs` into a sibling module is still seen.
@@ -171,9 +171,12 @@ fn to_snake(pascal: &str) -> String {
 /// process actually fronts, so a domain whose contracts landed ahead of its
 /// `modules/<name>` contributes no rows and is not required in the hand-list until the
 /// module's commit.
-fn rpc_modules_from_fs() -> Result<FsRpcModules> {
-    let root = workspace_root();
-    let served = rpc_contract_model::served_domains(&root)
+///
+/// The root is a parameter (the production caller passes [`workspace_root`]) so the
+/// served/unserved split is exercisable against a synthetic tree, which the real repo can
+/// only show in whatever state it happens to be in.
+fn rpc_modules_from_fs_at(root: &Path) -> Result<FsRpcModules> {
+    let served = rpc_contract_model::served_domains(root)
         .with_context(|| format!("list served domains under {}/modules", root.display()))?;
     let api_root = root.join("api");
     let mut expected = FsRpcModules::default();
@@ -245,7 +248,12 @@ struct FsRpcModules {
 /// Dies if [`rpc_modules`] drifts from the `#[rpc]` traits of SERVED domains under
 /// `api/*/api`.
 fn self_check_rpc_list(listed: &[&'static str]) -> Result<()> {
-    let expected = rpc_modules_from_fs()?;
+    self_check_rpc_list_at(&workspace_root(), listed)
+}
+
+/// [`self_check_rpc_list`] against an explicit workspace root.
+fn self_check_rpc_list_at(root: &Path, listed: &[&'static str]) -> Result<()> {
+    let expected = rpc_modules_from_fs_at(root)?;
     let listed: BTreeSet<String> = listed.iter().map(|s| s.to_string()).collect();
     let mut drift = Vec::new();
     for m in expected.served.difference(&listed) {
