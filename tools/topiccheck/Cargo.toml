@@ -40,6 +40,7 @@ adminevents = { workspace = true }
 walletevents = { workspace = true }
 mailevents = { workspace = true }
 friendsevents = { workspace = true }
+groupsevents = { workspace = true }
 
 # The RPC-contract sources for the `contract-golden` subcommand (Step 6c): each api
 # crate's generated `<snake>_rpc::route_bindings()` carries the impl-free Operation

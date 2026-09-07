@@ -18,8 +18,9 @@
 //! exactly-once in BOTH topologies. The
 //! producers each emit durably by their respective steps (characters today; config
 //! Step 5; accounts Step 6; match Step 10; wallet Step 3 of the wallet-module plan;
-//! friends Step 3 of the friends-module plan) — every topic in [`DURABLE_TOPICS`] has
-//! a real producer: the owning module `emit_tx`'s it atomic with its own domain write,
+//! friends Step 3 of the friends-module plan; groups Step 5 of the groups-membership
+//! plan) — each topic in [`DURABLE_TOPICS`] gets a real producer by its own step: the
+//! owning module `emit_tx`'s it atomic with its own domain write,
 //! landing it in the shared event log, and audit's own pull subscription drains it
 //! from its checkpoint — no relay, no HTTP hop.
 //!
@@ -56,6 +57,9 @@ const DURABLE_TOPICS: &[&str] = &[
     "friend.requested",
     "friend.accepted",
     "friend.removed",
+    "group.created",
+    "group.member_joined",
+    "group.member_left",
 ];
 
 /// The per-topic subscription ids, zipped positionally with [`DURABLE_TOPICS`]:
@@ -74,6 +78,9 @@ const DURABLE_SPEC_IDS: &[&str] = &[
     "audit.friend-requested.v1",
     "audit.friend-accepted.v1",
     "audit.friend-removed.v1",
+    "audit.group-created.v1",
+    "audit.group-member_joined.v1",
+    "audit.group-member_left.v1",
 ];
 
 /// The `scheduler.fired` `name` audit prunes on. Shared vocabulary (a string, like a

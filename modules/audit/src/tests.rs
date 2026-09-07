@@ -92,6 +92,9 @@ fn durable_topics_match_events() {
         friendsevents::REQUESTED.topic(),
         friendsevents::ACCEPTED.topic(),
         friendsevents::REMOVED.topic(),
+        groupsevents::CREATED.topic(),
+        groupsevents::MEMBER_JOINED.topic(),
+        groupsevents::MEMBER_LEFT.topic(),
     ]
     .into_iter()
     .collect();

@@ -44,6 +44,9 @@ event topic=config.changed version=1 history=min-retention:7d
 event topic=friend.accepted version=1 history=min-retention:30d
 event topic=friend.removed version=1 history=min-retention:30d
 event topic=friend.requested version=1 history=min-retention:30d
+event topic=group.created version=1 history=min-retention:30d
+event topic=group.member_joined version=1 history=min-retention:30d
+event topic=group.member_left version=1 history=min-retention:30d
 event topic=mail.send_requested version=1 history=min-retention:1d
 event topic=match.finished version=1 history=min-retention:7d
 event topic=player.promoted version=1 history=min-retention:7d
@@ -82,6 +85,17 @@ payload topic=friend.requested version=1 payload.addressee_id:string
 payload topic=friend.requested version=1 payload.edge_id:string
 payload topic=friend.requested version=1 payload.requester_handle:string
 payload topic=friend.requested version=1 payload.requester_id:string
+payload topic=group.created version=1 payload.creator_id:string
+payload topic=group.created version=1 payload.group_id:string
+payload topic=group.created version=1 payload.join_policy:string
+payload topic=group.created version=1 payload.name:string
+payload topic=group.member_joined version=1 payload.group_id:string
+payload topic=group.member_joined version=1 payload.player_id:string
+payload topic=group.member_joined version=1 payload.role:string
+payload topic=group.member_left version=1 payload.actor_id:string
+payload topic=group.member_left version=1 payload.group_id:string
+payload topic=group.member_left version=1 payload.player_id:string
+payload topic=group.member_left version=1 payload.reason:string
 payload topic=mail.send_requested version=1 payload.body:string
 payload topic=mail.send_requested version=1 payload.idempotency_key:string
 payload topic=mail.send_requested version=1 payload.kind:string
@@ -119,6 +133,15 @@ rpc module=friendsapi::player_rpc method=friends.list verb=POST path=/friends/li
 rpc module=friendsapi::player_rpc method=friends.pending verb=POST path=/friends/requests/list auth=Player success=200 retry=OnceAfterReconnect
 rpc module=friendsapi::player_rpc method=friends.remove verb=DELETE path=/friends/{id} auth=Player success=204 retry=Never
 rpc module=friendsapi::player_rpc method=friends.request verb=POST path=/friends/requests auth=Player success=201 retry=Never
+rpc module=groupsapi::player_rpc method=groups.create verb=POST path=/groups auth=Player success=201 retry=Never
+rpc module=groupsapi::player_rpc method=groups.decide verb=POST path=/groups/{id}/decide auth=Player success=204 retry=Never
+rpc module=groupsapi::player_rpc method=groups.invite verb=POST path=/groups/{id}/invites auth=Player success=201 retry=Never
+rpc module=groupsapi::player_rpc method=groups.join verb=POST path=/groups/{id}/join auth=Player success=200 retry=Never
+rpc module=groupsapi::player_rpc method=groups.leave verb=POST path=/groups/{id}/leave auth=Player success=204 retry=Never
+rpc module=groupsapi::player_rpc method=groups.listMine verb=POST path=/groups/list auth=Player success=200 retry=OnceAfterReconnect
+rpc module=groupsapi::player_rpc method=groups.members verb=POST path=/groups/{id}/members/list auth=Player success=200 retry=OnceAfterReconnect
+rpc module=groupsapi::player_rpc method=groups.pending verb=POST path=/groups/{id}/pending/list auth=Player success=200 retry=OnceAfterReconnect
+rpc module=groupsapi::player_rpc method=groups.respond verb=POST path=/groups/{id}/respond auth=Player success=204 retry=Never
 rpc module=inventoryapi::holdings_rpc method=inventory.grant verb=POST path=/inventory/me/grant auth=Player success=200 retry=Never
 rpc module=inventoryapi::holdings_rpc method=inventory.listCharacter verb=GET path=/inventory/character/{id} auth=Player success=200 retry=OnceAfterReconnect
 rpc module=inventoryapi::holdings_rpc method=inventory.listMine verb=GET path=/inventory/me auth=Player success=200 retry=OnceAfterReconnect
@@ -150,6 +173,25 @@ rpc-arg module=friendsapi::player_rpc method=friends.pending param=cursor wire_k
 rpc-arg module=friendsapi::player_rpc method=friends.pending param=limit wire_key=limit source=body
 rpc-arg module=friendsapi::player_rpc method=friends.remove param=edge_id wire_key=edge_id source=path:id
 rpc-arg module=friendsapi::player_rpc method=friends.request param=target_handle wire_key=target_handle source=body
+rpc-arg module=groupsapi::player_rpc method=groups.create param=join_policy wire_key=join_policy source=body
+rpc-arg module=groupsapi::player_rpc method=groups.create param=name wire_key=name source=body
+rpc-arg module=groupsapi::player_rpc method=groups.decide param=decision wire_key=decision source=body
+rpc-arg module=groupsapi::player_rpc method=groups.decide param=group_id wire_key=group_id source=path:id
+rpc-arg module=groupsapi::player_rpc method=groups.decide param=subject_id wire_key=subject_id source=body
+rpc-arg module=groupsapi::player_rpc method=groups.invite param=group_id wire_key=group_id source=path:id
+rpc-arg module=groupsapi::player_rpc method=groups.invite param=target_handle wire_key=target_handle source=body
+rpc-arg module=groupsapi::player_rpc method=groups.join param=group_id wire_key=group_id source=path:id
+rpc-arg module=groupsapi::player_rpc method=groups.leave param=group_id wire_key=group_id source=path:id
+rpc-arg module=groupsapi::player_rpc method=groups.listMine param=cursor wire_key=cursor source=body
+rpc-arg module=groupsapi::player_rpc method=groups.listMine param=limit wire_key=limit source=body
+rpc-arg module=groupsapi::player_rpc method=groups.members param=cursor wire_key=cursor source=body
+rpc-arg module=groupsapi::player_rpc method=groups.members param=group_id wire_key=group_id source=path:id
+rpc-arg module=groupsapi::player_rpc method=groups.members param=limit wire_key=limit source=body
+rpc-arg module=groupsapi::player_rpc method=groups.pending param=cursor wire_key=cursor source=body
+rpc-arg module=groupsapi::player_rpc method=groups.pending param=group_id wire_key=group_id source=path:id
+rpc-arg module=groupsapi::player_rpc method=groups.pending param=limit wire_key=limit source=body
+rpc-arg module=groupsapi::player_rpc method=groups.respond param=decision wire_key=decision source=body
+rpc-arg module=groupsapi::player_rpc method=groups.respond param=group_id wire_key=group_id source=path:id
 rpc-arg module=inventoryapi::holdings_rpc method=inventory.grant param=item_id wire_key=item_id source=body
 rpc-arg module=inventoryapi::holdings_rpc method=inventory.grant param=qty wire_key=qty source=body
 rpc-arg module=inventoryapi::holdings_rpc method=inventory.listCharacter param=character_id wire_key=character_id source=path:id
@@ -184,6 +226,20 @@ rpc-body module=friendsapi::player_rpc method=friends.pending body.cursor:string
 rpc-body module=friendsapi::player_rpc method=friends.pending body.limit:number
 rpc-body module=friendsapi::player_rpc method=friends.remove body:object{}
 rpc-body module=friendsapi::player_rpc method=friends.request body.target_handle:string
+rpc-body module=groupsapi::player_rpc method=groups.create body.join_policy:string
+rpc-body module=groupsapi::player_rpc method=groups.create body.name:string
+rpc-body module=groupsapi::player_rpc method=groups.decide body.decision:string
+rpc-body module=groupsapi::player_rpc method=groups.decide body.subject_id:string
+rpc-body module=groupsapi::player_rpc method=groups.invite body.target_handle:string
+rpc-body module=groupsapi::player_rpc method=groups.join body:object{}
+rpc-body module=groupsapi::player_rpc method=groups.leave body:object{}
+rpc-body module=groupsapi::player_rpc method=groups.listMine body.cursor:string
+rpc-body module=groupsapi::player_rpc method=groups.listMine body.limit:number
+rpc-body module=groupsapi::player_rpc method=groups.members body.cursor:string
+rpc-body module=groupsapi::player_rpc method=groups.members body.limit:number
+rpc-body module=groupsapi::player_rpc method=groups.pending body.cursor:string
+rpc-body module=groupsapi::player_rpc method=groups.pending body.limit:number
+rpc-body module=groupsapi::player_rpc method=groups.respond body.decision:string
 rpc-body module=inventoryapi::holdings_rpc method=inventory.grant body.item_id:string
 rpc-body module=inventoryapi::holdings_rpc method=inventory.grant body.qty:number
 rpc-body module=inventoryapi::holdings_rpc method=inventory.listCharacter body:object{}
@@ -222,6 +278,16 @@ wire module=friendsapi::player_rpc method=friends.list retry=OnceAfterReconnect
 wire module=friendsapi::player_rpc method=friends.pending retry=OnceAfterReconnect
 wire module=friendsapi::player_rpc method=friends.remove retry=Never
 wire module=friendsapi::player_rpc method=friends.request retry=Never
+wire module=groupsapi::membership_rpc method=groups.roleOf retry=OnceAfterReconnect
+wire module=groupsapi::player_rpc method=groups.create retry=Never
+wire module=groupsapi::player_rpc method=groups.decide retry=Never
+wire module=groupsapi::player_rpc method=groups.invite retry=Never
+wire module=groupsapi::player_rpc method=groups.join retry=Never
+wire module=groupsapi::player_rpc method=groups.leave retry=Never
+wire module=groupsapi::player_rpc method=groups.listMine retry=OnceAfterReconnect
+wire module=groupsapi::player_rpc method=groups.members retry=OnceAfterReconnect
+wire module=groupsapi::player_rpc method=groups.pending retry=OnceAfterReconnect
+wire module=groupsapi::player_rpc method=groups.respond retry=Never
 wire module=inventoryapi::holdings_rpc method=inventory.grant retry=Never
 wire module=inventoryapi::holdings_rpc method=inventory.listCharacter retry=OnceAfterReconnect
 wire module=inventoryapi::holdings_rpc method=inventory.listMine retry=OnceAfterReconnect
