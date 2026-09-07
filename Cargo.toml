@@ -132,6 +132,9 @@ members = [
     "api/friends/api",
     "api/friends/rpc",
     "api/friends/events",
+    "api/groups/api",
+    "api/groups/rpc",
+    "api/groups/events",
     # Module implementations — private, reachable only from a cmd/ binary.
     "modules/config",
     "modules/apikeys",
@@ -360,6 +363,9 @@ mailrpc = { path = "api/mail/rpc" }
 friendsapi = { path = "api/friends/api" }
 friendsrpc = { path = "api/friends/rpc" }
 friendsevents = { path = "api/friends/events" }
+groupsapi = { path = "api/groups/api" }
+groupsrpc = { path = "api/groups/rpc" }
+groupsevents = { path = "api/groups/events" }
 
 # ---- Generated ops catalog (neutral leaf data crate; imports nothing). ----
 opscatalog = { path = "opscatalog" }

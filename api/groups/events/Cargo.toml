@@ -1,0 +1,16 @@
+[package]
+name = "groupsevents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The published event vocabulary of the groups domain: the Created/MemberJoined/
+# MemberLeft payloads + their topic descriptors. The ONLY surface a consumer (audit)
+# shares with groups; nobody imports the groups implementation. The topics ride the
+# DURABLE plane (bus::emit_tx, atomic with the `groups.groups`/`groups.memberships`
+# write), so the payloads are serde. Imports only the `bus` leaf.
+[dependencies]
+bus = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

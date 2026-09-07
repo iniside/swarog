@@ -227,6 +227,20 @@ fn rpc_modules() -> Vec<RpcModule> {
             friendsapi::player_rpc::body_shapes(),
             friendsapi::player_rpc::describe().ops,
         ),
+        (
+            "groupsapi::player_rpc",
+            groupsapi::player_rpc::route_bindings(),
+            groupsapi::player_rpc::wire_ops(),
+            groupsapi::player_rpc::body_shapes(),
+            groupsapi::player_rpc::describe().ops,
+        ),
+        (
+            "groupsapi::membership_rpc",
+            groupsapi::membership_rpc::route_bindings(),
+            groupsapi::membership_rpc::wire_ops(),
+            groupsapi::membership_rpc::body_shapes(),
+            groupsapi::membership_rpc::describe().ops,
+        ),
     ]
 }
 

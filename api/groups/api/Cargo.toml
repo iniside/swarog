@@ -1,0 +1,21 @@
+[package]
+name = "groupsapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The groups module's PURE, transport-free contract: the player-facing `Player`
+# capability (create/list_mine/members/pending/join/leave/invite/respond/decide), the
+# wire-only `Membership::role_of` capability `chat` will consume, and the shared vocab
+# consts + DTOs. `#[rpc]` generates the transport-FREE surface (wire envelopes,
+# METHOD_* consts, operations()/route_bindings()) into the child `player_rpc` /
+# `membership_rpc` modules, plus the metadata-callback macros the sibling `groupsrpc`
+# glue crate expands into the edge-dependent glue. NO `edge`/`remote`/transport
+# dependency (archcheck's FORBIDDEN_API_DEPS).
+[dependencies]
+opsapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
