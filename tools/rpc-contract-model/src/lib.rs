@@ -116,7 +116,7 @@ pub const HTTP_OP_MARKER: &str = "#[http(";
 /// `modules/socialgraph`) would be skipped by all five and 404 through the gateway in the
 /// split while working in the monolith. This list is that decision, written down;
 /// [`contract_only_violations`] fails any un-listed skip AND any entry that has gone stale.
-pub const CONTRACT_ONLY: &[&str] = &["groups"];
+pub const CONTRACT_ONLY: &[&str] = &[];
 
 /// Every `api/<domain>` whose contract sources declare at least one [`HTTP_OP_MARKER`] on a
 /// NON-comment line, plus one error line per directory or file the scan could not read.
