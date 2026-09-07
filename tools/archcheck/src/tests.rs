@@ -1390,3 +1390,45 @@ fn an_unscannable_modules_dir_is_an_error_not_an_empty_domain_list() {
     assert!(errors[0].contains("rule 17"), "errors were: {errors:?}");
     let _ = std::fs::remove_dir_all(root);
 }
+
+// --- Rule 21: rule 17's skip is not a silent hole ------------------------------
+
+/// The exact shape the retarget opened and rule 21 closes: `api/social` (with `#[http(`
+/// ops) implemented as `modules/socialgraph`. The dir names diverge, so rule 17 SKIPS the
+/// domain and demands no gateway stub — correct in isolation, a silent hole on its own.
+/// Rule 21 (`rpc_contract_model::contract_only_violations`, run from `main` beside rule
+/// 17) is what turns that skip back into a FAIL. Both halves are asserted on ONE synthetic
+/// root, so neither can be removed without this test dying.
+#[test]
+fn a_divergently_named_module_is_skipped_by_rule_17_and_caught_by_rule_21() {
+    let root = unique_temp_dir();
+    write_domain(&root, "served", true);
+    write_domain(&root, "social", false);
+    let socialgraph = root.join("modules").join("socialgraph");
+    std::fs::create_dir_all(&socialgraph).unwrap();
+    std::fs::write(socialgraph.join("Cargo.toml"), "").unwrap();
+    for entry in rpc_contract_model::CONTRACT_ONLY {
+        write_domain(&root, entry, false);
+    }
+
+    // Rule 17: `social` is not in the checked set, so a gateway lib that stubs only
+    // `served` raises no violation.
+    let (domains, errors) = http_op_domains(&root);
+    assert!(errors.is_empty(), "errors were: {errors:?}");
+    assert!(!domains.contains(&"social".to_string()), "{domains:?}");
+    assert!(
+        super::gateway_stub_coverage_violations(&domains, "remote::Stub::new(\"served\",")
+            .is_empty(),
+        "rule 17 must have nothing to say about a divergently-named domain"
+    );
+
+    // Rule 21: the same tree is a FAIL, naming the domain and the rename remedy.
+    let violations = rpc_contract_model::contract_only_violations(&root);
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert!(violations[0].contains("`social`"), "{violations:?}");
+    assert!(
+        violations[0].contains("Name the module directory `modules/social`"),
+        "{violations:?}"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}

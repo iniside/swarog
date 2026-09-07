@@ -595,3 +595,7 @@ fn capitalize(s: &str) -> String {
         None => String::new(),
     }
 }
+
+#[cfg(test)]
+#[path = "scrape_tests.rs"]
+mod scrape_tests;

@@ -133,11 +133,30 @@ fn gateway_stubs_every_http_domain() {
         .collect();
 
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let served = rpc_contract_model::served_domains(&workspace_root)
+    let http_domains = http_domains_needing_a_stub(&workspace_root);
+
+    let missing: BTreeSet<&String> = http_domains.difference(&gateway_names).collect();
+    assert!(
+        missing.is_empty(),
+        "cmd/gateway-svc's modules() is missing a remote::Stub for {missing:?} from the \
+         #[http(-bearing domains (gateway hosts {gateway_names:?}) -- add \
+         remote::Stub::new(\"<domain>\", ...) to cmd/gateway-svc/src/lib.rs so its PEER_SLOT \
+         entry is present and the gateway's `__describe` fetch reaches it, lighting up its \
+         player-facing routes Remote in the split"
+    );
+}
+
+/// The domains a gateway stub is REQUIRED for, under `workspace_root`: an `api/<domain>`
+/// whose contract sources carry a non-comment `#[http(` AND whose `modules/<domain>`
+/// exists. Shared by the real-tree assertion above and the synthetic-root fixture below,
+/// so the served filter has exactly ONE definition and cannot be dropped from the real
+/// scan while a fixture keeps passing.
+fn http_domains_needing_a_stub(workspace_root: &Path) -> BTreeSet<String> {
+    let served = rpc_contract_model::served_domains(workspace_root)
         .unwrap_or_else(|e| panic!("failed to list served domains: {e}"));
 
     let api_dir = workspace_root.join("api");
-    let http_domains: BTreeSet<String> = std::fs::read_dir(&api_dir)
+    std::fs::read_dir(&api_dir)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", api_dir.display()))
         .filter_map(|entry| {
             let entry = entry.expect("readable dir entry");
@@ -167,15 +186,45 @@ fn gateway_stubs_every_http_domain() {
             });
             has_http.then_some(domain)
         })
-        .collect();
+        .collect()
+}
 
-    let missing: BTreeSet<&String> = http_domains.difference(&gateway_names).collect();
-    assert!(
-        missing.is_empty(),
-        "cmd/gateway-svc's modules() is missing a remote::Stub for {missing:?} from the \
-         #[http(-bearing domains (gateway hosts {gateway_names:?}) -- add \
-         remote::Stub::new(\"<domain>\", ...) to cmd/gateway-svc/src/lib.rs so its PEER_SLOT \
-         entry is present and the gateway's `__describe` fetch reaches it, lighting up its \
-         player-facing routes Remote in the split"
+/// The served filter, pinned INDEPENDENTLY of what is on disk in this repo. The real-tree
+/// assertion above only distinguishes "filtered" from "unfiltered" while some contract-only
+/// domain happens to exist under `api/`; the day its module lands, deleting the filter
+/// would break no committed test. Here both cases are constructed: `served` has a module
+/// and must be demanded, `contractonly`'s contracts landed ahead of its module and must
+/// not be.
+#[test]
+fn only_a_domain_with_a_module_needs_a_gateway_stub() {
+    let root = std::env::temp_dir().join(format!(
+        "checkmodules-served-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    for (domain, served) in [("served", true), ("contractonly", false)] {
+        let src = root.join("api").join(domain).join("api/src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            src.join("lib.rs"),
+            "#[http(verb = \"POST\", path = \"/x\", auth = \"none\", success = 200)]\n",
+        )
+        .unwrap();
+        if served {
+            let module = root.join("modules").join(domain);
+            std::fs::create_dir_all(&module).unwrap();
+            std::fs::write(module.join("Cargo.toml"), "").unwrap();
+        }
+    }
+
+    assert_eq!(
+        http_domains_needing_a_stub(&root),
+        BTreeSet::from(["served".to_string()]),
+        "a domain whose contracts landed ahead of its module must not demand a stub"
     );
+    let _ = std::fs::remove_dir_all(root);
 }
