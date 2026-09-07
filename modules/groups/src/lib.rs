@@ -12,6 +12,7 @@
 //! The domain write and its durable event append commit in ONE transaction — the event is
 //! durable iff the membership change is.
 
+mod projection;
 mod service;
 mod store;
 
@@ -134,7 +135,12 @@ impl Module for Groups {
     }
 
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
+        let retention_days = projection::retention_days_from_env()?;
         let svc = self.svc();
+
+        let prune: Arc<dyn bus::TxHandler> = Arc::new(projection::PruneHandler { retention_days });
+        ctx.bus()
+            .on_tx_raw(projection::PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
 
         // Phase 2: in the split a `remote::Stub` swaps an edge-backed client under the
         // SAME key, so this line is topology-blind.

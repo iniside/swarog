@@ -1799,13 +1799,18 @@ dependencies = [
  "base64 0.22.1",
  "bus",
  "edge",
+ "futures",
  "groupsapi",
  "groupsevents",
  "groupsrpc",
  "lifecycle",
  "opsapi",
  "registry",
+ "schedulerevents",
+ "serde",
+ "serde_json",
  "sqlx",
+ "tracing",
 ]
 
 [[package]]

@@ -236,6 +236,7 @@ fn seeded_schedule_names_are_contract() {
         schedulerevents::schedule_names::SESSIONS_PRUNE,
         schedulerevents::schedule_names::NOTIFICATIONS_PRUNE,
         schedulerevents::schedule_names::MAIL_PRUNE,
+        schedulerevents::schedule_names::GROUPS_PRUNE,
     ] {
         assert!(
             SCHEMA_DDL.contains(&format!("('{name}',")),

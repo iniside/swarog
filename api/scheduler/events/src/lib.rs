@@ -67,4 +67,8 @@ pub mod schedule_names {
     /// `MAIL_RETENTION_DAYS`. The scheduler seeds this schedule (86400s); mail reacts to
     /// `scheduler.fired{name}` matching it.
     pub const MAIL_PRUNE: &str = "mail-prune";
+    /// The daily cadence on which `groups` prunes stale `invited`/`requested` membership
+    /// rows past `GROUPS_RETENTION_DAYS`. The scheduler seeds this schedule (86400s);
+    /// groups reacts to `scheduler.fired{name}` matching it.
+    pub const GROUPS_PRUNE: &str = "groups-prune";
 }
