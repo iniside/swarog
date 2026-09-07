@@ -21,6 +21,9 @@ pub const REASON_LEFT: &str = "left";
 pub const REASON_KICKED: &str = "kicked";
 /// [`MemberLeft::reason`] for a `respond`/`decide` reject on a pending row.
 pub const REASON_DECLINED: &str = "declined";
+/// [`MemberLeft::reason`] for a pending row the retention sweep removed after
+/// `GROUPS_RETENTION_DAYS`. No party ended it, so [`MemberLeft::actor_id`] is empty.
+pub const REASON_EXPIRED: &str = "expired";
 
 /// A group was created. `join_policy` is one of `groupsapi::JOIN_OPEN`/`JOIN_REQUEST`/
 /// `JOIN_INVITE`.
@@ -50,7 +53,9 @@ pub struct MemberJoined {
 ///
 /// `actor_id` is the party who ended it (the subject itself for [`REASON_LEFT`], an
 /// admin for [`REASON_KICKED`], the subject for [`REASON_DECLINED`]) — recorded
-/// because a kick is otherwise unattributable in a ledger that retains 30 days.
+/// because a kick is otherwise unattributable in a ledger that retains 30 days. It is
+/// EMPTY when no party ended it ([`REASON_EXPIRED`]), never a stand-in id: a consumer
+/// reading it as "who did this" must not be told the subject did.
 /// `reason` is an open vocabulary: treat an unrecognised value as the plain case, so a
 /// future ending is an additive change rather than a new topic.
 ///

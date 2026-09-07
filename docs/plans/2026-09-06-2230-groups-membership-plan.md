@@ -755,3 +755,12 @@ turn all five red) is what commits `a5c8398`/`6c09bea` closed by splitting the s
 surface from the contract surface and introducing the `CONTRACT_ONLY` exemption list
 (`tools/rpc-contract-model`). Both are corrections to this plan's Step 1 sequencing, not
 new drift at HEAD.
+
+**4 — The non-goal "A swept invitation emits nothing" is reversed.** Adversarial review of
+Step 5 (`fdc59fb`) rejected it: unlike `mail`'s prune, which removes tombstones, this sweep
+removes LIVE relations a player can still act on, so the ledger would hold an invite that
+never ended while `audit`'s `group.member_left` sink stayed silent. The sweep now emits
+`group.member_left` per swept row inside the delivery transaction, with the new
+`groupsevents::REASON_EXPIRED` and an EMPTY `actor_id` (no party ended it). Additive: the
+`reason` vocabulary is open by contract. The `notifications` argument in the original
+bullet is unaffected — no inbox row is produced for it here.

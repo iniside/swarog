@@ -7,7 +7,11 @@
 //! decide from the subject's state (`respond`, `decide`) all take it before their read,
 //! because a concurrent writer would invalidate what they read. `create` takes no lock,
 //! and that is not an omission: the group id it mints is unreachable by any other caller
-//! until the transaction commits, so there is nothing to serialize against.
+//! until the transaction commits, so there is nothing to serialize against. The retention
+//! sweep is the one writer that takes no group lock: it never requests one, so it cannot
+//! deadlock, and its `FOR UPDATE` re-check drops a concurrently accepted invite from the
+//! batch instead of deleting it — the cost is that an `accept`/`decide` on a swept row can
+//! block on that row lock for up to the sweep's budget.
 //!
 //! The domain write and its durable event append commit in ONE transaction — the event is
 //! durable iff the membership change is.
@@ -31,9 +35,10 @@ use registry::key;
 /// `state='member' AND role=''`, so an accept that updated the state and forgot the role
 /// would commit and leave a real member carrying no role at all.
 ///
-/// `memberships_pending_idx` is partial and serves no reader yet: it exists for the
-/// retention sweep that plan Step 5 adds, which would otherwise seq-scan a table whose
-/// live rows dominate.
+/// `memberships_pending_idx` is partial, and its predicate must stay identical to the
+/// retention sweep's (`projection::STALE_BATCH_SQL`): the planner only uses a partial index
+/// it can prove the query's `WHERE` implies, and without it the sweep seq-scans a table
+/// whose live `member` rows dominate.
 ///
 /// Plain `uuid` columns, no cross-module FK (constraint #10).
 const SCHEMA_DDL: &str = r#"
@@ -64,7 +69,7 @@ CREATE INDEX IF NOT EXISTS memberships_player_idx
 CREATE INDEX IF NOT EXISTS memberships_group_idx
     ON groups.memberships (group_id, state, created_at DESC, player_id DESC);
 CREATE INDEX IF NOT EXISTS memberships_pending_idx
-    ON groups.memberships (created_at) WHERE state <> 'member';"#;
+    ON groups.memberships (created_at) WHERE state IN ('invited','requested');"#;
 
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
     opsapi::Error::internal(e.to_string())
@@ -138,7 +143,10 @@ impl Module for Groups {
         let retention_days = projection::retention_days_from_env()?;
         let svc = self.svc();
 
-        let prune: Arc<dyn bus::TxHandler> = Arc::new(projection::PruneHandler { retention_days });
+        let prune: Arc<dyn bus::TxHandler> = Arc::new(projection::PruneHandler {
+            retention_days,
+            bus: ctx.bus().clone(),
+        });
         ctx.bus()
             .on_tx_raw(projection::PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
 

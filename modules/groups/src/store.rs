@@ -390,7 +390,9 @@ impl Store {
     }
 
     /// One page of a group's rows. `state_clause` is a compile-time literal chosen by the
-    /// caller ([`MEMBER_ROWS`] or [`PENDING_ROWS`]) — never caller input. Authorization is
+    /// caller ([`MEMBER_ROWS`] or [`PENDING_ROWS`]) — never caller input, and PARENTHESIZED
+    /// at the interpolation site so respelling one of them with an `OR` cannot bind looser
+    /// than the `group_id` term and page another group's rows. Authorization is
     /// NOT in this statement: it is decided by [`Store::visible_role`] first, because an
     /// empty page and an invisible group must answer differently.
     pub(crate) async fn page_group(
@@ -466,7 +468,7 @@ fn group_page_sql(state_clause: &str, cut: &str, limit: &str) -> String {
     let joined = created_text("created_at");
     format!(
         "SELECT player_id::text, state, role, {joined} FROM groups.memberships \
-          WHERE group_id = $1::uuid AND {state_clause} {cut} \
+          WHERE group_id = $1::uuid AND ({state_clause}) {cut} \
           ORDER BY created_at DESC, player_id DESC LIMIT {limit}"
     )
 }
