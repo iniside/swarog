@@ -910,6 +910,7 @@ dependencies = [
  "config-svc",
  "friends-svc",
  "gateway-svc",
+ "groups-svc",
  "inventory-svc",
  "leaderboard-svc",
  "lifecycle",
@@ -1805,6 +1806,23 @@ dependencies = [
  "opsapi",
  "registry",
  "sqlx",
+]
+
+[[package]]
+name = "groups-svc"
+version = "0.1.0"
+dependencies = [
+ "accountsrpc",
+ "anyhow",
+ "app",
+ "edge",
+ "groups",
+ "lifecycle",
+ "metrics",
+ "remote",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4075,6 +4093,7 @@ dependencies = [
  "edge",
  "friends",
  "gateway",
+ "groups",
  "inventory",
  "leaderboard",
  "lifecycle",

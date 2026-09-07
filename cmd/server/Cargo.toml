@@ -35,6 +35,7 @@ wallet = { workspace = true }
 notifications = { workspace = true }
 mail = { workspace = true }
 friends = { workspace = true }
+groups = { workspace = true }
 webui = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }

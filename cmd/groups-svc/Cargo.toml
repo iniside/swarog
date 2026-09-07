@@ -1,0 +1,29 @@
+[package]
+name = "groups-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The groups fortress process: hosts groups and fills its `accounts` dependency
+# (`accountsapi::Directory`) with a `remote::Stub` dialing accounts-svc over the QUIC
+# edge. It hosts NO gateway (FrontDoor) — the single public front door lives only in
+# gateway-svc + the monolith. It imports neither the accounts IMPL crate nor
+# `groupsrpc`'s remote factories in this crate (Step 4 wires those into `groups`'
+# own `EDGE_SLOT` closure), only `accountsrpc` glue (passed into the stub, rule 5).
+[[bin]]
+name = "groups-svc"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+lifecycle = { workspace = true }
+metrics = { workspace = true }
+edge = { workspace = true }
+groups = { workspace = true }
+remote = { workspace = true }
+accountsrpc = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

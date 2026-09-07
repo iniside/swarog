@@ -185,6 +185,7 @@ members = [
     "cmd/notifications-svc",
     "cmd/mail-svc",
     "cmd/friends-svc",
+    "cmd/groups-svc",
 ]
 
 [workspace.package]
@@ -414,3 +415,4 @@ wallet-svc = { path = "cmd/wallet-svc" }
 notifications-svc = { path = "cmd/notifications-svc" }
 mail-svc = { path = "cmd/mail-svc" }
 friends-svc = { path = "cmd/friends-svc" }
+groups-svc = { path = "cmd/groups-svc" }

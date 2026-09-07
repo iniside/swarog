@@ -40,6 +40,7 @@ wallet-svc = { workspace = true }
 notifications-svc = { workspace = true }
 mail-svc = { workspace = true }
 friends-svc = { workspace = true }
+groups-svc = { workspace = true }
 
 [dev-dependencies]
 # `contract_sources` only — the shared "which files make up a contract crate" walker
