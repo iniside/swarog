@@ -434,9 +434,9 @@ async fn fire_exactly_once_under_concurrency() {
     let Some(pool1) = test_pool().await else {
         return;
     };
-    let Ok(pool2) = PgPool::connect(&dsn()).await else {
-        return;
-    };
+    let pool2 = PgPool::connect(&dsn())
+        .await
+        .expect("second replica pool — without it there is no concurrency to prove");
 
     let name = unique_name(&pool1).await;
     seed_schedule(&pool1, &name, 3600).await; // due (epoch), won't re-arm within the test

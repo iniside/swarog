@@ -152,7 +152,7 @@ async fn reconnect_performs_full_refresh() {
         return;
     };
     // A recognizable application_name so we can find and terminate exactly the listener's
-    // backend; if sqlx doesn't propagate it (0 backends found) the test SKIPs honestly.
+    // backend.
     let app_name = format!("inval_test_{}_{}", std::process::id(), nanos());
     let sep = if dsn.contains('?') { '&' } else { '?' };
     let listen_dsn = format!("{dsn}{sep}application_name={app_name}");
@@ -179,9 +179,12 @@ async fn reconnect_performs_full_refresh() {
     .unwrap();
     if killed == 0 {
         plane.stop().await;
-        eprintln!("SKIP: application_name not propagated to the listener conn — reconnect test skipped");
-        return;
     }
+    assert!(
+        killed > 0,
+        "no backend matched application_name {app_name}: the listener's connection was \
+         never killed, so the reconnect path this test exists for did not run"
+    );
 
     // Reconnect goes through a ~1s backoff, then LISTEN + refresh_all.
     let mut healed = false;

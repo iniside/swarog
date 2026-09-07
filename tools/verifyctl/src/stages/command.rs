@@ -21,7 +21,26 @@ pub fn clippy(ctx: &mut Context<'_>) -> Result<Outcome> {
     )
 }
 
+/// The `test` stage's precondition. `testdb`'s opt-out makes every database test skip,
+/// and libtest captures a PASSING test's output — so the stage would be green and silent
+/// about having proven nothing. The false green this stage exists to prevent, one exported
+/// variable away, which is why it is refused here rather than merely announced.
+pub(crate) fn database_skip_refusal() -> Option<String> {
+    testdb::skip_allowed().then(|| {
+        format!(
+            "{} is on: every database test would skip and this run would prove nothing. \
+             Unset it and start Postgres before verifying.",
+            testdb::SKIP_ENV
+        )
+    })
+}
+
 pub fn test(ctx: &mut Context<'_>) -> Result<Outcome> {
+    if let Some(refusal) = database_skip_refusal() {
+        eprintln!("verifyctl: {refusal}");
+        ctx.note(&refusal)?;
+        return Ok(Outcome::Fail);
+    }
     // `--no-fail-fast`: without it cargo stops at the first failing test binary, so one red
     // crate silently leaves every alphabetically-later workspace package unexecuted.
     let workspace = ctx.cargo(

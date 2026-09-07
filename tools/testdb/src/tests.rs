@@ -133,3 +133,35 @@ async fn the_connect_bound_does_not_ride_the_virtual_clock() {
         started.elapsed()
     );
 }
+
+/// The bound timer must exit the moment the connect answers. Reintroducing an
+/// unconditional `sleep(CONNECT_BOUND)` parks one thread per DB test for the whole bound;
+/// this joins the thread and fails in that shape. Deterministic — no cluster, no clock
+/// race: the release happens-before the join.
+#[test]
+fn the_bound_timer_thread_exits_as_soon_as_the_connect_answers() {
+    let started = std::time::Instant::now();
+    let (bound, _elapsed) = Bound::start();
+    bound.release().join().unwrap();
+    let waited = started.elapsed();
+    assert!(
+        waited < CONNECT_BOUND / 3,
+        "the released bound timer lived {waited:?} of its {CONNECT_BOUND:?} — a parked \
+         thread per DB test is what this release exists to avoid"
+    );
+}
+
+/// The other half: a bound that is never released still fires, so the early release can
+/// never be "fixed" by not arming the timer at all.
+#[test]
+fn an_unreleased_bound_still_elapses() {
+    let started = std::time::Instant::now();
+    let (bound, elapsed) = Bound::start();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(elapsed).expect("the bound must fire");
+    assert!(started.elapsed() >= CONNECT_BOUND);
+    bound.release().join().unwrap();
+}

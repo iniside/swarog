@@ -605,9 +605,11 @@ committed.)
 pool from the one authority, `tools/testdb` (`testdb::test_pool`, a dev-dependency),
 which panics when the cluster is unreachable — a green `cargo test --workspace` can
 never mean "the database tests silently did not run". The single opt-out is
-`TESTDB_ALLOW_SKIP=1` (explicitly truthy, unset = strict, warns loudly per skip), for
-working without a cluster. `testdb`'s own suite scans the workspace and fails if any
-crate grows a second skip authority.
+`TESTDB_ALLOW_SKIP=1` (explicitly truthy, unset = strict), for working without a
+cluster — and it is a LOCAL convenience only: **`verifyctl`'s `test` stage FAILS while
+it is on**, because libtest captures a passing test's output, so an opted-out run
+would be green and silent about having proven nothing. `testdb`'s own suite scans the
+workspace crate by crate and fails if any one grows a second skip authority.
 
 **No data migrations — wipe is the migration strategy (current phase).** This is
 pre-production with no persistent users yet: when a schema or event-contract

@@ -3,7 +3,12 @@
 //! Every crate with live-Postgres tests dev-depends on this crate and obtains its pool
 //! from [`test_pool`]. The default is STRICT: an unreachable cluster PANICS, so a green
 //! `cargo test --workspace` can never mean "the DB tests silently did not run". The only
-//! way to skip is [`SKIP_ENV`], explicitly truthy, and it warns on every call.
+//! way to skip is [`SKIP_ENV`], explicitly truthy.
+//!
+//! The per-skip warning below is NOT the safety net — libtest captures a passing test's
+//! output, so it is invisible in a default run. What keeps the opt-out from relocating
+//! the false green into an env var is `verifyctl`'s `test` stage, which reads
+//! [`skip_allowed`] and REFUSES to run while it is on.
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -98,32 +103,56 @@ async fn connect(dsn: &str) -> Option<PgPool> {
     let inhibitor = tokio::task::spawn_blocking(move || {
         let _ = released.recv();
     });
-    let elapsed = Arc::new((Mutex::new(false), Condvar::new()));
-    let timer = Arc::clone(&elapsed);
-    let (bound_tx, bound) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        let (done, wake) = &*timer;
-        let finished = wake
-            .wait_timeout_while(done.lock().unwrap(), CONNECT_BOUND, |done| !*done)
-            .unwrap();
-        if !*finished.0 {
-            let _ = bound_tx.send(());
-        }
-    });
+    let (bound_timer, bound) = Bound::start();
     let owned = dsn.to_string();
     let pool = tokio::select! {
         connected = PgPool::connect(&owned) => connected.ok(),
         _ = bound => None,
     };
-    // Release both helpers immediately: a connect that answered in milliseconds must not
-    // leave a thread parked for the rest of the bound. Multiplied by every DB test in the
-    // workspace, that costs enough scheduler pressure to perturb other tests' timing.
-    let (done, wake) = &*elapsed;
-    *done.lock().unwrap() = true;
-    wake.notify_all();
+    bound_timer.release();
     let _ = release.send(());
     let _ = inhibitor.await;
     pool
+}
+
+/// The real-clock half of the connect bound: a thread that fires `bound` once
+/// [`CONNECT_BOUND`] has elapsed, and exits IMMEDIATELY once released. The early release
+/// is not cosmetic — one parked thread per DB test, workspace-wide, is enough scheduler
+/// pressure to perturb other crates' timing-sensitive tests (it reproducibly broke
+/// `asyncevents::stop_terminates_active_backend_…`, which is green on either side of this
+/// crate's introduction but red with an unconditional sleep here). That crate-level
+/// symptom does not reproduce at crate scale, so what pins the early release is this
+/// crate's `the_bound_timer_thread_exits_as_soon_as_the_connect_answers`, which joins the
+/// thread and fails if it outlives the release.
+struct Bound {
+    done: Arc<(Mutex<bool>, Condvar)>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+impl Bound {
+    fn start() -> (Self, tokio::sync::oneshot::Receiver<()>) {
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let timer = Arc::clone(&done);
+        let (elapsed_tx, elapsed) = tokio::sync::oneshot::channel();
+        let thread = std::thread::spawn(move || {
+            let (done, wake) = &*timer;
+            let (done, _) = wake
+                .wait_timeout_while(done.lock().unwrap(), CONNECT_BOUND, |done| !*done)
+                .unwrap();
+            if !*done {
+                let _ = elapsed_tx.send(());
+            }
+        });
+        (Self { done, thread }, elapsed)
+    }
+
+    /// Signals the timer and returns its handle (tests join it; `connect` drops it).
+    fn release(self) -> std::thread::JoinHandle<()> {
+        let (done, wake) = &*self.done;
+        *done.lock().unwrap() = true;
+        wake.notify_all();
+        self.thread
+    }
 }
 
 

@@ -5,8 +5,9 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# Dev-dependency-only test support: the ONE place that decides whether a DB test may
-# be skipped. It is never a runtime dependency of any shipping crate.
+# Test support: the ONE place that decides whether a DB test may be skipped. Every
+# consumer with live-DB tests dev-depends on it; verifyctl depends on it normally, to
+# refuse a run whose database tests would all skip. Never in a shipping process graph.
 [dependencies]
 sqlx = { workspace = true }
 tokio = { workspace = true }

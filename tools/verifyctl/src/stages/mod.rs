@@ -2,6 +2,8 @@ pub mod admincheck;
 pub mod audit;
 pub mod codegen;
 pub mod command;
+#[cfg(test)]
+mod command_tests;
 pub mod conformance;
 pub mod contract_golden;
 pub mod csharp;
