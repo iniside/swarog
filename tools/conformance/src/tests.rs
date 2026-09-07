@@ -662,9 +662,8 @@ fn real_policy_has_no_known_input_cap_gaps() {
 /// plain constructors need neither env flips nor a runtime.
 #[test]
 fn real_entries_match_disk_and_monolith() {
-    let disk: BTreeSet<String> = crate::crate_dirs(&crate::modules_dir())
-        .into_iter()
-        .collect();
+    let disk: BTreeSet<String> = rpc_contract_model::module_dirs(&crate::modules_dir())
+        .expect("list module crate dirs under modules/");
     assert!(
         !disk.is_empty(),
         "modules/ scan found nothing — harness path bug"

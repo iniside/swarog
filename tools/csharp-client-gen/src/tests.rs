@@ -14,11 +14,11 @@
 
 use std::collections::BTreeSet;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::emit::{emit_client, emit_dtos, emit_status};
 use crate::model::{Manifest, TypeRef};
-use crate::scrape::{check_completeness, check_drift, domain_of, map_type, parse_sources, scrape};
+use crate::scrape::{check_completeness, check_drift, map_type, parse_sources, scrape};
 
 /// The committed golden manifest — regenerate with
 /// `cargo run -p csharp-client-gen -- --emit-manifest testdata/manifest.golden.json`.
@@ -210,10 +210,12 @@ fn struct_collision_across_files_bails_naming_both_paths() {
     // other DTO's fields. This must be a hard error instead, naming both source files.
     let files = vec![
         (
+            "characters".to_string(),
             PathBuf::from("api/characters/api/src/lib.rs"),
             "pub struct Score { pub value: i64 }".to_string(),
         ),
         (
+            "leaderboard".to_string(),
             PathBuf::from("api/leaderboard/api/src/lib.rs"),
             "pub struct Score { pub points: i64 }".to_string(),
         ),
@@ -238,10 +240,12 @@ fn struct_collision_across_files_bails_naming_both_paths() {
 fn struct_no_collision_when_names_differ() {
     let files = vec![
         (
+            "characters".to_string(),
             PathBuf::from("api/characters/api/src/lib.rs"),
             "pub struct Character { pub id: i64 }".to_string(),
         ),
         (
+            "leaderboard".to_string(),
             PathBuf::from("api/leaderboard/api/src/lib.rs"),
             "pub struct Score { pub value: i64 }".to_string(),
         ),
@@ -296,20 +300,3 @@ fn unmodelled_scalar_bails_naming_the_lattice_not_a_missing_dto() {
     );
 }
 
-// --- Which api/ directory a contract source belongs to ----------------------
-
-/// The completeness gate skips a domain whose contracts landed ahead of its module, so it
-/// must attribute each parsed trait to the right `api/<domain>/`. Anchoring on the
-/// `api/src` pair keeps that right when the workspace itself sits under an `api` segment.
-#[test]
-fn domain_of_reads_the_api_directory_name() {
-    assert_eq!(
-        domain_of(Path::new("api/characters/api/src/lib.rs")).as_deref(),
-        Some("characters")
-    );
-    assert_eq!(
-        domain_of(Path::new("/home/api/dev/swarog/api/groups/api/src/ops.rs")).as_deref(),
-        Some("groups")
-    );
-    assert_eq!(domain_of(Path::new("some/other/file.rs")), None);
-}

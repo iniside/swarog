@@ -34,7 +34,7 @@
 //!      else forges a client-fault verdict for a server-side fault.
 //!
 //! (The above is a curated summary; the numbered rule comments in `main()` are the full
-//! set, currently 1–20 plus the two svc-parity legs of rule 12.)
+//! set, currently 1–21 plus the two svc-parity legs of rule 12.)
 //!
 //! "Own" is defined by path prefix: `modules/<name>/` owns `api/<name>/rpc/`. It also
 //! greps `modules/` for a resurrected `Option<… edge::Server>` — the topology-leak
@@ -150,14 +150,10 @@ const ASYNCEVENTS_SQL_ALLOW: &[&str] = &["append_event(", "ensure_history_contra
 /// does not flag itself. Path-prefix under the workspace root.
 const BAN_SELF_EXCLUDE: &str = "tools/archcheck";
 
-/// The textual marker in an `api/<name>/api/src/lib.rs` that means "this domain exposes
-/// player-facing HTTP ops" (an `#[http(…)]` attribute on an `#[rpc]` method). This is the
-/// ONLY authoritative signal for HTTP surface: the generated `route_bindings()` exists
-/// even for wire-only crates (e.g. `ratingrpc`), so the attribute — never the glue — is
-/// what rule 17 keys off. The provider/stub name is the DIR name (`api/<name>/api`), not
-/// the crate name: `modules/match`'s crate is `match_module` but its provider name is
-/// `match`, and `api/match/api` yields that directly.
-const HTTP_OP_MARKER: &str = "#[http(";
+/// The textual marker that means "this domain exposes player-facing HTTP ops" — owned by
+/// [`rpc_contract_model::HTTP_OP_MARKER`] so rules 17 and 21 and every other served-surface
+/// gate read one definition. Re-bound here only to keep the rule messages short.
+const HTTP_OP_MARKER: &str = rpc_contract_model::HTTP_OP_MARKER;
 
 /// A workspace package's classification, derived from its manifest path.
 #[derive(Debug, Clone)]
@@ -479,10 +475,23 @@ fn main() {
     // `cargo metadata` but must still fail here. No per-module list to maintain:
     // `SVC_EXEMPT_MODULES` is the only allow-list, and it holds sanctioned EXCEPTIONS.
     let root = workspace_root(meta.clone());
-    let fs_modules = crate_dirs(&root.join("modules"));
+    // The module-dir scan is `rpc_contract_model::served_domains` — the same authority the
+    // served-surface gates use — because it reports an unreadable or EMPTY modules/ as an
+    // error. A local scan degrading to an empty Vec would make this parity check pass over
+    // zero modules.
     let fs_cmds = crate_dirs(&root.join("cmd"));
-    for line in missing_svc_violations(&fs_modules, &fs_cmds) {
-        violations.push(line);
+    match rpc_contract_model::served_domains(&root) {
+        Ok(served) => {
+            let fs_modules: Vec<String> = served.into_iter().collect();
+            for line in missing_svc_violations(&fs_modules, &fs_cmds) {
+                violations.push(line);
+            }
+        }
+        Err(e) => violations.push(format!(
+            "cannot list module crate dirs under {}/modules: {e} — the fortress-parity scan \
+             (rule 12) cannot run",
+            root.display()
+        )),
     }
     // The workspace-registered module set, for the "svc actually lists its module" leg.
     let module_names: Vec<String> = packages
@@ -633,9 +642,28 @@ fn main() {
     for line in gateway_stub_coverage_violations(&http_domains, &gateway_lib) {
         violations.push(line);
     }
+    // The verdict SET, not a constant banner: rule 17 proves "every SERVED `#[http(` domain
+    // is stubbed", so which domains it checked is the load-bearing half. Printed so a diff
+    // of two runs shows a domain leaving the checked set instead of an unchanged "OK".
+    println!(
+        "archcheck rule 17: checked {} {HTTP_OP_MARKER} domains: {}",
+        http_domains.len(),
+        if http_domains.is_empty() { "<none>".to_string() } else { http_domains.join(", ") }
+    );
+
+    // --- 21: the served-surface exemption set is explicit and self-checking.
+    // Rule 17 (and checkmodules, opscatalog-gen, csharp-client-gen, conformance) SKIP a
+    // domain with no `modules/<domain>`. That skip is only sound while the module's dir
+    // name equals the api/ dir name: `api/social` implemented as `modules/socialgraph`
+    // would be skipped by all five gates — no gateway stub demanded, no ops-catalog row,
+    // no provider, no input policy — and 404 through the gateway in the split while
+    // working in the monolith. `rpc_contract_model::CONTRACT_ONLY` is the written-down
+    // list of sanctioned skips and this rule fails both an UNLISTED skip and a STALE
+    // entry (module landed, or the contract's HTTP surface is gone).
+    violations.extend(rpc_contract_model::contract_only_violations(&root));
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every #[http( domain is stubbed in cmd/gateway-svc, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -661,8 +689,10 @@ fn env_cargo() -> String {
 }
 
 /// The names of every immediate subdirectory of `dir` that holds a `Cargo.toml` — the
-/// filesystem's own answer to "which crates live under modules/ (or cmd/)", independent
-/// of whether they're registered as workspace members yet.
+/// filesystem's own answer to "which crates live under cmd/", independent of whether
+/// they're registered as workspace members yet. The `modules/` answer is
+/// [`rpc_contract_model::served_domains`], which fails loudly on an empty scan instead of
+/// degrading to an empty list.
 fn crate_dirs(dir: &Path) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -714,8 +744,9 @@ fn core_bus_sqlx_violations(packages: &[serde_json::Value]) -> Vec<String> {
 
 /// Fortress-parity check (rule 12): every `modules/<name>` (minus the sanctioned
 /// [`SVC_EXEMPT_MODULES`]) must have a `cmd/<name>-svc` composition root. Inputs are
-/// the module dir names and cmd dir names from a [`crate_dirs`] filesystem scan, so
-/// the check follows the folders themselves — no per-module list to maintain.
+/// the module dir names ([`rpc_contract_model::served_domains`]) and cmd dir names
+/// ([`crate_dirs`]), so the check follows the folders themselves — no per-module list to
+/// maintain.
 fn missing_svc_violations(modules: &[String], cmds: &[String]) -> Vec<String> {
     modules
         .iter()
@@ -762,88 +793,36 @@ fn svc_lib_references_module(lib_path: &Path, module: &str) -> bool {
     })
 }
 
-/// Every SERVED domain whose contract crate declares at least one [`HTTP_OP_MARKER`]
-/// (`#[http(`) on a NON-comment line (boundary-checked, same style as the other grep
-/// tripwires) — i.e. the domain exposes player-facing HTTP ops. The domain name is the
+/// Every SERVED domain whose contracts declare at least one
+/// [`rpc_contract_model::HTTP_OP_MARKER`] (`#[http(`) — i.e. the domain exposes
+/// player-facing HTTP ops AND something can answer the call. The domain name is the
 /// `api/<name>` DIR name, which IS the provider/stub name (see [`HTTP_OP_MARKER`]).
+///
+/// The `#[http(` scan itself is [`rpc_contract_model::http_op_domains`] — the same
+/// authority rule 21 uses for the contract-only allow-list, so the two rules can never
+/// disagree about which domains have an HTTP surface.
 ///
 /// "Served" is [`rpc_contract_model::served_domains`]: a domain with contracts but no
 /// `modules/<name>` has nothing to answer a call, so requiring a gateway stub for it would
 /// force the module into the contracts' commit. The stub is required from the commit that
-/// adds the module.
-///
-/// Scans EVERY contract source under `api/<name>/api/src` (`rpc_contract_model::
-/// contract_sources`, the walker the other contract scanners share), not just `lib.rs`:
-/// moving one `#[http(` method into `src/ops.rs` would otherwise make the domain's HTTP
-/// surface invisible here, so the "every `#[http(` domain needs a gateway stub" rule would
-/// match zero targets and pass green over a domain unreachable in the split.
+/// adds the module; rule 21 is what keeps that skip from being a silent hole.
 ///
 /// Returns `(domains, errors)`. An unreadable source is an ERROR line, never a silently
 /// absent domain — a permission blip must not turn this rule vacuous.
 fn http_op_domains(root: &Path) -> (Vec<String>, Vec<String>) {
-    let mut domains = Vec::new();
-    let mut errors = Vec::new();
+    let (all, mut errors) = rpc_contract_model::http_op_domains(root);
     let served = match rpc_contract_model::served_domains(root) {
         Ok(served) => served,
         Err(e) => {
             errors.push(format!(
-                "cannot list served domains under {}/modules: {e} — the `#[http(` domain \
+                "cannot list served domains under {}/modules: {e} — the `{HTTP_OP_MARKER}` domain \
                  scan (rule 17) cannot run",
                 root.display()
             ));
-            return (domains, errors);
+            return (Vec::new(), errors);
         }
     };
-    let api_root = &root.join("api");
-    let Ok(entries) = std::fs::read_dir(api_root) else {
-        errors.push(format!(
-            "cannot read {} — the `#[http(` domain scan (rule 17) cannot run",
-            api_root.display()
-        ));
-        return (domains, errors);
-    };
-    let mut dirs: Vec<_> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
-    dirs.sort();
-    for dir in dirs {
-        let Some(domain) = dir.file_name().and_then(|n| n.to_str()).map(String::from) else {
-            continue;
-        };
-        if !served.contains(&domain) {
-            continue;
-        }
-        let src = dir.join("api").join("src");
-        if !src.is_dir() {
-            continue;
-        }
-        let sources = match rpc_contract_model::contract_sources(&src) {
-            Ok(sources) => sources,
-            Err(e) => {
-                errors.push(format!("cannot list contract sources under {}: {e}", src.display()));
-                continue;
-            }
-        };
-        let mut has_http = false;
-        for path in sources {
-            let text = match std::fs::read_to_string(&path) {
-                Ok(text) => text,
-                Err(e) => {
-                    errors.push(format!("cannot read contract source {}: {e}", path.display()));
-                    continue;
-                }
-            };
-            has_http |= text.lines().any(|line| {
-                let t = line.trim_start();
-                !t.starts_with("//") && contains_boundary_checked(line, HTTP_OP_MARKER)
-            });
-        }
-        if has_http {
-            domains.push(domain);
-        }
-    }
+    let domains = all.into_iter().filter(|d| served.contains(d)).collect();
     (domains, errors)
 }
 
@@ -1600,8 +1579,9 @@ fn foreign_schema_sql_refs(line: &str, own: &str, schemas: &[String]) -> Vec<Str
 }
 
 /// Bans a module querying ANOTHER module's Postgres schema in SQL literals (finding 7,
-/// scoped tripwire). The schema set is the fortress module dir scan ([`crate_dirs`] over
-/// `modules/`); each module (own = its dir name) may name only its OWN schema in a SQL
+/// scoped tripwire). The schema set is the fortress module dir scan
+/// ([`rpc_contract_model::served_domains`]); each module (own = its dir name) may name
+/// only its OWN schema in a SQL
 /// keyword context. `asyncevents.` stays with [`grep_asyncevents_sql`] and cross-schema
 /// FKs (`REFERENCES`) with [`grep_cross_schema_fk`] — this rule owns the read/write query
 /// surface (FROM/JOIN/INTO/UPDATE/…). Comment lines and test sources are skipped (same
@@ -1609,7 +1589,18 @@ fn foreign_schema_sql_refs(line: &str, own: &str, schemas: &[String]) -> Vec<Str
 /// [`foreign_schema_sql_refs`] for the declared line-scope limitation.
 fn grep_foreign_schema_sql(root: &Path) -> Vec<String> {
     let modules_root = root.join("modules");
-    let schemas = crate_dirs(&modules_root);
+    // `served_domains`, not a local dir scan: the schema set IS the rule's target list, so
+    // an unreadable or empty modules/ must be a loud finding, never zero targets scanned.
+    let schemas: Vec<String> = match rpc_contract_model::served_domains(root) {
+        Ok(served) => served.into_iter().collect(),
+        Err(e) => {
+            return vec![format!(
+                "cannot list module crate dirs under {}: {e} — the foreign-schema SQL scan \
+                 cannot run",
+                modules_root.display()
+            )];
+        }
+    };
     let mut hits = Vec::new();
     for own in &schemas {
         let mut stack = vec![modules_root.join(own).join("src")];

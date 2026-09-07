@@ -81,10 +81,11 @@ type StructFields = Vec<(String, String, Type)>;
 /// One parsed `#[rpc(prefix = ...)]` trait.
 struct ParsedTrait {
     prefix: String,
-    /// The `api/<domain>/` directory the trait was parsed from, or `None` when the source
-    /// path is not of that shape (a synthetic fixture). `None` is treated as served, so an
-    /// unrecognised path fails the completeness gate closed rather than skipping it.
-    domain: Option<String>,
+    /// The `api/<domain>/` directory the trait was parsed from. Supplied by the directory
+    /// walk that found the source, never re-derived from the path — a path-shape guess is
+    /// wrong for any checkout whose own path contains the anchor it looks for, and a
+    /// mis-attributed domain silently empties the completeness gate.
+    domain: String,
     /// The `#[http]` methods (wire-only methods without `#[http]` are excluded).
     http_methods: Vec<ParsedHttpMethod>,
 }
@@ -121,7 +122,7 @@ pub fn scrape() -> Result<Manifest> {
         .traits
         .iter()
         .filter(|t| !t.http_methods.is_empty())
-        .filter(|t| t.domain.as_ref().is_none_or(|d| served.contains(d)))
+        .filter(|t| served.contains(&t.domain))
         .map(|t| t.prefix.clone())
         .collect();
     check_completeness(&http_trait_prefixes, PROVIDERS)
@@ -241,10 +242,11 @@ pub fn check_drift(runtime: &BTreeSet<String>, parsed: &BTreeSet<String>) -> Res
 // Phase B — parsing
 // ---------------------------------------------------------------------------
 
-/// Discovers every contract source under `api/<name>/api/src/` for every domain,
-/// sorted — via [`rpc_contract_model::contract_sources`], so a trait or DTO moved out
-/// of `lib.rs` into a sibling module is still scraped.
-fn discover_api_sources(root: &Path) -> Result<Vec<PathBuf>> {
+/// Every contract source under `api/<domain>/api/src/`, paired with the `api/<domain>` DIR
+/// name it was found under and sorted — via [`rpc_contract_model::contract_sources`], so a
+/// trait or DTO moved out of `lib.rs` into a sibling module is still scraped. The pairing is
+/// why nothing downstream re-derives the domain from the file path.
+fn discover_api_sources(root: &Path) -> Result<Vec<(String, PathBuf)>> {
     let api_dir = root.join("api");
     let mut files = Vec::new();
     for entry in std::fs::read_dir(&api_dir)
@@ -254,12 +256,16 @@ fn discover_api_sources(root: &Path) -> Result<Vec<PathBuf>> {
         if !entry.path().is_dir() {
             continue;
         }
+        let Some(domain) = entry.file_name().to_str().map(String::from) else {
+            continue;
+        };
         let src_dir = entry.path().join("api").join("src");
         if src_dir.is_dir() {
-            files.extend(
-                rpc_contract_model::contract_sources(&src_dir)
-                    .with_context(|| format!("read contract sources {}", src_dir.display()))?,
-            );
+            for file in rpc_contract_model::contract_sources(&src_dir)
+                .with_context(|| format!("read contract sources {}", src_dir.display()))?
+            {
+                files.push((domain.clone(), file));
+            }
         }
     }
     files.sort();
@@ -269,28 +275,30 @@ fn discover_api_sources(root: &Path) -> Result<Vec<PathBuf>> {
 /// Parses every api crate source into [`Parsed`]: `#[rpc]` traits (with their `#[http]`
 /// method sigs) and a global `pub struct` registry. Reads each discovered file, then
 /// delegates to [`parse_sources`] (kept separate so it's unit-testable on synthetic
-/// `(path, source)` pairs without touching the real `api/` tree).
+/// `(domain, path, source)` triples without touching the real `api/` tree).
 fn parse_all_api_crates(root: &Path) -> Result<Parsed> {
     let mut files = Vec::new();
-    for file in discover_api_sources(root)? {
+    for (domain, file) in discover_api_sources(root)? {
         let src = std::fs::read_to_string(&file)
             .with_context(|| format!("read {}", file.display()))?;
-        files.push((file, src));
+        files.push((domain, file, src));
     }
     parse_sources(&files)
 }
 
-/// Parses already-read `(file, source)` pairs into [`Parsed`]. A `pub struct` name
+/// Parses already-read `(domain, file, source)` triples into [`Parsed`]. The domain comes
+/// from the `api/<domain>` directory walk in [`discover_api_sources`], so no consumer has
+/// to re-derive it from a path. A `pub struct` name
 /// colliding across two different files (a flat `name -> fields` map would silently let
 /// the last-processed file overwrite the first DTO's fields — same failure class the
 /// drift/completeness gates exist to catch) is a hard `bail!` naming BOTH source files.
-pub(crate) fn parse_sources(files: &[(PathBuf, String)]) -> Result<Parsed> {
+pub(crate) fn parse_sources(files: &[(String, PathBuf, String)]) -> Result<Parsed> {
     let mut traits: Vec<ParsedTrait> = Vec::new();
     let mut structs: BTreeMap<String, StructFields> = BTreeMap::new();
     // name -> the file that first declared it, so a later collision can name both.
     let mut struct_provenance: BTreeMap<String, PathBuf> = BTreeMap::new();
 
-    for (file, src) in files {
+    for (domain, file, src) in files {
         let ast =
             syn::parse_file(src).with_context(|| format!("parse {}", file.display()))?;
         for item in ast.items {
@@ -299,7 +307,7 @@ pub(crate) fn parse_sources(files: &[(PathBuf, String)]) -> Result<Parsed> {
                     let prefix = rpc_contract_model::trait_prefix(&t)
                         .with_context(|| format!("parse #[rpc] on {} in {}", t.ident, file.display()))?;
                     if let Some(prefix) = prefix {
-                        traits.push(parse_trait(&t, &prefix, domain_of(file)).with_context(
+                        traits.push(parse_trait(&t, &prefix, domain.clone()).with_context(
                             || format!("parse trait {} in {}", t.ident, file.display()),
                         )?);
                     }
@@ -326,20 +334,8 @@ pub(crate) fn parse_sources(files: &[(PathBuf, String)]) -> Result<Parsed> {
     Ok(Parsed { traits, structs })
 }
 
-/// The `api/<domain>/api/src/...` directory a contract source belongs to. Anchored on the
-/// `api/src` pair so the component before it is the domain even when the workspace itself
-/// lives under a path containing an `api` segment.
-pub(crate) fn domain_of(path: &Path) -> Option<String> {
-    let parts: Vec<&str> = path.components().filter_map(|c| c.as_os_str().to_str()).collect();
-    parts
-        .windows(2)
-        .position(|w| w == ["api", "src"])
-        .filter(|i| *i >= 1)
-        .map(|i| parts[i - 1].to_owned())
-}
-
 /// Parses a `#[rpc]` trait's `#[http]` methods (wire-only methods are skipped).
-fn parse_trait(t: &ItemTrait, prefix: &str, domain: Option<String>) -> Result<ParsedTrait> {
+fn parse_trait(t: &ItemTrait, prefix: &str, domain: String) -> Result<ParsedTrait> {
     let mut syntax = t.clone();
     let methods = rpc_contract_model::build_methods(&mut syntax)
         .with_context(|| format!("parse RPC methods of {}", t.ident))?;

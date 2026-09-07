@@ -23,7 +23,7 @@
 //! `--out <path>` writes elsewhere (the `codegen-freshness` stage regenerates to a temp
 //! and diffs against the commit).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context as _, Result};
@@ -171,12 +171,12 @@ fn to_snake(pascal: &str) -> String {
 /// process actually fronts, so a domain whose contracts landed ahead of its
 /// `modules/<name>` contributes no rows and is not required in the hand-list until the
 /// module's commit.
-fn rpc_modules_from_fs() -> Result<BTreeSet<String>> {
+fn rpc_modules_from_fs() -> Result<FsRpcModules> {
     let root = workspace_root();
     let served = rpc_contract_model::served_domains(&root)
         .with_context(|| format!("list served domains under {}/modules", root.display()))?;
     let api_root = root.join("api");
-    let mut expected = BTreeSet::new();
+    let mut expected = FsRpcModules::default();
     for entry in std::fs::read_dir(&api_root)? {
         let dir = entry?.path();
         let domain = dir
@@ -184,9 +184,7 @@ fn rpc_modules_from_fs() -> Result<BTreeSet<String>> {
             .and_then(|name| name.to_str())
             .unwrap_or_default()
             .to_owned();
-        if !served.contains(&domain) {
-            continue;
-        }
+        let is_served = served.contains(&domain);
         let cargo = dir.join("api").join("Cargo.toml");
         let src_dir = dir.join("api").join("src");
         if !cargo.is_file() || !src_dir.is_dir() {
@@ -214,7 +212,12 @@ fn rpc_modules_from_fs() -> Result<BTreeSet<String>> {
                 });
                 match trait_name {
                     Some(t) if !t.is_empty() => {
-                        expected.insert(format!("{crate_name}::{}_rpc", to_snake(&t)));
+                        let label = format!("{crate_name}::{}_rpc", to_snake(&t));
+                        if is_served {
+                            expected.served.insert(label);
+                        } else {
+                            expected.unserved.insert(label, domain.clone());
+                        }
                     }
                     _ => bail!(
                         "{}:{}: found `#[rpc(` with no following `pub trait`",
@@ -228,21 +231,41 @@ fn rpc_modules_from_fs() -> Result<BTreeSet<String>> {
     Ok(expected)
 }
 
-/// Dies if [`rpc_modules`] drifts from the `#[rpc]` traits present under `api/*/api`.
+/// The `#[rpc]` trait labels found under `api/*/api`, split by whether the domain is
+/// SERVED (`modules/<domain>` exists). The unserved half is carried so a stale-entry
+/// message can tell "the trait is gone" apart from "the trait is still there, its module
+/// is not" — the two need opposite fixes.
+#[derive(Default)]
+struct FsRpcModules {
+    served: BTreeSet<String>,
+    /// label -> the `api/<domain>` dir it was found under.
+    unserved: BTreeMap<String, String>,
+}
+
+/// Dies if [`rpc_modules`] drifts from the `#[rpc]` traits of SERVED domains under
+/// `api/*/api`.
 fn self_check_rpc_list(listed: &[&'static str]) -> Result<()> {
     let expected = rpc_modules_from_fs()?;
     let listed: BTreeSet<String> = listed.iter().map(|s| s.to_string()).collect();
     let mut drift = Vec::new();
-    for m in expected.difference(&listed) {
+    for m in expected.served.difference(&listed) {
         drift.push(format!(
             "MISSING from rpc_modules(): {m} -- add `(\"{m}\", {m}::route_bindings())` to \
              tools/opscatalog-gen/src/main.rs"
         ));
     }
-    for m in listed.difference(&expected) {
-        drift.push(format!(
-            "STALE in rpc_modules(): {m} -- no matching #[rpc] trait under api/*/api; remove it"
-        ));
+    for m in listed.difference(&expected.served) {
+        drift.push(match expected.unserved.get(m) {
+            Some(domain) => format!(
+                "STALE in rpc_modules(): {m} -- its #[rpc] trait still exists under \
+                 api/{domain}/api, but there is no modules/{domain}, so the catalog projects \
+                 no ops for it; remove the entry and restore it with the module"
+            ),
+            None => format!(
+                "STALE in rpc_modules(): {m} -- no matching #[rpc] trait under api/*/api; \
+                 remove it"
+            ),
+        });
     }
     if drift.is_empty() {
         Ok(())

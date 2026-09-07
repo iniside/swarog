@@ -89,20 +89,6 @@ impl Transport for NoopTransport {
     }
 }
 
-/// The names of every immediate subdirectory of `dir` holding a `Cargo.toml` —
-/// the filesystem's own answer to "which crates live under modules/",
-/// independent of workspace registration (the `archcheck::crate_dirs` pattern,
-/// `tools/archcheck/src/main.rs:570-582` — deliberately the filesystem, not
-/// cargo metadata, so an unregistered module still drifts loudly).
-fn crate_dirs(dir: &Path) -> Vec<String> {
-    let Ok(read) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    read.flatten()
-        .filter(|e| e.path().is_dir() && e.path().join("Cargo.toml").is_file())
-        .filter_map(|e| e.file_name().to_str().map(String::from))
-        .collect()
-}
 
 /// The `modules/<name>` set whose sources declare an `adminapi::AdminSubmit` impl — the
 /// real source of truth [`checks::ADMIN_SUBMIT_MODULES`] is diffed against. Test files
@@ -112,7 +98,9 @@ fn crate_dirs(dir: &Path) -> Vec<String> {
 /// `impl AdminSubmit for` both match.
 fn admin_submit_impl_modules(modules_dir: &Path) -> Result<BTreeSet<String>, String> {
     let mut found = BTreeSet::new();
-    for module in crate_dirs(modules_dir) {
+    let modules = rpc_contract_model::module_dirs(modules_dir)
+        .map_err(|e| format!("list module crate dirs under {}: {e}", modules_dir.display()))?;
+    for module in modules {
         let src = Path::new(modules_dir).join(&module).join("src");
         if !src.is_dir() {
             continue;
@@ -387,7 +375,16 @@ fn main() {
         );
     }
     println!();
-    let disk: BTreeSet<String> = crate_dirs(&modules_dir()).into_iter().collect();
+    let disk: BTreeSet<String> = rpc_contract_model::module_dirs(&modules_dir())
+        .unwrap_or_else(|e| {
+            fail_phase(
+                "drift preflight",
+                &[format!(
+                    "list module crate dirs under {}: {e}",
+                    modules_dir().display()
+                )],
+            )
+        });
     let entry_names: BTreeSet<String> = entries.iter().map(|e| e.module.to_string()).collect();
     let monolith = monolith_module_names();
     let drift = drift_findings(&disk, &entry_names, &monolith);

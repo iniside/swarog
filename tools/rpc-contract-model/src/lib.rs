@@ -68,9 +68,16 @@ fn is_contract_source(path: &Path) -> bool {
 /// "nothing is served" can only mean the scan ran against the wrong root — and a silent
 /// empty set would make every caller's gate vacuous instead of loud.
 pub fn served_domains(workspace_root: &Path) -> std::io::Result<BTreeSet<String>> {
-    let modules_root = workspace_root.join("modules");
+    module_dirs(&workspace_root.join("modules"))
+}
+
+/// [`served_domains`] against an explicit `modules/` root, for the scanners that already
+/// hold that path (and for fixtures). Same contract, including the empty-scan `Err`: this
+/// is the ONE place the "which module directories exist" answer is computed, so no caller
+/// can hold a second, silently-degrading copy of the directory test.
+pub fn module_dirs(modules_root: &Path) -> std::io::Result<BTreeSet<String>> {
     let mut domains = BTreeSet::new();
-    for entry in std::fs::read_dir(&modules_root)? {
+    for entry in std::fs::read_dir(modules_root)? {
         let path = entry?.path();
         if !path.join("Cargo.toml").is_file() {
             continue;
@@ -83,13 +90,165 @@ pub fn served_domains(workspace_root: &Path) -> std::io::Result<BTreeSet<String>
         return Err(std::io::Error::new(
             std::io::ErrorKind::NotFound,
             format!(
-                "no module crate directory under {} — every served-surface gate keyed on \
-                 this answer would be vacuous, so the empty scan is reported as a failure",
+                "no module crate directory under {} — every gate keyed on this answer would \
+                 be vacuous, so the empty scan is reported as a failure",
                 modules_root.display()
             ),
         ));
     }
     Ok(domains)
+}
+
+/// The textual marker in a contract source that means "this domain exposes player-facing
+/// HTTP ops" (an `#[http(…)]` attribute on an `#[rpc]` method). This is the ONLY
+/// authoritative signal for HTTP surface: the generated `route_bindings()` exists even for
+/// wire-only crates (e.g. `ratingrpc`), so the attribute — never the glue — is what the
+/// served-surface gates key off. The domain name is the DIR name (`api/<name>`), not the
+/// crate name: `modules/match`'s crate is `match_module` but its provider name is `match`.
+pub const HTTP_OP_MARKER: &str = "#[http(";
+
+/// The domains sanctioned to ship an `#[http(` contract surface WITHOUT `modules/<domain>`.
+///
+/// Every served-surface gate (archcheck rule 17, checkmodules' gateway-stub parity,
+/// opscatalog-gen's hand-list, the C# provider list, the conformance input inventory) skips
+/// a domain that is not in [`served_domains`]. That skip is a hole unless someone decided
+/// it: a domain whose module lands under a DIVERGENT directory name (`api/social` served by
+/// `modules/socialgraph`) would be skipped by all five and 404 through the gateway in the
+/// split while working in the monolith. This list is that decision, written down;
+/// [`contract_only_violations`] fails any un-listed skip AND any entry that has gone stale.
+pub const CONTRACT_ONLY: &[&str] = &["groups"];
+
+/// Every `api/<domain>` whose contract sources declare at least one [`HTTP_OP_MARKER`] on a
+/// NON-comment line, plus one error line per directory or file the scan could not read.
+///
+/// Scans EVERY source under `api/<domain>/api/src` via [`contract_sources`], not just
+/// `lib.rs`: moving one `#[http(` method into `src/ops.rs` would otherwise make the
+/// domain's HTTP surface invisible to every caller. An unreadable source is an ERROR line,
+/// never a silently absent domain — a permission blip must not turn a caller vacuous.
+pub fn http_op_domains(workspace_root: &Path) -> (BTreeSet<String>, Vec<String>) {
+    let mut domains = BTreeSet::new();
+    let mut errors = Vec::new();
+    let api_root = workspace_root.join("api");
+    let entries = match std::fs::read_dir(&api_root) {
+        Ok(entries) => entries,
+        Err(e) => {
+            errors.push(format!(
+                "cannot read {}: {e} — the `{HTTP_OP_MARKER}` domain scan cannot run",
+                api_root.display()
+            ));
+            return (domains, errors);
+        }
+    };
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    dirs.sort();
+    for dir in dirs {
+        let Some(domain) = dir.file_name().and_then(|name| name.to_str()).map(String::from) else {
+            continue;
+        };
+        let src = dir.join("api").join("src");
+        if !src.is_dir() {
+            continue;
+        }
+        let sources = match contract_sources(&src) {
+            Ok(sources) => sources,
+            Err(e) => {
+                errors.push(format!("cannot list contract sources under {}: {e}", src.display()));
+                continue;
+            }
+        };
+        let mut declares = false;
+        for path in sources {
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(e) => {
+                    errors.push(format!("cannot read contract source {}: {e}", path.display()));
+                    continue;
+                }
+            };
+            declares |= text.lines().any(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with("//") && contains_boundary_checked(line, HTTP_OP_MARKER)
+            });
+        }
+        if declares {
+            domains.insert(domain);
+        }
+    }
+    (domains, errors)
+}
+
+/// True if `text` contains `pat` at a position whose PRECEDING byte is not an identifier
+/// character (`[A-Za-z0-9_]`) — i.e. `pat` starts a fresh token rather than continuing a
+/// longer one. A match at byte offset 0 always counts.
+fn contains_boundary_checked(text: &str, pat: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut from = 0;
+    while let Some(offset) = text[from..].find(pat) {
+        let i = from + offset;
+        if i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_') {
+            return true;
+        }
+        from = i + 1;
+    }
+    false
+}
+
+/// One violation per `api/<domain>` that exposes HTTP ops with no `modules/<domain>` and no
+/// [`CONTRACT_ONLY`] entry, and one per CONTRACT_ONLY entry that has gone stale (its
+/// module landed, or its `#[http(` contract is gone). Empty = OK.
+///
+/// This is the self-check that keeps the served-surface gates' exemption set reviewed
+/// rather than implicit: without it, a divergently-named module (`api/social` ⇄
+/// `modules/socialgraph`) silently drops out of all five gates, and an exemption granted
+/// once is never taken back.
+pub fn contract_only_violations(workspace_root: &Path) -> Vec<String> {
+    let (http_domains, mut violations) = http_op_domains(workspace_root);
+    let served = match served_domains(workspace_root) {
+        Ok(served) => served,
+        Err(e) => {
+            violations.push(format!(
+                "cannot list served domains under {}/modules: {e} — the contract-only \
+                 allow-list check cannot run",
+                workspace_root.display()
+            ));
+            return violations;
+        }
+    };
+    let allowed: BTreeSet<&str> = CONTRACT_ONLY.iter().copied().collect();
+    for domain in &http_domains {
+        if served.contains(domain) || allowed.contains(domain.as_str()) {
+            continue;
+        }
+        violations.push(format!(
+            "domain `{domain}` exposes HTTP ops (`{HTTP_OP_MARKER}` under \
+             api/{domain}/api/src) but there is no modules/{domain}/Cargo.toml — every \
+             served-surface gate (gateway stub, ops catalog, C# providers, input policy) \
+             SKIPS it, so it would 404 through the gateway in the split while working in \
+             the monolith. Name the module directory `modules/{domain}` (the provider name \
+             is the api/ dir name), or, if the contracts are deliberately ahead of the \
+             module, add \"{domain}\" to rpc_contract_model::CONTRACT_ONLY"
+        ));
+    }
+    for entry in CONTRACT_ONLY {
+        if served.contains(*entry) {
+            violations.push(format!(
+                "stale rpc_contract_model::CONTRACT_ONLY entry \"{entry}\": modules/{entry} \
+                 now exists, so the served-surface gates already cover it — remove the entry \
+                 so the exemption cannot outlive its reason"
+            ));
+        } else if !http_domains.contains(*entry) {
+            violations.push(format!(
+                "stale rpc_contract_model::CONTRACT_ONLY entry \"{entry}\": no \
+                 `{HTTP_OP_MARKER}` contract under api/{entry}/api/src — the exemption \
+                 names a domain that does not exist (or no longer has HTTP ops); remove it"
+            ));
+        }
+    }
+    violations
 }
 
 /// The parsed arguments of `#[rpc(prefix = "...")]`.
