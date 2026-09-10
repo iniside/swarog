@@ -44,6 +44,18 @@ pub(crate) struct GroupCounts {
     pub(crate) admins: i64,
 }
 
+/// One group as the ADMIN page lists it: the group's own row plus its live counts. The
+/// counts ride the SAME statement as the row (a lateral aggregate), so a group can never
+/// be listed with a member count taken at a different instant than its name.
+pub(crate) struct AdminGroupRow {
+    pub(crate) group_id: String,
+    pub(crate) name: String,
+    pub(crate) join_policy: String,
+    pub(crate) created_at: String,
+    pub(crate) members: i64,
+    pub(crate) pending: i64,
+}
+
 /// Per-GROUP lock key: `MAX_MEMBERS` cannot be enforced by one statement, because
 /// `INSERT … WHERE (SELECT count(*)) < 500` is a count-then-insert however it is spelled —
 /// under READ COMMITTED two concurrent joins both read 499 (neither committed yet) and
@@ -434,6 +446,65 @@ impl Store {
             Err(e) => Err(e),
         }
     }
+
+    /// The three totals the admin overview reports, in ONE statement: three separate
+    /// round-trips would report a total no single instant of the table ever had.
+    pub(crate) async fn admin_totals(&self, member: &str) -> Result<(i64, i64, i64), sqlx::Error> {
+        sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT (SELECT count(*) FROM groups.groups), \
+                    (SELECT count(*) FROM groups.memberships WHERE state = $1), \
+                    (SELECT count(*) FROM groups.memberships WHERE state <> $1)",
+        )
+        .bind(member)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    /// The newest groups with their live counts. Unpaged by design — the operator narrows
+    /// by drilling into one group, not by walking the table.
+    pub(crate) async fn admin_recent_groups(
+        &self,
+        member: &str,
+        limit: i64,
+    ) -> Result<Vec<AdminGroupRow>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, i64, i64)>(&format!(
+            "SELECT g.id::text, g.name, g.join_policy, {}, c.members, c.pending \
+               FROM groups.groups g JOIN LATERAL ({}) c ON true \
+              ORDER BY g.created_at DESC, g.id DESC LIMIT $2",
+            created_text("g.created_at"),
+            COUNTS_LATERAL
+        ))
+        .bind(member)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_admin_group).collect())
+    }
+
+    /// One group by id, counts included. A group id that is not a uuid is `None`, not a
+    /// 500 — the page renders it as "no such group" (see [`is_invalid_uuid`]).
+    pub(crate) async fn admin_group(
+        &self,
+        member: &str,
+        group_id: &str,
+    ) -> Result<Option<AdminGroupRow>, sqlx::Error> {
+        let res = sqlx::query_as::<_, (String, String, String, String, i64, i64)>(&format!(
+            "SELECT g.id::text, g.name, g.join_policy, {}, c.members, c.pending \
+               FROM groups.groups g JOIN LATERAL ({}) c ON true \
+              WHERE g.id = $2::uuid",
+            created_text("g.created_at"),
+            COUNTS_LATERAL
+        ))
+        .bind(member)
+        .bind(group_id)
+        .fetch_optional(&self.pool)
+        .await;
+        match res {
+            Ok(row) => Ok(row.map(row_to_admin_group)),
+            Err(e) if is_invalid_uuid(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// `$3` empty means "any member"; a required role is compared IN the predicate, so a
@@ -448,6 +519,9 @@ const VISIBLE_ROLE_SQL: &str = "SELECT role, player_id::text FROM groups.members
 
 pub(crate) const MEMBER_ROWS: &str = "state = 'member'";
 pub(crate) const PENDING_ROWS: &str = "state <> 'member'";
+/// Every row of a group, whatever state it holds — the admin page's list, which shows
+/// members and pending rows in ONE table with the state as a column.
+pub(crate) const ALL_ROWS: &str = "true";
 
 /// Placeholder numbering is per-VARIANT: Postgres rejects a bind for a parameter the
 /// statement does not reference, so the keyed page's `$4` becomes `$2` when the cursor
@@ -495,5 +569,24 @@ fn row_to_member(row: (String, String, String, String)) -> MemberRow {
         state,
         role,
         created_at,
+    }
+}
+
+/// The per-group live counts both admin reads share, correlated on `g.id`. `$1` is the
+/// `member` state; a group with no rows at all still yields one row of zeros, which is why
+/// the join is a plain `LATERAL ... ON true`.
+const COUNTS_LATERAL: &str = "SELECT count(*) FILTER (WHERE state = $1) AS members, \
+                                     count(*) FILTER (WHERE state <> $1) AS pending \
+                                FROM groups.memberships WHERE group_id = g.id";
+
+fn row_to_admin_group(row: (String, String, String, String, i64, i64)) -> AdminGroupRow {
+    let (group_id, name, join_policy, created_at, members, pending) = row;
+    AdminGroupRow {
+        group_id,
+        name,
+        join_policy,
+        created_at,
+        members,
+        pending,
     }
 }

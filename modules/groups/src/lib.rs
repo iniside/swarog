@@ -16,6 +16,7 @@
 //! The domain write and its durable event append commit in ONE transaction — the event is
 //! durable iff the membership change is.
 
+mod admin;
 mod projection;
 mod service;
 mod store;
@@ -172,7 +173,25 @@ impl Module for Groups {
                 // The wire-only roster predicate: reachable ONLY here, on the internal
                 // mTLS edge, never from the front door.
                 groupsrpc::membership_rpc::register_server(server, svc.clone());
+                // The admin fan-out READ face and, ALONGSIDE it, the opt-in WRITE face —
+                // both through this module's OWN glue crate's re-exports, so the page is
+                // editable from a REMOTE admin process too.
+                groupsrpc::register_admin(server, svc.clone());
+                groupsrpc::register_admin_submit(server, svc.clone());
             }),
+        );
+
+        // The local "Groups" page. `RenderFn` is synchronous while the store reads are
+        // not; the closure bridges via `block_in_place` on the multi-thread runtime.
+        let render_svc = self.svc();
+        ctx.contribute(
+            adminapi::SLOT,
+            adminapi::Item::local(
+                admin::ADMIN_ITEM_ID,
+                admin::ADMIN_SECTION,
+                admin::ADMIN_LABEL,
+                Arc::new(move |params: &adminapi::Params| admin::admin_render(&render_svc, params)),
+            ),
         );
 
         // `membership_rpc` is wire-only, so its `describe()` is empty; concatenated anyway

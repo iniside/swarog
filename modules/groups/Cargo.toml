@@ -22,6 +22,9 @@ groupsevents = { workspace = true }
 # The directory capability's CONTRACT (`Directory`, `PlayerSummary`) plus the byte cap on
 # a handle — the one authority for that bound, so groups declares no second const.
 accountsapi = { workspace = true }
+# The admin CONTRACT (widgets + the `AdminData`/`AdminSubmit` traits) — a contract crate,
+# importable by any module; the admin impl is never reached.
+adminapi = { workspace = true }
 bus = { workspace = true }
 sqlx = { workspace = true }
 # The opaque paging cursor is base64url-no-pad over `"{created_at}|{id}"`.
@@ -34,3 +37,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }
+# The admin `RenderFn` is synchronous while the page's store reads are not: the local render
+# bridges through `block_in_place` on the multi-thread runtime.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
