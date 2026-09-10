@@ -35,3 +35,23 @@ me the authority on a fact I have not checked.
 
 Related: [[scope-claims-to-what-was-verified]], [[a-green-signal-that-never-ran-the-thing]],
 [[prose-about-code-is-not-evidence]], [[didnt-forget-scripts-must-self-check]].
+
+**Recydywa 2026-09-10, w drugą stronę: I asserted a red window that did not exist.** In
+the `groups` plan (2026-09-06) I wrote "there is no red window there" — four blocking
+gates were red from the first commit, forcing a six-commit gate-retarget detour. Four
+days later, in the account-deletion plan, I wrote the mirror image: "`--durability-strict`
+is red until Step 4 lands, which is why Steps 3 and 4 are one rollout." Also false —
+Step 2's `audit` list edit becomes a real `on_tx_raw` subscription pinned to version 1,
+so the topic is subscribed from Step 2. The plan contradicted itself two steps later.
+
+**Why this is its own habit, not an instance of [[prose-about-code-is-not-evidence]]:**
+both errors are *predictions about gate state used to justify a structural decision* —
+a step boundary, a rollout shape. The cost is not a wrong sentence; it is a wrong plan
+skeleton that agents then execute faithfully.
+
+**How to apply:** a claim about what a gate does after step N is only writable in a plan
+after **running that gate**, or after reading the gate's own predicate and naming it
+(`unsubscribed()` keys on `(topic, version)`; `on_tx_raw` pins version 1). Never derive
+it from what the step "obviously" leaves incomplete. If it cannot be executed at
+planning time, write the open question instead of an assertion — a plan that says
+"verify before Step 3 whether X is red" costs nothing and cannot mislead.
