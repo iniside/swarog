@@ -267,7 +267,10 @@ lands immediately after — the window is one step, not five.
 **(a)** `DEV_CLIENT_POLICY`, conformance `input_policies()` rows, regenerated
 `opscatalog/src/generated.rs` and `clients/csharp/Generated/`, the four hand-regenerated
 `tools/csharp-client-gen/testdata/` goldens, the three hand-written sets in
-`tools/csharp-client-gen/src/tests.rs`, and `--bless-public-api`.
+`tools/csharp-client-gen/src/tests.rs`, `--bless-public-api` (`accountsapi` only —
+`accountsevents` closed in Step 2), and **`--bless-contract-golden`**: Step 3 adds two
+`wire` lines and one `rpc-body` line, which rev 2 omitted from this list. Observed, not
+predicted.
 
 **(b) Why now.** Moved ahead of the consumers in rev 2: Steps 5-8 add no `#[http]` op,
 so deferring the gates behind them left `verifyctl --fast` red for five steps.
@@ -418,6 +421,17 @@ Confirm zero `SKIP: postgres unreachable` lines and say so.
 **(d)** `[test-author]` at `model:"sonnet"`.
 
 ## Step 11 — acceptance  `[inline]`
+
+**Precondition, operator action, blocking:** `DROP SCHEMA accounts CASCADE` and boot
+fresh. Step 3 moved the handle-mint authority into a new `accounts.handles` table,
+which starts empty — every pre-existing player row holds a `(lower(display_name),
+discriminator)` pair with no claim, so a registration can claim a pair a legacy player
+already holds and then raise `23505` on `accounts.players`, aborting the caller's
+transaction as a 500 rather than a retry. Wipe is the sanctioned migration strategy
+here; a backfill is banned. **No gate reports this** — `cargo test -p accounts` passes
+because its display names are random — so it must be done deliberately before
+acceptance and before any `devctl up`.
+
 
 `cargo run -p verifyctl -- --fast`, then `--all --strict`. One rollout at a time.
 **Redirect to a file and read the stage table — a trailing `echo $?` reports the
