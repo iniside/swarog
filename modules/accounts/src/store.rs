@@ -22,6 +22,11 @@ pub(crate) const REFRESH_TTL_DAYS: i32 = 30;
 /// `make_interval(secs => …)` takes double precision.
 pub(crate) const REFRESH_GRACE_SECONDS: f64 = 30.0;
 
+/// How long a `begin_delete` confirmation ticket stays live. Short for the same reason
+/// the OAuth state store's window is: it exists to carry one user confirmation across a
+/// couple of screens, not to be stored.
+pub(crate) const DELETE_TICKET_TTL_MINUTES: i32 = 10;
+
 /// The lifetime the API reports for a freshly minted access token, derived from the
 /// SAME constant the INSERT applies so the number a client schedules against cannot
 /// drift from the number the row expires by.
@@ -57,10 +62,25 @@ fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"))
 }
 
-/// How many discriminators one display name may try before minting fails. The unique
-/// index `accounts_handle_idx` is the ONLY freeness authority: each attempt INSERTs and
-/// reads back whether the index accepted it, so there is no window between a check and
-/// the write for a concurrent registration to slip through.
+/// `true` for a Postgres foreign-key violation (23503) — on the delete-ticket upsert,
+/// an identity naming a player that no longer exists.
+fn is_foreign_key_violation(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23503"))
+}
+
+/// `true` for a Postgres invalid-text-representation (22P02) — an id the `::uuid` cast
+/// could not parse. The delete path folds it into the same `NotFound` an unknown player
+/// gets, rather than a 500 (friends' precedent).
+pub(crate) fn is_invalid_uuid(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
+}
+
+/// How many discriminators one display name may try before minting fails. The primary
+/// key of `accounts.handles` is the ONLY freeness authority: each attempt INSERTs a claim
+/// and reads back whether the key accepted it, so there is no window between a check and
+/// the write for a concurrent registration — or for a deletion's permanent reservation —
+/// to slip through. A name whose free discriminators are thinned by reservations fails
+/// minting sooner; that is the cost of never recycling a handle.
 const HANDLE_MINT_ATTEMPTS: usize = 8;
 
 /// One four-digit discriminator candidate, `"0000"`..=`"9999"`.
@@ -101,10 +121,20 @@ const SUMMARY_SELECT: &str = "SELECT p.id::text, p.display_name, p.discriminator
        FROM accounts.players p \
        LEFT JOIN accounts.sessions s ON s.player_id = p.id AND s.expires_at > now() ";
 
+/// The ONE rendering of a `"Name#1234"` handle.
+fn render_handle(display_name: &str, discriminator: &str) -> String {
+    format!("{display_name}#{discriminator}")
+}
+
+/// A `timestamptz` column rendered as the RFC3339 instant the wire types here carry.
+fn rfc3339(column: &str) -> String {
+    format!("to_char({column} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')")
+}
+
 fn summary_of(row: (String, String, String, String)) -> accountsapi::PlayerSummary {
     let (player_id, display_name, discriminator, online_until) = row;
     accountsapi::PlayerSummary {
-        handle: format!("{display_name}#{discriminator}"),
+        handle: render_handle(&display_name, &discriminator),
         player_id,
         display_name,
         online_until,
@@ -262,26 +292,31 @@ impl Store {
         display_name: &str,
         secret_hash: Option<&str>,
     ) -> Result<Player, StoreError> {
-        let mut minted: Option<(String, String)> = None;
+        let mut minted: Option<String> = None;
         for _ in 0..HANDLE_MINT_ATTEMPTS {
-            // ON CONFLICT DO NOTHING, not a caught 23505: a raised unique violation would
-            // abort the caller's whole transaction, leaving nothing to retry into.
-            minted = sqlx::query_as(
-                "INSERT INTO accounts.players (display_name, discriminator) VALUES ($1, $2) \
-                 ON CONFLICT (lower(display_name), discriminator) DO NOTHING \
-                 RETURNING id::text, display_name",
+            let discriminator = new_discriminator();
+            let Some(id) = self
+                .claim_handle_tx(&mut *conn, display_name, &discriminator)
+                .await?
+            else {
+                continue;
+            };
+            sqlx::query(
+                "INSERT INTO accounts.players (id, display_name, discriminator) \
+                 VALUES ($1::uuid, $2, $3)",
             )
+            .bind(&id)
             .bind(display_name)
-            .bind(new_discriminator())
-            .fetch_optional(&mut *conn)
+            .bind(&discriminator)
+            .execute(&mut *conn)
             .await?;
-            if minted.is_some() {
-                break;
-            }
+            minted = Some(id);
+            break;
         }
-        let Some((id, display_name)) = minted else {
+        let Some(id) = minted else {
             return Err(StoreError::HandleExhausted);
         };
+        let display_name = display_name.to_string();
         let res = sqlx::query(
             "INSERT INTO accounts.identities (provider, subject, player_id, secret_hash) \
              VALUES ($1, $2, $3::uuid, $4)",
@@ -297,6 +332,203 @@ impl Store {
             Err(e) if is_unique_violation(&e) => Err(StoreError::Taken),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Claims one `(lower(display_name), discriminator)` pair, answering the player id
+    /// minted with it, or `None` when the pair is already claimed — by a live player OR
+    /// by a deletion's permanent reservation, which are the same row shape and the same
+    /// refusal. The id is minted HERE so the claim can precede the player row it belongs
+    /// to; the caller inserts that row on the same transaction, so a rollback frees the
+    /// claim with it.
+    ///
+    /// ON CONFLICT DO NOTHING, not a caught 23505: a raised unique violation would abort
+    /// the caller's whole transaction, leaving nothing to retry into.
+    async fn claim_handle_tx(
+        &self,
+        conn: &mut PgConnection,
+        display_name: &str,
+        discriminator: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "INSERT INTO accounts.handles (display_name_lower, discriminator, player_id) \
+             VALUES (lower($1), $2, gen_random_uuid()) \
+             ON CONFLICT (display_name_lower, discriminator) DO NOTHING \
+             RETURNING player_id::text",
+        )
+        .bind(display_name)
+        .bind(discriminator)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(row.map(|(id,)| id))
+    }
+
+    /// Mints or re-reads the ONE live delete ticket of a player, answering
+    /// `(ticket, expires_at)`. A player already holding a live ticket gets that same
+    /// ticket and its original expiry back: the conflict arm keeps the stored values
+    /// while they are live and replaces them only once they are not, so a repeated
+    /// `begin_delete` can neither invalidate an outstanding confirmation nor extend one
+    /// indefinitely. One statement, so two concurrent calls cannot each mint.
+    ///
+    /// `None` is a `player_id` that names no player — the foreign key's rejection, or an
+    /// id the uuid cast could not parse at all; the caller answers `NotFound` for both.
+    pub async fn upsert_delete_ticket(
+        &self,
+        player_id: &str,
+        ticket: &str,
+    ) -> Result<Option<(String, String)>, sqlx::Error> {
+        let res: Result<(String, String), sqlx::Error> = sqlx::query_as(&format!(
+            "INSERT INTO accounts.delete_tickets (player_id, ticket, expires_at) \
+             VALUES ($1::uuid, $2, now() + make_interval(mins => $3)) \
+             ON CONFLICT (player_id) DO UPDATE SET \
+               ticket = CASE WHEN accounts.delete_tickets.expires_at > now() \
+                             THEN accounts.delete_tickets.ticket ELSE excluded.ticket END, \
+               expires_at = CASE WHEN accounts.delete_tickets.expires_at > now() \
+                             THEN accounts.delete_tickets.expires_at ELSE excluded.expires_at END \
+             RETURNING ticket, {}",
+            rfc3339("expires_at")
+        ))
+        .bind(player_id)
+        .bind(ticket)
+        .bind(DELETE_TICKET_TTL_MINUTES)
+        .fetch_one(&self.pool)
+        .await;
+        match res {
+            Ok(row) => Ok(Some(row)),
+            Err(e) if is_foreign_key_violation(&e) || is_invalid_uuid(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Consumes the caller's live delete ticket on the caller's transaction, answering
+    /// the DB-canonical spelling of the player id (wallet's precedent: what the receipt
+    /// and the event carry is the database's spelling, never the caller's). A ticket
+    /// belonging to another player is simply not this player's row, so it reads the same
+    /// as an unknown one — the caller owes both the same `NotFound`.
+    pub async fn consume_delete_ticket_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        ticket: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "DELETE FROM accounts.delete_tickets \
+              WHERE player_id = $1::uuid AND ticket = $2 AND expires_at > now() \
+             RETURNING player_id::text",
+        )
+        .bind(player_id)
+        .bind(ticket)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(row.map(|(id,)| id))
+    }
+
+    /// The `"Name#1234"` of a player on the caller's transaction, read from the two
+    /// columns the claim was minted against so the reserved pair and the reported handle
+    /// cannot disagree.
+    pub async fn handle_of_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT display_name, discriminator FROM accounts.players WHERE id = $1::uuid",
+        )
+        .bind(player_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(row.map(|(display_name, discriminator)| render_handle(&display_name, &discriminator)))
+    }
+
+    /// Reserves a player's handle FOREVER on the caller's transaction, from the player's
+    /// own row — so the reserved pair is by construction the pair the claim holds. The
+    /// claim row survives the player: `player_id` goes NULL (the deleted player is not
+    /// named by the registry that outlives it) and the pair stays unmintable, since
+    /// [`Store::claim_handle_tx`] asks the same primary key.
+    ///
+    /// The INSERT arm covers a player whose claim predates this table; the UPDATE arm is
+    /// the ordinary release. Run BEFORE the player row is deleted — it reads it.
+    pub async fn reserve_handle_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO accounts.handles (display_name_lower, discriminator, player_id) \
+             SELECT lower(display_name), discriminator, NULL \
+               FROM accounts.players WHERE id = $1::uuid \
+             ON CONFLICT (display_name_lower, discriminator) DO UPDATE SET player_id = NULL",
+        )
+        .bind(player_id)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    /// Writes the permanent deletion receipt on the caller's transaction and answers it.
+    pub async fn insert_deletion_receipt_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        handle: &str,
+        ticket: &str,
+    ) -> Result<accountsapi::DeleteReceipt, sqlx::Error> {
+        let (deleted_at,): (String,) = sqlx::query_as(&format!(
+            "INSERT INTO accounts.deletion_receipts (player_id, handle, ticket) \
+             VALUES ($1::uuid, $2, $3) RETURNING {}",
+            rfc3339("deleted_at")
+        ))
+        .bind(player_id)
+        .bind(handle)
+        .bind(ticket)
+        .fetch_one(&mut *conn)
+        .await?;
+        Ok(accountsapi::DeleteReceipt {
+            player_id: player_id.to_string(),
+            handle: handle.to_string(),
+            deleted_at,
+        })
+    }
+
+    /// The receipt of an ALREADY completed deletion, matched on the ticket that produced
+    /// it — what an internal-edge replay is answered from once the player, and with it
+    /// the ticket row, are gone. A different ticket answers nothing, so the receipt can
+    /// only be re-read by the call that wrote it.
+    pub async fn deletion_receipt_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        ticket: &str,
+    ) -> Result<Option<accountsapi::DeleteReceipt>, sqlx::Error> {
+        let row: Option<(String, String, String)> = sqlx::query_as(&format!(
+            "SELECT player_id::text, handle, {} FROM accounts.deletion_receipts \
+              WHERE player_id = $1::uuid AND ticket = $2",
+            rfc3339("deleted_at")
+        ))
+        .bind(player_id)
+        .bind(ticket)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(row.map(|(player_id, handle, deleted_at)| accountsapi::DeleteReceipt {
+            player_id,
+            handle,
+            deleted_at,
+        }))
+    }
+
+    /// Deletes the player row on the caller's transaction, answering whether it was
+    /// there. The schema's `ON DELETE CASCADE`s take its identities, sessions, refresh
+    /// tokens and delete ticket with it — THE session revocation, committing with
+    /// whatever else this transaction carries.
+    pub async fn delete_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query("DELETE FROM accounts.players WHERE id = $1::uuid")
+            .bind(player_id)
+            .execute(&mut *conn)
+            .await?;
+        Ok(res.rows_affected() > 0)
     }
 
     /// The player and stored hash for a dev identity, or `Ok(None)` when there is no
@@ -621,6 +853,19 @@ impl Store {
         conn: &mut PgConnection,
     ) -> Result<u64, sqlx::Error> {
         let res = sqlx::query("DELETE FROM accounts.sessions WHERE expires_at <= now()")
+            .execute(&mut *conn)
+            .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Deletes every EXPIRED delete ticket on the delivery tx, the third table this
+    /// module's daily prune drains. An expired ticket can no longer be consumed, so
+    /// removing it changes no answer.
+    pub async fn prune_expired_delete_tickets(
+        &self,
+        conn: &mut PgConnection,
+    ) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query("DELETE FROM accounts.delete_tickets WHERE expires_at <= now()")
             .execute(&mut *conn)
             .await?;
         Ok(res.rows_affected())

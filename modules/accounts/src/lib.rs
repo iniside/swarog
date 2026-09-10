@@ -14,8 +14,9 @@
 //!     capability the gateway's auth-once verifier resolves (registry swap: local
 //!     here, an edge client from `accountsrpc::remote_factories()` in a split peer).
 //!   - `accounts.auth` ([`accountsapi::Auth`]) — register/login/loginFederated/
-//!     createGuest/refresh/me/link, all seven contributed as gateway operations
-//!     UNCONDITIONALLY — the dev/provider gating lives at the impl (see `ops.rs`).
+//!     createGuest/refresh/me/link/beginDelete/deleteAccount, ALL contributed as gateway
+//!     operations UNCONDITIONALLY — the dev/provider gating lives at the impl (see
+//!     `ops.rs`).
 //!   - `accounts.directory` ([`accountsapi::Directory`]) — wire-only player lookup by
 //!     id or `Name#1234` handle, for a consumer that renders or validates a player
 //!     other than its own caller.
@@ -63,6 +64,10 @@ use crate::store::{LinkOutcome, Player, Store, StoreError};
 const MAX_EMAIL_BYTES: usize = 320;
 const MAX_PASSWORD_BYTES: usize = 1024;
 pub const MAX_PROVIDER_NAME_BYTES: usize = 64;
+/// The delete ticket is server-minted (43 base64url characters) and only ever replayed
+/// back to us, so nothing outside this module sizes it; the headroom is the session
+/// token's, for the same reason — bounding attacker-controlled input before the lookup.
+pub const MAX_DELETE_TICKET_BYTES: usize = 128;
 
 /// The SHARED cap checks — the register/login handlers and factual conformance probes
 /// call these same pure fns, so the probe
@@ -100,6 +105,10 @@ pub(crate) fn session_token_within_cap(token: &str) -> bool {
     token.len() <= accountsapi::MAX_SESSION_TOKEN_BYTES
 }
 
+pub(crate) fn delete_ticket_within_cap(ticket: &str) -> bool {
+    ticket.len() <= MAX_DELETE_TICKET_BYTES
+}
+
 /// The fixed decoy candidate verified against [`DUMMY_HASH`] when the email is
 /// unknown or the input invalid — never the caller's real password against a decoy.
 const DECOY_CANDIDATE: &str = "accounts-invalid-credentials";
@@ -116,10 +125,44 @@ CREATE TABLE IF NOT EXISTS accounts.players (
 	discriminator text        NOT NULL,
 	created_at    timestamptz NOT NULL DEFAULT now()
 );
--- The handle authority: display names are NOT unique, so `Name#1234` is what addresses
--- a player. Minting INSERTs against this index and retries what it rejects.
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_handle_idx
 	ON accounts.players (lower(display_name), discriminator);
+
+-- The handle authority: display names are NOT unique, so `Name#1234` is what addresses a
+-- player, and THIS table decides which pairs are free. Minting INSERTs a claim here and
+-- retries what the unique key rejects; deleting a player NULLs `player_id` and keeps the
+-- row, so a freed handle is refused by the same key that refuses a live one and can never
+-- be re-minted (impersonation-by-recycling). NO foreign key to `players`: the cascade
+-- would take the reservation with the row it exists to outlive.
+-- Every live player has a row here — an `accounts` schema without one per player is
+-- wiped and rebooted (wipe-over-migrations), never backfilled.
+CREATE TABLE IF NOT EXISTS accounts.handles (
+	display_name_lower text NOT NULL,
+	discriminator      text NOT NULL,
+	player_id          uuid,
+	claimed_at         timestamptz NOT NULL DEFAULT now(),
+	PRIMARY KEY (display_name_lower, discriminator)
+);
+
+-- The confirmation ticket `begin_delete` mints. One live ticket per player (the primary
+-- key), so a repeated call returns the same one; it dies with the player through the
+-- cascade, unlike the reservation and the receipt.
+CREATE TABLE IF NOT EXISTS accounts.delete_tickets (
+	player_id  uuid PRIMARY KEY REFERENCES accounts.players(id) ON DELETE CASCADE,
+	ticket     text        NOT NULL,
+	created_at timestamptz NOT NULL DEFAULT now(),
+	expires_at timestamptz NOT NULL
+);
+
+-- The permanent record of one completed deletion: what an internal-edge replay of
+-- `delete_account` is answered from after the player row is gone. NO foreign key to
+-- `players`, for the same reason as `handles`.
+CREATE TABLE IF NOT EXISTS accounts.deletion_receipts (
+	player_id  uuid PRIMARY KEY,
+	handle     text        NOT NULL,
+	ticket     text        NOT NULL,
+	deleted_at timestamptz NOT NULL DEFAULT now()
+);
 
 CREATE TABLE IF NOT EXISTS accounts.identities (
 	provider    text NOT NULL,
@@ -164,6 +207,9 @@ CREATE INDEX IF NOT EXISTS refresh_expires_idx ON accounts.refresh_tokens(expire
 -- take_state is a DELETE ... RETURNING (cross-replica exactly-once single-redemption,
 -- 10-min TTL as a created_at predicate). An empty session_token is a LOGIN flow; a
 -- set one is a LINK flow bound to that session's player.
+-- No player_id and deliberately NO cascade: a LINK row still in flight when its player is
+-- deleted names only that player's session token, and it is swept by the same 10-minute
+-- TTL prune as any abandoned one.
 CREATE TABLE IF NOT EXISTS accounts.oauth_states (
 	state           text PRIMARY KEY,
 	session_token   text        NOT NULL,
@@ -176,6 +222,21 @@ CREATE INDEX IF NOT EXISTS oauth_states_created_idx ON accounts.oauth_states(cre
 fn internal<E: std::fmt::Display>(e: E) -> Error {
     Error::internal(e.to_string())
 }
+
+/// A store failure on the delete path: an id the `::uuid` cast could not parse gets the
+/// same `NotFound` an unknown ticket gets — never a 500, and never a 403, which would
+/// confirm the ticket exists.
+fn delete_store_error(e: sqlx::Error) -> Error {
+    if store::is_invalid_uuid(&e) {
+        Error::not_found(TICKET_NOT_FOUND)
+    } else {
+        internal(e)
+    }
+}
+
+/// The ONE answer every miss on the delete path gives: an unknown ticket, an expired
+/// one, one belonging to another player, and an unparseable caller id.
+const TICKET_NOT_FOUND: &str = "delete ticket not found";
 
 // ============================================================================
 // Service — backs Sessions + Auth (the registry capabilities + the generated edge
@@ -562,6 +623,115 @@ impl Service {
         })
     }
 
+    /// Erases one player in ONE transaction: consume the ticket, reserve the handle
+    /// permanently, write the receipt, delete the player row — whose cascades take its
+    /// identities, sessions, refresh tokens and remaining ticket — and append
+    /// `player.deleted`.
+    ///
+    /// The revocation sharing this transaction is what closes the resurrection race:
+    /// accounts owns both the session table and the append, and a consumer becomes
+    /// eligible for an event only once the appending transaction is globally visible, so
+    /// every purge handler runs strictly after the player's 60-minute access tokens
+    /// stopped verifying.
+    ///
+    /// The player lock is the first statement after BEGIN (the lock order this module
+    /// documents on `link_identity`), which is also what makes the replay deterministic:
+    /// a second delivery waits for the original to commit, then finds no ticket and reads
+    /// the receipt instead of racing the delete.
+    async fn delete_player_atomic(
+        &self,
+        player_id: &str,
+        ticket: &str,
+    ) -> Result<accountsapi::DeleteReceipt, Error> {
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        if let Err(e) = self.store.lock_player_tx(&mut tx, player_id).await {
+            tx.rollback().await.ok();
+            return Err(internal(e));
+        }
+        let consumed = match self
+            .store
+            .consume_delete_ticket_tx(&mut tx, player_id, ticket)
+            .await
+        {
+            Ok(consumed) => consumed,
+            Err(e) => {
+                tx.rollback().await.ok();
+                return Err(delete_store_error(e));
+            }
+        };
+        let Some(player_id) = consumed else {
+            let replay = match self
+                .store
+                .deletion_receipt_tx(&mut tx, player_id, ticket)
+                .await
+            {
+                Ok(replay) => replay,
+                Err(e) => {
+                    tx.rollback().await.ok();
+                    return Err(delete_store_error(e));
+                }
+            };
+            tx.rollback().await.ok();
+            return replay.ok_or_else(|| Error::not_found(TICKET_NOT_FOUND));
+        };
+
+        let receipt = match self.delete_player_steps(&mut tx, &player_id, ticket).await {
+            Ok(receipt) => receipt,
+            Err(err) => {
+                tx.rollback().await.ok();
+                return Err(err);
+            }
+        };
+        tx.commit().await.map_err(internal)?;
+        Ok(receipt)
+    }
+
+    /// The writes of a deletion, in the order they depend on each other: the reservation
+    /// and the handle read BEFORE the row they read is gone, then the receipt, then the
+    /// delete, then the append.
+    async fn delete_player_steps(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        player_id: &str,
+        ticket: &str,
+    ) -> Result<accountsapi::DeleteReceipt, Error> {
+        let handle = self
+            .store
+            .handle_of_tx(tx, player_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| Error::not_found(TICKET_NOT_FOUND))?;
+        self.store
+            .reserve_handle_tx(tx, player_id)
+            .await
+            .map_err(internal)?;
+        let receipt = self
+            .store
+            .insert_deletion_receipt_tx(tx, player_id, &handle, ticket)
+            .await
+            .map_err(internal)?;
+        if !self
+            .store
+            .delete_player_tx(tx, player_id)
+            .await
+            .map_err(internal)?
+        {
+            return Err(Error::not_found(TICKET_NOT_FOUND));
+        }
+        self.bus
+            .emit_tx(
+                AnyTx::new(&mut **tx),
+                &accountsevents::PLAYER_DELETED,
+                &accountsevents::PlayerDeleted {
+                    player_id: player_id.to_string(),
+                    handle,
+                },
+            )
+            .await
+            .map_err(internal)?;
+        Ok(receipt)
+    }
+
     /// Appends the `player.registered` durable event (`emit_tx`) on the caller's
     /// tx — the durable rule: the event commits iff the registration does.
     async fn emit_registered_tx(
@@ -899,12 +1069,53 @@ impl accountsapi::Auth for Service {
         self.link_identity(pid, &provider, &verified.subject).await?;
         self.me_view(pid).await
     }
+
+    /// Mints — or re-reads — the caller's ONE live delete ticket. The upsert is the whole
+    /// safety property: a repeat answers with the same ticket and the same expiry, so a
+    /// client that calls twice cannot invalidate the confirmation its user is looking at.
+    /// A caller identity that names no player is `NotFound`.
+    async fn begin_delete(&self, identity: Identity) -> Result<accountsapi::DeleteTicket, Error> {
+        let pid = identity
+            .player_id()
+            .ok_or_else(|| Error::invalid("missing player identity"))?;
+        let minted = self
+            .store
+            .upsert_delete_ticket(pid, &store::new_token())
+            .await
+            .map_err(internal)?;
+        let Some((ticket, expires_at)) = minted else {
+            return Err(Error::not_found("player not found"));
+        };
+        Ok(accountsapi::DeleteTicket {
+            ticket,
+            expires_at,
+        })
+    }
+
+    /// Erases the calling player against the ticket `begin_delete` minted. The cap is the
+    /// only shape check: a ticket that is not this player's live one — unknown, expired,
+    /// or another player's — is the same `NotFound`, since a `Forbidden` would confirm it
+    /// exists. Everything the deletion does happens in one transaction
+    /// ([`Service::delete_player_atomic`]).
+    async fn delete_account(
+        &self,
+        identity: Identity,
+        ticket: String,
+    ) -> Result<accountsapi::DeleteReceipt, Error> {
+        let pid = identity
+            .player_id()
+            .ok_or_else(|| Error::invalid("missing player identity"))?;
+        if !delete_ticket_within_cap(&ticket) {
+            return Err(Error::invalid("ticket too long"));
+        }
+        self.delete_player_atomic(pid, &ticket).await
+    }
 }
 
 // ============================================================================
-// Durable prune reaction — sessions and refresh tokens grow unboundedly (INSERT-only,
-// TTL filtered on read), so accounts reacts to the seeded daily
-// `accounts-sessions-prune` schedule and deletes expired rows of BOTH tables on the
+// Durable prune reaction — sessions, refresh tokens and delete tickets are all
+// INSERT-only with a TTL filtered on read, so accounts reacts to the seeded daily
+// `accounts-sessions-prune` schedule and deletes the expired rows of all three on the
 // DELIVERY tx (exactly-once with the checkpoint advance).
 // Copied from audit's prune: subscribe raw by the CONTRACT descriptor's topic const, no
 // `schedulerevents::Fired` payload-type import — the handler parses only `name`.
@@ -957,6 +1168,11 @@ impl TxHandler for PruneHandler {
             self.svc
                 .store
                 .prune_expired_refresh_tokens(conn)
+                .await
+                .map_err(BusError::transport)?;
+            self.svc
+                .store
+                .prune_expired_delete_tickets(conn)
                 .await
                 .map_err(BusError::transport)?;
             Ok(())

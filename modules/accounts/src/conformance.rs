@@ -23,7 +23,7 @@ use crate::{
 /// the only ones.
 pub use crate::guest::MAX_GUEST_CREDENTIAL_BYTES;
 pub use crate::providers::MAX_OIDC_CREDENTIAL_BYTES;
-pub use crate::MAX_PROVIDER_NAME_BYTES;
+pub use crate::{MAX_DELETE_TICKET_BYTES, MAX_PROVIDER_NAME_BYTES};
 
 /// Every provider name this build can verify — the naming authority itself, so the
 /// tool's per-provider cap list is diffed against the real list rather than a copy.
@@ -283,6 +283,29 @@ fn dead_pool() -> PgPool {
 }
 
 const DEAD_DSN: &str = "postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable";
+
+/// Whether `accountsapi::Auth::delete_account` rejects a ticket of `len` bytes, driven
+/// through the op on a pool that CANNOT connect — the `refresh` case's shape, and for the
+/// same reason: an at-cap ticket is simply not a live one, and an unknown ticket is also a
+/// 404, so on a live pool this probe would answer identically with the guard deleted.
+/// Against a dead pool only the guard can produce a 400: at the cap the op reaches the
+/// store and answers Internal (false), over the cap the guard rejects it (true).
+#[doc(hidden)]
+pub fn conformance_delete_ticket_rejected(len: usize) -> bool {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime");
+    let svc = {
+        let _guard = rt.enter();
+        service_on(dead_pool())
+    };
+    let outcome = rt.block_on(svc.delete_account(
+        Identity::player("00000000-0000-0000-0000-000000000000"),
+        "a".repeat(len),
+    ));
+    matches!(outcome, Err(error) if error.status == opsapi::Status::Invalid)
+}
 
 #[doc(hidden)]
 pub fn conformance_provider_name_rejected(len: usize) -> bool {

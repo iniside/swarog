@@ -72,6 +72,26 @@ pub struct GuestSession {
     pub device_secret: String,
 }
 
+/// The confirmation ticket [`Auth::begin_delete`] mints and [`Auth::delete_account`]
+/// consumes. `expires_at` is RFC3339 (`"2026-01-02T15:04:05Z"`), so a client can show
+/// the user how long the confirmation stays valid.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteTicket {
+    pub ticket: String,
+    pub expires_at: String,
+}
+
+/// The record of a completed deletion: the player that no longer exists, the handle now
+/// permanently reserved against it, and when it happened (RFC3339). It outlives the
+/// player row — it is what an internal-edge replay is answered from, and what an
+/// operator reads afterwards.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteReceipt {
+    pub player_id: String,
+    pub handle: String,
+    pub deleted_at: String,
+}
+
 /// One credential mapping `(provider, subject) → player`. Go named this `Identity`;
 /// renamed here so it can never be confused with the macro's leading
 /// `opsapi::Identity` caller-identity convention. Serde field names are Go's JSON
@@ -214,6 +234,33 @@ pub trait Auth: Send + Sync {
     /// view. 200.
     #[http(verb = "POST", path = "/accounts/link", auth = "player", success = 200)]
     async fn link(&self, identity: Identity, provider: String, credential: String) -> Result<MeView, Error>;
+
+    /// Mints the confirmation ticket [`Auth::delete_account`] requires — the second
+    /// step that keeps a single stray POST from erasing a player. The ticket is
+    /// server-minted, short-lived, and UPSERTED: a player that already holds a live
+    /// ticket gets that SAME ticket back instead of a second one, so a client repeating
+    /// this call can never invalidate the ticket it already showed its user. Not
+    /// `#[retry_safe]` — minting is a mutation; the upsert is what makes a repeat safe.
+    /// 200.
+    #[http(verb = "POST", path = "/accounts/delete/begin", auth = "player", success = 200)]
+    async fn begin_delete(&self, identity: Identity) -> Result<DeleteTicket, Error>;
+
+    /// Erases the CALLING player: the ticket is consumed, its handle is reserved
+    /// permanently (it can never be minted again), a receipt is written, the player row
+    /// is deleted — cascading its identities, sessions and refresh tokens — and
+    /// `player.deleted` is appended, ALL in one transaction. An unknown ticket, an
+    /// expired one, and one belonging to another player are the same `NotFound` (404),
+    /// never `Forbidden` — a 403 would confirm the ticket exists.
+    ///
+    /// `#[retry_safe]` covers exactly one replay: the gateway→accounts **internal-edge**
+    /// replay after a reconnect (`opsapi::RetryMode::OnceAfterReconnect`), which the
+    /// receipt answers with the original success instead of re-executing. It does NOT
+    /// cover a client re-POST — the session died with the player, so the gateway's
+    /// verifier answers 401 before the request reaches this method. A client learns the
+    /// outcome from the first response or not at all. 200.
+    #[http(verb = "POST", path = "/accounts/delete", auth = "player", success = 200)]
+    #[retry_safe]
+    async fn delete_account(&self, identity: Identity, ticket: String) -> Result<DeleteReceipt, Error>;
 }
 
 // The admin fan-out capability now lives in the cross-cutting `adminapi::AdminData`
