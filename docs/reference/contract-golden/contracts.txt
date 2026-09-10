@@ -126,7 +126,9 @@ payload topic=wallet.changed version=1 payload.delta:number
 payload topic=wallet.changed version=1 payload.ledger_id:string
 payload topic=wallet.changed version=1 payload.player_id:string
 payload topic=wallet.changed version=1 payload.reason:string
+rpc module=accountsapi::auth_rpc method=accounts.beginDelete verb=POST path=/accounts/delete/begin auth=Player success=200 retry=Never
 rpc module=accountsapi::auth_rpc method=accounts.createGuest verb=POST path=/accounts/guest auth=None success=201 retry=Never
+rpc module=accountsapi::auth_rpc method=accounts.deleteAccount verb=POST path=/accounts/delete auth=Player success=200 retry=OnceAfterReconnect
 rpc module=accountsapi::auth_rpc method=accounts.link verb=POST path=/accounts/link auth=Player success=200 retry=Never
 rpc module=accountsapi::auth_rpc method=accounts.login verb=POST path=/accounts/login auth=None success=200 retry=Never
 rpc module=accountsapi::auth_rpc method=accounts.loginFederated verb=POST path=/accounts/login/federated auth=None success=200 retry=Never
@@ -161,6 +163,7 @@ rpc module=notificationsapi::player_rpc method=notifications.list verb=POST path
 rpc module=notificationsapi::player_rpc method=notifications.markRead verb=POST path=/notifications/{id}/read auth=Player success=204 retry=OnceAfterReconnect
 rpc module=walletapi::player_rpc method=wallet.listCurrencies verb=GET path=/wallet/currencies auth=Player success=200 retry=OnceAfterReconnect
 rpc module=walletapi::player_rpc method=wallet.myBalances verb=GET path=/wallet/me auth=Player success=200 retry=OnceAfterReconnect
+rpc-arg module=accountsapi::auth_rpc method=accounts.deleteAccount param=ticket wire_key=ticket source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.link param=credential wire_key=credential source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.link param=provider wire_key=provider source=body
 rpc-arg module=accountsapi::auth_rpc method=accounts.login param=email wire_key=email source=body
@@ -211,7 +214,9 @@ rpc-arg module=notificationsapi::player_rpc method=notifications.delete param=no
 rpc-arg module=notificationsapi::player_rpc method=notifications.list param=cursor wire_key=cursor source=body
 rpc-arg module=notificationsapi::player_rpc method=notifications.list param=limit wire_key=limit source=body
 rpc-arg module=notificationsapi::player_rpc method=notifications.markRead param=notification_id wire_key=notification_id source=path:id
+rpc-body module=accountsapi::auth_rpc method=accounts.beginDelete body:object{}
 rpc-body module=accountsapi::auth_rpc method=accounts.createGuest body:object{}
+rpc-body module=accountsapi::auth_rpc method=accounts.deleteAccount body.ticket:string
 rpc-body module=accountsapi::auth_rpc method=accounts.link body.credential:string
 rpc-body module=accountsapi::auth_rpc method=accounts.link body.provider:string
 rpc-body module=accountsapi::auth_rpc method=accounts.login body.email:string
@@ -263,7 +268,9 @@ rpc-body module=notificationsapi::player_rpc method=notifications.list body.limi
 rpc-body module=notificationsapi::player_rpc method=notifications.markRead body:object{}
 rpc-body module=walletapi::player_rpc method=wallet.listCurrencies body:object{}
 rpc-body module=walletapi::player_rpc method=wallet.myBalances body:object{}
+wire module=accountsapi::auth_rpc method=accounts.beginDelete retry=Never
 wire module=accountsapi::auth_rpc method=accounts.createGuest retry=Never
+wire module=accountsapi::auth_rpc method=accounts.deleteAccount retry=OnceAfterReconnect
 wire module=accountsapi::auth_rpc method=accounts.link retry=Never
 wire module=accountsapi::auth_rpc method=accounts.login retry=Never
 wire module=accountsapi::auth_rpc method=accounts.loginFederated retry=Never

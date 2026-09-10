@@ -30,8 +30,15 @@ public sealed class GameBackendStatusException(Status status, string? detail)
     public string? Detail { get; } = detail;
 }
 
+/// <summary>Request for <c>accounts.beginDelete</c> (no arguments — serializes to <c>{}</c>).</summary>
+public sealed record AccountsBeginDeleteRequest();
+
 /// <summary>Request for <c>accounts.createGuest</c> (no arguments — serializes to <c>{}</c>).</summary>
 public sealed record AccountsCreateGuestRequest();
+
+/// <summary>Request for <c>accounts.deleteAccount</c>.</summary>
+public sealed record AccountsDeleteAccountRequest(
+    [property: JsonPropertyName("ticket")] string Ticket);
 
 /// <summary>Request for <c>accounts.link</c>.</summary>
 public sealed record AccountsLinkRequest(
@@ -199,6 +206,18 @@ public sealed class GameBackendClient(IPlayerTransport transport)
         Converters = { new JsonStringEnumConverter() },
     };
 
+    /// <summary>Invokes <c>accounts.beginDelete</c> (requires a bearer token).</summary>
+    public async Task<DeleteTicket> AccountsBeginDeleteAsync(string token, CancellationToken ct = default)
+    {
+        var request = new AccountsBeginDeleteRequest();
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("accounts.beginDelete", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<DeleteTicket>(JsonOpts)!;
+    }
+
     /// <summary>Invokes <c>accounts.createGuest</c> (unauthenticated).</summary>
     public async Task<GuestSession> AccountsCreateGuestAsync(CancellationToken ct = default)
     {
@@ -209,6 +228,18 @@ public sealed class GameBackendClient(IPlayerTransport transport)
         JsonNode value = envelope["value"]
             ?? throw new GameBackendTransportException("Ok response missing 'value'");
         return value.Deserialize<GuestSession>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>accounts.deleteAccount</c> (requires a bearer token).</summary>
+    public async Task<DeleteReceipt> AccountsDeleteAccountAsync(string token, string ticket, CancellationToken ct = default)
+    {
+        var request = new AccountsDeleteAccountRequest(ticket);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("accounts.deleteAccount", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<DeleteReceipt>(JsonOpts)!;
     }
 
     /// <summary>Invokes <c>accounts.link</c> (requires a bearer token).</summary>

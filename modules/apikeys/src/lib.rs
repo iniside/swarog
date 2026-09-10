@@ -104,6 +104,7 @@ fn internal<E: std::fmt::Display>(e: E) -> Error {
 // harness a real negative case.
 const DEV_CLIENT_POLICY: &str = "accounts.register,accounts.login,accounts.loginFederated,\
 accounts.createGuest,accounts.refresh,accounts.me,accounts.link,\
+accounts.beginDelete,accounts.deleteAccount,\
 characters.create,characters.list,characters.delete,\
 inventory.grant,inventory.listMine,inventory.listCharacter,\
 leaderboard.topScores,\

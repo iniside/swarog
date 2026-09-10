@@ -31,6 +31,17 @@ public sealed record Currency(
     [property: JsonPropertyName("kind")] string Kind,
     [property: JsonPropertyName("decimals")] int Decimals);
 
+/// <summary>The <c>DeleteReceipt</c> DTO.</summary>
+public sealed record DeleteReceipt(
+    [property: JsonPropertyName("player_id")] string PlayerId,
+    [property: JsonPropertyName("handle")] string Handle,
+    [property: JsonPropertyName("deleted_at")] string DeletedAt);
+
+/// <summary>The <c>DeleteTicket</c> DTO.</summary>
+public sealed record DeleteTicket(
+    [property: JsonPropertyName("ticket")] string Ticket,
+    [property: JsonPropertyName("expires_at")] string ExpiresAt);
+
 /// <summary>The <c>Friend</c> DTO.</summary>
 public sealed record Friend(
     [property: JsonPropertyName("player_id")] string PlayerId,

@@ -2,6 +2,18 @@
   "methods": [
     {
       "provider": "accounts",
+      "wire_method": "accounts.beginDelete",
+      "verb": "POST",
+      "path": "/accounts/delete/begin",
+      "auth": "player",
+      "success": 200,
+      "args": [],
+      "ret": {
+        "Struct": "DeleteTicket"
+      }
+    },
+    {
+      "provider": "accounts",
       "wire_method": "accounts.createGuest",
       "verb": "POST",
       "path": "/accounts/guest",
@@ -10,6 +22,24 @@
       "args": [],
       "ret": {
         "Struct": "GuestSession"
+      }
+    },
+    {
+      "provider": "accounts",
+      "wire_method": "accounts.deleteAccount",
+      "verb": "POST",
+      "path": "/accounts/delete",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "ticket",
+          "wire_name": "ticket",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "DeleteReceipt"
       }
     },
     {
@@ -759,6 +789,41 @@
           "name": "decimals",
           "wire_name": "decimals",
           "ty": "I32"
+        }
+      ]
+    },
+    {
+      "name": "DeleteReceipt",
+      "fields": [
+        {
+          "name": "player_id",
+          "wire_name": "player_id",
+          "ty": "String"
+        },
+        {
+          "name": "handle",
+          "wire_name": "handle",
+          "ty": "String"
+        },
+        {
+          "name": "deleted_at",
+          "wire_name": "deleted_at",
+          "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "DeleteTicket",
+      "fields": [
+        {
+          "name": "ticket",
+          "wire_name": "ticket",
+          "ty": "String"
+        },
+        {
+          "name": "expires_at",
+          "wire_name": "expires_at",
+          "ty": "String"
         }
       ]
     },

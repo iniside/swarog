@@ -1,4 +1,5 @@
 wire_method	wire_field_name	exposure
+accounts.deleteAccount	ticket	external
 accounts.findByHandle	handle	wire
 accounts.link	credential	external
 accounts.link	provider	external

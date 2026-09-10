@@ -63,6 +63,7 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         exposure,
     };
     vec![
+        (key("accounts.deleteAccount", "ticket", External), Validated { cap: accounts::conformance::MAX_DELETE_TICKET_BYTES, basis: "accounts::delete_ticket_within_cap is the ONLY shape check accountsapi::Auth::delete_account applies, and it runs before Service::delete_player_atomic opens its transaction, so no over-cap ticket reaches a statement. The \"accounts delete ticket\" CapCase drives that op ITSELF against a pool that cannot connect and discriminates on STATUS: at the cap the ticket passes the guard, reaches the store and answers Internal; over the cap the guard answers Invalid first. A live pool could not decide this row — an unknown ticket is the same NotFound as a live one, by design, so the dead pool is what makes the cap executable" }),
         (key("accounts.findByHandle", "handle", Wire), Validated { cap: accountsapi::MAX_HANDLE_BYTES, basis: "accounts::handle_within_cap runs as the FIRST statement of Directory::find_by_handle, before the store round-trip — the same authority friends::Player::request checks before resolving a target and the one input_policies() names for friends' target_handle, so a caller of either op meets the identical bound" }),
         (key("accounts.link", "credential", External), Validated { cap: widest_credential_cap(), basis: "the same single authority loginFederated traverses: accounts::Service::verify_credential applies the RESOLVED provider's own CredentialVerifier::max_credential_bytes through accounts::credential_within_cap, before any verifier, JWKS or database work. The number stated is the maximum of the cap map the registry accounts really builds; the per-provider caps are exercised by the CapCases below, which call that same shared path, and the \"accounts link guest credential\" case drives accountsapi::Auth::link ITSELF against the resolved guest verifier's own bound, so deleting link's guards turns this row red" }),
         (key("accounts.link", "provider", External), Validated { cap: accounts::conformance::MAX_PROVIDER_NAME_BYTES, basis: "accounts::provider_name_within_cap runs first in accounts::Service::verify_credential — the one helper link and loginFederated share — before the provider name is used as a registry lookup key. The \"accounts link provider name\" CapCase executes it through accountsapi::Auth::link itself, not through the helper below the guard" }),
@@ -229,6 +230,11 @@ fn accounts() -> Entry {
                         probe: Arc::new(
                             accounts::conformance::conformance_link_credential_rejected,
                         ),
+                    },
+                    CapCase {
+                        name: "accounts delete ticket",
+                        cap: accounts::conformance::MAX_DELETE_TICKET_BYTES,
+                        probe: Arc::new(accounts::conformance::conformance_delete_ticket_rejected),
                     },
                     CapCase {
                         name: "accounts refresh token",

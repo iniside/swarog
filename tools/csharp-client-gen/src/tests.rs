@@ -3,7 +3,7 @@
 //!
 //! Four things are pinned:
 //!
-//! 1. the produced manifest matches the committed golden (the 35 methods, 17 DTOs,
+//! 1. the produced manifest matches the committed golden (the 37 methods, 19 DTOs,
 //!    `Status` variants) — the whole scrape end-to-end;
 //! 2. the drift gate fires on a route_bindings-without-signature mismatch;
 //! 3. the completeness gate fires on a #[http]-bearing provider missing from the list;
@@ -45,11 +45,11 @@ fn manifest_matches_golden() {
 
 #[test]
 fn golden_covers_the_known_surface() {
-    // A structural sanity check independent of the string golden: exactly the 35
-    // player-reachable methods and the 17 reachable DTOs.
+    // A structural sanity check independent of the string golden: exactly the 37
+    // player-reachable methods and the 19 reachable DTOs.
     let m: Manifest = serde_json::from_str(GOLDEN).unwrap();
-    assert_eq!(m.methods.len(), 35, "expected 35 #[http] methods");
-    assert_eq!(m.dtos.len(), 17, "expected 17 reachable DTOs");
+    assert_eq!(m.methods.len(), 37, "expected 37 #[http] methods");
+    assert_eq!(m.dtos.len(), 19, "expected 19 reachable DTOs");
     assert_eq!(m.statuses.len(), 8, "expected 8 Status variants");
 
     // Set EQUALITY, not inclusion: an added method that is counted and re-blessed
@@ -65,6 +65,8 @@ fn golden_covers_the_known_surface() {
             "accounts.refresh",
             "accounts.me",
             "accounts.link",
+            "accounts.beginDelete",
+            "accounts.deleteAccount",
             "characters.create",
             "characters.list",
             "characters.delete",
@@ -112,6 +114,8 @@ fn golden_covers_the_known_surface() {
             "Score",
             "Balance",
             "Currency",
+            "DeleteTicket",
+            "DeleteReceipt",
             "Friend",
             "FriendPage",
             "GroupSummary",
