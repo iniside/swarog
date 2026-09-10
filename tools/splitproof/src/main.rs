@@ -4162,7 +4162,9 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     // --- Session prune: scheduler fires accounts-sessions-prune; D prunes on delivery. ---
     let sp_token = format!("prune-proof-{suffix}");
     // [SP0] plant a throwaway player + an EXPIRED session (FK needs a real player).
-    let sp_pid: Option<String> = sqlx::query_scalar("INSERT INTO accounts.players (display_name, discriminator) VALUES ($1, '0001') RETURNING id::text")
+    // Claims the handle in the same statement: a `players` row without one is exactly what
+    // accounts' migrate refuses to boot on, and the monolith re-run migrates this DB again.
+    let sp_pid: Option<String> = sqlx::query_scalar("WITH h AS (INSERT INTO accounts.handles (display_name_lower, discriminator, player_id) VALUES (lower($1), '0001', gen_random_uuid()) RETURNING player_id, discriminator) INSERT INTO accounts.players (id, display_name, discriminator) SELECT h.player_id, $1, h.discriminator FROM h RETURNING id::text")
         .bind(format!("prune-proof-{suffix}")).fetch_optional(pool).await.ok().flatten();
     if let Some(pid) = &sp_pid {
         sqlx::query("INSERT INTO accounts.sessions (token, player_id, expires_at) VALUES ($1, $2::uuid, now() - interval '1 day')")

@@ -1269,6 +1269,28 @@ impl Module for Accounts {
             .db()
             .ok_or_else(|| anyhow::anyhow!("accounts requires a DB pool"))?;
         sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+
+        // `CREATE TABLE IF NOT EXISTS` is silent on a schema that predates
+        // `accounts.handles`, leaving `accounts_handle_idx` as a SECOND uniqueness
+        // authority the mint loop cannot see: a draw the claim table accepts then trips
+        // 23505 on the players INSERT and aborts the caller's whole transaction.
+        let unclaimed: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM accounts.players p \
+             WHERE NOT EXISTS (SELECT 1 FROM accounts.handles h \
+                                WHERE h.display_name_lower = lower(p.display_name) \
+                                  AND h.discriminator = p.discriminator)",
+        )
+        .fetch_one(pool)
+        .await?;
+        if unclaimed != 0 {
+            anyhow::bail!(
+                "accounts: {unclaimed} player(s) have no accounts.handles claim, so \
+                 accounts_handle_idx can refuse a handle the claim table just granted and \
+                 abort a register/login transaction. Remedy: DROP SCHEMA accounts CASCADE; \
+                 and reboot. NOT a backfill: wipe is this phase's migration strategy, and a \
+                 backfill would mint reservations for handles nothing ever claimed."
+            );
+        }
         Ok(())
     }
 
