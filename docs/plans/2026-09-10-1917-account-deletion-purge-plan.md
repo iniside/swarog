@@ -459,6 +459,28 @@ topic exists, so the ledger cannot distinguish a dissolution from N leaves**; pu
 latency bounded by the daily sweep, not immediate; and the two new permanent identity
 registries this feature adds.
 
+### Two pre-existing gate defects found while auditing Step 4
+
+Neither is caused by this rollout; both were proven by mutation and are recorded so
+they are not re-discovered as new.
+
+1. **A conformance `Validated { cap }` number is decoration.** Replacing the row's
+   `cap` with `999_999` leaves `conformancecheck` at exit 0 while the report prints
+   `validated(999999): …` as fact — nothing compares the row's number to the
+   `CapCase` that actually enforces it. The only binding of a policy cap to a probe is
+   `checks::CREDENTIAL_CAPS`, which covers `loginFederated`'s providers alone. So a
+   row can publish a bound the code does not enforce. Minimal closure: for every
+   `Validated` row in a module that declares an `InputByteCaps` fixture, require a
+   `CapCase` whose declared case name the row cites — matching by number alone is
+   insufficient, as `CREDENTIAL_CAPS`' own doc explains.
+2. **`OPAQUE_REQUEST_TYPES` matches the written path's bare segment.** Its doc claims
+   *"Matched against the written path, not the last segment, so a foreign
+   `somecrate::Identity` is not allowlisted by sharing a name"*, and the committed test
+   only exercises the qualified form. A contract writing `use somecrate::Identity;`
+   then `actor: Identity` renders as `"Identity"` and **is** allowlisted — the exact
+   escape the doc says is closed. Closure: list `opsapi::Identity` and normalise
+   imports, or resolve the `use` before matching.
+
 ---
 
 ## Review response (rev 1 → rev 2)
