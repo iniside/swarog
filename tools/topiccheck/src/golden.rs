@@ -471,8 +471,11 @@ fn event_sample_drift(
     }
     for (t, v) in sampled.difference(defined) {
         drift.push(format!(
-            "STALE golden_samples() entry {t} v{v} -- no matching bus::define; remove it \
-             from the owning events crate's golden_samples()"
+            "STALE golden_samples() entry {t} v{v} -- topiccheck's defined_topics() names \
+             no contract for it. If the bus::define still EXISTS, defined_topics() is the \
+             stale hand-list: add of(<crate>::<CONST>.contract()) there. Remove the sample \
+             ONLY when the define is genuinely gone -- deleting it beside a live define \
+             greens this check and ships the topic with its wire shape unpinned"
         ));
     }
     drift

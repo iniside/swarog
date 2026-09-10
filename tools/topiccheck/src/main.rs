@@ -207,6 +207,7 @@ fn defined_topics() -> Vec<Contract> {
         of(groupsevents::CREATED.contract()),
         of(groupsevents::MEMBER_JOINED.contract()),
         of(groupsevents::MEMBER_LEFT.contract()),
+        of(groupsevents::ROLE_CHANGED.contract()),
     ]
 }
 

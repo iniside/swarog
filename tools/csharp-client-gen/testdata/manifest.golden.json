@@ -305,6 +305,210 @@
       }
     },
     {
+      "provider": "groups",
+      "wire_method": "groups.create",
+      "verb": "POST",
+      "path": "/groups",
+      "auth": "player",
+      "success": 201,
+      "args": [
+        {
+          "name": "name",
+          "wire_name": "name",
+          "ty": "String"
+        },
+        {
+          "name": "join_policy",
+          "wire_name": "join_policy",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "GroupSummary"
+      }
+    },
+    {
+      "provider": "groups",
+      "wire_method": "groups.decide",
+      "verb": "POST",
+      "path": "/groups/{id}/decide",
+      "auth": "player",
+      "success": 204,
+      "args": [
+        {
+          "name": "group_id",
+          "wire_name": "group_id",
+          "ty": "String"
+        },
+        {
+          "name": "subject_id",
+          "wire_name": "subject_id",
+          "ty": "String"
+        },
+        {
+          "name": "decision",
+          "wire_name": "decision",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    },
+    {
+      "provider": "groups",
+      "wire_method": "groups.invite",
+      "verb": "POST",
+      "path": "/groups/{id}/invites",
+      "auth": "player",
+      "success": 201,
+      "args": [
+        {
+          "name": "group_id",
+          "wire_name": "group_id",
+          "ty": "String"
+        },
+        {
+          "name": "target_handle",
+          "wire_name": "target_handle",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    },
+    {
+      "provider": "groups",
+      "wire_method": "groups.join",
+      "verb": "POST",
+      "path": "/groups/{id}/join",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "group_id",
+          "wire_name": "group_id",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "MemberSummary"
+      }
+    },
+    {
+      "provider": "groups",
+      "wire_method": "groups.leave",
+      "verb": "POST",
+      "path": "/groups/{id}/leave",
+      "auth": "player",
+      "success": 204,
+      "args": [
+        {
+          "name": "group_id",
+          "wire_name": "group_id",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    },
+    {
+      "provider": "groups",
+      "wire_method": "groups.listMine",
+      "verb": "POST",
+      "path": "/groups/list",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "cursor",
+          "wire_name": "cursor",
+          "ty": "String"
+        },
+        {
+          "name": "limit",
+          "wire_name": "limit",
+          "ty": "I64"
+        }
+      ],
+      "ret": {
+        "Struct": "GroupPage"
+      }
+    },
+    {
+      "provider": "groups",
+      "wire_method": "groups.members",
+      "verb": "POST",
+      "path": "/groups/{id}/members/list",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "group_id",
+          "wire_name": "group_id",
+          "ty": "String"
+        },
+        {
+          "name": "cursor",
+          "wire_name": "cursor",
+          "ty": "String"
+        },
+        {
+          "name": "limit",
+          "wire_name": "limit",
+          "ty": "I64"
+        }
+      ],
+      "ret": {
+        "Struct": "MemberPage"
+      }
+    },
+    {
+      "provider": "groups",
+      "wire_method": "groups.pending",
+      "verb": "POST",
+      "path": "/groups/{id}/pending/list",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "group_id",
+          "wire_name": "group_id",
+          "ty": "String"
+        },
+        {
+          "name": "cursor",
+          "wire_name": "cursor",
+          "ty": "String"
+        },
+        {
+          "name": "limit",
+          "wire_name": "limit",
+          "ty": "I64"
+        }
+      ],
+      "ret": {
+        "Struct": "MemberPage"
+      }
+    },
+    {
+      "provider": "groups",
+      "wire_method": "groups.respond",
+      "verb": "POST",
+      "path": "/groups/{id}/respond",
+      "auth": "player",
+      "success": 204,
+      "args": [
+        {
+          "name": "group_id",
+          "wire_name": "group_id",
+          "ty": "String"
+        },
+        {
+          "name": "decision",
+          "wire_name": "decision",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    },
+    {
       "provider": "inventory",
       "wire_method": "inventory.grant",
       "verb": "POST",
@@ -618,6 +822,60 @@
       ]
     },
     {
+      "name": "GroupPage",
+      "fields": [
+        {
+          "name": "items",
+          "wire_name": "items",
+          "ty": {
+            "Vec": {
+              "Struct": "GroupSummary"
+            }
+          }
+        },
+        {
+          "name": "next_cursor",
+          "wire_name": "next_cursor",
+          "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "GroupSummary",
+      "fields": [
+        {
+          "name": "id",
+          "wire_name": "id",
+          "ty": "String"
+        },
+        {
+          "name": "name",
+          "wire_name": "name",
+          "ty": "String"
+        },
+        {
+          "name": "join_policy",
+          "wire_name": "join_policy",
+          "ty": "String"
+        },
+        {
+          "name": "created_at",
+          "wire_name": "created_at",
+          "ty": "String"
+        },
+        {
+          "name": "my_state",
+          "wire_name": "my_state",
+          "ty": "String"
+        },
+        {
+          "name": "my_role",
+          "wire_name": "my_role",
+          "ty": "String"
+        }
+      ]
+    },
+    {
       "name": "GuestSession",
       "fields": [
         {
@@ -718,6 +976,55 @@
               "Struct": "IdentityRef"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "MemberPage",
+      "fields": [
+        {
+          "name": "items",
+          "wire_name": "items",
+          "ty": {
+            "Vec": {
+              "Struct": "MemberSummary"
+            }
+          }
+        },
+        {
+          "name": "next_cursor",
+          "wire_name": "next_cursor",
+          "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "MemberSummary",
+      "fields": [
+        {
+          "name": "player_id",
+          "wire_name": "player_id",
+          "ty": "String"
+        },
+        {
+          "name": "handle",
+          "wire_name": "handle",
+          "ty": "String"
+        },
+        {
+          "name": "state",
+          "wire_name": "state",
+          "ty": "String"
+        },
+        {
+          "name": "role",
+          "wire_name": "role",
+          "ty": "String"
+        },
+        {
+          "name": "joined_at",
+          "wire_name": "joined_at",
+          "ty": "String"
         }
       ]
     },

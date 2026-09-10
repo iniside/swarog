@@ -99,6 +99,52 @@ public sealed record FriendsRemoveRequest(
 public sealed record FriendsRequestRequest(
     [property: JsonPropertyName("target_handle")] string TargetHandle);
 
+/// <summary>Request for <c>groups.create</c>.</summary>
+public sealed record GroupsCreateRequest(
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("join_policy")] string JoinPolicy);
+
+/// <summary>Request for <c>groups.decide</c>.</summary>
+public sealed record GroupsDecideRequest(
+    [property: JsonPropertyName("group_id")] string GroupId,
+    [property: JsonPropertyName("subject_id")] string SubjectId,
+    [property: JsonPropertyName("decision")] string Decision);
+
+/// <summary>Request for <c>groups.invite</c>.</summary>
+public sealed record GroupsInviteRequest(
+    [property: JsonPropertyName("group_id")] string GroupId,
+    [property: JsonPropertyName("target_handle")] string TargetHandle);
+
+/// <summary>Request for <c>groups.join</c>.</summary>
+public sealed record GroupsJoinRequest(
+    [property: JsonPropertyName("group_id")] string GroupId);
+
+/// <summary>Request for <c>groups.leave</c>.</summary>
+public sealed record GroupsLeaveRequest(
+    [property: JsonPropertyName("group_id")] string GroupId);
+
+/// <summary>Request for <c>groups.listMine</c>.</summary>
+public sealed record GroupsListMineRequest(
+    [property: JsonPropertyName("cursor")] string Cursor,
+    [property: JsonPropertyName("limit")] long Limit);
+
+/// <summary>Request for <c>groups.members</c>.</summary>
+public sealed record GroupsMembersRequest(
+    [property: JsonPropertyName("group_id")] string GroupId,
+    [property: JsonPropertyName("cursor")] string Cursor,
+    [property: JsonPropertyName("limit")] long Limit);
+
+/// <summary>Request for <c>groups.pending</c>.</summary>
+public sealed record GroupsPendingRequest(
+    [property: JsonPropertyName("group_id")] string GroupId,
+    [property: JsonPropertyName("cursor")] string Cursor,
+    [property: JsonPropertyName("limit")] long Limit);
+
+/// <summary>Request for <c>groups.respond</c>.</summary>
+public sealed record GroupsRespondRequest(
+    [property: JsonPropertyName("group_id")] string GroupId,
+    [property: JsonPropertyName("decision")] string Decision);
+
 /// <summary>Request for <c>inventory.grant</c>.</summary>
 public sealed record InventoryGrantRequest(
     [property: JsonPropertyName("item_id")] string ItemId,
@@ -331,6 +377,102 @@ public sealed class GameBackendClient(IPlayerTransport transport)
         JsonNode value = envelope["value"]
             ?? throw new GameBackendTransportException("Ok response missing 'value'");
         return value.Deserialize<Friend>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>groups.create</c> (requires a bearer token).</summary>
+    public async Task<GroupSummary> GroupsCreateAsync(string token, string name, string joinPolicy, CancellationToken ct = default)
+    {
+        var request = new GroupsCreateRequest(name, joinPolicy);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("groups.create", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<GroupSummary>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>groups.decide</c> (requires a bearer token).</summary>
+    public async Task GroupsDecideAsync(string token, string groupId, string subjectId, string decision, CancellationToken ct = default)
+    {
+        var request = new GroupsDecideRequest(groupId, subjectId, decision);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("groups.decide", token, payload, ct).ConfigureAwait(false);
+        Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>groups.invite</c> (requires a bearer token).</summary>
+    public async Task GroupsInviteAsync(string token, string groupId, string targetHandle, CancellationToken ct = default)
+    {
+        var request = new GroupsInviteRequest(groupId, targetHandle);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("groups.invite", token, payload, ct).ConfigureAwait(false);
+        Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>groups.join</c> (requires a bearer token).</summary>
+    public async Task<MemberSummary> GroupsJoinAsync(string token, string groupId, CancellationToken ct = default)
+    {
+        var request = new GroupsJoinRequest(groupId);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("groups.join", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<MemberSummary>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>groups.leave</c> (requires a bearer token).</summary>
+    public async Task GroupsLeaveAsync(string token, string groupId, CancellationToken ct = default)
+    {
+        var request = new GroupsLeaveRequest(groupId);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("groups.leave", token, payload, ct).ConfigureAwait(false);
+        Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>groups.listMine</c> (requires a bearer token).</summary>
+    public async Task<GroupPage> GroupsListMineAsync(string token, string cursor, long limit, CancellationToken ct = default)
+    {
+        var request = new GroupsListMineRequest(cursor, limit);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("groups.listMine", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<GroupPage>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>groups.members</c> (requires a bearer token).</summary>
+    public async Task<MemberPage> GroupsMembersAsync(string token, string groupId, string cursor, long limit, CancellationToken ct = default)
+    {
+        var request = new GroupsMembersRequest(groupId, cursor, limit);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("groups.members", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<MemberPage>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>groups.pending</c> (requires a bearer token).</summary>
+    public async Task<MemberPage> GroupsPendingAsync(string token, string groupId, string cursor, long limit, CancellationToken ct = default)
+    {
+        var request = new GroupsPendingRequest(groupId, cursor, limit);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("groups.pending", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<MemberPage>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>groups.respond</c> (requires a bearer token).</summary>
+    public async Task GroupsRespondAsync(string token, string groupId, string decision, CancellationToken ct = default)
+    {
+        var request = new GroupsRespondRequest(groupId, decision);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("groups.respond", token, payload, ct).ConfigureAwait(false);
+        Unwrap(resp);
     }
 
     /// <summary>Invokes <c>inventory.grant</c> (requires a bearer token).</summary>

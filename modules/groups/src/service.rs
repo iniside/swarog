@@ -276,7 +276,7 @@ impl Service {
     /// ONE batched call per page, made after the rows are read and OUTSIDE any
     /// transaction: an RPC issued while holding one would pin the connection and the
     /// rows' locks across the network, so one accounts blip would stall every writer.
-    async fn hydrate(&self, rows: &[MemberRow]) -> Result<Vec<PlayerSummary>, Error> {
+    pub(crate) async fn hydrate(&self, rows: &[MemberRow]) -> Result<Vec<PlayerSummary>, Error> {
         let mut ids: Vec<String> = Vec::with_capacity(rows.len());
         for row in rows {
             if !ids.iter().any(|id| id == &row.player_id) {

@@ -41,6 +41,7 @@ pub fn entries() -> Vec<Entry> {
         config(),
         friends(),
         gateway(),
+        groups(),
         inventory(),
         leaderboard(),
         mail(),
@@ -79,7 +80,7 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("admin.adminData", "params.<value>", Wire), Opaque { rationale: "read-path only, and nothing on this path writes it. Two consumer shapes, both bounded by construction: a lookup value reaching SQL is a bound parameter behind a uuid parse (characters/inventory `owner`, wallet `player`), where an over-long value fails the parse or matches no row; and a DISPLAY value that never reaches a statement at all (characters::admin/inventory::admin `owner_name`, which only titles the drill-down page and is HTML-escaped by the portal's minijinja autoescape)" }),
         (key("admin.adminSubmit", "id", Wire), Opaque { rationale: "the provider's own admin slug (adminapi::Item::id), selected by the portal from its resolved item set rather than parsed from operator text" }),
         (key("admin.adminSubmit", "params.<key>", Wire), Opaque { rationale: "the key set is NOT closed — admin::collect_submit_params copies the form's own declared Field/HiddenField names, then accepts ANY submitted name starting with the reserved _expected_ prefix, so the suffix is operator-authored and unbounded. It is opaque because no consumer ever iterates these keys: every provider reads the map by a name it constructed itself (adminapi::param / the module's own _expected_<field> literal), so an unrecognized key is inert — never persisted, interpolated or echoed" }),
-        (key("admin.adminSubmit", "params.<value>", Wire), Validated { cap: apikeys::conformance::MAX_POLICY_BYTES, basis: "every module exposing adminapi::AdminSubmit constrains its declared form values in Rust before any statement carrying that value runs, mostly as byte caps mirroring a column CHECK: wallet via admin::CATALOG_CAPS + the currencies_*_len_check constraints (widest 64) and its validate_movement caps, apikeys via store::COLUMN_CAPS + the roles_/keys_*_len_check constraints — MAX_NAME_BYTES (128) on every role/key name and MAX_POLICY_BYTES (4096, the widest declared form value ANY implementor posts) on a role policy — and notifications via service::validate_new inside its single insert authority, MAX_TITLE_BYTES (200) and MAX_BODY_BYTES (4000) against notifications_title_len_check/notifications_body_len_check and, on its hidden _idem_send field, an EXACT shape rather than a ceiling — admin::rendered_key admits only the 48-byte minted key (admin-send-mail- + 32 hex) before any SQL, and service::send_operator_mail re-checks it at the insert authority so the shared dedup column's two key spaces stay disjoint — and mail via service::validate_new inside its single enqueue authority, store::COLUMN_CAPS against mail_outbox_*_len_check, plus two EXACT shapes rather than ceilings: admin::is_outbox_id on the selected row id (36 bytes, the uuid spelling the selector rendered) and admin::rendered_key on the hidden _idem_test field (48 bytes, admin-send-test- + 32 hex), both refused before the value reaches a statement. Mail is the one implementor whose caps run with a transaction already open: enqueue_from_admin checks out a bounded tx before validate_new, but that tx has issued only SET LOCAL statement_timeout, so no operator value has reached a statement. Its sibling bound, MAX_DEDUP_KEY_BYTES (128) in validate_new, is NOT a submit-path cap and no form input can exercise it: it covers the OTHER half of that shared column, the fan-in's event_id, and is the only level that can word a verdict there because a btree index key has no column CHECK beneath it, so an over-long value would be an unmappable 54000 rather than a 23514. The 23514 mapping is NOT uniform and the difference is deliberate: wallet and apikeys map the CHECK back to the SAME operator-facing verdict because their writes can reach it, while notifications runs both caps in the same function that issues the INSERT, so nothing passing them reaches the CHECK and it stands only as the class fail-safe under them. Two declared form values carry no Rust byte cap. notifications' player_id is operator text bounded by the column's $1::uuid cast instead — the 22P02 comes back as Status::Invalid, never a row nobody owns. The other is the _action discriminant, and it is uncapped in ALL FOUR implementors by the same argument rather than by oversight: collect_submit_params takes it from the POSTED value, but every apply_submit matches it against a closed set of literal actions, and a value outside that set is never persisted, never interpolated into SQL and never forwarded — its only reach is being echoed back into the operator-facing rejection message. Its LENGTH rests on axum's default request-body limit, which the admin POST's axum::body::Bytes extractor honours and which nothing under core/ or modules/admin disables — a whole-request bound the HTTP layer owes every form field, not a per-module cap four modules should each grow. Two of the three claims are executable HERE: checks::ADMIN_SUBMIT_MODULES is diffed against modules/*/src before any assertion runs, so the implementor list cannot go stale, and every listed module must carry an input-byte-caps CapCase whose probe calls its real validator (today wallet::conformance -> validate_movement, apikeys::conformance -> store::validate_name/validate_policy, and mail::conformance -> service::validate_new), so the caps themselves are exercised. The third — that the cap runs on the SUBMIT path, pre-SQL, rather than only as the column CHECK — is NOT decided by this gate: it is pinned by each module's own tests (wallet's direct admin::check_catalog_caps/check_decimals_range tests, apikeys' store_tests over_cap_* writers), because in those two, through apply_submit, the Rust verdict and the CHECK's mapping are byte-identical and no input can separate them. Mail's two shape cases are the exception: they drive admin::apply_submit ITSELF against a store that cannot connect and discriminate on the verdict, so for those two the submit-path claim IS decided here" }),
+        (key("admin.adminSubmit", "params.<value>", Wire), Validated { cap: apikeys::conformance::MAX_POLICY_BYTES, basis: "every module exposing adminapi::AdminSubmit constrains its declared form values in Rust before any statement carrying that value runs, mostly as byte caps mirroring a column CHECK: wallet via admin::CATALOG_CAPS + the currencies_*_len_check constraints (widest 64) and its validate_movement caps, apikeys via store::COLUMN_CAPS + the roles_/keys_*_len_check constraints — MAX_NAME_BYTES (128) on every role/key name and MAX_POLICY_BYTES (4096, the widest declared form value ANY implementor posts) on a role policy — and notifications via service::validate_new inside its single insert authority, MAX_TITLE_BYTES (200) and MAX_BODY_BYTES (4000) against notifications_title_len_check/notifications_body_len_check and, on its hidden _idem_send field, an EXACT shape rather than a ceiling — admin::rendered_key admits only the 48-byte minted key (admin-send-mail- + 32 hex) before any SQL, and service::send_operator_mail re-checks it at the insert authority so the shared dedup column's two key spaces stay disjoint — groups via admin::rendered_group and apply_submit's own player check, two EXACT uuid shapes (36 bytes) rather than ceilings, both refused before any statement reaches the store, and mail via service::validate_new inside its single enqueue authority, store::COLUMN_CAPS against mail_outbox_*_len_check, plus two EXACT shapes rather than ceilings: admin::is_outbox_id on the selected row id (36 bytes, the uuid spelling the selector rendered) and admin::rendered_key on the hidden _idem_test field (48 bytes, admin-send-test- + 32 hex), both refused before the value reaches a statement. Mail is the one implementor whose caps run with a transaction already open: enqueue_from_admin checks out a bounded tx before validate_new, but that tx has issued only SET LOCAL statement_timeout, so no operator value has reached a statement. Its sibling bound, MAX_DEDUP_KEY_BYTES (128) in validate_new, is NOT a submit-path cap and no form input can exercise it: it covers the OTHER half of that shared column, the fan-in's event_id, and is the only level that can word a verdict there because a btree index key has no column CHECK beneath it, so an over-long value would be an unmappable 54000 rather than a 23514. The 23514 mapping is NOT uniform and the difference is deliberate: wallet and apikeys map the CHECK back to the SAME operator-facing verdict because their writes can reach it, while notifications runs both caps in the same function that issues the INSERT, so nothing passing them reaches the CHECK and it stands only as the class fail-safe under them. Two declared form values carry no Rust byte cap. notifications' player_id is operator text bounded by the column's $1::uuid cast instead — the 22P02 comes back as Status::Invalid, never a row nobody owns. The other is the _action discriminant, and it is uncapped in ALL FIVE implementors by the same argument rather than by oversight: collect_submit_params takes it from the POSTED value, but every apply_submit matches it against a closed set of literal actions, and a value outside that set is never persisted, never interpolated into SQL and never forwarded — its only reach is being echoed back into the operator-facing rejection message. Its LENGTH rests on axum's default request-body limit, which the admin POST's axum::body::Bytes extractor honours and which nothing under core/ or modules/admin disables — a whole-request bound the HTTP layer owes every form field, not a per-module cap four modules should each grow. Two of the three claims are executable HERE: checks::ADMIN_SUBMIT_MODULES is diffed against modules/*/src before any assertion runs, so the implementor list cannot go stale, and every listed module must carry an input-byte-caps CapCase whose probe calls its real validator (today wallet::conformance -> validate_movement, apikeys::conformance -> store::validate_name/validate_policy, mail::conformance -> service::validate_new, and groups::conformance -> admin::apply_submit), so the caps themselves are exercised. The third — that the cap runs on the SUBMIT path, pre-SQL, rather than only as the column CHECK — is NOT decided by this gate: it is pinned by each module's own tests (wallet's direct admin::check_catalog_caps/check_decimals_range tests, apikeys' store_tests over_cap_* writers), because in those two, through apply_submit, the Rust verdict and the CHECK's mapping are byte-identical and no input can separate them. Mail's and groups' shape cases are the exception: each drives its own admin::apply_submit ITSELF against a store that cannot connect and discriminates on the verdict — Stale for a value the page did not render, Rejected for the operator's own bad input — so for those four the submit-path claim IS decided here" }),
         (key("apikeys.lookupKey", "key", Wire), Validated { cap: apikeysapi::MAX_KEY_BYTES, basis: "gateway::RealKeyVerifier::lookup rejects a presented key over apikeysapi::MAX_KEY_BYTES before any store round-trip; secrets are server-generated, so there is no caller-supplied creation path to cap" }),
         (key("characters.create", "class", External), Validated { cap: 64, basis: "characters::class_within_cap validates the defaulted persisted class before SQL" }),
         (key("characters.create", "name", External), Validated { cap: 128, basis: "characters::name_within_cap validates the persisted name before SQL" }),
@@ -91,6 +92,24 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("friends.pending", "cursor", External), Validated { cap: friendsapi::MAX_CURSOR_BYTES, basis: "friends::service::decode_cursor is the SAME authority Player::list's row states — Player::pending calls the identical helper before any store read, so the cursor cap and its verdict discrimination are shared, not restated" }),
         (key("friends.remove", "edge_id", External), Opaque { rationale: "opaque relation-edge UUID, bound as $1::uuid alongside the caller's player_id in store::view_edge/delete_tx; a value that is not a uuid raises 22P02, folded by friends::store::is_invalid_uuid into the same 404 an unknown edge id gets" }),
         (key("friends.request", "target_handle", External), Validated { cap: accountsapi::MAX_HANDLE_BYTES, basis: "friends deliberately owns no second const for this bound: Player::request checks target_handle.len() against accountsapi::MAX_HANDLE_BYTES — the SAME authority accounts::handle_within_cap enforces for Directory::find_by_handle — before ever calling the directory. The \"friends request target handle\" CapCase drives Player::request itself against a resolved-but-failing Directory, discriminating on status: an at-cap handle reaches (and is refused by) the directory and answers Unavailable, never Invalid, so only the cap's own rejection registers as Invalid" }),
+        (key("groups.create", "join_policy", External), Opaque { rationale: "a closed vocabulary, not free text: groups::service::validate_policy matches the posted value against the three groupsapi join-policy consts (open/request/invite) and answers a &'static str, so the value that reaches a statement is the compiled literal and never the caller's bytes. Anything outside the set is refused with Status::Invalid before any store work, and the rejection names the ALLOWED values rather than echoing the input" }),
+        (key("groups.create", "name", External), Validated { cap: groupsapi::MAX_NAME_BYTES, basis: "groups::service::validate_name runs as Player::create's second statement — after the identity is read and before the transaction is opened, so no operator value has reached a statement. The \"groups create name\" CapCase drives Player::create ITSELF against a pool that cannot connect and discriminates on STATUS: at the cap the name passes the guard, reaches the store and answers Internal; over the cap the guard answers Invalid first. Delete validate_name and the over-cap name reaches the dead store too, so the case goes red rather than passing on the column below it" }),
+        (key("groups.decide", "decision", External), Opaque { rationale: "a closed vocabulary, not free text: groups::service::validate_decision matches the posted value against the two groupsapi decision consts (accept/reject) and answers a &'static str, so the value that reaches a statement is the compiled literal and never the caller's bytes. Anything outside the set is refused with Status::Invalid before any store work, and the rejection names the ALLOWED values rather than echoing the input" }),
+        (key("groups.decide", "group_id", External), Opaque { rationale: "opaque group UUID, bound as $1::uuid alongside the caller's own player_id in the statements groups::store runs for decide; every one of those helpers folds the 22P02 a non-uuid raises into the ABSENT-row answer (Ok(None)/empty rows), so a malformed id gets the same NotFound an unknown id gets and is never persisted, interpolated or echoed" }),
+        (key("groups.decide", "subject_id", External), Opaque { rationale: "opaque player UUID naming the subject of the decision, bound as $1::uuid alongside the caller's own player_id in the statements groups::store runs for decide; every one of those helpers folds the 22P02 a non-uuid raises into the ABSENT-row answer (Ok(None)/empty rows), so a malformed id gets the same NotFound an unknown id gets and is never persisted, interpolated or echoed" }),
+        (key("groups.invite", "group_id", External), Opaque { rationale: "opaque group UUID, bound as $1::uuid alongside the caller's own player_id in the statements groups::store runs for invite; every one of those helpers folds the 22P02 a non-uuid raises into the ABSENT-row answer (Ok(None)/empty rows), so a malformed id gets the same NotFound an unknown id gets and is never persisted, interpolated or echoed" }),
+        (key("groups.invite", "target_handle", External), Validated { cap: accountsapi::MAX_HANDLE_BYTES, basis: "groups deliberately owns no second const for this bound: Player::invite checks target_handle.len() against accountsapi::MAX_HANDLE_BYTES — the SAME authority accounts::handle_within_cap enforces for Directory::find_by_handle and the one friends::Player::request checks — before the roster read and before the directory call. The \"groups invite target handle\" CapCase drives Player::invite ITSELF against a pool that cannot connect, discriminating on status: at the cap the handle passes the guard and the op answers Internal off the dead store, so only the cap's own rejection registers as Invalid" }),
+        (key("groups.join", "group_id", External), Opaque { rationale: "opaque group UUID, bound as $1::uuid alongside the caller's own player_id in the statements groups::store runs for join; every one of those helpers folds the 22P02 a non-uuid raises into the ABSENT-row answer (Ok(None)/empty rows), so a malformed id gets the same NotFound an unknown id gets and is never persisted, interpolated or echoed" }),
+        (key("groups.leave", "group_id", External), Opaque { rationale: "opaque group UUID, bound as $1::uuid alongside the caller's own player_id in the statements groups::store runs for leave; every one of those helpers folds the 22P02 a non-uuid raises into the ABSENT-row answer (Ok(None)/empty rows), so a malformed id gets the same NotFound an unknown id gets and is never persisted, interpolated or echoed" }),
+        (key("groups.listMine", "cursor", External), Validated { cap: groupsapi::MAX_CURSOR_BYTES, basis: "groups::service::decode_cursor applies MAX_CURSOR_BYTES as its first check after the empty-cursor arm — before the base64 decode, before the keyset halves are parsed and before any store read — and list_mine/members/pending all call it ahead of the page statement. The \"groups list/members/pending cursor\" CapCase drives Player::list_mine ITSELF against a pool that cannot connect and discriminates on the VERDICT rather than the status, because both arms are Status::Invalid: at the cap the filler cannot be a well-formed keyset and answers the malformed-cursor verdict, over the cap the cap verdict answers first" }),
+        (key("groups.members", "cursor", External), Validated { cap: groupsapi::MAX_CURSOR_BYTES, basis: "groups::service::decode_cursor is the SAME authority list_mine's row states — page_group calls the identical helper before the visibility check and before any store read, so the cursor cap and its verdict discrimination are shared, not restated" }),
+        (key("groups.members", "group_id", External), Opaque { rationale: "opaque group UUID, bound as $1::uuid alongside the caller's own player_id in the statements groups::store runs for the member page; every one of those helpers folds the 22P02 a non-uuid raises into the ABSENT-row answer (Ok(None)/empty rows), so a malformed id gets the same NotFound an unknown id gets and is never persisted, interpolated or echoed" }),
+        (key("groups.pending", "cursor", External), Validated { cap: groupsapi::MAX_CURSOR_BYTES, basis: "the same groups::service::decode_cursor call page_group makes for the member page — one helper, one cap, two ops" }),
+        (key("groups.pending", "group_id", External), Opaque { rationale: "opaque group UUID, bound as $1::uuid alongside the caller's own player_id in the statements groups::store runs for the pending page; every one of those helpers folds the 22P02 a non-uuid raises into the ABSENT-row answer (Ok(None)/empty rows), so a malformed id gets the same NotFound an unknown id gets and is never persisted, interpolated or echoed" }),
+        (key("groups.respond", "decision", External), Opaque { rationale: "a closed vocabulary, not free text: groups::service::validate_decision matches the posted value against the two groupsapi decision consts (accept/reject) and answers a &'static str, so the value that reaches a statement is the compiled literal and never the caller's bytes. Anything outside the set is refused with Status::Invalid before any store work, and the rejection names the ALLOWED values rather than echoing the input" }),
+        (key("groups.respond", "group_id", External), Opaque { rationale: "opaque group UUID, bound as $1::uuid alongside the caller's own player_id in the statements groups::store runs for respond; every one of those helpers folds the 22P02 a non-uuid raises into the ABSENT-row answer (Ok(None)/empty rows), so a malformed id gets the same NotFound an unknown id gets and is never persisted, interpolated or echoed" }),
+        (key("groups.roleOf", "group_id", Wire), Opaque { rationale: "opaque group UUID passed between domain capabilities, bound as $1::uuid alongside the caller's own player_id in the statements groups::store runs for the roster predicate; every one of those helpers folds the 22P02 a non-uuid raises into the ABSENT-row answer (Ok(None)/empty rows), so a malformed id gets the same NotFound an unknown id gets and is never persisted, interpolated or echoed" }),
+        (key("groups.roleOf", "player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities, bound as $1::uuid alongside the caller's own player_id in the statements groups::store runs for the roster predicate; every one of those helpers folds the 22P02 a non-uuid raises into the ABSENT-row answer (Ok(None)/empty rows), so a malformed id gets the same NotFound an unknown id gets and is never persisted, interpolated or echoed" }),
         (key("inventory.grant", "item_id", External), Opaque { rationale: "opaque catalog identifier accepted only when it exactly resolves to an existing inventory item" }),
         (key("inventory.listCharacter", "character_id", External), Opaque { rationale: "opaque character UUID authorized through characters::Ownership" }),
         (key("match.report", "Loser", External), Validated { cap: 128, basis: "match_module::validate_participant is called for every new loser before rating or SQL" }),
@@ -470,6 +489,109 @@ fn friends() -> Entry {
             (
                 Convention::ArgonParity,
                 na("friends performs no password hashing"),
+            ),
+        ],
+    }
+}
+
+fn groups() -> Entry {
+    Entry {
+        module: "groups",
+        stances: vec![
+            (
+                Convention::EnvValidation,
+                Stance::Applies(Fixture::EnvValidation(vec![
+                    // Only an UNSET variable takes the compiled default
+                    // (groups::projection::retention_days_from_env). Blank rather than empty
+                    // because std::env::set_var("") REMOVES the variable on Windows, where
+                    // the case would then assert nothing.
+                    EnvCase {
+                        var: "GROUPS_RETENTION_DAYS",
+                        bad_value: "   ",
+                        expect: "GROUPS_RETENTION_DAYS must be a whole number of days",
+                    },
+                    EnvCase {
+                        var: "GROUPS_RETENTION_DAYS",
+                        bad_value: "0",
+                        expect: "GROUPS_RETENTION_DAYS must be between 1 and",
+                    },
+                    // The ceiling: a retention beyond the range make_interval can subtract
+                    // from now() passes startup and then raises 22008 on every sweep,
+                    // pausing the subscription.
+                    EnvCase {
+                        var: "GROUPS_RETENTION_DAYS",
+                        bad_value: "99999999",
+                        expect: "GROUPS_RETENTION_DAYS must be between 1 and",
+                    },
+                ])),
+            ),
+            (
+                Convention::InputByteCaps,
+                Stance::Applies(Fixture::InputByteCaps(vec![
+                    CapCase {
+                        name: "groups create name",
+                        cap: groupsapi::MAX_NAME_BYTES,
+                        probe: Arc::new(groups::conformance::conformance_name_rejected),
+                    },
+                    CapCase {
+                        name: "groups list/members/pending cursor",
+                        cap: groupsapi::MAX_CURSOR_BYTES,
+                        probe: Arc::new(groups::conformance::conformance_cursor_rejected),
+                    },
+                    CapCase {
+                        name: "groups invite target handle",
+                        cap: accountsapi::MAX_HANDLE_BYTES,
+                        probe: Arc::new(groups::conformance::conformance_target_handle_rejected),
+                    },
+                    // The two admin-form values, the reason groups is in
+                    // checks::ADMIN_SUBMIT_MODULES: both are EXACT uuid shapes rather than
+                    // ceilings, and both cases drive admin::apply_submit itself.
+                    CapCase {
+                        name: "groups admin selected group id",
+                        cap: groups::conformance::UUID_SHAPE_BYTES,
+                        probe: Arc::new(groups::conformance::conformance_admin_group_rejected),
+                    },
+                    CapCase {
+                        name: "groups admin promoted player id",
+                        cap: groups::conformance::UUID_SHAPE_BYTES,
+                        probe: Arc::new(groups::conformance::conformance_admin_player_rejected),
+                    },
+                ])),
+            ),
+            (
+                Convention::InfraOutage503,
+                // The accounts directory IS groups' one synchronous external dependency:
+                // every member/pending page hydrates its handles through it. The case drives
+                // the hydrate call those pages make, discriminating on status, so a
+                // capability that cannot be reached surfaces 503 and never a page of blank
+                // handles. `invite` and `join` fold through the SAME
+                // service::directory_unavailable but re-check the caller's role in the
+                // database first, so neither is reachable without a live store — a known gap
+                // this zero-I/O case cannot close, left to the split-proof fleet.
+                Stance::Applies(Fixture::InfraOutage503(vec![OutageCase {
+                    name: "groups member page hydrate over a failing accounts directory capability",
+                    probe: Arc::new(|| {
+                        Box::pin(async {
+                            match groups::conformance::conformance_directory_outage().await {
+                                Err(error) if error.status.http() == 503 => {
+                                    OutageClass::Unavailable
+                                }
+                                Err(error) => OutageClass::Other(format!(
+                                    "unexpected error status {:?}: {}",
+                                    error.status, error.msg
+                                )),
+                                Ok(_) => OutageClass::Other(
+                                    "the page hydrated with the directory capability down"
+                                        .into(),
+                                ),
+                            }
+                        })
+                    }),
+                }])),
+            ),
+            (
+                Convention::ArgonParity,
+                na("groups performs no password hashing"),
             ),
         ],
     }

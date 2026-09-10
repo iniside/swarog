@@ -95,6 +95,7 @@ fn durable_topics_match_events() {
         groupsevents::CREATED.topic(),
         groupsevents::MEMBER_JOINED.topic(),
         groupsevents::MEMBER_LEFT.topic(),
+        groupsevents::ROLE_CHANGED.topic(),
     ]
     .into_iter()
     .collect();
@@ -118,7 +119,7 @@ fn durable_spec_ids_zip_with_topics() {
         "DURABLE_SPEC_IDS and DURABLE_TOPICS must pair positionally"
     );
     for (topic, id) in DURABLE_TOPICS.iter().zip(DURABLE_SPEC_IDS) {
-        let want = format!("audit.{}.v1", topic.replace('.', "-"));
+        let want = format!("audit.{}.v1", topic.replace(['.', '_'], "-"));
         assert_eq!(*id, want, "spec id for {topic:?} broke the naming convention");
     }
 }

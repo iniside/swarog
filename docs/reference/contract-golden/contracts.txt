@@ -47,6 +47,7 @@ event topic=friend.requested version=1 history=min-retention:30d
 event topic=group.created version=1 history=min-retention:30d
 event topic=group.member_joined version=1 history=min-retention:30d
 event topic=group.member_left version=1 history=min-retention:30d
+event topic=group.role_changed version=1 history=min-retention:30d
 event topic=mail.send_requested version=1 history=min-retention:1d
 event topic=match.finished version=1 history=min-retention:7d
 event topic=player.promoted version=1 history=min-retention:7d
@@ -96,6 +97,11 @@ payload topic=group.member_left version=1 payload.actor_id:string
 payload topic=group.member_left version=1 payload.group_id:string
 payload topic=group.member_left version=1 payload.player_id:string
 payload topic=group.member_left version=1 payload.reason:string
+payload topic=group.role_changed version=1 payload.actor_id:string
+payload topic=group.role_changed version=1 payload.actor_kind:string
+payload topic=group.role_changed version=1 payload.group_id:string
+payload topic=group.role_changed version=1 payload.player_id:string
+payload topic=group.role_changed version=1 payload.role:string
 payload topic=mail.send_requested version=1 payload.body:string
 payload topic=mail.send_requested version=1 payload.idempotency_key:string
 payload topic=mail.send_requested version=1 payload.kind:string

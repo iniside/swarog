@@ -45,10 +45,10 @@ const PAGE: i64 = 50;
 
 /// The form's fields. `GROUP_FIELD` shares its name with [`PARAM_GROUP`] deliberately: the
 /// drill-down's group is the one the form preselects.
-const ACTION_FIELD: &str = "action";
-const ACTION_PROMOTE: &str = "promote-admin";
-const GROUP_FIELD: &str = "group";
-const PLAYER_FIELD: &str = "player";
+pub(crate) const ACTION_FIELD: &str = "action";
+pub(crate) const ACTION_PROMOTE: &str = "promote-admin";
+pub(crate) const GROUP_FIELD: &str = "group";
+pub(crate) const PLAYER_FIELD: &str = "player";
 
 /// The route this page answers on. The portal derives it from `slug(LABEL)`
 /// (`admin::resolve_items`), NEVER from the item id, so every self-link is built from HERE:
@@ -313,7 +313,7 @@ pub(crate) fn admin_render(
 /// thing. `adminapi::SubmitError` alone cannot carry the class ([`Rejection::Rejected`] and
 /// [`Rejection::Internal`] both collapse into `Other`), and the wire needs the distinction:
 /// an operator's bad input is not a server fault.
-enum Rejection {
+pub(crate) enum Rejection {
     /// The posted form no longer describes the store: its group is one this page did not
     /// render, or the row it named changed under the write. The remedy is a reload.
     Stale,
@@ -378,7 +378,7 @@ fn required<'a>(
 /// THE submit authority for this page, run by BOTH topologies: the local closure calls it
 /// in-process and `AdminSubmit::admin_submit` calls it server-side after the edge hop, so
 /// monolith and split apply identical rules.
-async fn apply_submit(
+pub(crate) async fn apply_submit(
     svc: &Service,
     values: adminapi::Params,
 ) -> Result<adminapi::SubmitOutcome, Rejection> {

@@ -60,6 +60,7 @@ const DURABLE_TOPICS: &[&str] = &[
     "group.created",
     "group.member_joined",
     "group.member_left",
+    "group.role_changed",
 ];
 
 /// The per-topic subscription ids, zipped positionally with [`DURABLE_TOPICS`]:
@@ -79,8 +80,9 @@ const DURABLE_SPEC_IDS: &[&str] = &[
     "audit.friend-accepted.v1",
     "audit.friend-removed.v1",
     "audit.group-created.v1",
-    "audit.group-member_joined.v1",
-    "audit.group-member_left.v1",
+    "audit.group-member-joined.v1",
+    "audit.group-member-left.v1",
+    "audit.group-role-changed.v1",
 ];
 
 /// The `scheduler.fired` `name` audit prunes on. Shared vocabulary (a string, like a

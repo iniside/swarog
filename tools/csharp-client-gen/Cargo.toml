@@ -20,6 +20,7 @@ leaderboardapi = { workspace = true }
 walletapi = { workspace = true }
 notificationsapi = { workspace = true }
 friendsapi = { workspace = true }
+groupsapi = { workspace = true }
 opsapi = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

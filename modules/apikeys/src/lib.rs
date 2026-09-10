@@ -109,7 +109,9 @@ inventory.grant,inventory.listMine,inventory.listCharacter,\
 leaderboard.topScores,\
 wallet.myBalances,wallet.listCurrencies,\
 notifications.list,notifications.markRead,notifications.delete,\
-friends.request,friends.accept,friends.decline,friends.remove,friends.list,friends.pending";
+friends.request,friends.accept,friends.decline,friends.remove,friends.list,friends.pending,\
+groups.create,groups.listMine,groups.members,groups.pending,groups.join,groups.leave,\
+groups.invite,groups.respond,groups.decide";
 
 /// The well-known dev ROLES: `(name, policy)`. Seeded (FK order) BEFORE the keys.
 const DEV_SEED_ROLES: &[(&str, &str)] = &[

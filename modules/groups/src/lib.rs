@@ -17,6 +17,7 @@
 //! durable iff the membership change is.
 
 mod admin;
+pub mod conformance;
 mod projection;
 mod service;
 mod store;

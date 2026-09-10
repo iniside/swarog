@@ -46,6 +46,20 @@ public sealed record FriendPage(
     [property: JsonPropertyName("items")] Friend[] Items,
     [property: JsonPropertyName("next_cursor")] string NextCursor);
 
+/// <summary>The <c>GroupPage</c> DTO.</summary>
+public sealed record GroupPage(
+    [property: JsonPropertyName("items")] GroupSummary[] Items,
+    [property: JsonPropertyName("next_cursor")] string NextCursor);
+
+/// <summary>The <c>GroupSummary</c> DTO.</summary>
+public sealed record GroupSummary(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("name")] string Name,
+    [property: JsonPropertyName("join_policy")] string JoinPolicy,
+    [property: JsonPropertyName("created_at")] string CreatedAt,
+    [property: JsonPropertyName("my_state")] string MyState,
+    [property: JsonPropertyName("my_role")] string MyRole);
+
 /// <summary>The <c>GuestSession</c> DTO.</summary>
 public sealed record GuestSession(
     [property: JsonPropertyName("player_id")] string PlayerId,
@@ -73,6 +87,19 @@ public sealed record MeView(
     [property: JsonPropertyName("display_name")] string DisplayName,
     [property: JsonPropertyName("handle")] string Handle,
     [property: JsonPropertyName("identities")] IdentityRef[] Identities);
+
+/// <summary>The <c>MemberPage</c> DTO.</summary>
+public sealed record MemberPage(
+    [property: JsonPropertyName("items")] MemberSummary[] Items,
+    [property: JsonPropertyName("next_cursor")] string NextCursor);
+
+/// <summary>The <c>MemberSummary</c> DTO.</summary>
+public sealed record MemberSummary(
+    [property: JsonPropertyName("player_id")] string PlayerId,
+    [property: JsonPropertyName("handle")] string Handle,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("role")] string Role,
+    [property: JsonPropertyName("joined_at")] string JoinedAt);
 
 /// <summary>The <c>Notification</c> DTO.</summary>
 public sealed record Notification(
