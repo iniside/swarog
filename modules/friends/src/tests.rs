@@ -1488,7 +1488,8 @@ async fn players_row_menu_entry_round_trips_into_the_player_param_build_content_
     let Some(pool) = test_pool().await else { return };
     ensure_schema(&pool).await;
 
-    let ctx = Context::with_db(pool.clone());
+    let transport = asyncevents::testing::transport(pool.clone());
+    let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
     let module = Friends::new();
     module.register(&ctx).unwrap();
 

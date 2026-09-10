@@ -265,6 +265,27 @@ impl Store {
         }
     }
 
+    /// Plants the purge tombstone on the HANDED delivery connection, so it commits with the
+    /// subscription checkpoint. The row is the sweep's work item and, once swept, the
+    /// permanent record that this player is gone — nothing deletes it, and a redelivery is
+    /// `ON CONFLICT DO NOTHING` rather than a reset of `swept_at`.
+    pub(crate) async fn plant_purged_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        handle: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO friends.purged_players (player_id, handle) VALUES ($1::uuid, $2) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(player_id)
+        .bind(handle)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
     /// EITHER party, in EITHER state, so no `requester_id` clause. The returned
     /// `state`/`requester_is_caller` are the DELETED row's, not a prior read's: a state that
     /// changed underneath the caller must not mislabel the emitted event's reason.

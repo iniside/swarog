@@ -22,6 +22,9 @@ friendsevents = { workspace = true }
 # The directory capability's CONTRACT (`Directory`, `PlayerSummary`) plus the byte cap on a
 # handle — the one authority for that bound, so friends declares no second const.
 accountsapi = { workspace = true }
+# The accounts EVENT contract only (an events crate is importable by any module): the
+# purge tombstone reacts to durable `player.deleted`.
+accountsevents = { workspace = true }
 # The admin CONTRACT (widgets + the read-only `AdminData` trait) — a contract crate,
 # importable by any module; the admin impl is never reached.
 adminapi = { workspace = true }

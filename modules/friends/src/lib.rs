@@ -51,7 +51,13 @@ CREATE TABLE IF NOT EXISTS friends.edges (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS friends_pair_idx ON friends.edges (low_id, high_id);
 CREATE INDEX IF NOT EXISTS friends_low_idx  ON friends.edges (low_id,  state, created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS friends_high_idx ON friends.edges (high_id, state, created_at DESC, id DESC);"#;
+CREATE INDEX IF NOT EXISTS friends_high_idx ON friends.edges (high_id, state, created_at DESC, id DESC);
+CREATE TABLE IF NOT EXISTS friends.purged_players (
+    player_id  uuid PRIMARY KEY,
+    handle     text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    swept_at   timestamptz
+);"#;
 
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
     opsapi::Error::internal(e.to_string())
@@ -163,6 +169,37 @@ impl Module for Friends {
                 }),
             )
             .with_extensions(admin::extension_entries()),
+        );
+
+        // The purge tombstone, planted on the HANDED delivery conn so it commits with the
+        // subscription checkpoint. O(1) BY DESIGN: nothing bounds a player's accepted edges,
+        // while `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this handler at 10s — a delete too large
+        // for that budget would make NO progress ever and burn failures toward the plane's
+        // pause threshold, stranding every later player behind the same cursor. The deleting
+        // (and its `friend.removed` emits) belongs to the scheduled sweep, which resumes
+        // across fires; this only records its work item.
+        //
+        // `Genesis`, not `AfterRegistration`: a lost deletion is a permanent retention leak
+        // with no repair path, while a redelivery into an already-tombstoned module is a
+        // no-op. The id and the start position are an IMMUTABLE contract (`spec_hash`).
+        let purger = self.svc();
+        ctx.bus().on_tx(
+            bus::SubscriptionSpec {
+                id: "friends.player-deleted.v1",
+                start: bus::StartPosition::Genesis,
+            },
+            &accountsevents::PLAYER_DELETED,
+            move |mut delivery, e: accountsevents::PlayerDeleted| {
+                let purger = purger.clone();
+                Box::pin(async move {
+                    let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                    purger
+                        .store
+                        .plant_purged_player_tx(conn, &e.player_id, &e.handle)
+                        .await
+                        .map_err(bus::Error::transport)
+                })
+            },
         );
         Ok(())
     }
