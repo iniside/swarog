@@ -24,6 +24,15 @@ mod store;
 
 pub use service::Service;
 
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod service_tests;
+#[cfg(test)]
+mod store_tests;
+#[cfg(test)]
+mod projection_tests;
+
 use std::sync::{Arc, OnceLock};
 
 use accountsapi::Directory;

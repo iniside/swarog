@@ -67,10 +67,29 @@ async fn deliver_prune(pool: &PgPool, handler: &PruneHandler, name: &str) {
 
 // --- anti-drift (no DB) -----------------------------------------------------
 
-/// The anti-drift guard: [`DURABLE_TOPICS`] must equal EXACTLY the producers' declared
-/// topics (with no duplicates). Imports the domain events crates and diffs the sets, so
-/// a topic rename on either side fails the build (Go's `TestDurableTopicsMatchEvents`,
-/// adjusted to the single durable list).
+/// A topic an events crate DECLARES (via its own self-checked `golden_samples()`) but
+/// this module deliberately does NOT sink to the ledger — each entry names a reason, so
+/// the omission is a decision on record rather than a silent gap.
+const NOT_LOGGED: &[(&str, &str)] = &[
+    (
+        "scheduler.fired",
+        "a reactive control signal (a schedule fired), not a fact about a domain",
+    ),
+    (
+        "mail.send_requested",
+        "a command topic mail both defines and consumes as its own ingress, not a \
+         fact about another domain",
+    ),
+];
+
+/// The anti-drift guard: [`DURABLE_TOPICS`] must equal EXACTLY the union of every
+/// events crate's own `golden_samples()` topics, MINUS [`NOT_LOGGED`]. `want` is
+/// machine-enumerated from each crate's self-checked sample list rather than hand-typed
+/// here — a hand-typed `want` edited in the SAME commit as [`DURABLE_TOPICS`] catches a
+/// rename on either side but can never catch a topic that exists and is subscribed
+/// nowhere, because an omission from one list is an omission from both (Go's
+/// `TestDurableTopicsMatchEvents`, adjusted to the single durable list and to a
+/// machine-derived `want`).
 #[test]
 fn durable_topics_match_events() {
     let got: HashSet<&str> = DURABLE_TOPICS.iter().copied().collect();
@@ -80,30 +99,52 @@ fn durable_topics_match_events() {
         "duplicate topic in DURABLE_TOPICS"
     );
 
-    let want: HashSet<&str> = [
-        charactersevents::CREATED.topic(),
-        charactersevents::DELETED.topic(),
-        accountsevents::PLAYER_REGISTERED.topic(),
-        accountsevents::PLAYER_PROMOTED.topic(),
-        configevents::CHANGED.topic(),
-        matchevents::FINISHED.topic(),
-        adminevents::ACTION.topic(),
-        walletevents::CHANGED.topic(),
-        friendsevents::REQUESTED.topic(),
-        friendsevents::ACCEPTED.topic(),
-        friendsevents::REMOVED.topic(),
-        groupsevents::CREATED.topic(),
-        groupsevents::MEMBER_JOINED.topic(),
-        groupsevents::MEMBER_LEFT.topic(),
-        groupsevents::ROLE_CHANGED.topic(),
-    ]
-    .into_iter()
-    .collect();
+    let mut declared: HashSet<&'static str> = HashSet::new();
+    for (topic, _, _) in charactersevents::golden_samples() {
+        declared.insert(topic);
+    }
+    for (topic, _, _) in accountsevents::golden_samples() {
+        declared.insert(topic);
+    }
+    for (topic, _, _) in configevents::golden_samples() {
+        declared.insert(topic);
+    }
+    for (topic, _, _) in matchevents::golden_samples() {
+        declared.insert(topic);
+    }
+    for (topic, _, _) in adminevents::golden_samples() {
+        declared.insert(topic);
+    }
+    for (topic, _, _) in walletevents::golden_samples() {
+        declared.insert(topic);
+    }
+    for (topic, _, _) in friendsevents::golden_samples() {
+        declared.insert(topic);
+    }
+    for (topic, _, _) in groupsevents::golden_samples() {
+        declared.insert(topic);
+    }
+    for (topic, _, _) in mailevents::golden_samples() {
+        declared.insert(topic);
+    }
+    for (topic, _, _) in schedulerevents::golden_samples() {
+        declared.insert(topic);
+    }
+
+    for (topic, _reason) in NOT_LOGGED {
+        assert!(
+            declared.contains(topic),
+            "NOT_LOGGED names {topic:?}, which no events crate declares any more — \
+             remove the stale entry"
+        );
+    }
+    let not_logged: HashSet<&str> = NOT_LOGGED.iter().map(|(t, _)| *t).collect();
+    let want: HashSet<&str> = declared.difference(&not_logged).copied().collect();
 
     assert_eq!(
         got, want,
         "audited durable topic set drifted from the producers' declared event topics \
-         (rename? stray topic? missing producer?)"
+         (rename? stray topic? missing producer? missing NOT_LOGGED entry?)"
     );
 }
 

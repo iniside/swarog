@@ -44,6 +44,10 @@ adminevents = { workspace = true }
 walletevents = { workspace = true }
 friendsevents = { workspace = true }
 groupsevents = { workspace = true }
+# NOT-sunk-but-declared: `mail.send_requested` is a command topic (mail both defines
+# and consumes it as its own ingress), so it must appear in `declared` for the
+# anti-drift test's NOT_LOGGED entry to be checked against a real producer.
+mailevents = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 # The retention-gate `init` test needs a real (in-memory) `bus::Transport` handle —
 # `on_tx_raw` panics on a transport-less bus — via `asyncevents::testing::transport`,

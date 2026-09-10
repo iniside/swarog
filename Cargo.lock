@@ -538,6 +538,7 @@ dependencies = [
  "futures",
  "groupsevents",
  "lifecycle",
+ "mailevents",
  "matchevents",
  "opsapi",
  "schedulerevents",
@@ -1800,6 +1801,7 @@ dependencies = [
  "adminapi",
  "anyhow",
  "async-trait",
+ "asyncevents",
  "base64 0.22.1",
  "bus",
  "edge",
@@ -1814,6 +1816,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
 ]

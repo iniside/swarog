@@ -40,3 +40,7 @@ tracing = { workspace = true }
 # The admin `RenderFn` is synchronous while the page's store reads are not: the local render
 # bridges through `block_in_place` on the multi-thread runtime.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[dev-dependencies]
+testdb = { workspace = true }
+asyncevents = { workspace = true }
