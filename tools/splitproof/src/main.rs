@@ -561,6 +561,13 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     // the split's `[FR1]`-`[FR8]` cross.
     friends_assertions(ctx, pool, p, &m, &jar, "m").await?;
 
+    // --- Groups parity: the same six assertions with the ops, the directory, the durable
+    // sweep and the portal in ONE process. `edge` is `None` because the monolith hosts no
+    // internal edge — `[GR4]`'s front-door negative still runs here (it is a property of
+    // the front's dispatch table, which the monolith serves too), while its edge-positive
+    // half is split-only by construction.
+    groups_assertions(ctx, pool, p, &m, &jar, None, "m").await?;
+
     // [W2] graceful shutdown: a native Ctrl-Break (Windows) / SIGTERM (unix) must drain
     // in-flight work and exit 0 within the grace window — no force-kill. This is the
     // proof winctrl gave, now native (the app's shutdown_signal listens for ctrl_break).
@@ -1656,8 +1663,8 @@ struct FriendPlayer {
 }
 
 /// Registers, logs in, and reads the handle back off `GET /accounts/me`. The handle is never
-/// composed here: its four-digit discriminator is minted by `accounts` and the friends ops
-/// address a target by exactly the string `accounts` returned.
+/// composed here: its four-digit discriminator is minted by `accounts` and the friends and
+/// groups ops address a target by exactly the string `accounts` returned.
 async fn friends_player(
     ctx: &Ctx,
     base: &str,
@@ -1715,7 +1722,8 @@ fn handle_shape_ok(handle: &str) -> bool {
     }
 }
 
-/// One friends op through a front door as one player, answering `(status, body)`. A 204
+/// One player op through a front door as one player, answering `(status, body)` — shared by
+/// the friends and groups passes. A 204
 /// carries no body and lands as `Value::Null`, so its caller asserts the code. Retries past
 /// the gateway's always-on 429 exactly as `inbox_page` does.
 async fn friends_call(
@@ -2130,6 +2138,445 @@ async fn friends_checks(
              handle={fr9_handle:?} expect={:?}",
             a.handle
         ),
+    );
+
+    Ok(())
+}
+
+/// The `(state, role)` of one `groups.memberships` row, `None` when the row is gone.
+/// `::text = $n` rather than uuid binds: the harness holds both ids as the strings the
+/// wire returned, and `groups` deliberately stores plain uuid columns with no FK.
+async fn membership_row(
+    pool: &PgPool,
+    group_id: &str,
+    player_id: &str,
+) -> Option<(String, String)> {
+    sqlx::query_as(
+        "SELECT state, role FROM groups.memberships \
+          WHERE group_id::text = $1 AND player_id::text = $2",
+    )
+    .bind(group_id)
+    .bind(player_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+}
+
+/// `POST /groups` as `token`, answering `(status, id)`. The id is empty when the create
+/// failed, so every downstream check reports its own verdict instead of unwrapping.
+async fn create_group(
+    ctx: &Ctx,
+    front: &str,
+    token: &str,
+    name: &str,
+    join_policy: &str,
+) -> Result<(u16, String)> {
+    let (code, body) = friends_call(
+        ctx,
+        front,
+        token,
+        reqwest::Method::POST,
+        "/groups",
+        Some(serde_json::json!({ "name": name, "join_policy": join_policy })),
+    )
+    .await?;
+    let id = body
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    Ok((code, id))
+}
+
+/// `[GR1]`-`[GR6]`, run once per topology.
+///
+/// `front` serves both the player ops and `/admin` — gateway-svc in the split, where every
+/// groups op is a Remote dispatch to groups-svc over the mTLS edge, its
+/// `accountsapi::Directory` handle resolution is a second edge hop into accounts-svc, and
+/// the admin page is fetched from groups-svc by admin-svc over `admin.adminData`; the
+/// monolith itself in parity, where all three are in-process calls. `edge` is groups-svc's
+/// INTERNAL mTLS address, `Some` in the split and `None` in the monolith, which hosts no
+/// internal edge at all — so `[GR4]`'s positive half exists only in the split while its
+/// front-door negative runs in both.
+///
+/// `jar` is an already-authenticated operator session and `tag` suffixes every name and
+/// every email so the two passes neither collide nor report indistinguishable verdicts.
+/// No baseline reset, for `friends_assertions`' reason: every predicate below is keyed by
+/// a group id or by a player minted from this pass's random nonce, never by an absolute
+/// row count.
+///
+/// Transport errors collapse into ONE named failing check rather than an `Err`: the parity
+/// pass runs BEFORE `[W2]`, and an `Err` out of `monolith_parity` would delete the
+/// graceful-shutdown proof from the run and point the diagnosis at the wrong assertion.
+async fn groups_assertions(
+    ctx: &Ctx,
+    pool: &PgPool,
+    p: &mut Proof,
+    front: &str,
+    jar: &reqwest::Client,
+    edge: Option<std::net::SocketAddr>,
+    tag: &str,
+) -> Result<()> {
+    if let Err(e) = groups_checks(ctx, pool, p, front, jar, edge, tag).await {
+        p.check(
+            &format!("[GR0{tag}] the groups pass ran to completion"),
+            false,
+            format!("{e:#}"),
+        );
+    }
+    Ok(())
+}
+
+async fn groups_checks(
+    ctx: &Ctx,
+    pool: &PgPool,
+    p: &mut Proof,
+    front: &str,
+    jar: &reqwest::Client,
+    edge: Option<std::net::SocketAddr>,
+    tag: &str,
+) -> Result<()> {
+    let nonce = pass_nonce(tag);
+    // `friends_player` is the shared front-door registration helper: register, log in, and
+    // read the `accounts`-minted handle back off `GET /accounts/me`. `groups` addresses an
+    // invite target by exactly that handle, so it is never composed here either.
+    let a = friends_player(ctx, front, &format!("gr-a-{nonce}@test.local"), &format!("GrA{nonce}")).await?;
+    let b = friends_player(ctx, front, &format!("gr-b-{nonce}@test.local"), &format!("GrB{nonce}")).await?;
+    let c = friends_player(ctx, front, &format!("gr-c-{nonce}@test.local"), &format!("GrC{nonce}")).await?;
+    let d = friends_player(ctx, front, &format!("gr-d-{nonce}@test.local"), &format!("GrD{nonce}")).await?;
+
+    // [GR1] create -> join -> members, all three Remote in the split. The ROWS are the
+    // assertion, not the statuses: `create` must admit its caller as the group's admin in
+    // the same transaction (a group whose creator is a plain member can never be
+    // administered), and `join` under `open` must land a `member`/`member` row rather than
+    // the `requested` row the other policy produces. The list is read as `b`, the plain
+    // member, because ANY member may read it.
+    let open_name = format!("GrOpen{nonce}");
+    let (gr1_create, open_id) = create_group(ctx, front, &a.token, &open_name, "open").await?;
+    let (gr1_join, gr1_join_body) = friends_call(
+        ctx,
+        front,
+        &b.token,
+        reqwest::Method::POST,
+        &format!("/groups/{open_id}/join"),
+        Some(serde_json::json!({})),
+    )
+    .await?;
+    let (gr1_list, gr1_list_body) = friends_call(
+        ctx,
+        front,
+        &b.token,
+        reqwest::Method::POST,
+        &format!("/groups/{open_id}/members/list"),
+        Some(serde_json::json!({ "cursor": "", "limit": 0 })),
+    )
+    .await?;
+    let gr1_listed: Vec<String> = gr1_list_body
+        .get("items")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|i| i.get("player_id").and_then(|v| v.as_str()))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let gr1_admin = membership_row(pool, &open_id, &a.player_id).await;
+    let gr1_member = membership_row(pool, &open_id, &b.player_id).await;
+    p.check(
+        &format!("[GR1{tag}] create -> join -> members: creator is admin, joiner is member, both listed"),
+        gr1_create == 201
+            && !open_id.is_empty()
+            && gr1_join == 200
+            && gr1_join_body.get("state").and_then(|v| v.as_str()) == Some("member")
+            && gr1_list == 200
+            && gr1_listed.contains(&a.player_id)
+            && gr1_listed.contains(&b.player_id)
+            && gr1_admin == Some(("member".into(), "admin".into()))
+            && gr1_member == Some(("member".into(), "member".into())),
+        format!(
+            "create={gr1_create} group={open_id} join={gr1_join} list={gr1_list} \
+             listed={gr1_listed:?} creator_row={gr1_admin:?} joiner_row={gr1_member:?}"
+        ),
+    );
+
+    // [GR2] the three join policies, which is the ONE decision `join` makes and the only
+    // place `decide`'s accept arm is reachable from. `request` is proven in two steps
+    // because the row is what distinguishes it from `open`: the same 200 answer carries
+    // `requested`/no role, and only an admin's `decide` promotes it. `invite` is proven by
+    // the ABSENCE of a row — a 409 with a row written would be the policy leaking a
+    // membership the group never consented to.
+    let req_name = format!("GrReq{nonce}");
+    let (gr2_create, req_id) = create_group(ctx, front, &a.token, &req_name, "request").await?;
+    let (gr2_join, gr2_join_body) = friends_call(
+        ctx,
+        front,
+        &c.token,
+        reqwest::Method::POST,
+        &format!("/groups/{req_id}/join"),
+        Some(serde_json::json!({})),
+    )
+    .await?;
+    let gr2_requested = membership_row(pool, &req_id, &c.player_id).await;
+    let (gr2_decide, _) = friends_call(
+        ctx,
+        front,
+        &a.token,
+        reqwest::Method::POST,
+        &format!("/groups/{req_id}/decide"),
+        Some(serde_json::json!({ "subject_id": c.player_id, "decision": "accept" })),
+    )
+    .await?;
+    let gr2_accepted = membership_row(pool, &req_id, &c.player_id).await;
+
+    let inv_name = format!("GrInv{nonce}");
+    let (gr2_inv_create, inv_id) = create_group(ctx, front, &a.token, &inv_name, "invite").await?;
+    let (gr2_inv_join, _) = friends_call(
+        ctx,
+        front,
+        &d.token,
+        reqwest::Method::POST,
+        &format!("/groups/{inv_id}/join"),
+        Some(serde_json::json!({})),
+    )
+    .await?;
+    let gr2_inv_row = membership_row(pool, &inv_id, &d.player_id).await;
+    p.check(
+        &format!("[GR2{tag}] open admits; request records a requested row that decide promotes; invite refuses a bare join"),
+        gr2_create == 201
+            && gr2_join == 200
+            && gr2_join_body.get("state").and_then(|v| v.as_str()) == Some("requested")
+            && gr2_requested == Some(("requested".into(), String::new()))
+            && gr2_decide == 204
+            && gr2_accepted == Some(("member".into(), "member".into()))
+            && gr2_inv_create == 201
+            && gr2_inv_join == 409
+            && gr2_inv_row.is_none(),
+        format!(
+            "request_create={gr2_create} join={gr2_join} requested_row={gr2_requested:?} \
+             decide={gr2_decide} promoted_row={gr2_accepted:?} invite_create={gr2_inv_create} \
+             invite_join={gr2_inv_join} invite_row={gr2_inv_row:?} req_group={req_id} \
+             inv_group={inv_id}"
+        ),
+    );
+
+    // [GR3] the enumeration oracle this module answers `NotFound` to everywhere. A 403 on
+    // either call would confirm the id names a real group the caller may not see, so the
+    // status IS the assertion — and the row is checked alongside it, because a 404 with the
+    // write applied would be the bypass wearing the right status code. `b` joins the
+    // `request` group to become the subject: `c` is a real MEMBER of that group and still
+    // not its admin, which is the branch a member-vs-stranger check would miss.
+    let (gr3_read, _) = friends_call(
+        ctx,
+        front,
+        &d.token,
+        reqwest::Method::POST,
+        &format!("/groups/{open_id}/members/list"),
+        Some(serde_json::json!({ "cursor": "", "limit": 0 })),
+    )
+    .await?;
+    let (gr3_subject_join, _) = friends_call(
+        ctx,
+        front,
+        &b.token,
+        reqwest::Method::POST,
+        &format!("/groups/{req_id}/join"),
+        Some(serde_json::json!({})),
+    )
+    .await?;
+    let (gr3_decide, _) = friends_call(
+        ctx,
+        front,
+        &c.token,
+        reqwest::Method::POST,
+        &format!("/groups/{req_id}/decide"),
+        Some(serde_json::json!({ "subject_id": b.player_id, "decision": "accept" })),
+    )
+    .await?;
+    let gr3_subject_row = membership_row(pool, &req_id, &b.player_id).await;
+    p.check(
+        &format!("[GR3{tag}] a non-member's members read and a non-admin member's decide -> 404 (never 403), subject row untouched"),
+        gr3_read == 404
+            && gr3_decide == 404
+            && gr3_subject_join == 200
+            && gr3_subject_row == Some(("requested".into(), String::new())),
+        format!(
+            "stranger_read={gr3_read} subject_join={gr3_subject_join} nonadmin_decide={gr3_decide} \
+             subject_row={gr3_subject_row:?} group={req_id}"
+        ),
+    );
+
+    // [GR4] the wire-only roster predicate. Its two halves are one property: `role_of`
+    // carries no `Identity` and no `#[http]`, so its authorization IS the internal mTLS
+    // edge it is registered on — reachable there, absent from the front door's dispatch
+    // table.
+    //
+    // The negative is driven over the PLAYER-QUIC plane, which dispatches by the same wire
+    // method name the internal edge does, and it carries its own positive control in the
+    // same connection: `groups.join` (a real `#[http]` op) reaches the auth stage and
+    // answers `Unauthorized` for the absent bearer, while `groups.roleOf` answers
+    // `NotFound` on the table miss BEFORE auth. Without that pair a green `NotFound` would
+    // be indistinguishable from a plane that routes no groups method at all. The HTTP probe
+    // is the same claim on the other front-door protocol: the path a `#[http] role_of`
+    // would have occupied is not routed.
+    //
+    // The SPLIT run is the one that binds: giving `role_of` an `#[http]` attribute was
+    // observed to flip this check there (`Forbidden`/403) while `[GR4m]` stayed green,
+    // because gateway-svc learns its routes from the peer's `describe()` manifest — which
+    // concatenates BOTH contracts — whereas the module's `init` contributes only
+    // `player_rpc::operations` to the local table. The monolith answer is a weaker
+    // property, kept for parity, not as a substitute.
+    let gr4_probe = format!(r#"{{"group_id":"{open_id}","player_id":"{}"}}"#, a.player_id);
+    let gr4_plane = player_session(
+        ctx,
+        &[
+            ("groups.roleOf", gr4_probe.clone()),
+            ("groups.join", format!(r#"{{"group_id":"{open_id}"}}"#)),
+        ],
+    )
+    .await?;
+    let gr4_wire_only = gr4_plane.first().and_then(envelope_status).unwrap_or("");
+    let gr4_control = gr4_plane.get(1).and_then(envelope_status).unwrap_or("");
+    let (gr4_http, _) = friends_call(
+        ctx,
+        front,
+        &a.token,
+        reqwest::Method::POST,
+        &format!("/groups/{open_id}/roleOf"),
+        Some(serde_json::json!({ "player_id": a.player_id })),
+    )
+    .await?;
+    p.check(
+        &format!("[GR4{tag}] groups.roleOf is NOT routed by the front door: QUIC NotFound beside a routed op's Unauthorized, HTTP 404"),
+        gr4_wire_only == "NotFound"
+            && gr4_control == "Unauthorized"
+            && matches!(gr4_http, 404 | 405),
+        format!(
+            "quic_roleOf={gr4_wire_only} quic_join_control={gr4_control} http_roleOf={gr4_http}"
+        ),
+    );
+
+    // The positive half, split-only: the SAME method name and payload the front door just
+    // refused, answered over groups-svc's internal mTLS edge. The monolith hosts no
+    // internal edge, so there is nothing to dial — recorded as a known gap of the parity
+    // pass rather than faked with an in-process call the harness cannot make.
+    if let Some(addr) = edge {
+        let ca = DevCA::load(
+            ctx.ca_cert.to_str().context("CA cert path not UTF-8")?,
+            ctx.ca_key.to_str().context("CA key path not UTF-8")?,
+        )
+        .map_err(|e| anyhow::anyhow!("load dev CA: {e}"))?;
+        let client = edge::Client::dial(addr, &ca)
+            .await
+            .map_err(|e| anyhow::anyhow!("dial groups-svc edge: {e}"))?;
+        let raw = client
+            .call_raw("groups.roleOf", gr4_probe.as_bytes())
+            .await
+            .map_err(|e| anyhow::anyhow!("groups.roleOf over the edge: {e}"));
+        let answer: Option<serde_json::Value> = raw
+            .as_ref()
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(bytes).ok());
+        let gr4e_status = answer.as_ref().and_then(envelope_status).unwrap_or("").to_string();
+        let gr4e_role = answer
+            .as_ref()
+            .and_then(|v| v.get("value"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        client.close();
+        p.check(
+            &format!("[GR4e{tag}] the same groups.roleOf call over groups-svc's internal edge -> Ok + the caller's real role"),
+            gr4e_status == "Ok" && gr4e_role == "admin",
+            format!(
+                "status={gr4e_status} role={gr4e_role} err={:?} group={open_id} player={}",
+                raw.as_ref().err().map(|e| e.to_string()),
+                a.player_id
+            ),
+        );
+    }
+
+    // [GR5] the operator page, drilled into ONE group so the assertion is the group this
+    // pass created and not "something rendered". In the split the header, the KPIs and the
+    // roster table were all built inside groups-svc and crossed the edge as
+    // `admin.adminData` — a missing `register_admin` face or a wrong :9015 peer renders the
+    // error card instead, with the item's section and label collapsed to its id. The
+    // foreign `owner=` param belongs to another page and is attached deliberately: the
+    // portal forwards every page's params to every resolved provider, so tolerating one is
+    // a cross-process obligation.
+    let gr5 = jar
+        .get(format!("{front}/admin/groups?group={open_id}&owner=character:123"))
+        .send()
+        .await?;
+    let (gr5_code, gr5_page) = (gr5.status().as_u16(), gr5.text().await.unwrap_or_default());
+    let gr5_error_card = gr5_page.contains("<div class=\"kpi-label\">Error</div>");
+    let gr5_named = gr5_page.contains(&open_name);
+    let gr5_kpis = gr5_page.contains("Join policy") && gr5_page.contains("Members");
+    let gr5_table = gr5_page.contains("STATE") && gr5_page.contains("ROLE");
+    p.check(
+        &format!("[GR5{tag}] GET /admin/groups?group=<id>&owner=character:123 -> the group's own page, no error card"),
+        gr5_code == 200 && gr5_named && gr5_kpis && gr5_table && !gr5_error_card,
+        format!(
+            "code={gr5_code} named={gr5_named} kpis={gr5_kpis} table={gr5_table} \
+             error_card={gr5_error_card} group={open_id}"
+        ),
+    );
+
+    // [GR6] the retention sweep, driven the way `[SP2]`/`[ML6]` drive theirs: force the
+    // seeded schedule due and poll the row out. Both fixture rows are aged identically and
+    // differ ONLY in state, so the surviving `member` row is what proves the sweep's
+    // predicate rather than a sweep that simply ran. In the split this crosses three
+    // processes — scheduler-svc fires, the durable log carries it, groups-svc deletes.
+    let gr6_group: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
+        .fetch_one(pool)
+        .await?;
+    let gr6_stale: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
+        .fetch_one(pool)
+        .await?;
+    let gr6_kept: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
+        .fetch_one(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO groups.memberships (group_id, player_id, state, role, created_at) \
+         VALUES ($1::uuid, $2::uuid, 'requested', '', now() - interval '400 days'), \
+                ($1::uuid, $3::uuid, 'member', 'member', now() - interval '400 days')",
+    )
+    .bind(&gr6_group)
+    .bind(&gr6_stale)
+    .bind(&gr6_kept)
+    .execute(pool)
+    .await
+    .context("seed the groups retention fixtures")?;
+    sqlx::query(
+        "UPDATE scheduler.schedules SET last_fired = to_timestamp(0) WHERE name = 'groups-prune'",
+    )
+    .execute(pool)
+    .await
+    .context("force the groups-prune schedule due")?;
+    let gr6_swept = poll_count(
+        pool,
+        "SELECT count(*) FROM groups.memberships WHERE player_id::text = $1",
+        &gr6_stale,
+        0,
+    )
+    .await;
+    let gr6_survived: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM groups.memberships WHERE player_id::text = $1")
+            .bind(&gr6_kept)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(-1);
+    sqlx::query("DELETE FROM groups.memberships WHERE group_id::text = $1")
+        .bind(&gr6_group)
+        .execute(pool)
+        .await
+        .ok();
+    p.check(
+        &format!("[GR6{tag}] groups-prune sweeps the stale requested row and leaves the equally old member row"),
+        gr6_swept && gr6_survived == 1,
+        format!("swept={gr6_swept} survived={gr6_survived} group={gr6_group}"),
     );
 
     Ok(())
@@ -4337,6 +4784,28 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     // hop, `friend.accepted` fans out to audit-svc and notifications-svc through the durable
     // log, and admin-svc renders the page from friends-svc over `admin.adminData`.
     friends_assertions(ctx, pool, p, &g, &cfg, "").await?;
+
+    // --- Social groups. The same four seams plus a fifth the friends pass has none of: a
+    // WIRE-ONLY capability that must be reachable on groups-svc's internal edge and absent
+    // from both front-door planes. `[GR6]`'s sweep crosses three processes (scheduler-svc
+    // fires, the durable log carries it, groups-svc deletes).
+    groups_assertions(
+        ctx,
+        pool,
+        p,
+        &g,
+        &cfg,
+        Some(
+            format!(
+                "127.0.0.1:{}",
+                ctx.service("groups-svc").edge_port.context("groups edge port")?
+            )
+            .parse()
+            .context("groups edge address")?,
+        ),
+        "",
+    )
+    .await?;
 
     // --- Metrics ---
     // [MX1] characters-svc /metrics -> 200 + http_requests_total (one recorded hit first).
