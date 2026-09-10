@@ -1,0 +1,108 @@
+# cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
+pub mod groupsevents
+pub struct groupsevents::Created
+pub groupsevents::Created::creator_id: alloc::string::String
+pub groupsevents::Created::group_id: alloc::string::String
+pub groupsevents::Created::join_policy: alloc::string::String
+pub groupsevents::Created::name: alloc::string::String
+impl core::clone::Clone for groupsevents::Created
+pub fn groupsevents::Created::clone(&self) -> groupsevents::Created
+impl core::cmp::Eq for groupsevents::Created
+impl core::cmp::PartialEq for groupsevents::Created
+pub fn groupsevents::Created::eq(&self, &groupsevents::Created) -> bool
+impl core::fmt::Debug for groupsevents::Created
+pub fn groupsevents::Created::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for groupsevents::Created
+impl serde_core::ser::Serialize for groupsevents::Created
+pub fn groupsevents::Created::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsevents::Created
+pub fn groupsevents::Created::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsevents::Created
+impl core::marker::Send for groupsevents::Created
+impl core::marker::Sync for groupsevents::Created
+impl core::marker::Unpin for groupsevents::Created
+impl core::marker::UnsafeUnpin for groupsevents::Created
+impl core::panic::unwind_safe::RefUnwindSafe for groupsevents::Created
+impl core::panic::unwind_safe::UnwindSafe for groupsevents::Created
+pub struct groupsevents::MemberJoined
+pub groupsevents::MemberJoined::group_id: alloc::string::String
+pub groupsevents::MemberJoined::player_id: alloc::string::String
+pub groupsevents::MemberJoined::role: alloc::string::String
+impl core::clone::Clone for groupsevents::MemberJoined
+pub fn groupsevents::MemberJoined::clone(&self) -> groupsevents::MemberJoined
+impl core::cmp::Eq for groupsevents::MemberJoined
+impl core::cmp::PartialEq for groupsevents::MemberJoined
+pub fn groupsevents::MemberJoined::eq(&self, &groupsevents::MemberJoined) -> bool
+impl core::fmt::Debug for groupsevents::MemberJoined
+pub fn groupsevents::MemberJoined::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for groupsevents::MemberJoined
+impl serde_core::ser::Serialize for groupsevents::MemberJoined
+pub fn groupsevents::MemberJoined::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsevents::MemberJoined
+pub fn groupsevents::MemberJoined::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsevents::MemberJoined
+impl core::marker::Send for groupsevents::MemberJoined
+impl core::marker::Sync for groupsevents::MemberJoined
+impl core::marker::Unpin for groupsevents::MemberJoined
+impl core::marker::UnsafeUnpin for groupsevents::MemberJoined
+impl core::panic::unwind_safe::RefUnwindSafe for groupsevents::MemberJoined
+impl core::panic::unwind_safe::UnwindSafe for groupsevents::MemberJoined
+pub struct groupsevents::MemberLeft
+pub groupsevents::MemberLeft::actor_id: alloc::string::String
+pub groupsevents::MemberLeft::group_id: alloc::string::String
+pub groupsevents::MemberLeft::player_id: alloc::string::String
+pub groupsevents::MemberLeft::reason: alloc::string::String
+impl core::clone::Clone for groupsevents::MemberLeft
+pub fn groupsevents::MemberLeft::clone(&self) -> groupsevents::MemberLeft
+impl core::cmp::Eq for groupsevents::MemberLeft
+impl core::cmp::PartialEq for groupsevents::MemberLeft
+pub fn groupsevents::MemberLeft::eq(&self, &groupsevents::MemberLeft) -> bool
+impl core::fmt::Debug for groupsevents::MemberLeft
+pub fn groupsevents::MemberLeft::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for groupsevents::MemberLeft
+impl serde_core::ser::Serialize for groupsevents::MemberLeft
+pub fn groupsevents::MemberLeft::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsevents::MemberLeft
+pub fn groupsevents::MemberLeft::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsevents::MemberLeft
+impl core::marker::Send for groupsevents::MemberLeft
+impl core::marker::Sync for groupsevents::MemberLeft
+impl core::marker::Unpin for groupsevents::MemberLeft
+impl core::marker::UnsafeUnpin for groupsevents::MemberLeft
+impl core::panic::unwind_safe::RefUnwindSafe for groupsevents::MemberLeft
+impl core::panic::unwind_safe::UnwindSafe for groupsevents::MemberLeft
+pub struct groupsevents::RoleChanged
+pub groupsevents::RoleChanged::actor_id: alloc::string::String
+pub groupsevents::RoleChanged::actor_kind: alloc::string::String
+pub groupsevents::RoleChanged::group_id: alloc::string::String
+pub groupsevents::RoleChanged::player_id: alloc::string::String
+pub groupsevents::RoleChanged::role: alloc::string::String
+impl core::clone::Clone for groupsevents::RoleChanged
+pub fn groupsevents::RoleChanged::clone(&self) -> groupsevents::RoleChanged
+impl core::cmp::Eq for groupsevents::RoleChanged
+impl core::cmp::PartialEq for groupsevents::RoleChanged
+pub fn groupsevents::RoleChanged::eq(&self, &groupsevents::RoleChanged) -> bool
+impl core::fmt::Debug for groupsevents::RoleChanged
+pub fn groupsevents::RoleChanged::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for groupsevents::RoleChanged
+impl serde_core::ser::Serialize for groupsevents::RoleChanged
+pub fn groupsevents::RoleChanged::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsevents::RoleChanged
+pub fn groupsevents::RoleChanged::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsevents::RoleChanged
+impl core::marker::Send for groupsevents::RoleChanged
+impl core::marker::Sync for groupsevents::RoleChanged
+impl core::marker::Unpin for groupsevents::RoleChanged
+impl core::marker::UnsafeUnpin for groupsevents::RoleChanged
+impl core::panic::unwind_safe::RefUnwindSafe for groupsevents::RoleChanged
+impl core::panic::unwind_safe::UnwindSafe for groupsevents::RoleChanged
+pub const groupsevents::ACTOR_OPERATOR: &str
+pub const groupsevents::ACTOR_PLAYER: &str
+pub const groupsevents::REASON_DECLINED: &str
+pub const groupsevents::REASON_EXPIRED: &str
+pub const groupsevents::REASON_KICKED: &str
+pub const groupsevents::REASON_LEFT: &str
+pub static groupsevents::CREATED: std::sync::lazy_lock::LazyLock<bus::EventType<groupsevents::Created>>
+pub static groupsevents::MEMBER_JOINED: std::sync::lazy_lock::LazyLock<bus::EventType<groupsevents::MemberJoined>>
+pub static groupsevents::MEMBER_LEFT: std::sync::lazy_lock::LazyLock<bus::EventType<groupsevents::MemberLeft>>
+pub static groupsevents::ROLE_CHANGED: std::sync::lazy_lock::LazyLock<bus::EventType<groupsevents::RoleChanged>>

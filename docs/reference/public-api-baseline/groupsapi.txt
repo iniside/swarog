@@ -1,0 +1,447 @@
+# cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
+pub mod groupsapi
+pub mod groupsapi::membership_rpc
+pub struct groupsapi::membership_rpc::RoleOfRequest
+pub groupsapi::membership_rpc::RoleOfRequest::group_id: alloc::string::String
+pub groupsapi::membership_rpc::RoleOfRequest::player_id: alloc::string::String
+impl serde_core::ser::Serialize for groupsapi::membership_rpc::RoleOfRequest
+pub fn groupsapi::membership_rpc::RoleOfRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::membership_rpc::RoleOfRequest
+pub fn groupsapi::membership_rpc::RoleOfRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::membership_rpc::RoleOfRequest
+impl core::marker::Send for groupsapi::membership_rpc::RoleOfRequest
+impl core::marker::Sync for groupsapi::membership_rpc::RoleOfRequest
+impl core::marker::Unpin for groupsapi::membership_rpc::RoleOfRequest
+impl core::marker::UnsafeUnpin for groupsapi::membership_rpc::RoleOfRequest
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::membership_rpc::RoleOfRequest
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::membership_rpc::RoleOfRequest
+pub struct groupsapi::membership_rpc::RoleOfResponse
+pub groupsapi::membership_rpc::RoleOfResponse::err: alloc::string::String
+pub groupsapi::membership_rpc::RoleOfResponse::status: opsapi::Status
+pub groupsapi::membership_rpc::RoleOfResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for groupsapi::membership_rpc::RoleOfResponse
+pub fn groupsapi::membership_rpc::RoleOfResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::membership_rpc::RoleOfResponse
+pub fn groupsapi::membership_rpc::RoleOfResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::membership_rpc::RoleOfResponse
+impl core::marker::Send for groupsapi::membership_rpc::RoleOfResponse
+impl core::marker::Sync for groupsapi::membership_rpc::RoleOfResponse
+impl core::marker::Unpin for groupsapi::membership_rpc::RoleOfResponse
+impl core::marker::UnsafeUnpin for groupsapi::membership_rpc::RoleOfResponse
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::membership_rpc::RoleOfResponse
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::membership_rpc::RoleOfResponse
+pub const groupsapi::membership_rpc::METHOD_ROLE_OF: &str
+pub fn groupsapi::membership_rpc::describe() -> opsapi::DescribeManifest
+pub fn groupsapi::membership_rpc::operations(alloc::sync::Arc<(dyn groupsapi::Membership + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn groupsapi::membership_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn groupsapi::membership_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub mod groupsapi::player_rpc
+pub struct groupsapi::player_rpc::CreateRequest
+pub groupsapi::player_rpc::CreateRequest::join_policy: alloc::string::String
+pub groupsapi::player_rpc::CreateRequest::name: alloc::string::String
+impl core::default::Default for groupsapi::player_rpc::CreateRequest
+pub fn groupsapi::player_rpc::CreateRequest::default() -> groupsapi::player_rpc::CreateRequest
+impl serde_core::ser::Serialize for groupsapi::player_rpc::CreateRequest
+pub fn groupsapi::player_rpc::CreateRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::CreateRequest where groupsapi::player_rpc::CreateRequest: core::default::Default
+pub fn groupsapi::player_rpc::CreateRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::CreateRequest
+impl core::marker::Send for groupsapi::player_rpc::CreateRequest
+impl core::marker::Sync for groupsapi::player_rpc::CreateRequest
+impl core::marker::Unpin for groupsapi::player_rpc::CreateRequest
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::CreateRequest
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::CreateRequest
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::CreateRequest
+pub struct groupsapi::player_rpc::CreateResponse
+pub groupsapi::player_rpc::CreateResponse::err: alloc::string::String
+pub groupsapi::player_rpc::CreateResponse::status: opsapi::Status
+pub groupsapi::player_rpc::CreateResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for groupsapi::player_rpc::CreateResponse
+pub fn groupsapi::player_rpc::CreateResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::CreateResponse
+pub fn groupsapi::player_rpc::CreateResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::CreateResponse
+impl core::marker::Send for groupsapi::player_rpc::CreateResponse
+impl core::marker::Sync for groupsapi::player_rpc::CreateResponse
+impl core::marker::Unpin for groupsapi::player_rpc::CreateResponse
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::CreateResponse
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::CreateResponse
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::CreateResponse
+pub struct groupsapi::player_rpc::DecideRequest
+pub groupsapi::player_rpc::DecideRequest::decision: alloc::string::String
+pub groupsapi::player_rpc::DecideRequest::group_id: alloc::string::String
+pub groupsapi::player_rpc::DecideRequest::subject_id: alloc::string::String
+impl core::default::Default for groupsapi::player_rpc::DecideRequest
+pub fn groupsapi::player_rpc::DecideRequest::default() -> groupsapi::player_rpc::DecideRequest
+impl serde_core::ser::Serialize for groupsapi::player_rpc::DecideRequest
+pub fn groupsapi::player_rpc::DecideRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::DecideRequest where groupsapi::player_rpc::DecideRequest: core::default::Default
+pub fn groupsapi::player_rpc::DecideRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::DecideRequest
+impl core::marker::Send for groupsapi::player_rpc::DecideRequest
+impl core::marker::Sync for groupsapi::player_rpc::DecideRequest
+impl core::marker::Unpin for groupsapi::player_rpc::DecideRequest
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::DecideRequest
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::DecideRequest
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::DecideRequest
+pub struct groupsapi::player_rpc::DecideResponse
+pub groupsapi::player_rpc::DecideResponse::err: alloc::string::String
+pub groupsapi::player_rpc::DecideResponse::status: opsapi::Status
+impl serde_core::ser::Serialize for groupsapi::player_rpc::DecideResponse
+pub fn groupsapi::player_rpc::DecideResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::DecideResponse
+pub fn groupsapi::player_rpc::DecideResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::DecideResponse
+impl core::marker::Send for groupsapi::player_rpc::DecideResponse
+impl core::marker::Sync for groupsapi::player_rpc::DecideResponse
+impl core::marker::Unpin for groupsapi::player_rpc::DecideResponse
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::DecideResponse
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::DecideResponse
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::DecideResponse
+pub struct groupsapi::player_rpc::InviteRequest
+pub groupsapi::player_rpc::InviteRequest::group_id: alloc::string::String
+pub groupsapi::player_rpc::InviteRequest::target_handle: alloc::string::String
+impl core::default::Default for groupsapi::player_rpc::InviteRequest
+pub fn groupsapi::player_rpc::InviteRequest::default() -> groupsapi::player_rpc::InviteRequest
+impl serde_core::ser::Serialize for groupsapi::player_rpc::InviteRequest
+pub fn groupsapi::player_rpc::InviteRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::InviteRequest where groupsapi::player_rpc::InviteRequest: core::default::Default
+pub fn groupsapi::player_rpc::InviteRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::InviteRequest
+impl core::marker::Send for groupsapi::player_rpc::InviteRequest
+impl core::marker::Sync for groupsapi::player_rpc::InviteRequest
+impl core::marker::Unpin for groupsapi::player_rpc::InviteRequest
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::InviteRequest
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::InviteRequest
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::InviteRequest
+pub struct groupsapi::player_rpc::InviteResponse
+pub groupsapi::player_rpc::InviteResponse::err: alloc::string::String
+pub groupsapi::player_rpc::InviteResponse::status: opsapi::Status
+impl serde_core::ser::Serialize for groupsapi::player_rpc::InviteResponse
+pub fn groupsapi::player_rpc::InviteResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::InviteResponse
+pub fn groupsapi::player_rpc::InviteResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::InviteResponse
+impl core::marker::Send for groupsapi::player_rpc::InviteResponse
+impl core::marker::Sync for groupsapi::player_rpc::InviteResponse
+impl core::marker::Unpin for groupsapi::player_rpc::InviteResponse
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::InviteResponse
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::InviteResponse
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::InviteResponse
+pub struct groupsapi::player_rpc::JoinRequest
+pub groupsapi::player_rpc::JoinRequest::group_id: alloc::string::String
+impl core::default::Default for groupsapi::player_rpc::JoinRequest
+pub fn groupsapi::player_rpc::JoinRequest::default() -> groupsapi::player_rpc::JoinRequest
+impl serde_core::ser::Serialize for groupsapi::player_rpc::JoinRequest
+pub fn groupsapi::player_rpc::JoinRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::JoinRequest where groupsapi::player_rpc::JoinRequest: core::default::Default
+pub fn groupsapi::player_rpc::JoinRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::JoinRequest
+impl core::marker::Send for groupsapi::player_rpc::JoinRequest
+impl core::marker::Sync for groupsapi::player_rpc::JoinRequest
+impl core::marker::Unpin for groupsapi::player_rpc::JoinRequest
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::JoinRequest
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::JoinRequest
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::JoinRequest
+pub struct groupsapi::player_rpc::JoinResponse
+pub groupsapi::player_rpc::JoinResponse::err: alloc::string::String
+pub groupsapi::player_rpc::JoinResponse::status: opsapi::Status
+pub groupsapi::player_rpc::JoinResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for groupsapi::player_rpc::JoinResponse
+pub fn groupsapi::player_rpc::JoinResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::JoinResponse
+pub fn groupsapi::player_rpc::JoinResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::JoinResponse
+impl core::marker::Send for groupsapi::player_rpc::JoinResponse
+impl core::marker::Sync for groupsapi::player_rpc::JoinResponse
+impl core::marker::Unpin for groupsapi::player_rpc::JoinResponse
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::JoinResponse
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::JoinResponse
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::JoinResponse
+pub struct groupsapi::player_rpc::LeaveRequest
+pub groupsapi::player_rpc::LeaveRequest::group_id: alloc::string::String
+impl core::default::Default for groupsapi::player_rpc::LeaveRequest
+pub fn groupsapi::player_rpc::LeaveRequest::default() -> groupsapi::player_rpc::LeaveRequest
+impl serde_core::ser::Serialize for groupsapi::player_rpc::LeaveRequest
+pub fn groupsapi::player_rpc::LeaveRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::LeaveRequest where groupsapi::player_rpc::LeaveRequest: core::default::Default
+pub fn groupsapi::player_rpc::LeaveRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::LeaveRequest
+impl core::marker::Send for groupsapi::player_rpc::LeaveRequest
+impl core::marker::Sync for groupsapi::player_rpc::LeaveRequest
+impl core::marker::Unpin for groupsapi::player_rpc::LeaveRequest
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::LeaveRequest
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::LeaveRequest
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::LeaveRequest
+pub struct groupsapi::player_rpc::LeaveResponse
+pub groupsapi::player_rpc::LeaveResponse::err: alloc::string::String
+pub groupsapi::player_rpc::LeaveResponse::status: opsapi::Status
+impl serde_core::ser::Serialize for groupsapi::player_rpc::LeaveResponse
+pub fn groupsapi::player_rpc::LeaveResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::LeaveResponse
+pub fn groupsapi::player_rpc::LeaveResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::LeaveResponse
+impl core::marker::Send for groupsapi::player_rpc::LeaveResponse
+impl core::marker::Sync for groupsapi::player_rpc::LeaveResponse
+impl core::marker::Unpin for groupsapi::player_rpc::LeaveResponse
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::LeaveResponse
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::LeaveResponse
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::LeaveResponse
+pub struct groupsapi::player_rpc::ListMineRequest
+pub groupsapi::player_rpc::ListMineRequest::cursor: alloc::string::String
+pub groupsapi::player_rpc::ListMineRequest::limit: i64
+impl core::default::Default for groupsapi::player_rpc::ListMineRequest
+pub fn groupsapi::player_rpc::ListMineRequest::default() -> groupsapi::player_rpc::ListMineRequest
+impl serde_core::ser::Serialize for groupsapi::player_rpc::ListMineRequest
+pub fn groupsapi::player_rpc::ListMineRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::ListMineRequest where groupsapi::player_rpc::ListMineRequest: core::default::Default
+pub fn groupsapi::player_rpc::ListMineRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::ListMineRequest
+impl core::marker::Send for groupsapi::player_rpc::ListMineRequest
+impl core::marker::Sync for groupsapi::player_rpc::ListMineRequest
+impl core::marker::Unpin for groupsapi::player_rpc::ListMineRequest
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::ListMineRequest
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::ListMineRequest
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::ListMineRequest
+pub struct groupsapi::player_rpc::ListMineResponse
+pub groupsapi::player_rpc::ListMineResponse::err: alloc::string::String
+pub groupsapi::player_rpc::ListMineResponse::status: opsapi::Status
+pub groupsapi::player_rpc::ListMineResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for groupsapi::player_rpc::ListMineResponse
+pub fn groupsapi::player_rpc::ListMineResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::ListMineResponse
+pub fn groupsapi::player_rpc::ListMineResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::ListMineResponse
+impl core::marker::Send for groupsapi::player_rpc::ListMineResponse
+impl core::marker::Sync for groupsapi::player_rpc::ListMineResponse
+impl core::marker::Unpin for groupsapi::player_rpc::ListMineResponse
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::ListMineResponse
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::ListMineResponse
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::ListMineResponse
+pub struct groupsapi::player_rpc::MembersRequest
+pub groupsapi::player_rpc::MembersRequest::cursor: alloc::string::String
+pub groupsapi::player_rpc::MembersRequest::group_id: alloc::string::String
+pub groupsapi::player_rpc::MembersRequest::limit: i64
+impl core::default::Default for groupsapi::player_rpc::MembersRequest
+pub fn groupsapi::player_rpc::MembersRequest::default() -> groupsapi::player_rpc::MembersRequest
+impl serde_core::ser::Serialize for groupsapi::player_rpc::MembersRequest
+pub fn groupsapi::player_rpc::MembersRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::MembersRequest where groupsapi::player_rpc::MembersRequest: core::default::Default
+pub fn groupsapi::player_rpc::MembersRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::MembersRequest
+impl core::marker::Send for groupsapi::player_rpc::MembersRequest
+impl core::marker::Sync for groupsapi::player_rpc::MembersRequest
+impl core::marker::Unpin for groupsapi::player_rpc::MembersRequest
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::MembersRequest
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::MembersRequest
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::MembersRequest
+pub struct groupsapi::player_rpc::MembersResponse
+pub groupsapi::player_rpc::MembersResponse::err: alloc::string::String
+pub groupsapi::player_rpc::MembersResponse::status: opsapi::Status
+pub groupsapi::player_rpc::MembersResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for groupsapi::player_rpc::MembersResponse
+pub fn groupsapi::player_rpc::MembersResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::MembersResponse
+pub fn groupsapi::player_rpc::MembersResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::MembersResponse
+impl core::marker::Send for groupsapi::player_rpc::MembersResponse
+impl core::marker::Sync for groupsapi::player_rpc::MembersResponse
+impl core::marker::Unpin for groupsapi::player_rpc::MembersResponse
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::MembersResponse
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::MembersResponse
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::MembersResponse
+pub struct groupsapi::player_rpc::PendingRequest
+pub groupsapi::player_rpc::PendingRequest::cursor: alloc::string::String
+pub groupsapi::player_rpc::PendingRequest::group_id: alloc::string::String
+pub groupsapi::player_rpc::PendingRequest::limit: i64
+impl core::default::Default for groupsapi::player_rpc::PendingRequest
+pub fn groupsapi::player_rpc::PendingRequest::default() -> groupsapi::player_rpc::PendingRequest
+impl serde_core::ser::Serialize for groupsapi::player_rpc::PendingRequest
+pub fn groupsapi::player_rpc::PendingRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::PendingRequest where groupsapi::player_rpc::PendingRequest: core::default::Default
+pub fn groupsapi::player_rpc::PendingRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::PendingRequest
+impl core::marker::Send for groupsapi::player_rpc::PendingRequest
+impl core::marker::Sync for groupsapi::player_rpc::PendingRequest
+impl core::marker::Unpin for groupsapi::player_rpc::PendingRequest
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::PendingRequest
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::PendingRequest
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::PendingRequest
+pub struct groupsapi::player_rpc::PendingResponse
+pub groupsapi::player_rpc::PendingResponse::err: alloc::string::String
+pub groupsapi::player_rpc::PendingResponse::status: opsapi::Status
+pub groupsapi::player_rpc::PendingResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for groupsapi::player_rpc::PendingResponse
+pub fn groupsapi::player_rpc::PendingResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::PendingResponse
+pub fn groupsapi::player_rpc::PendingResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::PendingResponse
+impl core::marker::Send for groupsapi::player_rpc::PendingResponse
+impl core::marker::Sync for groupsapi::player_rpc::PendingResponse
+impl core::marker::Unpin for groupsapi::player_rpc::PendingResponse
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::PendingResponse
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::PendingResponse
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::PendingResponse
+pub struct groupsapi::player_rpc::RespondRequest
+pub groupsapi::player_rpc::RespondRequest::decision: alloc::string::String
+pub groupsapi::player_rpc::RespondRequest::group_id: alloc::string::String
+impl core::default::Default for groupsapi::player_rpc::RespondRequest
+pub fn groupsapi::player_rpc::RespondRequest::default() -> groupsapi::player_rpc::RespondRequest
+impl serde_core::ser::Serialize for groupsapi::player_rpc::RespondRequest
+pub fn groupsapi::player_rpc::RespondRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::RespondRequest where groupsapi::player_rpc::RespondRequest: core::default::Default
+pub fn groupsapi::player_rpc::RespondRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::RespondRequest
+impl core::marker::Send for groupsapi::player_rpc::RespondRequest
+impl core::marker::Sync for groupsapi::player_rpc::RespondRequest
+impl core::marker::Unpin for groupsapi::player_rpc::RespondRequest
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::RespondRequest
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::RespondRequest
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::RespondRequest
+pub struct groupsapi::player_rpc::RespondResponse
+pub groupsapi::player_rpc::RespondResponse::err: alloc::string::String
+pub groupsapi::player_rpc::RespondResponse::status: opsapi::Status
+impl serde_core::ser::Serialize for groupsapi::player_rpc::RespondResponse
+pub fn groupsapi::player_rpc::RespondResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::player_rpc::RespondResponse
+pub fn groupsapi::player_rpc::RespondResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::player_rpc::RespondResponse
+impl core::marker::Send for groupsapi::player_rpc::RespondResponse
+impl core::marker::Sync for groupsapi::player_rpc::RespondResponse
+impl core::marker::Unpin for groupsapi::player_rpc::RespondResponse
+impl core::marker::UnsafeUnpin for groupsapi::player_rpc::RespondResponse
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::player_rpc::RespondResponse
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::player_rpc::RespondResponse
+pub const groupsapi::player_rpc::METHOD_CREATE: &str
+pub const groupsapi::player_rpc::METHOD_DECIDE: &str
+pub const groupsapi::player_rpc::METHOD_INVITE: &str
+pub const groupsapi::player_rpc::METHOD_JOIN: &str
+pub const groupsapi::player_rpc::METHOD_LEAVE: &str
+pub const groupsapi::player_rpc::METHOD_LIST_MINE: &str
+pub const groupsapi::player_rpc::METHOD_MEMBERS: &str
+pub const groupsapi::player_rpc::METHOD_PENDING: &str
+pub const groupsapi::player_rpc::METHOD_RESPOND: &str
+pub fn groupsapi::player_rpc::describe() -> opsapi::DescribeManifest
+pub fn groupsapi::player_rpc::operations(alloc::sync::Arc<(dyn groupsapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn groupsapi::player_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn groupsapi::player_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub struct groupsapi::GroupPage
+pub groupsapi::GroupPage::items: alloc::vec::Vec<groupsapi::GroupSummary>
+pub groupsapi::GroupPage::next_cursor: alloc::string::String
+impl core::clone::Clone for groupsapi::GroupPage
+pub fn groupsapi::GroupPage::clone(&self) -> groupsapi::GroupPage
+impl core::cmp::Eq for groupsapi::GroupPage
+impl core::cmp::PartialEq for groupsapi::GroupPage
+pub fn groupsapi::GroupPage::eq(&self, &groupsapi::GroupPage) -> bool
+impl core::fmt::Debug for groupsapi::GroupPage
+pub fn groupsapi::GroupPage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for groupsapi::GroupPage
+impl serde_core::ser::Serialize for groupsapi::GroupPage
+pub fn groupsapi::GroupPage::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::GroupPage
+pub fn groupsapi::GroupPage::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::GroupPage
+impl core::marker::Send for groupsapi::GroupPage
+impl core::marker::Sync for groupsapi::GroupPage
+impl core::marker::Unpin for groupsapi::GroupPage
+impl core::marker::UnsafeUnpin for groupsapi::GroupPage
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::GroupPage
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::GroupPage
+pub struct groupsapi::GroupSummary
+pub groupsapi::GroupSummary::created_at: alloc::string::String
+pub groupsapi::GroupSummary::id: alloc::string::String
+pub groupsapi::GroupSummary::join_policy: alloc::string::String
+pub groupsapi::GroupSummary::my_role: alloc::string::String
+pub groupsapi::GroupSummary::my_state: alloc::string::String
+pub groupsapi::GroupSummary::name: alloc::string::String
+impl core::clone::Clone for groupsapi::GroupSummary
+pub fn groupsapi::GroupSummary::clone(&self) -> groupsapi::GroupSummary
+impl core::cmp::Eq for groupsapi::GroupSummary
+impl core::cmp::PartialEq for groupsapi::GroupSummary
+pub fn groupsapi::GroupSummary::eq(&self, &groupsapi::GroupSummary) -> bool
+impl core::fmt::Debug for groupsapi::GroupSummary
+pub fn groupsapi::GroupSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for groupsapi::GroupSummary
+impl serde_core::ser::Serialize for groupsapi::GroupSummary
+pub fn groupsapi::GroupSummary::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::GroupSummary
+pub fn groupsapi::GroupSummary::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::GroupSummary
+impl core::marker::Send for groupsapi::GroupSummary
+impl core::marker::Sync for groupsapi::GroupSummary
+impl core::marker::Unpin for groupsapi::GroupSummary
+impl core::marker::UnsafeUnpin for groupsapi::GroupSummary
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::GroupSummary
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::GroupSummary
+pub struct groupsapi::MemberPage
+pub groupsapi::MemberPage::items: alloc::vec::Vec<groupsapi::MemberSummary>
+pub groupsapi::MemberPage::next_cursor: alloc::string::String
+impl core::clone::Clone for groupsapi::MemberPage
+pub fn groupsapi::MemberPage::clone(&self) -> groupsapi::MemberPage
+impl core::cmp::Eq for groupsapi::MemberPage
+impl core::cmp::PartialEq for groupsapi::MemberPage
+pub fn groupsapi::MemberPage::eq(&self, &groupsapi::MemberPage) -> bool
+impl core::fmt::Debug for groupsapi::MemberPage
+pub fn groupsapi::MemberPage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for groupsapi::MemberPage
+impl serde_core::ser::Serialize for groupsapi::MemberPage
+pub fn groupsapi::MemberPage::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::MemberPage
+pub fn groupsapi::MemberPage::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::MemberPage
+impl core::marker::Send for groupsapi::MemberPage
+impl core::marker::Sync for groupsapi::MemberPage
+impl core::marker::Unpin for groupsapi::MemberPage
+impl core::marker::UnsafeUnpin for groupsapi::MemberPage
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::MemberPage
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::MemberPage
+pub struct groupsapi::MemberSummary
+pub groupsapi::MemberSummary::handle: alloc::string::String
+pub groupsapi::MemberSummary::joined_at: alloc::string::String
+pub groupsapi::MemberSummary::player_id: alloc::string::String
+pub groupsapi::MemberSummary::role: alloc::string::String
+pub groupsapi::MemberSummary::state: alloc::string::String
+impl core::clone::Clone for groupsapi::MemberSummary
+pub fn groupsapi::MemberSummary::clone(&self) -> groupsapi::MemberSummary
+impl core::cmp::Eq for groupsapi::MemberSummary
+impl core::cmp::PartialEq for groupsapi::MemberSummary
+pub fn groupsapi::MemberSummary::eq(&self, &groupsapi::MemberSummary) -> bool
+impl core::fmt::Debug for groupsapi::MemberSummary
+pub fn groupsapi::MemberSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for groupsapi::MemberSummary
+impl serde_core::ser::Serialize for groupsapi::MemberSummary
+pub fn groupsapi::MemberSummary::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for groupsapi::MemberSummary
+pub fn groupsapi::MemberSummary::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for groupsapi::MemberSummary
+impl core::marker::Send for groupsapi::MemberSummary
+impl core::marker::Sync for groupsapi::MemberSummary
+impl core::marker::Unpin for groupsapi::MemberSummary
+impl core::marker::UnsafeUnpin for groupsapi::MemberSummary
+impl core::panic::unwind_safe::RefUnwindSafe for groupsapi::MemberSummary
+impl core::panic::unwind_safe::UnwindSafe for groupsapi::MemberSummary
+pub const groupsapi::DEFAULT_PAGE_LIMIT: i64
+pub const groupsapi::JOIN_INVITE: &str
+pub const groupsapi::JOIN_OPEN: &str
+pub const groupsapi::JOIN_REQUEST: &str
+pub const groupsapi::MAX_CURSOR_BYTES: usize
+pub const groupsapi::MAX_MEMBERS: i64
+pub const groupsapi::MAX_NAME_BYTES: usize
+pub const groupsapi::MAX_PAGE_LIMIT: i64
+pub const groupsapi::ROLE_ADMIN: &str
+pub const groupsapi::ROLE_MEMBER: &str
+pub const groupsapi::STATE_INVITED: &str
+pub const groupsapi::STATE_MEMBER: &str
+pub const groupsapi::STATE_REQUESTED: &str
+pub trait groupsapi::Membership: core::marker::Send + core::marker::Sync
+pub fn groupsapi::Membership::role_of<'life0, 'async_trait>(&'life0 self, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait groupsapi::Player: core::marker::Send + core::marker::Sync
+pub fn groupsapi::Player::create<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<groupsapi::GroupSummary, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn groupsapi::Player::decide<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn groupsapi::Player::invite<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn groupsapi::Player::join<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<groupsapi::MemberSummary, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn groupsapi::Player::leave<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn groupsapi::Player::list_mine<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, i64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<groupsapi::GroupPage, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn groupsapi::Player::members<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, alloc::string::String, i64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<groupsapi::MemberPage, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn groupsapi::Player::pending<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, alloc::string::String, i64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<groupsapi::MemberPage, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn groupsapi::Player::respond<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
