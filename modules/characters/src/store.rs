@@ -140,6 +140,27 @@ impl Store {
         Ok(n)
     }
 
+    /// Plants the purge tombstone on the HANDED delivery connection, so it commits with
+    /// the subscription checkpoint. The row is the sweep's work item and, once swept, the
+    /// permanent record that this player is gone — nothing deletes it, and a redelivery is
+    /// `ON CONFLICT DO NOTHING` rather than a reset of `swept_at`.
+    pub(crate) async fn plant_purged_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        handle: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO characters.purged_players (player_id, handle) VALUES ($1::uuid, $2) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(player_id)
+        .bind(handle)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
     pub(crate) async fn list_all(&self, limit: i64) -> Result<Vec<Character>, sqlx::Error> {
         let rows: Vec<Row> = sqlx::query_as(&format!(
             "SELECT {COLS} FROM characters.characters ORDER BY created_at DESC LIMIT $1"

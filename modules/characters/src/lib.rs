@@ -47,8 +47,9 @@ const ADMIN_SECTION: &str = "Game Content";
 const ADMIN_LABEL: &str = "Characters";
 
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
-/// Idempotent. Verbatim from Go's `schemaDDL`: `player_id` is a plain ref to
-/// accounts.players with NO cross-module FK; the index keeps a player's list cheap.
+/// Idempotent. The characters table is verbatim from Go's `schemaDDL`: `player_id` is a
+/// plain ref to accounts.players with NO cross-module FK; the index keeps a player's list
+/// cheap.
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS characters;
 CREATE TABLE IF NOT EXISTS characters.characters (
@@ -58,7 +59,13 @@ CREATE TABLE IF NOT EXISTS characters.characters (
 	class      text        NOT NULL DEFAULT 'novice',
 	created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS characters_player_idx ON characters.characters(player_id);"#;
+CREATE INDEX IF NOT EXISTS characters_player_idx ON characters.characters(player_id);
+CREATE TABLE IF NOT EXISTS characters.purged_players (
+	player_id  uuid PRIMARY KEY,
+	handle     text        NOT NULL DEFAULT '',
+	created_at timestamptz NOT NULL DEFAULT now(),
+	swept_at   timestamptz
+);"#;
 
 /// Folds any lower-level error into an `Internal` operation error.
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
@@ -150,7 +157,7 @@ impl Module for Characters {
     /// the opsapi slots so the gateway fronts POST/GET/DELETE /characters, (b) the
     /// local admin `Item`, and (c) the generated Ownership + Player RPC faces to the
     /// edge slot so a peer can reach `characters.*` over QUIC when this process
-    /// serves an internal edge.
+    /// serves an internal edge, and subscribes (d) to durable `player.deleted`.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let svc = self.svc();
 
@@ -223,6 +230,37 @@ impl Module for Characters {
                 charactersrpc::player_rpc::describe(),
                 charactersrpc::ownership_rpc::describe(),
             ]),
+        );
+
+        // (d) The purge tombstone, planted on the HANDED delivery conn so it commits with
+        // the subscription checkpoint. O(1) BY DESIGN: nothing bounds how many characters
+        // a player owns, while `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this handler at 10s —
+        // a delete too large for that budget would make NO progress ever and burn failures
+        // toward the plane's pause threshold, stranding every later player behind the same
+        // cursor. The deleting belongs to the scheduled sweep, which resumes across fires;
+        // this only records its work item.
+        //
+        // `Genesis`, not `AfterRegistration`: a lost deletion is a permanent retention leak
+        // with no repair path, while a redelivery into an already-tombstoned module is a
+        // no-op. The id and the start position are an IMMUTABLE contract (`spec_hash`).
+        let purger = self.svc();
+        ctx.bus().on_tx(
+            bus::SubscriptionSpec {
+                id: "characters.player-deleted.v1",
+                start: bus::StartPosition::Genesis,
+            },
+            &accountsevents::PLAYER_DELETED,
+            move |mut delivery, e: accountsevents::PlayerDeleted| {
+                let purger = purger.clone();
+                Box::pin(async move {
+                    let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                    purger
+                        .store
+                        .plant_purged_player_tx(conn, &e.player_id, &e.handle)
+                        .await
+                        .map_err(bus::Error::transport)
+                })
+            },
         );
         Ok(())
     }

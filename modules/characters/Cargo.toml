@@ -30,6 +30,9 @@ adminapi = { workspace = true }
 # api-crate const — never the accounts impl (Open/Closed: the owner never learns its
 # extenders).
 accountsapi = { workspace = true }
+# The accounts EVENT contract only (an events crate is importable by any module): the
+# purge tombstone reacts to durable `player.deleted`.
+accountsevents = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = { workspace = true }
