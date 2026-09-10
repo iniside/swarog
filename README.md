@@ -3,7 +3,7 @@
 A for-fun game backend in **Rust** (Cargo workspace), built as a **modular monolith
 with a proven split**: one repo, one `cmd/server` binary running everything — and
 every domain module *also* compiles and boots as its own `cmd/<name>-svc` process.
-Both topologies are first-class, continuously proven by a live 16-process
+Both topologies are first-class, continuously proven by a live 17-process
 integration suite.
 
 The design goal is **Open/Closed at the architecture level**: features are added by
@@ -84,7 +84,7 @@ public-API checks protect the surfaces that cross those boundaries.
 
 ## Domain modules
 
-15 fortresses plus the gateway:
+16 fortresses plus the gateway:
 
 - **accounts** — identity: one `player_id`, many identities, 60-minute access tokens
   plus rotating 30-day refresh-token families with reuse detection; federated login
@@ -120,6 +120,11 @@ public-API checks protect the surfaces that cross those boundaries.
   handles (`Name#1234`, minted in `accounts`); another player's edge is
   `NotFound`, never `Forbidden`. Presence is session-derived (`online_until`),
   not socket presence.
+- **groups** — social groups: two roles, three membership states (`member`,
+  `invited`, `requested`), and a wire-only `role_of` predicate for a future
+  `chat` module to authorize a group channel against. Nine `#[http]` ops;
+  another player's view of a group it cannot see is `NotFound`, never
+  `Forbidden`.
 - **gateway** — the single public front door: HTTP op routing (local vs remote
   purely by slot presence), authenticated player-QUIC plane, passthroughs, rate
   limiting. Domain services never host it; they serve ops only over the internal
@@ -209,7 +214,7 @@ weles has no concept of monolith/split: the fleet is a hand-authored, strict
 `fleet.toml` (services, ports, peers, and `[[prepare]]` hooks like minting the
 edge CA or seeding the admin account) that `deploy --fleet` stamps into the
 generation and `up` reads back — monolith is just a fleet of one process, split a
-fleet of fourteen.
+fleet of seventeen.
 
 It shares the same `run/rollout.lock` as `devctl`/`verifyctl`, so it can never run
 a fleet concurrently with them. See [`weles/README.md`](weles/README.md) and the

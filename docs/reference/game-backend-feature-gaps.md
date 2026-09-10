@@ -281,3 +281,20 @@ that plugs into scheduler / event-bus / registry that **already exist**, and tog
 flip the surface from "match-report demo" to "recognizable game platform". P1 then adds
 the monetization and depth story. P2 needs its own architecture conversation before any
 plan — do not fold it into the same decision.
+
+---
+
+## Errata (post-freeze)
+
+This analysis is frozen at its 2026-07-22 date (`docs/roadmap/feature-tracker.md` is the
+doc that moves); the row and recommendation below are recorded here rather than edited in
+place.
+
+- **Line 87** — "Groups / guilds / clans (roles, join requests) | … | ❌" is superseded:
+  `groups` landed (`7c7ee12`..`0d8c3b0`, 2026-09-10), the 16th fortress. See
+  `docs/roadmap/feature-tracker.md`'s Social table for current status and gaps.
+- **Line 200-201** — "new `groups` fortress … depends on friends/notifications for
+  invites" is superseded on the dependency clause: the landed module depends on
+  `accounts` (to resolve an invite target's handle), not `notifications` — no
+  notification is sent for a group invite, membership change, or expiry in this
+  rollout.

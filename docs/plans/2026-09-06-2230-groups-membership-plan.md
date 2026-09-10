@@ -764,3 +764,11 @@ never ended while `audit`'s `group.member_left` sink stayed silent. The sweep no
 `groupsevents::REASON_EXPIRED` and an EMPTY `actor_id` (no party ended it). Additive: the
 `reason` vocabulary is open by contract. The `notifications` argument in the original
 bullet is unaffected — no inbox row is produced for it here.
+
+**5 — The non-goal "Promote/demote and role changes" is reversed.** Step 6
+(`582c556`, `7b4aef7`) added an operator-only member→admin promotion on the "Groups"
+admin page, emitting a durable `group.role_changed` event
+(`api/groups/events/src/lib.rs`). The player contract still has no self-service
+promote/demote — only an operator can grant admin — so the non-goal's narrower claim
+("the only role assignment is the creator's `admin` at create time") is what changed,
+not the whole bullet.

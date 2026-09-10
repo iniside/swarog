@@ -425,10 +425,10 @@ impl Store {
         }
     }
 
-    /// One page of a group's rows. `state_clause` is a compile-time literal chosen by the
-    /// caller ([`MEMBER_ROWS`] or [`PENDING_ROWS`]) — never caller input, and PARENTHESIZED
-    /// at the interpolation site so respelling one of them with an `OR` cannot bind looser
-    /// than the `group_id` term and page another group's rows. Authorization is
+    /// One page of a group's rows. `state_clause` is a compile-time literal
+    /// ([`MEMBER_ROWS`], [`PENDING_ROWS`] or [`ALL_ROWS`]) — never caller input, and
+    /// PARENTHESIZED at the interpolation site so respelling one of them with an `OR`
+    /// cannot bind looser than the `group_id` term and page another group's rows. Authorization is
     /// NOT in this statement: it is decided by [`Store::visible_role`] first, because an
     /// empty page and an invisible group must answer differently.
     pub(crate) async fn page_group(

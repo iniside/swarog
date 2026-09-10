@@ -235,9 +235,11 @@ fn error_content(msg: &str) -> adminapi::Content {
 /// the bare page slug (`/admin/<slug>`, query dropped — `admin::render_page`): a form built
 /// only on the drill-down would re-render as the overview on POST and answer 405.
 ///
-/// The group is a SELECT over the groups this render listed, not free text — so the posted
-/// group is rendered evidence, and a value naming no group means the page the operator
-/// submitted from is stale rather than mistyped. The player is free text: it is the
+/// The group field renders as a SELECT over the groups this render listed, but
+/// `admin::collect_submit_params` copies whatever value comes back with no check against
+/// `Field.options` — so [`rendered_group`]'s uuid-shape check is the only thing standing
+/// between a stale/tampered post and the store, and it classifies a non-uuid value as
+/// [`Rejection::Stale`] rather than proof the value named a listed group. The player is free text: it is the
 /// operator's input, and a bad one comes back as a visible rejection from [`apply_submit`].
 fn build_form(groups: &[AdminGroupRow]) -> adminapi::Form {
     let options: Vec<adminapi::FieldOption> = groups

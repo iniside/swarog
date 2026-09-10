@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-09-06-1231**
+**Last update: 2026-09-10-1200**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -156,7 +156,7 @@ balances and is its own feature.
 | Feature | Status | Module(s) | Landed | Notes |
 |---|:--:|---|---|---|
 | Friends (add/remove/block, states) | ✅ | friends, friendsapi, friendsevents, friendsrpc, friends-svc | `922cc63`..`0b4d85a`, 2026-09-05–2026-09-06 | **P0#4**, [plan](../plans/2026-09-05-1921-friends-module-plan.md). 15th fortress: schema `friends`, one `edges` table with a canonical ordered pair (`low_id < high_id` CHECK, symmetry/pair-uniqueness live in the schema) plus `requester_id` for the asymmetric transitions; `pending`/`accepted` states, no blocking in v1. Six `#[http]` ops (request by handle/accept/decline/remove/list/pending); another player's edge is `NotFound`, never `Forbidden`. `request` resolves a target via the new wire-only `accountsapi::Directory` against a minted handle (`Name#1234`); the handle-existence oracle is **not** closed (201 vs 404), only rate-limited at the gateway. Three durable topics (`friend.requested/accepted/removed`, 30-day retention, both parties' handles denormalized) consumed by `audit` (3 new raw sinks) and `notifications` (2 `AfterRegistration` subscriptions). Read-only admin page "Friends" under Player Support + a "View Friends" row-menu entry. Proven in both topologies: `[FR1]`-`[FR9]` in split-proof (`decline` deliberately unasserted). Known gaps: **no socket presence** (`online_until` is session-derived only — gateway has no DB, presence is per-process RAM, the offline transition runs in a `Drop` that cannot `await`, no fan-in primitive); no blocking in v1; the handle-existence oracle; `audit`/`notifications` both violate `adminapi`'s never-`Err` `admin_data` contract (pre-existing, recorded not fixed); `PLAYERS_ROW_MENU` ordering is unpinned across topologies. |
-| Groups / guilds / clans | ❌ | — | — | P1#8. Depends on friends + notifications. |
+| Groups / guilds / clans | ✅ | groups, groupsapi, groupsevents, groupsrpc, groups-svc | `7c7ee12`..`0d8c3b0`, 2026-09-07–2026-09-10 | 16th fortress, [plan](../plans/2026-09-06-2230-groups-membership-plan.md). Schema `groups`: a `groups` row, a `memberships` row per `(group_id, player_id)` with three states (`member`/`invited`/`requested`) and two roles (`admin`/`member`); `MAX_MEMBERS` enforced under a per-group advisory lock, not a count-then-insert. Nine `#[http]` ops (`create`/`list_mine`/`members`/`pending`/`join`/`leave`/`invite`/`respond`/`decide`) plus a wire-only `role_of` predicate (`groupsapi::Membership`, internal-edge only — not reachable through the front door) that `chat` will consume. Another player's view of a group it cannot see is `NotFound`, never `Forbidden`. Four durable topics at 30-day retention (`group.created`, `group.member_joined`, `group.member_left`, `group.role_changed`), consumed by `audit` (four raw sinks) and pruned by `groups.prune-on-scheduler.v1` (`GROUPS_RETENTION_DAYS`, default 30) — the sweep emits `group.member_left` (`reason = "expired"`) for a swept row rather than staying silent. Admin page "Groups" under Player Support adds an operator promote (member → admin). Proven in both topologies: `[GR1]`-`[GR6]` in split-proof, re-run against the monolith. Known gaps: no push nudge on membership change; no group rename or `join_policy` change after create; `chat`'s dependency on `role_of` unexercised until `chat` lands; no `group.deleted` topic, so a teardown reads as N leaves in the ledger; `memberships_player_idx` does not serve `list_mine` (that read has no equality predicate on `state`, so the index prefix can't supply the ordering); `"accept"`/`"reject"` are not exported consts in `groupsapi`, unlike every other vocabulary word in that crate; and `join` resolves the caller's handle before opening its transaction, so a join naming a nonexistent group still costs a directory call and answers 503 rather than 404 when accounts is unreachable. |
 | Presence / online status / follow | ⚠️ | friends | `922cc63`..`0b4d85a`, 2026-09-06 | Session-derived presence shipped as part of P0#4: `online_until` (RFC3339, empty = no live session) computed from `accounts.sessions`, deliberately a timestamp rather than a socket-backed bool — a quit player reads a future value for up to an hour (60-minute access tokens). **Socket presence did not ship**: gateway has no DB, presence is per-process RAM with no accessor, the offline transition runs in a `Drop` that cannot `await`, and there is no fan-in primitive across gateway instances. Still needs client push for socket presence/follow. |
 | Realtime chat | ❌ | — | — | P2 — gated on the realtime decision (#14). |
 | Parties | ❌ | — | — | P2 — gated on the realtime decision (#14). |
@@ -229,6 +229,19 @@ balances and is its own feature.
 
 ## Change log
 
+- **2026-09-10** — Groups (P1#8) **landed**, `7c7ee12`..`0d8c3b0`, 22 commits,
+  [plan](../plans/2026-09-06-2230-groups-membership-plan.md) revision 2. 16th fortress:
+  membership, two roles, three states, and a wire-only `role_of` capability
+  `chat` will consume — no channels or messages, those are `chat`'s own plan. The
+  rollout's review response closed five blocking holes before Step 2 landed
+  (`invite` and `decide` were unreachable as first specified — see the plan's
+  *Review response*), and Step 5's retention sweep was corrected after the fact
+  (`7807980`) to emit a terminal `group.member_left` for a swept invite rather than
+  going silent, reversing the plan's original non-goal. A separate defect surfaced
+  by this rollout but not caused by it — `rpc-contract-model`'s served-surface gates
+  keyed on `api/<domain>` rather than `modules/<domain>`, so a contract crate
+  landing ahead of its module could turn five gates red — was closed in the same
+  window (`a5c8398`, `6c09bea`). Known gaps recorded in the tracker row above.
 - **2026-09-06** — Friends (P0#4) **landed**, `922cc63`..`0b4d85a`. 15th
   fortress: `friends` (schema `friends`, canonical-ordered-pair `edges` table,
   `pending`/`accepted` states), a new wire-only `accountsapi::Directory` and

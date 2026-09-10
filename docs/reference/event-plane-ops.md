@@ -84,6 +84,25 @@ timing-sensitive tests: `docs/research/2026-07-14-2058-timing-sensitive-tests-su
 — that document is a dated historical snapshot and is not updated for this
 class; this section is the living reference for it going forward.
 
+## A retention sweep can block on a roster op's row lock
+
+`groups`' retention sweep (`modules/groups/src/projection.rs`,
+`groups.prune-on-scheduler.v1`) deletes stale `invited`/`requested` rows via
+`SELECT … FOR UPDATE SKIP LOCKED` batches, unlike every roster-deciding op
+(`join`/`invite`/`respond`/`decide`), which takes a per-group
+`pg_advisory_xact_lock` before touching `groups.memberships`. The sweep takes no
+such lock. `SKIP LOCKED` means the sweep never blocks waiting for a row a
+concurrent `decide`/`respond` already holds — it just skips that row this pass
+and picks it up next fire, so no deadlock is possible. The other direction is
+real, though: a row the sweep DID lock (not skipped) blocks a concurrent
+`decide`/`respond` targeting that same row until the sweep's transaction
+commits, which can take up to `PRUNE_BUDGET` (5s) if the sweep is mid-batch.
+The batch query's `WHERE state IN ('invited','requested')` also re-evaluates
+against current state on every batch, so a row a concurrent `decide`/`respond`
+already promoted to `member` before a given batch's `SELECT` simply no longer
+matches — the sweep never deletes a row out from under an accept that landed
+first.
+
 ## Related
 
 - `cargo run -p eventctl -- list` — lag/retry/pause/resume/skip/retire per

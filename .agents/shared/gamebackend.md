@@ -216,7 +216,7 @@ last-writer-wins overwrite.
    split. `topiccheck` validates the subscription graph per deployment
    profile.
 
-## Domain modules (15 fortresses + gateway)
+## Domain modules (16 fortresses + gateway)
 
 - **accounts** — identity: one `player_id`, many identities
   (`provider`,`subject`), opaque DB sessions: 60-minute access tokens plus
@@ -292,11 +292,12 @@ last-writer-wins overwrite.
   (`adminrpc::admin_remote_factory`). Remote forms are read-only. admin-svc
   has a DB (schema `admin` + the durable plane) — no longer planeless.
 - **audit** — append-only ledger (`audit.log`), zero-coupling raw durable
-  sinks for all 11 ledger topics (`character.created/deleted`,
+  sinks for all 15 ledger topics (`character.created/deleted`,
   `player.registered`, `player.promoted`, `config.changed`, `match.finished`,
-  `admin.action`, `wallet.changed`, `friend.requested/accepted/removed`) —
-  eleven independent subscriptions (`audit.<topic-kebab>.v1`), each with its
-  own checkpoint, plus a 12th independent subscription for prune reacting to
+  `admin.action`, `wallet.changed`, `friend.requested/accepted/removed`,
+  `group.created/member_joined/member_left/role_changed`) —
+  fifteen independent subscriptions (`audit.<topic-kebab>.v1`), each with its
+  own checkpoint, plus a 16th independent subscription for prune reacting to
   `scheduler.fired{audit-prune}` (`AUDIT_RETENTION_DAYS`, default 30).
 - **scheduler** — data-driven schedules (`scheduler.schedules`), 1s tick,
   per-name `pg_try_advisory_lock` + still-due re-check + `UPDATE`+`emit_tx`
@@ -428,6 +429,28 @@ last-writer-wins overwrite.
   runs in a `Drop` that cannot `await`, and there is no fan-in primitive).
   Read-only admin page "Friends" under Player Support plus a "View Friends"
   entry on the Players row menu.
+- **groups** — social groups: schema `groups`, a `groups` row plus a
+  `memberships` row per `(group_id, player_id)` with three states
+  (`member`/`invited`/`requested`) and two roles (`admin`/`member`);
+  `MAX_MEMBERS` (500) is enforced under a per-group `pg_advisory_xact_lock`,
+  not a count-then-insert, which two concurrent joins would both pass under
+  READ COMMITTED. Nine `#[http]` ops (`create`/`list_mine`/`members`/
+  `pending`/`join`/`leave`/`invite`/`respond`/`decide`) plus a wire-only
+  `role_of` predicate (`groupsapi::Membership`, reachable ONLY over the
+  internal edge, never the front door) for `chat` to authorize a group
+  channel against. `list_mine` doubles as the invitation inbox — it returns
+  all three states, not just `member`. Another player's view of a group it
+  cannot see is `NotFound`, never `Forbidden`. Four durable topics at 30-day
+  retention (`group.created`, `group.member_joined`, `group.member_left`,
+  `group.role_changed`), consumed by `audit` (four raw sinks); a
+  `groups.prune-on-scheduler.v1` sweep deletes stale `invited`/`requested`
+  rows past `GROUPS_RETENTION_DAYS` (default 30) and emits
+  `group.member_left` (`reason = "expired"`) for each swept row rather than
+  leaving the ledger silent. Admin page "Groups" under Player Support
+  includes an operator member→admin promotion, emitting `group.role_changed`.
+  Known gaps: no push nudge on membership change, no group rename or
+  `join_policy` change after create, and no `group.deleted` topic (a
+  teardown reads as N leaves).
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote
   purely by slot presence; peer addresses are injected by `cmd/*` via
   `remote::Stub` → `opsapi::PEER_SLOT` contributions — the gateway module
@@ -592,7 +615,7 @@ inbound `push.deliver` face), config :8083/:9002,
 accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler :8087/:9005,
 match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008, apikeys
 :8091/:9009, wallet :8092/:9010, notifications :8093/:9011,
-mail :8094/:9012, friends :8095/:9014. The fleet is
+mail :8094/:9012, friends :8095/:9014, groups :8096/:9015. The fleet is
 spawned with a typed
 environment and owned process containment plus a kill-on-drop guard,
 health-checked over reqwest, DB-asserted via sqlx, and the player QUIC front
@@ -602,7 +625,7 @@ cross-process starter-grant + DB-verified wipe, config live-reload, audit
 rows, scheduler exactly-once, leaderboard accumulation, 429 rate-limit,
 api-key policy [K1-K5], admin session auth [AD1-AD5], audit [AU1-AU3],
 scheduler/prune [SC/SP], metrics [MX], rate-limit [RL], player QUIC
-[P1-P6], friends [FR1-FR9]), then re-runs the monolith (`cmd/server`) on the same player front
+[P1-P6], friends [FR1-FR9], groups [GR1-GR6]), then re-runs the monolith (`cmd/server`) on the same player front
 for parity ([M0-M3b]) and proves native graceful shutdown ([W2]: the
 platform's native cooperative stop to the monolith's process group → clean
 drain, no force-kill — see `docs/reference/platform-notes.md`). A reachable
@@ -679,7 +702,7 @@ api/<name>/                # contract surface per domain
   <name>api/               #   pure #[rpc] traits + ops/bindings (transport-free)
   <name>events/            #   bus::define descriptors + payloads
   <name>rpc/               #   generated glue (Client/register_server/factories)
-modules/                   # private impls — 15 fortresses + gateway (see above)
+modules/                   # private impls — 16 fortresses + gateway (see above)
 demos/                     # non-shipping demo crates (webui) — cmd/server only
 weles/                     # standalone mini-orchestrator (zero-sharing; deploy/ artifacts,
                            # restart-on-crash supervisor; see Commands)
