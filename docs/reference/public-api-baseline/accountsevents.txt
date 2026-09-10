@@ -5,6 +5,28 @@ pub const accountsevents::providers::DEV: &str
 pub const accountsevents::providers::EPIC: &str
 pub const accountsevents::providers::GOOGLE: &str
 pub const accountsevents::providers::GUEST: &str
+pub struct accountsevents::PlayerDeleted
+pub accountsevents::PlayerDeleted::handle: alloc::string::String
+pub accountsevents::PlayerDeleted::player_id: alloc::string::String
+impl core::clone::Clone for accountsevents::PlayerDeleted
+pub fn accountsevents::PlayerDeleted::clone(&self) -> accountsevents::PlayerDeleted
+impl core::cmp::Eq for accountsevents::PlayerDeleted
+impl core::cmp::PartialEq for accountsevents::PlayerDeleted
+pub fn accountsevents::PlayerDeleted::eq(&self, &accountsevents::PlayerDeleted) -> bool
+impl core::fmt::Debug for accountsevents::PlayerDeleted
+pub fn accountsevents::PlayerDeleted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for accountsevents::PlayerDeleted
+impl serde_core::ser::Serialize for accountsevents::PlayerDeleted
+pub fn accountsevents::PlayerDeleted::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for accountsevents::PlayerDeleted
+pub fn accountsevents::PlayerDeleted::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for accountsevents::PlayerDeleted
+impl core::marker::Send for accountsevents::PlayerDeleted
+impl core::marker::Sync for accountsevents::PlayerDeleted
+impl core::marker::Unpin for accountsevents::PlayerDeleted
+impl core::marker::UnsafeUnpin for accountsevents::PlayerDeleted
+impl core::panic::unwind_safe::RefUnwindSafe for accountsevents::PlayerDeleted
+impl core::panic::unwind_safe::UnwindSafe for accountsevents::PlayerDeleted
 pub struct accountsevents::PlayerPromoted
 pub accountsevents::PlayerPromoted::from_provider: alloc::string::String
 pub accountsevents::PlayerPromoted::player_id: alloc::string::String
@@ -51,5 +73,6 @@ impl core::marker::Unpin for accountsevents::PlayerRegistered
 impl core::marker::UnsafeUnpin for accountsevents::PlayerRegistered
 impl core::panic::unwind_safe::RefUnwindSafe for accountsevents::PlayerRegistered
 impl core::panic::unwind_safe::UnwindSafe for accountsevents::PlayerRegistered
+pub static accountsevents::PLAYER_DELETED: std::sync::lazy_lock::LazyLock<bus::EventType<accountsevents::PlayerDeleted>>
 pub static accountsevents::PLAYER_PROMOTED: std::sync::lazy_lock::LazyLock<bus::EventType<accountsevents::PlayerPromoted>>
 pub static accountsevents::PLAYER_REGISTERED: std::sync::lazy_lock::LazyLock<bus::EventType<accountsevents::PlayerRegistered>>

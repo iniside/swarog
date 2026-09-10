@@ -220,11 +220,18 @@ red demanding a sink or a `NOT_LOGGED` entry.
 (`durable_spec_ids_zip_with_topics` kebabs both `.` and `_`). The self-checks run
 before the golden diff, so the bless cannot skip them.
 
-**Red after this step:** `contract-golden` until blessed in the same commit.
+**Red after this step:** `contract-golden` until blessed in the same commit, and
+**`public-api` for `accountsevents`** — the crate exports `PlayerDeleted` +
+`PLAYER_DELETED` from this step, not from Step 3 as rev 2 first said. Since the
+`accountsevents` surface is *complete* after this step (Step 3 adds `accountsapi`
+ops, not events), it is blessed here and the crate is closed permanently, shrinking
+Step 4's bless to `accountsapi`.
 `--durability-strict` is **green** — audit's list edit becomes a real `on_tx_raw`
 subscription pinned to version 1, and `unsubscribed()` keys on `(topic, version)`.
 *(Rev 1 asserted the opposite and was wrong; that claim justified a rollout boundary
-that does not exist.)*
+that does not exist. Rev 2 then mis-stated the `public-api` step by one — the third
+gate-state prediction in this plan's history to be wrong, which is why every
+remaining step's red list is to be **observed**, never predicted.)*
 
 **(d)** `[sonnet]`.
 
@@ -423,8 +430,10 @@ Named files: `docs/roadmap/feature-tracker.md:141`,
 `docs/reference/event-plane-ops.md` (the paused-purge operator story),
 `api/friends/events/src/lib.rs:88-93` (its doc enumerates `Removed.reason` as exactly
 three values — a fourth makes it false on a public contract surface),
-`CLAUDE.md` (the accounts paragraph, and the audit topic count, which already says
-**11** while `DURABLE_TOPICS` holds **15** — the fix is 11 → 16, not 15 → 16),
+`CLAUDE.md` (the accounts paragraph, and the audit topic count — corrected to **15**
+by the groups rollout's docs step `a0d44095`, and made stale again by this feature's
+own Step 2, so the fix is 15 → 16; verify the live `DURABLE_TOPICS` length rather
+than trusting either number),
 `.agents/shared/gamebackend.md`, and this plan's errata.
 
 **The known-gap list must be complete or it is silence implying coverage:** no GDPR
