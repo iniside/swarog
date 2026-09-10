@@ -64,6 +64,26 @@ pub struct PlayerPromoted {
 pub static PLAYER_PROMOTED: LazyLock<EventType<PlayerPromoted>> =
     LazyLock::new(|| define("player.promoted", 1, HistoryPolicy::MinRetention { days: 7 }));
 
+/// Fires once, when `delete_account` commits — the final record of a player that no
+/// longer exists. `handle` is the reserved, permanently-unrecyclable handle (D4/D5 of
+/// the account-deletion plan), carried so a purge consumer or the audit ledger can
+/// still name the player after the row is gone.
+///
+/// `Serialize`/`Deserialize` are load-bearing: the durable transport collapses the
+/// payload to JSON at the `emit_tx`/`on_tx` boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlayerDeleted {
+    pub player_id: String,
+    pub handle: String,
+}
+
+/// The `player.deleted` topic. `MinRetention { days: 90 }`, not `KeepForever`: the
+/// retention sweep only scans `policy = 'min_retention'`
+/// (`core/asyncevents/src/retention.rs`), so `KeepForever` would retain the player id
+/// and handle permanently — the opposite of an erasure feature's intent.
+pub static PLAYER_DELETED: LazyLock<EventType<PlayerDeleted>> =
+    LazyLock::new(|| define("player.deleted", 1, HistoryPolicy::MinRetention { days: 90 }));
+
 /// The `provider` vocabulary of [`PlayerRegistered::provider`] and
 /// [`PlayerPromoted`] — the `accounts.identities.provider` column values the
 /// provisioning paths write. A consumer filtering the field names one of these
@@ -109,6 +129,15 @@ pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
                 to_provider: "epic".to_string(),
             })
             .expect("PlayerPromoted serializes to json"),
+        ),
+        (
+            "player.deleted",
+            1,
+            serde_json::to_value(PlayerDeleted {
+                player_id: "player-1".to_string(),
+                handle: "Aria#1234".to_string(),
+            })
+            .expect("PlayerDeleted serializes to json"),
         ),
     ]
 }

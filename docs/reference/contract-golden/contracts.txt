@@ -50,6 +50,7 @@ event topic=group.member_left version=1 history=min-retention:30d
 event topic=group.role_changed version=1 history=min-retention:30d
 event topic=mail.send_requested version=1 history=min-retention:1d
 event topic=match.finished version=1 history=min-retention:7d
+event topic=player.deleted version=1 history=min-retention:90d
 event topic=player.promoted version=1 history=min-retention:7d
 event topic=player.registered version=1 history=min-retention:7d
 event topic=scheduler.fired version=1 history=min-retention:7d
@@ -110,6 +111,8 @@ payload topic=mail.send_requested version=1 payload.to:string
 payload topic=match.finished version=1 payload.loser:string
 payload topic=match.finished version=1 payload.match_id:string
 payload topic=match.finished version=1 payload.winner:string
+payload topic=player.deleted version=1 payload.handle:string
+payload topic=player.deleted version=1 payload.player_id:string
 payload topic=player.promoted version=1 payload.from_provider:string
 payload topic=player.promoted version=1 payload.player_id:string
 payload topic=player.promoted version=1 payload.to_provider:string

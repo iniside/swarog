@@ -193,6 +193,7 @@ fn defined_topics() -> Vec<Contract> {
     vec![
         of(accountsevents::PLAYER_REGISTERED.contract()),
         of(accountsevents::PLAYER_PROMOTED.contract()),
+        of(accountsevents::PLAYER_DELETED.contract()),
         of(charactersevents::CREATED.contract()),
         of(charactersevents::DELETED.contract()),
         of(configevents::CHANGED.contract()),
