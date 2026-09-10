@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use accountsapi::{PlayerSummary, MAX_LOOKUP_IDS};
+use bus::AnyTx;
 use groupsapi::{
     JOIN_INVITE, JOIN_OPEN, JOIN_REQUEST, ROLE_ADMIN, ROLE_MEMBER, STATE_INVITED, STATE_MEMBER,
     STATE_REQUESTED,
@@ -391,12 +392,16 @@ async fn apply_submit(
                     "groups: {player_id:?} is not a player uuid"
                 )));
             }
-            let notice = match promote(svc, group_id, player_id).await? {
-                Promotion::Promoted => format!("{player_id} is now an admin of this group"),
-                Promotion::AlreadyAdmin => {
-                    format!("{player_id} was already an admin of this group")
-                }
+            let done = promote(svc, group_id, player_id).await?;
+            let verb = if done.already_admin {
+                "was already"
+            } else {
+                "is now"
             };
+            let notice = format!(
+                "{} {verb} an admin of {} ({})",
+                done.player_id, done.group_name, done.group_id
+            );
             Ok(adminapi::SubmitOutcome {
                 reveal: Vec::new(),
                 notice: Some(notice),
@@ -411,18 +416,23 @@ async fn apply_submit(
     }
 }
 
-enum Promotion {
-    Promoted,
-    AlreadyAdmin,
+/// The write's verdict, carrying the group and player as the DATABASE spells them: the
+/// notice names the row that was locked, not the operator's spelling of it.
+struct Promotion {
+    group_id: String,
+    group_name: String,
+    player_id: String,
+    already_admin: bool,
 }
 
 /// The operator's role change, decided under the group's advisory lock exactly like every
 /// other write that reads the roster first ([`crate::store::Store::lock_group_tx`]).
 ///
-/// It emits NO durable event: `group.member_joined` says a row BECAME a member, which is
-/// false here, and there is no role-change topic to emit instead. The operator trail is the
-/// portal's `admin.action{form-submit}`, which `modules/admin` appends for the local and the
-/// remote branch alike.
+/// It emits durable `group.role_changed` in the write's OWN transaction: the portal's
+/// `admin.action{form-submit}` row records the operator's username, the page slug and the
+/// posted field NAMES only (`modules/admin::emit_form_submit`), so nothing there says WHICH
+/// group or WHICH player gained admin — and this promotion is what `role_of` answers, the
+/// predicate `chat` authorizes channels with.
 async fn promote(
     svc: &Service,
     group_id: &str,
@@ -433,13 +443,13 @@ async fn promote(
         .lock_group_tx(&mut tx, group_id)
         .await
         .map_err(store_rejection)?;
-    let group_id = match svc
+    let (group_name, group_id) = match svc
         .store
-        .join_policy_tx(&mut tx, group_id)
+        .group_name_tx(&mut tx, group_id)
         .await
         .map_err(store_rejection)?
     {
-        Some((_, id)) => id,
+        Some(row) => row,
         None => {
             tx.rollback().await.map_err(store_rejection)?;
             return Err(Rejection::Stale);
@@ -467,7 +477,12 @@ async fn promote(
     }
     if role == ROLE_ADMIN {
         tx.rollback().await.map_err(store_rejection)?;
-        return Ok(Promotion::AlreadyAdmin);
+        return Ok(Promotion {
+            group_id,
+            group_name,
+            player_id,
+            already_admin: true,
+        });
     }
     // A ROLE change: the new state is the state the predicate requires, so the row's state
     // is written back unchanged while `memberships_role_check`'s equivalence stays true.
@@ -483,12 +498,34 @@ async fn promote(
         )
         .await
         .map_err(store_rejection)?;
-    if updated.is_none() {
-        tx.rollback().await.map_err(store_rejection)?;
-        return Err(Rejection::Stale);
-    }
+    let (group_id, player_id) = match updated {
+        Some(row) => row,
+        None => {
+            tx.rollback().await.map_err(store_rejection)?;
+            return Err(Rejection::Stale);
+        }
+    };
+    svc.bus
+        .emit_tx(
+            AnyTx::new(&mut *tx),
+            &groupsevents::ROLE_CHANGED,
+            &groupsevents::RoleChanged {
+                group_id: group_id.clone(),
+                player_id: player_id.clone(),
+                role: ROLE_ADMIN.to_string(),
+                actor_kind: groupsevents::ACTOR_OPERATOR.to_string(),
+                actor_id: String::new(),
+            },
+        )
+        .await
+        .map_err(|e| Rejection::Internal(format!("groups: {e}")))?;
     tx.commit().await.map_err(store_rejection)?;
-    Ok(Promotion::Promoted)
+    Ok(Promotion {
+        group_id,
+        group_name,
+        player_id,
+        already_admin: false,
+    })
 }
 
 #[async_trait::async_trait]

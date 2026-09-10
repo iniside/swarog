@@ -25,6 +25,15 @@ pub const REASON_DECLINED: &str = "declined";
 /// `GROUPS_RETENTION_DAYS`. No party ended it, so [`MemberLeft::actor_id`] is empty.
 pub const REASON_EXPIRED: &str = "expired";
 
+/// [`RoleChanged::actor_kind`] for a change made through the operator portal. The admin
+/// seam carries NO caller identity (`adminapi::AdminData`/`AdminSubmit` are
+/// process-authenticated), so [`RoleChanged::actor_id`] is empty for it: the acting human
+/// is named by the portal's own `admin.action` row, correlated by time.
+pub const ACTOR_OPERATOR: &str = "operator";
+/// [`RoleChanged::actor_kind`] for a change made by a player of the group, whose
+/// [`RoleChanged::actor_id`] is that player's id.
+pub const ACTOR_PLAYER: &str = "player";
+
 /// A group was created. `join_policy` is one of `groupsapi::JOIN_OPEN`/`JOIN_REQUEST`/
 /// `JOIN_INVITE`.
 ///
@@ -68,6 +77,25 @@ pub struct MemberLeft {
     pub reason: String,
 }
 
+/// A member's `role` within a group changed while the row stayed a
+/// `groupsapi::STATE_MEMBER` row. `role` is the NEW role
+/// (`groupsapi::ROLE_ADMIN`/`ROLE_MEMBER`).
+///
+/// `actor_kind` names WHO changed it ([`ACTOR_OPERATOR`]/[`ACTOR_PLAYER`], an open
+/// vocabulary — treat an unrecognised value as "some authority did this"), and
+/// `actor_id` identifies them when the acting seam knows an id. It is EMPTY otherwise,
+/// never a stand-in id, on the rule [`MemberLeft::actor_id`] already sets.
+///
+/// Evolve additively — see [`Created`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoleChanged {
+    pub group_id: String,
+    pub player_id: String,
+    pub role: String,
+    pub actor_kind: String,
+    pub actor_id: String,
+}
+
 /// `MinRetention { days: 30 }` matches `friendsevents`: the durable log is the
 /// DELIVERY path, not the archive — the authority for group membership is
 /// `groups.memberships`. The history policy is IMMUTABLE after the first emit.
@@ -81,6 +109,10 @@ pub static MEMBER_JOINED: LazyLock<EventType<MemberJoined>> =
 /// Retention as [`CREATED`].
 pub static MEMBER_LEFT: LazyLock<EventType<MemberLeft>> =
     LazyLock::new(|| define("group.member_left", 1, HistoryPolicy::MinRetention { days: 30 }));
+
+/// Retention as [`CREATED`].
+pub static ROLE_CHANGED: LazyLock<EventType<RoleChanged>> =
+    LazyLock::new(|| define("group.role_changed", 1, HistoryPolicy::MinRetention { days: 30 }));
 
 /// Fully-POPULATED wire sample per defined `(topic, version)`: every field set, so
 /// serde's actual JSON keys land in the golden and a silent `#[serde(rename)]` or a
@@ -119,6 +151,18 @@ pub fn golden_samples() -> Vec<(&'static str, u32, serde_json::Value)> {
                 reason: REASON_KICKED.to_string(),
             })
             .expect("MemberLeft serializes to json"),
+        ),
+        (
+            "group.role_changed",
+            1,
+            serde_json::to_value(RoleChanged {
+                group_id: "group-1".to_string(),
+                player_id: "player-2".to_string(),
+                role: "admin".to_string(),
+                actor_kind: ACTOR_OPERATOR.to_string(),
+                actor_id: String::new(),
+            })
+            .expect("RoleChanged serializes to json"),
         ),
     ]
 }

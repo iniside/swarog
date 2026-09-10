@@ -181,6 +181,30 @@ impl Store {
         }
     }
 
+    /// The group's name alongside its id as the DATABASE spells it — the admin promote
+    /// reads BOTH from one row under the group lock, so its notice and its emitted event
+    /// name the group the write actually locked rather than the caller's spelling.
+    ///
+    /// Binds ONLY the group id, so a `22P02` folds to "no such group" for the reason in
+    /// [`Store::join_policy_tx`].
+    pub(crate) async fn group_name_tx(
+        &self,
+        conn: &mut PgConnection,
+        group_id: &str,
+    ) -> Result<Option<(String, String)>, sqlx::Error> {
+        let res = sqlx::query_as::<_, (String, String)>(
+            "SELECT name, id::text FROM groups.groups WHERE id = $1::uuid",
+        )
+        .bind(group_id)
+        .fetch_optional(&mut *conn)
+        .await;
+        match res {
+            Ok(row) => Ok(row),
+            Err(e) if is_invalid_uuid(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     pub(crate) async fn counts_tx(
         &self,
         conn: &mut PgConnection,
