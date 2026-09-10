@@ -60,7 +60,7 @@ type ServiceRow = (&'static str, &'static str, u16, Option<u16>, Option<u16>, Ve
 /// tautological. The per-service diff below is what a whole-vector `assert_eq!` cannot
 /// give — a mismatch that names the service that moved.
 #[test]
-fn proof_fleet_is_the_canonical_sixteen_service_snapshot() {
+fn proof_fleet_is_the_canonical_seventeen_service_snapshot() {
     let fleet = game_backend_fleet(&inputs(), FleetFlavor::Proof);
     let actual: Vec<ServiceRow> = fleet
         .services()
@@ -91,8 +91,9 @@ fn proof_fleet_is_the_canonical_sixteen_service_snapshot() {
         ("notifications-svc", "notifications-svc", 8093, Some(9011), None, vec![]),
         ("mail-svc", "mail-svc", 8094, Some(9012), None, vec![]),
         ("friends-svc", "friends-svc", 8095, Some(9014), None, vec!["accounts-svc"]),
-        ("gateway-svc", "gateway-svc", 8082, Some(9013), Some(9100), vec!["characters-svc", "inventory-svc", "accounts-svc", "match-svc", "leaderboard-svc", "apikeys-svc", "wallet-svc", "notifications-svc", "friends-svc"]),
-        ("admin-svc", "admin-svc", 8085, None, None, vec!["characters-svc", "inventory-svc", "config-svc", "accounts-svc", "audit-svc", "scheduler-svc", "apikeys-svc", "wallet-svc", "notifications-svc", "mail-svc", "friends-svc"]),
+        ("groups-svc", "groups-svc", 8096, Some(9015), None, vec!["accounts-svc"]),
+        ("gateway-svc", "gateway-svc", 8082, Some(9013), Some(9100), vec!["characters-svc", "inventory-svc", "accounts-svc", "match-svc", "leaderboard-svc", "apikeys-svc", "wallet-svc", "notifications-svc", "friends-svc", "groups-svc"]),
+        ("admin-svc", "admin-svc", 8085, None, None, vec!["characters-svc", "inventory-svc", "config-svc", "accounts-svc", "audit-svc", "scheduler-svc", "apikeys-svc", "wallet-svc", "notifications-svc", "mail-svc", "friends-svc", "groups-svc"]),
     ];
 
     // Per-service diff, the shape `FleetSpec::validate_names` reports drift in: a reader

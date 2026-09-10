@@ -1,4 +1,4 @@
-//! Where this front door's ten addresses come from — the ONE deterministic
+//! Where this front door's twelve addresses come from — the ONE deterministic
 //! decision this process makes at start.
 //!
 //! ```text
@@ -189,6 +189,24 @@ const ADDR_SPECS: &[AddrSpec] = &[
         provider: "notifications",
         class: AddrClass::Edge,
         env_default: "127.0.0.1:9011",
+    },
+    // friends' player ops (request/accept/decline/remove/list/pending) front here
+    // Remote over the mTLS edge; like the other pure-HTTP providers its routes arrive
+    // through `__describe`, so this table supplies only the address.
+    AddrSpec {
+        env_key: "FRIENDS_EDGE_ADDR",
+        provider: "friends",
+        class: AddrClass::Edge,
+        env_default: "127.0.0.1:9014",
+    },
+    // groups' player ops front here Remote over the mTLS edge; like the other
+    // pure-HTTP providers its routes arrive through `__describe`, so this table
+    // supplies only the address.
+    AddrSpec {
+        env_key: "GROUPS_EDGE_ADDR",
+        provider: "groups",
+        class: AddrClass::Edge,
+        env_default: "127.0.0.1:9015",
     },
     // The two passthrough ORIGINS: `/admin` → admin-svc, `/accounts/epic` → the
     // Epic web OAuth flow on accounts-svc. A blank default drops the prefix (the

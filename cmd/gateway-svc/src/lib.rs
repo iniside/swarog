@@ -140,5 +140,14 @@ pub fn modules(
             "friends",
             edge_peer(wiring, edge_list_resolver, "friends", "127.0.0.1:9014"),
         )),
+        // groups is pure-HTTP from this front door's point of view (its player-facing
+        // membership/invite ops, routes arriving via `__describe`); the gateway consumes
+        // no groups capability of its own. `describe_peer`, never `Stub::new` — `groupsrpc`
+        // deliberately exposes no `remote_factories()`, and `Stub::new` with an empty
+        // factory list `anyhow::bail!`s in `register`.
+        Box::new(remote::Stub::describe_peer(
+            "groups",
+            edge_peer(wiring, edge_list_resolver, "groups", "127.0.0.1:9015"),
+        )),
     ]
 }
