@@ -76,11 +76,13 @@ pub(crate) fn is_invalid_uuid(e: &sqlx::Error) -> bool {
 }
 
 /// How many discriminators one display name may try before minting fails. The primary
-/// key of `accounts.handles` is the ONLY freeness authority: each attempt INSERTs a claim
-/// and reads back whether the key accepted it, so there is no window between a check and
-/// the write for a concurrent registration — or for a deletion's permanent reservation —
-/// to slip through. A name whose free discriminators are thinned by reservations fails
-/// minting sooner; that is the cost of never recycling a handle.
+/// key of `accounts.handles` is the mint-time freeness check: each attempt INSERTs a
+/// claim and reads back whether the key accepted it, so there is no window between a
+/// check and the write for a concurrent registration — or for a deletion's permanent
+/// reservation — to slip through. `accounts.players`' `accounts_handle_idx` is a second,
+/// DB-level constraint on the same pair (`Module::migrate` asserts every player is
+/// claimed so it can never trip). A name whose free discriminators are thinned by
+/// reservations fails minting sooner; that is the cost of never recycling a handle.
 const HANDLE_MINT_ATTEMPTS: usize = 8;
 
 /// One four-digit discriminator candidate, `"0000"`..=`"9999"`.
@@ -926,9 +928,10 @@ impl Store {
     }
 
     /// The player one `"Name#1234"` handle names, matched case-insensitively on the name
-    /// half — the same `(lower(display_name), discriminator)` pair the unique index
-    /// mints against, so exactly one row can ever match. A handle that does not parse is
-    /// `Ok(None)`, indistinguishable from an unknown one.
+    /// half — the same `(lower(display_name), discriminator)` pair `claim_handle_tx`
+    /// claims, with `accounts_handle_idx` still enforcing uniqueness on `players` itself,
+    /// so exactly one row can ever match. A handle that does not parse is `Ok(None)`,
+    /// indistinguishable from an unknown one.
     pub async fn player_by_handle(
         &self,
         handle: &str,

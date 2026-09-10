@@ -125,6 +125,9 @@ CREATE TABLE IF NOT EXISTS accounts.players (
 	discriminator text        NOT NULL,
 	created_at    timestamptz NOT NULL DEFAULT now()
 );
+-- Kept as a second, DB-level constraint on `players` itself (see `migrate`'s claim-
+-- coverage check below) — `accounts.handles` decides freeness at mint time, this index
+-- backs `player_by_handle`'s lookup and still refuses a duplicate pair on the row.
 CREATE UNIQUE INDEX IF NOT EXISTS accounts_handle_idx
 	ON accounts.players (lower(display_name), discriminator);
 
