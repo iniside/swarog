@@ -33,7 +33,7 @@ pub(crate) const MAX_PER_PLAYER: i64 = 10;
 /// ascii-hex digits ignoring case/hyphens/braces; a non-uuid input (never on the
 /// identity-validated path) falls back to its raw bytes — still stable, only ever
 /// over-serializes, never breaks.
-fn player_lock_key(player_id: &str) -> i64 {
+pub(crate) fn player_lock_key(player_id: &str) -> i64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
     let hex: Vec<u8> = player_id

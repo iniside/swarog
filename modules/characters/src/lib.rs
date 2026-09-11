@@ -14,6 +14,7 @@
 pub mod conformance;
 
 mod admin;
+mod projection;
 mod service;
 mod store;
 
@@ -244,6 +245,17 @@ impl Module for Characters {
         // `Genesis`, not `AfterRegistration`: a lost deletion is a permanent retention leak
         // with no repair path, while a redelivery into an already-tombstoned module is a
         // no-op. The id and the start position are an IMMUTABLE contract (`spec_hash`).
+        // The drain of what that tombstone records, on its OWN subscription: a raw sink on
+        // `scheduler.fired` guarding on the shared daily `player-purge` name.
+        let sweeper: Arc<dyn bus::TxHandler> = Arc::new(projection::PurgeSweepHandler {
+            svc: self.svc(),
+        });
+        ctx.bus().on_tx_raw(
+            projection::PURGE_SWEEP_SUB,
+            schedulerevents::FIRED.topic(),
+            sweeper,
+        );
+
         let purger = self.svc();
         ctx.bus().on_tx(
             bus::SubscriptionSpec {
