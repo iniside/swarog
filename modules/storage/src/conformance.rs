@@ -61,11 +61,11 @@ fn put_rejected(collection: String, key: String, value: String) -> bool {
 }
 
 /// `storageapi::MAX_COLLECTION_BYTES`, executed through `Player::put` itself against a pool
-/// that cannot connect. The discriminant is the STATUS: `validate_address` runs before any
-/// statement, so an at-cap collection passes it, reaches the store and answers `Internal`;
-/// only the cap's own rejection is `Invalid`. Delete the guard and the over-cap collection
-/// reaches the dead store too, so the case goes red rather than passing on the column
-/// CHECK below it.
+/// that cannot connect. The discriminant is the STATUS: `validate_address` runs before the
+/// op's hardcoded `Internal` stub, so an at-cap collection passes it and falls through to
+/// that stub; only the cap's own rejection is `Invalid`. Delete the guard and the over-cap
+/// collection falls through too, so the case goes red rather than passing on the column
+/// CHECK Step 3 wires beneath it.
 #[doc(hidden)]
 pub fn conformance_collection_rejected(len: usize) -> bool {
     put_rejected(legal(len), "k".to_string(), "{}".to_string())

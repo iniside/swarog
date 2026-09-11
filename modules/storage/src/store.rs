@@ -10,9 +10,10 @@ use sqlx::PgPool;
 /// paired with one.
 ///
 /// `collection` and `key` sit in the primary key, a btree, so an uncapped value raises
-/// `54000` — an unmappable 500 where the contract promises 400. Their named CHECKs pair
-/// with `storageapi::MAX_COLLECTION_BYTES`/`MAX_KEY_BYTES`, which the service applies
-/// first.
+/// `54000` — an unmappable 500 where the contract promises 400. Their CHECKs hardcode
+/// `64`/`128` as literals today; Step 3 pairs them with
+/// `storageapi::MAX_COLLECTION_BYTES`/`MAX_KEY_BYTES` via `COLUMN_CAPS`, which nothing
+/// wires yet.
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS storage;
 CREATE TABLE IF NOT EXISTS storage.objects (

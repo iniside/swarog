@@ -497,3 +497,20 @@ not stay green (C1); "eighth purge consumer" becomes "seventh purge module, eigh
 `player.deleted` consumer, `[DL11]`" (C2); the events crate is dropped and D10 records why
 (C3); `FLEET`/`FakeAgent` are attributed to `addrs_tests.rs` (C4); the `Option` ban keeps
 its real authority (C5); `.agents/README.md` joins Step 11 (C6).
+
+## Step 1/2 errata (proof audit, `05e38fe`/`014fcf2`)
+
+1. **Split-proof is red and no step's observed-red list caught it.** `cmd/storage-svc/`
+   exists on disk while `tools/processctl/src/fleet.rs` has no `storage` service, so
+   `validate_disk` raises `FleetError::DiskDrift` at
+   `tools/splitproof/src/main.rs:913`. Step 7 owns the fix. It was missed because
+   `validate_disk` has exactly two references in the tree — its definition and that one
+   call site — so no unit test reaches it, and `tools/processctl/src/fleet_tests.rs`
+   diffs the fleet against a hand-written snapshot that also omits `storage-svc`, so it
+   passes. "Observe what is red" cannot surface this defect class before a fleet boot.
+2. **The `storage list cursor` probe was coupled to its error message's wording**,
+   fixed in `014fcf2` by a shared `cursor_too_long_message()` authority
+   (`modules/storage/src/service.rs`). The lesson: a probe matching a message substring
+   turns a comment-grade rewording into a red gate whose failure text lies (e.g. "was
+   ACCEPTED" when the cap rejected it). `groups`, `notifications` and `friends` compare
+   a shared const by inequality; `storage` was the only module with the defect.
