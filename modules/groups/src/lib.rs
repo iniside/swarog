@@ -32,6 +32,8 @@ mod service_tests;
 mod store_tests;
 #[cfg(test)]
 mod projection_tests;
+#[cfg(test)]
+mod purge_tests;
 
 use std::sync::{Arc, OnceLock};
 
