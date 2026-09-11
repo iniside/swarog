@@ -142,8 +142,8 @@ pub trait Player: Send + Sync {
     /// is deliberately no unconditional-overwrite value, because a blind overwrite is
     /// exactly what a naive client would send and it defeats OCC. A NEGATIVE
     /// `expected_version` is [`opsapi::Status::Invalid`]. A positive expectation that
-    /// does not match the stored version is [`opsapi::Status::Conflict`]; an address the
-    /// caller does not own, or that holds no object, is [`opsapi::Status::NotFound`].
+    /// does not match the stored version is [`opsapi::Status::Conflict`]; an address that
+    /// holds no object is [`opsapi::Status::NotFound`].
     ///
     /// `value` is the document as JSON text, capped at [`MAX_VALUE_BYTES`]. `acl` is
     /// [`ACL_PRIVATE`] or [`ACL_PUBLIC_READ`]; the EMPTY string leaves an existing
@@ -157,8 +157,9 @@ pub trait Player: Send + Sync {
     async fn put(&self, identity: Identity, collection: String, key: String, value: String,
                  expected_version: i64, acl: String) -> Result<ObjectVersion, Error>;
 
-    /// Reads one object. `owner_id` EMPTY means the caller's own; any other owner
-    /// resolves only when the object is [`ACL_PUBLIC_READ`].
+    /// Reads one object. `owner_id` EMPTY or equal to the caller's own id resolves the
+    /// caller's own object; a DIFFERENT owner resolves only when the object is
+    /// [`ACL_PUBLIC_READ`].
     ///
     /// A nonexistent object, another owner's private object and a malformed `owner_id`
     /// all answer the SAME [`opsapi::Status::NotFound`].

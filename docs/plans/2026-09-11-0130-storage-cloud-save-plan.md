@@ -450,6 +450,28 @@ recorded, which this module inherits.
    for. `put` returns a one-field `ObjectVersion` rather than a bare `i64`, because no
    `#[http]` op in the tree returns a scalar today.
 4. The plan's Schema block omits `CREATE SCHEMA IF NOT EXISTS storage;`.
+5. **Carried obligations for later steps, found while docs-correcting Step 1's
+   comments (`974692f`):**
+   - **Step 4 / Step 9:** `get(owner_id = "<the caller's own uuid>")` must return the
+     caller's own private object, not 404 — a naive `if owner_id.is_empty() { caller }
+     else { require public_read }` 404s a client that echoes its own `owner_id` back.
+   - **Step 4 / Step 9:** the paging cursor must NOT encode `owner_id`. A cursor forged
+     or replayed from another session must not move the `WHERE owner_id = $caller`
+     predicate — the only path by which `list`, which has no owner argument, could leak
+     another owner's rows. Prove it with a cursor minted for owner A replayed by owner B.
+   - **Step 3:** `storage_value_len_check` (131072) can fire on an input UNDER the 65536
+     Rust cap, because jsonb normalization can expand a value (a large exponent literal,
+     for instance). Today an unmapped `23514` is store trouble — a 500 where the contract
+     promises 400. Step 3 must decide that mapping explicitly even though `value` stays
+     outside the `COLUMN_CAPS` pairing.
+   - **Step 3:** when `ColumnCap` lands, its `23514` message must be byte-identical to
+     `validate_segment`'s current wording, or the Rust and DB verdicts word one limit two
+     ways.
+   - **Step 7:** `ADDR_SPECS`' storage entry must be `9016`, matching the hardcoded
+     default at `cmd/gateway-svc/src/lib.rs:159`. Until then `STORAGE_EDGE_ADDR` is
+     ignored and a managed boot silently dials the standalone default instead of failing
+     loudly — the exact disjointness `cmd/gateway-svc/src/addrs.rs:11-18` exists to
+     refuse. Same defect class as the `FRIENDS_EDGE_ADDR` finding in the groups rollout.
 
 ## Review response (rev 1 → rev 2)
 

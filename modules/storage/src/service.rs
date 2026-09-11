@@ -10,12 +10,11 @@ use storageapi::{
 use crate::store::Store;
 
 /// What every op answers until Steps 3 and 4 replace its body with a statement. The
-/// validation above each one is already the contract's, so a caller's malformed request
-/// gets its real verdict; only the storage half is absent.
+/// validation above each one is already the contract's, so every argument whose verdict
+/// does not require the store gets its real verdict; only the storage half is absent.
 const NOT_IMPLEMENTED: &str = "storage: not implemented";
 
-/// The ONE address verdict, worded identically for `collection` and `key`. The alphabet
-/// is checked before the byte cap so an illegal segment is never echoed back at length.
+/// The ONE address verdict, worded identically for `collection` and `key`.
 fn validate_segment(what: &str, segment: &str, max_bytes: usize) -> Result<(), Error> {
     if !is_legal_segment(segment) {
         return Err(Error::invalid(format!(
