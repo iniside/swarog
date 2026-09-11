@@ -1,5 +1,5 @@
 use super::*;
-use bus::AnyTx;
+use bus::{AnyTx, Delivery, TxHandler};
 use opsapi::Status;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -1113,4 +1113,192 @@ async fn admin_owner_detail_table_has_rarity_columns_and_icon() {
     assert_eq!(row[3].text, "3");
 
     cleanup_owner(&pool, &owner_id).await;
+}
+
+// ============================================================================
+// Account-deletion purge (Steps 5-7): the tombstone, the sweep (player-owned rows
+// cleared, character-owned rows kept), and the `grant` write guard.
+// ============================================================================
+
+async fn purge_swept_at(pool: &PgPool, player_id: &str) -> Option<Option<String>> {
+    sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT swept_at::text FROM inventory.purged_players WHERE player_id = $1::uuid",
+    )
+    .bind(player_id)
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+    .map(|(s,)| s)
+}
+
+async fn stamp_purge_swept(pool: &PgPool, player_id: &str) {
+    sqlx::query("UPDATE inventory.purged_players SET swept_at = now() WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn cleanup_purge_row(pool: &PgPool, player_id: &str) {
+    let _ = sqlx::query("DELETE FROM inventory.purged_players WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .execute(pool)
+        .await;
+}
+
+fn purge_payload(name: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({ "name": name })).unwrap()
+}
+
+/// The tombstone insert is idempotent, and a redelivery after the sweep stamped
+/// `swept_at` must NOT reset it.
+#[tokio::test]
+async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let pid = unique_uuid(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+
+    let mut conn = pool.acquire().await.unwrap();
+    inner.plant_purged_player(&mut conn, &pid, "Handle#0001").await.unwrap();
+    inner.plant_purged_player(&mut conn, &pid, "Handle#0001").await.unwrap();
+
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM inventory.purged_players WHERE player_id = $1::uuid")
+            .bind(&pid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 1, "a redelivered tombstone must not insert a second row");
+
+    stamp_purge_swept(&pool, &pid).await;
+    inner.plant_purged_player(&mut conn, &pid, "Handle#0001").await.unwrap();
+    assert!(
+        purge_swept_at(&pool, &pid).await.flatten().is_some(),
+        "a redelivery after the sweep stamped swept_at must NOT reset it"
+    );
+
+    cleanup_purge_row(&pool, &pid).await;
+}
+
+/// THE PREVIOUSLY-WRONG SHAPE this sweep must never regress into: clearing a
+/// player's holdings by player_id must NOT touch that same player's characters'
+/// holdings — those arrive on the untouched `character.deleted`/wipe path, driven
+/// separately by `characters`' own sweep. A sweep that (wrongly) tried to enumerate
+/// and clear a purged player's characters here would delete the character-owned
+/// row this test pins as a survivor.
+#[tokio::test]
+async fn sweep_clears_player_owned_holdings_but_keeps_character_owned_rows() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let pid = unique_uuid(&pool).await;
+    let cid = unique_uuid(&pool).await; // a character owned by the same purged player
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+
+    inner.store.grant_pool(&Owner::player(&pid), "starter_sword", 1).await.unwrap();
+    inner.store.grant_pool(&Owner::character(&cid), "starter_sword", 1).await.unwrap();
+
+    let mut conn = pool.acquire().await.unwrap();
+    inner.plant_purged_player(&mut conn, &pid, "Sweep#0001").await.unwrap();
+
+    inner.sweep_purged_players(&mut conn).await.unwrap();
+
+    let player_holdings = inner.store.list(&Owner::player(&pid)).await.unwrap();
+    assert!(player_holdings.is_empty(), "the player-owned holding must be cleared");
+    let char_holdings = inner.store.list(&Owner::character(&cid)).await.unwrap();
+    assert_eq!(
+        char_holdings.len(),
+        1,
+        "the character-owned holding must be KEPT — it is not this sweep's work"
+    );
+    assert!(purge_swept_at(&pool, &pid).await.flatten().is_some());
+
+    cleanup_owner(&pool, &pid).await;
+    cleanup_owner(&pool, &cid).await;
+    cleanup_purge_row(&pool, &pid).await;
+}
+
+/// A survivor (non-tombstoned player) is untouched by the sweep, and a foreign
+/// `scheduler.fired` name sweeps nothing — proven with a positive control on the
+/// same row.
+#[tokio::test]
+async fn sweep_handler_survivor_untouched_and_ignores_foreign_schedule_name() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let target = unique_uuid(&pool).await;
+    let survivor = unique_uuid(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+
+    inner.store.grant_pool(&Owner::player(&target), "starter_sword", 1).await.unwrap();
+    inner.store.grant_pool(&Owner::player(&survivor), "starter_sword", 1).await.unwrap();
+
+    let mut conn = pool.acquire().await.unwrap();
+    inner.plant_purged_player(&mut conn, &target, "Target#0001").await.unwrap();
+    drop(conn);
+
+    let handler = projection::PurgeSweepHandler { inner: inner.clone() };
+
+    // Negative: a foreign schedule name sweeps nothing.
+    let mut tx = pool.begin().await.unwrap();
+    let delivery = Delivery { event_id: "inventory:test", tx: AnyTx::new(&mut *tx) };
+    handler.call(delivery, purge_payload("some-other-job")).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        inner.store.list(&Owner::player(&target)).await.unwrap().len(),
+        1,
+        "a foreign schedule name must not sweep"
+    );
+    assert_eq!(inner.store.list(&Owner::player(&survivor)).await.unwrap().len(), 1);
+
+    // Positive control, same target row: the real name drains it, survivor unchanged.
+    let mut tx2 = pool.begin().await.unwrap();
+    let delivery2 = Delivery { event_id: "inventory:test", tx: AnyTx::new(&mut *tx2) };
+    handler
+        .call(delivery2, purge_payload(projection::PURGE_SCHEDULE_NAME))
+        .await
+        .unwrap();
+    tx2.commit().await.unwrap();
+    assert!(inner.store.list(&Owner::player(&target)).await.unwrap().is_empty());
+    assert_eq!(
+        inner.store.list(&Owner::player(&survivor)).await.unwrap().len(),
+        1,
+        "the survivor must remain untouched by the real sweep too"
+    );
+
+    cleanup_owner(&pool, &target).await;
+    cleanup_owner(&pool, &survivor).await;
+    cleanup_purge_row(&pool, &target).await;
+}
+
+/// `grant` is blocked by the tombstone PREDICATE, not by "a tombstone exists
+/// somewhere": a purged player's grant is Conflict with no holding row, while a
+/// DIFFERENT, non-tombstoned player still succeeds.
+#[tokio::test]
+async fn grant_is_blocked_by_tombstone_predicate_not_presence() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let purged = unique_uuid(&pool).await;
+    let other = unique_uuid(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+
+    let mut conn = pool.acquire().await.unwrap();
+    inner.plant_purged_player(&mut conn, &purged, "Purged#0001").await.unwrap();
+    drop(conn);
+
+    let e = inner
+        .grant(Identity::player(&purged), "starter_sword".into(), 1)
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, Status::Conflict);
+    assert!(inner.store.list(&Owner::player(&purged)).await.unwrap().is_empty());
+
+    inner
+        .grant(Identity::player(&other), "starter_sword".into(), 1)
+        .await
+        .expect("a different, non-tombstoned player must still succeed");
+    assert_eq!(inner.store.list(&Owner::player(&other)).await.unwrap().len(), 1);
+
+    cleanup_owner(&pool, &purged).await;
+    cleanup_owner(&pool, &other).await;
+    cleanup_purge_row(&pool, &purged).await;
 }
