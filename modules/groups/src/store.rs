@@ -91,6 +91,26 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    /// Plants the purge tombstone on the HANDED delivery connection, so it commits with the
+    /// subscription checkpoint. Redelivery is `ON CONFLICT DO NOTHING`, never a reset of
+    /// `swept_at`.
+    pub(crate) async fn plant_purged_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        handle: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO groups.purged_players (player_id, handle) VALUES ($1::uuid, $2) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(player_id)
+        .bind(handle)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
     /// Taken ON THE TX CONNECTION — a separate pool connection would lose the
     /// serialization — and released at commit/rollback.
     pub(crate) async fn lock_group_tx(

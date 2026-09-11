@@ -80,7 +80,13 @@ CREATE INDEX IF NOT EXISTS memberships_player_idx
 CREATE INDEX IF NOT EXISTS memberships_group_idx
     ON groups.memberships (group_id, state, created_at DESC, player_id DESC);
 CREATE INDEX IF NOT EXISTS memberships_pending_idx
-    ON groups.memberships (created_at) WHERE state IN ('invited','requested');"#;
+    ON groups.memberships (created_at) WHERE state IN ('invited','requested');
+CREATE TABLE IF NOT EXISTS groups.purged_players (
+    player_id  uuid PRIMARY KEY,
+    handle     text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    swept_at   timestamptz
+);"#;
 
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
     opsapi::Error::internal(e.to_string())
@@ -160,6 +166,15 @@ impl Module for Groups {
         });
         ctx.bus()
             .on_tx_raw(projection::PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
+
+        let purger = svc.clone();
+        ctx.bus().on_tx(
+            projection::PLAYER_DELETED_SUB,
+            &accountsevents::PLAYER_DELETED,
+            move |delivery, e: accountsevents::PlayerDeleted| {
+                projection::on_player_deleted(purger.clone(), delivery, e)
+            },
+        );
 
         // Phase 2: in the split a `remote::Stub` swaps an edge-backed client under the
         // SAME key, so this line is topology-blind.

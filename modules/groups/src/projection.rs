@@ -12,6 +12,14 @@ pub(crate) const PRUNE_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
     start: bus::StartPosition::Genesis,
 };
 
+/// `Genesis`, not `AfterRegistration`: a lost deletion is a permanent retention leak with
+/// no repair path, while a redelivery into an already-tombstoned module is a no-op. The id
+/// and the start position are an IMMUTABLE contract (`spec_hash`).
+pub(crate) const PLAYER_DELETED_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
+    id: "groups.player-deleted.v1",
+    start: bus::StartPosition::Genesis,
+};
+
 pub(crate) const PRUNE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::GROUPS_PRUNE;
 
 pub(crate) const DEFAULT_RETENTION_DAYS: i32 = 30;
@@ -171,4 +179,29 @@ impl TxHandler for PruneHandler {
             }
         })
     }
+}
+
+/// Plants the purge tombstone on the HANDED delivery connection, so it commits with the
+/// subscription checkpoint. The row is the sweep's work item and, once swept, the permanent
+/// record that this player is gone — nothing deletes it, and a redelivery is `ON CONFLICT DO
+/// NOTHING` rather than a reset of `swept_at`.
+///
+/// O(1) BY DESIGN: nothing bounds a player's memberships, while `ASYNCEVENTS_HANDLER_TIMEOUT`
+/// bounds this handler at 10s — a delete too large for that budget would make NO progress
+/// ever and burn failures toward the plane's pause threshold, stranding every later player
+/// behind the same cursor. The deleting (and its `group.member_left` emits, and the group
+/// locks they need) belongs to the scheduled sweep, which resumes across fires; this only
+/// records the work item, takes no group lock and emits nothing.
+pub(crate) fn on_player_deleted<'a>(
+    svc: Arc<crate::Service>,
+    mut delivery: Delivery<'a>,
+    e: accountsevents::PlayerDeleted,
+) -> BoxFuture<'a, Result<(), BusError>> {
+    Box::pin(async move {
+        let conn = delivery.tx.downcast::<PgConnection>()?;
+        svc.store
+            .plant_purged_player_tx(conn, &e.player_id, &e.handle)
+            .await
+            .map_err(BusError::transport)
+    })
 }
