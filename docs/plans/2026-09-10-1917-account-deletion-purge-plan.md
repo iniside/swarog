@@ -408,6 +408,47 @@ finishes.
 
 **(d)** `[opus]`.
 
+**Errata (as landed, `af39fd4`..`544d6a1`).**
+
+1. **The guard sits at each module's service write path, not at the `insert_*_tx`
+   statements.** A store helper (`is_player_purged[_tx]`) reads the tombstone; the
+   caller decides the status, because the store layer can only answer an
+   `sqlx::Error`, i.e. a 500, where the contract wants 409.
+2. **Guarded:** `characters.create`, `inventory.grant`, `friends.request` (caller
+   side), `groups.create`, `groups.join`, `notifications`' one insert authority
+   `Service::deliver_on`, `wallet`'s one movement authority `Service::apply_on`.
+   **Deliberately not guarded, with reasons:** `characters.delete`,
+   `friends.accept/decline/remove`, `groups.respond/decide` — they mutate or delete a
+   PRE-EXISTING row the sweep collects by `player_id` in any state, so they cannot
+   leave a row it would miss; `friends.request`'s and `groups.invite`'s TARGET —
+   resolved through `accountsapi::Directory::find_by_handle`, which selects `FROM
+   accounts.players`, a row `accounts` deletes in the same transaction that emits
+   `player.deleted`, so a tombstoned target has already answered 404 one call earlier;
+   `inventory.grant_starter` — its owner is a CHARACTER, guarded by the existing
+   `wiped_characters` tombstone.
+3. **Status.** `Conflict` on every op-facing path (the request is well-formed and
+   names a real past player; the caller is either asking about ITSELF or is a server,
+   so there is no enumeration oracle a 404 would have to protect). Two deviations,
+   both forced by the durable plane: `notifications` answers `Invalid`, the one status
+   `deliver_or_skip` already turns into `Ok(())`, so a deleted recipient cannot pause
+   every player's inbox; `wallet` answers a new `Outcome::Purged` variant rather than
+   an `Err`, because an `Err` out of `apply_on` is propagated by contract and would
+   pause `wallet.player-promoted.v1`.
+4. **No advisory lock — a plain read.** The tombstone row is permanent, so any
+   statement taken after the plant commits sees it, and the plant commits strictly
+   before the sweep can see the row to act on it.
+5. **Known gap (the residual window the plain read leaves).** A live write transaction
+   that read the tombstone BEFORE the plant committed and commits its row AFTER that
+   player's sweep has stamped `swept_at` leaves one orphan row no later sweep
+   revisits. Closing it requires the plant handler AND every guarded write path in all
+   six modules to share one per-player advisory lock — which would also put a lock on
+   `wallet`'s hot movement path, where the store's own note explains there is
+   deliberately none. Not taken: the leak is one unreachable row (every read path is
+   identity-keyed and that identity is gone), while the cost is a cross-cutting lock
+   on six fortresses. The window is ordinarily a day wide only in the sense that the
+   sweep is daily; it shrinks to a scheduler tick when a tombstone lands just before a
+   due fire, so it is narrow but real — not "impossible".
+
 ## Step 8 — operator visibility  `[opus]`
 
 **(a)** A readiness check on a paused subscription, and a read-only admin view of
