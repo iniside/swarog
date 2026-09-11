@@ -487,6 +487,22 @@ topic exists, so the ledger cannot distinguish a dissolution from N leaves**; pu
 latency bounded by the daily sweep, not immediate; and the two new permanent identity
 registries this feature adds.
 
+### A pre-existing paging twin found while fixing Step 6's floor
+
+`modules/groups/src/store.rs:582-588` (`group_page_sql`) is a real twin of the
+`ORDER BY` defect: it selects `player_id::text` and orders by the unqualified name, so
+the sort key is text, while its keyset cut at `:462` compares
+`(created_at, player_id) < ($2::timestamptz, $3::uuid)` — the **uuid** column. The two
+orders coincide only because canonical uuid text is fixed-length with hyphens at
+identical offsets; nothing states or pins that, and the ordering cannot be
+index-served either way. Latent, not currently wrong. It is a different authority
+(keyset pagination, not a purge floor) and needs its own paging tests, so it is
+recorded here rather than fixed inside this rollout.
+
+`modules/inventory/src/store.rs:215-222` (`list_owners`) has the same shape and is
+benign: a `GROUP BY` already forces the aggregate, there is no range predicate to
+demote, and the admin list is `LIMIT`-capped.
+
 ### Two pre-existing gate defects found while auditing Step 4
 
 Neither is caused by this rollout; both were proven by mutation and are recorded so
