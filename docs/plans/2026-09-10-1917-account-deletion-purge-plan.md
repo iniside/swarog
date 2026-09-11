@@ -664,3 +664,26 @@ assertion tags moved to `[DL*]`; the canonical-id assertion moved from split-pro
 Step 10's store-layer tests, since the op takes no caller-supplied uuid; Step 9's three
 per-consumer assertions spelled out as "and"; the four citation drifts corrected; and
 Step 12's two missing named files added.
+
+## Step 12 errata (docs sweep, as landed)
+
+`docs/roadmap/feature-tracker.md:141` flipped to ⚠️ (not ✅) with the GDPR gap stated
+inline; `docs/reference/game-backend-feature-gaps.md` got an appended errata entry,
+row unchanged (it is a frozen archive); `docs/reference/event-plane-ops.md` gained the
+paused-purge operator section (`/readyz` non-goal, the three real surfaces:
+`asyncevents_subscription_paused_state`/`asyncevents_subscriptions_paused`,
+`eventctl list`, the per-module Purges Pending KPI); `CLAUDE.md` and
+`.agents/shared/gamebackend.md` both got the accounts self-delete paragraph, the audit
+topic count corrected **15 → 16** (`DURABLE_TOPICS` hand-counted at HEAD, `player.deleted`
+added it, prune subscription is the 17th), and `[DL0-DL11]` added to the split-proof
+paragraph. `api/friends/events/src/lib.rs` and `api/groups/events/src/lib.rs` were
+already true at HEAD (`REASON_ACCOUNT_DELETED`/`REASON_GROUP_DISSOLVED` already
+enumerated in their doc comments) — no edit needed.
+
+`tools/splitproof/src/main.rs:1614-1616`'s `mail_prune_assertion` doc comment claimed
+the monolith sets no `SCHEDULER_ENABLED`, so there's no tick to drive `[ML6]`'s parity
+pass. False: `modules/scheduler/src/lib.rs:741` defaults `SCHEDULER_ENABLED` to `true`
+and the monolith run never overrides it — its scheduler does tick, proven by
+`deletion_assertions`'s own monolith pass (`[DL4m]`-`[DL9m]`), which also needs a fire
+to pass. Corrected to state the disproof and leave the actual reason `[ML6]` has no
+`"m"`-tagged twin as an open question, rather than inventing one.

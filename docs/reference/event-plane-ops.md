@@ -103,6 +103,31 @@ already promoted to `member` before a given batch's `SELECT` simply no longer
 matches — the sweep never deletes a row out from under an accept that landed
 first.
 
+## A paused purge subscription: what an operator sees, and why `/readyz` stays green
+
+The account-deletion purge (six `player.deleted` consumers plus daily sweeps) can
+strand a player half-deleted if one of those consumer subscriptions pauses. `/readyz`
+deliberately does **not** flip on a paused subscription: it is a boot/restart gate
+(`weles`'s supervisor kills a `NotReady` process past its health deadline), and a
+paused subscription is durable state in `asyncevents.subscriptions` — the verdict
+would be identical after every respawn, so the check would convert one stalled
+subscription into a guaranteed kill-loop of a process that is otherwise serving HTTP
+correctly, including killing the very worker `eventctl resume` needs alive to drain
+the backlog.
+
+The operator surface instead is:
+
+- `asyncevents_subscription_paused_state{subscription}` and
+  `asyncevents_subscriptions_paused` (`core/asyncevents/src/plane_metrics.rs`),
+  scoped to the process's own subscription ids;
+- `cargo run -p eventctl -- list`, which prints `paused_since` for a paused row;
+- the per-module **Purges Pending** admin KPI (`swept_at IS NULL` count plus the
+  oldest pending `created_at`) on each purging module's existing admin page
+  (`characters`, `inventory`, `friends`, `groups`, `notifications`, `wallet`) — this
+  reports outstanding sweep work, not a paused *subscription*, and there is no
+  cross-schema admin view: `core/*` cannot contribute an `adminapi::Item` and
+  archcheck bans a foreign module reading another schema's tables.
+
 ## Related
 
 - `cargo run -p eventctl -- list` — lag/retry/pause/resume/skip/retire per

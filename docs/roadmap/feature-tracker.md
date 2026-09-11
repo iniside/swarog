@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-09-10-1200**
+**Last update: 2026-09-11-0000**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -138,7 +138,7 @@ now resolved — see the Identity & accounts table below for the landed shape.
 | Account linking / unlinking | ⚠️ | accounts | 2026-08-30 | `POST /accounts/link` ships (verified credential → identity attached to the caller's player; a foreign identity is 409, no merge). **Unlink is still missing** — seq #2b. |
 | Session + refresh-token model | ✅ | accounts | 2026-08-30 | 60-minute opaque access tokens + rotating 30-day refresh-token families: reuse detection, a 30s grace window for a lost response, family-scoped revocation (never all the player's devices), and a hard family life a rotation cannot extend. Open decision 4 resolved inside #2a. |
 | Self-registration (production-grade) | ⚠️ | accounts | — | `POST /accounts/register` + `/accounts/login` exist (`api/accounts/api/src/lib.rs:79,85`, argon2id) but gated behind `ACCOUNTS_DEV_AUTH` (default OFF). Missing: email verification, password reset, per-IP/per-account throttling, password policy, email-as-identity uniqueness, **and an outbound mail channel**. Seq #4, depends on #3b. |
-| Account self-delete + GDPR export | ❌ | accounts | — | Only server-side prune today. |
+| Account self-delete + GDPR export | ⚠️ | accounts | `79cf52d`..`0cc58bf`, 2026-09-10 | Self-delete ships: `begin_delete`/`delete_account`, a fan-out purge over `player.deleted` into `characters`/`inventory`/`friends`/`groups`/`notifications`/`wallet`, daily `player-purge` sweeps. **GDPR export does not exist.** Known gaps: no redaction of `asyncevents.events`/`audit.log` (the id and, for `player.deleted`, the handle, survive 90/30 days); `leaderboard`/`rating`/`match` can't purge (`match.finished` carries opaque contestant strings); `mail` can't purge (no `player_id` in `mail.outbox`); a sole admin's deletion dissolves their group (no `group.deleted` topic); purge latency is bounded by the daily sweep, not immediate. |
 | User metadata / profile (display name, avatar, lang) | ⚠️ | accounts | `922cc63`, 2026-09-06 | Handles landed as part of P0#4 (friends): `accounts.players` gained a `discriminator` + a unique index on `(lower(display_name), discriminator)`, and `MeView` carries the caller's own `handle` (`Name#1234`). Discovery of another player is wire-only (`accountsapi::Directory`), never front-door. Still missing: avatar, language, and any player-editable profile field. |
 
 **Known gaps carried out of seq #2a** (deliberate, not oversights): `accounts` still parses

@@ -1611,9 +1611,11 @@ async fn mail_assertions(
 /// machinery already here (force `last_fired` to the epoch, poll the row out) — no new
 /// fixture.
 ///
-/// Split-only, deliberately rather than by omission: the monolith's Proof environment sets
-/// no `SCHEDULER_ENABLED` (the fleet sets it on scheduler-svc alone), so there is no tick
-/// to drive in the parity pass.
+/// Split-only. NOT because of `SCHEDULER_ENABLED`: `modules/scheduler/src/lib.rs`
+/// defaults it to `true` and the monolith run does not set the env var, so the
+/// monolith's scheduler does tick — `deletion_assertions`'s monolith pass
+/// (`[DL4m]`-`[DL9m]`) proves it, since those also need a fire to pass. The real
+/// reason this assertion has no `"m"`-tagged monolith twin is open.
 ///
 /// BOTH halves are asserted. A fresh `sent` row seeded in the same statement must SURVIVE:
 /// a sweep with an inverted date predicate, or one that ignored the fired name and ran on

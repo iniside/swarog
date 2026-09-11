@@ -298,3 +298,10 @@ place.
   `accounts` (to resolve an invite target's handle), not `notifications` — no
   notification is sent for a group invite, membership change, or expiry in this
   rollout.
+- **Line 79** — "Account self-delete + GDPR export | … | ❌ (only server-side prune)"
+  is superseded on the self-delete half: `accounts` landed `begin_delete`/
+  `delete_account` and a `player.deleted` purge fan-out (`79cf52d`..`0cc58bf`,
+  2026-09-10). GDPR export still does not exist. See
+  `docs/roadmap/feature-tracker.md`'s Identity & accounts table for current status
+  and the known gaps (no log/ledger redaction, unpurgeable `leaderboard`/`rating`/
+  `match`/`mail`, group dissolution on a sole admin's deletion, daily-sweep latency).

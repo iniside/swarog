@@ -242,7 +242,25 @@ last-writer-wins overwrite.
   hosting a gateway without the accounts capability FAILS STARTUP unless
   `ACCOUNTS_DEV_AUTH=1` (dev verifier, loud warn). `wallet` grants starter
   currency on `player.promoted` (and on non-guest `player.registered`) when
-  configured.
+  configured. Self-delete is two ops: `POST /accounts/delete/begin` mints a
+  server-minted, upserted confirmation ticket (a repeat call returns the same
+  live ticket, never a second one); `POST /accounts/delete` consumes it and,
+  in one transaction, revokes every session, reserves the caller's handle
+  PERMANENTLY (`accounts.handles`, closing impersonation-by-recycling),
+  writes a permanent receipt (`accounts.deletion_receipts`), deletes the
+  player row (cascading identities/sessions/refresh tokens), and emits
+  durable `player.deleted` (`player_id` + handle, `MinRetention{90d}`) — an
+  unknown/expired/foreign ticket is `NotFound`, never `Forbidden`.
+  `#[retry_safe]` on `delete_account` covers only the gateway→accounts
+  internal-edge replay (the receipt answers it with the original success); a
+  client re-POST is a 401 by construction, since the session died with the
+  player. Six modules (`characters`, `inventory`, `friends`, `groups`,
+  `notifications`, `wallet`) each subscribe to `player.deleted`, tombstone
+  the player in a per-module `purged_players` table, and drain it via a
+  daily `player-purge` scheduler-driven sweep — see the `accounts`
+  self-delete row in `docs/roadmap/feature-tracker.md` for the known gaps (no
+  GDPR export, no log/ledger redaction, `leaderboard`/`rating`/`match`/`mail`
+  unpurgeable, sole-admin group dissolution).
 - **characters / inventory** — the modularity reference case: plain-id
   relations, sync `Ownership` authz over the wire, starter-grant/wipe via
   durable `character.created/deleted`. `INVENTORY_DEV_GRANT` (explicit-only —
@@ -292,12 +310,13 @@ last-writer-wins overwrite.
   (`adminrpc::admin_remote_factory`). Remote forms are read-only. admin-svc
   has a DB (schema `admin` + the durable plane) — no longer planeless.
 - **audit** — append-only ledger (`audit.log`), zero-coupling raw durable
-  sinks for all 15 ledger topics (`character.created/deleted`,
-  `player.registered`, `player.promoted`, `config.changed`, `match.finished`,
-  `admin.action`, `wallet.changed`, `friend.requested/accepted/removed`,
+  sinks for all 16 ledger topics (`character.created/deleted`,
+  `player.registered`, `player.promoted`, `player.deleted`, `config.changed`,
+  `match.finished`, `admin.action`, `wallet.changed`,
+  `friend.requested/accepted/removed`,
   `group.created/member_joined/member_left/role_changed`) —
-  fifteen independent subscriptions (`audit.<topic-kebab>.v1`), each with its
-  own checkpoint, plus a 16th independent subscription for prune reacting to
+  sixteen independent subscriptions (`audit.<topic-kebab>.v1`), each with its
+  own checkpoint, plus a 17th independent subscription for prune reacting to
   `scheduler.fired{audit-prune}` (`AUDIT_RETENTION_DAYS`, default 30).
 - **scheduler** — data-driven schedules (`scheduler.schedules`), 1s tick,
   per-name `pg_try_advisory_lock` + still-due re-check + `UPDATE`+`emit_tx`
@@ -625,7 +644,8 @@ cross-process starter-grant + DB-verified wipe, config live-reload, audit
 rows, scheduler exactly-once, leaderboard accumulation, 429 rate-limit,
 api-key policy [K1-K5], admin session auth [AD1-AD5], audit [AU1-AU3],
 scheduler/prune [SC/SP], metrics [MX], rate-limit [RL], player QUIC
-[P1-P6], friends [FR1-FR9], groups [GR1-GR6]), then re-runs the monolith (`cmd/server`) on the same player front
+[P1-P6], friends [FR1-FR9], groups [GR1-GR6], account-deletion purge
+[DL0-DL11]), then re-runs the monolith (`cmd/server`) on the same player front
 for parity ([M0-M3b]) and proves native graceful shutdown ([W2]: the
 platform's native cooperative stop to the monolith's process group → clean
 drain, no force-kill — see `docs/reference/platform-notes.md`). A reachable
