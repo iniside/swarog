@@ -113,9 +113,14 @@ impl Service {
             .ok_or_else(|| Error::unauthorized("a player identity is required"))
     }
 
-    /// The create half of `put`. The owner cap is counted and the row inserted under the
-    /// owner's advisory lock in ONE transaction: counting outside it is a
-    /// count-then-insert two concurrent creates both pass.
+    /// The create half of `put`. Both statements run under the owner's advisory lock in ONE
+    /// transaction: counting outside it is a count-then-insert that two concurrent creates
+    /// both pass.
+    ///
+    /// The insert is attempted BEFORE the count, so an owner at the cap writing to an
+    /// address it ALREADY holds is told the address is taken rather than told to delete
+    /// something — two 409s with different remedies. The count therefore sees this
+    /// transaction's own uncommitted row, which is why the cap comparison is strict.
     async fn create(
         &self,
         owner_id: &str,
@@ -129,17 +134,6 @@ impl Service {
             .lock_owner_tx(&mut tx, owner_id)
             .await
             .map_err(write_error)?;
-        let held = self
-            .store
-            .count_objects_tx(&mut tx, owner_id)
-            .await
-            .map_err(write_error)?;
-        if held >= MAX_OBJECTS_PER_OWNER {
-            tx.rollback().await.map_err(write_error)?;
-            return Err(Error::conflict(format!(
-                "you already hold the maximum of {MAX_OBJECTS_PER_OWNER} objects"
-            )));
-        }
         let created = self
             .store
             .insert_object_tx(&mut tx, owner_id, collection, key, value, acl)
@@ -151,6 +145,17 @@ impl Service {
                 "an object already exists at this address; read it and write with its version",
             ));
         };
+        let held = self
+            .store
+            .count_objects_tx(&mut tx, owner_id)
+            .await
+            .map_err(write_error)?;
+        if held > MAX_OBJECTS_PER_OWNER {
+            tx.rollback().await.map_err(write_error)?;
+            return Err(Error::conflict(format!(
+                "you already hold the maximum of {MAX_OBJECTS_PER_OWNER} objects"
+            )));
+        }
         tx.commit().await.map_err(write_error)?;
         Ok(ObjectVersion { version })
     }

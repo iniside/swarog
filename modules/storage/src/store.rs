@@ -2,6 +2,11 @@ use opsapi::Error;
 use sqlx::{PgConnection, PgPool};
 use storageapi::{MAX_COLLECTION_BYTES, MAX_KEY_BYTES};
 
+/// The DDL below writes [`MAX_COLLECTION_BYTES`]/[`MAX_KEY_BYTES`] a second time, in SQL,
+/// and `write_error` words a `23514` with the RUST cap: a const raised past its CHECK would
+/// answer an over-cap input with a limit it never had.
+const _: () = assert!(MAX_COLLECTION_BYTES == 64 && MAX_KEY_BYTES == 128);
+
 /// Plain `uuid` owner column, no cross-module FK (constraint #10): the relation to
 /// `accounts` is a bare id.
 ///
@@ -142,9 +147,11 @@ pub(crate) enum CasOutcome {
 /// anyone who can name it and writable only by its owner, so this string must never gain
 /// the read's acl disjunction — sharing it would make `public_read` mean public WRITE.
 ///
-/// One statement, one snapshot: a two-statement "update, then look" cannot tell a stale
-/// expectation from a deleted object, because the second statement takes its own snapshot
-/// under READ COMMITTED.
+/// One statement BOUNDS the stale-vs-deleted ambiguity to a delete committing during this
+/// very write: the `EXISTS` half reads the command snapshot, so a concurrent `DELETE` that
+/// commits while the UPDATE waits on its row lock still answers `Stale`, and the caller
+/// re-reads into a 404. A two-statement "update, then look" leaves that window open across
+/// two independent READ COMMITTED snapshots.
 const CAS_SQL: &str = r#"
 WITH upd AS (
     UPDATE storage.objects
