@@ -24,6 +24,15 @@ pub const REASON_DECLINED: &str = "declined";
 /// [`MemberLeft::reason`] for a pending row the retention sweep removed after
 /// `GROUPS_RETENTION_DAYS`. No party ended it, so [`MemberLeft::actor_id`] is empty.
 pub const REASON_EXPIRED: &str = "expired";
+/// [`MemberLeft::reason`] for the row of a player whose account was deleted, removed by the
+/// purge sweep. [`MemberLeft::actor_id`] is that player.
+pub const REASON_ACCOUNT_DELETED: &str = "account-deleted";
+/// [`MemberLeft::reason`] for a row the group's DISSOLUTION removed — the purge sweep took
+/// the group's last admin (or last member) with a deleted account, and a group nobody can
+/// administer is deleted rather than succeeded. The subject did not end this relation and
+/// neither did the deleted player act on it, so [`MemberLeft::actor_id`] is empty. There is
+/// no `group.deleted` topic: a dissolution is N of these rows sharing a `group_id`.
+pub const REASON_GROUP_DISSOLVED: &str = "group-dissolved";
 
 /// [`RoleChanged::actor_kind`] for a change made through the operator portal. The admin
 /// seam carries NO caller identity (`adminapi::AdminData`/`AdminSubmit` are
@@ -60,11 +69,12 @@ pub struct MemberJoined {
 
 /// A player's row was removed from the group, whatever state it was in.
 ///
-/// `actor_id` is the party who ended it (the subject itself for [`REASON_LEFT`], an
-/// admin for [`REASON_KICKED`], the subject for [`REASON_DECLINED`]) — recorded
-/// because a kick is otherwise unattributable in a ledger that retains 30 days. It is
-/// EMPTY when no party ended it ([`REASON_EXPIRED`]), never a stand-in id: a consumer
-/// reading it as "who did this" must not be told the subject did.
+/// `actor_id` is the party who ended it (the subject itself for [`REASON_LEFT`] and
+/// [`REASON_ACCOUNT_DELETED`], an admin for [`REASON_KICKED`], the subject for
+/// [`REASON_DECLINED`]) — recorded because a kick is otherwise unattributable in a ledger
+/// that retains 30 days. It is EMPTY when no party ended it ([`REASON_EXPIRED`],
+/// [`REASON_GROUP_DISSOLVED`]), never a stand-in id: a consumer reading it as "who did
+/// this" must not be told the subject did.
 /// `reason` is an open vocabulary: treat an unrecognised value as the plain case, so a
 /// future ending is an additive change rather than a new topic.
 ///

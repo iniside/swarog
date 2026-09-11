@@ -108,6 +108,30 @@ impl Store {
         Ok(())
     }
 
+    /// The groups a purged player still holds a row in, up to `limit`. Ordered by
+    /// `groups.memberships.group_id` — the TABLE's column, never the `::text` output column,
+    /// which no index can serve — so the sweep takes its per-group advisory locks in one
+    /// consistent order and two multi-lock takers cannot build a cycle.
+    ///
+    /// The sweep deletes as it goes, so a later call inside the same transaction no longer
+    /// sees what it already removed.
+    pub(crate) async fn player_groups_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        limit: i64,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String,)>(
+            "SELECT group_id::text FROM groups.memberships WHERE player_id = $1::uuid \
+              ORDER BY groups.memberships.group_id LIMIT $2",
+        )
+        .bind(player_id)
+        .bind(limit)
+        .fetch_all(&mut *conn)
+        .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     /// Taken ON THE TX CONNECTION — a separate pool connection would lose the
     /// serialization — and released at commit/rollback.
     pub(crate) async fn lock_group_tx(

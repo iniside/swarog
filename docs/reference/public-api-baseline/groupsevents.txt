@@ -98,8 +98,10 @@ impl core::panic::unwind_safe::RefUnwindSafe for groupsevents::RoleChanged
 impl core::panic::unwind_safe::UnwindSafe for groupsevents::RoleChanged
 pub const groupsevents::ACTOR_OPERATOR: &str
 pub const groupsevents::ACTOR_PLAYER: &str
+pub const groupsevents::REASON_ACCOUNT_DELETED: &str
 pub const groupsevents::REASON_DECLINED: &str
 pub const groupsevents::REASON_EXPIRED: &str
+pub const groupsevents::REASON_GROUP_DISSOLVED: &str
 pub const groupsevents::REASON_KICKED: &str
 pub const groupsevents::REASON_LEFT: &str
 pub static groupsevents::CREATED: std::sync::lazy_lock::LazyLock<bus::EventType<groupsevents::Created>>
