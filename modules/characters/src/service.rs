@@ -16,6 +16,11 @@ pub(crate) const MAX_CLASS_BYTES: usize = 64;
 /// characters than `list` can return.
 pub(crate) const MAX_PER_PLAYER: i64 = 10;
 
+/// What `create` answers a caller whose account is already tombstoned. `Conflict`, not
+/// `NotFound`: the request is well-formed and names a real past player — what is stale is
+/// the identity it carries.
+pub(crate) const PLAYER_DELETED: &str = "this account has been deleted";
+
 /// Per-PLAYER transaction-scoped advisory-lock key for `create`'s cap gate: two
 /// concurrent creates for one player must serialize their count-then-insert, or both
 /// SELECT `count` below the cap (neither committed yet, READ COMMITTED) and both
@@ -133,6 +138,15 @@ impl Player for Service {
             .execute(&mut *tx)
             .await
             .map_err(internal)?;
+        if self
+            .store
+            .is_player_purged_tx(&mut tx, &player_id)
+            .await
+            .map_err(internal)?
+        {
+            tx.rollback().await.map_err(internal)?;
+            return Err(Error::conflict(PLAYER_DELETED));
+        }
         // Clamp to [0, LIST_HARD_LIMIT]: the upper bound so `create` can never admit
         // more than `list` returns; the lower bound 0 (NOT 1) so `max_per_player = 0`
         // means "freeze creation" — the gate `n >= cap` rejects even the first create —
