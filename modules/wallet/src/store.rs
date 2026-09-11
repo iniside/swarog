@@ -305,6 +305,35 @@ impl Store {
         Ok(row.is_some())
     }
 
+    /// The uuid a purged player's ledger rows are re-owned to. It is an OVERWRITE, never a
+    /// NULL (`player_id` is `uuid NOT NULL`: a NULL raises 23502 inside the delivery
+    /// transaction and pauses the subscription) and never a DELETE: the ledger is also the
+    /// dedup registry ([`Store::insert_ledger_tx`]'s `ON CONFLICT (idempotency_key)`), and
+    /// the starter grant's key is `starter:{player_id}` — dropping the row frees that key,
+    /// so a `player.registered` redelivery would grant the currency a second time. The nil
+    /// uuid can never name a real player: every player id is minted by `gen_random_uuid()`,
+    /// which only ever emits version-4 uuids, and nil is version 0.
+    pub(crate) const PURGE_SENTINEL: &str = "00000000-0000-0000-0000-000000000000";
+
+    /// Erases one purged player's money: balances go, ledger rows stay under
+    /// [`Store::PURGE_SENTINEL`]. Runs on the sweep's handed delivery tx.
+    pub(crate) async fn purge_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM wallet.balances WHERE player_id = $1::uuid")
+            .bind(player_id)
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query("UPDATE wallet.ledger SET player_id = $2::uuid WHERE player_id = $1::uuid")
+            .bind(player_id)
+            .bind(Store::PURGE_SENTINEL)
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
     pub(crate) async fn plant_purged_player_tx(
         &self,
         conn: &mut PgConnection,

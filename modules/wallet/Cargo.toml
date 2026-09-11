@@ -34,6 +34,9 @@ rand = { workspace = true }
 # The accounts EVENT contract only (an events crate is importable by any module): the
 # optional starter grant reacts to durable `player.registered`.
 accountsevents = { workspace = true }
+# The scheduler EVENT contract only: the purge sweep is a raw sink on `scheduler.fired`,
+# guarding on `schedule_names::PLAYER_PURGE`.
+schedulerevents = { workspace = true }
 sqlx = { workspace = true }
 # The admin `RenderFn` is synchronous while the page's store reads are not: the local
 # render bridges through `block_in_place` on the multi-thread runtime.
@@ -41,6 +44,11 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "ti
 anyhow = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
+# `bus::TxHandler` returns a `futures::future::BoxFuture`, which `bus` does not re-export.
+futures = { workspace = true }
+# The raw `scheduler.fired` payload is decoded to its `name` field only.
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }

@@ -297,6 +297,17 @@ impl Module for WalletModule {
             },
         );
 
+        // The drain of what that tombstone records, on its OWN subscription: a raw sink on
+        // `scheduler.fired` guarding on the shared daily `player-purge` name.
+        let sweeper: Arc<dyn bus::TxHandler> = Arc::new(projection::PurgeSweepHandler {
+            svc: svc.clone(),
+        });
+        ctx.bus().on_tx_raw(
+            projection::PURGE_SWEEP_SUB,
+            schedulerevents::FIRED.topic(),
+            sweeper,
+        );
+
         for op in walletapi::player_rpc::operations(svc.clone()) {
             ctx.contribute(opsapi::SLOT, op.operation);
             ctx.contribute(opsapi::BINDING_SLOT, op.binding);
