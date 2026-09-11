@@ -1,6 +1,8 @@
 use super::*;
 use opsapi::Status;
 
+mod purge;
+
 /// Fallback DSN for the lazy-pool unit tests (the live tests read `DATABASE_URL`).
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
