@@ -16,7 +16,7 @@ use super::*;
 use accountsapi::admin::PLAYERS_ROW_MENU;
 use accountsapi::{Directory, PlayerSummary};
 use adminapi::AdminData as _;
-use bus::Bus;
+use bus::{AnyTx, Bus, Delivery, TxHandler};
 use friendsapi::{
     Player as _, DEFAULT_PAGE_LIMIT, MAX_CURSOR_BYTES, MAX_PAGE_LIMIT, MAX_PENDING_OUTSTANDING,
     STATE_ACCEPTED, STATE_PENDING,
@@ -1551,4 +1551,271 @@ async fn players_row_menu_entry_round_trips_into_the_player_param_build_content_
         "player_view (not overview) is the only branch that scaffolds a header — proves \
          this exact params map reached it"
     );
+}
+
+// ============================================================================
+// Account-deletion purge (Steps 5-7): the tombstone, the sweep (both sides of the
+// pair, including a pending edge the player did not author), and the `request`
+// write guard.
+// ============================================================================
+
+async fn purge_swept_at(pool: &PgPool, player_id: &str) -> Option<Option<String>> {
+    sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT swept_at::text FROM friends.purged_players WHERE player_id = $1::uuid",
+    )
+    .bind(player_id)
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+    .map(|(s,)| s)
+}
+
+async fn stamp_purge_swept(pool: &PgPool, player_id: &str) {
+    sqlx::query("UPDATE friends.purged_players SET swept_at = now() WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn cleanup_purge_row(pool: &PgPool, player_id: &str) {
+    let _ = sqlx::query("DELETE FROM friends.purged_players WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .execute(pool)
+        .await;
+}
+
+async fn edge_exists(pool: &PgPool, edge_id: &str) -> bool {
+    sqlx::query_scalar::<_, i32>("SELECT 1 FROM friends.edges WHERE id = $1::uuid")
+        .bind(edge_id)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+        .is_some()
+}
+
+fn purge_payload(name: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({ "name": name })).unwrap()
+}
+
+/// The tombstone insert is idempotent, and a redelivery after the sweep stamped
+/// `swept_at` must NOT reset it.
+#[tokio::test]
+async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
+    let Some(pool) = test_pool().await else { return };
+    let directory = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, directory).await;
+    let pid = low_uuid();
+
+    with_cleanup(&pool, vec![pid.clone()], {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        let pid = pid.clone();
+        async move {
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &pid, "Handle#0001").await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &pid, "Handle#0001").await.unwrap();
+
+            let (n,): (i64,) =
+                sqlx::query_as("SELECT count(*) FROM friends.purged_players WHERE player_id = $1::uuid")
+                    .bind(&pid)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(n, 1, "a redelivered tombstone must not insert a second row");
+
+            stamp_purge_swept(&pool, &pid).await;
+            svc.store.plant_purged_player_tx(&mut conn, &pid, "Handle#0001").await.unwrap();
+            assert!(
+                purge_swept_at(&pool, &pid).await.flatten().is_some(),
+                "a redelivery after the sweep stamped swept_at must NOT reset it"
+            );
+        }
+    })
+    .await;
+    cleanup_purge_row(&pool, &pid).await;
+}
+
+/// THE PREVIOUSLY-RISKY SHAPE: the sweep deletes on EITHER side of the canonical
+/// pair (`low_id`/`high_id`) and in EITHER state — including a PENDING edge the
+/// purged player did not author (a query filtered by `requester_id` would miss it).
+/// A survivor pair is untouched, and the removal carries `REASON_ACCOUNT_DELETED`.
+#[tokio::test]
+async fn sweep_removes_edges_on_both_sides_including_a_pending_edge_not_authored_by_the_player() {
+    let Some(pool) = test_pool().await else { return };
+    let directory = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, directory).await;
+
+    let target = low_uuid(); // the purged player
+    let as_low_side = high_uuid(); // an ACCEPTED edge where target is the LOW id
+    let pending_addressee = fixed_uuid(0x33); // a PENDING edge the TARGET did not author
+    let survivor_a = fixed_uuid(0x44);
+    let survivor_b = fixed_uuid(0x55);
+
+    let ids = vec![
+        target.clone(),
+        as_low_side.clone(),
+        pending_addressee.clone(),
+        survivor_a.clone(),
+        survivor_b.clone(),
+    ];
+
+    with_cleanup(&pool, ids, {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        let target = target.clone();
+        let as_low_side = as_low_side.clone();
+        let pending_addressee = pending_addressee.clone();
+        let survivor_a = survivor_a.clone();
+        let survivor_b = survivor_b.clone();
+        async move {
+            // target as low_id, accepted, requested BY target.
+            let e1 = insert_edge_raw(&pool, &target, &as_low_side, &target, STATE_ACCEPTED).await;
+            // target as high_id (pending_addressee < target numerically via fixed_uuid tiers),
+            // PENDING, requested by the OTHER party — target never authored this request.
+            let e2 =
+                insert_edge_raw(&pool, &pending_addressee, &target, &pending_addressee, STATE_PENDING)
+                    .await;
+            // A survivor pair sharing NEITHER id with target.
+            let e3 = insert_edge_raw(&pool, &survivor_a, &survivor_b, &survivor_a, STATE_ACCEPTED).await;
+
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &target, "Target#0001").await.unwrap();
+            drop(conn);
+
+            let mut tx = pool.begin().await.unwrap();
+            svc.sweep_purged_players(&mut tx).await.unwrap();
+            tx.commit().await.unwrap();
+
+            assert!(!edge_exists(&pool, &e1).await, "the accepted edge (target as low_id) must be removed");
+            assert!(
+                !edge_exists(&pool, &e2).await,
+                "the PENDING edge the target did not author must also be removed"
+            );
+            assert!(edge_exists(&pool, &e3).await, "a survivor pair must be untouched");
+
+            let removed = asyncevents::testing::events_count(&pool, "friend.removed", "actor_id", &target)
+                .await
+                .unwrap();
+            assert_eq!(removed, 2, "one friend.removed per deleted edge");
+
+            let reason_count: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM asyncevents.events WHERE topic = 'friend.removed' \
+                  AND payload->>'actor_id' = $1 AND payload->>'reason' = $2",
+            )
+            .bind(&target)
+            .bind(friendsevents::REASON_ACCOUNT_DELETED)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(reason_count, 2, "both removals must carry REASON_ACCOUNT_DELETED");
+
+            assert!(purge_swept_at(&pool, &target).await.flatten().is_some());
+
+            // Redelivery: swept_at excludes the target now — nothing more emitted.
+            let mut tx2 = pool.begin().await.unwrap();
+            svc.sweep_purged_players(&mut tx2).await.unwrap();
+            tx2.commit().await.unwrap();
+            let removed_again =
+                asyncevents::testing::events_count(&pool, "friend.removed", "actor_id", &target)
+                    .await
+                    .unwrap();
+            assert_eq!(removed_again, 2, "a redelivery must emit NOTHING more");
+        }
+    })
+    .await;
+    cleanup_purge_row(&pool, &target).await;
+}
+
+/// `request` is blocked by the tombstone PREDICATE, not "a tombstone exists
+/// somewhere": a purged caller gets Conflict and no edge row, while a different,
+/// non-tombstoned caller still succeeds.
+#[tokio::test]
+async fn request_is_blocked_by_tombstone_predicate_not_presence() {
+    let Some(pool) = test_pool().await else { return };
+    let directory = Arc::new(FakeDirectory::new());
+    let purged = low_uuid();
+    let other = high_uuid();
+    let target = fixed_uuid(0x66);
+    directory.insert(&purged, "Purged#0001");
+    directory.insert(&other, "Other#0002");
+    directory.insert(&target, "Target#0003");
+
+    let (_ctx, svc) = wired(&pool, directory).await;
+    let ids = vec![purged.clone(), other.clone(), target.clone()];
+
+    with_cleanup(&pool, ids, {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        let purged = purged.clone();
+        let other = other.clone();
+        async move {
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &purged, "Purged#0001").await.unwrap();
+            drop(conn);
+
+            let e = svc
+                .request(Identity::player(&purged), "Target#0003".into())
+                .await
+                .unwrap_err();
+            assert_eq!(e.status, Status::Conflict);
+            let (n,): (i64,) = sqlx::query_as(
+                "SELECT count(*) FROM friends.edges WHERE low_id = $1::uuid OR high_id = $1::uuid",
+            )
+            .bind(&purged)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(n, 0, "no edge row for a tombstoned requester");
+
+            svc.request(Identity::player(&other), "Target#0003".into())
+                .await
+                .expect("a different, non-tombstoned player must still be able to request");
+        }
+    })
+    .await;
+    cleanup_purge_row(&pool, &purged).await;
+}
+
+/// A foreign `scheduler.fired` name sweeps nothing; the real name (positive control on
+/// the same row) drains it.
+#[tokio::test]
+async fn sweep_handler_ignores_a_foreign_schedule_name_with_positive_control() {
+    let Some(pool) = test_pool().await else { return };
+    let directory = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, directory).await;
+    let target = low_uuid();
+    let other = high_uuid();
+
+    with_cleanup(&pool, vec![target.clone(), other.clone()], {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        let target = target.clone();
+        let other = other.clone();
+        async move {
+            let edge = insert_edge_raw(&pool, &target, &other, &target, STATE_ACCEPTED).await;
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &target, "Target#0001").await.unwrap();
+            drop(conn);
+
+            let handler = projection::PurgeSweepHandler { svc: svc.clone() };
+
+            let mut tx = pool.begin().await.unwrap();
+            let delivery = Delivery { event_id: "friends:test", tx: AnyTx::new(&mut *tx) };
+            handler.call(delivery, purge_payload("some-other-job")).await.unwrap();
+            tx.commit().await.unwrap();
+            assert!(edge_exists(&pool, &edge).await, "a foreign schedule name must not sweep");
+
+            let mut tx2 = pool.begin().await.unwrap();
+            let delivery2 = Delivery { event_id: "friends:test", tx: AnyTx::new(&mut *tx2) };
+            handler
+                .call(delivery2, purge_payload(projection::PURGE_SCHEDULE_NAME))
+                .await
+                .unwrap();
+            tx2.commit().await.unwrap();
+            assert!(!edge_exists(&pool, &edge).await, "the real schedule name must sweep the same row");
+        }
+    })
+    .await;
+    cleanup_purge_row(&pool, &target).await;
 }
