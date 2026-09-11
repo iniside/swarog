@@ -174,3 +174,31 @@ impl Inner {
             .map_err(bus::Error::transport)
     }
 }
+
+impl Inner {
+    /// Plants the purge tombstone on the HANDED delivery connection, so it commits with
+    /// the subscription checkpoint. The row is the sweep's work item and, once swept, the
+    /// permanent record that this player is gone — nothing deletes it, and a redelivery is
+    /// `ON CONFLICT DO NOTHING` rather than a reset of `swept_at`.
+    ///
+    /// Deliberately takes no per-character advisory lock: it touches neither
+    /// `inventory.holdings` nor `inventory.wiped_characters`, so it serializes against
+    /// nothing the two character handlers do.
+    pub(crate) async fn plant_purged_player(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        handle: &str,
+    ) -> Result<(), bus::Error> {
+        sqlx::query(
+            "INSERT INTO inventory.purged_players (player_id, handle) VALUES ($1::uuid, $2) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(player_id)
+        .bind(handle)
+        .execute(&mut *conn)
+        .await
+        .map(|_| ())
+        .map_err(bus::Error::transport)
+    }
+}

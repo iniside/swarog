@@ -2238,6 +2238,7 @@ name = "inventory"
 version = "0.1.0"
 dependencies = [
  "accountsapi",
+ "accountsevents",
  "adminapi",
  "anyhow",
  "async-trait",

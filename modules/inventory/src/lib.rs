@@ -89,6 +89,13 @@ CREATE INDEX IF NOT EXISTS holdings_owner_idx ON inventory.holdings(owner_type, 
 CREATE TABLE IF NOT EXISTS inventory.wiped_characters (
 	character_id uuid PRIMARY KEY,
 	wiped_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS inventory.purged_players (
+	player_id  uuid PRIMARY KEY,
+	handle     text        NOT NULL DEFAULT '',
+	created_at timestamptz NOT NULL DEFAULT now(),
+	swept_at   timestamptz
 );"#;
 
 /// Folds any lower-level error into an `Internal` operation error.
@@ -241,6 +248,33 @@ impl Module for Inventory {
                 Box::pin(async move {
                     let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
                     wiper.wipe_character(conn, &e.character_id).await
+                })
+            },
+        );
+
+        // The purge tombstone, planted on the HANDED conn so it commits with the
+        // subscription checkpoint. O(1) BY DESIGN: nothing bounds how many holdings a
+        // player and its characters own, while `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this
+        // handler at 10s — a delete too large for that budget would make NO progress ever
+        // and burn failures toward the plane's pause threshold, stranding every later
+        // player behind the same cursor. The deleting belongs to the scheduled sweep,
+        // which resumes across fires; this only records its work item.
+        //
+        // `Genesis`, not `AfterRegistration`: a lost deletion is a permanent retention leak
+        // with no repair path, while a redelivery into an already-tombstoned module is a
+        // no-op. The id and the start position are an IMMUTABLE contract (`spec_hash`).
+        let purger = inner.clone();
+        ctx.bus().on_tx(
+            bus::SubscriptionSpec {
+                id: "inventory.player-deleted.v1",
+                start: bus::StartPosition::Genesis,
+            },
+            &accountsevents::PLAYER_DELETED,
+            move |mut delivery, e: accountsevents::PlayerDeleted| {
+                let purger = purger.clone();
+                Box::pin(async move {
+                    let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                    purger.plant_purged_player(conn, &e.player_id, &e.handle).await
                 })
             },
         );

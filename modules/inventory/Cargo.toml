@@ -31,6 +31,9 @@ adminapi = { workspace = true }
 # contributes "View Inventory" entries to those owner-declared points. Pure api-crate
 # consts — never the owner impls.
 accountsapi = { workspace = true }
+# The accounts EVENT contract only (an events crate is importable by any module): the
+# purge tombstone reacts to durable `player.deleted`.
+accountsevents = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = { workspace = true }
