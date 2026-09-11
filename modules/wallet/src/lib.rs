@@ -92,7 +92,14 @@ CREATE TABLE IF NOT EXISTS wallet.ledger (
 	at              timestamptz NOT NULL DEFAULT clock_timestamp(),
 	UNIQUE (idempotency_key)
 );
-CREATE INDEX IF NOT EXISTS ledger_player_seq_idx ON wallet.ledger(player_id, seq DESC);"#;
+CREATE INDEX IF NOT EXISTS ledger_player_seq_idx ON wallet.ledger(player_id, seq DESC);
+
+CREATE TABLE IF NOT EXISTS wallet.purged_players (
+	player_id  uuid        PRIMARY KEY,
+	handle     text        NOT NULL DEFAULT '',
+	created_at timestamptz NOT NULL DEFAULT now(),
+	swept_at   timestamptz
+);"#;
 
 /// `(code, display_name, kind, decimals)`.
 const DEV_SEED_CURRENCIES: &[(&str, &str, &str, i32)] = &[
@@ -253,6 +260,38 @@ impl Module for WalletModule {
                 Box::pin(async move {
                     let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
                     granter.grant_starter(conn, &e.player_id).await
+                })
+            },
+        );
+
+        // The purge tombstone, planted on the HANDED delivery conn so it commits with the
+        // subscription checkpoint. O(1) BY DESIGN: a player's ledger is append-only and
+        // unbounded, while `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this handler at 10s — a
+        // delete too large for that budget would make NO progress ever and burn failures
+        // toward the plane's pause threshold, stranding every later player behind the same
+        // cursor. The deleting belongs to the scheduled sweep, which resumes across fires;
+        // this only records its work item.
+        //
+        // `Genesis`, not the `AfterRegistration` the two grant subscriptions take: a lost
+        // deletion is a permanent retention leak with no repair path, while a redelivery
+        // into an already-tombstoned module is a no-op. The id and the start position are an
+        // IMMUTABLE contract (`spec_hash`).
+        let purger = svc.clone();
+        ctx.bus().on_tx(
+            bus::SubscriptionSpec {
+                id: "wallet.player-deleted.v1",
+                start: bus::StartPosition::Genesis,
+            },
+            &accountsevents::PLAYER_DELETED,
+            move |mut delivery, e: accountsevents::PlayerDeleted| {
+                let purger = purger.clone();
+                Box::pin(async move {
+                    let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                    purger
+                        .store
+                        .plant_purged_player_tx(conn, &e.player_id, &e.handle)
+                        .await
+                        .map_err(bus::Error::transport)
                 })
             },
         );
