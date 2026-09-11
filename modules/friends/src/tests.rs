@@ -36,6 +36,16 @@ use testdb::test_pool;
 /// binary — concurrent idempotent DDL across parallel tests can deadlock on catalog locks.
 static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
+/// `sweep_purged_players` scans the WHOLE shared `friends.purged_players` table (not just
+/// one test's rows) and `pending_purges()` counts across it too — an unfiltered `count(*)`,
+/// not scoped to any one test's ids. Every purge test that plants a row (even one that never
+/// sweeps) or reads that count must serialize with every OTHER such test: a concurrent
+/// plant landing inside a before/after counting window inflates it, and a concurrent sweep
+/// can race another sweep's `FOR UPDATE SKIP LOCKED` batch over the same shared rows.
+/// Mirrors `groups`' `purge_tests::DB_LOCK`, widened here because `friends` also has a
+/// whole-table counting test `groups` does not.
+pub(crate) static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn ensure_schema(pool: &PgPool) {
     SCHEMA_READY
         .get_or_init(|| async {
@@ -1603,6 +1613,7 @@ fn purge_payload(name: &str) -> Vec<u8> {
 #[tokio::test]
 async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let directory = Arc::new(FakeDirectory::new());
     let (_ctx, svc) = wired(&pool, directory).await;
     let pid = low_uuid();
@@ -1643,6 +1654,7 @@ async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
 #[tokio::test]
 async fn sweep_removes_edges_on_both_sides_including_a_pending_edge_not_authored_by_the_player() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let directory = Arc::new(FakeDirectory::new());
     let (_ctx, svc) = wired(&pool, directory).await;
 
@@ -1733,6 +1745,7 @@ async fn sweep_removes_edges_on_both_sides_including_a_pending_edge_not_authored
 #[tokio::test]
 async fn request_is_blocked_by_tombstone_predicate_not_presence() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let directory = Arc::new(FakeDirectory::new());
     let purged = low_uuid();
     let other = high_uuid();
@@ -1782,6 +1795,7 @@ async fn request_is_blocked_by_tombstone_predicate_not_presence() {
 #[tokio::test]
 async fn sweep_handler_ignores_a_foreign_schedule_name_with_positive_control() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let directory = Arc::new(FakeDirectory::new());
     let (_ctx, svc) = wired(&pool, directory).await;
     let target = low_uuid();
@@ -1877,6 +1891,7 @@ async fn admin_purges_kpi_present_on_overview_absent_from_drill_down() {
 #[tokio::test]
 async fn pending_purges_counts_only_swept_at_null_a_swept_row_does_not_inflate_it() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let directory = Arc::new(FakeDirectory::new());
     let (_ctx, svc) = wired(&pool, directory).await;
     let unswept = fixed_uuid(0x88);
