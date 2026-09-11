@@ -34,11 +34,16 @@ accountsapi = { workspace = true }
 # The accounts EVENT contract only (an events crate is importable by any module): the
 # purge tombstone reacts to durable `player.deleted`.
 accountsevents = { workspace = true }
+# The scheduler EVENT contract only: the purge sweep is a raw sink on `scheduler.fired`,
+# guarding on `schedule_names::PLAYER_PURGE`.
+schedulerevents = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 async-trait = { workspace = true }
+# `bus::TxHandler` returns a `futures::future::BoxFuture`, which `bus` does not re-export.
+futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

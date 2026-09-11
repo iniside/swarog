@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use bus::{Delivery, Error as BusError, TxHandler};
+use futures::future::BoxFuture;
 use sqlx::PgConnection;
 
 use crate::{validate_quantity, Inner, Owner};
@@ -197,5 +201,127 @@ impl Inner {
         .await
         .map(|_| ())
         .map_err(bus::Error::transport)
+    }
+}
+
+/// The purge sweep's consumer-owned subscription id — a durable contract; renaming it
+/// abandons the checkpoint. `Genesis` because the sweep must run on a boot that has never
+/// subscribed before.
+pub(crate) const PURGE_SWEEP_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
+    id: "inventory.purge-on-scheduler.v1",
+    start: bus::StartPosition::Genesis,
+};
+
+pub(crate) const PURGE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::PLAYER_PURGE;
+
+/// Tombstones claimed per selection statement. It bounds PLAYERS, not holdings — the
+/// per-player delete is one statement whose size nothing here caps — and the sweep LOOPS
+/// batches until a short one, so a backlog above one batch per day still drains.
+pub(crate) const PURGE_BATCH: i64 = 256;
+
+/// The sweep's whole wall-clock budget. Exhausting it ends the fire with the players swept
+/// so far KEPT — they commit with the subscription checkpoint and the next fire resumes from
+/// there. It is a bare constant because a module may not read the plane's env and
+/// `bus::Delivery` carries no deadline to derive one from; the operator constraint that
+/// comes with it is that `ASYNCEVENTS_HANDLER_TIMEOUT` must stay above 5s (its default is
+/// 10s, and nothing in the tree sets it). Below that the sweep is killed rather than
+/// budgeted: the plane `pg_terminate_backend`s the delivery backend, so the whole fire's
+/// transaction dies with it and 20 such fires pause the subscription.
+pub(crate) const SWEEP_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The scan floor carried across batches, load-bearing rather than an optimisation: every
+/// batch runs inside the ONE still-open delivery transaction, where the tombstones this
+/// transaction has already stamped are dead-but-unprunable row versions that a
+/// `swept_at IS NULL` re-scan still walks — so a floorless scan re-walks `256 x (k-1)` of
+/// them and the loop goes quadratic. `player_id` is the tombstone table's primary key, hence
+/// unique and ordered, so the comparison is `>=` rather than the `>` a unique key would
+/// allow: it costs one already-stamped row per batch (`swept_at IS NULL` filters it out) and
+/// in exchange keeps the floor value itself reachable.
+const PURGE_FLOOR: &str = "00000000-0000-0000-0000-000000000000";
+
+/// Just the `name` of a `scheduler.fired` payload: the sweep subscribes by the contract's
+/// topic const without importing the producer's payload type (audit's zero-coupling shape).
+#[derive(serde::Deserialize)]
+struct FiredName {
+    name: String,
+}
+
+impl Inner {
+    /// Drains the tombstones planted by `plant_purged_player`: the PLAYER-owned holdings of
+    /// players whose account is gone. Their CHARACTER-owned holdings are not this sweep's
+    /// work — they arrive on the untouched `character.deleted` path, which `accounts`' purge
+    /// drives through `characters`, and this module cannot enumerate a player's characters
+    /// anyway.
+    ///
+    /// Every delete, every `swept_at` stamp and the subscription checkpoint commit together
+    /// on the handed delivery tx. Takes no per-character advisory lock: `Owner::player` rows
+    /// are disjoint from every key `lock_character` guards.
+    pub(crate) async fn sweep_purged_players(&self, conn: &mut PgConnection) -> Result<(), BusError> {
+        let started = std::time::Instant::now();
+        let mut watermark = PURGE_FLOOR.to_string();
+        loop {
+            let due: Vec<(String,)> = sqlx::query_as(
+                "SELECT player_id::text FROM inventory.purged_players \
+                  WHERE swept_at IS NULL AND player_id >= $1::uuid \
+                  ORDER BY player_id LIMIT $2 FOR UPDATE SKIP LOCKED",
+            )
+            .bind(&watermark)
+            .bind(PURGE_BATCH)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(BusError::transport)?;
+            for (player_id,) in &due {
+                self.store
+                    .clear_owner_exec(&mut *conn, &Owner::player(player_id.as_str()))
+                    .await
+                    .map_err(BusError::transport)?;
+                sqlx::query(
+                    "UPDATE inventory.purged_players SET swept_at = now() \
+                      WHERE player_id = $1::uuid",
+                )
+                .bind(player_id)
+                .execute(&mut *conn)
+                .await
+                .map_err(BusError::transport)?;
+                // The budget is spent only at a player boundary — after the stamp, never
+                // between a player's delete and its stamp. The sweeps that emit a terminal
+                // event per deleted row depend on that placement; this one keeps it so all
+                // six read the same.
+                if started.elapsed() >= SWEEP_BUDGET {
+                    tracing::warn!(
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "inventory: purge sweep hit its budget — resuming next fire"
+                    );
+                    return Ok(());
+                }
+            }
+            if (due.len() as i64) < PURGE_BATCH {
+                return Ok(());
+            }
+            if let Some((last,)) = due.last() {
+                watermark.clone_from(last);
+            }
+        }
+    }
+}
+
+pub(crate) struct PurgeSweepHandler {
+    pub(crate) inner: Arc<Inner>,
+}
+
+impl TxHandler for PurgeSweepHandler {
+    fn call<'a>(
+        &'a self,
+        mut delivery: Delivery<'a>,
+        payload: Vec<u8>,
+    ) -> BoxFuture<'a, Result<(), BusError>> {
+        Box::pin(async move {
+            let conn = delivery.tx.downcast::<PgConnection>()?;
+            let fired: FiredName = serde_json::from_slice(&payload).map_err(BusError::from)?;
+            if fired.name != PURGE_SCHEDULE_NAME {
+                return Ok(());
+            }
+            self.inner.sweep_purged_players(conn).await
+        })
     }
 }

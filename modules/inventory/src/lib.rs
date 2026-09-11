@@ -280,6 +280,17 @@ impl Module for Inventory {
             },
         );
 
+        // The drain of what that tombstone records, on its OWN subscription: a raw sink on
+        // `scheduler.fired` guarding on the shared daily `player-purge` name.
+        let sweeper: Arc<dyn bus::TxHandler> = Arc::new(projection::PurgeSweepHandler {
+            inner: inner.clone(),
+        });
+        ctx.bus().on_tx_raw(
+            projection::PURGE_SWEEP_SUB,
+            schedulerevents::FIRED.topic(),
+            sweeper,
+        );
+
         // 4. HARD dependency on config (declared in requires()): every composition
         // hosting inventory supplies the capability locally or through a remote stub,
         // so this fails loud at boot rather than silently degrading to the starter
