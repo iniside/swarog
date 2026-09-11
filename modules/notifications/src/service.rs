@@ -21,6 +21,11 @@ pub(crate) const MALFORMED_CURSOR: &str = "cursor is malformed";
 
 pub(crate) const MALFORMED_PLAYER_ID: &str = "player_id is not a valid uuid";
 
+/// A deleted player's inbox takes no row. `Status::Invalid`, the status the durable fan-in
+/// already answers `Ok(())` to: the verdict is a property of this ONE message that no retry
+/// can change, and any other status would back the subscription off toward a pause.
+pub(crate) const PLAYER_DELETED: &str = "player has been deleted";
+
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
@@ -327,6 +332,20 @@ impl Service {
         n: &NewNotification<'_>,
     ) -> Result<bool, Error> {
         validate_new(n)?;
+        if self
+            .store
+            .is_player_purged_tx(conn, n.player_id)
+            .await
+            .map_err(|e| {
+                if crate::is_invalid_uuid(&e) {
+                    Error::invalid(MALFORMED_PLAYER_ID)
+                } else {
+                    internal(e)
+                }
+            })?
+        {
+            return Err(Error::invalid(PLAYER_DELETED));
+        }
         let appended = self
             .store
             .insert_tx(conn, n.player_id, n.kind, n.title, n.body, n.source_event_id)
