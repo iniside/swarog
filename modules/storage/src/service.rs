@@ -3,35 +3,36 @@ use opsapi::{Error, Identity};
 use sqlx::PgPool;
 use storageapi::{
     is_legal_segment, ObjectPage, ObjectVersion, Player, StorageObject, ACL_PRIVATE,
-    ACL_PUBLIC_READ, DEFAULT_PAGE_LIMIT, MAX_COLLECTION_BYTES, MAX_CURSOR_BYTES, MAX_KEY_BYTES,
+    ACL_PUBLIC_READ, DEFAULT_PAGE_LIMIT, MAX_CURSOR_BYTES, MAX_OBJECTS_PER_OWNER,
     MAX_PAGE_LIMIT, MAX_VALUE_BYTES,
 };
 
-use crate::store::Store;
+use crate::store::{write_error, CasOutcome, ColumnCap, Store, COLLECTION_CAP, KEY_CAP};
 
-/// What every op answers until Steps 3 and 4 replace its body with a statement. The
-/// validation above each one is already the contract's, so every argument whose verdict
-/// does not require the store gets its real verdict; only the storage half is absent.
+/// What `get`, `delete` and `list` answer until Step 4 replaces their bodies with
+/// statements. The validation above each one is already the contract's, so every argument
+/// whose verdict does not require the store gets its real verdict.
 const NOT_IMPLEMENTED: &str = "storage: not implemented";
 
-/// The ONE address verdict, worded identically for `collection` and `key`.
-fn validate_segment(what: &str, segment: &str, max_bytes: usize) -> Result<(), Error> {
+/// The address verdict for a caller who may not see the object, and for one writing to an
+/// address that holds nothing: the same answer, or the write path becomes an oracle.
+pub(crate) const NOT_FOUND: &str = "no such object";
+
+/// The ONE address verdict, worded identically for `collection` and `key`. The byte half
+/// is [`ColumnCap`]'s, so Rust and the column CHECK cannot word the limit two ways.
+fn validate_segment(cap: &ColumnCap, segment: &str) -> Result<(), Error> {
     if !is_legal_segment(segment) {
         return Err(Error::invalid(format!(
-            "{what} must be a non-empty run of [A-Za-z0-9._-]"
+            "{} must be a non-empty run of [A-Za-z0-9._-]",
+            cap.what
         )));
     }
-    if segment.len() > max_bytes {
-        return Err(Error::invalid(format!(
-            "{what} exceeds {max_bytes} bytes"
-        )));
-    }
-    Ok(())
+    cap.check(segment)
 }
 
 pub(crate) fn validate_address(collection: &str, key: &str) -> Result<(), Error> {
-    validate_segment("collection", collection, MAX_COLLECTION_BYTES)?;
-    validate_segment("key", key, MAX_KEY_BYTES)
+    validate_segment(&COLLECTION_CAP, collection)?;
+    validate_segment(&KEY_CAP, key)
 }
 
 /// Checked in the SERVICE, before the statement: a malformed document left to the
@@ -111,6 +112,48 @@ impl Service {
             .map(str::to_string)
             .ok_or_else(|| Error::unauthorized("a player identity is required"))
     }
+
+    /// The create half of `put`. The owner cap is counted and the row inserted under the
+    /// owner's advisory lock in ONE transaction: counting outside it is a
+    /// count-then-insert two concurrent creates both pass.
+    async fn create(
+        &self,
+        owner_id: &str,
+        collection: &str,
+        key: &str,
+        value: &str,
+        acl: &str,
+    ) -> Result<ObjectVersion, Error> {
+        let mut tx = self.store.pool.begin().await.map_err(write_error)?;
+        self.store
+            .lock_owner_tx(&mut tx, owner_id)
+            .await
+            .map_err(write_error)?;
+        let held = self
+            .store
+            .count_objects_tx(&mut tx, owner_id)
+            .await
+            .map_err(write_error)?;
+        if held >= MAX_OBJECTS_PER_OWNER {
+            tx.rollback().await.map_err(write_error)?;
+            return Err(Error::conflict(format!(
+                "you already hold the maximum of {MAX_OBJECTS_PER_OWNER} objects"
+            )));
+        }
+        let created = self
+            .store
+            .insert_object_tx(&mut tx, owner_id, collection, key, value, acl)
+            .await
+            .map_err(write_error)?;
+        let Some(version) = created else {
+            tx.rollback().await.map_err(write_error)?;
+            return Err(Error::conflict(
+                "an object already exists at this address; read it and write with its version",
+            ));
+        };
+        tx.commit().await.map_err(write_error)?;
+        Ok(ObjectVersion { version })
+    }
 }
 
 #[async_trait]
@@ -124,12 +167,29 @@ impl Player for Service {
         expected_version: i64,
         acl: String,
     ) -> Result<ObjectVersion, Error> {
-        Service::caller(&identity)?;
+        let me = Service::caller(&identity)?;
         validate_address(&collection, &key)?;
         validate_value(&value)?;
         validate_acl(&acl)?;
         validate_expected_version(expected_version)?;
-        Err(Error::internal(NOT_IMPLEMENTED))
+
+        if expected_version == 0 {
+            let acl = if acl.is_empty() { ACL_PRIVATE } else { acl.as_str() };
+            return self.create(&me, &collection, &key, &value, acl).await;
+        }
+        let acl = if acl.is_empty() { None } else { Some(acl.as_str()) };
+        let outcome = self
+            .store
+            .cas_object(&me, &collection, &key, &value, expected_version, acl)
+            .await
+            .map_err(write_error)?;
+        match outcome {
+            CasOutcome::Updated(version) => Ok(ObjectVersion { version }),
+            CasOutcome::Stale => Err(Error::conflict(
+                "expected_version does not match the stored version; re-read and retry",
+            )),
+            CasOutcome::Missing => Err(Error::not_found(NOT_FOUND)),
+        }
     }
 
     async fn get(
@@ -163,7 +223,7 @@ impl Player for Service {
         limit: i64,
     ) -> Result<ObjectPage, Error> {
         Service::caller(&identity)?;
-        validate_segment("collection", &collection, MAX_COLLECTION_BYTES)?;
+        validate_segment(&COLLECTION_CAP, &collection)?;
         cursor_within_cap(&cursor)?;
         resolve_limit(limit)?;
         Err(Error::internal(NOT_IMPLEMENTED))

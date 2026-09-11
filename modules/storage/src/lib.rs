@@ -18,6 +18,10 @@ use lifecycle::{Context, Module};
 use registry::key;
 use storageapi::Player;
 
+pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
+    opsapi::Error::internal(e.to_string())
+}
+
 pub struct Storage {
     svc: OnceLock<Arc<Service>>,
 }

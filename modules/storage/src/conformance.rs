@@ -62,10 +62,10 @@ fn put_rejected(collection: String, key: String, value: String) -> bool {
 
 /// `storageapi::MAX_COLLECTION_BYTES`, executed through `Player::put` itself against a pool
 /// that cannot connect. The discriminant is the STATUS: `validate_address` runs before the
-/// op's hardcoded `Internal` stub, so an at-cap collection passes it and falls through to
-/// that stub; only the cap's own rejection is `Invalid`. Delete the guard and the over-cap
-/// collection falls through too, so the case goes red rather than passing on the column
-/// CHECK Step 3 wires beneath it.
+/// store, so an at-cap collection passes it and dies on the unreachable pool as
+/// `Internal`; only the cap's own rejection is `Invalid`. Delete the guard and the
+/// over-cap collection reaches the pool too, so the case goes red rather than passing on
+/// the column CHECK beneath it.
 #[doc(hidden)]
 pub fn conformance_collection_rejected(len: usize) -> bool {
     put_rejected(legal(len), "k".to_string(), "{}".to_string())
@@ -81,7 +81,8 @@ pub fn conformance_key_rejected(len: usize) -> bool {
 
 /// `storageapi::MAX_VALUE_BYTES`, executed through `Player::put`. `validate_value` checks
 /// the length BEFORE the json parse, and the probe's document is well-formed at every
-/// length, so the parse arm can never decide either call.
+/// length, so the parse arm can never decide either call. The at-cap call reaches the
+/// unreachable pool and is `Internal`, never `Invalid`.
 #[doc(hidden)]
 pub fn conformance_value_rejected(len: usize) -> bool {
     put_rejected("c".to_string(), "k".to_string(), json_of(len))
