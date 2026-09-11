@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-09-11-0000**
+**Last update: 2026-09-12-0000**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -149,6 +149,26 @@ proof fleet leaves Google deliberately unconfigured so a *known but unconfigured
 (503) stays distinguishable from an unknown one (400); and `unlink` does not exist — a
 foreign identity is a 409 with no merge, because merging accounts post-wallet means merging
 balances and is its own feature.
+
+**Cross-cutting gap found during `storage` Step 4 review, NOT scheduled** (added
+2026-09-12): `modules/gateway/src/verifier.rs`'s `DevSessionVerifier` (`ACCOUNTS_DEV_AUTH=1`,
+set by the `devctl` and split-proof development profiles) mints `Identity::player(pid)`
+directly from a `Bearer dev-<pid>` token's suffix — `dev-alice` → player id `"alice"` — while
+the real verifier always yields a uuid and every module's `player_id` column is typed
+`uuid`. `storage` hit this twice and fixed it in `b3df015` by making `Service::caller` the
+one authority on a caller id's shape (verdict `Internal`). The same root cause is visible at
+eight more sites, each folding the resulting Postgres `22P02` into a green empty result
+instead: `wallet/src/store.rs:403`, `notifications/src/store.rs:98,287`,
+`friends/src/store.rs:412,443,475`, `groups/src/store.rs:498,544` — and `friends`/`groups`
+separately word the same condition `Invalid` on their write paths
+(`friends::service::pair_write_error`, `groups::service::write_error`), so the tree answers
+one condition three ways. One root cause, nine visible points — patching the nine would be
+hack-on-hack; the candidate closure is the dev verifier minting a deterministic uuid from
+the suffix (`dev-alice` → the same uuid every time), retiring the class everywhere at once
+and leaving the per-module shape checks as defence in depth. Not decided or scheduled: it
+touches a dev seam driven by split-proof and the demo SPA, changing it may invalidate
+assertions comparing player ids as strings, and it needs its own rollout. Unreachable in
+production — the real verifier always yields a uuid — which is why it survived undetected.
 | Ban / moderation / trust | ❌ | accounts + admin | — | P1#12. Ban state gates session verify; admin page via extension points. |
 
 ## Social

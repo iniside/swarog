@@ -550,3 +550,11 @@ its real authority (C5); `.agents/README.md` joins Step 11 (C6).
    `tools/conformance/src/policy.rs` went stale eleven minutes later, when `57d089f`
    wired the real CAS write path underneath them — a REJECT on an otherwise-clean
    review.
+
+## Step 4 review — cross-cutting finding, not fixed here
+
+`b3df015`'s fix (`Service::caller` as the one authority on a caller id's shape) is
+storage-local; the same root cause — the `ACCOUNTS_DEV_AUTH` dev verifier minting a
+non-uuid `player_id` — has eight further visible sites across `wallet`, `notifications`,
+`friends`, and `groups`. Recorded, not scheduled: see the "Identity & accounts" section
+of `docs/roadmap/feature-tracker.md` (added 2026-09-12).
