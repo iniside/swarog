@@ -1,6 +1,11 @@
 //! `storageapi` — the storage module's PURE, transport-free contract for player
-//! cloud-save: opaque, caller-authored JSON documents addressed by
-//! `(owner_id, collection, key)` and written under optimistic concurrency control.
+//! cloud-save: caller-authored JSON documents addressed by
+//! `(owner_id, collection, key)` and written under optimistic concurrency control. The
+//! server never interprets the document, but it is not byte-opaque: the value is stored
+//! as `jsonb` and read back via `value::text`, so `get` returns Postgres's NORMALIZED
+//! rendering (keys reordered, whitespace and escapes rewritten, numbers respelled), not
+//! the caller's original bytes.
+//!
 //! The edge-dependent glue (`Client`, `register_server`, `provide_remote`) lives in the
 //! sibling `storagerpc`, which expands this crate's metadata-callback macro, so THIS
 //! crate never depends on `edge`.
@@ -86,7 +91,9 @@ pub struct StorageObject {
     pub owner_id: String,
     pub collection: String,
     pub key: String,
-    /// The caller-authored JSON document, as text.
+    /// The stored document as Postgres's `jsonb::text` rendering: key order,
+    /// whitespace, escape sequences and number spelling are NOT preserved from what the
+    /// caller wrote.
     pub value: String,
     pub version: i64,
     /// [`ACL_PRIVATE`] or [`ACL_PUBLIC_READ`].

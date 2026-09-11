@@ -410,7 +410,12 @@ delete-and-recreate**; **keys unrepresentable through the HTTP front (`/`), and 
 player-QUIC plane accepting a wider set unless D9 is enforced in the service** — the
 never-monolith-only rule pointed the other way; **the `value` cap and its CHECK measure
 different byte strings**, so the CHECK is a backstop and `value` is outside the
-`COLUMN_CAPS` pairing test; **`put` is not `#[retry_safe]`**, so an ambiguous network
+`COLUMN_CAPS` pairing test; **`get` does not return the caller's original bytes** — the
+column is `jsonb` and `VISIBLE_SQL` reads `value::text`, so Postgres's normalization
+(key order, whitespace, escapes, number spelling) is the same root cause as the CHECK
+mismatch above, seen from the read side, and forecloses checksummed/signed payloads —
+a product question worth the user's decision, not merely a gap; **`put` is not
+`#[retry_safe]`**, so an ambiguous network
 result has no replay story; no value-indexed query; no sharing beyond `public_read`; no
 per-collection TTL; and the two pre-existing conformance defects the deletion rollout
 recorded, which this module inherits.
