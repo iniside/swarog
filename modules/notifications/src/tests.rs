@@ -1738,3 +1738,184 @@ async fn the_inbox_nudge_is_addressed_by_the_rows_canonical_player_id() {
 
     cleanup(&pool, &[canonical.as_str()]).await;
 }
+
+// ============================================================================
+// Account-deletion purge (Steps 5-7): the tombstone, the sweep, and
+// `deliver_or_skip`'s Ok(()) durable-path guard.
+// ============================================================================
+
+async fn purge_swept_at(pool: &PgPool, player_id: &str) -> Option<Option<String>> {
+    sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT swept_at::text FROM notifications.purged_players WHERE player_id = $1::uuid",
+    )
+    .bind(player_id)
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+    .map(|(s,)| s)
+}
+
+async fn stamp_purge_swept(pool: &PgPool, player_id: &str) {
+    sqlx::query("UPDATE notifications.purged_players SET swept_at = now() WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn cleanup_purge_row(pool: &PgPool, player_id: &str) {
+    let _ = sqlx::query("DELETE FROM notifications.purged_players WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .execute(pool)
+        .await;
+}
+
+async fn message_count(pool: &PgPool, player_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM notifications.messages WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+fn purge_payload(name: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({ "name": name })).unwrap()
+}
+
+/// The tombstone insert is idempotent, and a redelivery after the sweep stamped
+/// `swept_at` must NOT reset it.
+#[tokio::test]
+async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+
+    let mut conn = pool.acquire().await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &pid, "Handle#0001").await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &pid, "Handle#0001").await.unwrap();
+
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM notifications.purged_players WHERE player_id = $1::uuid")
+            .bind(&pid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 1, "a redelivered tombstone must not insert a second row");
+
+    stamp_purge_swept(&pool, &pid).await;
+    svc.store.plant_purged_player_tx(&mut conn, &pid, "Handle#0001").await.unwrap();
+    assert!(
+        purge_swept_at(&pool, &pid).await.flatten().is_some(),
+        "a redelivery after the sweep stamped swept_at must NOT reset it"
+    );
+
+    cleanup_purge_row(&pool, &pid).await;
+}
+
+/// The sweep deletes ONLY the tombstoned target's inbox rows; a survivor is
+/// untouched; a foreign `scheduler.fired` name sweeps nothing (positive control on
+/// the same row); a redelivery (already swept) is a no-op.
+#[tokio::test]
+async fn sweep_deletes_target_survivor_untouched_and_ignores_foreign_schedule_name() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let target = unique_player(&pool).await;
+    let survivor = unique_player(&pool).await;
+
+    seed_row(&svc, &pool, &target, "Target row").await;
+    seed_row(&svc, &pool, &survivor, "Survivor row").await;
+
+    let mut conn = pool.acquire().await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &target, "Target#0001").await.unwrap();
+    drop(conn);
+
+    let handler = crate::projection::PurgeSweepHandler;
+
+    // Negative: a foreign schedule name sweeps nothing.
+    let mut tx = pool.begin().await.unwrap();
+    let delivery = bus::Delivery { event_id: "notifications:test", tx: AnyTx::new(&mut *tx) };
+    handler.call(delivery, purge_payload("some-other-job")).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(message_count(&pool, &target).await, 1, "a foreign schedule name must not sweep");
+    assert_eq!(message_count(&pool, &survivor).await, 1);
+
+    // Positive control, same row: the real name drains it, survivor untouched.
+    let mut tx2 = pool.begin().await.unwrap();
+    let delivery2 = bus::Delivery { event_id: "notifications:test", tx: AnyTx::new(&mut *tx2) };
+    handler
+        .call(delivery2, purge_payload(crate::projection::PURGE_SCHEDULE_NAME))
+        .await
+        .unwrap();
+    tx2.commit().await.unwrap();
+    assert_eq!(message_count(&pool, &target).await, 0, "the target's inbox must be cleared");
+    assert_eq!(message_count(&pool, &survivor).await, 1, "the survivor's inbox must be untouched");
+    assert!(purge_swept_at(&pool, &target).await.flatten().is_some());
+
+    // Redelivery: swept_at excludes the target now — a no-op.
+    let mut tx3 = pool.begin().await.unwrap();
+    let delivery3 = bus::Delivery { event_id: "notifications:test", tx: AnyTx::new(&mut *tx3) };
+    handler
+        .call(delivery3, purge_payload(crate::projection::PURGE_SCHEDULE_NAME))
+        .await
+        .unwrap();
+    tx3.commit().await.unwrap();
+    assert_eq!(message_count(&pool, &target).await, 0);
+
+    cleanup(&pool, &[&target, &survivor]).await;
+    cleanup_purge_row(&pool, &target).await;
+}
+
+/// THE PREVIOUSLY-RISKY SHAPE: `deliver_or_skip` must answer `Ok(())` for a
+/// tombstoned recipient — never `Err`, which would back off and eventually PAUSE
+/// the wallet-credit subscription for EVERY player's inbox over one deleted
+/// recipient. No inbox row is written for the purged player; a different,
+/// non-tombstoned player on the identical handler still gets delivered.
+#[tokio::test]
+async fn deliver_or_skip_answers_ok_for_a_purged_recipient_without_pausing_the_subscription() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let purged = unique_player(&pool).await;
+    let other = unique_player(&pool).await;
+
+    let mut conn = pool.acquire().await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &purged, "Purged#0001").await.unwrap();
+    drop(conn);
+
+    let mut tx = pool.begin().await.unwrap();
+    let delivery = bus::Delivery { event_id: "notifications:test-purged", tx: AnyTx::new(&mut *tx) };
+    let purged_evt = walletevents::Changed {
+        player_id: purged.clone(),
+        currency: "gold".into(),
+        delta: 100,
+        balance_after: 100,
+        reason: "test".into(),
+        ledger_id: "ledger-1".into(),
+    };
+    let outcome = crate::projection::on_wallet_changed(svc.clone(), delivery, purged_evt).await;
+    tx.commit().await.unwrap();
+    assert!(
+        outcome.is_ok(),
+        "a purged recipient must answer Ok(()) — an Err here pauses every player's inbox"
+    );
+    assert_eq!(message_count(&pool, &purged).await, 0, "no inbox row for a tombstoned recipient");
+
+    // Same handler, a DIFFERENT non-tombstoned recipient: still delivered normally.
+    let mut tx2 = pool.begin().await.unwrap();
+    let delivery2 = bus::Delivery { event_id: "notifications:test-other", tx: AnyTx::new(&mut *tx2) };
+    let other_evt = walletevents::Changed {
+        player_id: other.clone(),
+        currency: "gold".into(),
+        delta: 50,
+        balance_after: 50,
+        reason: "test".into(),
+        ledger_id: "ledger-2".into(),
+    };
+    crate::projection::on_wallet_changed(svc.clone(), delivery2, other_evt)
+        .await
+        .expect("a non-tombstoned recipient must still be delivered");
+    tx2.commit().await.unwrap();
+    assert_eq!(message_count(&pool, &other).await, 1);
+
+    cleanup(&pool, &[&purged, &other]).await;
+    cleanup_purge_row(&pool, &purged).await;
+}
