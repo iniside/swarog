@@ -314,6 +314,34 @@ calls accounts (`notifications` proves it: empty `requires()`, five consumed top
 
 **(b) Why now.** After the tombstones exist to drain.
 
+**Errata, from the first third landing (`53f1841`..`78b4337`) — these OVERRIDE the text
+below, which the remaining sweeps must not follow as written:**
+
+1. **ONE shared schedule name `player-purge`, not one per module.** The promise is a
+   maximum — a player is deleted when the *slowest* module has swept — so six rows let
+   an operator accelerate three and leave three at a day, producing a half-purged
+   player and a latency claim nobody can state. Each module keeps its own subscription
+   id and checkpoint, so a paused sweep in one does not stall another.
+2. **The budget is checked at the PLAYER boundary, not between batches.** Between
+   batches puts up to 512 statements between checks; the player boundary is the
+   smallest point that preserves the invariant the emitting sweeps need, and it is
+   verified to sit after both the delete and the stamp so a player can never be
+   stranded between them.
+3. **`ORDER BY` must name the table.** A bare `ORDER BY player_id` resolves to the
+   SELECT's output column `player_id::text`, so the sort key is text, the PK btree
+   cannot serve it, and the floor degrades to a filter on a full seq scan — measured
+   at ~1850× with an external merge spilling to disk **inside the delivery
+   transaction**. Write `ORDER BY <schema>.purged_players.player_id`.
+4. **Carry `Cargo.lock` in each sweep's commit.** No verify stage catches a stale lock
+   (`--locked` appears only on `cargo install` lines), so a fresh checkout is dirty on
+   first build.
+5. **Known gap, to close uniformly across all six or not at all:** each fire walks the
+   whole PK index filtering `swept_at IS NULL` on the heap, and the table grows one
+   permanent row per deleted player, so scan cost tracks *total* deletions rather than
+   outstanding work. The fix is one partial index per module
+   (`… (player_id) WHERE swept_at IS NULL`); adding it to some modules only would make
+   the six tombstone tables disagree.
+
 **(c) The seed is a named sub-step, not an implied one.** Without it nothing fires:
 - `api/scheduler/events/src/lib.rs:54-73` — a `schedule_names::*` const per module;
 - `modules/scheduler/src/lib.rs:165-179` — the `ON CONFLICT DO NOTHING` seed rows,
