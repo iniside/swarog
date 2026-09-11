@@ -282,6 +282,28 @@ impl Store {
         Ok(())
     }
 
+    /// Every relation the purged player is party to, on EITHER side of the canonical pair
+    /// and in EITHER state. No `requester_id` clause: every consent predicate tests it
+    /// because the transitions are asymmetric, and a purge is the one operation with no
+    /// consent question.
+    ///
+    /// Returns `(edge_id, other_id)` per removed row, so the sweep's terminal events carry
+    /// the DELETE's own values and a redelivery emits nothing.
+    pub(crate) async fn purge_edges_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<Vec<(String, String)>, sqlx::Error> {
+        sqlx::query_as::<_, (String, String)>(
+            "DELETE FROM friends.edges WHERE $1::uuid IN (low_id, high_id) \
+             RETURNING id::text, \
+                       CASE WHEN low_id = $1::uuid THEN high_id ELSE low_id END::text",
+        )
+        .bind(player_id)
+        .fetch_all(&mut *conn)
+        .await
+    }
+
     /// EITHER party, in EITHER state, so no `requester_id` clause. The returned
     /// `state`/`requester_is_caller` are the DELETED row's, not a prior read's: a state that
     /// changed underneath the caller must not mislabel the emitted event's reason.

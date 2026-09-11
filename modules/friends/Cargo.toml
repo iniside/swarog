@@ -28,6 +28,9 @@ accountsevents = { workspace = true }
 # The admin CONTRACT (widgets + the read-only `AdminData` trait) — a contract crate,
 # importable by any module; the admin impl is never reached.
 adminapi = { workspace = true }
+# The scheduler EVENT contract only: the purge sweep is a raw sink on `scheduler.fired`,
+# guarding on `schedule_names::PLAYER_PURGE`.
+schedulerevents = { workspace = true }
 bus = { workspace = true }
 sqlx = { workspace = true }
 # The opaque paging cursor is base64url-no-pad over `"{created_at}|{id}"`.
@@ -37,6 +40,11 @@ async-trait = { workspace = true }
 # The admin `RenderFn` is synchronous while the page's store reads are not: the local render
 # bridges through `block_in_place` on the multi-thread runtime.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing = { workspace = true }
+# `bus::TxHandler` returns a `futures::future::BoxFuture`, which `bus` does not re-export.
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }

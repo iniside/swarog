@@ -76,6 +76,7 @@ impl core::marker::Unpin for friendsevents::Requested
 impl core::marker::UnsafeUnpin for friendsevents::Requested
 impl core::panic::unwind_safe::RefUnwindSafe for friendsevents::Requested
 impl core::panic::unwind_safe::UnwindSafe for friendsevents::Requested
+pub const friendsevents::REASON_ACCOUNT_DELETED: &str
 pub const friendsevents::REASON_DECLINED: &str
 pub const friendsevents::REASON_UNFRIENDED: &str
 pub const friendsevents::REASON_WITHDRAWN: &str

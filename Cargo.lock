@@ -1494,12 +1494,17 @@ dependencies = [
  "friendsapi",
  "friendsevents",
  "friendsrpc",
+ "futures",
  "lifecycle",
  "opsapi",
  "registry",
+ "schedulerevents",
+ "serde",
+ "serde_json",
  "sqlx",
  "testdb",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

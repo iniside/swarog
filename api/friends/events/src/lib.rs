@@ -37,6 +37,12 @@ pub const REASON_DECLINED: &str = "declined";
 /// [`Removed::reason`] when either party ended an ACCEPTED friendship.
 pub const REASON_UNFRIENDED: &str = "unfriended";
 
+/// [`Removed::reason`] when the account-deletion purge removed the relation.
+/// `actor_id`/`actor_handle` name the deleted player, carried from the `player.deleted`
+/// payload; `other_handle` is EMPTY, because resolving it would mean the directory call
+/// inside a delivery transaction this crate's module doc rules out.
+pub const REASON_ACCOUNT_DELETED: &str = "account-deleted";
+
 /// [`Removed::reason`] when the requester dropped their OWN still-pending request.
 /// Distinct from [`REASON_UNFRIENDED`] because the two say opposite things about the
 /// social graph — one cancels an offer, the other ends a friendship — and a consumer
@@ -91,6 +97,8 @@ pub struct Accepted {
 /// - [`REASON_DECLINED`] — the addressee refused a pending request.
 /// - [`REASON_WITHDRAWN`] — the requester dropped their own pending request.
 /// - [`REASON_UNFRIENDED`] — either party ended an accepted friendship.
+/// - [`REASON_ACCOUNT_DELETED`] — `actor_id`'s account was deleted and the purge swept the
+///   relation; `other_handle` is empty.
 ///
 /// The first two both end a PENDING edge and differ only in which side acted, which
 /// `actor_id` already says; they are separate values anyway because a consumer counting
