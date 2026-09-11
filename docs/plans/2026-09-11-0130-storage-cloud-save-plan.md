@@ -558,3 +558,13 @@ storage-local; the same root cause — the `ACCOUNTS_DEV_AUTH` dev verifier mint
 non-uuid `player_id` — has eight further visible sites across `wallet`, `notifications`,
 `friends`, and `groups`. Recorded, not scheduled: see the "Identity & accounts" section
 of `docs/roadmap/feature-tracker.md` (added 2026-09-12).
+
+## Step 5 review — sibling finding in `wallet`, not fixed here
+
+Step 5's per-owner advisory lock shared between the guard (`Service::create` /
+`is_purged`) and the sweep (`sweep_purged_players`) is what makes this module's purge
+final. `wallet` has the identical guard/sweep shape (`is_player_purged_tx` in
+`service.rs`, `sweep_purged_players` in `projection.rs`) but shares no lock between
+them, so a movement can land after the sweep has already passed that player. Recorded,
+not scheduled: see the "Identity & accounts" section of `docs/roadmap/feature-tracker.md`
+(added 2026-09-12).

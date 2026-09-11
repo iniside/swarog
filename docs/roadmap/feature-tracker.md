@@ -169,6 +169,24 @@ and leaving the per-module shape checks as defence in depth. Not decided or sche
 touches a dev seam driven by split-proof and the demo SPA, changing it may invalidate
 assertions comparing player ids as strings, and it needs its own rollout. Unreachable in
 production — the real verifier always yields a uuid — which is why it survived undetected.
+
+**Correctness finding surfaced by the `storage` Step 5 sibling sweep (`8be595c`), NOT
+scheduled, `wallet`'s own authority to fix**: `wallet`'s movement guard
+(`modules/wallet/src/service.rs:245`, `is_player_purged_tx`) and its purge sweep
+(`modules/wallet/src/projection.rs:187`, `sweep_purged_players`) share no lock. A
+movement whose guard check ran before the tombstone committed can still land its
+balance and ledger rows after the sweep has already passed that player — money
+reappearing after the account it belonged to was erased, inside the subsystem whose
+job is deletion. `storage` closes the identical race by taking one per-owner
+`pg_advisory_xact_lock` on both the guard side (`modules/storage/src/service.rs:237`)
+and the sweep side (`modules/storage/src/projection.rs:61,70`), documenting that the
+shared lock order (advisory lock, then row locks) is what makes the drain final and
+deadlock-free. `inventory` also omits the lock on its purge sweep
+(`modules/inventory/src/projection.rs:261-262`) but states why it's safe there —
+`Owner::player` rows are disjoint from every key its per-character advisory lock
+guards; `wallet` states no such reason, so its omission reads as unexamined rather
+than decided. Not reproduced, not scheduled — the closure shape already exists in
+`storage` to copy from.
 | Ban / moderation / trust | ❌ | accounts + admin | — | P1#12. Ban state gates session verify; admin page via extension points. |
 
 ## Social
