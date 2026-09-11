@@ -186,6 +186,31 @@ public sealed record NotificationsListRequest(
 public sealed record NotificationsMarkReadRequest(
     [property: JsonPropertyName("notification_id")] string NotificationId);
 
+/// <summary>Request for <c>storage.delete</c>.</summary>
+public sealed record StorageDeleteRequest(
+    [property: JsonPropertyName("collection")] string Collection,
+    [property: JsonPropertyName("key")] string Key);
+
+/// <summary>Request for <c>storage.get</c>.</summary>
+public sealed record StorageGetRequest(
+    [property: JsonPropertyName("collection")] string Collection,
+    [property: JsonPropertyName("key")] string Key,
+    [property: JsonPropertyName("owner_id")] string OwnerId);
+
+/// <summary>Request for <c>storage.list</c>.</summary>
+public sealed record StorageListRequest(
+    [property: JsonPropertyName("collection")] string Collection,
+    [property: JsonPropertyName("cursor")] string Cursor,
+    [property: JsonPropertyName("limit")] long Limit);
+
+/// <summary>Request for <c>storage.put</c>.</summary>
+public sealed record StoragePutRequest(
+    [property: JsonPropertyName("collection")] string Collection,
+    [property: JsonPropertyName("key")] string Key,
+    [property: JsonPropertyName("value")] string Value,
+    [property: JsonPropertyName("expected_version")] long ExpectedVersion,
+    [property: JsonPropertyName("acl")] string Acl);
+
 /// <summary>Request for <c>wallet.listCurrencies</c> (no arguments — serializes to <c>{}</c>).</summary>
 public sealed record WalletListCurrenciesRequest();
 
@@ -591,6 +616,51 @@ public sealed class GameBackendClient(IPlayerTransport transport)
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
         PlayerResponse resp = await transport.CallAsync("notifications.markRead", token, payload, ct).ConfigureAwait(false);
         Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>storage.delete</c> (requires a bearer token).</summary>
+    public async Task StorageDeleteAsync(string token, string collection, string key, CancellationToken ct = default)
+    {
+        var request = new StorageDeleteRequest(collection, key);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("storage.delete", token, payload, ct).ConfigureAwait(false);
+        Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>storage.get</c> (requires a bearer token).</summary>
+    public async Task<StorageObject> StorageGetAsync(string token, string collection, string key, string ownerId, CancellationToken ct = default)
+    {
+        var request = new StorageGetRequest(collection, key, ownerId);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("storage.get", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<StorageObject>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>storage.list</c> (requires a bearer token).</summary>
+    public async Task<ObjectPage> StorageListAsync(string token, string collection, string cursor, long limit, CancellationToken ct = default)
+    {
+        var request = new StorageListRequest(collection, cursor, limit);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("storage.list", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<ObjectPage>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>storage.put</c> (requires a bearer token).</summary>
+    public async Task<ObjectVersion> StoragePutAsync(string token, string collection, string key, string value, long expectedVersion, string acl, CancellationToken ct = default)
+    {
+        var request = new StoragePutRequest(collection, key, value, expectedVersion, acl);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("storage.put", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<ObjectVersion>(JsonOpts)!;
     }
 
     /// <summary>Invokes <c>wallet.listCurrencies</c> (requires a bearer token).</summary>

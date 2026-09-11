@@ -1,0 +1,251 @@
+# cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
+pub mod storageapi
+pub mod storageapi::player_rpc
+pub struct storageapi::player_rpc::DeleteRequest
+pub storageapi::player_rpc::DeleteRequest::collection: alloc::string::String
+pub storageapi::player_rpc::DeleteRequest::key: alloc::string::String
+impl core::default::Default for storageapi::player_rpc::DeleteRequest
+pub fn storageapi::player_rpc::DeleteRequest::default() -> storageapi::player_rpc::DeleteRequest
+impl serde_core::ser::Serialize for storageapi::player_rpc::DeleteRequest
+pub fn storageapi::player_rpc::DeleteRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for storageapi::player_rpc::DeleteRequest where storageapi::player_rpc::DeleteRequest: core::default::Default
+pub fn storageapi::player_rpc::DeleteRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for storageapi::player_rpc::DeleteRequest
+impl core::marker::Send for storageapi::player_rpc::DeleteRequest
+impl core::marker::Sync for storageapi::player_rpc::DeleteRequest
+impl core::marker::Unpin for storageapi::player_rpc::DeleteRequest
+impl core::marker::UnsafeUnpin for storageapi::player_rpc::DeleteRequest
+impl core::panic::unwind_safe::RefUnwindSafe for storageapi::player_rpc::DeleteRequest
+impl core::panic::unwind_safe::UnwindSafe for storageapi::player_rpc::DeleteRequest
+pub struct storageapi::player_rpc::DeleteResponse
+pub storageapi::player_rpc::DeleteResponse::err: alloc::string::String
+pub storageapi::player_rpc::DeleteResponse::status: opsapi::Status
+impl serde_core::ser::Serialize for storageapi::player_rpc::DeleteResponse
+pub fn storageapi::player_rpc::DeleteResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for storageapi::player_rpc::DeleteResponse
+pub fn storageapi::player_rpc::DeleteResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for storageapi::player_rpc::DeleteResponse
+impl core::marker::Send for storageapi::player_rpc::DeleteResponse
+impl core::marker::Sync for storageapi::player_rpc::DeleteResponse
+impl core::marker::Unpin for storageapi::player_rpc::DeleteResponse
+impl core::marker::UnsafeUnpin for storageapi::player_rpc::DeleteResponse
+impl core::panic::unwind_safe::RefUnwindSafe for storageapi::player_rpc::DeleteResponse
+impl core::panic::unwind_safe::UnwindSafe for storageapi::player_rpc::DeleteResponse
+pub struct storageapi::player_rpc::GetRequest
+pub storageapi::player_rpc::GetRequest::collection: alloc::string::String
+pub storageapi::player_rpc::GetRequest::key: alloc::string::String
+pub storageapi::player_rpc::GetRequest::owner_id: alloc::string::String
+impl core::default::Default for storageapi::player_rpc::GetRequest
+pub fn storageapi::player_rpc::GetRequest::default() -> storageapi::player_rpc::GetRequest
+impl serde_core::ser::Serialize for storageapi::player_rpc::GetRequest
+pub fn storageapi::player_rpc::GetRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for storageapi::player_rpc::GetRequest where storageapi::player_rpc::GetRequest: core::default::Default
+pub fn storageapi::player_rpc::GetRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for storageapi::player_rpc::GetRequest
+impl core::marker::Send for storageapi::player_rpc::GetRequest
+impl core::marker::Sync for storageapi::player_rpc::GetRequest
+impl core::marker::Unpin for storageapi::player_rpc::GetRequest
+impl core::marker::UnsafeUnpin for storageapi::player_rpc::GetRequest
+impl core::panic::unwind_safe::RefUnwindSafe for storageapi::player_rpc::GetRequest
+impl core::panic::unwind_safe::UnwindSafe for storageapi::player_rpc::GetRequest
+pub struct storageapi::player_rpc::GetResponse
+pub storageapi::player_rpc::GetResponse::err: alloc::string::String
+pub storageapi::player_rpc::GetResponse::status: opsapi::Status
+pub storageapi::player_rpc::GetResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for storageapi::player_rpc::GetResponse
+pub fn storageapi::player_rpc::GetResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for storageapi::player_rpc::GetResponse
+pub fn storageapi::player_rpc::GetResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for storageapi::player_rpc::GetResponse
+impl core::marker::Send for storageapi::player_rpc::GetResponse
+impl core::marker::Sync for storageapi::player_rpc::GetResponse
+impl core::marker::Unpin for storageapi::player_rpc::GetResponse
+impl core::marker::UnsafeUnpin for storageapi::player_rpc::GetResponse
+impl core::panic::unwind_safe::RefUnwindSafe for storageapi::player_rpc::GetResponse
+impl core::panic::unwind_safe::UnwindSafe for storageapi::player_rpc::GetResponse
+pub struct storageapi::player_rpc::ListRequest
+pub storageapi::player_rpc::ListRequest::collection: alloc::string::String
+pub storageapi::player_rpc::ListRequest::cursor: alloc::string::String
+pub storageapi::player_rpc::ListRequest::limit: i64
+impl core::default::Default for storageapi::player_rpc::ListRequest
+pub fn storageapi::player_rpc::ListRequest::default() -> storageapi::player_rpc::ListRequest
+impl serde_core::ser::Serialize for storageapi::player_rpc::ListRequest
+pub fn storageapi::player_rpc::ListRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for storageapi::player_rpc::ListRequest where storageapi::player_rpc::ListRequest: core::default::Default
+pub fn storageapi::player_rpc::ListRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for storageapi::player_rpc::ListRequest
+impl core::marker::Send for storageapi::player_rpc::ListRequest
+impl core::marker::Sync for storageapi::player_rpc::ListRequest
+impl core::marker::Unpin for storageapi::player_rpc::ListRequest
+impl core::marker::UnsafeUnpin for storageapi::player_rpc::ListRequest
+impl core::panic::unwind_safe::RefUnwindSafe for storageapi::player_rpc::ListRequest
+impl core::panic::unwind_safe::UnwindSafe for storageapi::player_rpc::ListRequest
+pub struct storageapi::player_rpc::ListResponse
+pub storageapi::player_rpc::ListResponse::err: alloc::string::String
+pub storageapi::player_rpc::ListResponse::status: opsapi::Status
+pub storageapi::player_rpc::ListResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for storageapi::player_rpc::ListResponse
+pub fn storageapi::player_rpc::ListResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for storageapi::player_rpc::ListResponse
+pub fn storageapi::player_rpc::ListResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for storageapi::player_rpc::ListResponse
+impl core::marker::Send for storageapi::player_rpc::ListResponse
+impl core::marker::Sync for storageapi::player_rpc::ListResponse
+impl core::marker::Unpin for storageapi::player_rpc::ListResponse
+impl core::marker::UnsafeUnpin for storageapi::player_rpc::ListResponse
+impl core::panic::unwind_safe::RefUnwindSafe for storageapi::player_rpc::ListResponse
+impl core::panic::unwind_safe::UnwindSafe for storageapi::player_rpc::ListResponse
+pub struct storageapi::player_rpc::PutRequest
+pub storageapi::player_rpc::PutRequest::acl: alloc::string::String
+pub storageapi::player_rpc::PutRequest::collection: alloc::string::String
+pub storageapi::player_rpc::PutRequest::expected_version: i64
+pub storageapi::player_rpc::PutRequest::key: alloc::string::String
+pub storageapi::player_rpc::PutRequest::value: alloc::string::String
+impl core::default::Default for storageapi::player_rpc::PutRequest
+pub fn storageapi::player_rpc::PutRequest::default() -> storageapi::player_rpc::PutRequest
+impl serde_core::ser::Serialize for storageapi::player_rpc::PutRequest
+pub fn storageapi::player_rpc::PutRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for storageapi::player_rpc::PutRequest where storageapi::player_rpc::PutRequest: core::default::Default
+pub fn storageapi::player_rpc::PutRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for storageapi::player_rpc::PutRequest
+impl core::marker::Send for storageapi::player_rpc::PutRequest
+impl core::marker::Sync for storageapi::player_rpc::PutRequest
+impl core::marker::Unpin for storageapi::player_rpc::PutRequest
+impl core::marker::UnsafeUnpin for storageapi::player_rpc::PutRequest
+impl core::panic::unwind_safe::RefUnwindSafe for storageapi::player_rpc::PutRequest
+impl core::panic::unwind_safe::UnwindSafe for storageapi::player_rpc::PutRequest
+pub struct storageapi::player_rpc::PutResponse
+pub storageapi::player_rpc::PutResponse::err: alloc::string::String
+pub storageapi::player_rpc::PutResponse::status: opsapi::Status
+pub storageapi::player_rpc::PutResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for storageapi::player_rpc::PutResponse
+pub fn storageapi::player_rpc::PutResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for storageapi::player_rpc::PutResponse
+pub fn storageapi::player_rpc::PutResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for storageapi::player_rpc::PutResponse
+impl core::marker::Send for storageapi::player_rpc::PutResponse
+impl core::marker::Sync for storageapi::player_rpc::PutResponse
+impl core::marker::Unpin for storageapi::player_rpc::PutResponse
+impl core::marker::UnsafeUnpin for storageapi::player_rpc::PutResponse
+impl core::panic::unwind_safe::RefUnwindSafe for storageapi::player_rpc::PutResponse
+impl core::panic::unwind_safe::UnwindSafe for storageapi::player_rpc::PutResponse
+pub const storageapi::player_rpc::METHOD_DELETE: &str
+pub const storageapi::player_rpc::METHOD_GET: &str
+pub const storageapi::player_rpc::METHOD_LIST: &str
+pub const storageapi::player_rpc::METHOD_PUT: &str
+pub fn storageapi::player_rpc::describe() -> opsapi::DescribeManifest
+pub fn storageapi::player_rpc::operations(alloc::sync::Arc<(dyn storageapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn storageapi::player_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn storageapi::player_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub struct storageapi::ObjectPage
+pub storageapi::ObjectPage::items: alloc::vec::Vec<storageapi::ObjectSummary>
+pub storageapi::ObjectPage::next_cursor: alloc::string::String
+impl core::clone::Clone for storageapi::ObjectPage
+pub fn storageapi::ObjectPage::clone(&self) -> storageapi::ObjectPage
+impl core::cmp::Eq for storageapi::ObjectPage
+impl core::cmp::PartialEq for storageapi::ObjectPage
+pub fn storageapi::ObjectPage::eq(&self, &storageapi::ObjectPage) -> bool
+impl core::fmt::Debug for storageapi::ObjectPage
+pub fn storageapi::ObjectPage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for storageapi::ObjectPage
+impl serde_core::ser::Serialize for storageapi::ObjectPage
+pub fn storageapi::ObjectPage::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for storageapi::ObjectPage
+pub fn storageapi::ObjectPage::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for storageapi::ObjectPage
+impl core::marker::Send for storageapi::ObjectPage
+impl core::marker::Sync for storageapi::ObjectPage
+impl core::marker::Unpin for storageapi::ObjectPage
+impl core::marker::UnsafeUnpin for storageapi::ObjectPage
+impl core::panic::unwind_safe::RefUnwindSafe for storageapi::ObjectPage
+impl core::panic::unwind_safe::UnwindSafe for storageapi::ObjectPage
+pub struct storageapi::ObjectSummary
+pub storageapi::ObjectSummary::acl: alloc::string::String
+pub storageapi::ObjectSummary::collection: alloc::string::String
+pub storageapi::ObjectSummary::created_at: alloc::string::String
+pub storageapi::ObjectSummary::key: alloc::string::String
+pub storageapi::ObjectSummary::updated_at: alloc::string::String
+pub storageapi::ObjectSummary::version: i64
+impl core::clone::Clone for storageapi::ObjectSummary
+pub fn storageapi::ObjectSummary::clone(&self) -> storageapi::ObjectSummary
+impl core::cmp::Eq for storageapi::ObjectSummary
+impl core::cmp::PartialEq for storageapi::ObjectSummary
+pub fn storageapi::ObjectSummary::eq(&self, &storageapi::ObjectSummary) -> bool
+impl core::fmt::Debug for storageapi::ObjectSummary
+pub fn storageapi::ObjectSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for storageapi::ObjectSummary
+impl serde_core::ser::Serialize for storageapi::ObjectSummary
+pub fn storageapi::ObjectSummary::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for storageapi::ObjectSummary
+pub fn storageapi::ObjectSummary::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for storageapi::ObjectSummary
+impl core::marker::Send for storageapi::ObjectSummary
+impl core::marker::Sync for storageapi::ObjectSummary
+impl core::marker::Unpin for storageapi::ObjectSummary
+impl core::marker::UnsafeUnpin for storageapi::ObjectSummary
+impl core::panic::unwind_safe::RefUnwindSafe for storageapi::ObjectSummary
+impl core::panic::unwind_safe::UnwindSafe for storageapi::ObjectSummary
+pub struct storageapi::ObjectVersion
+pub storageapi::ObjectVersion::version: i64
+impl core::clone::Clone for storageapi::ObjectVersion
+pub fn storageapi::ObjectVersion::clone(&self) -> storageapi::ObjectVersion
+impl core::cmp::Eq for storageapi::ObjectVersion
+impl core::cmp::PartialEq for storageapi::ObjectVersion
+pub fn storageapi::ObjectVersion::eq(&self, &storageapi::ObjectVersion) -> bool
+impl core::fmt::Debug for storageapi::ObjectVersion
+pub fn storageapi::ObjectVersion::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for storageapi::ObjectVersion
+impl serde_core::ser::Serialize for storageapi::ObjectVersion
+pub fn storageapi::ObjectVersion::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for storageapi::ObjectVersion
+pub fn storageapi::ObjectVersion::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for storageapi::ObjectVersion
+impl core::marker::Send for storageapi::ObjectVersion
+impl core::marker::Sync for storageapi::ObjectVersion
+impl core::marker::Unpin for storageapi::ObjectVersion
+impl core::marker::UnsafeUnpin for storageapi::ObjectVersion
+impl core::panic::unwind_safe::RefUnwindSafe for storageapi::ObjectVersion
+impl core::panic::unwind_safe::UnwindSafe for storageapi::ObjectVersion
+pub struct storageapi::StorageObject
+pub storageapi::StorageObject::acl: alloc::string::String
+pub storageapi::StorageObject::collection: alloc::string::String
+pub storageapi::StorageObject::created_at: alloc::string::String
+pub storageapi::StorageObject::key: alloc::string::String
+pub storageapi::StorageObject::owner_id: alloc::string::String
+pub storageapi::StorageObject::updated_at: alloc::string::String
+pub storageapi::StorageObject::value: alloc::string::String
+pub storageapi::StorageObject::version: i64
+impl core::clone::Clone for storageapi::StorageObject
+pub fn storageapi::StorageObject::clone(&self) -> storageapi::StorageObject
+impl core::cmp::Eq for storageapi::StorageObject
+impl core::cmp::PartialEq for storageapi::StorageObject
+pub fn storageapi::StorageObject::eq(&self, &storageapi::StorageObject) -> bool
+impl core::fmt::Debug for storageapi::StorageObject
+pub fn storageapi::StorageObject::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for storageapi::StorageObject
+impl serde_core::ser::Serialize for storageapi::StorageObject
+pub fn storageapi::StorageObject::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for storageapi::StorageObject
+pub fn storageapi::StorageObject::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Freeze for storageapi::StorageObject
+impl core::marker::Send for storageapi::StorageObject
+impl core::marker::Sync for storageapi::StorageObject
+impl core::marker::Unpin for storageapi::StorageObject
+impl core::marker::UnsafeUnpin for storageapi::StorageObject
+impl core::panic::unwind_safe::RefUnwindSafe for storageapi::StorageObject
+impl core::panic::unwind_safe::UnwindSafe for storageapi::StorageObject
+pub const storageapi::ACL_PRIVATE: &str
+pub const storageapi::ACL_PUBLIC_READ: &str
+pub const storageapi::DEFAULT_PAGE_LIMIT: i64
+pub const storageapi::MAX_COLLECTION_BYTES: usize
+pub const storageapi::MAX_CURSOR_BYTES: usize
+pub const storageapi::MAX_KEY_BYTES: usize
+pub const storageapi::MAX_OBJECTS_PER_OWNER: i64
+pub const storageapi::MAX_PAGE_LIMIT: i64
+pub const storageapi::MAX_VALUE_BYTES: usize
+pub trait storageapi::Player: core::marker::Send + core::marker::Sync
+pub fn storageapi::Player::delete<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn storageapi::Player::get<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, alloc::string::String, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<storageapi::StorageObject, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn storageapi::Player::list<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, alloc::string::String, i64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<storageapi::ObjectPage, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn storageapi::Player::put<'life0, 'async_trait>(&'life0 self, opsapi::Identity, alloc::string::String, alloc::string::String, alloc::string::String, i64, alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<storageapi::ObjectVersion, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn storageapi::is_legal_segment(&str) -> bool

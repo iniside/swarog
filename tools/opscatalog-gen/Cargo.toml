@@ -27,6 +27,7 @@ walletapi = { workspace = true }
 notificationsapi = { workspace = true }
 friendsapi = { workspace = true }
 groupsapi = { workspace = true }
+storageapi = { workspace = true }
 anyhow = { workspace = true }
 rpc-contract-model = { workspace = true }
 

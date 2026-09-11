@@ -49,6 +49,7 @@ pub fn entries() -> Vec<Entry> {
         notifications(),
         rating(),
         scheduler(),
+        storage(),
         wallet(),
     ]
 }
@@ -120,6 +121,17 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("notifications.list", "cursor", External), Validated { cap: notificationsapi::MAX_CURSOR_BYTES, basis: "notifications::service::decode_cursor applies MAX_CURSOR_BYTES as its first check after the empty-cursor arm — before the base64 decode, before the keyset halves are parsed and before any store read — and notificationsapi::Player::list calls it ahead of Store::page_by_player. The \"notifications list cursor\" CapCase drives that op ITSELF against a pool that cannot connect, and discriminates on the VERDICT rather than the status because both arms are Status::Invalid: at the cap the value cannot be a well-formed keyset and answers the malformed-cursor verdict, over the cap the cap verdict answers first. Delete the cap and the over-cap value falls through to malformed; delete the decode_cursor call and both arms reach the dead store and answer Internal — either way the case goes red" }),
         (key("notifications.markRead", "notification_id", External), Opaque { rationale: "opaque notification UUID, bound as $1::uuid in the UPDATE's own predicate alongside the caller's player_id; a value that is not a uuid raises 22P02, which notifications::is_invalid_uuid folds into the same 404 an unknown id gets, so it is never persisted, interpolated or echoed" }),
         (key("rating.mmr", "player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
+        (key("storage.delete", "collection", External), Validated { cap: storageapi::MAX_COLLECTION_BYTES, basis: "storage::service::validate_address is the SAME authority the put rows state — Player::delete calls it as its second statement, after the identity is read and before any store work, so the collection bound and its wording are shared, not restated" }),
+        (key("storage.delete", "key", External), Validated { cap: storageapi::MAX_KEY_BYTES, basis: "the key half of the same storage::service::validate_address call Player::delete makes before any store work; one helper words the collection and key verdicts identically" }),
+        (key("storage.get", "collection", External), Validated { cap: storageapi::MAX_COLLECTION_BYTES, basis: "storage::service::validate_address, called by Player::get before any store work — the same helper put and delete call, so the three ops cannot drift to different bounds" }),
+        (key("storage.get", "key", External), Validated { cap: storageapi::MAX_KEY_BYTES, basis: "the key half of the same storage::service::validate_address call Player::get makes before any store work" }),
+        (key("storage.get", "owner_id", External), Opaque { rationale: "opaque player UUID naming the object's owner: it is never persisted, interpolated or echoed — it reaches only the read predicate, as a bound parameter beside the caller's own id. It carries no cap because the field cannot discriminate: storageapi::Player::get collapses a nonexistent object, another owner's private object and a malformed owner id into ONE NotFound, so a length verdict would be the only answer that told a caller its address named something real" }),
+        (key("storage.list", "collection", External), Validated { cap: storageapi::MAX_COLLECTION_BYTES, basis: "storage::service::validate_segment applied to the collection as Player::list's second statement — the same authority validate_address wraps for the addressed ops, called directly here because list names no key" }),
+        (key("storage.list", "cursor", External), Validated { cap: storageapi::MAX_CURSOR_BYTES, basis: "storage::service::cursor_within_cap runs ahead of the paging read, before the cursor is decoded and before the limit is resolved. The \"storage list cursor\" CapCase drives Player::list ITSELF against a pool that cannot connect and discriminates on the MESSAGE rather than the status, because a decoder placed behind this cap answers Invalid for an at-cap filler too — as a MALFORMED cursor, a different verdict from the cap's own" }),
+        (key("storage.put", "acl", External), Opaque { rationale: "a closed vocabulary, not free text: storage::service::validate_acl matches the posted value against the two storageapi acl consts (private/public_read) plus the EMPTY string, which means leave the acl unchanged so a value-only write cannot silently un-share an object. Anything outside that set is Status::Invalid before any store work, and the value that reaches a statement is the compiled literal, never the caller's bytes" }),
+        (key("storage.put", "collection", External), Validated { cap: storageapi::MAX_COLLECTION_BYTES, basis: "storage::service::validate_address runs as Player::put's second statement, after the identity is read and before the store is touched. The \"storage put collection\" CapCase drives that op ITSELF against a pool that cannot connect and discriminates on STATUS: at the cap the collection passes the guard, reaches the store and answers Internal; over the cap the guard answers Invalid first. Delete the guard and the over-cap value reaches the dead store too, so the case goes red rather than passing on the storage_collection_len_check CHECK below it" }),
+        (key("storage.put", "key", External), Validated { cap: storageapi::MAX_KEY_BYTES, basis: "the key half of the same storage::service::validate_address call, with its own \"storage put key\" CapCase on Player::put and the same status discrimination — both halves sit in the table's btree primary key, where an uncapped value is a 54000 no error mapping can turn into the 400 the contract promises" }),
+        (key("storage.put", "value", External), Validated { cap: storageapi::MAX_VALUE_BYTES, basis: "storage::service::validate_value checks the byte length BEFORE it parses the document, inside Player::put and ahead of the store. This cap is deliberately NOT paired with storage_value_len_check: the CHECK measures NORMALIZED jsonb text — whitespace dropped, keys reordered, escapes and numbers rewritten — which is a different byte string at a deliberately different number, so it is a backstop rather than a twin and the COLUMN_CAPS pairing must exclude it. The \"storage put value\" CapCase drives Player::put ITSELF with a document that is well-formed at every length, so only its length can decide the verdict" }),
         (key("wallet.balances", "player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
         (key("wallet.credit", "movement.idempotency_key", Wire), Validated { cap: walletapi::MAX_IDEMPOTENCY_KEY_BYTES, basis: "wallet::idempotency_key_within_cap runs inside validate_movement, called by every credit/debit before ledger SQL" }),
         (key("wallet.credit", "movement.player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
@@ -1004,6 +1016,51 @@ fn scheduler() -> Entry {
         "scheduler rows are operator data, not player-supplied free text",
         "scheduler has no credential verifier",
     )
+}
+
+fn storage() -> Entry {
+    Entry {
+        module: "storage",
+        stances: vec![
+            (
+                Convention::EnvValidation,
+                na("storage parses no process environment: its caps are contract consts, its retention is none (a save must not evaporate) and its only handle is the shared pool app::run injects"),
+            ),
+            (
+                Convention::InputByteCaps,
+                Stance::Applies(Fixture::InputByteCaps(vec![
+                    CapCase {
+                        name: "storage put collection",
+                        cap: storageapi::MAX_COLLECTION_BYTES,
+                        probe: Arc::new(storage::conformance::conformance_collection_rejected),
+                    },
+                    CapCase {
+                        name: "storage put key",
+                        cap: storageapi::MAX_KEY_BYTES,
+                        probe: Arc::new(storage::conformance::conformance_key_rejected),
+                    },
+                    CapCase {
+                        name: "storage put value",
+                        cap: storageapi::MAX_VALUE_BYTES,
+                        probe: Arc::new(storage::conformance::conformance_value_rejected),
+                    },
+                    CapCase {
+                        name: "storage list cursor",
+                        cap: storageapi::MAX_CURSOR_BYTES,
+                        probe: Arc::new(storage::conformance::conformance_cursor_rejected),
+                    },
+                ])),
+            ),
+            (
+                Convention::InfraOutage503,
+                na("storage declares no requires() and holds no capability handle — the owner id is the caller's own identity, resolved at the front door — so it has no external dependency whose outage could be classified; its only dependency is the shared Postgres, where a failed read or write is a 500"),
+            ),
+            (
+                Convention::ArgonParity,
+                na("storage performs no password hashing"),
+            ),
+        ],
+    }
 }
 
 fn wallet() -> Entry {

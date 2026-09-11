@@ -5,6 +5,7 @@
 //! module publishes no durable event. It consumes no other module's capability either:
 //! the owner id is the caller's own identity, resolved at the front door.
 
+pub mod conformance;
 mod service;
 mod store;
 

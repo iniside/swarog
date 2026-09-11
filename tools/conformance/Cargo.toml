@@ -41,5 +41,7 @@ mailevents = { workspace = true }
 match_module = { workspace = true }
 notifications = { workspace = true }
 notificationsapi = { workspace = true }
+storage = { workspace = true }
+storageapi = { workspace = true }
 wallet = { workspace = true }
 walletapi = { workspace = true }

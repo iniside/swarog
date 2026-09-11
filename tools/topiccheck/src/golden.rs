@@ -241,6 +241,13 @@ fn rpc_modules() -> Vec<RpcModule> {
             groupsapi::membership_rpc::body_shapes(),
             groupsapi::membership_rpc::describe().ops,
         ),
+        (
+            "storageapi::player_rpc",
+            storageapi::player_rpc::route_bindings(),
+            storageapi::player_rpc::wire_ops(),
+            storageapi::player_rpc::body_shapes(),
+            storageapi::player_rpc::describe().ops,
+        ),
     ]
 }
 

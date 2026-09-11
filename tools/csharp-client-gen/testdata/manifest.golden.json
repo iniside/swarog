@@ -693,6 +693,121 @@
       "ret": "Unit"
     },
     {
+      "provider": "storage",
+      "wire_method": "storage.delete",
+      "verb": "DELETE",
+      "path": "/storage/{collection}/{key}",
+      "auth": "player",
+      "success": 204,
+      "args": [
+        {
+          "name": "collection",
+          "wire_name": "collection",
+          "ty": "String"
+        },
+        {
+          "name": "key",
+          "wire_name": "key",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    },
+    {
+      "provider": "storage",
+      "wire_method": "storage.get",
+      "verb": "POST",
+      "path": "/storage/{collection}/{key}/get",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "collection",
+          "wire_name": "collection",
+          "ty": "String"
+        },
+        {
+          "name": "key",
+          "wire_name": "key",
+          "ty": "String"
+        },
+        {
+          "name": "owner_id",
+          "wire_name": "owner_id",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "StorageObject"
+      }
+    },
+    {
+      "provider": "storage",
+      "wire_method": "storage.list",
+      "verb": "POST",
+      "path": "/storage/list",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "collection",
+          "wire_name": "collection",
+          "ty": "String"
+        },
+        {
+          "name": "cursor",
+          "wire_name": "cursor",
+          "ty": "String"
+        },
+        {
+          "name": "limit",
+          "wire_name": "limit",
+          "ty": "I64"
+        }
+      ],
+      "ret": {
+        "Struct": "ObjectPage"
+      }
+    },
+    {
+      "provider": "storage",
+      "wire_method": "storage.put",
+      "verb": "POST",
+      "path": "/storage/{collection}/{key}",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "collection",
+          "wire_name": "collection",
+          "ty": "String"
+        },
+        {
+          "name": "key",
+          "wire_name": "key",
+          "ty": "String"
+        },
+        {
+          "name": "value",
+          "wire_name": "value",
+          "ty": "String"
+        },
+        {
+          "name": "expected_version",
+          "wire_name": "expected_version",
+          "ty": "I64"
+        },
+        {
+          "name": "acl",
+          "wire_name": "acl",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "ObjectVersion"
+      }
+    },
+    {
       "provider": "wallet",
       "wire_method": "wallet.listCurrencies",
       "verb": "GET",
@@ -1129,6 +1244,70 @@
       ]
     },
     {
+      "name": "ObjectPage",
+      "fields": [
+        {
+          "name": "items",
+          "wire_name": "items",
+          "ty": {
+            "Vec": {
+              "Struct": "ObjectSummary"
+            }
+          }
+        },
+        {
+          "name": "next_cursor",
+          "wire_name": "next_cursor",
+          "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "ObjectSummary",
+      "fields": [
+        {
+          "name": "collection",
+          "wire_name": "collection",
+          "ty": "String"
+        },
+        {
+          "name": "key",
+          "wire_name": "key",
+          "ty": "String"
+        },
+        {
+          "name": "version",
+          "wire_name": "version",
+          "ty": "I64"
+        },
+        {
+          "name": "acl",
+          "wire_name": "acl",
+          "ty": "String"
+        },
+        {
+          "name": "created_at",
+          "wire_name": "created_at",
+          "ty": "String"
+        },
+        {
+          "name": "updated_at",
+          "wire_name": "updated_at",
+          "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "ObjectVersion",
+      "fields": [
+        {
+          "name": "version",
+          "wire_name": "version",
+          "ty": "I64"
+        }
+      ]
+    },
+    {
       "name": "Page",
       "fields": [
         {
@@ -1184,6 +1363,51 @@
           "name": "access_expires_in_secs",
           "wire_name": "access_expires_in_secs",
           "ty": "I64"
+        }
+      ]
+    },
+    {
+      "name": "StorageObject",
+      "fields": [
+        {
+          "name": "owner_id",
+          "wire_name": "owner_id",
+          "ty": "String"
+        },
+        {
+          "name": "collection",
+          "wire_name": "collection",
+          "ty": "String"
+        },
+        {
+          "name": "key",
+          "wire_name": "key",
+          "ty": "String"
+        },
+        {
+          "name": "value",
+          "wire_name": "value",
+          "ty": "String"
+        },
+        {
+          "name": "version",
+          "wire_name": "version",
+          "ty": "I64"
+        },
+        {
+          "name": "acl",
+          "wire_name": "acl",
+          "ty": "String"
+        },
+        {
+          "name": "created_at",
+          "wire_name": "created_at",
+          "ty": "String"
+        },
+        {
+          "name": "updated_at",
+          "wire_name": "updated_at",
+          "ty": "String"
         }
       ]
     }

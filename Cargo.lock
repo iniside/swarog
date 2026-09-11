@@ -1064,6 +1064,8 @@ dependencies = [
  "notificationsapi",
  "rpc-contract-model",
  "sqlx",
+ "storage",
+ "storageapi",
  "syn",
  "tokio",
  "wallet",
@@ -1200,6 +1202,7 @@ dependencies = [
  "rpc-contract-model",
  "serde",
  "serde_json",
+ "storageapi",
  "syn",
  "walletapi",
 ]
@@ -3040,6 +3043,7 @@ dependencies = [
  "opsapi",
  "ratingapi",
  "rpc-contract-model",
+ "storageapi",
  "walletapi",
 ]
 
@@ -4507,6 +4511,7 @@ dependencies = [
  "sqlx",
  "storageapi",
  "storagerpc",
+ "tokio",
 ]
 
 [[package]]
@@ -4883,6 +4888,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "storageapi",
  "tokio",
  "walletapi",
  "walletevents",

@@ -121,6 +121,24 @@ public sealed record Notification(
     [property: JsonPropertyName("created_at")] string CreatedAt,
     [property: JsonPropertyName("read_at")] string ReadAt);
 
+/// <summary>The <c>ObjectPage</c> DTO.</summary>
+public sealed record ObjectPage(
+    [property: JsonPropertyName("items")] ObjectSummary[] Items,
+    [property: JsonPropertyName("next_cursor")] string NextCursor);
+
+/// <summary>The <c>ObjectSummary</c> DTO.</summary>
+public sealed record ObjectSummary(
+    [property: JsonPropertyName("collection")] string Collection,
+    [property: JsonPropertyName("key")] string Key,
+    [property: JsonPropertyName("version")] long Version,
+    [property: JsonPropertyName("acl")] string Acl,
+    [property: JsonPropertyName("created_at")] string CreatedAt,
+    [property: JsonPropertyName("updated_at")] string UpdatedAt);
+
+/// <summary>The <c>ObjectVersion</c> DTO.</summary>
+public sealed record ObjectVersion(
+    [property: JsonPropertyName("version")] long Version);
+
 /// <summary>The <c>Page</c> DTO.</summary>
 public sealed record Page(
     [property: JsonPropertyName("items")] Notification[] Items,
@@ -137,3 +155,14 @@ public sealed record Session(
     [property: JsonPropertyName("token")] string Token,
     [property: JsonPropertyName("refresh_token")] string RefreshToken,
     [property: JsonPropertyName("access_expires_in_secs")] long AccessExpiresInSecs);
+
+/// <summary>The <c>StorageObject</c> DTO.</summary>
+public sealed record StorageObject(
+    [property: JsonPropertyName("owner_id")] string OwnerId,
+    [property: JsonPropertyName("collection")] string Collection,
+    [property: JsonPropertyName("key")] string Key,
+    [property: JsonPropertyName("value")] string Value,
+    [property: JsonPropertyName("version")] long Version,
+    [property: JsonPropertyName("acl")] string Acl,
+    [property: JsonPropertyName("created_at")] string CreatedAt,
+    [property: JsonPropertyName("updated_at")] string UpdatedAt);

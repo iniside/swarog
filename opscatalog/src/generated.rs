@@ -37,6 +37,10 @@ pub const OPERATIONS: &[OpInfo] = &[
     OpInfo { method: "notifications.delete", verb: "DELETE", path: "/notifications/{id}", auth: "player" },
     OpInfo { method: "notifications.list", verb: "POST", path: "/notifications/list", auth: "player" },
     OpInfo { method: "notifications.markRead", verb: "POST", path: "/notifications/{id}/read", auth: "player" },
+    OpInfo { method: "storage.delete", verb: "DELETE", path: "/storage/{collection}/{key}", auth: "player" },
+    OpInfo { method: "storage.get", verb: "POST", path: "/storage/{collection}/{key}/get", auth: "player" },
+    OpInfo { method: "storage.list", verb: "POST", path: "/storage/list", auth: "player" },
+    OpInfo { method: "storage.put", verb: "POST", path: "/storage/{collection}/{key}", auth: "player" },
     OpInfo { method: "wallet.listCurrencies", verb: "GET", path: "/wallet/currencies", auth: "player" },
     OpInfo { method: "wallet.myBalances", verb: "GET", path: "/wallet/me", auth: "player" },
 ];

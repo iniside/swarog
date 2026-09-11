@@ -56,6 +56,17 @@ notifications.delete	notification_id	external
 notifications.list	cursor	external
 notifications.markRead	notification_id	external
 rating.mmr	player_id	wire
+storage.delete	collection	external
+storage.delete	key	external
+storage.get	collection	external
+storage.get	key	external
+storage.get	owner_id	external
+storage.list	collection	external
+storage.list	cursor	external
+storage.put	acl	external
+storage.put	collection	external
+storage.put	key	external
+storage.put	value	external
 wallet.balances	player_id	wire
 wallet.credit	movement.currency	wire
 wallet.credit	movement.idempotency_key	wire
