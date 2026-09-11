@@ -300,7 +300,6 @@ impl crate::Service {
             .map_err(BusError::transport)?;
             for (player_id,) in &due {
                 match self.purge_player_groups(conn, player_id, &mut slots).await? {
-                    PlayerOutcome::Purged => {}
                     PlayerOutcome::CapReached => {
                         tracing::warn!(
                             player_id,
@@ -309,16 +308,21 @@ impl crate::Service {
                         );
                         return Ok(());
                     }
-                    PlayerOutcome::Skipped => continue,
+                    // No stamp: the tombstone stays this sweep's work item. The budget
+                    // below still runs, so a batch of failing players cannot outrun
+                    // `ASYNCEVENTS_HANDLER_TIMEOUT` unchecked.
+                    PlayerOutcome::Skipped => {}
+                    PlayerOutcome::Purged => {
+                        sqlx::query(
+                            "UPDATE groups.purged_players SET swept_at = now() \
+                              WHERE player_id = $1::uuid",
+                        )
+                        .bind(player_id)
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(BusError::transport)?;
+                    }
                 }
-                sqlx::query(
-                    "UPDATE groups.purged_players SET swept_at = now() \
-                      WHERE player_id = $1::uuid",
-                )
-                .bind(player_id)
-                .execute(&mut *conn)
-                .await
-                .map_err(BusError::transport)?;
                 if started.elapsed() >= SWEEP_BUDGET {
                     tracing::warn!(
                         elapsed_ms = started.elapsed().as_millis() as u64,
