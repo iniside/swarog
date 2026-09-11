@@ -4,7 +4,7 @@ use bus::{AnyTx, Delivery, TxHandler};
 use futures::future::BoxFuture;
 use sqlx::PgConnection;
 
-use crate::service::{player_lock_key, Service};
+use crate::service::Service;
 
 /// The purge sweep's consumer-owned subscription id — a durable contract; renaming it
 /// abandons the checkpoint. Separate from `characters.player-deleted.v1` so a paused sweep
@@ -24,14 +24,6 @@ pub(crate) const PURGE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::PL
 /// player's rows go in a single statement — and the sweep LOOPS batches until a short one, so
 /// a backlog above one batch per day still drains.
 pub(crate) const PURGE_BATCH: i64 = 256;
-
-/// The hard cap on PLAYERS swept per fire, and the reason it exists is not throughput:
-/// `pg_advisory_xact_lock` is transaction-scoped, so every lock this sweep takes is held
-/// until the DELIVERY commits. Uncapped, a backlog exhausts the cluster-wide lock table
-/// (`max_locks_per_transaction x max_connections`, 6400 by default) with an out-of-memory
-/// error that reproduces on every retry — a permanently paused subscription, not a slow one.
-/// Capped, the fire ends at a player boundary and the next one resumes.
-const PURGE_PLAYERS_PER_FIRE: usize = 512;
 
 /// The sweep's whole wall-clock budget. Exhausting it ends the fire with the players swept so
 /// far KEPT — they commit with the subscription checkpoint and the next fire resumes from
@@ -92,15 +84,6 @@ impl Service {
             .await
             .map_err(bus::Error::transport)?;
             for (player_id,) in &due {
-                // The same per-player key `create` takes, first: without it a concurrent
-                // create does not see this uncommitted delete under READ COMMITTED and lands
-                // a character for an already-purged player — with a starter grant and no
-                // tombstone behind it.
-                sqlx::query("SELECT pg_advisory_xact_lock($1)")
-                    .bind(player_lock_key(player_id))
-                    .execute(&mut *conn)
-                    .await
-                    .map_err(bus::Error::transport)?;
                 let removed: Vec<(String, String)> = sqlx::query_as(
                     "DELETE FROM characters.characters WHERE player_id = $1::uuid \
                      RETURNING id::text, player_id::text",
@@ -128,21 +111,16 @@ impl Service {
                 .await
                 .map_err(bus::Error::transport)?;
                 swept += 1;
-                // Both exits are spent only at a player boundary — after the emits and the
+                // The budget is spent only at a player boundary — after the emits and the
                 // stamp, never between a row's delete and the `character.deleted` that
-                // cascades it.
+                // cascades it. Resumption is therefore at PLAYER granularity: one player
+                // whose single `DELETE … RETURNING` outruns `ASYNCEVENTS_HANDLER_TIMEOUT`
+                // fails identically every retry and pauses this subscription.
                 if started.elapsed() >= SWEEP_BUDGET {
                     tracing::warn!(
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         swept,
                         "characters: purge sweep hit its budget — resuming next fire"
-                    );
-                    return Ok(());
-                }
-                if swept >= PURGE_PLAYERS_PER_FIRE {
-                    tracing::warn!(
-                        swept,
-                        "characters: purge sweep hit its per-fire player cap — resuming next fire"
                     );
                     return Ok(());
                 }

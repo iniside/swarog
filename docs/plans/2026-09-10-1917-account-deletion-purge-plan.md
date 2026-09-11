@@ -335,6 +335,19 @@ below, which the remaining sweeps must not follow as written:**
 4. **Carry `Cargo.lock` in each sweep's commit.** No verify stage catches a stale lock
    (`--locked` appears only on `cargo install` lines), so a fresh checkout is dirty on
    first build.
+5a. **`characters` takes NO `pg_advisory_xact_lock`, reversing the bullet below
+   (landed then removed, `2df4ba2`→this commit).** The lock buys no purge guarantee:
+   it is released at the DELIVERY commit, not at the player boundary, so a `create`
+   blocked on it wakes after the tombstone is stamped, counts 0, inserts, and is
+   never revisited — the same orphan as with no lock, except that a `create` which
+   would have committed *before* the DELETE now lands after it. `create`'s cap gate
+   is a plain non-locking `SELECT count(*)` (`store.rs:130`), so the lock cannot
+   serialize it either. The orphan is closed by Step 7's `purged_players` write
+   guard, mirroring `inventory`'s `wiped_characters` check in `grant_starter`. The
+   per-fire player cap went with it — its sole justification was bounding
+   simultaneously held locks. `groups` keeps ITS cap on its own argument: its
+   per-group write-path locks are real.
+
 5. **Known gap, to close uniformly across all six or not at all:** each fire walks the
    whole PK index filtering `swept_at IS NULL` on the heap, and the table grows one
    permanent row per deleted player, so scan cost tracks *total* deletions rather than

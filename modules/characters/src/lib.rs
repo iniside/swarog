@@ -238,24 +238,13 @@ impl Module for Characters {
         // characters a player owns, while `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this handler
         // at 10s, so deleting them here could make no progress and burn failures toward the
         // plane's pause threshold. The deleting belongs to the scheduled sweep, which
-        // resumes across fires; this row is that sweep's work item and, once swept, the
-        // permanent record that this player is gone — redelivery is `ON CONFLICT DO
-        // NOTHING`, never a reset of `swept_at`.
+        // resumes across fires at player granularity; this row is that sweep's work item
+        // and, once swept, the permanent record that this player is gone — redelivery is
+        // `ON CONFLICT DO NOTHING`, never a reset of `swept_at`.
         //
         // `Genesis`, not `AfterRegistration`: a lost deletion is a permanent retention leak
         // with no repair path, while a redelivery into an already-tombstoned module is a
         // no-op. The id and the start position are an IMMUTABLE contract (`spec_hash`).
-        // The drain of what that tombstone records, on its OWN subscription: a raw sink on
-        // `scheduler.fired` guarding on the shared daily `player-purge` name.
-        let sweeper: Arc<dyn bus::TxHandler> = Arc::new(projection::PurgeSweepHandler {
-            svc: self.svc(),
-        });
-        ctx.bus().on_tx_raw(
-            projection::PURGE_SWEEP_SUB,
-            schedulerevents::FIRED.topic(),
-            sweeper,
-        );
-
         let purger = self.svc();
         ctx.bus().on_tx(
             bus::SubscriptionSpec {
@@ -274,6 +263,17 @@ impl Module for Characters {
                         .map_err(bus::Error::transport)
                 })
             },
+        );
+
+        // The drain of what that tombstone records, on its OWN subscription: a raw sink on
+        // `scheduler.fired` guarding on the shared daily `player-purge` name.
+        let sweeper: Arc<dyn bus::TxHandler> = Arc::new(projection::PurgeSweepHandler {
+            svc: self.svc(),
+        });
+        ctx.bus().on_tx_raw(
+            projection::PURGE_SWEEP_SUB,
+            schedulerevents::FIRED.topic(),
+            sweeper,
         );
         Ok(())
     }
