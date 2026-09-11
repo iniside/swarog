@@ -3266,7 +3266,9 @@ async fn deletion_checks(
             && after_edges == 0
             && survivor_edge_state.as_deref() == Some("accepted")
             && removed.as_ref().map(|(r, _)| r.as_str()) == Some("account-deleted")
-            && removed.as_ref().map(|(_, h)| h.as_str()) == Some(s.handle.as_str()),
+            && removed.as_ref().map(|(_, h)| h.as_str()) == Some(s.handle.as_str())
+            && friends_tomb == 1
+            && friends_sweep == 1,
         format!(
             "before={before_edges} after={after_edges} survivor_edge={survivor_edge_state:?} \
              removed={removed:?} handle={} planted={} swept={} tombstone_cursor={friends_tomb} sweep_cursor={friends_sweep}",
