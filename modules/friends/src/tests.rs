@@ -1819,3 +1819,99 @@ async fn sweep_handler_ignores_a_foreign_schedule_name_with_positive_control() {
     .await;
     cleanup_purge_row(&pool, &target).await;
 }
+
+// ============================================================================
+// Step 8 — the admin "Purges Pending" KPI: present on the overview, absent from
+// the drill-down, and a store error rendering an error card rather than a 500
+// (`build_content` is infallible by construction).
+// ============================================================================
+
+fn purges_pending_kpi(content: &adminapi::Content) -> Option<&adminapi::Kpi> {
+    content.kpis.iter().find(|k| k.label == "Purges Pending")
+}
+
+/// A dead pool must render an error card, never propagate as an `Err`/500 —
+/// `build_content` has no `Result` in its signature at all, so this also pins that
+/// the KPI's own `pending_purges()` read shares the same infallible-by-construction
+/// discipline as the rest of the page.
+#[tokio::test]
+async fn admin_overview_store_error_renders_error_card_not_a_500() {
+    let pool = sqlx::PgPool::connect_lazy("postgres://nope:nope@127.0.0.1:1/nonexistent").unwrap();
+    let svc = Service::new(pool, Arc::new(Bus::new()));
+    let content = admin::build_content(&svc, &adminapi::Params::new()).await;
+    assert!(
+        content.kpis.iter().any(|k| k.label == "Error"),
+        "a store error must render an error card, not panic or propagate a 500"
+    );
+}
+
+/// The "Purges Pending" KPI is present on the OVERVIEW and absent from the
+/// per-player DRILL-DOWN — `player_view` never calls `pending_purges()` at all,
+/// structurally guaranteed, not by omission.
+#[tokio::test]
+async fn admin_purges_kpi_present_on_overview_absent_from_drill_down() {
+    let Some(pool) = test_pool().await else { return };
+    let directory = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, directory).await;
+
+    let overview = admin::build_content(&svc, &adminapi::Params::new()).await;
+    assert!(
+        purges_pending_kpi(&overview).is_some(),
+        "the overview must carry the Purges Pending KPI"
+    );
+
+    let target = fixed_uuid(0x77);
+    let mut params = adminapi::Params::new();
+    params.insert("player".into(), target);
+    let drilldown = admin::build_content(&svc, &params).await;
+    assert!(
+        purges_pending_kpi(&drilldown).is_none(),
+        "the per-player drill-down must NOT carry the Purges Pending KPI"
+    );
+}
+
+/// `pending_purges()` counts ONLY `swept_at IS NULL` — a swept row must not inflate
+/// it. Proven by DELTA (the shared table may carry unrelated rows from concurrent
+/// tests): planting one unswept and one swept tombstone must move the count by
+/// exactly ONE, never two.
+#[tokio::test]
+async fn pending_purges_counts_only_swept_at_null_a_swept_row_does_not_inflate_it() {
+    let Some(pool) = test_pool().await else { return };
+    let directory = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, directory).await;
+    let unswept = fixed_uuid(0x88);
+    let already_swept = fixed_uuid(0x99);
+
+    let (before, _) = svc.store.pending_purges().await.unwrap();
+
+    let mut conn = pool.acquire().await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &unswept, "Unswept#0001").await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &already_swept, "Swept#0002").await.unwrap();
+    drop(conn);
+    sqlx::query("UPDATE friends.purged_players SET swept_at = now() WHERE player_id = $1::uuid")
+        .bind(&already_swept)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (after, _) = svc.store.pending_purges().await.unwrap();
+    assert_eq!(
+        after - before,
+        1,
+        "only the UNSWEPT tombstone may count — the already-swept one must not inflate it"
+    );
+
+    // The KPI built from a >=1 pending count must carry a non-empty "oldest ..." sub-line.
+    let overview = admin::build_content(&svc, &adminapi::Params::new()).await;
+    let kpi = purges_pending_kpi(&overview).expect("Purges Pending KPI must be present");
+    assert!(
+        !kpi.sub.is_empty() && kpi.sub.starts_with("oldest"),
+        "a >=1 pending count must render a non-empty 'oldest ...' sub-line, got {:?}",
+        kpi.sub
+    );
+
+    let _ = sqlx::query("DELETE FROM friends.purged_players WHERE player_id = ANY($1::uuid[])")
+        .bind([unswept.as_str(), already_swept.as_str()].as_slice())
+        .execute(&pool)
+        .await;
+}
