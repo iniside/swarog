@@ -1,6 +1,6 @@
 use super::*;
 use crate::projection::{REASON, STARTER_AMOUNT, STARTER_CURRENCY};
-use bus::AnyTx;
+use bus::{AnyTx, Delivery, TxHandler};
 use opsapi::Status;
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -2608,4 +2608,223 @@ fn every_len_check_in_the_ddl_is_mapped_by_a_catalog_cap() {
              its 23514 stays an unmapped Internal error instead of the operator-input verdict"
         );
     }
+}
+
+// ============================================================================
+// Account-deletion purge (Steps 5-7): the tombstone, the sweep (balances cleared,
+// ledger reassigned to the sentinel with its idempotency_key still claimed), and
+// the `apply_on` Outcome::Purged write guard.
+// ============================================================================
+
+async fn purge_swept_at(pool: &PgPool, player_id: &str) -> Option<Option<String>> {
+    sqlx::query_as::<_, (Option<String>,)>(
+        "SELECT swept_at::text FROM wallet.purged_players WHERE player_id = $1::uuid",
+    )
+    .bind(player_id)
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+    .map(|(s,)| s)
+}
+
+async fn stamp_purge_swept(pool: &PgPool, player_id: &str) {
+    sqlx::query("UPDATE wallet.purged_players SET swept_at = now() WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn cleanup_purge_row(pool: &PgPool, player_id: &str) {
+    let _ = sqlx::query("DELETE FROM wallet.purged_players WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .execute(pool)
+        .await;
+}
+
+async fn balance_count(pool: &PgPool, player_id: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM wallet.balances WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn ledger_owner(pool: &PgPool, key: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT player_id::text FROM wallet.ledger WHERE idempotency_key = $1")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
+async fn ledger_row_count(pool: &PgPool, key: &str) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM wallet.ledger WHERE idempotency_key = $1")
+        .bind(key)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+fn purge_payload(name: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({ "name": name })).unwrap()
+}
+
+/// The tombstone insert is idempotent, and a redelivery after the sweep stamped
+/// `swept_at` must NOT reset it.
+#[tokio::test]
+async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+
+    let mut conn = pool.acquire().await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &pid, "Handle#0001").await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &pid, "Handle#0001").await.unwrap();
+
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM wallet.purged_players WHERE player_id = $1::uuid")
+            .bind(&pid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 1, "a redelivered tombstone must not insert a second row");
+
+    stamp_purge_swept(&pool, &pid).await;
+    svc.store.plant_purged_player_tx(&mut conn, &pid, "Handle#0001").await.unwrap();
+    assert!(
+        purge_swept_at(&pool, &pid).await.flatten().is_some(),
+        "a redelivery after the sweep stamped swept_at must NOT reset it"
+    );
+
+    cleanup_purge_row(&pool, &pid).await;
+}
+
+/// D6: the sweep deletes the purged player's BALANCES but never the ledger row —
+/// it is re-owned to `Store::PURGE_SENTINEL`, keeping its `idempotency_key` claimed
+/// forever (a later attempt to reuse the SAME key for a DIFFERENT player must not
+/// silently apply as a fresh movement). A foreign scheduler.fired name sweeps
+/// nothing; the real name (positive control on the same row) drains it.
+#[tokio::test]
+async fn sweep_clears_balances_reassigns_ledger_to_sentinel_key_stays_claimed() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+    let currency = unique_currency(&pool).await;
+    let key = unique_key("sentinel");
+
+    svc.credit(movement(&key, &pid, &currency, 100, "test")).await.unwrap();
+    assert_eq!(balance_count(&pool, &pid).await, 1);
+    assert_eq!(ledger_owner(&pool, &key).await.as_deref(), Some(pid.as_str()));
+
+    let mut conn = pool.acquire().await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &pid, "Sentinel#0001").await.unwrap();
+    drop(conn);
+
+    let handler = crate::projection::PurgeSweepHandler { svc: svc.clone() };
+
+    // Negative: a foreign schedule name sweeps nothing.
+    let mut tx = pool.begin().await.unwrap();
+    let delivery = Delivery { event_id: "wallet:test", tx: AnyTx::new(&mut *tx) };
+    handler.call(delivery, purge_payload("some-other-job")).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(balance_count(&pool, &pid).await, 1, "a foreign schedule name must not sweep");
+
+    // Positive control, same row: the real name drains it.
+    let mut tx2 = pool.begin().await.unwrap();
+    let delivery2 = Delivery { event_id: "wallet:test", tx: AnyTx::new(&mut *tx2) };
+    handler
+        .call(delivery2, purge_payload(crate::projection::PURGE_SCHEDULE_NAME))
+        .await
+        .unwrap();
+    tx2.commit().await.unwrap();
+
+    assert_eq!(balance_count(&pool, &pid).await, 0, "balances must be cleared");
+    assert_eq!(ledger_row_count(&pool, &key).await, 1, "the ledger row must SURVIVE, never deleted");
+    assert_eq!(
+        ledger_owner(&pool, &key).await.as_deref(),
+        Some(crate::store::Store::PURGE_SENTINEL),
+        "the ledger row must be re-owned to the sentinel, keeping its idempotency_key claimed"
+    );
+    assert!(purge_swept_at(&pool, &pid).await.flatten().is_some());
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+    let _ = sqlx::query("DELETE FROM wallet.ledger WHERE idempotency_key = $1")
+        .bind(&key)
+        .execute(&pool)
+        .await;
+    cleanup_purge_row(&pool, &pid).await;
+}
+
+/// `apply_on` answers `Outcome::Purged` for a tombstoned player WITHOUT claiming the
+/// movement's `idempotency_key` — proven by re-running the identical key for a
+/// DIFFERENT, live player afterwards and asserting it actually applies (a claimed
+/// key would instead answer a duplicate/conflict).
+#[tokio::test]
+async fn apply_on_purged_player_claims_no_key_so_a_live_player_can_reuse_it() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let purged = unique_player(&pool).await;
+    let live = unique_player(&pool).await;
+    let currency = unique_currency(&pool).await;
+    let key = unique_key("purged-guard");
+
+    let mut conn = pool.acquire().await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &purged, "Purged#0001").await.unwrap();
+    drop(conn);
+
+    let e = svc
+        .credit(movement(&key, &purged, &currency, 50, "test"))
+        .await
+        .unwrap_err();
+    assert_eq!(e.status, Status::Conflict);
+    assert_eq!(
+        ledger_row_count(&pool, &key).await,
+        0,
+        "a purged player's movement must claim NO ledger row"
+    );
+
+    let balance = svc
+        .credit(movement(&key, &live, &currency, 50, "test"))
+        .await
+        .expect("the same key must still be free for a live player");
+    assert_eq!(balance, 50);
+    assert_eq!(ledger_owner(&pool, &key).await.as_deref(), Some(live.as_str()));
+
+    cleanup(&pool, &[&purged, &live], &[&currency]).await;
+    let _ = sqlx::query("DELETE FROM wallet.ledger WHERE idempotency_key = $1")
+        .bind(&key)
+        .execute(&pool)
+        .await;
+    cleanup_purge_row(&pool, &purged).await;
+}
+
+/// `grant_starter` (the `player.registered` starter-grant reaction) skips a purged
+/// player on BOTH the first call and a REDELIVERED one — the "granting nothing" must
+/// hold across a redelivery, not just once.
+#[tokio::test]
+async fn grant_starter_skips_a_purged_player_on_first_and_redelivered_calls() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+    let currency = unique_currency(&pool).await;
+    let _ = svc.config.set(FakeConfig::new(&currency, 100));
+
+    let mut conn = pool.acquire().await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &pid, "Purged#0001").await.unwrap();
+
+    svc.grant_starter(&mut conn, &pid).await.unwrap();
+    let starter_key = format!("starter:{pid}");
+    assert_eq!(ledger_row_count(&pool, &starter_key).await, 0, "the first call must grant nothing");
+
+    // Redelivery: same player, same handler — still nothing.
+    svc.grant_starter(&mut conn, &pid).await.unwrap();
+    assert_eq!(
+        ledger_row_count(&pool, &starter_key).await,
+        0,
+        "a redelivered player.registered must also grant nothing"
+    );
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+    cleanup_purge_row(&pool, &pid).await;
 }
