@@ -4,10 +4,9 @@
 //! player-op faces plus `admin.adminData`/`admin.adminSubmit` to `edge::EDGE_SLOT`
 //! (topology-blind), and `app::run` installs them on this server, so gateway-svc can
 //! dispatch the player ops Remote and admin-svc can fetch/submit its admin page over
-//! the mTLS edge. Its three durable subscriptions (`notifications.wallet-changed.v1`,
-//! `notifications.player-promoted.v1`, `notifications.prune-on-scheduler.v1`) pull
-//! from the shared XID-ordered log; each handler inserts on the handed delivery tx,
-//! atomically with the checkpoint advance.
+//! the mTLS edge. Its durable subscriptions (`notifications.wallet-changed.v1`,
+//! `notifications.player-promoted.v1`, …) pull from the shared XID-ordered log; each
+//! handler runs on the handed delivery tx, atomically with the checkpoint advance.
 //!
 //! It dials no peer for a CAPABILITY — `requires()` is empty, so it hosts no
 //! `remote::Stub`. It does hold one outbound sender: `remote::PushSender`, the backplane

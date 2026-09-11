@@ -233,10 +233,14 @@ pub(crate) const SWEEP_BUDGET: std::time::Duration = std::time::Duration::from_s
 /// batch runs inside the ONE still-open delivery transaction, where the tombstones this
 /// transaction has already stamped are dead-but-unprunable row versions that a
 /// `swept_at IS NULL` re-scan still walks — so a floorless scan re-walks `256 x (k-1)` of
-/// them and the loop goes quadratic. `player_id` is the tombstone table's primary key, hence
-/// unique and ordered, so the comparison is `>=` rather than the `>` a unique key would
-/// allow: it costs one already-stamped row per batch (`swept_at IS NULL` filters it out) and
-/// in exchange keeps the floor value itself reachable.
+/// them and the loop goes quadratic. It buys that only while the batch query's `ORDER BY`
+/// names the TABLE's `player_id`: unqualified it resolves to the `player_id::text` output
+/// column, which the primary key can supply as neither the ordering nor an index condition,
+/// leaving a seq scan plus a sort that spills to disk inside that transaction. Ordering and
+/// filtering on the same `uuid` column also drops an unstated dependency on canonical uuid
+/// text collating in uuid order. The comparison is `>=` rather than the `>` the unique key
+/// would allow: it costs one already-stamped row per batch (`swept_at IS NULL` filters it
+/// out) and in exchange keeps the floor value itself reachable.
 const PURGE_FLOOR: &str = "00000000-0000-0000-0000-000000000000";
 
 /// Just the `name` of a `scheduler.fired` payload: the sweep subscribes by the contract's
@@ -263,7 +267,8 @@ impl Inner {
             let due: Vec<(String,)> = sqlx::query_as(
                 "SELECT player_id::text FROM inventory.purged_players \
                   WHERE swept_at IS NULL AND player_id >= $1::uuid \
-                  ORDER BY player_id LIMIT $2 FOR UPDATE SKIP LOCKED",
+                  ORDER BY inventory.purged_players.player_id \
+                  LIMIT $2 FOR UPDATE SKIP LOCKED",
             )
             .bind(&watermark)
             .bind(PURGE_BATCH)

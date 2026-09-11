@@ -379,8 +379,8 @@ impl TxHandler for PruneHandler {
 
 /// The purge sweep's consumer-owned subscription id. Separate from [`PRUNE_SUB`] although
 /// both ride `scheduler.fired`: two checkpoints, so a paused retention prune never stalls a
-/// deletion and a paused deletion never stalls retention. `Genesis` for the reason
-/// [`PRUNE_SUB`] gives.
+/// deletion and a paused deletion never stalls retention. `Genesis` because the sweep must
+/// run on a boot that has never subscribed before.
 pub(crate) const PURGE_SWEEP_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
     id: "notifications.purge-on-scheduler.v1",
     start: bus::StartPosition::Genesis,
@@ -397,10 +397,14 @@ pub(crate) const PURGE_BATCH: i64 = 256;
 /// batch runs inside the ONE still-open delivery transaction, where the tombstones this
 /// transaction has already stamped are dead-but-unprunable row versions that a
 /// `swept_at IS NULL` re-scan still walks — so a floorless scan re-walks `256 x (k-1)` of
-/// them and the loop goes quadratic. `player_id` is the tombstone table's primary key, hence
-/// unique and ordered, so the comparison is `>=` rather than the `>` a unique key would
-/// allow: it costs one already-stamped row per batch (`swept_at IS NULL` filters it out) and
-/// in exchange keeps the floor value itself reachable.
+/// them and the loop goes quadratic. It buys that only while the batch query's `ORDER BY`
+/// names the TABLE's `player_id`: unqualified it resolves to the `player_id::text` output
+/// column, which the primary key can supply as neither the ordering nor an index condition,
+/// leaving a seq scan plus a sort that spills to disk inside that transaction. Ordering and
+/// filtering on the same `uuid` column also drops an unstated dependency on canonical uuid
+/// text collating in uuid order. The comparison is `>=` rather than the `>` the unique key
+/// would allow: it costs one already-stamped row per batch (`swept_at IS NULL` filters it
+/// out) and in exchange keeps the floor value itself reachable.
 const PURGE_FLOOR: &str = "00000000-0000-0000-0000-000000000000";
 
 /// Drains the tombstones planted by [`on_player_deleted`]: the inbox rows of players whose
@@ -426,7 +430,8 @@ impl TxHandler for PurgeSweepHandler {
                 let due: Vec<(String,)> = sqlx::query_as(
                     "SELECT player_id::text FROM notifications.purged_players \
                       WHERE swept_at IS NULL AND player_id >= $1::uuid \
-                      ORDER BY player_id LIMIT $2 FOR UPDATE SKIP LOCKED",
+                      ORDER BY notifications.purged_players.player_id \
+                      LIMIT $2 FOR UPDATE SKIP LOCKED",
                 )
                 .bind(&watermark)
                 .bind(PURGE_BATCH)
