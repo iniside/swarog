@@ -429,6 +429,28 @@ recorded, which this module inherits.
 
 ---
 
+## Step 1 errata (landed `974692f`)
+
+1. **D3 had no reachable consumer.** The contract table gave `get` only
+   `{collection}/{key}`, but D1 puts the owner in the address — so a non-owner could not
+   name another owner's object and `ACL_PUBLIC_READ` was unexercisable, including by
+   Step 8a's required assertion. `get` now takes `owner_id: String` (empty = the
+   caller's own). `list` deliberately does **not**: a public object is readable by
+   whoever can name it, never discoverable. That second half is the implementer's
+   decision, consistent with D1's accepted oracle.
+2. **`ColumnCap`/`COLUMN_CAPS` moves to Step 3, deliberately.** Its `constraint` field
+   exists only so a `23514` can be mapped back to the Rust verdict; Step 1 has no
+   statement that can raise one, so the table would need `#[allow(dead_code)]` under
+   `-D warnings` — the same exemption-outliving-its-reason shape Step 1(b) rejects.
+   Step 1 lands the named CHECKs and one `validate_segment` authority instead.
+   **Step 3 must introduce `ColumnCap`/`COLUMN_CAPS`/`by_constraint` with the write
+   path's error mapping, or Step 9's pairing test has nothing to iterate and the
+   pairing never exists.**
+3. `ObjectSummary` carries no `value` — 100 rows x 64 KiB is a response nobody asked
+   for. `put` returns a one-field `ObjectVersion` rather than a bare `i64`, because no
+   `#[http]` op in the tree returns a scalar today.
+4. The plan's Schema block omits `CREATE SCHEMA IF NOT EXISTS storage;`.
+
 ## Review response (rev 1 → rev 2)
 
 All seven blocking-factual findings addressed: the phantom ACL grant table and every
