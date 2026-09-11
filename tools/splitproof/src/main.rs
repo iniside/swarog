@@ -2625,7 +2625,7 @@ async fn cursor_at_or_past(pool: &PgPool, subscription_id: &str, event_id: &str)
 }
 
 /// The EARLIEST `scheduler.fired{player-purge}` appended after `event_id` — the anchor the
-/// six sweep cursors are measured against, since a sweep subscription rides
+/// seven sweep cursors are measured against, since a sweep subscription rides
 /// `scheduler.fired`, not `player.deleted`. Any fire that could have done this pass's work
 /// was appended after the tombstone committed, hence after `player.deleted`; the cursor is
 /// monotone and equals the delivered position, so `>=` this earliest one is exactly the
@@ -2650,7 +2650,7 @@ async fn first_purge_fire_after(pool: &PgPool, event_id: &str) -> Option<String>
 
 /// Polls a POSITIVE count predicate while re-forcing the shared `player-purge` schedule due
 /// on every attempt. One fire sweeps a bounded slice — `groups` caps at 64 groups per fire
-/// and all six sweeps carry a 5s budget — so a backlog left by an earlier run would defer
+/// and all seven sweeps carry a 5s budget — so a backlog left by an earlier run would defer
 /// this pass's player to a fire 86400s away, which no wait can survive. The UPDATE is the
 /// `[GR6]`/`[SP2]` force, idempotent, and an extra fire is a committed no-op for every
 /// module with nothing left to sweep.
@@ -2675,7 +2675,7 @@ async fn poll_swept(pool: &PgPool, sql: &str, id: &str, want: i64) -> bool {
 ///
 /// F5 of the deletion plan is why every per-module check below joins THREE predicates rather
 /// than one: `topiccheck`'s unsubscribed check is keyed on `(topic, version)` — existence,
-/// not consumer — so six of the seven `player.deleted` consumers can be deleted with both
+/// not consumer — so seven of the eight `player.deleted` consumers can be deleted with both
 /// deployment profiles green, and contract-golden carries definition lines only. This pass is
 /// the only instrument that names a consumer. The three are: the subject's rows gone from an
 /// EXACT asserted pre-count (a `= 0` alone passes when the fixture never seeded), a survivor
@@ -3038,7 +3038,7 @@ async fn deletion_checks(
         format!("handle={} reserved={reserved:?} sqlstate={sqlstate:?} players_holding={still_held}", s.handle),
     );
 
-    // ---- the six tombstones, then the sweeps -------------------------------------------
+    // ---- the seven tombstones, then the sweeps -----------------------------------------
     // The tombstone plants are polled FIRST, before any fire is forced: the sweep reads
     // `purged_players`, so a fire that arrives before the plant does nothing and the next
     // one is 86400s away.
@@ -3055,7 +3055,7 @@ async fn deletion_checks(
             .await,
         );
     }
-    // Each sweep gets its OWN poll, and therefore its own full budget: six sweeps each
+    // Each sweep gets its OWN poll, and therefore its own full budget: seven sweeps each
     // holding a 5s budget can serialize behind one fire, and a single shared poll would go
     // red on timing rather than on correctness.
     let mut swept: BTreeMap<&str, bool> = BTreeMap::new();
@@ -3333,7 +3333,7 @@ async fn deletion_checks(
         ),
     );
 
-    // ---- [DL10] audit, the seventh consumer --------------------------------------------------
+    // ---- [DL10] audit, the eighth consumer ---------------------------------------------------
     let audit_row = poll_count(
         pool,
         "SELECT count(*) FROM audit.log WHERE topic = 'player.deleted' AND payload->>'player_id' = $1",
@@ -3353,7 +3353,7 @@ async fn deletion_checks(
     // the sessions in the producing transaction), so the guard is reached the only way it can
     // be: a `player.deleted` appended straight onto the plane through `asyncevents.append_event`
     // for a player still LIVE in accounts (the `[ML1]` producer shape). That synthetic event
-    // fires all six sweeps against a live player, so `w` is dedicated, consumed once, and never
+    // fires all seven sweeps against a live player, so `w` is dedicated, consumed once, and never
     // used again. The assertion is that NOTHING was written — a guard that answers 409 after
     // inserting is exactly the failure this check exists for.
     let w = friends_player(ctx, front, &format!("dl-w-{nonce}@test.local"), &format!("DlW{nonce}")).await?;

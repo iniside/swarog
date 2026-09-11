@@ -228,7 +228,7 @@ impl Service {
     }
 
     /// The purge backlog for the admin page: outstanding tombstones and the oldest one's
-    /// `created_at`. Public because the page is the only caller and lives outside this module.
+    /// `created_at`. Public for the admin page's future call, which lives outside this module.
     pub async fn pending_purges(&self) -> Result<(i64, String), Error> {
         self.store.pending_purges().await.map_err(crate::internal)
     }
