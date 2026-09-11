@@ -443,11 +443,21 @@ finishes.
    revisits. Closing it requires the plant handler AND every guarded write path in all
    six modules to share one per-player advisory lock — which would also put a lock on
    `wallet`'s hot movement path, where the store's own note explains there is
-   deliberately none. Not taken: the leak is one unreachable row (every read path is
-   identity-keyed and that identity is gone), while the cost is a cross-cutting lock
-   on six fortresses. The window is ordinarily a day wide only in the sense that the
-   sweep is daily; it shrinks to a scheduler tick when a tombstone lands just before a
-   due fire, so it is narrow but real — not "impossible".
+   deliberately none. Not taken, but the orphan is not uniformly the unreachable row
+   the first cut of this note claimed: for `characters`/`inventory`/`notifications`/
+   `wallet` every read path IS identity-keyed and that identity is gone, so those four
+   really do leak one dead row apiece. `friends` and `groups` are different — `friends`'
+   `page` (`modules/friends/src/service.rs:305-350`) keys on the surviving counterparty,
+   and `groups`' `page_group` (`modules/groups/src/service.rs:314`) keys on the group,
+   so an orphan there is *visible* to the counterparty or co-members and *removable* by
+   them (`friends.remove`, `groups.decide` reject) — just never revisited by a sweep.
+   The one unrecoverable shape is an orphan from `groups.create`: the deleted player is
+   the group's sole `ROLE_ADMIN`, `decide`'s kick requires an admin and `leave` is the
+   only self-removal, so that group ends up with no reachable actor at all. The cost of
+   closing all of this remains a cross-cutting lock on six fortresses. The window is
+   ordinarily a day wide only in the sense that the sweep is daily; it shrinks to a
+   scheduler tick when a tombstone lands just before a due fire, so it is narrow but
+   real — not "impossible".
 
 ## Step 8 — operator visibility  `[opus]`
 

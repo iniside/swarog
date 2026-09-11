@@ -228,10 +228,11 @@ impl Service {
     /// that connection would turn a 409 into a 500). A DURABLE caller must therefore
     /// PROPAGATE that `Err`: the plane's `ROLLBACK TO SAVEPOINT deliver` is what makes the
     /// connection usable again, while an `Ok` on an aborted transaction fails the plane's
-    /// checkpoint `UPDATE` with 25P02. `Ok` is for the verdicts a handler decides ITSELF,
-    /// before any statement of this call runs — which is what the by-construction
-    /// pre-checks above buy: they keep the reachable `Err` set down to genuine faults, so
-    /// the backoff a propagated `Err` costs is never spent on a data-quality problem.
+    /// checkpoint `UPDATE` with 25P02. `Ok` (including `Duplicate`/`Conflict`, decided
+    /// from the ledger insert's own outcome) is for verdicts this call itself reaches
+    /// without aborting the transaction — which is what the by-construction pre-checks
+    /// above buy: they keep the reachable `Err` set down to genuine faults, so the
+    /// backoff a propagated `Err` costs is never spent on a data-quality problem.
     pub(crate) async fn apply_on(
         &self,
         conn: &mut PgConnection,
