@@ -24,3 +24,17 @@ existing ones are non-vacuous → `proof-auditor`. Fixing a defect in the harnes
 → `core-implementer`. `test-author` owns module `src/*_tests.rs`, not the harness.
 Related: [[specialized-core-agents]], [[a-green-signal-that-never-ran-the-thing]],
 [[not-pinned-lists-are-unexecuted-prose]].
+
+**Generalised 2026-09-11, after a third "zly agent".** The split is by ACTIVITY, not by
+file path. I had written this memory as "test-author owns module `src/*_tests.rs`", and
+was corrected again when I sent `test-author` to **fix** the isolation of two already-
+landed friends tests.
+
+- **Authoring** new tests for freshly-landed code → `test-author`.
+- **Fixing** anything — a defect in a test, a harness, a gate, a module — →
+  `core-implementer`, whatever file it lives in.
+- **Auditing** whether a test or gate proves what it claims → `proof-auditor`.
+- **Correcting prose**, including a doc comment inside a `.rs` file → `docs-writer`.
+
+All three corrections in this session were the same error read three ways: I routed on
+"which file does this touch" instead of "what is being done to it".
