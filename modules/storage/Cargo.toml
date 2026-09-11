@@ -1,0 +1,23 @@
+[package]
+name = "storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The storage impl module: owns schema `storage` (one row per cloud-save object) and
+# provides the player-facing `Player` capability (put/get/delete/list). It consumes no
+# other module's capability — the owner id is the caller's own identity. An impl crate:
+# no other module imports it. `storagerpc` is its OWN glue (sanctioned): the edge
+# register_server face.
+[dependencies]
+lifecycle = { workspace = true }
+registry = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+storageapi = { workspace = true }
+storagerpc = { workspace = true }
+sqlx = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }

@@ -1,0 +1,25 @@
+[package]
+name = "storage-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The storage fortress process: hosts storage and stands up one shared QUIC edge server.
+# It dials no peer — storage consumes no other module's capability. It hosts NO gateway
+# (FrontDoor): the single public front door lives only in gateway-svc + the monolith, so
+# it serves its player ops ONLY over the internal mTLS edge and gateway-svc dispatches
+# them Remote.
+[[bin]]
+name = "storage-svc"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+lifecycle = { workspace = true }
+metrics = { workspace = true }
+edge = { workspace = true }
+storage = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+tracing-subscriber = { workspace = true }

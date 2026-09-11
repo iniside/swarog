@@ -149,5 +149,14 @@ pub fn modules(
             "groups",
             edge_peer(wiring, edge_list_resolver, "groups", "127.0.0.1:9015"),
         )),
+        // storage is pure-HTTP from this front door's point of view (put/get/delete/list,
+        // routes arriving via `__describe`); the gateway consumes no storage capability of
+        // its own. `describe_peer`, never `Stub::new` — `storagerpc` deliberately exposes
+        // no `remote_factories()`, and `Stub::new` with an empty factory list
+        // `anyhow::bail!`s in `register`.
+        Box::new(remote::Stub::describe_peer(
+            "storage",
+            edge_peer(wiring, edge_list_resolver, "storage", "127.0.0.1:9016"),
+        )),
     ]
 }

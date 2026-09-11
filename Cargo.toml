@@ -135,6 +135,8 @@ members = [
     "api/groups/api",
     "api/groups/rpc",
     "api/groups/events",
+    "api/storage/api",
+    "api/storage/rpc",
     # Module implementations — private, reachable only from a cmd/ binary.
     "modules/config",
     "modules/apikeys",
@@ -153,6 +155,7 @@ members = [
     "modules/mail",
     "modules/friends",
     "modules/groups",
+    "modules/storage",
     # Generated, dependency-free ops catalog (Faza C): the (method, verb, path, auth) rows
     # of every #[http]-bound op, produced by tools/opscatalog-gen. A neutral leaf data
     # crate importable by any module (like opsapi); imports nothing itself.
@@ -186,6 +189,7 @@ members = [
     "cmd/mail-svc",
     "cmd/friends-svc",
     "cmd/groups-svc",
+    "cmd/storage-svc",
 ]
 
 [workspace.package]
@@ -368,6 +372,8 @@ friendsevents = { path = "api/friends/events" }
 groupsapi = { path = "api/groups/api" }
 groupsrpc = { path = "api/groups/rpc" }
 groupsevents = { path = "api/groups/events" }
+storageapi = { path = "api/storage/api" }
+storagerpc = { path = "api/storage/rpc" }
 
 # ---- Generated ops catalog (neutral leaf data crate; imports nothing). ----
 opscatalog = { path = "opscatalog" }
@@ -390,6 +396,7 @@ notifications = { path = "modules/notifications" }
 mail = { path = "modules/mail" }
 friends = { path = "modules/friends" }
 groups = { path = "modules/groups" }
+storage = { path = "modules/storage" }
 # ---- Demo crates (demos/): non-shipping, importable ONLY by cmd/server (archcheck). ----
 webui = { path = "demos/webui" }
 
@@ -416,3 +423,4 @@ notifications-svc = { path = "cmd/notifications-svc" }
 mail-svc = { path = "cmd/mail-svc" }
 friends-svc = { path = "cmd/friends-svc" }
 groups-svc = { path = "cmd/groups-svc" }
+storage-svc = { path = "cmd/storage-svc" }

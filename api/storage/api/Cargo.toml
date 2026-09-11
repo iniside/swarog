@@ -1,0 +1,20 @@
+[package]
+name = "storageapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The storage module's PURE, transport-free contract: the player-facing `Player`
+# capability (put/get/delete/list) over caller-authored cloud-save documents, plus the
+# shared vocab consts, the legal-segment alphabet and the DTOs. `#[rpc]` generates the
+# transport-FREE surface (wire envelopes, METHOD_* consts, operations()/route_bindings())
+# into the child `player_rpc` module, plus the metadata-callback macro the sibling
+# `storagerpc` glue crate expands into the edge-dependent glue. NO `edge`/`remote`/
+# transport dependency (archcheck's FORBIDDEN_API_DEPS).
+[dependencies]
+opsapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

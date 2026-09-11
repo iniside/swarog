@@ -63,6 +63,7 @@ pub fn modules(
         Box::new(mail::MailModule::new()), // outbound email: schema "mail", consumes mail.send_requested durably
         Box::new(friends::Friends::new()), // social graph: schema "friends", consumes accounts' Directory capability
         Box::new(groups::Groups::new()), // player groups: schema "groups", consumes accounts' Directory capability
+        Box::new(storage::Storage::new()), // player cloud-save: schema "storage", caller-authored documents under OCC
         Box::new(gw),                            // HTTP + player QUIC front, auth-once (real accounts sessions)
     ]
 }
