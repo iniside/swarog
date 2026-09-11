@@ -251,6 +251,23 @@ than decided. Not reproduced, not scheduled — the closure shape already exists
 | Metrics endpoint + record layer | ✅ | metrics | pre-existing | `GET /metrics`, listed in every main. |
 | Scheduler (data-driven, replica-safe) | ✅ | scheduler | pre-existing | Drives seq #5 resets and any future rotation. |
 | Admin portal + cross-module extension points | ✅ | admin | pre-existing | Remote fan-out + remotely-editable forms ([[admin-extension-points-shipped]]). Known gaps, repo-wide class surfaced by the `storage` Step 6 review and NOT fixed there (storage is not an outlier — recorded, not scheduled): `resolve_items` (`modules/admin/src/lib.rs`) fetches every REMOTE item's `admin_data` on every `/admin` request, so a sibling's whole-table aggregate (`friends`/`groups`/`inventory` each run an unscoped `count(*)`-family query with no player/owner scope) pays its cost whenever an operator opens any OTHER page, not just its own; each local-render page (`apikeys`/`friends`/`groups`/`mail`/`notifications`/`wallet`) runs that query under `block_in_place`, which a request cancelled by `HTTP_REQUEST_TIMEOUT_MS` does not stop — the timeout bounds the response, not the blocking work; `friends`' drill-down seeds its avatar `palette`/`short_uuid` from the raw URL param while its table cells seed from the DB's canonical lowercase id, so a hand-typed uppercase uuid draws a different colour than the same player's row (same pattern in `wallet`, `notifications`); and `friends`/`notifications`/`wallet` each redeclare `PARAM_PLAYER`/`PLAYER_REF_PREFIX` as local literals rather than deriving them from `accountsapi::admin::PLAYERS_ROW_MENU`'s contract. |
+**Two pre-existing SQL findings surfaced by the `storage` Step 6 fix (`74728b3`),
+NOT scheduled, each verified by `EXPLAIN` on the live cluster by the
+implementer**: `friends::store::admin_recent` (`modules/friends/src/store.rs:461`)
+projects `id::text` as its first select-list column and then runs an unqualified
+`ORDER BY created_at DESC, id DESC` — the bare `id` binds to that text-cast output
+column rather than the underlying uuid, so the sort key is a text collation no
+`(created_at DESC, id DESC)` index could ever serve (the same file's `side_sql`, a
+few lines up, gets this right with explicit `sort_at`/`sort_id` aliases).
+`groups::store::admin_recent_groups` (`modules/groups/src/store.rs:564`) runs a
+correlated `JOIN LATERAL` member/pending count for every row of `groups.groups`
+before its `ORDER BY g.created_at DESC, g.id DESC LIMIT $2` applies — the same
+evaluated-below-the-sort shape `74728b3` closed in `storage`, though here the sort
+key itself is already correctly qualified, so only the evaluation-order half of
+that defect applies. Neither is fixed here; the closure `74728b3` proved —
+project/aggregate above an ordered, limited subquery — is the candidate shape:
+on `storage`'s 2000-row/42 MB-toast case it dropped shared buffers 11395 → 320
+and latency 64.3 ms → 0.7 ms.
 | API-key policy layer | ✅ | apikeys | pre-existing | role→policy, hashed secrets, admin-editable. |
 
 ---
