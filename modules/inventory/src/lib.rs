@@ -255,11 +255,10 @@ impl Module for Inventory {
         );
 
         // The purge tombstone, planted on the HANDED conn so it commits with the
-        // subscription checkpoint. O(1) BY DESIGN: nothing bounds how many holdings a
-        // player and its characters own, while `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this
-        // handler at 10s — a delete too large for that budget would make NO progress ever
-        // and burn failures toward the plane's pause threshold, stranding every later
-        // player behind the same cursor. The deleting belongs to the scheduled sweep,
+        // subscription checkpoint, and does no other work: nothing bounds how many holdings
+        // a player and its characters own, while `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this
+        // handler at 10s, so deleting them here could make no progress and burn failures
+        // toward the plane's pause threshold. The deleting belongs to the scheduled sweep,
         // which resumes across fires; this only records its work item.
         //
         // `Genesis`, not `AfterRegistration`: a lost deletion is a permanent retention leak

@@ -233,12 +233,13 @@ impl Module for Characters {
         );
 
         // (d) The purge tombstone, planted on the HANDED delivery conn so it commits with
-        // the subscription checkpoint. O(1) BY DESIGN: nothing bounds how many characters
-        // a player owns, while `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this handler at 10s —
-        // a delete too large for that budget would make NO progress ever and burn failures
-        // toward the plane's pause threshold, stranding every later player behind the same
-        // cursor. The deleting belongs to the scheduled sweep, which resumes across fires;
-        // this only records its work item.
+        // the subscription checkpoint, and does no other work: nothing bounds how many
+        // characters a player owns, while `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this handler
+        // at 10s, so deleting them here could make no progress and burn failures toward the
+        // plane's pause threshold. The deleting belongs to the scheduled sweep, which
+        // resumes across fires; this row is that sweep's work item and, once swept, the
+        // permanent record that this player is gone — redelivery is `ON CONFLICT DO
+        // NOTHING`, never a reset of `swept_at`.
         //
         // `Genesis`, not `AfterRegistration`: a lost deletion is a permanent retention leak
         // with no repair path, while a redelivery into an already-tombstoned module is a

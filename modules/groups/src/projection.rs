@@ -182,16 +182,13 @@ impl TxHandler for PruneHandler {
 }
 
 /// Plants the purge tombstone on the HANDED delivery connection, so it commits with the
-/// subscription checkpoint. The row is the sweep's work item and, once swept, the permanent
-/// record that this player is gone — nothing deletes it, and a redelivery is `ON CONFLICT DO
-/// NOTHING` rather than a reset of `swept_at`.
-///
-/// O(1) BY DESIGN: nothing bounds a player's memberships, while `ASYNCEVENTS_HANDLER_TIMEOUT`
-/// bounds this handler at 10s — a delete too large for that budget would make NO progress
-/// ever and burn failures toward the plane's pause threshold, stranding every later player
-/// behind the same cursor. The deleting (and its `group.member_left` emits, and the group
-/// locks they need) belongs to the scheduled sweep, which resumes across fires; this only
-/// records the work item, takes no group lock and emits nothing.
+/// subscription checkpoint, and does no other work: nothing bounds a player's memberships,
+/// while `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this handler at 10s, so deleting them here
+/// could make no progress and burn failures toward the plane's pause threshold. The deleting
+/// (and its `group.member_left` emits, and the group locks they need) belongs to the
+/// scheduled sweep, which resumes across fires; this row is that sweep's work item and,
+/// once swept, the permanent record that this player is gone — redelivery is
+/// `ON CONFLICT DO NOTHING`, never a reset of `swept_at`.
 pub(crate) fn on_player_deleted<'a>(
     svc: Arc<crate::Service>,
     mut delivery: Delivery<'a>,

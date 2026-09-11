@@ -196,9 +196,6 @@ impl Store {
         .await
     }
 
-    /// Plants the purge tombstone on the HANDED delivery connection, so it commits with the
-    /// subscription checkpoint. Redelivery is `ON CONFLICT DO NOTHING`, never a reset of
-    /// `swept_at`.
     pub(crate) async fn plant_purged_player_tx(
         &self,
         conn: &mut PgConnection,

@@ -305,10 +305,6 @@ impl Store {
         Ok(row.is_some())
     }
 
-    /// Plants the purge tombstone on the HANDED delivery connection, so it commits with the
-    /// subscription checkpoint. The row is the sweep's work item and, once swept, the
-    /// permanent record that this player is gone — nothing deletes it, and a redelivery is
-    /// `ON CONFLICT DO NOTHING` rather than a reset of `swept_at`.
     pub(crate) async fn plant_purged_player_tx(
         &self,
         conn: &mut PgConnection,
