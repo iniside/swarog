@@ -514,3 +514,34 @@ its real authority (C5); `.agents/README.md` joins Step 11 (C6).
    turns a comment-grade rewording into a red gate whose failure text lies (e.g. "was
    ACCEPTED" when the cap rejected it). `groups`, `notifications` and `friends` compare
    a shared const by inequality; `storage` was the only module with the defect.
+3. **`CAS_SQL`'s delete-race window** (`modules/storage/src/store.rs:150-167`, from the
+   Step 3 review): T1 deletes an address uncommitted; T2 `put(expected_version = 5)`
+   blocks on T1's row lock; T1 commits; the `UPDATE` then re-evaluates against a deleted
+   tuple and matches zero rows, while the `EXISTS` half still reads T2's own command
+   snapshot and sees the row — a 409 for an address that no longer holds an object. The
+   client re-reads and gets 404. No overwrite, no phantom 409: a bounded ambiguity, not a
+   defect. Both producers are imminent — `delete` and the purge sweep, both landing off
+   Steps 4 and 5. The SQL is unchanged; `2936390` corrected only the doc sentence above it.
+4. **A Step 9 obligation**, recorded in `2936390`'s commit body: the reverse leg of the
+   `COLUMN_CAPS` pairing test must **not** be copied verbatim from
+   `modules/apikeys/src/store_tests.rs:608-625` — `storage_value_len_check` ends in
+   `_len_check` but is deliberately absent from `COLUMN_CAPS`, so a `COLUMN_CAPS`-driven
+   sweep fails spuriously on it and invites a "fix" into a vacuous pass. Drive that leg
+   off `write_error`'s mapping instead.
+5. **A known gap:** an owner at `MAX_OBJECTS_PER_OWNER` sending `expected_version = 0` to
+   an address it already holds gets the cap's 409 rather than the address-taken 409 —
+   same status, misleading remedy (`modules/storage/src/service.rs:137-144`). `2936390`
+   reordered `create()` to close this by inserting before counting, and `cbd4a04`
+   **reverted that reorder**: it flipped an off-by-one-prone comparison
+   (`>=` to `>`) with no test pinning either form, needed a ~10,000-row fixture to
+   exercise, and let a client sitting at the cap force an insert-then-rollback on every
+   attempt. The gap stands, recorded as a one-line comment at the cap decision rather
+   than fixed.
+6. **The process lesson, stated as a lesson:** a prose correction describing a
+   *transient* state (a stub, a deferred pairing, a not-yet-wired path) expires the
+   moment the step that changes that state lands. Sequence such corrections **after**
+   the change they describe, or word them to state the invariant rather than the
+   current stage. `946230e`'s own `storage.put` collection/acl bases in
+   `tools/conformance/src/policy.rs` went stale eleven minutes later, when `57d089f`
+   wired the real CAS write path underneath them — a REJECT on an otherwise-clean
+   review.
