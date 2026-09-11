@@ -194,8 +194,10 @@ impl Module for Inventory {
     /// Only wires up — no I/O (#8). EXACT order mirrors Go's `Init`, minus the config
     /// inventory-owned config cache Step 8 removed:
     ///   1. resolve `characters` ownership → inject into the shared state,
-    ///   2/3. the two DURABLE `on_tx` subscriptions (grant-starter/wipe, on the HANDED
-    ///        conn so the effect is atomic with the checkpoint commit in the delivery tx),
+    ///   2/3. the two character-lifecycle DURABLE `on_tx` subscriptions (grant-starter/
+    ///        wipe, on the HANDED conn so the effect is atomic with the checkpoint commit
+    ///        in the delivery tx), then the `player.deleted` purge tombstone on the same
+    ///        contract,
     ///   4. resolve `config` (HARD — fail-loud, this is why config is in `requires`);
     ///      `grant_starter` reads it directly, no second cache/subscription needed,
     ///   5/6. contribute the player operations (ALL unconditional; grant is gated at
