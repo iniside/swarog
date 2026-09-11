@@ -17,12 +17,14 @@
 //!   were one letter apart instead of a clearly distinct name,
 //! - `asyncevents_safe_frontier_age_seconds` — how long the oldest not-yet-eligible
 //!   current-generation event has been waiting on the snapshot frontier (a
-//!   long-running foreign transaction delays delivery; this is the alarm for it).
+//!   long-running foreign transaction delays delivery; this is the alarm for it),
+//! - `asyncevents_metrics_refresh_total` / `asyncevents_metrics_refresh_errors_total`
+//!   — the freshness pair for everything above (see [`refresh_loop`]).
 
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use prometheus::{Gauge, GaugeVec, IntGauge, IntGaugeVec, Opts};
+use prometheus::{Gauge, GaugeVec, IntCounter, IntGauge, IntGaugeVec, Opts};
 use sqlx::{PgPool, Row};
 use tokio::sync::watch;
 
@@ -33,6 +35,8 @@ struct Gauges {
     paused: IntGauge,
     paused_state: IntGaugeVec,
     frontier_age: Gauge,
+    refreshes: IntCounter,
+    refresh_errors: IntCounter,
 }
 
 fn gauges() -> &'static Gauges {
@@ -80,6 +84,21 @@ fn gauges() -> &'static Gauges {
             "Age of the oldest current-generation event still behind the snapshot frontier.",
         )
         .expect("valid frontier_age gauge");
+        // Every series above is PUSHED, so a dead or persistently failing refresh loop
+        // (log-only by design — pure observability never gates readiness) freezes them
+        // all at their last value, and an alert on `..._paused_state` never fires again.
+        // These counters are the only series whose own staleness is self-evident.
+        let refreshes = IntCounter::new(
+            "asyncevents_metrics_refresh_total",
+            "Completed refreshes of this plane's gauges; a flat rate means every \
+             other asyncevents gauge is frozen, not healthy.",
+        )
+        .expect("valid refreshes counter");
+        let refresh_errors = IntCounter::new(
+            "asyncevents_metrics_refresh_errors_total",
+            "Failed refreshes of this plane's gauges while the plane was running.",
+        )
+        .expect("valid refresh_errors counter");
         // One registration per process; a second Plane in the same process (tests)
         // reuses the statics, so a duplicate-register error cannot occur here.
         let _ = metrics::register(Box::new(lag_events.clone()));
@@ -88,6 +107,8 @@ fn gauges() -> &'static Gauges {
         let _ = metrics::register(Box::new(paused.clone()));
         let _ = metrics::register(Box::new(paused_state.clone()));
         let _ = metrics::register(Box::new(frontier_age.clone()));
+        let _ = metrics::register(Box::new(refreshes.clone()));
+        let _ = metrics::register(Box::new(refresh_errors.clone()));
         Gauges {
             lag_events,
             lag_age,
@@ -95,6 +116,8 @@ fn gauges() -> &'static Gauges {
             paused,
             paused_state,
             frontier_age,
+            refreshes,
+            refresh_errors,
         }
     })
 }
@@ -164,8 +187,12 @@ pub(crate) async fn refresh_loop(pool: PgPool, local_ids: Vec<String>, mut stop:
         tokio::select! {
             _ = stop.changed() => return,
             _ = ticker.tick() => {
-                if let Err(err) = refresh(&pool, &local_ids).await {
-                    tracing::warn!(%err, "asyncevents metrics refresh failed");
+                match refresh(&pool, &local_ids).await {
+                    Ok(()) => gauges().refreshes.inc(),
+                    Err(err) => {
+                        gauges().refresh_errors.inc();
+                        tracing::warn!(%err, "asyncevents metrics refresh failed");
+                    }
                 }
             }
         }

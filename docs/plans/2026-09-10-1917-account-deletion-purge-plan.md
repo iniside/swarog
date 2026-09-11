@@ -471,6 +471,57 @@ own subscriptions. The admin view reads `purged_players` (`swept_at IS NULL`).
 
 **(d)** `[opus]`.
 
+**Errata (as landed) — the readiness check is NOT built, and F2 overstated the
+invisibility.**
+
+1. **No `ReadyCheck` reads `state = 'paused'`, deliberately.** `/readyz` in this repo is
+   a BOOT and RESTART gate, never a load-balancer gate — nothing routes traffic on it.
+   `weles::supervisor::step` (`weles/src/supervisor.rs:230-245`) answers a live process
+   that is `NotReady` past `HEALTH_DEADLINE` (30s) with `Directive::Kill`, then backoff,
+   then `Failed` after `MAX_CONSECUTIVE_FAILURES` (5); `devctl`/`splitproof` gate boot on
+   the same probe. A paused subscription is DURABLE state in
+   `asyncevents.subscriptions`, so the verdict is identical on every respawn: the check
+   would convert one stalled subscription into a guaranteed kill-loop of a process that
+   is serving HTTP correctly — and it would kill the very worker that `eventctl resume`
+   needs alive to drain the backlog. The plan's "right for a purge that must complete"
+   inverts: killing the process is what guarantees the purge never completes.
+2. **F2's "invisible" was wrong.** A paused subscription is already exported per process
+   as `asyncevents_subscription_paused_state{subscription}` and
+   `asyncevents_subscriptions_paused`, restricted to the process's OWN subscription ids
+   (`core/asyncevents/src/plane_metrics.rs:133-168`, ids from `Plane::start`), plus
+   `asyncevents_retention_blocked_age_seconds` when the pause holds back GC, and
+   `cargo run -p eventctl -- list` prints `paused_since`. What F2 correctly names is that
+   NO `ReadyCheck` reads it — which is the right design, not the gap.
+3. **What was actually missing in that alert shape, and is now closed:** every plane gauge
+   is PUSHED by the 10s `refresh_loop`, whose death is log-only and whose per-tick error
+   was a bare `tracing::warn!`. A dead or persistently failing loop freezes every gauge at
+   its last value, so an alert keyed on `..._paused_state` would silently never fire.
+   `asyncevents_metrics_refresh_total` / `asyncevents_metrics_refresh_errors_total` make
+   that staleness self-evident (`rate(...) == 0`); the alert rule is
+   `asyncevents_subscription_paused_state == 1` AND a non-flat refresh rate.
+4. **The paused state cannot reach the admin portal at all.** `core/*` never imports an
+   `api/` crate (constraint 1), so the plane cannot contribute an `adminapi::Item`; and
+   archcheck rule 14b bans any schema-qualified `asyncevents.<table>` read outside the
+   plane, so no module can render it either. Structural known gap: the plane's operator
+   surface is `/metrics` + `eventctl`, never `/admin`.
+5. **The admin view is a KPI on each purging module's EXISTING page, not a new page and
+   not a cross-schema reader.** The six tombstone tables live in six fortress schemas, so
+   each module reads its own: `Purges Pending` (count of `swept_at IS NULL`) with the
+   oldest pending `created_at` as the sub-line. It rides `admin.adminData` unchanged in
+   split. A TABLE was not an option: `adminapi::Content` carries exactly ONE `table`, and
+   every one of the six pages already spends it.
+6. **Step 6's known gap #5 (the partial index) is closed here, uniformly across all six**,
+   because the KPI's `WHERE swept_at IS NULL` is a second consumer of the same access path
+   and would otherwise seq-scan a table that grows one permanent row per deleted player.
+   `<schema>.purged_players_pending_idx ON (player_id) WHERE swept_at IS NULL` serves both
+   the sweep's `ORDER BY <schema>.purged_players.player_id` keyset walk and the KPI's
+   aggregate.
+7. **Deliberately not built:** a producer-side "deletions requested" KPI on the accounts
+   page (the denominator that would make a paused PLANT visible as a disagreement between
+   modules) — the plant-paused case is exactly what `..._paused_state` reports, and a
+   `count(*)` over the permanent receipts table is the unbounded scan this step is trying
+   to avoid.
+
 ## Step 9 — split-proof assertions  `[test-author]`, `model:"opus"`
 
 **(a)** `[DL1]`-`[DL9]` in `tools/splitproof/src/main.rs`, both topologies.
