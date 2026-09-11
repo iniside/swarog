@@ -89,10 +89,10 @@ pub fn conformance_value_rejected(len: usize) -> bool {
 }
 
 /// `storageapi::MAX_CURSOR_BYTES`, executed through `Player::list` itself. The
-/// discriminant is the MESSAGE, not the status: the cap is checked before the cursor is
-/// decoded, so once a decoder exists an at-cap filler is `Invalid` too — as a MALFORMED
-/// cursor, a different verdict from the cap's own. The message comes from the same
-/// `cursor_too_long_message` production calls, so a wording change can't desync the probe.
+/// discriminant is the MESSAGE, not the status: the cap is checked ahead of the decode, and
+/// an at-cap filler is `Invalid` too — as a MALFORMED cursor, a different verdict from the
+/// cap's own. The message comes from the same `cursor_too_long_message` production calls, so
+/// a wording change can't desync the probe.
 #[doc(hidden)]
 pub fn conformance_cursor_rejected(len: usize) -> bool {
     let rt = runtime();

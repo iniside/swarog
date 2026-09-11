@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use base64::Engine;
 use opsapi::{Error, Identity};
 use sqlx::PgPool;
 use storageapi::{
@@ -8,11 +9,6 @@ use storageapi::{
 };
 
 use crate::store::{write_error, CasOutcome, ColumnCap, Store, COLLECTION_CAP, KEY_CAP};
-
-/// What `get`, `delete` and `list` answer until Step 4 replaces their bodies with
-/// statements. The validation above each one is already the contract's, so every argument
-/// whose verdict does not require the store gets its real verdict.
-const NOT_IMPLEMENTED: &str = "storage: not implemented";
 
 /// The address verdict for a caller who may not see the object, and for one writing to an
 /// address that holds nothing: the same answer, or the write path becomes an oracle.
@@ -93,6 +89,94 @@ pub(crate) fn cursor_within_cap(cursor: &str) -> Result<(), Error> {
         return Err(Error::invalid(cursor_too_long_message()));
     }
     Ok(())
+}
+
+pub(crate) const MALFORMED_CURSOR: &str = "cursor is malformed";
+
+const B64: base64::engine::general_purpose::GeneralPurpose =
+    base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+/// `N` is one ascii digit; every other byte matches literally. The shape `store`'s
+/// `to_char` renders.
+const CURSOR_TIME_SHAPE: &str = "NNNN-NN-NNTNN:NN:NN.NNNNNNZ";
+
+fn field(s: &str, from: usize, to: usize) -> u32 {
+    s[from..to].parse().unwrap_or_default()
+}
+
+fn days_in_month(year: u32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// The codec is the sole authority on what reaches `$3::timestamptz`, so the calendar is
+/// checked HERE: a digit-SHAPED but impossible instant (`2026-02-30`, hour 25, year 0000)
+/// would otherwise raise 22008 and answer 500, contradicting the contract's promise of a
+/// 400 for a malformed cursor.
+pub(crate) fn is_cursor_time(s: &str) -> bool {
+    let shaped = s.len() == CURSOR_TIME_SHAPE.len()
+        && s.bytes()
+            .zip(CURSOR_TIME_SHAPE.bytes())
+            .all(|(c, p)| if p == b'N' { c.is_ascii_digit() } else { c == p });
+    if !shaped {
+        return false;
+    }
+    let (year, month, day) = (field(s, 0, 4), field(s, 5, 7), field(s, 8, 10));
+    let (hour, minute, second) = (field(s, 11, 13), field(s, 14, 16), field(s, 17, 19));
+    year >= 1
+        && (1..=12).contains(&month)
+        && day >= 1
+        && day <= days_in_month(year, month)
+        && hour <= 23
+        && minute <= 59
+        && second <= 59
+}
+
+/// base64url-no-pad over `"{created_at}|{key}"` — opaque, so the keyset stays this module's
+/// business rather than a client's.
+///
+/// It carries the keyset and NOTHING else. The owner is never encoded, so a cursor replayed
+/// from another session has no half that could reach the `owner_id` predicate, which
+/// [`Store::page_objects`] binds from the caller's identity alone.
+///
+/// The second half is TEXT — a caller-authored `key`, where the tree's other keyset codecs
+/// carry a server-minted uuid. That is what makes the `|` separator safe to split on:
+/// [`is_legal_segment`] is the one alphabet, and `|` is outside it.
+pub(crate) fn encode_cursor(created_at: &str, key: &str) -> String {
+    B64.encode(format!("{created_at}|{key}"))
+}
+
+/// `Ok(None)` is the empty cursor — the first page. Anything malformed is REJECTED, never
+/// silently reset to page 1: a silent reset makes a paging bug look like a working listing
+/// that repeats its newest page. The cap is checked BEFORE the decode, as the contract
+/// states.
+///
+/// Accepting a cursor does not mean this module minted it — an attacker can encode any real
+/// instant and any legal key — only that the keyset is well-formed, which is all a keyset
+/// predicate needs, since neither half can name another owner.
+///
+/// Pure: no I/O, no `self`, so every reject arm is testable without a database.
+pub(crate) fn decode_cursor(cursor: &str) -> Result<Option<(String, String)>, Error> {
+    if cursor.is_empty() {
+        return Ok(None);
+    }
+    cursor_within_cap(cursor)?;
+    let raw = B64
+        .decode(cursor)
+        .map_err(|_| Error::invalid(MALFORMED_CURSOR))?;
+    let text = String::from_utf8(raw).map_err(|_| Error::invalid(MALFORMED_CURSOR))?;
+    let (created_at, key) = text
+        .split_once('|')
+        .ok_or_else(|| Error::invalid(MALFORMED_CURSOR))?;
+    if !is_cursor_time(created_at) || !is_legal_segment(key) || key.len() > KEY_CAP.max_bytes {
+        return Err(Error::invalid(MALFORMED_CURSOR));
+    }
+    Ok(Some((created_at.to_string(), key.to_string())))
 }
 
 pub struct Service {
@@ -199,11 +283,23 @@ impl Player for Service {
         identity: Identity,
         collection: String,
         key: String,
-        _owner_id: String,
+        owner_id: String,
     ) -> Result<StorageObject, Error> {
-        Service::caller(&identity)?;
+        let me = Service::caller(&identity)?;
         validate_address(&collection, &key)?;
-        Err(Error::internal(NOT_IMPLEMENTED))
+        // EMPTY is the only "my own" spelling resolved in Rust. An owner_id the caller
+        // echoes back is settled by uuid equality inside the statement, which two
+        // differently-spelled but DB-equal ids agree on and a string compare would not.
+        let owner = if owner_id.is_empty() {
+            me.as_str()
+        } else {
+            owner_id.as_str()
+        };
+        self.store
+            .read_visible_object(owner, &collection, &key, &me)
+            .await
+            .map_err(crate::internal)?
+            .ok_or_else(|| Error::not_found(NOT_FOUND))
     }
 
     async fn delete(
@@ -212,9 +308,17 @@ impl Player for Service {
         collection: String,
         key: String,
     ) -> Result<(), Error> {
-        Service::caller(&identity)?;
+        let me = Service::caller(&identity)?;
         validate_address(&collection, &key)?;
-        Err(Error::internal(NOT_IMPLEMENTED))
+        let dropped = self
+            .store
+            .delete_object(&me, &collection, &key)
+            .await
+            .map_err(crate::internal)?;
+        if !dropped {
+            return Err(Error::not_found(NOT_FOUND));
+        }
+        Ok(())
     }
 
     async fn list(
@@ -224,10 +328,28 @@ impl Player for Service {
         cursor: String,
         limit: i64,
     ) -> Result<ObjectPage, Error> {
-        Service::caller(&identity)?;
+        let me = Service::caller(&identity)?;
         validate_segment(&COLLECTION_CAP, &collection)?;
-        cursor_within_cap(&cursor)?;
-        resolve_limit(limit)?;
-        Err(Error::internal(NOT_IMPLEMENTED))
+        let after = decode_cursor(&cursor)?;
+        let limit = resolve_limit(limit)?;
+        let mut items = self
+            .store
+            .page_objects(
+                &me,
+                &collection,
+                after.as_ref().map(|(at, key)| (at.as_str(), key.as_str())),
+                limit + 1,
+            )
+            .await
+            .map_err(crate::internal)?;
+        // One row past the page: its presence IS `next_cursor`, so a full last page never
+        // hands out a cursor that would answer empty.
+        let has_more = items.len() as i64 > limit;
+        items.truncate(limit as usize);
+        let next_cursor = match items.last() {
+            Some(last) if has_more => encode_cursor(&last.created_at, &last.key),
+            _ => String::new(),
+        };
+        Ok(ObjectPage { items, next_cursor })
     }
 }

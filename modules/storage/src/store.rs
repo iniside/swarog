@@ -1,6 +1,8 @@
 use opsapi::Error;
 use sqlx::{PgConnection, PgPool};
-use storageapi::{MAX_COLLECTION_BYTES, MAX_KEY_BYTES};
+use storageapi::{
+    ObjectSummary, StorageObject, ACL_PUBLIC_READ, MAX_COLLECTION_BYTES, MAX_KEY_BYTES,
+};
 
 /// The DDL below writes [`MAX_COLLECTION_BYTES`]/[`MAX_KEY_BYTES`] a second time, in SQL,
 /// and `write_error` words a `23514` with the RUST cap: a const raised past its CHECK would
@@ -166,6 +168,67 @@ SELECT (SELECT version FROM upd),
        EXISTS (SELECT 1 FROM storage.objects
                 WHERE owner_id = $1::uuid AND collection = $2 AND key = $3)"#;
 
+/// "Invalid text representation": `owner_id` is a `uuid` column while the contract carries
+/// a `String`, so a malformed id arrives as this SQLSTATE from the `$n::uuid` cast rather
+/// than as a match failure. Every READ answers it as "no such row", which is what keeps a
+/// malformed id indistinguishable from a real one the caller may not see.
+fn is_invalid_uuid(e: &sqlx::Error) -> bool {
+    matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
+}
+
+/// The listing's columns, rendered as text in SQL because the workspace's `sqlx` carries no
+/// date/time feature: the timestamps arrive already in the contract's RFC3339 shape, which
+/// is the shape [`crate::service::is_cursor_time`] validates a cursor's keyset against.
+const SUMMARY_COLS: &str = r#"collection, key, version, acl,
+       to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+       to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')"#;
+
+type ObjectRow = (String, String, String, String, i64, String, String, String);
+type SummaryRow = (String, String, i64, String, String, String);
+
+fn to_object(row: ObjectRow) -> StorageObject {
+    StorageObject {
+        owner_id: row.0,
+        collection: row.1,
+        key: row.2,
+        value: row.3,
+        version: row.4,
+        acl: row.5,
+        created_at: row.6,
+        updated_at: row.7,
+    }
+}
+
+fn to_summary(row: SummaryRow) -> ObjectSummary {
+    ObjectSummary {
+        collection: row.0,
+        key: row.1,
+        version: row.2,
+        acl: row.3,
+        created_at: row.4,
+        updated_at: row.5,
+    }
+}
+
+/// The READ predicate, and a SEPARATE string from [`CAS_SQL`] and `insert_object_tx` for one
+/// reason: this one is widened by the acl disjunction. A write path that ever shared it
+/// would make `public_read` mean public WRITE, with nothing anywhere raising an error.
+///
+/// Ownership is decided by Postgres uuid EQUALITY inside the statement, never by comparing
+/// two Rust strings, so a caller naming its own object with a differently-spelled but
+/// DB-equal id still reads its own private object.
+///
+/// A nonexistent address, another owner's private object, a malformed `owner_id` and a
+/// malformed caller id all answer the same `None`: four "no" answers, one verdict, so the
+/// response cannot confirm that an address names a real object.
+const VISIBLE_SQL: &str = r#"
+SELECT owner_id::text, collection, key, value::text, version, acl,
+       to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+       to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+  FROM storage.objects
+ WHERE owner_id = $1::uuid AND collection = $2 AND key = $3
+   AND (owner_id = $4::uuid OR acl = $5)"#;
+
 pub(crate) struct Store {
     pub(crate) pool: PgPool,
 }
@@ -254,5 +317,116 @@ impl Store {
             (None, true) => CasOutcome::Stale,
             (None, false) => CasOutcome::Missing,
         })
+    }
+
+    /// One object as `caller_id` may see it: its own, or anybody's [`ACL_PUBLIC_READ`] one.
+    /// `None` is the single answer to every reason the caller may not have it.
+    pub(crate) async fn read_visible_object(
+        &self,
+        owner_id: &str,
+        collection: &str,
+        key: &str,
+        caller_id: &str,
+    ) -> Result<Option<StorageObject>, sqlx::Error> {
+        let row = sqlx::query_as::<_, ObjectRow>(VISIBLE_SQL)
+            .bind(owner_id)
+            .bind(collection)
+            .bind(key)
+            .bind(caller_id)
+            .bind(ACL_PUBLIC_READ)
+            .fetch_optional(&self.pool)
+            .await;
+        match row {
+            Ok(row) => Ok(row.map(to_object)),
+            Err(e) if is_invalid_uuid(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// One page of `owner_id`'s own objects, newest first.
+    ///
+    /// The owner is its own parameter, taken from the caller's identity; `after` carries
+    /// the keyset halves and nothing else, so a cursor minted by another session cannot move
+    /// the `owner_id` predicate — there is no owner in it to bind.
+    ///
+    /// The acl disjunction of [`VISIBLE_SQL`] is deliberately absent: a `public_read` object
+    /// is readable by whoever can name it and discoverable by nobody.
+    ///
+    /// `(created_at, key)` is a tuple comparison, not an `OFFSET`: it stays correct while
+    /// rows are written and deleted underneath the client, and the `key` half breaks the tie
+    /// between rows sharing a timestamp, which a bare `created_at <` would skip or repeat.
+    /// The caller asks for one row past the page, which is how the page decides whether a
+    /// `next_cursor` exists without a second count.
+    ///
+    /// An `owner_id` that is not a uuid owns no rows, so it is an EMPTY page rather than a
+    /// 500. `$3`/`$4` cannot raise a cast error: [`crate::service::decode_cursor`] admits
+    /// only a real calendar instant and a legal key segment.
+    pub(crate) async fn page_objects(
+        &self,
+        owner_id: &str,
+        collection: &str,
+        after: Option<(&str, &str)>,
+        limit: i64,
+    ) -> Result<Vec<ObjectSummary>, sqlx::Error> {
+        let res = match after {
+            Some((created_at, key)) => {
+                sqlx::query_as::<_, SummaryRow>(&format!(
+                    "SELECT {SUMMARY_COLS} FROM storage.objects \
+                      WHERE owner_id = $1::uuid AND collection = $2 \
+                        AND (created_at, key) < ($3::timestamptz, $4) \
+                      ORDER BY created_at DESC, key DESC LIMIT $5"
+                ))
+                .bind(owner_id)
+                .bind(collection)
+                .bind(created_at)
+                .bind(key)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query_as::<_, SummaryRow>(&format!(
+                    "SELECT {SUMMARY_COLS} FROM storage.objects \
+                      WHERE owner_id = $1::uuid AND collection = $2 \
+                      ORDER BY created_at DESC, key DESC LIMIT $3"
+                ))
+                .bind(owner_id)
+                .bind(collection)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+            }
+        };
+        match res {
+            Ok(rows) => Ok(rows.into_iter().map(to_summary).collect()),
+            Err(e) if is_invalid_uuid(&e) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Drops one of the caller's OWN objects; `false` when the address holds nothing it owns.
+    /// The predicate names the owner alone, like every other write here.
+    ///
+    /// The address is free afterwards, and a recreated object starts at version 1.
+    pub(crate) async fn delete_object(
+        &self,
+        owner_id: &str,
+        collection: &str,
+        key: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let res = sqlx::query(
+            "DELETE FROM storage.objects \
+              WHERE owner_id = $1::uuid AND collection = $2 AND key = $3",
+        )
+        .bind(owner_id)
+        .bind(collection)
+        .bind(key)
+        .execute(&self.pool)
+        .await;
+        match res {
+            Ok(done) => Ok(done.rows_affected() > 0),
+            Err(e) if is_invalid_uuid(&e) => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 }
