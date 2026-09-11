@@ -113,6 +113,18 @@ impl Store {
         Ok(())
     }
 
+    /// `true` once this player's deletion tombstone is committed. A plain read, no
+    /// advisory lock: the row is permanent, so every statement taken after the plant
+    /// commits sees it.
+    pub(crate) async fn is_player_purged(&self, player_id: &str) -> Result<bool, sqlx::Error> {
+        let found: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM inventory.purged_players WHERE player_id = $1::uuid")
+                .bind(player_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(found.is_some())
+    }
+
     /// The pool-backed grant (the player IAP path): acquires a connection and runs
     /// `grant_exec` against it. Not the durable-event path — that hands its own tx.
     pub(crate) async fn grant_pool(&self, owner: &Owner, item_id: &str, qty: i64) -> Result<(), sqlx::Error> {

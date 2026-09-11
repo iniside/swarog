@@ -15,6 +15,11 @@ use crate::{internal, is_holdings_cap_violation, validate_quantity, Owner, Store
 // every path so they share the same store, ownership dep, and materialized starter.
 // ============================================================================
 
+/// What `grant` answers a caller whose account is already tombstoned. `Conflict`, not
+/// `NotFound`: the request is well-formed and names a real past player — what is stale is
+/// the identity it carries.
+pub(crate) const PLAYER_DELETED: &str = "this account has been deleted";
+
 pub struct Inner {
     pub(crate) store: Store,
     /// Whether the simulated-IAP grant is enabled (`INVENTORY_DEV_GRANT`, resolved in
@@ -116,6 +121,9 @@ impl Holdings for Inner {
             .map_err(|_| Error::invalid(format!("qty must be between 1 and {MAX_HOLDING_QTY}")))?;
         if !self.store.item_exists(&item_id).await.map_err(internal)? {
             return Err(Error::invalid("unknown item"));
+        }
+        if self.store.is_player_purged(&pid).await.map_err(internal)? {
+            return Err(Error::conflict(PLAYER_DELETED));
         }
         let owner = Owner::player(pid);
         // The accumulated-state ceiling: a per-grant-LEGAL qty can still push the
