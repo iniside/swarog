@@ -130,6 +130,15 @@ pub(crate) fn paused_state_gauge() -> &'static IntGaugeVec {
     &gauges().paused_state
 }
 
+/// Test-only accessor for the refresh-freshness pair
+/// (`asyncevents_metrics_refresh_total`, `asyncevents_metrics_refresh_errors_total`),
+/// so a test can pin `refresh_loop`'s error branch against a dead pool without
+/// scraping `/metrics` text output.
+#[cfg(test)]
+pub(crate) fn refresh_counters() -> (u64, u64) {
+    (gauges().refreshes.get(), gauges().refresh_errors.get())
+}
+
 pub(crate) async fn refresh(pool: &PgPool, local_ids: &[String]) -> anyhow::Result<()> {
     let g = gauges();
 

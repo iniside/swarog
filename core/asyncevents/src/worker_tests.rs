@@ -786,3 +786,43 @@ async fn notify_loss_is_covered_by_the_poll_fallback() {
 
     cleanup(&pool, topic, sub_id).await;
 }
+
+/// THE FREEZING-GAUGE PROOF (Step 8's operator-visibility errata #3): every plane gauge
+/// is PUSHED by `plane_metrics::refresh_loop`, so a persistently-failing refresh freezes
+/// every OTHER gauge at its last value with no direct signal — `asyncevents_metrics_refresh_total`
+/// / `..._refresh_errors_total` are the only series whose own staleness is self-evident. A dead
+/// pool (closed immediately, never a real network attempt) forces every tick's `refresh()` to
+/// error; the paused clock advances virtually past one 10s tick with no wall-clock wait, so this
+/// pins the error branch rather than merely asserting the absence of a panic.
+#[tokio::test(start_paused = true)]
+async fn refresh_loop_over_a_dead_pool_increments_the_error_counter_not_the_success_one() {
+    let pool = PgPool::connect_lazy(DEFAULT_DSN).unwrap();
+    pool.close().await;
+
+    let (before_ok, before_err) = crate::plane_metrics::refresh_counters();
+
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let task = tokio::spawn(crate::plane_metrics::refresh_loop(
+        pool,
+        vec!["dead-pool-probe".to_string()],
+        stop_rx,
+    ));
+
+    tokio::time::advance(Duration::from_secs(11)).await;
+    tokio::task::yield_now().await;
+
+    let _ = stop_tx.send(true);
+    let _ = task.await;
+
+    let (after_ok, after_err) = crate::plane_metrics::refresh_counters();
+    assert!(
+        after_err > before_err,
+        "a dead-pool tick must increment asyncevents_metrics_refresh_errors_total \
+         (before={before_err}, after={after_err})"
+    );
+    assert_eq!(
+        after_ok, before_ok,
+        "a dead pool must never increment the SUCCESS counter — that would report the frozen \
+         gauges as fresh"
+    );
+}
