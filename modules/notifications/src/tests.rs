@@ -1468,7 +1468,9 @@ async fn a_scheduler_fire_prunes_only_rows_past_retention() {
     assert_eq!(rows_of(&pool, &pid).await.len(), 2);
 
     emit_fired(&ctx, &pool, PRUNE_SCHEDULE_NAME).await;
-    assert_eq!(transport.deliver_all().await.unwrap(), 1);
+    // Two: this module hosts two raw sinks on `scheduler.fired` (retention and the purge
+    // sweep), and every fire reaches both — each guards on the schedule name itself.
+    assert_eq!(transport.deliver_all().await.unwrap(), 2);
 
     let keys: Vec<(String,)> = sqlx::query_as(
         "SELECT source_event_id FROM notifications.messages WHERE player_id = $1::uuid",
@@ -1502,8 +1504,8 @@ async fn a_foreign_schedule_name_prunes_nothing() {
     emit_fired(&ctx, &pool, "audit-prune").await;
     assert_eq!(
         transport.deliver_all().await.unwrap(),
-        1,
-        "the foreign fire IS delivered to this subscription — the guard is in the handler"
+        2,
+        "the foreign fire IS delivered to both raw sinks — the guard is in the handler"
     );
     assert_eq!(
         rows_of(&pool, &pid).await.len(),
@@ -1514,7 +1516,7 @@ async fn a_foreign_schedule_name_prunes_nothing() {
     // The positive control on the SAME row: this module's own name does prune it, so the
     // assertion above is not "nothing ever prunes".
     emit_fired(&ctx, &pool, PRUNE_SCHEDULE_NAME).await;
-    assert_eq!(transport.deliver_all().await.unwrap(), 1);
+    assert_eq!(transport.deliver_all().await.unwrap(), 2);
     assert!(rows_of(&pool, &pid).await.is_empty());
     assert_subscription_unpoisoned(&pool, PRUNE_SUB.id).await;
 

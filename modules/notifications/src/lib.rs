@@ -204,6 +204,13 @@ impl Module for NotificationsModule {
         ctx.bus()
             .on_tx_raw(projection::PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
 
+        let purge_sweep: Arc<dyn bus::TxHandler> = Arc::new(projection::PurgeSweepHandler);
+        ctx.bus().on_tx_raw(
+            projection::PURGE_SWEEP_SUB,
+            schedulerevents::FIRED.topic(),
+            purge_sweep,
+        );
+
         for op in notificationsapi::player_rpc::operations(svc.clone()) {
             ctx.contribute(opsapi::SLOT, op.operation);
             ctx.contribute(opsapi::BINDING_SLOT, op.binding);

@@ -65,7 +65,9 @@ pub(crate) const RETENTION_ENV: &str = "NOTIFICATIONS_RETENTION_DAYS";
 /// scan re-walks all `256 x (k-1)` of them and the loop goes quadratic.
 pub(crate) const PRUNE_BATCH: i64 = 256;
 
-/// The whole sweep's wall-clock budget. Exhausting it ends the fire with the batches so far
+/// A sweep's whole wall-clock budget — one constant for BOTH scheduled sweeps in this
+/// module, since the bound it respects is the plane's per-handler timeout, not either
+/// sweep's subject matter. Exhausting it ends the fire with the batches so far
 /// KEPT — they commit with the checkpoint, and the next fire resumes from there.
 ///
 /// It is a bare constant because a module may not read the plane's env and `bus::Delivery`
@@ -75,7 +77,7 @@ pub(crate) const PRUNE_BATCH: i64 = 256;
 /// `pg_terminate_backend`s the delivery backend, so the transaction dies with it and EVERY
 /// batch of that fire is lost — no savepoint rollback is involved — and 20 such fires
 /// (`PAUSE_AFTER`, i.e. 20 days on a daily schedule) pause the subscription.
-pub(crate) const PRUNE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const SWEEP_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Ten years: far past any inbox policy, and far inside the timestamp range `make_interval`
 /// can subtract from `now()`. Without the ceiling an out-of-range value passes startup and
@@ -363,12 +365,105 @@ impl TxHandler for PruneHandler {
                 if let Some(high) = high {
                     watermark = high;
                 }
-                if started.elapsed() >= PRUNE_BUDGET {
+                if started.elapsed() >= SWEEP_BUDGET {
                     tracing::warn!(
                         elapsed_ms = started.elapsed().as_millis() as u64,
                         "notifications: retention sweep hit its budget — resuming next fire"
                     );
                     return Ok(());
+                }
+            }
+        })
+    }
+}
+
+/// The purge sweep's consumer-owned subscription id. Separate from [`PRUNE_SUB`] although
+/// both ride `scheduler.fired`: two checkpoints, so a paused retention prune never stalls a
+/// deletion and a paused deletion never stalls retention. `Genesis` for the reason
+/// [`PRUNE_SUB`] gives.
+pub(crate) const PURGE_SWEEP_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
+    id: "notifications.purge-on-scheduler.v1",
+    start: bus::StartPosition::Genesis,
+};
+
+pub(crate) const PURGE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::PLAYER_PURGE;
+
+/// Tombstones claimed per selection statement. Unlike [`PRUNE_BATCH`] this bounds PLAYERS,
+/// not rows — the per-player delete is one statement whose size nothing here caps — and the
+/// sweep LOOPS batches until a short one, so a backlog above one batch per day still drains.
+pub(crate) const PURGE_BATCH: i64 = 256;
+
+/// The scan floor carried across batches, load-bearing rather than an optimisation: every
+/// batch runs inside the ONE still-open delivery transaction, where the tombstones this
+/// transaction has already stamped are dead-but-unprunable row versions that a
+/// `swept_at IS NULL` re-scan still walks — so a floorless scan re-walks `256 x (k-1)` of
+/// them and the loop goes quadratic. `player_id` is the tombstone table's primary key, hence
+/// unique and ordered, so the comparison is `>=` rather than the `>` a unique key would
+/// allow: it costs one already-stamped row per batch (`swept_at IS NULL` filters it out) and
+/// in exchange keeps the floor value itself reachable.
+const PURGE_FLOOR: &str = "00000000-0000-0000-0000-000000000000";
+
+/// Drains the tombstones planted by [`on_player_deleted`]: the inbox rows of players whose
+/// account is gone. Runs on the handed delivery tx, so every delete, every `swept_at` stamp
+/// and the subscription checkpoint commit together.
+pub(crate) struct PurgeSweepHandler;
+
+impl TxHandler for PurgeSweepHandler {
+    fn call<'a>(
+        &'a self,
+        mut delivery: Delivery<'a>,
+        payload: Vec<u8>,
+    ) -> BoxFuture<'a, Result<(), BusError>> {
+        Box::pin(async move {
+            let conn = delivery.tx.downcast::<PgConnection>()?;
+            let fired: FiredName = serde_json::from_slice(&payload).map_err(BusError::from)?;
+            if fired.name != PURGE_SCHEDULE_NAME {
+                return Ok(());
+            }
+            let started = std::time::Instant::now();
+            let mut watermark = PURGE_FLOOR.to_string();
+            loop {
+                let due: Vec<(String,)> = sqlx::query_as(
+                    "SELECT player_id::text FROM notifications.purged_players \
+                      WHERE swept_at IS NULL AND player_id >= $1::uuid \
+                      ORDER BY player_id LIMIT $2 FOR UPDATE SKIP LOCKED",
+                )
+                .bind(&watermark)
+                .bind(PURGE_BATCH)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(BusError::transport)?;
+                for (player_id,) in &due {
+                    sqlx::query("DELETE FROM notifications.messages WHERE player_id = $1::uuid")
+                        .bind(player_id)
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(BusError::transport)?;
+                    sqlx::query(
+                        "UPDATE notifications.purged_players SET swept_at = now() \
+                          WHERE player_id = $1::uuid",
+                    )
+                    .bind(player_id)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(BusError::transport)?;
+                    // The budget is spent only at a player boundary — after the stamp, never
+                    // between a player's delete and its stamp. The sweeps that emit a
+                    // terminal event per deleted row depend on that placement; this one keeps
+                    // it so all six read the same.
+                    if started.elapsed() >= SWEEP_BUDGET {
+                        tracing::warn!(
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "notifications: purge sweep hit its budget — resuming next fire"
+                        );
+                        return Ok(());
+                    }
+                }
+                if (due.len() as i64) < PURGE_BATCH {
+                    return Ok(());
+                }
+                if let Some((last,)) = due.last() {
+                    watermark.clone_from(last);
                 }
             }
         })
