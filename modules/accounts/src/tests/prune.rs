@@ -88,6 +88,64 @@ async fn prune_deletes_only_expired_sessions_for_prune_name() {
     cleanup_player(&pool, &pid).await;
 }
 
+/// The delete-ticket leg of the same prune reaction: an EXPIRED delete ticket is removed
+/// by `accounts-sessions-prune`; a LIVE one is not. Pre-fix the prune handler only touched
+/// sessions/refresh tokens, so an expired ticket row would accumulate forever.
+#[tokio::test(flavor = "multi_thread")]
+async fn prune_deletes_expired_delete_ticket_keeps_live_one() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+
+    let expired_sess = svc
+        .register(format!("prune-ticket-exp-{}@test.local", suffix()), "pw".into(), "PruneTickExp".into())
+        .await
+        .unwrap();
+    let live_sess = svc
+        .register(format!("prune-ticket-live-{}@test.local", suffix()), "pw".into(), "PruneTickLive".into())
+        .await
+        .unwrap();
+    let expired_pid = expired_sess.player_id.clone();
+    let live_pid = live_sess.player_id.clone();
+
+    let expired_ticket = svc.begin_delete(Identity::player(&expired_pid)).await.unwrap().ticket;
+    let live_ticket = svc.begin_delete(Identity::player(&live_pid)).await.unwrap().ticket;
+
+    sqlx::query(
+        "UPDATE accounts.delete_tickets SET expires_at = now() - interval '1 minute' \
+          WHERE player_id = $1::uuid",
+    )
+    .bind(&expired_pid)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let handler = PruneHandler { svc: svc.clone() };
+    deliver_prune(&pool, &handler, PRUNE_SCHEDULE_NAME).await;
+
+    let (expired_n,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM accounts.delete_tickets WHERE player_id = $1::uuid AND ticket = $2",
+    )
+    .bind(&expired_pid)
+    .bind(&expired_ticket)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(expired_n, 0, "an expired delete ticket must be pruned");
+
+    let (live_n,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM accounts.delete_tickets WHERE player_id = $1::uuid AND ticket = $2",
+    )
+    .bind(&live_pid)
+    .bind(&live_ticket)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(live_n, 1, "a live delete ticket must survive the prune");
+
+    cleanup_player(&pool, &expired_pid).await;
+    cleanup_player(&pool, &live_pid).await;
+}
+
 /// A foreign schedule name is a committed no-op AT THE HANDLER BOUNDARY (returns Ok, the
 /// tick is marked processed, nothing deleted) even with an expired session present — the
 /// filter is the whole point of subscribing raw to `scheduler.fired`.

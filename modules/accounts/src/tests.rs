@@ -3,6 +3,7 @@ use accountsapi::{Auth as _, Sessions as _};
 use base64::Engine as _;
 
 mod dev_auth_gate;
+mod delete;
 mod directory;
 mod guest;
 mod prune;
