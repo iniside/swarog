@@ -179,6 +179,24 @@ pub(crate) fn decode_cursor(cursor: &str) -> Result<Option<(String, String)>, Er
     Ok(Some((created_at.to_string(), key.to_string())))
 }
 
+/// The canonical hyphenated spelling, hex case-insensitive — what `accounts` mints and the
+/// only shape `storage.objects`' `uuid` owner column can hold.
+pub(crate) fn is_uuid_text(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 36
+        && b.iter().enumerate().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => *c == b'-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
+/// A caller id outside [`is_uuid_text`] is an identity the front door minted and this
+/// module can never own rows for. It is a SERVER fault: no request field is at fault, so
+/// `Invalid` would blame the caller's input; re-authenticating mints the same identity
+/// again, so `Unauthorized` and `Unavailable` would both promise a retry that cannot
+/// succeed.
+pub(crate) const MALFORMED_IDENTITY: &str = "caller identity is not a uuid";
+
 pub struct Service {
     pub(crate) store: Store,
 }
@@ -190,11 +208,18 @@ impl Service {
         }
     }
 
+    /// The ONE place the shape of a caller id is decided, ahead of every statement that
+    /// binds it, so `put`/`get`/`delete`/`list` cannot answer one malformed identity four
+    /// ways — and so a `22P02` from a statement binding only this id is store trouble
+    /// rather than an outcome to swallow.
     fn caller(identity: &Identity) -> Result<String, Error> {
-        identity
+        let me = identity
             .player_id()
-            .map(str::to_string)
-            .ok_or_else(|| Error::unauthorized("a player identity is required"))
+            .ok_or_else(|| Error::unauthorized("a player identity is required"))?;
+        if !is_uuid_text(me) {
+            return Err(Error::internal(MALFORMED_IDENTITY));
+        }
+        Ok(me.to_string())
     }
 
     /// The create half of `put`. The owner cap is counted and the row inserted under the

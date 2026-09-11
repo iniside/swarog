@@ -22,6 +22,11 @@ fn dead_pool() -> PgPool {
         .expect("lazy pool from a well-formed DSN")
 }
 
+/// Uuid-shaped on purpose: [`crate::service::Service::caller`] settles the caller id's
+/// shape ahead of every input cap, so a probe identity outside it would answer `Internal`
+/// before the cap under test ever ran.
+const PROBE_PLAYER: &str = "00000000-0000-4000-8000-000000000000";
+
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -50,7 +55,7 @@ fn put_rejected(collection: String, key: String, value: String) -> bool {
     let rt = runtime();
     let svc = service(&rt);
     let outcome = rt.block_on(svc.put(
-        Identity::player("conformance-storage-probe"),
+        Identity::player(PROBE_PLAYER),
         collection,
         key,
         value,
@@ -98,7 +103,7 @@ pub fn conformance_cursor_rejected(len: usize) -> bool {
     let rt = runtime();
     let svc = service(&rt);
     let outcome = rt.block_on(svc.list(
-        Identity::player("conformance-storage-probe"),
+        Identity::player(PROBE_PLAYER),
         "c".to_string(),
         legal(len),
         0,

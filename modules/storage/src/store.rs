@@ -170,8 +170,13 @@ SELECT (SELECT version FROM upd),
 
 /// "Invalid text representation": `owner_id` is a `uuid` column while the contract carries
 /// a `String`, so a malformed id arrives as this SQLSTATE from the `$n::uuid` cast rather
-/// than as a match failure. Every READ answers it as "no such row", which is what keeps a
-/// malformed id indistinguishable from a real one the caller may not see.
+/// than as a match failure.
+///
+/// ONE bind in this file can legitimately carry it: [`VISIBLE_SQL`]'s `$1`, the only
+/// CALLER-SUPPLIED owner id, where it answers "no such row" and so stays indistinguishable
+/// from a real id the caller may not see. Every other statement here binds the caller's own
+/// identity, whose shape [`crate::service::Service::caller`] settles before any of them
+/// runs, so a `22P02` on those is store trouble and propagates.
 fn is_invalid_uuid(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
 }
@@ -218,9 +223,10 @@ fn to_summary(row: SummaryRow) -> ObjectSummary {
 /// two Rust strings, so a caller naming its own object with a differently-spelled but
 /// DB-equal id still reads its own private object.
 ///
-/// A nonexistent address, another owner's private object, a malformed `owner_id` and a
-/// malformed caller id all answer the same `None`: four "no" answers, one verdict, so the
-/// response cannot confirm that an address names a real object.
+/// A nonexistent address, another owner's private object and a malformed `$1` all answer
+/// the same `None`: three "no" answers, one verdict, so the response cannot confirm that an
+/// address names a real object. `$4` cannot be malformed here — it is the caller's own
+/// identity, already shaped by [`crate::service::Service::caller`].
 const VISIBLE_SQL: &str = r#"
 SELECT owner_id::text, collection, key, value::text, version, acl,
        to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
@@ -358,9 +364,9 @@ impl Store {
     /// The caller asks for one row past the page, which is how the page decides whether a
     /// `next_cursor` exists without a second count.
     ///
-    /// An `owner_id` that is not a uuid owns no rows, so it is an EMPTY page rather than a
-    /// 500. `$3`/`$4` cannot raise a cast error: [`crate::service::decode_cursor`] admits
-    /// only a real calendar instant and a legal key segment.
+    /// No bind here can raise a cast error: `$1` is the caller's own identity, shaped by
+    /// [`crate::service::Service::caller`], and [`crate::service::decode_cursor`] admits
+    /// only a real calendar instant and a legal key segment into `$3`/`$4`.
     pub(crate) async fn page_objects(
         &self,
         owner_id: &str,
@@ -368,7 +374,7 @@ impl Store {
         after: Option<(&str, &str)>,
         limit: i64,
     ) -> Result<Vec<ObjectSummary>, sqlx::Error> {
-        let res = match after {
+        let rows = match after {
             Some((created_at, key)) => {
                 sqlx::query_as::<_, SummaryRow>(&format!(
                     "SELECT {SUMMARY_COLS} FROM storage.objects \
@@ -396,12 +402,8 @@ impl Store {
                 .fetch_all(&self.pool)
                 .await
             }
-        };
-        match res {
-            Ok(rows) => Ok(rows.into_iter().map(to_summary).collect()),
-            Err(e) if is_invalid_uuid(&e) => Ok(Vec::new()),
-            Err(e) => Err(e),
-        }
+        }?;
+        Ok(rows.into_iter().map(to_summary).collect())
     }
 
     /// Drops one of the caller's OWN objects; `false` when the address holds nothing it owns.
@@ -414,7 +416,7 @@ impl Store {
         collection: &str,
         key: &str,
     ) -> Result<bool, sqlx::Error> {
-        let res = sqlx::query(
+        let done = sqlx::query(
             "DELETE FROM storage.objects \
               WHERE owner_id = $1::uuid AND collection = $2 AND key = $3",
         )
@@ -422,11 +424,7 @@ impl Store {
         .bind(collection)
         .bind(key)
         .execute(&self.pool)
-        .await;
-        match res {
-            Ok(done) => Ok(done.rows_affected() > 0),
-            Err(e) if is_invalid_uuid(&e) => Ok(false),
-            Err(e) => Err(e),
-        }
+        .await?;
+        Ok(done.rows_affected() > 0)
     }
 }
