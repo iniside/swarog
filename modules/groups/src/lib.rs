@@ -86,7 +86,9 @@ CREATE TABLE IF NOT EXISTS groups.purged_players (
     handle     text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     swept_at   timestamptz
-);"#;
+);
+CREATE INDEX IF NOT EXISTS purged_players_pending_idx
+    ON groups.purged_players (player_id) WHERE swept_at IS NULL;"#;
 
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
     opsapi::Error::internal(e.to_string())

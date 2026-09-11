@@ -81,6 +81,7 @@ pub(crate) async fn admin_content(store: &Store, params: &adminapi::Params) -> a
 async fn admin_owners_list(store: &Store) -> anyhow::Result<adminapi::Content> {
     let (holdings, owners) = store.stats().await?;
     let rows = store.list_owners(ADMIN_OWNERS_LIMIT).await?;
+    let (purges, oldest_purge) = store.pending_purges().await?;
 
     let mut table = adminapi::Table {
         columns: vec!["OWNER".into(), "OWNER ID".into(), "ITEMS".into(), "TOTAL QTY".into()],
@@ -114,6 +115,7 @@ async fn admin_owners_list(store: &Store) -> anyhow::Result<adminapi::Content> {
         kpis: vec![
             adminapi::Kpi { label: "Holdings".into(), value: holdings.to_string(), sub: String::new() },
             adminapi::Kpi { label: "Owners".into(), value: owners.to_string(), sub: "players + characters".into() },
+            purge_kpi(purges, &oldest_purge),
         ],
         table: Some(table),
         form: None,
@@ -279,6 +281,26 @@ fn owner_badge(owner_type: &str) -> &'static str {
     } else {
         "grey"
     }
+}
+
+/// The purge-backlog KPI: deletion tombstones this module's sweep still owes work on.
+/// Always rendered, `0` included — an absent tile would read as an empty backlog rather
+/// than as a page that never asked.
+fn purge_kpi(pending: i64, oldest: &str) -> adminapi::Kpi {
+    adminapi::Kpi {
+        label: "Purges Pending".into(),
+        value: pending.to_string(),
+        sub: if pending == 0 {
+            String::new()
+        } else {
+            format!("oldest {}", short_ts(oldest))
+        },
+    }
+}
+
+/// A raw `timestamptz::text` truncated to minutes for display.
+fn short_ts(ts: &str) -> &str {
+    ts.get(..16).unwrap_or(ts)
 }
 
 /// Renders a single message as an error card (a lone KPI, so the page is a clean

@@ -99,7 +99,10 @@ pub(crate) async fn build_content(
         let mut rows = svc.store.recent(PAGE + 1).await?;
         let truncated = rows.len() as i64 > PAGE;
         rows.truncate(PAGE as usize);
-        return Ok(overview_content(&rows, truncated));
+        let (purges, oldest_purge) = svc.store.pending_purges().await?;
+        let mut content = overview_content(&rows, truncated);
+        content.kpis.push(purge_kpi(purges, &oldest_purge));
+        return Ok(content);
     }
     let player_id = raw.strip_prefix(PLAYER_REF_PREFIX).unwrap_or(raw);
     if !is_uuid_text(player_id) {
@@ -533,6 +536,21 @@ fn preview(body: &str) -> String {
     match body.char_indices().nth(PREVIEW_CHARS) {
         Some((cut, _)) => format!("{}…", &body[..cut]),
         None => body.to_string(),
+    }
+}
+
+/// The purge-backlog KPI: deletion tombstones this module's sweep still owes work on.
+/// Always rendered, `0` included — an absent tile would read as an empty backlog rather
+/// than as a page that never asked.
+fn purge_kpi(pending: i64, oldest: &str) -> adminapi::Kpi {
+    adminapi::Kpi {
+        label: "Purges Pending".into(),
+        value: pending.to_string(),
+        sub: if pending == 0 {
+            String::new()
+        } else {
+            format!("oldest {}", short_ts(oldest))
+        },
     }
 }
 

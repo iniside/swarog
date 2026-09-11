@@ -125,6 +125,20 @@ impl Store {
         Ok(found.is_some())
     }
 
+    /// The purge backlog the admin page shows: tombstones the sweep still owes work
+    /// on, and the oldest one's `created_at` (`""` when nothing is outstanding).
+    /// `purged_players_pending_idx` serves the predicate, so the cost tracks
+    /// outstanding work rather than the permanent row per deleted player.
+    pub(crate) async fn pending_purges(&self) -> Result<(i64, String), sqlx::Error> {
+        let (count, oldest) = sqlx::query_as::<_, (i64, Option<String>)>(
+            "SELECT count(*)::bigint, min(created_at)::text \
+             FROM inventory.purged_players WHERE swept_at IS NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((count, oldest.unwrap_or_default()))
+    }
+
     /// The pool-backed grant (the player IAP path): acquires a connection and runs
     /// `grant_exec` against it. Not the durable-event path — that hands its own tx.
     pub(crate) async fn grant_pool(&self, owner: &Owner, item_id: &str, qty: i64) -> Result<(), sqlx::Error> {

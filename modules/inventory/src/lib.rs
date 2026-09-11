@@ -96,7 +96,9 @@ CREATE TABLE IF NOT EXISTS inventory.purged_players (
 	handle     text        NOT NULL DEFAULT '',
 	created_at timestamptz NOT NULL DEFAULT now(),
 	swept_at   timestamptz
-);"#;
+);
+CREATE INDEX IF NOT EXISTS purged_players_pending_idx
+    ON inventory.purged_players (player_id) WHERE swept_at IS NULL;"#;
 
 /// Folds any lower-level error into an `Internal` operation error.
 fn internal<E: std::fmt::Display>(e: E) -> Error {

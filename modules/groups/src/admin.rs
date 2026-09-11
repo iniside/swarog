@@ -90,6 +90,10 @@ async fn overview(svc: &Service) -> adminapi::Content {
     };
     let truncated = rows.len() as i64 > PAGE;
     rows.truncate(PAGE as usize);
+    let (purges, oldest_purge) = match svc.store.pending_purges().await {
+        Ok(backlog) => backlog,
+        Err(e) => return error_content(&store_message(e)),
+    };
 
     let mut table = adminapi::Table {
         columns: vec![
@@ -121,6 +125,7 @@ async fn overview(svc: &Service) -> adminapi::Content {
             count_kpi("Members", members, "across every group"),
             count_kpi("Pending", pending, "invited or requested"),
             count_kpi("Listed", rows.len() as i64, page_note(truncated)),
+            purge_kpi(purges, &oldest_purge),
         ],
         table: Some(table),
         form: Some(build_form(&rows)),
@@ -718,6 +723,21 @@ fn page_note(truncated: bool) -> &'static str {
         "newest shown — older rows exist"
     } else {
         "all of them"
+    }
+}
+
+/// The purge-backlog KPI: deletion tombstones this module's sweep still owes work on.
+/// Always rendered, `0` included — an absent tile would read as an empty backlog rather
+/// than as a page that never asked.
+fn purge_kpi(pending: i64, oldest: &str) -> adminapi::Kpi {
+    adminapi::Kpi {
+        label: "Purges Pending".into(),
+        value: pending.to_string(),
+        sub: if pending == 0 {
+            String::new()
+        } else {
+            format!("oldest {}", short_ts(oldest))
+        },
     }
 }
 

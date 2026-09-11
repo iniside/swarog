@@ -169,6 +169,20 @@ impl Store {
         Ok(found.is_some())
     }
 
+    /// The purge backlog the admin page shows: tombstones the sweep still owes work
+    /// on, and the oldest one's `created_at` (`""` when nothing is outstanding).
+    /// `purged_players_pending_idx` serves the predicate, so the cost tracks
+    /// outstanding work rather than the permanent row per deleted player.
+    pub(crate) async fn pending_purges(&self) -> Result<(i64, String), sqlx::Error> {
+        let (count, oldest) = sqlx::query_as::<_, (i64, Option<String>)>(
+            "SELECT count(*)::bigint, min(created_at)::text \
+             FROM wallet.purged_players WHERE swept_at IS NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((count, oldest.unwrap_or_default()))
+    }
+
     /// Re-reads the row that won the key, ON THE SAME CONNECTION as the losing INSERT.
     /// Under READ COMMITTED (the default, unchanged here) that INSERT waited for the
     /// conflicting transaction and this statement takes a fresh snapshot afterwards, so the

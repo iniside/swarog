@@ -96,6 +96,7 @@ pub(crate) async fn admin_content(
 async fn admin_all_characters(store: &Store) -> anyhow::Result<adminapi::Content> {
     let n = store.count().await?;
     let rows = store.list_all(50).await?;
+    let (purges, oldest_purge) = store.pending_purges().await?;
 
     let mut table = adminapi::Table {
         columns: vec!["NAME".into(), "CLASS".into(), "PLAYER".into(), "CREATED".into()],
@@ -116,11 +117,14 @@ async fn admin_all_characters(store: &Store) -> anyhow::Result<adminapi::Content
     }
 
     Ok(adminapi::Content {
-        kpis: vec![adminapi::Kpi {
-            label: "Characters".into(),
-            value: n.to_string(),
-            sub: String::new(),
-        }],
+        kpis: vec![
+            adminapi::Kpi {
+                label: "Characters".into(),
+                value: n.to_string(),
+                sub: String::new(),
+            },
+            purge_kpi(purges, &oldest_purge),
+        ],
         table: Some(table),
         form: None,
         ..Default::default()
@@ -325,6 +329,21 @@ fn is_uuid(s: &str) -> bool {
         }
     }
     true
+}
+
+/// The purge-backlog KPI: deletion tombstones this module's sweep still owes work on.
+/// Always rendered, `0` included — an absent tile would read as an empty backlog rather
+/// than as a page that never asked.
+fn purge_kpi(pending: i64, oldest: &str) -> adminapi::Kpi {
+    adminapi::Kpi {
+        label: "Purges Pending".into(),
+        value: pending.to_string(),
+        sub: if pending == 0 {
+            String::new()
+        } else {
+            format!("oldest {}", short_ts(oldest))
+        },
+    }
 }
 
 /// The store's raw `created_at::text` (`2026-07-08 16:17:45.286964+00`) truncated to

@@ -88,7 +88,10 @@ pub(crate) async fn build_content(
     let catalog = svc.store.list_catalog().await?;
     let raw = adminapi::param(params, PARAM_PLAYER).trim();
     if raw.is_empty() {
-        return Ok(catalog_content(&catalog));
+        let (purges, oldest_purge) = svc.store.pending_purges().await?;
+        let mut content = catalog_content(&catalog);
+        content.kpis.push(purge_kpi(purges, &oldest_purge));
+        return Ok(content);
     }
     let player_id = raw.strip_prefix(PLAYER_REF_PREFIX).unwrap_or(raw);
     if !is_uuid_text(player_id) {
@@ -702,6 +705,21 @@ fn kind_badge(kind: &str) -> &'static str {
         "soft" => "blue",
         "hard" => "amber",
         _ => "grey",
+    }
+}
+
+/// The purge-backlog KPI: deletion tombstones this module's sweep still owes work on.
+/// Always rendered, `0` included — an absent tile would read as an empty backlog rather
+/// than as a page that never asked.
+fn purge_kpi(pending: i64, oldest: &str) -> adminapi::Kpi {
+    adminapi::Kpi {
+        label: "Purges Pending".into(),
+        value: pending.to_string(),
+        sub: if pending == 0 {
+            String::new()
+        } else {
+            format!("oldest {}", short_ts(oldest))
+        },
     }
 }
 

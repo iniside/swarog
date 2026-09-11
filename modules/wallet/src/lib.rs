@@ -99,7 +99,9 @@ CREATE TABLE IF NOT EXISTS wallet.purged_players (
 	handle     text        NOT NULL DEFAULT '',
 	created_at timestamptz NOT NULL DEFAULT now(),
 	swept_at   timestamptz
-);"#;
+);
+CREATE INDEX IF NOT EXISTS purged_players_pending_idx
+    ON wallet.purged_players (player_id) WHERE swept_at IS NULL;"#;
 
 /// `(code, display_name, kind, decimals)`.
 const DEV_SEED_CURRENCIES: &[(&str, &str, &str, i32)] = &[
