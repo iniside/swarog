@@ -10,7 +10,7 @@ use groupsapi::{
     JOIN_OPEN, JOIN_REQUEST, MAX_CURSOR_BYTES, MAX_MEMBERS, MAX_NAME_BYTES, MAX_PAGE_LIMIT,
     ROLE_ADMIN, ROLE_MEMBER, STATE_INVITED, STATE_MEMBER, STATE_REQUESTED,
 };
-use groupsevents::{REASON_DECLINED, REASON_KICKED, REASON_LEFT};
+use groupsevents::{REASON_DECLINED, REASON_GROUP_DISSOLVED, REASON_KICKED, REASON_LEFT};
 use opsapi::{Error, Identity};
 use sqlx::PgPool;
 
@@ -633,9 +633,9 @@ impl Player for Service {
             )
             .await
             .map_err(internal)?;
-        // A pending row the teardown removed ends the same way a reject ends it, so the
-        // log carries a terminal event for every relation it ever announced. Bounded by
-        // `MAX_MEMBERS`, and the group lock is held either way.
+        // The same fact the purge sweep labels, so it carries the same reason and the same
+        // empty actor: the departing member did not act on these rows, the group's
+        // dissolution ended them. Bounded by `MAX_MEMBERS`, and the group lock is held.
         for swept_id in swept {
             self.bus
                 .emit_tx(
@@ -644,8 +644,8 @@ impl Player for Service {
                     &groupsevents::MemberLeft {
                         group_id: group_id.clone(),
                         player_id: swept_id,
-                        actor_id: player_id.clone(),
-                        reason: REASON_DECLINED.to_string(),
+                        actor_id: String::new(),
+                        reason: REASON_GROUP_DISSOLVED.to_string(),
                     },
                 )
                 .await

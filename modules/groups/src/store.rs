@@ -109,9 +109,13 @@ impl Store {
     }
 
     /// The groups a purged player still holds a row in, up to `limit`. Ordered by
-    /// `groups.memberships.group_id` — the TABLE's column, never the `::text` output column,
-    /// which no index can serve — so the sweep takes its per-group advisory locks in one
-    /// consistent order and two multi-lock takers cannot build a cycle.
+    /// `groups.memberships.group_id` — the TABLE's column, not the `::text` output column an
+    /// unqualified name would bind to, so the sort is on the stored value rather than on a
+    /// cast. No index serves either spelling (`memberships_player_idx` is
+    /// `(player_id, state, created_at DESC, group_id DESC)`, the primary key
+    /// `(group_id, player_id)`); the sort is affordable because it is bounded by one player's
+    /// memberships. The sweep is the only multi-lock taker, which is what makes its per-group
+    /// advisory locks deadlock-free — this ordering is per-player and would not establish it.
     ///
     /// The sweep deletes as it goes, so a later call inside the same transaction no longer
     /// sees what it already removed.

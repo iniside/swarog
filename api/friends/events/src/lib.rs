@@ -90,9 +90,9 @@ pub struct Accepted {
 /// and `other_id` is the one who did not; neither maps to the original requester/addressee
 /// roles, because either side may remove.
 ///
-/// **One topic covers every ending**, discriminated by `reason` rather than split into
-/// three topics, because a defined topic with no durable subscriber fails the blocking
-/// durability check — three endings would each owe their own consumer.
+/// **One topic covers every ending**, discriminated by `reason` rather than split per
+/// ending, because a defined topic with no durable subscriber fails the blocking durability
+/// check — each ending would otherwise owe its own consumer.
 ///
 /// - [`REASON_DECLINED`] — the addressee refused a pending request.
 /// - [`REASON_WITHDRAWN`] — the requester dropped their own pending request.

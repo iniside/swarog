@@ -218,29 +218,32 @@ pub(crate) const PURGE_SWEEP_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec 
 /// some and leave the rest at a day.
 pub(crate) const PURGE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::PLAYER_PURGE;
 
-/// Tombstones claimed per selection statement. It bounds PLAYERS; [`GROUPS_PER_FIRE`] is
-/// what bounds the work each one costs.
+/// Tombstones claimed per selection statement. It bounds PLAYERS only: one player can cost
+/// anything from zero statements to a dissolution per group, so what bounds a fire's work is
+/// [`SWEEP_BUDGET`], checked after every group.
 pub(crate) const PURGE_BATCH: i64 = 256;
 
-/// Groups this fire may touch, and therefore the number of `pg_advisory_xact_lock`s the
-/// delivery transaction can be holding at once: the lock is TRANSACTION-scoped and the
-/// delivery transaction ends only after the whole fire, so nothing inside a fire ever gives
-/// one back. This cluster sizes its shared lock table at `max_locks_per_transaction` x
-/// (`max_connections` + `max_prepared_transactions`) = 64 x 150 = 9600 slots, so a sweep
-/// holding 256 advisory locks plus its handful of relation locks takes under 3% of the
-/// table; the plane delivers one subscription at a time per process, so the concurrent
-/// count is a small multiple of that, not 150 of them.
+/// Groups this fire may touch, and therefore the number of committed SAVEPOINTs the delivery
+/// transaction accumulates: the binding constraint is the backend's cached subxid array
+/// (`PGPROC_MAX_CACHED_SUBXIDS` = 64), not the lock table. Every `SAVEPOINT purge_group` that
+/// writes consumes a subtransaction id; past 64 of them in one transaction the backend is
+/// marked suboverflowed, and then EVERY other backend in the cluster resolves this
+/// transaction's tuple visibility through `pg_subtrans` for as long as the fire runs. The 64
+/// transaction-scoped advisory locks it holds alongside are 0.7% of this cluster's shared
+/// lock table (`max_locks_per_transaction` x (`max_connections` +
+/// `max_prepared_transactions`) = 64 x 150 = 9600 slots).
 ///
 /// Unlike the retention sweep this IS a per-fire cap, and it costs throughput: a backlog
-/// above 256 groups per day drains over several days. A player whose groups outrun one fire
+/// above 64 groups per day drains over several days. A player whose groups outrun one fire
 /// keeps an unstamped tombstone and resumes on what is left — the deletes already done are
 /// committed, so every fire makes progress.
-pub(crate) const GROUPS_PER_FIRE: usize = 256;
+pub(crate) const GROUPS_PER_FIRE: usize = 64;
 
-/// The sweep's whole wall-clock budget, spent only at a PLAYER boundary — after that
-/// player's groups and its `swept_at` stamp, never between a membership delete and the
-/// `group.member_left` that ends it. A module may not read the plane's env, so it is a bare
-/// constant; the operator constraint that comes with it is that
+/// The sweep's whole wall-clock budget, checked after every GROUP (once its savepoint is
+/// released) and at every player boundary, never between a membership delete and the
+/// `group.member_left` that ends it — one dissolution alone emits up to `MAX_MEMBERS` events,
+/// so a player boundary is far too coarse to be the only check. A module may not read the
+/// plane's env, so it is a bare constant; the operator constraint that comes with it is that
 /// `ASYNCEVENTS_HANDLER_TIMEOUT` must stay above 5s (default 10s, and nothing in the tree
 /// sets it), below which the plane terminates the delivery backend instead and 20 such fires
 /// pause the subscription.
@@ -263,6 +266,9 @@ enum PlayerOutcome {
     Purged,
     /// [`GROUPS_PER_FIRE`] is exhausted; the fire ends with this player unstamped.
     CapReached,
+    /// [`SWEEP_BUDGET`] ran out between two of this player's groups; the fire ends with this
+    /// player unstamped.
+    BudgetSpent,
     /// One group failed and was rolled back to its savepoint; this player is skipped and
     /// the fire continues with the next one.
     Skipped,
@@ -299,7 +305,18 @@ impl crate::Service {
             .await
             .map_err(BusError::transport)?;
             for (player_id,) in &due {
-                match self.purge_player_groups(conn, player_id, &mut slots).await? {
+                match self
+                    .purge_player_groups(conn, player_id, &mut slots, started)
+                    .await?
+                {
+                    PlayerOutcome::BudgetSpent => {
+                        tracing::warn!(
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            player_id,
+                            "groups: purge sweep hit its budget mid-player — resuming next fire"
+                        );
+                        return Ok(());
+                    }
                     PlayerOutcome::CapReached => {
                         tracing::warn!(
                             player_id,
@@ -348,11 +365,15 @@ impl crate::Service {
     ///
     /// An `Err` here is therefore never a group's own failure — only the savepoint statements
     /// themselves failing, which means the connection is gone.
+    ///
+    /// [`SWEEP_BUDGET`] is checked here, per group, because a player is unbounded in groups
+    /// and each group is unbounded in rows.
     async fn purge_player_groups(
         &self,
         conn: &mut PgConnection,
         player_id: &str,
         slots: &mut usize,
+        started: std::time::Instant,
     ) -> Result<PlayerOutcome, BusError> {
         loop {
             if *slots == 0 {
@@ -378,6 +399,12 @@ impl crate::Service {
                             .await
                             .map_err(BusError::transport)?;
                         *slots -= 1;
+                        // The released savepoint is the only resumption boundary inside a
+                        // player: the tombstone is still unstamped, so the next fire's
+                        // `player_groups_tx` re-reads exactly what is left.
+                        if started.elapsed() >= SWEEP_BUDGET {
+                            return Ok(PlayerOutcome::BudgetSpent);
+                        }
                     }
                     Err(e) => {
                         sqlx::query("ROLLBACK TO SAVEPOINT purge_group")
