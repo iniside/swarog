@@ -568,6 +568,13 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     // half is split-only by construction.
     groups_assertions(ctx, pool, p, &m, &jar, None, "m").await?;
 
+    // --- Account deletion parity: the same eleven assertions with accounts, all seven
+    // `player.deleted` consumers, the scheduler and the front door in ONE process. The event
+    // still travels the durable log and each consumer still owns two checkpoints — the
+    // topology is the only difference. `edge` is `None` because the monolith hosts no internal
+    // edge, so the receipt-idempotency replay `[DL2e]` is split-only by construction.
+    deletion_assertions(ctx, pool, p, &m, None, "m").await?;
+
     // [W2] graceful shutdown: a native Ctrl-Break (Windows) / SIGTERM (unix) must drain
     // in-flight work and exit 0 within the grace window — no force-kill. This is the
     // proof winctrl gave, now native (the app's shutdown_signal listens for ctrl_break).
@@ -2577,6 +2584,800 @@ async fn groups_checks(
         &format!("[GR6{tag}] groups-prune sweeps the stale requested row and leaves the equally old member row"),
         gr6_swept && gr6_survived == 1,
         format!("swept={gr6_swept} survived={gr6_survived} group={gr6_group}"),
+    );
+
+    Ok(())
+}
+
+/// One scalar count bound to one text parameter, `-1` when the query itself failed — so a
+/// broken predicate reports a verdict instead of aborting the pass.
+async fn count_of(pool: &PgPool, sql: &str, a: &str) -> i64 {
+    sqlx::query_scalar(sql).bind(a).fetch_one(pool).await.unwrap_or(-1)
+}
+
+/// `1` iff `subscription_id` exists, is ACTIVE, and its cursor is AT OR PAST the position of
+/// `event_id`. Stated positively on purpose: this is the only instrument in the tree that can
+/// see a MISSING `player.deleted` consumer (`topiccheck`'s unsubscribed check is keyed on
+/// `(topic, version)`, contract-golden carries definition lines only), and written as
+/// "no subscription is behind the event" a deleted consumer would pass vacuously — 0 rows
+/// behind, green. Written this way a deleted consumer is 0 rows found, FAIL.
+///
+/// The cursor is the composite triple `(cursor_generation, cursor_xid, cursor_tie)` the
+/// worker sets TO the delivered position (`core/asyncevents/src/worker.rs`), so the
+/// comparison is `>=`: `>` would be flaky for every event that happens to be last on its
+/// topic.
+async fn cursor_at_or_past(pool: &PgPool, subscription_id: &str, event_id: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM asyncevents.subscriptions s, asyncevents.events e \
+          WHERE s.subscription_id = $1 \
+            AND e.event_id = $2 \
+            AND s.state = 'active' \
+            AND (s.cursor_generation, s.cursor_xid, s.cursor_tie) \
+                >= (e.generation, e.producer_xid, e.tie_breaker)",
+    )
+    .bind(subscription_id)
+    .bind(event_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(-1)
+}
+
+/// The EARLIEST `scheduler.fired{player-purge}` appended after `event_id` — the anchor the
+/// six sweep cursors are measured against, since a sweep subscription rides
+/// `scheduler.fired`, not `player.deleted`. Any fire that could have done this pass's work
+/// was appended after the tombstone committed, hence after `player.deleted`; the cursor is
+/// monotone and equals the delivered position, so `>=` this earliest one is exactly the
+/// claim "the sweep consumed a fire that could see this player".
+async fn first_purge_fire_after(pool: &PgPool, event_id: &str) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT f.event_id FROM asyncevents.events f, asyncevents.events d \
+          WHERE d.event_id = $1 \
+            AND f.topic = 'scheduler.fired' \
+            AND f.payload->>'name' = 'player-purge' \
+            AND (f.generation, f.producer_xid, f.tie_breaker) \
+                > (d.generation, d.producer_xid, d.tie_breaker) \
+          ORDER BY f.generation, f.producer_xid, f.tie_breaker \
+          LIMIT 1",
+    )
+    .bind(event_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+}
+
+/// Polls a POSITIVE count predicate while re-forcing the shared `player-purge` schedule due
+/// on every attempt. One fire sweeps a bounded slice — `groups` caps at 64 groups per fire
+/// and all six sweeps carry a 5s budget — so a backlog left by an earlier run would defer
+/// this pass's player to a fire 86400s away, which no wait can survive. The UPDATE is the
+/// `[GR6]`/`[SP2]` force, idempotent, and an extra fire is a committed no-op for every
+/// module with nothing left to sweep.
+async fn poll_swept(pool: &PgPool, sql: &str, id: &str, want: i64) -> bool {
+    for _ in 0..30 {
+        sqlx::query(
+            "UPDATE scheduler.schedules SET last_fired = to_timestamp(0) WHERE name = 'player-purge'",
+        )
+        .execute(pool)
+        .await
+        .ok();
+        let n: Option<i64> = sqlx::query_scalar(sql).bind(id).fetch_optional(pool).await.ok().flatten();
+        if n == Some(want) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    false
+}
+
+/// `[DL1]`-`[DL11]`, run once per topology.
+///
+/// F5 of the deletion plan is why every per-module check below joins THREE predicates rather
+/// than one: `topiccheck`'s unsubscribed check is keyed on `(topic, version)` — existence,
+/// not consumer — so six of the seven `player.deleted` consumers can be deleted with both
+/// deployment profiles green, and contract-golden carries definition lines only. This pass is
+/// the only instrument that names a consumer. The three are: the subject's rows gone from an
+/// EXACT asserted pre-count (a `= 0` alone passes when the fixture never seeded), a survivor
+/// seeded identically and untouched, and BOTH of that module's cursors at or past the event
+/// that drove them — the tombstone subscription (`<module>.player-deleted.v1`) and the
+/// SEPARATE sweep subscription (`<module>.purge-on-scheduler.v1`), which is the cursor F2
+/// (a paused consumer behind a green `/readyz`) is actually about.
+///
+/// `edge` is accounts-svc's INTERNAL mTLS address, `Some` in the split and `None` in the
+/// monolith, which hosts no internal edge at all — so `[DL2e]` exists only in the split,
+/// recorded as a known gap of the parity pass rather than faked with an in-process call
+/// (the `[GR4e]` convention).
+///
+/// Transport errors collapse into ONE named failing check rather than an `Err`: the parity
+/// pass runs BEFORE `[W2]`, and an `Err` out of `monolith_parity` would delete the
+/// graceful-shutdown proof from the run.
+async fn deletion_assertions(
+    ctx: &Ctx,
+    pool: &PgPool,
+    p: &mut Proof,
+    front: &str,
+    edge: Option<std::net::SocketAddr>,
+    tag: &str,
+) -> Result<()> {
+    if let Err(e) = deletion_checks(ctx, pool, p, front, edge, tag).await {
+        p.check(
+            &format!("[DL0{tag}] the account-deletion pass ran to completion"),
+            false,
+            format!("{e:#}"),
+        );
+    }
+    Ok(())
+}
+
+async fn deletion_checks(
+    ctx: &Ctx,
+    pool: &PgPool,
+    p: &mut Proof,
+    front: &str,
+    edge: Option<std::net::SocketAddr>,
+    tag: &str,
+) -> Result<()> {
+    let nonce = pass_nonce(tag);
+    let sentinel = "00000000-0000-0000-0000-000000000000";
+
+    // `s` is deleted, `t` is the survivor: same registration helper, same seeding calls, same
+    // counts. `f` is the friend both befriend and `m` the member that joins both groups, so
+    // the survivor's rows are reachable from the SAME peers the subject's were — a sweep that
+    // deleted by peer rather than by subject fails on `t`, not on `s`.
+    let s = friends_player(ctx, front, &format!("dl-s-{nonce}@test.local"), &format!("DlS{nonce}")).await?;
+    let t = friends_player(ctx, front, &format!("dl-t-{nonce}@test.local"), &format!("DlT{nonce}")).await?;
+    let f = friends_player(ctx, front, &format!("dl-f-{nonce}@test.local"), &format!("DlF{nonce}")).await?;
+    let m = friends_player(ctx, front, &format!("dl-m-{nonce}@test.local"), &format!("DlM{nonce}")).await?;
+
+    // ---- seed both players identically -------------------------------------------------
+    let mut chars: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for (who, player) in [("s", &s), ("t", &t)] {
+        let mut ids = Vec::new();
+        for n in 0..2 {
+            if let Some(id) = create_character(ctx, front, &player.token, &format!("dl{who}{n}{nonce}")).await {
+                ids.push(id);
+            }
+        }
+        chars.insert(who, ids);
+        for item in ["coin", "health_potion"] {
+            friends_call(
+                ctx,
+                front,
+                &player.token,
+                reqwest::Method::POST,
+                "/inventory/me/grant",
+                Some(serde_json::json!({ "item_id": item, "qty": 3 })),
+            )
+            .await?;
+        }
+    }
+    // ONE statement for both inboxes, so an asymmetry cannot come from the seeding. The kind
+    // carries the pass nonce: the pre-count is then exactly this pass's rows, while the
+    // post-count is every row the player owns (the wallet starter grant leaves one too), so
+    // the sweep is asserted to take MORE than the fixture, never less.
+    let inbox_kind = format!("splitproof.deletion.{nonce}");
+    sqlx::query(
+        "INSERT INTO notifications.messages (id, player_id, kind, title, body) \
+         SELECT gen_random_uuid(), who::uuid, $3, 'Deletion fixture ' || i, 'seeded' \
+           FROM unnest(ARRAY[$1::text, $2::text]) AS who, generate_series(1, 3) AS i",
+    )
+    .bind(&s.player_id)
+    .bind(&t.player_id)
+    .bind(&inbox_kind)
+    .execute(pool)
+    .await
+    .context("seed the deletion inbox fixtures")?;
+
+    let mut edges: BTreeMap<&str, String> = BTreeMap::new();
+    let mut groups: BTreeMap<&str, String> = BTreeMap::new();
+    for (who, player) in [("s", &s), ("t", &t)] {
+        let (_, body) = friends_call(
+            ctx,
+            front,
+            &player.token,
+            reqwest::Method::POST,
+            "/friends/requests",
+            Some(serde_json::json!({ "target_handle": f.handle })),
+        )
+        .await?;
+        let edge_id = body.get("edge_id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        friends_call(
+            ctx,
+            front,
+            &f.token,
+            reqwest::Method::POST,
+            &format!("/friends/requests/{edge_id}/accept"),
+            None,
+        )
+        .await?;
+        edges.insert(who, edge_id);
+        let (_, group_id) =
+            create_group(ctx, front, &player.token, &format!("DlG{who}{nonce}"), "open").await?;
+        friends_call(
+            ctx,
+            front,
+            &m.token,
+            reqwest::Method::POST,
+            &format!("/groups/{group_id}/join"),
+            Some(serde_json::json!({})),
+        )
+        .await?;
+        groups.insert(who, group_id);
+    }
+
+    // The wallet fixture is the configured starter grant, which is durable: poll it to
+    // EXACTLY one ledger row rather than reading a count that has not landed yet.
+    let wallet_seeded = poll_count(
+        pool,
+        "SELECT count(*) FROM wallet.ledger WHERE player_id::text = $1",
+        &s.player_id,
+        1,
+    )
+    .await
+        && poll_count(
+            pool,
+            "SELECT count(*) FROM wallet.ledger WHERE player_id::text = $1",
+            &t.player_id,
+            1,
+        )
+        .await;
+
+    // ---- the exact pre-counts, captured BEFORE the delete ------------------------------
+    let before_chars = count_of(
+        pool,
+        "SELECT count(*) FROM characters.characters WHERE player_id::text = $1",
+        &s.player_id,
+    )
+    .await;
+    let before_holdings = count_of(
+        pool,
+        "SELECT count(*) FROM inventory.holdings WHERE owner_type = 'player' AND owner_id::text = $1",
+        &s.player_id,
+    )
+    .await;
+    let before_balances = count_of(
+        pool,
+        "SELECT count(*) FROM wallet.balances WHERE player_id::text = $1",
+        &s.player_id,
+    )
+    .await;
+    let before_ledger_keys: Vec<String> = sqlx::query_scalar(
+        "SELECT idempotency_key FROM wallet.ledger WHERE player_id::text = $1 ORDER BY idempotency_key",
+    )
+    .bind(&s.player_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let before_inbox = count_of(
+        pool,
+        &format!(
+            "SELECT count(*) FROM notifications.messages WHERE player_id::text = $1 AND kind = '{inbox_kind}'"
+        ),
+        &s.player_id,
+    )
+    .await;
+    let before_edges = count_of(
+        pool,
+        "SELECT count(*) FROM friends.edges WHERE $1::uuid IN (low_id, high_id)",
+        &s.player_id,
+    )
+    .await;
+    let before_memberships = count_of(
+        pool,
+        "SELECT count(*) FROM groups.memberships WHERE group_id::text = $1",
+        groups.get("s").map(String::as_str).unwrap_or_default(),
+    )
+    .await;
+
+    // ---- [DL1] the op itself -----------------------------------------------------------
+    // `begin_delete` UPSERTS one live ticket per player, so the second call must answer the
+    // SAME ticket: a client that re-confirms can never invalidate the confirmation its user
+    // is looking at. Then the delete, whose receipt names the handle and whose ONE
+    // `player.deleted` carries that same handle (D5) — nothing else in the tree executes D5,
+    // whose whole justification is a readable ledger after the player row is gone.
+    let (begin1_code, begin1) = friends_call(ctx, front, &s.token, reqwest::Method::POST, "/accounts/delete/begin", None).await?;
+    let (_, begin2) = friends_call(ctx, front, &s.token, reqwest::Method::POST, "/accounts/delete/begin", None).await?;
+    let ticket = begin1.get("ticket").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let ticket2 = begin2.get("ticket").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let (del_code, del_body) = friends_call(
+        ctx,
+        front,
+        &s.token,
+        reqwest::Method::POST,
+        "/accounts/delete",
+        Some(serde_json::json!({ "ticket": &ticket })),
+    )
+    .await?;
+    let receipt_handle = del_body.get("handle").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let receipt_deleted_at = del_body.get("deleted_at").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let deleted_events: Vec<(String, String)> = sqlx::query_as(
+        "SELECT event_id, payload->>'handle' FROM asyncevents.events \
+          WHERE topic = 'player.deleted' AND payload->>'player_id' = $1",
+    )
+    .bind(&s.player_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let deleted_event_id = deleted_events.first().map(|(id, _)| id.clone()).unwrap_or_default();
+    let player_rows = count_of(pool, "SELECT count(*) FROM accounts.players WHERE id::text = $1", &s.player_id).await;
+    let session_rows = count_of(pool, "SELECT count(*) FROM accounts.sessions WHERE player_id::text = $1", &s.player_id).await;
+    p.check(
+        &format!("[DL1{tag}] begin twice -> one ticket; delete -> 200 receipt, player + sessions gone, ONE player.deleted carrying the handle"),
+        begin1_code == 200
+            && !ticket.is_empty()
+            && ticket2 == ticket
+            && del_code == 200
+            && receipt_handle == s.handle
+            && player_rows == 0
+            && session_rows == 0
+            && deleted_events.len() == 1
+            && deleted_events.first().map(|(_, h)| h.as_str()) == Some(s.handle.as_str()),
+        format!(
+            "begin={begin1_code} same_ticket={} delete={del_code} receipt_handle={receipt_handle} \
+             handle={} players={player_rows} sessions={session_rows} events={:?}",
+            ticket2 == ticket,
+            s.handle,
+            deleted_events
+        ),
+    );
+
+    // ---- [DL2] the client leg ----------------------------------------------------------
+    // EXACTLY 401, never `!= 200`: the same verifier answers 503 when accounts is
+    // unreachable, and a loose assertion would wave through "accounts-svc fell over" as a
+    // proof that the session died with the player. `delete_account` is `#[retry_safe]` and
+    // that does NOT reach a client — the session is gone, so the gateway refuses before
+    // accounts is dispatched at all.
+    let (replay_code, _) = friends_call(
+        ctx,
+        front,
+        &s.token,
+        reqwest::Method::POST,
+        "/accounts/delete",
+        Some(serde_json::json!({ "ticket": &ticket })),
+    )
+    .await?;
+    p.check(
+        &format!("[DL2{tag}] a client re-POST of /accounts/delete with the dead bearer -> exactly 401"),
+        replay_code == 401,
+        format!("code={replay_code} (503 would mean accounts-svc is down, not that the session died)"),
+    );
+
+    // ---- [DL2e] the internal-edge leg, split-only --------------------------------------
+    // RECEIPT IDEMPOTENCY on the internal-edge path, which is NOT the
+    // `RetryMode::OnceAfterReconnect` replay: that one lives inside `remote::Stub` and fires
+    // on reconnect, and contract-golden already pins the mode. What this proves is the half
+    // the receipt table exists for — the same method, identity and ticket arriving a second
+    // time at accounts-svc answer the ORIGINAL receipt, byte for byte, and append no second
+    // `player.deleted`. The monolith hosts no internal edge, so there is nothing to dial.
+    if let Some(addr) = edge {
+        let ca = DevCA::load(
+            ctx.ca_cert.to_str().context("CA cert path not UTF-8")?,
+            ctx.ca_key.to_str().context("CA key path not UTF-8")?,
+        )
+        .map_err(|e| anyhow::anyhow!("load dev CA: {e}"))?;
+        let client = edge::Client::dial(addr, &ca)
+            .await
+            .map_err(|e| anyhow::anyhow!("dial accounts-svc edge: {e}"))?;
+        let body = serde_json::json!({ "ticket": &ticket }).to_string();
+        let raw = client
+            .call_raw_id("accounts.deleteAccount", Some(&s.player_id), body.as_bytes())
+            .await
+            .map_err(|e| anyhow::anyhow!("accounts.deleteAccount over the edge: {e}"));
+        let answer: Option<serde_json::Value> = raw.as_ref().ok().and_then(|b| serde_json::from_slice(b).ok());
+        client.close();
+        let status = answer.as_ref().and_then(envelope_status).unwrap_or("").to_string();
+        let value = answer.as_ref().and_then(|v| v.get("value")).cloned().unwrap_or(serde_json::Value::Null);
+        let replay_handle = value.get("handle").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let replay_at = value.get("deleted_at").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let replay_pid = value.get("player_id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let still_one = count_of(
+            pool,
+            "SELECT count(*) FROM asyncevents.events WHERE topic = 'player.deleted' AND payload->>'player_id' = $1",
+            &s.player_id,
+        )
+        .await;
+        p.check(
+            &format!("[DL2e{tag}] the same accounts.deleteAccount over accounts-svc's internal edge -> the ORIGINAL receipt, no second player.deleted"),
+            status == "Ok"
+                && replay_pid == s.player_id
+                && replay_handle == receipt_handle
+                && replay_at == receipt_deleted_at
+                && still_one == 1,
+            format!(
+                "status={status} pid={replay_pid} handle={replay_handle} deleted_at={replay_at} \
+                 first_deleted_at={receipt_deleted_at} events={still_one} err={:?}",
+                raw.as_ref().err().map(|e| e.to_string())
+            ),
+        );
+    }
+
+    // ---- [DL3] the handle reservation (D4) ---------------------------------------------
+    // Asserted at the DB, not through a re-registration: minting RETRIES what the unique key
+    // rejects (`modules/accounts/src/lib.rs`), so "register with the freed name and observe a
+    // different discriminator" passes identically whether or not `accounts.handles` holds
+    // anything. Only the direct INSERT executes the branch that used to be wrong, and its
+    // SQLSTATE is read off the error rather than "it errored".
+    let (name_part, disc_part) = s.handle.rsplit_once('#').unwrap_or((s.handle.as_str(), ""));
+    let lower = name_part.to_lowercase();
+    let reserved: Option<(bool,)> = sqlx::query_as(
+        "SELECT player_id IS NULL FROM accounts.handles \
+          WHERE display_name_lower = $1 AND discriminator = $2",
+    )
+    .bind(&lower)
+    .bind(disc_part)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let remint = sqlx::query(
+        "INSERT INTO accounts.handles (display_name_lower, discriminator, player_id) VALUES ($1, $2, NULL)",
+    )
+    .bind(&lower)
+    .bind(disc_part)
+    .execute(pool)
+    .await;
+    let sqlstate = remint
+        .as_ref()
+        .err()
+        .and_then(|e| e.as_database_error())
+        .and_then(|e| e.code())
+        .map(|c| c.to_string())
+        .unwrap_or_default();
+    let still_held: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM accounts.players WHERE lower(display_name) = $1 AND discriminator = $2",
+    )
+    .bind(&lower)
+    .bind(disc_part)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(-1);
+    p.check(
+        &format!("[DL3{tag}] the deleted handle stays claimed: reservation row with a NULL player, a re-claim raises 23505, no player holds the pair"),
+        reserved == Some((true,)) && sqlstate == "23505" && still_held == 0,
+        format!("handle={} reserved={reserved:?} sqlstate={sqlstate:?} players_holding={still_held}", s.handle),
+    );
+
+    // ---- the six tombstones, then the sweeps -------------------------------------------
+    // The tombstone plants are polled FIRST, before any fire is forced: the sweep reads
+    // `purged_players`, so a fire that arrives before the plant does nothing and the next
+    // one is 86400s away.
+    let mut planted: BTreeMap<&str, bool> = BTreeMap::new();
+    for schema in ["characters", "inventory", "wallet", "notifications", "friends", "groups"] {
+        planted.insert(
+            schema,
+            poll_count(
+                pool,
+                &format!("SELECT count(*) FROM {schema}.purged_players WHERE player_id::text = $1"),
+                &s.player_id,
+                1,
+            )
+            .await,
+        );
+    }
+    // Each sweep gets its OWN poll, and therefore its own full budget: six sweeps each
+    // holding a 5s budget can serialize behind one fire, and a single shared poll would go
+    // red on timing rather than on correctness.
+    let mut swept: BTreeMap<&str, bool> = BTreeMap::new();
+    for schema in ["characters", "inventory", "wallet", "notifications", "friends", "groups"] {
+        swept.insert(
+            schema,
+            poll_swept(
+                pool,
+                &format!(
+                    "SELECT count(*) FROM {schema}.purged_players \
+                      WHERE player_id::text = $1 AND swept_at IS NOT NULL"
+                ),
+                &s.player_id,
+                1,
+            )
+            .await,
+        );
+    }
+    let fire = first_purge_fire_after(pool, &deleted_event_id).await.unwrap_or_default();
+
+    // ---- [DL4] characters ---------------------------------------------------------------
+    let after_chars = count_of(
+        pool,
+        "SELECT count(*) FROM characters.characters WHERE player_id::text = $1",
+        &s.player_id,
+    )
+    .await;
+    let survivor_chars = count_of(
+        pool,
+        "SELECT count(*) FROM characters.characters WHERE player_id::text = $1",
+        &t.player_id,
+    )
+    .await;
+    let chars_tomb = cursor_at_or_past(pool, "characters.player-deleted.v1", &deleted_event_id).await;
+    let chars_sweep = cursor_at_or_past(pool, "characters.purge-on-scheduler.v1", &fire).await;
+    p.check(
+        &format!("[DL4{tag}] characters: the subject's 2 characters gone, the survivor's 2 untouched, tombstone + sweep cursors advanced"),
+        before_chars == 2
+            && planted["characters"]
+            && swept["characters"]
+            && after_chars == 0
+            && survivor_chars == 2
+            && chars_tomb == 1
+            && chars_sweep == 1,
+        format!(
+            "before={before_chars} after={after_chars} survivor={survivor_chars} \
+             planted={} swept={} tombstone_cursor={chars_tomb} sweep_cursor={chars_sweep}",
+            planted["characters"], swept["characters"]
+        ),
+    );
+
+    // [DL4c] the cascade the sweep's emit exists for: one `character.deleted` per swept row,
+    // consumed CROSS-PROCESS by inventory, which writes the tombstone that stops a late
+    // `character.created` from resurrecting the holdings.
+    let subject_chars = chars.get("s").cloned().unwrap_or_default();
+    let mut wiped = 0i64;
+    for cid in &subject_chars {
+        wiped += if poll_count(
+            pool,
+            "SELECT count(*) FROM inventory.wiped_characters WHERE character_id::text = $1",
+            cid,
+            1,
+        )
+        .await
+        {
+            1
+        } else {
+            0
+        };
+    }
+    p.check(
+        &format!("[DL4c{tag}] the purge's character.deleted reaches inventory: a wiped_characters row per swept character"),
+        subject_chars.len() == 2 && wiped == 2,
+        format!("characters={subject_chars:?} wiped={wiped}"),
+    );
+
+    // ---- [DL5] inventory -----------------------------------------------------------------
+    let after_holdings = count_of(
+        pool,
+        "SELECT count(*) FROM inventory.holdings WHERE owner_type = 'player' AND owner_id::text = $1",
+        &s.player_id,
+    )
+    .await;
+    let survivor_holdings = count_of(
+        pool,
+        "SELECT count(*) FROM inventory.holdings WHERE owner_type = 'player' AND owner_id::text = $1",
+        &t.player_id,
+    )
+    .await;
+    let inv_tomb = cursor_at_or_past(pool, "inventory.player-deleted.v1", &deleted_event_id).await;
+    let inv_sweep = cursor_at_or_past(pool, "inventory.purge-on-scheduler.v1", &fire).await;
+    p.check(
+        &format!("[DL5{tag}] inventory: the subject's 2 player-owned holdings gone, the survivor's 2 untouched, tombstone + sweep cursors advanced"),
+        before_holdings == 2
+            && planted["inventory"]
+            && swept["inventory"]
+            && after_holdings == 0
+            && survivor_holdings == 2
+            && inv_tomb == 1
+            && inv_sweep == 1,
+        format!(
+            "before={before_holdings} after={after_holdings} survivor={survivor_holdings} \
+             planted={} swept={} tombstone_cursor={inv_tomb} sweep_cursor={inv_sweep}",
+            planted["inventory"], swept["inventory"]
+        ),
+    );
+
+    // ---- [DL6] wallet (D6) ---------------------------------------------------------------
+    // The ledger is the dedup registry and the starter key is `starter:{player_id}`, so the
+    // row must SURVIVE with its key claimed, re-owned to the nil sentinel. A bare
+    // "count where player_id = subject is 0" would pass if the sweep DELETED the ledger —
+    // D6's forbidden outcome — so the assertion is the same key, still exactly one row,
+    // under the sentinel.
+    let ledger_key = before_ledger_keys.first().cloned().unwrap_or_default();
+    let after_balances = count_of(pool, "SELECT count(*) FROM wallet.balances WHERE player_id::text = $1", &s.player_id).await;
+    let after_ledger = count_of(pool, "SELECT count(*) FROM wallet.ledger WHERE player_id::text = $1", &s.player_id).await;
+    let key_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM wallet.ledger WHERE idempotency_key = $1")
+        .bind(&ledger_key)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(-1);
+    let key_owner: Option<String> = sqlx::query_scalar("SELECT player_id::text FROM wallet.ledger WHERE idempotency_key = $1")
+        .bind(&ledger_key)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten();
+    let survivor_balances = count_of(pool, "SELECT count(*) FROM wallet.balances WHERE player_id::text = $1", &t.player_id).await;
+    let survivor_ledger = count_of(pool, "SELECT count(*) FROM wallet.ledger WHERE player_id::text = $1", &t.player_id).await;
+    let wallet_tomb = cursor_at_or_past(pool, "wallet.player-deleted.v1", &deleted_event_id).await;
+    let wallet_sweep = cursor_at_or_past(pool, "wallet.purge-on-scheduler.v1", &fire).await;
+    p.check(
+        &format!("[DL6{tag}] wallet: balances gone, the ledger row KEPT under the nil sentinel with its idempotency_key intact, the survivor's money untouched, both cursors advanced"),
+        wallet_seeded
+            && before_balances == 1
+            && before_ledger_keys.len() == 1
+            && ledger_key.starts_with("starter:")
+            && planted["wallet"]
+            && swept["wallet"]
+            && after_balances == 0
+            && after_ledger == 0
+            && key_rows == 1
+            && key_owner.as_deref() == Some(sentinel)
+            && survivor_balances == 1
+            && survivor_ledger == 1
+            && wallet_tomb == 1
+            && wallet_sweep == 1,
+        format!(
+            "seeded={wallet_seeded} before_balances={before_balances} before_keys={before_ledger_keys:?} \
+             after_balances={after_balances} after_ledger={after_ledger} key_rows={key_rows} \
+             key_owner={key_owner:?} survivor=({survivor_balances},{survivor_ledger}) \
+             tombstone_cursor={wallet_tomb} sweep_cursor={wallet_sweep}"
+        ),
+    );
+
+    // ---- [DL7] notifications ---------------------------------------------------------------
+    let after_inbox = count_of(pool, "SELECT count(*) FROM notifications.messages WHERE player_id::text = $1", &s.player_id).await;
+    let survivor_inbox = count_of(
+        pool,
+        &format!("SELECT count(*) FROM notifications.messages WHERE player_id::text = $1 AND kind = '{inbox_kind}'"),
+        &t.player_id,
+    )
+    .await;
+    let notif_tomb = cursor_at_or_past(pool, "notifications.player-deleted.v1", &deleted_event_id).await;
+    let notif_sweep = cursor_at_or_past(pool, "notifications.purge-on-scheduler.v1", &fire).await;
+    p.check(
+        &format!("[DL7{tag}] notifications: the subject's whole inbox gone (3 seeded), the survivor's 3 untouched, tombstone + sweep cursors advanced"),
+        before_inbox == 3
+            && planted["notifications"]
+            && swept["notifications"]
+            && after_inbox == 0
+            && survivor_inbox == 3
+            && notif_tomb == 1
+            && notif_sweep == 1,
+        format!(
+            "before={before_inbox} after={after_inbox} survivor={survivor_inbox} \
+             planted={} swept={} tombstone_cursor={notif_tomb} sweep_cursor={notif_sweep}",
+            planted["notifications"], swept["notifications"]
+        ),
+    );
+
+    // ---- [DL8] friends ---------------------------------------------------------------------
+    let after_edges = count_of(
+        pool,
+        "SELECT count(*) FROM friends.edges WHERE $1::uuid IN (low_id, high_id)",
+        &s.player_id,
+    )
+    .await;
+    let survivor_edge = edges.get("t").map(String::as_str).unwrap_or_default();
+    let survivor_edge_state = edge_state(pool, survivor_edge).await;
+    // The terminal event is the sweep's contract with the rest of the log, and its
+    // `actor_handle` is the handle carried on `player.deleted` (D5) — the only path by which
+    // a purge-emitted event can still name the player whose row is gone.
+    let removed: Option<(String, String)> = sqlx::query_as(
+        "SELECT payload->>'reason', payload->>'actor_handle' FROM asyncevents.events \
+          WHERE topic = 'friend.removed' AND payload->>'edge_id' = $1",
+    )
+    .bind(edges.get("s").map(String::as_str).unwrap_or_default())
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let friends_tomb = cursor_at_or_past(pool, "friends.player-deleted.v1", &deleted_event_id).await;
+    let friends_sweep = cursor_at_or_past(pool, "friends.purge-on-scheduler.v1", &fire).await;
+    p.check(
+        &format!("[DL8{tag}] friends: the subject's edge gone with a friend.removed{{account-deleted}} naming its handle, the survivor's edge still accepted, both cursors advanced"),
+        before_edges == 1
+            && planted["friends"]
+            && swept["friends"]
+            && after_edges == 0
+            && survivor_edge_state.as_deref() == Some("accepted")
+            && removed.as_ref().map(|(r, _)| r.as_str()) == Some("account-deleted")
+            && removed.as_ref().map(|(_, h)| h.as_str()) == Some(s.handle.as_str()),
+        format!(
+            "before={before_edges} after={after_edges} survivor_edge={survivor_edge_state:?} \
+             removed={removed:?} handle={} planted={} swept={} tombstone_cursor={friends_tomb} sweep_cursor={friends_sweep}",
+            s.handle, planted["friends"], swept["friends"]
+        ),
+    );
+
+    // ---- [DL9] groups (D7) ------------------------------------------------------------------
+    // The sole admin's deletion DISSOLVES the group: the group row and every remaining
+    // membership go, the subject's own row ends with `account-deleted` authored by itself and
+    // every collateral row with `group-dissolved` authored by NOBODY — the empty `actor_id`
+    // is the vocabulary difference D7 costs the audit ledger, so it is asserted, not implied.
+    let subject_group = groups.get("s").map(String::as_str).unwrap_or_default();
+    let survivor_group = groups.get("t").map(String::as_str).unwrap_or_default();
+    let after_group_rows = count_of(pool, "SELECT count(*) FROM groups.groups WHERE id::text = $1", subject_group).await;
+    let after_memberships = count_of(pool, "SELECT count(*) FROM groups.memberships WHERE group_id::text = $1", subject_group).await;
+    let survivor_group_rows = count_of(pool, "SELECT count(*) FROM groups.groups WHERE id::text = $1", survivor_group).await;
+    let survivor_memberships = count_of(pool, "SELECT count(*) FROM groups.memberships WHERE group_id::text = $1", survivor_group).await;
+    let left_subject: Option<(String, String)> = sqlx::query_as(
+        "SELECT payload->>'reason', payload->>'actor_id' FROM asyncevents.events \
+          WHERE topic = 'group.member_left' AND payload->>'group_id' = $1 AND payload->>'player_id' = $2",
+    )
+    .bind(subject_group)
+    .bind(&s.player_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let left_collateral: Option<(String, String)> = sqlx::query_as(
+        "SELECT payload->>'reason', payload->>'actor_id' FROM asyncevents.events \
+          WHERE topic = 'group.member_left' AND payload->>'group_id' = $1 AND payload->>'player_id' = $2",
+    )
+    .bind(subject_group)
+    .bind(&m.player_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    let groups_tomb = cursor_at_or_past(pool, "groups.player-deleted.v1", &deleted_event_id).await;
+    let groups_sweep = cursor_at_or_past(pool, "groups.purge-on-scheduler.v1", &fire).await;
+    p.check(
+        &format!("[DL9{tag}] groups: the sole admin's group dissolved with every membership, account-deleted for the subject and group-dissolved/no-actor for the collateral member, the survivor's group intact, both cursors advanced"),
+        before_memberships == 2
+            && planted["groups"]
+            && swept["groups"]
+            && after_group_rows == 0
+            && after_memberships == 0
+            && survivor_group_rows == 1
+            && survivor_memberships == 2
+            && left_subject == Some(("account-deleted".to_string(), s.player_id.clone()))
+            && left_collateral == Some(("group-dissolved".to_string(), String::new()))
+            && groups_tomb == 1
+            && groups_sweep == 1,
+        format!(
+            "before_memberships={before_memberships} group_rows={after_group_rows} \
+             memberships={after_memberships} survivor=({survivor_group_rows},{survivor_memberships}) \
+             subject_left={left_subject:?} collateral_left={left_collateral:?} \
+             planted={} swept={} tombstone_cursor={groups_tomb} sweep_cursor={groups_sweep}",
+            planted["groups"], swept["groups"]
+        ),
+    );
+
+    // ---- [DL10] audit, the seventh consumer --------------------------------------------------
+    let audit_row = poll_count(
+        pool,
+        "SELECT count(*) FROM audit.log WHERE topic = 'player.deleted' AND payload->>'player_id' = $1",
+        &s.player_id,
+        1,
+    )
+    .await;
+    let audit_cursor = cursor_at_or_past(pool, "audit.player-deleted.v1", &deleted_event_id).await;
+    p.check(
+        &format!("[DL10{tag}] audit: one player.deleted row in the ledger and its own cursor advanced"),
+        audit_row && audit_cursor == 1,
+        format!("row={audit_row} cursor={audit_cursor} player={}", s.player_id),
+    );
+
+    // ---- [DL11] the tombstone write guard -----------------------------------------------------
+    // A really-deleted player is 401 at the gateway and never reaches the guard (F4 revokes
+    // the sessions in the producing transaction), so the guard is reached the only way it can
+    // be: a `player.deleted` appended straight onto the plane through `asyncevents.append_event`
+    // for a player still LIVE in accounts (the `[ML1]` producer shape). That synthetic event
+    // fires all six sweeps against a live player, so `w` is dedicated, consumed once, and never
+    // used again. The assertion is that NOTHING was written — a guard that answers 409 after
+    // inserting is exactly the failure this check exists for.
+    let w = friends_player(ctx, front, &format!("dl-w-{nonce}@test.local"), &format!("DlW{nonce}")).await?;
+    sqlx::query("SELECT asyncevents.append_event($1, $2, $3::jsonb)")
+        .bind("player.deleted")
+        .bind(1i32)
+        .bind(serde_json::json!({ "player_id": w.player_id, "handle": w.handle }).to_string())
+        .execute(pool)
+        .await
+        .context("append the synthetic player.deleted")?;
+    let guard_planted = poll_count(
+        pool,
+        "SELECT count(*) FROM characters.purged_players WHERE player_id::text = $1",
+        &w.player_id,
+        1,
+    )
+    .await;
+    let guard_code = create_character_status(ctx, front, &w.token, &format!("dlguard{nonce}")).await;
+    let guard_rows = count_of(
+        pool,
+        "SELECT count(*) FROM characters.characters WHERE player_id::text = $1",
+        &w.player_id,
+    )
+    .await;
+    p.check(
+        &format!("[DL11{tag}] a tombstoned but still-authenticated player's characters.create -> 409 AND no row written"),
+        guard_planted && guard_code == 409 && guard_rows == 0,
+        format!("planted={guard_planted} code={guard_code} rows={guard_rows} player={}", w.player_id),
     );
 
     Ok(())
@@ -4804,6 +5605,28 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
             )
             .parse()
             .context("groups edge address")?,
+        ),
+        "",
+    )
+    .await?;
+
+    // --- Account deletion and the purge fan-out. The op is Remote-dispatched to accounts-svc,
+    // its `player.deleted` fans out over the durable log to SEVEN other processes, the sweeps
+    // are driven by scheduler-svc's fire, and `[DL2e]` dials accounts-svc's internal edge
+    // directly. `[DL4c]`'s cascade crosses two more processes (characters-svc emits,
+    // inventory-svc consumes).
+    deletion_assertions(
+        ctx,
+        pool,
+        p,
+        &g,
+        Some(
+            format!(
+                "127.0.0.1:{}",
+                ctx.service("accounts-svc").edge_port.context("accounts edge port")?
+            )
+            .parse()
+            .context("accounts edge address")?,
         ),
         "",
     )
