@@ -568,3 +568,20 @@ final. `wallet` has the identical guard/sweep shape (`is_player_purged_tx` in
 them, so a movement can land after the sweep has already passed that player. Recorded,
 not scheduled: see the "Identity & accounts" section of `docs/roadmap/feature-tracker.md`
 (added 2026-09-12).
+
+## Step 6 errata
+
+Two records, both deviations from what the earlier steps' text assumed:
+
+1. **`Service::pending_purges` (Step 5) is deleted.** Its doc comment stated the admin
+   page's call "lives outside this module", which Step 6 disproves: `admin.rs` is a
+   private module of the `storage` crate and reads `svc.store.pending_purges()` directly,
+   exactly as the six sibling pages do. The wrapper had no caller left, so it was dead
+   `pub` API carrying a false claim rather than a seam.
+2. **Step 6 also adds two store reads**, which its `(a)` did not name: `Store::admin_counts`
+   and `Store::admin_recent` (`modules/storage/src/store.rs`). The page had no read of its
+   own table otherwise — `page_objects` is owner-scoped and caller-relative.
+
+The page's label is **"Cloud Saves"** under `Player Support`, so its route is
+`cloud-saves` while the item id stays `storage` — the two deliberately differ, which is
+what the `adminapi::slug(LABEL)` rule exists for.

@@ -227,12 +227,6 @@ impl Service {
         Ok(me.to_string())
     }
 
-    /// The purge backlog for the admin page: outstanding tombstones and the oldest one's
-    /// `created_at`. Public for the admin page's future call, which lives outside this module.
-    pub async fn pending_purges(&self) -> Result<(i64, String), Error> {
-        self.store.pending_purges().await.map_err(crate::internal)
-    }
-
     /// The create half of `put`. The owner cap is counted and the row inserted under the
     /// owner's advisory lock in ONE transaction: counting outside it is a count-then-insert
     /// that two concurrent creates both pass.

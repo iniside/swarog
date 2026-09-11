@@ -17,6 +17,9 @@ publish = false
 # and the monolith is local), so an aggregator would pin a public symbol nothing calls.
 [dependencies]
 storageapi = { workspace = true }
+# The cross-cutting admin fan-out glue, re-exported (`register_admin`) so the storage
+# module reaches it through its OWN rpc crate.
+adminrpc = { workspace = true }
 opsapi = { workspace = true }
 edge = { workspace = true }
 registry = { workspace = true }

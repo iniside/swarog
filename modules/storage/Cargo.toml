@@ -20,6 +20,9 @@ storagerpc = { workspace = true }
 # The accounts EVENT contract only (an events crate is importable by any module): the purge
 # tombstone reacts to durable `player.deleted`.
 accountsevents = { workspace = true }
+# The admin CONTRACT (widgets + the read-only `AdminData` trait) — a contract crate,
+# importable by any module; the admin impl is never reached.
+adminapi = { workspace = true }
 # The scheduler EVENT contract only: the purge sweep is a raw sink on `scheduler.fired`,
 # guarding on `schedule_names::PLAYER_PURGE`.
 schedulerevents = { workspace = true }

@@ -15,3 +15,9 @@ use opsapi::{Error, Identity};
 use storageapi::*;
 
 storageapi::storage_player_meta!(rpc_macro::generate_glue);
+
+/// The admin fan-out's server-side registration, re-exported so the `storage` module
+/// reaches it through its OWN glue crate: archcheck forbids a module→foreign-rpc edge,
+/// while this module→own-rpc→adminrpc chain is fine. The Cloud Saves page is READ-ONLY, so
+/// `register_admin_submit` is deliberately not re-exported.
+pub use adminrpc::register_admin;

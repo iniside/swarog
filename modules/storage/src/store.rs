@@ -498,4 +498,104 @@ impl Store {
             .await?;
         Ok(())
     }
+
+    /// The page's four aggregates, in ONE statement and for both scopes: totals a KPI row
+    /// states side by side must agree with each other, which two statements taken apart
+    /// cannot promise.
+    ///
+    /// An `owner_id` reaches this only once [`crate::service::is_uuid_text`] has accepted
+    /// it, so the `$2::uuid` cast has no malformed spelling left to raise `22P02` over.
+    pub(crate) async fn admin_counts(
+        &self,
+        owner_id: Option<&str>,
+    ) -> Result<AdminCounts, sqlx::Error> {
+        let sql = format!(
+            "SELECT count(*), count(DISTINCT owner_id), count(DISTINCT collection), \
+                    count(*) FILTER (WHERE acl = $1) \
+               FROM storage.objects{}",
+            match owner_id {
+                Some(_) => " WHERE owner_id = $2::uuid",
+                None => "",
+            }
+        );
+        let q = sqlx::query_as::<_, (i64, i64, i64, i64)>(&sql).bind(ACL_PUBLIC_READ);
+        let row = match owner_id {
+            Some(id) => q.bind(id).fetch_one(&self.pool).await?,
+            None => q.fetch_one(&self.pool).await?,
+        };
+        Ok(AdminCounts {
+            objects: row.0,
+            owners: row.1,
+            collections: row.2,
+            public: row.3,
+        })
+    }
+
+    /// The newest objects, across every owner or scoped to one. The ordering carries the
+    /// whole primary key behind `updated_at`, which rows written by one statement share, so
+    /// a truncated page cuts at the same row on every request rather than at a fresh one.
+    ///
+    /// `octet_length(value::text)` detoasts the document, so the size is read HERE — over at
+    /// most `limit` rows, each bounded by `storage_value_len_check` — and never as a
+    /// whole-table sum behind a KPI, which every portal request would pay for.
+    pub(crate) async fn admin_recent(
+        &self,
+        owner_id: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<AdminObjectRow>, sqlx::Error> {
+        let sql = format!(
+            "SELECT owner_id::text, collection, key, version, acl, \
+                    octet_length(value::text)::bigint, \
+                    to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') \
+               FROM storage.objects{} \
+              ORDER BY updated_at DESC, owner_id, collection, key LIMIT $1",
+            match owner_id {
+                Some(_) => " WHERE owner_id = $2::uuid",
+                None => "",
+            }
+        );
+        let q = sqlx::query_as::<_, AdminRow>(&sql).bind(limit);
+        let rows = match owner_id {
+            Some(id) => q.bind(id).fetch_all(&self.pool).await?,
+            None => q.fetch_all(&self.pool).await?,
+        };
+        Ok(rows.into_iter().map(to_admin_row).collect())
+    }
+}
+
+/// The admin page's aggregates, every one of them counted in the scope that was asked.
+/// `owners` is therefore 1 on a drill-down, which is why the page states it only in the
+/// unscoped view and states `collections` in the scoped one.
+pub(crate) struct AdminCounts {
+    pub(crate) objects: i64,
+    pub(crate) owners: i64,
+    pub(crate) collections: i64,
+    pub(crate) public: i64,
+}
+
+/// One listed object as the admin sees it: the owner included, which
+/// [`storageapi::ObjectSummary`] omits because a player's own listing already knows it.
+/// The value itself is never carried — only its size.
+pub(crate) struct AdminObjectRow {
+    pub(crate) owner_id: String,
+    pub(crate) collection: String,
+    pub(crate) key: String,
+    pub(crate) version: i64,
+    pub(crate) acl: String,
+    pub(crate) bytes: i64,
+    pub(crate) updated_at: String,
+}
+
+type AdminRow = (String, String, String, i64, String, i64, String);
+
+fn to_admin_row(row: AdminRow) -> AdminObjectRow {
+    AdminObjectRow {
+        owner_id: row.0,
+        collection: row.1,
+        key: row.2,
+        version: row.3,
+        acl: row.4,
+        bytes: row.5,
+        updated_at: row.6,
+    }
 }

@@ -4502,6 +4502,7 @@ name = "storage"
 version = "0.1.0"
 dependencies = [
  "accountsevents",
+ "adminapi",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
@@ -4550,6 +4551,7 @@ dependencies = [
 name = "storagerpc"
 version = "0.1.0"
 dependencies = [
+ "adminrpc",
  "async-trait",
  "edge",
  "opsapi",
