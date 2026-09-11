@@ -535,25 +535,20 @@ impl Store {
     /// whole primary key behind `updated_at`, which rows written by one statement share, so
     /// a truncated page cuts at the same row on every request rather than at a fresh one.
     ///
-    /// `octet_length(value::text)` detoasts the document, so the size is read HERE — over at
-    /// most `limit` rows, each bounded by `storage_value_len_check` — and never as a
-    /// whole-table sum behind a KPI, which every portal request would pay for.
+    /// The projection sits ABOVE an ordered subquery, not beside the `ORDER BY`: flattened,
+    /// the planner puts `octet_length(value::text)` on the scan below the top-N sort, so the
+    /// whole table is detoasted to produce `limit` numbers. Nested, the sort carries `value`
+    /// as a toast pointer and only the rows that survive the `LIMIT` are detoasted.
+    ///
+    /// The inner `ORDER BY` names table columns: bound instead to an `owner_id::text` output
+    /// column, the sort key is a text collation that no `(updated_at DESC, owner_id, ...)`
+    /// index can serve.
     pub(crate) async fn admin_recent(
         &self,
         owner_id: Option<&str>,
         limit: i64,
     ) -> Result<Vec<AdminObjectRow>, sqlx::Error> {
-        let sql = format!(
-            "SELECT owner_id::text, collection, key, version, acl, \
-                    octet_length(value::text)::bigint, \
-                    to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') \
-               FROM storage.objects{} \
-              ORDER BY updated_at DESC, owner_id, collection, key LIMIT $1",
-            match owner_id {
-                Some(_) => " WHERE owner_id = $2::uuid",
-                None => "",
-            }
-        );
+        let sql = admin_recent_sql(owner_id.is_some());
         let q = sqlx::query_as::<_, AdminRow>(&sql).bind(limit);
         let rows = match owner_id {
             Some(id) => q.bind(id).fetch_all(&self.pool).await?,
@@ -561,6 +556,20 @@ impl Store {
         };
         Ok(rows.into_iter().map(to_admin_row).collect())
     }
+}
+
+/// `$1` is the limit and `$2` the owner, both bound inside the subquery, so the scoped and
+/// unscoped spellings number their binds alike.
+pub(crate) fn admin_recent_sql(scoped: bool) -> String {
+    format!(
+        "SELECT owner_id::text, collection, key, version, acl, \
+                octet_length(value::text)::bigint, \
+                to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') \
+           FROM (SELECT owner_id, collection, key, version, acl, value, updated_at \
+                   FROM storage.objects{} \
+                  ORDER BY updated_at DESC, owner_id, collection, key LIMIT $1) t",
+        if scoped { " WHERE owner_id = $2::uuid" } else { "" }
+    )
 }
 
 /// The admin page's aggregates, every one of them counted in the scope that was asked.
