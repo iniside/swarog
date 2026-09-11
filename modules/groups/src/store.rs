@@ -91,6 +91,22 @@ pub(crate) struct Store {
 }
 
 impl Store {
+    /// `true` once this player's deletion tombstone is committed. A plain read, no
+    /// advisory lock: the row is permanent, so every statement taken after the plant
+    /// commits sees it.
+    pub(crate) async fn is_player_purged_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let found: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM groups.purged_players WHERE player_id = $1::uuid")
+                .bind(player_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        Ok(found.is_some())
+    }
+
     pub(crate) async fn plant_purged_player_tx(
         &self,
         conn: &mut PgConnection,

@@ -26,6 +26,13 @@ pub(crate) const NO_SUCH_PLAYER: &str = "no player with that handle";
 
 pub(crate) const MALFORMED_CURSOR: &str = "cursor is malformed";
 
+/// What `create`/`join` answer a caller whose account is already tombstoned. `Conflict`, not
+/// `NotFound`: the request is well-formed and names a real past player — what is stale is
+/// the identity it carries. `invite`'s target needs no such answer: the handle is resolved
+/// through `accountsapi::Directory`, and `accounts` deletes the player row in the same
+/// transaction as the event this tombstone descends from, so the lookup already misses.
+pub(crate) const PLAYER_DELETED: &str = "this account has been deleted";
+
 /// `decision` on `respond`/`decide`. Not `groupsapi` consts: the contract states the two
 /// literals in prose, and adding exported consts is a contract change.
 pub(crate) const DECISION_ACCEPT: &str = "accept";
@@ -355,6 +362,15 @@ impl Player for Service {
         let policy = validate_policy(&join_policy)?;
 
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        if self
+            .store
+            .is_player_purged_tx(&mut tx, &me)
+            .await
+            .map_err(internal)?
+        {
+            tx.rollback().await.map_err(internal)?;
+            return Err(Error::conflict(PLAYER_DELETED));
+        }
         let (group_id, creator_id, created_at) = self
             .store
             .insert_group_tx(&mut tx, &name, policy, &me)
@@ -481,6 +497,15 @@ impl Player for Service {
             .lock_group_tx(&mut tx, &group_id)
             .await
             .map_err(internal)?;
+        if self
+            .store
+            .is_player_purged_tx(&mut tx, &me)
+            .await
+            .map_err(internal)?
+        {
+            tx.rollback().await.map_err(internal)?;
+            return Err(Error::conflict(PLAYER_DELETED));
+        }
         let (policy, group_id) = match self
             .store
             .join_policy_tx(&mut tx, &group_id)
