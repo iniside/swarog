@@ -81,11 +81,15 @@ pub(crate) fn resolve_limit(limit: i64) -> Result<i64, Error> {
     Ok(limit.min(MAX_PAGE_LIMIT))
 }
 
+/// The cap's own rejection text, shared with `conformance.rs` so a wording change here
+/// stays in lockstep with the probe instead of tripping it on a rename.
+pub(crate) fn cursor_too_long_message() -> String {
+    format!("cursor exceeds {MAX_CURSOR_BYTES} bytes")
+}
+
 pub(crate) fn cursor_within_cap(cursor: &str) -> Result<(), Error> {
     if cursor.len() > MAX_CURSOR_BYTES {
-        return Err(Error::invalid(format!(
-            "cursor exceeds {MAX_CURSOR_BYTES} bytes"
-        )));
+        return Err(Error::invalid(cursor_too_long_message()));
     }
     Ok(())
 }

@@ -8,6 +8,7 @@ use opsapi::Identity;
 use sqlx::PgPool;
 use storageapi::{Player as _, ACL_PRIVATE};
 
+use crate::service::cursor_too_long_message;
 use crate::Service;
 
 const DEAD_DSN: &str = "postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable";
@@ -89,7 +90,8 @@ pub fn conformance_value_rejected(len: usize) -> bool {
 /// `storageapi::MAX_CURSOR_BYTES`, executed through `Player::list` itself. The
 /// discriminant is the MESSAGE, not the status: the cap is checked before the cursor is
 /// decoded, so once a decoder exists an at-cap filler is `Invalid` too — as a MALFORMED
-/// cursor, a different verdict from the cap's own.
+/// cursor, a different verdict from the cap's own. The message comes from the same
+/// `cursor_too_long_message` production calls, so a wording change can't desync the probe.
 #[doc(hidden)]
 pub fn conformance_cursor_rejected(len: usize) -> bool {
     let rt = runtime();
@@ -100,5 +102,5 @@ pub fn conformance_cursor_rejected(len: usize) -> bool {
         legal(len),
         0,
     ));
-    matches!(outcome, Err(e) if e.status == opsapi::Status::Invalid && e.msg.contains("cursor exceeds"))
+    matches!(outcome, Err(e) if e.status == opsapi::Status::Invalid && e.msg == cursor_too_long_message())
 }
