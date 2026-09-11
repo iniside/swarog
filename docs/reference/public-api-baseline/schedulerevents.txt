@@ -5,6 +5,7 @@ pub const schedulerevents::schedule_names::AUDIT_PRUNE: &str
 pub const schedulerevents::schedule_names::GROUPS_PRUNE: &str
 pub const schedulerevents::schedule_names::MAIL_PRUNE: &str
 pub const schedulerevents::schedule_names::NOTIFICATIONS_PRUNE: &str
+pub const schedulerevents::schedule_names::PLAYER_PURGE: &str
 pub const schedulerevents::schedule_names::SESSIONS_PRUNE: &str
 pub struct schedulerevents::Fired
 pub schedulerevents::Fired::name: alloc::string::String

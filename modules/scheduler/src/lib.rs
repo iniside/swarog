@@ -176,6 +176,9 @@ INSERT INTO scheduler.schedules (name, interval_seconds)
 	ON CONFLICT (name) DO NOTHING;
 INSERT INTO scheduler.schedules (name, interval_seconds)
 	VALUES ('groups-prune', 86400)
+	ON CONFLICT (name) DO NOTHING;
+INSERT INTO scheduler.schedules (name, interval_seconds)
+	VALUES ('player-purge', 86400)
 	ON CONFLICT (name) DO NOTHING;"#
     )
 });
