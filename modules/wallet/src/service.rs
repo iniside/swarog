@@ -25,6 +25,11 @@ pub(crate) const UNKNOWN_CURRENCY: &str = "unknown currency";
 
 pub(crate) const MALFORMED_PLAYER_ID: &str = "player_id is not a valid uuid";
 
+/// The 409 for a movement naming a player whose deletion tombstone is already committed.
+/// `Conflict`, not `NotFound`: the movement is well-formed and names a real past player —
+/// what is stale is the caller's evidence that the player is still there.
+pub(crate) const PLAYER_DELETED: &str = "player has been deleted";
+
 /// The INSERT lost the key but the winning row is not visible — unreachable under READ
 /// COMMITTED, and an explicit arm rather than an `unwrap` so a changed isolation level
 /// fails loudly.
@@ -179,6 +184,9 @@ pub(crate) enum Outcome {
     Applied(i64),
     Duplicate(i64),
     Conflict,
+    /// The player's deletion tombstone is committed. Decided BEFORE the ledger insert, so
+    /// it claims no key and leaves the caller's transaction usable.
+    Purged,
 }
 
 pub struct Service {
@@ -231,6 +239,14 @@ impl Service {
         sign: i64,
     ) -> Result<Outcome, Error> {
         validate_movement(m)?;
+        if self
+            .store
+            .is_player_purged_tx(conn, &m.player_id)
+            .await
+            .map_err(movement_error)?
+        {
+            return Ok(Outcome::Purged);
+        }
         // `amount` is validated to `1 ..= MAX_MOVEMENT_AMOUNT` above, so with a ±1 sign the
         // multiplication cannot overflow.
         debug_assert!(sign == 1 || sign == -1, "apply_on's sign is ±1");
@@ -314,6 +330,7 @@ impl Service {
             Ok(Outcome::Applied(balance)) => (true, Ok(balance)),
             Ok(Outcome::Duplicate(balance)) => (false, Ok(balance)),
             Ok(Outcome::Conflict) => (false, Err(Error::conflict(IDEMPOTENCY_CONFLICT))),
+            Ok(Outcome::Purged) => (false, Err(Error::conflict(PLAYER_DELETED))),
             Err(e) => (false, Err(e)),
         };
         if applied {

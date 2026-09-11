@@ -123,6 +123,13 @@ impl Service {
                 );
                 Ok(())
             }
+            Outcome::Purged => {
+                tracing::info!(
+                    player_id,
+                    "wallet: starter grant skipped — the player's account is deleted"
+                );
+                Ok(())
+            }
         }
     }
 }

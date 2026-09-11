@@ -153,6 +153,22 @@ impl Store {
         .await
     }
 
+    /// `true` once this player's deletion tombstone is committed. A plain read, no
+    /// advisory lock: the row is permanent, so every statement taken after the plant
+    /// commits sees it.
+    pub(crate) async fn is_player_purged_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let found: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM wallet.purged_players WHERE player_id = $1::uuid")
+                .bind(player_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        Ok(found.is_some())
+    }
+
     /// Re-reads the row that won the key, ON THE SAME CONNECTION as the losing INSERT.
     /// Under READ COMMITTED (the default, unchanged here) that INSERT waited for the
     /// conflicting transaction and this statement takes a fresh snapshot afterwards, so the
