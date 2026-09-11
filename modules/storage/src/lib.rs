@@ -6,6 +6,7 @@
 //! the owner id is the caller's own identity, resolved at the front door.
 
 pub mod conformance;
+mod projection;
 mod service;
 mod store;
 
@@ -93,6 +94,41 @@ impl Module for Storage {
         ctx.contribute(
             opsapi::DESCRIBE_SLOT,
             storagerpc::player_rpc::describe(),
+        );
+
+        // The tombstone, planted on the HANDED delivery conn so it commits with the
+        // subscription checkpoint, and doing no other work: an owner holds up to
+        // `MAX_OBJECTS_PER_OWNER` objects, while `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this
+        // handler at 10s. The deleting is the scheduled sweep's, which resumes across fires;
+        // this row is that sweep's work item, the guard `Service::create` reads, and, once
+        // swept, the permanent record that the player is gone — redelivery is
+        // `ON CONFLICT DO NOTHING`, never a reset of `swept_at`.
+        let purger = self.svc();
+        ctx.bus().on_tx(
+            projection::PLAYER_DELETED_SUB,
+            &accountsevents::PLAYER_DELETED,
+            move |mut delivery, e: accountsevents::PlayerDeleted| {
+                let purger = purger.clone();
+                Box::pin(async move {
+                    let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                    purger
+                        .store
+                        .plant_purged_player_tx(conn, &e.player_id, &e.handle)
+                        .await
+                        .map_err(bus::Error::transport)
+                })
+            },
+        );
+
+        // The drain of what that tombstone records, on its OWN subscription: a raw sink on
+        // `scheduler.fired` guarding on the shared daily `player-purge` name.
+        let sweeper: Arc<dyn bus::TxHandler> = Arc::new(projection::PurgeSweepHandler {
+            svc: self.svc(),
+        });
+        ctx.bus().on_tx_raw(
+            projection::PURGE_SWEEP_SUB,
+            schedulerevents::FIRED.topic(),
+            sweeper,
         );
         Ok(())
     }

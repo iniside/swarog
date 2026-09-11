@@ -14,6 +14,11 @@ use crate::store::{write_error, CasOutcome, ColumnCap, Store, COLLECTION_CAP, KE
 /// address that holds nothing: the same answer, or the write path becomes an oracle.
 pub(crate) const NOT_FOUND: &str = "no such object";
 
+/// What `put` answers a caller whose account is already tombstoned. `Conflict`, not the
+/// address's [`NOT_FOUND`]: the request is well-formed and names a real past player — what is
+/// stale is the identity it carries.
+pub(crate) const PLAYER_DELETED: &str = "this account has been deleted";
+
 /// The ONE address verdict, worded identically for `collection` and `key`. The byte half
 /// is [`ColumnCap`]'s, so Rust and the column CHECK cannot word the limit two ways.
 fn validate_segment(cap: &ColumnCap, segment: &str) -> Result<(), Error> {
@@ -222,6 +227,12 @@ impl Service {
         Ok(me.to_string())
     }
 
+    /// The purge backlog for the admin page: outstanding tombstones and the oldest one's
+    /// `created_at`. Public because the page is the only caller and lives outside this module.
+    pub async fn pending_purges(&self) -> Result<(i64, String), Error> {
+        self.store.pending_purges().await.map_err(crate::internal)
+    }
+
     /// The create half of `put`. The owner cap is counted and the row inserted under the
     /// owner's advisory lock in ONE transaction: counting outside it is a count-then-insert
     /// that two concurrent creates both pass.
@@ -238,6 +249,20 @@ impl Service {
             .lock_owner_tx(&mut tx, owner_id)
             .await
             .map_err(write_error)?;
+        // Read UNDER the owner lock, which is what orders it against the purge sweep: an
+        // insert admitted past a committed tombstone is an object nothing collects, because
+        // the sweep has no second pass and this module never prunes by time. The CAS half of
+        // `put` needs no such guard — it creates no row, and a row it can still find is one
+        // the sweep is yet to delete.
+        if self
+            .store
+            .is_player_purged_tx(&mut tx, owner_id)
+            .await
+            .map_err(write_error)?
+        {
+            tx.rollback().await.map_err(write_error)?;
+            return Err(Error::conflict(PLAYER_DELETED));
+        }
         let held = self
             .store
             .count_objects_tx(&mut tx, owner_id)

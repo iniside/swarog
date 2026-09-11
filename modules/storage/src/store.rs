@@ -39,7 +39,15 @@ CREATE TABLE IF NOT EXISTS storage.objects (
     CONSTRAINT storage_acl_check            CHECK (acl IN ('private','public_read'))
 );
 CREATE INDEX IF NOT EXISTS storage_list_idx
-    ON storage.objects (owner_id, collection, created_at DESC, key DESC);"#;
+    ON storage.objects (owner_id, collection, created_at DESC, key DESC);
+CREATE TABLE IF NOT EXISTS storage.purged_players (
+    player_id  uuid PRIMARY KEY,
+    handle     text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL DEFAULT now(),
+    swept_at   timestamptz
+);
+CREATE INDEX IF NOT EXISTS purged_players_pending_idx
+    ON storage.purged_players (player_id) WHERE swept_at IS NULL;"#;
 
 /// One caller-authored text column: the caller-facing name, the byte ceiling checked in
 /// Rust before the statement, and the named column CHECK that backstops it. ONE table
@@ -426,5 +434,68 @@ impl Store {
         .execute(&self.pool)
         .await?;
         Ok(done.rows_affected() > 0)
+    }
+
+    /// `true` once this player's deletion tombstone is committed. A plain read, no advisory
+    /// lock of its own: the caller holding the owner lock is what orders it against the
+    /// sweep, and the row is permanent, so a later statement can never stop seeing it.
+    pub(crate) async fn is_player_purged_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let found: Option<i32> =
+            sqlx::query_scalar("SELECT 1 FROM storage.purged_players WHERE player_id = $1::uuid")
+                .bind(player_id)
+                .fetch_optional(&mut *conn)
+                .await?;
+        Ok(found.is_some())
+    }
+
+    /// The purge backlog the admin page shows: tombstones the sweep still owes work on, and
+    /// the oldest one's `created_at` (`""` when nothing is outstanding).
+    /// `purged_players_pending_idx` serves the predicate, so the cost tracks outstanding work
+    /// rather than the permanent row per deleted player.
+    pub(crate) async fn pending_purges(&self) -> Result<(i64, String), sqlx::Error> {
+        let (count, oldest) = sqlx::query_as::<_, (i64, Option<String>)>(
+            "SELECT count(*)::bigint, min(created_at)::text \
+             FROM storage.purged_players WHERE swept_at IS NULL",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((count, oldest.unwrap_or_default()))
+    }
+
+    pub(crate) async fn plant_purged_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        handle: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO storage.purged_players (player_id, handle) VALUES ($1::uuid, $2) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(player_id)
+        .bind(handle)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
+    /// Every object the purged owner holds, in every collection: the purge is the one write
+    /// with no consent question and no acl question. `MAX_OBJECTS_PER_OWNER` is what bounds
+    /// this statement — the write path admits no more rows than that under the same lock the
+    /// sweep holds here — so one owner's delete cannot outrun `ASYNCEVENTS_HANDLER_TIMEOUT`.
+    pub(crate) async fn delete_owner_objects_tx(
+        &self,
+        conn: &mut PgConnection,
+        owner_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM storage.objects WHERE owner_id = $1::uuid")
+            .bind(owner_id)
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
     }
 }

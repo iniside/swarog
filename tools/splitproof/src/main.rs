@@ -3043,7 +3043,7 @@ async fn deletion_checks(
     // `purged_players`, so a fire that arrives before the plant does nothing and the next
     // one is 86400s away.
     let mut planted: BTreeMap<&str, bool> = BTreeMap::new();
-    for schema in ["characters", "inventory", "wallet", "notifications", "friends", "groups"] {
+    for schema in ["characters", "inventory", "wallet", "notifications", "friends", "groups", "storage"] {
         planted.insert(
             schema,
             poll_count(
@@ -3059,7 +3059,7 @@ async fn deletion_checks(
     // holding a 5s budget can serialize behind one fire, and a single shared poll would go
     // red on timing rather than on correctness.
     let mut swept: BTreeMap<&str, bool> = BTreeMap::new();
-    for schema in ["characters", "inventory", "wallet", "notifications", "friends", "groups"] {
+    for schema in ["characters", "inventory", "wallet", "notifications", "friends", "groups", "storage"] {
         swept.insert(
             schema,
             poll_swept(
