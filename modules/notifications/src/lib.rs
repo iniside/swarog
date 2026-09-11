@@ -75,7 +75,14 @@ CREATE INDEX IF NOT EXISTS notifications_inbox_idx
 	ON notifications.messages (player_id, created_at DESC, id DESC);
 
 CREATE INDEX IF NOT EXISTS notifications_created_at_idx
-	ON notifications.messages (created_at);"#;
+	ON notifications.messages (created_at);
+
+CREATE TABLE IF NOT EXISTS notifications.purged_players (
+	player_id  uuid        PRIMARY KEY,
+	handle     text        NOT NULL DEFAULT '',
+	created_at timestamptz NOT NULL DEFAULT now(),
+	swept_at   timestamptz
+);"#;
 
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
     opsapi::Error::internal(e.to_string())
@@ -181,6 +188,15 @@ impl Module for NotificationsModule {
             &friendsevents::ACCEPTED,
             move |delivery, e: friendsevents::Accepted| {
                 projection::on_friend_accepted(accepted_svc.clone(), delivery, e)
+            },
+        );
+
+        let purge_svc = svc.clone();
+        ctx.bus().on_tx(
+            projection::PLAYER_DELETED_SUB,
+            &accountsevents::PLAYER_DELETED,
+            move |delivery, e: accountsevents::PlayerDeleted| {
+                projection::on_player_deleted(purge_svc.clone(), delivery, e)
             },
         );
 

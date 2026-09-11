@@ -36,6 +36,15 @@ pub(crate) const FRIEND_ACCEPTED_SUB: bus::SubscriptionSpec = bus::SubscriptionS
     start: bus::StartPosition::AfterRegistration,
 };
 
+/// `Genesis`, not the `AfterRegistration` the content subscriptions take: a lost deletion
+/// is a permanent retention leak with no repair path, and a redelivery into an
+/// already-tombstoned module is a no-op — there is no inbox row to duplicate. The id and
+/// the start position are an IMMUTABLE contract (`spec_hash`).
+pub(crate) const PLAYER_DELETED_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
+    id: "notifications.player-deleted.v1",
+    start: bus::StartPosition::Genesis,
+};
+
 pub(crate) const PRUNE_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
     id: "notifications.prune-on-scheduler.v1",
     start: bus::StartPosition::Genesis,
@@ -279,6 +288,30 @@ pub(crate) fn on_friend_accepted<'a>(
 #[derive(serde::Deserialize)]
 struct FiredName {
     name: String,
+}
+
+/// Plants the purge tombstone on the HANDED delivery connection, so it commits with the
+/// subscription checkpoint. The row is the sweep's work item and, once swept, the permanent
+/// record that this player is gone — nothing deletes it, and a redelivery is `ON CONFLICT DO
+/// NOTHING` rather than a reset of `swept_at`.
+///
+/// O(1) BY DESIGN, unlike every other handler here: nothing bounds a player's inbox, while
+/// `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this handler at 10s — deleting a large inbox here
+/// would make NO progress ever and burn failures toward the plane's pause threshold,
+/// stranding every later player behind the same cursor. The deleting belongs to the
+/// scheduled sweep, which resumes across fires; this only records the work item.
+pub(crate) fn on_player_deleted<'a>(
+    svc: Arc<Service>,
+    mut delivery: Delivery<'a>,
+    e: accountsevents::PlayerDeleted,
+) -> BoxFuture<'a, Result<(), BusError>> {
+    Box::pin(async move {
+        let conn = delivery.tx.downcast::<PgConnection>()?;
+        svc.store
+            .plant_purged_player_tx(conn, &e.player_id, &e.handle)
+            .await
+            .map_err(BusError::transport)
+    })
 }
 
 pub(crate) struct PruneHandler {

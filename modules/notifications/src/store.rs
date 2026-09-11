@@ -196,6 +196,26 @@ impl Store {
         .await
     }
 
+    /// Plants the purge tombstone on the HANDED delivery connection, so it commits with the
+    /// subscription checkpoint. Redelivery is `ON CONFLICT DO NOTHING`, never a reset of
+    /// `swept_at`.
+    pub(crate) async fn plant_purged_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+        handle: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO notifications.purged_players (player_id, handle) VALUES ($1::uuid, $2) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(player_id)
+        .bind(handle)
+        .execute(&mut *conn)
+        .await?;
+        Ok(())
+    }
+
     /// The newest messages across every player, for the operator overview. Ordered like the
     /// per-player page so the two views agree on what "newest" means, and unpaged: the
     /// operator drills into one player rather than walking the whole table.
