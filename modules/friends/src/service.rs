@@ -24,6 +24,13 @@ pub(crate) const NO_SUCH_PLAYER: &str = "no player with that handle";
 
 pub(crate) const MALFORMED_CURSOR: &str = "cursor is malformed";
 
+/// What `request` answers a caller whose account is already tombstoned. `Conflict`, not
+/// `NotFound`: the request is well-formed and names a real past player — what is stale is
+/// the identity it carries. A purged TARGET needs no such answer: the handle is resolved
+/// through `accountsapi::Directory`, and `accounts` deletes the player row in the same
+/// transaction as the event this tombstone descends from, so the lookup already misses.
+pub(crate) const PLAYER_DELETED: &str = "this account has been deleted";
+
 const B64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
@@ -392,6 +399,15 @@ impl Player for Service {
             .lock_requester_tx(&mut tx, &me)
             .await
             .map_err(internal)?;
+        if self
+            .store
+            .is_player_purged_tx(&mut tx, &me)
+            .await
+            .map_err(internal)?
+        {
+            tx.rollback().await.map_err(internal)?;
+            return Err(Error::conflict(PLAYER_DELETED));
+        }
 
         if let Some((edge_id, requester_id)) = self
             .store
