@@ -585,3 +585,33 @@ Two records, both deviations from what the earlier steps' text assumed:
 The page's label is **"Cloud Saves"** under `Player Support`, so its route is
 `cloud-saves` while the item id stays `storage` — the two deliberately differ, which is
 what the `adminapi::slug(LABEL)` rule exists for.
+
+## Step 7 errata (test-author, landed `242af7c`'s test half)
+
+**(a)'s four-file list was incomplete.** Running the suite after `242af7c` landed found
+a FIFTH stale snapshot the plan text never named:
+`tools/processctl/src/fleet_tests.rs::proof_fleet_is_the_canonical_seventeen_service_snapshot`
+— a hand-written `ServiceRow` vector missing the `storage-svc` row and missing
+`storage-svc` from `gateway-svc`'s and `admin-svc`'s snapshotted `dependencies` lists. Same
+defect class as the two renames the plan DID call out (`fleet_toml_tests.rs`'s
+`17`/`18` and `addrs_tests.rs`'s `_twelve_pairs_` name): a count baked into a name or a
+row list is exactly the kind of drift a "here are the four files" list in a plan cannot
+itself execute — see [[not-pinned-lists-are-unexecuted-prose]]. Renamed to
+`proof_fleet_matches_the_canonical_service_snapshot` (count dropped from the name
+entirely, not updated to eighteen, since the per-service diff loop already reports which
+service moved — a second name-embedded count would only re-create the same drift
+surface next time a service is added). `managed_resolves_the_same_twelve_pairs_as_env`
+renamed to `managed_resolves_the_same_pairs_as_env` for the identical reason; its
+doc comment now says the count belongs in the enumerated `asked` assertion below it, not
+the name.
+
+**Verification method for all five files:** for each, temporarily reverted the fix (removed
+the `storage-svc` row/answer, or restored the stale count) and re-ran the single affected
+test to confirm a FAILURE naming `storage`/the count mismatch, then restored the file from
+a scratch backup and re-ran to confirm green. Every one of the five failed on the reverted
+state and passed on the landed one — none is vacuous. Full crate suites also re-run green
+after restoration: `processctl` 52/52, `weles-master` 66/66 (covering both
+`fleet_toml_tests` and `manifest_tests`), `gateway-svc`'s `addrs_tests` 14/14.
+
+No production code was touched by this pass — all five diffs are test-file-only, per the
+test-author lane's mandate.

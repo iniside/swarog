@@ -28,7 +28,7 @@ use super::{addr_source_from_value, gateway_addrs, AddrSource, ResolvedAddrs};
 /// What the fake hands back for one question.
 type Answer = Result<Vec<String>, ResolveError>;
 
-/// The twelve addresses the split fleet actually runs at — `weles::manifest`'s
+/// The addresses the split fleet actually runs at — `weles::manifest`'s
 /// ports, which is where BOTH modes' answers come from in a managed rollout (the
 /// composed env and the agent's `resolve` map are derived from the one port
 /// authority). Written once and fed to BOTH fakes, which is what makes the
@@ -44,6 +44,7 @@ const FLEET: &[(&str, &str)] = &[
     ("NOTIFICATIONS_EDGE_ADDR", "127.0.0.1:9011"),
     ("FRIENDS_EDGE_ADDR", "127.0.0.1:9014"),
     ("GROUPS_EDGE_ADDR", "127.0.0.1:9015"),
+    ("STORAGE_EDGE_ADDR", "127.0.0.1:9016"),
     ("ADMIN_HTTP_ADDR", "127.0.0.1:8085"),
     ("ACCOUNTS_HTTP_ADDR", "127.0.0.1:8084"),
 ];
@@ -91,7 +92,7 @@ fn decoy_env() -> impl Fn(&'static str) -> Option<String> {
 ///
 /// A scanned `Vec`, not a `HashMap`: `remote::AddrKind` is deliberately not
 /// `Hash`, and a fixture's convenience is no reason to widen a shipping type's
-/// derives. Twelve entries do not need a data structure with an opinion.
+/// derives. A handful of entries do not need a data structure with an opinion.
 struct FakeAgent {
     answers: Vec<((&'static str, AddrKind), Answer)>,
     asked: RefCell<Vec<(&'static str, AddrKind)>>,
@@ -111,6 +112,7 @@ impl FakeAgent {
             (("notifications", AddrKind::Edge), Ok(vec![addr("NOTIFICATIONS_EDGE_ADDR")])),
             (("friends", AddrKind::Edge), Ok(vec![addr("FRIENDS_EDGE_ADDR")])),
             (("groups", AddrKind::Edge), Ok(vec![addr("GROUPS_EDGE_ADDR")])),
+            (("storage", AddrKind::Edge), Ok(vec![addr("STORAGE_EDGE_ADDR")])),
             (("admin", AddrKind::Http), Ok(vec![addr("ADMIN_HTTP_ADDR")])),
             (("accounts", AddrKind::Http), Ok(vec![addr("ACCOUNTS_HTTP_ADDR")])),
         ];
@@ -278,23 +280,26 @@ async fn env_mode_asks_no_agent() {
 }
 
 // ---------------------------------------------------------------------------
-// Managed: the same twelve pairs, learned from the agent
+// Managed: the same pairs, learned from the agent
 // ---------------------------------------------------------------------------
 
 /// THE equivalence: for one fleet, "told by env" and "asked the agent" produce
-/// the SAME twelve pairs. That is the whole M1 claim at this seam — the plaster
-/// changes where the answer comes from, and nothing else.
+/// the SAME pairs. That is the whole M1 claim at this seam — the plaster
+/// changes where the answer comes from, and nothing else. (Deliberately unnamed
+/// by count — Step 7's fleet_tests fallout is precisely a count baked into a
+/// test NAME drifting silently while the table under it grew; this test's own
+/// assertion enumerates every pair below, which is where the count belongs.)
 #[tokio::test]
-async fn managed_resolves_the_same_twelve_pairs_as_env() {
+async fn managed_resolves_the_same_pairs_as_env() {
     let agent = FakeAgent::healthy();
     let from_agent = resolve_managed(&agent).await.unwrap();
     let from_env = resolve_env(FLEET).await;
 
     assert_eq!(from_agent, from_env, "managed and standalone must agree for the same fleet");
 
-    // ...and the questions were the right ones: twelve, one per address, with
+    // ...and the questions were the right ones: one per address, with
     // `accounts` asked twice as its TWO classes (edge 9003 + http 8084). A table
-    // that asked Http for an edge peer would still have produced twelve pairs.
+    // that asked Http for an edge peer would still have produced the same count.
     assert_eq!(
         *agent.asked.borrow(),
         vec![
@@ -308,6 +313,7 @@ async fn managed_resolves_the_same_twelve_pairs_as_env() {
             ("notifications", AddrKind::Edge),
             ("friends", AddrKind::Edge),
             ("groups", AddrKind::Edge),
+            ("storage", AddrKind::Edge),
             ("admin", AddrKind::Http),
             ("accounts", AddrKind::Http),
         ],
