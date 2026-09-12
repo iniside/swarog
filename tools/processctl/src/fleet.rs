@@ -808,6 +808,7 @@ pub fn game_backend_fleet_with_environment(
     peer(&mut friends.env, "ACCOUNTS", 9003);
     let mut groups = service("groups-svc", 8096, Some(9015), vec!["accounts-svc"]);
     peer(&mut groups.env, "ACCOUNTS", 9003);
+    let storage = service("storage-svc", 8097, Some(9016), vec![]);
 
     let mut gateway_env = environment.runtime_environment();
     gateway_env.insert("EDGE_CA_CERT".into(), cert.clone());
@@ -830,6 +831,7 @@ pub fn game_backend_fleet_with_environment(
         ("NOTIFICATIONS", 9011),
         ("FRIENDS", 9014),
         ("GROUPS", 9015),
+        ("STORAGE", 9016),
     ] {
         peer(&mut gateway_env, name, port);
     }
@@ -844,7 +846,7 @@ pub fn game_backend_fleet_with_environment(
         dependencies: vec![
             "characters-svc", "inventory-svc", "accounts-svc", "match-svc",
             "leaderboard-svc", "apikeys-svc", "wallet-svc", "notifications-svc",
-            "friends-svc", "groups-svc",
+            "friends-svc", "groups-svc", "storage-svc",
         ],
         env: gateway_env,
         overrideable_env: &[],
@@ -860,7 +862,7 @@ pub fn game_backend_fleet_with_environment(
         vec![
             "characters-svc", "inventory-svc", "config-svc", "accounts-svc", "audit-svc",
             "scheduler-svc", "apikeys-svc", "wallet-svc", "notifications-svc", "mail-svc",
-            "friends-svc", "groups-svc",
+            "friends-svc", "groups-svc", "storage-svc",
         ],
     );
     for (name, port) in [
@@ -876,6 +878,7 @@ pub fn game_backend_fleet_with_environment(
         ("MAIL", 9012),
         ("FRIENDS", 9014),
         ("GROUPS", 9015),
+        ("STORAGE", 9016),
     ] {
         peer(&mut admin.env, name, port);
     }
@@ -956,7 +959,7 @@ pub fn game_backend_fleet_with_environment(
 
     FleetSpec::new(vec![
         accounts, apikeys, audit, scheduler, rating, leaderboard, matches, config, characters,
-        inventory, wallet, notifications, mail, friends, groups, gateway, admin,
+        inventory, wallet, notifications, mail, friends, groups, storage, gateway, admin,
     ])
     .expect("the built-in game backend fleet is internally valid")
 }

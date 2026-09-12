@@ -1,4 +1,4 @@
-# The 17-process split fleet, as operator-authored strict data. This is the
+# The 18-process split fleet, as operator-authored strict data. This is the
 # file `weles up` boots after `weles deploy target/debug --fleet
 # weles/fleet.split.toml`, and the one verifyctl's `weles-managed-gateway`
 # stage loads. It is the faithful successor of the deleted Rust
@@ -202,6 +202,14 @@ env = { DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.c
   provider = "accounts"
   kind = "edge"
 
+[[service]]
+name = "storage-svc"
+pkg = "storage-svc"
+provider = "storage"
+http_port = 8097
+edge_port = 9016
+env = { DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT = "run/weles/edge-ca.crt", EDGE_CA_KEY = "run/weles/edge-ca.key" }
+
 # The managed front door: `resolve = "asks"` — it asks the agent where its
 # peers are (ORCHESTRATOR_URL) instead of being told, so it declares NO peers.
 # It dials every peer's edge, so it needs the CA; it also SERVES one face on its own
@@ -284,4 +292,9 @@ env = { ADMIN_COOKIE_SECURE = "0", TRUSTED_PROXY_CIDRS = "127.0.0.1/32", DATABAS
   [[service.peer]]
   env_key = "GROUPS_EDGE_ADDR"
   provider = "groups"
+  kind = "edge"
+
+  [[service.peer]]
+  env_key = "STORAGE_EDGE_ADDR"
+  provider = "storage"
   kind = "edge"

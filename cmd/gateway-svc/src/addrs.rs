@@ -1,4 +1,4 @@
-//! Where this front door's twelve addresses come from — the ONE deterministic
+//! Where this front door's thirteen addresses come from — the ONE deterministic
 //! decision this process makes at start.
 //!
 //! ```text
@@ -207,6 +207,15 @@ const ADDR_SPECS: &[AddrSpec] = &[
         provider: "groups",
         class: AddrClass::Edge,
         env_default: "127.0.0.1:9015",
+    },
+    // storage's player ops (put/get/delete/list) front here Remote over the mTLS edge;
+    // like the other pure-HTTP providers its routes arrive through `__describe`, so this
+    // table supplies only the address.
+    AddrSpec {
+        env_key: "STORAGE_EDGE_ADDR",
+        provider: "storage",
+        class: AddrClass::Edge,
+        env_default: "127.0.0.1:9016",
     },
     // The two passthrough ORIGINS: `/admin` → admin-svc, `/accounts/epic` → the
     // Epic web OAuth flow on accounts-svc. A blank default drops the prefix (the
