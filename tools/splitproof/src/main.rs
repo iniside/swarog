@@ -33,6 +33,7 @@ use crate::pushws::{Frame, PushClient};
 
 mod idp;
 mod pushws;
+mod storage_checks;
 
 #[cfg(test)]
 mod tests;
@@ -573,6 +574,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     // still travels the durable log and each consumer still owns two checkpoints — the
     // topology is the only difference. `edge` is `None` because the monolith hosts no internal
     // edge, so the receipt-idempotency replay `[DL2e]` is split-only by construction.
+    storage_checks::assertions(ctx, pool, p, &m, "m").await?;
     deletion_assertions(ctx, pool, p, &m, None, "m").await?;
 
     // [W2] graceful shutdown: a native Ctrl-Break (Windows) / SIGTERM (unix) must drain
@@ -2823,6 +2825,8 @@ async fn deletion_checks(
         )
         .await;
 
+    let storage_before = storage_checks::seed_purge(ctx, pool, front, &s, &t).await?;
+
     // ---- the exact pre-counts, captured BEFORE the delete ------------------------------
     let before_chars = count_of(
         pool,
@@ -3333,6 +3337,11 @@ async fn deletion_checks(
         ),
     );
 
+    storage_checks::check_purge(
+        pool, p, (&s, &t), storage_before, (planted["storage"], swept["storage"]),
+        (&deleted_event_id, &fire), tag,
+    ).await?;
+
     // ---- [DL10] audit, the eighth consumer ---------------------------------------------------
     let audit_row = poll_count(
         pool,
@@ -3364,6 +3373,7 @@ async fn deletion_checks(
         .execute(pool)
         .await
         .context("append the synthetic player.deleted")?;
+    storage_checks::check_guard(ctx, pool, p, front, &w, tag).await?;
     let guard_planted = poll_count(
         pool,
         "SELECT count(*) FROM characters.purged_players WHERE player_id::text = $1",
@@ -5613,6 +5623,8 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         "",
     )
     .await?;
+
+    storage_checks::assertions(ctx, pool, p, &g, "").await?;
 
     // --- Account deletion and the purge fan-out. The op is Remote-dispatched to accounts-svc,
     // its `player.deleted` fans out over the durable log to SEVEN other processes, the sweeps

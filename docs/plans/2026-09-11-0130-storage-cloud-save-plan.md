@@ -615,3 +615,19 @@ after restoration: `processctl` 52/52, `weles-master` 66/66 (covering both
 
 No production code was touched by this pass — all five diffs are test-file-only, per the
 test-author lane's mandate.
+
+## Step 8a errata
+
+`[DL11]` already names the characters tombstone write guard. Storage uses
+`[DL12]` for its purge proof and `[DL13]` for its own write guard; both run in
+split and monolith (`m` suffix). The storage scenarios live in the dedicated
+`tools/splitproof/src/storage_checks.rs` harness module, called from both
+existing topology passes. `[ST1]`–`[ST6]` cover CAS, ACL, paging, deletion,
+QUIC key validation and the owner cap; `[ST0]` records a failed scenario setup.
+
+The cap fixture inserts `MAX_OBJECTS_PER_OWNER - 1` rows directly, then drives
+both competing final-slot creates and an explicit over-cap create through the
+real HTTP front door. This exercises admission at the boundary without 10,000
+setup requests. It asserts the exact before/after counts and the accepted
+version; concurrent request scheduling alone is not a deterministic proof of
+advisory-lock serialization.

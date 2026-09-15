@@ -4297,6 +4297,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sqlx",
+ "storageapi",
  "tokio",
  "tokio-tungstenite",
 ]
