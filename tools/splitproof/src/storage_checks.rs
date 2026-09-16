@@ -7,9 +7,9 @@ use storageapi::MAX_OBJECTS_PER_OWNER;
 use crate::{count_of, cursor_at_or_past, friends_call, friends_player, pass_nonce,
     player_call, poll_count, Ctx, FriendPlayer, Proof};
 
-async fn put(ctx: &Ctx, front: &str, token: &str, key: &str, version: i64, acl: &str) -> Result<(u16, Value)> {
+async fn put(ctx: &Ctx, front: &str, token: &str, key: &str, version: i64, acl: &str, value: &str) -> Result<(u16, Value)> {
     friends_call(ctx, front, token, Method::POST, &format!("/storage/proof/{key}"),
-        Some(json!({"value": "{\"save\":2}", "expected_version": version, "acl": acl}))).await
+        Some(json!({"value": value, "expected_version": version, "acl": acl}))).await
 }
 
 async fn get(ctx: &Ctx, front: &str, token: &str, key: &str, owner: &str) -> Result<(u16, Value)> {
@@ -28,20 +28,21 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, tag: &str)
     let nonce = pass_nonce(tag);
     let a = friends_player(ctx, front, &format!("st-a-{nonce}@test.local"), &format!("StA{nonce}")).await?;
     let b = friends_player(ctx, front, &format!("st-b-{nonce}@test.local"), &format!("StB{nonce}")).await?;
-    let (created, first) = put(ctx, front, &a.token, "public", 0, "public_read").await?;
-    let (updated, second) = put(ctx, front, &a.token, "public", 1, "").await?;
-    let (stale, _) = put(ctx, front, &a.token, "public", 1, "private").await?;
-    let (stranger, _) = put(ctx, front, &b.token, "public", 1, "private").await?;
-    let (duplicate, _) = put(ctx, front, &a.token, "public", 0, "private").await?;
+    let (created, first) = put(ctx, front, &a.token, "public", 0, "public_read", r#"{"save":1}"#).await?;
+    let (updated, second) = put(ctx, front, &a.token, "public", 1, "", r#"{"save":2}"#).await?;
+    let (stale, _) = put(ctx, front, &a.token, "public", 1, "private", r#"{"save":3}"#).await?;
+    let (stranger, _) = put(ctx, front, &b.token, "public", 1, "private", r#"{"save":4}"#).await?;
+    let (duplicate, _) = put(ctx, front, &a.token, "public", 0, "private", r#"{"save":5}"#).await?;
     let (read, saved) = get(ctx, front, &a.token, "public", &a.player_id).await?;
+    let saved_value = saved["value"].as_str().and_then(|value| serde_json::from_str::<Value>(value).ok());
     p.check(&format!("[ST1{tag}] CAS increments; stale/create owner 409, stranger 404, rejected writes preserve object"),
         created == 200 && first["version"] == 1 && updated == 200 && second["version"] == 2
             && stale == 409 && stranger == 404 && duplicate == 409 && read == 200
             && saved["version"] == 2 && saved["acl"] == "public_read"
-            && saved["owner_id"] == a.player_id,
+            && saved["owner_id"] == a.player_id && saved_value == Some(json!({"save": 2})),
         format!("create={created} update={updated} stale={stale} stranger={stranger} duplicate={duplicate} saved={saved}"));
 
-    let (private_create, _) = put(ctx, front, &a.token, "private", 0, "private").await?;
+    let (private_create, _) = put(ctx, front, &a.token, "private", 0, "private", "{}").await?;
     let (public_read, public) = get(ctx, front, &b.token, "public", &a.player_id).await?;
     let (private_read, _) = get(ctx, front, &b.token, "private", &a.player_id).await?;
     let (own_read, own) = get(ctx, front, &a.token, "private", &a.player_id).await?;
@@ -71,7 +72,7 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, tag: &str)
 
     let (deleted, _) = friends_call(ctx, front, &a.token, Method::DELETE, "/storage/proof/private", None).await?;
     let (missing, _) = get(ctx, front, &a.token, "private", "").await?;
-    let (recreated, incarnation) = put(ctx, front, &a.token, "private", 0, "").await?;
+    let (recreated, incarnation) = put(ctx, front, &a.token, "private", 0, "", "{}").await?;
     p.check(&format!("[ST4{tag}] delete removes address; recreate starts version 1"),
         deleted == 204 && missing == 404 && recreated == 200 && incarnation["version"] == 1,
         format!("delete={deleted} get={missing} recreate={recreated} object={incarnation}"));
@@ -99,10 +100,10 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, tag: &str)
         SELECT $1::uuid, 'cap-seed', i::text, '{}'::jsonb FROM generate_series(1, $2::bigint) i")
         .bind(&c.player_id).bind(MAX_OBJECTS_PER_OWNER - 1).execute(pool).await?;
     let before = count_of(pool, "SELECT count(*) FROM storage.objects WHERE owner_id::text = $1", &c.player_id).await;
-    let (left, right) = tokio::join!(put(ctx, front, &c.token, "cap-left", 0, ""), put(ctx, front, &c.token, "cap-right", 0, ""));
+    let (left, right) = tokio::join!(put(ctx, front, &c.token, "cap-left", 0, "", "{}"), put(ctx, front, &c.token, "cap-right", 0, "", "{}"));
     let (left, left_body) = left?;
     let (right, right_body) = right?;
-    let (over, _) = put(ctx, front, &c.token, "cap-over", 0, "").await?;
+    let (over, _) = put(ctx, front, &c.token, "cap-over", 0, "", "{}").await?;
     let after = count_of(pool, "SELECT count(*) FROM storage.objects WHERE owner_id::text = $1", &c.player_id).await;
     let inserted = count_of(pool, "SELECT count(*) FROM storage.objects WHERE owner_id::text = $1 AND collection = 'proof'", &c.player_id).await;
     p.check(&format!("[ST6{tag}] cap permits exactly the last slot, refuses MAX+1, counts across collections"),
@@ -149,7 +150,7 @@ pub(super) async fn check_purge(pool: &PgPool, p: &mut Proof, (s, t): (&FriendPl
 
 pub(super) async fn check_guard(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, w: &FriendPlayer, tag: &str) -> Result<()> {
     let planted = poll_count(pool, "SELECT count(*) FROM storage.purged_players WHERE player_id::text = $1", &w.player_id, 1).await;
-    let (code, _) = put(ctx, front, &w.token, "guard", 0, "").await?;
+    let (code, _) = put(ctx, front, &w.token, "guard", 0, "", "{}").await?;
     let rows = count_of(pool, "SELECT count(*) FROM storage.objects WHERE owner_id::text = $1", &w.player_id).await;
     p.check(&format!("[DL13{tag}] storage tombstone refuses still-authenticated create with 409 and writes no row"),
         planted && code == 409 && rows == 0,
