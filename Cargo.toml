@@ -206,6 +206,7 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+strip = "none"
 
 # Pinned once here, referenced by `.workspace = true` in each crate. Keeps the
 # leaf foundations on one coherent set of async/DB/serde versions.
