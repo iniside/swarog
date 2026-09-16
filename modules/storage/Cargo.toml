@@ -37,3 +37,6 @@ tracing = { workspace = true }
 # `bus::TxHandler` returns a `futures::future::BoxFuture`, which `bus` does not re-export.
 futures = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+testdb = { workspace = true }

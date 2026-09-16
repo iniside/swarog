@@ -11,6 +11,11 @@ mod projection;
 mod service;
 mod store;
 
+#[cfg(test)]
+mod service_tests;
+#[cfg(test)]
+mod store_tests;
+
 pub use service::Service;
 
 use std::sync::{Arc, OnceLock};

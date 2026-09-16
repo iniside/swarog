@@ -4519,6 +4519,7 @@ dependencies = [
  "sqlx",
  "storageapi",
  "storagerpc",
+ "testdb",
  "tokio",
  "tracing",
 ]
