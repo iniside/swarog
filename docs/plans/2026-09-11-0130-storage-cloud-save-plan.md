@@ -631,3 +631,16 @@ real HTTP front door. This exercises admission at the boundary without 10,000
 setup requests. It asserts the exact before/after counts and the accepted
 version; concurrent request scheduling alone is not a deterministic proof of
 advisory-lock serialization.
+
+## Acceptance errata — macOS build environment
+
+The acceptance run exposed a tooling prerequisite outside storage: nested Cargo
+builds discarded the caller's `DEVELOPER_DIR`, so SDK discovery selected an Xcode
+installation with an unaccepted license despite the caller selecting installed
+Command Line Tools. `processctl::BUILD_ENV_ALLOWLIST` now preserves
+`DEVELOPER_DIR` and its sibling SDK selection, `SDKROOT`, from the captured
+environment. Service environment filtering remains separate. The same authority
+feeds devctl, verifyctl and splitproof builds; no global developer-directory
+change or alternate SDK discovery path is introduced. A separate `[test-author]`
+step must prove both selections reach build environments and remain absent from
+service environments before terminal acceptance.
