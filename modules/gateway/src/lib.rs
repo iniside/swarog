@@ -192,11 +192,11 @@ const DESCRIBE_PEER_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// How many peers a refresh pass fetches CONCURRENTLY. Bounded rather than unbounded fan-out so
 /// a large fleet cannot open one QUIC dial per provider at once, and chosen `>=` the provider
-/// count (11 today) so a pass over the real fleet is ONE wave: the pass bound is
+/// count so a pass over the real fleet is ONE wave: the pass bound is
 /// `ceil(N / this) * DESCRIBE_PEER_TIMEOUT`, and with a per-peer timeout that must clear a 5s
 /// cold dial ([`DESCRIBE_PEER_TIMEOUT`]) a second wave would double an already-long boot pass.
 /// Growing the fleet past this number costs a wave; that is the only reason to change it.
-const DESCRIBE_FETCH_CONCURRENCY: usize = 16;
+const DESCRIBE_FETCH_CONCURRENCY: usize = 17;
 
 /// Grace given to the describe-refresh task to observe the stop signal before
 /// [`Gateway::stop`] aborts it. Reuses the 2s shape of `remote`'s `PROBE_STOP_GRACE`
