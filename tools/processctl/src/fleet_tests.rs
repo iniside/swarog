@@ -18,6 +18,36 @@ fn inputs() -> FleetInputs {
 }
 
 #[test]
+fn apple_toolchain_selection_is_preserved_only_in_build_environment() {
+    let selected = [
+        ("DEVELOPER_DIR", "/operator-selected/Xcode Preview.app/Contents/Developer"),
+        ("SDKROOT", "/operator-selected/SDKs/MacOSX.sdk"),
+    ];
+    let environment = EnvironmentSnapshot::from_values(
+        selected.map(|(key, value)| (key.into(), value.into())),
+    );
+    let build = environment.build_environment();
+    let runtime = environment.runtime_environment();
+
+    for (key, value) in selected {
+        assert_eq!(build.get(key).map(String::as_str), Some(value), "{key}");
+        assert!(!runtime.contains_key(key), "{key} is build-only");
+    }
+}
+
+#[test]
+fn apple_toolchain_selection_is_not_discovered_when_absent() {
+    let environment = EnvironmentSnapshot::from_values([]);
+    let build = environment.build_environment();
+    let runtime = environment.runtime_environment();
+
+    for key in ["DEVELOPER_DIR", "SDKROOT"] {
+        assert!(!build.contains_key(key), "{key} must come from the snapshot");
+        assert!(!runtime.contains_key(key), "{key} is build-only");
+    }
+}
+
+#[test]
 fn inherited_application_overrides_are_explicit_and_cannot_rewire_topology() {
     let environment = EnvironmentSnapshot::from_values([
         ("ACCOUNTS_DEV_AUTH".into(), "0".into()),
