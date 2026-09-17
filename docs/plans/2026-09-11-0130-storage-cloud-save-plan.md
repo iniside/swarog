@@ -1,10 +1,11 @@
 # `storage` — player cloud-save (P1#7)
 
-**Status:** revision 2, after adversarial review (17 findings: 7 blocking-factual,
-4 structural, 6 citation). Review response at the end.
+**Status (2026-09-17):** implemented, tested and accepted in both topologies;
+documentation complete. Revision 2 followed adversarial review
+(17 findings: 7 blocking-factual, 4 structural, 6 citation). Execution evidence
+and deviations are recorded below.
 
-Tracker row: `docs/roadmap/feature-tracker.md:206` — *Generic storage objects /
-player cloud-save (KV+OCC) ❌ — P1#7. Self-contained new fortress.*
+Tracker: [Generic storage objects / player cloud-save](../roadmap/feature-tracker.md#storage-contract-and-known-gaps).
 Shape already decided by the gap analysis (`docs/reference/game-backend-feature-gaps.md:194-198`):
 *"collection/key, per-user + public, read/write permission levels, OCC via version …
 new `storage` fortress, its own schema … Self-contained."*
@@ -641,6 +642,133 @@ Command Line Tools. `processctl::BUILD_ENV_ALLOWLIST` now preserves
 `DEVELOPER_DIR` and its sibling SDK selection, `SDKROOT`, from the captured
 environment. Service environment filtering remains separate. The same authority
 feeds devctl, verifyctl and splitproof builds; no global developer-directory
-change or alternate SDK discovery path is introduced. A separate `[test-author]`
-step must prove both selections reach build environments and remain absent from
-service environments before terminal acceptance.
+change or alternate SDK discovery path is introduced. The production fix is
+`59c1287`; its separate `[test-author]` commit `ed55117` proves both selections
+reach build environments and remain absent from service environments. The two
+targeted tests and Clippy pass; independent reviews of both changes returned PASS.
+
+## Steps 8–11 execution record (2026-09-16–2026-09-17)
+
+- **8a / 8b:** `9d0c19f` and `76b7f80` add and harden the split-proof storage
+  scenarios. Final independent implementation/proof reviews returned PASS.
+  `[ST1]`–`[ST6]` and `[DL12]`/`[DL13]` run in split and monolith (suffix `m`);
+  `[ST0]` prevents failed setup from silently omitting scenarios. `[DL11]`
+  remains the characters write guard.
+- **Negative proof:** `run/storage-perturb-proof2.log` exits 1 with exactly
+  `[DL12]` and `[DL12m]` failing after changing the required subject pre-count
+  from 2 to 3. All other assertions pass (224 PASS, 2 FAIL). The source was
+  restored and its SHA-256 matched the pre-perturbation value:
+  `00770a338baa50bb9b8596d39fb921064b218668172caa219a80177f55434ce7`
+  (`tools/splitproof/src/storage_checks.rs`). The earlier
+  `run/storage-perturb-proof.log` stopped at the build-environment failure and
+  is not negative-proof evidence.
+- **9:** `a49cbed` adds the storage service/store tests. All 16 pass, with
+  **zero `SKIP: postgres unreachable` lines**; Clippy passes. Initial failures
+  exposed an existing local `storage.objects` table missing four CHECK
+  constraints. An authorized DROP of the storage schema followed by the
+  production `migrate` rebuilt it from the authoritative DDL; no migration
+  bridge or unrelated schema wipe was introduced.
+- **10 — sequencing deviation:** the current
+  [safe-verification Step 4](../../.claude/skills/safe-verification/SKILL.md#step-4--full-net-last-once-at-the-end)
+  requires one terminal manifest and forbids a preceding `--fast` rehearsal.
+  Therefore acceptance uses a single `--all --strict`, which includes the
+  blocking stages, instead of the original Step 10's two runs. The terminal
+  first run (`verify-1789589998-11162-40b85f44`) is recorded in
+  `run/storage-final-verify.log`. Its restored split-proof passes **226/226**,
+  and `weles-managed-gateway` passes. The final table has failures in `test`
+  and `audit`, a platform SKIP for `csharp-client`, and PASS for every other
+  stage. Acceptance was withheld until the findings below were fixed and a
+  new terminal run passed. The reruns address concrete failures rather than
+  rehearsing a broader manifest.
+- **11:** documentation drafts cover the module inventory, ports, assertion
+  families and complete known-gap list. The first independent docs review
+  returned PASS. `AGENTS.md` was inspected and needs no change: it delegates
+  architecture facts to `.agents/shared/gamebackend.md` and contains no stale
+  module count. Final acceptance wording records the successful third manifest
+  below; the committed closeout receives the final independent docs review.
+
+### First terminal manifest findings
+
+- **Step 7 missed a fleet-dependent gateway limit.** The existing
+  `describe_peer_timeout_clears_the_edge_dial_deadline` test fails because
+  the fleet now has 17 domain services while `DESCRIBE_FETCH_CONCURRENCY`
+  remains 16. The constant's authority already directs callers to raise it
+  when the fleet grows. Commit `9597645` corrects it to 17 and removes the
+  stale count comment. The existing test supplies the red case and passes
+  **1/1** in `run/storage-gateway-window-test4.log` after the tooling fixes
+  below. This literal correction uses the below-threshold inline lane.
+- **Dependency audit:** `rustls 0.23.41` fails on `RUSTSEC-2026-0285`
+  (published 2026-09-14; patched in `0.23.45` and later). Commit `76193dd`
+  updates `rustls` to `0.23.45` and its required `rustls-webpki` to `0.103.15`,
+  preserving the `ring` provider without a new advisory ignore. Independent
+  review returned PASS; the targeted audit exited 0 (no persisted log).
+- **Gateway test rerun blocked before execution:** after the first manifest,
+  both targeted attempts (`run/storage-gateway-window-test.log` and
+  `run/storage-gateway-window-test2.log`) fail to compile `sqlx-macros` with
+  a misaligned `__LINKEDIT` segment on macOS 27 / Rust 1.97.1. Cleaning that
+  crate does not resolve it. The failure matches the implicit debug-stripping
+  defect tracked in [rust-lang/rust#157750](https://github.com/rust-lang/rust/issues/157750).
+  Commit `01387e4` sets `strip = "none"` in the development wildcard package
+  profile. The third attempt then stops at a `ring` missing-header error,
+  resolved by selecting the installed SDK explicitly; no `ring` source is
+  changed. The fourth attempt compiles and passes the gateway test **1/1**.
+  The failed compile attempts are not test results. These changes select
+  build tooling and fix artifact loading, not storage behavior.
+
+The second terminal manifest (`verify-1789594034-20207-497a6fb2`), recorded
+in `run/storage-final-verify2.log`, exits 1 after a clear Cargo/rustc and
+inactive-fleet preflight. On 2026-09-17 every stage passes except `split-proof`,
+with the platform SKIP for `csharp-client`. Workspace test output totals
+1,855 passed and zero failed, including doctests; the separate verifyctl suite
+reports 97 passed and zero failed. Split-proof reports 225 PASS
+and one FAIL, the existing admin lock assertion `[AD2]`; all storage assertions
+pass. The run uses the installed
+Command Line Tools and SDK explicitly:
+
+```sh
+PATH=/Library/Developer/CommandLineTools/usr/bin:$PATH
+DEVELOPER_DIR=/Library/Developer/CommandLineTools
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk
+```
+
+The independent review of the stripping workaround (`01387e4`) returned PASS.
+
+### Second terminal manifest finding — admin proof clock sensitivity
+
+`[AD2]` reports all six wrong-password responses as 401, five persisted user
+failures and zero IP failures, but its `locked_until > now()` predicate is
+false. It observes the lock after six costly calls, so the 32-second lock can
+expire before the assertion runs. This is a proof-timing failure outside
+storage, not evidence that storage or the admin backoff policy is wrong.
+
+A separate test-author correction, `d7a671d`, asserts the persisted 32-second
+duration and five failures, then installs an explicit infinite-lock fixture
+and proves that a sixth wrong-password call returns 401 without changing that
+count. No admin production behavior or backoff duration changes. Independent
+implementation and proof reviews returned PASS. Changing the expected
+duration from 32 to 33 produces exactly one `[AD2]` failure, with the other
+225 assertions passing. After restoration, `tools/splitproof/src/main.rs`
+matches its original SHA-256:
+`d900911c6e382547666c650a50c103a5e72d02a1145857f64b1806901b7546bc`.
+`[AD2b]` retains a post-burst `> now()` timing dependency. This inherited
+admin-proof gap is outside storage's implemented behavior and was not changed
+by the `[AD2]` correction.
+
+### Final acceptance — 2026-09-17
+
+The third terminal manifest, `verify-1789647668-31050-2e14140a`, completes
+`--all --strict` with **exit 0**, recorded in `run/storage-final-verify3.log`.
+The stage table has **19 PASS**, with only `csharp-client` marked **SKIP:
+not applicable on this platform**. C# execution is not claimed.
+
+- Workspace tests, including doctests: **1,855 passed, 0 failed**.
+- Separate verifyctl tests: **97 passed, 0 failed**.
+- Split-proof: **226 passed, 0 failed**, including `[ST1]`–`[ST6]`,
+  `[DL12]`/`[DL13]` in split and monolith and the corrected `[AD2]` proof.
+- `[AD2]` proves the lock was created, then frozen for the denial check:
+  response 401, five unchanged user failures, lock retained, zero IP failures.
+- After completion no Cargo/rustc process remains and direct `devctl status`
+  reports no active fleet.
+
+Steps 8–11 are complete. The two failed manifests above remain part of the
+record; their failures were corrected before this successful acceptance.

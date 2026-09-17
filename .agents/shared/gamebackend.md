@@ -216,7 +216,7 @@ last-writer-wins overwrite.
    split. `topiccheck` validates the subscription graph per deployment
    profile.
 
-## Domain modules (16 fortresses + gateway)
+## Domain modules (17 fortresses + gateway)
 
 - **accounts** — identity: one `player_id`, many identities
   (`provider`,`subject`), opaque DB sessions: 60-minute access tokens plus
@@ -254,9 +254,9 @@ last-writer-wins overwrite.
   `#[retry_safe]` on `delete_account` covers only the gateway→accounts
   internal-edge replay (the receipt answers it with the original success); a
   client re-POST is a 401 by construction, since the session died with the
-  player. Six modules (`characters`, `inventory`, `friends`, `groups`,
-  `notifications`, `wallet`) each subscribe to `player.deleted`, tombstone
-  the player in a per-module `purged_players` table, and drain it via a
+  player. Seven modules (`characters`, `inventory`, `friends`, `groups`,
+  `notifications`, `wallet`, `storage`) each subscribe to `player.deleted`,
+  tombstone the player in a per-module `purged_players` table, and drain it via a
   daily `player-purge` scheduler-driven sweep — see the `accounts`
   self-delete row in `docs/roadmap/feature-tracker.md` for the known gaps (no
   GDPR export, no log/ledger redaction, `leaderboard`/`rating`/`match`/`mail`
@@ -470,6 +470,23 @@ last-writer-wins overwrite.
   Known gaps: no push nudge on membership change, no group rename or
   `join_policy` change after create, and no `group.deleted` topic (a
   teardown reads as N leaves).
+- **storage** — player cloud-save in schema `storage`, addressed by
+  `(owner_id, collection, key)`. Four player ops (`put`/`get`/`delete`/`list`)
+  provide owner-only writes, `private`/`public_read` reads, and keyset paging
+  of the caller's own collection. `put(expected_version = 0)` creates or
+  returns 409; positive versions use compare-and-swap, with no blind
+  overwrite. Values are JSON text (65,536 input bytes), stored as `jsonb` and
+  read back normalized; byte identity is not preserved. Collection/key
+  segments use `[A-Za-z0-9._-]`, capped at 64/128 bytes in the service across
+  transports. The 10,000-object owner cap and purge sweep share an owner
+  advisory lock. `storage.player-deleted.v1` plants permanent tombstones;
+  `storage.purge-on-scheduler.v1` drains up to 64 owners per daily
+  `player-purge` fire, with a 5s budget checked between owners. The seventh
+  purge module and eighth `player.deleted` consumer (including `audit`),
+  with no published events or synchronous domain dependencies. Read-only
+  admin page "Cloud Saves" under Player Support at `/admin/cloud-saves`.
+  Known limits and acceptance status live in the storage section of
+  `docs/roadmap/feature-tracker.md`.
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote
   purely by slot presence; peer addresses are injected by `cmd/*` via
   `remote::Stub` → `opsapi::PEER_SLOT` contributions — the gateway module
@@ -634,8 +651,8 @@ inbound `push.deliver` face), config :8083/:9002,
 accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler :8087/:9005,
 match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008, apikeys
 :8091/:9009, wallet :8092/:9010, notifications :8093/:9011,
-mail :8094/:9012, friends :8095/:9014, groups :8096/:9015. The fleet is
-spawned with a typed
+mail :8094/:9012, friends :8095/:9014, groups :8096/:9015,
+storage :8097/:9016. The fleet is spawned with a typed
 environment and owned process containment plus a kill-on-drop guard,
 health-checked over reqwest, DB-asserted via sqlx, and the player QUIC front
 driven through the `edge` crate as a library. It asserts the same named
@@ -644,9 +661,9 @@ cross-process starter-grant + DB-verified wipe, config live-reload, audit
 rows, scheduler exactly-once, leaderboard accumulation, 429 rate-limit,
 api-key policy [K1-K5], admin session auth [AD1-AD5], audit [AU1-AU3],
 scheduler/prune [SC/SP], metrics [MX], rate-limit [RL], player QUIC
-[P1-P6], friends [FR1-FR9], groups [GR1-GR6], account-deletion purge
-[DL0-DL11]), then re-runs the monolith (`cmd/server`) on the same player front
-for parity ([M0-M3b]) and proves native graceful shutdown ([W2]: the
+[P1-P6], friends [FR1-FR9], groups [GR1-GR6], storage [ST0-ST6],
+account-deletion purge [DL0-DL13]), then re-runs the monolith (`cmd/server`)
+on the same player front for parity ([M0-M3b]) and proves native graceful shutdown ([W2]: the
 platform's native cooperative stop to the monolith's process group → clean
 drain, no force-kill — see `docs/reference/platform-notes.md`). A reachable
 Postgres with the `gamebackend` role is REQUIRED at `DATABASE_URL` (the
@@ -722,7 +739,7 @@ api/<name>/                # contract surface per domain
   <name>api/               #   pure #[rpc] traits + ops/bindings (transport-free)
   <name>events/            #   bus::define descriptors + payloads
   <name>rpc/               #   generated glue (Client/register_server/factories)
-modules/                   # private impls — 16 fortresses + gateway (see above)
+modules/                   # private impls — 17 fortresses + gateway (see above)
 demos/                     # non-shipping demo crates (webui) — cmd/server only
 weles/                     # standalone mini-orchestrator (zero-sharing; deploy/ artifacts,
                            # restart-on-crash supervisor; see Commands)

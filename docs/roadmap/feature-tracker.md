@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-09-12-0000**
+**Last update: 2026-09-17-1438**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -138,7 +138,7 @@ now resolved — see the Identity & accounts table below for the landed shape.
 | Account linking / unlinking | ⚠️ | accounts | 2026-08-30 | `POST /accounts/link` ships (verified credential → identity attached to the caller's player; a foreign identity is 409, no merge). **Unlink is still missing** — seq #2b. |
 | Session + refresh-token model | ✅ | accounts | 2026-08-30 | 60-minute opaque access tokens + rotating 30-day refresh-token families: reuse detection, a 30s grace window for a lost response, family-scoped revocation (never all the player's devices), and a hard family life a rotation cannot extend. Open decision 4 resolved inside #2a. |
 | Self-registration (production-grade) | ⚠️ | accounts | — | `POST /accounts/register` + `/accounts/login` exist (`api/accounts/api/src/lib.rs:79,85`, argon2id) but gated behind `ACCOUNTS_DEV_AUTH` (default OFF). Missing: email verification, password reset, per-IP/per-account throttling, password policy, email-as-identity uniqueness, **and an outbound mail channel**. Seq #4, depends on #3b. |
-| Account self-delete + GDPR export | ⚠️ | accounts | `79cf52d`..`0cc58bf`, 2026-09-10 | Self-delete ships: `begin_delete`/`delete_account`, a fan-out purge over `player.deleted` into `characters`/`inventory`/`friends`/`groups`/`notifications`/`wallet`, daily `player-purge` sweeps. **GDPR export does not exist.** Known gaps: no redaction of `asyncevents.events`/`audit.log` (the id and, for `player.deleted`, the handle, survive 90/30 days); `leaderboard`/`rating`/`match` can't purge (`match.finished` carries opaque contestant strings); `mail` can't purge (no `player_id` in `mail.outbox`); a sole admin's deletion dissolves their group (no `group.deleted` topic); purge latency is bounded by the daily sweep, not immediate. |
+| Account self-delete + GDPR export | ⚠️ | accounts | `79cf52d`..`0cc58bf`, 2026-09-10 | Self-delete ships: `begin_delete`/`delete_account`, a fan-out purge over `player.deleted` into `characters`/`inventory`/`friends`/`groups`/`notifications`/`wallet`/`storage` (seven purge modules, eight consumers including `audit`), daily `player-purge` sweeps. **GDPR export does not exist.** Known gaps: no redaction of `asyncevents.events`/`audit.log` (the id and, for `player.deleted`, the handle, survive 90/30 days); `leaderboard`/`rating`/`match` can't purge (`match.finished` carries opaque contestant strings); `mail` can't purge (no `player_id` in `mail.outbox`); a sole admin's deletion dissolves their group (no `group.deleted` topic); purge is scheduled daily, not immediate, and capped sweeps can need multiple fires to clear a backlog. |
 | User metadata / profile (display name, avatar, lang) | ⚠️ | accounts | `922cc63`, 2026-09-06 | Handles landed as part of P0#4 (friends): `accounts.players` gained a `discriminator` + a unique index on `(lower(display_name), discriminator)`, and `MeView` carries the caller's own `handle` (`Name#1234`). Discovery of another player is wire-only (`accountsapi::Directory`), never front-door. Still missing: avatar, language, and any player-editable profile field. |
 
 **Known gaps carried out of seq #2a** (deliberate, not oversights): `accounts` still parses
@@ -241,7 +241,7 @@ than decided. Not reproduced, not scheduled — the closure shape already exists
 | Player mail (1:1 inbox) | ✅ | notifications | `ecbefae`..`b991f8a`, 2026-08-31 | Seq #3a, same module and plan — operator 1:1 mail through the admin "Inbox" page (new "Player Support" section), sharing the `source_event_id` dedup column with the durable fan-in via a disjoint `admin-send-mail-` prefix; a resubmit with an edited body is 409, never a silent success. |
 | Outbound email channel (verification, reset) | ✅ | mail, mailevents, mailrpc, mail-svc | `d97503f`..`88e26fd`, 2026-08-31–2026-09-05 | **Seq #3b**, [plan](../plans/2026-08-31-1650-mail-outbound-channel-3b-plan.md). 14th fortress — a separate module from `notifications` (different key: a literal address, not `player_id`; different consumer: `accounts`; different failure surface: outbound SMTP with operator secrets). Durable outbox (`mail.outbox`) drained by a retry worker against a provider registry (`log` dev sink, `smtp` via `lettre`); ingress is `mail.send_requested`, which `mail` both defines and consumes (a deliberate deviation — the topic is a command, not a fact about another domain). Enqueue is exactly-once per `idempotency_key`; delivery to the recipient is at-least-once. Scheduled pruning via `mail.prune-on-scheduler.v1` (`MAIL_RETENTION_DAYS`, default 30). Admin page "Mail" under Platform, remotely editable via `admin.adminSubmit`. Known gaps: TLS negotiation (upgrade, cert/trust check, `AUTH`) is unproven by any automated test; the command topic has no in-tree producer until seq #4; `mail` stores no address, so nothing resolves a `player_id` to a recipient; a remote admin submit produces no `admin.action` row (closure deferred to a `mail.operator_sent` topic); `cancel` cannot recall a message the relay already accepted. |
 | Push notifications (FCM/APNs) | ❌ | — | — | Seq #3c. Later channel on the notifications module. |
-| Generic storage objects / player cloud-save (KV+OCC) | ❌ | — | — | P1#7. Self-contained new fortress. |
+| Generic storage objects / player cloud-save (KV+OCC) | ✅ | storage, storageapi, storagerpc, storage-svc | Implementation `974692f`..`4b47a0f`; proof `9d0c19f`, `76b7f80`, tests `a49cbed`; accepted 2026-09-17 | **P1#7**, [plan](../plans/2026-09-11-0130-storage-cloud-save-plan.md). 17th fortress: owner-scoped JSON CRUD, optimistic concurrency, private/public reads, keyset listing, account purge and read-only "Cloud Saves" admin page. Proven in both topologies by `[ST1]`–`[ST6]`, `[DL12]`/`[DL13]` and their `m` variants. See storage contract and known gaps below. |
 | Server-side custom logic / RPC hooks | ✅ | (architecture) | pre-existing | Our module registry **is** this. Scripting runtimes explicitly rejected — see gap doc "Explicit non-recommendations". |
 | Remote config / feature flags | ⚠️ | config | pre-existing | Live-reload delivery half exists (revision + NOTIFY + invalidation); **no targeting**. |
 | A/B experiments / segmentation / audiences | ❌ | — | — | P2#16 — the targeting brain is the real work. |
@@ -272,6 +272,61 @@ and latency 64.3 ms → 0.7 ms.
 
 ---
 
+### Storage contract and known gaps
+
+Accepted 2026-09-17 by `--all --strict` run
+`verify-1789647668-31050-2e14140a` (`run/storage-final-verify3.log`, exit 0):
+19 stages PASS; `csharp-client` SKIP because it is not applicable on this
+platform. Workspace tests: 1,855 PASS / 0 FAIL; verifyctl tests: 97 / 0;
+split-proof: 226 / 0, including storage in both topologies. Four player ops expose owner-only writes,
+`private` / `public_read` reads and owner-scoped keyset listing. Versions are `i64`
+on the contract and `bigint` in Postgres. The module publishes no events and has
+no synchronous domain dependency. Its two durable subscriptions plant permanent
+account tombstones and drain objects on the shared daily `player-purge` schedule;
+64 owners per fire and a 5s budget checked between owners can carry a backlog
+into later fires. The owner cap (10,000) and purge share an advisory lock.
+
+- **Addressing oracle (D1):** a public object's address contains its owner's id.
+  Readers must already know the owner, collection and key; public objects are
+  readable by authenticated callers but not discoverable through another
+  owner's listing. Private or absent objects return the same 404.
+- **Lifetime (D2):** only the owner and account purge delete objects. No age-based
+  collection or per-collection TTL exists; an abandoned live account retains its
+  saves indefinitely.
+- **Version reuse (D6):** deletion and recreation restart at version 1. A stale
+  `expected_version = 1` from the previous incarnation can overwrite the new
+  document. Compare-and-swap protects one incarnation, not an address's lifetime.
+- **Address alphabet (D9):** collections and keys are non-empty ASCII runs of
+  `[A-Za-z0-9._-]` (64/128 bytes). `/` cannot be represented as one HTTP path
+  segment; `%` and the cursor separator are also rejected. Validation lives in
+  the service, so player QUIC cannot accept a wider key set than HTTP.
+- **JSON bytes and limits:** the Rust cap is 65,536 bytes of input text; the
+  `storage_value_len_check` backstop is 131,072 bytes of normalized `jsonb::text`.
+  They measure different strings, so `value` is deliberately outside the
+  `COLUMN_CAPS` pairing test. Normalization can expand valid input under the
+  Rust cap enough to trigger the CHECK, mapped to 400. `get` returns normalized
+  JSON (key order, whitespace, escapes and number spelling can change), not the
+  original bytes. Payloads whose signatures or checksums require byte-preserving
+  round trips need a separate product decision; that support has not shipped.
+- **Ambiguous writes:** `put` is not `#[retry_safe]` and has no idempotency key or
+  replay receipt. After an ambiguous network result the client must re-read and
+  reconcile before another compare-and-swap; automatic replay is not provided.
+- **Deliberate scope:** no value-indexed query, sharing beyond `public_read`,
+  per-collection TTL, or cross-owner atomic writes.
+- **Cap conflict message:** at 10,000 objects, `put(expected_version = 0)` to an
+  already-owned address returns the cap's 409 before checking address occupancy.
+  The status is correct but the suggested remedy is misleading; positive-version
+  updates remain available at the cap.
+- **Inherited conformance defects:** a policy `Validated { cap }` number is not
+  linked to its actual `CapCase` (except the separate federated-credential
+  binding), so the report can advertise a limit it has not proved. The request
+  traversal allowlists the written bare `Identity` type without resolving its
+  import, so a foreign type imported under that name can bypass inventory. Both
+  predate storage and remain open; see the deletion plan's
+  [gate-defect record](../plans/2026-09-10-1917-account-deletion-purge-plan.md#two-pre-existing-gate-defects-found-while-auditing-step-4).
+
+---
+
 ## Explicitly not doing
 
 | Item | Decision |
@@ -283,6 +338,13 @@ and latency 64.3 ms → 0.7 ms.
 ---
 
 ## Change log
+
+- **2026-09-17** — Storage (P1#7) accepted in both topologies. Final
+  `--all --strict` exits 0: 19 stages PASS, platform-only C# SKIP;
+  split-proof 226 / 0. The plan records the two earlier failed manifests and
+  their fixes. Architecture inventories include the standalone service
+  (HTTP 8097 / internal edge 9016) and seventh account-purge module; deliberate
+  scope limits remain documented above.
 
 - **2026-09-10** — Groups (P1#8) **landed**, `7c7ee12`..`0d8c3b0`, 22 commits,
   [plan](../plans/2026-09-06-2230-groups-membership-plan.md) revision 2. 16th fortress:

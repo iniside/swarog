@@ -305,3 +305,14 @@ place.
   `docs/roadmap/feature-tracker.md`'s Identity & accounts table for current status
   and the known gaps (no log/ledger redaction, unpurgeable `leaderboard`/`rating`/
   `match`/`mail`, group dissolution on a sole admin's deletion, daily-sweep latency).
+- **2026-09-17 — Generic storage / cloud-save (Data, LiveOps & ops; P1#7):**
+  the frozen ❌ row and proposed new fortress are superseded by the implemented
+  `storage` fortress (`974692f`..`4b47a0f`, 2026-09-11–2026-09-12): owner-only
+  JSON writes with versions, private/public reads, owner-scoped listing,
+  account purge and read-only admin inspection. Accepted in both topologies
+  on 2026-09-17: `--all --strict` exits 0 (19 PASS; C# platform SKIP), with
+  split-proof 226 / 0. See the tracker for the final run ID and proof commits.
+  Values round-trip as normalized JSON, not original bytes; versions restart
+  after delete/recreate; no value-indexed query, selective sharing or TTL exists.
+  The living [storage tracker](../roadmap/feature-tracker.md#storage-contract-and-known-gaps)
+  records the complete limits and current proof status.
