@@ -4424,23 +4424,28 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         format!("code={} loc={ad1_loc}", ad1.status().as_u16()),
     );
 
-    // [AD2] asymmetric lockout: prooflock 6x wrong -> each 401; user locks at 5, ip not.
     sqlx::query("DELETE FROM admin.login_attempts WHERE subject='user:prooflock' OR subject LIKE 'ip:%'")
-        .execute(pool).await.ok();
+        .execute(pool).await?;
     let mut ad2_all401 = true;
-    for i in 0..6 {
+    for i in 0..5 {
         let pw = format!("wrong-{i}");
         let r = ctx.http_noredirect.post(format!("{g}/admin/login"))
             .form(&[("username", "prooflock"), ("password", pw.as_str())]).send().await?;
         if r.status().as_u16() != 401 { ad2_all401 = false; }
     }
-    let ad2_fails: Option<i64> = sqlx::query_scalar("SELECT fails::bigint FROM admin.login_attempts WHERE subject='user:prooflock'").fetch_optional(pool).await.ok().flatten();
-    let ad2_locked: Option<bool> = sqlx::query_scalar("SELECT locked_until > now() FROM admin.login_attempts WHERE subject='user:prooflock'").fetch_optional(pool).await.ok().flatten();
-    let ad2_ip_locked: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM admin.login_attempts WHERE subject LIKE 'ip:%' AND locked_until > now()").fetch_optional(pool).await.ok().flatten();
+    let ad2_created: Option<bool> = sqlx::query_scalar("SELECT fails = 5 AND locked_until = updated_at + interval '32 seconds' FROM admin.login_attempts WHERE subject='user:prooflock'").fetch_optional(pool).await?;
+    // Freeze the proven lock so the denied-attempt probe cannot race its expiry.
+    let ad2_frozen = sqlx::query("UPDATE admin.login_attempts SET locked_until = 'infinity'::timestamptz WHERE subject='user:prooflock' AND fails = 5 AND locked_until = updated_at + interval '32 seconds'")
+        .execute(pool).await?.rows_affected() == 1;
+    let ad2_denied = ctx.http_noredirect.post(format!("{g}/admin/login"))
+        .form(&[("username", "prooflock"), ("password", "wrong-5")]).send().await?.status().as_u16();
+    let ad2_fails: Option<i64> = sqlx::query_scalar("SELECT fails::bigint FROM admin.login_attempts WHERE subject='user:prooflock'").fetch_optional(pool).await?;
+    let ad2_locked: Option<bool> = sqlx::query_scalar("SELECT locked_until = 'infinity'::timestamptz FROM admin.login_attempts WHERE subject='user:prooflock'").fetch_optional(pool).await?;
+    let ad2_ip_locked: Option<i64> = sqlx::query_scalar("SELECT count(*) FROM admin.login_attempts WHERE subject LIKE 'ip:%' AND locked_until IS NOT NULL").fetch_optional(pool).await?;
     p.check(
         "[AD2] user locks at 5, ip does not",
-        ad2_all401 && ad2_fails.map(|f| f >= 5).unwrap_or(false) && ad2_locked == Some(true) && ad2_ip_locked == Some(0),
-        format!("all401={ad2_all401} fails={ad2_fails:?} locked={ad2_locked:?} ip_locked={ad2_ip_locked:?}"),
+        ad2_all401 && ad2_created == Some(true) && ad2_frozen && ad2_denied == 401 && ad2_fails == Some(5) && ad2_locked == Some(true) && ad2_ip_locked == Some(0),
+        format!("all401={ad2_all401} created={ad2_created:?} frozen={ad2_frozen} denied={ad2_denied} fails={ad2_fails:?} locked={ad2_locked:?} ip_locked={ad2_ip_locked:?}"),
     );
 
     // [AD2b] 12 CONCURRENT wrong logins -> advisory-lock serializes to exactly 5 fails +
