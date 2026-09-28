@@ -77,6 +77,13 @@ pub fn conformance_group_name_rejected(len: usize) -> bool {
     crate::push_ws::PushHub::conformance_group_name_rejected(len)
 }
 
+/// Drives the real `/push` invoke-frame method cap (`MAX_INVOKE_METHOD_BYTES`): `true`
+/// when an `invoke` naming a method of `len` bytes is refused.
+#[doc(hidden)]
+pub fn conformance_invoke_method_rejected(len: usize) -> bool {
+    crate::push_ws::PushHub::conformance_invoke_method_rejected(len)
+}
+
 /// A current-thread runtime for the byte-cap probes, which the gate calls SYNCHRONOUSLY
 /// (`Fixture::InputByteCaps`) while the async paths they drive are the production ones.
 fn probe_runtime() -> tokio::runtime::Runtime {

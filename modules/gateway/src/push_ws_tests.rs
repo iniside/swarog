@@ -59,6 +59,7 @@ fn test_limits() -> PushLimits {
         max_stale: Duration::from_secs(3600),
         trusted_proxies: Vec::new(),
         presence: false,
+        ..PushLimits::default()
     }
 }
 
@@ -91,7 +92,15 @@ fn bound(hub: &Arc<PushHub>, ip: IpAddr, player: &str) -> (Slot, mpsc::Receiver<
 /// task that does not exist.
 fn queued(queue: &ConnQueue) -> Vec<String> {
     let state = queue.state.lock().unwrap();
-    let mut out: Vec<String> = state.reply.iter().map(|frame| frame.to_string()).collect();
+    let mut out: Vec<String> = state
+        .reply
+        .iter()
+        .map(|reply| match reply {
+            Reply::Frame(text) | Reply::Rejection(text) | Reply::Result(text, _) => {
+                text.to_string()
+            }
+        })
+        .collect();
     let mut lanes: Vec<VecDeque<Arc<str>>> =
         state.events.iter().map(|(_, frames)| frames.clone()).collect();
     let count = lanes.len();
@@ -752,7 +761,7 @@ async fn recv_serves_close_then_reply_then_events_round_robin() {
     let hub = hub_with(PushLimits { queue_depth: 16, ..test_limits() });
     let (slot, mut wake) = bound(&hub, local(), "alice");
     let text = |o: Outbound| match o {
-        Outbound::Text(t) => t.to_string(),
+        Outbound::Text(t) | Outbound::Result(t, _) => t.to_string(),
         Outbound::Close(c) => panic!("unexpected close {c:?}"),
     };
 
@@ -760,7 +769,7 @@ async fn recv_serves_close_then_reply_then_events_round_robin() {
     to_alice(&hub, "a.x", "a2");
     to_alice(&hub, "b.x", "b1");
     to_alice(&hub, "b.x", "b2");
-    assert!(slot.queue.push_reply(Arc::from("reply")));
+    assert!(slot.queue.push_reply(Reply::Frame(Arc::from("reply"))));
 
     // Reply first even though events were queued before it, then a/b alternate.
     assert_eq!(text(slot.queue.recv(&mut wake).await.unwrap()), "reply");
@@ -774,7 +783,7 @@ async fn recv_serves_close_then_reply_then_events_round_robin() {
 
     // Close preempts both a pending reply and pending events.
     to_alice(&hub, "a.x", "a3");
-    assert!(slot.queue.push_reply(Arc::from("reply2")));
+    assert!(slot.queue.push_reply(Reply::Frame(Arc::from("reply2"))));
     slot.queue.close(CloseCode::Shutdown);
     match slot.queue.recv(&mut wake).await {
         Some(Outbound::Close(code)) => assert_eq!(code, CloseCode::Shutdown),
@@ -788,7 +797,7 @@ async fn the_reply_lane_survives_event_lane_eviction() {
     let hub = hub_with(PushLimits { queue_depth: 2, ..test_limits() });
     let (slot, _wake) = bound(&hub, local(), "alice");
 
-    assert!(slot.queue.push_reply(Arc::from("ack")));
+    assert!(slot.queue.push_reply(Reply::Frame(Arc::from("ack"))));
     for n in 0..10 {
         to_alice(&hub, "a.x", &format!("m{n}"));
     }

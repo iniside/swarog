@@ -337,6 +337,9 @@ pub struct Gateway {
     /// `RouteTable` behind the long-lived `FrontDoor`; `stop` releases those separately
     /// through [`FrontDoor::stop_pools`].
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The `/push` per-IP invoke limiter's idle-bucket reaper (`Some` between `start` and
+    /// `stop`).
+    limiter_eviction: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Gateway {
@@ -356,6 +359,7 @@ impl Gateway {
             front_door: OnceLock::new(),
             stop_tx: Mutex::new(None),
             task: Mutex::new(None),
+            limiter_eviction: Mutex::new(None),
         }
     }
 
@@ -373,6 +377,7 @@ impl Gateway {
             front_door: OnceLock::new(),
             stop_tx: Mutex::new(None),
             task: Mutex::new(None),
+            limiter_eviction: Mutex::new(None),
         }
     }
 
@@ -541,7 +546,8 @@ impl Module for Gateway {
             // (its routes are simply absent, picked up by the loop when it comes up). Then
             // spawn the periodic re-fetch.
             let peers: Vec<opsapi::PeerAddr> = ctx.slots().contributions(opsapi::PEER_SLOT);
-            let mut router = DescribeRouter::new(front_door, peers, production_describe_fetcher());
+            let mut router =
+                DescribeRouter::new(front_door.clone(), peers, production_describe_fetcher());
             router.refresh_once().await?;
             // Own the loop (lifecycle constraint 8): keep both the stop sender and the join
             // handle so `stop` tears the task down instead of leaving it running past module
@@ -555,6 +561,8 @@ impl Module for Gateway {
             // loud startup failure, not a first-request surprise). UNCHANGED.
             front_door.build_table()?;
         }
+        let eviction = front_door.push_hub().spawn_invoke_limiter_eviction();
+        *self.limiter_eviction.lock().unwrap_or_else(|e| e.into_inner()) = Some(eviction);
         Ok(())
     }
 
@@ -589,6 +597,11 @@ impl Module for Gateway {
     async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
         if let Some(front_door) = self.front_door.get() {
             front_door.push_hub().shutdown().await;
+        }
+        let eviction = self.limiter_eviction.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(eviction) = eviction {
+            eviction.abort();
+            let _ = eviction.await;
         }
         if let Some(tx) = self.stop_tx.lock().unwrap_or_else(|e| e.into_inner()).take() {
             let _ = tx.send(true);

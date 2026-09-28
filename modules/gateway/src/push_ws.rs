@@ -33,11 +33,13 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use ipnet::IpNet;
 use push::{ConnId, Message, Target};
-use tokio::sync::{mpsc, oneshot};
-use tokio::task::AbortHandle;
+use opsapi::Status;
+use serde_json::value::RawValue;
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
+use tokio::task::{AbortHandle, JoinSet};
 
 use crate::keys::{KeyCheck, KeyDenial};
-use crate::{AdmissionDenial, FrontDoor};
+use crate::{front_envelope, AdmissionDenial, FrontDoor};
 
 /// Grace [`PushHub::shutdown`] gives every live connection to write its typed close
 /// before the remaining tasks are aborted.
@@ -95,6 +97,19 @@ pub struct PushLimits {
     /// and the front has no friends graph to narrow the audience with, so the fan-out is
     /// quadratic in a population that does not care about most of it.
     pub presence: bool,
+    /// Invokes one connection may have dispatched and not yet written a result for.
+    pub invoke_max_in_flight: usize,
+    /// Bound on one invoke's dispatch; on elapse the client gets an `Unavailable` result.
+    pub invoke_timeout: Duration,
+    /// Per-connection refill rate (frames/s) of the bucket every inbound frame is charged
+    /// to before it is parsed.
+    pub inbound_rps: u32,
+    /// Capacity of that per-connection bucket.
+    pub inbound_burst: u32,
+    /// Per-client-IP refill rate (invokes/s) shared by every connection from that IP.
+    pub invoke_ip_rps: u32,
+    /// Capacity of that per-IP bucket.
+    pub invoke_ip_burst: u32,
 }
 
 impl Default for PushLimits {
@@ -104,13 +119,19 @@ impl Default for PushLimits {
             max_per_ip: 64,
             max_per_player: 8,
             queue_depth: 64,
-            max_frame_bytes: 32 * 1024,
+            max_frame_bytes: 128 * 1024,
             handshake_grace: Duration::from_secs(10),
             write_deadline: Duration::from_secs(10),
             reverify_interval: Duration::from_secs(60),
             max_stale: Duration::from_secs(900),
             trusted_proxies: Vec::new(),
             presence: false,
+            invoke_max_in_flight: 16,
+            invoke_timeout: Duration::from_secs(30),
+            inbound_rps: 10,
+            inbound_burst: 20,
+            invoke_ip_rps: 20,
+            invoke_ip_burst: 40,
         }
     }
 }
@@ -146,15 +167,18 @@ impl PushLimits {
         fn value(raw: Option<String>) -> Option<String> {
             raw.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
         }
-        fn count(name: &str, raw: Option<String>, current: usize) -> anyhow::Result<usize> {
+        fn count<T>(name: &str, raw: Option<String>, current: T) -> anyhow::Result<T>
+        where
+            T: std::str::FromStr + std::fmt::Display + Default + PartialEq,
+        {
             match value(raw) {
                 None => Ok(current),
-                Some(v) => match v.parse::<usize>() {
-                    Ok(0) | Err(_) => anyhow::bail!(
+                Some(v) => match v.parse::<T>() {
+                    Ok(n) if n != T::default() => Ok(n),
+                    _ => anyhow::bail!(
                         "{name}={v:?} is invalid: expected a positive integer (unset it \
                          for the default of {current})"
                     ),
-                    Ok(n) => Ok(n),
                 },
             }
         }
@@ -202,6 +226,16 @@ impl PushLimits {
             reverify_interval: ms(REVERIFY_MS, get(REVERIFY_MS), d.reverify_interval)?,
             max_stale: ms(MAX_STALE_MS, get(MAX_STALE_MS), d.max_stale)?,
             presence: flag(PRESENCE, get(PRESENCE), d.presence)?,
+            invoke_max_in_flight: count(
+                INVOKE_MAX_IN_FLIGHT,
+                get(INVOKE_MAX_IN_FLIGHT),
+                d.invoke_max_in_flight,
+            )?,
+            invoke_timeout: ms(INVOKE_TIMEOUT_MS, get(INVOKE_TIMEOUT_MS), d.invoke_timeout)?,
+            inbound_rps: count(INBOUND_RPS, get(INBOUND_RPS), d.inbound_rps)?,
+            inbound_burst: count(INBOUND_BURST, get(INBOUND_BURST), d.inbound_burst)?,
+            invoke_ip_rps: count(INVOKE_IP_RPS, get(INVOKE_IP_RPS), d.invoke_ip_rps)?,
+            invoke_ip_burst: count(INVOKE_IP_BURST, get(INVOKE_IP_BURST), d.invoke_ip_burst)?,
             ..d
         };
         // The SAME trusted-proxy set `core/app`'s rate limiter resolves a client IP
@@ -223,6 +257,12 @@ pub const WRITE_MS: &str = "PUSH_WRITE_TIMEOUT_MS";
 pub const REVERIFY_MS: &str = "PUSH_REVERIFY_INTERVAL_MS";
 pub const MAX_STALE_MS: &str = "PUSH_MAX_STALE_MS";
 pub const PRESENCE: &str = "PUSH_PRESENCE";
+pub const INVOKE_MAX_IN_FLIGHT: &str = "PUSH_INVOKE_MAX_IN_FLIGHT";
+pub const INVOKE_TIMEOUT_MS: &str = "PUSH_INVOKE_TIMEOUT_MS";
+pub const INBOUND_RPS: &str = "PUSH_INBOUND_RPS";
+pub const INBOUND_BURST: &str = "PUSH_INBOUND_BURST";
+pub const INVOKE_IP_RPS: &str = "PUSH_INVOKE_IP_RPS";
+pub const INVOKE_IP_BURST: &str = "PUSH_INVOKE_IP_BURST";
 /// Shared with `core/app`'s rate limiter — the one trusted-proxy set per process.
 pub const TRUSTED_PROXIES: &str = "TRUSTED_PROXY_CIDRS";
 
@@ -254,6 +294,10 @@ const MAX_HUBS_PER_CONN: usize = 16;
 /// reconnect, so 64 per interval is far above real use and bounded regardless of the
 /// interval an operator picks.
 const MAX_VERBS_PER_INTERVAL: u32 = 64;
+
+/// The longest wire-method name an `invoke` frame is accepted with; longer closes
+/// `bad_frame`.
+pub const MAX_INVOKE_METHOD_BYTES: usize = 128;
 
 /// The topic a presence transition is published under (see [`PushHub::announce`]).
 const PRESENCE_TOPIC: &str = "push.presence";
@@ -296,6 +340,25 @@ enum ClientFrame {
     Other,
 }
 
+/// The `type` of an inbound frame, read before anything else is parsed so an `invoke` can
+/// be told apart from the verbs [`ClientFrame`] carries.
+#[derive(serde::Deserialize)]
+struct Kind<'a> {
+    #[serde(rename = "type", borrow)]
+    kind: std::borrow::Cow<'a, str>,
+}
+
+/// `{"type":"invoke","id":…,"method":…,"payload":{…}}`: one player op over this socket,
+/// answered by a `result` frame with the same `id`. Parsed apart from [`ClientFrame`]
+/// because a `RawValue` does not deserialize inside an internally tagged enum.
+#[derive(serde::Deserialize)]
+struct InvokeFrame {
+    id: i64,
+    method: String,
+    #[serde(default)]
+    payload: Option<Box<RawValue>>,
+}
+
 /// The presence payload published on [`PRESENCE_TOPIC`].
 #[derive(serde::Serialize)]
 struct Presence<'a> {
@@ -318,6 +381,8 @@ enum ServerFrame<'a> {
         topic: &'a str,
         payload: String,
     },
+    /// The answer to the `invoke` with the same `id`: `handle_player`'s envelope verbatim.
+    Result { id: i64, response: &'a RawValue },
     /// The connection is ending, and why.
     Close {
         code: CloseCode,
@@ -352,6 +417,11 @@ enum CloseCode {
     SessionExpired,
     /// The process is stopping.
     Shutdown,
+    /// A malformed `invoke` frame on a live connection.
+    BadFrame,
+    /// An inbound frame over [`PushLimits::max_frame_bytes`]. Retryable: the reconnect
+    /// restores every stream, and the request itself belongs on HTTP or QUIC.
+    FrameTooLarge,
 }
 
 impl CloseCode {
@@ -366,12 +436,14 @@ impl CloseCode {
             CloseCode::Unauthorized
             | CloseCode::ApiKey
             | CloseCode::Protocol
-            | CloseCode::Replaced => false,
+            | CloseCode::Replaced
+            | CloseCode::BadFrame => false,
             CloseCode::Unavailable
             | CloseCode::HandshakeTimeout
             | CloseCode::Capacity
             | CloseCode::SessionExpired
-            | CloseCode::Shutdown => true,
+            | CloseCode::Shutdown
+            | CloseCode::FrameTooLarge => true,
         }
     }
 
@@ -379,7 +451,11 @@ impl CloseCode {
     /// that reads only that (a browser's `CloseEvent`).
     fn ws_code(self) -> u16 {
         match self {
-            CloseCode::Unauthorized | CloseCode::ApiKey | CloseCode::Protocol => 1008,
+            CloseCode::Unauthorized
+            | CloseCode::ApiKey
+            | CloseCode::Protocol
+            | CloseCode::BadFrame => 1008,
+            CloseCode::FrameTooLarge => 1009,
             CloseCode::Replaced | CloseCode::SessionExpired => 1000,
             CloseCode::Unavailable | CloseCode::HandshakeTimeout | CloseCode::Capacity => 1013,
             CloseCode::Shutdown => 1001,
@@ -397,6 +473,8 @@ impl CloseCode {
             CloseCode::Replaced => "replaced by a newer connection for this player",
             CloseCode::SessionExpired => "session no longer valid",
             CloseCode::Shutdown => "server shutting down",
+            CloseCode::BadFrame => "malformed invoke frame",
+            CloseCode::FrameTooLarge => "inbound frame over the size cap",
         }
     }
 
@@ -444,7 +522,18 @@ fn hub_of(topic: &str) -> &str {
 /// times the front's whole connection count before the producer's call returns.
 enum Outbound {
     Text(Arc<str>),
+    /// An invoke's result; its in-flight permit is released once the frame is written.
+    Result(Arc<str>, OwnedSemaphorePermit),
     Close(CloseCode),
+}
+
+/// One reply-lane entry. Never evicted: every entry is bounded by the invoke admission in
+/// [`Inbound::frame`] (results by the in-flight permit they carry, rejections by
+/// [`ConnQueue::unwritten_rejections`]) or is the one ack.
+enum Reply {
+    Frame(Arc<str>),
+    Result(Arc<str>, OwnedSemaphorePermit),
+    Rejection(Arc<str>),
 }
 
 /// One connection's bounded outbound queue, dropping its OLDEST message when full.
@@ -462,7 +551,7 @@ struct ConnQueue {
 }
 
 struct QueueState {
-    reply: VecDeque<Arc<str>>,
+    reply: VecDeque<Reply>,
     events: Vec<(Box<str>, VecDeque<Arc<str>>)>,
     event_len: usize,
     next: usize,
@@ -529,16 +618,22 @@ impl ConnQueue {
 
     /// Queues a reply frame, which is never evicted; `false` means the connection is
     /// already closing and the frame was not queued.
-    fn push_reply(&self, text: Arc<str>) -> bool {
+    fn push_reply(&self, reply: Reply) -> bool {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.close.is_some() {
                 return false;
             }
-            state.reply.push_back(text);
+            state.reply.push_back(reply);
         }
         let _ = self.wake.try_send(());
         true
+    }
+
+    /// Rejection entries queued and not yet taken by the writer.
+    fn unwritten_rejections(&self) -> usize {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.reply.iter().filter(|reply| matches!(reply, Reply::Rejection(_))).count()
     }
 
     /// Ends the connection with `code`. Idempotent — the FIRST reason wins, so a
@@ -567,8 +662,14 @@ impl ConnQueue {
                 if let Some(code) = state.close {
                     return Some(Outbound::Close(code));
                 }
-                if let Some(text) = state.reply.pop_front() {
-                    return Some(Outbound::Text(text));
+                match state.reply.pop_front() {
+                    Some(Reply::Frame(text) | Reply::Rejection(text)) => {
+                        return Some(Outbound::Text(text))
+                    }
+                    Some(Reply::Result(text, permit)) => {
+                        return Some(Outbound::Result(text, permit))
+                    }
+                    None => {}
                 }
                 if let Some(text) = state.pop_event() {
                     return Some(Outbound::Text(text));
@@ -648,6 +749,8 @@ pub(crate) struct PushHub {
     /// Woken every time a connection releases its slot, so [`PushHub::shutdown`] waits
     /// on the drain instead of polling for it.
     drained: tokio::sync::Notify,
+    /// The per-client-IP invoke budget, shared by every connection from one IP.
+    invoke_limiter: Arc<httpmw::IpLimiter>,
 }
 
 struct HubState {
@@ -734,7 +837,10 @@ enum AcceptError {
 
 impl PushHub {
     pub(crate) fn new(limits: PushLimits) -> PushHub {
+        let invoke_limiter =
+            httpmw::IpLimiter::new(f64::from(limits.invoke_ip_rps), limits.invoke_ip_burst);
         PushHub {
+            invoke_limiter,
             limits,
             state: Mutex::new(HubState {
                 closing: false,
@@ -749,6 +855,12 @@ impl PushHub {
 
     pub(crate) fn limits(&self) -> &PushLimits {
         &self.limits
+    }
+
+    /// Starts reaping idle per-IP invoke buckets; without it the limiter refuses every new
+    /// IP once its visitor table is full. The caller owns (and aborts) the task.
+    pub(crate) fn spawn_invoke_limiter_eviction(&self) -> tokio::task::JoinHandle<()> {
+        self.invoke_limiter.spawn_eviction_task()
     }
 
     /// Takes a connection slot for `ip` and mints its [`ConnId`]. The returned [`Slot`]
@@ -851,6 +963,19 @@ impl PushHub {
             .accept(IpAddr::V4(Ipv4Addr::LOCALHOST))
             .unwrap_or_else(|_| panic!("a fresh hub accepts its first connection"));
         !hub.join(slot.id, &"g".repeat(len))
+    }
+
+    /// Whether an `invoke` frame whose method is `len` bytes is refused by the real
+    /// [`parse_invoke`] — the executable body of the conformance gate's input-byte-cap case
+    /// for [`MAX_INVOKE_METHOD_BYTES`].
+    pub(crate) fn conformance_invoke_method_rejected(len: usize) -> bool {
+        let frame = serde_json::json!({
+            "type": "invoke",
+            "id": 1,
+            "method": "m".repeat(len),
+            "payload": {},
+        });
+        parse_invoke(frame.to_string().as_bytes()).is_err()
     }
 
     /// Removes `id` from group `name`. `false` when it was not a member — the client's
@@ -1242,12 +1367,12 @@ async fn run(
     }
     // Queued, not written directly: every server->client frame leaves through the one
     // bounded queue, so the ack cannot jump a backlog or bypass the write deadline.
-    slot.queue.push_reply(Arc::from(
+    slot.queue.push_reply(Reply::Frame(Arc::from(
         serde_json::to_string(&ServerFrame::Ack {
             connection_id: slot.id,
         })
         .expect("ack serialization cannot fail"),
-    ));
+    )));
 
     // `first` was decided inside `bind`, under the guard that pushed this connection onto
     // the player's deque; announcing here, with that guard gone, is the emission only.
@@ -1257,7 +1382,20 @@ async fn run(
 
     // The matching offline announcement belongs to `Slot::drop`, which runs when this
     // returns — and on the paths this never returns from.
-    serve(front, &slot, &mut wake, &mut socket, &player, &bearer, &limits).await;
+    let inbound = Inbound {
+        front,
+        slot: &slot,
+        bearer,
+        api_key: creds.api_key,
+        limits: &limits,
+        bucket: InboundBucket::new(limits.inbound_rps, limits.inbound_burst),
+        verbs: MAX_VERBS_PER_INTERVAL,
+        in_flight: Arc::new(Semaphore::new(
+            limits.invoke_max_in_flight.min(Semaphore::MAX_PERMITS),
+        )),
+        tasks: JoinSet::new(),
+    };
+    serve(inbound, &mut wake, &mut socket, &player).await;
 }
 
 struct Credentials {
@@ -1294,7 +1432,7 @@ async fn handshake(
                     // `HubState::resolve` never names a connection with no player, so a
                     // frame here would mean the hub addressed an unauthenticated socket —
                     // a routing defect, not a frame to swallow.
-                    Some(Outbound::Text(_)) => {
+                    Some(Outbound::Text(_) | Outbound::Result(..)) => {
                         unreachable!("nothing is queued to a connection before it binds")
                     }
                     // The queue's sender lives in the registry entry this connection still
@@ -1338,21 +1476,20 @@ fn parse_hello(bytes: &[u8]) -> Result<Credentials, Option<CloseCode>> {
     }
 }
 
-/// The live connection: outbound frames, inbound frames, and the re-verification tick.
+/// The live connection: outbound frames, inbound frames, invoke completions, and the
+/// re-verification tick.
 async fn serve(
-    front: Arc<FrontDoor>,
-    slot: &Slot,
+    mut inbound: Inbound<'_>,
     wake: &mut mpsc::Receiver<()>,
     socket: &mut WebSocket,
     player: &str,
-    bearer: &str,
-    limits: &PushLimits,
 ) {
+    let slot = inbound.slot;
+    let limits = inbound.limits;
     let mut reverify = tokio::time::interval(limits.reverify_interval);
     reverify.tick().await; // the first tick fires immediately; the bearer was just verified
     let mut last_ok = Instant::now();
     let mut close: Option<CloseCode> = None;
-    let mut verbs = MAX_VERBS_PER_INTERVAL;
 
     loop {
         // Deliberately UNBIASED. A close preempts inside the queue branch already (the
@@ -1370,35 +1507,53 @@ async fn serve(
                         break;
                     }
                 }
+                Some(Outbound::Result(text, permit)) => {
+                    let frame = WsMessage::Text(text.to_string());
+                    let written = write(socket, frame, limits.write_deadline).await;
+                    drop(permit);
+                    if written.is_err() {
+                        break;
+                    }
+                }
                 None => break,
             },
             msg = socket.recv() => match msg {
-                None | Some(Err(_)) | Some(Ok(WsMessage::Close(_))) => break,
-                // Over budget the frame is DROPPED, not fatal: the cost this refuses is
-                // the registry lock, and a client that overspends is throttled rather
-                // than disconnected.
+                None | Some(Ok(WsMessage::Close(_))) => break,
+                Some(Err(err)) => {
+                    if is_frame_too_large(err) {
+                        close = Some(CloseCode::FrameTooLarge);
+                    }
+                    break;
+                }
                 Some(Ok(WsMessage::Text(text))) => {
-                    if verbs > 0 {
-                        verbs -= 1;
-                        on_client_frame(slot, text.as_bytes());
+                    if let Some(code) = inbound.frame(text.as_bytes()) {
+                        close = Some(code);
+                        break;
                     }
                 }
                 Some(Ok(WsMessage::Binary(bytes))) => {
-                    if verbs > 0 {
-                        verbs -= 1;
-                        on_client_frame(slot, &bytes);
+                    if let Some(code) = inbound.frame(&bytes) {
+                        close = Some(code);
+                        break;
                     }
                 }
                 // Ping/Pong: axum answers a ping itself, and a pong is the reply to the
                 // liveness ping written on the re-verify tick.
                 Some(Ok(_)) => {}
             },
+            Some(joined) = inbound.tasks.join_next(), if !inbound.tasks.is_empty() => {
+                if let Err(err) = joined {
+                    if err.is_panic() {
+                        tracing::warn!(conn = %slot.id, "push: invoke task panicked");
+                    }
+                }
+            },
             _ = reverify.tick() => {
-                verbs = MAX_VERBS_PER_INTERVAL;
+                inbound.verbs = MAX_VERBS_PER_INTERVAL;
                 if write(socket, WsMessage::Ping(Vec::new()), limits.write_deadline).await.is_err() {
                     break;
                 }
-                match front.reverify_push(bearer).await {
+                match inbound.front.reverify_push(&inbound.bearer).await {
                     Ok(identity) if identity.player_id() == Some(player) => {
                         last_ok = Instant::now();
                     }
@@ -1429,6 +1584,150 @@ async fn serve(
     if let Some(code) = close {
         write_close(socket, code, limits.write_deadline).await;
     }
+}
+
+/// Whether a socket read failed because the peer sent a frame or message over the
+/// upgrade's size cap. axum wraps tungstenite's error opaquely, so the only way to tell
+/// it apart is the downcast.
+fn is_frame_too_large(err: axum::Error) -> bool {
+    err.into_inner()
+        .downcast::<tungstenite::Error>()
+        .is_ok_and(|err| matches!(*err, tungstenite::Error::Capacity(_)))
+}
+
+/// A per-connection token bucket over the tokio clock. Owned by the one connection task,
+/// so it takes no lock.
+struct InboundBucket {
+    rate: f64,
+    burst: f64,
+    tokens: f64,
+    last: tokio::time::Instant,
+}
+
+impl InboundBucket {
+    fn new(rate: u32, burst: u32) -> InboundBucket {
+        InboundBucket {
+            rate: f64::from(rate),
+            burst: f64::from(burst),
+            tokens: f64::from(burst),
+            last: tokio::time::Instant::now(),
+        }
+    }
+
+    fn allow(&mut self) -> bool {
+        let now = tokio::time::Instant::now();
+        let elapsed = now.saturating_duration_since(self.last).as_secs_f64();
+        self.last = now;
+        self.tokens = (self.tokens + elapsed * self.rate).min(self.burst);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Everything one live connection needs to admit and run its inbound frames.
+struct Inbound<'a> {
+    front: Arc<FrontDoor>,
+    slot: &'a Slot,
+    bearer: String,
+    api_key: Option<String>,
+    limits: &'a PushLimits,
+    bucket: InboundBucket,
+    verbs: u32,
+    in_flight: Arc<Semaphore>,
+    /// Dropped with the connection, which aborts every invoke still running.
+    tasks: JoinSet<()>,
+}
+
+impl Inbound<'_> {
+    /// Admits one inbound frame. `Some` is the close the connection ends with.
+    ///
+    /// Every frame is charged to the per-connection bucket before any byte of it is
+    /// parsed, so the shared per-IP limiter's lock is reached at most at that rate.
+    fn frame(&mut self, bytes: &[u8]) -> Option<CloseCode> {
+        if !self.bucket.allow() {
+            return None;
+        }
+        let is_invoke = serde_json::from_slice::<Kind>(bytes)
+            .is_ok_and(|kind| kind.kind == "invoke");
+        if !is_invoke {
+            // Over budget the verb is DROPPED, not fatal: the cost this refuses is the
+            // registry lock, and a client that overspends is throttled rather than
+            // disconnected.
+            if self.verbs > 0 {
+                self.verbs -= 1;
+                on_client_frame(self.slot, bytes);
+            }
+            return None;
+        }
+        let ip_allowed = self.slot.hub.invoke_limiter.allow(self.slot.ip);
+        let invoke = match parse_invoke(bytes) {
+            Ok(invoke) => invoke,
+            Err(code) => return Some(code),
+        };
+        if !ip_allowed {
+            return self.reject(invoke.id, "rate limited");
+        }
+        let Ok(permit) = self.in_flight.clone().try_acquire_owned() else {
+            return self.reject(invoke.id, "too many in-flight invokes");
+        };
+        let payload = invoke
+            .payload
+            .map_or_else(|| b"{}".to_vec(), |raw| raw.get().as_bytes().to_vec());
+        let front = self.front.clone();
+        let queue = self.slot.queue.clone();
+        let bearer = self.bearer.clone();
+        let api_key = self.api_key.clone();
+        let timeout = self.limits.invoke_timeout;
+        self.tasks.spawn(async move {
+            let dispatch = front.handle_player(invoke.method, Some(bearer), api_key, payload);
+            let response = match tokio::time::timeout(timeout, dispatch).await {
+                Ok(response) => response,
+                Err(_elapsed) => front_envelope(Status::Unavailable, "invoke timed out"),
+            };
+            queue.push_reply(Reply::Result(result_frame(invoke.id, &response), permit));
+        });
+        None
+    }
+
+    /// Answers a refused invoke with an `Unavailable` result, or closes `capacity` when
+    /// the client has left [`PushLimits::invoke_max_in_flight`] rejections unread.
+    fn reject(&self, id: i64, why: &str) -> Option<CloseCode> {
+        if self.slot.queue.unwritten_rejections() >= self.limits.invoke_max_in_flight {
+            return Some(CloseCode::Capacity);
+        }
+        let response = front_envelope(Status::Unavailable, why);
+        self.slot.queue.push_reply(Reply::Rejection(result_frame(id, &response)));
+        None
+    }
+}
+
+/// Parses a frame already probed as `invoke`, refusing a malformed one and an over-long
+/// method with [`CloseCode::BadFrame`].
+fn parse_invoke(bytes: &[u8]) -> Result<InvokeFrame, CloseCode> {
+    match serde_json::from_slice::<InvokeFrame>(bytes) {
+        Ok(invoke) if invoke.method.len() <= MAX_INVOKE_METHOD_BYTES => Ok(invoke),
+        _ => Err(CloseCode::BadFrame),
+    }
+}
+
+/// Serializes the `result` frame for `id` around `response`, which is embedded as JSON.
+fn result_frame(id: i64, response: &[u8]) -> Arc<str> {
+    let fallback;
+    let response: &RawValue = match serde_json::from_slice(response) {
+        Ok(raw) => raw,
+        Err(_) => {
+            fallback = front_envelope(Status::Internal, "malformed backend response");
+            serde_json::from_slice(&fallback).expect("a front envelope is JSON")
+        }
+    };
+    Arc::from(
+        serde_json::to_string(&ServerFrame::Result { id, response })
+            .expect("result frame serialization cannot fail"),
+    )
 }
 
 /// Applies one frame from a LIVE connection: the group verbs, and nothing else.

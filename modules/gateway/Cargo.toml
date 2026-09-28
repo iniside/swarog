@@ -38,6 +38,10 @@ httpmw = { workspace = true }
 # parsed by `httpmw::parse_cidrs` and carried in the limits the composition root injects.
 ipnet = { workspace = true }
 axum = { workspace = true }
+# `tungstenite::Error::Capacity` is how an over-cap inbound `/push` frame is told apart
+# from any other read error (axum's ws error wraps it opaquely). The same 0.24 line axum's
+# `ws` feature locks — no new lock entry.
+tungstenite = "0.24"
 # The HTTP reverse-proxy passthrough (Go's httpproxy): reqwest is the workspace client
 # already used by accounts (Epic OIDC/OAuth); the `stream` feature streams the
 # response body back (`bytes_stream`). The request body streams via `Body::wrap` (axum
