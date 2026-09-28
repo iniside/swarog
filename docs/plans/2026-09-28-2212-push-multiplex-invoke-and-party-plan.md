@@ -290,6 +290,14 @@ Covers Step 3's commit (`push_ws_tests.rs`, gateway `lib.rs` tests):
 - shutdown with an in-flight invoke → the `shutdown` close is written and the invoke
   task is aborted (drop-guard observed), no result frame after the close;
 - `from_values` rejects `PUSH_INBOUND_RPS=0`/garbage, keeps defaults on blank.
+- (added after the Step 3 review, commit e171253) a Local op whose handler panics,
+  invoked over `/push` → `result` with the same id, `Internal` "invoke failed", the
+  permit returns (next invoke admitted), socket stays open;
+- (e171253, in `core/httpmw` tests since `with_max_visitors` is crate-private) two
+  limiters named `push_invoke` and `http` with a tiny visitor cap: saturating
+  `push_invoke` raises only its own `limiter` series, the `http` series is unchanged;
+- (e171253) `enqueue_ack` called with events already queued (and under an event
+  flood at depth) → the ack is the first frame `recv` yields.
 
 ### Step 5 — Split-proof: invoke on existing ops `[opus]` (core-implementer)
 
@@ -518,6 +526,16 @@ discriminating (the 10 s lease sweep would also remove it); the invite half is.
 - `docs/roadmap/feature-tracker.md`: Parties row, push hub row, change log.
 - `docs/reference/module-reference.md` "Sending a push notification": the
   post-commit snapshot + global `revision` pattern.
+- Errata section in THIS plan: (1) `http_rate_limit_table_saturated_total` gained a
+  `limiter` label (`http`, `admin_login`, `push_invoke`) in e171253, reversing the
+  single global counter decided in
+  `docs/plans/2026-07-12-1214-architecture-remediation-rust-tooling-plan.md:254`
+  (archive, not edited); a process that builds no `IpLimiter` no longer exports the
+  family; the `http_` prefix is kept although `push_invoke` limits WebSocket frames.
+  (2) decision 4's "the `join_next` arm logs panics only" is superseded: a panicking
+  invoke is answered with `Internal` "invoke failed" inside the task (e171253).
+  (3) Step 2's flood test ordering (`b` must be queued BEFORE the `a` flood) per the
+  Step 2 proof audit.
 
 ## Reviews
 
