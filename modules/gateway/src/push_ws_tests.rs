@@ -85,12 +85,35 @@ fn bound(hub: &Arc<PushHub>, ip: IpAddr, player: &str) -> (Slot, mpsc::Receiver<
     (slot, wake)
 }
 
-/// The frames sitting in a connection's queue, WITHOUT consuming them — a synchronous
-/// read of the ring under its own mutex, so no test has to await a connection task that
-/// does not exist.
+/// The frames sitting in a connection's queue, WITHOUT consuming them, in the order `recv`
+/// would yield them: the reply lane first, then event lanes round-robin from the cursor.
+/// A synchronous read under the queue's own mutex, so no test has to await a connection
+/// task that does not exist.
 fn queued(queue: &ConnQueue) -> Vec<String> {
     let state = queue.state.lock().unwrap();
-    state.ring.iter().map(|frame| frame.to_string()).collect()
+    let mut out: Vec<String> = state.reply.iter().map(|frame| frame.to_string()).collect();
+    let mut lanes: Vec<VecDeque<Arc<str>>> =
+        state.events.iter().map(|(_, frames)| frames.clone()).collect();
+    let count = lanes.len();
+    let mut next = state.next;
+    while let Some(lane) =
+        (0..count).map(|o| (next + o) % count).find(|l| !lanes[*l].is_empty())
+    {
+        out.push(lanes[lane].pop_front().expect("lane is non-empty").to_string());
+        next = (lane + 1) % count;
+    }
+    out
+}
+
+/// The hub name and length of every event lane, in lane order (index 0 is always `""`).
+fn lane_lens(queue: &ConnQueue) -> Vec<(String, usize)> {
+    let state = queue.state.lock().unwrap();
+    state.events.iter().map(|(name, frames)| (name.to_string(), frames.len())).collect()
+}
+
+/// Total frames queued across the event lanes (excludes the reply lane).
+fn event_total(queue: &ConnQueue) -> usize {
+    lane_lens(queue).iter().map(|(_, n)| n).sum()
 }
 
 fn queued_close(queue: &ConnQueue) -> Option<CloseCode> {
@@ -615,12 +638,12 @@ async fn the_queue_keeps_the_first_close_reason_and_refuses_later_frames() {
     let hub = hub_with(test_limits());
     let (slot, mut wake) = bound(&hub, local(), "alice");
 
-    assert!(slot.queue.push(Arc::from("pending")), "a live queue accepts");
+    assert!(slot.queue.push("", Arc::from("pending")), "a live queue accepts");
     slot.queue.close(CloseCode::Replaced);
     slot.queue.close(CloseCode::Shutdown);
     assert_eq!(queued_close(&slot.queue), Some(CloseCode::Replaced));
     assert!(
-        !slot.queue.push(Arc::from("too late")),
+        !slot.queue.push("", Arc::from("too late")),
         "a closing connection refuses the frame, so it is not counted as delivered"
     );
 
@@ -628,6 +651,171 @@ async fn the_queue_keeps_the_first_close_reason_and_refuses_later_frames() {
         Some(Outbound::Close(code)) => assert_eq!(code, CloseCode::Replaced),
         other => panic!("the close must preempt the pending frame, got {:?}", other.is_some()),
     }
+}
+
+fn topic_msg(topic: &str, payload: &str) -> Message {
+    Message::new(topic, payload.as_bytes().to_vec())
+}
+
+fn to_alice(hub: &Arc<PushHub>, topic: &str, payload: &str) {
+    assert_eq!(hub.deliver(&Target::Player("alice".into()), &topic_msg(topic, payload)), 1);
+}
+
+/// One chatty hub must not starve another: with a single shared ring, 200 frames on `a`
+/// would have evicted everything else. At depth 64 the quiet hub's frame survives and the
+/// event total never exceeds the depth.
+#[tokio::test]
+async fn a_flooded_hub_does_not_evict_another_hubs_frame() {
+    let hub = hub_with(PushLimits { queue_depth: 64, ..test_limits() });
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    for n in 0..200 {
+        to_alice(&hub, "a.tick", &format!("a{n}"));
+    }
+    to_alice(&hub, "b.tick", "b0");
+
+    assert!(event_total(&slot.queue) <= 64, "depth is the total across event lanes");
+    assert_eq!(event_total(&slot.queue), 64);
+    assert!(
+        queued_payloads(&slot.queue).contains(&"b0".to_string()),
+        "the b frame is still queued, not evicted by the a flood"
+    );
+    assert_eq!(
+        queued_topics(&slot.queue).iter().filter(|t| *t == "b.tick").count(),
+        1
+    );
+}
+
+/// At capacity the victim is the oldest frame of the LONGEST lane, and a tie goes to the
+/// lowest lane index.
+#[tokio::test]
+async fn eviction_takes_from_the_longest_lane_and_the_lowest_index_on_a_tie() {
+    let hub = hub_with(PushLimits { queue_depth: 4, ..test_limits() });
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    // Lanes: "" (0), a (1), b (2).
+    to_alice(&hub, "a.x", "a1");
+    to_alice(&hub, "a.x", "a2");
+    to_alice(&hub, "a.x", "a3");
+    to_alice(&hub, "b.x", "b1");
+    assert_eq!(
+        lane_lens(&slot.queue),
+        vec![("".to_string(), 0), ("a".to_string(), 3), ("b".to_string(), 1)]
+    );
+    // Full: the longest lane is `a`, so its OLDEST frame goes, not b's or the newest.
+    to_alice(&hub, "b.x", "b2");
+    assert_eq!(
+        lane_lens(&slot.queue),
+        vec![("".to_string(), 0), ("a".to_string(), 2), ("b".to_string(), 2)]
+    );
+    let payloads = queued_payloads(&slot.queue);
+    assert!(!payloads.contains(&"a1".to_string()), "a's oldest was evicted");
+    assert!(payloads.contains(&"b1".to_string()) && payloads.contains(&"b2".to_string()));
+
+    // Tie (a=2, b=2), full: the lowest index (a) loses its oldest, even though the new
+    // frame goes to b.
+    to_alice(&hub, "b.x", "b3");
+    assert_eq!(
+        lane_lens(&slot.queue),
+        vec![("".to_string(), 0), ("a".to_string(), 1), ("b".to_string(), 3)]
+    );
+    assert!(!queued_payloads(&slot.queue).contains(&"a2".to_string()));
+}
+
+/// Named lanes are capped at MAX_HUBS_PER_CONN including `""`; a hub past the cap shares
+/// lane 0 and the lane count never grows.
+#[tokio::test]
+async fn hubs_past_the_lane_cap_share_lane_zero() {
+    let hub = hub_with(PushLimits { queue_depth: 64, ..test_limits() });
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    // 15 named hubs fill indices 1..=15.
+    for n in 0..MAX_HUBS_PER_CONN - 1 {
+        to_alice(&hub, &format!("h{n}.x"), &format!("p{n}"));
+    }
+    assert_eq!(lane_lens(&slot.queue).len(), MAX_HUBS_PER_CONN);
+    assert_eq!(lane_lens(&slot.queue)[0], ("".to_string(), 0));
+
+    // The 16th distinct named hub (and a 17th) land in lane 0.
+    to_alice(&hub, "overflow.x", "o1");
+    to_alice(&hub, "another.x", "o2");
+    let lanes = lane_lens(&slot.queue);
+    assert_eq!(lanes.len(), MAX_HUBS_PER_CONN, "lane count never exceeds the cap");
+    assert_eq!(lanes[0], ("".to_string(), 2), "overflow hubs share lane \"\" at index 0");
+    assert!(lanes.iter().skip(1).all(|(_, n)| *n == 1));
+}
+
+/// recv order: a pending close beats a reply, a reply beats events, and two non-empty
+/// event lanes alternate.
+#[tokio::test]
+async fn recv_serves_close_then_reply_then_events_round_robin() {
+    let hub = hub_with(PushLimits { queue_depth: 16, ..test_limits() });
+    let (slot, mut wake) = bound(&hub, local(), "alice");
+    let text = |o: Outbound| match o {
+        Outbound::Text(t) => t.to_string(),
+        Outbound::Close(c) => panic!("unexpected close {c:?}"),
+    };
+
+    to_alice(&hub, "a.x", "a1");
+    to_alice(&hub, "a.x", "a2");
+    to_alice(&hub, "b.x", "b1");
+    to_alice(&hub, "b.x", "b2");
+    assert!(slot.queue.push_reply(Arc::from("reply")));
+
+    // Reply first even though events were queued before it, then a/b alternate.
+    assert_eq!(text(slot.queue.recv(&mut wake).await.unwrap()), "reply");
+    let mut order = Vec::new();
+    for _ in 0..4 {
+        let frame = text(slot.queue.recv(&mut wake).await.unwrap());
+        let v: serde_json::Value = serde_json::from_str(&frame).unwrap();
+        order.push(v["hub"].as_str().unwrap().to_string());
+    }
+    assert_eq!(order, vec!["a", "b", "a", "b"], "non-empty lanes alternate");
+
+    // Close preempts both a pending reply and pending events.
+    to_alice(&hub, "a.x", "a3");
+    assert!(slot.queue.push_reply(Arc::from("reply2")));
+    slot.queue.close(CloseCode::Shutdown);
+    match slot.queue.recv(&mut wake).await {
+        Some(Outbound::Close(code)) => assert_eq!(code, CloseCode::Shutdown),
+        _ => panic!("the close must come before the reply and the events"),
+    }
+}
+
+/// The reply lane is never evicted: filling the event lanes past depth leaves the ack.
+#[tokio::test]
+async fn the_reply_lane_survives_event_lane_eviction() {
+    let hub = hub_with(PushLimits { queue_depth: 2, ..test_limits() });
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    assert!(slot.queue.push_reply(Arc::from("ack")));
+    for n in 0..10 {
+        to_alice(&hub, "a.x", &format!("m{n}"));
+    }
+    let frames = queued(&slot.queue);
+    assert_eq!(frames.first().map(String::as_str), Some("ack"));
+    assert_eq!(frames.len(), 3, "the ack plus the two-frame event window");
+}
+
+/// The wire `message` frame carries `hub` = the topic prefix before the first dot, and
+/// `""` for a dotless topic.
+#[tokio::test]
+async fn the_message_frame_carries_its_hub() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    to_alice(&hub, "party.state", "x");
+    to_alice(&hub, "nodot", "y");
+
+    let frames: Vec<serde_json::Value> = queued(&slot.queue)
+        .iter()
+        .map(|f| serde_json::from_str(f).unwrap())
+        .collect();
+    let by_topic = |topic: &str| {
+        frames.iter().find(|f| f["topic"] == topic).unwrap_or_else(|| panic!("no {topic}"))
+    };
+    assert_eq!(by_topic("party.state")["hub"], "party");
+    assert_eq!(by_topic("nodot")["hub"], "");
 }
 
 // ---------------------------------------------------------------------------
