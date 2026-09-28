@@ -18,8 +18,9 @@
 //!   buckets, which are byte-identical to Go's `prometheus.DefBuckets`
 //!   (`.005,.01,.025,.05,.1,.25,.5,1,2.5,5,10`).
 //!
-//! The same private registry also carries the unlabeled, `httpmw`-owned
-//! `http_rate_limit_table_saturated_total` counter.
+//! The same private registry also carries the `httpmw`-owned
+//! `http_rate_limit_table_saturated_total` counter, labelled `{limiter}`; a series exists
+//! once a limiter of that name is constructed in the process.
 //!
 //! **The `path` label is the MATCHED ROUTE PATTERN, never the raw URL** — the cardinality
 //! guard Go implemented by reading `r.Pattern` after the mux matched. The axum analogue is

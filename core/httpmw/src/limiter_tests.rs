@@ -15,7 +15,7 @@ fn allows_exactly_burst_then_denies_with_zero_rate() {
     // rate 0 so no tokens refill: exactly `burst` pass, then denied (the determinism
     // trick Go's test uses).
     let burst = 3;
-    let lim = IpLimiter::new(0.0, burst);
+    let lim = IpLimiter::new("test", 0.0, burst);
     let who = ip(9, 9, 9, 9);
     for i in 0..burst {
         assert!(lim.allow(who), "request {i} within burst should pass");
@@ -25,7 +25,7 @@ fn allows_exactly_burst_then_denies_with_zero_rate() {
 
 #[test]
 fn zero_burst_denies_everything() {
-    let lim = IpLimiter::new(0.0, 0);
+    let lim = IpLimiter::new("test", 0.0, 0);
     assert!(!lim.allow(ip(9, 9, 9, 9)));
 }
 
@@ -35,7 +35,7 @@ fn positive_rate_zero_burst_still_denies_everything() {
     // capacity-0 bucket denies unconditionally regardless of refill rate) — the
     // pair-policy gate belongs to `core/app::env_rate_pair`, not here. A nonzero
     // rate must not accidentally let a zero-capacity bucket admit anything.
-    let lim = IpLimiter::new(100.0, 0);
+    let lim = IpLimiter::new("test", 100.0, 0);
     let who = ip(9, 9, 9, 8);
     assert!(!lim.allow(who));
     assert!(!lim.allow(who));
@@ -43,7 +43,7 @@ fn positive_rate_zero_burst_still_denies_everything() {
 
 #[test]
 fn buckets_are_per_ip() {
-    let lim = IpLimiter::new(0.0, 1);
+    let lim = IpLimiter::new("test", 0.0, 1);
     let a = ip(1, 1, 1, 1);
     let b = ip(2, 2, 2, 2);
     assert!(lim.allow(a));
@@ -55,7 +55,7 @@ fn buckets_are_per_ip() {
 fn refills_over_time() {
     // rate 100/s, burst 1: spend it, then after ~50ms a token is back (100/s refills 1
     // token in 10ms, so 50ms is comfortably enough — not timing-fragile).
-    let lim = IpLimiter::new(100.0, 1);
+    let lim = IpLimiter::new("test", 100.0, 1);
     let who = ip(3, 3, 3, 3);
     assert!(lim.allow(who));
     assert!(!lim.allow(who));
@@ -66,7 +66,7 @@ fn refills_over_time() {
 #[test]
 fn evict_idle_reaps_only_stale_buckets() {
     // Go's TestEvictIdle: backdate one visitor beyond the window, keep the other fresh.
-    let lim = IpLimiter::new(1.0, 1);
+    let lim = IpLimiter::new("test", 1.0, 1);
     let stale = ip(1, 1, 1, 1);
     let fresh = ip(2, 2, 2, 2);
     lim.allow(stale);
@@ -82,8 +82,8 @@ fn evict_idle_reaps_only_stale_buckets() {
 
 #[test]
 fn visitor_cap_rejects_only_new_ips_until_reaper_frees_space() {
-    let before = table_saturated_total().get();
-    let lim = IpLimiter::with_max_visitors(0.0, 2, 2);
+    let before = table_saturated_total().with_label_values(&["saturation_test"]).get();
+    let lim = IpLimiter::with_max_visitors("saturation_test", 0.0, 2, 2);
     let existing = ip(1, 1, 1, 1);
     let stale = ip(2, 2, 2, 2);
     let newcomer = ip(3, 3, 3, 3);
@@ -98,7 +98,10 @@ fn visitor_cap_rejects_only_new_ips_until_reaper_frees_space() {
     assert!(!lim.allow(newcomer));
     assert!(!lim.has_bucket(newcomer));
     assert_eq!(lim.bucket_count(), 2);
-    assert_eq!(table_saturated_total().get(), before + 1);
+    assert_eq!(
+        table_saturated_total().with_label_values(&["saturation_test"]).get(),
+        before + 1
+    );
 
     // Capacity is recovered only by the existing reaper path.
     lim.backdate(stale, EVICT_AFTER + Duration::from_secs(1));

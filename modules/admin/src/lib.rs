@@ -366,7 +366,7 @@ impl Module for Admin {
         let trusted = httpmw::parse_cidrs(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())
             .map_err(|e| anyhow::anyhow!("admin: parse TRUSTED_PROXY_CIDRS: {e}"))?;
 
-        let login_limiter = httpmw::IpLimiter::new(5.0, 20);
+        let login_limiter = httpmw::IpLimiter::new("admin_login", 5.0, 20);
         self.login_limiter
             .set(login_limiter.clone())
             .map_err(|_| anyhow::anyhow!("admin.init ran twice"))?;

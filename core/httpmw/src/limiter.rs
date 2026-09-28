@@ -16,12 +16,17 @@ const EVICT_AFTER: Duration = Duration::from_secs(3 * 60);
 /// existing minute reaper; a new address arriving at the ceiling is rejected in O(1).
 const DEFAULT_MAX_VISITORS: usize = 65_536;
 
-fn table_saturated_total() -> &'static prometheus::IntCounter {
-    static COUNTER: OnceLock<prometheus::IntCounter> = OnceLock::new();
+/// Labelled by `limiter`, the name each [`IpLimiter`] is constructed with, so one
+/// limiter's saturation never reads as another's.
+fn table_saturated_total() -> &'static prometheus::IntCounterVec {
+    static COUNTER: OnceLock<prometheus::IntCounterVec> = OnceLock::new();
     COUNTER.get_or_init(|| {
-        prometheus::IntCounter::new(
-            "http_rate_limit_table_saturated_total",
-            "HTTP requests rejected because the per-IP rate-limit table was full.",
+        prometheus::IntCounterVec::new(
+            prometheus::Opts::new(
+                "http_rate_limit_table_saturated_total",
+                "Requests rejected because a per-IP rate-limit table was full.",
+            ),
+            &["limiter"],
         )
         .expect("valid http_rate_limit_table_saturated_total metric")
     })
@@ -85,6 +90,7 @@ struct Visitor {
 /// the bucket map is behind a `Mutex` because [`IpLimiter::allow`] takes `&self` and is
 /// hit concurrently by every request — same reason Go guarded its map with a mutex.
 pub struct IpLimiter {
+    saturated: prometheus::IntCounter,
     visitors: Mutex<HashMap<IpAddr, Visitor>>,
     rate: f64,
     burst: f64,
@@ -96,12 +102,21 @@ impl IpLimiter {
     /// burst `burst`. Does NOT start the eviction task — call [`IpLimiter::spawn_eviction`]
     /// once inside an async context (the boot layer does; unit tests drive
     /// [`IpLimiter::evict_idle`] directly, deterministically, as Go's tests do).
-    pub fn new(rate: f64, burst: u32) -> Arc<IpLimiter> {
-        Self::with_capacity(rate, burst, DEFAULT_MAX_VISITORS)
+    ///
+    /// `name` is this limiter's `limiter` label on the table-saturation counter; its
+    /// series exists (at zero) from construction.
+    pub fn new(name: &'static str, rate: f64, burst: u32) -> Arc<IpLimiter> {
+        Self::with_capacity(name, rate, burst, DEFAULT_MAX_VISITORS)
     }
 
-    fn with_capacity(rate: f64, burst: u32, max_visitors: usize) -> Arc<IpLimiter> {
+    fn with_capacity(
+        name: &'static str,
+        rate: f64,
+        burst: u32,
+        max_visitors: usize,
+    ) -> Arc<IpLimiter> {
         Arc::new(IpLimiter {
+            saturated: table_saturated_total().with_label_values(&[name]),
             visitors: Mutex::new(HashMap::new()),
             rate,
             burst: f64::from(burst),
@@ -112,11 +127,12 @@ impl IpLimiter {
     /// Test-only constructor with a tiny deterministic visitor ceiling.
     #[cfg(test)]
     pub(crate) fn with_max_visitors(
+        name: &'static str,
         rate: f64,
         burst: u32,
         max_visitors: usize,
     ) -> Arc<IpLimiter> {
-        Self::with_capacity(rate, burst, max_visitors)
+        Self::with_capacity(name, rate, burst, max_visitors)
     }
 
     /// Reports whether a request from `ip` may proceed now, spending one token from that
@@ -132,7 +148,7 @@ impl IpLimiter {
         }
 
         if visitors.len() >= self.max_visitors {
-            table_saturated_total().inc();
+            self.saturated.inc();
             return false;
         }
 

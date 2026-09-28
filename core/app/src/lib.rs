@@ -1071,7 +1071,7 @@ pub async fn run(
             let trusted =
                 httpmw::parse_cidrs(&std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default())
                     .map_err(|e| anyhow::anyhow!("parse TRUSTED_PROXY_CIDRS: {e}"))?;
-            let limiter = httpmw::IpLimiter::new(rps, burst);
+            let limiter = httpmw::IpLimiter::new("http", rps, burst);
             limiter.spawn_eviction();
             tracing::info!(rps, burst, trusted_cidrs = trusted.len(), "http rate limiting enabled");
             httpmw::mount(router, limiter, Arc::new(trusted))

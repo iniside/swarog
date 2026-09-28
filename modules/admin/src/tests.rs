@@ -37,7 +37,7 @@ fn state_from(ctx: &Context) -> AdminState {
         trusted: Vec::new(),
         login_slots: Arc::new(tokio::sync::Semaphore::new(32)),
         argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
-        login_limiter: httpmw::IpLimiter::new(5.0, 20),
+        login_limiter: httpmw::IpLimiter::new("admin_login", 5.0, 20),
         login_attempt_gc_requests: AtomicU64::new(0),
         verifier: Arc::new(ArgonVerifier),
     }
@@ -57,7 +57,7 @@ async fn login_reaper_stops_and_restarts_without_clock_coordination() {
     assert!(
         admin
             .login_limiter
-            .set(httpmw::IpLimiter::new(5.0, 20))
+            .set(httpmw::IpLimiter::new("admin_login", 5.0, 20))
             .is_ok()
     );
     let ctx = Context::new();
@@ -1085,7 +1085,7 @@ async fn wired_with_verifier(
         trusted: Vec::new(),
         login_slots: Arc::new(tokio::sync::Semaphore::new(32)),
         argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
-        login_limiter: httpmw::IpLimiter::new(1_000.0, 1_000),
+        login_limiter: httpmw::IpLimiter::new("admin_login", 1_000.0, 1_000),
         login_attempt_gc_requests: AtomicU64::new(0),
         verifier,
     });
@@ -2190,7 +2190,7 @@ async fn login_ip_limiter_returns_exact_retry_after() {
         trusted: Vec::new(),
         login_slots: Arc::new(tokio::sync::Semaphore::new(32)),
         argon_permits: Arc::new(tokio::sync::Semaphore::new(2)),
-        login_limiter: httpmw::IpLimiter::new(0.0, 1),
+        login_limiter: httpmw::IpLimiter::new("admin_login", 0.0, 1),
         login_attempt_gc_requests: AtomicU64::new(0),
         verifier: Arc::new(ArgonVerifier),
     });

@@ -42,7 +42,7 @@ async fn status(app: &Router, path: &str, peer: &str) -> StatusCode {
 #[tokio::test]
 async fn allows_burst_then_429_with_retry_after() {
     // rate 0, burst 3: exactly 3 pass from one IP, then 429 + Retry-After: 1.
-    let app = app(IpLimiter::new(0.0, 3));
+    let app = app(IpLimiter::new("test", 0.0, 3));
     for i in 0..3 {
         assert_eq!(status(&app, "/x", "9.9.9.9:1111").await, StatusCode::OK, "req {i}");
     }
@@ -53,7 +53,7 @@ async fn allows_burst_then_429_with_retry_after() {
 
 #[tokio::test]
 async fn separate_ips_have_separate_buckets() {
-    let app = app(IpLimiter::new(0.0, 1));
+    let app = app(IpLimiter::new("test", 0.0, 1));
     assert_eq!(status(&app, "/x", "1.1.1.1:1").await, StatusCode::OK);
     assert_eq!(status(&app, "/x", "1.1.1.1:1").await, StatusCode::TOO_MANY_REQUESTS);
     // A different peer keys a different bucket.
@@ -63,7 +63,7 @@ async fn separate_ips_have_separate_buckets() {
 #[tokio::test]
 async fn skip_infra_never_limited() {
     // A limiter with zero capacity blocks every non-infra path; /metrics is exempt.
-    let app = app(IpLimiter::new(0.0, 0));
+    let app = app(IpLimiter::new("test", 0.0, 0));
     assert_eq!(status(&app, "/metrics", "9.9.9.9:1").await, StatusCode::OK);
     assert_eq!(status(&app, "/x", "9.9.9.9:1").await, StatusCode::TOO_MANY_REQUESTS);
 }

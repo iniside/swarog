@@ -22,6 +22,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -31,6 +32,7 @@ use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
+use futures::FutureExt;
 use ipnet::IpNet;
 use push::{ConnId, Message, Target};
 use opsapi::Status;
@@ -837,8 +839,11 @@ enum AcceptError {
 
 impl PushHub {
     pub(crate) fn new(limits: PushLimits) -> PushHub {
-        let invoke_limiter =
-            httpmw::IpLimiter::new(f64::from(limits.invoke_ip_rps), limits.invoke_ip_burst);
+        let invoke_limiter = httpmw::IpLimiter::new(
+            "push_invoke",
+            f64::from(limits.invoke_ip_rps),
+            limits.invoke_ip_burst,
+        );
         PushHub {
             invoke_limiter,
             limits,
@@ -1365,14 +1370,7 @@ async fn run(
     if let Some(evicted) = bound.and_then(|bound| bound.evicted) {
         evicted.close(CloseCode::Replaced);
     }
-    // Queued, not written directly: every server->client frame leaves through the one
-    // bounded queue, so the ack cannot jump a backlog or bypass the write deadline.
-    slot.queue.push_reply(Reply::Frame(Arc::from(
-        serde_json::to_string(&ServerFrame::Ack {
-            connection_id: slot.id,
-        })
-        .expect("ack serialization cannot fail"),
-    )));
+    enqueue_ack(&slot.queue, slot.id);
 
     // `first` was decided inside `bind`, under the guard that pushed this connection onto
     // the player's deque; announcing here, with that guard gone, is the emission only.
@@ -1396,6 +1394,14 @@ async fn run(
         tasks: JoinSet::new(),
     };
     serve(inbound, &mut wake, &mut socket, &player).await;
+}
+
+/// Queues the handshake ack on the reply lane, so no event backlog can evict or delay it.
+fn enqueue_ack(queue: &ConnQueue, id: ConnId) -> bool {
+    queue.push_reply(Reply::Frame(Arc::from(
+        serde_json::to_string(&ServerFrame::Ack { connection_id: id })
+            .expect("ack serialization cannot fail"),
+    )))
 }
 
 struct Credentials {
@@ -1684,9 +1690,16 @@ impl Inbound<'_> {
         let timeout = self.limits.invoke_timeout;
         self.tasks.spawn(async move {
             let dispatch = front.handle_player(invoke.method, Some(bearer), api_key, payload);
-            let response = match tokio::time::timeout(timeout, dispatch).await {
-                Ok(response) => response,
-                Err(_elapsed) => front_envelope(Status::Unavailable, "invoke timed out"),
+            // A Local op runs domain code in this task: a panic in it must still answer the
+            // invoke, or the client waits forever on an id that will never come back.
+            let bounded = AssertUnwindSafe(tokio::time::timeout(timeout, dispatch));
+            let response = match bounded.catch_unwind().await {
+                Ok(Ok(response)) => response,
+                Ok(Err(_elapsed)) => front_envelope(Status::Unavailable, "invoke timed out"),
+                Err(_panic) => {
+                    tracing::warn!("push: invoke dispatch panicked");
+                    front_envelope(Status::Internal, "invoke failed")
+                }
             };
             queue.push_reply(Reply::Result(result_frame(invoke.id, &response), permit));
         });

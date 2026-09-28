@@ -106,6 +106,8 @@ async fn counter_uses_matched_path_label_not_raw_url() {
 async fn metrics_endpoint_renders_exposition() {
     // Record at least one request so the counter family has a child line to render.
     let _ = get_body(app(), "/widgets/7").await;
+    // The saturation counter is labelled per limiter; its series exists once one is built.
+    let _limiter = httpmw::IpLimiter::new("metrics_test", 1.0, 1);
 
     let (status, body) = get_body(app(), "/metrics").await;
     assert_eq!(status, StatusCode::OK);
@@ -115,7 +117,7 @@ async fn metrics_endpoint_renders_exposition() {
         "got:\n{body}"
     );
     assert!(
-        body.contains("http_rate_limit_table_saturated_total"),
+        body.contains(r#"http_rate_limit_table_saturated_total{limiter="metrics_test"} 0"#),
         "got:\n{body}"
     );
 }
