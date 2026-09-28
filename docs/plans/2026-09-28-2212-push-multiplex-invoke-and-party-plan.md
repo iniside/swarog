@@ -1,0 +1,517 @@
+# Push multiplex (hub lanes + WS invoke) and the `party` fortress — plan
+
+Status: DRAFT r2. Round-1 grumpy review (core-reviewer, opus, think hard) returned
+REJECT with 24 items; every item is addressed below (see "Review round 1 — disposition").
+Scope decided with the user 2026-09-28: the protocol change **plus** the first domain
+hub (`party`). Chat and lobby are separate plans.
+
+## Context
+
+### Goal
+
+One `GET /push` WebSocket carries several independent feature streams ("hubs") at
+once — party now, chat/lobby later — in both directions:
+
+- **server→client**: every `message` frame is labelled with its hub and each hub has
+  its own outbound lane, so a flood on one hub cannot evict another hub's frames;
+- **client→server**: an `invoke` frame calls a player op and gets a correlated
+  `result` frame — the same op catalog, auth, API-key policy and Local/Remote
+  dispatch that HTTP and player-QUIC use.
+
+The hub is a **namespace, not a new registry**: for invoke it is the op's wire-method
+prefix (`party.accept` → `party`, already unique per process by the rpc `prefix`), for
+events it is the topic prefix (`party.state` → `party`). No new contribution slot, no
+new macro attribute, no change to the backplane wire format.
+
+### Research method
+
+Five parallel read-only subagents (opus ×4, sonnet ×1; targeted `rg` anchors then
+end-to-end reads; no cargo), angles: opsapi + rpc-macro surface; gateway dispatch
+paths; push hub internals; party overlap + fortress checklist; verify/proof surface.
+Plus one core-reviewer pass that re-read the cited code. `git log`/`git diff` were
+unavailable (Xcode license), so the storage-rollout checklist is reconstructed from
+grep over tools/cmd/weles — a lower bound; the fleet-drift preflight, `checkmodules`,
+and the self-checking hand-lists (`opscatalog-gen`, `topiccheck` golden,
+`csharp-client-gen`) are the backstop in Steps 8–9.
+
+### Verified facts the design rests on
+
+- **Player-QUIC's allow-list IS the route table.** `FrontDoor::handle_player`
+  (`modules/gateway/src/lib.rs:843-887`): JSON gate → `table.find_by_method` (`:1260`,
+  exact match over `#[http]`-bound ops only) → `self.admit(api_key, token, op.auth,
+  KeyCheck::Policy(&op.method))` (`:869-880`) → `table.dispatch` (`:1284-1300`, Local by
+  `LOCAL_SLOT` invoker, else Remote via `PEER_SLOT` pool honouring `retry_mode`) →
+  `{status, err, value?}` envelope bytes (`front_envelope`, `:1066`). `table.dispatch`
+  itself is unbounded in time. A non-`#[http]` op is unreachable by players today.
+- `push_ws` is a child module of the gateway crate root, so `handle_player` and
+  `front_envelope` are already visible to it; no visibility change.
+- `/push` admits with `KeyCheck::PresenceOnly` (`push_ws.rs:1151`) and then drops the
+  api key; only `player` and `bearer` reach `serve` (`:1189`).
+- `serve` (`:1271-1361`) is one unbiased `select!` over queue / socket / reverify tick.
+  Every inbound Text/Binary frame is charged against `MAX_VERBS_PER_INTERVAL = 64`
+  (`:252`), refilled only on the reverify tick (`:1326`); over budget the frame is
+  silently dropped (`:1309-1320`). The budget exists to bound acquisitions of the
+  process-wide registry `Mutex` by group verbs (doc `:240-251`).
+- An inbound frame over `max_frame_bytes` (32 KiB default, `:107`, applied at
+  `:1079-1080`) makes `recv` return `Err` and `serve` `break`s with no typed close
+  (`:1305`).
+- `ConnQueue` (`:445-528`) is one drop-oldest ring per connection (`PUSH_QUEUE_DEPTH`,
+  default 64, frames ≤ `MAX_PAYLOAD_BYTES` 32 KiB, `:266,485`). The test helpers
+  `queued()`/`queued_close()` read that ring directly (`push_ws_tests.rs:91-94`).
+- `CloseCode::Protocol`'s reason text is "malformed handshake frame" (`:387`);
+  `on_client_frame`'s doc (`:1363-1368`) and `ClientFrame`'s doc (`:268-271`) promise
+  every live-connection rejection is ignored.
+- `ClientFrame` is `#[serde(tag = "type")]` (`:272-274`); `serde_json::RawValue` does
+  not deserialize inside an internally tagged enum.
+- `push::Target`/`push::Message` changes alter the backplane `Envelope` JSON
+  (`core/push/src/lib.rs:106,134`) and an old front fails the whole batch. **This plan
+  changes neither.**
+- `httpmw::IpLimiter` (`core/httpmw/src/limiter.rs:87,125`) refuses every new IP once
+  `max_visitors` is reached (`:134-137`) unless `spawn_eviction_task` (`:160`) runs; it
+  uses `std::time::Instant`.
+- Graceful stop: HTTP drains (`HTTP_DRAIN_GRACE_MS`), QUIC drains
+  (`EDGE_DRAIN_GRACE_MS`); `/push` closes with `Shutdown` inside `PUSH_STOP_GRACE`
+  (500 ms of a 4500 ms budget, `push_ws.rs:45-57`).
+- Producer pattern: `ctx.push()` → `Push::send`, sync, non-blocking, best-effort
+  (`modules/notifications/src/service.rs:292-300`); a domain svc reaches the fronts via
+  `remote::PushSender::new(wiring.peer_or("gateway","127.0.0.1:9013"))`
+  (`cmd/notifications-svc/src/lib.rs:19-27`) + fleet `peer(…, "GATEWAY",
+  GATEWAY_EDGE_PORT)` (`tools/processctl/src/fleet.rs:801-805`), not a fleet dependency.
+- `dev-key-client`'s policy is the hand list `DEV_CLIENT_POLICY`
+  (`modules/apikeys/src/lib.rs:105-116`); splitproof's push sockets use that key
+  (`tools/splitproof/src/main.rs:3464,3519`).
+- `#[http]` DTO scalars are `i64`/`String` only (`api/groups/api/src/lib.rs:11-15`).
+- Conformance has four conventions — `EnvValidation`, `InputByteCaps`,
+  `InfraOutage503`, `ArgonParity` (`tools/conformance/src/model.rs:13-26`); the handle
+  cap precedent is groups at `policy.rs:559-563` using `accountsapi::MAX_HANDLE_BYTES`.
+
+### Overlapping systems — why not extend / depend on them
+
+| Existing | What it does | Why not extend it for this |
+|---|---|---|
+| Socket.IO (discussed 2026-09-28) | namespaces, acks, rooms, recovery | Multi-node adapter needs Redis (against the one-Postgres decision) and duplicates our `push.deliver` backplane; `core/push` stays transport-free so a Socket.IO adapter stays possible later. |
+| A new `#[ws]` rpc attribute | would mark socket-invocable ops | Player-QUIC proves `#[http]` is the player allow-list; a second flag is a second authority (golden, routecheck, csharp, opscatalog derive from `route_bindings()`). Invoke reuses `find_by_method`, so the WS op set == the QUIC op set by construction. Payload size is NOT identical — see decision 7. |
+| Player-QUIC plane | request/response for players | Not reachable from browsers and has no server→client stream. WS invoke reuses its handler, it does not replace it. |
+| `push::Target::Group` | ephemeral per-process client-joined sets | Not permission-checked and front-local (`push_ws.rs:275-285`); a party is a privilege. Party fans out `Target::Player` per member (≤ 8). |
+| `groups` fortress | durable social groups | Last admin cannot leave while members remain (`service.rs:596-617`) vs party handoff; no player promote (`admin.rs:12-17`); 30-day invites; no one-per-player rule; every change is a 30-day durable event into `audit`; a lease would edit a shipped fortress's DDL and every op. **Copy** its advisory-lock cap gate (`store.rs:59-85,171-181`), NotFound-not-Forbidden, last-member dissolution (`service.rs:635-678`). |
+| `friends` | social graph, handle lookup | Party resolves handles through `accountsapi::Directory` directly; friends-only invites need a new friends capability — out of scope. |
+| `accounts` presence (`online_until`) | newest session expiry | Session lifetime (≤ 60 min), not connection liveness. |
+| `scheduler` for the lease sweep | durable `scheduler.fired` | A seconds-scale sweep would append a durable event every few seconds; the `mail` worker's module-owned `start()` loop is the precedent. |
+
+### Design decisions
+
+1. **Invoke frame.**
+   `{"type":"invoke","id":<i64>,"method":"party.accept","payload":{...}}` →
+   `{"type":"result","id":<same>,"response":{status,err,value?}}`; `response` is
+   `handle_player`'s envelope verbatim (the QUIC shape). Missing `payload` = `{}`.
+   Parsing: a `Kind { type }` probe first; `invoke` is parsed by a separate non-tagged
+   `struct InvokeFrame { id: i64, method: String, #[serde(default)] payload:
+   Option<Box<RawValue>> }`. `ClientFrame` stays `RawValue`-free.
+2. **Per-invoke admission with the stored credentials.** Bearer + api key from the
+   handshake are kept in `serve`; every invoke calls `handle_player(method,
+   Some(bearer), Some(api_key), payload)`. API-key **policy** per method; fresh bearer
+   check per call (no reverify-interval staleness). Cost: one `Sessions` lookup per
+   invoke, as on HTTP/QUIC.
+3. **Grammar errors on a live connection.** A frame whose `type` is `invoke` that fails
+   `InvokeFrame` parsing, or whose `method` exceeds `MAX_INVOKE_METHOD_BYTES = 128`, and
+   an inbound frame over `max_frame_bytes`, close with a NEW code `CloseCode::BadFrame`
+   (`"bad_frame"`, non-retryable, reason "malformed or oversized frame"). `Protocol`
+   keeps meaning "bad handshake". Other unknown `type`s keep today's ignore rule.
+4. **Execution.** Each invoke runs in a `tokio::task::JoinSet` owned by `serve`, gated
+   by a per-connection semaphore `PUSH_INVOKE_MAX_IN_FLIGHT` (default 16). The
+   `join_next()` arm is guarded `if !join_set.is_empty()` and a `None` never breaks the
+   loop. Each task is bounded by `PUSH_INVOKE_TIMEOUT_MS` (default 30000, a
+   `PushLimits` field, never `HTTP_REQUEST_TIMEOUT_MS` read in the module); elapse →
+   `Unavailable` "invoke timed out". The permit is released only after the result frame
+   is written.
+5. **Rate limits — one authority per frame kind.** `invoke` frames are charged ONLY to
+   a per-connection token bucket (`PUSH_INVOKE_RPS` 10 / `PUSH_INVOKE_BURST` 20,
+   refilled by elapsed `tokio::time::Instant`) and a shared per-IP
+   `httpmw::IpLimiter` (`PUSH_INVOKE_IP_RPS` 20 / `PUSH_INVOKE_IP_BURST` 40) keyed by the
+   IP `upgrade` resolves (`push_ws.rs:1065`). `MAX_VERBS_PER_INTERVAL` keeps governing
+   every NON-invoke frame (group verbs, unknown types) — its purpose (registry-mutex
+   acquisitions) is unchanged, and invoke never touches that mutex. The charge happens
+   after the `Kind` probe. `Gateway::start` spawns the limiter's
+   `spawn_eviction_task()`; `Gateway::stop` aborts it.
+6. **Rejection results are bounded too.** A rate-limited or over-cap invoke gets an
+   immediate `Unavailable` result ("rate limited" / "too many in-flight invokes"),
+   pushed to the reply lane. If the reply lane already holds
+   `PUSH_INVOKE_MAX_IN_FLIGHT` unwritten entries, the connection closes with
+   `CloseCode::Capacity` (retryable) instead — so the reply lane holds at most
+   2 × `PUSH_INVOKE_MAX_IN_FLIGHT` frames (the ack counts as one), with no permit-less
+   growth.
+7. **Payload ceiling.** WS invoke requests are limited by `PUSH_MAX_FRAME_BYTES`; its
+   default rises from 32 KiB to 128 KiB so every current op's request fits (largest:
+   `storage.put`, 65,536-byte value). An over-cap frame closes `bad_frame`
+   (decision 3). Ops whose request can exceed the configured cap must use HTTP/QUIC —
+   documented in push-hub.md.
+8. **Lanes with a total bound.** `ConnQueue` becomes: a **reply lane** (acks + results,
+   never dropped, bounded by decision 6) and **event lanes** keyed by hub = topic
+   prefix before the first `.` (no dot → `""`), at most `MAX_HUBS_PER_CONN = 16`, frames
+   of a 17th hub share lane `""`. `PUSH_QUEUE_DEPTH` stays the TOTAL across event lanes
+   (per-connection memory bound unchanged): at capacity the oldest frame of the
+   LONGEST lane is evicted (ties → lowest lane index) and counted in `DROPS`.
+   `recv` order: pending close → reply lane → event lanes round-robin.
+9. **Hub label.** `ServerFrame::Message` gains `hub`, derived in the gateway from the
+   topic, never carried on the backplane.
+10. **Graceful stop drains invokes.** On `Shutdown`, `serve` stops accepting new
+    invokes, awaits the `JoinSet` inside the existing `PUSH_STOP_GRACE` (writing each
+    result as it lands), then writes the close; tasks still running then are aborted.
+    The 4500 ms stop budget is unchanged (the drain is inside the 500 ms already
+    budgeted). Invokes cut off by that grace are the recorded divergence from the HTTP/
+    QUIC drain (which get 5 s).
+11. **Party state authority is Postgres** (schema `party`); real-time is a best-effort
+    `party.state` snapshot pushed after commit. Ordering: `revision` comes from ONE
+    global sequence `party.revision_seq` (`nextval` on every membership mutation, also
+    stamped on the "you left" snapshot), so a client keeps the snapshot with the highest
+    `revision` across ALL parties — leave-X-then-join-Y orders correctly. No durable
+    topics in v1.
+12. **Liveness is a client-renewed lease.** Every party op by a member renews
+    `members.lease_until = now() + PARTY_LEASE_SECS` (default 60, range 10..=600,
+    unusable = startup failure); lease renewal never bumps `revision` and never pushes.
+    A module-owned sweep removes expired members. Socket-driven leases are a follow-up.
+
+## Steps
+
+### Step 1 — Hub lanes + hub label in the push hub `[opus]` (core-implementer)
+
+(a) **What:** `modules/gateway/src/push_ws.rs` — `ConnQueue`/`QueueState` (`:445-528`),
+`HubState::deliver` (`:819-838`), `ServerFrame::Message` (`:304-319`), the ack enqueue
+(`:1174`), new const `MAX_HUBS_PER_CONN = 16` beside `:238-266`, `fn hub_of(topic:
+&str) -> &str`.
+(b) **Why first:** Step 3 needs the reply lane; landing lanes alone keeps the queue
+rewrite reviewable without invoke concurrency on top.
+(c) **How:** replace `QueueState.ring` with `reply: VecDeque<Arc<str>>`, `events:
+Vec<(Box<str>, VecDeque<Arc<str>>)>`, `event_len: usize`, `next: usize`, under the
+existing `Mutex`. `push(hub, frame)`: find/create lane (≤ 16, else lane `""`); if
+`event_len == depth`, pop the front of the longest lane (lowest index on tie),
+increment `DROPS`; push; return false when closing (unchanged). `push_reply(frame)`
+never drops. `recv`: close > reply > next non-empty event lane from `next` (advance).
+`deliver` computes `hub_of` once and serializes `Message { hub, topic, payload }` once
+(shared `Arc<str>` kept). Ack → `push_reply`. Single-slot mpsc wakeup unchanged.
+(d) `[opus]` core-implementer, effort think hard.
+
+### Step 2 — Tests for Step 1 `[test-author]` (model: sonnet)
+
+Covers Step 1's commit in `modules/gateway/src/push_ws_tests.rs`. First rewrite
+`queued()`/`queued_close()` (`:91-94`) over the lane structure in `recv` order (reply,
+then events round-robin) and fix any existing test that counted the ack in the ring.
+New tests:
+- 200 frames on hub `a` with depth 64, then one `b` frame → `b` is still delivered
+  (previously wrong: one shared ring evicted it) and total queued ≤ 64;
+- eviction takes from the longest lane;
+- a 17th hub lands in lane `""`, lane count ≤ 16;
+- close > reply > events; two non-empty lanes alternate;
+- serialized `message` carries `hub` (`party.state` → `party`, `nodot` → `""`);
+- `deliver_batch_replays_every_target_variant_in_order` (`:1126`) passes after the
+  helper rewrite (backplane untouched).
+
+### Step 3 — `invoke`/`result` frames on `/push` `[opus]` (core-implementer)
+
+(a) **What:** `modules/gateway/src/push_ws.rs` — `InvokeFrame` + `Kind` structs,
+`ServerFrame::Result { id: i64, response: &RawValue }`, `CloseCode::BadFrame`
+(+ `retryable()`/`ws_code()`/`reason()` arms), `PushLimits` (`:64-116`, env `:216-227`)
+fields `invoke_max_in_flight`, `invoke_timeout`, `invoke_rps`, `invoke_burst`,
+`invoke_ip_rps`, `invoke_ip_burst`, and `max_frame_bytes` default 128 KiB, all through
+`PushLimits::from_values` (absent/blank → default, present-but-unusable or `0` →
+startup failure); `PushHub` gains the `IpLimiter`; `run` (`:1144-1189`) passes
+`creds.api_key`, `bearer`, client IP and the `FrontDoor` into `serve`;
+`modules/gateway/src/lib.rs` `Gateway::start`/`stop` spawn/abort the limiter's
+eviction task; new const `MAX_INVOKE_METHOD_BYTES = 128`.
+(b) **Why now:** needs Step 1's reply lane; Step 5 proves it on existing ops; party
+(Step 7) is invoked through it.
+(c) **How:** in `serve`'s socket arm: an `Err` from `recv` caused by frame size →
+write `BadFrame` close (other `Err`s keep `break`). Probe `Kind`; `invoke` → decision 1
+parse / decision 3 close → decision 5 buckets → semaphore `try_acquire_owned` →
+decision 6 rejection path, else `join_set.spawn(timeout(invoke_timeout,
+front.handle_player(...)))` whose output (or the timeout `Unavailable` envelope via
+`front_envelope`) is `push_reply`ed together with the permit; the writer drops the
+permit after the socket write. Non-`invoke` kinds go through the unchanged
+`MAX_VERBS_PER_INTERVAL` path and `on_client_frame`. Add `join_next()` arm guarded by
+`!join_set.is_empty()` (logs panics only). Shutdown path per decision 10.
+(d) `[opus]` core-implementer, effort think hard.
+
+### Step 4 — Tests for Step 3 `[test-author]` (model: sonnet)
+
+Covers Step 3's commit (`push_ws_tests.rs`, gateway `lib.rs` tests):
+- a well-formed invoke with an object payload is dispatched and the socket stays open
+  (the RawValue-in-tagged-enum branch);
+- the result envelope equals `handle_player`'s output for the same input;
+- `characters.ownerOf` → `NotFound` (QUIC parity);
+- key without the method in its policy → `Forbidden` (previously `PresenceOnly`);
+- bearer revoked after bind → next invoke `Unauthorized`;
+- 17 concurrent held invokes (counting fake backend on a `Notify`) → 17th gets
+  in-flight `Unavailable`; releasing one admits a new one;
+- reply lane full of unwritten rejections → `capacity` close;
+- per-connection bucket exhaustion (paused tokio clock) → `Unavailable` "rate limited",
+  zero backend calls; per-IP limiter with rate/burst 1 (real `IpLimiter`, no paused
+  clock) → second connection from the same IP limited;
+- invokes do not consume `MAX_VERBS_PER_INTERVAL` (65 invokes in one interval all get
+  results) and group verbs still do;
+- a held invoke past `invoke_timeout` (paused clock) → `Unavailable` "invoke timed out";
+- idle connection with an empty `JoinSet` does not spin (the `select!` completes zero
+  `join_next` iterations over a paused-clock interval);
+- no-id invoke, over-128-byte method, and an over-cap frame → `bad_frame` close;
+  `{"type":"future_verb"}` ignored;
+- shutdown with one invoke finishing inside the grace → its result precedes the
+  `shutdown` close; one exceeding it → aborted (drop-guard observed);
+- `from_values` rejects `PUSH_INVOKE_RPS=0`/garbage, keeps defaults on blank.
+
+### Step 5 — Split-proof: invoke on existing ops `[opus]` (core-implementer)
+
+(a) **What:** `tools/splitproof/src/pushws.rs` — `Frame::Message` gains `hub`,
+new `Frame::Result { id, response }`, `PushClient::invoke(id, method, payload)`
+awaiting the matching `result` while buffering other frames;
+`tools/splitproof/src/main.rs` `push_assertions` (`:3435`) gains `[PH7{tag}]`–`[PH11{tag}]`
+and the existing nudge assertion also checks `hub == "notifications"`.
+(b) **Why now:** proves Steps 1–3 in split (Remote through gateway-svc) and monolith
+before party exists.
+(c) **How:** `[PH7]` registered player (existing register/login helper, not
+`create_guest`) invokes `storage.put` then `storage.get` over `/push`; `[PH8]`
+`dev-key-client` invoking `match.report` → `Forbidden`; `[PH9]` `characters.ownerOf`
+→ `NotFound`; `[PH10]` no-id invoke → `bad_frame` close; `[PH11]` a nudge frame and an
+invoke result interleave on one socket with correct `hub`/`id`. Split call before
+`[RL1]` (`:5578`); monolith parity at `:548-570`.
+(d) `[opus]` core-implementer ([[splitproof-is-proof-surface]]), effort think hard;
+then `proof-auditor`.
+
+### Step 6 — `party` contracts `[opus]` (core-implementer)
+
+(a) **What:** `api/party/api` (`partyapi`), `api/party/rpc` (`partyrpc`,
+`party_player_meta!(rpc_macro::generate_glue);`); root `Cargo.toml` members +
+workspace deps (storage precedent `:138-139,158,192,376-377,400,427`). No
+`partyevents` crate.
+(b) **Why now:** everything downstream compiles against it.
+(c) **How:** `#[rpc(prefix = "party")] trait Player`, every method
+`#[http(verb = "POST", path = "/party/<name>", auth = "player")]`, first arg `Identity`:
+- `create(id) -> Result<PartyView, Error>`
+- `get(id) -> Result<PartyView, Error>` `#[retry_safe]` (no party → `party_id == ""`)
+- `invite(id, target_handle: String) -> Result<InviteView, Error>`
+- `invites(id) -> Result<InviteList, Error>` `#[retry_safe]`
+- `accept(id, invite_id: String) -> Result<PartyView, Error>`
+- `decline(id, invite_id: String) -> Result<(), Error>` (empty value)
+- `leave(id) -> Result<PartyView, Error>` (returns the "no party" view)
+- `kick(id, player_id: String) -> Result<PartyView, Error>`
+- `promote(id, player_id: String) -> Result<PartyView, Error>`
+- `set_ready(id, state: String) -> Result<PartyView, Error>`
+- `heartbeat(id) -> Result<HeartbeatView, Error>` `#[retry_safe]`
+Views (i64/String only): `PartyView { party_id, revision: i64, leader_id, members:
+Vec<MemberView { player_id, handle, ready }> }`, `InviteView { invite_id, party_id,
+inviter_handle, expires_at }`, `InviteList { invites: Vec<InviteView> }`,
+`HeartbeatView { lease_until }` (RFC3339, `""` when not in a party). Consts:
+`MAX_MEMBERS: i64 = 8`, `READY`/`NOT_READY`, `PUSH_STATE_TOPIC = "party.state"`
+(payload `PartyView`), `PUSH_INVITE_TOPIC = "party.invite"` (payload `InviteView`),
+`INVITE_TTL_SECS: i64 = 120`. Contract doc states: another player's party/invite is
+`NotFound`, never `Forbidden`; malformed uuid or unknown `state` is `Invalid`;
+`target_handle` over `accountsapi::MAX_HANDLE_BYTES` is `Invalid`.
+(d) `[opus]` core-implementer, effort think.
+
+### Step 7 — `party` module `[opus]` (core-implementer)
+
+(a) **What:** `modules/party/src/{lib.rs,store.rs,service.rs,sweep.rs,conformance.rs}`.
+(b) **Why now:** needs Step 6; Step 8 registers it.
+(c) **How:**
+- **Schema `party`** (idempotent DDL): `CREATE SEQUENCE party.revision_seq`;
+  `parties(id uuid PK, leader_id uuid NOT NULL, revision bigint NOT NULL, created_at
+  timestamptz)`; `members(player_id uuid PRIMARY KEY, party_id uuid NOT NULL, ready text
+  NOT NULL CHECK (ready IN ('ready','not_ready')), joined_at timestamptz NOT NULL,
+  lease_until timestamptz NOT NULL)` + indexes `(party_id)`, `(lease_until)`;
+  `invites(id uuid PK, party_id uuid, inviter_id uuid, invitee_id uuid, expires_at
+  timestamptz, UNIQUE (party_id, invitee_id))`. Ids bound `$1::uuid` like every other
+  module; the `members` PK is the one-party-per-player rule.
+- **Locking:** groups' namespaced FNV key → `pg_advisory_xact_lock` per party
+  (`modules/groups/src/store.rs:59-85,171-181`), namespace `party.party/`. Every
+  membership mutation takes it and sets `parties.revision = nextval(...)`. A `23505` on
+  the `members` insert (two ops by one player under different party locks) maps to
+  `Conflict`.
+- **Rules:** `create` → Conflict if caller in `members`. `invite` → caller must be
+  leader (else NotFound); self → Invalid; target already a member → Conflict; resolve
+  via `Directory::find_by_handle` (unknown → NotFound; outage → Unavailable/503);
+  upsert invite, `expires_at = now() + INVITE_TTL_SECS`. `accept` → invite must be the
+  caller's and unexpired (else NotFound); Conflict if caller in a party or party at
+  `MAX_MEMBERS` (counted under the lock); deletes the invite. `leave` → delete member;
+  leader leaving hands leadership to the earliest `(joined_at, player_id)`; last member
+  leaving deletes party + invites. `kick`/`promote` → leader only, target a member
+  (else NotFound). `set_ready` validates `state`. `get`/`heartbeat` in no party →
+  "no party" view / `lease_until = ""`, no error. Lease renewal (any op by a member,
+  incl. `get`/`heartbeat`) never bumps `revision` and never pushes.
+- **Response and push after commit:** after commit, load the snapshot, resolve handles
+  with ONE `Directory::players_by_id` call; on failure the op STILL succeeds, handles
+  are `""` in both the response and the push (the mutation is committed; failing it
+  would make a retry answer `Conflict`). Push `party.state` to each current member,
+  and to a removed member a "no party" view stamped with the mutation's `revision`;
+  `invite` pushes `party.invite` to the invitee. `Push::send` errors → debug log.
+- **Sweep** (`start()` loop, `mail` worker precedent; stop = grace then abort under the
+  app's 5 s): every 5 s pick ≤ 64 `party_id`s with an expired member; per party take the
+  lock, re-check, apply the `leave` rule to each expired member, commit, push; then
+  `DELETE FROM party.invites WHERE expires_at < now()`. Replica-safe by re-check under
+  the lock.
+- **`PARTY_LEASE_SECS`** read in the module (retention-env precedent), 10..=600, unset
+  = 60, unusable = startup failure.
+- **Purge:** `on_tx(SubscriptionSpec { id: "party.player-deleted.v1", start:
+  StartPosition::AfterRegistration }, …)` on `accountsevents::PLAYER_DELETED` applies
+  the `leave` rule for that player and deletes invites to/from them in the delivery
+  tx; no push from there. No `purged_players` tombstone: rows are lease-bound, the
+  player's sessions are revoked in the accounts tx that emits `player.deleted`, the
+  gateway verifier has no session cache, and `Directory` no longer resolves the handle.
+- `requires()` = `vec!["accounts".into()]` (groups precedent `lib.rs:134-136`).
+- **Conformance stances** (`conformance.rs`): `EnvValidation` Applies —
+  `PARTY_LEASE_SECS` cases blank→60, `9`, `601`, `abc` fail; `InputByteCaps` Applies —
+  `target_handle` capped at `accountsapi::MAX_HANDLE_BYTES` with fixture
+  `conformance_target_handle_rejected`; `invite_id`/`player_id` Validated as uuid
+  (parse → `Invalid`); `state` Validated (two consts); `InfraOutage503` Applies —
+  probe: failing `Directory` fake on `invite` → 503; `ArgonParity` NotApplicable (no
+  password handling).
+(d) `[opus]` core-implementer, effort think hard.
+
+### Step 8 — Wiring `party-svc` into both topologies `[sonnet]`
+
+(a) **What:**
+- `cmd/party-svc/{Cargo.toml,src/lib.rs,src/main.rs}`: metrics + `PartyModule` +
+  accounts `remote::Stub` (as `cmd/groups-svc`) + `remote::PushSender::new(wiring.
+  peer_or("gateway","127.0.0.1:9013"))` (as `cmd/notifications-svc/src/lib.rs:19-27`).
+- `cmd/server/{Cargo.toml,src/lib.rs:66}`.
+- `cmd/gateway-svc` `describe_peer` (`src/lib.rs:148-160`), `addrs.rs:211-217`.
+- `modules/apikeys/src/lib.rs` `DEV_CLIENT_POLICY` (`:105-116`) += `party.create,
+  party.get,party.invite,party.invites,party.accept,party.decline,party.leave,
+  party.kick,party.promote,party.setReady,party.heartbeat` (exact `METHOD_*`
+  spellings; the seed is a self-healing upsert).
+- `tools/checkmodules/{Cargo.toml,src/lib.rs:55}`.
+- `tools/processctl/src/fleet.rs`: `service("party-svc", 8098, Some(9017),
+  vec!["accounts-svc"])`, `peer(ACCOUNTS, 9003)`, `peer(GATEWAY, GATEWAY_EDGE_PORT)`
+  (no gateway dependency, `:801-805` reasoning), gateway-svc's dependency and peer
+  list += party-svc, `PARTY_LEASE_SECS=10` in the split-proof profile for party-svc
+  AND in the monolith proof overlay; `PARTY_LEASE_SECS` joins `MONOLITH_BASE_ENV`
+  (`:46`, array size and its doc count updated).
+- `weles/fleet.split.toml` (`:206-211,298`).
+- `tools/opscatalog-gen/{Cargo.toml,src/main.rs:87}`;
+  `tools/csharp-client-gen/{Cargo.toml,src/scrape.rs:38,56}` `PROVIDERS`;
+  `tools/topiccheck/{Cargo.toml:65,src/golden.rs:245-249}` `rpc_modules()` +=
+  `partyapi::player_rpc`; `tools/conformance/{Cargo.toml,src/policy.rs}` —
+  `entries()` (`:52`), input policies (`:124-130`) for `target_handle`, `invite_id`,
+  `player_id`, `state`, and the gateway entry's `CapCase` for
+  `MAX_INVOKE_METHOD_BYTES` beside `gateway push group name` (`:645-651`);
+  `tools/splitproof/Cargo.toml` (`partyapi`).
+(b) **Why now:** needs Steps 6–7; Step 9's generators self-check against these lists.
+(c) **How:** mechanical copy of groups-svc/storage-svc shapes; fleet-drift preflight,
+`checkmodules` and the generators' own drift checks confirm completeness.
+(d) `[sonnet]`, effort default; prompt carries the rollout pre-check.
+
+### Step 8b — Fixture-list updates forced by drift checks `[test-author]` (model: sonnet)
+
+`tools/processctl/src/fleet_tests.rs:123-127` (party-svc in the fleet snapshot, gateway
+dependency list) and `weles/master/src/manifest_tests.rs:275,320`. Separate from Step 8
+because tests are never the `[sonnet]` lane.
+
+### Step 9 — Regenerate and bless contract artifacts `[sonnet]`
+
+(a) **What:** `cargo run -p opscatalog-gen`; csharp-client-gen into
+`clients/csharp/Generated`; `verifyctl --bless-contract-golden`,
+`--bless-input-golden`, `--bless-public-api` (creates
+`docs/reference/public-api-baseline/partyapi.txt`).
+(b) **Why now:** after all contract/wiring changes, before any `verifyctl` run.
+(c) **How:** one rollout at a time (`pgrep -x cargo; pgrep -x rustc` as its OWN call,
+read before launching); after each bless, diff the baseline dir and restore files this
+change did not cause ([[pgrep-check-must-gate-not-decorate]]).
+(d) `[sonnet]`, effort default.
+
+### Step 10 — Party tests `[test-author]` (model: sonnet)
+
+Covers Steps 6–8 in `modules/party/src/tests.rs` (`testdb::test_pool`):
+- concurrent `create` vs `accept` by one player → one succeeds, the other `Conflict`
+  (not 500 — the 23505 branch);
+- two concurrent accepts into a 7-member party → exactly one succeeds (advisory lock);
+- leader-only invite/kick/promote → `NotFound` for a member; foreign/expired invite →
+  `NotFound`; self-invite → `Invalid`; invite of a member → `Conflict`;
+- leader leave → handoff to earliest `(joined_at, player_id)`; last leave → party and
+  invites gone;
+- leave X then accept into Y → the Y snapshot's `revision` > the "left X" revision;
+- heartbeat/get never bump `revision` and never push (counting `push::Sink` fake);
+- push only after commit (rolled-back mutation → fake sees nothing);
+- failing `Directory` fake after commit → op succeeds with empty handles;
+- sweep removes an expired member with leader handoff; two concurrent sweeps remove it
+  once;
+- `PARTY_LEASE_SECS` bounds; `player.deleted` delivery removes membership + invites;
+- conformance fixtures from Step 7 execute their failing branch.
+
+### Step 11 — Split-proof: party over the multiplexed socket `[opus]` (core-implementer)
+
+(a) **What:** `tools/splitproof/src/party_checks.rs` + `party_assertions` wrapper in
+`main.rs` (friends/groups shape, `[PY0{tag}]` completion), monolith call at `:548-570`,
+split call before `[RL1]`, and a separate deletion assertion `[DL14{tag}]` (party is
+NOT added to the `purged_players` lists at `:3050,3066`).
+(b) **Why now:** needs the whole fleet (Step 8) and Step 5's client.
+(c) **How:** players A, B (registered), one `/push` each. `[PY1]` A invokes
+`party.create`; `[PY2]` A invokes `party.invite(B's handle)` → B's socket gets
+`hub: "party"`, `topic: "party.invite"`; `[PY3]` B invokes `party.accept` → both get
+`party.state` with 2 members and equal `revision`; `[PY4]` B invokes `party.kick` on
+A → `NotFound`; `[PY5]` B stops heartbeating, A heartbeats → A gets `party.state` with
+1 member within `PARTY_LEASE_SECS` (10) + 5 s sweep, polled against a deadline;
+`[PY6]` A invokes `party.leave` → party row gone (sqlx); `[PY7]` notifications nudge and
+party frames interleave with distinct `hub`s. `[DL14]`: a party member deletes their
+account → after delivery their `party.members`/`party.invites` rows are gone (sqlx).
+(d) `[opus]` core-implementer, effort think hard; then `proof-auditor`.
+
+### Step 12 — Docs `[docs]` (model: sonnet)
+
+- `docs/reference/push-hub.md`: invoke/result grammar, `hub`, lanes + total-depth
+  eviction, `bad_frame`, env rows (`PUSH_INVOKE_*`, new `PUSH_MAX_FRAME_BYTES`
+  default), per-invoke admission cost, the payload ceiling, the stop-grace divergence,
+  carried gaps.
+- `modules/gateway/src/push_ws.rs` doc comments made false by Step 3:
+  `ClientFrame` (`:268-271`), `on_client_frame` (`:1363-1368`),
+  `MAX_VERBS_PER_INTERVAL` (`:240-251`, now non-invoke frames only).
+- `CLAUDE.md`: "Domain modules (18 fortresses + gateway)" with a `party` entry;
+  split-proof port list `party :8098/:9017`; the `/push` sentence under gateway.
+- `docs/roadmap/feature-tracker.md`: Parties row, push hub row, change log.
+- `docs/reference/module-reference.md` "Sending a push notification": the
+  post-commit snapshot + global `revision` pattern.
+
+## Reviews
+
+Every implementation step gets one `core-reviewer` pass before the next step; Steps 5
+and 11 add `proof-auditor`. Commit after each step, staging by explicit path while
+agents run. Precondition for the rollout: git works on this machine (Xcode license
+accepted).
+
+## Known gaps carried forward (recorded, not scheduled)
+
+- No fuzz target covers the `/push` frame parser (`stages/fuzz.rs:24`).
+- Party disconnect is detected by lease TTL (≤ `PARTY_LEASE_SECS` + 5 s), not socket
+  close; socket-driven leases (also the path to socket presence) are a follow-up.
+- No `Target::Players(Vec)` — fine for 8-member parties; large chat/lobby audiences
+  need it, and it changes the backplane `Envelope` (fronts-before-producers rollout).
+- No invoke resume/replay: a result lost to a dropped socket is ambiguous, as on QUIC.
+- Invokes still running after `PUSH_STOP_GRACE` (500 ms) are aborted on graceful stop,
+  vs 5 s drains on HTTP/QUIC.
+- No admin page for parties (not a conformance convention; ephemeral lease-bound state).
+- `/push` still has no `routecheck` coverage of its fixed route.
+
+## Review round 1 — disposition
+
+| # | Finding | Resolution |
+|---|---|---|
+| 1 | verbs budget silently drops invokes | Decision 5: invokes exempt, bucket is their only limiter; verbs keeps non-invoke frames |
+| 2 | `join_next` hot loop | Decision 4 / Step 3 guard; Step 4 test |
+| 3 | RawValue in tagged enum | Decision 1 separate `InvokeFrame`; Step 4 test |
+| 4 | `DEV_CLIENT_POLICY` | Step 8 |
+| 5 | topiccheck `rpc_modules` + Cargo deps | Step 8 |
+| 6 | purge list vs no tombstone | Step 11 `[DL14]`, not the lists |
+| 7 | per-party revision | Decision 11 global sequence; Step 10 test |
+| 8 | rejection results unbounded | Decision 6 |
+| 9 | 16× memory | Decision 8 total depth |
+| 10 | IpLimiter eviction | Decision 5 / Step 3; Step 4 real-limiter test |
+| 11 | no drain on stop | Decision 10 + known gap |
+| 12 | frame cap vs storage.put | Decision 7, `bad_frame` |
+| 13 | no invoke deadline | Decision 4 `PUSH_INVOKE_TIMEOUT_MS` |
+| 14 | signatures / post-commit Directory failure | Step 6 signatures, Step 7 rule, Step 10 test |
+| 15 | 23505 → 500 | Step 7 mapping, Step 10 race test |
+| 16 | conformance stances | Step 7 stances; admin-page claim removed |
+| 17 | test helpers read `ring` | Step 2 |
+| 18 | splitproof can't see `hub` | Step 5 |
+| 19 | monolith lease env | Step 8 |
+| 20 | Protocol reason / false docs | Decision 3 `BadFrame`; Step 12 names the comments |
+| 21 | test files in `[sonnet]` | Step 8b |
+| 22 | unspecified rules | Step 7 rules |
+| 23 | requires / visibility | Step 7; facts section |
+| 24 | CLAUDE.md count | Step 12 |
