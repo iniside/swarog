@@ -238,6 +238,10 @@ pub const TRUSTED_PROXIES: &str = "TRUSTED_PROXY_CIDRS";
 pub const MAX_GROUP_NAME_BYTES: usize = 128;
 const MAX_GROUPS_PER_CONN: usize = 32;
 
+/// The most event lanes one connection holds, INCLUDING the shared lane `""` at index 0;
+/// a hub past the first 15 named ones shares that lane.
+const MAX_HUBS_PER_CONN: usize = 16;
+
 /// Inbound verb frames one connection may spend per [`PushLimits::reverify_interval`],
 /// refilled on that tick.
 ///
@@ -309,7 +313,11 @@ enum ServerFrame<'a> {
     /// producer's bytes are opaque to every layer between it and the client, so they are
     /// carried in the one JSON-safe encoding that survives non-UTF-8 content instead of
     /// being re-interpreted here.
-    Message { topic: &'a str, payload: String },
+    Message {
+        hub: &'a str,
+        topic: &'a str,
+        payload: String,
+    },
     /// The connection is ending, and why.
     Close {
         code: CloseCode,
@@ -419,6 +427,11 @@ fn close_for(denial: &AdmissionDenial) -> CloseCode {
     }
 }
 
+/// The hub a topic belongs to: its prefix before the first `.`, or `""` with no dot.
+fn hub_of(topic: &str) -> &str {
+    topic.split_once('.').map_or("", |(hub, _)| hub)
+}
+
 // ---------------------------------------------------------------------------
 // The per-connection queue
 // ---------------------------------------------------------------------------
@@ -449,7 +462,10 @@ struct ConnQueue {
 }
 
 struct QueueState {
-    ring: VecDeque<Arc<str>>,
+    reply: VecDeque<Arc<str>>,
+    events: Vec<(Box<str>, VecDeque<Arc<str>>)>,
+    event_len: usize,
+    next: usize,
     /// Set once; preempts any pending frame — a close is the one frame worth blocking
     /// the queue's backlog for.
     close: Option<CloseCode>,
@@ -460,7 +476,10 @@ impl ConnQueue {
         let (wake, rx) = mpsc::channel(1);
         let queue = ConnQueue {
             state: Mutex::new(QueueState {
-                ring: VecDeque::new(),
+                reply: VecDeque::new(),
+                events: vec![(Box::from(""), VecDeque::new())],
+                event_len: 0,
+                next: 0,
                 close: None,
             }),
             wake,
@@ -476,17 +495,47 @@ impl ConnQueue {
     /// `false` means the connection is already closing and the frame was not queued —
     /// what [`PushHub::deliver`] counts, so a `Delivered::Local(n)` counts connections
     /// the frame actually reached.
-    fn push(&self, text: Arc<str>) -> bool {
+    fn push(&self, hub: &str, text: Arc<str>) -> bool {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.close.is_some() {
                 return false;
             }
-            while state.ring.len() >= self.capacity {
-                state.ring.pop_front();
+            let lane = match state.events.iter().position(|(name, _)| &**name == hub) {
+                Some(lane) => lane,
+                None if state.events.len() < MAX_HUBS_PER_CONN => {
+                    state.events.push((Box::from(hub), VecDeque::new()));
+                    state.events.len() - 1
+                }
+                None => 0,
+            };
+            while state.event_len >= self.capacity {
+                let mut longest = 0;
+                for (index, (_, frames)) in state.events.iter().enumerate() {
+                    if frames.len() > state.events[longest].1.len() {
+                        longest = index;
+                    }
+                }
+                state.events[longest].1.pop_front();
+                state.event_len -= 1;
                 DROPS.record("connection queue full, oldest evicted");
             }
-            state.ring.push_back(text);
+            state.events[lane].1.push_back(text);
+            state.event_len += 1;
+        }
+        let _ = self.wake.try_send(());
+        true
+    }
+
+    /// Queues a reply frame, which is never evicted; `false` means the connection is
+    /// already closing and the frame was not queued.
+    fn push_reply(&self, text: Arc<str>) -> bool {
+        {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.close.is_some() {
+                return false;
+            }
+            state.reply.push_back(text);
         }
         let _ = self.wake.try_send(());
         true
@@ -518,12 +567,32 @@ impl ConnQueue {
                 if let Some(code) = state.close {
                     return Some(Outbound::Close(code));
                 }
-                if let Some(text) = state.ring.pop_front() {
+                if let Some(text) = state.reply.pop_front() {
+                    return Some(Outbound::Text(text));
+                }
+                if let Some(text) = state.pop_event() {
                     return Some(Outbound::Text(text));
                 }
             }
             wake.recv().await?;
         }
+    }
+}
+
+impl QueueState {
+    /// The front frame of the first non-empty event lane at or after `next`, advancing
+    /// `next` past it so non-empty lanes alternate.
+    fn pop_event(&mut self) -> Option<Arc<str>> {
+        let lanes = self.events.len();
+        for offset in 0..lanes {
+            let lane = (self.next + offset) % lanes;
+            if let Some(text) = self.events[lane].1.pop_front() {
+                self.event_len -= 1;
+                self.next = (lane + 1) % lanes;
+                return Some(text);
+            }
+        }
+        None
     }
 }
 
@@ -821,8 +890,10 @@ impl PushHub {
             OVERSIZE.record("payload over the outbound cap");
             return 0;
         }
+        let hub = hub_of(&msg.topic);
         let frame: Arc<str> = Arc::from(
             serde_json::to_string(&ServerFrame::Message {
+                hub,
                 topic: &msg.topic,
                 payload: base64::engine::general_purpose::STANDARD.encode(&msg.payload),
             })
@@ -834,7 +905,7 @@ impl PushHub {
         };
         // `frame.clone()` is a refcount bump: the bytes are allocated ONCE per call, not
         // once per addressed connection.
-        queues.into_iter().filter(|queue| queue.push(frame.clone())).count()
+        queues.into_iter().filter(|queue| queue.push(hub, frame.clone())).count()
     }
 
     /// Broadcasts one presence transition to every bound connection.
@@ -1171,7 +1242,7 @@ async fn run(
     }
     // Queued, not written directly: every server->client frame leaves through the one
     // bounded queue, so the ack cannot jump a backlog or bypass the write deadline.
-    slot.queue.push(Arc::from(
+    slot.queue.push_reply(Arc::from(
         serde_json::to_string(&ServerFrame::Ack {
             connection_id: slot.id,
         })
