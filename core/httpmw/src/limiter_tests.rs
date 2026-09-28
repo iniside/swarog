@@ -111,3 +111,26 @@ fn visitor_cap_rejects_only_new_ips_until_reaper_frees_space() {
     assert!(lim.has_bucket(newcomer));
     assert_eq!(lim.bucket_count(), 2);
 }
+
+/// Two limiters share one counter FAMILY but not one series: saturating `push_invoke` moves
+/// only its own `limiter` label, and saturating `http` moves only its own. With a single
+/// unlabelled counter (the shape before the `limiter` label) the other limiter's series would
+/// move too, and push-invoke saturation would read as HTTP saturation.
+#[test]
+fn saturating_one_limiter_moves_only_its_own_labelled_series() {
+    let series = |name: &str| table_saturated_total().with_label_values(&[name]).get();
+    let push = IpLimiter::with_max_visitors("push_invoke", 0.0, 1, 1);
+    let http = IpLimiter::with_max_visitors("http", 0.0, 1, 1);
+    let (push_before, http_before) = (series("push_invoke"), series("http"));
+
+    assert!(push.allow(ip(1, 1, 1, 1)), "the one visitor slot is taken");
+    assert!(!push.allow(ip(2, 2, 2, 2)), "a second IP is refused at the cap");
+    assert!(!push.allow(ip(3, 3, 3, 3)));
+    assert_eq!(series("push_invoke"), push_before + 2, "push_invoke counted its own refusals");
+    assert_eq!(series("http"), http_before, "the http series did not move");
+
+    assert!(http.allow(ip(1, 1, 1, 1)));
+    assert!(!http.allow(ip(2, 2, 2, 2)));
+    assert_eq!(series("http"), http_before + 1);
+    assert_eq!(series("push_invoke"), push_before + 2, "and push_invoke did not move for http");
+}

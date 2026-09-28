@@ -120,6 +120,26 @@ fn lane_lens(queue: &ConnQueue) -> Vec<(String, usize)> {
     state.events.iter().map(|(name, frames)| (name.to_string(), frames.len())).collect()
 }
 
+/// The decoded payloads of the frames in event lane `hub`, front (next served) first.
+fn lane_payloads(queue: &ConnQueue, hub: &str) -> Vec<String> {
+    let state = queue.state.lock().unwrap();
+    let (_, frames) = state
+        .events
+        .iter()
+        .find(|(name, _)| &**name == hub)
+        .unwrap_or_else(|| panic!("no lane {hub:?}"));
+    frames
+        .iter()
+        .map(|frame| {
+            let v: serde_json::Value = serde_json::from_str(frame).expect("a frame is JSON");
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(v["payload"].as_str().expect("a message frame"))
+                .expect("payload is base64");
+            String::from_utf8(bytes).expect("test payloads are utf-8")
+        })
+        .collect()
+}
+
 /// Total frames queued across the event lanes (excludes the reply lane).
 fn event_total(queue: &ConnQueue) -> usize {
     lane_lens(queue).iter().map(|(_, n)| n).sum()
@@ -670,29 +690,30 @@ fn to_alice(hub: &Arc<PushHub>, topic: &str, payload: &str) {
     assert_eq!(hub.deliver(&Target::Player("alice".into()), &topic_msg(topic, payload)), 1);
 }
 
-/// One chatty hub must not starve another: with a single shared ring, 200 frames on `a`
-/// would have evicted everything else. At depth 64 the quiet hub's frame survives and the
-/// event total never exceeds the depth.
+/// One chatty hub must not starve another: with a single shared drop-oldest ring, the `b`
+/// frame queued FIRST would be the oldest of 201 and the first thing evicted. Here it is
+/// queued before the flood, at depth 64, and survives: the flood only ever evicts from
+/// its own (longest) lane.
 #[tokio::test]
 async fn a_flooded_hub_does_not_evict_another_hubs_frame() {
     let hub = hub_with(PushLimits { queue_depth: 64, ..test_limits() });
     let (slot, _wake) = bound(&hub, local(), "alice");
 
+    to_alice(&hub, "b.tick", "b0");
     for n in 0..200 {
         to_alice(&hub, "a.tick", &format!("a{n}"));
     }
-    to_alice(&hub, "b.tick", "b0");
 
-    assert!(event_total(&slot.queue) <= 64, "depth is the total across event lanes");
-    assert_eq!(event_total(&slot.queue), 64);
-    assert!(
-        queued_payloads(&slot.queue).contains(&"b0".to_string()),
-        "the b frame is still queued, not evicted by the a flood"
-    );
     assert_eq!(
-        queued_topics(&slot.queue).iter().filter(|t| *t == "b.tick").count(),
-        1
+        lane_lens(&slot.queue),
+        vec![("".to_string(), 0), ("b".to_string(), 1), ("a".to_string(), 63)],
+        "b keeps its one frame; the flood is held to depth minus b's frame in its own lane"
     );
+    let payloads = queued_payloads(&slot.queue);
+    assert!(payloads.contains(&"b0".to_string()), "the oldest frame overall survived");
+    assert!(!payloads.contains(&"a0".to_string()), "the flood evicted its own oldest");
+    assert!(payloads.contains(&"a199".to_string()), "the flood's newest is queued");
+    assert_eq!(event_total(&slot.queue), 64, "depth is the total across event lanes");
 }
 
 /// At capacity the victim is the oldest frame of the LONGEST lane, and a tie goes to the
@@ -729,6 +750,37 @@ async fn eviction_takes_from_the_longest_lane_and_the_lowest_index_on_a_tie() {
         vec![("".to_string(), 0), ("a".to_string(), 1), ("b".to_string(), 3)]
     );
     assert!(!queued_payloads(&slot.queue).contains(&"a2".to_string()));
+}
+
+/// The longest lane and the oldest frame anywhere disagree: `b1` is the oldest frame in
+/// the whole queue, but `a` is the longest lane, so the victim is `a1`. A single ring (or
+/// any "evict the globally oldest" rule) evicts `b1` instead.
+#[tokio::test]
+async fn eviction_takes_the_longest_lane_even_when_another_lane_holds_the_oldest_frame() {
+    let hub = hub_with(PushLimits { queue_depth: 4, ..test_limits() });
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    to_alice(&hub, "b.x", "b1");
+    to_alice(&hub, "a.x", "a1");
+    to_alice(&hub, "a.x", "a2");
+    to_alice(&hub, "a.x", "a3");
+    assert_eq!(event_total(&slot.queue), 4, "the queue is exactly full");
+
+    to_alice(&hub, "c.x", "c1");
+
+    assert_eq!(
+        lane_lens(&slot.queue),
+        vec![
+            ("".to_string(), 0),
+            ("b".to_string(), 1),
+            ("a".to_string(), 2),
+            ("c".to_string(), 1),
+        ]
+    );
+    let payloads = queued_payloads(&slot.queue);
+    assert!(payloads.contains(&"b1".to_string()), "the globally oldest frame survived");
+    assert!(!payloads.contains(&"a1".to_string()), "the longest lane lost its oldest");
+    assert!(payloads.contains(&"c1".to_string()), "the new frame was queued");
 }
 
 /// Named lanes are capped at MAX_HUBS_PER_CONN including `""`; a hub past the cap shares
@@ -807,13 +859,14 @@ async fn the_reply_lane_survives_event_lane_eviction() {
 }
 
 /// The wire `message` frame carries `hub` = the topic prefix before the first dot, and
-/// `""` for a dotless topic.
+/// `""` for a dotless topic; two topics of one hub share ONE lane.
 #[tokio::test]
 async fn the_message_frame_carries_its_hub() {
     let hub = hub_with(test_limits());
     let (slot, _wake) = bound(&hub, local(), "alice");
 
     to_alice(&hub, "party.state", "x");
+    to_alice(&hub, "party.member.joined", "z");
     to_alice(&hub, "nodot", "y");
 
     let frames: Vec<serde_json::Value> = queued(&slot.queue)
@@ -824,7 +877,86 @@ async fn the_message_frame_carries_its_hub() {
         frames.iter().find(|f| f["topic"] == topic).unwrap_or_else(|| panic!("no {topic}"))
     };
     assert_eq!(by_topic("party.state")["hub"], "party");
+    assert_eq!(
+        by_topic("party.member.joined")["hub"],
+        "party",
+        "the hub is the prefix before the FIRST dot, not the last"
+    );
     assert_eq!(by_topic("nodot")["hub"], "");
+    assert_eq!(
+        lane_lens(&slot.queue),
+        vec![("".to_string(), 1), ("party".to_string(), 2)],
+        "both party topics share the one party lane; the dotless topic is lane \"\""
+    );
+}
+
+/// `queued()` claims to list frames in the order `recv` yields them; the assertions that
+/// lean on that order are only as good as the claim. Drain a mixed-lane queue through the
+/// production `recv`, from a non-zero round-robin cursor, and compare.
+#[tokio::test]
+async fn the_queued_helper_lists_frames_in_the_order_recv_yields_them() {
+    let hub = hub_with(PushLimits { queue_depth: 32, ..test_limits() });
+    let (slot, mut wake) = bound(&hub, local(), "alice");
+
+    for (n, topic) in ["a.x", "a.x", "a.x", "b.x", "c.x", "c.x", "nodot"].iter().enumerate() {
+        to_alice(&hub, topic, &format!("p{n}"));
+    }
+    assert!(slot.queue.push_reply(Reply::Frame(Arc::from("reply"))));
+    // One recv per lane advances the cursor off zero, so a helper that always starts at
+    // lane 0 disagrees with the production cursor.
+    for _ in 0..3 {
+        let _ = slot.queue.recv(&mut wake).await.expect("a queued frame");
+    }
+
+    let listed = queued(&slot.queue);
+    assert!(listed.len() > 3, "a mixed queue with several lanes left to drain");
+    let mut drained = Vec::new();
+    for _ in 0..listed.len() {
+        match slot.queue.recv(&mut wake).await.expect("a queued frame") {
+            Outbound::Text(text) | Outbound::Result(text, _) => drained.push(text.to_string()),
+            Outbound::Close(code) => panic!("unexpected close {code:?}"),
+        }
+    }
+    assert_eq!(listed, drained);
+    assert!(queued(&slot.queue).is_empty(), "the drain consumed exactly what was listed");
+}
+
+/// The handshake ack is queued by the production `enqueue_ack` on the reply lane: with
+/// events already queued, and with the event lanes flooded at depth, it is still the FIRST
+/// frame `recv` yields and is never evicted. Enqueued as an event frame instead, the first
+/// case yields the events first and the second evicts it.
+#[tokio::test]
+async fn the_ack_is_the_first_frame_even_behind_queued_events_and_a_flood() {
+    let hub = hub_with(PushLimits { queue_depth: 4, ..test_limits() });
+    let ack_is = |frame: &str, id: ConnId| {
+        let v: serde_json::Value = serde_json::from_str(frame).unwrap();
+        assert_eq!(v["type"], "ack", "the first frame is the ack: {v}");
+        assert_eq!(v["connection_id"], serde_json::to_value(id).unwrap());
+    };
+
+    // Events already queued when the ack is enqueued.
+    let (slot, mut wake) = bound(&hub, local(), "alice");
+    to_alice(&hub, "a.x", "e1");
+    to_alice(&hub, "b.x", "e2");
+    assert!(enqueue_ack(&slot.queue, slot.id));
+    match slot.queue.recv(&mut wake).await {
+        Some(Outbound::Text(text)) => ack_is(&text, slot.id),
+        _ => panic!("expected the ack first"),
+    }
+    assert_eq!(event_total(&slot.queue), 2, "the events were not consumed by the ack");
+
+    // The event lanes flooded far past depth before the ack.
+    let (flooded, mut wake) = bound(&hub, local(), "bob");
+    for n in 0..20 {
+        assert_eq!(hub.deliver(&Target::Player("bob".into()), &msg(&format!("f{n}"))), 1);
+    }
+    assert_eq!(event_total(&flooded.queue), 4, "the flood is at depth");
+    assert!(enqueue_ack(&flooded.queue, flooded.id));
+    match flooded.queue.recv(&mut wake).await {
+        Some(Outbound::Text(text)) => ack_is(&text, flooded.id),
+        _ => panic!("expected the ack first under a flood"),
+    }
+    assert_eq!(event_total(&flooded.queue), 4, "the ack cost the event lanes nothing");
 }
 
 // ---------------------------------------------------------------------------
@@ -1340,6 +1472,35 @@ async fn deliver_batch_replays_every_target_variant_in_order() {
         vec!["one".to_string(), "two".to_string(), "three".to_string()],
         "order is the contract, and an unaddressed message is simply skipped"
     );
+}
+
+/// `deliver_batch` order is per HUB now: hubs alternate at `recv`, so the contract a
+/// producer can rely on is that each hub's frames keep their batch order. Read straight
+/// from the lanes, a batch that replayed out of order (reversed, sorted, or fanned out
+/// concurrently) puts a hub's frames out of order.
+#[tokio::test]
+async fn deliver_batch_keeps_each_hubs_order_across_a_mixed_hub_batch() {
+    let hub = hub_with(PushLimits { queue_depth: 32, ..test_limits() });
+    let (slot, _wake) = bound(&hub, local(), "alice");
+    let to = |topic: &str, payload: &str| {
+        push::Envelope::new(Target::Player("alice".into()), topic_msg(topic, payload))
+    };
+
+    let batch = push::encode_batch(&[
+        to("a.x", "a1"),
+        to("b.x", "b1"),
+        to("a.x", "a2"),
+        to("c.x", "c1"),
+        to("b.x", "b2"),
+        to("a.x", "a3"),
+    ])
+    .expect("encode");
+    deliver_batch(&hub, &batch).expect("a well-formed batch is replayed");
+
+    let lane = |name: &str| lane_payloads(&slot.queue, name);
+    assert_eq!(lane("a"), vec!["a1", "a2", "a3"]);
+    assert_eq!(lane("b"), vec!["b1", "b2"]);
+    assert_eq!(lane("c"), vec!["c1"]);
 }
 
 /// A malformed batch is a typed error, not a panic and not a silent success — the peer
@@ -1979,4 +2140,1047 @@ async fn await_live(hub: &Arc<PushHub>, want: usize) {
         );
         tokio::task::yield_now().await;
     }
+}
+
+// ---------------------------------------------------------------------------
+// invoke/result: the fixtures
+// ---------------------------------------------------------------------------
+//
+// Two harnesses again, chosen per branch. The admission ORDER inside `Inbound::frame`
+// (bucket, probe, limiter, parse, semaphore) and every bound that reads a clock are proven
+// by driving `Inbound::frame` directly over a real `Slot`/`FrontDoor` — synchronous, so a
+// paused tokio clock is safe (a paused clock over a real TCP socket auto-advances while
+// bytes are still in flight). Everything that is `run`/`serve` wiring — the handshake's
+// stored credentials, the typed closes, the permit released only after the socket write,
+// the shutdown abort — is proven over a real bound listener.
+
+use opsapi::{
+    AuthReq, DecodeFn, EncodeFn, Identity, LocalInvoker, LocalOp, OpBinding, Operation, RetryMode,
+};
+
+/// What a fake backend op records, and the gate it can hold a call on. `calls` counts every
+/// dispatch that reached the op, so "zero backend calls" is an assertion on the fake and not
+/// an inference from the absence of an error.
+struct Probe {
+    calls: AtomicUsize,
+    entered: tokio::sync::Notify,
+    /// A gated call proceeds only by taking a permit from here; a test that never adds one
+    /// holds the call forever.
+    release: Semaphore,
+    /// Gated calls whose future was dropped — completed OR cancelled.
+    dropped: AtomicUsize,
+    dropped_signal: tokio::sync::Notify,
+}
+
+impl Probe {
+    fn new() -> Arc<Probe> {
+        Arc::new(Probe {
+            calls: AtomicUsize::new(0),
+            entered: tokio::sync::Notify::new(),
+            release: Semaphore::new(0),
+            dropped: AtomicUsize::new(0),
+            dropped_signal: tokio::sync::Notify::new(),
+        })
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(AtomicOrdering::SeqCst)
+    }
+}
+
+struct DropGuard(Arc<Probe>);
+
+impl Drop for DropGuard {
+    fn drop(&mut self) {
+        self.0.dropped.fetch_add(1, AtomicOrdering::SeqCst);
+        self.0.dropped_signal.notify_one();
+    }
+}
+
+/// The `{status, pid, echo}` response every echo-shaped fake op answers with: the verified
+/// identity the front threaded, and the request bytes it received.
+fn echo_response(ident: &Identity, req: &[u8]) -> Result<Vec<u8>, opsapi::Error> {
+    let pid = ident.player_id().ok_or_else(|| opsapi::Error::invalid("no identity"))?;
+    Ok(format!(
+        r#"{{"status":"Ok","pid":"{pid}","echo":{}}}"#,
+        String::from_utf8_lossy(req)
+    )
+    .into_bytes())
+}
+
+/// Counts the call, answers immediately.
+fn echo_invoker(probe: Arc<Probe>) -> LocalInvoker {
+    Arc::new(move |ident: Identity, req: Vec<u8>| {
+        let probe = probe.clone();
+        Box::pin(async move {
+            probe.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            echo_response(&ident, &req)
+        })
+    })
+}
+
+/// Counts the call, signals `entered`, then holds until the test adds a `release` permit.
+/// Dropping the call's future (an abort, a timeout) is observable on `dropped`.
+fn gated_invoker(probe: Arc<Probe>) -> LocalInvoker {
+    Arc::new(move |ident: Identity, req: Vec<u8>| {
+        let probe = probe.clone();
+        Box::pin(async move {
+            probe.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            probe.entered.notify_one();
+            let _guard = DropGuard(probe.clone());
+            probe.release.acquire().await.expect("the gate is never closed").forget();
+            echo_response(&ident, &req)
+        })
+    })
+}
+
+/// Answers with a domain error, so the envelope's error arm is compared too.
+fn failing_invoker() -> LocalInvoker {
+    Arc::new(|_ident: Identity, _req: Vec<u8>| {
+        Box::pin(async move { Err::<Vec<u8>, _>(opsapi::Error::not_found("gone")) })
+    })
+}
+
+fn domain_code_panics() -> opsapi::Error {
+    panic!("a Local op's domain code panicked")
+}
+
+/// A Local op whose domain code panics inside the invoke task.
+fn panicking_invoker() -> LocalInvoker {
+    Arc::new(|_ident: Identity, _req: Vec<u8>| {
+        Box::pin(async move { Err::<Vec<u8>, _>(domain_code_panics()) })
+    })
+}
+
+/// Slots carrying each `(method, invoker)` as a full player op (`Operation` + binding +
+/// `LocalOp`), i.e. reachable through the route table.
+fn ops_slots(ops: Vec<(&str, LocalInvoker)>) -> Arc<Slots> {
+    let slots = Arc::new(Slots::new());
+    for (method, invoke) in ops {
+        slots.contribute(
+            opsapi::SLOT,
+            Operation {
+                method: method.into(),
+                verb: "POST".into(),
+                path: format!("/{}", method.replace('.', "/")),
+                auth: AuthReq::Player,
+                success: 200,
+                retry_mode: RetryMode::Never,
+            },
+        );
+        let decode: DecodeFn = Arc::new(|body, _path| Ok(body.unwrap_or(b"null").to_vec()));
+        let encode: EncodeFn = Arc::new(|resp: &[u8]| Ok((Some(resp.to_vec()), Status::Ok)));
+        slots.contribute(
+            opsapi::BINDING_SLOT,
+            OpBinding { method: method.into(), decode, encode },
+        );
+        slots.contribute(opsapi::LOCAL_SLOT, LocalOp { method: method.into(), invoke });
+    }
+    slots
+}
+
+fn front_over(
+    slots: Arc<Slots>,
+    limits: PushLimits,
+    verifier: Arc<dyn SessionVerifier>,
+    keys: Arc<dyn KeyVerifier>,
+) -> Arc<FrontDoor> {
+    Arc::new(FrontDoor::new(slots, verifier, keys, Vec::new()).with_push_limits(limits))
+}
+
+/// A dev-session front over `ops`.
+fn ops_front(limits: PushLimits, ops: Vec<(&str, LocalInvoker)>) -> Arc<FrontDoor> {
+    front_over(
+        ops_slots(ops),
+        limits,
+        Arc::new(DevSessionVerifier::new()),
+        FakeKeys::demo(),
+    )
+}
+
+fn invoke_frame(id: i64, method: &str, payload: Option<&str>) -> String {
+    match payload {
+        Some(payload) => format!(
+            r#"{{"type":"invoke","id":{id},"method":"{method}","payload":{payload}}}"#
+        ),
+        None => format!(r#"{{"type":"invoke","id":{id},"method":"{method}"}}"#),
+    }
+}
+
+async fn send(ws: &mut Client, text: String) {
+    ws.send(ClientMessage::Text(text)).await.expect("the socket accepts a client frame");
+}
+
+/// The next server frame, which must be a `result`: `(id, response)`.
+async fn next_result(ws: &mut Client) -> (i64, serde_json::Value) {
+    let frame = next_json(ws).await;
+    assert_eq!(frame["type"], "result", "expected a result frame, got {frame}");
+    (frame["id"].as_i64().expect("a numeric id"), frame["response"].clone())
+}
+
+/// Waits until the op behind `probe` has been entered `want` times — a `Notify`
+/// happens-before, bounded by the hang guard, never a sleep.
+async fn wait_calls(probe: &Probe, want: usize) {
+    let waited = tokio::time::timeout(GUARD, async {
+        loop {
+            if probe.calls() >= want {
+                return;
+            }
+            probe.entered.notified().await;
+        }
+    })
+    .await;
+    assert!(waited.is_ok(), "the backend saw {} calls, wanted {want}", probe.calls());
+}
+
+/// One connection's inbound machinery over a real `Slot`, WITHOUT a socket: what `run`
+/// builds for `serve`, minus the `WebSocket`. The queue is read back through the
+/// production `recv`.
+struct Rig {
+    front: Arc<FrontDoor>,
+    hub: Arc<PushHub>,
+    slot: Slot,
+    limits: PushLimits,
+}
+
+fn rig(front: Arc<FrontDoor>) -> (Rig, mpsc::Receiver<()>) {
+    let hub = front.push_hub();
+    let limits = hub.limits().clone();
+    let (slot, wake) = accept(&hub, local());
+    (Rig { front, hub, slot, limits }, wake)
+}
+
+impl Rig {
+    fn inbound(&self, api_key: &str) -> Inbound<'_> {
+        Inbound {
+            front: self.front.clone(),
+            slot: &self.slot,
+            bearer: "dev-alice".to_string(),
+            api_key: Some(api_key.to_string()),
+            limits: &self.limits,
+            bucket: InboundBucket::new(self.limits.inbound_rps, self.limits.inbound_burst),
+            verbs: MAX_VERBS_PER_INTERVAL,
+            in_flight: Arc::new(Semaphore::new(self.limits.invoke_max_in_flight)),
+            tasks: JoinSet::new(),
+        }
+    }
+
+    fn reply_len(&self) -> usize {
+        self.slot.queue.state.lock().unwrap().reply.len()
+    }
+}
+
+/// The next outbound item as JSON, with the permit a `result` carries (the writer's job to
+/// drop after the socket write; the test drops it where `serve` would).
+async fn take(
+    rig: &Rig,
+    wake: &mut mpsc::Receiver<()>,
+) -> (serde_json::Value, Option<OwnedSemaphorePermit>) {
+    let out = tokio::time::timeout(GUARD, rig.slot.queue.recv(wake))
+        .await
+        .expect("an outbound item within the hang guard")
+        .expect("the queue is open");
+    match out {
+        Outbound::Text(text) => (serde_json::from_str(&text).expect("a frame is JSON"), None),
+        Outbound::Result(text, permit) => {
+            (serde_json::from_str(&text).expect("a frame is JSON"), Some(permit))
+        }
+        Outbound::Close(code) => panic!("unexpected close {code:?}"),
+    }
+}
+
+/// Runs every spawned invoke task to completion.
+async fn settle(inbound: &mut Inbound<'_>) {
+    while let Some(joined) = inbound.tasks.join_next().await {
+        joined.expect("an invoke task never panics: the panic is caught and answered");
+    }
+}
+
+fn status_of(response: &serde_json::Value) -> &str {
+    response["status"].as_str().unwrap_or_else(|| panic!("no status in {response}"))
+}
+
+// ---------------------------------------------------------------------------
+// invoke/result over a real socket
+// ---------------------------------------------------------------------------
+
+/// The RawValue-in-a-tagged-enum branch: a well-formed invoke with an OBJECT payload must
+/// parse (via the separate `InvokeFrame`), dispatch with the handshake's bearer, and leave
+/// the socket open. An `invoke` folded into the tagged `ClientFrame`, or a probe that fails
+/// on a nested object, would close or ignore it.
+#[tokio::test]
+async fn an_invoke_with_an_object_payload_is_dispatched_and_the_socket_stays_open() {
+    let probe = Probe::new();
+    let front = ops_front(test_limits(), vec![("demo.echo", echo_invoker(probe.clone()))]);
+    let (addr, server) = serve(&front).await;
+
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+
+    send(&mut ws, invoke_frame(7, "demo.echo", Some(r#"{"n":1,"nested":{"a":[1,2]}}"#))).await;
+    let (id, response) = next_result(&mut ws).await;
+    assert_eq!(id, 7);
+    assert_eq!(status_of(&response), "Ok");
+    assert_eq!(response["pid"], "alice", "the identity is the handshake bearer's player");
+    assert_eq!(response["echo"], serde_json::json!({"n":1,"nested":{"a":[1,2]}}));
+
+    // A missing payload is `{}`, an array payload is legal JSON: both answer, on the same
+    // still-open socket.
+    send(&mut ws, invoke_frame(8, "demo.echo", None)).await;
+    let (id, response) = next_result(&mut ws).await;
+    assert_eq!((id, response["echo"].clone()), (8, serde_json::json!({})));
+    send(&mut ws, invoke_frame(9, "demo.echo", Some("[1,2]"))).await;
+    let (id, response) = next_result(&mut ws).await;
+    assert_eq!((id, response["echo"].clone()), (9, serde_json::json!([1, 2])));
+    assert_eq!(probe.calls(), 3);
+
+    server.abort();
+}
+
+/// `response` is `handle_player`'s envelope VERBATIM: for the same input the socket answers
+/// exactly what the player-QUIC handler computes — success, a domain error, an unknown
+/// method, a missing payload.
+#[tokio::test]
+async fn the_result_envelope_equals_handle_players_output_for_the_same_input() {
+    let probe = Probe::new();
+    let front = ops_front(
+        test_limits(),
+        vec![
+            ("demo.echo", echo_invoker(probe.clone())),
+            ("demo.gone", failing_invoker()),
+        ],
+    );
+    let (addr, server) = serve(&front).await;
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+
+    let cases: [(&str, Option<&str>); 4] = [
+        ("demo.echo", Some(r#"{"n":1}"#)),
+        ("demo.echo", None),
+        ("demo.gone", Some("{}")),
+        ("no.such.op", Some("{}")),
+    ];
+    for (n, (method, payload)) in cases.into_iter().enumerate() {
+        send(&mut ws, invoke_frame(n as i64, method, payload)).await;
+        let (id, response) = next_result(&mut ws).await;
+        assert_eq!(id, n as i64);
+
+        let direct = front
+            .handle_player(
+                method.to_string(),
+                Some("dev-alice".to_string()),
+                Some(KEY.to_string()),
+                payload.unwrap_or("{}").as_bytes().to_vec(),
+            )
+            .await;
+        let direct: serde_json::Value = serde_json::from_slice(&direct).expect("an envelope");
+        assert_eq!(response, direct, "{method}: the socket answers handle_player's envelope");
+        if method == "demo.gone" {
+            assert_eq!(status_of(&response), "NotFound", "the error arm is a real non-Ok envelope");
+        }
+    }
+
+    server.abort();
+}
+
+/// A wire-only method (`characters.ownerOf`) IS served in-process — its invoker is
+/// registered — but is not an `#[http]`-bound op, so the route table does not list it and an
+/// invoke must answer NotFound without ever reaching the invoker. Were the invoke to dispatch
+/// by method name instead of through the route table, the counting fake would see a call.
+#[tokio::test]
+async fn invoking_a_wire_only_method_is_not_found_and_never_reaches_the_backend() {
+    let owner = Probe::new();
+    let slots = ops_slots(vec![("demo.echo", echo_invoker(Probe::new()))]);
+    slots.contribute(
+        opsapi::LOCAL_SLOT,
+        LocalOp { method: "characters.ownerOf".into(), invoke: echo_invoker(owner.clone()) },
+    );
+    let front = front_over(
+        slots,
+        test_limits(),
+        Arc::new(DevSessionVerifier::new()),
+        FakeKeys::demo(),
+    );
+    let (addr, server) = serve(&front).await;
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+
+    send(&mut ws, invoke_frame(1, "characters.ownerOf", Some("{}"))).await;
+    let (id, response) = next_result(&mut ws).await;
+    assert_eq!(id, 1);
+    assert_eq!(
+        response,
+        serde_json::json!({"status":"NotFound","err":"unknown operation"})
+    );
+    assert_eq!(owner.calls(), 0, "the wire-only invoker was never called");
+
+    server.abort();
+}
+
+/// The api-key POLICY is checked per method on every invoke. `/push` admits with
+/// `PresenceOnly`, so a key whose policy names nothing holds a socket; were the invoke to
+/// reuse that admission (or drop the key), the op would run. The same front answers the
+/// full-policy key.
+#[tokio::test]
+async fn a_key_without_the_method_in_its_policy_is_forbidden_per_invoke() {
+    let probe = Probe::new();
+    let front = ops_front(test_limits(), vec![("demo.echo", echo_invoker(probe.clone()))]);
+    let (addr, server) = serve(&front).await;
+
+    let mut limited = dial_authed(addr, "dev-alice", POLICYLESS_KEY).await;
+    expect_ack(&mut limited).await;
+    send(&mut limited, invoke_frame(1, "demo.echo", Some("{}"))).await;
+    let (id, response) = next_result(&mut limited).await;
+    assert_eq!(id, 1);
+    assert_eq!(status_of(&response), "Forbidden");
+    assert_eq!(probe.calls(), 0, "a policy denial never reaches the backend");
+
+    let mut full = dial_authed(addr, "dev-bob", KEY).await;
+    expect_ack(&mut full).await;
+    send(&mut full, invoke_frame(2, "demo.echo", Some("{}"))).await;
+    let (_, response) = next_result(&mut full).await;
+    assert_eq!(status_of(&response), "Ok");
+    assert_eq!(probe.calls(), 1);
+
+    server.abort();
+}
+
+/// A session revoked AFTER the bind is refused on the very next invoke: the bearer is
+/// verified per call, not once at admission and not on the (here, hour-long) re-verify tick.
+/// The verifier counts its calls, so the per-invoke lookup is observed rather than inferred.
+#[tokio::test]
+async fn a_bearer_revoked_after_bind_is_unauthorized_on_the_next_invoke() {
+    let sessions = RevokingSessions::new("alice", |_| Ok(None));
+    let probe = Probe::new();
+    let front = front_over(
+        ops_slots(vec![("demo.echo", echo_invoker(probe.clone()))]),
+        test_limits(),
+        sessions.clone(),
+        FakeKeys::demo(),
+    );
+    let (addr, server) = serve(&front).await;
+
+    let mut ws = dial_authed(addr, "session-token", KEY).await;
+    expect_ack(&mut ws).await;
+    assert_eq!(sessions.calls.load(AtomicOrdering::SeqCst), 1, "only the bind so far");
+
+    for id in [1, 2] {
+        send(&mut ws, invoke_frame(id, "demo.echo", Some("{}"))).await;
+        let (got, response) = next_result(&mut ws).await;
+        assert_eq!(got, id);
+        assert_eq!(status_of(&response), "Unauthorized");
+    }
+    assert_eq!(sessions.calls.load(AtomicOrdering::SeqCst), 3, "one lookup per invoke");
+    assert_eq!(probe.calls(), 0, "a revoked bearer never reaches the backend");
+
+    server.abort();
+}
+
+/// 17 concurrent held invokes against the default in-flight cap of 16: the 17th is
+/// answered at once with `Unavailable` and never reaches the backend. The permit is released
+/// only after a result is WRITTEN, so releasing one held call and reading its result admits
+/// the next invoke.
+#[tokio::test]
+async fn the_17th_concurrent_invoke_is_refused_and_a_written_result_frees_a_slot() {
+    let probe = Probe::new();
+    let front = ops_front(test_limits(), vec![("demo.hold", gated_invoker(probe.clone()))]);
+    let (addr, server) = serve(&front).await;
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+    let cap = front.push_hub().limits().invoke_max_in_flight;
+    assert_eq!(cap, 16);
+
+    for id in 1..=cap as i64 {
+        send(&mut ws, invoke_frame(id, "demo.hold", Some("{}"))).await;
+    }
+    wait_calls(&probe, cap).await;
+
+    send(&mut ws, invoke_frame(17, "demo.hold", Some("{}"))).await;
+    let (id, response) = next_result(&mut ws).await;
+    assert_eq!(id, 17);
+    assert_eq!(
+        response,
+        serde_json::json!({"status":"Unavailable","err":"too many in-flight invokes"})
+    );
+    assert_eq!(probe.calls(), cap, "the refused invoke never reached the backend");
+
+    probe.release.add_permits(1);
+    let (first, response) = next_result(&mut ws).await;
+    assert!((1..=cap as i64).contains(&first), "a held call finished: {first}");
+    assert_eq!(status_of(&response), "Ok");
+
+    send(&mut ws, invoke_frame(18, "demo.hold", Some("{}"))).await;
+    wait_calls(&probe, cap + 1).await;
+
+    probe.release.add_permits(cap);
+    let mut rest = std::collections::BTreeSet::new();
+    for _ in 0..cap {
+        let (id, response) = next_result(&mut ws).await;
+        assert_eq!(status_of(&response), "Ok");
+        rest.insert(id);
+    }
+    let mut expected: std::collections::BTreeSet<i64> = (1..=cap as i64).collect();
+    expected.remove(&first);
+    expected.insert(18);
+    assert_eq!(rest, expected, "every admitted invoke answers exactly once");
+
+    server.abort();
+}
+
+/// A Local op runs domain code inside the invoke task. A panic in it must still answer the
+/// invoke's id with `Internal` "invoke failed", return the permit, and leave the socket
+/// open. Without the catch the client waits forever on an id that never comes back.
+#[tokio::test]
+async fn a_panicking_local_op_answers_internal_returns_its_permit_and_keeps_the_socket() {
+    let probe = Probe::new();
+    let front = ops_front(
+        PushLimits { invoke_max_in_flight: 1, ..test_limits() },
+        vec![
+            ("demo.boom", panicking_invoker()),
+            ("demo.echo", echo_invoker(probe.clone())),
+        ],
+    );
+    let (addr, server) = serve(&front).await;
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+
+    send(&mut ws, invoke_frame(5, "demo.boom", Some("{}"))).await;
+    let (id, response) = next_result(&mut ws).await;
+    assert_eq!(id, 5);
+    assert_eq!(
+        response,
+        serde_json::json!({"status":"Internal","err":"invoke failed"})
+    );
+
+    // The one in-flight permit came back: the next invoke is admitted, not refused.
+    send(&mut ws, invoke_frame(6, "demo.echo", Some("{}"))).await;
+    let (id, response) = next_result(&mut ws).await;
+    assert_eq!(id, 6);
+    assert_eq!(status_of(&response), "Ok");
+    assert_eq!(probe.calls(), 1);
+
+    server.abort();
+}
+
+/// The per-IP limiter is REAL and shared by every connection from an address: with rate 0
+/// and burst 1 (no refill, so nothing here races a clock) the first invoke from
+/// 127.0.0.1 passes, and both a second CONNECTION's invoke and the first connection's second
+/// invoke get `Unavailable` "rate limited". A different resolved client IP has its own
+/// bucket.
+#[tokio::test]
+async fn the_per_ip_invoke_limiter_is_shared_across_connections_from_one_ip() {
+    let probe = Probe::new();
+    let limits = PushLimits { invoke_ip_rps: 0, invoke_ip_burst: 1, ..test_limits() }
+        .with_trusted_proxies("127.0.0.1")
+        .expect("a valid CIDR");
+    let front = ops_front(limits, vec![("demo.echo", echo_invoker(probe.clone()))]);
+    let (addr, server) = serve(&front).await;
+    let limited = |response: &serde_json::Value| {
+        *response == serde_json::json!({"status":"Unavailable","err":"rate limited"})
+    };
+
+    let mut a = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut a).await;
+    send(&mut a, invoke_frame(1, "demo.echo", Some("{}"))).await;
+    assert_eq!(status_of(&next_result(&mut a).await.1), "Ok");
+
+    let mut b = dial_authed(addr, "dev-bob", KEY).await;
+    expect_ack(&mut b).await;
+    send(&mut b, invoke_frame(2, "demo.echo", Some("{}"))).await;
+    assert!(limited(&next_result(&mut b).await.1), "a second connection shares the bucket");
+
+    send(&mut a, invoke_frame(3, "demo.echo", Some("{}"))).await;
+    assert!(limited(&next_result(&mut a).await.1), "so does the first connection's next invoke");
+    assert_eq!(probe.calls(), 1, "a limited invoke never reaches the backend");
+
+    // Another client IP, forwarded by the trusted proxy, has a fresh bucket.
+    let mut c = dial(
+        addr,
+        &[
+            ("authorization", "Bearer dev-carol"),
+            ("x-api-key", KEY),
+            ("x-forwarded-for", "203.0.113.9"),
+        ],
+    )
+    .await
+    .unwrap_or_else(|status| panic!("dial refused with HTTP {status}"));
+    expect_ack(&mut c).await;
+    send(&mut c, invoke_frame(4, "demo.echo", Some("{}"))).await;
+    assert_eq!(status_of(&next_result(&mut c).await.1), "Ok");
+    assert_eq!(probe.calls(), 2);
+
+    server.abort();
+}
+
+/// A connection with an EMPTY `JoinSet` that lives through several re-verify ticks stays
+/// open and still answers a later invoke: the `join_next` arm must neither end the loop on
+/// an empty set nor starve the other arms.
+///
+/// KNOWN LIMIT: the `if !tasks.is_empty()` guard on that arm is not itself observable —
+/// `select!` disables a branch whose pattern (`Some(joined)`) does not match the `None` an
+/// empty set yields, so removing the guard changes no behaviour a test can see. This pins
+/// the neighbouring regression (an arm that breaks the loop on `None`); the guard has no
+/// failing test.
+#[tokio::test]
+async fn an_idle_connection_survives_reverify_ticks_and_answers_a_later_invoke() {
+    let sessions = RevokingSessions::new("alice", |_| Ok(Some("alice".to_string())));
+    let probe = Probe::new();
+    let front = front_over(
+        ops_slots(vec![("demo.echo", echo_invoker(probe.clone()))]),
+        PushLimits { reverify_interval: Duration::from_millis(20), ..test_limits() },
+        sessions.clone(),
+        FakeKeys::demo(),
+    );
+    let (addr, server) = serve(&front).await;
+    let mut ws = dial_authed(addr, "session-token", KEY).await;
+    expect_ack(&mut ws).await;
+
+    // Explicit persisted state, not a sleep: the verifier counts every tick that ran.
+    let deadline = std::time::Instant::now() + GUARD;
+    while sessions.calls.load(AtomicOrdering::SeqCst) < 4 {
+        assert!(std::time::Instant::now() < deadline, "the re-verify ticks never ran");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(front.push_hub().live(), 1, "still connected after the idle ticks");
+
+    send(&mut ws, invoke_frame(1, "demo.echo", Some("{}"))).await;
+    let (id, response) = next_result(&mut ws).await;
+    assert_eq!((id, status_of(&response)), (1, "Ok"));
+
+    server.abort();
+}
+
+/// Grammar errors on a live connection close `bad_frame` (non-retryable): no id, an id of
+/// the wrong type, no method, a method one byte over `MAX_INVOKE_METHOD_BYTES`. A method of
+/// exactly the cap is NOT a grammar error — it reaches the route table and is NotFound.
+#[tokio::test]
+async fn a_malformed_invoke_closes_bad_frame_and_a_method_at_the_cap_does_not() {
+    let front = ops_front(test_limits(), vec![("demo.echo", echo_invoker(Probe::new()))]);
+    let (addr, server) = serve(&front).await;
+
+    let long = "m".repeat(MAX_INVOKE_METHOD_BYTES + 1);
+    let bad = [
+        r#"{"type":"invoke","method":"demo.echo","payload":{}}"#.to_string(),
+        r#"{"type":"invoke","id":"one","method":"demo.echo"}"#.to_string(),
+        r#"{"type":"invoke","id":1,"payload":{}}"#.to_string(),
+        invoke_frame(1, &long, Some("{}")),
+    ];
+    for frame in bad {
+        let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+        expect_ack(&mut ws).await;
+        send(&mut ws, frame.clone()).await;
+        let (code, retryable) = expect_close(&mut ws).await;
+        assert_eq!(code, "bad_frame", "{frame}");
+        assert!(!retryable, "a retry reproduces a malformed frame");
+    }
+
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+    let at_cap = "m".repeat(MAX_INVOKE_METHOD_BYTES);
+    send(&mut ws, invoke_frame(2, &at_cap, Some("{}"))).await;
+    let (id, response) = next_result(&mut ws).await;
+    assert_eq!((id, status_of(&response)), (2, "NotFound"));
+
+    server.abort();
+}
+
+/// An inbound frame over `max_frame_bytes` closes `frame_too_large`, RETRYABLE (the
+/// reconnect restores every stream) — distinct from `bad_frame`. A frame just under the cap
+/// is served. The protocol-level 1009 close is not asserted: the server closes with the
+/// rest of the oversize frame unread, so the peer may see a reset before it.
+#[tokio::test]
+async fn an_over_cap_frame_closes_frame_too_large_retryably() {
+    let front = ops_front(test_limits(), vec![("demo.echo", echo_invoker(Probe::new()))]);
+    let (addr, server) = serve(&front).await;
+    let cap = front.push_hub().limits().max_frame_bytes;
+
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+    let under = format!(r#"{{"pad":"{}"}}"#, "x".repeat(cap / 2));
+    send(&mut ws, invoke_frame(1, "demo.echo", Some(&under))).await;
+    assert_eq!(status_of(&next_result(&mut ws).await.1), "Ok", "a frame under the cap is served");
+
+    let over = format!(r#"{{"pad":"{}"}}"#, "x".repeat(cap + 1024));
+    send(&mut ws, invoke_frame(2, "demo.echo", Some(&over))).await;
+    let (code, retryable) = expect_close(&mut ws).await;
+    assert_eq!(code, "frame_too_large");
+    assert!(retryable, "the reconnect restores every hub stream");
+
+    server.abort();
+}
+
+/// An unknown `type` on a live connection is still ignored — a newer client speaking a verb
+/// this build lacks stays connected — and so is a frame that is not JSON at all.
+#[tokio::test]
+async fn an_unknown_frame_type_is_ignored_and_the_connection_keeps_answering() {
+    let front = ops_front(test_limits(), vec![("demo.echo", echo_invoker(Probe::new()))]);
+    let (addr, server) = serve(&front).await;
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+
+    send(&mut ws, r#"{"type":"future_verb","x":1}"#.to_string()).await;
+    send(&mut ws, "not json at all".to_string()).await;
+    send(&mut ws, invoke_frame(1, "demo.echo", Some("{}"))).await;
+    let (id, response) = next_result(&mut ws).await;
+    assert_eq!((id, status_of(&response)), (1, "Ok"));
+
+    server.abort();
+}
+
+/// Graceful stop does NOT drain invokes: with one invoke held in the backend, `shutdown`
+/// writes the typed `shutdown` close, no `result` frame follows it, and the invoke task is
+/// ABORTED — the backend call's future is dropped (observed by a drop guard) though the
+/// gate was never released.
+#[tokio::test]
+async fn shutdown_aborts_an_in_flight_invoke_and_the_close_is_written() {
+    let probe = Probe::new();
+    let front = ops_front(test_limits(), vec![("demo.hold", gated_invoker(probe.clone()))]);
+    let (addr, server) = serve(&front).await;
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+
+    send(&mut ws, invoke_frame(1, "demo.hold", Some("{}"))).await;
+    wait_calls(&probe, 1).await;
+    assert_eq!(probe.dropped.load(AtomicOrdering::SeqCst), 0, "the call is held, not finished");
+
+    front.push_hub().shutdown().await;
+
+    let (code, retryable) = expect_close(&mut ws).await;
+    assert_eq!(code, "shutdown");
+    assert!(retryable);
+    loop {
+        match tokio::time::timeout(GUARD, ws.next()).await {
+            Err(_) => panic!("the socket neither ended nor closed within the hang guard"),
+            Ok(None) | Ok(Some(Err(_))) | Ok(Some(Ok(ClientMessage::Close(_)))) => break,
+            Ok(Some(Ok(ClientMessage::Text(text)))) => panic!("a frame after the close: {text}"),
+            Ok(Some(Ok(_))) => {}
+        }
+    }
+
+    let aborted = tokio::time::timeout(GUARD, async {
+        while probe.dropped.load(AtomicOrdering::SeqCst) == 0 {
+            probe.dropped_signal.notified().await;
+        }
+    })
+    .await;
+    assert!(aborted.is_ok(), "the in-flight invoke task was aborted");
+    assert_eq!(probe.release.available_permits(), 0, "the gate was never released");
+    assert_eq!(front.push_hub().live(), 0);
+
+    server.abort();
+}
+
+// ---------------------------------------------------------------------------
+// Inbound::frame driven directly: admission order, rejection accounting, the clock
+// ---------------------------------------------------------------------------
+
+/// Unwritten REJECTION entries are capped at `invoke_max_in_flight`: with every in-flight
+/// permit held and the client never reading, the first 16 refusals queue and the 17th closes
+/// `capacity` (retryable) without queueing anything.
+#[tokio::test]
+async fn sixteen_unwritten_rejections_close_capacity_on_the_next() {
+    let probe = Probe::new();
+    let limits = PushLimits {
+        inbound_rps: 1000,
+        inbound_burst: 1000,
+        invoke_ip_burst: 1000,
+        ..test_limits()
+    };
+    let (rig, _wake) = rig(ops_front(limits, vec![("demo.hold", gated_invoker(probe.clone()))]));
+    let cap = rig.limits.invoke_max_in_flight;
+    let mut inbound = rig.inbound(KEY);
+
+    for id in 0..cap as i64 {
+        assert_eq!(inbound.frame(invoke_frame(id, "demo.hold", None).as_bytes()), None);
+    }
+    for id in 0..cap as i64 {
+        assert_eq!(
+            inbound.frame(invoke_frame(100 + id, "demo.hold", None).as_bytes()),
+            None,
+            "refusal {id} is answered, not fatal"
+        );
+    }
+    assert_eq!(rig.slot.queue.unwritten_rejections(), cap);
+
+    assert_eq!(
+        inbound.frame(invoke_frame(999, "demo.hold", None).as_bytes()),
+        Some(CloseCode::Capacity)
+    );
+    assert!(CloseCode::Capacity.retryable());
+    assert_eq!(rig.slot.queue.unwritten_rejections(), cap, "the closing refusal queued nothing");
+}
+
+/// The false-positive branch: 16 unwritten PERMIT-BACKED results are not rejections. With
+/// them holding every in-flight permit, one more invoke is admitted-then-refused — answered,
+/// NOT closed. Counting every unwritten reply entry (16 >= 16) would close `capacity` here.
+/// Reading one result and dropping its permit, as the writer does, admits the next invoke.
+#[tokio::test]
+async fn unwritten_results_are_not_rejections_and_never_close_capacity() {
+    let probe = Probe::new();
+    let limits = PushLimits {
+        inbound_rps: 1000,
+        inbound_burst: 1000,
+        invoke_ip_burst: 1000,
+        ..test_limits()
+    };
+    let (rig, mut wake) = rig(ops_front(limits, vec![("demo.echo", echo_invoker(probe.clone()))]));
+    let cap = rig.limits.invoke_max_in_flight;
+    let mut inbound = rig.inbound(KEY);
+
+    for id in 0..cap as i64 {
+        assert_eq!(inbound.frame(invoke_frame(id, "demo.echo", None).as_bytes()), None);
+    }
+    settle(&mut inbound).await;
+    assert_eq!(rig.reply_len(), cap, "sixteen unwritten, permit-backed results");
+    assert_eq!(rig.slot.queue.unwritten_rejections(), 0);
+
+    assert_eq!(
+        inbound.frame(invoke_frame(100, "demo.echo", None).as_bytes()),
+        None,
+        "refused for want of a permit, but not a capacity close"
+    );
+    assert_eq!(rig.slot.queue.unwritten_rejections(), 1);
+    assert_eq!(probe.calls(), cap, "the refused invoke never reached the backend");
+
+    let (first, permit) = take(&rig, &mut wake).await;
+    assert_eq!(first["type"], "result");
+    drop(permit.expect("a result carries its in-flight permit"));
+    assert_eq!(inbound.frame(invoke_frame(101, "demo.echo", None).as_bytes()), None);
+    settle(&mut inbound).await;
+    assert_eq!(probe.calls(), cap + 1, "the freed permit admitted the next invoke");
+}
+
+/// Every inbound frame is charged to the per-connection bucket BEFORE any byte is parsed.
+/// Under a paused clock: an exhausted bucket drops a valid invoke (zero backend calls) and a
+/// MALFORMED invoke (returns no `bad_frame` close, so it was never parsed) and never touches
+/// the shared per-IP limiter (its token is still there when the bucket refills); the refill
+/// is clock-driven. As a control, the same malformed frame closes `bad_frame` once tokens are
+/// available.
+#[tokio::test(start_paused = true)]
+async fn an_exhausted_inbound_bucket_drops_unparsed_with_no_backend_call_or_limiter_charge() {
+    let probe = Probe::new();
+    let limits = PushLimits {
+        inbound_rps: 1,
+        inbound_burst: 1,
+        invoke_ip_rps: 0,
+        invoke_ip_burst: 3,
+        ..test_limits()
+    };
+    let (rig, mut wake) = rig(ops_front(limits, vec![("demo.echo", echo_invoker(probe.clone()))]));
+    let mut inbound = rig.inbound(KEY);
+
+    // Token 1 of 1: admitted; the limiter spends 1 of 3.
+    assert_eq!(inbound.frame(invoke_frame(1, "demo.echo", None).as_bytes()), None);
+    settle(&mut inbound).await;
+    let (frame, permit) = take(&rig, &mut wake).await;
+    drop(permit);
+    assert_eq!((frame["id"].as_i64(), status_of(&frame["response"])), (Some(1), "Ok"));
+    assert_eq!(probe.calls(), 1);
+
+    // Bucket empty: a valid invoke and a malformed invoke are both dropped.
+    assert_eq!(inbound.frame(invoke_frame(2, "demo.echo", None).as_bytes()), None);
+    assert_eq!(
+        inbound.frame(br#"{"type":"invoke"}"#),
+        None,
+        "dropped before the parse that would have closed bad_frame"
+    );
+    assert!(inbound.tasks.is_empty(), "nothing was spawned");
+    assert_eq!(probe.calls(), 1, "zero backend calls for a dropped frame");
+    assert_eq!(rig.reply_len(), 0, "a dropped frame is not even answered");
+
+    // One virtual second refills one token; the limiter still has its second token, which
+    // it would not had the two dropped frames been charged to it.
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(inbound.frame(invoke_frame(4, "demo.echo", None).as_bytes()), None);
+    settle(&mut inbound).await;
+    let (frame, permit) = take(&rig, &mut wake).await;
+    drop(permit);
+    assert_eq!(
+        (frame["id"].as_i64(), status_of(&frame["response"])),
+        (Some(4), "Ok"),
+        "the refilled frame was admitted: the limiter was not consulted for frames 2 and 3"
+    );
+    assert_eq!(probe.calls(), 2);
+    assert!(rig.hub.invoke_limiter.allow(local()), "one limiter token is left");
+    assert!(!rig.hub.invoke_limiter.allow(local()), "and only one");
+
+    // Control: with a token available the same malformed frame IS parsed and closes.
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(inbound.frame(br#"{"type":"invoke"}"#), Some(CloseCode::BadFrame));
+}
+
+/// Invokes do not spend `MAX_VERBS_PER_INTERVAL` — that budget bounds acquisitions of the
+/// registry mutex, which an invoke never takes. 65 invokes (each under the inbound bucket)
+/// all get results and leave the budget untouched; group verbs still spend it, and the 65th
+/// verb is dropped (a `leave` of a joined group is ignored, so the membership survives).
+#[tokio::test]
+async fn invokes_do_not_consume_the_verb_budget_but_group_verbs_still_do() {
+    let probe = Probe::new();
+    let limits = PushLimits {
+        inbound_rps: 1000,
+        inbound_burst: 1000,
+        invoke_ip_rps: 1000,
+        invoke_ip_burst: 1000,
+        ..test_limits()
+    };
+    let (rig, mut wake) = rig(ops_front(limits, vec![("demo.echo", echo_invoker(probe.clone()))]));
+    let mut inbound = rig.inbound(KEY);
+
+    for id in 0..=MAX_VERBS_PER_INTERVAL as i64 {
+        assert_eq!(inbound.frame(invoke_frame(id, "demo.echo", None).as_bytes()), None);
+        settle(&mut inbound).await;
+        let (frame, permit) = take(&rig, &mut wake).await;
+        drop(permit);
+        assert_eq!(
+            (frame["id"].as_i64(), status_of(&frame["response"])),
+            (Some(id), "Ok"),
+            "invoke {id} of {} was answered",
+            MAX_VERBS_PER_INTERVAL + 1
+        );
+    }
+    assert_eq!(probe.calls(), MAX_VERBS_PER_INTERVAL as usize + 1);
+    assert_eq!(inbound.verbs, MAX_VERBS_PER_INTERVAL, "invokes spent none of the verb budget");
+
+    let members = |name: &str| {
+        rig.hub.state.lock().unwrap().groups.get(name).map_or(0, |members| members.len())
+    };
+    assert_eq!(inbound.frame(br#"{"type":"join","group":"g"}"#), None);
+    assert_eq!(members("g"), 1);
+    assert_eq!(inbound.verbs, MAX_VERBS_PER_INTERVAL - 1, "a group verb spends the budget");
+    for n in 0..MAX_VERBS_PER_INTERVAL - 1 {
+        let leave = format!(r#"{{"type":"leave","group":"other{n}"}}"#);
+        assert_eq!(inbound.frame(leave.as_bytes()), None);
+    }
+    assert_eq!(inbound.verbs, 0);
+    assert_eq!(inbound.frame(br#"{"type":"leave","group":"g"}"#), None);
+    assert_eq!(members("g"), 1, "the 65th verb was dropped, so the leave never ran");
+}
+
+/// A held invoke past `invoke_timeout` answers `Unavailable` "invoke timed out": the
+/// backend call is CANCELLED (its future dropped, observed by the guard) and the permit
+/// returns. Paused clock, no I/O: the deadline is virtual time.
+#[tokio::test(start_paused = true)]
+async fn a_held_invoke_past_the_timeout_answers_unavailable_and_returns_its_permit() {
+    let probe = Probe::new();
+    let limits = PushLimits { invoke_timeout: Duration::from_secs(1), ..test_limits() };
+    let (rig, mut wake) = rig(ops_front(limits, vec![("demo.hold", gated_invoker(probe.clone()))]));
+    let mut inbound = rig.inbound(KEY);
+
+    assert_eq!(inbound.frame(invoke_frame(9, "demo.hold", None).as_bytes()), None);
+    wait_calls(&probe, 1).await;
+    assert_eq!(inbound.in_flight.available_permits(), rig.limits.invoke_max_in_flight - 1);
+    assert_eq!(probe.dropped.load(AtomicOrdering::SeqCst), 0);
+
+    tokio::time::advance(Duration::from_millis(1100)).await;
+    settle(&mut inbound).await;
+
+    let (frame, permit) = take(&rig, &mut wake).await;
+    assert_eq!(frame["id"], 9);
+    assert_eq!(
+        frame["response"],
+        serde_json::json!({"status":"Unavailable","err":"invoke timed out"})
+    );
+    assert_eq!(probe.dropped.load(AtomicOrdering::SeqCst), 1, "the backend call was cancelled");
+    drop(permit);
+    assert_eq!(
+        inbound.in_flight.available_permits(),
+        rig.limits.invoke_max_in_flight,
+        "the permit came back with the written result"
+    );
+}
+
+/// `result_frame` embeds the response as JSON; a backend that answers bytes that are not
+/// JSON must become a well-formed `Internal` result rather than an unparseable frame the
+/// client cannot correlate.
+#[test]
+fn a_non_json_backend_response_becomes_an_internal_result_with_the_same_id() {
+    let ok: serde_json::Value =
+        serde_json::from_str(&result_frame(-4, br#"{"status":"Ok","v":1}"#)).unwrap();
+    assert_eq!(ok["type"], "result");
+    assert_eq!(ok["id"], -4);
+    assert_eq!(ok["response"], serde_json::json!({"status":"Ok","v":1}));
+
+    let bad: serde_json::Value = serde_json::from_str(&result_frame(3, b"not json")).unwrap();
+    assert_eq!(bad["type"], "result");
+    assert_eq!(bad["id"], 3);
+    assert_eq!(
+        bad["response"],
+        serde_json::json!({"status":"Internal","err":"malformed backend response"})
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PushLimits::from_values for the invoke knobs
+// ---------------------------------------------------------------------------
+
+const INVOKE_KNOBS: [&str; 6] = [
+    INVOKE_MAX_IN_FLIGHT,
+    INVOKE_TIMEOUT_MS,
+    INBOUND_RPS,
+    INBOUND_BURST,
+    INVOKE_IP_RPS,
+    INVOKE_IP_BURST,
+];
+
+/// `0` and garbage in any invoke knob FAIL STARTUP naming the variable and the value — a
+/// zero `PUSH_INBOUND_RPS` would otherwise be a bucket that never refills, silently.
+#[test]
+fn invoke_knobs_reject_zero_and_garbage_naming_the_variable() {
+    for name in INVOKE_KNOBS {
+        for bad in ["0", "banana", "-1", "1.5", "10s"] {
+            let err = match PushLimits::from_values(values(&[(name, bad)])) {
+                Ok(_) => panic!("{name}={bad} must fail startup"),
+                Err(err) => err,
+            };
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains(name) && msg.contains(bad),
+                "the failure must name the variable and the value it refused: {msg}"
+            );
+        }
+    }
+}
+
+/// Unset and blank invoke knobs keep the defaults (and the frame cap default is 128 KiB);
+/// set knobs land on their OWN field.
+#[test]
+fn invoke_knobs_default_when_blank_and_each_parse_onto_its_own_field() {
+    let d = PushLimits::default();
+    assert_eq!(d.max_frame_bytes, 128 * 1024);
+    for limits in [
+        PushLimits::from_values(none()).expect("unset is the default"),
+        PushLimits::from_values(values(&[
+            (INVOKE_MAX_IN_FLIGHT, ""),
+            (INVOKE_TIMEOUT_MS, "  "),
+            (INBOUND_RPS, ""),
+            (INBOUND_BURST, ""),
+            (INVOKE_IP_RPS, ""),
+            (INVOKE_IP_BURST, ""),
+        ]))
+        .expect("blank is unset"),
+    ] {
+        assert_eq!(limits.invoke_max_in_flight, d.invoke_max_in_flight);
+        assert_eq!(limits.invoke_timeout, d.invoke_timeout);
+        assert_eq!(limits.inbound_rps, d.inbound_rps);
+        assert_eq!(limits.inbound_burst, d.inbound_burst);
+        assert_eq!(limits.invoke_ip_rps, d.invoke_ip_rps);
+        assert_eq!(limits.invoke_ip_burst, d.invoke_ip_burst);
+        assert_eq!(limits.max_frame_bytes, d.max_frame_bytes);
+    }
+
+    let limits = PushLimits::from_values(values(&[
+        (INVOKE_MAX_IN_FLIGHT, "21"),
+        (INVOKE_TIMEOUT_MS, "22"),
+        (INBOUND_RPS, "23"),
+        (INBOUND_BURST, "24"),
+        (INVOKE_IP_RPS, "25"),
+        (INVOKE_IP_BURST, "26"),
+    ]))
+    .expect("a fully-specified, valid set parses");
+    assert_eq!(limits.invoke_max_in_flight, 21);
+    assert_eq!(limits.invoke_timeout, Duration::from_millis(22));
+    assert_eq!(limits.inbound_rps, 23);
+    assert_eq!(limits.inbound_burst, 24);
+    assert_eq!(limits.invoke_ip_rps, 25);
+    assert_eq!(limits.invoke_ip_burst, 26);
 }
