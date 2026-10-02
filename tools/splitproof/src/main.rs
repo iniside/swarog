@@ -3455,7 +3455,7 @@ async fn push_assertions(
         }
     };
 
-    // Every push assertion is driven by a GUEST, for the reason `[NT1]` gives: a guest
+    // Every nudge assertion is driven by a GUEST, for the reason `[NT1]` gives: a guest
     // receives no starter grant, so its inbox is empty BY CONSTRUCTION and the only
     // `notifications.new` frame it can ever see is the one this proof causes. A
     // registered player would be racing its own starter-grant nudge, and `[PH3]` would
@@ -3565,25 +3565,32 @@ async fn push_assertions(
         1,
     )
     .await;
+    let ph3_hub = match &ph3_frame {
+        Some(Frame::Message { hub, .. }) => Some(hub.clone()),
+        _ => None,
+    };
     p.check(
         &format!(
             "[PH3{tag}] durable wallet.changed -> notifications-svc inbox row -> id-free \
-             `{}` frame at a client on the front",
+             `{}` frame labelled hub `notifications` at a client on the front",
             notificationsapi::PUSH_NEW_TOPIC
         ),
         ph3_code == 201
             && ph3_ack
             && ph3_grant_code == 303
             && ph3_frame.is_some()
+            && ph3_hub.as_deref() == Some("notifications")
             && ph3_id_free
             && ph3_row,
         format!(
-            "guest={ph3_code} ack={ph3_ack} grant={ph3_grant_code} frame={} id_free={ph3_id_free} \
-             inbox_row={ph3_row} pid={}",
+            "guest={ph3_code} ack={ph3_ack} grant={ph3_grant_code} frame={} hub={ph3_hub:?} \
+             id_free={ph3_id_free} inbox_row={ph3_row} pid={}",
             ph3_frame.is_some(),
             ph3_guest.player_id
         ),
     );
+
+    push_invoke_assertions(ctx, pool, p, base, admin, &ws, &suffix, tag).await?;
 
     let mut ph5_watcher: Option<PushClient> = None;
     if split {
@@ -3770,6 +3777,202 @@ async fn push_assertions(
             client.disconnect().await;
         }
     }
+
+    Ok(())
+}
+
+/// `[PH7]`-`[PH11]`: player ops invoked over `/push`. The invoke runs `handle_player`, so in
+/// the split every op below is dispatched Remote from gateway-svc to its owning svc over
+/// the internal edge, and in the monolith Local — the same frames either way.
+///
+/// Four invokes per socket stay inside the per-connection inbound bucket (burst 20); a
+/// frame over it is dropped silently and would read as a missing result, not a denial.
+#[allow(clippy::too_many_arguments)]
+async fn push_invoke_assertions(
+    ctx: &Ctx,
+    pool: &PgPool,
+    p: &mut Proof,
+    base: &str,
+    admin: &reqwest::Client,
+    ws: &str,
+    suffix: &str,
+    tag: &str,
+) -> Result<()> {
+    let budget = Duration::from_secs(15);
+    let status = |r: &Result<serde_json::Value>| -> Option<String> {
+        r.as_ref()
+            .ok()
+            .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(str::to_string))
+    };
+
+    // [PH7] a REGISTERED player (a guest could not tell a session-verified identity from
+    // the handshake's) writes then reads back its own object: the second invoke only finds
+    // the value if the first one committed under the invoking player's id.
+    let ph7_token = register_login(ctx, base, &format!("push-invoke-{suffix}@test.local")).await?;
+    let mut ph7 = PushClient::connect(ws, &ph7_token, "dev-key-client").await?;
+    let ph7_ack = matches!(
+        ph7.next_frame(Duration::from_secs(10)).await,
+        Ok(Some(Frame::Ack { .. }))
+    );
+    let ph7_key = format!("push-{suffix}");
+    let ph7_doc = serde_json::json!({ "proof": suffix, "n": 7 });
+    let ph7_put = ph7
+        .invoke(
+            1,
+            "storage.put",
+            serde_json::json!({
+                "collection": "splitproof",
+                "key": ph7_key,
+                "value": ph7_doc.to_string(),
+                "expected_version": 0,
+                "acl": "",
+            }),
+            budget,
+        )
+        .await;
+    let ph7_get = ph7
+        .invoke(
+            2,
+            "storage.get",
+            serde_json::json!({ "collection": "splitproof", "key": ph7_key, "owner_id": "" }),
+            budget,
+        )
+        .await;
+    let ph7_version = ph7_put
+        .as_ref()
+        .ok()
+        .and_then(|v| v.pointer("/value/version").and_then(|n| n.as_i64()));
+    let ph7_read = ph7_get
+        .as_ref()
+        .ok()
+        .and_then(|v| v.pointer("/value/value").and_then(|t| t.as_str()))
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok());
+    p.check(
+        &format!("[PH7{tag}] registered player invokes storage.put then storage.get over /push -> value read back"),
+        ph7_ack
+            && status(&ph7_put).as_deref() == Some("Ok")
+            && ph7_version == Some(1)
+            && status(&ph7_get).as_deref() == Some("Ok")
+            && ph7_read.as_ref() == Some(&ph7_doc),
+        format!("ack={ph7_ack} put={ph7_put:?} get={ph7_get:?}"),
+    );
+
+    // [PH8] the api-key POLICY is applied per invoke: `match.report` is a real op the
+    // front routes, absent from `dev-client`'s policy — Forbidden, not NotFound.
+    let ph8 = ph7
+        .invoke(
+            3,
+            "match.report",
+            serde_json::json!({ "report_id": format!("push-{suffix}"), "winner": "a", "loser": "b" }),
+            budget,
+        )
+        .await;
+    p.check(
+        &format!("[PH8{tag}] dev-key-client invokes match.report over /push -> Forbidden"),
+        status(&ph8).as_deref() == Some("Forbidden"),
+        format!("response={ph8:?}"),
+    );
+
+    // [PH9] the allow-list is the player plane's: a wire-only method is NotFound even
+    // though the owning svc's internal edge serves it.
+    let ph9 = ph7
+        .invoke(
+            4,
+            "characters.ownerOf",
+            serde_json::json!({ "character_id": "00000000-0000-0000-0000-000000000000" }),
+            budget,
+        )
+        .await;
+    p.check(
+        &format!("[PH9{tag}] wire-only characters.ownerOf over /push -> NotFound"),
+        status(&ph9).as_deref() == Some("NotFound"),
+        format!("response={ph9:?}"),
+    );
+    ph7.disconnect().await;
+
+    // [PH11] one socket carries a hub-labelled nudge AND an invoke result. A guest again
+    // ([PH3]'s reason: its inbox is empty, so the only `notifications.new` it can see is the
+    // one caused here). The invoke is sent once the inbox row is committed, so the nudge is
+    // normally already on the wire and `invoke` must BUFFER it for `await_topic` to find.
+    let (ph11_code, ph11_guest) = create_guest(ctx, base).await?;
+    let mut ph11 = PushClient::connect(ws, &ph11_guest.token, "dev-key-client").await?;
+    let ph11_ack = matches!(
+        ph11.next_frame(Duration::from_secs(10)).await,
+        Ok(Some(Frame::Ack { .. }))
+    );
+    let (csrf, idem, _) = wallet_form(admin, base).await?;
+    let ph11_grant = admin
+        .post(format!("{base}/admin/wallet"))
+        .form(&[
+            ("_csrf", csrf.as_str()),
+            ("_idem_grant", idem.as_str()),
+            ("_action", "grant"),
+            ("player_id", ph11_guest.player_id.as_str()),
+            ("currency", "gold"),
+            ("amount", "11"),
+            ("reason", "splitproof push interleave"),
+        ])
+        .send()
+        .await?
+        .status()
+        .as_u16();
+    let ph11_row = poll_count(
+        pool,
+        "SELECT count(*) FROM notifications.messages \
+          WHERE player_id::text = $1 AND kind = 'wallet.credit'",
+        &ph11_guest.player_id,
+        1,
+    )
+    .await;
+    let ph11_result = ph11
+        .invoke(
+            11,
+            "storage.get",
+            serde_json::json!({ "collection": "splitproof", "key": format!("absent-{suffix}"), "owner_id": "" }),
+            budget,
+        )
+        .await;
+    let ph11_nudge = ph11
+        .await_topic(notificationsapi::PUSH_NEW_TOPIC, Duration::from_secs(30))
+        .await;
+    let ph11_hub = match &ph11_nudge {
+        Some(Frame::Message { hub, .. }) => Some(hub.clone()),
+        _ => None,
+    };
+    p.check(
+        &format!(
+            "[PH11{tag}] a `notifications` nudge and the result of invoke 11 share one socket, \
+             each with its own hub/id"
+        ),
+        ph11_code == 201
+            && ph11_ack
+            && ph11_grant == 303
+            && ph11_row
+            && status(&ph11_result).as_deref() == Some("NotFound")
+            && ph11_hub.as_deref() == Some("notifications"),
+        format!(
+            "guest={ph11_code} ack={ph11_ack} grant={ph11_grant} inbox_row={ph11_row} \
+             result={ph11_result:?} nudge_hub={ph11_hub:?}"
+        ),
+    );
+
+    // [PH10] an invoke with no `id` cannot be answered, so it ends the connection with the
+    // typed, non-retryable `bad_frame` close rather than being ignored.
+    ph11
+        .send(serde_json::json!({ "type": "invoke", "method": "storage.get", "payload": {} }))
+        .await?;
+    let ph10_close = ph11
+        .await_frame(Duration::from_secs(10), |f| matches!(f, Frame::Close { .. }))
+        .await;
+    let ph10_ended = matches!(ph11.next_frame(Duration::from_secs(10)).await, Ok(None));
+    p.check(
+        &format!("[PH10{tag}] invoke without an id -> typed close bad_frame (not retryable)"),
+        matches!(
+            &ph10_close,
+            Some(Frame::Close { code, retryable }) if code == "bad_frame" && !*retryable
+        ) && ph10_ended,
+        format!("close={ph10_close:?} socket_ended={ph10_ended}"),
+    );
 
     Ok(())
 }

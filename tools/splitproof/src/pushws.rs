@@ -10,6 +10,7 @@
 //! FRAME, never a sleep: a push message has no id and no redelivery, so a proof that
 //! slept and then looked would be racing the socket rather than observing it.
 
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -24,12 +25,19 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 /// One server→client frame, in the shape the front serializes it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
     /// The handshake succeeded and the front minted this connection id.
     Ack { connection_id: u64 },
     /// A delivered `push::Message`; `payload` is the producer's bytes, base64-decoded.
-    Message { topic: String, payload: Vec<u8> },
+    Message {
+        hub: String,
+        topic: String,
+        payload: Vec<u8>,
+    },
+    /// The answer to the `invoke` with the same `id`: the player-plane `{status, err,
+    /// value?}` envelope.
+    Result { id: i64, response: serde_json::Value },
     /// The typed close, carrying the code a client dispatches on.
     Close { code: String, retryable: bool },
     /// Anything this harness does not model — kept whole so a failure message can show it.
@@ -46,7 +54,7 @@ impl Frame {
 
     /// The `player_id`/`online` pair of a `push.presence` payload.
     pub fn presence(&self) -> Option<(String, bool)> {
-        let Frame::Message { topic, payload } = self else {
+        let Frame::Message { topic, payload, .. } = self else {
             return None;
         };
         if topic != PRESENCE_TOPIC {
@@ -69,16 +77,25 @@ impl Frame {
                 None => Frame::Other(text.to_string()),
             },
             Some("message") => {
+                let hub = value.get("hub").and_then(|v| v.as_str());
                 let topic = value.get("topic").and_then(|v| v.as_str()).unwrap_or_default();
                 let encoded = value.get("payload").and_then(|v| v.as_str()).unwrap_or_default();
-                match base64::engine::general_purpose::STANDARD.decode(encoded) {
-                    Ok(payload) => Frame::Message {
+                match (hub, base64::engine::general_purpose::STANDARD.decode(encoded)) {
+                    (Some(hub), Ok(payload)) => Frame::Message {
+                        hub: hub.to_string(),
                         topic: topic.to_string(),
                         payload,
                     },
-                    Err(_) => Frame::Other(text.to_string()),
+                    _ => Frame::Other(text.to_string()),
                 }
             }
+            Some("result") => match (value.get("id").and_then(|v| v.as_i64()), value.get("response")) {
+                (Some(id), Some(response)) if response.is_object() => Frame::Result {
+                    id,
+                    response: response.clone(),
+                },
+                _ => Frame::Other(text.to_string()),
+            },
             Some("close") => Frame::Close {
                 code: value
                     .get("code")
@@ -103,6 +120,9 @@ pub const PRESENCE_TOPIC: &str = "push.presence";
 /// One live `/push` connection.
 pub struct PushClient {
     stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    /// Frames read while [`PushClient::invoke`] awaited its result; `next_frame` yields
+    /// them before reading the socket again, so an invoke never swallows a push frame.
+    buffered: VecDeque<Frame>,
 }
 
 impl PushClient {
@@ -124,13 +144,23 @@ impl PushClient {
         let (stream, _response) = tokio_tungstenite::connect_async(request)
             .await
             .context("upgrade GET /push")?;
-        Ok(PushClient { stream })
+        Ok(PushClient {
+            stream,
+            buffered: VecDeque::new(),
+        })
     }
 
     /// The next frame the front sends, within `budget`. `Ok(None)` means the socket ended
     /// (a close or a drop) and `Err` means the budget elapsed with the socket still open —
     /// the two are different findings, so they are different answers.
     pub async fn next_frame(&mut self, budget: Duration) -> Result<Option<Frame>> {
+        if let Some(frame) = self.buffered.pop_front() {
+            return Ok(Some(frame));
+        }
+        self.read_frame(budget).await
+    }
+
+    async fn read_frame(&mut self, budget: Duration) -> Result<Option<Frame>> {
         let deadline = Instant::now() + budget;
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -199,12 +229,47 @@ impl PushClient {
         .is_some()
     }
 
-    /// Sends one client→server verb frame (`join`/`leave`).
+    /// Sends one raw client→server frame.
     pub async fn send(&mut self, frame: serde_json::Value) -> Result<()> {
         self.stream
             .send(WsMessage::Text(frame.to_string()))
             .await
             .context("write a client frame")
+    }
+
+    /// Sends `{"type":"invoke","id":id,"method":method,"payload":payload}` and returns the
+    /// `response` envelope of the `result` carrying the same `id`, within `budget`. Every
+    /// other frame read meanwhile is buffered for later `next_frame`/`await_*` calls.
+    pub async fn invoke(
+        &mut self,
+        id: i64,
+        method: &str,
+        payload: serde_json::Value,
+        budget: Duration,
+    ) -> Result<serde_json::Value> {
+        self.send(serde_json::json!({
+            "type": "invoke",
+            "id": id,
+            "method": method,
+            "payload": payload,
+        }))
+        .await?;
+        let deadline = Instant::now() + budget;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                bail!("no result for invoke {id} ({method}) within {budget:?}");
+            }
+            match self.read_frame(left).await? {
+                Some(Frame::Result { id: got, response }) if got == id => return Ok(response),
+                Some(frame @ Frame::Close { .. }) => {
+                    self.buffered.push_back(frame.clone());
+                    bail!("socket closed before the result of invoke {id} ({method}): {frame:?}");
+                }
+                Some(frame) => self.buffered.push_back(frame),
+                None => bail!("socket ended before the result of invoke {id} ({method})"),
+            }
+        }
     }
 
     /// Joins `group`, addressable as `push::Target::Group`. The verb is silent by design
