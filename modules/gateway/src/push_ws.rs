@@ -1380,19 +1380,7 @@ async fn run(
 
     // The matching offline announcement belongs to `Slot::drop`, which runs when this
     // returns — and on the paths this never returns from.
-    let inbound = Inbound {
-        front,
-        slot: &slot,
-        bearer,
-        api_key: creds.api_key,
-        limits: &limits,
-        bucket: InboundBucket::new(limits.inbound_rps, limits.inbound_burst),
-        verbs: MAX_VERBS_PER_INTERVAL,
-        in_flight: Arc::new(Semaphore::new(
-            limits.invoke_max_in_flight.min(Semaphore::MAX_PERMITS),
-        )),
-        tasks: JoinSet::new(),
-    };
+    let inbound = Inbound::new(front, &slot, bearer, creds.api_key, &limits);
     serve(inbound, &mut wake, &mut socket, &player).await;
 }
 
@@ -1648,7 +1636,29 @@ struct Inbound<'a> {
     tasks: JoinSet<()>,
 }
 
-impl Inbound<'_> {
+impl<'a> Inbound<'a> {
+    fn new(
+        front: Arc<FrontDoor>,
+        slot: &'a Slot,
+        bearer: String,
+        api_key: Option<String>,
+        limits: &'a PushLimits,
+    ) -> Self {
+        Inbound {
+            front,
+            slot,
+            bearer,
+            api_key,
+            limits,
+            bucket: InboundBucket::new(limits.inbound_rps, limits.inbound_burst),
+            verbs: MAX_VERBS_PER_INTERVAL,
+            in_flight: Arc::new(Semaphore::new(
+                limits.invoke_max_in_flight.min(Semaphore::MAX_PERMITS),
+            )),
+            tasks: JoinSet::new(),
+        }
+    }
+
     /// Admits one inbound frame. `Some` is the close the connection ends with.
     ///
     /// Every frame is charged to the per-connection bucket before any byte of it is
