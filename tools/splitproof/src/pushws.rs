@@ -311,3 +311,7 @@ pub async fn deliver_batch(
     client.close();
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "pushws_tests.rs"]
+mod tests;

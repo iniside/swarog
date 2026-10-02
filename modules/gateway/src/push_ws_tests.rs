@@ -921,10 +921,13 @@ async fn the_queued_helper_lists_frames_in_the_order_recv_yields_them() {
     assert!(queued(&slot.queue).is_empty(), "the drain consumed exactly what was listed");
 }
 
-/// The handshake ack is queued by the production `enqueue_ack` on the reply lane: with
-/// events already queued, and with the event lanes flooded at depth, it is still the FIRST
-/// frame `recv` yields and is never evicted. Enqueued as an event frame instead, the first
-/// case yields the events first and the second evicts it.
+/// The handshake ack is queued by the production `enqueue_ack` on the reply lane. Case 1
+/// moves the round-robin cursor OFF lane 0 (e1 is served from lane `a`, leaving the cursor on
+/// lane `b`) before the ack is enqueued: an ack pushed as an event frame would land in lane 0
+/// behind the cursor and be yielded AFTER e2, so "ack first" fails. Case 2 floods the event
+/// lanes to depth: an ack pushed as an event frame would evict an event, so the event total
+/// after the ack is served would be 3, not 4 (the ack-first assertion alone does not
+/// discriminate there, since the cursor is still on lane 0).
 #[tokio::test]
 async fn the_ack_is_the_first_frame_even_behind_queued_events_and_a_flood() {
     let hub = hub_with(PushLimits { queue_depth: 4, ..test_limits() });
@@ -934,14 +937,22 @@ async fn the_ack_is_the_first_frame_even_behind_queued_events_and_a_flood() {
         assert_eq!(v["connection_id"], serde_json::to_value(id).unwrap());
     };
 
-    // Events already queued when the ack is enqueued.
+    // Events queued, and the cursor moved off lane 0, when the ack is enqueued.
     let (slot, mut wake) = bound(&hub, local(), "alice");
     to_alice(&hub, "a.x", "e1");
     to_alice(&hub, "b.x", "e2");
+    to_alice(&hub, "a.x", "e3");
+    match slot.queue.recv(&mut wake).await {
+        Some(Outbound::Text(text)) => {
+            assert!(text.contains("\"topic\":\"a.x\""), "e1 is served first: {text}")
+        }
+        _ => panic!("expected the first event"),
+    }
+    assert_eq!(event_total(&slot.queue), 2);
     assert!(enqueue_ack(&slot.queue, slot.id));
     match slot.queue.recv(&mut wake).await {
         Some(Outbound::Text(text)) => ack_is(&text, slot.id),
-        _ => panic!("expected the ack first"),
+        _ => panic!("expected the ack before the remaining events"),
     }
     assert_eq!(event_total(&slot.queue), 2, "the events were not consumed by the ack");
 
@@ -2352,17 +2363,13 @@ fn rig(front: Arc<FrontDoor>) -> (Rig, mpsc::Receiver<()>) {
 
 impl Rig {
     fn inbound(&self, api_key: &str) -> Inbound<'_> {
-        Inbound {
-            front: self.front.clone(),
-            slot: &self.slot,
-            bearer: "dev-alice".to_string(),
-            api_key: Some(api_key.to_string()),
-            limits: &self.limits,
-            bucket: InboundBucket::new(self.limits.inbound_rps, self.limits.inbound_burst),
-            verbs: MAX_VERBS_PER_INTERVAL,
-            in_flight: Arc::new(Semaphore::new(self.limits.invoke_max_in_flight)),
-            tasks: JoinSet::new(),
-        }
+        Inbound::new(
+            self.front.clone(),
+            &self.slot,
+            "dev-alice".to_string(),
+            Some(api_key.to_string()),
+            &self.limits,
+        )
     }
 
     fn reply_len(&self) -> usize {
@@ -2391,9 +2398,13 @@ async fn take(
 
 /// Runs every spawned invoke task to completion.
 async fn settle(inbound: &mut Inbound<'_>) {
-    while let Some(joined) = inbound.tasks.join_next().await {
-        joined.expect("an invoke task never panics: the panic is caught and answered");
-    }
+    let drained = tokio::time::timeout(GUARD, async {
+        while let Some(joined) = inbound.tasks.join_next().await {
+            joined.expect("an invoke task never panics: the panic is caught and answered");
+        }
+    })
+    .await;
+    assert!(drained.is_ok(), "an invoke task did not finish within the hang guard");
 }
 
 fn status_of(response: &serde_json::Value) -> &str {
@@ -2577,9 +2588,8 @@ async fn a_bearer_revoked_after_bind_is_unauthorized_on_the_next_invoke() {
 }
 
 /// 17 concurrent held invokes against the default in-flight cap of 16: the 17th is
-/// answered at once with `Unavailable` and never reaches the backend. The permit is released
-/// only after a result is WRITTEN, so releasing one held call and reading its result admits
-/// the next invoke.
+/// answered at once with `Unavailable` and never reaches the backend. Releasing one held call
+/// and reading its written result frees a slot, so the next invoke is admitted.
 #[tokio::test]
 async fn the_17th_concurrent_invoke_is_refused_and_a_written_result_frees_a_slot() {
     let probe = Probe::new();
@@ -3146,6 +3156,12 @@ fn invoke_knobs_reject_zero_and_garbage_naming_the_variable() {
 #[test]
 fn invoke_knobs_default_when_blank_and_each_parse_onto_its_own_field() {
     let d = PushLimits::default();
+    assert_eq!(d.invoke_max_in_flight, 16);
+    assert_eq!(d.invoke_timeout, Duration::from_millis(30_000));
+    assert_eq!(d.inbound_rps, 10);
+    assert_eq!(d.inbound_burst, 20);
+    assert_eq!(d.invoke_ip_rps, 20);
+    assert_eq!(d.invoke_ip_burst, 40);
     assert_eq!(d.max_frame_bytes, 128 * 1024);
     for limits in [
         PushLimits::from_values(none()).expect("unset is the default"),
@@ -3183,4 +3199,75 @@ fn invoke_knobs_default_when_blank_and_each_parse_onto_its_own_field() {
     assert_eq!(limits.inbound_burst, 24);
     assert_eq!(limits.invoke_ip_rps, 25);
     assert_eq!(limits.invoke_ip_burst, 26);
+}
+
+/// The per-IP invoke limiter is consulted ONLY for invoke frames. With rate 0 / burst 1 the
+/// bucket holds exactly one token and never refills: a join, an unknown verb and malformed
+/// JSON must not spend it, so the one invoke that follows is still answered `Ok`, and the
+/// token is spent afterwards. A limiter charged before the invoke probe (or on every frame)
+/// would have emptied the bucket and answered "rate limited".
+#[tokio::test]
+async fn non_invoke_frames_never_touch_the_per_ip_invoke_limiter() {
+    let probe = Probe::new();
+    let limits = PushLimits { invoke_ip_rps: 0, invoke_ip_burst: 1, ..test_limits() };
+    let (rig, mut wake) = rig(ops_front(limits, vec![("demo.echo", echo_invoker(probe.clone()))]));
+    let mut inbound = rig.inbound(KEY);
+
+    for frame in [r#"{"type":"join","group":"g"}"#, r#"{"type":"future_verb"}"#, "not json"] {
+        assert_eq!(inbound.frame(frame.as_bytes()), None);
+    }
+    assert_eq!(inbound.frame(invoke_frame(1, "demo.echo", None).as_bytes()), None);
+    settle(&mut inbound).await;
+
+    let (frame, permit) = take(&rig, &mut wake).await;
+    drop(permit);
+    assert_eq!(frame["type"], "result");
+    assert_eq!(status_of(&frame["response"]), "Ok", "the token was still there: {frame}");
+    assert_eq!(probe.calls(), 1);
+    assert!(
+        !rig.hub.invoke_limiter.allow(local()),
+        "the invoke spent the one token, so the limiter is consulted for invokes"
+    );
+}
+
+/// `PushHub::new` names its limiter `push_invoke`: the series exists (at zero) from
+/// construction, so a hub that passed another name — or the HTTP limiter's — would leave no
+/// `limiter="push_invoke"` series behind.
+#[test]
+fn the_hub_registers_its_limiter_series_as_push_invoke() {
+    let _hub = hub_with(test_limits());
+    let families = httpmw::table_saturation_collector().collect();
+    let labelled = families
+        .iter()
+        .flat_map(|family| family.get_metric())
+        .any(|metric| {
+            metric.get_label().iter().any(|l| l.get_name() == "limiter" && l.get_value() == "push_invoke")
+        });
+    assert!(labelled, "no limiter=\"push_invoke\" series after constructing a PushHub");
+}
+
+/// `Gateway::start` spawns the invoke-limiter eviction task and `stop` aborts it. The task
+/// owns a clone of the limiter, so the limiter's strong count is the observable: 1 before
+/// start, 2 while the task lives, 1 again once `stop` has aborted and awaited it. A `start`
+/// that never spawns leaves it at 1; a `stop` that drops the handle without aborting leaves
+/// it at 2.
+#[tokio::test]
+async fn gateway_start_spawns_the_invoke_limiter_eviction_and_stop_aborts_it() {
+    use lifecycle::Module as _;
+
+    let front = ops_front(test_limits(), vec![("demo.echo", echo_invoker(Probe::new()))]);
+    let gw = crate::Gateway::with_verifier(Arc::new(DevSessionVerifier::new()));
+    let _ = gw.front_door.set(front.clone());
+    let hub = front.push_hub();
+    assert_eq!(Arc::strong_count(&hub.invoke_limiter), 1, "fixture: no task holds the limiter yet");
+    let baseline = 1;
+
+    let ctx = lifecycle::Context::new();
+    gw.start(&ctx).await.expect("start in the slots topology");
+    assert!(gw.limiter_eviction.lock().unwrap().is_some(), "start keeps the eviction handle");
+    assert_eq!(Arc::strong_count(&hub.invoke_limiter), baseline + 1, "the task holds the limiter");
+
+    gw.stop(&ctx).await.expect("stop");
+    assert!(gw.limiter_eviction.lock().unwrap().is_none(), "stop takes the handle");
+    assert_eq!(Arc::strong_count(&hub.invoke_limiter), baseline, "the aborted task released it");
 }
