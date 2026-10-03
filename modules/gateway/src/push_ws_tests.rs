@@ -3246,28 +3246,48 @@ fn the_hub_registers_its_limiter_series_as_push_invoke() {
     assert!(labelled, "no limiter=\"push_invoke\" series after constructing a PushHub");
 }
 
-/// `Gateway::start` spawns the invoke-limiter eviction task and `stop` aborts it. The task
-/// owns a clone of the limiter, so the limiter's strong count is the observable: 1 before
-/// start, 2 while the task lives, 1 again once `stop` has aborted and awaited it. A `start`
-/// that never spawns leaves it at 1; a `stop` that drops the handle without aborting leaves
-/// it at 2.
-#[tokio::test]
-async fn gateway_start_spawns_the_invoke_limiter_eviction_and_stop_aborts_it() {
+/// Drives `Gateway::start`/`stop` on `gw` (whose FrontDoor is `front`) and checks the invoke
+/// limiter's reaper lifecycle. The task owns a clone of the limiter, so its strong count is the
+/// observable: 1 before start, 2 while the task lives, 1 again once `stop` has aborted and
+/// awaited it. A `start` that never spawns leaves it at 1; a `stop` that drops the handle
+/// without aborting leaves it at 2.
+async fn assert_limiter_reaper_lifecycle(gw: &crate::Gateway, front: &Arc<crate::FrontDoor>) {
     use lifecycle::Module as _;
 
-    let front = ops_front(test_limits(), vec![("demo.echo", echo_invoker(Probe::new()))]);
-    let gw = crate::Gateway::with_verifier(Arc::new(DevSessionVerifier::new()));
-    let _ = gw.front_door.set(front.clone());
     let hub = front.push_hub();
     assert_eq!(Arc::strong_count(&hub.invoke_limiter), 1, "fixture: no task holds the limiter yet");
-    let baseline = 1;
 
     let ctx = lifecycle::Context::new();
-    gw.start(&ctx).await.expect("start in the slots topology");
+    gw.start(&ctx).await.expect("start");
     assert!(gw.limiter_eviction.lock().unwrap().is_some(), "start keeps the eviction handle");
-    assert_eq!(Arc::strong_count(&hub.invoke_limiter), baseline + 1, "the task holds the limiter");
+    assert_eq!(Arc::strong_count(&hub.invoke_limiter), 2, "the task holds the limiter");
 
     gw.stop(&ctx).await.expect("stop");
     assert!(gw.limiter_eviction.lock().unwrap().is_none(), "stop takes the handle");
-    assert_eq!(Arc::strong_count(&hub.invoke_limiter), baseline, "the aborted task released it");
+    assert_eq!(Arc::strong_count(&hub.invoke_limiter), 1, "the aborted task released it");
+}
+
+/// Slots-only (monolith/standalone) `start` branch: `describe_routing == false`.
+#[tokio::test]
+async fn gateway_start_spawns_the_invoke_limiter_eviction_and_stop_aborts_it() {
+    let front = ops_front(test_limits(), vec![("demo.echo", echo_invoker(Probe::new()))]);
+    let gw = crate::Gateway::with_verifier(Arc::new(DevSessionVerifier::new()));
+    assert!(gw.front_door.set(front.clone()).is_ok(), "fixture: the front door was unset");
+    assert_limiter_reaper_lifecycle(&gw, &front).await;
+}
+
+/// Describe-routing (gateway-svc split front) `start` branch: `describe_routing == true`, the
+/// branch that spawns the describe refresh loop. The reaper spawn sits after the if/else, so a
+/// refactor that moved it into the slots-only arm would leave the split front without a reaper
+/// while the slots-only case above stayed green. Zero peers: `refresh_once` skips the fetch loop
+/// and builds an empty table, so `start` succeeds offline; the describe task is owned and joined
+/// by `stop` too.
+#[tokio::test]
+async fn gateway_start_spawns_the_invoke_limiter_eviction_on_the_describe_routing_front() {
+    let front = ops_front(test_limits(), vec![("demo.echo", echo_invoker(Probe::new()))]);
+    let gw = crate::Gateway::with_verifier(Arc::new(DevSessionVerifier::new())).with_describe_routing();
+    assert!(gw.front_door.set(front.clone()).is_ok(), "fixture: the front door was unset");
+    assert_limiter_reaper_lifecycle(&gw, &front).await;
+    assert!(gw.task.lock().unwrap().is_none(), "stop joined the describe refresh task");
+    assert!(gw.stop_tx.lock().unwrap().is_none(), "stop took the describe stop sender");
 }
