@@ -3785,8 +3785,8 @@ async fn push_assertions(
 /// the split every op below is dispatched Remote from gateway-svc to its owning svc over
 /// the internal edge, and in the monolith Local — the same frames either way.
 ///
-/// Four invokes per socket stay inside the per-connection inbound bucket (burst 20); a
-/// frame over it is dropped silently and would read as a missing result, not a denial.
+/// At most four frames per socket stay inside the per-connection inbound bucket (burst 20);
+/// a frame over it is dropped silently and would read as a missing result, not a denial.
 #[allow(clippy::too_many_arguments)]
 async fn push_invoke_assertions(
     ctx: &Ctx,
@@ -3804,11 +3804,22 @@ async fn push_invoke_assertions(
             .ok()
             .and_then(|v| v.get("status").and_then(|s| s.as_str()).map(str::to_string))
     };
+    let err = |r: &Result<serde_json::Value>| -> Option<String> {
+        r.as_ref()
+            .ok()
+            .and_then(|v| v.get("err").and_then(|s| s.as_str()).map(str::to_string))
+    };
 
-    // [PH7] a REGISTERED player (a guest could not tell a session-verified identity from
-    // the handshake's) writes then reads back its own object: the second invoke only finds
-    // the value if the first one committed under the invoking player's id.
-    let ph7_token = register_login(ctx, base, &format!("push-invoke-{suffix}@test.local")).await?;
+    // [PH7] a REGISTERED player writes then reads back its own object. The read's
+    // `owner_id` and the `storage.objects` row are both checked against the id `register`
+    // returned, so the invoke ran as the session's player, not as some other identity.
+    let (ph7_player, ph7_token) = register_capture(
+        ctx,
+        base,
+        &format!("push-invoke-{suffix}@test.local"),
+        "PushInvoke",
+    )
+    .await?;
     let mut ph7 = PushClient::connect(ws, &ph7_token, "dev-key-client").await?;
     let ph7_ack = matches!(
         ph7.next_frame(Duration::from_secs(10)).await,
@@ -3847,18 +3858,40 @@ async fn push_invoke_assertions(
         .ok()
         .and_then(|v| v.pointer("/value/value").and_then(|t| t.as_str()))
         .and_then(|t| serde_json::from_str::<serde_json::Value>(t).ok());
+    let ph7_owner = ph7_get
+        .as_ref()
+        .ok()
+        .and_then(|v| v.pointer("/value/owner_id").and_then(|o| o.as_str()).map(str::to_string));
+    let ph7_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM storage.objects \
+          WHERE owner_id::text = $1 AND collection = 'splitproof' AND key = $2",
+    )
+    .bind(&ph7_player)
+    .bind(&ph7_key)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(-1);
     p.check(
-        &format!("[PH7{tag}] registered player invokes storage.put then storage.get over /push -> value read back"),
+        &format!(
+            "[PH7{tag}] registered player invokes storage.put then storage.get over /push -> \
+             value read back, owned by the registered player id"
+        ),
         ph7_ack
             && status(&ph7_put).as_deref() == Some("Ok")
             && ph7_version == Some(1)
             && status(&ph7_get).as_deref() == Some("Ok")
-            && ph7_read.as_ref() == Some(&ph7_doc),
-        format!("ack={ph7_ack} put={ph7_put:?} get={ph7_get:?}"),
+            && ph7_read.as_ref() == Some(&ph7_doc)
+            && ph7_owner.as_deref() == Some(ph7_player.as_str())
+            && ph7_rows == 1,
+        format!(
+            "ack={ph7_ack} player={ph7_player} owner={ph7_owner:?} rows={ph7_rows} \
+             put={ph7_put:?} get={ph7_get:?}"
+        ),
     );
 
     // [PH8] the api-key POLICY is applied per invoke: `match.report` is a real op the
-    // front routes, absent from `dev-client`'s policy — Forbidden, not NotFound.
+    // front routes, absent from `dev-client`'s policy — the key denial's Forbidden, not
+    // NotFound and not a domain Forbidden.
     let ph8 = ph7
         .invoke(
             3,
@@ -3868,13 +3901,15 @@ async fn push_invoke_assertions(
         )
         .await;
     p.check(
-        &format!("[PH8{tag}] dev-key-client invokes match.report over /push -> Forbidden"),
-        status(&ph8).as_deref() == Some("Forbidden"),
+        &format!("[PH8{tag}] dev-key-client invokes match.report over /push -> Forbidden (key policy)"),
+        status(&ph8).as_deref() == Some("Forbidden")
+            && err(&ph8).as_deref() == Some("api key policy forbids this operation"),
         format!("response={ph8:?}"),
     );
 
-    // [PH9] the allow-list is the player plane's: a wire-only method is NotFound even
-    // though the owning svc's internal edge serves it.
+    // [PH9] the allow-list is the player plane's: a wire-only method is the front's own
+    // `unknown operation` NotFound even though the owning svc's internal edge serves it —
+    // the message tells it apart from a misrouted edge UnknownMethod, also NotFound.
     let ph9 = ph7
         .invoke(
             4,
@@ -3884,16 +3919,18 @@ async fn push_invoke_assertions(
         )
         .await;
     p.check(
-        &format!("[PH9{tag}] wire-only characters.ownerOf over /push -> NotFound"),
-        status(&ph9).as_deref() == Some("NotFound"),
+        &format!("[PH9{tag}] wire-only characters.ownerOf over /push -> NotFound (unknown operation)"),
+        status(&ph9).as_deref() == Some("NotFound")
+            && err(&ph9).as_deref() == Some("unknown operation"),
         format!("response={ph9:?}"),
     );
     ph7.disconnect().await;
 
     // [PH11] one socket carries a hub-labelled nudge AND an invoke result. A guest again
     // ([PH3]'s reason: its inbox is empty, so the only `notifications.new` it can see is the
-    // one caused here). The invoke is sent once the inbox row is committed, so the nudge is
-    // normally already on the wire and `invoke` must BUFFER it for `await_topic` to find.
+    // one caused here). The invoke is sent once the inbox row is committed; whichever of
+    // nudge and result arrives first, each must still be found by its own id/topic. That
+    // `invoke` buffers an earlier frame is proven deterministically in `pushws_tests.rs`.
     let (ph11_code, ph11_guest) = create_guest(ctx, base).await?;
     let mut ph11 = PushClient::connect(ws, &ph11_guest.token, "dev-key-client").await?;
     let ph11_ack = matches!(
@@ -3949,6 +3986,7 @@ async fn push_invoke_assertions(
             && ph11_grant == 303
             && ph11_row
             && status(&ph11_result).as_deref() == Some("NotFound")
+            && err(&ph11_result).as_deref() == Some("no such object")
             && ph11_hub.as_deref() == Some("notifications"),
         format!(
             "guest={ph11_code} ack={ph11_ack} grant={ph11_grant} inbox_row={ph11_row} \
@@ -3956,22 +3994,32 @@ async fn push_invoke_assertions(
         ),
     );
 
+    ph11.disconnect().await;
+
     // [PH10] an invoke with no `id` cannot be answered, so it ends the connection with the
-    // typed, non-retryable `bad_frame` close rather than being ignored.
-    ph11
+    // typed, non-retryable `bad_frame` close rather than being ignored. A fresh socket whose
+    // only inbound frame is that invoke, so no earlier frame can supply the close.
+    let mut ph10 = PushClient::connect(ws, &ph7_token, "dev-key-client").await?;
+    let ph10_ack = matches!(
+        ph10.next_frame(Duration::from_secs(10)).await,
+        Ok(Some(Frame::Ack { .. }))
+    );
+    ph10
         .send(serde_json::json!({ "type": "invoke", "method": "storage.get", "payload": {} }))
         .await?;
-    let ph10_close = ph11
+    let ph10_close = ph10
         .await_frame(Duration::from_secs(10), |f| matches!(f, Frame::Close { .. }))
         .await;
-    let ph10_ended = matches!(ph11.next_frame(Duration::from_secs(10)).await, Ok(None));
+    let ph10_ended = matches!(ph10.next_frame(Duration::from_secs(10)).await, Ok(None));
     p.check(
         &format!("[PH10{tag}] invoke without an id -> typed close bad_frame (not retryable)"),
-        matches!(
-            &ph10_close,
-            Some(Frame::Close { code, retryable }) if code == "bad_frame" && !*retryable
-        ) && ph10_ended,
-        format!("close={ph10_close:?} socket_ended={ph10_ended}"),
+        ph10_ack
+            && matches!(
+                &ph10_close,
+                Some(Frame::Close { code, retryable }) if code == "bad_frame" && !*retryable
+            )
+            && ph10_ended,
+        format!("ack={ph10_ack} close={ph10_close:?} socket_ended={ph10_ended}"),
     );
 
     Ok(())
