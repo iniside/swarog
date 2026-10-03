@@ -247,9 +247,9 @@ const DESCRIBE_FETCH_CONCURRENCY: usize = 17;
 const DESCRIBE_STOP_GRACE: Duration = Duration::from_secs(2);
 
 /// Budget for tearing down ALL of the installed route table's dispatch `remote::Pool`s
-/// ([`RouteTable::stop_pools`]) — the second and last awaited step of [`Gateway::stop`]. See
-/// the arithmetic block on [`DESCRIBE_STOP_GRACE`]: 2000 + 2000 < 5000ms, the whole point
-/// being that `App::stop` must never be the thing that cancels this.
+/// ([`RouteTable::stop_pools`]) — the last of the three time-bounded awaits in [`Gateway::stop`]. See
+/// the arithmetic block on [`DESCRIBE_STOP_GRACE`]: 500 + 2000 + 2000 = 4500ms < 5000ms, the
+/// whole point being that `App::stop` must never be the thing that cancels this.
 ///
 /// It is a WHOLE-fan-out budget, not per pool, which is why the fan-out is concurrent: a
 /// single `Pool::stop` can legitimately take ~2s (`remote`'s probe grace) and, with a
