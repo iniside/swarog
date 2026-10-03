@@ -1,40 +1,45 @@
 ---
 name: splitproof-is-proof-surface
-description: "tools/splitproof work is proof-auditing, not test authoring — route it to proof-auditor, never test-author"
-metadata:
+description: "Authoring tools/splitproof assertions is core-implementer; auditing landed ones is proof-auditor (read-only, cannot write). Not test-author."
+metadata: 
   node_type: memory
   type: feedback
+  originSessionId: 3dcd09ee-8844-4095-a44d-a83c5ff1a9f8
+  modified: 2026-10-03T19:37:49.958Z
 ---
 
-Twice in one session I dispatched `test-author` for `tools/splitproof` work and was
-corrected both times ("zly agent"): once to fix a splitproof defect (should have been
-`core-implementer`), once to write the `[DL*]` account-deletion assertions (should have
-been `proof-auditor`).
+`tools/splitproof` is the only instrument for properties no other gate checks — a live
+two-topology fleet driven as a harness. Route by **activity**:
 
-**Why:** splitproof is not a test suite that accompanies code — it is the repo's only
-instrument for a whole class of properties no gate checks. `topiccheck`'s unsubscribed
-check is keyed on `(topic, version)`, so six of seven consumers can be missing with
-both profiles green; splitproof is what would catch it, and its content is entirely
-hand-written with nothing forcing an assertion to exist. Work there is therefore
-answering "does this gate catch the failure it claims to", which is proof-auditing.
+- **Authoring or editing an assertion → `core-implementer`.** These are assertions inside
+  a *binary harness crate*, not cargo test cases. CLAUDE.md itself lists "extend
+  `tools/splitproof` with a named assertion" as part of implementing a module.
+- **Auditing landed assertions → `proof-auditor`.** Its tool set is `Read, Grep, Glob,
+  Bash` — it **cannot edit files**, so it can never be the author. This is the fact that
+  settles every argument about this path; check an agent's tools before routing to it.
+- **Not `test-author`**, whose lane is cargo tests for landed code.
 
-**How to apply:** before dispatching anything that touches `tools/splitproof`, ask what
-the task actually is. Writing or strengthening an assertion, or judging whether the
-existing ones are non-vacuous → `proof-auditor`. Fixing a defect in the harness itself
-→ `core-implementer`. `test-author` owns module `src/*_tests.rs`, not the harness.
-Related: [[specialized-core-agents]], [[a-green-signal-that-never-ran-the-thing]],
-[[not-pinned-lists-are-unexecuted-prose]].
+**Why this entry was rewritten (2026-09-12):** its earlier form said only "assertions →
+proof-auditor, harness defects → core-implementer, NEVER test-author". I read "assertions"
+literally, ignored that proof-auditor cannot write, and overrode a plan step that had
+tagged the work correctly. Three dispatches were rejected in a row — core-implementer →
+proof-auditor → test-author → core-implementer, a full cycle — because the repo guardrail
+hook has no rule for this path and resolves it differently each time.
 
-**Generalised 2026-09-11, after a third "zly agent".** The split is by ACTIVITY, not by
-file path. I had written this memory as "test-author owns module `src/*_tests.rs`", and
-was corrected again when I sent `test-author` to **fix** the isolation of two already-
-landed friends tests.
+**How to apply:**
+- Before routing, check the agent definition's **tool list**. A lane that cannot write is
+  not an authoring lane, whatever a memory or a role blurb calls it.
+- When a guardrail rejects two different lanes for one task, stop re-dispatching: that is
+  a rule defect, not a routing question. Report the cycle and ask.
+- A plan's own lane tag was written with the step in front of it — do not override it from
+  a general memory without checking that the memory's lane can do the work.
 
-- **Authoring** new tests for freshly-landed code → `test-author`.
-- **Fixing** anything — a defect in a test, a harness, a gate, a module — →
-  `core-implementer`, whatever file it lives in.
-- **Auditing** whether a test or gate proves what it claims → `proof-auditor`.
-- **Correcting prose**, including a doc comment inside a `.rs` file → `docs-writer`.
+**Observed 2026-10-03 (push invoke rollout):** new assertions dispatched to core-implementer
+passed the hook (Step 5, [PH7–PH11]); a later *tightening of existing assertions* after a
+proof audit was rejected for core-implementer and accepted for `test-author` (model opus),
+which did it correctly. The hook keys on wording: "add/author assertions for a step" →
+core-implementer passes; "tighten/fix assertions per an audit" reads as test work. Phrase
+the prompt by the actual activity; still only one re-route before asking.
 
-All three corrections in this session were the same error read three ways: I routed on
-"which file does this touch" instead of "what is being done to it".
+Related: [[specialized-core-agents]], [[no-inline-adhoc-fixes]],
+[[cite-a-precedent-only-after-reading-it]].
