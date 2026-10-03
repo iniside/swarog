@@ -82,11 +82,11 @@ method, e.g. `storage.put`) and an optional `payload` JSON value (absent means
 `{}`). The server answers with one `result` frame bearing the same `id`:
 
 ```json
-{"type": "result", "id": 7, "response": {"status": "Ok", "err": "", "value": {"...": "..."}}}
+{"type": "result", "id": 7, "response": {"status": "Ok", "value": {"...": "..."}}}
 ```
 
-`response` is the player-QUIC envelope verbatim (`status`, `err`, `value` on
-success). Text and binary frames are both parsed. Up to
+`response` is the player-QUIC envelope verbatim (`status`, `err` — omitted when
+empty — and `value` on success). Text and binary frames are both parsed. Up to
 `PUSH_INVOKE_MAX_IN_FLIGHT` invokes run concurrently, so results arrive in
 completion order, not request order — correlate by `id`.
 
@@ -96,10 +96,14 @@ wire-only op) answers `NotFound` "unknown operation".
 
 **Admission, per invoke.** Each invoke is admitted with the bearer and API key
 the connection bound with, through the same `handle_player` path as player-QUIC:
-the API key's **policy** is checked for that method, then one `Sessions` lookup
-validates the bearer, then the op is dispatched Local or Remote. A session
-revoked after the bind is therefore refused on the very next invoke, without
-waiting for the re-verify tick. A payload that is not valid JSON answers `Invalid`.
+the API key's **policy** is checked for that method, then — for an
+`auth = "player"` op — one `Sessions` lookup validates the bearer, then the op is
+dispatched Local or Remote. A session revoked after the bind is therefore
+refused on the very next player-auth invoke, without waiting for the re-verify
+tick; an op with no auth requirement (e.g. `leaderboard`, the accounts
+register/login ops) does no session lookup. An absent `payload` is sent as `{}`;
+a `payload` that is not valid JSON makes the frame malformed and closes
+`bad_frame`.
 
 **What happens to every inbound frame, in order:**
 
@@ -131,7 +135,9 @@ op that panics gets `Internal` "invoke failed"; the connection stays open.
 whole ESCAPED frame, not the logical payload: a JSON string field containing
 quotes or backslashes grows 2x, and up to 6x under `\u` escaping, so a payload
 that fits HTTP or player-QUIC (1 MiB) may not fit here. A frame over the cap
-closes `frame_too_large` (retryable); send large requests over HTTP or QUIC.
+closes `frame_too_large` (retryable) once the connection is bound (an oversize
+frame during the handshake just drops the socket with no typed close); send
+large requests over HTTP or QUIC.
 
 **Graceful stop does not drain invokes.** On shutdown the `shutdown` close is
 written and in-flight invokes are aborted; their results are never sent, so a
@@ -233,7 +239,7 @@ silently falling back to a default.
 | `PUSH_MAX_CONNECTIONS_PER_IP` | 64 | Sockets one resolved client IP may hold. |
 | `PUSH_MAX_CONNECTIONS_PER_PLAYER` | 8 | Sockets one player may hold across devices; the oldest is evicted (`replaced`) past this. |
 | `PUSH_QUEUE_DEPTH` | 64 | Event frames one connection may have pending, total across its hub lanes, before the longest lane's oldest frame is evicted. |
-| `PUSH_MAX_FRAME_BYTES` | 131072 (128 KiB) | Inbound message/frame cap applied to the upgrade itself; over it the connection closes `frame_too_large`. Applies to the escaped frame. |
+| `PUSH_MAX_FRAME_BYTES` | 131072 (128 KiB) | Inbound message/frame cap applied to the upgrade itself; over it a bound connection closes `frame_too_large` (during the handshake the socket is dropped untyped). Applies to the escaped frame. |
 | `PUSH_HANDSHAKE_TIMEOUT_MS` | 10000 | How long a socket may stay unauthenticated after the upgrade. |
 | `PUSH_WRITE_TIMEOUT_MS` | 10000 | Bound on one outbound write, so a peer that stops reading can't pin the task. |
 | `PUSH_REVERIFY_INTERVAL_MS` | 60000 | How often the bind-time bearer is re-checked (and a liveness ping is written). |

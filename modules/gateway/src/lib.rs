@@ -572,7 +572,7 @@ impl Module for Gateway {
     ///    socket runs in a task the module spawned and OUTLIVES the HTTP drain, so
     ///    nothing else would ever end them. They are flushed a typed close within
     ///    `PUSH_STOP_GRACE` and then aborted; that grace is part of the arithmetic on
-    ///    [`DESCRIBE_STOP_GRACE`], which now sums three awaited steps, not two;
+    ///    [`DESCRIBE_STOP_GRACE`], which sums the three time-bounded awaits;
     /// 0b. the `/push` invoke limiter's idle-bucket reaper — aborted and joined, which
     ///    completes immediately and adds nothing to the grace arithmetic;
     /// 1. the D2 describe-refresh task (grace-then-abort, mirroring `remote::Stub::stop`):

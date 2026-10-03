@@ -77,10 +77,10 @@ pub struct PushLimits {
     /// the queue evicts the oldest frame of its longest lane. Replies (ack, results) are
     /// not counted and never evicted.
     pub queue_depth: usize,
-    /// Inbound message and frame cap applied to the upgrade; a frame over it closes
-    /// `frame_too_large`. It bounds the ESCAPED frame, so a JSON string field carrying
-    /// quotes or backslashes needs up to 6x its unescaped size. axum's own defaults are
-    /// 64 MiB/16 MiB.
+    /// Inbound message and frame cap applied to the upgrade; over it a bound connection
+    /// closes `frame_too_large` (during the handshake the socket is dropped untyped). It
+    /// bounds the ESCAPED frame, so a JSON string field carrying quotes or backslashes
+    /// needs up to 6x its unescaped size. axum's own defaults are 64 MiB/16 MiB.
     pub max_frame_bytes: usize,
     /// How long a socket may stay unauthenticated after the upgrade.
     pub handshake_grace: Duration,
@@ -585,8 +585,8 @@ impl ConnQueue {
     }
 
     /// Offers one event frame to `hub`'s lane, evicting the OLDEST frame of the longest
-    /// lane while the event lanes hold `capacity` frames. Synchronous and non-blocking by contract: a producer may be holding a database
-    /// transaction's connection.
+    /// lane while the event lanes hold `capacity` frames. Synchronous and non-blocking by
+    /// contract: a producer may be holding a database transaction's connection.
     ///
     /// `false` means the connection is already closing and the frame was not queued —
     /// what [`PushHub::deliver`] counts, so a `Delivered::Local(n)` counts connections
