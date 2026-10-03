@@ -47,7 +47,7 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 | 5 | Leaderboard seasons / reset / rotation | ❌ | — |
 | 6 | Steam auth (ticket verifier) | ❌ | — |
 | 7 | Store + IAP receipt validation | ❌ | — |
-| 8 | Real-time push hub (`GET /push` WebSocket, SignalR-shaped) | ✅ | [2026-09-03-2022-push-hub-websocket-plan.md](../plans/2026-09-03-2022-push-hub-websocket-plan.md) |
+| 8 | Real-time push hub (`GET /push` WebSocket, SignalR-shaped) | ✅ | [2026-09-03-2022-push-hub-websocket-plan.md](../plans/2026-09-03-2022-push-hub-websocket-plan.md); multiplexed invoke + hub lanes: [2026-09-28-2212-push-multiplex-invoke-and-party-plan.md](../plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md) (Steps 1-5; party Steps 6-11 deferred) |
 
 **Why this order (not the gap doc's):**
 
@@ -197,7 +197,7 @@ than decided. Not reproduced, not scheduled — the closure shape already exists
 | Groups / guilds / clans | ✅ | groups, groupsapi, groupsevents, groupsrpc, groups-svc | `7c7ee12`..`0d8c3b0`, 2026-09-07–2026-09-10 | 16th fortress, [plan](../plans/2026-09-06-2230-groups-membership-plan.md). Schema `groups`: a `groups` row, a `memberships` row per `(group_id, player_id)` with three states (`member`/`invited`/`requested`) and two roles (`admin`/`member`); `MAX_MEMBERS` enforced under a per-group advisory lock, not a count-then-insert. Nine `#[http]` ops (`create`/`list_mine`/`members`/`pending`/`join`/`leave`/`invite`/`respond`/`decide`) plus a wire-only `role_of` predicate (`groupsapi::Membership`, internal-edge only — not reachable through the front door) that `chat` will consume. Another player's view of a group it cannot see is `NotFound`, never `Forbidden`. Four durable topics at 30-day retention (`group.created`, `group.member_joined`, `group.member_left`, `group.role_changed`), consumed by `audit` (four raw sinks) and pruned by `groups.prune-on-scheduler.v1` (`GROUPS_RETENTION_DAYS`, default 30) — the sweep emits `group.member_left` (`reason = "expired"`) for a swept row rather than staying silent. Admin page "Groups" under Player Support adds an operator promote (member → admin). Proven in both topologies: `[GR1]`-`[GR6]` in split-proof, re-run against the monolith. Known gaps: no push nudge on membership change; no group rename or `join_policy` change after create; `chat`'s dependency on `role_of` unexercised until `chat` lands; no `group.deleted` topic, so a teardown reads as N leaves in the ledger; `memberships_player_idx` does not serve `list_mine` (that read has no equality predicate on `state`, so the index prefix can't supply the ordering); `"accept"`/`"reject"` are not exported consts in `groupsapi`, unlike every other vocabulary word in that crate; and `join` resolves the caller's handle before opening its transaction, so a join naming a nonexistent group still costs a directory call and answers 503 rather than 404 when accounts is unreachable. |
 | Presence / online status / follow | ⚠️ | friends | `922cc63`..`0b4d85a`, 2026-09-06 | Session-derived presence shipped as part of P0#4: `online_until` (RFC3339, empty = no live session) computed from `accounts.sessions`, deliberately a timestamp rather than a socket-backed bool — a quit player reads a future value for up to an hour (60-minute access tokens). **Socket presence did not ship**: gateway has no DB, presence is per-process RAM with no accessor, the offline transition runs in a `Drop` that cannot `await`, and there is no fan-in primitive across gateway instances. Still needs client push for socket presence/follow. |
 | Realtime chat | ❌ | — | — | P2 — gated on the realtime decision (#14). |
-| Parties | ❌ | — | — | P2 — gated on the realtime decision (#14). |
+| Parties | ❌ | — | — | P2 — gated on the realtime decision (#14). Not started; its transport now exists (the multiplexed `/push` invoke protocol, row 8), but the `party` fortress is planned (Steps 6-11) and deferred, nothing implemented. |
 
 ## Progression & competition
 
@@ -338,6 +338,20 @@ into later fires. The owner cap (10,000) and purge share an advisory lock.
 ---
 
 ## Change log
+
+- **2026-10-03** — Push hub (row 8) gained a **multiplexed protocol**:
+  `40875d8`..`e1fa197`, [plan](../plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md)
+  Steps 1-5. `message` frames carry a `hub` label (topic prefix) with per-hub
+  outbound lanes under one `PUSH_QUEUE_DEPTH` total and a never-evicted reply
+  lane; a client can `invoke` any `#[http]`-bound player op over the socket and
+  gets a correlated `result` (per-invoke API-key policy + session check, inbound
+  and per-IP limits, in-flight cap, timeout). New close codes `bad_frame` and
+  `frame_too_large`; default `PUSH_MAX_FRAME_BYTES` is now 128 KiB (escaped).
+  `http_rate_limit_table_saturated_total` gained a `limiter` label. Proven in
+  both topologies by `[PH7]`-`[PH11]` in split-proof. Wire contract and carried
+  gaps (no invoke resume, invokes aborted not drained on stop, no fuzz target
+  for the frame parser) in [docs/reference/push-hub.md](../reference/push-hub.md).
+  The `party` fortress (plan Steps 6-11) is NOT implemented — deferred.
 
 - **2026-09-17** — Storage (P1#7) accepted in both topologies. Final
   `--all --strict` exits 0: 19 stages PASS, platform-only C# SKIP;

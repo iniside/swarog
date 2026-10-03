@@ -459,7 +459,10 @@ never a silent last-writer-wins overwrite.
   `opsapi::PEER_SLOT` contributions — the gateway module itself never reads env),
   a `GET /push` WebSocket hub (SignalR-shaped: server-minted connection id,
   `Target::Player|Group|All`, ephemeral non-authorizing groups, front-local
-  presence default off) resolving `push::Target`s against the sockets it owns
+  presence default off; each `message` frame carries a `hub` label with its own
+  outbound lane, and a client may `invoke` any `#[http]`-bound player op over the
+  socket and get a correlated `result` under the same API-key policy and session
+  check) resolving `push::Target`s against the sockets it owns
   and contributing the inbound `push.deliver` face to `edge::EDGE_SLOT` so a
   producer elsewhere in the split can reach them (`docs/reference/push-hub.md`),
   player-QUIC plane (bearer-in-envelope, exact-method allow-list), HTTP passthrough

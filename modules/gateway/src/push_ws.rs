@@ -73,11 +73,14 @@ pub struct PushLimits {
     /// Sockets one player may hold across devices. The longest-bound one is closed when a
     /// new one would exceed this, so a player's newest device always connects.
     pub max_per_player: usize,
-    /// Frames one connection may have pending before the queue starts dropping its
-    /// OLDEST message.
+    /// Event frames one connection may have pending, TOTAL across its hub lanes, before
+    /// the queue evicts the oldest frame of its longest lane. Replies (ack, results) are
+    /// not counted and never evicted.
     pub queue_depth: usize,
-    /// Inbound message and frame cap applied to the upgrade. axum's own defaults are
-    /// 64 MiB/16 MiB and nothing else bounds a socket once it is upgraded.
+    /// Inbound message and frame cap applied to the upgrade; a frame over it closes
+    /// `frame_too_large`. It bounds the ESCAPED frame, so a JSON string field carrying
+    /// quotes or backslashes needs up to 6x its unescaped size. axum's own defaults are
+    /// 64 MiB/16 MiB.
     pub max_frame_bytes: usize,
     /// How long a socket may stay unauthenticated after the upgrade.
     pub handshake_grace: Duration,
@@ -284,8 +287,9 @@ const MAX_GROUPS_PER_CONN: usize = 32;
 /// a hub past the first 15 named ones shares that lane.
 const MAX_HUBS_PER_CONN: usize = 16;
 
-/// Inbound verb frames one connection may spend per [`PushLimits::reverify_interval`],
-/// refilled on that tick.
+/// Non-invoke inbound frames (the group verbs) one connection may spend per
+/// [`PushLimits::reverify_interval`], refilled on that tick; charged after the
+/// per-connection inbound bucket, never for an `invoke`.
 ///
 /// A group verb is the only client input that reaches the process-wide registry `Mutex` —
 /// the same lock every `accept`, `bind`, release and `deliver` serializes on, and
@@ -538,14 +542,15 @@ enum Reply {
     Rejection(Arc<str>),
 }
 
-/// One connection's bounded outbound queue, dropping its OLDEST message when full.
+/// One connection's outbound queue: a reply lane (never evicted) and per-hub event lanes
+/// that share one total bound, evicting the OLDEST frame of the longest lane when full.
 ///
 /// A `tokio` mpsc cannot drop its head, and dropping the NEWEST is the wrong end: the
 /// durable copy of anything that matters is in the producing module's tables and a push
 /// message only says "refetch", so the freshest message is the one worth keeping. The
-/// deque is guarded by a `std::sync::Mutex` held for a push/pop and never across an
+/// lanes are guarded by a `std::sync::Mutex` held for a push/pop and never across an
 /// await; a capacity-1 mpsc carries the WAKEUP only, so a coalesced signal can never
-/// lose a message (the reader always drains the deque before it waits again).
+/// lose a message (the reader always drains the lanes before it waits again).
 struct ConnQueue {
     state: Mutex<QueueState>,
     wake: mpsc::Sender<()>,
@@ -579,8 +584,8 @@ impl ConnQueue {
         (Arc::new(queue), rx)
     }
 
-    /// Offers one frame, dropping the OLDEST pending one when the queue is full.
-    /// Synchronous and non-blocking by contract: a producer may be holding a database
+    /// Offers one event frame to `hub`'s lane, evicting the OLDEST frame of the longest
+    /// lane while the event lanes hold `capacity` frames. Synchronous and non-blocking by contract: a producer may be holding a database
     /// transaction's connection.
     ///
     /// `false` means the connection is already closing and the frame was not queued —
@@ -655,7 +660,7 @@ impl ConnQueue {
     ///
     /// Cancel-safe: everything before the `await` is synchronous, so a lost race in a
     /// `select!` cannot consume an item. A coalesced wakeup cannot strand a message
-    /// either — the deque is drained before each wait, so a wakeup only matters while it
+    /// either — the lanes are drained before each wait, so a wakeup only matters while it
     /// is empty.
     async fn recv(&self, wake: &mut mpsc::Receiver<()>) -> Option<Outbound> {
         loop {
@@ -1012,7 +1017,7 @@ impl PushHub {
     /// its delivery transaction's connection.
     ///
     /// What that caller pays is bounded in BOTH dimensions: one frame allocation per call
-    /// regardless of fan-out (the ring holds a shared handle), and a payload over
+    /// regardless of fan-out (each queue holds a shared handle), and a payload over
     /// [`MAX_PAYLOAD_BYTES`] delivered to nobody and counted — the `0` it then answers is
     /// a drop, not an empty target set.
     fn deliver(&self, target: &Target, msg: &Message) -> usize {
@@ -1200,7 +1205,7 @@ impl push::Sink for LocalSink {
     /// [`MAX_PAYLOAD_BYTES`] is refused before any of it.
     ///
     /// The count is connections the frame was ENQUEUED to. A socket that dies before its
-    /// queue drains, or whose ring later evicts the frame under a newer one, is still
+    /// queue drains, or whose lane later evicts the frame under a newer one, is still
     /// counted — which is as much as any best-effort sink can honestly claim.
     fn send(&self, target: &Target, msg: &Message) -> Result<push::Delivered, push::Error> {
         Ok(push::Delivered::Local(self.hub.deliver(target, msg)))

@@ -205,7 +205,7 @@ const DESCRIBE_FETCH_CONCURRENCY: usize = 17;
 /// INVARIANT (the WHOLE `stop`, not just this grace): `lifecycle::App` wraps each module in
 /// `timeout(MODULE_STOP_GRACE_MS, m.stop())` and DROPS the future on elapse, so the SUM of
 /// everything `Gateway::stop` awaits must stay strictly under it. `Gateway::stop` has exactly
-/// three sequential awaits, each separately bounded:
+/// three sequential time-bounded awaits (the limiter reaper's abort-and-join is immediate):
 ///
 /// ```text
 ///   PUSH_STOP_GRACE       500ms   (typed close flushed to every live socket, then abort)
@@ -573,6 +573,8 @@ impl Module for Gateway {
     ///    nothing else would ever end them. They are flushed a typed close within
     ///    `PUSH_STOP_GRACE` and then aborted; that grace is part of the arithmetic on
     ///    [`DESCRIBE_STOP_GRACE`], which now sums three awaited steps, not two;
+    /// 0b. the `/push` invoke limiter's idle-bucket reaper — aborted and joined, which
+    ///    completes immediately and adds nothing to the grace arithmetic;
     /// 1. the D2 describe-refresh task (grace-then-abort, mirroring `remote::Stub::stop`):
     ///    signal, join within [`DESCRIBE_STOP_GRACE`], else abort and await the abort so the
     ///    task is not leaked;

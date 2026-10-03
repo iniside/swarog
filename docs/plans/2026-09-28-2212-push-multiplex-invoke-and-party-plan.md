@@ -1,6 +1,12 @@
 # Push multiplex (hub lanes + WS invoke) and the `party` fortress — plan
 
-Status: r3, review cap reached. Round 1 (core-reviewer, opus, think hard): REJECT,
+Status (2026-10-03): Steps 1-5 (hub lanes, invoke/result frames, their tests, and the
+invoke split-proof) and the push-protocol docs from Step 12 have landed. Steps 6-11
+(the `party` fortress) are deferred by the user and NOT implemented; the party-specific
+Step 12 items (CLAUDE.md party entry and port list, `module-reference.md`, the Parties
+tracker row, the client revision rule) are likewise not done.
+
+Status of the plan text: r3, review cap reached. Round 1 (core-reviewer, opus, think hard): REJECT,
 24 items. Round 2 (fresh core-reviewer): REJECT, 11 items. All addressed below (see
 the two disposition tables); no third review round per the 2-round cap — the
 per-step core-reviewer passes during implementation are the next gate.
@@ -557,6 +563,24 @@ accepted).
 - `PARTY_LEASE_SECS` has no devctl operator-override entry in either topology.
 - No admin page for parties (not a conformance convention; ephemeral lease-bound state).
 - `/push` still has no `routecheck` coverage of its fixed route.
+
+## Errata (recorded with the Step 12 push-protocol docs)
+
+1. `http_rate_limit_table_saturated_total` gained a `limiter` label (`http`,
+   `admin_login`, `push_invoke`) in e171253, reversing the single global counter decided
+   in `docs/plans/2026-07-12-1214-architecture-remediation-rust-tooling-plan.md:254`
+   (archive, not edited). A process that builds no `IpLimiter` no longer exports the
+   family. The `http_` prefix is kept although `push_invoke` limits WebSocket frames.
+2. Decision 4's "the `join_next` arm logs panics only" is superseded: a panicking
+   invoke is answered with `Internal` "invoke failed" inside the task (e171253); the
+   `join_next` arm still logs a task panic that escapes that guard.
+3. Step 2's flood test ordering: `b` must be queued BEFORE the `a` flood (Step 2 proof
+   audit).
+4. Step 4's "idle connection ... zero `join_next` iterations" test proved unbuildable:
+   `select!` disables a branch whose pattern does not match the `None` an empty set
+   yields, so the `!is_empty()` guard is unobservable. The landed test pins the
+   neighbouring regression (the arm must not end the loop) and records the limit in its
+   doc comment (`push_ws_tests.rs`).
 
 ## Review round 1 — disposition
 
