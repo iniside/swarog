@@ -79,6 +79,11 @@ public sealed record GuestSession(
     [property: JsonPropertyName("access_expires_in_secs")] long AccessExpiresInSecs,
     [property: JsonPropertyName("device_secret")] string DeviceSecret);
 
+/// <summary>The <c>HeartbeatView</c> DTO.</summary>
+public sealed record HeartbeatView(
+    [property: JsonPropertyName("lease_until")] string LeaseUntil,
+    [property: JsonPropertyName("revision")] long Revision);
+
 /// <summary>The <c>Holding</c> DTO.</summary>
 public sealed record Holding(
     [property: JsonPropertyName("owner_type")] string OwnerType,
@@ -91,6 +96,17 @@ public sealed record Holding(
 public sealed record IdentityRef(
     [property: JsonPropertyName("provider")] string Provider,
     [property: JsonPropertyName("subject")] string Subject);
+
+/// <summary>The <c>InviteList</c> DTO.</summary>
+public sealed record InviteList(
+    [property: JsonPropertyName("invites")] InviteView[] Invites);
+
+/// <summary>The <c>InviteView</c> DTO.</summary>
+public sealed record InviteView(
+    [property: JsonPropertyName("invite_id")] string InviteId,
+    [property: JsonPropertyName("party_id")] string PartyId,
+    [property: JsonPropertyName("inviter_handle")] string InviterHandle,
+    [property: JsonPropertyName("expires_at")] string ExpiresAt);
 
 /// <summary>The <c>MeView</c> DTO.</summary>
 public sealed record MeView(
@@ -111,6 +127,12 @@ public sealed record MemberSummary(
     [property: JsonPropertyName("state")] string State,
     [property: JsonPropertyName("role")] string Role,
     [property: JsonPropertyName("joined_at")] string JoinedAt);
+
+/// <summary>The <c>MemberView</c> DTO.</summary>
+public sealed record MemberView(
+    [property: JsonPropertyName("player_id")] string PlayerId,
+    [property: JsonPropertyName("handle")] string Handle,
+    [property: JsonPropertyName("ready")] string Ready);
 
 /// <summary>The <c>Notification</c> DTO.</summary>
 public sealed record Notification(
@@ -143,6 +165,13 @@ public sealed record ObjectVersion(
 public sealed record Page(
     [property: JsonPropertyName("items")] Notification[] Items,
     [property: JsonPropertyName("next_cursor")] string NextCursor);
+
+/// <summary>The <c>PartyView</c> DTO.</summary>
+public sealed record PartyView(
+    [property: JsonPropertyName("party_id")] string PartyId,
+    [property: JsonPropertyName("revision")] long Revision,
+    [property: JsonPropertyName("leader_id")] string LeaderId,
+    [property: JsonPropertyName("members")] MemberView[] Members);
 
 /// <summary>The <c>Score</c> DTO.</summary>
 public sealed record Score(

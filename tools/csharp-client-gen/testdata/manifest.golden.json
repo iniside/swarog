@@ -693,6 +693,172 @@
       "ret": "Unit"
     },
     {
+      "provider": "party",
+      "wire_method": "party.accept",
+      "verb": "POST",
+      "path": "/party/accept",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "invite_id",
+          "wire_name": "invite_id",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "PartyView"
+      }
+    },
+    {
+      "provider": "party",
+      "wire_method": "party.create",
+      "verb": "POST",
+      "path": "/party/create",
+      "auth": "player",
+      "success": 201,
+      "args": [],
+      "ret": {
+        "Struct": "PartyView"
+      }
+    },
+    {
+      "provider": "party",
+      "wire_method": "party.decline",
+      "verb": "POST",
+      "path": "/party/decline",
+      "auth": "player",
+      "success": 204,
+      "args": [
+        {
+          "name": "invite_id",
+          "wire_name": "invite_id",
+          "ty": "String"
+        }
+      ],
+      "ret": "Unit"
+    },
+    {
+      "provider": "party",
+      "wire_method": "party.get",
+      "verb": "POST",
+      "path": "/party/get",
+      "auth": "player",
+      "success": 200,
+      "args": [],
+      "ret": {
+        "Struct": "PartyView"
+      }
+    },
+    {
+      "provider": "party",
+      "wire_method": "party.heartbeat",
+      "verb": "POST",
+      "path": "/party/heartbeat",
+      "auth": "player",
+      "success": 200,
+      "args": [],
+      "ret": {
+        "Struct": "HeartbeatView"
+      }
+    },
+    {
+      "provider": "party",
+      "wire_method": "party.invite",
+      "verb": "POST",
+      "path": "/party/invite",
+      "auth": "player",
+      "success": 201,
+      "args": [
+        {
+          "name": "target_handle",
+          "wire_name": "target_handle",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "InviteView"
+      }
+    },
+    {
+      "provider": "party",
+      "wire_method": "party.invites",
+      "verb": "POST",
+      "path": "/party/invites",
+      "auth": "player",
+      "success": 200,
+      "args": [],
+      "ret": {
+        "Struct": "InviteList"
+      }
+    },
+    {
+      "provider": "party",
+      "wire_method": "party.kick",
+      "verb": "POST",
+      "path": "/party/kick",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "player_id",
+          "wire_name": "player_id",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "PartyView"
+      }
+    },
+    {
+      "provider": "party",
+      "wire_method": "party.leave",
+      "verb": "POST",
+      "path": "/party/leave",
+      "auth": "player",
+      "success": 200,
+      "args": [],
+      "ret": {
+        "Struct": "PartyView"
+      }
+    },
+    {
+      "provider": "party",
+      "wire_method": "party.promote",
+      "verb": "POST",
+      "path": "/party/promote",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "player_id",
+          "wire_name": "player_id",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "PartyView"
+      }
+    },
+    {
+      "provider": "party",
+      "wire_method": "party.setReady",
+      "verb": "POST",
+      "path": "/party/set_ready",
+      "auth": "player",
+      "success": 200,
+      "args": [
+        {
+          "name": "state",
+          "wire_name": "state",
+          "ty": "String"
+        }
+      ],
+      "ret": {
+        "Struct": "PartyView"
+      }
+    },
+    {
       "provider": "storage",
       "wire_method": "storage.delete",
       "verb": "DELETE",
@@ -1086,6 +1252,21 @@
       ]
     },
     {
+      "name": "HeartbeatView",
+      "fields": [
+        {
+          "name": "lease_until",
+          "wire_name": "lease_until",
+          "ty": "String"
+        },
+        {
+          "name": "revision",
+          "wire_name": "revision",
+          "ty": "I64"
+        }
+      ]
+    },
+    {
       "name": "Holding",
       "fields": [
         {
@@ -1126,6 +1307,45 @@
         {
           "name": "subject",
           "wire_name": "subject",
+          "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "InviteList",
+      "fields": [
+        {
+          "name": "invites",
+          "wire_name": "invites",
+          "ty": {
+            "Vec": {
+              "Struct": "InviteView"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "InviteView",
+      "fields": [
+        {
+          "name": "invite_id",
+          "wire_name": "invite_id",
+          "ty": "String"
+        },
+        {
+          "name": "party_id",
+          "wire_name": "party_id",
+          "ty": "String"
+        },
+        {
+          "name": "inviter_handle",
+          "wire_name": "inviter_handle",
+          "ty": "String"
+        },
+        {
+          "name": "expires_at",
+          "wire_name": "expires_at",
           "ty": "String"
         }
       ]
@@ -1204,6 +1424,26 @@
         {
           "name": "joined_at",
           "wire_name": "joined_at",
+          "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "MemberView",
+      "fields": [
+        {
+          "name": "player_id",
+          "wire_name": "player_id",
+          "ty": "String"
+        },
+        {
+          "name": "handle",
+          "wire_name": "handle",
+          "ty": "String"
+        },
+        {
+          "name": "ready",
+          "wire_name": "ready",
           "ty": "String"
         }
       ]
@@ -1323,6 +1563,35 @@
           "name": "next_cursor",
           "wire_name": "next_cursor",
           "ty": "String"
+        }
+      ]
+    },
+    {
+      "name": "PartyView",
+      "fields": [
+        {
+          "name": "party_id",
+          "wire_name": "party_id",
+          "ty": "String"
+        },
+        {
+          "name": "revision",
+          "wire_name": "revision",
+          "ty": "I64"
+        },
+        {
+          "name": "leader_id",
+          "wire_name": "leader_id",
+          "ty": "String"
+        },
+        {
+          "name": "members",
+          "wire_name": "members",
+          "ty": {
+            "Vec": {
+              "Struct": "MemberView"
+            }
+          }
         }
       ]
     },

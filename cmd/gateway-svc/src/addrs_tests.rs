@@ -45,6 +45,7 @@ const FLEET: &[(&str, &str)] = &[
     ("FRIENDS_EDGE_ADDR", "127.0.0.1:9014"),
     ("GROUPS_EDGE_ADDR", "127.0.0.1:9015"),
     ("STORAGE_EDGE_ADDR", "127.0.0.1:9016"),
+    ("PARTY_EDGE_ADDR", "127.0.0.1:9017"),
     ("ADMIN_HTTP_ADDR", "127.0.0.1:8085"),
     ("ACCOUNTS_HTTP_ADDR", "127.0.0.1:8084"),
 ];
@@ -113,6 +114,7 @@ impl FakeAgent {
             (("friends", AddrKind::Edge), Ok(vec![addr("FRIENDS_EDGE_ADDR")])),
             (("groups", AddrKind::Edge), Ok(vec![addr("GROUPS_EDGE_ADDR")])),
             (("storage", AddrKind::Edge), Ok(vec![addr("STORAGE_EDGE_ADDR")])),
+            (("party", AddrKind::Edge), Ok(vec![addr("PARTY_EDGE_ADDR")])),
             (("admin", AddrKind::Http), Ok(vec![addr("ADMIN_HTTP_ADDR")])),
             (("accounts", AddrKind::Http), Ok(vec![addr("ACCOUNTS_HTTP_ADDR")])),
         ];
@@ -314,6 +316,7 @@ async fn managed_resolves_the_same_pairs_as_env() {
             ("friends", AddrKind::Edge),
             ("groups", AddrKind::Edge),
             ("storage", AddrKind::Edge),
+            ("party", AddrKind::Edge),
             ("admin", AddrKind::Http),
             ("accounts", AddrKind::Http),
         ],

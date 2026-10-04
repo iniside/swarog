@@ -282,6 +282,18 @@ fn full_fleet_env_goldens() {
             ],
         ),
         (
+            "party-svc",
+            &[
+                ("PORT", ":8098"),
+                ("EDGE_ADDR", ":9017"),
+                ("DATABASE_POOL_MAX_CONNECTIONS", "3"),
+                ("EDGE_CA_CERT", CA_CERT),
+                ("EDGE_CA_KEY", CA_KEY),
+                ("GATEWAY_EDGE_ADDR", "127.0.0.1:9013"),
+                ("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
+            ],
+        ),
+        (
             // Pure-transport front door (`Addrs::Asks`): no pool cap, but it DOES carry
             // the CA (dials every peer's edge) and gets ORCHESTRATOR_URL — none of the
             // address keys it used to carry, only the URL it asks each of them for. Its
