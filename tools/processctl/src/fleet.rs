@@ -840,6 +840,7 @@ pub fn game_backend_fleet_with_environment(
         ("FRIENDS", 9014),
         ("GROUPS", 9015),
         ("STORAGE", 9016),
+        ("PARTY", 9017),
     ] {
         peer(&mut gateway_env, name, port);
     }
