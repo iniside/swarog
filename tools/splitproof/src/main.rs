@@ -32,6 +32,7 @@ use crate::idp::Idp;
 use crate::pushws::{Frame, PushClient};
 
 mod idp;
+mod party_checks;
 mod pushws;
 mod storage_checks;
 
@@ -569,6 +570,10 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     // half is split-only by construction.
     groups_assertions(ctx, pool, p, &m, &jar, None, "m").await?;
 
+    // --- Party parity: the ops invoked Local over the monolith's `/push`, and the pushes
+    // resolved through `LocalSink` with no backplane in between.
+    party_assertions(ctx, pool, p, &m, &jar, "m").await?;
+
     // --- Account deletion parity: the same eleven assertions with accounts, all seven
     // `player.deleted` consumers, the scheduler and the front door in ONE process. The event
     // still travels the durable log and each consumer still owns two checkpoints — the
@@ -576,6 +581,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     // edge, so the receipt-idempotency replay `[DL2e]` is split-only by construction.
     storage_checks::assertions(ctx, pool, p, &m, "m").await?;
     deletion_assertions(ctx, pool, p, &m, None, "m").await?;
+    party_checks::deletion_assertion(ctx, pool, p, &m, "m").await?;
 
     // [W2] graceful shutdown: a native Ctrl-Break (Windows) / SIGTERM (unix) must drain
     // in-flight work and exit 0 within the grace window — no force-kill. This is the
@@ -2232,6 +2238,26 @@ async fn groups_assertions(
     if let Err(e) = groups_checks(ctx, pool, p, front, jar, edge, tag).await {
         p.check(
             &format!("[GR0{tag}] the groups pass ran to completion"),
+            false,
+            format!("{e:#}"),
+        );
+    }
+    Ok(())
+}
+
+/// `[PY1]`-`[PY7]` (`party_checks::checks`) with transport errors collapsed into ONE named
+/// failing check, for `groups_assertions`' reason.
+async fn party_assertions(
+    ctx: &Ctx,
+    pool: &PgPool,
+    p: &mut Proof,
+    front: &str,
+    admin: &reqwest::Client,
+    tag: &str,
+) -> Result<()> {
+    if let Err(e) = party_checks::checks(ctx, pool, p, front, admin, tag).await {
+        p.check(
+            &format!("[PY0{tag}] the party pass ran to completion"),
             false,
             format!("{e:#}"),
         );
@@ -5882,6 +5908,11 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
 
     storage_checks::assertions(ctx, pool, p, &g, "").await?;
 
+    // --- Parties over the multiplexed socket: every invoke is Remote-dispatched from
+    // gateway-svc to party-svc, whose post-commit pushes cross the backplane back to the
+    // sockets on gateway-svc, and its lease sweep runs in party-svc.
+    party_assertions(ctx, pool, p, &g, &cfg, "").await?;
+
     // --- Account deletion and the purge fan-out. The op is Remote-dispatched to accounts-svc,
     // its `player.deleted` fans out over the durable log to SEVEN other processes, the sweeps
     // are driven by scheduler-svc's fire, and `[DL2e]` dials accounts-svc's internal edge
@@ -5903,6 +5934,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         "",
     )
     .await?;
+    party_checks::deletion_assertion(ctx, pool, p, &g, "").await?;
 
     // --- Metrics ---
     // [MX1] characters-svc /metrics -> 200 + http_requests_total (one recorded hit first).
