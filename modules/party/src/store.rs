@@ -1,4 +1,6 @@
-use sqlx::{PgConnection, PgPool};
+use sqlx::{PgConnection, PgPool, Postgres, Transaction};
+
+use crate::sweep::{SWEEP_ACQUIRE_DEADLINE, SWEEP_STATEMENT_TIMEOUT};
 
 pub(crate) fn is_unique_violation(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("23505"))
@@ -112,11 +114,19 @@ impl Store {
 
     /// `None` once the party is dissolved.
     pub(crate) async fn party_view(&self, party_id: &str) -> Result<Option<ViewRow>, sqlx::Error> {
-        let row: Option<PartyTuple> =
-            sqlx::query_as(PARTY_VIEW_SQL)
-                .bind(party_id)
-                .fetch_optional(&self.pool)
-                .await?;
+        let mut conn = self.pool.acquire().await?;
+        self.party_view_tx(&mut conn, party_id).await
+    }
+
+    pub(crate) async fn party_view_tx(
+        &self,
+        conn: &mut PgConnection,
+        party_id: &str,
+    ) -> Result<Option<ViewRow>, sqlx::Error> {
+        let row: Option<PartyTuple> = sqlx::query_as(PARTY_VIEW_SQL)
+            .bind(party_id)
+            .fetch_optional(&mut *conn)
+            .await?;
         Ok(row.map(|(party_id, revision, leader_id, member_ids, readies)| ViewRow {
             party_id,
             revision,
@@ -587,20 +597,51 @@ impl Store {
         Ok(())
     }
 
-    pub(crate) async fn expired_parties(&self, limit: i64) -> Result<Vec<String>, sqlx::Error> {
-        sqlx::query_scalar(
+    /// A sweep transaction: the checkout bounded by `acquire`, every statement in it by
+    /// `statement_timeout` (which also bounds an advisory-lock wait). `SET LOCAL` reverts at
+    /// commit, so the bound never leaks into the next borrower of the pooled connection.
+    pub(crate) async fn begin_bounded(
+        &self,
+        acquire: std::time::Duration,
+        statement_timeout: std::time::Duration,
+    ) -> anyhow::Result<Transaction<'static, Postgres>> {
+        let mut tx = tokio::time::timeout(acquire, self.pool.begin())
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("party: pool checkout timed out after {}s", acquire.as_secs())
+            })??;
+        sqlx::query(&format!(
+            "SET LOCAL statement_timeout = {}",
+            statement_timeout.as_millis().clamp(1, i32::MAX as u128)
+        ))
+        .execute(&mut *tx)
+        .await?;
+        Ok(tx)
+    }
+
+    pub(crate) async fn expired_parties(&self, limit: i64) -> anyhow::Result<Vec<String>> {
+        let mut tx = self
+            .begin_bounded(SWEEP_ACQUIRE_DEADLINE, SWEEP_STATEMENT_TIMEOUT)
+            .await?;
+        let parties: Vec<String> = sqlx::query_scalar(
             "SELECT party_id::text FROM party.members WHERE lease_until < now() \
               GROUP BY party_id ORDER BY min(lease_until) LIMIT $1",
         )
         .bind(limit)
-        .fetch_all(&self.pool)
-        .await
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(parties)
     }
 
-    pub(crate) async fn delete_expired_invites(&self) -> Result<u64, sqlx::Error> {
-        let done = sqlx::query("DELETE FROM party.invites WHERE expires_at < now()")
-            .execute(&self.pool)
+    pub(crate) async fn delete_expired_invites(&self) -> anyhow::Result<u64> {
+        let mut tx = self
+            .begin_bounded(SWEEP_ACQUIRE_DEADLINE, SWEEP_STATEMENT_TIMEOUT)
             .await?;
+        let done = sqlx::query("DELETE FROM party.invites WHERE expires_at < now()")
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
         Ok(done.rows_affected())
     }
 }

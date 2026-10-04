@@ -104,6 +104,7 @@ pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
 
 pub struct Party {
     svc: OnceLock<Arc<Service>>,
+    liveness: sweep::Liveness,
     stop_tx: Mutex<Option<watch::Sender<bool>>>,
     task: Mutex<Option<JoinHandle<()>>>,
 }
@@ -118,6 +119,7 @@ impl Party {
     pub fn new() -> Party {
         Party {
             svc: OnceLock::new(),
+            liveness: sweep::Liveness::default(),
             stop_tx: Mutex::new(None),
             task: Mutex::new(None),
         }
@@ -203,19 +205,34 @@ impl Module for Party {
         );
 
         ctx.contribute(opsapi::DESCRIBE_SLOT, partyrpc::player_rpc::describe());
+
+        // Dark until `start` seeds the stamp: an unstarted sweep reads ready.
+        let liveness = self.liveness.clone();
+        ctx.contribute(
+            httpmw::READINESS_SLOT,
+            httpmw::ReadyCheck::new("party", move || {
+                let liveness = liveness.clone();
+                async move { liveness.check(sweep::STALL_MAX) }
+            }),
+        );
         Ok(())
     }
 
     /// The sweep runs on a fresh task, not tied to the `start` ctx.
     async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
+        // Seeded before the first pass: HTTP serves before it completes on a cold boot.
+        self.liveness.mark_pass_ok();
         let (stop_tx, stop_rx) = watch::channel(false);
-        let task = sweep::spawn(self.svc(), stop_rx);
+        let task = sweep::spawn(self.svc(), self.liveness.clone(), stop_rx);
         *self.stop_tx.lock().unwrap() = Some(stop_tx);
         *self.task.lock().unwrap() = Some(task);
         Ok(())
     }
 
+    /// Marks the liveness stopping BEFORE signalling, so the supervision wrapper reads a
+    /// controlled exit and `/readyz` never counts a stopping process as stalled.
     async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
+        self.liveness.set_stopping();
         let stop_tx = self.stop_tx.lock().unwrap().take();
         let task = self.task.lock().unwrap().take();
         sweep::stop_task(stop_tx, task).await;

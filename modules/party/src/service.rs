@@ -11,6 +11,7 @@ use push::{Message, Push, Target};
 use sqlx::{PgConnection, Postgres, Transaction};
 
 use crate::internal;
+use crate::sweep::{SWEEP_ACQUIRE_DEADLINE, SWEEP_LOOKUP_TIMEOUT, SWEEP_STATEMENT_TIMEOUT};
 use crate::store::{is_unique_violation, InviteRow, Removal, Store, ViewRow};
 
 /// The ONE answer for a party, invite or member the caller may not see or act on: a 403
@@ -224,24 +225,24 @@ impl Service {
         }
     }
 
-    /// After commit: the party's snapshot for its members' push, with handles from ONE
-    /// directory call, then the pushes.
-    pub(crate) async fn publish(&self, party_id: Option<&str>, removal: Option<&Removal>) {
-        let row = match party_id {
-            Some(pid) if !removal.is_some_and(|r| r.dissolved) => {
-                match self.store.party_view(pid).await {
-                    Ok(row) => row,
-                    Err(e) => {
-                        tracing::warn!(error = %e, "party: snapshot for push not loaded");
-                        None
-                    }
+    /// The members' push of a committed snapshot `row` and the removed players' "no party"
+    /// views, with handles from ONE directory call bounded by `lookup` when given.
+    async fn fan_out(
+        &self,
+        row: Option<ViewRow>,
+        removal: Option<&Removal>,
+        lookup: Option<std::time::Duration>,
+    ) {
+        let ids = row.as_ref().map(|r| r.member_ids.clone()).unwrap_or_default();
+        let summaries = match lookup {
+            None => self.summaries(ids).await,
+            Some(bound) => match tokio::time::timeout(bound, self.summaries(ids)).await {
+                Ok(summaries) => summaries,
+                Err(_) => {
+                    tracing::warn!("party: handle lookup timed out; pushing empty handles");
+                    Vec::new()
                 }
-            }
-            _ => None,
-        };
-        let summaries = match &row {
-            Some(row) => self.summaries(row.member_ids.clone()).await,
-            None => Vec::new(),
+            },
         };
         let view = row.as_ref().map(|row| view_of(row, &summaries));
         self.push_state(view.as_ref(), removal);
@@ -319,20 +320,28 @@ impl Service {
         Ok(())
     }
 
-    /// One sweep step: removes the party's expired members under its lock and publishes.
-    /// `false` when a re-check under the lock found none.
-    pub(crate) async fn sweep_party(&self, party_id: &str) -> Result<bool, sqlx::Error> {
-        let mut tx = self.store.pool.begin().await?;
-        sqlx::query("SET LOCAL lock_timeout = '2s'")
-            .execute(&mut *tx)
+    /// One sweep step: removes the party's expired members under its lock, loads the
+    /// remaining roster inside the same transaction, commits, then pushes. `false` when a
+    /// re-check under the lock found none. Every statement is bounded by
+    /// [`SWEEP_STATEMENT_TIMEOUT`] and the lookup by [`SWEEP_LOOKUP_TIMEOUT`].
+    pub(crate) async fn sweep_party(&self, party_id: &str) -> anyhow::Result<bool> {
+        let mut tx = self
+            .store
+            .begin_bounded(SWEEP_ACQUIRE_DEADLINE, SWEEP_STATEMENT_TIMEOUT)
             .await?;
         self.store.lock_party_tx(&mut tx, party_id).await?;
         let Some(removal) = self.store.remove_expired_tx(&mut tx, party_id).await? else {
             tx.rollback().await?;
             return Ok(false);
         };
+        let row = if removal.dissolved {
+            None
+        } else {
+            self.store.party_view_tx(&mut tx, party_id).await?
+        };
         tx.commit().await?;
-        self.publish(Some(party_id), Some(&removal)).await;
+        self.fan_out(row, Some(&removal), Some(SWEEP_LOOKUP_TIMEOUT))
+            .await;
         Ok(true)
     }
 
@@ -540,25 +549,38 @@ impl Player for Service {
 
     async fn leave(&self, identity: Identity) -> Result<PartyView, Error> {
         let me = Service::caller(&identity)?;
-        let Some((mut tx, party_id)) = self.begin_locked(&me).await? else {
-            let row = self.store.player_view(&me).await.map_err(internal)?;
-            return Ok(view_of(&row, &[]));
-        };
-        let removal = self
-            .store
-            .remove_member_tx(&mut tx, &party_id, &me)
-            .await
-            .map_err(internal)?
-            .ok_or_else(|| internal("membership vanished while the party was locked"))?;
-        tx.commit().await.map_err(internal)?;
-        self.respond(
-            &me,
-            Fanout {
-                party_id: Some(party_id),
-                removal: Some(removal),
-            },
-        )
-        .await
+        for _ in 0..MEMBERSHIP_ATTEMPTS {
+            let Some((mut tx, party_id)) = self.begin_locked(&me).await? else {
+                // A join committed between the two reads makes the caller a member again;
+                // the contract answers "no party", so the leave is retried against it.
+                let row = self.store.player_view(&me).await.map_err(internal)?;
+                if row.party_id.is_empty() {
+                    return Ok(no_party(row.revision));
+                }
+                continue;
+            };
+            let removal = self
+                .store
+                .remove_member_tx(&mut tx, &party_id, &me)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| internal("membership vanished while the party was locked"))?;
+            tx.commit().await.map_err(internal)?;
+            let row = if removal.dissolved {
+                None
+            } else {
+                match self.store.party_view(&party_id).await {
+                    Ok(row) => row,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "party: snapshot for push not loaded");
+                        None
+                    }
+                }
+            };
+            self.fan_out(row, Some(&removal), None).await;
+            return Ok(no_party(removal.revision));
+        }
+        Err(Error::conflict("party membership changed concurrently; retry"))
     }
 
     async fn kick(&self, identity: Identity, player_id: String) -> Result<PartyView, Error> {

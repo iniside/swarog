@@ -3092,6 +3092,8 @@ dependencies = [
  "async-trait",
  "bus",
  "edge",
+ "futures",
+ "httpmw",
  "lifecycle",
  "opsapi",
  "partyapi",
