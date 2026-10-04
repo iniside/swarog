@@ -1,0 +1,30 @@
+[package]
+name = "party"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The party impl module: owns schema `party` (lease-bound memberships, pending invites, the
+# global revision sequence) and provides the player-facing `Player` capability. It CONSUMES
+# `accountsapi::Directory` to resolve an invite target and hydrate handles, and reacts to
+# durable `player.deleted`. An impl crate: no other module imports it. `partyrpc` is its OWN
+# glue (sanctioned): the edge register_server face.
+[dependencies]
+lifecycle = { workspace = true }
+registry = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+partyapi = { workspace = true }
+partyrpc = { workspace = true }
+accountsapi = { workspace = true }
+accountsevents = { workspace = true }
+bus = { workspace = true }
+push = { workspace = true }
+sqlx = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
