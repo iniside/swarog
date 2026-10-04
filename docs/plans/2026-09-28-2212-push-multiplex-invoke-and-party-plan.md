@@ -199,7 +199,18 @@ and the self-checking hand-lists (`opscatalog-gen`, `topiccheck` golden,
     loses; a "no party" answer from before a concurrent `accept` loses (its revision is
     the player's previous change, strictly below the accept's). Equal revisions denote the
     same committed state. `HeartbeatView` carries the same `revision`. No durable topics
-    in v1. (Erratum 2026-10-04: replaces the r3 rule "a response always replaces the
+    in v1. **Monotonicity authority:** in every stamping tx, `nextval` is drawn only
+    AFTER that tx's `members` INSERT/DELETE statements for every affected player have
+    executed (an insert of P's row waits out any concurrent uncommitted delete of it), so
+    one player's join is always stamped above their concurrent leave/kick; `parties.
+    revision` and `player_revisions` are then written with that value. **Snapshot
+    atomicity:** every view (response or push) is loaded in ONE statement (or one
+    REPEATABLE READ tx) covering `parties.revision`, `leader_id`, members and the caller's
+    membership/`player_revisions`, so equal revisions denote the same membership and ready
+    state; handles may differ (Directory failure) and a client keeps non-empty handles on
+    an equal-revision snapshot. `hw` is per connection and resets to 0 on (re)connect.
+    Purge DELETEs the deleted player's `player_revisions` row (no residue).
+    (Erratum 2026-10-04: replaces the r3 rule "a response always replaces the
     view; no-party = `last_value`", which the Step 6 review broke with concurrent
     invokes and an uncommitted-`nextval` tie.)
 12. **Liveness is a client-renewed lease.** Every party op by a member renews
@@ -384,7 +395,8 @@ inviter_handle, expires_at }`, `InviteList { invites: Vec<InviteView> }`,
   membership mutation takes it and sets `parties.revision = nextval(...)`. A `23505` on
   the `members` insert (two ops by one player under different party locks) maps to
   `Conflict`.
-- **Rules:** `kick`/`promote` targeting the caller → `Invalid`. `leave` by a caller in
+- **Rules:** `kick`/`promote` targeting the caller → `Invalid`, checked BEFORE the
+  leader check (a non-leader self-kick is also `Invalid`). `leave` by a caller in
   no party → the "no party" view (not an error). `set_ready` in no party → NotFound.
   `create` → Conflict if caller in `members`. `invite` → caller must be
   leader (else NotFound); self → Invalid; target already a member → Conflict; resolve
@@ -412,8 +424,8 @@ inviter_handle, expires_at }`, `InviteList { invites: Vec<InviteView> }`,
   = 60, unusable = startup failure.
 - **Purge:** `on_tx(SubscriptionSpec { id: "party.player-deleted.v1", start:
   StartPosition::AfterRegistration }, …)` on `accountsevents::PLAYER_DELETED` applies
-  the `leave` rule for that player and deletes invites to/from them in the delivery
-  tx; no push from there. No `purged_players` tombstone: rows are lease-bound, the
+  the `leave` rule for that player (stamping the party), deletes invites to/from them
+  and DELETEs their `player_revisions` row, all in the delivery tx; no push from there. No `purged_players` tombstone: rows are lease-bound, the
   player's sessions are revoked in the accounts tx that emits `player.deleted`, the
   gateway verifier has no session cache, and `Directory` no longer resolves the handle.
 - `requires()` = `vec!["accounts".into()]` (groups precedent `lib.rs:134-136`).
@@ -489,6 +501,12 @@ Covers Steps 6–8 in `modules/party/src/tests.rs` (`testdb::test_pool`):
 - leader-only invite/kick/promote → `NotFound` for a member; foreign/expired invite →
   `NotFound`; self-invite → `Invalid`; invite of a member → `Conflict`; self-kick and
   self-promote → `Invalid`; `leave` with no party → "no party" view;
+- concurrent `leave` X + `create` by one player, and concurrent `leave` X + `accept`
+  into Y → the join's revision is strictly above the leave's (the nextval-ordering
+  branch; sequential tests cannot reach it);
+- a view loaded while a concurrent `set_ready` commits never pairs the new revision with
+  the old ready state (snapshot atomicity);
+- purge leaves no `player_revisions` row for the deleted player;
 - revision rule (decision 11 erratum): a "no party" `get` read before a concurrent
   `accept` commits carries a revision strictly below the accept's; `set_ready` and
   `promote` stamp a new revision and push; heartbeat returns the current view revision
@@ -525,7 +543,7 @@ D (D accepts) and invites E (pending, 120 s TTL); E leads its own party and invi
 (pending). C deletes the account. Assert (sqlx, deadline polling) that BOTH pending
 invites involving C are gone well inside their 120 s TTL — the sweep cannot delete an
 unexpired invite, so only `party.player-deleted.v1` passes this — and that C's
-`members` row is gone and D became leader. The members half alone is not
+`members` row is gone, D became leader, and no `party.player_revisions` row remains for C. The members half alone is not
 discriminating (the 10 s lease sweep would also remove it); the invite half is.
 (d) `[opus]` core-implementer, effort think hard; then `proof-auditor`.
 
