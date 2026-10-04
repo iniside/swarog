@@ -27,8 +27,10 @@
 //! A member's view carries the party's revision; a "no party" view carries the caller's
 //! own last membership-change revision, `0` if it never had one. Client rule, for op
 //! responses and [`PUSH_STATE_TOPIC`] pushes alike: apply a snapshot only when its
-//! `revision >= hw`, then set `hw = revision`. Equal revisions denote the same committed
-//! state.
+//! `revision >= hw`, then set `hw = revision`. `hw` is per connection and resets to 0 on
+//! (re)connect. Equal revisions denote the same membership and ready state; handles may
+//! differ (a failed directory lookup leaves `""`), so a client keeps non-empty handles
+//! when applying an equal-revision snapshot.
 //!
 //! **Liveness.** Membership is a lease: every op by a member renews it, and a member whose
 //! lease expires is removed as if it had called [`Player::leave`]. A client keeps its
@@ -159,15 +161,17 @@ pub trait Player: Send + Sync {
     #[http(verb = "POST", path = "/party/leave", auth = "player", success = 200)]
     async fn leave(&self, identity: Identity) -> Result<PartyView, Error>;
 
-    /// LEADER ONLY. Removes `player_id` from the caller's party. A non-leader caller or a
-    /// target not in the caller's party is [`opsapi::Status::NotFound`]; the caller itself
-    /// is [`opsapi::Status::Invalid`] — use [`Player::leave`].
+    /// LEADER ONLY. Removes `player_id` from the caller's party. The caller itself is
+    /// [`opsapi::Status::Invalid`] — use [`Player::leave`] — checked BEFORE the leader
+    /// check, so a non-leader self-kick is also `Invalid`. Otherwise a non-leader caller or
+    /// a target not in the caller's party is [`opsapi::Status::NotFound`].
     #[http(verb = "POST", path = "/party/kick", auth = "player", success = 200)]
     async fn kick(&self, identity: Identity, player_id: String) -> Result<PartyView, Error>;
 
-    /// LEADER ONLY. Hands leadership to `player_id`. A non-leader caller or a target not
-    /// in the caller's party is [`opsapi::Status::NotFound`]; the caller itself is
-    /// [`opsapi::Status::Invalid`].
+    /// LEADER ONLY. Hands leadership to `player_id`. The caller itself is
+    /// [`opsapi::Status::Invalid`], checked BEFORE the leader check, so a non-leader
+    /// self-promote is also `Invalid`. Otherwise a non-leader caller or a target not in the
+    /// caller's party is [`opsapi::Status::NotFound`].
     #[http(verb = "POST", path = "/party/promote", auth = "player", success = 200)]
     async fn promote(&self, identity: Identity, player_id: String)
         -> Result<PartyView, Error>;
