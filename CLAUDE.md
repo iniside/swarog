@@ -202,7 +202,7 @@ never a silent last-writer-wins overwrite.
    pull from their checkpoint — the same code in monolith and split. `topiccheck`
    validates the subscription graph per deployment profile.
 
-## Domain modules (17 fortresses + gateway)
+## Domain modules (18 fortresses + gateway)
 
 - **accounts** — identity: one `player_id`, many identities (`provider`,`subject`),
   opaque DB sessions: 60-minute access tokens plus rotating 30-day refresh-token
@@ -454,6 +454,32 @@ never a silent last-writer-wins overwrite.
   admin page "Cloud Saves" under Player Support at `/admin/cloud-saves`.
   Known limits and acceptance status live in the storage section of
   `docs/roadmap/feature-tracker.md`.
+- **party** — short-lived player parties, at most `MAX_MEMBERS` (8), one leader, one
+  party per player (the `members.player_id` primary key; a racing second insert is
+  409). Postgres is the authority (schema `party`); each membership change takes a
+  per-party `pg_advisory_xact_lock`. Eleven `#[http]` ops (`create`/`get`/`invite`/
+  `invites`/`accept`/`decline`/`leave`/`kick`/`promote`/`set_ready`/`heartbeat`);
+  `get`/`invites`/`heartbeat` are `#[retry_safe]`, mutations are not. Another
+  player's party or invite is `NotFound`, never `Forbidden`; `invite` resolves the
+  handle through `accountsapi::Directory` (outage = 503). Membership is a lease
+  (`PARTY_LEASE_SECS`, default 60, range 10..=600 — only an UNSET variable takes
+  the default, a blank one fails startup): every member op renews it, a module-owned
+  5s sweep removes expired members under the party lock, and a stalled or dead
+  sweep turns the `"party"` readiness check red. `revision` comes from ONE global
+  sequence; the stamping ops are create/accept/leave/kick/promote/set_ready, a lease
+  removal and a purge removal, each stamping the party and every player whose
+  membership it changed, and a "no party" view carries that player's own last
+  `party.player_revisions` value (`0` if none). Client rule: apply a snapshot only
+  when `revision >= hw`, then `hw = revision` (`hw` resets per connection). After
+  commit the module pushes `party.state` to every member (and a "no party" view to a
+  removed one) and `party.invite` to the invitee on hub `party` — best-effort, via
+  `ctx.push()`, so in the split `party-svc` holds a `remote::PushSender` to
+  gateway-svc; a client can invoke the ops over `/push` as well as HTTP. A purge
+  removal is not pushed. `party.player-deleted.v1` (`AfterRegistration`) applies the leave rule to
+  a deleted player in the delivery tx and deletes their invites and revision row;
+  there is no tombstone table, and `party` is not one of the seven purge modules.
+  No durable topics and no admin page. Known gaps are in the Parties row of
+  `docs/roadmap/feature-tracker.md`.
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote purely by
   slot presence; peer addresses are injected by `cmd/*` via `remote::Stub` →
   `opsapi::PEER_SLOT` contributions — the gateway module itself never reads env),
@@ -617,7 +643,7 @@ The blocking **split-proof** stage uses the cross-platform Rust harness in
 :8087/:9005, match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008,
 apikeys :8091/:9009, wallet :8092/:9010, notifications :8093/:9011,
 mail :8094/:9012, friends :8095/:9014, groups :8096/:9015,
-storage :8097/:9016. The fleet is spawned with a typed
+storage :8097/:9016, party :8098/:9017. The fleet is spawned with a typed
 environment and owned process containment plus a kill-on-drop guard,
 health-checked over reqwest, DB-asserted via sqlx, and the player QUIC front
 driven through the `edge` crate as a library. It asserts the same named scenarios
@@ -626,7 +652,7 @@ driven through the `edge` crate as a library. It asserts the same named scenario
 accumulation, 429 rate-limit, api-key policy [K1-K5], admin session auth [AD1-AD5],
 audit [AU1-AU3], scheduler/prune [SC/SP], metrics [MX], rate-limit [RL], player QUIC
 [P1-P6], friends [FR1-FR9], groups [GR1-GR6], storage [ST0-ST6],
-account-deletion purge [DL0-DL13]), then re-runs the monolith (`cmd/server`)
+party over `/push` [PY1-PY7], account-deletion purge [DL0-DL14]), then re-runs the monolith (`cmd/server`)
 on the same player front for parity ([M0-M3b]) and proves native graceful shutdown ([W2]: the platform's native
 cooperative stop to the monolith's process group → clean drain, no force-kill —
 see [platform notes](docs/reference/platform-notes.md)). A reachable Postgres with
@@ -711,7 +737,7 @@ api/<name>/                # contract surface per domain
   <name>api/               #   pure #[rpc] traits + ops/bindings (transport-free)
   <name>events/            #   bus::define descriptors + payloads
   <name>rpc/               #   generated glue (Client/register_server/factories)
-modules/                   # private impls — 17 fortresses + gateway (see above)
+modules/                   # private impls — 18 fortresses + gateway (see above)
 demos/                     # non-shipping demo crates (webui) — cmd/server only
 weles/                     # standalone mini-orchestrator (zero-sharing; deploy/ artifacts,
                            # restart-on-crash supervisor; see Commands)

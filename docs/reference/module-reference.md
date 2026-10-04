@@ -90,7 +90,7 @@ UUIDs never recur so a tombstone is permanent truth.
 ## Sending a push notification
 
 Not part of the characters/inventory pair, but the smallest producer to copy:
-`notifications` is the first (and so far only) module that sends one. A
+`notifications` is the first module that sends one; `party` is the second. A
 producer never touches sockets or topology — it resolves `ctx.push()` (always
 present, `core/lifecycle/src/context.rs:106`) and calls `Push::send` with a
 `push::Target` and a `push::Message`.
@@ -107,6 +107,27 @@ holding the delivery transaction's connection, and an `Err` (`NoSink`,
 `Backlogged`) is dropped, never bubbled into a handler failure — a gateway
 outage must not pause the subscription. See `docs/reference/push-hub.md` for
 the wire contract a client sees on the other end.
+
+### Snapshot pushes with a global revision (party)
+
+`notifications` sends a nudge; `party` pushes state, so a late or reordered frame
+must be recognisable. The pattern, all in `modules/party/src/`:
+
+- **Push after commit, never inside the transaction.** Mutating ops commit, then
+  load the snapshot and call `Push::send` per member (`service.rs` `respond`,
+  `fan_out`). A rolled-back mutation pushes nothing. The one in-transaction caller
+  is the `player.deleted` purge, which does not push at all.
+- **One global `revision` sequence** (`party.revision_seq`), drawn only after the
+  transaction's `members` writes, and written to the party and to every player
+  whose membership changed (`party.player_revisions`), so a "no party" view still
+  carries a revision (`store.rs` `next_revision_tx`, `record_player_revision_tx`).
+- **One-statement snapshots** (`store.rs` `player_view`/`party_view`/`party_view_tx`),
+  so an equal revision means equal membership and ready state.
+- **The client applies a snapshot only when `revision >= hw`**, then sets
+  `hw = revision`, for op responses and pushes alike; the pushed payload is the
+  same DTO an op returns, and the authority is the plain `get` op. The rule is
+  documented on the contract (`api/party/api/src/lib.rs`).
+- A failed handle lookup after commit yields empty handles, not an op failure.
 
 ---
 

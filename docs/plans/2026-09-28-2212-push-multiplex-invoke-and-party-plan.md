@@ -1,10 +1,10 @@
 # Push multiplex (hub lanes + WS invoke) and the `party` fortress — plan
 
-Status (2026-10-03): Steps 1-5 (hub lanes, invoke/result frames, their tests, and the
-invoke split-proof) and the push-protocol docs from Step 12 have landed. Steps 6-11
-(the `party` fortress) are deferred by the user and NOT implemented; the party-specific
-Step 12 items (CLAUDE.md party entry and port list, `module-reference.md`, the Parties
-tracker row, the client revision rule) are likewise not done.
+Status (2026-10-05): Steps 1-11 have landed: hub lanes, invoke/result frames, their
+tests and split-proof (Steps 1-5), and the `party` fortress (Steps 6-11: contracts, module,
+wiring, regenerated artifacts, tests, split-proof `[PY1]`-`[PY7]`/`[DL14]`). Step 12's
+docs have landed (push-protocol docs 2026-10-03; the party items on 2026-10-05). The
+deviations the party reviews recorded are in the Errata below.
 
 Status of the plan text: r3, review cap reached. Round 1 (core-reviewer, opus, think hard): REJECT,
 24 items. Round 2 (fresh core-reviewer): REJECT, 11 items. All addressed below (see
@@ -636,6 +636,53 @@ accepted).
    yields, so the `!is_empty()` guard is unobservable. The landed test pins the
    neighbouring regression (the arm must not end the loop) and records the limit in its
    doc comment (`push_ws_tests.rs`).
+
+### Party (Steps 6-11), recorded with the Step 12 party docs
+
+Verified against the code at HEAD, not against the commit messages.
+
+5. A blank or whitespace `PARTY_LEASE_SECS` FAILS startup; only an UNSET variable takes
+   the default 60 (`modules/party/src/lib.rs` `lease_secs_from_env`). Step 7's conformance
+   stance "blank→60" and decision 12's wording are superseded; the `EnvValidation` cases
+   are blank, `abc`, `9` and `601`, all failing.
+6. The `player.deleted` purge returns a `bus::Error` (forcing redelivery) when the
+   deleted player's membership moved between the party read and the removal under the
+   lock, and SKIPS a `player_id` that is not a uuid (warn, `Ok`). Step 7's purge text
+   describes neither.
+7. Lease renewal also happens on `invites` and `decline`, and on the leader's `invite`,
+   `kick` and `promote` (inside the op's transaction); renewal for a caller in no party
+   updates nothing.
+8. `0b62fb7` removed the gateway's `DESCRIBE_FETCH_CONCURRENCY` (a hand-kept mirror of the
+   provider count that party's arrival, the 18th, outgrew, adding a second
+   `DESCRIBE_PEER_TIMEOUT` wave to the boot pass). A describe pass now spawns every
+   peer's fetch before joining any, so it is one wave for any fleet size. This
+   reverses the bounded-window design in the gateway's describe docs.
+9. Success codes are part of the landed contract: `create` and `invite` answer 201,
+   `decline` 204, every other op 200 (`#[http(..., success = N)]` in `partyapi`).
+   Step 6 listed no codes.
+10. `partyapi` has no `accountsapi` dependency: the `MAX_HANDLE_BYTES` cap is named in
+    prose and enforced in the module, which imports `accountsapi::MAX_HANDLE_BYTES`
+    directly. Step 6's "`target_handle` over `accountsapi::MAX_HANDLE_BYTES`" is a
+    module rule, not a contract-crate import.
+11. `[DL14]` drives its party ops (create, invite, accept, heartbeat, leave) over HTTP
+    through the front, not over `/push`; only `[PY1]`-`[PY7]` use the socket.
+12. Step 7's `InfraOutage503` stance said the probe drives `invite` with a failing
+    `Directory`. The landed conformance probe drives `Service::resolve_target`, the
+    directory step `invite` takes after the leadership read, because `invite` reads
+    leadership from the database first and so cannot reach the directory without a live
+    store. The full `Player::invite` outage path is proven by the unit test
+    `invite_target_rules` (`modules/party/src/service_tests.rs`), not by conformance.
+    The same path in `groups` is unproven.
+
+Known gaps recorded with the party docs (not scheduled):
+
+- Purge residue window: an op verified before the account's session revoke can insert a
+  `members` row after the purge ran. The lease sweep later removes it, but writes a
+  `party.player_revisions` row for the deleted player that nothing deletes.
+- The sweep's `COMMIT` is not covered by its `SET LOCAL statement_timeout` (that bounds
+  statements); `sweep.rs`'s worst-case arithmetic counts the commit as a bounded
+  statement. Recorded, not re-proven.
+- `groups`' invite outage path has no conformance or unit proof of its own.
 
 ## Review round 1 — disposition
 
