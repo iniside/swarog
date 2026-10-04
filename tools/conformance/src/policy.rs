@@ -1076,8 +1076,10 @@ fn party() -> Entry {
                 // The accounts directory IS party's one synchronous external dependency. The
                 // case drives Service::resolve_target, the directory step `invite` takes once
                 // the caller's leadership is confirmed; `invite` itself reads leadership from
-                // the database first, so it is unreachable without a live store. The full
-                // invite path under an accounts outage is unproven by any assertion.
+                // the database first, so it is unreachable without a live store. This
+                // zero-I/O case does not cover the full invite path; the live-DB unit test
+                // `invite_target_rules` (modules/party/src/service_tests.rs) asserts
+                // `Player::invite` returns Unavailable on a failing `find_by_handle`.
                 Stance::Applies(Fixture::InfraOutage503(vec![OutageCase {
                     name: "party invite target resolution over a failing accounts directory capability",
                     probe: Arc::new(|| {
