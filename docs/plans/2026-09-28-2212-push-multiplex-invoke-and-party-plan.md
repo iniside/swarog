@@ -476,9 +476,14 @@ inviter_handle, expires_at }`, `InviteList { invites: Vec<InviteView> }`,
 
 ### Step 8b — Fixture-list updates forced by drift checks `[test-author]` (model: sonnet)
 
-`tools/processctl/src/fleet_tests.rs:123-127` (party-svc in the fleet snapshot, gateway
-dependency list) and `weles/master/src/manifest_tests.rs:275,320`. Separate from Step 8
-because tests are never the `[sonnet]` lane.
+`tools/processctl/src/fleet_tests.rs` (party-svc in the fleet snapshot, gateway
+dependency list), `weles/master/src/manifest_tests.rs` (the party-svc golden only — NOT
+the admin-svc golden: party has no admin item, so admin-svc gets no party peer),
+`cmd/gateway-svc/src/addrs_tests.rs` (`ADDR_SPECS` gained `PARTY_EDGE_ADDR`: the fake
+agent's answers and the `asked` vector need `("party", Edge)`), and
+`tools/csharp-client-gen/src/tests.rs` (the reviewed wire-method list and DTO set now
+include the 11 `party.*` methods and the party DTOs). Separate from Step 8 because
+tests are never the `[sonnet]` lane. (List amended after the Step 8 review.)
 
 ### Step 9 — Regenerate and bless contract artifacts `[sonnet]`
 
