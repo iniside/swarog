@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: 3dcd09ee-8844-4095-a44d-a83c5ff1a9f8
-  modified: 2026-10-03T19:37:49.958Z
+  modified: 2026-10-04T17:42:45.678Z
 ---
 
 `tools/splitproof` is the only instrument for properties no other gate checks — a live
@@ -40,6 +40,12 @@ proof audit was rejected for core-implementer and accepted for `test-author` (mo
 which did it correctly. The hook keys on wording: "add/author assertions for a step" →
 core-implementer passes; "tighten/fix assertions per an audit" reads as test work. Phrase
 the prompt by the actual activity; still only one re-route before asking.
+
+**Corrected by Lukasz 2026-10-04 ("zly agent"):** Step 8b was tagged `[test-author]` in the
+plan; the hook rejected the first prompt, and I re-routed to core-implementer — wrong.
+**The plan's lane tag wins.** When the hook rejects the tagged lane, re-phrase the SAME
+lane's prompt by its real activity (e.g. "update the tests that pin the landed wiring")
+instead of switching lanes; the re-phrased test-author prompt passed at once.
 
 Related: [[specialized-core-agents]], [[no-inline-adhoc-fixes]],
 [[cite-a-precedent-only-after-reading-it]].
