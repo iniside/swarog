@@ -676,6 +676,10 @@ Verified against the code at HEAD, not against the commit messages.
 
 Known gaps recorded with the party docs (not scheduled):
 
+- Disconnect detection is lease expiry, typically `PARTY_LEASE_SECS` plus one 5 s sweep
+  tick; nothing caps it (`SWEEP_BATCH` 64, `SWEEP_PASS_BUDGET` 20 s, a failed party is
+  retried next tick). This supersedes the "≤ `PARTY_LEASE_SECS` + 5 s" bound in the
+  carried-forward gaps above.
 - Purge residue window: an op verified before the account's session revoke can insert a
   `members` row after the purge ran. The lease sweep later removes it, but writes a
   `party.player_revisions` row for the deleted player that nothing deletes.

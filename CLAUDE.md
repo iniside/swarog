@@ -241,7 +241,8 @@ never a silent last-writer-wins overwrite.
   session died with the player. Seven modules (`characters`, `inventory`,
   `friends`, `groups`, `notifications`, `wallet`, `storage`) each subscribe to
   `player.deleted`, tombstone the player in a per-module `purged_players`
-  table, and drain it via a daily `player-purge` scheduler-driven sweep — see
+  table, and drain it via a daily `player-purge` scheduler-driven sweep (plus
+  `party`, purging in the delivery tx without a tombstone) — see
   the `accounts` self-delete row in `docs/roadmap/feature-tracker.md` for the
   known gaps (no GDPR export, no log/ledger redaction, `leaderboard`/`rating`/
   `match`/`mail` unpurgeable, sole-admin group dissolution).
@@ -456,8 +457,9 @@ never a silent last-writer-wins overwrite.
   `docs/roadmap/feature-tracker.md`.
 - **party** — short-lived player parties, at most `MAX_MEMBERS` (8), one leader, one
   party per player (the `members.player_id` primary key; a racing second insert is
-  409). Postgres is the authority (schema `party`); each membership change takes a
-  per-party `pg_advisory_xact_lock`. Eleven `#[http]` ops (`create`/`get`/`invite`/
+  409). Postgres is the authority (schema `party`); every change to an EXISTING
+  party's membership takes a per-party `pg_advisory_xact_lock`, while `create`
+  relies on the `members.player_id` primary key alone. Eleven `#[http]` ops (`create`/`get`/`invite`/
   `invites`/`accept`/`decline`/`leave`/`kick`/`promote`/`set_ready`/`heartbeat`);
   `get`/`invites`/`heartbeat` are `#[retry_safe]`, mutations are not. Another
   player's party or invite is `NotFound`, never `Forbidden`; `invite` resolves the
