@@ -591,8 +591,8 @@ fn groups() -> Entry {
                 // capability that cannot be reached surfaces 503 and never a page of blank
                 // handles. `invite` and `join` fold through the SAME
                 // service::directory_unavailable but re-check the caller's role in the
-                // database first, so neither is reachable without a live store — a known gap
-                // this zero-I/O case cannot close, left to the split-proof fleet.
+                // database first, so neither is reachable without a live store. The full
+                // invite path under an accounts outage is unproven by any assertion.
                 Stance::Applies(Fixture::InfraOutage503(vec![OutageCase {
                     name: "groups member page hydrate over a failing accounts directory capability",
                     probe: Arc::new(|| {
@@ -1076,8 +1076,8 @@ fn party() -> Entry {
                 // The accounts directory IS party's one synchronous external dependency. The
                 // case drives Service::resolve_target, the directory step `invite` takes once
                 // the caller's leadership is confirmed; `invite` itself reads leadership from
-                // the database first, so it is unreachable without a live store — a known gap
-                // this zero-I/O case cannot close, left to the split-proof fleet.
+                // the database first, so it is unreachable without a live store. The full
+                // invite path under an accounts outage is unproven by any assertion.
                 Stance::Applies(Fixture::InfraOutage503(vec![OutageCase {
                     name: "party invite target resolution over a failing accounts directory capability",
                     probe: Arc::new(|| {
