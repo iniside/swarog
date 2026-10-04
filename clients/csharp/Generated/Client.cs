@@ -186,6 +186,45 @@ public sealed record NotificationsListRequest(
 public sealed record NotificationsMarkReadRequest(
     [property: JsonPropertyName("notification_id")] string NotificationId);
 
+/// <summary>Request for <c>party.accept</c>.</summary>
+public sealed record PartyAcceptRequest(
+    [property: JsonPropertyName("invite_id")] string InviteId);
+
+/// <summary>Request for <c>party.create</c> (no arguments — serializes to <c>{}</c>).</summary>
+public sealed record PartyCreateRequest();
+
+/// <summary>Request for <c>party.decline</c>.</summary>
+public sealed record PartyDeclineRequest(
+    [property: JsonPropertyName("invite_id")] string InviteId);
+
+/// <summary>Request for <c>party.get</c> (no arguments — serializes to <c>{}</c>).</summary>
+public sealed record PartyGetRequest();
+
+/// <summary>Request for <c>party.heartbeat</c> (no arguments — serializes to <c>{}</c>).</summary>
+public sealed record PartyHeartbeatRequest();
+
+/// <summary>Request for <c>party.invite</c>.</summary>
+public sealed record PartyInviteRequest(
+    [property: JsonPropertyName("target_handle")] string TargetHandle);
+
+/// <summary>Request for <c>party.invites</c> (no arguments — serializes to <c>{}</c>).</summary>
+public sealed record PartyInvitesRequest();
+
+/// <summary>Request for <c>party.kick</c>.</summary>
+public sealed record PartyKickRequest(
+    [property: JsonPropertyName("player_id")] string PlayerId);
+
+/// <summary>Request for <c>party.leave</c> (no arguments — serializes to <c>{}</c>).</summary>
+public sealed record PartyLeaveRequest();
+
+/// <summary>Request for <c>party.promote</c>.</summary>
+public sealed record PartyPromoteRequest(
+    [property: JsonPropertyName("player_id")] string PlayerId);
+
+/// <summary>Request for <c>party.setReady</c>.</summary>
+public sealed record PartySetReadyRequest(
+    [property: JsonPropertyName("state")] string State);
+
 /// <summary>Request for <c>storage.delete</c>.</summary>
 public sealed record StorageDeleteRequest(
     [property: JsonPropertyName("collection")] string Collection,
@@ -616,6 +655,135 @@ public sealed class GameBackendClient(IPlayerTransport transport)
         byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
         PlayerResponse resp = await transport.CallAsync("notifications.markRead", token, payload, ct).ConfigureAwait(false);
         Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>party.accept</c> (requires a bearer token).</summary>
+    public async Task<PartyView> PartyAcceptAsync(string token, string inviteId, CancellationToken ct = default)
+    {
+        var request = new PartyAcceptRequest(inviteId);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("party.accept", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<PartyView>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>party.create</c> (requires a bearer token).</summary>
+    public async Task<PartyView> PartyCreateAsync(string token, CancellationToken ct = default)
+    {
+        var request = new PartyCreateRequest();
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("party.create", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<PartyView>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>party.decline</c> (requires a bearer token).</summary>
+    public async Task PartyDeclineAsync(string token, string inviteId, CancellationToken ct = default)
+    {
+        var request = new PartyDeclineRequest(inviteId);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("party.decline", token, payload, ct).ConfigureAwait(false);
+        Unwrap(resp);
+    }
+
+    /// <summary>Invokes <c>party.get</c> (requires a bearer token).</summary>
+    public async Task<PartyView> PartyGetAsync(string token, CancellationToken ct = default)
+    {
+        var request = new PartyGetRequest();
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("party.get", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<PartyView>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>party.heartbeat</c> (requires a bearer token).</summary>
+    public async Task<HeartbeatView> PartyHeartbeatAsync(string token, CancellationToken ct = default)
+    {
+        var request = new PartyHeartbeatRequest();
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("party.heartbeat", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<HeartbeatView>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>party.invite</c> (requires a bearer token).</summary>
+    public async Task<InviteView> PartyInviteAsync(string token, string targetHandle, CancellationToken ct = default)
+    {
+        var request = new PartyInviteRequest(targetHandle);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("party.invite", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<InviteView>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>party.invites</c> (requires a bearer token).</summary>
+    public async Task<InviteList> PartyInvitesAsync(string token, CancellationToken ct = default)
+    {
+        var request = new PartyInvitesRequest();
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("party.invites", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<InviteList>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>party.kick</c> (requires a bearer token).</summary>
+    public async Task<PartyView> PartyKickAsync(string token, string playerId, CancellationToken ct = default)
+    {
+        var request = new PartyKickRequest(playerId);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("party.kick", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<PartyView>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>party.leave</c> (requires a bearer token).</summary>
+    public async Task<PartyView> PartyLeaveAsync(string token, CancellationToken ct = default)
+    {
+        var request = new PartyLeaveRequest();
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("party.leave", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<PartyView>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>party.promote</c> (requires a bearer token).</summary>
+    public async Task<PartyView> PartyPromoteAsync(string token, string playerId, CancellationToken ct = default)
+    {
+        var request = new PartyPromoteRequest(playerId);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("party.promote", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<PartyView>(JsonOpts)!;
+    }
+
+    /// <summary>Invokes <c>party.setReady</c> (requires a bearer token).</summary>
+    public async Task<PartyView> PartySetReadyAsync(string token, string state, CancellationToken ct = default)
+    {
+        var request = new PartySetReadyRequest(state);
+        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);
+        PlayerResponse resp = await transport.CallAsync("party.setReady", token, payload, ct).ConfigureAwait(false);
+        JsonNode envelope = Unwrap(resp);
+        JsonNode value = envelope["value"]
+            ?? throw new GameBackendTransportException("Ok response missing 'value'");
+        return value.Deserialize<PartyView>(JsonOpts)!;
     }
 
     /// <summary>Invokes <c>storage.delete</c> (requires a bearer token).</summary>

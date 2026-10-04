@@ -161,6 +161,17 @@ rpc module=matchapi::match_rpc method=match.report verb=POST path=/match/report 
 rpc module=notificationsapi::player_rpc method=notifications.delete verb=DELETE path=/notifications/{id} auth=Player success=204 retry=Never
 rpc module=notificationsapi::player_rpc method=notifications.list verb=POST path=/notifications/list auth=Player success=200 retry=OnceAfterReconnect
 rpc module=notificationsapi::player_rpc method=notifications.markRead verb=POST path=/notifications/{id}/read auth=Player success=204 retry=OnceAfterReconnect
+rpc module=partyapi::player_rpc method=party.accept verb=POST path=/party/accept auth=Player success=200 retry=Never
+rpc module=partyapi::player_rpc method=party.create verb=POST path=/party/create auth=Player success=201 retry=Never
+rpc module=partyapi::player_rpc method=party.decline verb=POST path=/party/decline auth=Player success=204 retry=Never
+rpc module=partyapi::player_rpc method=party.get verb=POST path=/party/get auth=Player success=200 retry=OnceAfterReconnect
+rpc module=partyapi::player_rpc method=party.heartbeat verb=POST path=/party/heartbeat auth=Player success=200 retry=OnceAfterReconnect
+rpc module=partyapi::player_rpc method=party.invite verb=POST path=/party/invite auth=Player success=201 retry=Never
+rpc module=partyapi::player_rpc method=party.invites verb=POST path=/party/invites auth=Player success=200 retry=OnceAfterReconnect
+rpc module=partyapi::player_rpc method=party.kick verb=POST path=/party/kick auth=Player success=200 retry=Never
+rpc module=partyapi::player_rpc method=party.leave verb=POST path=/party/leave auth=Player success=200 retry=Never
+rpc module=partyapi::player_rpc method=party.promote verb=POST path=/party/promote auth=Player success=200 retry=Never
+rpc module=partyapi::player_rpc method=party.setReady verb=POST path=/party/set_ready auth=Player success=200 retry=Never
 rpc module=storageapi::player_rpc method=storage.delete verb=DELETE path=/storage/{collection}/{key} auth=Player success=204 retry=Never
 rpc module=storageapi::player_rpc method=storage.get verb=POST path=/storage/{collection}/{key}/get auth=Player success=200 retry=OnceAfterReconnect
 rpc module=storageapi::player_rpc method=storage.list verb=POST path=/storage/list auth=Player success=200 retry=OnceAfterReconnect
@@ -218,6 +229,12 @@ rpc-arg module=notificationsapi::player_rpc method=notifications.delete param=no
 rpc-arg module=notificationsapi::player_rpc method=notifications.list param=cursor wire_key=cursor source=body
 rpc-arg module=notificationsapi::player_rpc method=notifications.list param=limit wire_key=limit source=body
 rpc-arg module=notificationsapi::player_rpc method=notifications.markRead param=notification_id wire_key=notification_id source=path:id
+rpc-arg module=partyapi::player_rpc method=party.accept param=invite_id wire_key=invite_id source=body
+rpc-arg module=partyapi::player_rpc method=party.decline param=invite_id wire_key=invite_id source=body
+rpc-arg module=partyapi::player_rpc method=party.invite param=target_handle wire_key=target_handle source=body
+rpc-arg module=partyapi::player_rpc method=party.kick param=player_id wire_key=player_id source=body
+rpc-arg module=partyapi::player_rpc method=party.promote param=player_id wire_key=player_id source=body
+rpc-arg module=partyapi::player_rpc method=party.setReady param=state wire_key=state source=body
 rpc-arg module=storageapi::player_rpc method=storage.delete param=collection wire_key=collection source=path:collection
 rpc-arg module=storageapi::player_rpc method=storage.delete param=key wire_key=key source=path:key
 rpc-arg module=storageapi::player_rpc method=storage.get param=collection wire_key=collection source=path:collection
@@ -283,6 +300,17 @@ rpc-body module=notificationsapi::player_rpc method=notifications.delete body:ob
 rpc-body module=notificationsapi::player_rpc method=notifications.list body.cursor:string
 rpc-body module=notificationsapi::player_rpc method=notifications.list body.limit:number
 rpc-body module=notificationsapi::player_rpc method=notifications.markRead body:object{}
+rpc-body module=partyapi::player_rpc method=party.accept body.invite_id:string
+rpc-body module=partyapi::player_rpc method=party.create body:object{}
+rpc-body module=partyapi::player_rpc method=party.decline body.invite_id:string
+rpc-body module=partyapi::player_rpc method=party.get body:object{}
+rpc-body module=partyapi::player_rpc method=party.heartbeat body:object{}
+rpc-body module=partyapi::player_rpc method=party.invite body.target_handle:string
+rpc-body module=partyapi::player_rpc method=party.invites body:object{}
+rpc-body module=partyapi::player_rpc method=party.kick body.player_id:string
+rpc-body module=partyapi::player_rpc method=party.leave body:object{}
+rpc-body module=partyapi::player_rpc method=party.promote body.player_id:string
+rpc-body module=partyapi::player_rpc method=party.setReady body.state:string
 rpc-body module=storageapi::player_rpc method=storage.delete body:object{}
 rpc-body module=storageapi::player_rpc method=storage.get body.owner_id:string
 rpc-body module=storageapi::player_rpc method=storage.list body.collection:string
@@ -337,6 +365,17 @@ wire module=matchapi::match_rpc method=match.report retry=OnceAfterReconnect
 wire module=notificationsapi::player_rpc method=notifications.delete retry=Never
 wire module=notificationsapi::player_rpc method=notifications.list retry=OnceAfterReconnect
 wire module=notificationsapi::player_rpc method=notifications.markRead retry=OnceAfterReconnect
+wire module=partyapi::player_rpc method=party.accept retry=Never
+wire module=partyapi::player_rpc method=party.create retry=Never
+wire module=partyapi::player_rpc method=party.decline retry=Never
+wire module=partyapi::player_rpc method=party.get retry=OnceAfterReconnect
+wire module=partyapi::player_rpc method=party.heartbeat retry=OnceAfterReconnect
+wire module=partyapi::player_rpc method=party.invite retry=Never
+wire module=partyapi::player_rpc method=party.invites retry=OnceAfterReconnect
+wire module=partyapi::player_rpc method=party.kick retry=Never
+wire module=partyapi::player_rpc method=party.leave retry=Never
+wire module=partyapi::player_rpc method=party.promote retry=Never
+wire module=partyapi::player_rpc method=party.setReady retry=Never
 wire module=ratingapi::mmr_reader_rpc method=rating.mmr retry=OnceAfterReconnect
 wire module=storageapi::player_rpc method=storage.delete retry=Never
 wire module=storageapi::player_rpc method=storage.get retry=OnceAfterReconnect

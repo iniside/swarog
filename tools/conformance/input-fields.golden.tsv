@@ -55,6 +55,12 @@ match.report	Winner	external
 notifications.delete	notification_id	external
 notifications.list	cursor	external
 notifications.markRead	notification_id	external
+party.accept	invite_id	external
+party.decline	invite_id	external
+party.invite	target_handle	external
+party.kick	player_id	external
+party.promote	player_id	external
+party.setReady	state	external
 rating.mmr	player_id	wire
 storage.delete	collection	external
 storage.delete	key	external
