@@ -3078,6 +3078,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "partyapi"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "opsapi",
+ "rpc-macro",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "partyrpc"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "edge",
+ "opsapi",
+ "partyapi",
+ "registry",
+ "rpc-macro",
+ "serde_json",
+]
+
+[[package]]
 name = "password-hash"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

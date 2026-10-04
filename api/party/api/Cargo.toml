@@ -1,0 +1,21 @@
+[package]
+name = "partyapi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The party module's PURE, transport-free contract: the player-facing `Player`
+# capability (create/get/invite/invites/accept/decline/leave/kick/promote/set_ready/
+# heartbeat), the push topic names and the DTOs. `#[rpc]` generates the transport-FREE
+# surface (wire envelopes, METHOD_* consts, operations()/route_bindings()) into the
+# child `player_rpc` module, plus the metadata-callback macro the sibling `partyrpc`
+# glue crate expands into the edge-dependent glue. NO `edge`/`remote`/`push`/transport
+# dependency (archcheck's FORBIDDEN_API_DEPS), and no `accountsapi`: the handle cap is
+# named in prose, the module enforces it.
+[dependencies]
+opsapi = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
