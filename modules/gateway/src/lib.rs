@@ -189,9 +189,12 @@ const DESCRIBE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 ///
 /// The fan-out is the peer set, not a window: that set is the `opsapi::PEER_SLOT` boot snapshot
 /// (one entry per `remote::Stub` in the process's `cmd/*` root, fixed for the process lifetime),
-/// and each fetch reuses that provider's one persistent describe `Pool`, so concurrent dials are
-/// already bounded by the provider count the gateway holds connections to anyway. A smaller cap
-/// would only be a fleet-size mirror that silently adds a wave when the fleet outgrows it.
+/// and each fetch goes through that provider's one persistent describe `Pool`. The first-pass dial
+/// burst is bounded by the boot address set (also fixed for the process lifetime; a pooled
+/// `PeerAddr` can carry several addresses): the pool's first call spawns one `probe_loop` per
+/// instance, each dialing immediately, plus one fetch dial per provider. That is the same order
+/// as the connections the dispatch pools already hold. A smaller cap would only be a fleet-size
+/// mirror that silently adds a wave when the fleet outgrows it.
 const DESCRIBE_PEER_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// Grace given to the describe-refresh task to observe the stop signal before
