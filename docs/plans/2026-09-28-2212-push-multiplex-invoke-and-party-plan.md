@@ -439,6 +439,12 @@ inviter_handle, expires_at }`, `InviteList { invites: Vec<InviteView> }`,
   password handling).
 (d) `[opus]` core-implementer, effort think hard.
 
+(Erratum, Step 7 review, 9b64757: the lease sweep loads its push snapshot INSIDE its
+transaction under `SET LOCAL statement_timeout` (2 s) and pushes only after commit;
+every sweep transaction is bounded (acquire 2 s, statements 2 s, Directory lookup 2 s,
+20 s pass budget); the module contributes a "party" `READINESS_SLOT` check (stall limit
+79 s, derived in `sweep.rs`), and a panicking sweep loop marks itself dead.)
+
 ### Step 8 — Wiring `party-svc` into both topologies `[sonnet]`
 
 (a) **What:**
@@ -512,6 +518,13 @@ Covers Steps 6–8 in `modules/party/src/tests.rs` (`testdb::test_pool`):
 - a view loaded while a concurrent `set_ready` commits never pairs the new revision with
   the old ready state (snapshot atomicity);
 - purge leaves no `player_revisions` row for the deleted player;
+- (added after the Step 7 review, commit 9b64757) `sweep::Liveness` on a paused clock: a
+  pass with one failing party withholds the stamp and the "party" readiness check goes
+  red after `STALL_MAX`; a panicking pass sets `dead`; a controlled stop
+  (`set_stopping` before the signal) does not;
+- (9b64757) `leave` by a caller in no party racing an `accept` that commits between the
+  two reads takes the retry branch, removes the caller from the just-joined party and
+  answers `no_party(removal.revision)` — `leave` never answers a party view;
 - revision rule (decision 11 erratum): a "no party" `get` read before a concurrent
   `accept` commits carries a revision strictly below the accept's; `set_ready` and
   `promote` stamp a new revision and push; heartbeat returns the current view revision
