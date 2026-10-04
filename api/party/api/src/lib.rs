@@ -17,11 +17,18 @@
 //! an enumeration oracle. A malformed uuid argument or an unknown ready state is
 //! [`opsapi::Status::Invalid`].
 //!
-//! **Ordering.** Every membership change stamps the party with a `revision` drawn from
-//! ONE global sequence. A direct op response always replaces the client's view and raises
-//! its high-water mark to `max(hw, revision)`; a [`PUSH_STATE_TOPIC`] push is applied only
-//! when its `revision` is above the high-water mark. A "no party" view carries a revision
-//! at least as high as every committed one.
+//! **Ordering.** `revision` is drawn from ONE global sequence. The stamping ops are
+//! [`Player::create`], [`Player::accept`], [`Player::leave`], [`Player::kick`],
+//! [`Player::promote`], [`Player::set_ready`], a lease-expiry removal and a
+//! `player.deleted` purge removal; each stamps the party and every player whose
+//! membership it changes. Lease renewal never stamps. A purge removal is NOT pushed:
+//! the remaining members learn of it through [`Player::get`].
+//!
+//! A member's view carries the party's revision; a "no party" view carries the caller's
+//! own last membership-change revision, `0` if it never had one. Client rule, for op
+//! responses and [`PUSH_STATE_TOPIC`] pushes alike: apply a snapshot only when its
+//! `revision >= hw`, then set `hw = revision`. Equal revisions denote the same committed
+//! state.
 //!
 //! **Liveness.** Membership is a lease: every op by a member renews it, and a member whose
 //! lease expires is removed as if it had called [`Player::leave`]. A client keeps its
@@ -40,9 +47,9 @@ pub const READY: &str = "ready";
 /// A member's ready state on joining, and after [`Player::set_ready`] with this value.
 pub const NOT_READY: &str = "not_ready";
 
-/// Push topic carrying a [`PartyView`] to every current member after a committed
-/// membership change, and a "no party" view to a member just removed. Best-effort: the
-/// authority is [`Player::get`].
+/// Push topic carrying a [`PartyView`] to every current member after a committed stamping
+/// op (except a purge removal), and a "no party" view to a member just removed.
+/// Best-effort: the authority is [`Player::get`].
 pub const PUSH_STATE_TOPIC: &str = "party.state";
 /// Push topic carrying an [`InviteView`] to the invitee after [`Player::invite`].
 /// Best-effort: the authority is [`Player::invites`].
@@ -64,7 +71,8 @@ pub struct MemberView {
     pub ready: String,
 }
 
-/// The caller's party. "No party" is `party_id == ""`, `leader_id == ""`, no members.
+/// The caller's party. "No party" is `party_id == ""`, `leader_id == ""`, no members, and
+/// `revision` is the caller's own last membership-change revision (`0` if none).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartyView {
     pub party_id: String,
@@ -95,6 +103,9 @@ pub struct InviteList {
 pub struct HeartbeatView {
     /// RFC3339; EMPTY when the caller is in no party.
     pub lease_until: String,
+    /// The party's revision, or the caller's own last membership-change revision (`0` if
+    /// none) when in no party — the same value [`Player::get`] would answer.
+    pub revision: i64,
 }
 
 /// The player-facing party capability. Every op is `POST` with its arguments in the JSON
@@ -144,17 +155,19 @@ pub trait Player: Send + Sync {
 
     /// Leaves the caller's party and answers the "no party" view. A leaving leader hands
     /// leadership to the earliest-joined remaining member; the last member leaving
-    /// dissolves the party.
+    /// dissolves the party. A caller in no party gets the "no party" view, not an error.
     #[http(verb = "POST", path = "/party/leave", auth = "player", success = 200)]
     async fn leave(&self, identity: Identity) -> Result<PartyView, Error>;
 
     /// LEADER ONLY. Removes `player_id` from the caller's party. A non-leader caller or a
-    /// target not in the caller's party is [`opsapi::Status::NotFound`].
+    /// target not in the caller's party is [`opsapi::Status::NotFound`]; the caller itself
+    /// is [`opsapi::Status::Invalid`] — use [`Player::leave`].
     #[http(verb = "POST", path = "/party/kick", auth = "player", success = 200)]
     async fn kick(&self, identity: Identity, player_id: String) -> Result<PartyView, Error>;
 
     /// LEADER ONLY. Hands leadership to `player_id`. A non-leader caller or a target not
-    /// in the caller's party is [`opsapi::Status::NotFound`].
+    /// in the caller's party is [`opsapi::Status::NotFound`]; the caller itself is
+    /// [`opsapi::Status::Invalid`].
     #[http(verb = "POST", path = "/party/promote", auth = "player", success = 200)]
     async fn promote(&self, identity: Identity, player_id: String)
         -> Result<PartyView, Error>;
