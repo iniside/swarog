@@ -10,6 +10,17 @@ mod service;
 mod store;
 mod sweep;
 
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+mod service_tests;
+#[cfg(test)]
+mod race_tests;
+#[cfg(test)]
+mod sweep_tests;
+#[cfg(test)]
+mod purge_tests;
+
 pub use service::Service;
 
 use std::sync::{Arc, Mutex, OnceLock};

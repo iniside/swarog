@@ -3090,6 +3090,7 @@ dependencies = [
  "accountsevents",
  "anyhow",
  "async-trait",
+ "asyncevents",
  "bus",
  "edge",
  "futures",
@@ -3103,6 +3104,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "testdb",
  "tokio",
  "tracing",
 ]

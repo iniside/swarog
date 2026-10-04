@@ -31,3 +31,11 @@ httpmw = { workspace = true }
 # `catch_unwind` on the sweep task's future, so a panicking pass flips readiness.
 futures = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+
+[dev-dependencies]
+testdb = { workspace = true }
+# The durable plane, driven by hand: `TestTransport::deliver_all` runs the real
+# `party.player-deleted.v1` subscription.
+asyncevents = { workspace = true }
+# `time::pause`/`advance` for the sweep liveness clock.
+tokio = { workspace = true, features = ["test-util"] }
