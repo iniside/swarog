@@ -2109,37 +2109,6 @@ fn pool_readyz_error(pool: &remote::Pool) -> String {
     pool.readyz().err().unwrap_or_default()
 }
 
-/// The number of domain fortresses the managed gateway fetches describe from: every
-/// `cmd/<name>-svc` ON DISK except the front door itself (`gateway-svc` hosts the gateway,
-/// it is not one of its peers).
-///
-/// DERIVED, never a literal — the same drift-check discipline `tools/splitproof`'s
-/// fleet preflight uses. A hardcoded `11` would keep `DESCRIBE_FETCH_CONCURRENCY >= 11` true
-/// forever while a 12th, 17th, 20th svc quietly pushed the boot pass into a second fetch
-/// wave: the invariant would break with nothing red. Reading the tree is exact here because
-/// `CARGO_MANIFEST_DIR` is this crate's source path, baked in at compile time; if the tree is
-/// gone the test FAILS loudly rather than skipping (a green SKIP would restore the same hole).
-fn domain_svc_count() -> usize {
-    let cmd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cmd");
-    let entries = std::fs::read_dir(&cmd).unwrap_or_else(|e| {
-        panic!(
-            "cannot enumerate {} to derive the fleet size: {e}\n\
-             (this path is baked in at COMPILE time — a missing dir usually means the test \
-             binary was built from a different checkout sharing this CARGO_TARGET_DIR; \
-             rebuild it before reading this as a product failure)",
-            cmd.display()
-        )
-    });
-    let count = entries
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().is_dir())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .filter(|name| name.ends_with("-svc") && name != "gateway-svc")
-        .count();
-    assert!(count > 0, "no cmd/*-svc roots found under {} — the derivation is broken", cmd.display());
-    count
-}
-
 /// A guard MOVED into the refresh task through the fetcher closure. Its `Drop` runs only
 /// when the spawned task's future is dropped — i.e. only when the task has actually ENDED.
 /// This is the drop-flag the lifecycle proof rests on: "no further pass after stop" would be
@@ -2715,21 +2684,17 @@ async fn a_panicking_describe_fetch_is_keep_last_and_the_pass_survives() {
     router.refresh_once().await.expect("the router recovers on the next pass");
 }
 
-/// (#8 BOUNDED PASS) The fetch window is CAPPED at `DESCRIBE_FETCH_CONCURRENCY` and REFILLS:
-/// with more peers than the window, every peer is still fetched.
+/// (#8 ONE WAVE) A pass spawns EVERY peer's fetch before joining any, so all peers are in
+/// flight at once regardless of fleet size.
 ///
-/// Both halves are proven by construction, not by timing. Every fetch parks on a gate the
-/// TEST holds shut, so no fetch can complete and the window cannot refill while the test is
-/// looking: the number of fetches that ever STARTED is then exactly the window size. A
-/// smaller window never reaches 16 (the first wait fails); an absent/larger window spawns all
-/// 21 at once (the equality fails — the whole burst is spawned in one synchronous loop
-/// iteration before the first `join_next().await`, so the yields below are guaranteed to have
-/// polled them). Opening the gate then requires the window to refill 5 times over for the
-/// per-peer route assertions to hold.
+/// Proven by construction, not timing: every fetch parks on a gate the TEST holds shut, so none
+/// can complete while the test looks, and the only way `started` reaches `N` is if the pass
+/// spawned all of them without waiting for any to finish. A bounded window (the removed
+/// `DESCRIBE_FETCH_CONCURRENCY`, 17) never gets past its cap, so the wait fails. `N` is far
+/// above any past window so a re-introduced cap of the same order cannot pass.
 #[tokio::test]
-async fn a_pass_refills_the_fetch_window_and_never_exceeds_it() {
-    const EXTRA: usize = 5;
-    let total = DESCRIBE_FETCH_CONCURRENCY + EXTRA;
+async fn a_pass_fetches_every_peer_in_one_wave() {
+    const N: usize = 64;
 
     // 0 permits: a fetch that reaches this cannot finish until the test opens the gate.
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
@@ -2747,7 +2712,7 @@ async fn a_pass_refills_the_fetch_window_and_never_exceeds_it() {
             })
         })
     };
-    let peers: Vec<opsapi::PeerAddr> = (0..total)
+    let peers: Vec<opsapi::PeerAddr> = (0..N)
         .map(|i| opsapi::PeerAddr {
             provider: format!("p{i:02}"),
             addrs: vec![format!("127.0.0.1:{}", 9000 + i)],
@@ -2757,30 +2722,17 @@ async fn a_pass_refills_the_fetch_window_and_never_exceeds_it() {
     let mut router = DescribeRouter::new(front.clone(), peers, fetch);
     let pass = tokio::spawn(async move { router.refresh_once().await });
 
-    // Happens-before, not a sleep: wait until the window is FULL (hang guard has wide
-    // headroom — with a smaller window this wait is what fails).
+    // Happens-before, not a sleep: wait until ALL N fetches have started while the gate is
+    // still shut (hang guard has wide headroom — a bounded window is what makes this fail).
     tokio::time::timeout(Duration::from_secs(20), async {
-        while started.load(Ordering::SeqCst) < DESCRIBE_FETCH_CONCURRENCY {
+        while started.load(Ordering::SeqCst) < N {
             tokio::task::yield_now().await;
         }
     })
     .await
-    .expect("the pass must reach DESCRIBE_FETCH_CONCURRENCY simultaneous fetches");
-    // Every task the pass spawned is runnable (all of them are parked on the gate only after
-    // being polled), so these yields drain the scheduler's queue.
-    for _ in 0..256 {
-        tokio::task::yield_now().await;
-    }
-    assert_eq!(
-        started.load(Ordering::SeqCst),
-        DESCRIBE_FETCH_CONCURRENCY,
-        "no fetch can complete while the gate is shut, so no MORE than the window may have \
-         started — an unbounded fan-out would have started all {total}"
-    );
+    .expect("every peer's fetch must be in flight at once while none has finished");
 
-    // Open the gate: finishing a fetch is the only thing that can free a window slot, so the
-    // remaining peers are proof that the window REFILLS.
-    gate.add_permits(total);
+    gate.add_permits(N);
     tokio::time::timeout(Duration::from_secs(20), pass)
         .await
         .expect("the pass must not hang")
@@ -2788,14 +2740,50 @@ async fn a_pass_refills_the_fetch_window_and_never_exceeds_it() {
         .expect("the pass builds");
 
     let table = front.table();
-    for i in 0..total {
+    for i in 0..N {
         let method = format!("p{i:02}.op");
         assert!(
             table.find_by_method(&method).is_some(),
-            "every peer must be fetched — the window has to refill after the first wave \
-             (missing {method})"
+            "every peer's route must be in the table (missing {method})"
         );
     }
+}
+
+/// (#8b ONE WAVE) N fetches that never finish end the pass at ONE `DESCRIBE_PEER_TIMEOUT`, not
+/// one per wave.
+///
+/// Virtual clock only: every fetch is `pending()` forever, so the pass ends exactly when the
+/// per-peer deadlines (all armed together) fire. A windowed pass of 64 peers over a 17-wide
+/// window would take at least four timeouts of virtual time and fail the upper bound.
+#[tokio::test(start_paused = true)]
+async fn a_pass_of_hung_peers_ends_in_one_peer_timeout() {
+    const N: usize = 64;
+
+    let fetch: DescribeFetcher = Arc::new(|_provider: String, _addrs: Vec<String>| {
+        Box::pin(std::future::pending())
+    });
+    let peers: Vec<opsapi::PeerAddr> = (0..N)
+        .map(|i| opsapi::PeerAddr {
+            provider: format!("p{i:02}"),
+            addrs: vec![format!("127.0.0.1:{}", 9000 + i)],
+        })
+        .collect();
+    let front = dynamic_front();
+    let mut router = DescribeRouter::new(front.clone(), peers, fetch);
+
+    let started = tokio::time::Instant::now();
+    // Virtual hang guard with 10x headroom: it only fires if the pass is not bounded at all.
+    tokio::time::timeout(Duration::from_secs(60), router.refresh_once())
+        .await
+        .expect("the pass must be bounded per peer")
+        .expect("timed-out peers are keep-last, never a failed pass");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= DESCRIBE_PEER_TIMEOUT && elapsed < DESCRIBE_PEER_TIMEOUT + Duration::from_secs(1),
+        "the whole pass must cost ONE DESCRIBE_PEER_TIMEOUT regardless of peer count \
+         (took {elapsed:?} for {N} peers)"
+    );
 }
 
 /// (#9 BOUNDED PASS) Two `PeerAddr` entries naming ONE provider apply in PEER ORDER — the
@@ -2874,12 +2862,6 @@ fn describe_peer_timeout_clears_the_edge_dial_deadline() {
         DESCRIBE_PEER_TIMEOUT < Duration::from_secs(30),
         "DESCRIBE_PEER_TIMEOUT ({DESCRIBE_PEER_TIMEOUT:?}) must stay under edge's 30s \
          EDGE_STREAM_GRACE — beating that server-side bound is why it exists"
-    );
-    let fleet_providers = domain_svc_count();
-    assert!(
-        DESCRIBE_FETCH_CONCURRENCY >= fleet_providers,
-        "the fetch window ({DESCRIBE_FETCH_CONCURRENCY}) must cover the {fleet_providers}-provider \
-         fleet in ONE wave, or a boot pass costs two DESCRIBE_PEER_TIMEOUTs"
     );
 }
 
