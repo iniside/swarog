@@ -181,22 +181,18 @@ const DESCRIBE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 /// constant). Shutdown politeness loses to boot correctness, and the grace cannot be raised to
 /// chase this because it shares a budget with `POOL_STOP_BUDGET`.
 ///
-/// NO separate whole-pass budget exists, deliberately. Per-peer timeout x bounded fan-out
-/// already bounds a pass to `ceil(N_peers / DESCRIBE_FETCH_CONCURRENCY) * DESCRIBE_PEER_TIMEOUT`
-/// — one wave, 6s, for any fleet within the concurrency below. A second, overall deadline would
-/// add an invariant nothing enforces — `PASS_BUDGET >= wave_count * DESCRIBE_PEER_TIMEOUT` —
-/// and the failure mode of getting it wrong is the same silent exclusion of a slow-but-
-/// REACHABLE peer described above. Do not "add the missing budget": raise the concurrency
-/// (fewer waves) instead.
+/// NO separate whole-pass budget exists, deliberately. A pass spawns EVERY peer's fetch before
+/// joining any ([`DescribeRouter::refresh_once`]), so it is ONE wave by construction and ends
+/// within one `DESCRIBE_PEER_TIMEOUT` (6s) whatever the fleet size. A second, overall deadline
+/// would add an invariant nothing enforces and, set wrong, reproduce the silent exclusion of a
+/// slow-but-REACHABLE peer described above.
+///
+/// The fan-out is the peer set, not a window: that set is the `opsapi::PEER_SLOT` boot snapshot
+/// (one entry per `remote::Stub` in the process's `cmd/*` root, fixed for the process lifetime),
+/// and each fetch reuses that provider's one persistent describe `Pool`, so concurrent dials are
+/// already bounded by the provider count the gateway holds connections to anyway. A smaller cap
+/// would only be a fleet-size mirror that silently adds a wave when the fleet outgrows it.
 const DESCRIBE_PEER_TIMEOUT: Duration = Duration::from_secs(6);
-
-/// How many peers a refresh pass fetches CONCURRENTLY. Bounded rather than unbounded fan-out so
-/// a large fleet cannot open one QUIC dial per provider at once, and chosen `>=` the provider
-/// count so a pass over the real fleet is ONE wave: the pass bound is
-/// `ceil(N / this) * DESCRIBE_PEER_TIMEOUT`, and with a per-peer timeout that must clear a 5s
-/// cold dial ([`DESCRIBE_PEER_TIMEOUT`]) a second wave would double an already-long boot pass.
-/// Growing the fleet past this number costs a wave; that is the only reason to change it.
-const DESCRIBE_FETCH_CONCURRENCY: usize = 17;
 
 /// Grace given to the describe-refresh task to observe the stop signal before
 /// [`Gateway::stop`] aborts it. Reuses the 2s shape of `remote`'s `PROBE_STOP_GRACE`
@@ -222,9 +218,8 @@ const DESCRIBE_FETCH_CONCURRENCY: usize = 17;
 /// MID-PASS STOP — the task is FORCE-ABORTED, by design, and that is fine. The loop's `select!`
 /// observes the stop signal only BETWEEN passes (at `ticker.tick()`); the `biased;` there only
 /// guarantees the stop wins at that boundary, it cannot interrupt a pass already running. A pass
-/// is bounded at `ceil(N_peers / DESCRIBE_FETCH_CONCURRENCY) * DESCRIBE_PEER_TIMEOUT` — one wave
-/// of 6s for the real fleet, since the concurrency is >= the provider count — which EXCEEDS this
-/// 2s grace. So a stop landing mid-pass hits the abort path rather than draining, and the grace
+/// is bounded at one `DESCRIBE_PEER_TIMEOUT` (6s) — every peer is fetched in a single wave —
+/// which EXCEEDS this 2s grace. So a stop landing mid-pass hits the abort path rather than draining, and the grace
 /// is not raised to chase it (it shares `MODULE_STOP_GRACE_MS` with `POOL_STOP_BUDGET`, per the
 /// arithmetic above) because [`DESCRIBE_PEER_TIMEOUT`]'s floor — a cold QUIC dial — is a boot-
 /// correctness requirement that outranks shutdown politeness.
@@ -1713,11 +1708,10 @@ impl DescribeRouter {
     /// across the swap (see below) — a change to ONE peer never evicts the others (C2 no-evict
     /// at the refresh boundary).
     ///
-    /// The pass is BOUNDED: each peer's fetch is capped at [`DESCRIBE_PEER_TIMEOUT`] and at most
-    /// [`DESCRIBE_FETCH_CONCURRENCY`] run at once, so the whole pass — including the one awaited
-    /// by `Gateway::start` — ends within `ceil(N_peers / CONCURRENCY) * DESCRIBE_PEER_TIMEOUT`
-    /// (ONE wave, 6s, for the 11-provider fleet), never the 30s `EDGE_STREAM_GRACE` a stalled
-    /// peer used to impose. The per-peer bound clears a cold QUIC dial rather than cutting into
+    /// The pass is BOUNDED: every peer's fetch is spawned at once and each is capped at
+    /// [`DESCRIBE_PEER_TIMEOUT`], so the whole pass — including the one awaited by
+    /// `Gateway::start` — is ONE wave ending within 6s for any number of peers, never the 30s
+    /// `EDGE_STREAM_GRACE` a stalled peer used to impose. The per-peer bound clears a cold QUIC dial rather than cutting into
     /// it — see [`DESCRIBE_PEER_TIMEOUT`] for that floor, and for why there is no separate
     /// whole-pass budget.
     async fn refresh_once(&mut self) -> anyhow::Result<()> {
@@ -1737,49 +1731,47 @@ impl DescribeRouter {
         // Task id → peer index, so a panicking fetcher can still be reported by provider name
         // (the panic payload takes the return value, index included, with it).
         let mut ids: HashMap<tokio::task::Id, usize> = HashMap::new();
-        let mut next = 0usize;
-        while next < self.peers.len() || !set.is_empty() {
-            while next < self.peers.len() && set.len() < DESCRIBE_FETCH_CONCURRENCY {
-                let idx = next;
-                let p = &self.peers[idx];
-                let provider = p.provider.clone();
-                let addrs = p.addrs.clone();
-                let fetch = self.fetch.clone();
-                let handle = set.spawn(async move {
-                    // The bound lives HERE, in the pass owner: `remote::describe` has no timeout
-                    // of its own and the server side only gives up at `EDGE_STREAM_GRACE` (30s).
-                    let call = fetch(provider.clone(), addrs);
-                    match tokio::time::timeout(DESCRIBE_PEER_TIMEOUT, call).await {
-                        Ok(Ok(manifest)) => (idx, Some(manifest)),
-                        // ONE keep-last branch for both per-peer failure modes: an errored fetch
-                        // and a timed-out fetch are the same thing to the table — this peer is
-                        // ABSENT for this pass, so it keeps its prior manifest (or stays unseen).
-                        Ok(Err(e)) => {
-                            tracing::warn!(
-                                provider = %provider,
-                                error = %e,
-                                "gateway: describe fetch failed; keeping this peer's \
-                                 last-known routes"
-                            );
-                            (idx, None)
-                        }
-                        Err(_elapsed) => {
-                            tracing::warn!(
-                                provider = %provider,
-                                timeout_ms = DESCRIBE_PEER_TIMEOUT.as_millis(),
-                                "gateway: describe fetch timed out; keeping this peer's \
-                                 last-known routes"
-                            );
-                            (idx, None)
-                        }
+        // Every peer is spawned before the first join: the window is the peer set itself, so a
+        // pass is one wave by construction (see [`DESCRIBE_PEER_TIMEOUT`]).
+        for (idx, p) in self.peers.iter().enumerate() {
+            let provider = p.provider.clone();
+            let addrs = p.addrs.clone();
+            let fetch = self.fetch.clone();
+            let handle = set.spawn(async move {
+                // The bound lives HERE, in the pass owner: `remote::describe` has no timeout
+                // of its own and the server side only gives up at `EDGE_STREAM_GRACE` (30s).
+                let call = fetch(provider.clone(), addrs);
+                match tokio::time::timeout(DESCRIBE_PEER_TIMEOUT, call).await {
+                    Ok(Ok(manifest)) => (idx, Some(manifest)),
+                    // ONE keep-last branch for both per-peer failure modes: an errored fetch
+                    // and a timed-out fetch are the same thing to the table — this peer is
+                    // ABSENT for this pass, so it keeps its prior manifest (or stays unseen).
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            provider = %provider,
+                            error = %e,
+                            "gateway: describe fetch failed; keeping this peer's \
+                             last-known routes"
+                        );
+                        (idx, None)
                     }
-                });
-                ids.insert(handle.id(), idx);
-                next += 1;
-            }
-            match set.join_next().await {
-                Some(Ok((idx, manifest))) => fetched[idx] = manifest,
-                Some(Err(e)) => {
+                    Err(_elapsed) => {
+                        tracing::warn!(
+                            provider = %provider,
+                            timeout_ms = DESCRIBE_PEER_TIMEOUT.as_millis(),
+                            "gateway: describe fetch timed out; keeping this peer's \
+                             last-known routes"
+                        );
+                        (idx, None)
+                    }
+                }
+            });
+            ids.insert(handle.id(), idx);
+        }
+        while let Some(joined) = set.join_next().await {
+            match joined {
+                Ok((idx, manifest)) => fetched[idx] = manifest,
+                Err(e) => {
                     // A panicking fetcher is a per-peer failure like any other (keep-last), not a
                     // reason to fail the pass — the injected fetcher is the only code that can
                     // panic here, and one bad peer must not take the route table down.
@@ -1800,7 +1792,6 @@ impl DescribeRouter {
                         "gateway: describe fetch task failed; keeping this peer's last-known routes"
                     );
                 }
-                None => break,
             }
         }
         for (idx, p) in self.peers.iter().enumerate() {
