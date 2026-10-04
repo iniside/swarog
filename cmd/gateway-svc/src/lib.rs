@@ -158,5 +158,14 @@ pub fn modules(
             "storage",
             edge_peer(wiring, edge_list_resolver, "storage", "127.0.0.1:9016"),
         )),
+        // party is pure-HTTP from this front door's point of view (its player-facing ops,
+        // routes arriving via `__describe`); the gateway consumes no party capability of
+        // its own. `describe_peer`, never `Stub::new` — `partyrpc` deliberately exposes
+        // no `remote_factories()`, and `Stub::new` with an empty factory list
+        // `anyhow::bail!`s in `register`.
+        Box::new(remote::Stub::describe_peer(
+            "party",
+            edge_peer(wiring, edge_list_resolver, "party", "127.0.0.1:9017"),
+        )),
     ]
 }

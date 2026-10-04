@@ -85,6 +85,7 @@ fn rpc_modules() -> Vec<(&'static str, Vec<opsapi::RouteBinding>)> {
         ("groupsapi::membership_rpc", groupsapi::membership_rpc::route_bindings()),
         ("groupsapi::player_rpc", groupsapi::player_rpc::route_bindings()),
         ("storageapi::player_rpc", storageapi::player_rpc::route_bindings()),
+        ("partyapi::player_rpc", partyapi::player_rpc::route_bindings()),
     ]
 }
 

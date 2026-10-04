@@ -121,6 +121,10 @@ pub const PROOF_MAIL_PROVIDER: &str = "log";
 /// STARTUP on a provider without a from-address, so the pair is written together.
 pub const PROOF_MAIL_FROM: &str = "dev@localhost";
 
+/// The party lease the `Proof` flavor pins (the module's floor, `MIN_LEASE_SECS`) so the
+/// harness can watch a lease expire inside its budget; Development keeps the module default.
+pub const PROOF_PARTY_LEASE_SECS: &str = "10";
+
 /// The port [`PROOF_OIDC_ISSUER`] names, for the harness to bind.
 pub fn proof_oidc_port() -> u16 {
     PROOF_OIDC_ISSUER
@@ -809,6 +813,10 @@ pub fn game_backend_fleet_with_environment(
     let mut groups = service("groups-svc", 8096, Some(9015), vec!["accounts-svc"]);
     peer(&mut groups.env, "ACCOUNTS", 9003);
     let storage = service("storage-svc", 8097, Some(9016), vec![]);
+    let mut party = service("party-svc", 8098, Some(9017), vec!["accounts-svc"]);
+    peer(&mut party.env, "ACCOUNTS", 9003);
+    // Same push-backplane address and the same no-dependency reasoning as notifications-svc.
+    peer(&mut party.env, "GATEWAY", GATEWAY_EDGE_PORT);
 
     let mut gateway_env = environment.runtime_environment();
     gateway_env.insert("EDGE_CA_CERT".into(), cert.clone());
@@ -846,7 +854,7 @@ pub fn game_backend_fleet_with_environment(
         dependencies: vec![
             "characters-svc", "inventory-svc", "accounts-svc", "match-svc",
             "leaderboard-svc", "apikeys-svc", "wallet-svc", "notifications-svc",
-            "friends-svc", "groups-svc", "storage-svc",
+            "friends-svc", "groups-svc", "storage-svc", "party-svc",
         ],
         env: gateway_env,
         overrideable_env: &[],
@@ -950,6 +958,7 @@ pub fn game_backend_fleet_with_environment(
             scheduler.env.insert("SCHEDULER_ENABLED".into(), "1".into());
             inventory.env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
             wallet.env.insert("WALLET_DEV_SEED".into(), "1".into());
+            party.env.insert("PARTY_LEASE_SECS".into(), PROOF_PARTY_LEASE_SECS.into());
             for key in PROOF_CLEARED_MAIL_SMTP_ENV {
                 mail.env.remove(*key);
             }
@@ -959,7 +968,7 @@ pub fn game_backend_fleet_with_environment(
 
     FleetSpec::new(vec![
         accounts, apikeys, audit, scheduler, rating, leaderboard, matches, config, characters,
-        inventory, wallet, notifications, mail, friends, groups, storage, gateway, admin,
+        inventory, wallet, notifications, mail, friends, groups, storage, party, gateway, admin,
     ])
     .expect("the built-in game backend fleet is internally valid")
 }
@@ -1012,6 +1021,7 @@ pub fn game_backend_monolith(
         env.insert("APIKEYS_DEV_SEED".into(), "1".into());
         env.insert("INVENTORY_DEV_GRANT".into(), "1".into());
         env.insert("WALLET_DEV_SEED".into(), "1".into());
+        env.insert("PARTY_LEASE_SECS".into(), PROOF_PARTY_LEASE_SECS.into());
         env.insert("MAIL_PROVIDER".into(), PROOF_MAIL_PROVIDER.into());
         env.insert("MAIL_FROM".into(), PROOF_MAIL_FROM.into());
     }

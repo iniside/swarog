@@ -22,6 +22,7 @@ notificationsapi = { workspace = true }
 friendsapi = { workspace = true }
 groupsapi = { workspace = true }
 storageapi = { workspace = true }
+partyapi = { workspace = true }
 opsapi = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1,0 +1,29 @@
+[package]
+name = "party-svc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The party fortress process: hosts party and fills its `accounts` dependency
+# (`accountsapi::Directory`) with a `remote::Stub` dialing accounts-svc over the QUIC edge.
+# It also holds `remote::PushSender` — the push backplane's outbound half, forwarding
+# `ctx.push()` to gateway-svc's `push.deliver` (GATEWAY_EDGE_ADDR, :9013). It hosts NO
+# gateway (FrontDoor) — the single public front door lives only in gateway-svc + the
+# monolith.
+[[bin]]
+name = "party-svc"
+path = "src/main.rs"
+
+[dependencies]
+app = { workspace = true }
+lifecycle = { workspace = true }
+metrics = { workspace = true }
+edge = { workspace = true }
+party = { workspace = true }
+remote = { workspace = true }
+accountsrpc = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

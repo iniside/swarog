@@ -35,7 +35,7 @@ use crate::model::{ArgDef, DtoDef, FieldDef, Manifest, MethodDef, TypeRef};
 /// a NEW provider module without editing this list is caught by the completeness gate.
 const PROVIDERS: &[&str] = &[
     "characters", "inventory", "accounts", "match", "leaderboard", "wallet", "notifications",
-    "friends", "groups", "storage",
+    "friends", "groups", "storage", "party",
 ];
 
 /// Phase A: the authoritative reachable set + transport facts, straight from the
@@ -54,6 +54,7 @@ fn phase_a() -> Vec<(&'static str, Vec<opsapi::RouteBinding>)> {
         ("friends", friendsapi::player_rpc::route_bindings()),
         ("groups", groupsapi::player_rpc::route_bindings()),
         ("storage", storageapi::player_rpc::route_bindings()),
+        ("party", partyapi::player_rpc::route_bindings()),
     ]
 }
 

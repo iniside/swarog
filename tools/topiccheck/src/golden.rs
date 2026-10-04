@@ -248,6 +248,13 @@ fn rpc_modules() -> Vec<RpcModule> {
             storageapi::player_rpc::body_shapes(),
             storageapi::player_rpc::describe().ops,
         ),
+        (
+            "partyapi::player_rpc",
+            partyapi::player_rpc::route_bindings(),
+            partyapi::player_rpc::wire_ops(),
+            partyapi::player_rpc::body_shapes(),
+            partyapi::player_rpc::describe().ops,
+        ),
     ]
 }
 

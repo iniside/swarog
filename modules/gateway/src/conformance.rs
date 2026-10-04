@@ -13,7 +13,7 @@ use crate::{KeyVerifier as _, LookupUnavailable, RealKeyVerifier};
 
 /// The group-name bound this front owns, re-exported so the conformance gate's CapCase
 /// names the const rather than restating its number.
-pub use crate::push_ws::MAX_GROUP_NAME_BYTES;
+pub use crate::push_ws::{MAX_GROUP_NAME_BYTES, MAX_INVOKE_METHOD_BYTES};
 
 pub(crate) struct UnavailableVerifier;
 

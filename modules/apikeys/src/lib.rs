@@ -113,7 +113,9 @@ notifications.list,notifications.markRead,notifications.delete,\
 friends.request,friends.accept,friends.decline,friends.remove,friends.list,friends.pending,\
 groups.create,groups.listMine,groups.members,groups.pending,groups.join,groups.leave,\
 groups.invite,groups.respond,groups.decide,\
-storage.put,storage.get,storage.delete,storage.list";
+storage.put,storage.get,storage.delete,storage.list,\
+party.create,party.get,party.invite,party.invites,party.accept,party.decline,party.leave,\
+party.kick,party.promote,party.setReady,party.heartbeat";
 
 /// The well-known dev ROLES: `(name, policy)`. Seeded (FK order) BEFORE the keys.
 const DEV_SEED_ROLES: &[(&str, &str)] = &[

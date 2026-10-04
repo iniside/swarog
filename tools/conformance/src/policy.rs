@@ -47,6 +47,7 @@ pub fn entries() -> Vec<Entry> {
         mail(),
         match_module(),
         notifications(),
+        party(),
         rating(),
         scheduler(),
         storage(),
@@ -120,6 +121,12 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("notifications.delete", "notification_id", External), Opaque { rationale: "opaque notification UUID, bound as $1::uuid in the DELETE's own predicate alongside the caller's player_id; a value that is not a uuid raises 22P02, which notifications::is_invalid_uuid folds into the same 404 an unknown id gets, so it is never persisted, interpolated or echoed" }),
         (key("notifications.list", "cursor", External), Validated { cap: notificationsapi::MAX_CURSOR_BYTES, basis: "notifications::service::decode_cursor applies MAX_CURSOR_BYTES as its first check after the empty-cursor arm — before the base64 decode, before the keyset halves are parsed and before any store read — and notificationsapi::Player::list calls it ahead of Store::page_by_player. The \"notifications list cursor\" CapCase drives that op ITSELF against a pool that cannot connect, and discriminates on the VERDICT rather than the status because both arms are Status::Invalid: at the cap the value cannot be a well-formed keyset and answers the malformed-cursor verdict, over the cap the cap verdict answers first. Delete the cap and the over-cap value falls through to malformed; delete the decode_cursor call and both arms reach the dead store and answer Internal — either way the case goes red" }),
         (key("notifications.markRead", "notification_id", External), Opaque { rationale: "opaque notification UUID, bound as $1::uuid in the UPDATE's own predicate alongside the caller's player_id; a value that is not a uuid raises 22P02, which notifications::is_invalid_uuid folds into the same 404 an unknown id gets, so it is never persisted, interpolated or echoed" }),
+        (key("party.accept", "invite_id", External), Opaque { rationale: "opaque invite UUID: party::service::uuid_arg answers Status::Invalid for any value that is not a uuid shape before a statement runs, and an accepted value is lowercased and bound as a parameter, never interpolated or echoed" }),
+        (key("party.decline", "invite_id", External), Opaque { rationale: "opaque invite UUID: party::service::uuid_arg answers Status::Invalid for any value that is not a uuid shape before a statement runs, and an accepted value is lowercased and bound as a parameter, never interpolated or echoed" }),
+        (key("party.invite", "target_handle", External), Validated { cap: accountsapi::MAX_HANDLE_BYTES, basis: "party deliberately owns no second const for this bound: Player::invite checks target_handle.len() against accountsapi::MAX_HANDLE_BYTES — the SAME authority accounts::handle_within_cap enforces for Directory::find_by_handle — before the leadership read and before the directory call. The \"party invite target handle\" CapCase drives Player::invite ITSELF against a pool that cannot connect, discriminating on status: at the cap the handle passes the guard and the op answers Internal off the dead store, so only the cap's own rejection registers as Invalid" }),
+        (key("party.kick", "player_id", External), Opaque { rationale: "opaque player UUID: party::service::uuid_arg answers Status::Invalid for any value that is not a uuid shape before a statement runs, and an accepted value is lowercased and bound as a parameter, never interpolated or echoed" }),
+        (key("party.promote", "player_id", External), Opaque { rationale: "opaque player UUID: party::service::uuid_arg answers Status::Invalid for any value that is not a uuid shape before a statement runs, and an accepted value is lowercased and bound as a parameter, never interpolated or echoed" }),
+        (key("party.setReady", "state", External), Opaque { rationale: "a closed vocabulary, not free text: party::service::validate_state matches the posted value against the two compiled ready-state literals and answers a &'static str, so the value that reaches a statement is the compiled literal and never the caller's bytes; anything outside the set is Status::Invalid before any store work" }),
         (key("rating.mmr", "player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
         (key("storage.delete", "collection", External), Validated { cap: storageapi::MAX_COLLECTION_BYTES, basis: "storage::service::validate_address is the SAME authority the put rows state — Player::delete calls it as its second statement, after the identity is read and before any store work, so the collection bound and its wording are shared, not restated" }),
         (key("storage.delete", "key", External), Validated { cap: storageapi::MAX_KEY_BYTES, basis: "the key half of the same storage::service::validate_address call Player::delete makes before any store work; one helper words the collection and key verdicts identically" }),
@@ -650,6 +657,13 @@ fn gateway() -> Entry {
                         cap: gateway::conformance::MAX_GROUP_NAME_BYTES,
                         probe: Arc::new(gateway::conformance::conformance_group_name_rejected),
                     },
+                    // The method string of a `/push` invoke frame: the front both names and
+                    // bounds it before any backend dispatch.
+                    CapCase {
+                        name: "gateway push invoke method",
+                        cap: gateway::conformance::MAX_INVOKE_METHOD_BYTES,
+                        probe: Arc::new(gateway::conformance::conformance_invoke_method_rejected),
+                    },
                 ])),
             ),
             (
@@ -1016,6 +1030,81 @@ fn scheduler() -> Entry {
         "scheduler rows are operator data, not player-supplied free text",
         "scheduler has no credential verifier",
     )
+}
+
+fn party() -> Entry {
+    Entry {
+        module: "party",
+        stances: vec![
+            (
+                Convention::EnvValidation,
+                Stance::Applies(Fixture::EnvValidation(vec![
+                    // Only an UNSET variable takes the compiled default
+                    // (party::lease_secs_from_env); a blank value fails startup.
+                    EnvCase {
+                        var: "PARTY_LEASE_SECS",
+                        bad_value: "   ",
+                        expect: "PARTY_LEASE_SECS must be a whole number of seconds",
+                    },
+                    EnvCase {
+                        var: "PARTY_LEASE_SECS",
+                        bad_value: "abc",
+                        expect: "PARTY_LEASE_SECS must be a whole number of seconds",
+                    },
+                    EnvCase {
+                        var: "PARTY_LEASE_SECS",
+                        bad_value: "9",
+                        expect: "PARTY_LEASE_SECS must be between 10 and 600",
+                    },
+                    EnvCase {
+                        var: "PARTY_LEASE_SECS",
+                        bad_value: "601",
+                        expect: "PARTY_LEASE_SECS must be between 10 and 600",
+                    },
+                ])),
+            ),
+            (
+                Convention::InputByteCaps,
+                Stance::Applies(Fixture::InputByteCaps(vec![CapCase {
+                    name: "party invite target handle",
+                    cap: accountsapi::MAX_HANDLE_BYTES,
+                    probe: Arc::new(party::conformance::conformance_target_handle_rejected),
+                }])),
+            ),
+            (
+                Convention::InfraOutage503,
+                // The accounts directory IS party's one synchronous external dependency. The
+                // case drives Service::resolve_target, the directory step `invite` takes once
+                // the caller's leadership is confirmed; `invite` itself reads leadership from
+                // the database first, so it is unreachable without a live store — a known gap
+                // this zero-I/O case cannot close, left to the split-proof fleet.
+                Stance::Applies(Fixture::InfraOutage503(vec![OutageCase {
+                    name: "party invite target resolution over a failing accounts directory capability",
+                    probe: Arc::new(|| {
+                        Box::pin(async {
+                            match party::conformance::conformance_directory_outage().await {
+                                Err(error) if error.status.http() == 503 => {
+                                    OutageClass::Unavailable
+                                }
+                                Err(error) => OutageClass::Other(format!(
+                                    "unexpected error status {:?}: {}",
+                                    error.status, error.msg
+                                )),
+                                Ok(_) => OutageClass::Other(
+                                    "the target resolved with the directory capability down"
+                                        .into(),
+                                ),
+                            }
+                        })
+                    }),
+                }])),
+            ),
+            (
+                Convention::ArgonParity,
+                na("party performs no password hashing"),
+            ),
+        ],
+    }
 }
 
 fn storage() -> Entry {

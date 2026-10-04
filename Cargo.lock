@@ -921,6 +921,7 @@ dependencies = [
  "mail-svc",
  "match-svc",
  "notifications-svc",
+ "party-svc",
  "rating-svc",
  "rpc-contract-model",
  "scheduler-svc",
@@ -1062,6 +1063,8 @@ dependencies = [
  "match_module",
  "notifications",
  "notificationsapi",
+ "party",
+ "partyapi",
  "rpc-contract-model",
  "sqlx",
  "storage",
@@ -1199,6 +1202,7 @@ dependencies = [
  "matchapi",
  "notificationsapi",
  "opsapi",
+ "partyapi",
  "rpc-contract-model",
  "serde",
  "serde_json",
@@ -3042,6 +3046,7 @@ dependencies = [
  "matchapi",
  "notificationsapi",
  "opsapi",
+ "partyapi",
  "ratingapi",
  "rpc-contract-model",
  "storageapi",
@@ -3098,6 +3103,23 @@ dependencies = [
  "sqlx",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "party-svc"
+version = "0.1.0"
+dependencies = [
+ "accountsrpc",
+ "anyhow",
+ "app",
+ "edge",
+ "lifecycle",
+ "metrics",
+ "party",
+ "remote",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4181,6 +4203,7 @@ dependencies = [
  "match_module",
  "metrics",
  "notifications",
+ "party",
  "rating",
  "scheduler",
  "storage",
@@ -4337,6 +4360,7 @@ dependencies = [
  "futures",
  "jsonwebtoken",
  "notificationsapi",
+ "partyapi",
  "processctl",
  "push",
  "rand 0.8.6",
@@ -4941,6 +4965,7 @@ dependencies = [
  "matchevents",
  "notificationsapi",
  "opsapi",
+ "partyapi",
  "ratingapi",
  "rpc-contract-model",
  "schedulerevents",

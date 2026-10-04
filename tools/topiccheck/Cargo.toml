@@ -63,6 +63,7 @@ notificationsapi = { workspace = true }
 friendsapi = { workspace = true }
 groupsapi = { workspace = true }
 storageapi = { workspace = true }
+partyapi = { workspace = true }
 
 # The SUBSCRIBE sites — the full monolith module set, single-sourced (Step 3,
 # abstraction-leak closures) so this tool and requirecheck can't silently diverge on

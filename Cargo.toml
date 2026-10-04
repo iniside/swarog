@@ -193,6 +193,7 @@ members = [
     "cmd/friends-svc",
     "cmd/groups-svc",
     "cmd/storage-svc",
+    "cmd/party-svc",
 ]
 
 [workspace.package]
@@ -431,3 +432,4 @@ mail-svc = { path = "cmd/mail-svc" }
 friends-svc = { path = "cmd/friends-svc" }
 groups-svc = { path = "cmd/groups-svc" }
 storage-svc = { path = "cmd/storage-svc" }
+party-svc = { path = "cmd/party-svc" }

@@ -49,6 +49,7 @@ push = { workspace = true }
 # would defeat the reason it was moved there.
 notificationsapi = { workspace = true }
 storageapi = { workspace = true }
+partyapi = { workspace = true }
 
 # The fleet-liveness tests drive processctl's production spawn path, which on unix
 # re-execs `current_exe --__processctl-guardian-v1`; only a `harness = false`

@@ -217,6 +217,15 @@ const ADDR_SPECS: &[AddrSpec] = &[
         class: AddrClass::Edge,
         env_default: "127.0.0.1:9016",
     },
+    // party's player ops front here Remote over the mTLS edge; like the other pure-HTTP
+    // providers its routes arrive through `__describe`, so this table supplies only the
+    // address.
+    AddrSpec {
+        env_key: "PARTY_EDGE_ADDR",
+        provider: "party",
+        class: AddrClass::Edge,
+        env_default: "127.0.0.1:9017",
+    },
     // The two passthrough ORIGINS: `/admin` → admin-svc, `/accounts/epic` → the
     // Epic web OAuth flow on accounts-svc. A blank default drops the prefix (the
     // proxy table skips empties), so an unset var leaves that route a 404 — the
