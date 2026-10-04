@@ -262,7 +262,9 @@ async fn reinviting_reuses_the_invite_row_and_refreshes_the_ttl() {
 async fn leader_handoff_goes_to_the_earliest_joined_and_the_last_leave_dissolves() {
     let Some(pool) = test_pool().await else { return };
     Fixture::new(&pool).await.run(|fx| async move {
-        let [leader, a, b, c] = fx.players();
+        // Ids descend in join order: the earliest-joined member holds the LARGEST id, so a
+        // handoff that ordered by player_id alone would pick the wrong member.
+        let [leader, a, b, c] = fx.players_by_id_desc();
         let party = create_party(&fx, &leader).await;
         for p in [&a, &b, &c] {
             join(&fx, &leader, p).await;
@@ -273,12 +275,13 @@ async fn leader_handoff_goes_to_the_earliest_joined_and_the_last_leave_dissolves
         fx.svc.leave(who(&leader)).await.unwrap();
         assert_eq!(party_row(&fx.pool, &party).await.unwrap().1, a, "earliest joined leads");
 
-        // Tie on joined_at: the smaller player_id must win the handoff.
-        let [lead, m1, m2, z] = fx.players();
+        // Tie on joined_at: the smaller player_id must win the handoff, although the larger
+        // id joined (and was inserted) first, so scan order and id order disagree.
+        let [lead, high, low, z] = fx.players_by_id_desc();
+        assert!(high > low);
         let tie_party = create_party(&fx, &lead).await;
-        join(&fx, &lead, &m1).await;
-        join(&fx, &lead, &m2).await;
-        let (low, high) = if m1 < m2 { (m1.clone(), m2.clone()) } else { (m2.clone(), m1.clone()) };
+        join(&fx, &lead, &high).await;
+        join(&fx, &lead, &low).await;
         sqlx::query(
             "UPDATE party.members SET joined_at = '2030-01-01T00:00:00Z' \
               WHERE party_id = $1::uuid AND player_id <> $2::uuid",
@@ -299,6 +302,45 @@ async fn leader_handoff_goes_to_the_earliest_joined_and_the_last_leave_dissolves
         assert!(members_of(&fx.pool, &tie_party).await.is_empty());
         assert!(!invite_exists(&fx.pool, &z_invite).await, "the last leave deletes the party's invites");
         assert_status(fx.svc.accept(who(&z), z_invite).await, Status::NotFound, "accept into a dissolved party");
+    }).await;
+}
+
+/// Once-wrong branch: the `(m.player_id = p.leader_id) DESC` key of the leave rule. When a
+/// promoted member (NOT the earliest joined) leads, every removal path — a non-leader leaving,
+/// a kick, a lease expiry swept — must leave that member the leader; without the key the
+/// earliest remaining member by `(joined_at, player_id)` would be picked instead.
+#[tokio::test(flavor = "multi_thread")]
+async fn removing_a_non_leader_keeps_a_promoted_leader_on_every_path() {
+    let Some(pool) = test_pool().await else { return };
+    let _db = DB_LOCK.lock().await;
+    Fixture::new(&pool).await.run(|fx| async move {
+        for path in ["leave", "kick", "sweep"] {
+            let [original, gone, promoted] = fx.players();
+            let party = create_party(&fx, &original).await;
+            join(&fx, &original, &gone).await;
+            join(&fx, &original, &promoted).await;
+            let view = fx.svc.promote(who(&original), promoted.clone()).await.unwrap();
+            assert_eq!(view.leader_id, promoted);
+
+            match path {
+                "leave" => {
+                    fx.svc.leave(who(&gone)).await.unwrap();
+                }
+                "kick" => {
+                    fx.svc.kick(who(&promoted), gone.clone()).await.unwrap();
+                }
+                _ => {
+                    expire_lease(&fx.pool, &gone).await;
+                    assert!(fx.svc.sweep_party(&party).await.unwrap());
+                }
+            }
+            assert_eq!(members_of(&fx.pool, &party).await, vec![original.clone(), promoted.clone()], "{path}");
+            assert_eq!(
+                party_row(&fx.pool, &party).await.unwrap().1,
+                promoted,
+                "{path}: removing a non-leader must not move leadership to the earliest joined"
+            );
+        }
     }).await;
 }
 

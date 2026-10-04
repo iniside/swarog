@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
+use partyapi::Player as _;
+
 use crate::sweep;
 use crate::tests::*;
 use crate::Service;
@@ -22,7 +24,8 @@ async fn sweep_removes_an_expired_leader_hands_off_and_pushes() {
     let Some(pool) = test_pool().await else { return };
     let _db = DB_LOCK.lock().await;
     Fixture::new(&pool).await.run(|fx| async move {
-        let [leader, a, b] = fx.players();
+        // Ids descend in join order, so the earliest-joined member holds the larger id.
+        let [leader, a, b] = fx.players_by_id_desc();
         let party = create_party(&fx, &leader).await;
         join(&fx, &leader, &a).await;
         let before = join(&fx, &leader, &b).await.revision;
@@ -117,6 +120,42 @@ async fn two_concurrent_sweeps_remove_an_expired_member_once() {
     }).await;
 }
 
+/// Once-wrong branch: the expiry re-check UNDER the lock. A sweep that selected an expired
+/// member is parked on the party's lock; the member's heartbeat (which takes no party lock)
+/// renews the lease meanwhile. Released, the sweep must re-evaluate `lease_until < now()` and
+/// find nothing: `false`, the member still present, no push. A sweep that acted on the
+/// pre-lock expiry would remove a member who had just proved liveness.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sweep_parked_on_the_lock_rechecks_expiry_after_a_heartbeat_renews_the_lease() {
+    let Some(pool) = test_pool().await else { return };
+    let _db = DB_LOCK.lock().await;
+    Fixture::new(&pool).await.run(|fx| async move {
+        let [leader, member] = fx.players();
+        let party = create_party(&fx, &leader).await;
+        join(&fx, &leader, &member).await;
+        expire_lease(&fx.pool, &member).await;
+        assert!(lease_remaining(&fx.pool, &member).await < 0.0);
+        let tx = hold_party_lock(&fx, &party).await;
+
+        let racer = fx.racer(2);
+        let (svc, p) = (racer.svc.clone(), party.clone());
+        let sweep = tokio::spawn(async move { svc.sweep_party(&p).await });
+        wait_blocked(&fx.pool, &racer.app).await;
+        fx.sink.clear();
+
+        let beat = fx.svc.heartbeat(who(&member)).await.unwrap();
+        assert!(!beat.lease_until.is_empty(), "the heartbeat completed while the sweep was parked");
+        assert!(!sweep.is_finished(), "the sweep must still be parked on the party lock");
+        tx.rollback().await.unwrap();
+
+        let removed = finish("sweep", sweep).await.unwrap();
+        assert!(!removed, "the re-check under the lock sees the renewed lease");
+        assert_eq!(members_of(&fx.pool, &party).await.len(), 2, "the live member was not removed");
+        assert!(lease_remaining(&fx.pool, &member).await > 0.0);
+        assert_eq!(fx.sink.total(), 0, "a no-op sweep pushes nothing");
+    }).await;
+}
+
 /// Once-wrong branch: a whole pass — expired parties are swept AND `expires_at < now()`
 /// invites are deleted, while an unexpired invite and unexpired members survive.
 #[tokio::test(flavor = "multi_thread")]
@@ -173,7 +212,7 @@ async fn a_pass_with_a_failing_party_withholds_the_stamp_until_a_healthy_pass() 
         ));
         wait_blocked(&fx.pool, &racer.app).await;
         stop_tx.send(true).unwrap();
-        looped.await.unwrap();
+        finish("the failing sweep loop", looped).await;
         let err = liveness
             .check(sweep::STALL_MAX)
             .expect_err("a pass with a failing party must not stamp");
@@ -194,7 +233,7 @@ async fn a_pass_with_a_failing_party_withholds_the_stamp_until_a_healthy_pass() 
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         stop_tx.send(true).unwrap();
-        looped.await.unwrap();
+        finish("the healthy sweep loop", looped).await;
         assert_eq!(members_of(&fx.pool, &party).await, vec![leader.clone()], "the healthy pass swept it");
     }).await;
 }
@@ -219,9 +258,7 @@ async fn a_panicking_pass_marks_the_sweep_dead() {
         ));
         let liveness = sweep::Liveness::default();
         let (_stop, rx) = watch::channel(false);
-        sweep::spawn(no_directory, liveness.clone(), rx)
-            .await
-            .expect("the supervision wrapper itself never panics");
+        finish("the panicking sweep pass", sweep::spawn(no_directory, liveness.clone(), rx)).await;
         let err = liveness
             .check(sweep::STALL_MAX)
             .expect_err("a panicking pass must read as dead");

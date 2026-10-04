@@ -3,7 +3,7 @@
 //! their own tagged pools, and `wait_blocked` observes in `pg_stat_activity` that each racer
 //! is parked before the lock is released — explicit happens-before, never a sleep.
 //!
-//! The two tests that hold `ACCESS EXCLUSIVE` on `party.parties` take `DB_LOCK`: while that
+//! The tests that hold `ACCESS EXCLUSIVE` on a party table take `DB_LOCK`: while that
 //! request is queued, any transaction that holds a `parties` lock and then reads `parties`
 //! over ANOTHER connection waits behind it while the holder waits for that transaction — a
 //! cycle the database cannot see. No production path spans two connections that way; the
@@ -46,7 +46,7 @@ async fn create_losing_to_an_uncommitted_join_is_conflict_not_internal() {
         wait_blocked(&fx.pool, &racer.app).await;
         tx.commit().await.unwrap();
 
-        let err = create.await.unwrap().expect_err("the PK loser must fail");
+        let err = finish("create", create).await.expect_err("the PK loser must fail");
         assert_eq!(err.status, Status::Conflict, "23505 must map to Conflict, got {err:?}");
         assert_eq!(err.msg, ALREADY_IN_PARTY);
         assert_eq!(party_of(&fx.pool, &player).await.as_deref(), Some(party.as_str()));
@@ -76,7 +76,7 @@ async fn accept_losing_to_a_create_is_conflict_and_keeps_its_invite() {
         let created = fx.svc.create(who(&player)).await.unwrap();
         tx.rollback().await.unwrap();
 
-        let err = accept.await.unwrap().expect_err("the PK loser must fail");
+        let err = finish("accept", accept).await.expect_err("the PK loser must fail");
         assert_eq!(err.status, Status::Conflict, "23505 must map to Conflict, got {err:?}");
         assert_eq!(err.msg, ALREADY_IN_PARTY);
         assert!(invite_exists(&fx.pool, &invite).await, "the failed accept rolled its consume back");
@@ -116,7 +116,7 @@ async fn two_concurrent_accepts_into_a_seven_member_party_admit_exactly_one() {
         fx.sink.clear();
         tx.rollback().await.unwrap();
 
-        let results = [hx.await.unwrap(), hy.await.unwrap()];
+        let results = [finish("accept x", hx).await, finish("accept y", hy).await];
         let admitted: Vec<_> = results.iter().filter(|r| r.is_ok()).collect();
         assert_eq!(admitted.len(), 1, "exactly one accept is admitted: {results:?}");
         let refused = results.iter().find_map(|r| r.as_ref().err()).unwrap();
@@ -155,8 +155,8 @@ async fn leave_x_racing_create_stamps_the_create_above_the_leave() {
         wait_blocked(&fx.pool, &rc.app).await;
         gate.commit().await.unwrap();
 
-        let left = leave.await.unwrap().unwrap();
-        let created = create.await.unwrap().unwrap();
+        let left = finish("leave", leave).await.unwrap();
+        let created = finish("create", create).await.unwrap();
         assert!(is_no_party(&left));
         assert!(
             created.revision > left.revision,
@@ -200,8 +200,8 @@ async fn leave_x_racing_accept_into_y_stamps_the_join_above_the_leave() {
         wait_blocked(&fx.pool, &ra.app).await;
         gate.commit().await.unwrap();
 
-        let left = leave.await.unwrap().unwrap();
-        let joined = accept.await.unwrap().unwrap();
+        let left = finish("leave", leave).await.unwrap();
+        let joined = finish("accept", accept).await.unwrap();
         assert!(
             joined.revision > left.revision,
             "the join ({}) must be stamped above the concurrent leave ({})",
@@ -238,12 +238,23 @@ async fn leave_in_no_party_racing_an_accept_retries_and_removes_the_player() {
         tokio::time::timeout(std::time::Duration::from_secs(30), gate.reached.notified())
             .await
             .expect("leave never reached its second read");
+        let last: String = sqlx::query_scalar(
+            "SELECT query FROM pg_stat_activity WHERE application_name = $1",
+        )
+        .bind(&racer.app)
+        .fetch_one(&fx.pool)
+        .await
+        .unwrap();
+        assert!(
+            last.contains("ROLLBACK"),
+            "the gate must have paused the checkout AFTER begin_locked's no-party rollback, but the racer's last statement was {last:?}"
+        );
 
         let joined = fx.svc.accept(who(&player), invite).await.unwrap();
         assert_eq!(joined.party_id, party);
         gate.go.notify_one();
 
-        let left = leave.await.unwrap().unwrap();
+        let left = finish("leave", leave).await.unwrap();
         assert!(is_no_party(&left), "leave never answers a party view: {left:?}");
         assert!(left.revision > joined.revision, "the answer carries the removal's own revision");
         assert!(party_of(&fx.pool, &player).await.is_none(), "the player was removed from the party just joined");
@@ -281,22 +292,21 @@ async fn a_member_who_changes_party_while_waiting_for_the_lock_is_retried_agains
         fx.svc.store.join_tx(&mut tx, &party_y, &player, 60).await.unwrap();
         tx.commit().await.unwrap();
 
-        let view = set_ready.await.unwrap().expect("the retry must apply to the new party");
+        let view = finish("set_ready", set_ready).await.expect("the retry must apply to the new party");
         assert_eq!(view.party_id, party_y);
         assert_eq!(view.members.iter().find(|m| m.player_id == player).unwrap().ready, READY);
         assert_eq!(members_of(&fx.pool, &party_x).await, vec![leader_x.clone()]);
     }).await;
 }
 
-/// Once-wrong branch: snapshot atomicity of the view statement. While one member's
+/// Once-wrong branch: snapshot atomicity of the view statement, under load. While one member's
 /// `set_ready` toggles continuously, concurrent readers load the party; every view must pair
 /// its `revision` with the ready state THAT revision committed — a torn read (new revision,
 /// old state) would map one revision to two states. Reader revisions are also monotone.
 ///
-/// Stress, not a staged interleaving: a torn read cannot be interposed between the
-/// statements of a single SQL statement, so this detects a regression to a multi-statement
-/// view probabilistically (recorded as a known gap), while the equal-revision invariant is
-/// exact.
+/// Probabilistic by nature: it can only observe a regression to a multi-statement view when a
+/// writer happens to commit between the statements. The deterministic proof is the pair of
+/// `a_view_blocked_on_*` tests below, which stage that commit.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_view_never_pairs_a_revision_with_another_revisions_ready_state() {
     let Some(pool) = test_pool().await else { return };
@@ -335,7 +345,7 @@ async fn a_view_never_pairs_a_revision_with_another_revisions_ready_state() {
         }
         done.store(true, Ordering::SeqCst);
         for h in handles {
-            h.await.unwrap();
+            finish("snapshot reader", h).await;
         }
         let observed = observed.lock().unwrap();
         assert!(!observed.is_empty(), "the readers observed nothing");
@@ -368,6 +378,69 @@ async fn a_held_party_lock_parks_a_racer_until_it_is_released() {
         wait_blocked(&fx.pool, &racer.app).await;
         assert!(!ready.is_finished(), "set_ready must not finish while the party lock is held");
         tx.rollback().await.unwrap();
-        ready.await.unwrap().unwrap();
+        finish("set_ready", ready).await.unwrap();
     }).await;
+}
+
+/// Stages the commit between what would be two statements of a regressed multi-statement
+/// view. A test-owned transaction takes `ACCESS EXCLUSIVE` on `party.{locked}`, applies the
+/// production `set_ready_tx` + `stamp_tx` uncommitted, and a tagged reader runs the production
+/// `player_view` statement, which parks on the table lock. After the commit the view must carry
+/// the NEW revision with the NEW ready state. A view assembled from separate statements would
+/// read whichever table is not locked pre-commit and the other post-commit, pairing the old
+/// revision with the new state (locking `members`) or the new revision with the old state
+/// (locking `parties`). The reader calls `Store::player_view` rather than `get` because `get`
+/// first renews the lease with an UPDATE of `members`, which would park it before the view.
+async fn view_blocked_on_locked_table_is_untorn(locked: &'static str) {
+    let Some(pool) = test_pool().await else { return };
+    let _db = DB_LOCK.lock().await;
+    Fixture::new(&pool).await.run(move |fx| async move {
+        let [leader, subject] = fx.players();
+        let party = create_party(&fx, &leader).await;
+        let joined = join(&fx, &leader, &subject).await;
+        let ready_of = |ids: &[String], readies: &[String]| {
+            let i = ids.iter().position(|p| *p == subject).unwrap();
+            readies[i].clone()
+        };
+
+        let mut tx = fx.pool.begin().await.unwrap();
+        sqlx::query(&format!("LOCK TABLE party.{locked} IN ACCESS EXCLUSIVE MODE"))
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        fx.svc.store.lock_party_tx(&mut tx, &party).await.unwrap();
+        assert!(fx.svc.store.set_ready_tx(&mut tx, &party, &subject, READY, 60).await.unwrap());
+        let staged = fx.svc.store.stamp_tx(&mut tx, &party, None).await.unwrap();
+        assert!(staged > joined.revision);
+
+        let reader = fx.racer(2);
+        let svc = reader.svc.clone();
+        let who_ = leader.clone();
+        let read = tokio::spawn(async move { svc.store.player_view(&who_).await });
+        wait_blocked(&fx.pool, &reader.app).await;
+        assert!(!read.is_finished(), "the view must be parked on the {locked} lock");
+        tx.commit().await.unwrap();
+
+        let row = finish("view", read).await.unwrap();
+        assert_eq!(row.revision, staged, "a view parked across the commit reads the committed revision");
+        assert_eq!(
+            ready_of(&row.member_ids, &row.readies),
+            READY,
+            "and the ready state that revision committed, not the pre-commit one"
+        );
+    }).await;
+}
+
+/// Once-wrong branch: the view paired with `members` locked mid-write (a regressed view that
+/// read the party row first would pair the old revision with the new ready state).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_view_blocked_on_the_members_table_is_untorn() {
+    view_blocked_on_locked_table_is_untorn("members").await;
+}
+
+/// Once-wrong branch: the same with `parties` locked (a regressed view that read the roster
+/// first would pair the new revision with the old ready state).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_view_blocked_on_the_parties_table_is_untorn() {
+    view_blocked_on_locked_table_is_untorn("parties").await;
 }

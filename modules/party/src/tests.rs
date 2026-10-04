@@ -31,7 +31,9 @@ pub(crate) use testdb::test_pool;
 
 /// Serializes every test that expires a lease or an invite, runs a whole sweep pass (which
 /// visits every expired party in the shared database) or starts the module's sweep loop, so
-/// no other test's expiry can be swept out from under it.
+/// no other test's expiry can be swept out from under it. It is a process-local mutex: it
+/// serializes only within this test binary, so a runner that gives each test its own process
+/// (nextest) loses the isolation.
 pub(crate) static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Serializes the tests that read or write `PARTY_LEASE_SECS` (process-global).
@@ -282,7 +284,27 @@ async fn committed_before_push(pool: &PgPool, player: &str, msg: &push::Message)
                         "state push of party {} at revision {} but committed revision is {r}",
                         view.party_id, view.revision
                     )),
-                    _ => None,
+                    Some(_) => None,
+                    // A party row that is not there yet is a push before the create committed;
+                    // a party that is gone is legitimate only if the player's own later stamp
+                    // (the removal that dissolved it) is already above this push's revision.
+                    None => {
+                        let superseded: Option<i64> = sqlx::query_scalar(
+                            "SELECT revision FROM party.player_revisions WHERE player_id = $1::uuid",
+                        )
+                        .bind(player)
+                        .fetch_optional(pool)
+                        .await
+                        .unwrap();
+                        match superseded {
+                            Some(r) if r > view.revision => None,
+                            other => Some(format!(
+                                "state push of party {} at revision {} but no such party is committed \
+                                 and the player's revision is {other:?}",
+                                view.party_id, view.revision
+                            )),
+                        }
+                    }
                 }
             }
         }
@@ -362,6 +384,15 @@ impl Fixture {
 
     pub(crate) fn players<const N: usize>(&self) -> [String; N] {
         std::array::from_fn(|_| self.player())
+    }
+
+    /// `N` fresh players ordered by DESCENDING id, so a test that joins them in array order
+    /// has its earliest-joined member holding the LARGEST id and `joined_at` order disagrees
+    /// with `player_id` order.
+    pub(crate) fn players_by_id_desc<const N: usize>(&self) -> [String; N] {
+        let mut ids: Vec<String> = (0..N).map(|_| self.player()).collect();
+        ids.sort_by(|a, b| b.cmp(a));
+        ids.try_into().expect("N players")
     }
 
     pub(crate) fn handle(&self, id: &str) -> String {
@@ -500,6 +531,16 @@ fn tagged_pool(app: &str, max_conns: u32, gate: Option<Arc<Gate>>) -> PgPool {
         });
     }
     pool_options.connect_lazy_with(options)
+}
+
+/// Awaits a spawned racer with a hang guard, so a deadlocked race fails with a name instead
+/// of stalling the run.
+pub(crate) async fn finish<T>(what: &str, handle: tokio::task::JoinHandle<T>) -> T {
+    match tokio::time::timeout(Duration::from_secs(30), handle).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(e)) => panic!("{what} task did not complete: {e}"),
+        Err(_) => panic!("{what} did not finish within 30s"),
+    }
 }
 
 /// Polls until a backend of `app` is parked on a heavyweight lock (an advisory lock, a
