@@ -186,12 +186,22 @@ and the self-checking hand-lists (`opscatalog-gen`, `topiccheck` golden,
     HTTP/QUIC drains; a drain sub-loop is a follow-up.
 11. **Party state authority is Postgres** (schema `party`); real-time is a best-effort
     `party.state` snapshot pushed after commit. Ordering: `revision` comes from ONE
-    global sequence `party.revision_seq` (`nextval` on every membership mutation, also
-    stamped on the "you left" push). Client rule: a direct op RESPONSE always replaces
-    the client's view and raises its high-water mark to `max(hw, revision)`; a PUSH is
-    applied only if its `revision` > hw. A "no party" response (`get`/`heartbeat`/
-    `leave`) carries the sequence's current value (`SELECT last_value FROM
-    party.revision_seq`), which is ≥ every committed revision. No durable topics in v1.
+    global sequence `party.revision_seq`. **Stamping ops** (each takes `nextval`, sets
+    `parties.revision`, and pushes after commit): create, accept, leave, kick, promote,
+    set_ready, lease-sweep removal, and `player.deleted` purge removal (the purge path
+    stamps but does NOT push — it runs inside the delivery tx; members learn via `get`).
+    Lease renewal never stamps. Every player whose membership changes (joins or leaves a
+    party, by any path) gets `party.player_revisions(player_id, revision)` upserted with
+    the same `nextval`. **View revision:** a member's view carries `parties.revision`; a
+    non-member's "no party" view carries their `player_revisions.revision` (0 if none).
+    **Client rule (responses AND pushes alike):** apply a snapshot only if its
+    `revision >= hw`, then set `hw = revision`. A stale `get` result racing a newer push
+    loses; a "no party" answer from before a concurrent `accept` loses (its revision is
+    the player's previous change, strictly below the accept's). Equal revisions denote the
+    same committed state. `HeartbeatView` carries the same `revision`. No durable topics
+    in v1. (Erratum 2026-10-04: replaces the r3 rule "a response always replaces the
+    view; no-party = `last_value`", which the Step 6 review broke with concurrent
+    invokes and an uncommitted-`nextval` tie.)
 12. **Liveness is a client-renewed lease.** Every party op by a member renews
     `members.lease_until = now() + PARTY_LEASE_SECS` (default 60, range 10..=600,
     unusable = startup failure); lease renewal never bumps `revision` and never pushes.
@@ -346,7 +356,8 @@ workspace deps (storage precedent `:138-139,158,192,376-377,400,427`). No
 Views (i64/String only): `PartyView { party_id, revision: i64, leader_id, members:
 Vec<MemberView { player_id, handle, ready }> }`, `InviteView { invite_id, party_id,
 inviter_handle, expires_at }`, `InviteList { invites: Vec<InviteView> }`,
-`HeartbeatView { lease_until }` (RFC3339, `""` when not in a party). Consts:
+`HeartbeatView { lease_until, revision: i64 }` (RFC3339, `""` when not in a party;
+`revision` per decision 11). Consts:
 `MAX_MEMBERS: i64 = 8`, `READY`/`NOT_READY`, `PUSH_STATE_TOPIC = "party.state"`
 (payload `PartyView`), `PUSH_INVITE_TOPIC = "party.invite"` (payload `InviteView`),
 `INVITE_TTL_SECS: i64 = 120`. Contract doc states: another player's party/invite is
@@ -360,6 +371,7 @@ inviter_handle, expires_at }`, `InviteList { invites: Vec<InviteView> }`,
 (b) **Why now:** needs Step 6; Step 8 registers it.
 (c) **How:**
 - **Schema `party`** (idempotent DDL): `CREATE SEQUENCE party.revision_seq`;
+  `player_revisions(player_id uuid PRIMARY KEY, revision bigint NOT NULL)` (decision 11);
   `parties(id uuid PK, leader_id uuid NOT NULL, revision bigint NOT NULL, created_at
   timestamptz)`; `members(player_id uuid PRIMARY KEY, party_id uuid NOT NULL, ready text
   NOT NULL CHECK (ready IN ('ready','not_ready')), joined_at timestamptz NOT NULL,
@@ -372,7 +384,9 @@ inviter_handle, expires_at }`, `InviteList { invites: Vec<InviteView> }`,
   membership mutation takes it and sets `parties.revision = nextval(...)`. A `23505` on
   the `members` insert (two ops by one player under different party locks) maps to
   `Conflict`.
-- **Rules:** `create` → Conflict if caller in `members`. `invite` → caller must be
+- **Rules:** `kick`/`promote` targeting the caller → `Invalid`. `leave` by a caller in
+  no party → the "no party" view (not an error). `set_ready` in no party → NotFound.
+  `create` → Conflict if caller in `members`. `invite` → caller must be
   leader (else NotFound); self → Invalid; target already a member → Conflict; resolve
   via `Directory::find_by_handle` (unknown → NotFound; outage → Unavailable/503);
   upsert invite, `expires_at = now() + INVITE_TTL_SECS`. `accept` → invite must be the
@@ -473,7 +487,12 @@ Covers Steps 6–8 in `modules/party/src/tests.rs` (`testdb::test_pool`):
   (not 500 — the 23505 branch);
 - two concurrent accepts into a 7-member party → exactly one succeeds (advisory lock);
 - leader-only invite/kick/promote → `NotFound` for a member; foreign/expired invite →
-  `NotFound`; self-invite → `Invalid`; invite of a member → `Conflict`;
+  `NotFound`; self-invite → `Invalid`; invite of a member → `Conflict`; self-kick and
+  self-promote → `Invalid`; `leave` with no party → "no party" view;
+- revision rule (decision 11 erratum): a "no party" `get` read before a concurrent
+  `accept` commits carries a revision strictly below the accept's; `set_ready` and
+  `promote` stamp a new revision and push; heartbeat returns the current view revision
+  and never stamps; purge removal stamps without pushing;
 - leader leave → handoff to earliest `(joined_at, player_id)`; last leave → party and
   invites gone;
 - leave X then accept into Y → the Y snapshot's `revision` > the "left X" revision;
