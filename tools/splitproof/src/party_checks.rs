@@ -117,8 +117,9 @@ async fn lease_ahead(pool: &PgPool, lease_until: &str) -> f64 {
 }
 
 /// Both players heartbeat; `a` must hold a lease at least [`MIN_LEASE_AHEAD_SECS`] ahead and
-/// `b` likewise when `b_member`, else an EMPTY `lease_until` (it is in no party yet).
-async fn heartbeat_gate(pool: &PgPool, a: &mut Sock, b: &mut Sock, b_member: bool) -> Result<(bool, String)> {
+/// `b` likewise when `b_member`, else an EMPTY `lease_until` (it is in no party yet). Also
+/// answers `b`'s `lease_until` as returned.
+async fn heartbeat_gate(pool: &PgPool, a: &mut Sock, b: &mut Sock, b_member: bool) -> Result<(bool, String, String)> {
     let ha = a.call(METHOD_HEARTBEAT, json!({})).await?;
     let hb = b.call(METHOD_HEARTBEAT, json!({})).await?;
     let ahead_a = lease_ahead(pool, text(&ha, "/value/lease_until")).await;
@@ -129,7 +130,8 @@ async fn heartbeat_gate(pool: &PgPool, a: &mut Sock, b: &mut Sock, b_member: boo
         status(&hb) == "Ok" && text(&hb, "/value/lease_until").is_empty()
     };
     let ok = status(&ha) == "Ok" && status(&hb) == "Ok" && ahead_a >= MIN_LEASE_AHEAD_SECS && b_ok;
-    Ok((ok, format!("lease_a={ahead_a:.1}s lease_b={ahead_b:.1}s b_member={b_member}")))
+    let b_lease = text(&hb, "/value/lease_until").to_string();
+    Ok((ok, format!("lease_a={ahead_a:.1}s lease_b={ahead_b:.1}s b_member={b_member}"), b_lease))
 }
 
 pub(super) async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) -> Result<()> {
@@ -141,13 +143,13 @@ pub(super) async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str,
     let mut sb = Sock::open(&ws, &b.token).await?;
 
     // [PY1] create answers the leader-only roster, and the same revision is pushed to the
-    // leader's socket labelled hub `party`.
+    // leader's socket, where the gateway labels it hub `party`.
     let created = sa.call(METHOD_CREATE, json!({})).await?;
     let party_id = text(&created, "/value/party_id").to_string();
     let rev1 = int(&created, "/value/revision");
     let py1_push = sa.await_state(Duration::from_secs(10), |v| v["revision"] == rev1).await;
     let py1_rows = count_of(pool, "SELECT count(*) FROM party.parties WHERE id::text = $1", &party_id).await;
-    p.check(&format!("[PY1{tag}] party.create over /push -> leader-only party, same revision pushed on hub `party`"),
+    p.check(&format!("[PY1{tag}] party.create over /push -> leader-only party, same revision pushed, gateway hub label `party`"),
         status(&created) == "Ok" && !party_id.is_empty() && rev1 > 0
             && text(&created, "/value/leader_id") == a.player_id
             && roster(&created, "/value/members") == sorted(&[&a.player_id])
@@ -157,7 +159,7 @@ pub(super) async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str,
         format!("create={created} push={py1_push:?} rows={py1_rows}"));
 
     // [PY2] the invite is addressed by B's handle and reaches B's socket as `party.invite`.
-    let (gate2, gate2_detail) = heartbeat_gate(pool, &mut sa, &mut sb, false).await?;
+    let (gate2, gate2_detail, _) = heartbeat_gate(pool, &mut sa, &mut sb, false).await?;
     let invited = sa.call(METHOD_INVITE, json!({ "target_handle": b.handle })).await?;
     let invite_id = text(&invited, "/value/invite_id").to_string();
     let py2_frame = sb.client
@@ -167,7 +169,7 @@ pub(super) async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str,
         Some(Frame::Message { hub, payload, .. }) => (hub.clone(), serde_json::from_slice::<Value>(payload).unwrap_or(Value::Null)),
         _ => (String::new(), Value::Null),
     };
-    p.check(&format!("[PY2{tag}] leader invites by handle over /push -> invitee's socket gets hub `party`, topic `{PUSH_INVITE_TOPIC}`, same invite"),
+    p.check(&format!("[PY2{tag}] leader invites by handle over /push -> invitee's socket gets gateway hub label `party`, topic `{PUSH_INVITE_TOPIC}`, same invite"),
         gate2 && status(&invited) == "Ok" && !invite_id.is_empty()
             && text(&invited, "/value/party_id") == party_id
             && text(&invited, "/value/inviter_handle") == a.handle
@@ -177,7 +179,7 @@ pub(super) async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str,
 
     // [PY3] accept stamps above create, and BOTH sockets see the two-member snapshot at the
     // accept's own revision.
-    let (gate3, gate3_detail) = heartbeat_gate(pool, &mut sa, &mut sb, false).await?;
+    let (gate3, gate3_detail, _) = heartbeat_gate(pool, &mut sa, &mut sb, false).await?;
     let accepted = sb.call(METHOD_ACCEPT, json!({ "invite_id": invite_id })).await?;
     let rev3 = int(&accepted, "/value/revision");
     let both = sorted(&[&a.player_id, &b.player_id]);
@@ -195,7 +197,7 @@ pub(super) async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str,
 
     // [PY4] a member kicking the leader is the leader-only NotFound, and changes nothing: the
     // leader is still a member and the party's revision is still the accept's.
-    let (gate4, gate4_detail) = heartbeat_gate(pool, &mut sa, &mut sb, true).await?;
+    let (gate4, gate4_detail, b_lease) = heartbeat_gate(pool, &mut sa, &mut sb, true).await?;
     let kicked = sb.call(METHOD_KICK, json!({ "player_id": a.player_id })).await?;
     let py4_members = count_of(pool, "SELECT count(*) FROM party.members WHERE party_id::text = $1", &party_id).await;
     let py4_rev = count_of(pool, "SELECT revision FROM party.parties WHERE id::text = $1", &party_id).await;
@@ -208,12 +210,34 @@ pub(super) async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str,
     // gets the 1-member snapshot ABOVE the accept's revision (so no earlier 1-member
     // snapshot can satisfy it), and B's socket gets
     // the "no party" view stamped with that same revision.
+    //
+    // The lower bound: B's stored lease must still be the one the gate4 heartbeat answered
+    // (the failed kick renewed nothing), and every sample pairs B's presence with the
+    // database clock, so B absent while that clock is still before its lease FAILS — only
+    // the lease sweep may remove it, and only once the lease has passed.
+    let lease_unchanged = sqlx::query_scalar::<_, bool>(
+        "SELECT lease_until = $2::timestamptz FROM party.members WHERE player_id::text = $1")
+        .bind(&b.player_id).bind(&b_lease).fetch_optional(pool).await.ok().flatten() == Some(true);
+    let mut early_removal = false;
+    let mut absent_after_expiry = false;
     let silent_since = Instant::now();
     let deadline = silent_since + LEASE_EXPIRY_DEADLINE;
     let only_a = sorted(&[&a.player_id]);
     let mut py5_a = None;
     let mut heartbeats_ok = true;
-    while py5_a.is_none() && Instant::now() < deadline {
+    loop {
+        let (present, before_expiry) = b_sample(pool, &b.player_id, &b_lease).await;
+        if !present {
+            early_removal |= before_expiry;
+            absent_after_expiry |= !before_expiry;
+        }
+        if (py5_a.is_some() && !present) || Instant::now() >= deadline {
+            break;
+        }
+        if py5_a.is_some() {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
         let hb = sa.call(METHOD_HEARTBEAT, json!({})).await?;
         heartbeats_ok &= status(&hb) == "Ok" && !text(&hb, "/value/lease_until").is_empty();
         py5_a = sa
@@ -227,14 +251,14 @@ pub(super) async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str,
         .await;
     let b_rows = count_of(pool, "SELECT count(*) FROM party.members WHERE player_id::text = $1", &b.player_id).await;
     let b_rev = count_of(pool, "SELECT revision FROM party.player_revisions WHERE player_id::text = $1", &b.player_id).await;
-    p.check(&format!("[PY5{tag}] a silent member is swept within lease+sweep -> leader's socket gets the 1-member snapshot, the swept socket the no-party view, same revision"),
-        heartbeats_ok && rev5 > rev3
+    p.check(&format!("[PY5{tag}] a silent member is swept within lease+sweep and never before its lease expires -> leader's socket gets the 1-member snapshot, the swept socket the no-party view, same revision"),
+        heartbeats_ok && lease_unchanged && !early_removal && absent_after_expiry && rev5 > rev3
             && pushed_hub(&py5_a).as_deref() == Some("party")
             && py5_a.as_ref().is_some_and(|(_, v)| v["leader_id"] == a.player_id.as_str())
             && pushed_hub(&py5_b).as_deref() == Some("party")
             && py5_b.as_ref().is_some_and(|(_, v)| v["members"] == json!([]) && v["leader_id"] == "")
             && b_rows == 0 && b_rev == rev5,
-        format!("after={removed_after:?} heartbeats_ok={heartbeats_ok} push_a={py5_a:?} push_b={py5_b:?} b_rows={b_rows} b_rev={b_rev} accept_rev={rev3}"));
+        format!("lease_b={b_lease} lease_unchanged={lease_unchanged} early_removal={early_removal} absent_after_expiry={absent_after_expiry} after={removed_after:?} heartbeats_ok={heartbeats_ok} push_a={py5_a:?} push_b={py5_b:?} b_rows={b_rows} b_rev={b_rev} accept_rev={rev3}"));
 
     // [PY6] the last member leaving dissolves the party; the answer is the "no party" view
     // carrying the leave's own stamp, which is also A's recorded revision.
@@ -243,16 +267,23 @@ pub(super) async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str,
     let py6_rows = count_of(pool, "SELECT count(*) FROM party.parties WHERE id::text = $1", &party_id).await;
     let py6_members = count_of(pool, "SELECT count(*) FROM party.members WHERE party_id::text = $1", &party_id).await;
     let a_rev = count_of(pool, "SELECT revision FROM party.player_revisions WHERE player_id::text = $1", &a.player_id).await;
-    p.check(&format!("[PY6{tag}] last member party.leave over /push -> no-party view above the sweep's revision, party row gone"),
+    let py6_push = sa
+        .await_state(Duration::from_secs(10), |v| v["party_id"] == "" && int(v, "/revision") == rev6)
+        .await;
+    p.check(&format!("[PY6{tag}] last member party.leave over /push -> no-party view above the sweep's revision answered AND pushed to the leaver, party row gone"),
         status(&left) == "Ok" && text(&left, "/value/party_id").is_empty()
-            && rev6 > rev5 && py6_rows == 0 && py6_members == 0 && a_rev == rev6,
-        format!("leave={left} sweep_rev={rev5} parties={py6_rows} members={py6_members} a_rev={a_rev}"));
+            && rev6 > rev5 && py6_rows == 0 && py6_members == 0 && a_rev == rev6
+            && pushed_hub(&py6_push).as_deref() == Some("party")
+            && py6_push.as_ref().is_some_and(|(_, v)| v["members"] == json!([]) && v["leader_id"] == ""),
+        format!("leave={left} sweep_rev={rev5} parties={py6_rows} members={py6_members} a_rev={a_rev} push={py6_push:?}"));
     sa.client.disconnect().await;
     sb.client.disconnect().await;
 
-    // [PY7] a notifications nudge and a party snapshot share one socket, each on its own hub.
-    // A FRESH socket, opened after A's registration-time nudges were sent to sockets that no
-    // longer exist, so the only `notifications.new` it can see is the one this grant causes.
+    // [PY7] a notifications nudge and a party snapshot share one socket, each with its own
+    // gateway hub label. The socket is opened only once every wallet.changed for A that
+    // registration caused has been consumed by notifications (the nudge leaves inside that
+    // delivery, before its checkpoint), so the only nudge it can see is this grant's.
+    let quiesced = nudges_quiesced(pool, &a.player_id).await;
     let mut s7 = Sock::open(&ws, &a.token).await?;
     let credits_before = count_of(pool,
         "SELECT count(*) FROM notifications.messages WHERE player_id::text = $1 AND kind = 'wallet.credit'",
@@ -262,7 +293,7 @@ pub(super) async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str,
         .post(format!("{front}/admin/wallet"))
         .form(&[("_csrf", csrf.as_str()), ("_idem_grant", idem.as_str()), ("_action", "grant"),
             ("player_id", a.player_id.as_str()), ("currency", "gold"), ("amount", "7"),
-            ("reason", "splitproof party interleave")])
+            ("reason", "splitproof party shared socket")])
         .send()
         .await?
         .status()
@@ -302,12 +333,53 @@ pub(super) async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str,
     }
     let cleanup = s7.call(METHOD_LEAVE, json!({})).await?;
     s7.client.disconnect().await;
-    p.check(&format!("[PY7{tag}] a `notifications` nudge and a `party` snapshot interleave on one socket, each with its own hub"),
-        grant == 303 && credits_before >= 0 && credits_after > credits_before && status(&created7) == "Ok"
+    p.check(&format!("[PY7{tag}] this grant's `notifications` nudge and a `party` snapshot share one socket, each with its own gateway hub label"),
+        quiesced && grant == 303 && credits_before >= 0 && credits_after > credits_before && status(&created7) == "Ok"
             && pushed_hub(&py7_state).as_deref() == Some("party") && pushed_rev(&py7_state) == Some(rev7)
             && nudge_hub.as_deref() == Some("notifications") && status(&cleanup) == "Ok",
-        format!("grant={grant} credits={credits_before}->{credits_after} create={created7} state={py7_state:?} nudge_hub={nudge_hub:?} cleanup={}", status(&cleanup)));
+        format!("quiesced={quiesced} grant={grant} credits={credits_before}->{credits_after} create={created7} state={py7_state:?} nudge_hub={nudge_hub:?} cleanup={}", status(&cleanup)));
     Ok(())
+}
+
+/// `(B is a member, the database clock is still before lease)` from ONE statement.
+async fn b_sample(pool: &PgPool, player_id: &str, lease: &str) -> (bool, bool) {
+    sqlx::query_as::<_, (bool, bool)>(
+        "SELECT EXISTS (SELECT 1 FROM party.members WHERE player_id::text = $1), \
+                clock_timestamp() < $2::timestamptz")
+        .bind(player_id).bind(lease).fetch_one(pool).await.unwrap_or((true, false))
+}
+
+/// Polls `subscription` to at or past `event_id`, against a deadline.
+async fn poll_cursor(pool: &PgPool, subscription: &str, event_id: &str) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while Instant::now() < deadline {
+        if cursor_at_or_past(pool, subscription, event_id).await == 1 {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    false
+}
+
+/// True once wallet has consumed `player`'s `player.registered` (so any starter grant it
+/// causes is already appended) and notifications has consumed `player`'s latest
+/// `wallet.changed`, if there is one.
+async fn nudges_quiesced(pool: &PgPool, player: &str) -> bool {
+    let registered: Option<String> = sqlx::query_scalar(
+        "SELECT event_id FROM asyncevents.events WHERE topic = 'player.registered' AND payload->>'player_id' = $1")
+        .bind(player).fetch_optional(pool).await.ok().flatten();
+    let Some(registered) = registered else { return false };
+    if !poll_cursor(pool, "wallet.player-registered.v1", &registered).await {
+        return false;
+    }
+    let latest: Option<String> = sqlx::query_scalar(
+        "SELECT event_id FROM asyncevents.events WHERE topic = 'wallet.changed' AND payload->>'player_id' = $1 \
+          ORDER BY generation DESC, producer_xid DESC, tie_breaker DESC LIMIT 1")
+        .bind(player).fetch_optional(pool).await.ok().flatten();
+    match latest {
+        Some(event_id) => poll_cursor(pool, "notifications.wallet-changed.v1", &event_id).await,
+        None => true,
+    }
 }
 
 async fn http(ctx: &Ctx, front: &str, who: &FriendPlayer, path: &str, body: Value) -> Result<(u16, Value)> {
