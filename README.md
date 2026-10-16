@@ -6,10 +6,11 @@ every domain module also compiles and boots as its own `cmd/<name>-svc` process.
 Both topologies run the same domain code and are exercised end to end by a live
 integration suite on every verification run.
 
-The architecture follows the **Open/Closed principle at the level of the system**:
-features are added by writing new modules, not by modifying existing ones. Because
-every module already runs as a separate process, any module can be deployed
-independently without a rewrite.
+The architecture applies the **Open/Closed principle at the level of the system**:
+the backend grows by addition — new modules, new contract traits, new event
+subscriptions — and no module imports another's implementation. Because every
+module already boots as a separate process, any module can run as its own process
+without a rewrite.
 
 ## Highlights
 
@@ -18,13 +19,13 @@ independently without a rewrite.
 - Three extensibility seams: a module registry, a synchronous capability registry
   that swaps local implementations for QUIC-backed remote clients, and a durable
   event bus over Postgres.
-- Durable cross-module events: at-least-once delivery with a stable event id and
-  exactly-once effects, with the handler effect and the subscription checkpoint
-  committed in one transaction.
+- Durable cross-module events: at-least-once delivery with a stable event id;
+  effects are exactly-once for handlers that write their effect through the
+  delivery transaction, which also commits the subscription checkpoint.
 - A single public front door (HTTP, a WebSocket push hub, and a QUIC player
   plane), with an internal mTLS QUIC edge between services.
-- Architecture rules enforced by tooling rather than convention: dependency
-  checks, per-process boot checks, public-API and wire-contract snapshots, and a
+- Architecture rules enforced by tooling where they can be checked: dependency
+  checks, per-process boot checks, wire-contract and public-API snapshots, and a
   split-versus-monolith parity proof.
 - Native processes only. Development, verification, and supervision tooling run
   on Linux, macOS, and Windows without containers.
@@ -45,7 +46,8 @@ and `init` perform no I/O, and `stop` runs in reverse registration order.
 through capability traits. A consumer depends on the provider's contract crate,
 never its implementation, and resolves `dyn Trait` under a registry key. In a
 split deployment a `remote::Stub` provides a QUIC-backed client under the same
-key; that registry swap is the only difference between the two topologies.
+key; for synchronous calls, that registry swap is the only difference between
+the two topologies.
 Generated RPC operations are not retried unless the contract marks a method
 `#[retry_safe]`.
 
@@ -98,7 +100,10 @@ durable events.
 - **accounts** — player identity: one player id, many provider identities; opaque
   sessions with short-lived access tokens and rotating refresh-token families;
   federated login (Epic, Google, guest), account linking, and self-service account
-  deletion that downstream modules purge on.
+  deletion. Deletion emits durable `player.deleted`; seven modules purge the
+  player's data on a daily sweep, `party` removes the player directly, and `audit`
+  records it. `leaderboard`, `rating`, `match`, and `mail` cannot purge yet; the
+  known gaps are listed in the feature tracker.
 - **characters / inventory** — the reference pair for new modules: plain-id
   relations, synchronous ownership checks over the wire, and starter grants and
   wipes driven by durable character events.
@@ -109,8 +114,9 @@ durable events.
   modules, including remote pages fetched over QUIC.
 - **audit** — an append-only ledger fed by independent raw durable subscriptions,
   with scheduled retention.
-- **scheduler** — data-driven schedules that fire exactly once per due time under
-  per-schedule advisory locks.
+- **scheduler** — data-driven interval schedules; a due schedule fires once
+  across replicas under a per-schedule advisory lock, and missed intervals
+  coalesce into a single fire.
 - **match / rating / leaderboard** — idempotent match reports, a persistent MMR
   projection, and a persistent leaderboard, connected by the durable
   `match.finished` event.
@@ -142,24 +148,28 @@ Current gaps and planned work per module are tracked in
 
 ## Design principles
 
-- **Extend by addition.** New capability is new code: a new module, a new
-  contract crate, a new subscription. Existing modules are not edited to
-  accommodate it.
+- **Extend by addition.** New capability arrives as new code: a new module, new
+  contract traits, new subscriptions in the consuming modules. No module imports
+  another module's implementation.
 - **Every module is extractable.** Any domain module runs as its own process today.
   A feature that works in only one topology is treated as a defect.
 - **One shared Postgres.** A single database server with schema-per-module
   isolation is a deliberate operational choice, not an interim step towards
   database-per-service.
-- **Durable, transactional events.** Delivery is at-least-once; effects are
-  exactly-once because the consumer's effect and its checkpoint share one
-  transaction. There is no inbox table and no deduplication layer.
+- **Durable, transactional events.** Delivery is at-least-once. Effects are
+  exactly-once for handlers that write their effect through the delivery
+  transaction, which also commits the checkpoint; there is no inbox table. Effects
+  outside the database, such as an SMTP send, are at-least-once.
 - **Additive contract evolution.** A published event payload is never changed in
   place. A breaking change is a new contract version with new subscription ids.
 - **Fail closed.** Development conveniences (dev authentication, seeded API keys,
   seeded currencies, simulated purchases) are off unless explicitly enabled, and a
   process missing a required capability refuses to start.
-- **Mechanical enforcement over convention.** Each architectural rule above is
-  checked by a verification stage; see
+- **Mechanical enforcement over convention.** Dependency direction, the fortress
+  rule, per-process boot, capability requirements, and durable-topic consistency
+  are checked by blocking `verifyctl` stages; public-API snapshots and the full
+  event-topic graph check are advisory. Extend-by-addition and the shared-Postgres
+  model are conventions, not gates. See
   [docs/reference/architecture-enforcement.md](docs/reference/architecture-enforcement.md).
 
 ## Getting started
@@ -307,22 +317,23 @@ The agents follow written instructions kept in the repository:
 
 The failure classes agents are reviewed against are recorded in
 [docs/reference/core-failure-taxonomy.md](docs/reference/core-failure-taxonomy.md),
-derived from the fix commits of the project's own remediation history. Agent working memory is
-mirrored into `memory/` so it is versioned with the code.
+derived from the fix commits of the project's own remediation history. Agent
+working memory is mirrored into `memory/` so it is versioned with the code.
 
 The central design decision is that agents are not trusted to follow the
-architecture; the build enforces it. Dependency direction, the fortress rule,
-per-process boot, wire contracts, public API surfaces, documentation references,
-and split-versus-monolith parity are all checked by `verifyctl` stages, so an
-agent's mistake surfaces as a failed gate rather than relying on a reviewer to
-notice it.
+architecture; where a rule can be checked, the verification run checks it.
+Dependency direction, the fortress rule, per-process boot, wire contracts,
+documentation references, and split-versus-monolith parity fail the blocking
+`--fast` run; public API surface changes are reported by the advisory stage and
+fail only under `--strict`. An agent's mistake in those areas surfaces as a failed
+gate rather than depending on a reviewer to notice it.
 
 ## Project status
 
 Swarog is pre-production and has no deployed users. Consequences of that phase:
 
-- There is no hosted CI. `cargo run -p verifyctl -- --fast`, run locally, is the
-  gate before every push.
+- There is no hosted CI and no push hook. By convention,
+  `cargo run -p verifyctl -- --fast` is run locally before every push.
 - Schema and event-contract breaks are handled by dropping the affected schemas
   and booting fresh. There is no data-migration machinery; development data comes
   from seed scripts.

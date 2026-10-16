@@ -2,6 +2,7 @@
 name = "splitproof"
 version = "0.1.0"
 edition = "2021"
+license.workspace = true
 publish = false
 
 # Cross-platform split-proof harness. Replaces split-proof.sh/.ps1: the fleet is

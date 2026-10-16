@@ -1,14 +1,15 @@
-# GameBackend - Agent Reference
+# Swarog - Agent Reference
 
 This file is the entry point for agents working in this repo. It does not
 duplicate the full project policy; the shared rules live under `.agents/` so
 runtime-specific instructions do not drift.
 
-A for-fun game backend in **Rust** (Cargo workspace): a **modular monolith with
+Swarog is a game backend in **Rust** (Cargo workspace): a **modular monolith with
 a proven split** — one `cmd/server` binary for the monolith, and every domain
-module also compiles and boots as its own `cmd/<name>-svc` process. Features
-are added by writing new code, not modifying existing code (Open/Closed at the
-architecture level). Architecture facts (seams, fortresses, commands, layout)
+module also compiles and boots as its own `cmd/<name>-svc` process. The system
+grows by addition (Open/Closed at the architecture level): new modules, contract
+traits, and subscriptions, with no module importing another's implementation.
+Architecture facts (seams, fortresses, commands, layout)
 live in `.agents/shared/gamebackend.md` — do not treat this index as the
 architecture doc.
 
