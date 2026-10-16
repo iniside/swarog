@@ -1,10 +1,16 @@
 # Swarog
 
-Swarog is a game backend written in Rust. It is built as a **modular monolith with
-a proven split**: the whole backend runs as a single `cmd/server` process, and
-every domain module also compiles and boots as its own `cmd/<name>-svc` process.
-Both topologies run the same domain code and are exercised end to end by a live
-integration suite on every verification run.
+Swarog is an open, self-hostable backend platform written in Rust — the same
+category of system as Firebase or Supabase: accounts and sessions, configuration,
+an admin portal, audit, scheduling, API keys, notifications, email, social
+features, and player cloud storage, behind one public front door. A game backend
+is the first module set built on it: characters, inventory, matches, rating,
+leaderboards, and parties are modules compiled in alongside the platform ones.
+
+It is built as a **modular monolith with a proven split**: the whole backend runs
+as a single `cmd/server` process, and every domain module also compiles and boots
+as its own `cmd/<name>-svc` process. Both topologies run the same domain code and
+are exercised end to end by a live integration suite on every verification run.
 
 The architecture applies the **Open/Closed principle at the level of the system**:
 the backend grows by addition — new modules, new contract traits, new event
@@ -12,10 +18,26 @@ subscriptions — and no module imports another's implementation. Because every
 module already boots as a separate process, any module can run as its own process
 without a rewrite.
 
+### How it differs from Firebase and Supabase
+
+Firebase and Supabase are configured at runtime: you define data, access rules,
+and functions in a running service, and clients use the APIs it exposes
+(Supabase generates them from the database schema). Swarog is composed at
+compile time from Rust modules that own their database schemas and typed
+operations, and each module runs either inside the shared process or as its
+own. It is not a drop-in replacement for either. Its vocabulary also shows its
+origin in games — identities resolve to a `player_id`, and the front door
+includes a player QUIC plane.
+
+It is designed to run on a single modest machine with one PostgreSQL database,
+giving a predictable fixed cost and no dependency on a cloud provider. No
+capacity or cost figures have been measured yet.
+
 ## Highlights
 
-- 18 domain modules plus a gateway, each a "fortress" that never imports another
-  module's implementation and boots as its own service.
+- 18 domain modules plus a gateway — 12 general-purpose platform modules and 6
+  game modules — each a "fortress" that never imports another module's
+  implementation and boots as its own service.
 - Three extensibility seams: a module registry, a synchronous capability registry
   that swaps local implementations for QUIC-backed remote clients, and a durable
   event bus over Postgres.
@@ -27,8 +49,9 @@ without a rewrite.
 - Architecture rules enforced by tooling where they can be checked: dependency
   checks, per-process boot checks, wire-contract snapshots, and a
   split-versus-monolith parity proof, with advisory public-API snapshots.
-- Native processes only. Development, verification, and supervision tooling run
-  on Linux, macOS, and Windows without containers.
+- Self-hosted on native processes. Development, verification, and supervision
+  tooling run on Linux, macOS, and Windows without containers; the code is
+  licensed under the EUPL-1.2.
 
 ## Architecture
 
@@ -95,7 +118,17 @@ per module and no cross-module foreign keys. A reference to another module's dat
 is a plain id column, resolved through a capability call or kept in sync through
 durable events.
 
-## Domain modules
+## Modules
+
+The 18 domain modules form two sets: 12 general-purpose platform modules and 6
+game modules. Dependencies point one way. Several game modules use platform
+contracts (accounts, config, scheduler, admin); no platform module depends on a
+game module's crates in its production build, though some name game topics or
+operations as data (`audit` records the game events in its ledger, and the
+development API-key seed lists game operations). No build without the game
+modules is defined or tested today.
+
+### Platform modules
 
 - **accounts** — player identity: one player id, many provider identities; opaque
   sessions with short-lived access tokens and rotating refresh-token families;
@@ -104,9 +137,6 @@ durable events.
   player's data on a daily sweep, `party` removes the player directly, and `audit`
   records it. `leaderboard`, `rating`, `match`, and `mail` cannot purge yet; the
   known gaps are listed in the feature tracker.
-- **characters / inventory** — the reference pair for new modules: plain-id
-  relations, synchronous ownership checks over the wire, and starter grants and
-  wipes driven by durable character events.
 - **config** — database-backed settings with a monotonic revision, live reload
   through the invalidation plane, and a durable `config.changed` event.
 - **admin** — the GameOps portal at `/admin`: session authentication with CSRF
@@ -117,9 +147,6 @@ durable events.
 - **scheduler** — data-driven interval schedules; a due schedule fires once
   across replicas under a per-schedule advisory lock, and missed intervals
   coalesce into a single fire.
-- **match / rating / leaderboard** — idempotent match reports, a persistent MMR
-  projection, and a persistent leaderboard, connected by the durable
-  `match.finished` event.
 - **apikeys** — per-key API access policy; the gateway requires an API key on
   every operation and enforces its role's policy.
 - **wallet** — virtual currency: an operator-owned catalog, per-player balances,
@@ -133,8 +160,20 @@ durable events.
 - **groups** — social groups with roles and invitation/request membership states.
 - **storage** — player cloud saves with owner-only writes, public or private
   reads, and compare-and-swap versioning.
+
+### Game modules
+
+- **characters / inventory** — the reference pair for new modules: plain-id
+  relations, synchronous ownership checks over the wire, and starter grants and
+  wipes driven by durable character events.
+- **match / rating / leaderboard** — idempotent match reports, a persistent MMR
+  projection, and a persistent leaderboard, connected by the durable
+  `match.finished` event.
 - **party** — short-lived player parties with lease-based membership and real-time
   state pushed to members.
+
+### Front door
+
 - **gateway** — the single public front door: HTTP operation routing (local or
   remote, decided by slot presence), a WebSocket push hub, the player QUIC plane,
   HTTP passthroughs, rate limiting, and native TLS termination. Domain services
