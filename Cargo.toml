@@ -199,7 +199,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "EUPL-1.2"
 publish = false
 
 # Dev-build debuginfo trimming — keeps target/ from ballooning (full debug=2 on
