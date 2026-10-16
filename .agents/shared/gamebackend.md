@@ -3,8 +3,9 @@
 A game backend in **Rust** (Cargo workspace), built as a serious architecture
 experiment — a **modular monolith with a proven split**: one repo, one
 `cmd/server` binary for the monolith, AND every domain module compiles and
-boots as its own `cmd/<name>-svc` process. Features are added by *writing new
-code, not modifying existing code* (Open/Closed at the architecture level).
+boots as its own `cmd/<name>-svc` process. The system grows by addition
+(Open/Closed at the architecture level): new modules, contract traits, and
+subscriptions, with no module importing another's implementation.
 The retired Go original lives at `experiments/go-sketch/` (archived reference
 — do not evolve it).
 
@@ -216,7 +217,7 @@ last-writer-wins overwrite.
    split. `topiccheck` validates the subscription graph per deployment
    profile.
 
-## Domain modules (17 fortresses + gateway)
+## Domain modules (18 fortresses + gateway)
 
 - **accounts** — identity: one `player_id`, many identities
   (`provider`,`subject`), opaque DB sessions: 60-minute access tokens plus
@@ -487,6 +488,18 @@ last-writer-wins overwrite.
   admin page "Cloud Saves" under Player Support at `/admin/cloud-saves`.
   Known limits and acceptance status live in the storage section of
   `docs/roadmap/feature-tracker.md`.
+- **party** — short-lived player parties in schema `party`: at most
+  `MAX_MEMBERS` (8), one leader, one party per player (`members.player_id`
+  primary key). Eleven `#[http]` ops (`create`/`get`/`invite`/`invites`/
+  `accept`/`decline`/`leave`/`kick`/`promote`/`set_ready`/`heartbeat`);
+  `get`/`invites`/`heartbeat` are `#[retry_safe]`. `invite` resolves a handle
+  through `accountsapi::Directory`. Membership is a lease (`PARTY_LEASE_SECS`,
+  default 60, range 10..=600; only an unset variable takes the default) swept
+  every 5s, with a `"party"` readiness check. Post-commit `party.state`/
+  `party.invite` pushes go through `ctx.push()` and are best-effort.
+  `party.player-deleted.v1` (`AfterRegistration`) removes a deleted player in
+  the delivery tx, with no tombstone table. No durable topics, no admin page.
+  Known gaps are in the Parties row of `docs/roadmap/feature-tracker.md`.
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote
   purely by slot presence; peer addresses are injected by `cmd/*` via
   `remote::Stub` → `opsapi::PEER_SLOT` contributions — the gateway module

@@ -1,6 +1,6 @@
 # weles
 
-The standalone mini-orchestrator (binary: `weles`) for the GameBackend fleet.
+The standalone mini-orchestrator (binary: `weles`) for the Swarog fleet.
 It supervises native OS processes — no containers, no Docker, no Kubernetes.
 
 > **Design source of truth:** [`docs/reference/weles-design.md`](../docs/reference/weles-design.md).
@@ -74,8 +74,9 @@ Unix incl. macOS `LOCAL_PEERCRED`), a separate trust domain from the service edg
 
 M0 shipped (2026-07-15): supervisor, restart-on-crash, `deploy/` generations,
 control endpoint, `rollout.lock` bit-compat; pre-M1 hardening closed (2026-07-16).
-M1 is partly shipped: `weles rollback`, the agent `hello`/`resolve` endpoint for
-managed mode (exercised by the blocking `weles-managed-gateway` verify stage), a
+M1 is partly shipped: `weles rollback`, the agent `resolve` endpoint for managed
+mode (exercised by the blocking `weles-managed-gateway` verify stage), a `/hello`
+endpoint that no service calls yet (covered only by unit tests), a
 durable `redb` store (in place of SQLite) for deploy history and port assignments,
 and agent-side port minting (`"mint"` ports in `fleet.toml`) are in the code. The
 managed-vs-standalone boot modes and the four-point managed convention are

@@ -1,4 +1,4 @@
-# GameBackend Agent Instructions
+# Swarog Agent Instructions
 
 This folder is the shared instruction source for GameBackend agents.
 

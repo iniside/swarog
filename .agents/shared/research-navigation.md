@@ -2,8 +2,9 @@
 
 ## Research Before Planning - MANDATORY
 
-This is a modular monolith built on Open/Closed — new features are *new code*,
-not edits to existing code. Before any plan proposing a new module, service,
+This is a modular monolith built on Open/Closed — it grows by addition (new
+modules, contract traits, and subscriptions), with no module importing another's
+implementation. Before any plan proposing a new module, service,
 event, or admin section (or a replacement), first map the overlapping existing
 systems. The three seams (module registry, service registry
 `registry::provide` / `registry::require`, event bus) plus the contribution

@@ -25,8 +25,8 @@ without a rewrite.
 - A single public front door (HTTP, a WebSocket push hub, and a QUIC player
   plane), with an internal mTLS QUIC edge between services.
 - Architecture rules enforced by tooling where they can be checked: dependency
-  checks, per-process boot checks, wire-contract and public-API snapshots, and a
-  split-versus-monolith parity proof.
+  checks, per-process boot checks, wire-contract snapshots, and a
+  split-versus-monolith parity proof, with advisory public-API snapshots.
 - Native processes only. Development, verification, and supervision tooling run
   on Linux, macOS, and Windows without containers.
 
@@ -167,9 +167,10 @@ Current gaps and planned work per module are tracked in
   process missing a required capability refuses to start.
 - **Mechanical enforcement over convention.** Dependency direction, the fortress
   rule, per-process boot, capability requirements, and durable-topic consistency
-  are checked by blocking `verifyctl` stages; public-API snapshots and the full
-  event-topic graph check are advisory. Extend-by-addition and the shared-Postgres
-  model are conventions, not gates. See
+  are checked by blocking `verifyctl` stages; public-API snapshots are advisory.
+  The standalone `topiccheck` stage is advisory but currently adds no check beyond
+  the durability-strict topic run inside the blocking `fortress` stage.
+  Extend-by-addition and the shared-Postgres model are conventions, not gates. See
   [docs/reference/architecture-enforcement.md](docs/reference/architecture-enforcement.md).
 
 ## Getting started
