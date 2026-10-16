@@ -3,9 +3,10 @@
 Swarog is an open, self-hostable backend platform written in Rust — the same
 category of system as Firebase or Supabase: accounts and sessions, configuration,
 an admin portal, audit, scheduling, API keys, notifications, email, social
-features, and player cloud storage, behind one public front door. A game backend
-is the first module set built on it: characters, inventory, matches, rating,
-leaderboards, and parties are modules compiled in alongside the platform ones.
+features, and player cloud saves (JSON documents), behind one public front
+door. A game backend is the first module set built on it: characters,
+inventory, matches, rating, leaderboards, and parties are modules compiled in
+alongside the platform ones.
 
 It is built as a **modular monolith with a proven split**: the whole backend runs
 as a single `cmd/server` process, and every domain module also compiles and boots
@@ -20,18 +21,18 @@ without a rewrite.
 
 ### How it differs from Firebase and Supabase
 
-Firebase and Supabase are configured at runtime: you define data, access rules,
-and functions in a running service, and clients use the APIs it exposes
-(Supabase generates them from the database schema). Swarog is composed at
+Firebase and Supabase are generic hosted services into which you deploy data
+models, access rules, and functions, and clients call the APIs they expose
+(Supabase generates its data API from the database schema). Swarog is composed at
 compile time from Rust modules that own their database schemas and typed
 operations, and each module runs either inside the shared process or as its
 own. It is not a drop-in replacement for either. Its vocabulary also shows its
 origin in games — identities resolve to a `player_id`, and the front door
 includes a player QUIC plane.
 
-It is designed to run on a single modest machine with one PostgreSQL database,
-giving a predictable fixed cost and no dependency on a cloud provider. No
-capacity or cost figures have been measured yet.
+It runs as native processes on one machine with one PostgreSQL database; no
+container orchestrator or cloud-provider service is required. No capacity or
+cost figures have been measured yet.
 
 ## Highlights
 
@@ -123,10 +124,11 @@ durable events.
 The 18 domain modules form two sets: 12 general-purpose platform modules and 6
 game modules. Dependencies point one way. Several game modules use platform
 contracts (accounts, config, scheduler, admin); no platform module depends on a
-game module's crates in its production build, though some name game topics or
-operations as data (`audit` records the game events in its ledger, and the
-development API-key seed lists game operations). No build without the game
-modules is defined or tested today.
+game module's crates in its production build, though some name game concepts as
+data — for example, `audit` records the game events in its ledger, the
+development API-key seed lists game operations, and the admin portal template
+carries GameOps branding and game-specific icons and navigation. No build without
+the game modules is defined or tested today.
 
 ### Platform modules
 
