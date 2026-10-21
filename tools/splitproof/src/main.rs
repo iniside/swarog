@@ -6392,9 +6392,11 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
 
     // [PH14] the remote pool's own failure reaches a /push client as a result, and the
     // socket keeps serving. The first call may hang on the dead peer's cached connection
-    // until the front's 30s invoke timeout, so it gets 45s and only absorbs that; the
-    // second, bounded below the invoke timeout, must be the pool's answer. Together this
-    // adds up to ~60s inside the kill window.
+    // until the QUIC idle timeout or the front's 30s invoke timeout, whichever comes first,
+    // so it gets 45s and only absorbs that. Until the route pool's probe marks the peer
+    // down, a call can still fail as a dial error, so the follow-up is polled until the
+    // pool's own answer; each attempt is bounded and `characters.list` is retry-safe.
+    // This typically adds ~30s inside the kill window.
     let ws = format!("ws://{}", g.trim_start_matches("http://"));
     let (ph14_code, ph14_guest) = create_guest(ctx, &g).await?;
     let mut ph14 = PushClient::connect(&ws, &ph14_guest.token, "dev-key-client").await?;
@@ -6402,15 +6404,38 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
         ph14.next_frame(Duration::from_secs(10)).await,
         Ok(Some(Frame::Ack { .. }))
     );
+    let field = |r: &Result<serde_json::Value>, key: &str| -> Option<String> {
+        r.as_ref()
+            .ok()
+            .and_then(|v| v.get(key).and_then(|s| s.as_str()).map(str::to_string))
+    };
     let ph14_absorb = ph14
         .invoke(1, "characters.list", serde_json::json!({}), Duration::from_secs(45))
         .await;
-    let ph14_list = ph14
-        .invoke(2, "characters.list", serde_json::json!({}), Duration::from_secs(10))
-        .await;
+    let ph14_deadline = Instant::now() + Duration::from_secs(15);
+    let mut ph14_id = 1i64;
+    let mut ph14_attempts = 0u32;
+    let mut ph14_all_unavailable = true;
+    let mut ph14_pool = false;
+    let mut ph14_last: Option<Result<serde_json::Value>> = None;
+    while ph14_attempts < 10 && Instant::now() < ph14_deadline {
+        ph14_id += 1;
+        ph14_attempts += 1;
+        let r = ph14
+            .invoke(ph14_id, "characters.list", serde_json::json!({}), Duration::from_secs(10))
+            .await;
+        ph14_all_unavailable &= field(&r, "status").as_deref() == Some("Unavailable");
+        ph14_pool = field(&r, "err")
+            .is_some_and(|e| e.starts_with("remote pool: no reachable instance"));
+        ph14_last = Some(r);
+        if ph14_pool || !ph14_all_unavailable {
+            break;
+        }
+    }
+    let ph14_last_err = ph14_last.as_ref().and_then(|r| field(r, "err"));
     let ph14_get = ph14
         .invoke(
-            3,
+            ph14_id + 1,
             "storage.get",
             serde_json::json!({
                 "collection": "splitproof",
@@ -6420,12 +6445,6 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
             Duration::from_secs(15),
         )
         .await;
-    let field = |r: &Result<serde_json::Value>, key: &str| -> Option<String> {
-        r.as_ref()
-            .ok()
-            .and_then(|v| v.get(key).and_then(|s| s.as_str()).map(str::to_string))
-    };
-    let ph14_err = field(&ph14_list, "err").unwrap_or_default();
     p.check(
         "[PH14] characters-svc dead: characters.list over gateway-svc /push -> an Unavailable \
          result carrying the remote pool's no-reachable-instance error; storage.get on the \
@@ -6433,12 +6452,13 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
         ph14_code == 201
             && ph14_ack
             && field(&ph14_absorb, "status").as_deref() == Some("Unavailable")
-            && field(&ph14_list, "status").as_deref() == Some("Unavailable")
-            && ph14_err.starts_with("remote pool: no reachable instance")
+            && ph14_all_unavailable
+            && ph14_pool
             && field(&ph14_get, "status").as_deref() == Some("NotFound"),
         format!(
-            "guest={ph14_code} ack={ph14_ack} absorb={ph14_absorb:?} list={ph14_list:?} \
-             get={ph14_get:?}"
+            "guest={ph14_code} ack={ph14_ack} absorb={ph14_absorb:?} attempts={ph14_attempts} \
+             all_unavailable={ph14_all_unavailable} last_err={ph14_last_err:?} \
+             last={ph14_last:?} get={ph14_get:?}"
         ),
     );
     ph14.disconnect().await;
