@@ -22,15 +22,17 @@ behaviour and the **previously-wrong branch** each test must exercise, and the
 writing — a test that doesn't run the once-wrong branch is worthless.
 
 **Read before writing — these are your rules; do NOT expect them inherited:**
-- `CLAUDE.md` → **Hard constraint #10** — tests live in **separate files**
-  (`src/tests.rs` / `src/<file>_tests.rs`), never inline in impl files.
-- `CLAUDE.md` → **Fix the Authority** rule 5 — the assertion must execute the
-  branch that used to be wrong, on the topology that's actually at risk (split,
-  not just monolith); a negative path proven by construction (dead pool, decoy
-  process, counting fake) beats one asserted by absence of errors.
-- `docs/reference/core-failure-taxonomy.md` → the **proof-soundness** class —
-  your output is exactly what `proof-auditor` and `core-reviewer` will
-  interrogate; pre-empt them.
+- `.agents/shared/gamebackend.md` → **Hard constraints (do not violate without
+  discussing)** #10 — tests live in **separate files** (`src/tests.rs` /
+  `src/<file>_tests.rs`), never inline in impl files.
+- `.agents/shared/planning-dispatch.md` → **Fix the Authority, Not the Symptom -
+  MANDATORY** rule 5 — the assertion must execute the branch that used to be
+  wrong, on the topology that's actually at risk (split, not just monolith); a
+  negative path proven by construction (dead pool, decoy process, counting
+  fake) beats one asserted by absence of errors.
+- `docs/reference/core-failure-taxonomy.md` → class 6 `coverage-gap` /
+  `false-pass` — your output is exactly what `proof-auditor` and
+  `core-reviewer` will interrogate; pre-empt them.
 - **`cargo fmt` is NOT safe in this repo** — hand-format to the surrounding
   house style; never run `cargo fmt` (it churns untouched files).
 
