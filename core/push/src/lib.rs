@@ -6,7 +6,7 @@
 //! learns where a player's connections live: it addresses a [`Target`] and hands a
 //! [`Message`] to the process's [`Push`] handle. The installed [`Sink`] either answers
 //! locally (this process owns the sockets — [`Delivered::Local`] with the number of
-//! connections written to) or hands the message to a backplane queue for fan-out to the
+//! connections enqueued to) or hands the message to a backplane queue for fan-out to the
 //! processes that do ([`Delivered::Queued`]). The two answers are deliberately distinct
 //! types of statement: a count is an observation, a queue handoff is a promise to try.
 //!
@@ -116,9 +116,10 @@ impl Envelope {
 
 /// Encodes an ORDERED batch of addressed messages for the backplane.
 ///
-/// Order is the contract, not an implementation detail: the backplane sends a whole
-/// batch in ONE call precisely so frames cannot invert between the split and the
-/// monolith, and both this encoding and [`decode_batch`] preserve the slice order.
+/// Order within a batch is preserved by this encoding and [`decode_batch`]. Across
+/// batches, order holds per `producer`: a receiver drops a batch whose `seq` is not newer
+/// than the last it applied from that producer, so a batch arriving after a newer one is
+/// lost rather than delivered out of order.
 ///
 /// **The output is already-encoded JSON.** It belongs in `edge::Client::call_raw`'s
 /// `payload`, which relays those bytes verbatim into the request envelope. Handing it

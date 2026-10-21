@@ -9,16 +9,17 @@
 //! process owns.
 //!
 //! **Auth happens AFTER the upgrade, deliberately.** A browser cannot set headers on a
-//! WebSocket dial, so a bearer must also be accepted as the first frame; and a refusal
-//! must be a typed close the client can act on (`retryable`) rather than an HTTP status
-//! it never sees. Credentials are read from `Authorization`/`X-Api-Key` when present and
+//! WebSocket dial, so a bearer must also be accepted as the first frame; and a credential
+//! refusal must be a typed close the client can act on (`retryable`) rather than an HTTP
+//! status it never sees. Credentials are read from `Authorization`/`X-Api-Key` when present and
 //! from that first frame otherwise — NEVER from the query string, which lands in access
 //! logs, proxy history and browser history.
 //!
 //! **The aggregate caps are taken BEFORE the upgrade** ([`PushHub::accept`]) so an
 //! unauthenticated socket cannot sit in the handshake for free: a connection occupies its
 //! slot from the accept to the moment its [`Slot`] guard drops, whether it ever
-//! authenticated or not.
+//! authenticated or not. A cap refusal is therefore an HTTP 503 before the upgrade, not a
+//! typed close.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -64,6 +65,10 @@ const PUSH_STOP_GRACE: Duration = Duration::from_millis(500);
 /// composition root (`cmd/server`, `cmd/gateway-svc`) from env and handed to the module
 /// via `Gateway::with_push_limits`; the module itself never reads env. The [`Default`]
 /// values apply to any process whose root wired none.
+///
+/// The fields are public, and only [`PushLimits::from_values`] checks that
+/// `liveness_timeout` exceeds `reverify_interval`; limits built as a struct literal must
+/// uphold it themselves, or every idle healthy connection closes on a tick.
 #[derive(Clone, Debug)]
 pub struct PushLimits {
     /// Sockets this process serves at once, authenticated or still handshaking.
@@ -86,8 +91,8 @@ pub struct PushLimits {
     pub handshake_grace: Duration,
     /// Bound on one outbound write, so a peer that stops reading cannot pin the task.
     pub write_deadline: Duration,
-    /// How often a live connection's bind-time bearer is re-verified (and a liveness
-    /// ping is written).
+    /// How often a live connection's bind-time bearer is re-verified (and a ping is
+    /// written).
     pub reverify_interval: Duration,
     /// How long a connection may keep running while re-verification is UNAVAILABLE.
     /// An accounts outage must not log every player out, so an unavailable verdict
@@ -166,9 +171,11 @@ impl PushLimits {
     /// `admission_budget_from_value` precedent, which each front main also drives from a
     /// raw value.
     ///
-    /// A name that is ABSENT or blank keeps this build's default. A name that is PRESENT
+    /// A name that is ABSENT or blank keeps this build's default (for
+    /// `PUSH_LIVENESS_TIMEOUT_MS`, 1.5x the effective re-verify interval). A name that is PRESENT
     /// but unusable — unparseable, or `0` for a cap or a deadline where zero cannot mean
-    /// "disabled" — FAILS STARTUP naming the offender. **This is deliberately stricter
+    /// "disabled", or a liveness timeout not above the re-verify interval — FAILS STARTUP
+    /// naming the offender. **This is deliberately stricter
     /// than the precedent it borrows its shape from**: `admission_budget_from_value` falls
     /// back to its default on garbage, whereas a bound an operator typed and got silently
     /// dropped is a cap they believe is in force and is not.
@@ -424,7 +431,8 @@ enum ServerFrame<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum CloseCode {
-    /// No bearer, or one the session verifier definitively rejected at bind time.
+    /// No bearer, or one the session verifier definitively rejected at bind time; also
+    /// sent on re-verify when the bearer now resolves to a different player.
     Unauthorized,
     /// No api key, or one the store definitively does not know.
     ApiKey,
@@ -435,7 +443,9 @@ enum CloseCode {
     HandshakeTimeout,
     /// A malformed handshake frame.
     Protocol,
-    /// An aggregate cap refused the connection.
+    /// A client left [`PushLimits::invoke_max_in_flight`] refused invokes unread. Its
+    /// `reason` text is also the body of the HTTP 503 an aggregate cap answers before the
+    /// upgrade.
     Capacity,
     /// This player connected from more devices than the per-player cap allows and this
     /// was the oldest.
@@ -618,7 +628,7 @@ impl ConnQueue {
     ///
     /// `false` means the connection is already closing and the frame was not queued —
     /// what [`PushHub::deliver`] counts, so a `Delivered::Local(n)` counts connections
-    /// the frame actually reached.
+    /// the frame was enqueued to.
     fn push(&self, hub: &str, text: Arc<str>) -> bool {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1282,8 +1292,8 @@ pub(crate) fn deliver_registration(hub: Arc<PushHub>) -> edge::EdgeReg {
     })
 }
 
-/// Replays one encoded batch into the local hub IN ORDER — the property the sender pays
-/// for by batching (one call, sequentially awaited) instead of issuing a call per message.
+/// Replays one encoded batch into the local hub in order, unless a newer batch from the
+/// same producer has already been applied, in which case the whole batch is dropped.
 ///
 /// A message addressed to nobody on this front is a normal `0`, not a failure: every front
 /// receives every batch and filters locally, which is what keeps the design neutral to how
@@ -1631,8 +1641,8 @@ async fn serve(
                             break;
                         }
                     }
-                    // Ping/Pong: axum answers a ping itself, and a pong is the reply to the
-                    // liveness ping written on the re-verify tick.
+                    // Ping/Pong: axum answers a ping itself; any inbound frame, a pong
+                    // included, refreshes `last_inbound` for the liveness check.
                     Some(Ok(_)) => {}
                 }
             },

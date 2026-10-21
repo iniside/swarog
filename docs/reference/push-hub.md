@@ -1,7 +1,9 @@
 # Push hub — server→client delivery over `GET /push`
 
-The push hub is a WebSocket transport on the gateway's existing HTTP front door,
-carrying a SignalR-shaped hub model. Server→client delivery is best-effort, not
+The push hub is a WebSocket transport on the gateway's existing HTTP front door.
+A "hub" is only the topic's prefix before its first `.`, used as a label on
+`message` frames and to pick the connection's outbound lane: there is no per-hub
+subscription, authorization or endpoint. Server→client delivery is best-effort, not
 durable: there is no checkpoint, no redelivery and no message id. Client→server,
 the same socket can call player ops (`invoke`/`result`, below). Audience: someone implementing a
 `/push` client, or operating this in production. Model: `core/push`
@@ -16,15 +18,19 @@ read from the HTTP headers when present, and from the connection's first
 frame otherwise. **Never from the query string** — it lands in access logs,
 proxy history and browser history, and this transport does not parse one.
 
-The client's first frame must be:
+Unless BOTH `Authorization` and `X-Api-Key` arrived as headers, the client's
+first frame must be:
 
 ```json
 {"type": "hello", "token": "<bearer>", "api_key": "<key>"}
 ```
 
-(either field may be omitted if it already arrived as a header). Any other
-frame type as the first frame is a protocol violation and closes the
-connection.
+(either field may be omitted if it already arrived as a header). With both
+headers present no hello is required. Any other frame type as the first frame is
+a protocol violation and closes the connection.
+
+The aggregate connection caps are checked before the upgrade: a refusal there is
+an HTTP 503, not a typed close.
 
 On success the server replies:
 
@@ -54,13 +60,16 @@ The connection ends with a typed close naming why and whether retrying helps:
 
 `code` is one of `unauthorized`, `api_key`, `unavailable`, `handshake_timeout`,
 `protocol`, `capacity`, `replaced`, `session_expired`, `shutdown`, `bad_frame`,
-`frame_too_large`. Only `unauthorized`, `api_key`, `protocol`, `replaced` and
+`frame_too_large`, `liveness_timeout`. Only `unauthorized`, `api_key`, `protocol`, `replaced` and
 `bad_frame` are non-retryable — a
 retry there reproduces the same refusal (`replaced` is deliberately
 non-retryable even though a retry would succeed: the evicted device
 reconnecting would evict the next-oldest, and two devices over the cap would
 evict each other forever). The client's contract is `retryable`, not the
-`code` string itself.
+`code` string itself. `capacity` is sent only for unread invoke refusals (below).
+`unauthorized` is also sent on re-verify when the bearer now resolves to a
+different player. `liveness_timeout` is advisory: a half-open peer never
+receives it.
 
 Live, an authenticated connection may send:
 
@@ -170,7 +179,9 @@ connection with a new id. Nothing addressable (`Target`) is keyed by it.
 ## Groups
 
 A `join`/`leave` adds or removes the connection from an ephemeral, per-process
-set (`push::Target::Group`). Membership dies with the connection: it is not
+set (`push::Target::Group`). A connection holds at most 32 groups and a name is at
+most 128 bytes; a join over either is refused. Group verbs are budgeted at 64 per
+re-verify interval (see "What happens to every inbound frame"). Membership dies with the connection: it is not
 restored on reconnect, and the client is responsible for rejoining every group
 it cares about after one. **A join is not permission-checked** — any
 authenticated connection may join any group name, so a group addresses an
@@ -181,7 +192,7 @@ addressed by group alone.
 
 `PUSH_PRESENCE` (default off) makes a player's first bind and last unbind
 broadcast `push.presence` (`{"player_id": ..., "online": bool}`) to
-`Target::All`. It is front-local only: a multi-gateway fleet gets one
+`Target::All`; the connection that just bound receives its own `online` frame. It is front-local only: a multi-gateway fleet gets one
 independent presence view per front, with no shared store, because a global
 view needs a friends graph (to narrow the broadcast audience) and persistence,
 both out of scope here. The transition itself is decided atomically under the
@@ -190,6 +201,26 @@ same registry guard that performs the bind/unbind, but the two announcements
 racing the same player's reconnect can still deliver them to an observer in
 either order, and the frames carry no sequence number or timestamp a client
 could use to reorder them.
+
+## Delivery from a producer in another process
+
+A producer in a process with no sockets (`party-svc`, `notifications-svc`) sends
+through `PushSender`, which offers each message to ONE `mpsc(1024)` queue per
+process, shared by every hub and topic. When it is full the NEWEST message is
+dropped and counted — the per-connection queue below does the opposite and evicts
+the oldest.
+
+A drain task sends the queued messages to every front as `push.deliver` calls, each
+a batch `{"producer": u64, "seq": u64, "envelopes": [...]}`. `producer` is random per
+process start and `seq` rises by one per call. The front keeps the highest `seq`
+applied per producer and DROPS a batch whose `seq` is not above it (a call that
+timed out on the sender may still be dispatched late). Ordering is therefore per
+producer: a late batch is lost, never delivered out of order. Order across
+producers is undefined in both topologies. The front forgets a producer idle for
+300 s.
+
+`push.deliver` has no authorization beyond the internal mTLS edge. A message
+payload over 32 KiB is dropped and counted by the front, whatever its origin.
 
 ## The outbound queue
 
@@ -223,13 +254,18 @@ not survive a reconnect anyway). A verifier that cannot answer at all
 `PUSH_MAX_STALE_MS` (default 900s / 15 minutes) since the last successful
 check — an accounts outage must not log every player out at once.
 
+Every inbound frame, including the pong answering the tick's ping, counts as
+liveness. A tick that finds no inbound frame within `PUSH_LIVENESS_TIMEOUT_MS`
+closes the connection `liveness_timeout` (retryable) before writing the next ping.
+
 ## Operator environment (`PushLimits::from_values`)
 
 All of the following are read once, in `cmd/server`'s and `cmd/gateway-svc`'s
 `main.rs`, and passed to the module — never read by the module itself. A name
 that is **absent or blank** keeps the build's default; a name that is
-**present but unusable** (unparseable, or `0` for a cap/deadline where zero
-cannot mean "disabled") **fails startup**, naming the offender — this is
+**present but unusable** (unparseable, `0` for a cap/deadline where zero
+cannot mean "disabled", or a liveness timeout not above the re-verify interval)
+**fails startup**, naming the offender — this is
 deliberately stricter than `admission_budget_from_value`'s precedent of
 silently falling back to a default.
 
@@ -242,7 +278,8 @@ silently falling back to a default.
 | `PUSH_MAX_FRAME_BYTES` | 131072 (128 KiB) | Inbound message/frame cap applied to the upgrade itself; over it a bound connection closes `frame_too_large` (during the handshake the socket is dropped untyped). Applies to the escaped frame. |
 | `PUSH_HANDSHAKE_TIMEOUT_MS` | 10000 | How long a socket may stay unauthenticated after the upgrade. |
 | `PUSH_WRITE_TIMEOUT_MS` | 10000 | Bound on one outbound write, so a peer that stops reading can't pin the task. |
-| `PUSH_REVERIFY_INTERVAL_MS` | 60000 | How often the bind-time bearer is re-checked (and a liveness ping is written). |
+| `PUSH_REVERIFY_INTERVAL_MS` | 60000 | How often the bind-time bearer is re-checked (and a ping is written). |
+| `PUSH_LIVENESS_TIMEOUT_MS` | 1.5 × the effective re-verify interval | How long a connection may go without any inbound frame before the tick closes it `liveness_timeout`. An explicit value must exceed `PUSH_REVERIFY_INTERVAL_MS` or startup fails. |
 | `PUSH_MAX_STALE_MS` | 900000 (15 min) | How long a connection may run while re-verification answers `unavailable`. |
 | `PUSH_INBOUND_RPS` | 10 | Per-connection refill rate (frames/s) of the bucket every inbound frame is charged to before parsing. |
 | `PUSH_INBOUND_BURST` | 20 | Capacity of that per-connection bucket. |
@@ -269,5 +306,19 @@ silently falling back to a default.
   peer may see 1006); the typed JSON `close` frame still arrives.
 - **No fuzz target covers the `/push` frame parser.**
 - **A fixed `/push` route is invisible to `routecheck`** (it only models
-  `#[http]`-declared ops), so a future op landing at the same path would
-  shadow this route with no gate noticing.
+  `#[http]`-declared ops). The real `GET /push` route sits in front of the
+  gateway's fallback, so a future op declared at `/push` would be hidden by it
+  with no gate noticing.
+- **The liveness invariant is enforced on the env path only.** `PushLimits`
+  fields are public; limits built as a struct literal are the caller's
+  responsibility.
+
+## Proof
+
+Split-proof drives `/push` in both topologies: `[PH7]`-`[PH11]` (invoke and
+lanes), `[PH12]` (five invokes owned by five modules pipelined on one socket and
+correlated by id), `[PH13]` (a session revoked by account self-delete under a
+live socket answers the next invoke `Unauthorized`). Split only: `[PH14]` (with
+`characters-svc` dead, an invoke answers an `Unavailable` result from the remote
+pool and the socket keeps serving) and `[PH15]` (gateway-svc drops a backplane
+batch whose `seq` is below its producer's high-water mark).

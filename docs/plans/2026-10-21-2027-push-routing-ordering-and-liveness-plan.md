@@ -540,6 +540,16 @@ lane.
   - no `/push` routecheck;
   - WS invokes are aborted on stop;
   - no invoke resume.
+- **Proof-harness gaps:**
+  - the CloseCode contract-test table is a hand list with no exhaustiveness guard;
+    `BadFrame` and `FrameTooLarge` are already missing;
+  - no test pins that `await_result`'s budget bounds the whole call rather than each frame;
+  - splitproof's `await_frame`/`await_topic`/`await_presence` discard non-matching buffered
+    frames, including pipelined results, so a caller must not use them on a socket with
+    results still pending;
+  - the `push.deliver` refusal strings that splitproof pins are literals that could drift.
+- **Liveness tuning.** An explicit `PUSH_LIVENESS_TIMEOUT_MS` just above the interval can
+  close healthy idle clients on timer jitter.
 
 ## Errata
 
@@ -554,6 +564,23 @@ envelope budget):
    taken" is superseded by "the map lock never blocks on an entry lock".
 2. `seq` is consumed per chunk before encoding, so an encode failure leaves a gap, which
    the `<=` gate tolerates.
+3. Step 3: the Rust constant is `LIVENESS_MS` (env string `PUSH_LIVENESS_TIMEOUT_MS`),
+   matching its siblings.
+4. Steps 5/6: `await_result` resolves by arrival order. It scans the buffer front to back,
+   and the first matching Result or Close decides (77ef91d). This supersedes Step 5's
+   "buffered Close fails first", which failed a result that arrived before the close whenever
+   it was awaited after another id. Step 6's "buffered Close fails without a read" holds
+   only when no matching result precedes the close.
+5. Step 7 lane: the assertions were authored by test-author (model opus), not
+   core-implementer, by Lukasz's decision after the guardrail hook rejected core-implementer.
+6. Step 7 [PH14] as landed: `rdy_dead`'s signature is unchanged. Invoke 1 has a 45 s budget
+   and absorbs the half-dead-connection hang. It then polls `characters.list` every 500 ms
+   for up to 15 s until the err starts with "remote pool: no reachable instance", with every
+   attempt required to be Unavailable. Reason: the front's own "invoke timed out", or a fast
+   dial error before the route-pool probe flips, would otherwise pass or flake.
+7. [PH4] and [PH15] backplane injections are bounded by a 10 s timeout.
+8. [PH13] uses a guest and also requires err == "unauthorized".
+9. [PH12] also requires the storage result's version == 1.
 
 ## Review round 1 — disposition
 

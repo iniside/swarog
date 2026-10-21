@@ -47,7 +47,7 @@ Rationale in the decision notes below; the order deviates from the gap doc's own
 | 5 | Leaderboard seasons / reset / rotation | ❌ | — |
 | 6 | Steam auth (ticket verifier) | ❌ | — |
 | 7 | Store + IAP receipt validation | ❌ | — |
-| 8 | Real-time push hub (`GET /push` WebSocket, SignalR-shaped) | ✅ | [2026-09-03-2022-push-hub-websocket-plan.md](../plans/2026-09-03-2022-push-hub-websocket-plan.md); multiplexed invoke + hub lanes: [2026-09-28-2212-push-multiplex-invoke-and-party-plan.md](../plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md) (Steps 1-5; its first hub, `party`: see Parties row) |
+| 8 | Real-time push hub (`GET /push` WebSocket) | ✅ | [2026-09-03-2022-push-hub-websocket-plan.md](../plans/2026-09-03-2022-push-hub-websocket-plan.md); multiplexed invoke + hub lanes: [2026-09-28-2212-push-multiplex-invoke-and-party-plan.md](../plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md) (Steps 1-5; its first hub, `party`: see Parties row); split ordering + liveness: [2026-10-21-2027-push-routing-ordering-and-liveness-plan.md](../plans/2026-10-21-2027-push-routing-ordering-and-liveness-plan.md) |
 
 **Why this order (not the gap doc's):**
 
@@ -338,6 +338,17 @@ into later fires. The owner cap (10,000) and purge share an advisory lock.
 ---
 
 ## Change log
+
+- **2026-10-21** — Push hub (row 8): backplane batches now carry a `producer` id and
+  per-producer `seq` (`359535a`), and gateway-svc drops a batch arriving after a newer
+  one from the same producer, so ordering is per producer rather than topology-blind.
+  A `/push` socket with no inbound frame (a pong counts) within `PUSH_LIVENESS_TIMEOUT_MS`
+  (default 1.5x the re-verify interval; an explicit value at or below the interval now
+  fails startup) closes `liveness_timeout`. Split-proof gained `[PH12]`-`[PH15]`
+  (pipelined multi-module invoke, revocation under a live socket, remote-pool failure as
+  a result, late-batch drop); false ordering/capacity/liveness prose corrected.
+  [Plan](../plans/2026-10-21-2027-push-routing-ordering-and-liveness-plan.md).
+  Acceptance (Step 9) is not recorded here.
 
 - **2026-10-05** — Parties landed: the `party` fortress (18th) and `party-svc`
   (HTTP 8098 / internal edge 9017), plan Steps 6-11 (`ced9662`..`bf71d79`). First

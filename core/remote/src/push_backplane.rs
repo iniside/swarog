@@ -10,10 +10,10 @@
 //!   error) pauses its whole subscription for every player. So the sink does a
 //!   NON-BLOCKING offer and returns immediately; a full queue is a counted drop, never
 //!   backpressure and never a failure the producer must handle.
-//! * **Ordering must not depend on topology.** The drain sends one ORDERED batch per call
-//!   rather than a call per message: N concurrent per-message calls could arrive inverted
-//!   in the split while the monolith's local sink never inverts them, which would make
-//!   frame order a deployment detail.
+//! * **Ordering is per producer.** The drain sends one ORDERED batch per call, stamped
+//!   with its `producer` id and a rising `seq`; the receiving front drops a batch that
+//!   arrives after a newer one from the same producer (a call that timed out may still be
+//!   dispatched late), so a late batch is lost, never delivered out of order.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -375,7 +375,8 @@ async fn wait_for_resolve(pool: &Pool, stop: &mut watch::Receiver<bool>) -> bool
 }
 
 /// Encodes `batch` into as few ordered calls as the byte budget allows and issues them
-/// SEQUENTIALLY, so a batch that had to be split still arrives in produced order. Returns
+/// SEQUENTIALLY, each chunk stamped with the next `seq`. A chunk that arrives after a newer
+/// one is dropped by the receiver, so delivery is in produced order or not at all. Returns
 /// `false` when the stop signal fired — the caller must not start another batch.
 ///
 /// The stop signal is honoured BETWEEN chunks and DURING a delivery: a fan-out call can
