@@ -100,9 +100,9 @@ Do not ban `[fable]`.
   only for a novel harness/topology (new splitproof assertion, event-plane
   fixture).
 - `[docs]` — the `docs-writer` agent (`.claude/agents/docs-writer.md`). The
-  only lane that writes documentation prose — root guidance,
-  `docs/reference`, `docs/roadmap`, plan errata, and Rust doc-comments. It
-  runs last, against landed code, and deletes false prose as often as it adds
+  lane for documentation prose written as a planned docs step — root guidance,
+  `docs/reference`, `docs/roadmap`, plan errata, and Rust doc-comments. A
+  standalone comment edit stays `[inline]`. It runs last, against landed code, and deletes false prose as often as it adds
   true prose. Cheap default; escalate only when the doc must judge what a
   seam *means*. A plan's docs step names the exact files — an unnamed file is
   never found. Comment-only review findings are not a `[docs]` dispatch: the

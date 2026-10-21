@@ -269,6 +269,8 @@ every plan and every diff.
 
 ### 12. `scope-substitution` / `fix-forward-loop` — *coherent code, wrong product*
 
+Ported from the ArcGame workflow (2026-10-21), not mined from a swarog commit.
+
 **What.** The owner-selected shape is replaced by a broader architecture: an
 unrequested module, topic, capability, cache, bridge, or contract; an
 extract/move that became a parallel rewrite. A fix-forward loop then hardens
@@ -292,12 +294,14 @@ change the owner-selected shape, ask one blocking question.
 
 ### 13. `dispatch-process-discipline` — *the audit trail is part of correctness*
 
+Ported from the ArcGame workflow (2026-10-21), not mined from a swarog commit.
+
 **What.** How work is dispatched and recorded: a wrong-model trailer or a lost
 commit corrupts the audit trail, not just etiquette.
 
 **Attack.** An Agent call without an explicit `model:`; a plan step whose lane
 tag does not match the work (tests outside `[test-author]`, documentation
-prose outside `[docs]`, an `[inline]` change off the threshold list); a lane
+prose outside `[docs]` in a planned docs step, an `[inline]` change off the threshold list); a lane
 silently flipped mid-rollout; a `Co-Authored-By` trailer naming the harness
 default instead of the executing model; many tasks batched into one commit; a
 plan-step commit without its `(<plan-slug> step <id>)` suffix; research done as

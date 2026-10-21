@@ -59,9 +59,8 @@ implementing a plan step, including its review fixes, ends the description with
 name without the date prefix and `-plan.md`.
 
 The `Co-Authored-By` trailer identifies the model/agent that executed the work.
-The adapter defines the format (`Claude <Family> <Version> <noreply@anthropic.com>`);
-the executing model fills in its own family and version from its runtime
-identity, never copied from an example. More detail:
+The active adapter defines the format; the executing model fills in its own
+identity from its runtime identity, never copied from an example. More detail:
 `docs/reference/commit-format.md`.
 
 ## Comments - MANDATORY
