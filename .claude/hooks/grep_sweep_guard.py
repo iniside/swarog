@@ -6,8 +6,16 @@ Select-String / Get-ChildItem -Recurse into those trees. Override: put
 `force-grep` in the command. Any internal error exits 0 with no output.
 """
 import json
+import os
 import re
 import sys
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import shell_data
+except Exception:
+    shell_data = None
 
 SHELL_TOOLS = {"Bash", "PowerShell"}
 
@@ -26,7 +34,7 @@ PS_LIST_TOOLS = {"get-childitem", "gci", "dir", "ls"}
 RECURSIVE_FLAGS = re.compile(
     r"(?:^|\s)(?:--(?:recursive|dereference-recursive)|-(?!-)[a-zA-Z]*[rR][a-zA-Z]*)(?:\s|$)"
 )
-PS_RECURSE = re.compile(r"(?:^|\s)-rec\w*(?:\s|$|:)")
+PS_RECURSE = re.compile(r"(?:^|\s)-r(?:e(?:c(?:u(?:r(?:se?)?)?)?)?)?(?:\s|$|:)")
 
 REDIRECT = (
     "Use LSP / rust-analyzer first, then the Grep tool (ripgrep — it honours "
@@ -35,17 +43,6 @@ REDIRECT = (
     "(docs/reference/research-mode.md). Genuinely need the raw shell sweep? "
     "Re-send with `force-grep` in the command."
 )
-
-
-def segments(command):
-    parts = re.split(r"(\|\||\||&&|;)", command)
-    piped = False
-    for part in parts:
-        if part in ("|", "||", "&&", ";"):
-            piped = part == "|"
-            continue
-        if part.strip():
-            yield part.strip(), piped
 
 
 def first_token(segment):
@@ -78,7 +75,7 @@ def verdict(command):
     if "force-grep" in command.lower():
         return None
 
-    for segment, preceded_by_pipe in segments(command):
+    for segment, preceded_by_pipe in shell_data.split_commands(command):
         tool = first_token(segment)
         low = segment.lower()
 
@@ -127,7 +124,7 @@ def main():
         if tool and tool not in SHELL_TOOLS:
             return
         command = (data.get("tool_input") or {}).get("command") or ""
-        if not isinstance(command, str):
+        if shell_data is None or not isinstance(command, str):
             return
         reason = verdict(command)
         if not reason:
