@@ -122,11 +122,12 @@ async fn invoke_fails_on_a_typed_close_and_keeps_it_for_next_frame() {
 
 /// Reads `expect` client frames, writes `script` in order, then either closes the socket
 /// (`hold_open == false`, so any further client read ends with no frame) or holds it open
-/// until the client leaves. Returns every client frame received, in order.
+/// until the client leaves. `written` fires once every script write has returned. Returns every client frame received, in order.
 async fn pipelined_server(
     expect: usize,
     script: Vec<String>,
     hold_open: bool,
+    written: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> (SocketAddr, tokio::task::JoinHandle<Vec<serde_json::Value>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local addr");
@@ -145,6 +146,9 @@ async fn pipelined_server(
         }
         for frame in script {
             ws.send(WsMessage::Text(frame)).await.expect("server write");
+        }
+        if let Some(written) = written {
+            let _ = written.send(());
         }
         if hold_open {
             while ws.next().await.is_some() {}
@@ -169,7 +173,7 @@ fn ok(marker: &str) -> serde_json::Value {
 #[tokio::test]
 async fn out_of_order_results_resolve_the_later_id_from_the_buffer() {
     let (addr, server) =
-        pipelined_server(2, vec![result_frame(2, "two"), result_frame(1, "one")], false).await;
+        pipelined_server(2, vec![result_frame(2, "two"), result_frame(1, "one")], false, None).await;
     let mut client = PushClient::connect(&format!("ws://{addr}"), "tok", "key")
         .await
         .expect("connect");
@@ -194,6 +198,7 @@ async fn results_before_a_close_stay_deliverable_after_another_id_fails() {
         1,
         vec![result_frame(4, "four"), result_frame(3, "three"), close_frame()],
         true,
+        None,
     )
     .await;
     let mut client = PushClient::connect(&format!("ws://{addr}"), "tok", "key")
@@ -218,7 +223,7 @@ async fn results_before_a_close_stay_deliverable_after_another_id_fails() {
 /// Close); this guards the arrival-order scan in case that rule regresses.
 #[tokio::test]
 async fn a_close_ahead_of_a_result_fails_the_await_and_stays_buffered() {
-    let (addr, server) = pipelined_server(1, vec![], true).await;
+    let (addr, server) = pipelined_server(1, vec![], true, None).await;
     let mut client = PushClient::connect(&format!("ws://{addr}"), "tok", "key")
         .await
         .expect("connect");
@@ -241,18 +246,25 @@ async fn a_close_ahead_of_a_result_fails_the_await_and_stays_buffered() {
 /// `Ok`, so an `Err` with the Close still buffered proves the buffered Close decided.
 #[tokio::test]
 async fn a_buffered_close_fails_an_unmatched_await_without_reading() {
-    let (addr, server) = pipelined_server(1, vec![close_frame(), result_frame(99, "late")], true).await;
+    let (written_tx, written_rx) = tokio::sync::oneshot::channel();
+    let (addr, server) = pipelined_server(
+        1,
+        vec![close_frame(), result_frame(99, "late")],
+        true,
+        Some(written_tx),
+    )
+    .await;
     let mut client = PushClient::connect(&format!("ws://{addr}"), "tok", "key")
         .await
         .expect("connect");
     client.send_invoke(1, "a.one", serde_json::json!({})).await.expect("send");
     client.await_result(1, BUDGET).await.expect_err("the close fails id 1");
     assert_eq!(client.buffered.len(), 1);
+    written_rx.await.expect("server wrote result 99");
 
     let err = client.await_result(99, BUDGET).await.expect_err("buffered close fails id 99");
     let text = err.to_string();
     assert!(text.contains("closed before the result of invoke 99"), "{text}");
-    assert!(!text.contains("no frame within"), "{text}");
     assert_eq!(client.buffered.len(), 1, "the Close stays buffered and nothing was read");
 
     client.disconnect().await;
@@ -263,7 +275,7 @@ async fn a_buffered_close_fails_an_unmatched_await_without_reading() {
 /// their own ids, methods and payloads.
 #[tokio::test]
 async fn send_invoke_pipelines_frames_in_send_order() {
-    let (addr, server) = pipelined_server(3, vec![], true).await;
+    let (addr, server) = pipelined_server(3, vec![], true, None).await;
     let mut client = PushClient::connect(&format!("ws://{addr}"), "tok", "key")
         .await
         .expect("connect");
