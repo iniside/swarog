@@ -29,8 +29,8 @@ docs(agents): port Owning Mistakes rules (arcgame-workflow-port step 1)
 
 ## Attribution trailers
 
-Concrete `Co-Authored-By` strings live in the active runtime adapter under
-`.agents/adapters/`. The trailer names the executing model/agent, read from
-its own runtime identity, never copied from an example. Do not use a Claude
+The active runtime adapter under `.agents/adapters/` defines the
+`Co-Authored-By` trailer format. The executing model/agent fills in its own
+identity from its runtime identity, never copied from an example. Do not use a Claude
 trailer on a Grok/Cursor/Codex commit. Attribution is never a
 substitute for the required commit after each completed task.

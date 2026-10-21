@@ -58,9 +58,10 @@ implementing a plan step, including its review fixes, ends the description with
 `(<plan-slug> step <id>)` (`steps 3-4` for a range); the slug is the plan file
 name without the date prefix and `-plan.md`.
 
-The `Co-Authored-By` trailer identifies the model/agent that executed the work,
-read from its own runtime identity; never copy a family or version from an
-example or another document. Adapters define the trailer format. More detail:
+The `Co-Authored-By` trailer identifies the model/agent that executed the work.
+The adapter defines the format (`Claude <Family> <Version> <noreply@anthropic.com>`);
+the executing model fills in its own family and version from its runtime
+identity, never copied from an example. More detail:
 `docs/reference/commit-format.md`.
 
 ## Comments - MANDATORY

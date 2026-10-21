@@ -13,7 +13,7 @@ Cross-cutting invariants that apply to every subagent call, regardless of phase.
 
 3. **Code-navigation guidance does not inherit.** Paste the repo-appropriate navigation guidance into every code-touching prompt and require the subagent to report its method; a grep-only sweep is a labelled lower bound; never pre-authorize grep. See [research-mode.md](research-mode.md).
 
-4. **Commit trailer = the EXECUTING model.** When a subagent commits its own work, put its trailer in the prompt. After a multi-subagent rollout, audit recent trailers against the intended lanes and surface mismatches immediately. Detail: [commit-format.md](commit-format.md).
+4. **Commit trailer = the EXECUTING model.** When a subagent commits its own work, state the adapter's trailer format in the prompt; the subagent fills in its own identity. After a multi-subagent rollout, audit recent trailers against the intended lanes and surface mismatches immediately. Detail: [commit-format.md](commit-format.md).
 
 5. **Fresh, bounded context by default.** Provide the task-specific facts and source anchors needed to act; include conversation history only when it cannot be conveyed in a self-contained prompt. Reviewers always start fresh.
 
