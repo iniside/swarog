@@ -1,15 +1,90 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "env": {
+    "CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION": "300"
+  },
   "hooks": {
     "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/ref_reminder.py\"",
+            "statusMessage": "Checking reference docs"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/ref_reminder.py\"",
+            "statusMessage": "Checking reference docs"
+          },
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/git_safety_hook.py\"",
+            "statusMessage": "Git safety + commit-trailer guard"
+          },
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/grep_sweep_guard.py\"",
+            "statusMessage": "Blocking shell sweeps that bypass .gitignore"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent|EnterWorktree",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/no_worktree_hook.py\"",
+            "statusMessage": "Blocking git worktrees"
+          }
+        ]
+      },
       {
         "matcher": "Agent",
         "hooks": [
           {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/explicit_model_guard.py\"",
+            "statusMessage": "Enforcing explicit subagent model"
+          },
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/haiku_listing_reminder.py\"",
+            "statusMessage": "Nudging listing-only subagents onto Haiku"
+          },
+          {
             "type": "prompt",
             "statusMessage": "Sprawdzam typ agenta pod zadanie...",
             "timeout": 30,
-            "prompt": "You are a hard guardrail for the swarog repo. A subagent is about to be dispatched via the Agent tool. Decide whether the chosen `subagent_type` fits the actual task, using ONLY these role rules:\n\n- general-purpose, Explore, Plan: research, code-search, reading, mapping an API surface, locating callers/wiring, planning. STRICTLY READ-ONLY. Must NEVER be dispatched to implement, fix, edit, refactor, or write code/files.\n- core-implementer: implementing / fixing / writing / refactoring backend Rust PRODUCTION code (a fully-specified plan step or fix). This is the ONLY sanctioned lane for writing non-UI, non-test code — general-purpose is research-only and must not do it. It must NOT be dispatched to write tests — that is test-author's job.\n- mockup-implementer: implementing or adjusting admin/UI views against a UILayout/*.dc.html mockup (templates, theme.css, a module's admin_content render).\n- test-author: writing tests for an ALREADY-LANDED, compiling implementation — a separate step, always after and never bundled with the code it covers. This is the ONLY sanctioned lane for WRITING tests. Not for writing production code (core-implementer) and not for auditing an existing proof (proof-auditor).\n- docs-writer: writing or correcting PROSE against already-landed code — root guidance (CLAUDE.md, AGENTS.md, .agents/shared/*), docs/reference, docs/roadmap, plan errata, and Rust doc-comments/module headers. This is the ONLY sanctioned lane for documentation and comment-prose work; core-implementer is for code logic, and the read-only types cannot edit files at all. Correcting a false doc-comment inside a .rs file is docs-writer, not core-implementer.\n- core-reviewer: ONE adversarial review pass over a code diff (between commits) or over a plan.\n- proof-auditor: auditing whether tests actually exercise the previously-wrong branch, whether a verify gate really gates what it claims, or proving the code genuinely works rather than pretends to.\n\nJudge the `subagent_type` field in the call against the task described by its `description` and `prompt` fields.\n\nPASS (ok = true) when the subagent_type matches the task, OR when the intent is genuinely ambiguous — when in doubt, PASS. Do not block on style.\n\nFAIL (ok = false) ONLY on a clear, unambiguous mismatch, for example:\n- a read-only type (general-purpose, Explore, Plan) told to implement / fix / edit / write / refactor code;\n- core-implementer or mockup-implementer told to only research / search / read (no writing);\n- a code-diff or plan review sent to general-purpose instead of core-reviewer;\n- a test-honesty / proof / gate audit sent to general-purpose instead of proof-auditor;\n- writing tests (authoring new test cases / test files) sent to general-purpose, core-implementer, or any type other than test-author;\n- test-author told to write production code, do research-only, or audit an existing proof;\n- backend code work sent to mockup-implementer, or UI/mockup work sent to core-implementer.\n- a documentation / comment-prose correction sweep sent to core-implementer, mockup-implementer, or a read-only type instead of docs-writer;\n- docs-writer told to write production code, tests, or a review.\n\nWhen you FAIL, the reason MUST state the mismatch in one sentence AND name the correct subagent_type to use instead.\n\nThe pending Agent call:\n$ARGUMENTS"
+            "prompt": "You are a hard guardrail for the swarog repo. A subagent is about to be dispatched via the Agent tool. Decide whether the chosen `subagent_type` fits the actual task, using ONLY these role rules:\n\n- general-purpose, Explore, Plan: research, code-search, reading, mapping an API surface, locating callers/wiring, planning. STRICTLY READ-ONLY. Must NEVER be dispatched to implement, fix, edit, refactor, or write code/files.\n- core-implementer: implementing / fixing / writing / refactoring backend Rust PRODUCTION code, or repo tooling/config code (e.g. .claude/hooks/*.py, .claude/settings.json, tools/* scripts) — a fully-specified plan step or fix. This is the ONLY sanctioned lane for writing non-UI, non-test code — general-purpose is research-only and must not do it. It must NOT be dispatched to write tests — that is test-author's job.\n- mockup-implementer: implementing or adjusting admin/UI views against a UILayout/*.dc.html mockup (templates, theme.css, a module's admin_content render).\n- test-author: writing tests for an ALREADY-LANDED, compiling implementation — a separate step, always after and never bundled with the code it covers. This is the ONLY sanctioned lane for WRITING tests. Not for writing production code (core-implementer) and not for auditing an existing proof (proof-auditor).\n- docs-writer: writing or correcting PROSE against already-landed code — root guidance (CLAUDE.md, AGENTS.md, .agents/shared/*), docs/reference, docs/roadmap, plan errata, and Rust doc-comments/module headers. This is the ONLY sanctioned lane for documentation and comment-prose work; core-implementer is for code logic, and the read-only types cannot edit files at all. Correcting a false doc-comment inside a .rs file is docs-writer, not core-implementer.\n- core-reviewer: ONE adversarial review pass over a commit diff (between commits) — code, tests, config/hooks, OR a docs-only/prose commit (reviewing a documentation or comment-prose commit is a valid core-reviewer task) — or over a plan.\n- proof-auditor: auditing whether tests actually exercise the previously-wrong branch, whether a verify gate really gates what it claims, or proving the code genuinely works rather than pretends to.\n\nJudge the `subagent_type` field in the call against the task described by its `description` and `prompt` fields.\n\nPASS (ok = true) when the subagent_type matches the task, OR when the intent is genuinely ambiguous — when in doubt, PASS. Do not block on style.\n\nFAIL (ok = false) ONLY on a clear, unambiguous mismatch, for example:\n- a read-only type (general-purpose, Explore, Plan) told to implement / fix / edit / write / refactor code;\n- core-implementer or mockup-implementer told to only research / search / read (no writing);\n- a code-diff or plan review sent to general-purpose instead of core-reviewer;\n- a test-honesty / proof / gate audit sent to general-purpose instead of proof-auditor;\n- writing tests (authoring new test cases / test files) sent to general-purpose, core-implementer, or any type other than test-author;\n- test-author told to write production code, do research-only, or audit an existing proof;\n- backend code work sent to mockup-implementer, or UI/mockup work sent to core-implementer.\n- a documentation / comment-prose correction sweep sent to core-implementer, mockup-implementer, or a read-only type instead of docs-writer;\n- docs-writer told to write production code, tests, or a review.\n\nNEVER fail core-reviewer because the commit under review is documentation-only, and NEVER fail docs-writer for a docs/prose writing task, however framed.\n\nWhen you FAIL, the reason MUST state the mismatch in one sentence AND name the correct subagent_type to use instead.\n\nThe pending Agent call:\n$ARGUMENTS"
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/exit_plan_checklist.py\"",
+            "statusMessage": "Plan finalization checklist"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_commit_review_reminder.py\"",
+            "statusMessage": "Reminding to dispatch core-reviewer after commit"
           }
         ]
       }

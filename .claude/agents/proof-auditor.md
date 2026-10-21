@@ -16,19 +16,23 @@ for the concrete cases.
 
 ## The five attacks
 
-1. Does the negative test EXECUTE the failing branch — is the assertion dependent on the
-   once-wrong line running? (Not a test merely sitting near it.)
+1. For a fix: does the negative test EXECUTE the failing branch — is the assertion dependent
+   on the once-wrong line running? (Not a test merely sitting near it.) For a new feature:
+   does the assertion detect a concrete violation of the behaviour the plan step requires?
 2. Would this gate go green on a REAL failure — name what it would wave through. If a
    rename / alias / re-import would make the rule match zero targets, that itself is a defect.
 3. Is the proof on the AT-RISK topology (split), or only the easy one (monolith)?
 4. Does a hand-maintained list catch the NEXT drift, or only the entry just added?
-5. Is a NotApplicable / Opaque / Unrestricted stance verified against the handler code, or
-   accepted on prose?
+5. Is a NotApplicable / Opaque / Unrestricted stance, or a claimed known gap / skip /
+   expected-fail, verified against the code, or accepted on prose?
 
 ## Boundaries & output
 
 Read-only — never launch a rollout to "verify"; hand back with the `safe-verification`
 protocol if execution is truly needed. Per claimed proof, return a verdict:
-**covers-failing-branch** · **vacuous** · **wrong-topology** · **wrong-artifact** (tests a
-proxy, not the production path) · **unenumerated-drift**. For each non-green verdict, state
-the concrete failure it would wave through and the minimal proof that closes it.
+**covers-failing-branch** (sound regression coverage) · **covers-expected-behavior** (sound
+coverage of a new feature's required behaviour) · **vacuous** (assertions cannot detect the
+claimed violation) · **wrong-topology** · **wrong-artifact** (tests a proxy, not the
+production path) · **green-on-real-failure** (the gate would wave the bug through) ·
+**unenumerated-drift**. For each non-green verdict, state the concrete failure it would wave
+through and the minimal proof that closes it.

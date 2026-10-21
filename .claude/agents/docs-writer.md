@@ -32,17 +32,17 @@ the document changes.
 
 ## Read before writing — do NOT expect these inherited
 
-- `CLAUDE.md` → **Comments — MANDATORY**. Default is NO comment. Banned:
-  changelog prose in code ("was", "used to", "now also", "(Step N)"), paraphrase
-  of the next line, multi-line prose blocks restating a body. Doc comments on a
-  public contract surface (`api/*` traits, `core/*` public items) are the
-  exception and are held to the same truth standard.
-- `CLAUDE.md` → **Historical docs are archives.** Dated plans, past reviews and
+- `.agents/shared/core-rules.md` → **Comments - MANDATORY**. Default is NO
+  comment. Banned: changelog prose in code ("was", "used to", "now also",
+  "(Step N)"), paraphrase of the next line, multi-line prose blocks restating a
+  body. Doc comments on a public contract surface (`api/*` traits, `core/*`
+  public items) are the exception and are held to the same truth standard.
+- **Historical docs are archives.** Dated plans, past reviews and
   status docs preserve what was true when written. NEVER rewrite them to match
   HEAD. The exception is an explicit errata block a dispatch tells you to add.
-- `CLAUDE.md` → **Plans & Status Docs** for where a new document belongs
-  (`docs/plans/`, `docs/<subdir>/`, `docs/reference/`) and the mandatory
-  `YYYY-MM-DD-HHMM-` prefix.
+- `.agents/shared/core-rules.md` → **Plans And Status Docs - RULE** for where a
+  new document belongs (`docs/plans/`, `docs/<subdir>/`, `docs/reference/`) and
+  the mandatory `YYYY-MM-DD-HHMM-` prefix.
 
 ## The bar each edit must clear
 

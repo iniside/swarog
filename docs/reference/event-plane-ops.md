@@ -1,7 +1,7 @@
 # Event-plane ops: xmin pinning and delivery staleness
 
-Operational notes for the durable `asyncevents` plane (see CLAUDE.md seam #3 and
-lifecycle rule #8) that don't belong in the terse top-level guidance.
+Operational notes for the durable `asyncevents` plane (see `.agents/shared/gamebackend.md`
+seam #3 and lifecycle rule #8) that don't belong in the terse top-level guidance.
 
 ## The idle-in-tx belt only covers this plane's OWN sessions
 
@@ -32,7 +32,7 @@ safe-delete frontier and, transitively, delivery, even though every
   growing frontier age is the first externally visible symptom of an xmin
   pin, whether the cause is a plane worker or an unrelated session.
 - `/readyz` independently flags DELIVERY STALENESS (no worker completed a
-  healthy pass in 30s) as well as a dead worker task — see CLAUDE.md lifecycle
+  healthy pass in 30s) as well as a dead worker task — see `gamebackend.md` lifecycle
   rule #8 — but that check is process-local and only catches this process's
   own workers stalling, not the upstream xmin pin causing the stall.
 
@@ -132,5 +132,5 @@ The operator surface instead is:
 
 - `cargo run -p eventctl -- list` — lag/retry/pause/resume/skip/retire per
   subscription.
-- CLAUDE.md, "The point of this codebase" seam #3 (durable event bus) and
+- `.agents/shared/gamebackend.md`, "The point of this codebase" seam #3 (durable event bus) and
   lifecycle rule #8 (readyz/idle-in-tx summary).

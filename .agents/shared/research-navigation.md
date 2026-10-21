@@ -21,14 +21,22 @@ wide API-surface map, an all-callers sweep, a data-flow trace across modules,
 locating wiring, surveying overlap. Not for a lookup that can just be run:
 pick the method, run it, and say which one produced the answer.
 
+State the unresolved question and give it one owner. Reuse finished research
+unless it is missing, stale, contradicted, or insufficient. A handoff provides
+verified source anchors, conclusions, and open questions.
+
+Stop when the evidence supports the decision or change. Expand only for a
+concrete dependency, contradiction, or failing case; if the available methods
+cannot resolve a point, state the uncertainty instead of re-searching.
+
 Never default to grep. One pass misses trait implementations, macro-generated
 RPC glue, typed event wiring, and shared registry keys / contribution slots.
 Every grep sweep is a labelled lower bound, never the API.
 
-Method menu + subagent-count bands: `docs/reference/research-mode.md`.
-Agent-call invariants: `docs/reference/subagent-dispatch.md`. Paste the
-navigation chain into every code-touching subagent's prompt — it does not
-inherit.
+Method menu: `docs/reference/research-mode.md`. Agent-call invariants:
+`docs/reference/subagent-dispatch.md`. Paste the navigation chain into every
+code-touching subagent's prompt and require it to report the method it used —
+it does not inherit.
 
 ## Navigation - RULE
 
@@ -38,6 +46,7 @@ Fallback chain, in order — never skip to grep because it feels faster:
    call hierarchy, inferred type. Preferred for "where is X defined / who
    calls Y / what implements this trait". Start with one targeted search
    result to establish a file+line+column anchor, then query rust-analyzer.
+   Empty results while rust-analyzer is still indexing are not absence.
 2. **Targeted read** — small surface, one file end-to-end.
 3. **Research subagent** — fan out on distinct non-overlapping angles (API
    surface / callers+consumers / event publishers+subscribers /
@@ -46,10 +55,9 @@ Fallback chain, in order — never skip to grep because it feels faster:
 4. **Grep/Glob** — only when nothing else fits, and a labelled lower bound.
    Once grep locates a symbol, re-escalate with the now-known file+symbol.
 
-Pick the research subagent count from the bands (2–4 / 4–8 / 8–12). Ask
-**every time** a fan-out is picked. The method question ("how should I
-research this?") is separate: ask that only when the method changes the
-answer (see Search Mode above).
+Never hand symbol navigation to a grep-sweeping agent, and never pre-authorize
+grep in a handoff. Dispatch one subagent per independent question; there is no
+fixed count.
 
 ## Research Never Overrules a Decision - MANDATORY
 

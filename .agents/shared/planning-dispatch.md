@@ -6,13 +6,19 @@ Front-load the thinking. For any plan (plan mode / "write me a plan" / a
 `docs/plans/…-plan.md`), run these steps in order — no skipping for "it's
 small":
 
-0. Map the overlap first. Any plan proposing a new module, service, event, or
-   admin section (or a replacement) documents in its Context, per overlapping
-   candidate: what it does, how it differs, and an explicit "why not extend /
-   depend on X". Without that the plan is incomplete.
-1. Pick the research subagent count (bands 2–4 / 4–8 / 8–12). Ask **every
-   time** a fan-out is picked — the count is task-specific. Pass an explicit
-   model/tool choice from the active adapter.
+0. Preserve the owner's shape. The Context opens with the requested outcome
+   and explicit exclusions in the owner's words. Every unrequested module,
+   topic, capability, cache, bridge, or contract names the requirement that
+   cannot be met without it, or becomes one blocking question. Extract/move
+   work relocates the existing code; it never builds a parallel twin.
+1. Map the overlap, then pick the open questions. Any plan proposing a new
+   module, service, event, or admin section (or a replacement) documents in
+   its Context, per overlapping candidate: what it does, how it differs, and
+   an explicit "why not extend / depend on X". Without that the plan is
+   incomplete. Before approval, close only questions that change scope,
+   architecture, or feasibility; record the rest for the implementer. Fan-out
+   follows `docs/reference/research-mode.md` (one owner per question, no
+   fixed count). Pass an explicit model/tool choice from the active adapter.
 2. Research three non-overlapping angles: API surface, API usages, and
    patterns. Synthesize in the main agent — never write off one subagent.
 3. Write concrete specifics: exact files, exact signatures, exact API calls,
@@ -38,9 +44,11 @@ small":
 5. Dispatch `subagent_type: "core-reviewer"` — that field is written first,
    before `description` and before the prompt. Never a generic implementer
    or explore/plan type. Do not hand-author a "grumpy senior engineer"
-   persona. Ask the think-effort level first (it does not inherit; embed it
-   in the prompt). It returns a punch list, never a rewrite. Address it
-   before showing the user, or note deferrals with rationale.
+   persona. Effort is the Agent `effort:` parameter, default `"medium"`
+   (`docs/reference/subagent-dispatch.md`). It checks scope substitution
+   first, rejects only with evidence, and lists unverified concerns
+   separately. It returns a punch list, never a rewrite. Address it before
+   showing the user, or note deferrals with rationale.
 
 Full detail: `docs/reference/plan-writing-workflow.md`.
 
@@ -58,6 +66,7 @@ Shared tags:
 | `[independent]` | Top-tier separate context (`core-implementer`; visual/UI uses `mockup-implementer`). |
 | `[mechanical]` | Cheap implementation. Visual/UI never this. Tests never this. |
 | `[test-author]` | Only lane that writes tests; always a later step. |
+| `[docs]` | `docs-writer`. Documentation prose in a planned docs step; a standalone comment edit stays `[inline]`. Runs last, against landed code. |
 | `[review]` | `core-reviewer` (read-only). |
 
 Synonym table (adapters translate; new non-Claude plans write the shared
@@ -84,13 +93,25 @@ Do not ban `[fable]`.
   the independent-reviewer boundary.
 - `[mechanical]` — cheaper implementation lane: renames, scaffolding,
   N-similar edits, applying a fully specified step, compile fixes,
-  JSON/config. Visual/UI design is never `[mechanical]`. Tests are never
-  `[mechanical]`.
+  JSON/config. Never spend a higher tier on a rename. Visual/UI design is
+  never `[mechanical]`. Tests are never `[mechanical]`. Documentation prose is
+  never `[mechanical]`; it goes through `[docs]`.
 - `[test-author]` — the only lane that writes tests, always a separate step
   after the implementation it covers. Cheap/mechanical default; escalate
   only for a novel harness/topology (new splitproof assertion, event-plane
   fixture).
+- `[docs]` — the `docs-writer` agent (`.claude/agents/docs-writer.md`). The
+  lane for documentation prose written as a planned docs step — root guidance,
+  `docs/reference`, `docs/roadmap`, plan errata, and Rust doc-comments. A
+  standalone comment edit stays `[inline]`. It runs last, against landed code, and deletes false prose as often as it adds
+  true prose. Cheap default; escalate only when the doc must judge what a
+  seam *means*. A plan's docs step names the exact files — an unnamed file is
+  never found. Comment-only review findings are not a `[docs]` dispatch: the
+  orchestrator fixes them inline (`core-rules.md` **Comments**).
 - `[review]` — reviewer lane; critique only, no rewrites.
+
+The lane is chosen for the whole plan step or named fix; never divide a
+feature to fit the inline threshold.
 
 **Dispatch threshold — below it, `[inline]`, and a subagent is banned.** No
 subagent call, no plan tag, no approval, no review round for exactly these:
@@ -103,10 +124,10 @@ Every code-writing subagent call carries an explicit model/tool decision from
 the active adapter. Do not rely on inheritance. After a multi-subagent
 rollout, audit commit trailers against each step's lane.
 
-Tags are approved with the plan. Ask only for untagged/ad-hoc work, and for
-any subagent lane also ask the effort level (it does not inherit — embed it
-in the prompt). Commit after each task (subagents may commit their own).
-Mid-rollout, do not silently flip a tag.
+Tags are approved with the plan. Ask only for untagged/ad-hoc work; an
+authorized lane is not reopened. Effort is the Agent `effort:` parameter,
+default `"medium"`; prompt wording does not set it. Commit after each task
+(subagents may commit their own). Mid-rollout, never flip a step's lane tag silently — ask the owner first.
 
 **Review does not gate the next task — run them in parallel when the tasks
 are independent.** Every task still gets its `core-reviewer` pass, but that
@@ -131,9 +152,12 @@ prosecutor mode: guilty until proven correct, default verdict REJECT. The
 vibes skim ("roughly matches the plan → pass") is banned.
 
 The review runs in a subagent, never inline. Dispatch `core-reviewer` after
-every task and every commit. Inline self-review is the banned failure mode —
+every task commit, on that commit plus the cumulative diff from the
+task-start commit to `HEAD`. Prose-only commits (`.agents/`, `docs/`, plans)
+are reviewed the same way. Inline self-review is the banned failure mode —
 the context that wrote the code cannot judge it. Route by files-touched
-through `docs/reference/core-failure-taxonomy.md`. Add `proof-auditor` ONLY
+through `docs/reference/core-failure-taxonomy.md`, with a different method
+than the implementer used. Add `proof-auditor` ONLY
 when the diff touches a verify stage (verifyctl / archcheck / conformance /
 topiccheck / golden) or the test/gate is itself the risk surface — not for
 an ordinary fix that merely adds a unit test (`core-reviewer` already checks
@@ -148,11 +172,12 @@ with its own diff range.
 
 Mechanics:
 
-1. Read the real diff (`git diff` / `git show`), never the author's
-   self-report.
-2. Line-by-line against the plan step: every (a)-listed symbol touched?
-   anything touched the step did not authorize? any part silently skipped,
-   stubbed, or "simplified"?
+1. Read the original request, the approved plan step, and the real diffs
+   (`git diff` / `git show`), never the author's self-report.
+2. Scope first: the owner's shape kept, every new mechanism necessary, no
+   second source of truth or temporary bridge. Then line-by-line against the
+   plan step: every (a)-listed symbol touched? anything touched the step did
+   not authorize? any part silently skipped, stubbed, or "simplified"?
 3. Hunt, do not confirm. Attack the fix's own new seams first (a loop that
    can partially fail, a constant that shadows a config knob, an error class
    folded into success, a resource owned by the wrong scope). Then: what
@@ -161,20 +186,33 @@ Mechanics:
    topology split, not just monolith.
 4. Findings as `class` · `file:line` · failing scenario · what it should be.
    "Looks fine" / "mostly matches" / "pass with reservations" / "minor nits"
-   without a list are banned phrases.
+   without a list are banned phrases. REJECT only for a concrete defect, a
+   scope violation, or missing required validation, each with a source
+   anchor and a failing scenario or affected requirement. Unverified
+   concerns go in a separate list and do not change the verdict. No demand
+   for unrelated hardening (`gamebackend.md` **Dev tooling scope**), no
+   reopening the approved design.
 5. Binary verdict: PASS with the taxonomy class list attacked for the files
    touched, or a punch list. No "pass with reservations". Bounce findings;
-   never silently absorb them.
+   never silently absorb them. A punch list of only comment findings ends
+   the round; the orchestrator deletes the flagged comments inline.
+
+If a fix exists only because the task introduced an unrequested mechanism,
+the verdict is `REJECT — scope loop`: remove it or return to the approved
+boundary. A fix that needs a new abstraction, module, storage layer, or
+cross-module contract beyond the request/plan is a blocking owner question,
+not an automatic fix.
 
 Dispatch always to `core-reviewer` (explicit model ≥ the author's tier —
-tone and effort do not inherit). The review is mandatory but not a barrier —
-see Implementation Mode for running it alongside the next task.
+tone does not inherit; effort is the `effort:` parameter). The review is
+mandatory but not a barrier — independent steps proceed while a fix lands
+(see Implementation Mode).
 
 Hard cap: 2 review rounds per task. A task is one plan step (or, off-plan,
 one user request) — not one commit. Fix-up commits inside a task do not
-restart the count. Round 1 reviews the diff, round 2 reviews round 1's
-fixes, there is no round 3: stop, report what stands open plus the
-recommended fix, wait. Within the 2 rounds fix by severity, not list order:
+restart the count. Round 1 reviews the diff; round-one fixes are committed
+before round 2, which reviews them; there is no round 3: stop, report what
+stands open plus the recommended fix, wait. Within the 2 rounds fix by severity, not list order:
 correctness first, comment/doc-truth only if it fits; leftovers become named
 open items.
 

@@ -1,7 +1,7 @@
 # Module reference: `characters` + `inventory`
 
-The blessed reference PAIR for building a fortress module (CLAUDE.md "Adding a
-module"). Audience: a contributor about to add or extend a module. Anchors are
+The blessed reference PAIR for building a fortress module (`.agents/shared/gamebackend.md`
+"Adding a module"). Audience: a contributor about to add or extend a module. Anchors are
 `file:line` (clickable), never pasted snippets, so they age against line drift
 rather than going stale silently. Spot-check the cited line before trusting it;
 if it moved, the surrounding symbol name still finds it.

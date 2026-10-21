@@ -4,14 +4,38 @@ Detail for the **Plan Writing Workflow — MANDATORY** rule in
 [`.agents/shared/planning-dispatch.md`](../../.agents/shared/planning-dispatch.md).
 The skeleton stays there; this file holds the full elaboration. Shared plan
 tags are `[inline]` / `[independent]` / `[mechanical]` / `[test-author]` /
-`[review]`. Claude plans may still write `[opus]` / `[fable]` / `[sonnet]`;
+`[docs]` / `[review]`. Claude plans may still write `[opus]` / `[fable]` / `[sonnet]`;
 adapters translate.
 
 Front-load the thinking. For any plan (plan mode / "write me a plan" / a `docs/plans/…-plan.md`), run the steps in order — no skipping for "it's small".
 
-## Step 1 — Ask how many research subagents
+## Step 0 — Preserve the owner's shape
 
-Bands (same as [research-mode.md](research-mode.md)): **2–4** narrow / **4–8** multi-module / **8–12** whole-repo survey. Ask **every time**, even mid-session—the count is task-specific. Use the best available research profile and keep provider/model names out of durable guidance.
+Start the Context with the requested outcome and explicit exclusions in the
+owner's words. Research supplies facts; it does not upgrade a move,
+extraction, or narrow feature into a broader architecture.
+
+Every module, topic, capability, cache, bridge, or contract the owner did not
+request states which requirement cannot be met without it. If relocation or
+reuse is sufficient, the new mechanism is out of scope. If it still looks
+required, stop and ask one blocking question instead of adding it to the plan.
+
+For extract, move, and ownership-split work, relocate the existing code and
+data and expose only the requested API. Do not build a parallel implementation
+so the old and new paths coexist.
+
+## Step 1 — Map the overlap, then pick the open questions
+
+Map the overlapping existing systems first ([research-navigation.md](../../.agents/shared/research-navigation.md)
+**Research Before Planning**): per candidate, what it does, how it differs,
+and "why not extend / depend on X".
+
+Before approval, close only questions that can change scope, architecture,
+or feasibility; record other uncertainty for the implementer. Give each
+question one owner, reuse sufficient finished research, and answer small
+questions with a direct read. There is no fixed fan-out count
+([research-mode.md](research-mode.md)). Use the best available research
+profile and keep provider/model names out of durable guidance.
 
 ## Step 2 — Research subagents on 3 non-overlapping angles
 
@@ -43,7 +67,7 @@ The plan body must be `Step 1 → Step 2 → …` where each step spells out, ex
   registering the module in `cmd/server/src/lib.rs` plus its service composition
   root).
 - **(d) dispatch tag** — `[inline]`, `[independent]`, `[mechanical]`,
-  `[test-author]`, or `[review]` (see [implementation-mode.md](implementation-mode.md)).
+  `[test-author]`, `[docs]`, or `[review]` (see [implementation-mode.md](implementation-mode.md)).
   Claude may write `[opus]` / `[fable]` / `[sonnet]`; adapters translate.
 
 Steps do **NOT** each have to compile or pass tests in isolation — a step may leave the tree broken mid-rollout — but every step MUST be **written out**: a reader follows them top-to-bottom without inventing the order. Reference material (Context, Verified facts, file tables) is fine as supporting sections, but it does not replace the ordered steps — it feeds them.
@@ -51,14 +75,21 @@ Steps do **NOT** each have to compile or pass tests in isolation — a step may 
 ## Step 5 — Dispatch `core-reviewer`
 
 Write `subagent_type: "core-reviewer"` first. Never a generic implementer or
-explore/plan type. Do not hand-author a persona. **Ask the think-effort
-level first** — it does not inherit; embed it in the prompt. Punch list,
-never a rewrite. Address it before showing the user, or note deferrals.
+explore/plan type. Do not hand-author a persona. Effort is the Agent
+`effort:` parameter, default `"medium"` ([subagent-dispatch.md](subagent-dispatch.md));
+prompt wording does not set it. Punch list, never a rewrite. Address it
+before showing the user, or note deferrals.
 
-It hunts logical holes, missing pieces (module `migrate`? separate-file unit test?
+Before technical completeness, it compares the plan to the original request
+and rejects concrete scope substitution: an unrequested mechanism justified
+only by making the design more general, robust, or reusable. It then hunts
+logical holes, missing pieces (module `migrate`? separate-file unit test?
 a declared `requires()` capability that does not match the real synchronous
 dependency? an event mutated instead of evolved additively? a module importing
 another module's implementation crate, or a cross-module foreign key?), ambiguity,
 unstated assumptions, rule conflicts, and "figure-it-out-later" smell. It produces
-a punch list, does **not** rewrite. Address the list before showing the user (or
-note deferred items with rationale).
+a punch list, does **not** rewrite. It rejects only a concrete defect, scope
+violation, or missing required validation, with evidence and a failing scenario
+or affected requirement; unverified concerns are listed separately and do not
+change the verdict. Address the list before showing the user (or note deferred
+items with rationale).

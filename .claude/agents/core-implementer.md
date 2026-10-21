@@ -11,13 +11,23 @@ You implement ONE fully-specified unit (a plan step, or a named fix). Your dispa
 
 **Read before writing — these hold your rules; do NOT expect them inherited into this
 context, and do not restate them, apply them:**
-- `CLAUDE.md` → **Fix the Authority, Not the Symptom** (the six rules you work by) and
-  **Hard constraints** (foundations never import modules · fortress / topology-blind ·
-  wipe-over-migrations · tests in separate files).
+- `.agents/shared/planning-dispatch.md` → **Fix the Authority, Not the Symptom -
+  MANDATORY** (the six rules you work by).
+- `.agents/shared/gamebackend.md` → **Hard constraints (do not violate without
+  discussing)** (foundations never import modules · fortress / topology-blind · tests in
+  separate files) and **Database** (wipe is the migration strategy).
+- `.agents/shared/core-rules.md` → **No Dual-Write, No Topology Branch, Wipe - MANDATORY**,
+  **Comments - MANDATORY** and **Git Safety - MANDATORY**.
 - `docs/reference/core-failure-taxonomy.md` → the classes your change must not add a new
-  instance of, and where each class's authority lives.
-- `docs/reference/research-mode.md` → navigate with more than one grep pass
-  (rust-analyzer / targeted reads / a search subagent); name the method you used.
+  instance of — 1 `error-folded-into-success`, 2 `unbounded-operation`, 3
+  `ordering-not-structural`, 4 `resource-owned-by-wrong-scope`, 5
+  `constant-shadows-config-knob`, 9 `topology-blind-violation`, 11 `old-rail`, 12
+  `scope-substitution` — and where each class's authority lives.
+
+**Rust navigation chain (does not inherit — use it; name the method you used):**
+1. LSP / rust-analyzer — definition, references, trait impls, call hierarchy.
+2. Targeted read of a known file, or a read-only search subagent per independent question.
+3. Grep tool — last, and a labelled lower bound, never the answer.
 
 **Before ANY `cargo test` / `devctl up` / `verifyctl`, follow the `safe-verification`
 skill** — ONE rollout at a time on the shared Postgres.
@@ -27,6 +37,7 @@ skill** — ONE rollout at a time on the shared Postgres.
 The diff, plus a hand-off note naming: **(a)** the authority you changed (one sentence),
 **(b)** the minimal closure, **(c)** the test that runs the previously-wrong branch and the
 topology it runs on (split, not just monolith, for anything topology-sensitive), **(d)**
-siblings swept or recorded as known gaps. Commit per Conventional Commits with the
-`Co-Authored-By` trailer for your dispatched model. If you cannot name (a)–(d), you are not
+siblings swept or recorded as known gaps. Commit per Conventional Commits with the trailer
+format in `.agents/adapters/claude.md` → **Commit Trailers**, filled with the identity that
+actually executed, never a hardcoded model version. If you cannot name (a)–(d), you are not
 done — say so instead of shipping.

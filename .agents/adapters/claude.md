@@ -1,7 +1,7 @@
 # Claude Adapter
 
 Use this adapter for Claude Code / Claude harness sessions after reading
-`.agents/shared/*.md`.
+`AGENTS.md`.
 
 This runtime is Claude. Keep `[fable]`. Do not invent a model slug this
 harness does not expose. Every `Task` / `Agent` call passes explicit
@@ -22,8 +22,8 @@ During plan mode, edit only `C:\Users\lukas\.claude\plans\<slug>.md`. After
 user approval, copy the plan into
 `docs/plans/YYYY-MM-DD-HHMM-<topic>-plan.md`.
 
-Project skills live under `.claude/skills/`. Use them; do not reimplement.
-Never use a git worktree.
+Shared skills live in `.agents/skills/`; `.claude/skills/` holds Claude
+pointer stubs. Use them; do not reimplement. Never use a git worktree.
 
 ## Dispatch Mapping
 
@@ -31,12 +31,15 @@ Never use a git worktree.
   the shared dispatch-threshold list, or a compile/typo fix in a file this
   turn's approved step already has this agent editing.
 - `[independent]` / `[opus]` / `[fable]` — `subagent_type: "core-implementer"`
-  (visual/UI: `"mockup-implementer"`) with `model:"opus"` or `"fable"`. New
-  API, bus/registry/edge/lifecycle, cross-module behaviour, security
+  (visual/UI: `"mockup-implementer"`). `[opus]` → `model:"opus"`, `[fable]` →
+  `model:"fable"`, `[independent]` → the session's top tier (`fable` when the
+  session runs Fable, else `opus`). New API, bus/registry/edge/lifecycle, cross-module behaviour, security
   boundaries.
 - `[mechanical]` / `[sonnet]` — `model:"sonnet"`. Renames, scaffolding,
   N-similar edits, applying a fully specified step, compile fixes,
   JSON/config. Visual/UI is never this lane. Tests are never this lane.
+- `[docs]` — `subagent_type: "docs-writer"`, `model:"sonnet"` default;
+  `"opus"` / `"fable"` only when the doc must judge what a seam means.
 - `[test-author]` — `subagent_type: "test-author"`, `model:"sonnet"` default;
   `"opus"` / `"fable"` only for a novel harness/topology. The only lane that
   writes tests.
@@ -51,29 +54,50 @@ Never use a git worktree.
   tier. Only when the diff touches a verify stage or the test/gate is the
   risk surface.
 
-Effort does not inherit; embed it in the subagent prompt. The rust
+Effort does not inherit: set it with the Agent call's `effort:` parameter
+(`low`|`medium`|`high`|`xhigh`|`max`), never prompt wording; default
+`effort:"medium"` unless the owner or plan names another. The rust
 navigation chain does not inherit; paste it into every code-touching
 subagent prompt: rust-analyzer → targeted read → research subagent → grep
 as a labelled lower bound. Comments: default NONE; name at most the one or
 two things that earn a line in that file.
 
+## Haiku Lanes
+
+Read-only checklist work runs on `subagent_type:"Explore"`, `model:"haiku"`.
+Haiku reports; it never edits, builds, commits, or decides. On a gap it
+stops and reports. Verify every finding before acting on it.
+
+- log triage — after a failed `verifyctl` / cargo run, pass the log path;
+  return errors grouped by file and root cause, first error first, with
+  `file:line`.
+- diff lint — before `[review]`, pass the commit range; check
+  `.agents/shared/core-rules.md` **Comments** and **No Dual-Write, No
+  Topology Branch, Wipe** (no dual-write / old rail left alive, no topology
+  branch in domain code). Advisory only: it never replaces or shrinks the `[review]`
+  round.
+- trailer audit — after multi-subagent rollouts, pass the commit range and
+  intended lanes; return each commit whose `Co-Authored-By` mismatches.
+
 ## Commit Trailers
 
 Use the executing model. A tag selects a tier; the subagent writes whatever
-that tier currently is.
+that tier currently is. Do not hardcode a version per lane.
 
 ```text
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+Co-Authored-By: Claude <Family> <Version> <noreply@anthropic.com>
 ```
+
+Fill `<Family> <Version>` from the executing session's own model identity,
+never from an example or another lane.
 
 After multi-subagent rollouts, audit recent commit trailers against the
 intended lanes before reporting done.
 
 ## Skills
 
-Use the project skills under `.claude/skills/`:
+Use the shared skills in `.agents/skills/` (`.claude/skills/` holds Claude
+pointer stubs):
 
 - `safe-verification` — before any `cargo test` / `devctl up` / `verifyctl`
 - `architecture-review` — fortress / topology-blind / seam law

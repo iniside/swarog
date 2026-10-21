@@ -1,0 +1,334 @@
+"""Subprocess tests for the .claude/hooks guard hooks.
+
+Run from the repo root: python -B -m unittest discover .claude/hooks/tests
+Each hook is fed crafted hook JSON on stdin; the decision JSON is classified as
+deny / ask / silent / context. Shell cases run under both Bash and PowerShell.
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+import uuid
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+HOOKS = os.path.join(ROOT, ".claude", "hooks")
+R = ROOT.replace("\\", "/")
+TR = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+CODE_SHA = "fb58f1d"
+PROSE_SHA = "1b8015b"
+SHELL_TOOLS = ("Bash", "PowerShell")
+
+_TEMP = tempfile.TemporaryDirectory()
+ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", TEMP=_TEMP.name, TMP=_TEMP.name,
+           TMPDIR=_TEMP.name)
+ENV.pop("CLAUDE_PROJECT_DIR", None)
+
+
+def tearDownModule():
+    _TEMP.cleanup()
+
+
+def run(hook, payload, raw=None):
+    inp = raw if raw is not None else json.dumps(payload)
+    r = subprocess.run([sys.executable, "-B", os.path.join(HOOKS, hook + ".py")], input=inp,
+                       capture_output=True, text=True, cwd=ROOT, env=ENV, timeout=60)
+    if r.returncode != 0 or r.stderr:
+        return "ERR rc=%d %s" % (r.returncode, r.stderr[:200])
+    if not r.stdout.strip():
+        return "silent"
+    o = json.loads(r.stdout)["hookSpecificOutput"]
+    return o.get("permissionDecision") or ("context:" + o.get("additionalContext", ""))
+
+
+def sh(cmd, tool="Bash"):
+    return {"tool_name": tool, "tool_input": {"command": cmd}}
+
+
+def shc(cmd, tool, cwd=R):
+    p = sh(cmd, tool)
+    if cwd:
+        p["cwd"] = cwd
+    return p
+
+
+def pc(cmd, tool, out):
+    return {"tool_name": tool, "cwd": R, "tool_input": {"command": cmd}, "tool_response": {"stdout": out}}
+
+
+ALLOW_BRANCH = ["git branch", "git branch -a", "git branch -v", "git branch --show-current",
+                "git branch -d x", "git branch -D x", "git branch --contains x",
+                "git branch --list 'pat*'", "git switch master", "git checkout master",
+                "git status"]
+
+BASE_CASES = [
+    ("git_safety_hook", sh("git stash"), "deny"),
+    ("git_safety_hook", sh("git stash list"), "silent"),
+    ("git_safety_hook", sh("git restore x"), "deny"),
+    ("git_safety_hook", sh("git -C G:/x restore x"), "deny"),
+    ("git_safety_hook", sh("git reset --hard", "PowerShell"), "deny"),
+    ("git_safety_hook", sh("git reset --soft HEAD~1"), "silent"),
+    ("git_safety_hook", sh("git reset HEAD~3"), "deny"),
+    ("git_safety_hook", sh("git checkout -- a.rs"), "deny"),
+    ("git_safety_hook", sh("git worktree add ../x"), "deny"),
+    ("git_safety_hook", sh("Remove-Item .git\\index", "PowerShell"), "deny"),
+    ("git_safety_hook", sh("git commit -m 'feat: x'"), "deny"),
+    ("git_safety_hook", sh("git commit -m 'feat: x\n\nCo-Authored-By: Claude <Family> <Version> <noreply@anthropic.com>'"), "deny"),
+    ("git_safety_hook", sh("git commit -m 'docs: say git stash is banned\n\n" + TR + "'"), "silent"),
+    ("git_safety_hook", sh("git commit -F - <<'EOF'\nfix: x\n\n" + TR + "\nEOF"), "silent"),
+    ("git_safety_hook", sh("$m = @'\nfix: mention git restore\n\n" + TR + "\n'@\ngit commit -m $m", "PowerShell"), "silent"),
+    ("git_safety_hook", sh("git commit -m @'\nfix: x\n\n" + TR + "\n'@", "PowerShell"), "silent"),
+    ("git_safety_hook", sh("git commit -m @'\nfix: x\n'@", "PowerShell"), "deny"),
+    ("git_safety_hook", sh("git commit --amend --no-edit"), "silent"),
+    ("git_safety_hook", sh("git push --force"), "ask"),
+    ("git_safety_hook", sh("git push -f origin master"), "ask"),
+    ("git_safety_hook", sh("git push --force-with-lease"), "ask"),
+    ("git_safety_hook", sh("git push origin master"), "silent"),
+    ("git_safety_hook", sh("git checkout -b x"), "ask"),
+    ("git_safety_hook", sh("git switch -c x", "PowerShell"), "ask"),
+    ("git_safety_hook", sh("git branch newbr"), "ask"),
+    ("git_safety_hook", sh("git stash; git push --force"), "deny"),
+    *[("git_safety_hook", sh(c), "silent") for c in ALLOW_BRANCH],
+    ("git_safety_hook", sh("git checkout master 2>&1"), "silent"),
+    ("git_safety_hook", sh("git checkout master > out.txt", "PowerShell"), "silent"),
+    ("git_safety_hook", sh("git checkout master *>$null", "PowerShell"), "silent"),
+    ("git_safety_hook", sh("git checkout HEAD a.rs 2>&1"), "deny"),
+    ("git_safety_hook", sh("git commit-graph write"), "silent"),
+    ("git_safety_hook", sh("echo \"git stash\""), "silent"),
+    ("git_safety_hook", sh("git push origin +master"), "ask"),
+    ("git_safety_hook", sh("git push origin +master:master"), "ask"),
+    ("git_safety_hook", sh("git stash list && git stash pop"), "deny"),
+    ("git_safety_hook", sh("git stash show && git log"), "silent"),
+    ("git_safety_hook", sh("git stash list\ngit stash"), "deny"),
+    ("git_safety_hook", sh("git checkout master\ngit log -- path"), "silent"),
+    ("git_safety_hook", sh("git status\ngit branch\ngit log -3"), "silent"),
+    ("git_safety_hook", sh("git status\r\ngit branch\r\ngit log -3", "PowerShell"), "silent"),
+    ("git_safety_hook", sh("git log HEAD~5..HEAD && git reset --soft HEAD~1"), "silent"),
+    ("git_safety_hook", sh("git checkout HEAD~1"), "silent"),
+    ("git_safety_hook", sh("git checkout HEAD -- a.rs"), "deny"),
+    ("git_safety_hook", sh("git checkout HEAD a.rs"), "deny"),
+    ("git_safety_hook", sh("git checkout ."), "deny"),
+    ("git_safety_hook", sh("git checkout -b x origin/x"), "ask"),
+    ("git_safety_hook", sh("git reset --soft HEAD~2"), "deny"),
+    ("git_safety_hook", sh("git reset HEAD^^"), "deny"),
+    ("git_safety_hook", sh("git reset --soft HEAD~~"), "deny"),
+    ("git_safety_hook", sh("git reset --soft abc1234"), "deny"),
+    ("git_safety_hook", sh("git reset --soft HEAD^"), "silent"),
+    ("git_safety_hook", sh("git reset HEAD a.rs"), "silent"),
+    ("git_safety_hook", sh("git status\ngit reset --hard"), "deny"),
+    ("git_safety_hook", sh("git log \\\n  --oneline -3"), "silent"),
+    ("git_safety_hook", sh("git commit -F - <<'EOF'\nfix: x; git stash\n\n" + TR + "\nEOF\ngit log -1"), "silent"),
+    ("git_safety_hook", sh("cat > f.txt <<'EOF'\ngit stash\nEOF\ngit stash"), "deny"),
+    ("git_safety_hook", sh("Remove-Item '.git\\index'", "PowerShell"), "deny"),
+    ("git_safety_hook", sh("git -C G:/x stash list; git -C G:/x stash drop"), "deny"),
+    ("git_safety_hook", sh("git commit -m \"fix: x; git stash\n\n" + TR + "\""), "silent"),
+    ("git_safety_hook", {"tool_name": "Read", "tool_input": {"command": "git stash"}}, "silent"),
+    ("git_safety_hook", None, "silent"),
+    ("no_worktree_hook", {"tool_name": "EnterWorktree", "tool_input": {}}, "deny"),
+    ("no_worktree_hook", {"tool_name": "Agent", "tool_input": {"isolation": "worktree", "model": "opus"}}, "deny"),
+    ("no_worktree_hook", {"tool_name": "Agent", "tool_input": {"model": "opus", "prompt": "x"}}, "silent"),
+    ("no_worktree_hook", None, "silent"),
+    ("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"prompt": "x"}}, "deny"),
+    ("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"prompt": "x", "model": "  "}}, "deny"),
+    ("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"prompt": "x", "model": "sonnet"}}, "silent"),
+    ("explicit_model_guard", None, "silent"),
+    ("haiku_listing_reminder", {"tool_name": "Agent", "tool_input": {"model": "opus", "prompt": "List all callers of foo"}}, "deny"),
+    ("haiku_listing_reminder", {"tool_name": "Agent", "tool_input": {"model": "opus", "prompt": "List all callers of foo force-model"}}, "silent"),
+    ("haiku_listing_reminder", {"tool_name": "Agent", "tool_input": {"model": "opus", "prompt": "List all callers and analyze the flow"}}, "silent"),
+    ("haiku_listing_reminder", {"tool_name": "Agent", "tool_input": {"model": "haiku", "prompt": "List all callers"}}, "silent"),
+    ("haiku_listing_reminder", None, "silent"),
+    ("grep_sweep_guard", sh("grep -r foo target/"), "deny"),
+    ("grep_sweep_guard", sh("grep -rn foo core/"), "deny"),
+    ("grep_sweep_guard", sh("git log | grep foo"), "silent"),
+    ("grep_sweep_guard", sh("grep -r foo target/ force-grep"), "silent"),
+    ("grep_sweep_guard", sh("rg --no-ignore foo"), "deny"),
+    ("grep_sweep_guard", sh("rg foo core"), "silent"),
+    ("grep_sweep_guard", sh("Get-ChildItem -Recurse -Filter *.rs", "PowerShell"), "silent"),
+    ("grep_sweep_guard", sh("Get-ChildItem -Recurse target | Select-String foo", "PowerShell"), "deny"),
+    ("grep_sweep_guard", sh("Get-ChildItem -Recurse .\\run\\devctl", "PowerShell"), "deny"),
+    ("grep_sweep_guard", sh("gci -Recurse -Path deploy -Filter *.toml", "PowerShell"), "deny"),
+    ("grep_sweep_guard", sh("Select-String -Path target\\debug\\*.d -Pattern foo", "PowerShell"), "deny"),
+    ("grep_sweep_guard", sh("Select-String -Path core\\x.rs -Pattern 'run'", "PowerShell"), "silent"),
+    ("grep_sweep_guard", sh("Get-ChildItem -Recurse | Select-String deploy", "PowerShell"), "silent"),
+    ("grep_sweep_guard", sh("cargo run -p devctl -- up monolith"), "silent"),
+    ("grep_sweep_guard", sh("gci -r target", "PowerShell"), "deny"),
+    ("grep_sweep_guard", sh("dir -r run", "PowerShell"), "deny"),
+    ("grep_sweep_guard", sh("gci -re -Path deploy", "PowerShell"), "deny"),
+    ("grep_sweep_guard", sh("gci -Recurse:$true target", "PowerShell"), "deny"),
+    ("grep_sweep_guard", sh("gci -ReadOnly target", "PowerShell"), "silent"),
+    ("grep_sweep_guard", sh("git commit -F - <<'EOF'\nfix: x; find . -name y\nEOF"), "silent"),
+    ("grep_sweep_guard", sh("cat > f.py <<'EOF'\nimport os\ngrep -r a b\nEOF"), "silent"),
+    ("grep_sweep_guard", sh("cat > f.py <<'EOF'\ngrep -r a b\nEOF\ngrep -r a core/"), "deny"),
+    ("grep_sweep_guard", sh("git commit -m 'fix: x; grep -r foo core'"), "silent"),
+    ("grep_sweep_guard", sh("echo \"a | find . -name x\""), "silent"),
+    ("grep_sweep_guard", sh("git status\ngrep -rn foo core/"), "deny"),
+    ("grep_sweep_guard", sh("Select-String -Path \"target\\debug\\x.d\" -Pattern foo", "PowerShell"), "deny"),
+    ("grep_sweep_guard", sh("find . -maxdepth 1 -exec cat {} \\;"), "silent"),
+    ("grep_sweep_guard", sh("$s = @'\ngrep -r foo .\n'@\nWrite-Output $s", "PowerShell"), "silent"),
+    ("grep_sweep_guard", None, "silent"),
+    ("exit_plan_checklist", {"tool_name": "ExitPlanMode", "tool_input": {}}, "context"),
+    ("exit_plan_checklist", None, "context"),
+    ("post_commit_review_reminder", {"tool_name": "PowerShell", "cwd": R, "tool_input": {"command": "git commit -m x"}, "tool_response": {"stdout": "[master " + PROSE_SHA + "] docs\n"}}, "silent"),
+    ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": R, "tool_input": {"command": "git commit -m x"}, "tool_response": {"stdout": "[master " + CODE_SHA + "] refactor\n"}}, "context"),
+    ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": R, "tool_input": {"command": "git commit --amend"}, "tool_response": {"stdout": "[master " + CODE_SHA + "] x\n"}}, "silent"),
+    ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": R, "tool_input": {"command": "git commit --dry-run"}, "tool_response": {"stdout": ""}}, "silent"),
+    ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": R, "tool_input": {"command": "git commit-graph write"}, "tool_response": {"stdout": ""}}, "silent"),
+    ("post_commit_review_reminder", None, "silent"),
+]
+
+NEW_GIT = [
+    ("git checkout -f", "deny"), ("git checkout --force master", "deny"),
+    ("git checkout -fq master", "deny"), ("git checkout -p", "deny"),
+    ("git switch --discard-changes master", "deny"), ("git switch -f master", "deny"),
+    ("git switch --force master", "deny"), ("git switch master", "silent"),
+    ("git checkout CLAUDE.md", "deny"), ("git checkout core", "deny"),
+    ("git checkout master CLAUDE.md", "deny"), ("git checkout '*.rs'", "deny"),
+    ("git checkout master", "silent"), ("git checkout HEAD~1", "silent"),
+    ("git checkout -b x origin/x", "ask"), ("git checkout nosuchthing", "silent"),
+    ("git reset", "silent"), ("git reset HEAD a.rs", "silent"), ("git reset -- a.rs", "silent"),
+    ("git reset HEAD", "silent"), ("git reset CLAUDE.md", "silent"), ("git reset -q", "silent"),
+    ("git reset --soft HEAD~1", "silent"), ("git reset --soft HEAD^", "silent"),
+    ("git reset --soft @~1", "silent"), ("git reset --soft @^", "silent"),
+    ("git reset --hard", "deny"), ("git reset --mixed HEAD~1", "deny"),
+    ("git reset --soft origin/master", "deny"), ("git reset --soft HEAD@{1}", "deny"),
+    ("git reset HEAD@{2}", "deny"), ("git reset --soft ABC1234", "deny"),
+    ("git reset --soft abc1234def", "deny"), ("git reset deadbeef", "deny"),
+    ("git reset HEAD~1", "deny"), ("git reset --keep HEAD~1", "deny"),
+    ("git reset --merge", "deny"), ("git reset --soft", "deny"),
+    ("git reset --soft HEAD~2", "deny"), ("git reset origin/master", "deny"),
+    ("git reset \"--hard\"", "deny"), ("git \"restore\" .", "deny"),
+    ("git reset --soft 'HEAD~3'", "deny"), ("git 'stash'", "deny"),
+    ("git commit -m \"docs: never git stash\n\n" + TR + "\"", "silent"),
+    ("git commit -m 'git stash'\n", "deny"),
+    ("git commit -m 'docs: git stash\n\n" + TR + "'", "silent"),
+    ("git commit -F - <<\\EOF\nfix: x; git stash\n\n" + TR + "\nEOF\ngit log -1", "silent"),
+    ("cat > f <<\\EOF\ngit stash\nEOF\ngit stash", "deny"),
+    ("cat > f <<-EOF\n\tgit stash\n\tEOF\ngit log", "silent"),
+    ("cat > f <<\"EOF\"\ngit stash\nEOF\ngit log", "silent"),
+]
+
+POST = [
+    ("git commit -m x", "[master " + CODE_SHA + "] refactor\n", "context"),
+    ("git commit -m x", "On branch master\nnothing to commit, working tree clean\n", "silent"),
+    ("git commit -m x", "error: pathspec 'y' did not match\n", "silent"),
+    ("git commit -m x", "", "silent"),
+    ("git status; git commit -m x", "[master " + CODE_SHA + "] refactor\n", "context"),
+    ("git -C " + R + " commit -m x", "[master " + CODE_SHA + "] refactor\n", "context"),
+    ("echo 'git commit -m x'", "[master " + CODE_SHA + "] refactor\n", "silent"),
+    ("echo \"git commit\"", "[master " + CODE_SHA + "] refactor\n", "silent"),
+    ("git log --grep=commit", "[master " + CODE_SHA + "] refactor\n", "silent"),
+    ("git commit --amend --no-edit", "[master " + CODE_SHA + "] refactor\n", "silent"),
+    ("git commit --dry-run", "[master " + CODE_SHA + "] refactor\n", "silent"),
+    ("git commit -m \"mention --amend in text\"", "[master " + CODE_SHA + "] refactor\n", "context"),
+    ("git commit -m x", "[master " + PROSE_SHA + "] docs\n", "silent"),
+]
+
+
+def classify_all(payload_hook_filter):
+    return [(h, p, w) for h, p, w in BASE_CASES if h == payload_hook_filter]
+
+
+def _variants(payload):
+    if isinstance(payload, dict) and payload.get("tool_name") in SHELL_TOOLS:
+        for tool in SHELL_TOOLS:
+            yield dict(payload, tool_name=tool)
+    else:
+        yield payload
+
+
+class HookCases(unittest.TestCase):
+    def check(self, hook, extra=()):
+        cases = classify_all(hook) + [c for c in extra if c[0] == hook]
+        self.assertTrue(cases)
+        for _, payload, want in cases:
+            if payload is None:
+                continue
+            for p in _variants(payload):
+                label = (p.get("tool_input") or {}).get("command") or p.get("tool_name")
+                with self.subTest(hook=hook, tool=p.get("tool_name"), case=str(label)[:70], want=want):
+                    got = run(hook, p)
+                    self.assertTrue(got.startswith(want), "%s != %s" % (got, want))
+
+    def test_git_safety(self):
+        extra = []
+        for tool in SHELL_TOOLS:
+            for cmd, want in NEW_GIT:
+                extra.append(("git_safety_hook", shc(cmd, tool), want))
+            extra.append(("git_safety_hook", shc("git checkout CLAUDE.md", tool, cwd=None), "deny"))
+            extra.append(("git_safety_hook", shc("git checkout CLAUDE.md", tool, cwd="C:/Windows"), "silent"))
+        self.check("git_safety_hook", extra)
+
+    def test_post_commit(self):
+        extra = [("post_commit_review_reminder", pc(c, t, o), w)
+                 for t in SHELL_TOOLS for c, o, w in POST]
+        self.check("post_commit_review_reminder", extra)
+
+    def test_grep_sweep(self):
+        self.check("grep_sweep_guard")
+
+    def test_haiku_listing(self):
+        self.check("haiku_listing_reminder")
+
+    def test_no_worktree(self):
+        self.check("no_worktree_hook")
+
+    def test_explicit_model_guard(self):
+        self.check("explicit_model_guard")
+        ok = run("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"model": "opus", "prompt": "x"}})
+        self.assertEqual(ok, "silent")
+
+    def test_exit_plan_context_never_deny(self):
+        got = run("exit_plan_checklist", {"tool_name": "ExitPlanMode", "tool_input": {}})
+        self.assertTrue(got.startswith("context:"))
+        for needle in ("core-reviewer", "test-author", "model"):
+            self.assertIn(needle, got)
+
+
+class RefReminder(unittest.TestCase):
+    def payload(self, sid, tool, **ti):
+        return {"tool_name": tool, "session_id": sid, "cwd": R, "tool_input": ti}
+
+    def test_once_per_session_edit(self):
+        sid = str(uuid.uuid4())
+        p = self.payload(sid, "Edit", file_path=os.path.join(ROOT, "core", "asyncevents", "src", "lib.rs"))
+        self.assertTrue(run("ref_reminder", p).startswith("context:"))
+        self.assertEqual(run("ref_reminder", p), "silent")
+        p2 = self.payload(str(uuid.uuid4()), "Edit", file_path=p["tool_input"]["file_path"])
+        self.assertTrue(run("ref_reminder", p2).startswith("context:"))
+
+    def test_once_per_session_command_both_tools(self):
+        for tool in SHELL_TOOLS:
+            sid = str(uuid.uuid4())
+            p = self.payload(sid, tool, command="cargo run -p verifyctl -- --fast")
+            with self.subTest(tool=tool):
+                self.assertTrue(run("ref_reminder", p).startswith("context:"))
+                self.assertEqual(run("ref_reminder", p), "silent")
+
+    def test_paths(self):
+        for rel, want in (("modules/admin/templates/x.html", "context"),
+                          ("modules/gateway/src/lib.rs", "context"),
+                          ("modules/wallet/src/lib.rs", "silent")):
+            with self.subTest(rel=rel):
+                p = self.payload(str(uuid.uuid4()), "Write", file_path=R + "/" + rel)
+                self.assertTrue(run("ref_reminder", p).startswith(want))
+
+
+class FailOpen(unittest.TestCase):
+    HOOKS = ("git_safety_hook", "no_worktree_hook", "explicit_model_guard",
+             "haiku_listing_reminder", "grep_sweep_guard", "ref_reminder",
+             "post_commit_review_reminder", "exit_plan_checklist")
+
+    def test_malformed_json(self):
+        for hook in self.HOOKS:
+            for raw in ("not json{", "", "[]", "null"):
+                with self.subTest(hook=hook, raw=raw):
+                    got = run(hook, None, raw=raw)
+                    self.assertFalse(got.startswith("ERR"), got)
+                    self.assertNotIn(got, ("deny", "ask"))
+                    if hook != "exit_plan_checklist":
+                        self.assertEqual(got, "silent")
+
+
+if __name__ == "__main__":
+    unittest.main()
