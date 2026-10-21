@@ -13,21 +13,24 @@ Dispatch is decided **per plan step at plan-writing time**, not per session. Tag
 - `[independent]` — top-tier separate context (`core-implementer`; visual/UI uses `mockup-implementer`).
 - `[mechanical]` — cheap implementation. Visual/UI never this. Tests never this.
 - `[test-author]` — only lane that writes tests; always a later step.
+- `[docs]` — the `docs-writer` agent (`.claude/agents/docs-writer.md`, `subagent_type: "docs-writer"`). The only lane that writes documentation prose — root guidance, `docs/reference`, `docs/roadmap`, plan errata, and Rust doc-comments. It runs last, against landed code, and its job is as much DELETING false prose as adding true prose (a comment asserting behaviour the code lacks is a correctness defect). Cheap default; escalate only when the doc must judge what a seam *means*. A plan's docs step names the exact files — an unnamed file is never found. Carve-out: comment-only review findings end the round and are fixed inline by the orchestrator (flagged comments deleted, not reworded); no `[docs]` dispatch.
 - `[review]` — `core-reviewer` (read-only).
 
 Claude plans may write `[opus]` / `[fable]` → `[independent]`, `[sonnet]` → `[mechanical]`. Adapters own the concrete model slugs.
 
-The user approves the tags together with the plan (call them out at ExitPlanMode) — that approval replaces the old blanket "inline or subagents?" question. Ask it only for untagged/ad-hoc work (no plan), and if any step is a subagent lane, also ask **"what effort level?"** (effort does NOT inherit — embed it in the prompt; see [subagent-dispatch.md](subagent-dispatch.md)). Mid-rollout, do not re-litigate a tag: a tagged step that turns out to need different handling gets a follow-up question, not a silent lane switch.
+The lane is chosen for the whole plan step or named fix; never divide a feature to fit the inline threshold.
+
+The user approves the tags together with the plan (call them out at ExitPlanMode) — that approval replaces the old blanket "inline or subagents?" question. Ask it only for untagged/ad-hoc work (no plan); an authorized lane is not reopened. Effort is the Agent `effort:` parameter, default `"medium"`; prompt wording does not set it ([subagent-dispatch.md](subagent-dispatch.md)). Mid-rollout, do not re-litigate a tag: a tagged step that turns out to need different handling gets a follow-up question, not a silent lane switch.
 
 ## How implementation dispatch differs from research
 
-Implementation subagents run **sequentially per plan step** (no parallel fan-out for sequential steps), use the best available execution profile for the lane, are **read-write**, may **commit their own work**, and get a **diff review between tasks** instead of a synthesis pass. Research is the opposite: parallel fan-out, read-only, synthesized in the main model — [research-mode.md](research-mode.md).
+Implementation subagents run **per plan step** (no parallel fan-out for dependent steps), use the best available execution profile for the lane, are **read-write**, may **commit their own work**, and get a **diff review after each task commit** instead of a synthesis pass. Research is the opposite: parallel fan-out, read-only, synthesized in the main model — [research-mode.md](research-mode.md).
 
 ## Dispatch rules (implementation-specific)
 
 The shared effort/navigation/prompt rules are in [subagent-dispatch.md](subagent-dispatch.md). On top of those, implementation adds:
 
-1. **Review between tasks.** Main model reviews each diff against the plan step (did what the plan said? touched out-of-scope files? introduced conflicting patterns — a module importing another module's impl crate, a cross-module foreign key, untyped event JSON outside a deliberate raw sink, or an event publish used where a sync capability was needed?) before dispatching the next. No parallel fan-out for sequential plan steps.
+1. **Review between tasks.** A fresh `core-reviewer` reviews each task commit plus the cumulative diff from the task-start commit against the plan step (did what the plan said? touched out-of-scope files? introduced conflicting patterns — a module importing another module's impl crate, a cross-module foreign key, untyped event JSON outside a deliberate raw sink, or an event publish used where a sync capability was needed?). The review gates only a dependent next step; independent steps proceed while a fix lands (`planning-dispatch.md` **Implementation Mode**). No parallel fan-out for sequential plan steps.
 2. **Trust but verify.** Read the actual edits — self-reports describe intent, not result.
 3. **Commit after each task or independently reviewable part.** Granular history beats one final rollout commit: `git add` + `git commit` immediately after each unit verifies. **Subagents MAY commit their own work** before main-model review. The main-model review still runs afterward; a bad commit is fixed with a follow-up commit, never by discarding history.
 

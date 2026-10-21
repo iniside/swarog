@@ -267,6 +267,48 @@ branch / wipe) and Fix the Authority rule 2 (no hack-on-hack). The
 `core-reviewer` always-on class runs this **before** the other classes on
 every plan and every diff.
 
+### 12. `scope-substitution` / `fix-forward-loop` — *coherent code, wrong product*
+
+**What.** The owner-selected shape is replaced by a broader architecture: an
+unrequested module, topic, capability, cache, bridge, or contract; an
+extract/move that became a parallel rewrite. A fix-forward loop then hardens
+problems that exist only because of that addition instead of removing it.
+
+**Attack.** Compare the original request and its exclusions, the approved plan,
+the task commit, and the cumulative diff from the task-start commit. Look for a
+second implementation beside the moved one, a new `api/<name>` surface or
+durable topic nobody asked for, a temporary dual authority, or review fixes
+whose only reason to exist is one of those additions. Feasibility, reuse,
+robustness, and a detailed plan do not authorize the scope.
+
+**Authority.** `.agents/shared/planning-dispatch.md` → **Plan Writing
+Workflow** step 0 and **Adversarial Diff Review**;
+`docs/reference/plan-writing-workflow.md`; the owner's original request.
+
+**Verdict.** If the fix exists only because the task introduced an unrequested
+mechanism, return `REJECT — scope loop`: remove it or return to the last
+approved boundary, without prescribing further hardening. If removal would
+change the owner-selected shape, ask one blocking question.
+
+### 13. `dispatch-process-discipline` — *the audit trail is part of correctness*
+
+**What.** How work is dispatched and recorded: a wrong-model trailer or a lost
+commit corrupts the audit trail, not just etiquette.
+
+**Attack.** An Agent call without an explicit `model:`; a plan step whose lane
+tag does not match the work (tests outside `[test-author]`, documentation
+prose outside `[docs]`, an `[inline]` change off the threshold list); a lane
+silently flipped mid-rollout; a `Co-Authored-By` trailer naming the harness
+default instead of the executing model; many tasks batched into one commit; a
+plan-step commit without its `(<plan-slug> step <id>)` suffix; research done as
+one grep pass and reported as the API.
+
+**Authority.** `.agents/shared/planning-dispatch.md` → **Implementation Mode**;
+`.agents/shared/core-rules.md` → **Commit After Every Task**, **Commit Message
+Format**; `.agents/shared/research-navigation.md` → **Research / Search Mode**;
+`docs/reference/subagent-dispatch.md`, `docs/reference/implementation-mode.md`,
+`docs/reference/commit-format.md`.
+
 ---
 
 ## Cross-cutting review checklist — keyed to what the change touched
@@ -299,6 +341,12 @@ for the files in the diff. Route by what changed:
   5 and 8. Ask: what did this introduce, what must be dead, is the old rail still
   loaded (second entry file, alias agent, dual lane vocabulary without an adapter
   map)? Does a hand-maintained citation list still teach the fat heading?
+- **Any plan, and any diff against its request** → class 12, first. Ask: is every
+  new mechanism one the owner asked for or one a stated requirement forces? does
+  a fix exist only to harden an unrequested addition?
+- **The diff itself — how it was dispatched, tagged, and committed** → class 13.
+  Ask: does each commit's lane, `model:`, and trailer match its plan step? one
+  task per commit, with the plan-step suffix?
 
 ---
 
