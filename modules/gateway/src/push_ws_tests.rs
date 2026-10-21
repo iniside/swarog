@@ -56,6 +56,7 @@ fn test_limits() -> PushLimits {
         handshake_grace: Duration::from_secs(30),
         write_deadline: Duration::from_secs(10),
         reverify_interval: Duration::from_secs(3600),
+        liveness_timeout: Duration::from_secs(5400),
         max_stale: Duration::from_secs(3600),
         trusted_proxies: Vec::new(),
         presence: false,
@@ -460,6 +461,45 @@ fn push_limits_parse_every_knob_from_values() {
     );
 }
 
+/// Unset or blank derives 1.5x the EFFECTIVE interval, so raising only the interval keeps
+/// booting; an explicit value must exceed the interval or every idle socket closes on the
+/// first tick.
+#[test]
+fn push_limits_liveness_timeout_derives_from_the_effective_interval() {
+    let unset = PushLimits::from_values(none()).expect("defaults parse");
+    assert_eq!(unset.liveness_timeout, Duration::from_secs(90));
+
+    let raised = PushLimits::from_values(values(&[(REVERIFY_MS, "120000")]))
+        .expect("a raised interval with no timeout still boots");
+    assert_eq!(raised.liveness_timeout, Duration::from_secs(180));
+
+    let blank = PushLimits::from_values(values(&[(LIVENESS_MS, "  "), (REVERIFY_MS, "120000")]))
+        .expect("a blank timeout is an unset timeout");
+    assert_eq!(blank.liveness_timeout, Duration::from_secs(180));
+
+    let explicit =
+        PushLimits::from_values(values(&[(LIVENESS_MS, "61000")])).expect("above the 60s default");
+    assert_eq!(explicit.liveness_timeout, Duration::from_secs(61));
+    let explicit = PushLimits::from_values(values(&[(LIVENESS_MS, "2000"), (REVERIFY_MS, "1000")]))
+        .expect("above a custom interval");
+    assert_eq!(explicit.liveness_timeout, Duration::from_secs(2));
+}
+
+#[test]
+fn push_limits_reject_a_liveness_timeout_at_or_below_the_interval() {
+    for (timeout, interval) in [("60000", "60000"), ("59999", "60000"), ("1000", "60000")] {
+        let err = PushLimits::from_values(values(&[(LIVENESS_MS, timeout), (REVERIFY_MS, interval)]))
+            .expect_err("a timeout not above the interval must fail startup");
+        assert!(err.to_string().contains(LIVENESS_MS), "names the variable: {err}");
+    }
+    assert!(PushLimits::from_values(values(&[(LIVENESS_MS, "60000")])).is_err());
+    for bad in ["0", "garbage"] {
+        let err = PushLimits::from_values(values(&[(LIVENESS_MS, bad)]))
+            .expect_err("0 and garbage fail startup");
+        assert!(err.to_string().contains(LIVENESS_MS), "names the variable: {err}");
+    }
+}
+
 /// `0` and garbage FAIL STARTUP naming the offending variable — the deliberate divergence
 /// from `admission_budget_from_value`, which falls back to its default. A cap an operator
 /// typed and that was silently dropped is a bound they believe is in force and is not.
@@ -575,6 +615,7 @@ fn close_codes_carry_their_retry_and_protocol_contract() {
         (CloseCode::Capacity, true, 1013),
         (CloseCode::SessionExpired, true, 1000),
         (CloseCode::Shutdown, true, 1001),
+        (CloseCode::LivenessTimeout, true, 1000),
     ] {
         assert_eq!(code.retryable(), retryable, "{code:?} retryable");
         assert_eq!(code.ws_code(), ws, "{code:?} ws code");
@@ -584,6 +625,9 @@ fn close_codes_carry_their_retry_and_protocol_contract() {
         assert_eq!(frame["retryable"], retryable);
         assert_eq!(frame["reason"], code.reason());
     }
+    let frame: serde_json::Value =
+        serde_json::from_str(&CloseCode::LivenessTimeout.frame()).expect("the close frame is JSON");
+    assert_eq!(frame["code"], "liveness_timeout");
 }
 
 // ---------------------------------------------------------------------------
@@ -1982,6 +2026,61 @@ async fn an_unavailable_reverification_holds_the_connection_until_max_stale() {
         "several ticks were attempted and none of them ended the connection early"
     );
 
+    server.abort();
+}
+
+/// A peer that binds and then never reads never answers the liveness ping (the client only
+/// auto-pongs while it is being polled), so the server hears nothing past the timeout and
+/// the re-verify tick closes it. Before the `last_inbound` check the socket simply stayed
+/// open and the read below hit the hang guard.
+#[tokio::test]
+async fn a_silent_peer_is_closed_as_liveness_timeout() {
+    let front = dev_front(PushLimits {
+        reverify_interval: Duration::from_secs(1),
+        liveness_timeout: Duration::from_millis(1500),
+        ..test_limits()
+    });
+    let (addr, server) = serve(&front).await;
+
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+
+    let (code, retryable) = expect_close(&mut ws).await;
+    assert_eq!(code, "liveness_timeout");
+    assert!(retryable, "a dead link is recoverable by reconnecting");
+
+    server.abort();
+}
+
+/// A peer that keeps reading answers every ping with a pong, so inbound traffic keeps
+/// arriving and the connection outlives ticks that a silent peer would not.
+#[tokio::test]
+async fn a_live_peer_answering_pings_is_not_closed() {
+    let front = dev_front(PushLimits {
+        reverify_interval: Duration::from_secs(1),
+        liveness_timeout: Duration::from_millis(2500),
+        ..test_limits()
+    });
+    let (addr, server) = serve(&front).await;
+
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+
+    let mut pings = 0;
+    let deadline = tokio::time::Instant::now() + GUARD;
+    while pings < 4 {
+        let frame = tokio::time::timeout_at(deadline, ws.next())
+            .await
+            .expect("pings keep arriving within the hang guard");
+        match frame {
+            Some(Ok(ClientMessage::Ping(_))) => pings += 1,
+            Some(Ok(ClientMessage::Pong(_))) => {}
+            other => panic!("a live peer must not be closed, got {other:?}"),
+        }
+    }
+
+    ws.close(None).await.expect("a clean client close");
     server.abort();
 }
 
