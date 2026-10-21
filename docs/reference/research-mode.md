@@ -3,8 +3,8 @@
 Detail for the **Research / Search Mode** rule in
 [`.agents/shared/research-navigation.md`](../../.agents/shared/research-navigation.md).
 This file holds the method menu and research-specific dispatch shape. Ask
-"how should I research this?" only when the method changes the answer. Ask
-the fan-out **count** every time a fan-out is picked. Cross-cutting
+"how should I research this?" only when the method changes the answer. There
+is no fixed fan-out count. Cross-cutting
 effort/navigation/prompt rules live in [subagent-dispatch.md](subagent-dispatch.md).
 
 ## Why not just grep
@@ -25,18 +25,18 @@ Offer the fitting subset:
   who calls Y / what implements this trait"). Start with one targeted `rg` result
   to establish the anchor, then query rust-analyzer; implementation and call
   hierarchy results are the part a text sweep cannot prove.
-- **Parallel research subagents** — fan out subagents, each a distinct **non-overlapping** angle (e.g. API surface / callers+consumers / event publishers+subscribers / config+env wiring). If picked, ask **"how many?"** (bands below). Dispatch mechanics per [subagent-dispatch.md](subagent-dispatch.md)—every one gets the nav guidance pasted in and reports which method it used.
+- **Parallel research subagents** — fan out subagents, each a distinct **non-overlapping** angle (e.g. API surface / callers+consumers / event publishers+subscribers / config+env wiring). Dispatch mechanics per [subagent-dispatch.md](subagent-dispatch.md)—every one gets the nav guidance pasted in and reports which method it used.
 - **Targeted main-model read** — small surface, one file end-to-end.
 - **Grep/Glob** — only when nothing else fits; acknowledge it's a lower bound.
 
 ## How research dispatch differs from implementation
 
-Research subagents fan out **in parallel** (multiple at once, distinct angles), use the best available research profile, are mostly **read-only**, do not commit, and are **synthesized in the main model**—never write a conclusion from one subagent. Implementation is sequential per plan step, uses an execution lane, reviews each diff, and commits completed units—see [implementation-mode.md](implementation-mode.md).
+Research subagents may fan out **in parallel** (distinct angles), are mostly **read-only**, do not commit, and are **synthesized in the main model**—never write a conclusion from one subagent. Give each question one owner; the main agent does not repeat their searches. Each handoff provides verified source anchors, conclusions, and open questions. Escalating a wide fan-out to the top-tier model multiplies cost by its width — name the reason or don't escalate. Implementation is sequential per plan step, uses an execution lane, reviews each diff, and commits completed units—see [implementation-mode.md](implementation-mode.md).
 
-## Subagent count bands
+## Choosing research questions
 
-Asked every time a fan-out is picked (count is task-specific, even mid-session):
+State what remains unanswered. Dispatch one agent per independent question that merits separate read-only work; use none when a targeted read answers it. Do not pad a fan-out to a fixed count, split one question between owners, or duplicate a completed search. Reuse finished research unless it is missing, stale, contradicted, or insufficient. Typical angles: API surface, callers+consumers, event publishers+subscribers, config+env wiring.
 
-- **2–4** — narrow / single-module.
-- **4–8** — multi-module.
-- **8–12** — whole-repo survey.
+## Stopping rule
+
+Stop once the evidence supports the decision or proposed change. Expand only for a concrete dependency, contradiction, or failing case. If a remaining point cannot be resolved with the available methods, state the uncertainty and its impact instead of repeating the same search.
