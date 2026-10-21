@@ -35,6 +35,9 @@ several policies. Owner decisions (2026-10-21) on each divergence:
 | 8 | Architecture lives only in a shared file; `CLAUDE.md` is anchors (found in plan review: `gamebackend.md` drifted from `CLAUDE.md:14-751`) | **Adopt** — `gamebackend.md` is the single source (Step 4b), `CLAUDE.md` anchors (Step 6) |
 | 9 | Below-threshold `[inline]` diffs get no review round (found in Step 3 review: `planning-dispatch.md` vs `CLAUDE.md:1031`) | **Adopt** the `.agents` rule — Step 6 drops CLAUDE.md's "every `[inline]` fix before commit" |
 | 10 | Tier conflicts between `CLAUDE.md` (MANDATORY) and `.agents` (RULE) for Plans & Status Docs, Research / Search Mode, Agent Memory Backup (found in Step 5 review) | **`.agents` RULE wins** — recorded in Step 6 |
+| 11 | Commit Message Format: MANDATORY in old `CLAUDE.md`, RULE in `.agents` (found in Step 6 review) | **RULE** |
+| 12 | "Ask how should I research this": always (old `CLAUDE.md`) vs only when the method changes the answer (`.agents`) | **Only when the method changes the answer** |
+| 13 | Mid-rollout lane-tag flip: "don't silently flip — ask" lost its "ask" in Step 6 | **Restore: ask the owner first** |
 
 Out of scope (Unreal-specific or not worth it now): all `arc-*`/`ue-*` skills, Unreal MCP
 (`.mcp.json`, `.claude/scripts/`), `arcsem` semantic index, `clang-nav`→`rust-nav` port
