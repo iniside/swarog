@@ -94,7 +94,8 @@ Do not ban `[fable]`.
 - `[mechanical]` — cheaper implementation lane: renames, scaffolding,
   N-similar edits, applying a fully specified step, compile fixes,
   JSON/config. Never spend a higher tier on a rename. Visual/UI design is
-  never `[mechanical]`. Tests are never `[mechanical]`.
+  never `[mechanical]`. Tests are never `[mechanical]`. Documentation prose is
+  never `[mechanical]`; it goes through `[docs]`.
 - `[test-author]` — the only lane that writes tests, always a separate step
   after the implementation it covers. Cheap/mechanical default; escalate
   only for a novel harness/topology (new splitproof assertion, event-plane
@@ -126,7 +127,7 @@ rollout, audit commit trailers against each step's lane.
 Tags are approved with the plan. Ask only for untagged/ad-hoc work; an
 authorized lane is not reopened. Effort is the Agent `effort:` parameter,
 default `"medium"`; prompt wording does not set it. Commit after each task
-(subagents may commit their own). Mid-rollout, do not silently flip a tag.
+(subagents may commit their own). Mid-rollout, never flip a step's lane tag silently — ask the owner first.
 
 **Review does not gate the next task — run them in parallel when the tasks
 are independent.** Every task still gets its `core-reviewer` pass, but that

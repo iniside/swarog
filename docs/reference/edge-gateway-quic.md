@@ -20,7 +20,7 @@ layers; only the transport is QUIC:
 1. **Serialization = MessagePack, schema-less, reflection-driven.** No protobuf, no FlatBuffers, no IDL, no
    codegen. On the JVM we reuse Jackson (`jackson-dataformat-msgpack`) over the *same* data classes the project
    already uses. On Unreal: reflect the UStruct → msgpack. Additive evolution comes free (map keys on the wire +
-   ignore-unknown, matching CLAUDE.md rule #6). Tradeoff: no compile-time client↔server contract — agreement by
+   ignore-unknown, matching `.agents/shared/gamebackend.md` Hard constraints #6). Tradeoff: no compile-time client↔server contract — agreement by
    convention + tests; a schema *document* can be added later without changing the wire format.
    - *Why not protobuf/FlatBuffers:* both are schema + codegen ("machinery"); FlatBuffers' only edge is zero-copy
      reads of large buffers, irrelevant for tiny meta-backend req/resp objects, and its API is heavier.

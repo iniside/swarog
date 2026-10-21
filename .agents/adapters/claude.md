@@ -31,8 +31,9 @@ pointer stubs. Use them; do not reimplement. Never use a git worktree.
   the shared dispatch-threshold list, or a compile/typo fix in a file this
   turn's approved step already has this agent editing.
 - `[independent]` / `[opus]` / `[fable]` — `subagent_type: "core-implementer"`
-  (visual/UI: `"mockup-implementer"`) with `model:"opus"` or `"fable"`. New
-  API, bus/registry/edge/lifecycle, cross-module behaviour, security
+  (visual/UI: `"mockup-implementer"`). `[opus]` → `model:"opus"`, `[fable]` →
+  `model:"fable"`, `[independent]` → the session's top tier (`fable` when the
+  session runs Fable, else `opus`). New API, bus/registry/edge/lifecycle, cross-module behaviour, security
   boundaries.
 - `[mechanical]` / `[sonnet]` — `model:"sonnet"`. Renames, scaffolding,
   N-similar edits, applying a fully specified step, compile fixes,
