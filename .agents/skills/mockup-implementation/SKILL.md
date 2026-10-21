@@ -35,7 +35,7 @@ backend lacked their fields, and "done" was claimed without a live render compar
    gaps go to the user as one question. This table goes into the implementer's
    prompt and later anchors the review.
 3. **Dispatch `mockup-implementer`** (`subagent_type: "mockup-implementer"`,
-   explicit `model:` ≥ opus, effort embedded in the prompt) with: the mockup file +
+   explicit `model:` ≥ opus, effort via the Agent `effort:` parameter) with: the mockup file +
    line ranges, the checklist, exact files to touch, and the repo invariants it must
    keep (it re-reads the `.agents/shared/gamebackend.md` → Hard constraints itself). It returns the diff + the
    data-source table + declared deviations.
