@@ -93,8 +93,8 @@ Do not ban `[fable]`.
   the independent-reviewer boundary.
 - `[mechanical]` — cheaper implementation lane: renames, scaffolding,
   N-similar edits, applying a fully specified step, compile fixes,
-  JSON/config. Visual/UI design is never `[mechanical]`. Tests are never
-  `[mechanical]`.
+  JSON/config. Never spend a higher tier on a rename. Visual/UI design is
+  never `[mechanical]`. Tests are never `[mechanical]`.
 - `[test-author]` — the only lane that writes tests, always a separate step
   after the implementation it covers. Cheap/mechanical default; escalate
   only for a novel harness/topology (new splitproof assertion, event-plane
@@ -155,7 +155,8 @@ every task commit, on that commit plus the cumulative diff from the
 task-start commit to `HEAD`. Prose-only commits (`.agents/`, `docs/`, plans)
 are reviewed the same way. Inline self-review is the banned failure mode —
 the context that wrote the code cannot judge it. Route by files-touched
-through `docs/reference/core-failure-taxonomy.md`. Add `proof-auditor` ONLY
+through `docs/reference/core-failure-taxonomy.md`, with a different method
+than the implementer used. Add `proof-auditor` ONLY
 when the diff touches a verify stage (verifyctl / archcheck / conformance /
 topiccheck / golden) or the test/gate is itself the risk surface — not for
 an ordinary fix that merely adds a unit test (`core-reviewer` already checks

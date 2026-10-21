@@ -3,8 +3,8 @@
 Use this adapter for Cursor Agent / Cursor CLI sessions after reading
 `.agents/shared/*.md`.
 
-`.cursorignore` excludes `CLAUDE.md`; if it is loaded anyway, do not treat its
-model names, trailers, hook paths, or plan path as yours. Also load
+`.cursorignore` excludes `CLAUDE.md`, an anchor index into `.agents` with no
+rules of its own. Also load
 `AGENTS.md` + `.agents/` + `.claude/agents/`. Shared rules plus this adapter
 win on model slugs, trailers, and plan path.
 

@@ -14,8 +14,8 @@ question, never a revised plan that quietly adopts the rejected shape.
   not an in-process plugin framework. Record:
   `memory/gamebackend-north-star-and-jvm-exploration.md`.
 - **Wipe is the current-phase schema strategy.** No data-migration bridges,
-  dual-writes, or compatibility columns. `CLAUDE.md` / `.agents/shared/core-rules.md`
-  Database and no-compat sections.
+  dual-writes, or compatibility columns. `.agents/shared/gamebackend.md` **Database** /
+  `.agents/shared/core-rules.md` **No Dual-Write, No Topology Branch, Wipe**.
 
 ## Tells
 

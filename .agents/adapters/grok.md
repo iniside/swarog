@@ -3,9 +3,10 @@
 Use this adapter for Grok Build / Grok harness sessions after reading
 `.agents/shared/*.md`.
 
-Grok auto-loads both `AGENTS.md` and `CLAUDE.md`. `CLAUDE.md` is the Claude
-Code copy of the workflow. Do not treat its model names, hook paths,
-trailers, or `C:\Users\lukas\.claude\plans\` path as yours. Shared rules plus
+Grok auto-loads both `AGENTS.md` and `CLAUDE.md`. `CLAUDE.md` is an anchor
+index into `.agents` with no rules of its own. Do not treat the Claude
+adapter's model names, hook paths, trailers, or
+`C:\Users\lukas\.claude\plans\` path as yours. Shared rules plus
 this adapter win on those conflicts.
 
 Do not claim or imply that Grok is Claude, Fable, Opus, or Sonnet. Do not

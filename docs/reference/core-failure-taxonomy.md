@@ -9,8 +9,8 @@ failing-branch proof → fix-on-fix chain). This document is the synthesis. It i
 source that the `core-implementer` / `core-reviewer` agent checklists derive from — update
 it when a NEW failure class shows up in a real commit, not from guesswork.
 
-Companion rules already in CLAUDE.md: **Fix the Authority, Not the Symptom**, **Adversarial
-Subagent Review**. This doc is the *empirical catalog* those two rules operate on.
+Companion rules in `.agents/shared/planning-dispatch.md`: **Fix the Authority, Not the
+Symptom**, **Adversarial Diff Review**. This doc is the *empirical catalog* those two rules operate on.
 
 ---
 
@@ -122,7 +122,7 @@ is released on cancel while the work keeps running.
   handle owned opaquely by `std::process::Child` when the tool needed it for job/console-ctrl
   (`02ff417`); ambient env read via ad-hoc `std::env::vars()` at multiple sites instead of one
   captured snapshot (`8e96c15`); argon2 permit owned by the async handler frame instead of the
-  blocking closure (accounts/admin — see CLAUDE.md admin section); scheduler aborted task's
+  blocking closure (accounts/admin — see `.agents/shared/gamebackend.md` admin entry); scheduler aborted task's
   JoinHandle never awaited (`0431926`); the whole lock/lease chain.
 - **Attack:** trace **who actually calls `Drop`/close/release** on this resource, and whether
   two code paths (owner vs borrower, async frame vs blocking closure, two `env::vars()` calls)
