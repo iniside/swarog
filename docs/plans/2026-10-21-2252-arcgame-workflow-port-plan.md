@@ -32,6 +32,7 @@ several policies. Owner decisions (2026-10-21) on each divergence:
 | 5 | No fixed subagent count; don't ask the count band every time | **Adopt** |
 | 6 | Comment-only review findings end the round; fixed inline, flagged comments deleted not reworded | **Adopt** |
 | 7 | Fix the Authority dropped from shared rules | **Keep swarog** — section stays MANDATORY |
+| 9 | Below-threshold `[inline]` diffs get no review round (found in Step 3 review: `planning-dispatch.md` vs `CLAUDE.md:1031`) | **Adopt** the `.agents` rule — Step 6 drops CLAUDE.md's "every `[inline]` fix before commit" |
 | 8 | Architecture lives only in a shared file; `CLAUDE.md` is anchors (found in plan review: `gamebackend.md` drifted from `CLAUDE.md:14-751`) | **Adopt** — `gamebackend.md` is the single source (Step 4b), `CLAUDE.md` anchors (Step 6) |
 
 Out of scope (Unreal-specific or not worth it now): all `arc-*`/`ue-*` skills, Unreal MCP

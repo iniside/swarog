@@ -66,7 +66,7 @@ Shared tags:
 | `[independent]` | Top-tier separate context (`core-implementer`; visual/UI uses `mockup-implementer`). |
 | `[mechanical]` | Cheap implementation. Visual/UI never this. Tests never this. |
 | `[test-author]` | Only lane that writes tests; always a later step. |
-| `[docs]` | `docs-writer`. Only lane that writes documentation prose; runs last, against landed code. |
+| `[docs]` | `docs-writer`. Documentation prose in a planned docs step; a standalone comment edit stays `[inline]`. Runs last, against landed code. |
 | `[review]` | `core-reviewer` (read-only). |
 
 Synonym table (adapters translate; new non-Claude plans write the shared
