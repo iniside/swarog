@@ -3,8 +3,8 @@
 Start with the repository-level documents:
 
 - [README](../README.md) — architecture overview and current run/verify commands.
-- [AGENTS](../AGENTS.md) — non-Claude entry; points at `.agents/shared/` and
-  the active runtime adapter.
+- [AGENTS](../AGENTS.md) — universal entry and action router: which `.agents/`
+  authorities to load before each action.
 - [CLAUDE](../CLAUDE.md) — anchor index over `.agents/` that imports `AGENTS.md`;
   Claude runtime mechanics live in `.agents/adapters/claude.md`.
   Cursor ignores this file via `.cursorignore`.
