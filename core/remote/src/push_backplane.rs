@@ -455,7 +455,7 @@ fn split_batch(batch: Vec<Envelope>, drops: &Drops) -> Vec<Vec<Envelope>> {
             tracing::debug!(
                 topic = %env.msg.topic,
                 size,
-                budget = BATCH_BYTE_BUDGET,
+                budget,
                 "push backplane: message exceeds the transport frame budget"
             );
             drops.record(1, "oversized-message");
