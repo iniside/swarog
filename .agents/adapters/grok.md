@@ -64,7 +64,8 @@ Project Grok agents live in `.grok/agents/`. Project Grok rules live in
   `capability_mode: "read-only"`, `model: "grok-4.5"`. Listing-only uses
   the same type and model.
 - Proof audit — `spawn_subagent` with `subagent_type: "proof-auditor"`,
-  `capability_mode: "execute"`, `model` ≥ the author's tier.
+  `capability_mode: "execute"`, `model` ≥ the author's tier,
+  `isolation: "none"`.
 
 Every `spawn_subagent` call must pass explicit `model:`. There is no
 intentional inheritance path. Grok has no spawn-time effort field; state the

@@ -68,9 +68,10 @@ stops and reports. Verify every finding before acting on it.
 - log triage — after a failed `verifyctl` / cargo run, pass the log path;
   return errors grouped by file and root cause, first error first, with
   `file:line`.
-- diff lint — before `[review]`, pass the commit range; check the CLAUDE.md
-  Comments rules, no dual-write / old rail left alive, and no topology branch
-  in domain code. Advisory only: it never replaces or shrinks the `[review]`
+- diff lint — before `[review]`, pass the commit range; check
+  `.agents/shared/core-rules.md` **Comments** and **No Dual-Write, No
+  Topology Branch, Wipe** (no dual-write / old rail left alive, no topology
+  branch in domain code). Advisory only: it never replaces or shrinks the `[review]`
   round.
 - trailer audit — after multi-subagent rollouts, pass the commit range and
   intended lanes; return each commit whose `Co-Authored-By` mismatches.
