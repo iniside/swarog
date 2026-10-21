@@ -3477,7 +3477,13 @@ async fn push_assertions(
         let (cert, key) = (ca_cert.clone(), ca_key.clone());
         async move {
             let addr = edge.context("the backplane injector needs an internal edge")?;
-            pushws::deliver_batch(addr, &cert, &key, producer, seq, &batch).await
+            // A stuck front handler (e.g. its per-producer gate) must fail the proof, not hang it.
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                pushws::deliver_batch(addr, &cert, &key, producer, seq, &batch),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("push.deliver seq {seq}: no reply within 10s"))?
         }
     };
 
@@ -4195,6 +4201,11 @@ async fn push_invoke_assertions(
                 .iter()
                 .all(|r| status(r).as_deref() == Some("Ok"))
             && ph12_me_id == ph12_player
+            && ph12_storage
+                .as_ref()
+                .ok()
+                .and_then(|v| v.pointer("/value/version").and_then(|n| n.as_i64()))
+                == Some(1)
             && ph12_storage_rows == 1
             && ph12_leader.as_deref() == Some(ph12_player.as_str())
             && ph12_char_owner.as_deref() == Some(ph12_player.as_str())
@@ -4262,7 +4273,8 @@ async fn push_invoke_assertions(
             && !ph13_ticket.is_empty()
             && ph13_delete_code == 200
             && ph13_sessions == 0
-            && status(&ph13_after).as_deref() == Some("Unauthorized"),
+            && status(&ph13_after).as_deref() == Some("Unauthorized")
+            && err(&ph13_after).as_deref() == Some("unauthorized"),
         format!(
             "guest={ph13_code} ack={ph13_ack} before={ph13_before:?} begin={ph13_begin_code} \
              delete={ph13_delete_code} sessions={ph13_sessions} after={ph13_after:?} pid={}",
@@ -6378,9 +6390,11 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
     // core/remote `readiness_verdict_*` unit tests (zero-I/O by construction); this split
     // scenario proves readiness ACCURACY + RECOVERY end-to-end across gateway-svc's 6 stubs.
 
-    // [PH14] a Remote dispatch failure reaches a /push client as a result, and the socket
-    // keeps serving. The 45s budget sits above the 30s invoke timeout because the first call
-    // after a kill can hang; together this adds up to ~50s inside the kill window.
+    // [PH14] the remote pool's own failure reaches a /push client as a result, and the
+    // socket keeps serving. The first call may hang on the dead peer's cached connection
+    // until the front's 30s invoke timeout, so it gets 45s and only absorbs that; the
+    // second, bounded below the invoke timeout, must be the pool's answer. Together this
+    // adds up to ~60s inside the kill window.
     let ws = format!("ws://{}", g.trim_start_matches("http://"));
     let (ph14_code, ph14_guest) = create_guest(ctx, &g).await?;
     let mut ph14 = PushClient::connect(&ws, &ph14_guest.token, "dev-key-client").await?;
@@ -6388,12 +6402,15 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
         ph14.next_frame(Duration::from_secs(10)).await,
         Ok(Some(Frame::Ack { .. }))
     );
-    let ph14_list = ph14
+    let ph14_absorb = ph14
         .invoke(1, "characters.list", serde_json::json!({}), Duration::from_secs(45))
+        .await;
+    let ph14_list = ph14
+        .invoke(2, "characters.list", serde_json::json!({}), Duration::from_secs(10))
         .await;
     let ph14_get = ph14
         .invoke(
-            2,
+            3,
             "storage.get",
             serde_json::json!({
                 "collection": "splitproof",
@@ -6408,19 +6425,21 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
             .ok()
             .and_then(|v| v.get(key).and_then(|s| s.as_str()).map(str::to_string))
     };
-    let ph14_err = field(&ph14_list, "err");
+    let ph14_err = field(&ph14_list, "err").unwrap_or_default();
     p.check(
-        "[PH14] characters-svc dead: characters.list over gateway-svc /push -> Unavailable result \
-         (not a front refusal); storage.get on the same socket -> NotFound",
+        "[PH14] characters-svc dead: characters.list over gateway-svc /push -> an Unavailable \
+         result carrying the remote pool's no-reachable-instance error; storage.get on the \
+         same socket -> NotFound",
         ph14_code == 201
             && ph14_ack
+            && field(&ph14_absorb, "status").as_deref() == Some("Unavailable")
             && field(&ph14_list, "status").as_deref() == Some("Unavailable")
-            && !matches!(
-                ph14_err.as_deref(),
-                Some("rate limited" | "too many in-flight invokes")
-            )
+            && ph14_err.starts_with("remote pool: no reachable instance")
             && field(&ph14_get, "status").as_deref() == Some("NotFound"),
-        format!("guest={ph14_code} ack={ph14_ack} list={ph14_list:?} get={ph14_get:?}"),
+        format!(
+            "guest={ph14_code} ack={ph14_ack} absorb={ph14_absorb:?} list={ph14_list:?} \
+             get={ph14_get:?}"
+        ),
     );
     ph14.disconnect().await;
 
