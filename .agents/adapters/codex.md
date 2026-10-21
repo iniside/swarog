@@ -53,8 +53,9 @@ Never use a git worktree. Never reuse a reviewer conversation for round 2.
 Do not hardcode `model:"fable"`, `model:"opus"`, or `model:"sonnet"` in
 Codex instructions unless those exact models are exposed by a tool in the
 current session. If a tool has its own model field, set it deliberately and
-name the actual model/tool used. Effort does not inherit; embed it in the
-prompt when a subagent exists. Comments: default NONE.
+name the actual model/tool used. Effort does not inherit: set `reasoning_effort` in the live
+call when the tool has that field; prompt wording alone does not configure it.
+If the tool has no such field, say so in the handoff. Comments: default NONE.
 
 The rust navigation chain does not inherit; paste it into every
 code-touching prompt: rust-analyzer → targeted read → research subagent →
@@ -69,7 +70,8 @@ actually executed.
 
 ## Skills
 
-Use project skills under `.claude/skills/` when this runtime can load them
+Shared skills live in `.agents/skills/` (`.claude/skills/` holds Claude pointer
+stubs); use them when this runtime can load them
 (`safe-verification`, `architecture-review`, `split-topology-debugger`,
 `add-game-module`, `mockup-implementation`). Do not reimplement. Follow
 `safe-verification` before any `cargo test` / `devctl up` / `verifyctl`.

@@ -22,8 +22,8 @@ During plan mode, edit only `C:\Users\lukas\.claude\plans\<slug>.md`. After
 user approval, copy the plan into
 `docs/plans/YYYY-MM-DD-HHMM-<topic>-plan.md`.
 
-Project skills live under `.claude/skills/`. Use them; do not reimplement.
-Never use a git worktree.
+Shared skills live in `.agents/skills/`; `.claude/skills/` holds Claude
+pointer stubs. Use them; do not reimplement. Never use a git worktree.
 
 ## Dispatch Mapping
 
@@ -51,29 +51,49 @@ Never use a git worktree.
   tier. Only when the diff touches a verify stage or the test/gate is the
   risk surface.
 
-Effort does not inherit; embed it in the subagent prompt. The rust
+Effort does not inherit: set it with the Agent call's `effort:` parameter
+(`low`|`medium`|`high`|`xhigh`|`max`), never prompt wording; default
+`effort:"medium"` unless the owner or plan names another. The rust
 navigation chain does not inherit; paste it into every code-touching
 subagent prompt: rust-analyzer → targeted read → research subagent → grep
 as a labelled lower bound. Comments: default NONE; name at most the one or
 two things that earn a line in that file.
 
+## Haiku Lanes
+
+Read-only checklist work runs on `subagent_type:"Explore"`, `model:"haiku"`.
+Haiku reports; it never edits, builds, commits, or decides. On a gap it
+stops and reports. Verify every finding before acting on it.
+
+- log triage — after a failed `verifyctl` / cargo run, pass the log path;
+  return errors grouped by file and root cause, first error first, with
+  `file:line`.
+- diff lint — before `[review]`, pass the commit range; check the CLAUDE.md
+  Comments rules, no dual-write / old rail left alive, and no topology branch
+  in domain code. Advisory only: it never replaces or shrinks the `[review]`
+  round.
+- trailer audit — after multi-subagent rollouts, pass the commit range and
+  intended lanes; return each commit whose `Co-Authored-By` mismatches.
+
 ## Commit Trailers
 
 Use the executing model. A tag selects a tier; the subagent writes whatever
-that tier currently is.
+that tier currently is. Do not hardcode a version per lane.
 
 ```text
-Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
-Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
-Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+Co-Authored-By: Claude <Family> <Version> <noreply@anthropic.com>
 ```
+
+Fill `<Family> <Version>` from the executing session's own model identity,
+never from an example or another lane.
 
 After multi-subagent rollouts, audit recent commit trailers against the
 intended lanes before reporting done.
 
 ## Skills
 
-Use the project skills under `.claude/skills/`:
+Use the shared skills in `.agents/skills/` (`.claude/skills/` holds Claude
+pointer stubs):
 
 - `safe-verification` — before any `cargo test` / `devctl up` / `verifyctl`
 - `architecture-review` — fortress / topology-blind / seam law

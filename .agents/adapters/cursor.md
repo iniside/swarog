@@ -3,7 +3,8 @@
 Use this adapter for Cursor Agent / Cursor CLI sessions after reading
 `.agents/shared/*.md`.
 
-`.cursorignore` keeps `CLAUDE.md` out of this runtime's context. Load
+Cursor auto-loads `CLAUDE.md` (the Claude Code copy of the workflow); do not
+treat its model names, trailers, hook paths, or plan path as yours. Also load
 `AGENTS.md` + `.agents/` + `.claude/agents/`. Shared rules plus this adapter
 win on model slugs, trailers, and plan path.
 
@@ -56,7 +57,8 @@ Write `subagent_type` first, before `description` and before `prompt`, when
 dispatching `core-reviewer`.
 
 Every Task call passes explicit `model:` from the current schema (see
-preferred families above). Effort does not inherit; embed it in the prompt.
+preferred families above). Cursor has no spawn-time effort field; state the requested effort in the
+prompt and report that it is not enforced.
 The rust navigation chain does not inherit; paste it into every
 code-touching subagent prompt: rust-analyzer → targeted read → research
 subagent → grep as a labelled lower bound. Comments: default NONE; name at
@@ -105,8 +107,8 @@ multi-subagent rollout, audit recent trailers against the intended lanes.
 
 ## Skills
 
-Use the project skills under `.claude/skills/` (Cursor's Claude-compat skill
-roots). Do not reimplement:
+Shared skills live in `.agents/skills/` (`.claude/skills/` holds Claude pointer
+stubs; Cursor reads Claude-compat skill roots). Do not reimplement:
 
 - `safe-verification` — before any `cargo test` / `devctl up` / `verifyctl`
 - `architecture-review` — fortress / topology-blind / seam law

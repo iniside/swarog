@@ -64,15 +64,32 @@ Project Grok agents live in `.grok/agents/`. Project Grok rules live in
   `capability_mode: "read-only"`, `model: "grok-4.5"`. Listing-only uses
   the same type and model.
 - Proof audit — `spawn_subagent` with `subagent_type: "proof-auditor"`,
-  `capability_mode: "read-only"`, `model` ≥ the author's tier.
+  `capability_mode: "execute"`, `model` ≥ the author's tier.
 
 Every `spawn_subagent` call must pass explicit `model:`. There is no
-intentional inheritance path. Grok has no spawn-time effort field; embed
-the requested effort in the prompt. The rust navigation chain does not
+intentional inheritance path. Grok has no spawn-time effort field; state the
+requested effort in the prompt and report that it is not enforced. The rust navigation chain does not
 inherit; paste it into every code-touching subagent prompt: rust-analyzer
 → targeted read → research subagent → grep as a labelled lower bound.
 Comments: default NONE; name at most the one or two things that earn a
 line in that file.
+
+## Reviewers Need Shell And Git
+
+`core-reviewer` and `proof-auditor` **must** run `git show` / `git diff`
+themselves: the real commit, never the author's summary, never a diff pasted
+by the parent.
+
+Do **not** pass `capability_mode: "read-only"` on those two types. Read-only
+strips shell, so the reviewer cannot see the commit, hangs grepping the live
+tree, and the parent ends up pasting the diff.
+
+Use `capability_mode: "execute"`: shell and git, no file edits. Instruct the
+prompt to run `git show <sha>` (or `git diff` for uncommitted work) as the
+first action. They still must not edit, stash, restore, or reset.
+
+Explore / listing-only research stays `"read-only"`; it is not judging a
+diff.
 
 ## Commits
 
@@ -89,8 +106,8 @@ multi-subagent rollout, audit recent trailers against the intended lanes.
 
 ## Skills
 
-Use the project skills under `.claude/skills/` — Grok discovers Claude-compat
-skill roots. Do not reimplement:
+Shared skills live in `.agents/skills/` (`.claude/skills/` holds Claude pointer
+stubs; Grok discovers Claude-compat skill roots). Do not reimplement:
 
 - `safe-verification` — before any `cargo test` / `devctl up` / `verifyctl`
 - `architecture-review` — fortress / topology-blind / seam law
