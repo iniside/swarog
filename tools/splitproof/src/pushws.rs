@@ -254,22 +254,26 @@ impl PushClient {
         .await
     }
 
-    /// The `response` envelope of the `result` carrying `id`, within `budget`. A buffered
-    /// `close` fails at once; a result already buffered by an earlier wait is taken from the
-    /// buffer; otherwise every other frame read meanwhile is buffered for later
-    /// `next_frame`/`await_*`/`await_result` calls.
+    /// The `response` envelope of the `result` carrying `id`, within `budget`. The buffer is
+    /// scanned in arrival order: a matching `result` is removed and returned, a `close`
+    /// reached first fails (and stays buffered). Otherwise the socket is read, and every
+    /// other frame read meanwhile is buffered for later `next_frame`/`await_*`/`await_result`
+    /// calls.
     pub async fn await_result(&mut self, id: i64, budget: Duration) -> Result<serde_json::Value> {
-        if let Some(frame) = self.buffered.iter().find(|f| matches!(f, Frame::Close { .. })) {
-            bail!("socket closed before the result of invoke {id}: {frame:?}");
-        }
-        let buffered_match = self
-            .buffered
-            .iter()
-            .position(|f| matches!(f, Frame::Result { id: got, .. } if *got == id));
-        if let Some(Frame::Result { response, .. }) =
-            buffered_match.and_then(|at| self.buffered.remove(at))
-        {
-            return Ok(response);
+        let first = self.buffered.iter().position(|f| {
+            matches!(f, Frame::Close { .. })
+                || matches!(f, Frame::Result { id: got, .. } if *got == id)
+        });
+        if let Some(at) = first {
+            if let Frame::Close { .. } = &self.buffered[at] {
+                bail!(
+                    "socket closed before the result of invoke {id}: {:?}",
+                    self.buffered[at]
+                );
+            }
+            if let Some(Frame::Result { response, .. }) = self.buffered.remove(at) {
+                return Ok(response);
+            }
         }
         let deadline = Instant::now() + budget;
         loop {
