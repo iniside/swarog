@@ -176,8 +176,8 @@ fn send_delegates_to_the_sink_and_never_conflates_local_with_queued() {
 // ---- The backplane codec ----------------------------------------------------
 
 /// The batch codec is the seam `core/remote` encodes and `modules/gateway` decodes:
-/// every [`Target`] variant survives it, and ORDER is the contract (one call per batch
-/// exists precisely so frames cannot invert between topologies).
+/// every [`Target`] variant survives it, and slice order is preserved within a batch
+/// (order across batches is the receiver's per-producer `seq` gate, which drops late ones).
 #[test]
 fn encode_batch_round_trips_every_target_variant_in_order() {
     let batch = vec![

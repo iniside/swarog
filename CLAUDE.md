@@ -485,11 +485,12 @@ never a silent last-writer-wins overwrite.
 - **gateway** — the front-door module: HTTP ops routing (Local vs Remote purely by
   slot presence; peer addresses are injected by `cmd/*` via `remote::Stub` →
   `opsapi::PEER_SLOT` contributions — the gateway module itself never reads env),
-  a `GET /push` WebSocket hub (a hub is a topic-prefix label plus an outbound lane — no
+  a `GET /push` WebSocket hub (a hub is just a topic-prefix label — no
   per-hub subscription or authz; server-minted connection id,
   `Target::Player|Group|All`, ephemeral non-authorizing groups, front-local
-  presence default off; each `message` frame carries a `hub` label with its own
-  outbound lane, and a client may `invoke` any `#[http]`-bound player op over the
+  presence default off; each `message` frame carries a `hub` label and rides one
+  of at most 16 event lanes (the first 15 named hubs get their own, the rest share lane
+  `""`), and a client may `invoke` any `#[http]`-bound player op over the
   socket and get a correlated `result` under the same API-key policy and, for
   player-auth ops, session check) resolving `push::Target`s against the sockets it owns
   and contributing the inbound `push.deliver` face to `edge::EDGE_SLOT` so a

@@ -212,12 +212,14 @@ the oldest.
 
 A drain task sends the queued messages to every front as `push.deliver` calls, each
 a batch `{"producer": u64, "seq": u64, "envelopes": [...]}`. `producer` is random per
-process start and `seq` rises by one per call. The front keeps the highest `seq`
+process start and `seq` rises with every encoded chunk (a chunk that fails to encode
+leaves a gap; the receiver needs only that it rises). The front keeps the highest `seq`
 applied per producer and DROPS a batch whose `seq` is not above it (a call that
 timed out on the sender may still be dispatched late). Ordering is therefore per
 producer: a late batch is lost, never delivered out of order. Order across
-producers is undefined in both topologies. The front forgets a producer idle for
-300 s.
+producers is undefined in both topologies. A producer's entry is evicted lazily: only
+when a new producer is first seen, and only if idle past 300 s and held by no
+in-flight delivery.
 
 `push.deliver` has no authorization beyond the internal mTLS edge. A message
 payload over 32 KiB is dropped and counted by the front, whatever its origin.

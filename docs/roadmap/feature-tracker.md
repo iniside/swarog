@@ -341,14 +341,21 @@ into later fires. The owner cap (10,000) and purge share an advisory lock.
 
 - **2026-10-21** — Push hub (row 8): backplane batches now carry a `producer` id and
   per-producer `seq` (`359535a`), and gateway-svc drops a batch arriving after a newer
-  one from the same producer, so ordering is per producer rather than topology-blind.
+  one from the same producer: ordering is per producer, and in the split a late batch is
+  dropped, never re-ordered (the monolith has no backplane).
   A `/push` socket with no inbound frame (a pong counts) within `PUSH_LIVENESS_TIMEOUT_MS`
   (default 1.5x the re-verify interval; an explicit value at or below the interval now
   fails startup) closes `liveness_timeout`. Split-proof gained `[PH12]`-`[PH15]`
   (pipelined multi-module invoke, revocation under a live socket, remote-pool failure as
   a result, late-batch drop); false ordering/capacity/liveness prose corrected.
   [Plan](../plans/2026-10-21-2027-push-routing-ordering-and-liveness-plan.md).
-  Acceptance (Step 9) is not recorded here.
+  Step 9 acceptance, run `verify-1792616200-54429-317230a0` (HEAD 3aade5c + 49c572a), NOT
+  green: split-proof PASS, 258 assertions / 0 failed, including `[PH12]`-`[PH15]`,
+  `[PH12m]` and `[PH13m]`; blocking `test` FAIL on one unrelated test,
+  `inventory::sweep_handler_survivor_untouched_and_ignores_foreign_schedule_name`;
+  blocking `audit` FAIL on 12 RustSec advisories published after the last green run
+  (quinn-proto x5, rustls x4, rustls-webpki, webpki-roots, webpki-root-certs,
+  event-listener); every other blocking stage PASS.
 
 - **2026-10-05** — Parties landed: the `party` fortress (18th) and `party-svc`
   (HTTP 8098 / internal edge 9017), plan Steps 6-11 (`ced9662`..`bf71d79`). First
