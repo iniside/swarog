@@ -499,13 +499,12 @@ async fn drain_chunks(envs: Vec<Envelope>, n: usize) -> Vec<(push::Batch, usize)
     out
 }
 
-/// `a` and `b` such that the stamped batch `[a, b]` encodes to exactly `budget + extra`
-/// bytes: an envelope's standalone size already includes the header, and the second one
-/// costs one separator.
 fn tags(batch: &push::Batch) -> Vec<String> {
     batch.envelopes.iter().map(|e| e.msg.topic[..1].to_string()).collect()
 }
 
+/// `a` and `b` such that the widest-stamped batch `[a, b]` encodes to exactly `budget_plus`
+/// bytes (each standalone size includes the header; the second costs one separator).
 fn pair_sized_to(budget_plus: usize) -> (Envelope, Envelope) {
     let a_total = BATCH_BYTE_BUDGET / 2;
     let b_total = budget_plus + push::BATCH_HEADER_MAX - 1 - a_total;
