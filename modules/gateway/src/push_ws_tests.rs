@@ -410,12 +410,14 @@ fn push_limits_unset_or_blank_values_keep_the_defaults() {
     assert_eq!(unset.write_deadline, d.write_deadline);
     assert_eq!(unset.reverify_interval, d.reverify_interval);
     assert_eq!(unset.max_stale, d.max_stale);
+    assert_eq!(unset.liveness_timeout, d.liveness_timeout);
     assert!(!unset.presence, "presence is OFF by default");
     assert!(unset.trusted_proxies.is_empty());
 
     let blank = PushLimits::from_values(values(&[
         (MAX_CONNECTIONS, ""),
         (HANDSHAKE_MS, "   "),
+        (LIVENESS_MS, ""),
         (PRESENCE, ""),
         (TRUSTED_PROXIES, ""),
     ]))
@@ -440,6 +442,7 @@ fn push_limits_parse_every_knob_from_values() {
         (WRITE_MS, "17"),
         (REVERIFY_MS, "18"),
         (MAX_STALE_MS, "19"),
+        (LIVENESS_MS, "37"),
         (PRESENCE, "1"),
         (TRUSTED_PROXIES, "10.0.0.0/8, 127.0.0.1"),
     ]))
@@ -454,6 +457,7 @@ fn push_limits_parse_every_knob_from_values() {
     assert_eq!(limits.write_deadline, Duration::from_millis(17));
     assert_eq!(limits.reverify_interval, Duration::from_millis(18));
     assert_eq!(limits.max_stale, Duration::from_millis(19));
+    assert_eq!(limits.liveness_timeout, Duration::from_millis(37));
     assert!(limits.presence);
     assert_eq!(
         limits.trusted_proxies,
@@ -2029,10 +2033,8 @@ async fn an_unavailable_reverification_holds_the_connection_until_max_stale() {
     server.abort();
 }
 
-/// A peer that binds and then never reads never answers the liveness ping (the client only
-/// auto-pongs while it is being polled), so the server hears nothing past the timeout and
-/// the re-verify tick closes it. Before the `last_inbound` check the socket simply stayed
-/// open and the read below hit the hang guard.
+/// The slot is released only after `serve` wrote the close, and the client is not polled
+/// before then, so no pong can refresh liveness; a regression fails at `await_live`'s guard.
 #[tokio::test]
 async fn a_silent_peer_is_closed_as_liveness_timeout() {
     let front = dev_front(PushLimits {
@@ -2044,9 +2046,11 @@ async fn a_silent_peer_is_closed_as_liveness_timeout() {
 
     let mut ws = dial_authed(addr, "dev-alice", KEY).await;
     expect_ack(&mut ws).await;
-    tokio::time::sleep(Duration::from_millis(2500)).await;
+    await_live(&front.push_hub(), 0).await;
 
-    let (code, retryable) = expect_close(&mut ws).await;
+    let (code, retryable) = tokio::time::timeout(GUARD, expect_close(&mut ws))
+        .await
+        .expect("the typed close is already queued on the socket");
     assert_eq!(code, "liveness_timeout");
     assert!(retryable, "a dead link is recoverable by reconnecting");
 
