@@ -38,6 +38,8 @@ pointer stubs. Use them; do not reimplement. Never use a git worktree.
 - `[mechanical]` / `[sonnet]` — `model:"sonnet"`. Renames, scaffolding,
   N-similar edits, applying a fully specified step, compile fixes,
   JSON/config. Visual/UI is never this lane. Tests are never this lane.
+- `[docs]` — `subagent_type: "docs-writer"`, `model:"sonnet"` default;
+  `"opus"` / `"fable"` only when the doc must judge what a seam means.
 - `[test-author]` — `subagent_type: "test-author"`, `model:"sonnet"` default;
   `"opus"` / `"fable"` only for a novel harness/topology. The only lane that
   writes tests.

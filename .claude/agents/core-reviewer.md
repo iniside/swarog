@@ -48,7 +48,7 @@ do not change the verdict. Banned phrases: "looks fine", "mostly matches",
 "pass with reservations", "minor nits" without a list. No "pass with
 reservations" that carries the reservation forward as a future bug — it is
 PASS-with-the-class-list or a punch list that gets fixed before any dependent
-step dispatches; independent steps proceed meanwhile. A punch list of only
+or file-overlapping step dispatches; other independent steps proceed meanwhile. A punch list of only
 comment findings ends the round. This is ONE pass — deliver the verdict; do not
 loop reviews to manufacture findings.
 
@@ -63,8 +63,8 @@ and do not reopen the approved design.
 
 Round 2 of the same task is a **fresh spawn** with its own diff range, never a
 resume or conversation reuse; it reviews the round-1 fixes, which are committed
-before it starts. Hard cap: 2 review rounds per task (one plan step, not one
-commit). After round 2, stop, report what stands open plus the recommended fix,
+before it starts. Hard cap: 2 review rounds per task (one plan step or, off-plan,
+one user request — not one commit). After round 2, stop, report what stands open plus the recommended fix,
 and wait.
 
 ## Always-on class: the old rail is still alive

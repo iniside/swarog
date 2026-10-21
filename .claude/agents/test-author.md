@@ -48,7 +48,9 @@ named assertion in `tools/splitproof`, not by a monolith unit test.
 
 1. The assertion is **dependent on the once-wrong line running** — not a test
    sitting near it. A test that stays green if you revert the fix is a defect;
-   say so rather than shipping a vacuous green.
+   say so rather than shipping a vacuous green. For a new feature with no
+   once-wrong line, the assertion must fail on a concrete violation of the
+   behaviour the step requires.
 2. It runs on the **at-risk topology**. A split-only risk (registry swap, edge
    dispatch, cross-process event delivery) needs a `tools/splitproof` assertion,
    not a monolith-only test.
