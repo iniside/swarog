@@ -3701,6 +3701,52 @@ async fn push_assertions(
         b.disconnect().await;
         c.disconnect().await;
 
+        // [PH15] gateway-svc drops a backplane batch whose seq is not above its producer's
+        // high-water mark. Each injection returns only after the front's handler ran, and
+        // all three share the one `ordertest` lane, so had seq 3 been enqueued it would
+        // precede the sentinel: the first of the two seen settles it with no timer.
+        let (ph15_code, ph15_guest) = create_guest(ctx, base).await?;
+        let mut ph15 = PushClient::connect(&ws, &ph15_guest.token, "dev-key-client").await?;
+        let ph15_ack = matches!(
+            ph15.next_frame(Duration::from_secs(10)).await,
+            Ok(Some(Frame::Ack { .. }))
+        );
+        let ph15_producer: u64 = rand::random();
+        let ph15_to = |topic: &str| {
+            vec![push::Envelope::new(
+                push::Target::Player(ph15_guest.player_id.clone()),
+                push::Message::new(topic, b"{}".to_vec()),
+            )]
+        };
+        let ph15_new = deliver(ph15_producer, 5, ph15_to("ordertest.new")).await;
+        let ph15_old = deliver(ph15_producer, 3, ph15_to("ordertest.old")).await;
+        let ph15_sentinel = deliver(ph15_producer, 6, ph15_to("ordertest.sentinel")).await;
+        let ph15_first_new = ph15.await_topic("ordertest.new", Duration::from_secs(10)).await;
+        let ph15_next = ph15
+            .await_frame(Duration::from_secs(10), |f| {
+                matches!(f.topic(), Some("ordertest.old" | "ordertest.sentinel"))
+            })
+            .await;
+        p.check(
+            &format!(
+                "[PH15{tag}] backplane batches seq 5, 3, 6 from one producer -> gateway-svc \
+                 delivers 5, drops the late 3, delivers 6"
+            ),
+            ph15_code == 201
+                && ph15_ack
+                && ph15_new.is_ok()
+                && ph15_old.is_ok()
+                && ph15_sentinel.is_ok()
+                && matches!(&ph15_first_new, Some(Frame::Message { hub, .. }) if hub == "ordertest")
+                && ph15_next.as_ref().and_then(Frame::topic) == Some("ordertest.sentinel"),
+            format!(
+                "guest={ph15_code} ack={ph15_ack} deliver_new={ph15_new:?} \
+                 deliver_old={ph15_old:?} deliver_sentinel={ph15_sentinel:?} \
+                 new={ph15_first_new:?} next={ph15_next:?}"
+            ),
+        );
+        ph15.disconnect().await;
+
         // [PH5] presence, which the Proof fleet turns on with `PUSH_PRESENCE=1`
         // (default-off in `gateway::PushLimits` and left off for the Development fleet —
         // see tools/processctl/src/fleet.rs). The watcher must observe BOTH edges: an
@@ -3813,11 +3859,11 @@ async fn push_assertions(
     Ok(())
 }
 
-/// `[PH7]`-`[PH11]`: player ops invoked over `/push`. The invoke runs `handle_player`, so in
+/// `[PH7]`-`[PH13]`: player ops invoked over `/push`. The invoke runs `handle_player`, so in
 /// the split every op below is dispatched Remote from gateway-svc to its owning svc over
 /// the internal edge, and in the monolith Local — the same frames either way.
 ///
-/// At most four frames per socket stay inside the per-connection inbound bucket (burst 20);
+/// At most five frames per socket stay inside the per-connection inbound bucket (burst 20);
 /// a frame over it is dropped silently and would read as a missing result, not a denial.
 #[allow(clippy::too_many_arguments)]
 async fn push_invoke_assertions(
@@ -4053,6 +4099,177 @@ async fn push_invoke_assertions(
             && ph10_ended,
         format!("ack={ph10_ack} close={ph10_close:?} socket_ended={ph10_ended}"),
     );
+
+    // [PH12] five invokes owned by five different modules are written on one socket before
+    // any result is read, then awaited newest-first. Each answer must be its own op's,
+    // DB-verified as the session's player. In the split each is dispatched Remote to a
+    // different svc. The claim is pipelined and correlated, not concurrently in flight.
+    let (ph12_player, ph12_token) = register_capture(
+        ctx,
+        base,
+        &format!("push-pipe-{suffix}@test.local"),
+        "PushPipe",
+    )
+    .await?;
+    let mut ph12 = PushClient::connect(ws, &ph12_token, "dev-key-client").await?;
+    let ph12_ack = matches!(
+        ph12.next_frame(Duration::from_secs(10)).await,
+        Ok(Some(Frame::Ack { .. }))
+    );
+    let ph12_name = format!("ph12-{suffix}");
+    let ph12_sends = [
+        (1, "accounts.me", serde_json::json!({})),
+        (
+            2,
+            "storage.put",
+            serde_json::json!({
+                "collection": "splitproof",
+                "key": ph12_name,
+                "value": "{\"n\":12}",
+                "expected_version": 0,
+                "acl": "",
+            }),
+        ),
+        (3, "party.create", serde_json::json!({})),
+        (4, "characters.create", serde_json::json!({ "name": ph12_name, "class": "" })),
+        (
+            5,
+            "groups.create",
+            serde_json::json!({ "name": ph12_name, "join_policy": "open" }),
+        ),
+    ];
+    let mut ph12_sent = true;
+    for (id, method, payload) in ph12_sends {
+        ph12_sent &= ph12.send_invoke(id, method, payload).await.is_ok();
+    }
+    let ph12_groups = ph12.await_result(5, budget).await;
+    let ph12_chars = ph12.await_result(4, budget).await;
+    let ph12_party = ph12.await_result(3, budget).await;
+    let ph12_storage = ph12.await_result(2, budget).await;
+    let ph12_me = ph12.await_result(1, budget).await;
+    let field = |r: &Result<serde_json::Value>, ptr: &str| -> String {
+        r.as_ref()
+            .ok()
+            .and_then(|v| v.pointer(ptr).and_then(|s| s.as_str()).map(str::to_string))
+            .unwrap_or_default()
+    };
+    let ph12_me_id = field(&ph12_me, "/value/player_id");
+    let ph12_storage_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM storage.objects \
+          WHERE owner_id::text = $1 AND collection = 'splitproof' AND key = $2",
+    )
+    .bind(&ph12_player)
+    .bind(&ph12_name)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(-1);
+    let ph12_leader: Option<String> =
+        sqlx::query_scalar("SELECT leader_id::text FROM party.parties WHERE id::text = $1")
+            .bind(field(&ph12_party, "/value/party_id"))
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
+    let ph12_char_owner: Option<String> =
+        sqlx::query_scalar("SELECT player_id::text FROM characters.characters WHERE id::text = $1")
+            .bind(field(&ph12_chars, "/value/id"))
+            .fetch_optional(pool)
+            .await
+            .unwrap_or(None);
+    let ph12_role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM groups.memberships \
+          WHERE group_id::text = $1 AND player_id::text = $2 AND state = 'member'",
+    )
+    .bind(field(&ph12_groups, "/value/id"))
+    .bind(&ph12_player)
+    .fetch_optional(pool)
+    .await
+    .unwrap_or(None);
+    p.check(
+        &format!(
+            "[PH12{tag}] accounts/storage/party/characters/groups invokes pipelined on one /push \
+             socket, awaited 5->1 -> each its own op's answer, DB-owned by the session's player"
+        ),
+        ph12_ack
+            && ph12_sent
+            && [&ph12_me, &ph12_storage, &ph12_party, &ph12_chars, &ph12_groups]
+                .iter()
+                .all(|r| status(r).as_deref() == Some("Ok"))
+            && ph12_me_id == ph12_player
+            && ph12_storage_rows == 1
+            && ph12_leader.as_deref() == Some(ph12_player.as_str())
+            && ph12_char_owner.as_deref() == Some(ph12_player.as_str())
+            && ph12_role.as_deref() == Some("admin"),
+        format!(
+            "ack={ph12_ack} sent={ph12_sent} player={ph12_player} me={ph12_me:?} \
+             storage={ph12_storage:?} storage_rows={ph12_storage_rows} party={ph12_party:?} \
+             leader={ph12_leader:?} character={ph12_chars:?} char_owner={ph12_char_owner:?} \
+             group={ph12_groups:?} role={ph12_role:?}"
+        ),
+    );
+    ph12.disconnect().await;
+
+    // [PH13] a session revoked under a live socket: the invoke path checks the bearer per
+    // invoke, uncached, so the next invoke after self-delete answers Unauthorized as a
+    // result, without waiting for the socket's re-verify tick.
+    let (ph13_code, ph13_guest) = create_guest(ctx, base).await?;
+    let mut ph13 = PushClient::connect(ws, &ph13_guest.token, "dev-key-client").await?;
+    let ph13_ack = matches!(
+        ph13.next_frame(Duration::from_secs(10)).await,
+        Ok(Some(Frame::Ack { .. }))
+    );
+    let ph13_before = ph13.invoke(1, "accounts.me", serde_json::json!({}), budget).await;
+    let ph13_before_id = field(&ph13_before, "/value/player_id");
+    let (ph13_begin_code, ph13_begin) = friends_call(
+        ctx,
+        base,
+        &ph13_guest.token,
+        reqwest::Method::POST,
+        "/accounts/delete/begin",
+        None,
+    )
+    .await?;
+    let ph13_ticket = ph13_begin
+        .get("ticket")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let (ph13_delete_code, _) = friends_call(
+        ctx,
+        base,
+        &ph13_guest.token,
+        reqwest::Method::POST,
+        "/accounts/delete",
+        Some(serde_json::json!({ "ticket": &ph13_ticket })),
+    )
+    .await?;
+    let ph13_sessions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM accounts.sessions WHERE player_id::text = $1")
+            .bind(&ph13_guest.player_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(-1);
+    let ph13_after = ph13.invoke(2, "accounts.me", serde_json::json!({}), budget).await;
+    p.check(
+        &format!(
+            "[PH13{tag}] self-delete revokes the session under a live /push socket -> the next \
+             accounts.me invoke answers an Unauthorized result, not a close"
+        ),
+        ph13_code == 201
+            && ph13_ack
+            && status(&ph13_before).as_deref() == Some("Ok")
+            && ph13_before_id == ph13_guest.player_id
+            && ph13_begin_code == 200
+            && !ph13_ticket.is_empty()
+            && ph13_delete_code == 200
+            && ph13_sessions == 0
+            && status(&ph13_after).as_deref() == Some("Unauthorized"),
+        format!(
+            "guest={ph13_code} ack={ph13_ack} before={ph13_before:?} begin={ph13_begin_code} \
+             delete={ph13_delete_code} sessions={ph13_sessions} after={ph13_after:?} pid={}",
+            ph13_guest.player_id
+        ),
+    );
+    ph13.disconnect().await;
 
     Ok(())
 }
@@ -6160,6 +6377,52 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
     // fixed one under CI jitter). The exhaustive anti-amplification proof is the SEQUENTIAL
     // core/remote `readiness_verdict_*` unit tests (zero-I/O by construction); this split
     // scenario proves readiness ACCURACY + RECOVERY end-to-end across gateway-svc's 6 stubs.
+
+    // [PH14] a Remote dispatch failure reaches a /push client as a result, and the socket
+    // keeps serving. The 45s budget sits above the 30s invoke timeout because the first call
+    // after a kill can hang; together this adds up to ~50s inside the kill window.
+    let ws = format!("ws://{}", g.trim_start_matches("http://"));
+    let (ph14_code, ph14_guest) = create_guest(ctx, &g).await?;
+    let mut ph14 = PushClient::connect(&ws, &ph14_guest.token, "dev-key-client").await?;
+    let ph14_ack = matches!(
+        ph14.next_frame(Duration::from_secs(10)).await,
+        Ok(Some(Frame::Ack { .. }))
+    );
+    let ph14_list = ph14
+        .invoke(1, "characters.list", serde_json::json!({}), Duration::from_secs(45))
+        .await;
+    let ph14_get = ph14
+        .invoke(
+            2,
+            "storage.get",
+            serde_json::json!({
+                "collection": "splitproof",
+                "key": format!("absent-ph14-{}", std::process::id()),
+                "owner_id": "",
+            }),
+            Duration::from_secs(15),
+        )
+        .await;
+    let field = |r: &Result<serde_json::Value>, key: &str| -> Option<String> {
+        r.as_ref()
+            .ok()
+            .and_then(|v| v.get(key).and_then(|s| s.as_str()).map(str::to_string))
+    };
+    let ph14_err = field(&ph14_list, "err");
+    p.check(
+        "[PH14] characters-svc dead: characters.list over gateway-svc /push -> Unavailable result \
+         (not a front refusal); storage.get on the same socket -> NotFound",
+        ph14_code == 201
+            && ph14_ack
+            && field(&ph14_list, "status").as_deref() == Some("Unavailable")
+            && !matches!(
+                ph14_err.as_deref(),
+                Some("rate limited" | "too many in-flight invokes")
+            )
+            && field(&ph14_get, "status").as_deref() == Some("NotFound"),
+        format!("guest={ph14_code} ack={ph14_ack} list={ph14_list:?} get={ph14_get:?}"),
+    );
+    ph14.disconnect().await;
 
     // Recovery: respawn characters-svc from its canonical spec and wait for it healthy.
     let restarted = ctx.service("characters-svc").clone();
