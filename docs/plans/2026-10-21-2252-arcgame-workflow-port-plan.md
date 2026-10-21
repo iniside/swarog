@@ -32,8 +32,8 @@ several policies. Owner decisions (2026-10-21) on each divergence:
 | 5 | No fixed subagent count; don't ask the count band every time | **Adopt** |
 | 6 | Comment-only review findings end the round; fixed inline, flagged comments deleted not reworded | **Adopt** |
 | 7 | Fix the Authority dropped from shared rules | **Keep swarog** — section stays MANDATORY |
-| 9 | Below-threshold `[inline]` diffs get no review round (found in Step 3 review: `planning-dispatch.md` vs `CLAUDE.md:1031`) | **Adopt** the `.agents` rule — Step 6 drops CLAUDE.md's "every `[inline]` fix before commit" |
 | 8 | Architecture lives only in a shared file; `CLAUDE.md` is anchors (found in plan review: `gamebackend.md` drifted from `CLAUDE.md:14-751`) | **Adopt** — `gamebackend.md` is the single source (Step 4b), `CLAUDE.md` anchors (Step 6) |
+| 9 | Below-threshold `[inline]` diffs get no review round (found in Step 3 review: `planning-dispatch.md` vs `CLAUDE.md:1031`) | **Adopt** the `.agents` rule — Step 6 drops CLAUDE.md's "every `[inline]` fix before commit" |
 
 Out of scope (Unreal-specific or not worth it now): all `arc-*`/`ue-*` skills, Unreal MCP
 (`.mcp.json`, `.claude/scripts/`), `arcsem` semantic index, `clang-nav`→`rust-nav` port
@@ -136,10 +136,11 @@ text conflicts with decisions 1/3/7 and keep swarog's side.
   two; independent steps proceed during fixes. Keep "must earn PASS with a class list",
   fresh spawn for round 2, cap 2 rounds, proof-auditor trigger unchanged. Review applies
   to prose-only commits too (this plan's Steps 1–8 are prose).
-- **Excluded ArcGame lines** (conflict with decisions 1/3): `planning-dispatch.md:10`
-  "Tests appear only on explicit owner request" and `planning-dispatch.md:26`
-  "Below-threshold diffs get no review" — not ported; swarog's inline threshold and its
-  inline-gets-reviewed-before-commit rule stay.
+- **Excluded ArcGame line** (conflicts with decision 1): `planning-dispatch.md:10`
+  "Tests appear only on explicit owner request" — not ported. ArcGame
+  `planning-dispatch.md:26` "Below-threshold diffs get no review" already matches swarog's
+  own `planning-dispatch.md` text and is kept per decision 9; Step 6 drops
+  `CLAUDE.md:1031`'s "every `[inline]` fix before commit".
 - Taxonomy: add class **Scope substitution** (ArcGame `ue-failure-taxonomy.md:184-208`,
   rewritten for swarog: unrequested module/topic/capability, parallel rewrite instead of a
   move) and **Dispatch & process discipline** (missing `model:`, wrong trailer, lane
