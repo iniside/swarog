@@ -4,8 +4,13 @@ inside a quoted string, a heredoc body or a PowerShell here-string.
 """
 import re
 
-HEREDOC = re.compile(r"(?<!<)<<-?[ \t]*(['\"]?)([A-Za-z_]\w*)\1")
+HEREDOC = re.compile(r"(?<!<)<<-?[ \t]*(?:\\([A-Za-z_]\w*)|(['\"]?)([A-Za-z_]\w*)\2)")
 HERESTRING = re.compile(r"@(['\"])[ \t]*\r?\n")
+BARE_WORD = re.compile(r"[^\s'\"`\\;&|<>]+")
+REDIRECTION = re.compile(r"[\d*]*(?:>>?|<)(?:&\d+|\s*[^\s<>]+)")
+GIT_GLOBAL_OPTS = re.compile(
+    r"\bgit((?:\s+(?:-C\s+\S+|-c\s+\S+|--git-dir=\S+|--work-tree=\S+|"
+    r"--no-pager|--no-optional-locks|-P))+)(?=\s|$)")
 
 
 def quote_end(text, i):
@@ -22,18 +27,33 @@ def quote_end(text, i):
     return len(text)
 
 
-def blank_quotes(text):
+def unquote_words(text):
+    """Unquotes a quoted single word; blanks any other quoted string to ''."""
     out = []
     i = 0
     while i < len(text):
         c = text[i]
         if c in "'\"":
-            out.append(c + c)
-            i = quote_end(text, i)
+            j = quote_end(text, i)
+            inner = text[i + 1:j - 1] if text[j - 1:j] == c and j - i >= 2 else ""
+            out.append(inner if BARE_WORD.fullmatch(inner) else "''")
+            i = j
             continue
         out.append(c)
         i += 1
     return "".join(out)
+
+
+def git_code(raw):
+    """One command as argument text: quotes resolved, redirections and git
+    global options dropped, whitespace collapsed."""
+    code = REDIRECTION.sub(" ", re.sub(r"\s+", " ", unquote_words(raw)))
+    return GIT_GLOBAL_OPTS.sub("git", code).strip()
+
+
+def git_args(code, verb):
+    for match in re.finditer(r"\bgit\s+" + verb + r"(?=\s|$)(.*)", code):
+        yield match.group(1).split()
 
 
 def _skip_heredoc_bodies(text, i, terminators):
@@ -79,7 +99,7 @@ def split_commands(command):
         if c == "<":
             match = HEREDOC.match(command, i)
             if match:
-                pending.append(match.group(2))
+                pending.append(match.group(1) or match.group(3))
                 buf.append(match.group(0))
                 i = match.end()
                 continue

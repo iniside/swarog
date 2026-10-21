@@ -3,8 +3,8 @@
 one `core-reviewer` pass (planning-dispatch.md Adversarial Diff Review -
 MANDATORY), naming `proof-auditor` only when the commit touches a verify stage
 or a golden file. Silent on prose-only commits, --amend, --dry-run and
-"nothing to commit". Uncertainty about which files a commit touched resolves
-toward reminding. Any internal error exits 0 with no output.
+output without a `[branch sha]` line (failed or no-op commit). Uncertainty
+about which files a landed commit touched resolves toward reminding. Any internal error exits 0 with no output.
 """
 import json
 import os
@@ -12,14 +12,18 @@ import re
 import subprocess
 import sys
 
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import shell_data
+except Exception:
+    shell_data = None
+
 SHELL_TOOLS = {"Bash", "PowerShell"}
 
 PROSE_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".rst"})
 
 COMMIT_LINE = re.compile(r"^\[[^\]]*?\b([0-9a-f]{7,40})\]", re.MULTILINE)
-
-GIT_COMMIT = re.compile(
-    r"\bgit(?:\s+(?:-C\s+\S+|-c\s+\S+|--no-pager|-P))*\s+commit(?![-\w])")
 
 PROOF_PREFIXES = (
     "tools/verifyctl/", "tools/archcheck/", "tools/conformance/", "tools/topiccheck/",
@@ -81,20 +85,26 @@ def response_text(response):
     return "", ""
 
 
+def commit_invocations(command):
+    for raw, _ in shell_data.split_commands(command):
+        for args in shell_data.git_args(shell_data.git_code(raw), "commit"):
+            yield args
+
+
 def reminder(data):
     command = (data.get("tool_input") or {}).get("command") or ""
-    if not isinstance(command, str) or not GIT_COMMIT.search(command):
+    if not isinstance(command, str) or shell_data is None:
         return None
-    low = command.lower()
-    if "--dry-run" in low or "--amend" in low:
+    invocations = list(commit_invocations(command))
+    if not invocations or any(
+            a.split("=", 1)[0] in ("--dry-run", "--amend")
+            for args in invocations for a in args):
         return None
-    stdout, stderr = response_text(data.get("tool_response"))
-    if "nothing to commit" in (stdout + stderr).lower():
-        return None
+    stdout, _ = response_text(data.get("tool_response"))
 
     shas = COMMIT_LINE.findall(stdout)
     if not shas:
-        return BASE + PROOF_UNKNOWN
+        return None
 
     cwd = data.get("cwd") or None
     all_paths = []

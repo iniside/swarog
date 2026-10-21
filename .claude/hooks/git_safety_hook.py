@@ -11,6 +11,7 @@ any internal error exits 0 with no output.
 import json
 import os
 import re
+import subprocess
 import sys
 
 sys.dont_write_bytecode = True
@@ -62,40 +63,40 @@ def deny(reason):
     emit("deny", reason)
 
 
-GIT_GLOBAL_OPTS = re.compile(
-    r"\bgit((?:\s+(?:-C\s+\S+|-c\s+\S+|--git-dir=\S+|--work-tree=\S+|"
-    r"--no-pager|--no-optional-locks|-P))+)(?=\s|$)")
-REVISION_STEP = re.compile(r"~(\d*)|\^(\d*)")
-SHA = re.compile(r"[0-9a-f]{7,40}")
-REDIRECTION = re.compile(r"[\d*]*(?:>>?|<)(?:&\d+|\s*[^\s<>]+)")
+SOFT_UNDO_TARGETS = {"HEAD~1", "HEAD^", "@~1", "@^"}
+RESET_UNSTAGE_FLAGS = {"-q", "--quiet", "--mixed", "-N", "--intent-to-add", "-p",
+                       "--patch", "--refresh", "--no-refresh"}
+PATHSPEC_GLOB = re.compile(r"[*?\[]")
 
 
 def commands(command):
     for raw, _ in shell_data.split_commands(command):
-        flat = re.sub(r"\s+", " ", raw).strip()
-        code = REDIRECTION.sub(" ", re.sub(r"\s+", " ", shell_data.blank_quotes(raw)))
-        code = GIT_GLOBAL_OPTS.sub("git", code)
-        yield flat, code.strip()
+        yield re.sub(r"\s+", " ", raw).strip(), shell_data.git_code(raw)
 
 
 def git_args(code, verb):
-    for match in re.finditer(r"\bgit\s+" + verb + r"\b(.*)", code):
-        yield match.group(1).split()
+    return shell_data.git_args(code, verb)
 
 
-def commits_back(rev):
-    match = re.fullmatch(r"(?:HEAD|@)((?:~\d*|\^\d*)*)", rev)
-    if not match:
-        return None
-    depth = 0
-    for step in REVISION_STEP.finditer(match.group(1)):
-        if step.group(0).startswith("~"):
-            depth += int(step.group(1) or 1)
-        elif step.group(2) in ("", "1"):
-            depth += 1
-        else:
-            return 2
-    return depth
+def short_flag_has(arg, letter):
+    return re.fullmatch(r"-[a-zA-Z]+", arg) is not None and letter in arg[1:]
+
+
+def is_path(arg, cwd):
+    try:
+        return bool(PATHSPEC_GLOB.search(arg)) or os.path.exists(os.path.join(cwd, arg))
+    except Exception:
+        return False
+
+
+def is_commit(arg, cwd):
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", arg + "^{commit}"],
+            cwd=cwd, capture_output=True, text=True, timeout=5)
+    except Exception:
+        return False
+    return out.returncode == 0
 
 
 def creates_branch(code):
@@ -128,27 +129,44 @@ def force_pushes(code):
     return False
 
 
-def overwrites_worktree(args):
+def checkout_overwrites(args, cwd):
     if "--" in args:
         return True
-    revs = [a for a in args if not a.startswith("-")]
-    if "." in revs:
+    flags = [a for a in args if a.startswith("-")]
+    if any(a.split("=", 1)[0] in ("--force", "--patch", "--pathspec-from-file")
+           or short_flag_has(a, "f") or short_flag_has(a, "p") for a in flags):
         return True
-    creating = any(a in ("-b", "-B", "--orphan") for a in args)
-    return not creating and len(revs) >= 2
+    words = [a for a in args if not a.startswith("-")]
+    if "." in words:
+        return True
+    if any(a in ("-b", "-B", "--orphan") for a in args):
+        return False
+    if len(words) >= 2:
+        return True
+    return bool(words) and is_path(words[0], cwd) and not is_commit(words[0], cwd)
 
 
-def unsafe_reset_target(args):
-    for a in args:
-        if a.startswith("-"):
-            continue
-        depth = commits_back(a)
-        if depth is not None and depth >= 2 or SHA.fullmatch(a):
-            return True
-    return False
+def switch_overwrites(args):
+    return any(a.split("=", 1)[0] in ("--force", "--discard-changes")
+               or short_flag_has(a, "f") for a in args)
 
 
-def deny_reason(flat, code, raw_command):
+def reset_allowed(args, cwd):
+    if "--" in args:
+        before = args[:args.index("--")]
+    else:
+        before = args
+    flags = [a for a in before if a.startswith("-")]
+    words = [a for a in before if not a.startswith("-")]
+    if set(flags) <= {"--soft", "-q", "--quiet"} and "--soft" in flags:
+        return len(words) == 1 and words[0] in SOFT_UNDO_TARGETS and "--" not in args
+    if any(a.split("=", 1)[0] not in RESET_UNSTAGE_FLAGS | {"--pathspec-from-file"}
+           for a in flags):
+        return False
+    return not words or words[0] in ("HEAD", "@") or is_path(words[0], cwd)
+
+
+def deny_reason(flat, code, raw_command, cwd):
     if re.search(r"\b(rm|del|remove-item|ri)\b.*\.git[/\\]index(?!\.lock)(\b|$|['\"\s])",
                  flat, re.I):
         return (GIT_PREFIX + "never hand-edit git internals (deleting `.git/index`). A "
@@ -171,17 +189,25 @@ def deny_reason(flat, code, raw_command):
         return WORKTREE_REASON
 
     for args in git_args(code, "checkout"):
-        if overwrites_worktree(args):
-            return (GIT_PREFIX + "never `git checkout -- <file>` / `git checkout .` / "
-                    "`git checkout <rev> <path>` — it overwrites uncommitted changes. "
-                    "Inspect old contents with `git show <sha>:<path>`.")
+        if checkout_overwrites(args, cwd):
+            return (GIT_PREFIX + "never `git checkout -- <file>` / `git checkout <path>` / "
+                    "`git checkout .` / `git checkout -f` / `git checkout <rev> <path>` — "
+                    "it overwrites uncommitted changes. Inspect old contents with "
+                    "`git show <sha>:<path>`.")
+
+    for args in git_args(code, "switch"):
+        if switch_overwrites(args):
+            return (GIT_PREFIX + "never `git switch -f` / `--discard-changes` — it "
+                    "discards uncommitted changes.")
 
     for args in git_args(code, "reset"):
         if "--hard" in args:
             return GIT_PREFIX + "never `git reset --hard` — it discards uncommitted changes."
-        if unsafe_reset_target(args):
-            return (GIT_PREFIX + "only `git reset --soft HEAD~1` to undo a commit YOU made "
-                    "this turn, with nothing committed since — other agents commit on master.")
+        if not reset_allowed(args, cwd):
+            return (GIT_PREFIX + "`git reset` may only unstage (`git reset [HEAD] [--] "
+                    "<path>`) or be exactly `git reset --soft HEAD~1` to undo a commit YOU "
+                    "made this turn, with nothing committed since — other agents commit "
+                    "on master.")
 
     for args in git_args(code, "commit"):
         if "--amend" in args or "--no-edit" in args:
@@ -200,10 +226,10 @@ def deny_reason(flat, code, raw_command):
     return None
 
 
-def check(command):
+def check(command, cwd):
     parsed = list(commands(command))
     for flat, code in parsed:
-        reason = deny_reason(flat, code, command)
+        reason = deny_reason(flat, code, command, cwd)
         if reason:
             deny(reason)
 
@@ -225,7 +251,8 @@ def main():
         command = (data.get("tool_input") or {}).get("command") or ""
         if shell_data is None or not isinstance(command, str) or not command.strip():
             return
-        check(command)
+        cwd = data.get("cwd")
+        check(command, cwd if isinstance(cwd, str) and cwd else os.getcwd())
     except Exception:
         return
 
