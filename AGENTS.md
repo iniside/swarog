@@ -48,12 +48,12 @@ them. Shared behavior rules win; adapters translate runtime mechanics only.
 
 | Action | Required authority |
 | --- | --- |
-| Edit source/config/docs; add or commit | `.agents/shared/core-rules.md` |
+| Edit source/config/docs/memory; add or commit | `.agents/shared/core-rules.md` |
 | Research APIs/usages/data flow/overlap; navigate Rust | `.agents/shared/research-navigation.md`; `docs/reference/research-mode.md` |
 | Write/review a plan | `.agents/shared/research-navigation.md`; `.agents/shared/planning-dispatch.md`; `docs/reference/research-mode.md`; `docs/reference/plan-writing-workflow.md` |
 | Implement/delegate a step or review a diff/commit | `.agents/shared/core-rules.md`; `.agents/shared/planning-dispatch.md`; `docs/reference/implementation-mode.md`; `docs/reference/subagent-dispatch.md`; `docs/reference/core-failure-taxonomy.md` |
-| Touch `core/`, `modules/`, `api/`, or `cmd/` | `.agents/shared/gamebackend.md`; for a new module, the `add-game-module` skill |
-| Run `cargo test`, `verifyctl`, or `devctl` | `safe-verification` skill; `.agents/shared/gamebackend.md` **One test rollout at a time**; `docs/reference/testing.md` |
+| Touch `core/`, `modules/`, `api/`, `cmd/`, `demos/`, `tools/`, or `weles/` | `.agents/shared/gamebackend.md` (for `tools/`/`weles/`, **Dev tooling scope**); for a new module, the `add-game-module` skill |
+| Run, or delegate a step that runs, `cargo test`, `verifyctl`, or `devctl` | `safe-verification` skill; `.agents/shared/gamebackend.md` **One test rollout at a time**; `docs/reference/testing.md` |
 | Build or change admin UI | `mockup-implementation` skill |
 
 Durable technical references live in `docs/reference/`; workflow policy lives
@@ -73,6 +73,3 @@ in `.agents/`. Do not invent APIs, tools, models, or paths.
   imports, every domain module boots as `cmd/<name>-svc`, and schema/event
   contract breaks are DROP + boot fresh — no dual-writes or data-migration
   bridges.
-
-Durable technical references remain in `docs/reference/`; `.agents/` is for
-agent behavior, workflow, and runtime adapters.

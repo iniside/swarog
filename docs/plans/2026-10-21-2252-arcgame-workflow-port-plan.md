@@ -34,6 +34,7 @@ several policies. Owner decisions (2026-10-21) on each divergence:
 | 7 | Fix the Authority dropped from shared rules | **Keep swarog** — section stays MANDATORY |
 | 8 | Architecture lives only in a shared file; `CLAUDE.md` is anchors (found in plan review: `gamebackend.md` drifted from `CLAUDE.md:14-751`) | **Adopt** — `gamebackend.md` is the single source (Step 4b), `CLAUDE.md` anchors (Step 6) |
 | 9 | Below-threshold `[inline]` diffs get no review round (found in Step 3 review: `planning-dispatch.md` vs `CLAUDE.md:1031`) | **Adopt** the `.agents` rule — Step 6 drops CLAUDE.md's "every `[inline]` fix before commit" |
+| 10 | Tier conflicts between `CLAUDE.md` (MANDATORY) and `.agents` (RULE) for Plans & Status Docs, Research / Search Mode, Agent Memory Backup (found in Step 5 review) | **`.agents` RULE wins** — recorded in Step 6 |
 
 Out of scope (Unreal-specific or not worth it now): all `arc-*`/`ue-*` skills, Unreal MCP
 (`.mcp.json`, `.claude/scripts/`), `arcsem` semantic index, `clang-nav`→`rust-nav` port
@@ -227,8 +228,9 @@ second time; the implementer re-greps each heading after Steps 1–5 and only ad
 a rule whose CLAUDE.md copy carries content its home lacks (a diff, not a guess). Then
 replace the block with ArcGame-style anchors (the single c0 preamble + one
 `## <Section> — <TIER>` heading per rule, one line naming the owning file and section).
-**The `.agents` tier wins** where they differ (Owning Mistakes becomes RULE, per decision 4
-and Step 5). The commit message lists the rule→home map.
+**The `.agents` tier wins** where they differ (decision 10): Owning Mistakes, Plans &
+Status Docs, Research / Search Mode and Agent Memory Backup are RULE (MANDATORY in the old
+CLAUDE.md copy); the commit message names these four demotions. The commit message lists the rule→home map.
 (d) `[docs]` docs-writer, `model:"opus"`.
 
 ## Step 7 — agent definitions `[docs]` model:"opus"
