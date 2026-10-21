@@ -1,7 +1,7 @@
 # Grok Adapter
 
 Use this adapter for Grok Build / Grok harness sessions after reading
-`.agents/shared/*.md`.
+`AGENTS.md`.
 
 Grok auto-loads both `AGENTS.md` and `CLAUDE.md`. `CLAUDE.md` is an anchor
 index into `.agents` with no rules of its own. Do not treat the Claude

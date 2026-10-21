@@ -1,6 +1,6 @@
 # Codex Adapter
 
-Use this adapter for Codex sessions after reading `.agents/shared/*.md`.
+Use this adapter for Codex sessions after reading `AGENTS.md`.
 
 This runtime is Codex. Do not claim or imply that Codex is Claude, Fable,
 Opus, or Sonnet. Preserve the shared dispatch intent (explicit model/tool

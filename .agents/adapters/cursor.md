@@ -1,7 +1,7 @@
 # Cursor Adapter
 
 Use this adapter for Cursor Agent / Cursor CLI sessions after reading
-`.agents/shared/*.md`.
+`AGENTS.md`.
 
 `.cursorignore` excludes `CLAUDE.md`, an anchor index into `.agents` with no
 rules of its own. Also load

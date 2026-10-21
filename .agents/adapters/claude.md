@@ -1,7 +1,7 @@
 # Claude Adapter
 
 Use this adapter for Claude Code / Claude harness sessions after reading
-`.agents/shared/*.md`.
+`AGENTS.md`.
 
 This runtime is Claude. Keep `[fable]`. Do not invent a model slug this
 harness does not expose. Every `Task` / `Agent` call passes explicit
