@@ -93,6 +93,9 @@ pub struct PushLimits {
     /// An accounts outage must not log every player out, so an unavailable verdict
     /// keeps the connection — but not forever.
     pub max_stale: Duration,
+    /// How long a bound connection may go without any inbound frame before the re-verify
+    /// tick closes it with `CloseCode::LivenessTimeout`.
+    pub liveness_timeout: Duration,
     /// The trusted-proxy set the per-IP cap resolves a client address against. An
     /// `X-Forwarded-For` from an UNTRUSTED direct peer is ignored, so a forged header
     /// cannot mint a fresh bucket per connection.
@@ -129,6 +132,7 @@ impl Default for PushLimits {
             write_deadline: Duration::from_secs(10),
             reverify_interval: Duration::from_secs(60),
             max_stale: Duration::from_secs(900),
+            liveness_timeout: Duration::from_secs(90),
             trusted_proxies: Vec::new(),
             presence: false,
             invoke_max_in_flight: 16,
@@ -216,6 +220,22 @@ impl PushLimits {
         }
 
         let d = PushLimits::default();
+        let reverify_interval = ms(REVERIFY_MS, get(REVERIFY_MS), d.reverify_interval)?;
+        let liveness_timeout = match value(get(LIVENESS_MS)) {
+            None => reverify_interval.mul_f64(1.5),
+            raw => {
+                let v = ms(LIVENESS_MS, raw, reverify_interval.mul_f64(1.5))?;
+                if v <= reverify_interval {
+                    anyhow::bail!(
+                        "{LIVENESS_MS}={}ms is invalid: it must exceed {REVERIFY_MS} \
+                         ({}ms), or every idle connection closes on the first tick",
+                        v.as_millis(),
+                        reverify_interval.as_millis()
+                    );
+                }
+                v
+            }
+        };
         let limits = PushLimits {
             max_connections: count(
                 MAX_CONNECTIONS,
@@ -228,8 +248,9 @@ impl PushLimits {
             max_frame_bytes: count(MAX_FRAME_BYTES, get(MAX_FRAME_BYTES), d.max_frame_bytes)?,
             handshake_grace: ms(HANDSHAKE_MS, get(HANDSHAKE_MS), d.handshake_grace)?,
             write_deadline: ms(WRITE_MS, get(WRITE_MS), d.write_deadline)?,
-            reverify_interval: ms(REVERIFY_MS, get(REVERIFY_MS), d.reverify_interval)?,
+            reverify_interval,
             max_stale: ms(MAX_STALE_MS, get(MAX_STALE_MS), d.max_stale)?,
+            liveness_timeout,
             presence: flag(PRESENCE, get(PRESENCE), d.presence)?,
             invoke_max_in_flight: count(
                 INVOKE_MAX_IN_FLIGHT,
@@ -261,6 +282,7 @@ pub const HANDSHAKE_MS: &str = "PUSH_HANDSHAKE_TIMEOUT_MS";
 pub const WRITE_MS: &str = "PUSH_WRITE_TIMEOUT_MS";
 pub const REVERIFY_MS: &str = "PUSH_REVERIFY_INTERVAL_MS";
 pub const MAX_STALE_MS: &str = "PUSH_MAX_STALE_MS";
+pub const LIVENESS_MS: &str = "PUSH_LIVENESS_TIMEOUT_MS";
 pub const PRESENCE: &str = "PUSH_PRESENCE";
 pub const INVOKE_MAX_IN_FLIGHT: &str = "PUSH_INVOKE_MAX_IN_FLIGHT";
 pub const INVOKE_TIMEOUT_MS: &str = "PUSH_INVOKE_TIMEOUT_MS";
@@ -428,6 +450,8 @@ enum CloseCode {
     /// An inbound frame over [`PushLimits::max_frame_bytes`]. Retryable: the reconnect
     /// restores every stream, and the request itself belongs on HTTP or QUIC.
     FrameTooLarge,
+    /// No inbound frame, not even a pong, within [`PushLimits::liveness_timeout`].
+    LivenessTimeout,
 }
 
 impl CloseCode {
@@ -449,7 +473,8 @@ impl CloseCode {
             | CloseCode::Capacity
             | CloseCode::SessionExpired
             | CloseCode::Shutdown
-            | CloseCode::FrameTooLarge => true,
+            | CloseCode::FrameTooLarge
+            | CloseCode::LivenessTimeout => true,
         }
     }
 
@@ -462,7 +487,9 @@ impl CloseCode {
             | CloseCode::Protocol
             | CloseCode::BadFrame => 1008,
             CloseCode::FrameTooLarge => 1009,
-            CloseCode::Replaced | CloseCode::SessionExpired => 1000,
+            CloseCode::Replaced | CloseCode::SessionExpired | CloseCode::LivenessTimeout => {
+                1000
+            }
             CloseCode::Unavailable | CloseCode::HandshakeTimeout | CloseCode::Capacity => 1013,
             CloseCode::Shutdown => 1001,
         }
@@ -481,6 +508,7 @@ impl CloseCode {
             CloseCode::Shutdown => "server shutting down",
             CloseCode::BadFrame => "malformed invoke frame",
             CloseCode::FrameTooLarge => "inbound frame over the size cap",
+            CloseCode::LivenessTimeout => "no inbound frame within the liveness timeout",
         }
     }
 
@@ -1550,6 +1578,7 @@ async fn serve(
     let mut reverify = tokio::time::interval(limits.reverify_interval);
     reverify.tick().await; // the first tick fires immediately; the bearer was just verified
     let mut last_ok = Instant::now();
+    let mut last_inbound = tokio::time::Instant::now();
     let mut close: Option<CloseCode> = None;
 
     loop {
@@ -1578,29 +1607,34 @@ async fn serve(
                 }
                 None => break,
             },
-            msg = socket.recv() => match msg {
-                None | Some(Ok(WsMessage::Close(_))) => break,
-                Some(Err(err)) => {
-                    if is_frame_too_large(err) {
-                        close = Some(CloseCode::FrameTooLarge);
-                    }
-                    break;
+            msg = socket.recv() => {
+                if let Some(Ok(_)) = msg {
+                    last_inbound = tokio::time::Instant::now();
                 }
-                Some(Ok(WsMessage::Text(text))) => {
-                    if let Some(code) = inbound.frame(text.as_bytes()) {
-                        close = Some(code);
+                match msg {
+                    None | Some(Ok(WsMessage::Close(_))) => break,
+                    Some(Err(err)) => {
+                        if is_frame_too_large(err) {
+                            close = Some(CloseCode::FrameTooLarge);
+                        }
                         break;
                     }
-                }
-                Some(Ok(WsMessage::Binary(bytes))) => {
-                    if let Some(code) = inbound.frame(&bytes) {
-                        close = Some(code);
-                        break;
+                    Some(Ok(WsMessage::Text(text))) => {
+                        if let Some(code) = inbound.frame(text.as_bytes()) {
+                            close = Some(code);
+                            break;
+                        }
                     }
+                    Some(Ok(WsMessage::Binary(bytes))) => {
+                        if let Some(code) = inbound.frame(&bytes) {
+                            close = Some(code);
+                            break;
+                        }
+                    }
+                    // Ping/Pong: axum answers a ping itself, and a pong is the reply to the
+                    // liveness ping written on the re-verify tick.
+                    Some(Ok(_)) => {}
                 }
-                // Ping/Pong: axum answers a ping itself, and a pong is the reply to the
-                // liveness ping written on the re-verify tick.
-                Some(Ok(_)) => {}
             },
             Some(joined) = inbound.tasks.join_next(), if !inbound.tasks.is_empty() => {
                 if let Err(err) = joined {
@@ -1611,6 +1645,10 @@ async fn serve(
             },
             _ = reverify.tick() => {
                 inbound.verbs = MAX_VERBS_PER_INTERVAL;
+                if last_inbound.elapsed() > limits.liveness_timeout {
+                    close = Some(CloseCode::LivenessTimeout);
+                    break;
+                }
                 if write(socket, WsMessage::Ping(Vec::new()), limits.write_deadline).await.is_err() {
                     break;
                 }
