@@ -203,6 +203,10 @@ async fn results_before_a_close_stay_deliverable_after_another_id_fails() {
 
     let err = client.await_result(5, BUDGET).await.expect_err("the close fails id 5");
     assert!(err.to_string().contains("closed before the result"), "{err}");
+    assert!(
+        matches!(client.buffered.back(), Some(Frame::Close { .. })),
+        "the Close stays buffered after the failure"
+    );
     assert_eq!(client.await_result(4, BUDGET).await.expect("result 4"), ok("four"));
     assert_eq!(client.await_result(3, BUDGET).await.expect("result 3"), ok("three"));
 
@@ -210,8 +214,8 @@ async fn results_before_a_close_stay_deliverable_after_another_id_fails() {
     server.await.expect("server task");
 }
 
-/// A Close ahead of a Result in the buffer decides first. `await_result` itself never reads
-/// past a close, so the `[close, result]` order is seeded directly.
+/// A `[close, result]` buffer cannot arise from the client today (nothing is buffered after a
+/// Close); this guards the arrival-order scan in case that rule regresses.
 #[tokio::test]
 async fn a_close_ahead_of_a_result_fails_the_await_and_stays_buffered() {
     let (addr, server) = pipelined_server(1, vec![], true).await;
@@ -233,11 +237,11 @@ async fn a_close_ahead_of_a_result_fails_the_await_and_stays_buffered() {
     server.await.expect("server task");
 }
 
-/// With a Close buffered and the socket held open and silent, a read would run the whole
-/// budget and fail with "no frame within"; failing with the close error proves no read.
+/// Result 99 sits unread on the socket behind the Close: any socket read would return it as
+/// `Ok`, so an `Err` with the Close still buffered proves the buffered Close decided.
 #[tokio::test]
 async fn a_buffered_close_fails_an_unmatched_await_without_reading() {
-    let (addr, server) = pipelined_server(1, vec![close_frame()], true).await;
+    let (addr, server) = pipelined_server(1, vec![close_frame(), result_frame(99, "late")], true).await;
     let mut client = PushClient::connect(&format!("ws://{addr}"), "tok", "key")
         .await
         .expect("connect");
@@ -249,6 +253,7 @@ async fn a_buffered_close_fails_an_unmatched_await_without_reading() {
     let text = err.to_string();
     assert!(text.contains("closed before the result of invoke 99"), "{text}");
     assert!(!text.contains("no frame within"), "{text}");
+    assert_eq!(client.buffered.len(), 1, "the Close stays buffered and nothing was read");
 
     client.disconnect().await;
     server.await.expect("server task");
@@ -262,9 +267,13 @@ async fn send_invoke_pipelines_frames_in_send_order() {
     let mut client = PushClient::connect(&format!("ws://{addr}"), "tok", "key")
         .await
         .expect("connect");
-    client.send_invoke(11, "a.first", serde_json::json!({"n":1})).await.expect("send");
-    client.send_invoke(12, "b.second", serde_json::json!({"n":2})).await.expect("send");
-    client.send_invoke(13, "c.third", serde_json::json!({"n":3})).await.expect("send");
+    tokio::time::timeout(BUDGET, async {
+        client.send_invoke(11, "a.first", serde_json::json!({"n":1})).await.expect("send");
+        client.send_invoke(12, "b.second", serde_json::json!({"n":2})).await.expect("send");
+        client.send_invoke(13, "c.third", serde_json::json!({"n":3})).await.expect("send");
+    })
+    .await
+    .expect("send_invoke must not wait for a result");
     client.disconnect().await;
 
     let received = server.await.expect("server task");
