@@ -1,4 +1,4 @@
-# Instruction Map
+# Swarog Instruction Map
 
 `AGENTS.md` is the mandatory core and action router. Read it plus the active
 runtime adapter first, then load only the authorities for the next concrete

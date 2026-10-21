@@ -1,8 +1,8 @@
 //! `supported-targets` — a BLOCKING verify stage that typechecks the two
 //! rollout-tooling crates against every platform this repo PROMISES compiles.
 //!
-//! This exists because there is **no CI** (`README.md`: "No CI: `cargo run -p
-//! verifyctl -- --fast` is the safety net"). That is exactly why weles's
+//! This exists because there is **no CI**: a local `verifyctl` run is the only
+//! gate, so only targets it checks are checked at all. That is exactly why weles's
 //! non-Linux control-endpoint fallback rotted to the wrong arity (an E0061 that
 //! nothing compiled) and why the macOS port was a rescue rather than a routine
 //! build: no stage ever cross-checked a target the dev box does not run on. A

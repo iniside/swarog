@@ -3,8 +3,9 @@
 A game backend in **Rust** (Cargo workspace), built as a serious architecture
 experiment — a **modular monolith with a proven split**: one repo, one
 `cmd/server` binary for the monolith, AND every domain module compiles and
-boots as its own `cmd/<name>-svc` process. Features are added by *writing new
-code, not modifying existing code* (Open/Closed at the architecture level).
+boots as its own `cmd/<name>-svc` process. The system grows by addition
+(Open/Closed at the architecture level): new modules, contract traits, and
+subscriptions, with no module importing another's implementation.
 The retired Go original lives at `experiments/go-sketch/` (archived reference
 — do not evolve it).
 

@@ -74,11 +74,9 @@ pub struct DeployRecord {
 
 /// One agent-minted port binding.
 ///
-/// **Defined but WRITERLESS by design in A3.** The real writer is A4 (agent-side
-/// port minting): the agent binds a free port at spawn and reports it UP through
-/// [`Store::record_port_assignment`]. A3 lands the table + typed API so A4 has a
-/// durable place to persist a minted port the instant it is bound; A3 deliberately
-/// does NOT fabricate a synthetic caller to "use" it.
+/// Written by the supervisor's mint pass through [`Store::record_port_assignment`]
+/// once the agent has bound a free port at spawn; a failed write is logged, not
+/// fatal, because the in-memory minted fleet is the source of truth for that run.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PortAssignment {
     /// The instance the port was minted for (`<provider>#<n>`).
