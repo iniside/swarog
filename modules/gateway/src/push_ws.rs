@@ -759,8 +759,8 @@ pub(crate) struct PushHub {
     drained: tokio::sync::Notify,
     /// The per-client-IP invoke budget, shared by every connection from one IP.
     invoke_limiter: Arc<httpmw::IpLimiter>,
-    /// Each backplane producer's high-water `seq`. The map lock is only held to fetch or
-    /// insert an entry, never while an entry lock is taken.
+    /// Each backplane producer's high-water `seq`. The map lock is held only to fetch, insert or
+    /// evict; it never blocks on an entry lock (eviction only `try_lock`s an unshared entry).
     origins: Mutex<HashMap<u64, Arc<Mutex<Origin>>>>,
 }
 

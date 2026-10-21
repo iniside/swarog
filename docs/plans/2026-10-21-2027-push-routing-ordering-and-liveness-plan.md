@@ -541,6 +541,20 @@ lane.
   - WS invokes are aborted on stop;
   - no invoke resume.
 
+## Errata
+
+Landed in 359535a (oversized-drop log corrected in 293833b to report the effective
+envelope budget):
+
+1. Decision 3's eviction rule is implemented stricter. An entry is evicted only when it
+   is idle past `ORIGIN_IDLE_EVICT` AND the map holds its only reference
+   (`Arc::strong_count == 1`), read via `try_lock` under the map lock. This closes a race
+   where an in-flight batch holds an evicted entry and a late batch then gets a fresh
+   high-water mark of 0. Decision 3's "the map lock is never held while an entry lock is
+   taken" is superseded by "the map lock never blocks on an entry lock".
+2. `seq` is consumed per chunk before encoding, so an encode failure leaves a gap, which
+   the `<=` gate tolerates.
+
 ## Review round 1 — disposition
 
 | # | Finding | Disposition |

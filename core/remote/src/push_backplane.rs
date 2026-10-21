@@ -475,7 +475,7 @@ fn split_batch(batch: Vec<Envelope>, drops: &Drops) -> Vec<Vec<Envelope>> {
 }
 
 /// The drain's stamp for every chunk it sends: one `producer` id for the drain's lifetime
-/// and a `seq` that increases by one per encoded chunk, which is what lets a front drop a
+/// and a `seq` that increases by one per chunk, which is what lets a front drop a
 /// chunk that arrives after a newer one.
 struct Stamp {
     producer: u64,
