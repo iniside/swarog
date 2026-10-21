@@ -39,7 +39,6 @@ Use the repository's canonical policy rather than restating it in the prompt.
    constraints changed; ask the owner first if it must.
 
 This skill applies to the whole requested change. Never split a feature into
-inline-sized patches. For a one-shot known-symbol lookup, trivial mechanical
-edit, or few-line existing-function fix within the dispatch-threshold list in
-`.agents/shared/planning-dispatch.md`, work inline without this workflow, a
-subagent, or a review.
+inline-sized patches. For a one-shot known-symbol lookup or a change on the
+closed dispatch-threshold list in `.agents/shared/planning-dispatch.md`, work
+inline without this workflow.

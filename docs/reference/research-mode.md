@@ -33,6 +33,8 @@ Offer the fitting subset:
 
 Research subagents may fan out **in parallel** (distinct angles), are mostly **read-only**, do not commit, and are **synthesized in the main model**—never write a conclusion from one subagent. Give each question one owner; the main agent does not repeat their searches. Each handoff provides verified source anchors, conclusions, and open questions. Escalating a wide fan-out to the top-tier model multiplies cost by its width — name the reason or don't escalate. Implementation is sequential per plan step, uses an execution lane, reviews each diff, and commits completed units—see [implementation-mode.md](implementation-mode.md).
 
+Listing-only research (enumerate files/symbols, no reasoning) runs on the cheapest model — on Claude, `model:"haiku"` (see [`.agents/adapters/claude.md`](../../.agents/adapters/claude.md)).
+
 ## Choosing research questions
 
 State what remains unanswered. Dispatch one agent per independent question that merits separate read-only work; use none when a targeted read answers it. Do not pad a fan-out to a fixed count, split one question between owners, or duplicate a completed search. Reuse finished research unless it is missing, stale, contradicted, or insufficient. Typical angles: API surface, callers+consumers, event publishers+subscribers, config+env wiring.
