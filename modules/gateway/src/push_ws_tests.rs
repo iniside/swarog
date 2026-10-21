@@ -1523,9 +1523,8 @@ fn stamped(producer: u64, seq: u64, payload: &str) -> Vec<u8> {
     .expect("encode")
 }
 
-/// A batch that arrives after a newer one from the SAME producer is dropped whole. Before
-/// the stale gate both frames were enqueued (2 then 1, inverted); the queue contents are
-/// the assertion, `STALE` is process-global so it is only checked as non-decreasing.
+/// A batch that arrives after a newer one from the SAME producer is dropped whole.
+/// `STALE` is process-global, so it is checked as increased, not by an exact delta.
 #[tokio::test]
 async fn deliver_batch_drops_a_late_batch_from_the_same_producer() {
     let hub = hub_with(test_limits());
@@ -1581,17 +1580,22 @@ async fn an_idle_producer_is_evicted_when_a_new_one_arrives() {
     let (slot, _wake) = bound(&hub, local(), "alice");
 
     deliver_batch(&hub, &stamped(31, 5, "old5")).unwrap();
-    tokio::time::advance(ORIGIN_IDLE_EVICT + Duration::from_secs(1)).await;
-    assert!(tracked(&hub, 31), "eviction runs only when a new producer arrives");
+    deliver_batch(&hub, &stamped(33, 1, "a1")).unwrap();
+    tokio::time::advance(Duration::from_secs(200)).await;
+    deliver_batch(&hub, &stamped(33, 2, "a2")).unwrap();
+    tokio::time::advance(ORIGIN_IDLE_EVICT - Duration::from_secs(199)).await;
+
+    deliver_batch(&hub, &stamped(33, 3, "a3")).unwrap();
+    assert!(tracked(&hub, 31), "an already-tracked producer's batch does not evict");
 
     deliver_batch(&hub, &stamped(32, 1, "new1")).unwrap();
-    assert!(!tracked(&hub, 31), "the idle producer was evicted");
-    assert!(tracked(&hub, 32));
+    assert!(!tracked(&hub, 31), "the idle producer was evicted by a new one");
+    assert!(tracked(&hub, 32) && tracked(&hub, 33), "fresh producers stay");
 
     deliver_batch(&hub, &stamped(31, 1, "old1")).unwrap();
     assert_eq!(
         queued_payloads(&slot.queue),
-        vec!["old5".to_string(), "new1".to_string(), "old1".to_string()],
+        ["old5", "a1", "a2", "a3", "new1", "old1"].map(String::from).to_vec(),
         "with its entry gone the idle producer's low seq is accepted again"
     );
 }
@@ -1635,6 +1639,21 @@ async fn a_held_origin_entry_is_never_evicted() {
     drop(held);
     deliver_batch(&hub, &stamped(53, 1, "n2")).unwrap();
     assert!(!tracked(&hub, 51), "released and idle, it is evicted");
+}
+
+/// The old wire shape (a bare envelope array) is refused at the front and enqueues nothing.
+#[tokio::test]
+async fn deliver_batch_rejects_a_bare_envelope_array() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+    let bare = serde_json::to_vec(&vec![push::Envelope::new(
+        Target::Player("alice".into()),
+        msg("x"),
+    )])
+    .expect("encode");
+
+    assert!(deliver_batch(&hub, &bare).is_err());
+    assert!(queued(&slot.queue).is_empty());
 }
 
 /// A malformed batch is a typed error, not a panic and not a silent success — the peer
