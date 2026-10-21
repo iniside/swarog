@@ -2,24 +2,10 @@
 
 ## Owning Mistakes - RULE
 
-Caught ignoring an instruction, violating a documented rule, or fabricating
-something (made-up API, invented path, hallucinated behaviour, false claim of
-work done):
-
-1. Name the specific mistake directly — no hedging, no burying it in context.
-2. Do not minimize, deflect, or rationalize; do not blame tools or ambiguity.
-   The response is "you're right, I screwed up on X."
-3. State the corrected behaviour concretely.
-4. Then fix it. One or two sentences of repentance, not a wall. "Great catch!"
-   is not repentance.
-
-For repeat offenses, also save/update the relevant feedback memory.
-
-When caught violating any `## … — MANDATORY` rule, before the fix write a short
-(≤8-line) resignation letter addressed to the user: name the exact section,
-state explicitly what error was committed (what was done vs what the rule
-required), the impact, and the corrective action. Then update memory for the
-violated rule.
+If you ignore a rule or fabricate an API, path, behaviour, or claimed work,
+name the mistake, state the correction, and fix it without excuses or praise.
+Use two sentences; for a MANDATORY violation name the section and the mismatch.
+Do not create memory copies of rules; propose a hook when enforcement is needed.
 
 ## Plans And Status Docs - RULE
 
@@ -65,14 +51,17 @@ Use Conventional Commits:
 <type>(<scope>): <imperative description>
 ```
 
-`type` is one of `feat`, `fix`, `refactor`, `test`, `docs`, `chore`. `scope` is
-the lowercased module/package; multiple scopes are comma-separated
-(`fix(match,rating): …`). Do not use bracketed `[Module]` scopes. Multi-step
-rollouts may note `(Step N — …)`.
+`type` is one of `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `chore`.
+`scope` is the lowercased module/package; multiple scopes are comma-separated
+(`fix(match,rating): …`). Do not use bracketed `[Module]` scopes. A commit
+implementing a plan step, including its review fixes, ends the description with
+`(<plan-slug> step <id>)` (`steps 3-4` for a range); the slug is the plan file
+name without the date prefix and `-plan.md`.
 
-The `Co-Authored-By` trailer reflects the executing runtime. Adapters define
-concrete trailer strings. Do not invent a vendor, model family, or version the
-executing agent is not. More detail: `docs/reference/commit-format.md`.
+The `Co-Authored-By` trailer identifies the model/agent that executed the work,
+read from its own runtime identity; never copy a family or version from an
+example or another document. Adapters define the trailer format. More detail:
+`docs/reference/commit-format.md`.
 
 ## Comments - MANDATORY
 
@@ -85,11 +74,16 @@ held to the same truth standard.
 
 Banned: changelog prose ("removed X", "moved to Y", "this used to…", "(Step
 3)"); paraphrase of the next line; multi-line blocks restating the body;
-comments asserting behaviour the code does not have. A false comment is a
-correctness defect — fix it in the same rollout, never "later".
+comments asserting behaviour the code does not have; exclusivity claims ("the
+only place…"). A false comment is a correctness defect — fix it in the same
+rollout, never "later". A claim about library or runtime behaviour (tokio,
+sqlx, Postgres, quinn) requires reading that code this session and a
+`file:line` citation.
 
 Verbose comments hijack review. Findings that are only about comments mean
-there are too many comments, not that the diff is clean.
+there are too many comments, not that the diff is clean. A comment flagged in
+review is deleted, not reworded. Comment-only findings end the review round and
+the orchestrator fixes them inline; no prose-fixing agent is dispatched.
 
 Every implementation dispatch says `comments: default NONE` and names the one
 or two things that earn a line in that file.
