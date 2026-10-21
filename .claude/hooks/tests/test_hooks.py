@@ -16,14 +16,55 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.a
 HOOKS = os.path.join(ROOT, ".claude", "hooks")
 R = ROOT.replace("\\", "/")
 TR = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
-CODE_SHA = "fb58f1d"
-PROSE_SHA = "1b8015b"
 SHELL_TOOLS = ("Bash", "PowerShell")
 
 _TEMP = tempfile.TemporaryDirectory()
 ENV = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", TEMP=_TEMP.name, TMP=_TEMP.name,
            TMPDIR=_TEMP.name)
 ENV.pop("CLAUDE_PROJECT_DIR", None)
+
+
+def _git(repo, *args):
+    r = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com",
+                        "-c", "commit.gpgsign=false", *args], cwd=repo, capture_output=True,
+                       text=True, timeout=60)
+    assert r.returncode == 0, (args, r.stderr)
+    return r.stdout.strip()
+
+
+def _commit(repo, rel, text, msg):
+    path = os.path.join(repo, *rel.split("/"))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", msg)
+    return _git(repo, "rev-parse", "--short=10", "HEAD")
+
+
+def _build_fixture():
+    repo = os.path.join(_TEMP.name, "fixture-repo")
+    os.makedirs(repo)
+    _git(repo, "init", "-q", "-b", "master")
+    _commit(repo, "README.md", "seed\n", "seed")
+    shas = {
+        "code": _commit(repo, "core/x/src/lib.rs", "fn a() {}\n", "code"),
+        "prose": _commit(repo, "docs/note.md", "hello\n", "prose"),
+        "proof": _commit(repo, "tools/verifyctl/x.rs", "fn b() {}\n", "proof"),
+    }
+    _git(repo, "checkout", "-q", "-b", "side")
+    _commit(repo, "side.rs", "fn s() {}\n", "side")
+    _git(repo, "checkout", "-q", "master")
+    _commit(repo, "main.rs", "fn m() {}\n", "main")
+    _git(repo, "merge", "-q", "--no-ff", "-m", "merge", "side")
+    shas["merge"] = _git(repo, "rev-parse", "--short=10", "HEAD")
+    return repo, shas
+
+
+FIX, FIX_SHAS = _build_fixture()
+FX = FIX.replace("\\", "/")
+CODE_SHA = FIX_SHAS["code"]
+PROSE_SHA = FIX_SHAS["prose"]
 
 
 def tearDownModule():
@@ -39,6 +80,8 @@ def run(hook, payload, raw=None):
     if not r.stdout.strip():
         return "silent"
     o = json.loads(r.stdout)["hookSpecificOutput"]
+    want_event = "PostToolUse" if hook == "post_commit_review_reminder" else "PreToolUse"
+    assert o.get("hookEventName") == want_event, (hook, o.get("hookEventName"))
     return o.get("permissionDecision") or ("context:" + o.get("additionalContext", ""))
 
 
@@ -54,7 +97,7 @@ def shc(cmd, tool, cwd=R):
 
 
 def pc(cmd, tool, out):
-    return {"tool_name": tool, "cwd": R, "tool_input": {"command": cmd}, "tool_response": {"stdout": out}}
+    return {"tool_name": tool, "cwd": FX, "tool_input": {"command": cmd}, "tool_response": {"stdout": out}}
 
 
 ALLOW_BRANCH = ["git branch", "git branch -a", "git branch -v", "git branch --show-current",
@@ -169,11 +212,11 @@ BASE_CASES = [
     ("grep_sweep_guard", None, "silent"),
     ("exit_plan_checklist", {"tool_name": "ExitPlanMode", "tool_input": {}}, "context"),
     ("exit_plan_checklist", None, "context"),
-    ("post_commit_review_reminder", {"tool_name": "PowerShell", "cwd": R, "tool_input": {"command": "git commit -m x"}, "tool_response": {"stdout": "[master " + PROSE_SHA + "] docs\n"}}, "silent"),
-    ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": R, "tool_input": {"command": "git commit -m x"}, "tool_response": {"stdout": "[master " + CODE_SHA + "] refactor\n"}}, "context"),
-    ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": R, "tool_input": {"command": "git commit --amend"}, "tool_response": {"stdout": "[master " + CODE_SHA + "] x\n"}}, "silent"),
-    ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": R, "tool_input": {"command": "git commit --dry-run"}, "tool_response": {"stdout": ""}}, "silent"),
-    ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": R, "tool_input": {"command": "git commit-graph write"}, "tool_response": {"stdout": ""}}, "silent"),
+    ("post_commit_review_reminder", {"tool_name": "PowerShell", "cwd": FX, "tool_input": {"command": "git commit -m x"}, "tool_response": {"stdout": "[master " + PROSE_SHA + "] docs\n"}}, "silent"),
+    ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": FX, "tool_input": {"command": "git commit -m x"}, "tool_response": {"stdout": "[master " + CODE_SHA + "] refactor\n"}}, "context"),
+    ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": FX, "tool_input": {"command": "git commit --amend"}, "tool_response": {"stdout": "[master " + CODE_SHA + "] x\n"}}, "silent"),
+    ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": FX, "tool_input": {"command": "git commit --dry-run"}, "tool_response": {"stdout": ""}}, "silent"),
+    ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": FX, "tool_input": {"command": "git commit-graph write"}, "tool_response": {"stdout": ""}}, "silent"),
     ("post_commit_review_reminder", None, "silent"),
 ]
 
@@ -196,6 +239,9 @@ NEW_GIT = [
     ("git reset --soft abc1234def", "deny"), ("git reset deadbeef", "deny"),
     ("git reset HEAD~1", "deny"), ("git reset --keep HEAD~1", "deny"),
     ("git reset --merge", "deny"), ("git reset --soft", "deny"),
+    ("git clean -fd", "deny"), ("git push --force-if-includes", "ask"),
+    ("rm .git/index", "deny"), ("Remove-Item .git\\index", "deny"),
+    ("rm .git/index.lock", "silent"), ("Remove-Item .git\\index.lock", "silent"),
     ("git reset --soft HEAD~2", "deny"), ("git reset origin/master", "deny"),
     ("git reset \"--hard\"", "deny"), ("git \"restore\" .", "deny"),
     ("git reset --soft 'HEAD~3'", "deny"), ("git 'stash'", "deny"),
@@ -264,6 +310,15 @@ class HookCases(unittest.TestCase):
                  for t in SHELL_TOOLS for c, o, w in POST]
         self.check("post_commit_review_reminder", extra)
 
+    def test_known_gap_reset_soft_head_tilde_denied(self):
+        for tool in SHELL_TOOLS:
+            self.assertEqual(run("git_safety_hook", shc("git reset --soft HEAD~", tool)), "deny")
+
+    def test_known_gap_checkout_track_silent(self):
+        for tool in SHELL_TOOLS:
+            self.assertEqual(
+                run("git_safety_hook", shc("git checkout --track origin/x", tool)), "silent")
+
     def test_grep_sweep(self):
         self.check("grep_sweep_guard")
 
@@ -283,6 +338,121 @@ class HookCases(unittest.TestCase):
         self.assertTrue(got.startswith("context:"))
         for needle in ("core-reviewer", "test-author", "model"):
             self.assertIn(needle, got)
+
+
+class PostCommitFixture(unittest.TestCase):
+    """Real git repo in a temp dir; the hook classifies the real `git show` output."""
+
+    BASE = (
+        "ADVERSARIAL DIFF REVIEW (planning-dispatch.md - MANDATORY): a commit just "
+        "landed. Dispatch ONE `core-reviewer` subagent (subagent_type: \"core-reviewer\") "
+        "on it (`git show <sha>`) in a separate context, explicit model: >= the author's "
+        "tier. It routes by files touched through docs/reference/core-failure-taxonomy.md "
+        "and returns a binary verdict or a punch list."
+    )
+    PROOF = (
+        " This commit touches a verify stage or golden file \u2014 also dispatch "
+        "`proof-auditor`."
+    )
+    UNKNOWN = (
+        " If it touches tools/{verifyctl,archcheck,conformance,topiccheck} or a golden "
+        "file, also dispatch `proof-auditor`."
+    )
+
+    def reminder(self, which, tool="Bash"):
+        out = "[master %s] %s\n 1 file changed, 1 insertion(+)\n" % (FIX_SHAS[which], which)
+        r = subprocess.run(
+            [sys.executable, "-B", os.path.join(HOOKS, "post_commit_review_reminder.py")],
+            input=json.dumps(pc("git commit -m x", tool, out)), capture_output=True,
+            text=True, cwd=ROOT, env=ENV, timeout=60, encoding="utf-8")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr, "")
+        if not r.stdout.strip():
+            return None
+        o = json.loads(r.stdout)["hookSpecificOutput"]
+        self.assertEqual(o["hookEventName"], "PostToolUse")
+        return o["additionalContext"]
+
+    def test_code_commit_base_reminder(self):
+        for tool in SHELL_TOOLS:
+            self.assertEqual(self.reminder("code", tool), self.BASE)
+
+    def test_prose_commit_silent(self):
+        for tool in SHELL_TOOLS:
+            self.assertIsNone(self.reminder("prose", tool))
+
+    def test_verifyctl_commit_adds_proof_auditor(self):
+        for tool in SHELL_TOOLS:
+            self.assertEqual(self.reminder("proof", tool), self.BASE + self.PROOF)
+
+    def test_merge_commit_is_unknown(self):
+        for tool in SHELL_TOOLS:
+            self.assertEqual(self.reminder("merge", tool), self.BASE + self.UNKNOWN)
+
+    def test_unresolvable_sha_is_unknown(self):
+        out = "[master deadbee] x\n"
+        r = subprocess.run(
+            [sys.executable, "-B", os.path.join(HOOKS, "post_commit_review_reminder.py")],
+            input=json.dumps(pc("git commit -m x", "Bash", out)), capture_output=True,
+            text=True, cwd=ROOT, env=ENV, timeout=60, encoding="utf-8")
+        ctx = json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(ctx, self.BASE + self.UNKNOWN)
+
+
+class Wiring(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(ROOT, ".claude", "settings.json"), encoding="utf-8") as f:
+            cls.hooks = json.load(f)["hooks"]
+
+    @staticmethod
+    def script(h):
+        return h["command"].split("/.claude/hooks/")[1].rstrip('"')
+
+    def scripts(self, event, matcher):
+        found = [g for g in self.hooks[event] if g["matcher"] == matcher]
+        self.assertEqual(len(found), 1, (event, matcher))
+        return [self.script(h) for h in found[0]["hooks"] if h["type"] == "command"]
+
+    def test_exact_scripts_per_matcher(self):
+        want = {
+            ("PreToolUse", "Edit|Write|MultiEdit|NotebookEdit"): ["ref_reminder.py"],
+            ("PreToolUse", "Bash|PowerShell"): ["ref_reminder.py", "git_safety_hook.py",
+                                                "grep_sweep_guard.py"],
+            ("PreToolUse", "Agent|EnterWorktree"): ["no_worktree_hook.py"],
+            ("PreToolUse", "Agent"): ["explicit_model_guard.py", "haiku_listing_reminder.py"],
+            ("PreToolUse", "ExitPlanMode"): ["exit_plan_checklist.py"],
+            ("PostToolUse", "Bash|PowerShell"): ["post_commit_review_reminder.py"],
+        }
+        for (event, matcher), scripts in want.items():
+            with self.subTest(event=event, matcher=matcher):
+                self.assertEqual(self.scripts(event, matcher), scripts)
+        self.assertEqual(set(self.hooks), {"PreToolUse", "PostToolUse"})
+        self.assertEqual(sum(len(v) for v in self.hooks.values()), len(want))
+
+    def test_agent_prompt_guardrail_present(self):
+        grp = [g for g in self.hooks["PreToolUse"] if g["matcher"] == "Agent"][0]
+        prompts = [h for h in grp["hooks"] if h["type"] == "prompt"]
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("$ARGUMENTS", prompts[0]["prompt"])
+
+    def test_scripts_exist_and_all_wired(self):
+        wired = {self.script(h) for groups in self.hooks.values() for g in groups
+                 for h in g["hooks"] if h["type"] == "command"}
+        for name in wired:
+            self.assertTrue(os.path.isfile(os.path.join(HOOKS, name)), name)
+        on_disk = {f for f in os.listdir(HOOKS) if f.endswith(".py")} - {"shell_data.py"}
+        self.assertEqual(wired, on_disk)
+
+    def test_command_form(self):
+        for groups in self.hooks.values():
+            for g in groups:
+                for h in g["hooks"]:
+                    if h["type"] != "command":
+                        continue
+                    self.assertTrue(h["command"].startswith("python "), h["command"])
+                    self.assertNotIn("python3", h["command"])
+                    self.assertIn("$CLAUDE_PROJECT_DIR", h["command"])
 
 
 class RefReminder(unittest.TestCase):
