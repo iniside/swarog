@@ -1618,6 +1618,25 @@ async fn a_producer_that_is_not_idle_is_never_evicted() {
     );
 }
 
+/// An idle entry that a delivery still holds is not evicted: evicting it would give a
+/// late batch a fresh high-water mark of 0. Once the holder is gone it is evicted.
+#[tokio::test(start_paused = true)]
+async fn a_held_origin_entry_is_never_evicted() {
+    let hub = hub_with(test_limits());
+    let (_slot, _wake) = bound(&hub, local(), "alice");
+
+    deliver_batch(&hub, &stamped(51, 3, "held3")).unwrap();
+    let held = hub.origin(51);
+    tokio::time::advance(ORIGIN_IDLE_EVICT + Duration::from_secs(1)).await;
+
+    deliver_batch(&hub, &stamped(52, 1, "n1")).unwrap();
+    assert!(tracked(&hub, 51), "a held entry survives idle eviction");
+
+    drop(held);
+    deliver_batch(&hub, &stamped(53, 1, "n2")).unwrap();
+    assert!(!tracked(&hub, 51), "released and idle, it is evicted");
+}
+
 /// A malformed batch is a typed error, not a panic and not a silent success — the peer
 /// learns its call failed.
 #[tokio::test]
