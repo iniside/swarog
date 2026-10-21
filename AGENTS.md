@@ -36,14 +36,28 @@ Every shared section is binding. The tier says what breaking it costs.
 11. Dev tooling scope — `.agents/shared/gamebackend.md`
 12. One test rollout at a time — `.agents/shared/gamebackend.md`
 
-## Required Read Order
+## Read Before The Action
 
-1. Read `.agents/README.md`.
-2. Read every file in `.agents/shared/`.
-3. Read exactly one adapter for the active runtime under `.agents/adapters/`
-   (adapters may land after this index; still read the one that matches the
-   runtime you are running under when present).
-4. Read any referenced `docs/reference/*.md` file for the area you are touching.
+Read this file and the active runtime adapter in `.agents/adapters/` first.
+Before each concrete action, load every authority named by its matching row.
+Classify only that next action; if it is unclear, keep it read-only and use the
+research row until it is classified. Reuse authorities already read this
+session when their files have not changed. `.agents/README.md` maps the files.
+All rules named by the matching rows are binding even if you failed to load
+them. Shared behavior rules win; adapters translate runtime mechanics only.
+
+| Action | Required authority |
+| --- | --- |
+| Edit source/config/docs; add or commit | `.agents/shared/core-rules.md` |
+| Research APIs/usages/data flow/overlap; navigate Rust | `.agents/shared/research-navigation.md`; `docs/reference/research-mode.md` |
+| Write/review a plan | `.agents/shared/research-navigation.md`; `.agents/shared/planning-dispatch.md`; `docs/reference/research-mode.md`; `docs/reference/plan-writing-workflow.md` |
+| Implement/delegate a step or review a diff/commit | `.agents/shared/core-rules.md`; `.agents/shared/planning-dispatch.md`; `docs/reference/implementation-mode.md`; `docs/reference/subagent-dispatch.md`; `docs/reference/core-failure-taxonomy.md` |
+| Touch `core/`, `modules/`, `api/`, or `cmd/` | `.agents/shared/gamebackend.md`; for a new module, the `add-game-module` skill |
+| Run `cargo test`, `verifyctl`, or `devctl` | `safe-verification` skill; `.agents/shared/gamebackend.md` **One test rollout at a time**; `docs/reference/testing.md` |
+| Build or change admin UI | `mockup-implementation` skill |
+
+Durable technical references live in `docs/reference/`; workflow policy lives
+in `.agents/`. Do not invent APIs, tools, models, or paths.
 
 ## Non-Negotiables
 

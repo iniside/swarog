@@ -1,32 +1,21 @@
-# GameBackend Agent Instructions
+# Instruction Map
 
-This folder is the shared instruction source for GameBackend agents.
+`AGENTS.md` is the mandatory core and action router. Read it plus the active
+runtime adapter first, then load only the authorities for the next concrete
+action. If that action is unclear, keep it read-only and use the research row
+until it is classified. Reuse already-read authorities while they are unchanged.
 
-`CLAUDE.md` is the Claude-specific copy of the same workflow substance plus
-the Claude overlay (models, trailers, plan path, hook names). Keep it in
-lockstep on workflow substance. Runtime adapters only translate tools, model
-slugs, trailers, and plan-file paths.
+- `shared/core-rules.md`: owning mistakes, plans/status docs, git safety,
+  commit-after-task, commit format, comments, wipe / no dual-write /
+  topology-blind, memory backup.
+- `shared/research-navigation.md`: research before planning, search mode, Rust
+  navigation, decisions are final; routes the full research method.
+- `shared/planning-dispatch.md`: plan writing, implementation lanes,
+  adversarial diff review, Fix the Authority, refactor safety.
+- `shared/gamebackend.md`: architecture (seams, hard constraints, modules,
+  commands, dev tooling scope, one test rollout at a time, database, layout).
+- `adapters/<runtime>.md`: runtime tools, models, effort, trailers, and artifacts.
+- `skills/`: shared skills, cited by skill name.
+- `docs/reference/*.md`: full action-specific contracts linked by the router.
 
-## Read Order
-
-1. Read every file in `.agents/shared/`.
-2. Read exactly one runtime adapter in `.agents/adapters/` for the active agent.
-3. Follow referenced durable technical docs in `docs/reference/` when the task
-   touches that area.
-
-## Files
-
-- `.agents/shared/core-rules.md` — mistakes, docs, git safety, commit-after-task,
-  commit format, comments, wipe / no dual-write / topology-blind, memory-sync.
-- `.agents/shared/research-navigation.md` — research before planning, search
-  mode, decisions-are-final, rust navigation.
-- `.agents/shared/planning-dispatch.md` — plan writing, implementation lanes,
-  `core-reviewer`, Fix the Authority, refactor safety.
-- `.agents/shared/gamebackend.md` — architecture: three seams, hard constraints,
-  17 fortresses + gateway including storage, commands, one-rollout, wipe, layout.
-
-Adapters (one per runtime) live under `.agents/adapters/` and map shared lanes
-to that runtime's tools and trailers.
-
-If an adapter conflicts with shared rules, the shared project rule wins unless
-the adapter is only translating tool names for that runtime.
+Shared authorities win except where an adapter translates runtime mechanics.
