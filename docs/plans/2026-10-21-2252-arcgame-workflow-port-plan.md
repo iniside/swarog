@@ -366,6 +366,21 @@ hook invocation through Claude Code on Windows confirms `$CLAUDE_PROJECT_DIR` ex
 
 ## Deferred
 
+- Hook known gaps after Step 9 (owner chose one final fix, no third review round;
+  2026-10-22): `git -C <dir>` path checks resolve against the payload cwd, not `<dir>`;
+  `echo 'git' 'stash'` is a false deny; `git reset <deleted-file>` is denied (use
+  `git reset -- <file>`); a file named like a branch is ambiguous; `git checkout :/msg`
+  not treated as a path; `git reset --soft HEAD~` (no digit) denied; existing-path
+  checkout denied when `git rev-parse` cannot run; `git rm`/`git mv`, git aliases, and
+  git via `sh -c`/`Invoke-Expression` are not guarded; a lone `&` is not a separator;
+  `git checkout --track origin/x` creates a branch without asking; a broken
+  `shell_data.py` silently disables both shell guards (fail-open by design).
+- "Historical docs are archives" lives only in `docs-writer.md` + memory — owner to decide
+  whether it gets a `core-rules.md` home (decision 4 discourages memory-only rules).
+- ~40 "CLAUDE.md hard constraint N" references in `tools/archcheck` (user-facing error
+  strings), module comments, `weles/`, scripts — still resolve via the CLAUDE.md
+  **Hard constraints** anchor; repointing to `gamebackend.md` needs a cargo build/test run.
+
 - Concurrent-rollout guard hook (deny a second `cargo test`/`verifyctl`/`devctl up` while
   cargo/rustc runs) — enforces a MANDATORY rule but was not requested.
 - `rust-nav` LSP daemon, `arcsem`-style index, Codex `.codex/agents/*.toml`.
