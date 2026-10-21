@@ -6395,7 +6395,9 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
     // until the QUIC idle timeout or the front's 30s invoke timeout, whichever comes first,
     // so it gets 45s and only absorbs that. Until the route pool's probe marks the peer
     // down, a call can still fail as a dial error, so the follow-up is polled until the
-    // pool's own answer; each attempt is bounded and `characters.list` is retry-safe.
+    // pool's own answer; each attempt is bounded and `characters.list` is retry-safe. The
+    // 500ms pacing keeps fast dial failures from spending the attempts before the probe
+    // flips, and at 2 rps stays well inside the inbound and per-IP invoke buckets.
     // This typically adds ~30s inside the kill window.
     let ws = format!("ws://{}", g.trim_start_matches("http://"));
     let (ph14_code, ph14_guest) = create_guest(ctx, &g).await?;
@@ -6418,7 +6420,7 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
     let mut ph14_all_unavailable = true;
     let mut ph14_pool = false;
     let mut ph14_last: Option<Result<serde_json::Value>> = None;
-    while ph14_attempts < 10 && Instant::now() < ph14_deadline {
+    while ph14_attempts < 30 && Instant::now() < ph14_deadline {
         ph14_id += 1;
         ph14_attempts += 1;
         let r = ph14
@@ -6431,6 +6433,7 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
         if ph14_pool || !ph14_all_unavailable {
             break;
         }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
     let ph14_last_err = ph14_last.as_ref().and_then(|r| field(r, "err"));
     let ph14_get = ph14
