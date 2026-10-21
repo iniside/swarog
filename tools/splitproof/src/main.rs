@@ -3473,11 +3473,11 @@ async fn push_assertions(
     let suffix = format!("{}{tag}", std::process::id());
     let ca_cert = ctx.ca_cert.to_str().context("CA cert path not UTF-8")?.to_string();
     let ca_key = ctx.ca_key.to_str().context("CA key path not UTF-8")?.to_string();
-    let deliver = |batch: Vec<push::Envelope>| {
+    let deliver = |producer: u64, seq: u64, batch: Vec<push::Envelope>| {
         let (cert, key) = (ca_cert.clone(), ca_key.clone());
         async move {
             let addr = edge.context("the backplane injector needs an internal edge")?;
-            pushws::deliver_batch(addr, &cert, &key, &batch).await
+            pushws::deliver_batch(addr, &cert, &key, producer, seq, &batch).await
         }
     };
 
@@ -3655,11 +3655,16 @@ async fn push_assertions(
         // A join is silent by design (there is no join ack), so the batch is RE-SENT until
         // both members have seen one rather than slept-then-checked: nothing orders the
         // verb against a delivery that started in another process.
+        // The front drops a batch whose seq is not above its producer's last one, so
+        // every injection takes the next seq.
+        let ph4_producer: u64 = rand::random();
+        let mut ph4_seq = 0u64;
         let mut got_a = false;
         let mut got_b = false;
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline && !(got_a && got_b) {
-            deliver(vec![push::Envelope::new(
+            ph4_seq += 1;
+            deliver(ph4_producer, ph4_seq, vec![push::Envelope::new(
                 push::Target::Group(group.clone()),
                 push::Message::new(group_topic.clone(), b"grouped".to_vec()),
             )])
@@ -3672,7 +3677,8 @@ async fn push_assertions(
             }
         }
         let c_group = c.await_topic(&group_topic, Duration::from_secs(3)).await;
-        deliver(vec![push::Envelope::new(
+        ph4_seq += 1;
+        deliver(ph4_producer, ph4_seq, vec![push::Envelope::new(
             push::Target::All,
             push::Message::new(all_topic.clone(), b"broadcast".to_vec()),
         )])

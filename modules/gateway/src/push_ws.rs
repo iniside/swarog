@@ -710,6 +710,7 @@ impl QueueState {
 /// stalled reader from hiding a producer that is over the payload cap.
 static DROPS: Drops = Drops::new();
 static OVERSIZE: Drops = Drops::new();
+static STALE: Drops = Drops::new();
 
 /// Counts dropped frames. The first drop warns, every later one logs at `debug!` with the
 /// running total: a stalled client would otherwise emit one warning per produced message.
@@ -758,7 +759,21 @@ pub(crate) struct PushHub {
     drained: tokio::sync::Notify,
     /// The per-client-IP invoke budget, shared by every connection from one IP.
     invoke_limiter: Arc<httpmw::IpLimiter>,
+    /// Each backplane producer's high-water `seq`. The map lock is only held to fetch or
+    /// insert an entry, never while an entry lock is taken.
+    origins: Mutex<HashMap<u64, Arc<Mutex<Origin>>>>,
 }
+
+/// One backplane producer's ordering state, see [`deliver_batch`].
+struct Origin {
+    hw: u64,
+    last_seen: tokio::time::Instant,
+}
+
+/// How long a producer may stay silent before a NEW producer's arrival evicts its entry.
+/// A late batch is dispatched within about `EDGE_STREAM_GRACE` (30s) of a newer one from
+/// the same producer, so an evicted entry can no longer let a late batch through.
+const ORIGIN_IDLE_EVICT: Duration = Duration::from_secs(300);
 
 struct HubState {
     /// Set by [`PushHub::shutdown`]. Tested and the insert performed under the SAME
@@ -860,6 +875,7 @@ impl PushHub {
                 groups: HashMap::new(),
             }),
             drained: tokio::sync::Notify::new(),
+            origins: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1245,10 +1261,56 @@ pub(crate) fn deliver_registration(hub: Arc<PushHub>) -> edge::EdgeReg {
 /// receives every batch and filters locally, which is what keeps the design neutral to how
 /// many fronts the fleet runs.
 fn deliver_batch(hub: &PushHub, req: &[u8]) -> edge::HandlerResult {
-    for envelope in push::decode_batch(req)? {
+    let batch = push::decode_batch(req)?;
+    let origin = hub.origin(batch.producer);
+    // Held across every enqueue: releasing it between the seq check and the enqueue would
+    // let a newer batch enqueue in between, which is the inversion this gate exists to stop.
+    let mut origin = origin.lock().unwrap_or_else(|e| e.into_inner());
+    if batch.seq <= origin.hw {
+        STALE.record("stale backplane batch (late after a newer one)");
+        return Ok(Vec::new());
+    }
+    origin.hw = batch.seq;
+    origin.last_seen = tokio::time::Instant::now();
+    for envelope in &batch.envelopes {
         hub.deliver(&envelope.target, &envelope.msg);
     }
     Ok(Vec::new())
+}
+
+impl PushHub {
+    /// The ordering entry for `producer`, inserted on first sight. Inserting is also when
+    /// entries idle past [`ORIGIN_IDLE_EVICT`] are evicted, so the map is bounded by the
+    /// producers seen in that window.
+    fn origin(&self, producer: u64) -> Arc<Mutex<Origin>> {
+        let mut origins = self.origins.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(origin) = origins.get(&producer) {
+            return origin.clone();
+        }
+        let now = tokio::time::Instant::now();
+        let fresh = |seen: tokio::time::Instant| {
+            now.saturating_duration_since(seen) <= ORIGIN_IDLE_EVICT
+        };
+        origins.retain(|_, origin| {
+            // A clone exists only while a delivery holds it, and clones are made under this
+            // map lock, so an entry with no clone is not mid-delivery and cannot become so
+            // while it is being evicted — and its lock is free.
+            if Arc::strong_count(origin) > 1 {
+                return true;
+            }
+            match origin.try_lock() {
+                Ok(o) => fresh(o.last_seen),
+                Err(std::sync::TryLockError::Poisoned(e)) => fresh(e.into_inner().last_seen),
+                Err(std::sync::TryLockError::WouldBlock) => true,
+            }
+        });
+        let origin = Arc::new(Mutex::new(Origin {
+            hw: 0,
+            last_seen: now,
+        }));
+        origins.insert(producer, origin.clone());
+        origin
+    }
 }
 
 // ---------------------------------------------------------------------------

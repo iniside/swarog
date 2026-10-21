@@ -131,13 +131,40 @@ impl Envelope {
 /// unrelated small message travelling with it — the opposite of what
 /// one-ordered-batch-per-call is for. A batching sink caps its own batch against the
 /// transport's frame limit and splits into several ordered calls.
-pub fn encode_batch(batch: &[Envelope]) -> Result<Vec<u8>, Error> {
-    serde_json::to_vec(batch).map_err(|e| Error::Codec(e.to_string()))
+pub fn encode_batch(producer: u64, seq: u64, envelopes: &[Envelope]) -> Result<Vec<u8>, Error> {
+    serde_json::to_vec(&BatchRef {
+        producer,
+        seq,
+        envelopes,
+    })
+    .map_err(|e| Error::Codec(e.to_string()))
 }
 
 /// Decodes a batch produced by [`encode_batch`], preserving its order.
-pub fn decode_batch(bytes: &[u8]) -> Result<Vec<Envelope>, Error> {
+pub fn decode_batch(bytes: &[u8]) -> Result<Batch, Error> {
     serde_json::from_slice(bytes).map_err(|e| Error::Codec(e.to_string()))
+}
+
+/// One backplane batch: the sending drain's `producer` id, its per-producer `seq`, and the
+/// ordered envelopes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Batch {
+    pub producer: u64,
+    pub seq: u64,
+    pub envelopes: Vec<Envelope>,
+}
+
+/// The encoded length of [`encode_batch`] with no envelopes and the widest `producer` and
+/// `seq`: the most bytes the header can add to a batch.
+pub const BATCH_HEADER_MAX: usize = 75;
+
+/// [`Batch`]'s borrowed encoding twin; the field order must match it.
+#[derive(Serialize)]
+struct BatchRef<'a> {
+    producer: u64,
+    seq: u64,
+    envelopes: &'a [Envelope],
 }
 
 /// What a [`Sink`] did with a message. The two variants are different KINDS of answer

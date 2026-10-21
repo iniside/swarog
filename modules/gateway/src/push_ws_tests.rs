@@ -1468,7 +1468,7 @@ async fn deliver_batch_replays_every_target_variant_in_order() {
     let (slot, _wake) = bound(&hub, local(), "alice");
     assert!(hub.join(slot.id, "raid"));
 
-    let batch = push::encode_batch(&[
+    let batch = push::encode_batch(1, 1, &[
         push::Envelope::new(Target::Player("alice".into()), msg("one")),
         push::Envelope::new(Target::Player("nobody".into()), msg("skipped")),
         push::Envelope::new(Target::Group("raid".into()), msg("two")),
@@ -1497,7 +1497,7 @@ async fn deliver_batch_keeps_each_hubs_order_across_a_mixed_hub_batch() {
         push::Envelope::new(Target::Player("alice".into()), topic_msg(topic, payload))
     };
 
-    let batch = push::encode_batch(&[
+    let batch = push::encode_batch(1, 1, &[
         to("a.x", "a1"),
         to("b.x", "b1"),
         to("a.x", "a2"),
@@ -1520,7 +1520,8 @@ async fn deliver_batch_keeps_each_hubs_order_across_a_mixed_hub_batch() {
 async fn deliver_batch_rejects_a_malformed_batch() {
     let hub = hub_with(test_limits());
     assert!(deliver_batch(&hub, b"not a batch").is_err());
-    assert!(deliver_batch(&hub, b"[]").is_ok(), "an empty batch is legal");
+    let empty = push::encode_batch(1, 1, &[]).expect("encode");
+    assert!(deliver_batch(&hub, &empty).is_ok(), "an empty batch is legal");
 }
 
 /// The registration claims exactly the wire method the sender calls. Nothing links the

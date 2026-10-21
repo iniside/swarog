@@ -297,13 +297,16 @@ pub async fn deliver_batch(
     edge_addr: SocketAddr,
     ca_cert: &str,
     ca_key: &str,
+    producer: u64,
+    seq: u64,
     batch: &[push::Envelope],
 ) -> Result<()> {
     let ca = DevCA::load(ca_cert, ca_key).map_err(|e| anyhow::anyhow!("load edge CA: {e}"))?;
     let client = edge::Client::dial(edge_addr, &ca)
         .await
         .map_err(|e| anyhow::anyhow!("dial the front's internal edge at {edge_addr}: {e}"))?;
-    let encoded = push::encode_batch(batch).map_err(|e| anyhow::anyhow!("encode batch: {e}"))?;
+    let encoded = push::encode_batch(producer, seq, batch)
+        .map_err(|e| anyhow::anyhow!("encode batch: {e}"))?;
     client
         .call_raw("push.deliver", &encoded)
         .await

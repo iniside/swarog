@@ -187,7 +187,7 @@ fn encode_batch_round_trips_every_target_variant_in_order() {
         Envelope::new(Target::Player("p2".into()), Message::new("d", vec![7])),
     ];
 
-    let decoded = decode_batch(&encode_batch(&batch).unwrap()).unwrap();
+    let decoded = decode_batch(&encode_batch(1, 1, &batch).unwrap()).unwrap().envelopes;
 
     assert_eq!(decoded, batch, "every variant and the slice order survive the codec");
     assert_eq!(
@@ -200,7 +200,7 @@ fn encode_batch_round_trips_every_target_variant_in_order() {
 /// `Codec` error rather than a panic on the receiving front.
 #[test]
 fn decode_batch_rejects_garbage_and_accepts_an_empty_batch() {
-    assert!(decode_batch(&encode_batch(&[]).unwrap()).unwrap().is_empty());
+    assert!(decode_batch(&encode_batch(1, 1, &[]).unwrap()).unwrap().envelopes.is_empty());
 
     let err = decode_batch(b"not json").expect_err("garbage must not decode");
     assert!(matches!(err, Error::Codec(_)), "{err}");

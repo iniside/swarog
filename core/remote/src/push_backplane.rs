@@ -300,6 +300,10 @@ async fn drain_loop(
 ) {
     // The startup wait happens at most ONCE per drain, whatever its outcome.
     let mut resolve_waited = false;
+    let mut stamp = Stamp {
+        producer: rand::random::<u64>(),
+        next_seq: 1,
+    };
     loop {
         let first = tokio::select! {
             biased;
@@ -332,7 +336,7 @@ async fn drain_loop(
         }
         // `send_batch` has already accounted for the batch it was holding; what remains
         // unaccounted is the queue behind it.
-        if !send_batch(&pool, batch, &drops, &mut stop).await {
+        if !send_batch(&pool, batch, &drops, &mut stamp, &mut stop).await {
             record_stop_loss(&mut rx, &drops, 0);
             return;
         }
@@ -382,6 +386,7 @@ async fn send_batch(
     pool: &Pool,
     batch: Vec<Envelope>,
     drops: &Drops,
+    stamp: &mut Stamp,
     stop: &mut watch::Receiver<bool>,
 ) -> bool {
     if pool.fanout_state() == FanoutState::Empty {
@@ -396,7 +401,9 @@ async fn send_batch(
             return false;
         }
         let count = chunk.len() as u64;
-        let bytes = match push::encode_batch(chunk) {
+        let seq = stamp.next_seq;
+        stamp.next_seq += 1;
+        let bytes = match push::encode_batch(stamp.producer, seq, chunk) {
             Ok(bytes) => bytes,
             Err(e) => {
                 tracing::debug!(error = %e, "push backplane: batch encode failed");
@@ -423,16 +430,17 @@ async fn send_batch(
 /// order. A single message that cannot fit alone is dropped and counted — carrying it
 /// forward would make every later batch fail the same way.
 fn split_batch(batch: Vec<Envelope>, drops: &Drops) -> Vec<Vec<Envelope>> {
+    let budget = BATCH_BYTE_BUDGET - push::BATCH_HEADER_MAX;
     let mut chunks: Vec<Vec<Envelope>> = Vec::new();
     let mut chunk: Vec<Envelope> = Vec::new();
     // Both element sizes and the running total are measured through `push::encode_batch`
-    // itself, so the budget cannot drift from the codec: a JSON array of one element is
-    // the element plus its two brackets, and each further element costs its own size plus
-    // one separator.
-    let mut chunk_bytes = BRACKETS;
+    // itself, so the budget cannot drift from the codec: a widest-header batch of one
+    // element is the element plus `BATCH_HEADER_MAX`, and each further element costs its
+    // own size plus one separator.
+    let mut chunk_bytes = 0;
     for env in batch {
-        let size = match push::encode_batch(std::slice::from_ref(&env)) {
-            Ok(bytes) => bytes.len().saturating_sub(BRACKETS),
+        let size = match push::encode_batch(u64::MAX, u64::MAX, std::slice::from_ref(&env)) {
+            Ok(bytes) => bytes.len().saturating_sub(push::BATCH_HEADER_MAX),
             Err(e) => {
                 tracing::debug!(
                     topic = %env.msg.topic,
@@ -443,7 +451,7 @@ fn split_batch(batch: Vec<Envelope>, drops: &Drops) -> Vec<Vec<Envelope>> {
                 continue;
             }
         };
-        if BRACKETS + size > BATCH_BYTE_BUDGET {
+        if size > budget {
             tracing::debug!(
                 topic = %env.msg.topic,
                 size,
@@ -453,9 +461,9 @@ fn split_batch(batch: Vec<Envelope>, drops: &Drops) -> Vec<Vec<Envelope>> {
             drops.record(1, "oversized-message");
             continue;
         }
-        if chunk_bytes + separator_len(&chunk) + size > BATCH_BYTE_BUDGET {
+        if chunk_bytes + separator_len(&chunk) + size > budget {
             chunks.push(std::mem::take(&mut chunk));
-            chunk_bytes = BRACKETS;
+            chunk_bytes = 0;
         }
         chunk_bytes += separator_len(&chunk) + size;
         chunk.push(env);
@@ -466,8 +474,13 @@ fn split_batch(batch: Vec<Envelope>, drops: &Drops) -> Vec<Vec<Envelope>> {
     chunks
 }
 
-/// The `[` and `]` of an encoded batch.
-const BRACKETS: usize = 2;
+/// The drain's stamp for every chunk it sends: one `producer` id for the drain's lifetime
+/// and a `seq` that increases by one per encoded chunk, which is what lets a front drop a
+/// chunk that arrives after a newer one.
+struct Stamp {
+    producer: u64,
+    next_seq: u64,
+}
 
 /// The `,` an element costs when it is not the first in its chunk.
 fn separator_len(chunk: &[Envelope]) -> usize {

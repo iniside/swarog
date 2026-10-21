@@ -31,7 +31,9 @@ impl Caller for SpyCaller {
         _retry_mode: RetryMode,
     ) -> Result<Vec<u8>, Error> {
         assert_eq!(method, "push.deliver", "the drain sends one wire method");
-        let batch = push::decode_batch(payload).expect("the drain sends an encoded batch");
+        let batch = push::decode_batch(payload)
+            .expect("the drain sends an encoded batch")
+            .envelopes;
         let _ = self.sent.send(batch);
         if self.block {
             // Parks with no timer, so a paused or running clock cannot end the call —
@@ -103,11 +105,13 @@ fn topics(batch: &[Envelope]) -> Vec<String> {
 /// byte-boundary tests sit ON the budget rather than near it.
 fn env_of_encoded_size(tag: &str, total: usize) -> Envelope {
     let probe = envelope(tag, "");
-    let base = push::encode_batch(std::slice::from_ref(&probe)).unwrap().len();
+    let base = push::encode_batch(u64::MAX, u64::MAX, std::slice::from_ref(&probe))
+        .unwrap()
+        .len();
     assert!(total >= base, "cannot build an envelope smaller than {base} bytes");
     let env = envelope(tag, &"x".repeat(total - base));
     assert_eq!(
-        push::encode_batch(std::slice::from_ref(&env)).unwrap().len(),
+        push::encode_batch(u64::MAX, u64::MAX, std::slice::from_ref(&env)).unwrap().len(),
         total,
         "the fixture must land exactly on the requested size"
     );
