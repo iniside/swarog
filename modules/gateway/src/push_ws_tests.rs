@@ -1514,6 +1514,110 @@ async fn deliver_batch_keeps_each_hubs_order_across_a_mixed_hub_batch() {
     assert_eq!(lane("c"), vec!["c1"]);
 }
 
+fn stamped(producer: u64, seq: u64, payload: &str) -> Vec<u8> {
+    push::encode_batch(
+        producer,
+        seq,
+        &[push::Envelope::new(Target::Player("alice".into()), msg(payload))],
+    )
+    .expect("encode")
+}
+
+/// A batch that arrives after a newer one from the SAME producer is dropped whole. Before
+/// the stale gate both frames were enqueued (2 then 1, inverted); the queue contents are
+/// the assertion, `STALE` is process-global so it is only checked as non-decreasing.
+#[tokio::test]
+async fn deliver_batch_drops_a_late_batch_from_the_same_producer() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+    let stale_before = STALE.total.load(AtomicOrdering::Relaxed);
+
+    deliver_batch(&hub, &stamped(11, 2, "two")).unwrap();
+    deliver_batch(&hub, &stamped(11, 1, "one")).unwrap();
+
+    assert_eq!(queued_payloads(&slot.queue), vec!["two".to_string()]);
+    assert!(STALE.total.load(AtomicOrdering::Relaxed) > stale_before);
+}
+
+/// `seq <= hw`: the same seq twice is not delivered twice.
+#[tokio::test]
+async fn deliver_batch_drops_a_repeated_seq() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    deliver_batch(&hub, &stamped(12, 5, "first")).unwrap();
+    deliver_batch(&hub, &stamped(12, 5, "again")).unwrap();
+
+    assert_eq!(queued_payloads(&slot.queue), vec!["first".to_string()]);
+}
+
+/// High-water marks are per producer: a low seq from producer B is not late because
+/// producer A already reached a high one.
+#[tokio::test]
+async fn deliver_batch_keeps_producers_independent() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    deliver_batch(&hub, &stamped(21, 10, "a10")).unwrap();
+    deliver_batch(&hub, &stamped(22, 1, "b1")).unwrap();
+    deliver_batch(&hub, &stamped(21, 9, "a9-late")).unwrap();
+    deliver_batch(&hub, &stamped(22, 2, "b2")).unwrap();
+
+    assert_eq!(
+        queued_payloads(&slot.queue),
+        vec!["a10".to_string(), "b1".to_string(), "b2".to_string()]
+    );
+}
+
+fn tracked(hub: &PushHub, producer: u64) -> bool {
+    hub.origins.lock().unwrap().contains_key(&producer)
+}
+
+/// A producer idle past `ORIGIN_IDLE_EVICT` is evicted when a NEW producer arrives; the
+/// proof the entry is gone is that its low seq is accepted again.
+#[tokio::test(start_paused = true)]
+async fn an_idle_producer_is_evicted_when_a_new_one_arrives() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    deliver_batch(&hub, &stamped(31, 5, "old5")).unwrap();
+    tokio::time::advance(ORIGIN_IDLE_EVICT + Duration::from_secs(1)).await;
+    assert!(tracked(&hub, 31), "eviction runs only when a new producer arrives");
+
+    deliver_batch(&hub, &stamped(32, 1, "new1")).unwrap();
+    assert!(!tracked(&hub, 31), "the idle producer was evicted");
+    assert!(tracked(&hub, 32));
+
+    deliver_batch(&hub, &stamped(31, 1, "old1")).unwrap();
+    assert_eq!(
+        queued_payloads(&slot.queue),
+        vec!["old5".to_string(), "new1".to_string(), "old1".to_string()],
+        "with its entry gone the idle producer's low seq is accepted again"
+    );
+}
+
+/// A producer that kept sending is never evicted, however long the map has existed, so
+/// its high-water mark still drops a late batch.
+#[tokio::test(start_paused = true)]
+async fn a_producer_that_is_not_idle_is_never_evicted() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    deliver_batch(&hub, &stamped(41, 1, "s1")).unwrap();
+    tokio::time::advance(ORIGIN_IDLE_EVICT - Duration::from_secs(1)).await;
+    deliver_batch(&hub, &stamped(41, 2, "s2")).unwrap();
+    tokio::time::advance(ORIGIN_IDLE_EVICT - Duration::from_secs(1)).await;
+
+    deliver_batch(&hub, &stamped(42, 1, "other")).unwrap();
+    assert!(tracked(&hub, 41), "last seen within the window, so it stays");
+
+    deliver_batch(&hub, &stamped(41, 1, "late")).unwrap();
+    assert_eq!(
+        queued_payloads(&slot.queue),
+        vec!["s1".to_string(), "s2".to_string(), "other".to_string()]
+    );
+}
+
 /// A malformed batch is a typed error, not a panic and not a silent success — the peer
 /// learns its call failed.
 #[tokio::test]

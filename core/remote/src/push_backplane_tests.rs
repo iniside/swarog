@@ -75,6 +75,39 @@ fn spy_factory(sent: mpsc::UnboundedSender<Vec<Envelope>>, block: bool) -> crate
     })
 }
 
+/// Publishes the raw encoded payload of every call, so a test sees the stamped bytes.
+struct RawCaller {
+    sent: mpsc::UnboundedSender<Vec<u8>>,
+}
+
+#[async_trait]
+impl Caller for RawCaller {
+    async fn call(
+        &self,
+        _method: &str,
+        _identity: Option<&str>,
+        payload: &[u8],
+        _retry_mode: RetryMode,
+    ) -> Result<Vec<u8>, Error> {
+        let _ = self.sent.send(payload.to_vec());
+        Ok(Vec::new())
+    }
+}
+
+fn raw_factory(sent: mpsc::UnboundedSender<Vec<u8>>) -> crate::InstanceFactory {
+    Arc::new(move |addr: &str| {
+        let caller: Arc<dyn Caller> = Arc::new(RawCaller { sent: sent.clone() });
+        fake_instance(addr, caller, Arc::new(AtomicUsize::new(0)))
+    })
+}
+
+async fn next_payload(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("the drain must deliver")
+        .expect("a call")
+}
+
 fn list_of(addrs: &[&str]) -> PeerListResolver {
     let addrs: Vec<String> = addrs.iter().map(|s| s.to_string()).collect();
     Arc::new(move || {
@@ -438,5 +471,61 @@ fn push_sender_contributes_the_sink_and_never_a_peer_address() {
     assert!(
         ctx.contributions(opsapi::PEER_SLOT).is_empty(),
         "a push front provides no ops; it must not appear in the route table"
+    );
+}
+
+/// The real drain stamps every chunk: one constant `producer`, a strictly increasing
+/// `seq` across the chunks of one drain pass AND across later passes, and every ENCODED
+/// chunk (header included) within `BATCH_BYTE_BUDGET`. `split_batch`'s own boundary
+/// tests cannot see stamped bytes, so this is the budget-drift guard.
+#[tokio::test]
+async fn drain_stamps_a_constant_producer_and_increasing_seq_within_budget() {
+    let (tx, rx) = mpsc::channel(16);
+    let (sent_tx, mut sent_rx) = mpsc::unbounded_channel();
+    let pool = Arc::new(Pool::with_factory(list_of(&["A"]), raw_factory(sent_tx)));
+    pool.refresh_once().await;
+    // Two of these fit one chunk, three do not, so the first pass cuts at least two.
+    let big = BATCH_BYTE_BUDGET * 2 / 5;
+    for tag in ["a", "b", "c"] {
+        tx.send(env_of_encoded_size(tag, big)).await.unwrap();
+    }
+
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let drops = Arc::new(Drops::new());
+    let drain = tokio::spawn(drain_loop(pool.clone(), rx, stop_rx, drops.clone()));
+
+    let mut payloads = vec![next_payload(&mut sent_rx).await, next_payload(&mut sent_rx).await];
+    tx.send(envelope("d", "")).await.unwrap();
+    payloads.push(next_payload(&mut sent_rx).await);
+
+    stop_tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), drain)
+        .await
+        .expect("the drain must observe the stop signal")
+        .unwrap();
+
+    let mut batches = Vec::new();
+    for bytes in &payloads {
+        assert!(
+            bytes.len() <= BATCH_BYTE_BUDGET,
+            "a stamped chunk of {} bytes exceeds the {BATCH_BYTE_BUDGET} budget",
+            bytes.len()
+        );
+        batches.push(push::decode_batch(bytes).expect("the drain sends a stamped batch"));
+    }
+    let chunk_topics: Vec<Vec<String>> = batches
+        .iter()
+        .map(|b| topics(&b.envelopes))
+        .collect();
+    assert_eq!(chunk_topics[0].len() + chunk_topics[1].len(), 3, "{chunk_topics:?}");
+    assert!(chunk_topics[0].len() < 3, "the first pass was cut into >= 2 chunks");
+    assert_eq!(chunk_topics[2], vec!["d".to_string()]);
+
+    let producer = batches[0].producer;
+    assert!(batches.iter().all(|b| b.producer == producer), "one producer per drain");
+    let seqs: Vec<u64> = batches.iter().map(|b| b.seq).collect();
+    assert!(
+        seqs.windows(2).all(|w| w[0] < w[1]),
+        "seq strictly increases across chunks and passes: {seqs:?}"
     );
 }
