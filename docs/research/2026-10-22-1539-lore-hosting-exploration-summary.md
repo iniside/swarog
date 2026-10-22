@@ -91,17 +91,22 @@ Każde to jedno pytanie. Raport nie przyjmuje po cichu żadnej z opcji.
   z re-bless baseline'ów i golden. Bez nowych migracji, bez `serde(alias)` i bez
   tematów v2: reguła wipe obejmuje wprost także zmianę kontraktu eventu. Na maszynie
   roboczej nie ma jeszcze Postgresa, więc nie ma danych do wipe'u.
-- **P2 — otwarte**, wyjaśnienie poniżej.
-- **P3 — studio to osobny moduł (`studios`).** Moduł jest właścicielem studia,
-  członkostwa i ról w studiu (seaty). `lore` go wymaga. `groups` zostaje grupą
-  społecznościową graczy.
-- **P4 — osobna instancja `loreserver` na studio.** Konsekwencje:
-  - Tier 1, czyli akcje globalne w tokenie, jest granicą tenanta;
-  - TB to rozmiar store'u danej instancji;
-  - locki są izolowane per studio;
-  - każda instancja to osobny wpis Welesa z mintowanymi portami i własnym katalogiem
-    konfiguracji;
-  - `aud` tokenu wskazuje konkretną instancję.
+- **P2 — wariant A.** Stockowy `loreserver`. Moduł `lore` subskrybuje
+  `NotificationService.Subscribe` per repo i przenosi zdarzenia na trwałe tematy
+  `lore.*`. Pochodna binarka z hookami czeka, aż pojawi się potrzeba weta w Tier 1
+  albo zdarzenia obliteracji.
+- **P3/P4 — studio to cały deployment, zero-sharing.** Nowe studio dostaje pełny,
+  osobny deployment Swaroga z jednym `loreserver`, bez żadnego powiązania z innymi
+  studiami. To nie jest SaaS z wieloma tenantami w jednej instalacji. Konsekwencje:
+  - w kodzie **nie ma pojęcia tenanta ani modułu `studios`**: użytkownicy studia to
+    konta w `accounts` tego deploymentu, a role nadaje moduł `lore`;
+  - jeden deployment ma dokładnie jeden `loreserver`, więc Tier 1 (akcje globalne
+    w tokenie) jest naturalnym modelem, a `aud` wskazuje tę jedną instancję;
+  - billing liczy się per deployment: seaty to użytkownicy z dostępem do Lore, a TB to
+    rozmiar store'u tej instancji; moduł `lore` jedynie raportuje te liczby;
+  - zakładanie nowego studia, czyli provisioning całego deploymentu (osobna baza
+    danych, osobny root Welesa, porty, TLS), dzieje się poza deploymentem i jest
+    osobnym, późniejszym tematem.
 - **P5 — dostawca niezależny.** Strona zatwierdzania logowania (device approval)
   używa tego dostawcy, którego skonfigurowano w `accounts`. Do zbudowania są
   produkcyjna samorejestracja (e-mail i hasło; dziś `dev` działa tylko za
@@ -404,9 +409,8 @@ Każdy krok to osobny plan wg **Plan Writing Workflow**. Kroki modułowe idą pr
 2. **`accounts`: wystawca tokenów, minimum.** Tabela kluczy ES256 (`kid`, status,
    rotacja), `/.well-known/openid-configuration`, JWKS z `alg`, wire-only
    `TokenIssuer::mint_access` w `accountsapi`.
-3. **Moduły `studios` i `lore`, szkielety.** Dwa fortece, każdy z `api/<name>/*` i
-   `cmd/<name>-svc`. `studios` obejmuje studio, członków i role. `lore` obejmuje
-   instancję per studio, repozytoria, mapowanie grup na role i akcje, render konfiguracji
+3. **Moduł `lore`, szkielet.** Forteca z `api/lore/*` i `cmd/lore-svc`. Obejmuje
+   jedną instancję `loreserver` deploymentu, repozytoria, mapowanie grup na role i akcje, render konfiguracji
    (`lorectl render-config` jako `[[prepare]]`), fake Lore w split-proof.
 4. **Adapter `UrcAuthApi` + `RebacApi` w module `lore`.** Nowa zależność `tonic`/`prost`
    i decyzja o transporcie gRPC (§4). Login w stylu device przez ludzkie logowanie
