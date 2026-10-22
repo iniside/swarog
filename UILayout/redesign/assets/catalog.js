@@ -12,7 +12,7 @@
   const prims = [
     {
       id: "DataTable", name: "Data table", used: ["players.html", "lore-repos.html", "lore-locks.html", "apikeys.html", "audit.html", "events.html", "economy.html"],
-      desc: "Rows of one entity kind with server-side search, typed filters, sort, pagination, selection and per-row actions. Columns may come from other modules (<span class='tag'>user.list_column</span>); a failing column degrades to an icon, not a failed table.",
+      desc: "Rows of one entity kind with server-side search, typed filters, sort, pagination, selection and per-row actions. Columns may come from other modules (<span class='tag'>entity.user.list_column</span>); a failing column degrades to an icon, not a failed table.",
       data: `
 DataTable {
   columns: Column[]            // key, label, kind, sortable, align
@@ -24,7 +24,7 @@ DataTable {
 }
 Column.kind = text | mono | badge | ref | number | bytes | time | user
 Cell        = { kind, value, tone?: ok|warn|err|info, link?: EntityRef }
-EntityRef   = "player:7f3a9c21" | "repo:ashfall-game" | "apikey:ak_9f2c"`,
+EntityRef   = "user:7f3a9c21" | "repository:ashfall-game" | "apikey:ak_9f2c"`,
       actions: ["Row action → <span class='tag'>*.row_action</span> menu, grouped by module", "Bulk action on selection (same ActionDef, <code>multi: true</code>)", "Row click → entity detail via EntityRef", "Search / filter / sort / page → refetch with Params"],
       states: ["ok", "loading", "empty", "stale", "error", "readonly", "denied"],
       points: ["page", "entity tab", "dashboard.panel"],
@@ -39,10 +39,10 @@ EntityKind  { kind: "user" | "repository" | "apikey" | …, owner: Module,
 EntityTab   { kind, id, label, order, count?: Fetch<u64>, body: Panel[] }
 SummaryFact { kind, order, render: Fetch<Cell> }
 HeaderAction{ kind, ActionDef }`,
-      actions: ["Header actions (<span class='tag'>user.header_action</span>)", "Overflow menu = the row-action set for that kind", "Tab switch keeps the URL (<code>?tab=lore</code>), loads only that tab"],
+      actions: ["Header actions (<span class='tag'>entity.user.header_action</span>)", "Overflow menu = the row-action set for that kind", "Tab switch keeps the URL (<code>?tab=lore</code>), loads only that tab"],
       states: ["ok", "loading", "error", "denied"],
       points: ["entity.&lt;kind&gt;.tab", "entity.&lt;kind&gt;.summary_field", "entity.&lt;kind&gt;.header_action"],
-      demo: () => frag(C("portal", "entity:user (host)", "EntityDetail"), `<section class="panel"><div class="entity-head">${UI.avatar(D.byHandle["aiko.tanaka"], true)}<div class="grow"><div class="row"><h1 style="font-size:16px">Aiko Tanaka</h1>${status("active")}</div><div class="entity-facts">${frag(C("accounts", "user.summary_field", "Fact"), `<span>${icon("hash")} <span class="mono">7f3a9c21</span></span>`, { inline: true, tag: "span" })}${frag(C("lore", "user.summary_field", "Fact"), `<span>${icon("shield")} Lore Lead</span>`, { inline: true, tag: "span" })}${frag(C("wallet", "user.summary_field", "Fact"), `<span style="color:var(--err)">${icon("alert")} wallet unavailable</span>`, { inline: true, tag: "span" })}</div></div></div><div class="tabs">${["Profile & identities", "Wallet", "Lore"].map((t, i) => frag(C(["accounts", "wallet", "lore"][i], "user.tab", ""), `<button class="tab ${i ? "" : "on"}">${t}${i === 1 ? '<span class="dot err"></span>' : ""}</button>`, { inline: true, tag: "span" })).join("")}</div></section>`, { left: true }),
+      demo: () => frag(C("portal", "entity.user (host)", "EntityDetail"), `<section class="panel"><div class="entity-head">${UI.avatar(D.byHandle["aiko.tanaka"], true)}<div class="grow"><div class="row"><h1 style="font-size:16px">Aiko Tanaka</h1>${status("active")}</div><div class="entity-facts">${frag(C("accounts", "entity.user.summary_field", "SummaryFact"), `<span>${icon("hash")} <span class="mono">7f3a9c21</span></span>`, { inline: true, tag: "span" })}${frag(C("lore", "entity.user.summary_field", "SummaryFact"), `<span>${icon("shield")} Lore Lead</span>`, { inline: true, tag: "span" })}${frag(C("wallet", "entity.user.summary_field", "SummaryFact"), `<span style="color:var(--err)">${icon("alert")} wallet unavailable</span>`, { inline: true, tag: "span" })}</div></div></div><div class="tabs">${["Profile & identities", "Wallet", "Lore"].map((t, i) => frag(C(["accounts", "wallet", "lore"][i], "entity.user.tab", "EntityTab"), `<button class="tab ${i ? "" : "on"}">${t}${i === 1 ? '<span class="dot err"></span>' : ""}</button>`, { inline: true, tag: "span" })).join("")}</div></section>`, { left: true }),
     },
     {
       id: "Form", name: "Form / configurator", used: ["lore-repo.html", "config.html", "economy.html", "apikeys.html"],
@@ -104,7 +104,7 @@ KpiTile {
       actions: ["Click → link"],
       states: ["ok", "loading", "empty", "stale", "error", "denied"],
       points: ["dashboard.tile", "page"],
-      demo: () => `<div class="grid g-2">${kpi({ c: C("lore", "dashboard.tile", "KpiTile"), label: "Lore seats", value: "8", unit: "/ 10", bar: 80, delta: "1 suspended", noForce: true })}${kpi({ c: C("wallet", "dashboard.tile", "KpiTile"), label: "Embers spent (24 h)", value: "1.94 M", state: "error", noForce: true })}</div>`,
+      demo: () => `<div class="grid g-2">${kpi({ c: C("lore", "dashboard.tile", "KpiTile"), label: "Lore seats", value: "8", delta: "users with Lore access", spark: [5, 6, 6, 7, 8, 8], noForce: true })}${kpi({ c: C("wallet", "dashboard.tile", "KpiTile"), label: "Embers spent (24 h)", value: "1.94 M", state: "error", noForce: true })}</div>`,
     },
     {
       id: "Timeline", name: "Event timeline / log", used: ["lore-events.html", "index.html", "scheduler.html", "config.html", "player.html?tab=inbox"],
@@ -154,7 +154,7 @@ Explain(row, col) -> { resolved, steps: (source, value)[] }`,
       actions: ["Stage cell change", "Apply / discard change set", "Explain effective permission"],
       states: ["ok", "loading", "stale", "error", "readonly", "denied"],
       points: ["page", "entity tab"],
-      demo: () => panel({ c: C("lore", "page", "PermissionMatrix"), flush: true, noForce: true, title: "Overrides", body: `<div class="tbl-wrap"><table class="tbl matrix"><thead><tr><th>User</th><th class="rot mono">ashfall-art</th><th class="rot mono">marketing-capture</th></tr></thead><tbody><tr><td>${userCell("elena.p")}</td><td class="cell"><span class="pcell none">none</span></td><td class="cell"><span class="pcell override pending">Developer</span></td></tr><tr><td>${userCell("diego.r")}</td><td class="cell"><span class="pcell inherit">Developer</span></td><td class="cell"><span class="pcell inherit">Developer</span></td></tr></tbody></table></div>` }),
+      demo: () => panel({ c: C("lore", "page", "PermissionMatrix"), flush: true, noForce: true, title: "Overrides", body: `<div class="tbl-wrap"><table class="tbl matrix"><thead><tr><th>User</th><th class="rot mono">ashfall-art</th><th class="rot mono">engine-fork</th></tr></thead><tbody><tr><td>${userCell("elena.p")}</td><td class="cell"><span class="pcell none">none</span></td><td class="cell"><span class="pcell none">none</span></td></tr><tr><td>${userCell("priya.n")}</td><td class="cell"><span class="pcell override pending">Lead</span></td><td class="cell"><span class="pcell inherit">Developer</span></td></tr></tbody></table></div>` }),
     },
     {
       id: "ServiceStatus", name: "Process / service status", used: ["index.html#health", "lore-server.html", "lore-events.html"],
@@ -177,7 +177,7 @@ ProcessStatus extends item { pid, host, ports: (name, port)[],
       actions: ["Optional panel tool: Edit → Form"],
       states: ["ok", "loading", "stale", "error", "denied"],
       points: ["entity tab", "page"],
-      demo: () => panel({ c: C("accounts", "user.tab", "PropertyList"), title: "Profile", noForce: true, body: props([["User id", `<span class="mono">7f3a9c21</span>`], ["Status", status("active")], ["Created", "2025-03-11"]]) }),
+      demo: () => panel({ c: C("accounts", "entity.user.tab", "PropertyList"), title: "Profile", noForce: true, body: props([["User id", `<span class="mono">7f3a9c21</span>`], ["Status", status("active")], ["Created", "2025-03-11"]]) }),
     },
     {
       id: "TimeSeriesChart", name: "Time-series chart", used: ["lore-billing.html"],
@@ -244,6 +244,12 @@ NavEntry   { section, id, label, icon, order, page: PageId,
     ["AttentionList", "index.html", "Portal host that sorts AttentionItems from all modules"],
     ["FacetBar", "lore-locks.html", "DataTable filter values with counts, shown above the table"],
     ["ProcessStatus", "lore-server.html", "ServiceStatus single-item variant"],
+    ["EntityTab", "player.html", "EntityDetail tab contribution: label, order, optional count, Panel[]"],
+    ["SummaryFact", "player.html", "EntityDetail header fact: one Cell"],
+    ["Column", "players.html", "DataTable column contributed to another module's table: Column + batched Cell[]"],
+    ["NavSection", "index.html", "NavEntry group: id, label, order"],
+    ["NotificationItem", "index.html", "AttentionItem shape without an action label, shown under the shell bell"],
+    ["Breadcrumbs", "index.html", "Shell-derived from NavSection, NavEntry and EntityKind.resolve; no module input"],
   ];
 
   const points = [
@@ -258,8 +264,12 @@ NavEntry   { section, id, label, icon, order, page: PageId,
     ["entity.user.summary_field", "accounts", "EntityRef user", "Cell", "order"],
     ["entity.user.header_action / row_action", "accounts", "EntityRef user", "ActionDef", "grouped by module"],
     ["entity.user.list_column", "accounts", "EntityRef[] (page of rows)", "Column + Cell[]", "batched per page"],
-    ["entity.repository.tab / row_action", "lore", "EntityRef repo", "Panel[] / ActionDef", "order"],
+    ["entity.repository.tab / row_action", "lore", "EntityRef repository", "Panel[] / ActionDef", "order"],
     ["entity.apikey.row_action", "apikeys", "EntityRef apikey", "ActionDef", "grouped by module"],
+    ["entity.lock.row_action", "lore", "EntityRef lock", "ActionDef", "grouped by module"],
+    ["entity.&lt;kind&gt; (host), dashboard.attention (host)", "portal", "—", "EntityDetail, AttentionList", "portal-owned frames, outlined so the host is visible"],
+    ["shell.breadcrumbs / shell.health", "portal", "—", "Breadcrumbs, ServiceStatus", "shell-owned, no module input"],
+    ["SubmitOutcome.reveal", "any module", "—", "SecretReveal", "returned from a submit, not a contribution"],
     ["page", "contributing module", "Params (query string)", "any Panel[] in a layout", "nav order"],
   ];
 
@@ -290,19 +300,29 @@ Ctx = { operator, entity?: EntityRef, time_range? }`) })}${panel({ title: "State
 
       const comp = `<section class="cat-entry" id="compositions"><h2>${icon("grid")} Compositions (not primitives)</h2><p class="dim">Names that appear in the annotation layer but are built from the primitives above. They do not need their own API type.</p>${panel({ flush: true, body: table({ pager: false, cols: [{ label: "Name" }, { label: "Screen" }, { label: "Built from" }], rows: compositions.map(c => [`<span class="mono">${c[0]}</span>`, `<a href="${c[1]}">${c[1].replace(".html", "")}</a>`, `<span class="dim">${c[2]}</span>`]) }) })}</section>`;
 
-      const tokens = `<section class="cat-entry" id="tokens"><h2>${icon("sliders")} Tokens & atoms</h2><div class="grid g-2">${panel({ title: "Status badges (one style everywhere)", body: `<div class="row" style="flex-wrap:wrap;gap:6px">${["running", "active", "sent", "pending", "retrying", "lagging", "degraded", "suspended", "parked", "revoked", "failed", "paused", "down", "banned"].map(s => status(s)).join("")}</div><div class="muted" style="font-size:12px;margin-top:10px">Tone is derived from the value, never chosen per screen: ok · info · warn · err · neutral.</div>` })}${panel({ title: "Cells", body: props([["ref", `${UI.ref("player", "7f3a9c21")} ${UI.ref("repo", "ashfall-game")}`], ["user", userCell("aiko.tanaka")], ["mono", `<span class="mono">c41f9e2</span>`], ["tag", `<span class="tag">main</span>`], ["badge", badge("Lead", "", true)], ["buttons", `<button class="btn primary sm">Primary</button> <button class="btn sm">Default</button> <button class="btn sm danger">Danger</button> <button class="btn sm ghost">Ghost</button>`]]) })}</div></section>`;
+      const tokens = `<section class="cat-entry" id="tokens"><h2>${icon("sliders")} Tokens & atoms</h2><div class="grid g-2">${panel({ title: "Status badges (one style everywhere)", body: `<div class="row" style="flex-wrap:wrap;gap:6px">${["running", "active", "sent", "pending", "retrying", "lagging", "degraded", "suspended", "parked", "revoked", "failed", "paused", "down", "banned"].map(s => status(s)).join("")}</div><div class="muted" style="font-size:12px;margin-top:10px">Tone is derived from the value, never chosen per screen: ok · info · warn · err · neutral.</div>` })}${panel({ title: "Cells", body: props([["ref", `${UI.ref("user", "7f3a9c21")} ${UI.ref("repository", "ashfall-game")}`], ["user", userCell("aiko.tanaka")], ["mono", `<span class="mono">c41f9e2</span>`], ["tag", `<span class="tag">main</span>`], ["badge", badge("Lead", "", true)], ["buttons", `<button class="btn primary sm">Primary</button> <button class="btn sm">Default</button> <button class="btn sm danger">Danger</button> <button class="btn sm ghost">Ghost</button>`]]) })}</div></section>`;
 
       const qs = [
-        ["Fetch must carry Params and Ctx.", "Today <span class='mono'>AdminData::admin_data()</span> takes no arguments, so a remote module cannot render an entity tab or a filtered table. Every primitive above needs <code>fetch(ctx, params)</code> across the wire."],
-        ["One Content singleton → Panel list.", "Today a page is at most kpis + one table + one form. Screens here need N panels per page in a layout, each with its own state."],
-        ["EntityRef is owned centrally.", "<code>kind:id</code> (precedent: inventory's <code>player:&lt;uuid&gt;</code>). Kinds are declared by their owning module; links, actions and tabs key on them."],
-        ["Ordering field.", "Nav and tabs currently follow registration order. Contributions need an explicit <code>order</code>."],
-        ["Per-panel deadline + last-good cache.", "Needed for stale vs error; decide where the cache lives (portal memory is enough; it is per-deployment)."],
-        ["Write capability is declared, not inferred.", "Read-only today is 'no form'. A module should say <code>write: false</code> so the shell can explain why, as on Cloud saves."],
-        ["Batch fetch for list columns.", "<span class='tag'>user.list_column</span> must be one call per page of rows, not per row."],
-        ["CSP / no-JS constraint.", "The current portal ships zero JavaScript. Row menus, modals, tabs and the search palette need either CSS-only patterns or a deliberate script budget."],
+        ["Fetch needs a Ctx, not only Params.", "<span class='mono'>AdminData::admin_data(params)</span> already carries the query params over the wire, and every provider must tolerate foreign params. It carries no operator identity and no entity context, so a module cannot check <code>requires</code> per operator or know which entity tab it is rendering except by parsing params."],
+        ["One Content per item → a Panel list.", "<span class='mono'>Content</span> holds kpis, one table, one form, one card grid, a context header, a modal point and context. Screens here need N independently fetched panels per page, each with its own state, deadline and cache."],
+        ["EntityRef is owned centrally.", "<code>kind:id</code>. Today the precedent is <code>player:&lt;uuid&gt;</code> in row/card <span class='mono'>context</span>; these mockups write <code>user:</code> on the assumption of the planned player_id → user_id rename. Kinds are declared by their owning module; links, actions and tabs key on them."],
+        ["Ordering exists for menus only.", "<span class='mono'>ExtensionEntry.priority</span> already sorts menu entries (ties on label). Nav groups and items still follow first-seen registration order (<span class='mono'>build_groups</span>). Sections, nav entries, tabs and tiles need an explicit <code>order</code>."],
+        ["Per-panel deadline + last-good cache.", "Needed to tell stale from error. Decide where the cache lives; portal memory is enough because the portal serves one deployment."],
+        ["Write capability: explicit or inferred?", "A remote provider that does not register <span class='mono'>AdminSubmit</span> already degrades to read-only through <span class='mono'>UnknownMethod</span>. The envelope's <code>capabilities.write</code> would make that explicit per panel, so the shell can say why (as on Cloud saves) without probing."],
+        ["Batch fetch for list columns.", "<span class='tag'>entity.user.list_column</span> must be one call per page of rows, not per row."],
+        ["Script policy.", "The portal ships htmx and admin.js under a CSP. These mockups use inline handlers everywhere; the real menus, tabs, modals and search palette must fit the CSP (no inline script) or the CSP must change deliberately."],
       ];
-      const questions = `<section class="cat-entry" id="questions"><h2>${icon("info")} Open API questions these mockups raise</h2>${panel({ flush: true, body: `<table class="tbl"><tbody>${qs.map(([a, b], i) => `<tr><td style="width:28px" class="muted mono">${i + 1}</td><td style="width:280px;font-weight:500" class="wrap">${a}</td><td class="wrap dim">${b}</td></tr>`).join("")}</tbody></table>` })}</section>`;
+      const replaced = [
+        ["ExtensionKind::EntityMenu, ExtensionPoint, ExtensionEntry, MenuEntry, RowMeta", "MenuAction on <span class='mono'>entity.&lt;kind&gt;.row_action</span>"],
+        ["ExtensionKind::ModalActions, Content.modal_point, Present::Modal", "MenuAction on <span class='mono'>entity.&lt;kind&gt;.header_action</span>; modal = Form / ConfirmAction"],
+        ["Content.header (ContextHeader), Content.context", "EntityDetail host + <span class='mono'>entity.&lt;kind&gt;.summary_field</span>"],
+        ["Content.kpis", "KpiTile (page or <span class='mono'>dashboard.tile</span>)"],
+        ["Content.table (+ Cell)", "DataTable"],
+        ["Content.form, SubmitOutcome, RevealItem", "Form, SubmitOutcome, SecretReveal"],
+        ["Content.cards (CardGrid)", "No primitive yet: use DataTable or PropertyList, or add a CardGrid primitive"],
+        ["Item.section / label (nav)", "NavSection + NavEntry with order"],
+      ];
+      const questions = `<section class="cat-entry" id="questions"><h2>${icon("info")} Open API questions these mockups raise</h2>${panel({ title: "What the current contract types become", flush: true, body: table({ pager: false, cols: [{ label: "Today (api/admin/api)" }, { label: "In this design" }], rows: replaced.map(r => [`<span class="mono" style="white-space:normal">${r[0]}</span>`, `<span class="dim">${r[1]}</span>`]) }) })}<div style="height:12px"></div>${panel({ flush: true, body: `<table class="tbl"><tbody>${qs.map(([a, b], i) => `<tr><td style="width:28px" class="muted mono">${i + 1}</td><td style="width:280px;font-weight:500" class="wrap">${a}</td><td class="wrap dim">${b}</td></tr>`).join("")}</tbody></table>` })}</section>`;
 
       return P.head("Primitive catalog", `${prims.length} primitives · ${points.length} extension points. Every screen in this mockup is built only from these.`, `<a class="btn" href="states.html">${icon("grid")} Panel states</a><button class="btn" onclick="REG.toggleAnnot()">${icon("layers")} Toggle contributions</button>`) +
         `<div class="cat-grid">${toc}<div>${envelope}${pts}${entries}${comp}${tokens}${questions}</div></div>`;

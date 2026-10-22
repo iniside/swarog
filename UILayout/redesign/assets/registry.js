@@ -1,5 +1,4 @@
 // Mock module manifests: what each module contributes to which extension point.
-// The shell and pages read ONLY from here; nothing in the shell knows a domain.
 window.REG = (() => {
   const { icon, esc } = UI;
   const D = DATA;
@@ -37,7 +36,7 @@ window.REG = (() => {
   // search.provider — each provider answers independently; one may time out.
   const search = [
     { module: "accounts", kind: "user", label: "Users & players", icon: "user", results: q => D.users.filter(u => !q || u.handle.toLowerCase().includes(q) || u.name.toLowerCase().includes(q)).slice(0, 5).map(u => ({ title: u.handle, sub: `${u.kind} · ${u.id}`, right: u.status, href: `player.html?u=${u.handle}` })) },
-    { module: "lore", kind: "repository", label: "Lore repositories", icon: "repo", results: q => D.repos.filter(r => !q || r.name.includes(q)).slice(0, 4).map(r => ({ title: r.name, sub: `${r.size.toFixed(2)} TB · ${r.branches} branches`, right: `${r.locks} locks`, href: `lore-repo.html?r=${r.name}` })) },
+    { module: "lore", kind: "repository", label: "Lore repositories", icon: "repo", results: q => D.repos.filter(r => !q || r.name.includes(q)).slice(0, 4).map(r => ({ title: r.name, sub: `${r.branches} branches · default ${r.branch}`, right: `${r.locks} locks`, href: `lore-repo.html?r=${r.name}` })) },
     { module: "apikeys", kind: "apikey", label: "API keys", icon: "key", results: q => D.apiKeys.filter(k => !q || k.name.includes(q) || k.id.includes(q)).slice(0, 3).map(k => ({ title: k.name, sub: `${k.id} · role ${k.role}`, right: k.status, href: "apikeys.html" })) },
     { module: "wallet", kind: "transaction", label: "Wallet transactions", icon: "coins", timeout: true },
   ];
@@ -45,7 +44,7 @@ window.REG = (() => {
   // dashboard.tile
   const tiles = [
     { module: "accounts", label: "Active players (24 h)", value: "38,412", delta: '<span class="up">▲ 6.1%</span> vs prev. day', spark: [31, 30, 33, 32, 35, 34, 36, 35, 37, 38.4], href: "players.html" },
-    { module: "lore", label: "Lore seats", value: "8", unit: "/ 10 licensed", bar: 80, delta: "1 seat suspended (sam.o)", href: "lore-billing.html" },
+    { module: "lore", label: "Lore seats", value: "8", delta: "users with Lore access · 1 suspended", spark: [5, 6, 6, 7, 8, 8], href: "lore-billing.html" },
     { module: "lore", label: "Lore store used", value: "13.29", unit: "TB", delta: '<span class="bad-up">▲ 1.19 TB</span> this month', spark: [6.2, 7.4, 8.9, 10.6, 12.1, 13.29], sparkColor: "var(--chart-2)", href: "lore-billing.html" },
     { module: "storage", label: "Cloud saves used", value: "1.82", unit: "TB", delta: "64 MB quota / player", spark: [1.5, 1.55, 1.6, 1.64, 1.7, 1.76, 1.82], sparkColor: "var(--chart-2)" },
     { module: "mail", label: "Mail queue", value: "312", delta: '<span class="bad-up">▲ relay throttled</span> · 1 failed', spark: [4, 6, 3, 8, 20, 140, 310, 312], sparkColor: "var(--warn)", href: "mail.html" },
@@ -63,7 +62,7 @@ window.REG = (() => {
     { module: "scheduler", tone: "warn", icon: "clock", title: "storage.gc failed at 03:30", text: "timeout: storage-svc deadline exceeded.", href: "scheduler.html", action: "Logs" },
   ];
 
-  // user.tab — the entity detail for kind "user" is built from these.
+  // entity.user.tab — the entity detail for kind "user" is built from these.
   const userTabs = [
     { module: "accounts", id: "profile", label: "Profile & identities", prim: "PropertyList + DataTable" },
     { module: "characters", id: "characters", label: "Characters", prim: "DataTable", count: u => u.characters },
@@ -76,7 +75,7 @@ window.REG = (() => {
     { module: "lore", id: "lore", label: "Lore", prim: "PropertyList + Timeline", when: u => !!u.loreRole },
   ];
 
-  // user.summary_field — facts shown in the entity header.
+  // entity.user.summary_field — facts shown in the entity header.
   const userFacts = [
     { module: "accounts", render: u => `${icon("hash")} <span class="mono">${u.id}</span>` },
     { module: "accounts", render: u => `${icon("clock")} joined ${u.created}` },
@@ -85,14 +84,14 @@ window.REG = (() => {
     { module: "wallet", render: () => `<span style="color:var(--err)">${icon("alert")} wallet unavailable</span>` },
   ];
 
-  // user.header_action
+  // entity.user.header_action
   const userHeaderActions = [
     { module: "lore", label: "Change Lore role", icon: "shield", run: "PAGES.changeRole()", when: u => !!u.loreRole },
     { module: "notifications", label: "Notify", icon: "send", run: "UI.toast('Compose notification…','info')" },
     { module: "accounts", label: "Suspend", icon: "ban", danger: true, run: "PAGES.suspend()" },
   ];
 
-  // user.row_action — grouped per module in the row menu.
+  // entity.user.row_action — grouped per module in the row menu.
   const userRowActions = [
     { module: "accounts", items: [
       { label: "Open detail", icon: "external", run: "location.href='player.html?u=$'" },
@@ -116,7 +115,7 @@ window.REG = (() => {
   const notifications = [
     { module: "wallet", tone: "err", title: "wallet-svc is down", text: "Health probe failed 7× in 15 min.", when: "3 min" },
     { module: "core.events", tone: "err", title: "inventory.on_purchase.v1 paused", text: "Poison event at seq 12,905.", when: "4 h" },
-    { module: "lore", tone: "warn", title: "Lore store passed 13 TB", text: "Plan includes 15 TB; 88% used.", when: "5 h" },
+    { module: "lore", tone: "warn", title: "Lore store volume 66% full", text: "13.29 of 20 TB on lore-01.", when: "5 h" },
     { module: "mail", tone: "warn", title: "SMTP relay throttling", text: "Retry backoff active.", when: "2 h" },
     { module: "apikeys", tone: "info", title: "Key ak_c4a8 created", text: "by marta.k · role ci-build", when: "6 h" },
   ];
@@ -124,7 +123,7 @@ window.REG = (() => {
   UI.defineMenu("user", handle => {
     const u = D.byHandle[handle];
     return userRowActions.filter(g => !g.when || g.when(u)).map(g => ({
-      c: { module: g.module, point: "user.row_action", prim: "MenuAction" },
+      c: { module: g.module, point: "entity.user.row_action", prim: "MenuAction" },
       label: g.module, note: g.note ? `<span style="color:var(--err)">${g.note}</span>` : "",
       items: g.items.map(it => ({ ...it, run: (it.run || "").replace(/\$/g, handle) })),
     }));
@@ -139,7 +138,7 @@ window.REG = (() => {
       if (!items.length) return "";
       const entries = items.map(n => UI.frag({ module: n.module, point: "nav.entry", prim: "NavEntry" },
         `<a class="nav-item ${n.id === active ? "active" : ""} ${n.down ? "down" : ""}" href="${n.href}" title="${n.down ? "wallet module unavailable" : ""}">${icon(n.icon)}<span>${esc(n.label)}</span>${n.count && !n.down ? `<span class="count ${n.countTone || ""}">${esc(n.count)}</span>` : ""}</a>`, { inline: true })).join("");
-      return UI.frag({ module: s.owner, point: "nav.section", prim: "" }, `<div class="nav-section"><div class="nav-title">${esc(s.label)}</div>${entries}</div>`);
+      return UI.frag({ module: s.owner, point: "nav.section", prim: "NavSection" }, `<div class="nav-section"><div class="nav-title">${esc(s.label)}</div>${entries}</div>`);
     }).join("");
     return `<aside class="sidebar"><div class="brand"><div class="brand-mark">S</div><div><div class="brand-name">Swarog Admin</div><div class="brand-sub">emberline-prod</div></div></div><nav class="nav">${groups}</nav><div class="sidebar-foot"><div class="me">${UI.avatar(D.byHandle["marta.k"])}<div class="grow"><div style="font-weight:500">Marta Kowalczyk</div><div class="muted" style="font-size:11.5px">operator · admin.users</div></div></div></div></aside>`;
   }
@@ -197,7 +196,7 @@ window.REG = (() => {
     UI.popover(ev, html);
   }
   function notifPop(ev) {
-    const rows = notifications.map(n => UI.frag({ module: n.module, point: "notification.source", prim: "" }, `<div class="pop-row"><span class="dot ${n.tone === "info" ? "muted" : n.tone}" style="margin-top:5px"></span><div class="grow"><div class="t">${esc(n.title)}</div><div class="d">${esc(n.text)}</div></div><span class="muted" style="font-size:11.5px">${n.when}</span></div>`, { left: true })).join("");
+    const rows = notifications.map(n => UI.frag({ module: n.module, point: "notification.source", prim: "NotificationItem" }, `<div class="pop-row"><span class="dot ${n.tone === "info" ? "muted" : n.tone}" style="margin-top:5px"></span><div class="grow"><div class="t">${esc(n.title)}</div><div class="d">${esc(n.text)}</div></div><span class="muted" style="font-size:11.5px">${n.when}</span></div>`, { left: true })).join("");
     UI.popover(ev, `<div class="popover-head">${icon("bell")} Notifications<span class="grow"></span><button class="btn sm ghost">Mark all read</button></div><div class="pop-list">${rows}</div>`);
   }
 

@@ -8,15 +8,15 @@
   // ---------- API keys ----------
   UI.defineMenu("apikey", id => {
     const k = D.apiKeys.find(x => x.id === id);
-    return [{ c: { module: "apikeys", point: "apikey.row_action", prim: "MenuAction" }, label: "apikeys", items: k.status === "revoked" ? [{ label: "Already revoked", icon: "ban", disabled: "revoked keys cannot be restored" }] : [
+    return [{ c: { module: "apikeys", point: "entity.apikey.row_action", prim: "MenuAction" }, label: "apikeys", items: k.status === "revoked" ? [{ label: "Already revoked", icon: "ban", disabled: "revoked keys cannot be restored" }] : [
       { label: "Rotate secret…", icon: "refresh", run: "PAGES.reveal('" + id + "')" },
       { label: "Change role…", icon: "shield", run: "UI.toast('Role picker…','info')" },
       { label: "Revoke…", icon: "ban", danger: true, run: `PAGES.revokeKey('${id}')` },
-    ] }, { c: { module: "audit", point: "apikey.row_action", prim: "MenuAction" }, label: "audit", items: [{ label: "Requests by this key", icon: "list", run: "location.href='audit.html'" }] }];
+    ] }, { c: { module: "audit", point: "entity.apikey.row_action", prim: "MenuAction" }, label: "audit", items: [{ label: "Requests by this key", icon: "list", run: "location.href='audit.html'" }] }];
   });
   P.revokeKey = id => {
     const k = D.apiKeys.find(x => x.id === id);
-    UI.confirm({ c: { module: "apikeys", point: "apikey.row_action", prim: "ConfirmAction" }, title: `Revoke ${k.name}?`, icon: "ban",
+    UI.confirm({ c: { module: "apikeys", point: "entity.apikey.row_action", prim: "ConfirmAction" }, title: `Revoke ${k.name}?`, icon: "ban",
       body: "Requests signed with this key fail immediately on every process.",
       impact: [["Key", `<span class="mono">${k.id}</span> · ${k.role}`], ["Last used", k.lastUsed], ["Requests (24 h)", k.role === "game-server" ? "1.9 M" : "4,120"]],
       reason: "e.g. leaked in CI log", typeToConfirm: k.name, confirm: "Revoke key", done: "Key revoked" });
@@ -26,7 +26,7 @@
     { label: "Role", type: "select", typeName: "ref ApiRole", options: D.apiRoles.map(r => r.name), value: "ci-build", help: D.apiRoles[1].scopes.map(s => `<span class="tag">${s}</span>`).join(" ") },
     { label: "Expires", type: "select", typeName: "enum", options: ["Never", "30 days", "90 days", "1 year"], value: "90 days" },
   ] })}</div>`, { left: true })}<div class="modal-foot"><button class="btn" onclick="UI.closeModal()">Cancel</button><button class="btn primary" onclick="PAGES.reveal()">Create key</button></div>`);
-  P.reveal = () => UI.modal(`${frag({ module: "apikeys", point: "page", prim: "SecretReveal" }, `<div class="modal-head"><div class="modal-icon ok">${icon("check")}</div><div><h2>Key created — horde-agents-2</h2></div></div><div class="modal-body">${UI.secret({ value: "swg_live_6be1_Qm9yZWFsaXMtNGM3ZS1hMWQ5LWVtYmVybGluZS0wMDEx", extra: `<div style="margin-top:10px;font-size:12px" class="dim">Use as <span class="mono">Authorization: Bearer &lt;key&gt;</span>. Role <span class="tag">ci-build</span> · expires 2027-01-20.</div>` })}<label class="row" style="margin-top:12px;font-size:12.5px"><input type="checkbox" onchange="document.querySelector('.reveal-done').disabled=!this.checked"> I stored the secret somewhere safe</label></div>`, { left: true })}<div class="modal-foot"><button class="btn primary reveal-done" disabled onclick="UI.closeModal();UI.toast('Key active')">Done</button></div>`);
+  P.reveal = id => { const k = D.apiKeys.find(x => x.id === id); return UI.modal(`${frag({ module: "apikeys", point: "page", prim: "SecretReveal" }, `<div class="modal-head"><div class="modal-icon ok">${icon("check")}</div><div><h2>${k ? `Secret rotated — ${k.name}` : "Key created — horde-agents-2"}</h2></div></div><div class="modal-body">${UI.secret({ value: "swg_live_6be1_Qm9yZWFsaXMtNGM3ZS1hMWQ5LWVtYmVybGluZS0wMDEx", extra: `<div style="margin-top:10px;font-size:12px" class="dim">Use as <span class="mono">Authorization: Bearer &lt;key&gt;</span>. Role <span class="tag">${k ? k.role : "ci-build"}</span>${k ? " · the previous secret stops working now." : " · expires 2027-01-20."}</div>` })}<label class="row" style="margin-top:12px;font-size:12.5px"><input type="checkbox" onchange="document.querySelector('.reveal-done').disabled=!this.checked"> I stored the secret somewhere safe</label></div>`, { left: true })}<div class="modal-foot"><button class="btn primary reveal-done" disabled onclick="UI.closeModal();UI.toast('Key active')">Done</button></div>`); };
 
   P.apikeys = {
     meta: { nav: "apikeys", crumbs: [plat, ["API keys"]], after: () => { if (new URLSearchParams(location.search).get("reveal")) P.reveal(); } },
@@ -45,6 +45,12 @@
 
   // ---------- mail outbox (WorkQueue) ----------
   const att = (n, ok) => `<span class="attempts" title="${n} attempts">${Array.from({ length: 5 }, (_, i) => `<i class="${i < n ? (ok && i === n - 1 ? "ok" : "f") : ""}"></i>`).join("")}</span>`;
+  // Allowed actions per item state, as declared in the WorkQueue catalog entry.
+  const MAIL_ACTIONS = { pending: ["cancel"], retrying: ["retry", "park", "cancel"], failed: ["retry", "cancel"], parked: ["resume", "cancel"], sent: [] };
+  const mailActions = m => MAIL_ACTIONS[m.state].map(a => a === "retry" ? `<button class="btn sm" onclick="UI.toast('Retry scheduled now')">${icon("refresh")} Retry</button>`
+    : a === "resume" ? `<button class="btn sm" onclick="UI.toast('Resumed')">${icon("play")} Resume</button>`
+    : a === "park" ? `<button class="btn sm ghost" title="Park: keep but stop retrying" onclick="UI.toast('Parked')">${icon("park")}</button>`
+    : `<button class="btn sm ghost danger-ghost" title="Cancel" onclick="PAGES.cancelMail('${m.id}')">${icon("x")}</button>`).join("");
   P.mail = {
     meta: { nav: "mail", crumbs: [plat, ["Mail outbox"]] },
     render: () => {
@@ -58,12 +64,12 @@
           (list.length ? table({ selectable: true, searchPlaceholder: "Recipient, template or message id", filters: [{ k: "Template", v: "any" }],
             cols: [{ label: "Message" }, { label: "To" }, { label: "Template" }, { label: "State" }, { label: "Attempts" }, { label: "Next attempt" }, { label: "Last error", wrap: true }, { label: "" }],
             rows: list.map(m => [`<span class="mono">${m.id}</span>`, userCell(m.to), `<span class="tag">${m.template}</span>`, status(m.state), att(m.attempts, m.state === "sent"), `<span class="dim">${m.next}</span>`, m.err ? `<span class="mono" style="font-size:11.5px;color:${m.state === "failed" ? "var(--err)" : "var(--text-2)"}">${esc(m.err)}</span>` : `<span class="muted">—</span>`,
-              `<span class="row" style="justify-content:flex-end;gap:4px">${m.state === "sent" ? "" : `<button class="btn sm" ${m.state === "pending" ? "disabled" : ""} onclick="UI.toast('Retry scheduled now')">${icon("refresh")} Retry</button><button class="btn sm ghost" title="Park: keep but stop retrying" onclick="UI.toast('Parked')">${icon("park")}</button><button class="btn sm ghost danger-ghost" title="Cancel" onclick="PAGES.cancelMail('${m.id}')">${icon("x")}</button>`}</span>`]),
+              `<span class="row" style="justify-content:flex-end;gap:4px">${mailActions(m)}</span>`]),
             total: `${list.length} messages`, page: "1 / 1" }) : UI.stateBlock("empty", { title: "Queue is empty", detail: "Nothing in this state.", icon: "check", actions: "" })) });
       return P.head("Mail outbox", "Durable outbox; each message is retried until sent, cancelled or parked.", `<button class="btn">${icon("send")} Test send</button>`) + q;
     },
   };
-  P.cancelMail = id => UI.confirm({ c: { module: "mail", point: "page", prim: "ConfirmAction" }, title: `Cancel ${id}?`, body: "The message is removed from the outbox and will never be delivered.", impact: [["Recipient", "kestrel"], ["Template", "season_reward"]], confirm: "Cancel message", done: "Message cancelled" });
+  P.cancelMail = id => UI.confirm({ c: { module: "mail", point: "page", prim: "ConfirmAction" }, title: `Cancel ${id}?`, body: "The message is removed from the outbox and will never be delivered.", impact: [["Recipient", D.mail.find(m => m.id === id).to], ["Template", D.mail.find(m => m.id === id).template]], confirm: "Cancel message", done: "Message cancelled" });
 
   // ---------- scheduler ----------
   P.scheduler = {
@@ -127,7 +133,7 @@
     render: () => {
       const tiles = [
         { label: "Head sequence", value: "991,210", delta: "1.8 k events/min" },
-        { label: "Subscriptions", value: "7", delta: "6 running · 1 paused" },
+        { label: "Subscriptions", value: String(D.subs.length), delta: ["running", "lagging", "paused"].map(st => `${D.subs.filter(x => x.state === st).length} ${st}`).join(" · ") },
         { label: "Max lag", value: "273", delta: '<span class="bad-up">wallet.on_match.v1 (wallet down)</span>' },
         { label: "Dead-lettered (7 d)", value: "3", delta: "all skipped by operator" },
       ].map(t => kpi({ ...t, c: pg("core.events", "KpiTile") })).join("");

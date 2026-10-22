@@ -1,6 +1,4 @@
 // Panel primitives + shell runtime for the Swarog Admin mockups.
-// Every contributed fragment is rendered through UI.frag(), which carries its
-// (module, extension point, primitive) triple for the annotation layer.
 window.UI = (() => {
   const ICONS = {
     home: '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/>',
@@ -67,7 +65,7 @@ window.UI = (() => {
   const icon = (name, cls = "") => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ""}</svg>`;
 
   const MODULE_COLORS = {
-    portal: "#475569", accounts: "#2563eb", characters: "#0e7490", inventory: "#b45309", wallet: "#c026d3",
+    portal: "#475569", admin: "#475569", accounts: "#2563eb", characters: "#0e7490", inventory: "#b45309", wallet: "#c026d3",
     friends: "#db2777", groups: "#7c3aed", party: "#9333ea", notifications: "#0891b2", mail: "#ea580c",
     storage: "#0d9488", match: "#4d7c0f", rating: "#65a30d", leaderboard: "#15803d", config: "#a16207",
     scheduler: "#be185d", audit: "#334155", apikeys: "#4338ca", lore: "#dc2626", "core.events": "#0369a1",
@@ -134,7 +132,7 @@ window.UI = (() => {
     const d = STATE_DEFS[kind];
     const title = o.title || (kind === "error" ? `${o.module || "module"} module unavailable` : d.title);
     const detail = o.detail || (kind === "error" ? `${o.module || "module"}-svc did not answer within 2 s. The rest of this page is unaffected.` : kind === "denied" ? `Requires <span class="tag">${esc(o.perm || "admin.access")}</span>. Ask a deployment owner to grant it.` : "");
-    const actions = o.actions ?? (kind === "error" ? `<button class="btn sm" onclick="UI.retry(this)">${icon("refresh")} Retry</button><a class="btn sm ghost" href="lore-server.html">Service status</a>` : "");
+    const actions = o.actions ?? (kind === "error" ? `<button class="btn sm" onclick="UI.retry(this)">${icon("refresh")} Retry</button><a class="btn sm ghost" href="index.html#health">Service health</a>` : "");
     return `<div class="state ${d.cls} ${o.compact ? "compact" : ""}"><div class="state-icon">${icon(o.icon || d.icon)}</div><div class="state-title">${title}</div>${detail ? `<div class="state-detail">${detail}</div>` : ""}${actions ? `<div class="row">${actions}</div>` : ""}</div>`;
   }
 
@@ -201,6 +199,7 @@ window.UI = (() => {
 
   // ---------- timeline ----------
   function timeline(items) {
+    if (!items.length) return stateBlock("empty", { title: "No events", detail: "Nothing recorded in this range.", icon: "activity", actions: "", compact: true });
     let lastDay = null, out = "";
     for (const it of items) {
       if (it.day && it.day !== lastDay) { if (lastDay !== null) out += "</ul>"; out += `<div class="tl-day">${esc(it.day)}</div><ul class="tl">`; lastDay = it.day; }
@@ -334,10 +333,10 @@ window.UI = (() => {
   }
   function copied(btn) { btn.innerHTML = `${icon("check")} Copied`; }
   function retry(btn) {
-    const p = btn.closest(".panel, .kpi");
+    const m = btn.closest("[data-module]")?.dataset.module || "module";
     btn.disabled = true;
     btn.innerHTML = `${icon("refresh")} Retrying…`;
-    setTimeout(() => { btn.disabled = false; btn.innerHTML = `${icon("refresh")} Retry`; toast("Still unavailable — wallet-svc refused connection", "info"); }, 900);
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = `${icon("refresh")} Retry`; toast(`Still unavailable — ${m}-svc refused connection`, "info"); }, 900);
   }
 
   return { icon, esc, fmt, frag, badge, status, avatar, userCell, repoLink, ref, panel, stateBlock, table, rowMenuBtn, kpi, spark, props, timeline, form, field, secret, services, uptimeBar, chart, defineMenu, openMenu, popover, closePop, modal, closeModal, confirm, toast, copied, retry, state, MODULE_COLORS };
