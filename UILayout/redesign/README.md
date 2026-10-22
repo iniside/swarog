@@ -5,10 +5,10 @@ panel contribution API, so every screen is assembled only from named panel
 primitives contributed by modules (`assets/registry.js` holds the mock module
 manifests).
 
-Open `index.html` directly, or serve the folder:
+Open `index.html` directly, or serve `UILayout/` (the pages load `../design-system/`) and open `/redesign/`:
 
 ```bash
-python -m http.server 8765 --directory UILayout/redesign
+python -m http.server 8765 --directory UILayout
 ```
 
 Topbar controls (mockup only):
@@ -33,8 +33,8 @@ Topbar controls (mockup only):
 Fake data lives in `assets/data.js` and is shared by every screen (deployment
 `emberline-prod`, studio Emberline, game Ashfall).
 
-The design system derived from these mockups lives in `UILayout/design-system/`
-(tokens, brand book, component guidelines and previews). Its
-`components/bundle.css` and `components/bundle.js` are copies of
-`assets/swarog.css` (without the token blocks) and `assets/ui.js` (without the
-mockup's theme bootstrapping); change the mockup files first and copy again.
+Styles and primitives come from the design system in `UILayout/design-system/`:
+`tokens.css` (built from `tokens.json` by `build-tokens-css.py`),
+`components/bundle.css` and `components/bundle.js`. `assets/boot.js` adds the
+mockup-only theme, annotation and forced-state preferences. Change the design
+system, not copies here.

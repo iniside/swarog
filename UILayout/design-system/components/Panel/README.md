@@ -8,7 +8,7 @@ Always. A module never returns bare markup; it returns a primitive, and the port
 
 ## What the consumer provides
 
-- `title`, optional `meta` (one short phrase in `meta` style), `icon`, `tools` (small buttons, right-aligned), `foot`.
+- `title`, optional `meta` (one short phrase in `ts-meta` style), `icon`, `tools` (small buttons, right-aligned), `foot`.
 - `body`: a primitive's HTML, or a function `({ readonly }) => html` so write controls can disable themselves.
 - `state`: `"ok"` (default), `"loading"`, `"empty"`, `"stale"`, `"error"`, `"denied"`; or `readonly: true`.
 - State text: `emptyTitle`, `emptyDetail`, `emptyIcon`, `emptyActions`, `errorDetail`, `staleText`, `readonlyText`, `perm` (for denied).

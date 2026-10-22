@@ -1,0 +1,100 @@
+/* Swarog Admin — generated from tokens.json */
+:root, [data-theme="light"] {
+  --bg: #f5f6f8;
+  --bg-sunken: #eceef2;
+  --panel: #ffffff;
+  --panel-2: #f9fafb;
+  --hover: #f1f3f6;
+  --selected: #eaedff;
+  --border: #e2e5ea;
+  --border-strong: #cdd2da;
+  --control-border: #878e9b;
+  --text: #171a21;
+  --text-2: #4a5160;
+  --text-3: #687080;
+  --accent: #4f5bd5;
+  --accent-text: #ffffff;
+  --accent-soft: #eceefe;
+  --accent-fg: #3c46b8;
+  --ok: #11743f;
+  --ok-soft: #e4f5ea;
+  --warn: #9a5500;
+  --warn-soft: #fdf1dc;
+  --err: #c3282f;
+  --on-err: #ffffff;
+  --err-soft: #fce8e8;
+  --info: #1a64b0;
+  --info-soft: #e5f0fb;
+  --muted-soft: #eef0f3;
+  --chart-1: #4f5bd5;
+  --chart-2: #0f9488;
+  --chart-grid: #e8eaee;
+  --scrim: rgba(18, 20, 28, .38);
+  --shadow-pop: 0 8px 28px rgba(16, 20, 30, .14), 0 1px 3px rgba(16, 20, 30, .08);
+}
+[data-theme="dark"] {
+  --bg: #0d0e11;
+  --bg-sunken: #08090b;
+  --panel: #15171b;
+  --panel-2: #191b20;
+  --hover: #1e2127;
+  --selected: #22264a;
+  --border: #262930;
+  --border-strong: #353943;
+  --control-border: #6a7180;
+  --text: #e6e8ec;
+  --text-2: #a8aeba;
+  --text-3: #858c9a;
+  --accent: #6f7bf0;
+  --accent-text: #0d0e11;
+  --accent-soft: #1f2347;
+  --accent-fg: #a3abff;
+  --ok: #3fbf7a;
+  --ok-soft: #13291d;
+  --warn: #e3a43b;
+  --warn-soft: #2d2412;
+  --err: #f0656b;
+  --on-err: #0d0e11;
+  --err-soft: #331719;
+  --info: #5aa7f0;
+  --info-soft: #132538;
+  --muted-soft: #1f2228;
+  --chart-1: #7d88f5;
+  --chart-2: #2fbfae;
+  --chart-grid: #23262d;
+  --scrim: rgba(0, 0, 0, .55);
+  --shadow-pop: 0 10px 32px rgba(0, 0, 0, .5), 0 1px 3px rgba(0, 0, 0, .4);
+  color-scheme: dark;
+}
+:root {
+  --space-0\.5: 2px;
+  --space-1: 4px;
+  --space-1\.5: 6px;
+  --space-2: 8px;
+  --space-2\.5: 10px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --radius-sm: 4px;
+  --radius-item: 5px;
+  --radius: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+  --sidebar-width: 232px;
+  --topbar-height: 48px;
+  --control-height: 28px;
+  --row-height: 36px;
+  --font-sans: "Inter", ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+}
+.ts-kpi-value { font-family: var(--font-sans); font-size: 22px; line-height: 28px; font-weight: 600; letter-spacing: -0.02em; }
+.ts-page-title { font-family: var(--font-sans); font-size: 18px; line-height: 24px; font-weight: 600; letter-spacing: -0.01em; }
+.ts-modal-title { font-family: var(--font-sans); font-size: 15px; line-height: 20px; font-weight: 600; }
+.ts-panel-title { font-family: var(--font-sans); font-size: 13px; line-height: 18px; font-weight: 600; }
+.ts-body { font-family: var(--font-sans); font-size: 13px; line-height: 19px; font-weight: 400; }
+.ts-table { font-family: var(--font-sans); font-size: 12.5px; line-height: 18px; font-weight: 400; }
+.ts-meta { font-family: var(--font-sans); font-size: 12px; line-height: 16px; font-weight: 400; }
+.ts-label { font-family: var(--font-sans); font-size: 11.5px; line-height: 16px; font-weight: 500; }
+.ts-section-label { font-family: var(--font-sans); font-size: 11px; line-height: 16px; font-weight: 600; letter-spacing: 0.04em; }
+.ts-mono { font-family: var(--font-mono); font-size: 12px; line-height: 18px; font-weight: 400; }
+.ts-tag { font-family: var(--font-mono); font-size: 11.5px; line-height: 18px; font-weight: 400; }

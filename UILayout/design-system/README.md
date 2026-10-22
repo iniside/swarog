@@ -5,7 +5,7 @@ The portal knows nothing about game domains. Every screen is assembled from **pa
 ## Content fundamentals
 
 - **Write from the operator's side.** Name things by what the operator manages: "Locks", "Mail outbox", "API keys", not "LockService" or "outbox rows".
-- **Sentence case everywhere**: page titles, panel titles, buttons, menu items. Section labels in the sidebar and timeline day dividers are the only uppercase text, and they get it from CSS (`section-label`).
+- **Sentence case everywhere**: page titles, panel titles, buttons, menu items. Section labels in the sidebar and timeline day dividers are the only uppercase text, and they get it from CSS (`ts-section-label`).
 - **Buttons say exactly what happens**: "Force unlock", "Revoke key", "Skip and resume". The toast confirms in the past tense: "Lock released", "Key revoked".
 - **Confirmation titles are questions**: "Force unlock this file?", "Revoke horde-agents?".
 - **Errors name the module and the next step**: "wallet module unavailable", then the detail ("wallet-svc did not answer within 2 s. The rest of this page is unaffected.") and a Retry. Never "Something went wrong".
@@ -19,7 +19,7 @@ The portal knows nothing about game domains. Every screen is assembled from **pa
 
 **Themes.** Light is first and the fallback; dark is a full second palette, not an inversion. In dark, the accent lightens, so labels on it switch to dark text (`accent-text`, `on-err`).
 
-**Type.** One sans at 13px base (`body`), tables at 12.5px (`table`), metadata at 12px (`meta`), labels at 11.5px (`label`). The largest text on any screen is a KPI value at 22px; page titles are 18px. Mono (`mono`, `tag`) is for identifiers only.
+**Type.** One sans at 13px base (`ts-body`), tables at 12.5px (`ts-table`), metadata at 12px (`ts-meta`), labels at 11.5px (`ts-label`). The largest text on any screen is a KPI value at 22px; page titles are 18px. Mono (`ts-mono`, `ts-tag`) is for identifiers only.
 
 **Spacing and density.** Controls are 28px tall (`control-height`), small controls 24px; table rows 36px (`row-height`). Panels pad 12px (`space-3`) and sit 12px apart. Page gutter 20px (`space-5`) on desktop, 12–16px on tablet and phone.
 
