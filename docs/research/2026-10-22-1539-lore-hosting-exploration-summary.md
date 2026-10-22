@@ -85,6 +85,28 @@ Każde to jedno pytanie. Raport nie przyjmuje po cichu żadnej z opcji.
   hasła/e-maila. Jakim dostawcą loguje się człowiek na stronie zatwierdzania
   logowania (device approval)? Google federated jest najbliżej gotowego.
 
+### Decyzje właściciela (2026-10-22)
+
+- **P1 — wipe.** DDL edytowany w miejscu, zmiany payloadów i id subskrypcji w miejscu
+  z re-bless baseline'ów i golden. Bez nowych migracji, bez `serde(alias)` i bez
+  tematów v2: reguła wipe obejmuje wprost także zmianę kontraktu eventu. Na maszynie
+  roboczej nie ma jeszcze Postgresa, więc nie ma danych do wipe'u.
+- **P2 — otwarte**, wyjaśnienie poniżej.
+- **P3 — studio to osobny moduł (`studios`).** Moduł jest właścicielem studia,
+  członkostwa i ról w studiu (seaty). `lore` go wymaga. `groups` zostaje grupą
+  społecznościową graczy.
+- **P4 — osobna instancja `loreserver` na studio.** Konsekwencje:
+  - Tier 1, czyli akcje globalne w tokenie, jest granicą tenanta;
+  - TB to rozmiar store'u danej instancji;
+  - locki są izolowane per studio;
+  - każda instancja to osobny wpis Welesa z mintowanymi portami i własnym katalogiem
+    konfiguracji;
+  - `aud` tokenu wskazuje konkretną instancję.
+- **P5 — dostawca niezależny.** Strona zatwierdzania logowania (device approval)
+  używa tego dostawcy, którego skonfigurowano w `accounts`. Do zbudowania są
+  produkcyjna samorejestracja (e-mail i hasło; dziś `dev` działa tylko za
+  `ACCOUNTS_DEV_AUTH`) oraz konto zakładane przez admina. To kroki, a nie blokery.
+
 ## 2. Kontrakt claimów, którego oczekuje `loreserver`
 
 ### 2.1 Co serwer weryfikuje dziś (zaimplementowane)
@@ -382,8 +404,9 @@ Każdy krok to osobny plan wg **Plan Writing Workflow**. Kroki modułowe idą pr
 2. **`accounts`: wystawca tokenów, minimum.** Tabela kluczy ES256 (`kid`, status,
    rotacja), `/.well-known/openid-configuration`, JWKS z `alg`, wire-only
    `TokenIssuer::mint_access` w `accountsapi`.
-3. **Moduł `lore`, szkielet.** Fortress + `api/lore/*` + `cmd/lore-svc`. Studio
-   (wg P3), repozytoria, mapowanie grup na role i akcje, render konfiguracji
+3. **Moduły `studios` i `lore`, szkielety.** Dwa fortece, każdy z `api/<name>/*` i
+   `cmd/<name>-svc`. `studios` obejmuje studio, członków i role. `lore` obejmuje
+   instancję per studio, repozytoria, mapowanie grup na role i akcje, render konfiguracji
    (`lorectl render-config` jako `[[prepare]]`), fake Lore w split-proof.
 4. **Adapter `UrcAuthApi` + `RebacApi` w module `lore`.** Nowa zależność `tonic`/`prost`
    i decyzja o transporcie gRPC (§4). Login w stylu device przez ludzkie logowanie
