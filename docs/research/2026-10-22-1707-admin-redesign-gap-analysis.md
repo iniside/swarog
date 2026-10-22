@@ -163,3 +163,10 @@ htmx), memoized fan-out per request, SSE patches for live panels (Timeline `live
   may map 1:1 to design-system components; contract changes are wipes.
 - **Weles integrates from its own side only.** It exposes its own API; the portal reads it
   for process status. Weles is not a consumer of, or contributor to, the admin contract.
+- **Operators are admin-only records.** `admin.users` stays its own identity store, never
+  linked to `accounts` or any global identity. What crosses the wire is only: the call came
+  from the portal (mTLS edge / local call; an admin-only `AuthReq` variant) and the operator
+  login as a plain audit label. Permissions are checked once, in the portal, before fetch or
+  invoke; modules declare the permission a panel/action needs and do not re-check it.
+- **Fixed roles in v1** (e.g. admin / operator / viewer). Editable roles with permission sets
+  (full RBAC) are a separate, later feature.
