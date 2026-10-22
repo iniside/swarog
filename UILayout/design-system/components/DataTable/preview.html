@@ -1,0 +1,29 @@
+<!-- @dsCard group="Data" height=330 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  var t = S.DataTable({ selectable: true, searchPlaceholder: "Repository name", filters: [{ k: "Has locks", v: "any" }],
+    cols: [{ label: "Repository" }, { label: "Default branch" }, { label: "Last push", sorted: "desc" }, { label: "Locks", num: true }, { label: "Status" }],
+    rows: [
+      { cells: ['<a href="#">ashfall-game</a>', '<span class="tag">main</span>', "6 min ago", "14", S.status("active")] },
+      { sel: true, cells: ['<a href="#">ashfall-art</a>', '<span class="tag">main</span>', "41 min ago", "9", S.status("active")] },
+      { cells: ['<a href="#">engine-fork</a>', '<span class="tag">ember/5.6</span>', "yesterday", '<span class="muted">0</span>', S.status("degraded")] }],
+    rowMenu: function () { return '<button class="btn sm icon ghost" aria-label="Row actions">' + S.icon("more") + "</button>"; },
+    bulk: '1 selected <button class="btn sm">View locks</button>', total: "6 repositories", page: "1 / 2" });
+  document.getElementById("root").innerHTML = S.Panel({ c: { module: "lore", point: "page", prim: "DataTable" }, flush: true, noForce: true, body: t });
+</script>
+</body>
+</html>

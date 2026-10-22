@@ -109,7 +109,7 @@ window.UI = (() => {
   const initials = n => n.replace(/[^A-Za-z ._]/g, "").split(/[ ._]/).filter(Boolean).slice(0, 2).map(p => p[0].toUpperCase()).join("") || "?";
   const avatar = (u, lg) => `<span class="avatar ${lg ? "lg" : ""}" style="background:${u.color}">${initials(u.name)}</span>`;
   const userCell = (handle, link = true) => {
-    const u = DATA.byHandle[handle];
+    const u = window.DATA?.byHandle?.[handle];
     if (!u) return `<span class="mono">${esc(handle)}</span>`;
     const inner = `<span class="user-cell">${avatar(u)}<span>${esc(u.handle)}</span></span>`;
     return link ? `<a href="player.html?u=${u.handle}" style="color:inherit">${inner}</a>` : inner;

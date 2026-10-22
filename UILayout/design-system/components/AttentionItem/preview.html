@@ -1,0 +1,23 @@
+<!-- @dsCard group="Operations" height=200 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  var it = function (m, tone, ic, t, d, a) { return S.frag({ module: m, point: "dashboard.attention", prim: "AttentionItem" }, '<div class="pop-row" style="align-items:center"><span class="modal-icon ' + tone + '" style="width:28px;height:28px">' + S.icon(ic) + '</span><div class="grow"><div class="t">' + t + '</div><div class="d">' + d + '</div></div><a class="btn sm" href="#">' + a + "</a></div>"); };
+  document.getElementById("root").innerHTML = S.Panel({ c: { module: "portal", point: "dashboard.attention (host)", prim: "AttentionList" }, noForce: true, flush: true, title: "Needs attention", meta: "3 items from 3 modules",
+    body: it("wallet", "danger", "alert", "wallet-svc unavailable", "7 restarts in 15 min; grants and ledger are offline.", "Open") + it("core.events", "danger", "zap", "Subscription paused by poison event", "inventory.on_purchase.v1 stopped at seq 12,905.", "Resolve") + it("lore", "warn", "lock", "2 stale Lore locks", "Held over 14 days by sam.o (suspended).", "Review") });
+</script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+<!-- @dsCard group="Operations" height=250 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  var ck = function (on) { return '<td class="cell"><span class="check-cell ' + (on ? "on" : "") + ' locked">' + (on ? S.icon("check") : "") + "</span></td>"; };
+  var acts = ["read", "write", "presign", "push-protected", "admin", "obliterate"];
+  var roles = [["Viewer", [1, 0, 1, 0, 0, 0]], ["Developer", [1, 1, 1, 0, 0, 0]], ["Lead", [1, 1, 1, 1, 0, 0]], ["Admin", [1, 1, 1, 1, 1, 1]]];
+  var m1 = '<div class="tbl-wrap"><table class="tbl matrix"><thead><tr><th>Role</th>' + acts.map(function (a) { return '<th class="rot"><span class="mono">' + a + "</span></th>"; }).join("") + "</tr></thead><tbody>" + roles.map(function (r) { return "<tr><td><b>" + r[0] + "</b></td>" + r[1].map(ck).join("") + "</tr>"; }).join("") + "</tbody></table></div>";
+  var m2 = '<div class="tbl-wrap"><table class="tbl matrix"><thead><tr><th>User</th><th class="rot mono">ashfall-art</th><th class="rot mono">engine-fork</th></tr></thead><tbody><tr><td>elena.p</td><td class="cell"><span class="pcell none">none</span></td><td class="cell"><span class="pcell none">none</span></td></tr><tr><td>priya.n</td><td class="cell"><span class="pcell override pending">Lead</span></td><td class="cell"><span class="pcell inherit">Developer</span></td></tr></tbody></table></div>';
+  var c = { module: "lore", point: "page", prim: "PermissionMatrix" };
+  document.getElementById("root").innerHTML = '<div class="pv-row">' + S.Panel({ c: c, noForce: true, flush: true, title: "Role definitions", body: m1 }) + S.Panel({ c: c, noForce: true, flush: true, title: "Overrides", banner: '<div class="banner warn">' + S.icon("edit") + ' 1 unsaved change<button class="btn sm">Discard</button></div>', body: m2 }) + "</div>";
+</script>
+</body>
+</html>

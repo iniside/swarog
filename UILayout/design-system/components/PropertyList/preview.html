@@ -1,0 +1,22 @@
+<!-- @dsCard group="Data" height=200 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  document.getElementById("root").innerHTML = S.Panel({ c: { module: "accounts", point: "entity.user.tab", prim: "PropertyList" }, noForce: true, title: "Profile", tools: '<button class="btn sm">' + S.icon("edit") + ' Edit</button>',
+    body: S.PropertyList([["User id", '<span class="mono">7f3a9c21</span> ' + S.ref("user", "7f3a9c21")], ["Handle", "aiko.tanaka"], ["Status", S.status("active")], ["Providers", '<span class="tag">google</span> <span class="tag">epic</span>'], ["Created", "2025-03-11"]]) });
+</script>
+</body>
+</html>

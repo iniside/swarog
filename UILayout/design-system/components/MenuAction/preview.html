@@ -1,0 +1,29 @@
+<!-- @dsCard group="Actions" height=300 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  body { min-height: 300px; }
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  S.defineMenu("demo", function () { return [
+    { c: { module: "accounts", point: "entity.user.row_action", prim: "MenuAction" }, label: "accounts", items: [{ label: "Open detail", icon: "external" }, { label: "Suspend account…", icon: "ban" }, { label: "Delete account…", icon: "trash", danger: true }] },
+    { c: { module: "wallet", point: "entity.user.row_action", prim: "MenuAction" }, label: "wallet", note: '<span style="color:var(--err)">unavailable</span>', items: [{ label: "Grant currency…", icon: "gift", disabled: "wallet module unavailable" }] },
+    { c: { module: "lore", point: "entity.user.row_action", prim: "MenuAction" }, label: "lore", items: [{ label: "Change Lore role…", icon: "shield" }, { label: "Release all locks…", icon: "unlock", danger: true }] }]; });
+  var root = document.getElementById("root");
+  root.innerHTML = '<div><button class="btn" id="open">' + S.icon("more") + ' Row actions for aiko.tanaka</button></div>';
+  var b = document.getElementById("open");
+  b.addEventListener("click", function (e) { S.openMenu(e, "demo", "aiko.tanaka"); });
+  b.dispatchEvent(new MouseEvent("click", { bubbles: false }));
+</script>
+</body>
+</html>

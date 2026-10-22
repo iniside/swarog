@@ -1,0 +1,56 @@
+<!-- @dsCard height=288 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Swarog Admin</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text); font-family: var(--font-sans); overflow: hidden; }
+  .cover { position: relative; height: 288px; overflow: hidden; }
+  .art { position: absolute; top: 0; left: 480px; width: 480px; height: 288px; overflow: hidden; }
+  .art svg { display: block; width: 480px; height: 288px; }
+  .accent { fill: var(--accent); }
+  .ink { fill: var(--text); }
+  .tint { fill: var(--accent-soft); }
+  .teal { fill: var(--chart-2); }
+  .alarm { fill: var(--err); }
+  .blk { rx: var(--radius-lg); }
+  .cell { rx: var(--radius-sm); }
+  .words { position: absolute; left: 24px; bottom: 24px; max-width: 440px; }
+  .cv-name { margin: 0; font-size: 104px; line-height: .95; font-weight: 600; letter-spacing: -.03em; color: var(--text); }
+  .cv-tag { margin: 8px 0 0 4px; font-size: 14px; line-height: 20px; color: var(--text-3); }
+</style>
+</head>
+<body>
+<div class="cover">
+<div class="art" aria-hidden="true">
+<svg viewBox="0 0 480 288" width="480" height="288">
+<!--
+  blocks      accent 164×148 bled off the top (the one hue the portal is known by) · text (ink) 316×116 bled off the right · accent-soft 164×112 · chart-2 one 2-wide tile · err one 12px status dot: about 35% of 960×288
+  arrangement a dashboard grid: panels on a 12px gutter, a row of KPI-sized tiles under the ink panel, one tile merged two-wide like a wide panel
+  pattern     "dense UI, panels on a grid" -> tiles cut by the radius tokens: ten 52×48 tiles in two rows at a 64px pitch, the status dot sitting in one tile the way a badge dot does
+  scales      gutters space-3 (12px); tiles 52×48 on a 64 pitch; panel corners radius-lg (8px); tile corners radius-sm (4px); dot 12px
+-->
+<rect class="accent blk" x="0" y="-8" width="164" height="148" rx="8"/>
+<rect class="ink blk" x="176" y="24" width="316" height="116" rx="8"/>
+<rect class="tint blk" x="0" y="152" width="164" height="112" rx="8"/>
+<rect class="tint cell" x="176" y="152" width="52" height="48" rx="4"/>
+<rect class="tint cell" x="240" y="152" width="52" height="48" rx="4"/>
+<rect class="teal cell" x="304" y="152" width="116" height="48" rx="4"/>
+<rect class="tint cell" x="432" y="152" width="52" height="48" rx="4"/>
+<rect class="tint cell" x="176" y="216" width="52" height="48" rx="4"/>
+<rect class="tint cell" x="240" y="216" width="52" height="48" rx="4"/>
+<rect class="tint cell" x="304" y="216" width="52" height="48" rx="4"/>
+<rect class="tint cell" x="368" y="216" width="52" height="48" rx="4"/>
+<rect class="tint cell" x="432" y="216" width="52" height="48" rx="4"/>
+<circle class="alarm" cx="394" cy="240" r="6"/>
+</svg>
+</div>
+<div class="words">
+<h1 class="cv-name">Swarog Admin</h1>
+<p class="cv-tag">Panels from every module, one quiet ops console.</p>
+</div>
+</div>
+</body>
+</html>

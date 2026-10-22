@@ -1,0 +1,29 @@
+<!-- @dsCard group="Input" height=110 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  document.getElementById("root").innerHTML = '<div class="row" style="flex-wrap:wrap">' +
+    '<button class="btn primary">' + S.icon("plus") + ' Create key</button>' +
+    '<button class="btn">' + S.icon("download") + ' Export</button>' +
+    '<button class="btn danger">Revoke key</button>' +
+    '<button class="btn danger-ghost">' + S.icon("unlock") + ' Force unlock</button>' +
+    '<button class="btn ghost">Discard</button>' +
+    '<button class="btn sm">' + S.icon("refresh") + ' Retry</button>' +
+    '<button class="btn sm icon ghost" aria-label="Row actions">' + S.icon("more") + '</button>' +
+    '<button class="btn" disabled>Disabled</button></div>';
+</script>
+</body>
+</html>

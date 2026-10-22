@@ -1,0 +1,27 @@
+<!-- @dsCard group="Operations" height=260 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  var att = function (n) { var s = ""; for (var i = 0; i < 5; i++) s += '<i class="' + (i < n ? "f" : "") + '"></i>'; return '<span class="attempts">' + s + "</span>"; };
+  var counts = '<div class="q-counts">' + [["4", "Needs attention", 1], ["309", "Pending"], ["2", "Retrying"], ["1", "Failed"], ["182,051", "Sent (24 h)"]].map(function (c) { return '<div class="q-count ' + (c[2] ? "on" : "") + '"><div class="n">' + c[0] + '</div><div class="l">' + c[1] + "</div></div>"; }).join("") + "</div>";
+  var t = S.DataTable({ pager: false, cols: [{ label: "Message" }, { label: "State" }, { label: "Attempts" }, { label: "Last error", wrap: true }, { label: "" }],
+    rows: [['<span class="mono">m-88207</span>', S.status("retrying"), att(3), '<span class="mono">421 4.7.0 Try again later</span>', '<button class="btn sm">' + S.icon("refresh") + ' Retry</button> <button class="btn sm ghost">' + S.icon("park") + '</button>'],
+           ['<span class="mono">m-88180</span>', S.status("failed"), att(5), '<span class="mono" style="color:var(--err)">550 5.1.1 Mailbox unavailable</span>', '<button class="btn sm">' + S.icon("refresh") + ' Retry</button>'],
+           ['<span class="mono">m-88172</span>', S.status("parked"), att(5), '<span class="mono">recipient banned</span>', '<button class="btn sm">' + S.icon("play") + ' Resume</button>']] });
+  document.getElementById("root").innerHTML = S.Panel({ c: { module: "mail", point: "page", prim: "WorkQueue" }, noForce: true, flush: true, title: "Outbox", banner: '<div class="banner warn">' + S.icon("alert") + ' SMTP relay is throttling (421). Retries back off; nothing is lost.</div>', body: counts + t });
+</script>
+</body>
+</html>

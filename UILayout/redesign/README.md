@@ -32,3 +32,9 @@ Topbar controls (mockup only):
 
 Fake data lives in `assets/data.js` and is shared by every screen (deployment
 `emberline-prod`, studio Emberline, game Ashfall).
+
+The design system derived from these mockups lives in `UILayout/design-system/`
+(tokens, brand book, component guidelines and previews). Its
+`components/bundle.css` and `components/bundle.js` are copies of
+`assets/swarog.css` (without the token blocks) and `assets/ui.js` (without the
+mockup's theme bootstrapping); change the mockup files first and copy again.

@@ -1,0 +1,25 @@
+<!-- @dsCard group="Data" height=300 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  document.getElementById("root").innerHTML = S.Panel({ c: { module: "lore", point: "page", prim: "Timeline" }, noForce: true, flush: true, title: "Events", meta: "lore.* topics",
+    body: S.Timeline([
+      { day: "Today", t: "14:08", icon: "up", tone: "accent", html: "diego.r pushed 3 commits in <span class=\"mono\">ashfall-game</span>", meta: "c41f9e2 Frostreach: north gate blockout · 412 MB" },
+      { day: "Today", t: "12:40", icon: "unlock", tone: "err", html: "marta.k force-unlocked DA_GameRules.uasset", meta: "owner sam.o · reason: owner offboarded" },
+      { day: "Yesterday", t: "16:30", icon: "lock", tone: "warn", html: "aiko.tanaka locked SK_Warden_Body.blend", meta: "Rig fix for cloth sim" }]) });
+</script>
+</body>
+</html>

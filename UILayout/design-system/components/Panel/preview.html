@@ -1,0 +1,27 @@
+<!-- @dsCard group="Chrome" height=300 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  var rows = { cols: [{ label: "File" }, { label: "Owner" }, { label: "Held" }], rows: [["Hub_Ashgate.umap", "sam.o", S.badge("22 d", "warn")], ["SK_Warden_Body.blend", "aiko.tanaka", "22 h"]], pager: false };
+  var c = { module: "lore", point: "page", prim: "DataTable" };
+  document.getElementById("root").innerHTML = '<div class="pv-row">' +
+    S.Panel({ c: c, title: "Open locks", meta: "ashfall-art", flush: true, noForce: true, tools: '<button class="btn sm danger-ghost">Force unlock</button>', body: S.DataTable(rows) }) +
+    S.Panel({ c: c, title: "Open locks", meta: "stale", flush: true, noForce: true, state: "stale", staleText: "Showing cached data from 3 min ago. lore-svc is lagging.", body: S.DataTable(rows) }) +
+    S.Panel({ c: c, title: "Open locks", noForce: true, state: "error", errorDetail: "lore-svc: connection refused. Last good response 3 min ago." }) +
+    S.Panel({ c: c, title: "Open locks", noForce: true, state: "denied", perm: "lore.locks.read" }) + '</div>';
+</script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+<!-- @dsCard group="Status" height=120 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  var vals = ["running", "active", "sent", "pending", "retrying", "lagging", "degraded", "suspended", "parked", "revoked", "failed", "paused", "down", "banned"];
+  document.getElementById("root").innerHTML = '<div class="row" style="flex-wrap:wrap;gap:6px">' + vals.map(function (v) { return S.status(v); }).join("") + '</div>' +
+    '<div class="row" style="flex-wrap:wrap;gap:6px">' + S.badge("Lead", "accent", true) + S.badge("Developer", "", true) + S.badge("staff", "accent", true) + S.badge("player", "", true) + '<span class="tag">main</span><span class="tag">repository:ashfall-game</span></div>';
+</script>
+</body>
+</html>

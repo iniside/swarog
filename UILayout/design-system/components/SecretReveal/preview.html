@@ -1,0 +1,21 @@
+<!-- @dsCard group="Actions" height=210 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  document.getElementById("root").innerHTML = '<div class="pv-row"><div>' + S.SecretReveal({ value: "swg_live_6be1_Qm9yZWFsaXMtNGM3ZS1hMWQ5LWVtYmVybGluZS0wMDEx", extra: '<div style="margin-top:10px;font-size:12px" class="dim">Use as <span class="mono">Authorization: Bearer &lt;key&gt;</span>. Role <span class="tag">ci-build</span>.</div>' }) + '</div></div>';
+</script>
+</body>
+</html>

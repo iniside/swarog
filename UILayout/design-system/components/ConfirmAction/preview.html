@@ -1,0 +1,24 @@
+<!-- @dsCard group="Actions" height=360 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  .scrim { position: static; min-height: 360px; padding: 16px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+  var S = window.Swarog;
+  S.confirm({ c: { module: "lore", point: "entity.lock.row_action", prim: "ConfirmAction" }, title: "Force unlock this file?", icon: "unlock",
+    body: '<div class="code" style="white-space:normal">ashfall-art: Environment/Frostreach/T_Ice_Cliff_D.psd</div>',
+    impact: [["Owner", "sam.o"], ["Branch", '<span class="tag">main</span>'], ["Held for", '21 d <span class="badge warn">stale</span>']],
+    reason: "e.g. owner offboarded", typeToConfirm: "T_Ice_Cliff_D.psd", footNote: "The owner's local edits are kept.", confirm: "Force unlock" });
+</script>
+</body>
+</html>

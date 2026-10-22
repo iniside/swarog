@@ -1,0 +1,24 @@
+<!-- @dsCard group="Chrome" height=230 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  .pv { padding-top: 24px; }
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  document.body.classList.add("annot");
+  document.getElementById("root").innerHTML = '<div class="pv-row">' +
+    S.KpiTile({ c: { module: "lore", point: "dashboard.tile", prim: "KpiTile" }, noForce: true, label: "Lore seats", value: "8", delta: "users with Lore access" }) +
+    S.KpiTile({ c: { module: "mail", point: "dashboard.tile", prim: "KpiTile" }, noForce: true, label: "Mail queue", value: "312", delta: '<span class="bad-up">relay throttled</span>' }) + '</div>';
+</script>
+</body>
+</html>

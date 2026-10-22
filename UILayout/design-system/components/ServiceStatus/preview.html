@@ -1,0 +1,22 @@
+<!-- @dsCard group="Data" height=220 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  document.getElementById("root").innerHTML = S.Panel({ c: { module: "portal", point: "dashboard.health", prim: "ServiceStatus" }, noForce: true, flush: true, title: "Service health", meta: "18/20 healthy",
+    body: S.ServiceStatus([{ name: "lore-svc", state: "running", p99: "33 ms" }, { name: "mail-svc", state: "degraded", p99: "880 ms", note: "SMTP relay throttling · 312 queued" }, { name: "wallet-svc", state: "down", p99: "—", note: "connection refused · last ok 3 min ago" }]) });
+</script>
+</body>
+</html>

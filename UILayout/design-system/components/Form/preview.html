@@ -1,0 +1,25 @@
+<!-- @dsCard group="Input" height=290 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  document.getElementById("root").innerHTML = S.Panel({ c: { module: "config", point: "page", prim: "Form" }, noForce: true, title: 'Edit <span class="mono">match.max_party_size</span>', meta: "rev 12",
+    body: S.Form({ submit: "Save revision", note: "Saves only if still rev 12.", fields: [
+      { label: "Value", typeName: "int (1..8)", value: "9", error: "Must be between 1 and 8", mono: true, w: "120px" },
+      { label: "Enabled", type: "bool", typeName: "bool", value: true },
+      { label: "Change note", placeholder: "Why? (stored with the revision)" }] }) });
+</script>
+</body>
+</html>

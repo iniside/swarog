@@ -1,0 +1,26 @@
+<!-- @dsCard group="Entities" height=210 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  var f = function (m, p, html) { return S.frag({ module: m, point: p, prim: "SummaryFact" }, html, { inline: true, tag: "span" }); };
+  var t = function (m, label, on, extra) { return S.frag({ module: m, point: "entity.user.tab", prim: "EntityTab" }, '<button class="tab ' + (on ? "on" : "") + '">' + label + (extra || "") + '</button>', { inline: true, tag: "span" }); };
+  document.getElementById("root").innerHTML = '<section class="panel"><div class="entity-head"><span class="avatar lg" style="background:#d9488a">AT</span><div class="grow"><div class="row"><h1>Aiko Tanaka</h1>' + S.status("active") + S.badge("staff", "accent", true) + '</div><div class="entity-facts">' +
+    f("accounts", "entity.user.summary_field", "<span>" + S.icon("hash") + ' <span class="mono">7f3a9c21</span></span>') + f("lore", "entity.user.summary_field", "<span>" + S.icon("shield") + " Lore Lead</span>") + f("wallet", "entity.user.summary_field", '<span style="color:var(--err)">' + S.icon("alert") + " wallet unavailable</span>") +
+    '</div></div><div class="page-actions"><button class="btn">' + S.icon("shield") + ' Change Lore role</button><button class="btn danger-ghost">' + S.icon("ban") + ' Suspend</button></div></div><div class="tabs">' +
+    t("accounts", "Profile &amp; identities", true) + t("wallet", "Wallet", false, '<span class="dot err"></span>') + t("inventory", 'Inventory <span class="count">37</span>') + t("storage", "Cloud saves", false, '<span class="muted">' + S.icon("lock") + '</span>') + t("lore", "Lore") + '</div></section>';
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+<!-- @dsCard group="Chrome" height=230 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  var e = function (m, ic, l, extra, cls) { return S.frag({ module: m, point: "nav.entry", prim: "NavEntry" }, '<a class="nav-item ' + (cls || "") + '" href="#">' + S.icon(ic) + "<span>" + l + "</span>" + (extra || "") + "</a>", { inline: true }); };
+  document.getElementById("root").innerHTML = '<div class="sidebar" style="width:232px;border:1px solid var(--border);border-radius:var(--radius-lg)"><nav class="nav"><div class="nav-section"><div class="nav-title">Lore</div>' +
+    e("lore", "repo", "Repositories", '<span class="count">6</span>') + e("lore", "lock", "Locks", '<span class="count warn">26</span>', "active") + e("lore", "server", "Server instance") +
+    '</div><div class="nav-section"><div class="nav-title">Economy</div>' + e("wallet", "coins", "Currencies &amp; ledger", "", "down") + "</div></nav></div>";
+</script>
+</body>
+</html>

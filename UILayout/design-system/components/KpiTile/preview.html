@@ -1,0 +1,26 @@
+<!-- @dsCard group="Data" height=150 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { height: auto; }
+  .pv { padding: 16px; display: grid; gap: 12px; }
+  .pv-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; }
+  .pv-row > * { flex: 1 1 380px; min-width: 0; }
+  
+</style>
+</head>
+<body>
+<div id="root" class="pv"></div>
+<script>
+  var S = window.Swarog;
+  var c = { module: "lore", point: "dashboard.tile", prim: "KpiTile" };
+  document.getElementById("root").innerHTML = '<div class="pv-row">' +
+    S.KpiTile({ c: c, noForce: true, label: "Lore store used", value: "13.29", unit: "TB", delta: '<span class="bad-up">▲ 1.19 TB</span> this month', spark: [6.2, 7.4, 8.9, 10.6, 12.1, 13.29], sparkColor: "var(--chart-2)" }) +
+    S.KpiTile({ c: c, noForce: true, label: "Lore seats", value: "8", delta: "users with Lore access", bar: 66 }) +
+    S.KpiTile({ c: { module: "wallet", point: "dashboard.tile", prim: "KpiTile" }, noForce: true, label: "Embers spent (24 h)", value: "1.94 M", state: "error" }) +
+    S.KpiTile({ c: c, noForce: true, label: "Pushes (24 h)", value: "41", state: "loading" }) + '</div>';
+</script>
+</body>
+</html>
