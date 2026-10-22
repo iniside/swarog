@@ -186,7 +186,7 @@
     return panel({ c: { module: "lore", point: o.point || "page", prim: "DataTable" }, title: o.title, flush: true, emptyTitle: "No open locks", emptyIcon: "unlock", state: list.length ? "ok" : "empty", emptyDetail: "Nobody holds a lock here.",
       body: table({ selectable: true, cols, rows, filters: o.hideRepo ? [{ k: "Owner", v: "any" }] : [{ k: "Repository", v: "all" }, { k: "Owner", v: "any" }, { k: "Branch", v: "any" }, `<span class="filter-chip" style="${sel ? "background:var(--warn-soft);color:var(--warn);border-color:transparent" : ""}" onclick="PAGES.staleOnly=!PAGES.staleOnly;REG.render()">${icon("clock")} Older than 14 d${sel ? " ✓" : ""}</span>`],
         searchPlaceholder: "Path contains…", bulk: sel ? `${stale.length} selected <button class="btn sm danger" onclick="PAGES.forceUnlock(null,true)">${icon("unlock")} Force unlock ${stale.length}</button><button class="btn sm ghost">Notify owners</button>` : "",
-        rowMenu: (r, i) => rowMenuBtn("lock", list[i].id), total: `${list.length} of ${o.of ?? 26} locks${sel ? " · filtered: older than 14 d" : ""}`, page: "1 / 1", footNote: "Locks live in loreserver memory and are lost on restart" }) });
+        rowMenu: (r, i) => rowMenuBtn("lock", list[i].id), total: `${list.length} of ${o.of ?? 26} locks${sel ? " · filtered: older than 14 d" : ""}`, page: !sel && list.length < (o.of ?? 26) ? `1 / ${Math.ceil((o.of ?? 26) / list.length)}` : "1 / 1", footNote: "Locks live in loreserver memory and are lost on restart" }) });
   }
   P.loreLocks = {
     meta: { nav: "lore.locks", crumbs: [loreCrumb, ["Locks"]] },
