@@ -53,16 +53,16 @@ window.DATA = (() => {
   const roles = [
     { name: "Viewer", desc: "Read and download", builtin: true, actions: ["read", "presign"], users: 1 },
     { name: "Developer", desc: "Day-to-day contributors", builtin: true, actions: ["read", "write", "presign"], users: 4 },
-    { name: "Lead", desc: "Can push to protected branches", builtin: true, actions: ["read", "write", "presign", "push-protected", "migrate"], users: 2 },
+    { name: "Lead", desc: "push-protected (honoured after LEP)", builtin: true, actions: ["read", "write", "presign", "push-protected", "migrate"], users: 2 },
     { name: "Admin", desc: "Full control incl. destructive ops", builtin: true, actions: ["read", "write", "presign", "push-protected", "migrate", "admin", "owner", "obliterate"], users: 1 },
   ];
   const actions = [
     { key: "read", desc: "Clone, fetch, browse history", access: true },
     { key: "write", desc: "Push to unprotected branches, take locks", access: true },
     { key: "presign", desc: "Issue presigned blob URLs (CI, CDN)" },
-    { key: "push-protected", desc: "Push to protected branches" },
+    { key: "push-protected", desc: "Push to protected branches (after LEP; today only service accounts bypass PROTECT)" },
     { key: "migrate", desc: "Run repository format migrations" },
-    { key: "admin", desc: "Branch protection, force unlock, settings" },
+    { key: "admin", desc: "Force unlock, settings; who may call BranchProtect is not yet traced" },
     { key: "owner", desc: "Release any lock regardless of owner" },
     { key: "obliterate", desc: "Permanently purge files from history" },
   ];
@@ -77,15 +77,15 @@ window.DATA = (() => {
 
   const loreEvents = [
     { t: "14:08", day: "Today", type: "push", who: "diego.r", repo: "ashfall-game", branch: "main", text: "pushed 3 commits", detail: "c41f9e2 Frostreach: north gate blockout · 412 MB", tone: "accent", icon: "up" },
-    { t: "12:02", day: "Today", type: "lock", who: "jonas.l", repo: "tools-pipeline", branch: "main", text: "locked exporters/blender/ember_fbx.py", detail: "", tone: "warn", icon: "lock" },
     { t: "13:27", day: "Today", type: "push", who: "aiko.tanaka", repo: "ashfall-art", branch: "main", text: "pushed 1 commit", detail: "a0e7712 Warden body rig fix · 1.8 GB", tone: "accent", icon: "up" },
     { t: "12:40", day: "Today", type: "unlock", who: "marta.k", repo: "ashfall-game", branch: "main", text: "force-unlocked Content/Core/DA_GameRules.uasset", detail: "owner was sam.o (suspended) · reason: owner offboarded", tone: "err", icon: "unlock" },
+    { t: "12:02", day: "Today", type: "lock", who: "jonas.l", repo: "tools-pipeline", branch: "main", text: "locked exporters/blender/ember_fbx.py", detail: "", tone: "warn", icon: "lock" },
     { t: "11:15", day: "Today", type: "protect", who: "marta.k", repo: "ashfall-game", branch: "release/0.9", text: "protected branch release/0.9", detail: "pushes now require push-protected", tone: "warn", icon: "shield" },
     { t: "10:40", day: "Today", type: "lock", who: "tomasz.w", repo: "ashfall-audio", branch: "main", text: "locked Wwise/Actor-Mixer Hierarchy/Creatures.wwu", detail: "Warden VO hookup", tone: "warn", icon: "lock" },
     { t: "18:22", day: "Yesterday", type: "push", who: "jonas.l", repo: "engine-fork", branch: "ember/5.6", text: "pushed 12 commits", detail: "Merge upstream 5.6.1 hotfix · 96 MB", tone: "accent", icon: "up" },
     { t: "16:30", day: "Yesterday", type: "lock", who: "aiko.tanaka", repo: "ashfall-art", branch: "main", text: "locked Characters/Warden/SK_Warden_Body.blend", detail: "Rig fix for cloth sim", tone: "warn", icon: "lock" },
-    { t: "10:40", day: "Yesterday", type: "branch", who: "priya.n", repo: "ashfall-game", branch: "feature/warden-ai", text: "created branch feature/warden-ai", detail: "from main @ 3d1f0ab", tone: "info", icon: "branch" },
     { t: "15:02", day: "Yesterday", type: "branch", who: "diego.r", repo: "ashfall-game", branch: "spike/old-terrain", text: "deleted branch spike/old-terrain", detail: "head 91ac3e0 · 0 open locks", tone: "err", icon: "branch" },
+    { t: "10:40", day: "Yesterday", type: "branch", who: "priya.n", repo: "ashfall-game", branch: "feature/warden-ai", text: "created branch feature/warden-ai", detail: "from main @ 3d1f0ab", tone: "info", icon: "branch" },
   ];
 
   const services = [
@@ -144,7 +144,7 @@ window.DATA = (() => {
     { id: "notifications.mail-sent.v1", topic: "mail.sent", module: "notifications", checkpoint: 88_160, head: 88_166, lag: "6", state: "running" },
     { id: "inventory.on_purchase.v1", topic: "wallet.debited", module: "inventory", checkpoint: 12_904, head: 13_022, lag: "118", state: "paused", poison: { seq: 12_905, err: "decode: unknown currency code \"TOK2\" at $.amount.currency", at: "2026-10-22 09:41" } },
     { id: "leaderboard.on_rating.v1", topic: "rating.updated", module: "leaderboard", checkpoint: 220_418, head: 220_418, lag: "0", state: "running" },
-    { id: "storage.purge.v1", topic: "accounts.deleted", module: "storage", checkpoint: 311, head: 311, lag: "0", state: "running" },
+    { id: "storage.player-deleted.v1", topic: "player.deleted", module: "storage", checkpoint: 311, head: 311, lag: "0", state: "running" },
   ];
 
   const audit = [
@@ -155,7 +155,7 @@ window.DATA = (() => {
     { t: "10:02:13", actor: "jonas.l", topic: "wallet", action: "grant", target: "user:f6c4d097", detail: "+500 EMB · reason: CS ticket #4471" },
     { t: "09:44:57", actor: "system", topic: "events", action: "subscription.paused", target: "inventory.on_purchase.v1", detail: "poison event seq 12905" },
     { t: "09:30:00", actor: "jonas.l", topic: "config", action: "flag.update", target: "flag:season4.enabled", detail: "false → true · rev 41" },
-    { t: "08:51:36", actor: "marta.k", topic: "apikeys", action: "key.create", target: "ak_c4a8 horde-agents", detail: "role ci-build" },
+    { t: "08:51:36", actor: "marta.k", topic: "apikeys", action: "key.create", target: "apikey:ak_c4a8", detail: "horde-agents · role ci-build" },
     { t: "08:12:09", actor: "aiko.tanaka", topic: "accounts", action: "admin.login", target: "admin portal", detail: "google · 83.4.x.x" },
     { t: "07:00:00", actor: "scheduler", topic: "scheduler", action: "fire", target: "daily.leaderboard_reset", detail: "ok · 1.2 s" },
   ];

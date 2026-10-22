@@ -45,7 +45,6 @@
 
   // ---------- mail outbox (WorkQueue) ----------
   const att = (n, ok) => `<span class="attempts" title="${n} attempts">${Array.from({ length: 5 }, (_, i) => `<i class="${i < n ? (ok && i === n - 1 ? "ok" : "f") : ""}"></i>`).join("")}</span>`;
-  // Allowed actions per item state, as declared in the WorkQueue catalog entry.
   const MAIL_ACTIONS = { pending: ["cancel"], retrying: ["retry", "park", "cancel"], failed: ["retry", "cancel"], parked: ["resume", "cancel"], sent: [] };
   const mailActions = m => MAIL_ACTIONS[m.state].map(a => a === "retry" ? `<button class="btn sm" onclick="UI.toast('Retry scheduled now')">${icon("refresh")} Retry</button>`
     : a === "resume" ? `<button class="btn sm" onclick="UI.toast('Resumed')">${icon("play")} Resume</button>`

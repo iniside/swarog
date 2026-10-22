@@ -115,11 +115,11 @@
         const pf = panel({ c: { module: "lore", point: "entity.repository.tab", prim: "Form" }, title: `Protection · <span class="mono">${sel.name}</span>`, meta: sel.prot ? "protected" : "not protected",
           body: UI.form({ submit: "Save", note: "Calls BranchProtect / BranchUnprotect on loreserver.", fields: [
             { label: "Branch", typeName: "ref branch", value: sel.name, mono: true, disabled: true },
-            { label: "Protected", type: "bool", typeName: "bool", value: sel.prot, help: "Pushes to a protected branch need the <span class='tag'>push-protected</span> action (Lead, Admin). Protection is a per-branch flag; loreserver has no per-ref patterns." },
+            { label: "Protected", type: "bool", typeName: "bool", value: sel.prot, help: "Protection is a per-branch PROTECT flag; loreserver has no per-ref patterns. Today only service accounts bypass it; the <span class='tag'>push-protected</span> action (Lead, Admin) becomes the bypass after LEP." },
           ] }) });
         body = `<div class="grid g-21">${bt}${pf}</div>`;
       } else if (active === "locks") {
-        body = locksTable(D.locks.filter(l => l.repo === r.name), { point: "entity.repository.tab", hideRepo: true });
+        body = locksTable(D.locks.filter(l => l.repo === r.name), { point: "entity.repository.tab", hideRepo: true, of: r.locks });
       } else if (active === "access") {
         const rows = D.users.filter(u => u.loreRole).map(u => {
           const o = D.overrides[u.handle]?.[r.name];
@@ -150,7 +150,7 @@
         tools: `<button class="btn sm">${icon("plus")} Grant access</button>`,
         body: table({ pager: false, cols: [{ label: "User" }, { label: "Role" }, { label: "Overrides", num: true }, { label: "Status" }], rows: loreUsers.map(u => [userCell(u.handle), `<select class="select" style="height:24px;font-size:12px">${D.roles.map(r => `<option ${r.name === u.loreRole ? "selected" : ""}>${r.name}</option>`).join("")}</select>`, Object.keys(D.overrides[u.handle] || {}).length || `<span class="muted">0</span>`, status(u.status)]), rowMenu: () => `<button class="btn sm icon ghost">${icon("more")}</button>` }) });
 
-      const eu = D.byHandle[P.effUser || new URLSearchParams(location.search).get("u")] || D.byHandle["elena.p"], er = P.effRepo || "ashfall-art";
+      const eu = [D.byHandle[P.effUser], D.byHandle[new URLSearchParams(location.search).get("u")]].find(u => u?.loreRole) || D.byHandle["elena.p"], er = P.effRepo || "ashfall-art";
       const ov = D.overrides[eu.handle]?.[er];
       const effRole = ov || eu.loreRole;
       const effActs = effRole === "none" ? [] : D.roles.find(r => r.name === effRole).actions;
@@ -186,7 +186,7 @@
     return panel({ c: { module: "lore", point: o.point || "page", prim: "DataTable" }, title: o.title, flush: true, emptyTitle: "No open locks", emptyIcon: "unlock", state: list.length ? "ok" : "empty", emptyDetail: "Nobody holds a lock here.",
       body: table({ selectable: true, cols, rows, filters: o.hideRepo ? [{ k: "Owner", v: "any" }] : [{ k: "Repository", v: "all" }, { k: "Owner", v: "any" }, { k: "Branch", v: "any" }, `<span class="filter-chip" style="${sel ? "background:var(--warn-soft);color:var(--warn);border-color:transparent" : ""}" onclick="PAGES.staleOnly=!PAGES.staleOnly;REG.render()">${icon("clock")} Older than 14 d${sel ? " ✓" : ""}</span>`],
         searchPlaceholder: "Path contains…", bulk: sel ? `${stale.length} selected <button class="btn sm danger" onclick="PAGES.forceUnlock(null,true)">${icon("unlock")} Force unlock ${stale.length}</button><button class="btn sm ghost">Notify owners</button>` : "",
-        rowMenu: (r, i) => rowMenuBtn("lock", list[i].id), total: `${list.length} of 26 locks${sel ? " · filtered: older than 14 d" : ""}`, page: "1 / 1", footNote: "Locks live in loreserver memory and are lost on restart" }) });
+        rowMenu: (r, i) => rowMenuBtn("lock", list[i].id), total: `${list.length} of ${o.of ?? 26} locks${sel ? " · filtered: older than 14 d" : ""}`, page: "1 / 1", footNote: "Locks live in loreserver memory and are lost on restart" }) });
   }
   P.loreLocks = {
     meta: { nav: "lore.locks", crumbs: [loreCrumb, ["Locks"]] },

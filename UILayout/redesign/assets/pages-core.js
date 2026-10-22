@@ -103,7 +103,7 @@ window.PAGES = window.PAGES || {};
       });
       return head("Users & players", "Staff and players share one account space; Lore access is a role on the account.", `<button class="btn">${icon("download")} Export CSV</button><button class="btn primary">${icon("plus")} Create account</button>`) +
         panel({ c: { module: "accounts", point: "page", prim: "DataTable" }, flush: true, body: tbl, cls: "players-table",
-          banner: `<div class="banner warn">${icon("alert")} Embers column unavailable — wallet module did not answer. Other columns are live.<button class="btn sm" onclick="UI.retry(this)">${icon("refresh")} Retry</button></div>` });
+          banner: `<div class="banner warn" data-module="wallet">${icon("alert")} Embers column unavailable — wallet module did not answer. Other columns are live.<button class="btn sm" onclick="UI.retry(this)">${icon("refresh")} Retry</button></div>` });
     },
   };
   P.players.meta.after = () => {
@@ -129,7 +129,7 @@ window.PAGES = window.PAGES || {};
     panel({ c: { module: "wallet", point: "entity.user.tab", prim: "DataTable" }, title: "Transactions", state: "error" });
   tabRender.inventory = u => panel({ c: { module: "inventory", point: "entity.user.tab", prim: "DataTable" }, title: "Inventory", meta: "37 items · owner user:" + u.id, flush: true, tools: `<button class="btn sm">${icon("gift")} Grant item</button>`,
     body: table({ filters: [{ k: "Owner", v: "all characters" }, { k: "Type", v: "any" }], searchPlaceholder: "Item id or name", cols: [{ label: "Item" }, { label: "Type" }, { label: "Qty", num: true }, { label: "Owner" }, { label: "Source" }, { label: "Acquired" }],
-      rows: [["Frost Warden skin", "cosmetic", 1, "player", "store.purchase", "2026-10-22"], ["Ashblade +3", "weapon", 1, "character:Yuki", "quest.reward", "2026-10-19"], ["Ember shard", "material", 412, "character:Yuki", "match.reward", "2026-10-22"], ["Reroll token", "consumable", 12, "player", "event.s4", "2026-10-20"], ["Warden banner", "cosmetic", 1, "player", "admin.grant", "2026-09-02"]].map(r => [r[0], `<span class="tag">${r[1]}</span>`, r[2], `<span class="mono">${r[3]}</span>`, `<span class="mono muted">${r[4]}</span>`, r[5]]),
+      rows: [["Frost Warden skin", "cosmetic", 1, "user", "store.purchase", "2026-10-22"], ["Ashblade +3", "weapon", 1, "character:Yuki", "quest.reward", "2026-10-19"], ["Ember shard", "material", 412, "character:Yuki", "match.reward", "2026-10-22"], ["Reroll token", "consumable", 12, "user", "event.s4", "2026-10-20"], ["Warden banner", "cosmetic", 1, "user", "admin.grant", "2026-09-02"]].map(r => [r[0], `<span class="tag">${r[1]}</span>`, r[2], `<span class="mono">${r[3]}</span>`, `<span class="mono muted">${r[4]}</span>`, r[5]]),
       rowMenu: () => `<button class="btn sm icon ghost">${icon("more")}</button>`, total: "37 items", page: "1 / 2" }) });
   tabRender.friends = () => panel({ c: { module: "friends", point: "entity.user.tab", prim: "DataTable" }, title: "Friends", meta: "12 · 1 pending", flush: true,
     body: table({ cols: [{ label: "User" }, { label: "State" }, { label: "Since" }], rows: [["jonas.l", "accepted", "2025-03-14"], ["MiraVoss", "accepted", "2026-02-01"], ["NightOwl_77", "accepted", "2026-05-22"], ["kestrel", "pending (outgoing)", "2026-10-21"], ["diego.r", "accepted", "2025-03-11"]].map(r => [userCell(r[0]), r[1].startsWith("pending") ? badge(r[1], "info") : badge(r[1], "ok"), r[2]]), rowMenu: () => `<button class="btn sm icon ghost">${icon("more")}</button>`, total: "12 friends", page: "1 / 1" }) });

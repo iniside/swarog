@@ -132,7 +132,7 @@ WorkQueue {
 Item { id, ref?: EntityRef, state, attempts: u32, max_attempts: u32,
        next_attempt_at?: time, last_error?: string, payload_preview? }
 Allowed actions per item state are declared by the module:
-  retrying → retry | park | cancel ; failed → retry | cancel ; parked → resume | cancel`,
+  pending → cancel ; retrying → retry | park | cancel ; failed → retry | cancel ; parked → resume | cancel`,
       actions: ["Retry now", "Cancel (confirm)", "Park / Resume", "Bulk versions of each", "Pause the whole queue"],
       states: ["ok", "loading", "empty", "stale", "error", "readonly", "denied"],
       points: ["page", "dashboard.attention (count)"],
