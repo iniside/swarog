@@ -47,6 +47,10 @@ suffices ("do przepisywania pliku opus starczy") — don't burn the top tier.
    NEVER substitute my own filler (the "Character ID"/"Created" KPIs I invented for
    the character modal were exactly this failure — "copy the mockup" means copy the
    mockup, not creative invention).
+   Re-stated by the user for the admin redesign (2026-10-22): "no artistic freedom" —
+   port 1:1 as close as possible; anything the backend can't show the presented way is
+   mocked data, marked as such in a code comment. Every plan step for a redesign screen
+   carries its element → real|fake data-source table.
 6. Every render-vs-mockup deviation (element added, dropped, or data substituted)
    must be explicitly declared in the report — an undeclared deviation is treated
    as a violation, same class as fabricating.
