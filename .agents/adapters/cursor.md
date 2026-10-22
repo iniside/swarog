@@ -114,4 +114,4 @@ stubs; Cursor reads Claude-compat skill roots). Do not reimplement:
 - `architecture-review` — fortress / topology-blind / seam law
 - `split-topology-debugger` — split-only wiring
 - `add-game-module` — new fortress recipe
-- `mockup-implementation` — admin/UI against `UILayout/*.dc.html`
+- `mockup-implementation` — admin/UI against `UILayout/redesign/` (built on `UILayout/design-system/`)

@@ -2,8 +2,8 @@
 //! the four operator verbs the channel needs — requeue one parked row, requeue every parked
 //! row, cancel a pending one, and send a test message.
 //!
-//! `UILayout/GameOps Admin.dc.html` has no outbox panel, so the page is COMPOSED from the
-//! shipped widget vocabulary in the shape that file uses elsewhere: a context header, a KPI
+//! The retired GameOps mockup (removed 2026-10-22) had no outbox panel, so the page is COMPOSED from the
+//! shipped widget vocabulary in the shape that mockup used elsewhere: a context header, a KPI
 //! row, a table, one form. Nothing here is decorative — every value is read from
 //! `mail.outbox`.
 //!

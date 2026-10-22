@@ -1,9 +1,9 @@
 //! The read-only "Cloud Saves" page under `Player Support`: what the object table holds
 //! across every owner, a per-player drill-down (`?player=<uuid>`), and the purge backlog.
 //!
-//! `UILayout/GameOps Admin.dc.html` has no cloud-save section, so there is no 1:1 spec to
+//! The retired GameOps mockup (removed 2026-10-22) had no cloud-save section, so there is no 1:1 spec to
 //! translate. The page is COMPOSED from the shipped `adminapi` widget vocabulary in the
-//! shape the mockup's Players page gives (a KPI row over a table whose player column is an
+//! shape the mockup's Players page gave (a KPI row over a table whose player column is an
 //! avatar chip plus a label, a status pill per row, a row drill-down) — no new widget.
 //!
 //! There is no [`adminapi::AdminSubmit`]: a saved document is the player's, and the one

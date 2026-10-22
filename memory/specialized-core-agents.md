@@ -31,7 +31,7 @@ to close the gaps generic agents missed:
 - **proof-auditor** — audits the PROOF not the code (coverage-gap/false-pass/
   notapplicable — the verify-net class that ships bugs green). Use on diffs touching
   tests or verify stages, or that claim "proven".
-- **mockup-implementer** — UI work against `UILayout/*.dc.html`: mockup = exact spec
+- **mockup-implementer** — UI work against `UILayout/redesign/` (built on `UILayout/design-system/`): mockup = exact spec
   for layout AND data shape; data gap ⇒ deterministic decorative fake (or stop and
   ask), deviations declared, live render-vs-mockup smoke. Dispatch at [opus]+, never
   mechanical. Orchestration lives in the `mockup-implementation` skill

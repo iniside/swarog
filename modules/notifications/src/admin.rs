@@ -3,7 +3,7 @@
 //! and one editable form for the single operator action, sending a 1:1 message.
 //!
 //! There is no inbox mockup, so the page is COMPOSED from the shipped `adminapi` widget
-//! vocabulary in the shape `UILayout/GameOps Admin.dc.html` gives the Players page — a table
+//! vocabulary in the shape the retired GameOps mockup gave the Players page — a table
 //! plus a row drill-down, no new widget. Every value rendered is read from
 //! `notifications.messages`; nothing here is decorative.
 //!

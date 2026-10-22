@@ -1,6 +1,6 @@
-/* GameOps admin theme — design tokens + components, lifted 1:1 from the UILayout
-   mockup (`UILayout/GameOps Admin.dc.html`) so pages compose from reusable classes
-   with no external runtime. Every colour/size/radius here matches the mockup. */
+/* GameOps admin theme — design tokens + components, lifted 1:1 from the retired GameOps
+   mockup (removed 2026-10-22; the redesign lives in `UILayout/redesign/`) so pages compose from reusable classes
+   with no external runtime. Every colour/size/radius here matched that mockup. */
 :root {
   --bg:#060708; --sidebar:#0a0b0d; --header:#08090b; --card:#0e0f12;
   --border:#191c21; --border2:#1b1e24; --border3:#262b35; --row:#15171c;

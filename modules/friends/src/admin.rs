@@ -1,9 +1,9 @@
 //! The read-only "Friends" page under `Player Support`: the social graph's three counts,
 //! the newest relations, and a per-player drill-down (`?player=<uuid>`).
 //!
-//! `UILayout/GameOps Admin.dc.html` has NO social section, so there is no 1:1 spec to
+//! The retired GameOps mockup (removed 2026-10-22) had NO social section, so there is no 1:1 spec to
 //! translate. The page is COMPOSED from the shipped `adminapi` widget vocabulary in the
-//! shape the mockup's Players page gives (a KPI row over a table whose player column is an
+//! shape the mockup's Players page gave (a KPI row over a table whose player column is an
 //! avatar chip plus a name, a status pill per row, a row drill-down) — no new widget, and
 //! nothing decorative: every value is read from `friends.edges` or from the `accounts`
 //! directory.

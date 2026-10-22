@@ -23,7 +23,7 @@ use crate::store::{CatalogEntry, LedgerPage, OnConflict};
 use crate::{is_uuid_text, Service, IDEMPOTENCY_CONFLICT};
 
 pub(crate) const ADMIN_ITEM_ID: &str = "wallet";
-/// The sidebar group `UILayout/GameOps Admin.dc.html` names for currency/store surfaces.
+/// The sidebar group the retired GameOps mockup named for currency/store surfaces.
 pub(crate) const ADMIN_SECTION: &str = "Economy & Store";
 pub(crate) const ADMIN_LABEL: &str = "Wallet";
 

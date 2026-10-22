@@ -1,11 +1,11 @@
 ---
 name: mockup-implementation
-description: Implement or fix admin/UI views from a UILayout/*.dc.html mockup without fidelity drift. Use whenever the task is "make it look like the mockup", a new admin view/modal, a restyle, or a user report that the UI diverges from the mockup. Orchestrates spec extraction → data-gap checklist → mockup-implementer dispatch → live render-vs-mockup smoke → declared deviations.
+description: Implement or fix admin/UI views from a UILayout/redesign mockup without fidelity drift. Use whenever the task is "make it look like the mockup", a new admin view/modal, a restyle, or a user report that the UI diverges from the mockup. Orchestrates spec extraction → data-gap checklist → mockup-implementer dispatch → live render-vs-mockup smoke → declared deviations.
 ---
 
 # Mockup Implementation
 
-The mockup under `UILayout/*.dc.html` is the EXACT spec — layout, styling AND data
+The mockup under `UILayout/redesign/` (built on `UILayout/design-system/`) is the EXACT spec — layout, styling AND data
 shape. This skill exists because two documented failures (2026-07-14) came from
 resolving spec conflicts silently: mockup elements were dropped/substituted when the
 backend lacked their fields, and "done" was claimed without a live render comparison.
@@ -26,9 +26,10 @@ backend lacked their fields, and "done" was claimed without a live render compar
 ## The workflow
 
 1. **Extract the spec.** For a new view or a non-trivial change, one research
-   subagent extracts from the `.dc.html`: token table, per-component computed values
-   (including the `renderVals()` JS at the bottom — `modalAvStyle`, `rBadge`, `B()`,
-   fake-data shapes/formats), state/transition map, verbatim content with line
+   subagent extracts from the mockup page: token table (`UILayout/design-system/tokens.json`),
+   per-primitive values (design-system `components/<Name>/`, `bundle.css`), the page's
+   builder in `UILayout/redesign/assets/pages-*.js` and its fake-data shapes/formats
+   (`assets/data.js`), state/transition map, verbatim content with line
    numbers. For a small fix, read the relevant mockup lines directly instead.
 2. **Build the data-source checklist BEFORE code.** Element-by-element for the view:
    `element → source: real <field> | fake (formula) | drop (needs user)`. Unsettled
@@ -57,7 +58,7 @@ backend lacked their fields, and "done" was claimed without a live render compar
 - Visual layer = `modules/admin/src/theme.css` + `admin.html.tmpl`/`modal.html.tmpl`
   only; modules emit `adminapi` widgets. New visual need ⇒ additive widget-vocabulary
   change (`#[serde(default)]`), rendered via the shared macro in BOTH templates.
-- Mockup DSL (`sc-if`/`sc-for`) → minijinja; CSP unchanged (no inline JS, no
+- Mockup JS string builders (`pages-*.js`, design-system `bundle.js`) → minijinja; CSP unchanged (no inline JS, no
   `hx-on:`); vendored htmx + `admin.js` data-* delegation.
 - `api/admin/api` changes ⇒ `--bless-public-api` (additive), check contract-golden,
   grep `tools/splitproof` + `tools/admincheck` for pinned strings.

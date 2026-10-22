@@ -2,9 +2,9 @@
 //! per-group drill-down (`?group=<uuid>`) listing that group's rows, and ONE operator
 //! action — promoting a member to admin.
 //!
-//! `UILayout/GameOps Admin.dc.html` has no social section, so there is no 1:1 spec to
+//! The retired GameOps mockup (removed 2026-10-22) had no social section, so there is no 1:1 spec to
 //! translate. The page is COMPOSED from the shipped `adminapi` widget vocabulary in the
-//! shape the mockup's Players page gives (a KPI row over a table whose entity column is an
+//! shape the mockup's Players page gave (a KPI row over a table whose entity column is an
 //! avatar chip plus a name, a status pill per row, a row drill-down) — no new widget, and
 //! nothing decorative: every value is read from `groups.groups`/`groups.memberships` or
 //! from the `accounts` directory.
