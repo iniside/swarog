@@ -151,3 +151,15 @@ Fit:
 
 Worth borrowing as ideas: shard-style per-panel server re-render (what proposal 1 does with
 htmx), memoized fan-out per request, SSE patches for live panels (Timeline `live`).
+
+## 8. Owner decisions (2026-10-22)
+
+- **Redesign admin and its API.** Admin is promoted from one module among many to a
+  standing platform component (a control plane; not called "backplane", which already
+  names the push backplane in `core/remote`). Its contribution seam lives in `core`;
+  modules still never import the portal.
+- **One consumer.** Nobody will write their own admin panel. Extensibility is inbound only
+  (modules contribute panels); there is no outward, UI-neutral or stable data API. Primitives
+  may map 1:1 to design-system components; contract changes are wipes.
+- **Weles integrates from its own side only.** It exposes its own API; the portal reads it
+  for process status. Weles is not a consumer of, or contributor to, the admin contract.
