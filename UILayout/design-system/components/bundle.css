@@ -42,6 +42,7 @@ svg.i { width: 15px; height: 15px; flex: none; stroke: currentColor; fill: none;
 }
 .nav-item:hover { background: var(--hover); color: var(--text); text-decoration: none; }
 .nav-item.active { background: var(--selected); color: var(--accent-fg); }
+.nav-item.active .count { color: var(--accent-fg); }
 .nav-item .count { margin-left: auto; font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
 .nav-item .count.alert { color: var(--err); font-weight: 600; }
 .nav-item .count.warn { color: var(--warn); font-weight: 600; }

@@ -27,7 +27,7 @@ The portal knows nothing about game domains. Every screen is assembled from **pa
 
 **Radii.** `radius-sm` 4px for tags and cells, `radius-item` 5px for nav and menu items, `radius` 6px for controls, `radius-lg` 8px for panels and menus, `radius-xl` 10px for modals and status pills.
 
-**Motion.** Only the skeleton shimmer while loading and the drawer slide on tablet. No entrance animations.
+**Motion.** Only the skeleton shimmer while loading, the 120 ms toggle knob and the drawer slide on tablet. No entrance animations.
 
 **Layout.** A 232px sidebar (`sidebar-width`) with module-contributed nav sections, a 48px topbar (`topbar-height`) with breadcrumbs, global search, health, notifications. Content is a grid of panels (`g-tiles` for KPI rows, `g-21`, `g-2`, `stack`). Under 1080px the sidebar becomes a drawer and multi-column grids stack. Wide tables scroll inside their panel, never the page.
 

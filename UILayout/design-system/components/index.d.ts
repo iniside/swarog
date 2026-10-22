@@ -83,6 +83,7 @@ export declare function ref(kind: string, id: string): string;
 export declare function rowMenuBtn(menuId: string, arg: string): string;
 export declare function toast(text: string, tone?: 'ok' | 'info'): void;
 
+/** Lowercase names are the same functions as their aliases: openMenu = MenuAction, frag = Annotation, badge = Badge, confirm = ConfirmAction, secret = SecretReveal. */
 declare global {
   interface Window {
     Swarog: {
@@ -91,6 +92,7 @@ declare global {
       ServiceStatus: typeof ServiceStatus; TimeSeriesChart: typeof TimeSeriesChart; MenuAction: typeof MenuAction;
       Badge: typeof Badge; Annotation: typeof Annotation; status: typeof status; icon: typeof icon; ref: typeof ref;
       defineMenu: typeof defineMenu; rowMenuBtn: typeof rowMenuBtn; toast: typeof toast;
+      openMenu: typeof MenuAction; frag: typeof Annotation; badge: typeof Badge; confirm: typeof ConfirmAction; secret: typeof SecretReveal;
       MODULE_COLORS: Record<string, string>;
     };
   }
