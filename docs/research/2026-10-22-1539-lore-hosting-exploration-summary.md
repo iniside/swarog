@@ -107,6 +107,16 @@ Każde to jedno pytanie. Raport nie przyjmuje po cichu żadnej z opcji.
   - zakładanie nowego studia, czyli provisioning całego deploymentu (osobna baza
     danych, osobny root Welesa, porty, TLS), dzieje się poza deploymentem i jest
     osobnym, późniejszym tematem.
+- **Uprawnienia Lore — moduł `lore`, per repo, edytuje operator.**
+  - Moduł `lore` jest właścicielem ról, przypisań użytkowników, wyjątków per repo i
+    listy chronionych branchy. Osobny moduł `access` powstaje dopiero wtedy, gdy
+    pojawi się drugi system, który z nich korzysta.
+  - Uprawnienia są **per repo**, więc docelowym modelem jest **Tier 2** (token per
+    partycja z claimem `resources`), a nie Tier 1. W fazie adaptera uprawnienia per
+    repo działają od razu przez online `CheckUserPermission`.
+  - Edycja to zakładka w obecnym portalu admin (operator deploymentu, konta
+    `admin.users`). Panelu dla leada studia na zwykłym koncie nie budujemy: uprawnienia
+    w portalu wymagałyby projektu od zera.
 - **P5 — dostawca niezależny.** Strona zatwierdzania logowania (device approval)
   używa tego dostawcy, którego skonfigurowano w `accounts`. Do zbudowania są
   produkcyjna samorejestracja (e-mail i hasło; dziś `dev` działa tylko za
@@ -425,8 +435,9 @@ Każdy krok to osobny plan wg **Plan Writing Workflow**. Kroki modułowe idą pr
    tokenem serwisowym. Ochrona branchy przez `BranchProtect/Unprotect`.
 8. **Admin.** Najpierw mockup, potem zakładki Lore przez `mockup-implementation`.
 9. **Billing.** Seaty z modułu `lore`; TB wg P4.
-10. **OIDC pełne (Tier 1).** Device grant, refresh, `client_credentials` przez
-    `apikeys`, `at+jwt` z `permission_claim`. Włączane, gdy klient Lore ma fazę 3.
+10. **OIDC pełne (Tier 2).** Device grant, refresh, `client_credentials` przez
+    `apikeys`, `at+jwt`, token exchange RFC 8693 + RFC 8707 z claimem `resources`
+    per repo. Włączane, gdy klient Lore ma fazy 3–4.
     W tym samym kroku znika adapter `UrcAuthApi`, bo reguła „nigdy dwa tory” zabrania
     trzymania obu. Przejście po stronie floty steruje się w Lore przez
     `auth_mode`/`oidc_preferred` (LEP:516-531).
