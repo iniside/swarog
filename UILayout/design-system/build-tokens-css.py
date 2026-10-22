@@ -22,6 +22,7 @@ themed = T['color']['tokens'] + T.get('shadow', {}).get('tokens', [])
 lines = [f'/* {T["name"]} — generated from tokens.json */']
 lines.append(f':root, [data-theme="{themes[0]}"] {{')
 lines += per_theme(themed, themes[0])
+lines.append(f'  color-scheme: {themes[0]};')
 lines.append('}')
 for th in themes[1:]:
     lines.append(f'[data-theme="{th}"] {{')

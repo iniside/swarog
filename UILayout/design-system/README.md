@@ -5,7 +5,7 @@ The portal knows nothing about game domains. Every screen is assembled from **pa
 ## Content fundamentals
 
 - **Write from the operator's side.** Name things by what the operator manages: "Locks", "Mail outbox", "API keys", not "LockService" or "outbox rows".
-- **Sentence case everywhere**: page titles, panel titles, buttons, menu items. Section labels in the sidebar and timeline day dividers are the only uppercase text, and they get it from CSS (`ts-section-label`).
+- **Sentence case everywhere**: page titles, panel titles, buttons, menu items. Section labels in the sidebar and timeline day dividers are the only uppercase text, and they get it from CSS (`nav-title`, `tl-day`, `menu-group`; type style `ts-section-label`).
 - **Buttons say exactly what happens**: "Force unlock", "Revoke key", "Skip and resume". The toast confirms in the past tense: "Lock released", "Key revoked".
 - **Confirmation titles are questions**: "Force unlock this file?", "Revoke horde-agents?".
 - **Errors name the module and the next step**: "wallet module unavailable", then the detail ("wallet-svc did not answer within 2 s. The rest of this page is unaffected.") and a Retry. Never "Something went wrong".
