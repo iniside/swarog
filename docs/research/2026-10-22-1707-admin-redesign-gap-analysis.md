@@ -170,3 +170,11 @@ htmx), memoized fan-out per request, SSE patches for live panels (Timeline `live
   invoke; modules declare the permission a panel/action needs and do not re-check it.
 - **Fixed roles in v1** (e.g. admin / operator / viewer). Editable roles with permission sets
   (full RBAC) are a separate, later feature.
+- **Missing actions are disabled and marked.** Mockup actions with no backend behaviour are
+  ported 1:1 but rendered disabled with a "not implemented" hint and a FAKE comment; each
+  becomes a per-module follow-up, outside the redesign plan.
+- **Lore elements on in-scope screens render as marked fakes** (dashboard tiles, Lore role
+  column, user Lore tab, header fact, Lore actions, search provider), strict 1:1.
+- **Edge trust stays as is.** Every mTLS peer is equally trusted (`core/edge/src/tls.rs:174`);
+  "only the portal may call admin ops" is not enforced per method. Admin ops stay wire-only,
+  so the gateway never routes them; the operator login is a plain request field.
