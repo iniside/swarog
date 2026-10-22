@@ -128,3 +128,26 @@ Unverified unless a path is given; to be confirmed per screen before planning.
    PermissionMatrix (only Lore and maybe apikeys need it), list_column, notifications bell.
 9. **EntityRef kind naming**: introduce `EntityRef` with today's `player` kind, rename in the
    player_id → user_id sweep — or do that rename first.
+
+## 7. Considered: Topcoat (tokio-rs/topcoat)
+
+Checked 2026-10-22 from the README and docs.rs (0.10.0, 2026-10-03, MIT, "early-stage and
+experimental, expect breaking changes"). Server-rendered async `#[component]` functions in a
+`view!` macro; `$(...)` expressions are compiled to browser JS; `#[shard]` components are
+re-rendered on the server and swapped in; `live!`/`emit!` stream partial updates; optional
+Datastar transport over SSE; `#[memoize]` dedupes per-request fan-out.
+
+Fit:
+- It replaces only the rendering layer (minijinja + htmx today). It does not solve G1–G7:
+  components assume in-process data access, while admin-svc reaches modules only over the
+  wire, so modules would still return typed primitives.
+- It runs its own server (`topcoat::start`/`serve`); docs.rs shows no way to mount it into an
+  existing router, and axum is not a listed dependency. Admin is mounted into the shared
+  `core/app` HTTP server. Unverified whether embedding is possible.
+- Client code is "compiled to JavaScript and included with the page"; whether that is inline
+  or uses eval is undocumented. Either would break today's CSP (`default-src 'self'`, no
+  inline script, no eval). Unverified.
+- Pre-1.0 with breaking changes on a security-sensitive surface.
+
+Worth borrowing as ideas: shard-style per-panel server re-render (what proposal 1 does with
+htmx), memoized fan-out per request, SSE patches for live panels (Timeline `live`).
