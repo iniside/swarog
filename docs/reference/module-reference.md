@@ -150,30 +150,19 @@ exactly-once via the durable subscription.
 
 ### 2. The tombstone table grows without GC
 
-`modules/inventory/src/projection.rs:85-88` (the growth-cost note) and `:158-160`
-(the only writer): one permanent row per deleted character, no retention /
-watermark. Acceptable ONLY in the current wipe-is-migration phase; a long-lived
-deployment needs a retention policy. Do not copy the unbounded-table shape into a
-module that expects to run for years.
+Do not copy the unbounded-table shape into a module that expects to run for
+years. Open item: [docs/todo/inventory.md](../todo/inventory.md).
 
 ### 3. List endpoints have no cursor / pagination
 
-Both list paths silently truncate beyond a hard ceiling:
-`modules/inventory/src/store.rs:6-11` (`HOLDINGS_HARD_LIMIT`) and
-`modules/characters/src/store.rs:4-12` (`LIST_HARD_LIMIT`, with the KNOWN GAP
-comment). There is no `has_more` / cursor — surplus rows vanish from the view. A
-new list-bearing module should design pagination in from the start, not copy the
-ceiling.
+The inventory holdings list silently truncates beyond a hard ceiling, with no
+`has_more` / cursor. A new list-bearing module should design pagination in from
+the start, not copy the ceiling. Open item: [docs/todo/inventory.md](../todo/inventory.md).
 
 ### 4. No create-idempotency key on `characters::create`
 
-`modules/characters/src/service.rs:101-176`: transport correctly never replays a
-mutation, but there is NO contract-level idempotency key, so a client retry after
-an ambiguous timeout can double-create. The repo's one idempotency exemplar to
-copy if/when this matters is `match::report`'s REQUIRED `ReportId` — search
-`modules/match/` for `ReportId` (a duplicate key with the same
-winner/loser is a 202 no-op, a different one is a 409, and the method is
-`#[retry_safe]`). Copy THAT shape, not the un-keyed create.
+Copy `match::report`'s REQUIRED `ReportId` shape, not the un-keyed create. Open
+item: [docs/todo/characters.md](../todo/characters.md).
 
 ---
 

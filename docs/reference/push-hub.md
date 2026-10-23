@@ -182,14 +182,12 @@ addressed by group alone.
 `PUSH_PRESENCE` (default off) makes a player's first bind and last unbind
 broadcast `push.presence` (`{"player_id": ..., "online": bool}`) to
 `Target::All`. It is front-local only: a multi-gateway fleet gets one
-independent presence view per front, with no shared store, because a global
-view needs a friends graph (to narrow the broadcast audience) and persistence,
-both out of scope here. The transition itself is decided atomically under the
-same registry guard that performs the bind/unbind, but the two announcements
-(`online`/`offline`) are enqueued independently afterwards — a disconnect
-racing the same player's reconnect can still deliver them to an observer in
-either order, and the frames carry no sequence number or timestamp a client
-could use to reorder them.
+independent presence view per front, with no shared store (a global view:
+[docs/todo/push.md](../todo/push.md)). The transition itself is decided
+atomically under the same registry guard that performs the bind/unbind, but the
+two announcements (`online`/`offline`) are enqueued independently afterwards, so
+a disconnect racing the same player's reconnect can deliver them to an observer
+in either order (sequencing: [docs/todo/push.md](../todo/push.md)).
 
 ## The outbound queue
 
@@ -255,7 +253,10 @@ silently falling back to a default.
 
 ## Carried gaps
 
-- **The C# fixture is RPC-only** — it does not exercise `/push`.
+Open items (C# fixture coverage of `/push`, the lost 1009 close, the frame-parser
+fuzz target, `routecheck` coverage of the fixed route) are tracked in
+[docs/todo/push.md](../todo/push.md) and [docs/todo/csharp-client.md](../todo/csharp-client.md).
+
 - **The handshake checks API-key presence and validity, but not policy** — it
   uses `KeyCheck::PresenceOnly`, since the fixed route has no wire method to
   match a policy against. Policy is enforced per `invoke`; a connection that
@@ -265,9 +266,3 @@ silently falling back to a default.
   limiter); outbound frames are bounded only by the queue depth and the
   aggregate connection caps above. The per-IP invoke limiter's table-full
   refusals are counted in `http_rate_limit_table_saturated_total{limiter="push_invoke"}`.
-- **After `frame_too_large` the protocol-level 1009 close can be lost** (the
-  peer may see 1006); the typed JSON `close` frame still arrives.
-- **No fuzz target covers the `/push` frame parser.**
-- **A fixed `/push` route is invisible to `routecheck`** (it only models
-  `#[http]`-declared ops), so a future op landing at the same path would
-  shadow this route with no gate noticing.

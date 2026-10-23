@@ -66,18 +66,11 @@ drain in a loop until THIS test's own subscription checkpoint has passed THIS
 test's own event rows (matched by a per-test key), bounded by a deadline that
 is a hang guard, not a timing assertion.
 
-**Known-latent, not yet fixed** (both suites green as of `cddfc3b`):
-`modules/notifications/src/tests.rs` has 16 `deliver_all()` call sites and is
-exposed in BOTH directions (its subscriptions consume `wallet.changed` and
-`player.promoted`, both of which the wallet tests emit); `modules/mail/src/
-projection_tests.rs` has 13 sites exposed to the under-count direction only
-(`mail.send_requested` has no foreign emitter). `core/asyncevents/src/tests.rs`
+**Known-latent, not yet fixed:** the `deliver_all()` call sites in the
+`notifications` and `mail` tests are tracked in
+[docs/todo/event-plane.md](../todo/event-plane.md). `core/asyncevents/src/tests.rs`
 (:164, :174) is NOT at risk — it uses a unique per-test topic and subscription
-id and already polls. Left unfixed because it's 29 call sites across two
-modules each needing its own payload-key scoping, and hoisting
-`deliver_until_consumed` into `asyncevents::testing` (the clean shared home)
-changes a `core/*` public surface and requires `--bless-public-api` — it wants
-its own rollout, not a drive-by inside this one.
+id and already polls.
 
 See also the broader (2026-07-14, pre-dates this class) survey of
 timing-sensitive tests: `docs/research/2026-07-14-2058-timing-sensitive-tests-survey.md`

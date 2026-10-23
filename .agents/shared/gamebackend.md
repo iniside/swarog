@@ -241,9 +241,8 @@ never a silent last-writer-wins overwrite.
   `player.deleted`, tombstone the player in a per-module `purged_players`
   table, and drain it via a daily `player-purge` scheduler-driven sweep (plus
   `party`, purging in the delivery tx without a tombstone) — see
-  the `accounts` self-delete row in `docs/roadmap/feature-tracker.md` for the
-  known gaps (no GDPR export, no log/ledger redaction, `leaderboard`/`rating`/
-  `match`/`mail` unpurgeable, sole-admin group dissolution).
+  the `accounts` self-delete row in `docs/roadmap/feature-tracker.md`; open gaps
+  in `docs/todo/account-deletion.md` and `docs/todo/accounts.md`.
 - **characters / inventory** — the modularity reference case: plain-id relations,
   sync `Ownership` authz over the wire, starter-grant/wipe via durable
   `character.created/deleted`. `INVENTORY_DEV_GRANT` (explicit-only — default
@@ -385,25 +384,21 @@ never a silent last-writer-wins overwrite.
   recipient is at-least-once (a crash between the relay's `250` and the status
   commit re-sends). Scheduled pruning via `mail.prune-on-scheduler.v1`
   (`MAIL_RETENTION_DAYS`, default 30). Admin page "Mail" under Platform, remotely
-  editable via `admin.adminSubmit` (send/cancel/requeue/`requeue-all-parked`),
-  though a remote submit produces no `admin.action` row yet. Known gaps: TLS
-  negotiation (the STARTTLS upgrade, certificate/trust check, `AUTH`) is unproven
-  by any automated test; `mail` stores no address, so nothing resolves a
-  `player_id` to a recipient — seq #4 (`accounts`) is the intended producer, with
-  no in-tree producer until then; and `cancel` cannot recall a message the relay
-  already accepted.
+  editable via `admin.adminSubmit` (send/cancel/requeue/`requeue-all-parked`).
+  `mail` stores no address, so nothing resolves a `player_id` to a recipient, and
+  `cancel` cannot recall a message the relay already accepted. Open gaps:
+  `docs/todo/mail.md`.
 - **friends** — the social graph: schema `friends`, one table `edges` with a
   canonical ordered pair (`low_id < high_id` CHECK + unique index, so symmetry
   and pair-uniqueness live in the database) plus a separate `requester_id`,
-  since the *transitions* are not symmetric. States are `pending`/`accepted` —
-  no blocking in v1. Six `#[http]` ops (`request`/`accept`/`decline`/`remove`/
+  since the *transitions* are not symmetric. States are `pending`/`accepted`
+  (open gaps: `docs/todo/friends.md`). Six `#[http]` ops (`request`/`accept`/`decline`/`remove`/
   `list`/`pending`, all `auth = "player"`, mutations addressed by `edge_id`);
   reads are `#[retry_safe]`, mutations are not. Another player's edge is
   `NotFound`, never `Forbidden` — a 403 is an enumeration oracle. `request`
   resolves a target by handle (`Name#1234`, minted in `accounts` via the new
-  wire-only `accountsapi::Directory`, `players_by_id` batched + `find_by_handle`)
-  — the handle-existence oracle is NOT closed (201 vs 404), only rate-limited at
-  the gateway. Three durable topics at 30-day retention
+  wire-only `accountsapi::Directory`, `players_by_id` batched + `find_by_handle`).
+  Three durable topics at 30-day retention
   (`friend.requested/accepted/removed`, `Removed.reason` folding decline/unfriend/
   withdraw into one topic), each denormalizing both parties' handles because
   `notifications`' handler runs inside the delivery transaction with no accounts
@@ -433,9 +428,8 @@ never a silent last-writer-wins overwrite.
   past `GROUPS_RETENTION_DAYS` (default 30) and emits `group.member_left`
   (`reason = "expired"`) for each swept row rather than leaving the ledger
   silent. Admin page "Groups" under Player Support includes an operator
-  member→admin promotion, emitting `group.role_changed`. Known gaps: no push
-  nudge on membership change, no group rename or `join_policy` change after
-  create, and no `group.deleted` topic (a teardown reads as N leaves).
+  member→admin promotion, emitting `group.role_changed`. Open gaps:
+  `docs/todo/groups.md`.
 - **storage** — player cloud-save in schema `storage`, addressed by
   `(owner_id, collection, key)`. Four player ops (`put`/`get`/`delete`/`list`)
   provide owner-only writes, `private`/`public_read` reads, and keyset paging

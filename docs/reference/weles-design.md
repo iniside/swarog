@@ -121,9 +121,8 @@ shape, deliberately deferred:
   `rollout.lock` (`flock`/`LockFileEx` + stdin-pipe lease inheritance) and the
   loopback control endpoint cannot cross a machine. This is correct and stays — it
   coordinates operator invocations against one shared local dev Postgres — but it is
-  NOT a distribution mechanism, and nothing here states the **root/privilege**
-  requirement for installing the agent as a system service (the one gap the
-  "## Not unifying the operator control plane" section leaves unstated).
+  NOT a distribution mechanism. The **root/privilege** requirement for installing
+  the agent as a system service is tracked in [docs/todo/weles.md](../todo/weles.md).
 
 **Process contract, named honestly.** weles is generic over *domains* (it knows
 nothing of accounts/config/admin) but NOT over *process shape*: it assumes the Swaróg
@@ -837,14 +836,7 @@ and the `weles-managed-gateway` verify stage now run on macOS.
   pool/selection/health is the real remaining work). Do NOT add a `host` field to
   `fleet.toml` — the address authority is the agent's resolve answer, not the
   manifest (see the 2026-07-21b single-host errata at the top of this file).
-  **Known gap (2026-07-28) — the replica path has no live single-run test.** Nothing
-  in the tree exercises `replicas: 2` → mint → `weles up` → `/resolve` returns TWO
-  addresses → the client spreads across both, in one run. The split-proof harness does
-  assert cross-instance behaviour, but its second instance is HAND-BUILT by the harness
-  (`tools/splitproof/src/main.rs`, the `replicas_exactly_once` area) and never goes
-  through weles minting or resolve — so it proves the module-side property, not weles'
-  replica path. This is deferred M2 scope, consistent with "Not in M1: replicas" below;
-  it is a missing proof, not a regression in shipped behaviour.
+  The replica path has no live single-run test: [docs/todo/weles.md](../todo/weles.md).
 - **Round-robin LB is not "a field change".** Re-resolution is cheap — `Stub`
   holds `peer_addr` as an unparsed `String` and parses at dial, so swapping the
   string for a resolver call is small. **Load balancing is not:** N live instances
@@ -885,7 +877,8 @@ In M1:
   | `200 {"addrs":[]}` | it **is** a thing; **nothing is live right now** | M2, once liveness exists |
 
   A client may treat 404 as fatal-and-final; it may not treat `[]` that way. M2
-  puts zero instances in the list, never in the 404.
+  puts zero instances in the list, never in the 404. M2 liveness is open:
+  [docs/todo/weles.md](../todo/weles.md).
 
   Every non-2xx also carries `{"code":…,"error":…}` with `code` a closed enum
   (`unknown_route` / `unknown_peer` / `bad_request` / `internal`). `code` is the
@@ -902,8 +895,8 @@ In M1:
   its integrity half, not a separate feature.
 - **The managed-mode proof** — weles has no other gate, and every service that goes
   managed leaves the parity gate's port assertion.
-- Along the way: **M2** (bind control before the slow prep helpers) and
-  `DOWN_TIMEOUT` derived from fleet size.
+- Along the way: **M2** (bind control before the slow prep helpers; open —
+  [docs/todo/weles.md](../todo/weles.md)) and `DOWN_TIMEOUT` derived from fleet size.
 
 Deferred to machine two (recorded, not forgotten): the network hop and mTLS, the
 orchestrator's own CA, agent-side caching for remote peers, master migration by

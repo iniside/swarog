@@ -138,7 +138,7 @@ the game modules is defined or tested today.
   deletion. Deletion emits durable `player.deleted`; seven modules purge the
   player's data on a daily sweep, `party` removes the player directly, and `audit`
   records it. `leaderboard`, `rating`, `match`, and `mail` cannot purge yet; the
-  known gaps are listed in the feature tracker.
+  open gaps are in [docs/todo/account-deletion.md](docs/todo/account-deletion.md).
 - **config** — database-backed settings with a monotonic revision, live reload
   through the invalidation plane, and a durable `config.changed` event.
 - **admin** — the GameOps portal at `/admin`: session authentication with CSRF
@@ -184,8 +184,9 @@ the game modules is defined or tested today.
 `demos/webui` is a development demo SPA for the accounts flow. It is not shipped
 and is registered only in the monolith.
 
-Current gaps and planned work per module are tracked in
-[docs/roadmap/feature-tracker.md](docs/roadmap/feature-tracker.md).
+Feature-level status and planned work are tracked in
+[docs/roadmap/feature-tracker.md](docs/roadmap/feature-tracker.md); item-level gaps
+per topic are in [docs/todo/](docs/todo/).
 
 ## Design principles
 
