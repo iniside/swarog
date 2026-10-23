@@ -260,6 +260,11 @@ NEW_GIT = [
     ("git commit -an -m 'x\n\n" + TR + "'", "deny"),
     ("git commit -am 'x\n\n" + TR + "'", "silent"),
     ("git commit -uno -m 'x\n\n" + TR + "'", "silent"),
+    ("git commit -un -m 'x\n\n" + TR + "'", "silent"),
+    ("git commit -Skey -m 'x\n\n" + TR + "'", "silent"),
+    ("git commit -u -n -m 'x\n\n" + TR + "'", "deny"),
+    ("git commit -S -n -m 'x\n\n" + TR + "'", "deny"),
+    ("git commit -aS -n -m 'x\n\n" + TR + "'", "deny"),
     ("git commit --no-verbose -m 'x\n\n" + TR + "'", "silent"),
     ("git commit --amend --no-edit", "silent"),
     ("git commit -m 'docs(agents): deny --no-verify and -n\n\n" + TR + "'", "silent"),
@@ -315,12 +320,6 @@ class HookCases(unittest.TestCase):
             extra.append(("git_safety_hook", shc("git checkout CLAUDE.md", tool, cwd=None), "deny"))
             extra.append(("git_safety_hook", shc("git checkout CLAUDE.md", tool, cwd="C:/Windows"), "silent"))
         self.check("git_safety_hook", extra)
-
-    @unittest.expectedFailure
-    def test_known_gap_glued_value_flag_then_n(self):
-        for tool in SHELL_TOOLS:
-            cmd = "git commit -S -n -m 'x\n\n" + TR + "'"
-            self.assertEqual(run("git_safety_hook", shc(cmd, tool)), "deny")
 
     def test_post_commit(self):
         extra = [("post_commit_review_reminder", pc(c, t, o), w)
@@ -431,10 +430,19 @@ class CommitFormat(unittest.TestCase):
 
     def test_comments_and_scissors_ignored(self):
         self.ok("fix(core): x\n# Kind: other\n# a comment\n\nbody\n\n" + CF_TRAILER + "\n")
-        self.ok("# leading comment\nfix(core): x\n\nbody\n\n" + CF_TRAILER + "\n")
+        self.ok("fix(core): x\n# trailing comment\n\nbody\n\n" + CF_TRAILER + "\n")
+        self.ok("feat(x): ok\n# comment\n")
         self.ok("fix(core): x\n\nbody\n\n" + CF_TRAILER + "\n" + CF_SCISSORS +
                 "\nKind: other\nbad subject\ndiff --git a b\n")
         self.bad("fix(core): x\n\nbody\n\nKind: other\n" + CF_TRAILER + "\n" + CF_SCISSORS + "\nignored\n")
+
+    def test_hash_led_message_rejected(self):
+        self.bad("# leading comment\nfix(core): x\n\nbody\n\n" + CF_TRAILER + "\n", "starts with '#'")
+        self.bad("# x\n\nfeat(x): ok\n", "starts with '#'")
+
+    def test_leading_whitespace_subject_rejected(self):
+        self.bad("  feat(x): ok\n", "leading whitespace")
+        self.bad(" # x\nfeat(x): ok\n", "leading whitespace")
 
 
 class CommitMsgShim(unittest.TestCase):
@@ -473,6 +481,14 @@ class CommitMsgShim(unittest.TestCase):
         r = self.commit("feat(core): add (nosuch step 1)")
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("matches no file under docs/plans", r.stderr)
+
+    def test_hash_led_m_message_fails_with_hash_text(self):
+        r = subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false",
+             "commit", "-q", "--allow-empty", "-m", "# x", "-m", "feat(x): ok"],
+            cwd=self.repo, capture_output=True, text=True, env=ENV, timeout=60)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("starts with '#'", r.stderr)
 
     def test_good_subject_succeeds(self):
         r = self.commit("feat(core): add a thing (demo step 1)")
