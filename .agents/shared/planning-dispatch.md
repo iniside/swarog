@@ -102,7 +102,7 @@ Do not ban `[fable]`.
   fixture).
 - `[docs]` — the `docs-writer` agent (`.claude/agents/docs-writer.md`). The
   lane for documentation prose written as a planned docs step — root guidance,
-  `docs/reference`, `docs/roadmap`, plan errata, and Rust doc-comments. A
+  `docs/reference`, `docs/roadmap`, `docs/todo`, plan errata, and Rust doc-comments. A
   standalone comment edit stays `[inline]`. It runs last, against landed code, and deletes false prose as often as it adds
   true prose. Cheap default; escalate only when the doc must judge what a
   seam *means*. A plan's docs step names the exact files — an unnamed file is
@@ -116,8 +116,11 @@ feature to fit the inline threshold.
 **Dispatch threshold — below it, `[inline]`, and a subagent is banned.** No
 subagent call, no plan tag, no approval, no review round for exactly these:
 comment edits of any size, log/format/UI strings, include add/reorder, a
-literal or typo fix, a rename inside one file. That list is closed — it is
-not a size rule. A change that is not on it goes to a subagent lane however
+literal or typo fix, a rename inside one file, the lead's `docs/todo/` edits
+outside a dispatched step (adding owner-deferred leftovers, and moving an item
+to `## In progress` before dispatching the step that works on it; the owner
+already decided each item, so there is no review round). That list is closed —
+it is not a size rule. A change that is not on it goes to a subagent lane however
 small it looks.
 
 Every code-writing subagent call carries an explicit model/tool decision from
@@ -213,8 +216,9 @@ one user request) — not one commit. Fix-up commits inside a task do not
 restart the count. Round 1 reviews the diff; round-one fixes are committed
 before round 2, which reviews them (fix commits carry `Kind: review-fix`); there is no round 3: stop, report what
 stands open plus the recommended fix, wait. Within the 2 rounds fix by severity, not list order:
-correctness first, comment/doc-truth only if it fits; leftovers become named
-open items.
+correctness first, comment/doc-truth only if it fits; leftovers go under
+**Leftovers for owner** in the report, and the owner-deferred ones are written
+to `docs/todo` by the lead.
 
 Diffs under the dispatch threshold get no review round at all.
 
@@ -246,7 +250,7 @@ outcome while the flawed authority survives is banned.
 6. **Sweep for siblings before leaving.** While the defect class is loaded
    in context, search for its siblings (same pattern, other call sites, the
    adjacent lifecycle owner) and either fix them in the same rollout or
-   record them as explicit known gaps.
+   list them under **Leftovers for owner**.
 
 These six rules are encoded in the `core-implementer` agent. Dispatch it for
 authority-first work rather than restating them per prompt. It refuses to

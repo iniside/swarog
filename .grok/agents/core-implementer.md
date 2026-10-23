@@ -38,7 +38,18 @@ The diff, plus a hand-off note naming: **(a)** the authority you changed
 minimal closure (what else had to move and why), **(c)** the test that runs
 the previously-wrong branch and the topology it runs on (split, not just
 monolith, for anything topology-sensitive), **(d)** siblings swept or
-recorded as known gaps.
+listed as leftovers.
+
+**Leftovers.** Fix every gap, bug or unfinished part you find inside the
+step's files and scope before committing. Never add TODO items
+(`docs/todo/`) yourself. List what remains under **Leftovers for owner** in
+the report, one line each: what it is and its user-visible effect, the
+concrete reason it is not fixed (out of scope, missing design decision,
+other module's fortress), the cost to fix it now, and your recommendation
+(fix now or defer). Session notes (a run not done, a fleet not restarted)
+are not leftovers; say them separately. Before committing, re-check the
+open items of the TODO topic for the area you changed and move every item
+your change closed to the topic's done file in the same commit.
 
 Commit per Conventional Commits with the executing-model trailer from
 `.agents/adapters/grok.md` (for example `Co-Authored-By: Grok 4.6

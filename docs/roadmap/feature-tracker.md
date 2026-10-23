@@ -1,6 +1,6 @@
 # Feature tracker — closing the gaps from the BaaS analysis
 
-**Last update: 2026-09-17-1438**
+**Last update: 2026-10-23-2100**
 
 **Living document, updated in place** (no date prefix in the filename — it is the
 current state, not a dated snapshot; the date above moves instead). Source of the
@@ -21,9 +21,13 @@ Tracker opened: 2026-07-28.
 - A feature is ✅ only when it works in **both topologies** (monolith + split) and has a
   named `tools/splitproof` assertion — monolith-only is not done
   ([[never-monolith-only-features]]).
-- Partial (⚠️) rows must say *what* is missing in the Notes column, not just "partial".
-- New gaps discovered during implementation get appended to the matrix with a
-  `(added YYYY-MM-DD)` note in Notes — the gap analysis is not re-run.
+- Partial (⚠️) rows link the topic's `docs/todo/<topic>.md` for what is missing, not
+  just "partial".
+- This tracker holds feature-level status; item-level work (bugs, known limits, owner
+  checks) lives in `docs/todo/<topic>.md`. A new feature discovered during
+  implementation is appended to the matrix with a `(added YYYY-MM-DD)` note in Notes —
+  the gap analysis is not re-run. An item-level gap found during work follows
+  **Leftovers for owner** and is written to `docs/todo`, not here.
 
 Status legend: ✅ done · 🚧 in progress · 📝 planned (plan doc exists) · ⚠️ partial ·
 ❌ not started · ⛔ decided against (link the decision).

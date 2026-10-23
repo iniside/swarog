@@ -75,8 +75,11 @@ you copied from, **(b)** the data-source table for every visible element
 (real field / fake (formula) / dropped-with-approval), **(c)** the
 declared-deviations list (empty is a claim, not a default — write
 "none"), **(d)** the tests updated/added and what branch they pin, **(e)**
-whether a rebuild is needed for a live check. Tests live in `src/tests.rs`
-files, never inline. At-risk topology for admin remote forms is **split**.
+whether a rebuild is needed for a live check, plus **Leftovers for owner**
+(what remains unfixed, one line each: effect, reason, cost to fix now,
+recommendation). Never add TODO items (`docs/todo/`) yourself; before
+committing, move every item your change closed to the topic's done file in
+the same commit. Tests live in `src/tests.rs` files, never inline. At-risk topology for admin remote forms is **split**.
 Commit per Conventional Commits with the executing-model trailer from
 `.agents/adapters/grok.md`. If you cannot fill (a)–(e), you are not done —
 say so instead of shipping.

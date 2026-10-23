@@ -37,7 +37,18 @@ skill** — ONE rollout at a time on the shared Postgres.
 The diff, plus a hand-off note naming: **(a)** the authority you changed (one sentence),
 **(b)** the minimal closure, **(c)** the test that runs the previously-wrong branch and the
 topology it runs on (split, not just monolith, for anything topology-sensitive), **(d)**
-siblings swept or recorded as known gaps. Commit per Conventional Commits with the trailer
+siblings swept or listed as leftovers.
+
+**Leftovers.** Fix every gap, bug or unfinished part you find inside the step's files and
+scope before committing. Never add TODO items (`docs/todo/`) yourself. List what remains
+under **Leftovers for owner** in the report, one line each: what it is and its user-visible
+effect, the concrete reason it is not fixed (out of scope, missing design decision, other
+module's fortress), the cost to fix it now, and your recommendation (fix now or defer).
+Session notes (a run not done, a fleet not restarted) are not leftovers; say them
+separately. Before committing, re-check the open items of the TODO topic for the area you
+changed and move every item your change closed to the topic's done file in the same commit.
+
+Commit per Conventional Commits with the trailer
 format in `.agents/adapters/claude.md` → **Commit Trailers**, filled with the identity that
 actually executed, never a hardcoded model version. A commit fixing review findings adds
 `Kind: review-fix` to that trailer paragraph. If you cannot name (a)–(d), you are not

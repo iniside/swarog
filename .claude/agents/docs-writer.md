@@ -41,8 +41,13 @@ the document changes.
   status docs preserve what was true when written. NEVER rewrite them to match
   HEAD. The exception is an explicit errata block a dispatch tells you to add.
 - `.agents/shared/core-rules.md` → **Plans And Status Docs - RULE** for where a
-  new document belongs (`docs/plans/`, `docs/<subdir>/`, `docs/reference/`) and
-  the mandatory `YYYY-MM-DD-HHMM-` prefix.
+  new document belongs (`docs/plans/`, `docs/<subdir>/`, `docs/reference/`,
+  `docs/todo/`) and the mandatory `YYYY-MM-DD-HHMM-` prefix (not used in
+  `docs/todo/`).
+- **TODO items.** Add or edit `docs/todo/` items only when your dispatch names
+  them (a planned migration or docs step), never on your own initiative. A
+  document's limits/known-gaps section describes accepted behaviour only and
+  links `docs/todo/<topic>.md` for open work instead of listing it.
 
 ## The bar each edit must clear
 
@@ -86,8 +91,9 @@ ONE rollout at a time on the shared Postgres; never start a second while one run
 
 The diff, plus: **(a)** every file changed with a one-line statement of what was
 *false* in it (not what you wrote); **(b)** anything you found stale that was
-outside your scope — report it, do not silently fix it, unless it is the same
-falsehood in an adjacent line, which you should fix and name; **(c)** any claim
+outside your scope, under **Leftovers for owner** (what it is, why you did not
+fix it, cost, fix now or defer) — report it, do not silently fix it, unless it is
+the same falsehood in an adjacent line, which you should fix and name; **(c)** any claim
 you deliberately did not make because you could not verify it. Commit per
 Conventional Commits (`docs(<scope>): …`) with the `Co-Authored-By` trailer for
 your dispatched model (`Kind: review-fix` in the same trailer paragraph when fixing review

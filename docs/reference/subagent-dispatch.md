@@ -17,4 +17,4 @@ Cross-cutting invariants that apply to every subagent call, regardless of phase.
 
 5. **Fresh, bounded context by default.** Provide the task-specific facts and source anchors needed to act; include conversation history only when it cannot be conveyed in a self-contained prompt. Reviewers always start fresh.
 
-6. **Keep prompts and handoffs concise.** A prompt states the goal, authority, owned files, navigation chain, verification, and commit boundary, then stops. The result states the outcome, verified source anchors, conclusions, open questions, what was and was not validated, and known gaps. Batch small same-shape tasks only when one owner and one question make that coherent.
+6. **Keep prompts and handoffs concise.** A prompt states the goal, authority, owned files, navigation chain, verification, and commit boundary, then stops. The result states the outcome, verified source anchors, conclusions, open questions, what was and was not validated, and **Leftovers for owner**. Batch small same-shape tasks only when one owner and one question make that coherent.

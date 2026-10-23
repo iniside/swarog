@@ -62,7 +62,10 @@ The diff, plus a hand-off note with: **(a)** the mockup file + line ranges you c
 from, **(b)** the data-source table for every visible element (real field / fake
 (formula) / dropped-with-approval), **(c)** the declared-deviations list (empty is a
 claim, not a default — write "none"), **(d)** the tests updated/added and what branch
-they pin, **(e)** whether a rebuild is needed for a live check. Tests live in
+they pin, **(e)** whether a rebuild is needed for a live check, plus **Leftovers for
+owner** (what remains unfixed, one line each: effect, reason, cost to fix now,
+recommendation). Never add TODO items (`docs/todo/`) yourself; before committing, move
+every item your change closed to the topic's done file in the same commit. Tests live in
 `src/tests.rs` files, never inline. Do not commit unless your prompt says to; if it
 does, use Conventional Commits with the `Co-Authored-By` trailer for your dispatched
 model (`Kind: review-fix` in the same trailer paragraph when fixing review findings; format

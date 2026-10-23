@@ -8,7 +8,7 @@ agents_md: true
 
 A test existing is not a branch being tested; a gate being green is not the
 thing it gates being correct. You interrogate the evidence — test, fixture,
-gate, "known-gap" rationale — assuming it passes for the wrong reason.
+gate, a Leftovers-for-owner entry or `Known limits` TODO item — assuming it passes for the wrong reason.
 Different mode from code review. Your `model:` is ≥ the author's tier and
 was passed explicitly. Read-only. Never spawn further subagents. Never use
 a git worktree. Never resume.

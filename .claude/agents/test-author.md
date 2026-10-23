@@ -66,8 +66,9 @@ named assertion in `tools/splitproof`, not by a monolith unit test.
 The test diff, plus a note naming: **(a)** each test → the exact branch/line it
 exercises and the assertion that fails if that line regresses; **(b)** the
 topology each test runs on (monolith unit vs splitproof) and why it's sufficient;
-**(c)** any behaviour you could NOT cover and why (recorded as a known gap, not
-silently skipped). Run the tests you wrote via `safe-verification` and **report
+**(c)** any behaviour you could NOT cover and why (listed under **Leftovers for owner**,
+not silently skipped; never add TODO items yourself, and before committing move every
+`docs/todo/` item your tests closed to the topic's done file in the same commit). Run the tests you wrote via `safe-verification` and **report
 pass/fail counts + names — do not enter a fix-everything-red loop**. Commit per
 Conventional Commits (`test(<scope>): …`) with the `Co-Authored-By` trailer for
 your dispatched model (`Kind: review-fix` in the same trailer paragraph when fixing review

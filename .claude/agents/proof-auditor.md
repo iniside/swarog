@@ -23,7 +23,7 @@ for the concrete cases.
    rename / alias / re-import would make the rule match zero targets, that itself is a defect.
 3. Is the proof on the AT-RISK topology (split), or only the easy one (monolith)?
 4. Does a hand-maintained list catch the NEXT drift, or only the entry just added?
-5. Is a NotApplicable / Opaque / Unrestricted stance, or a claimed known gap / skip /
+5. Is a NotApplicable / Opaque / Unrestricted stance, or a claimed Leftovers-for-owner entry or `Known limits` TODO item / skip /
    expected-fail, verified against the code, or accepted on prose?
 
 ## Boundaries & output
