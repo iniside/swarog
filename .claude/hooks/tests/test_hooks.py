@@ -266,6 +266,16 @@ NEW_GIT = [
     ("git commit -S -n -m 'x\n\n" + TR + "'", "deny"),
     ("git commit -aS -n -m 'x\n\n" + TR + "'", "deny"),
     ("git commit --no-verbose -m 'x\n\n" + TR + "'", "silent"),
+    ("git commit -m 'x\n\n" + TR + "' --no-verify", "deny"),
+    ("git commit -m 'x\n\n" + TR + "' -n", "deny"),
+    ("git commit --amend -n", "deny"),
+    ("git commit --allow-empty -n", "deny"),
+    ("git commit -mWIP -n", "deny"),
+    ("git commit --amend --no-edit -n", "deny"),
+    ("git commit -m -n --amend", "silent"),
+    ("git commit --author -n -m 'x\n\n" + TR + "'", "silent"),
+    ("git commit -Sjohn -m 'x\n\n" + TR + "'", "silent"),
+    ("git commit -m -nothing --amend", "silent"),
     ("git commit --amend --no-edit", "silent"),
     ("git commit -m 'docs(agents): deny --no-verify and -n\n\n" + TR + "'", "silent"),
 ]
@@ -436,9 +446,34 @@ class CommitFormat(unittest.TestCase):
                 "\nKind: other\nbad subject\ndiff --git a b\n")
         self.bad("fix(core): x\n\nbody\n\nKind: other\n" + CF_TRAILER + "\n" + CF_SCISSORS + "\nignored\n")
 
-    def test_hash_led_message_rejected(self):
-        self.bad("# leading comment\nfix(core): x\n\nbody\n\n" + CF_TRAILER + "\n", "starts with '#'")
-        self.bad("# x\n\nfeat(x): ok\n", "starts with '#'")
+    def test_hash_led_message_rejected_without_editor(self):
+        for text in ("# leading comment\nfix(core): x\n\nbody\n\n" + CF_TRAILER + "\n",
+                     "# x\n\nfeat(x): ok\n", "#123 fix the thing\n"):
+            with self.subTest(text=text):
+                err = commit_format.check_message(text, editor_used=False)
+                self.assertIsNotNone(err)
+                self.assertIn("starts with '#'", err)
+
+    def test_hash_led_template_accepted_with_editor(self):
+        self.ok("# Subject below\nfeat(x): ok\n")
+
+    def test_kind_followed_by_prose_rejected(self):
+        self.bad("fix(core): x\n\nKind: review-fix\nsome prose\n" + CF_TRAILER + "\n",
+                 "outside the final trailer paragraph")
+
+    def test_lowercase_unknown_kind_rejected(self):
+        self.bad("fix(core): x\n\nbody\n\nkind: other\n" + CF_TRAILER + "\n", "Unknown `Kind: other`")
+
+    def test_tab_led_subject_rejected(self):
+        self.bad("\tfeat(x): ok\n", "leading whitespace")
+
+    def test_editor_message_with_trailing_comment_block_ok(self):
+        self.ok("fix(core): x\n\nbody\n\nKind: review-fix\n" + CF_TRAILER + "\n\n\n"
+                "# Please enter the commit message for your changes. Lines starting\n"
+                "# with '#' will be ignored.\n#\n# On branch master\n")
+
+    def test_column0_kind_comment_after_trailer_ignored(self):
+        self.ok("fix(core): x\n\nbody\n\n" + CF_TRAILER + "\n# Kind: other\n")
 
     def test_leading_whitespace_subject_rejected(self):
         self.bad("  feat(x): ok\n", "leading whitespace")
@@ -450,8 +485,8 @@ class CommitMsgShim(unittest.TestCase):
     def setUpClass(cls):
         if not shutil.which("sh"):
             raise unittest.SkipTest("sh not on PATH; the shim would not run")
-        if not shutil.which("python"):
-            raise unittest.SkipTest("python not on PATH; the shim fails open, assertions would be vacuous")
+        if not (shutil.which("python") or shutil.which("python3")):
+            raise unittest.SkipTest("neither python nor python3 on PATH; the shim fails open, assertions would be vacuous")
         cls.repo = os.path.join(_TEMP.name, "shim-repo")
         os.makedirs(cls.repo)
         _git(cls.repo, "init", "-q", "-b", "master")
@@ -489,6 +524,30 @@ class CommitMsgShim(unittest.TestCase):
             cwd=self.repo, capture_output=True, text=True, env=ENV, timeout=60)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("starts with '#'", r.stderr)
+
+    def git_commit(self, *args, env=None):
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false",
+             *args], cwd=self.repo, capture_output=True, text=True, env=env or ENV, timeout=60)
+
+    def test_hash_led_single_line_m_fails_with_hash_text(self):
+        r = self.git_commit("commit", "-q", "--allow-empty", "-m", "#123 fix")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("starts with '#'", r.stderr)
+
+    def test_editor_mode_template_comment_then_valid_subject_succeeds(self):
+        tpl = os.path.join(_TEMP.name, "shim-template.txt")
+        with open(tpl, "w", encoding="utf-8") as f:
+            f.write("# hint\n")
+        ed = os.path.join(_TEMP.name, "shim-editor.py")
+        with open(ed, "w", encoding="utf-8") as f:
+            f.write("import sys\n"
+                    "with open(sys.argv[1], 'a', encoding='utf-8') as f:\n"
+                    "    f.write('feat(core): add a thing (demo step 1)\\n\\n" + TR + "\\n')\n")
+        editor = '"%s" "%s"' % (sys.executable.replace("\\", "/"), ed.replace("\\", "/"))
+        r = self.git_commit("-c", "commit.template=" + tpl.replace("\\", "/"), "commit", "-q",
+                            "--allow-empty", env=dict(ENV, GIT_EDITOR=editor))
+        self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_good_subject_succeeds(self):
         r = self.commit("feat(core): add a thing (demo step 1)")
