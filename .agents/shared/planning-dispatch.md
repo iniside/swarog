@@ -138,7 +138,7 @@ already names that dependency). Otherwise dispatch the reviewer and the next
 implementation concurrently, in one message — the reviewer is read-only, so
 the sole hazard is two writers in one file.
 
-When a parallel review returns a punch list: fix it in its own commit. If a
+When a parallel review returns a punch list: fix it in its own commit carrying `Kind: review-fix`. If a
 finding touches a file the in-flight task is editing, wait for that task to
 land, then fix — never edit a file a live subagent holds.
 
@@ -211,7 +211,7 @@ mandatory but not a barrier — independent steps proceed while a fix lands
 Hard cap: 2 review rounds per task. A task is one plan step (or, off-plan,
 one user request) — not one commit. Fix-up commits inside a task do not
 restart the count. Round 1 reviews the diff; round-one fixes are committed
-before round 2, which reviews them; there is no round 3: stop, report what
+before round 2, which reviews them (fix commits carry `Kind: review-fix`); there is no round 3: stop, report what
 stands open plus the recommended fix, wait. Within the 2 rounds fix by severity, not list order:
 correctness first, comment/doc-truth only if it fits; leftovers become named
 open items.

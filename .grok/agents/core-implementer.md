@@ -43,5 +43,6 @@ recorded as known gaps.
 Commit per Conventional Commits with the executing-model trailer from
 `.agents/adapters/grok.md` (for example `Co-Authored-By: Grok 4.6
 <noreply@x.ai>`). Write the model that actually executed, not a Claude
-trailer. If you cannot name (a)–(d), you are not done — say so instead of
+trailer. A commit fixing review findings adds `Kind: review-fix` to that trailer
+paragraph. If you cannot name (a)–(d), you are not done — say so instead of
 shipping.

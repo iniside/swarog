@@ -56,7 +56,9 @@ Use Conventional Commits:
 (`fix(match,rating): …`). Do not use bracketed `[Module]` scopes. A commit
 implementing a plan step, including its review fixes, ends the description with
 `(<plan-slug> step <id>)` (`steps 3-4` for a range); the slug is the plan file
-name without the date prefix and `-plan.md`.
+name without the date prefix and `-plan.md`. A commit fixing review findings
+adds `Kind: review-fix` to the final trailer paragraph. The git `commit-msg`
+hook enforces this; never skip it (`--no-verify` / `-n`), fix the message.
 
 The `Co-Authored-By` trailer identifies the model/agent that executed the work.
 The active adapter defines the format; the executing model fills in its own

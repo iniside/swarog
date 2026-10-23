@@ -91,6 +91,17 @@ Co-Authored-By: Claude <Family> <Version> <noreply@anthropic.com>
 Fill `<Family> <Version>` from the executing session's own model identity,
 never from an example or another lane.
 
+Subject template: `<type>(<scope>): <imperative> (<plan-slug> step <id>)`. A
+commit fixing review findings adds `Kind: review-fix` above the
+`Co-Authored-By` line, in one `-m` (see `docs/reference/commit-format.md`):
+
+```text
+fix(match): require a ReportId on match.report (trackable-commit-format step 1)
+
+Kind: review-fix
+Co-Authored-By: Claude <Family> <Version> <noreply@anthropic.com>
+```
+
 After multi-subagent rollouts, audit recent commit trailers against the
 intended lanes before reporting done.
 

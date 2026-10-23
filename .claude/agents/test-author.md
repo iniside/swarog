@@ -70,4 +70,5 @@ topology each test runs on (monolith unit vs splitproof) and why it's sufficient
 silently skipped). Run the tests you wrote via `safe-verification` and **report
 pass/fail counts + names — do not enter a fix-everything-red loop**. Commit per
 Conventional Commits (`test(<scope>): …`) with the `Co-Authored-By` trailer for
-your dispatched model. If a test can't be made to fail-on-regress, say so.
+your dispatched model (`Kind: review-fix` in the same trailer paragraph when fixing review
+findings; format in `docs/reference/commit-format.md`). If a test can't be made to fail-on-regress, say so.

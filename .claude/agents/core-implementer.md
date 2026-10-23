@@ -39,5 +39,6 @@ The diff, plus a hand-off note naming: **(a)** the authority you changed (one se
 topology it runs on (split, not just monolith, for anything topology-sensitive), **(d)**
 siblings swept or recorded as known gaps. Commit per Conventional Commits with the trailer
 format in `.agents/adapters/claude.md` → **Commit Trailers**, filled with the identity that
-actually executed, never a hardcoded model version. If you cannot name (a)–(d), you are not
+actually executed, never a hardcoded model version. A commit fixing review findings adds
+`Kind: review-fix` to that trailer paragraph. If you cannot name (a)–(d), you are not
 done — say so instead of shipping.

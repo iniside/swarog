@@ -65,4 +65,5 @@ claim, not a default — write "none"), **(d)** the tests updated/added and what
 they pin, **(e)** whether a rebuild is needed for a live check. Tests live in
 `src/tests.rs` files, never inline. Do not commit unless your prompt says to; if it
 does, use Conventional Commits with the `Co-Authored-By` trailer for your dispatched
-model. If you cannot fill (a)–(e), you are not done — say so instead of shipping.
+model (`Kind: review-fix` in the same trailer paragraph when fixing review findings; format
+in `docs/reference/commit-format.md`). If you cannot fill (a)–(e), you are not done — say so instead of shipping.

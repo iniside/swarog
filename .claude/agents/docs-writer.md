@@ -90,4 +90,5 @@ outside your scope — report it, do not silently fix it, unless it is the same
 falsehood in an adjacent line, which you should fix and name; **(c)** any claim
 you deliberately did not make because you could not verify it. Commit per
 Conventional Commits (`docs(<scope>): …`) with the `Co-Authored-By` trailer for
-your dispatched model.
+your dispatched model (`Kind: review-fix` in the same trailer paragraph when fixing review
+findings; format in `docs/reference/commit-format.md`).

@@ -74,6 +74,8 @@ checker rejects a slug without a matching `docs/plans` file.
   - short cluster `-[a-zA-Z]+`: scan letters left to right, deny on `n`, stop at the
     first value-taking letter (`m F C c t u S`); if that letter is last in the cluster,
     skip the next token. So `-nm` denies, `-am` / `-uno` / `-mnote` do not.
+    Erratum (landed c67a05d1): `u` and `S` take only a glued value, so they never skip
+    the next token; only `m F C c t` do.
   - Reason: `core-rules.md Commit Message Format: never skip the commit-msg hook
     (--no-verify / -n); fix the message instead.`
 - After committing step 1 (the commit itself runs before the hook exists), install:

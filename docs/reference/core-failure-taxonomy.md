@@ -304,7 +304,8 @@ tag does not match the work (tests outside `[test-author]`, documentation
 prose outside `[docs]` in a planned docs step, an `[inline]` change off the threshold list); a lane
 silently flipped mid-rollout; a `Co-Authored-By` trailer naming the harness
 default instead of the executing model; many tasks batched into one commit; a
-plan-step commit without its `(<plan-slug> step <id>)` suffix; research done as
+plan-step commit without its `(<plan-slug> step <id>)` suffix; a review-fix
+commit without `Kind: review-fix`; research done as
 one grep pass and reported as the API.
 
 **Authority.** `.agents/shared/planning-dispatch.md` → **Implementation Mode**;
@@ -350,7 +351,8 @@ for the files in the diff. Route by what changed:
   a fix exist only to harden an unrequested addition?
 - **The diff itself — how it was dispatched, tagged, and committed** → class 13.
   Ask: does each commit's lane, `model:`, and trailer match its plan step? one
-  task per commit, with the plan-step suffix?
+  task per commit, with the plan-step suffix? does each review-fix commit carry
+  `Kind: review-fix`?
 
 ---
 
