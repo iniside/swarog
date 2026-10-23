@@ -468,7 +468,7 @@ not a supervision one.
 Consequences, accepted deliberately:
 - **The OS service manager restarts the agent** (systemd / Windows service /
   launchd) — we delegate, we do not write it. This requires the agent binary to
-  be installable as a system service, which it is not today.
+  be installable as a system service: [docs/todo/weles.md](../todo/weles.md).
 - **The master never resurrects an agent.** Cross-machine it structurally cannot:
   starting a process on machine B requires something already running on B, which
   is what the agent *is*. Giving the master remote exec (SSH) would make it a
