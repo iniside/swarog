@@ -82,10 +82,14 @@ Known gaps (not checked):
 - The slug lookup reads the working tree, so an untracked plan file also validates.
 - Git's cleanup is modelled only from `GIT_EDITOR` (`:` = no editor, whitespace cleanup; otherwise strip). An explicit
   `--cleanup=` overrides it: `--cleanup=strip -m "# c" -m "feat(x): ok"` is rejected though git drops the `#` line
-  (fail-closed); `-e --cleanup=whitespace|verbatim` with a `#`-led subject is accepted though git keeps it.
-- A user who exports `GIT_EDITOR=:` and uses an editor flow gets no-editor checking.
-- A scissors line typed into `-m` is not a cut point for git (whitespace cleanup), but the hook stops reading at it, so
-  content after it is unchecked.
+  (fail-closed); `-e --cleanup=whitespace|verbatim|scissors` with a `#`-led subject is accepted though git keeps it. A
+  `commit.cleanup` config value is equally invisible to the hook.
+- A user who exports `GIT_EDITOR=:` and uses an editor flow gets no-editor checking (fail-closed; no editor actually
+  opens).
+- Git cuts at a scissors line only under `--cleanup=scissors` or `git commit -v`; otherwise it keeps the line (strip
+  drops just the `#` line) and commits what follows. The hook always stops reading at it, so content after it is
+  unchecked: `-e -m "feat(x): ok" -m "# ------------------------ >8 ------------------------" -m "Kind: bogus"` commits
+  an invalid `Kind:` (fail-open).
 
 ## Kind trailer
 
