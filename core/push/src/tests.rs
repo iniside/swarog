@@ -176,8 +176,8 @@ fn send_delegates_to_the_sink_and_never_conflates_local_with_queued() {
 // ---- The backplane codec ----------------------------------------------------
 
 /// The batch codec is the seam `core/remote` encodes and `modules/gateway` decodes:
-/// every [`Target`] variant survives it, and ORDER is the contract (one call per batch
-/// exists precisely so frames cannot invert between topologies).
+/// every [`Target`] variant survives it, and slice order is preserved within a batch
+/// (order across batches is the receiver's per-producer `seq` gate, which drops late ones).
 #[test]
 fn encode_batch_round_trips_every_target_variant_in_order() {
     let batch = vec![
@@ -187,7 +187,7 @@ fn encode_batch_round_trips_every_target_variant_in_order() {
         Envelope::new(Target::Player("p2".into()), Message::new("d", vec![7])),
     ];
 
-    let decoded = decode_batch(&encode_batch(&batch).unwrap()).unwrap();
+    let decoded = decode_batch(&encode_batch(1, 1, &batch).unwrap()).unwrap().envelopes;
 
     assert_eq!(decoded, batch, "every variant and the slice order survive the codec");
     assert_eq!(
@@ -200,8 +200,51 @@ fn encode_batch_round_trips_every_target_variant_in_order() {
 /// `Codec` error rather than a panic on the receiving front.
 #[test]
 fn decode_batch_rejects_garbage_and_accepts_an_empty_batch() {
-    assert!(decode_batch(&encode_batch(&[]).unwrap()).unwrap().is_empty());
+    assert!(decode_batch(&encode_batch(1, 1, &[]).unwrap()).unwrap().envelopes.is_empty());
 
     let err = decode_batch(b"not json").expect_err("garbage must not decode");
     assert!(matches!(err, Error::Codec(_)), "{err}");
+}
+
+/// The header is part of the codec: `producer` and `seq` survive the round trip next to
+/// the envelopes, at both extremes of `u64`.
+#[test]
+fn batch_round_trips_producer_seq_and_envelopes() {
+    let envelopes = vec![
+        Envelope::new(Target::All, Message::new("a", vec![1])),
+        Envelope::new(Target::Group("g".into()), Message::new("b", vec![2, 3])),
+    ];
+    for (producer, seq) in [(7, 9), (u64::MAX, u64::MAX), (0, 1)] {
+        let decoded = decode_batch(&encode_batch(producer, seq, &envelopes).unwrap()).unwrap();
+        assert_eq!(decoded, Batch { producer, seq, envelopes: envelopes.clone() });
+    }
+}
+
+/// The old wire shape (a bare array of envelopes) is dead: a receiver must refuse it
+/// rather than treat it as an unstamped batch.
+#[test]
+fn decode_batch_rejects_a_bare_envelope_array() {
+    let bare = serde_json::to_vec(&vec![Envelope::new(Target::All, Message::new("a", vec![1]))])
+        .unwrap();
+    assert!(matches!(decode_batch(&bare), Err(Error::Codec(_))));
+    assert!(matches!(decode_batch(b"[]"), Err(Error::Codec(_))));
+}
+
+/// `deny_unknown_fields`: a header carrying an extra key does not decode.
+#[test]
+fn decode_batch_rejects_an_unknown_header_key() {
+    let ok = br#"{"producer":1,"seq":1,"envelopes":[]}"#;
+    assert!(decode_batch(ok).is_ok());
+    let extra = br#"{"producer":1,"seq":1,"envelopes":[],"extra":true}"#;
+    assert!(matches!(decode_batch(extra), Err(Error::Codec(_))));
+}
+
+/// The sender budgets against `BATCH_HEADER_MAX`; if it drifts from the codec a stamped
+/// chunk can exceed the frame budget.
+#[test]
+fn batch_header_max_equals_the_widest_encoded_header() {
+    assert_eq!(
+        BATCH_HEADER_MAX,
+        encode_batch(u64::MAX, u64::MAX, &[]).unwrap().len()
+    );
 }

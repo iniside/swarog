@@ -31,7 +31,9 @@ impl Caller for SpyCaller {
         _retry_mode: RetryMode,
     ) -> Result<Vec<u8>, Error> {
         assert_eq!(method, "push.deliver", "the drain sends one wire method");
-        let batch = push::decode_batch(payload).expect("the drain sends an encoded batch");
+        let batch = push::decode_batch(payload)
+            .expect("the drain sends an encoded batch")
+            .envelopes;
         let _ = self.sent.send(batch);
         if self.block {
             // Parks with no timer, so a paused or running clock cannot end the call —
@@ -73,6 +75,39 @@ fn spy_factory(sent: mpsc::UnboundedSender<Vec<Envelope>>, block: bool) -> crate
     })
 }
 
+/// Publishes the raw encoded payload of every call, so a test sees the stamped bytes.
+struct RawCaller {
+    sent: mpsc::UnboundedSender<Vec<u8>>,
+}
+
+#[async_trait]
+impl Caller for RawCaller {
+    async fn call(
+        &self,
+        _method: &str,
+        _identity: Option<&str>,
+        payload: &[u8],
+        _retry_mode: RetryMode,
+    ) -> Result<Vec<u8>, Error> {
+        let _ = self.sent.send(payload.to_vec());
+        Ok(Vec::new())
+    }
+}
+
+fn raw_factory(sent: mpsc::UnboundedSender<Vec<u8>>) -> crate::InstanceFactory {
+    Arc::new(move |addr: &str| {
+        let caller: Arc<dyn Caller> = Arc::new(RawCaller { sent: sent.clone() });
+        fake_instance(addr, caller, Arc::new(AtomicUsize::new(0)))
+    })
+}
+
+async fn next_payload(rx: &mut mpsc::UnboundedReceiver<Vec<u8>>) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(10), rx.recv())
+        .await
+        .expect("the drain must deliver")
+        .expect("a call")
+}
+
 fn list_of(addrs: &[&str]) -> PeerListResolver {
     let addrs: Vec<String> = addrs.iter().map(|s| s.to_string()).collect();
     Arc::new(move || {
@@ -103,11 +138,13 @@ fn topics(batch: &[Envelope]) -> Vec<String> {
 /// byte-boundary tests sit ON the budget rather than near it.
 fn env_of_encoded_size(tag: &str, total: usize) -> Envelope {
     let probe = envelope(tag, "");
-    let base = push::encode_batch(std::slice::from_ref(&probe)).unwrap().len();
+    let base = push::encode_batch(u64::MAX, u64::MAX, std::slice::from_ref(&probe))
+        .unwrap()
+        .len();
     assert!(total >= base, "cannot build an envelope smaller than {base} bytes");
     let env = envelope(tag, &"x".repeat(total - base));
     assert_eq!(
-        push::encode_batch(std::slice::from_ref(&env)).unwrap().len(),
+        push::encode_batch(u64::MAX, u64::MAX, std::slice::from_ref(&env)).unwrap().len(),
         total,
         "the fixture must land exactly on the requested size"
     );
@@ -435,4 +472,99 @@ fn push_sender_contributes_the_sink_and_never_a_peer_address() {
         ctx.contributions(opsapi::PEER_SLOT).is_empty(),
         "a push front provides no ops; it must not appear in the route table"
     );
+}
+
+/// Runs the real drain over `envs` (queued before it starts, so one pass takes them all)
+/// and returns the first `n` stamped batches it sent plus the raw payload lengths.
+async fn drain_chunks(envs: Vec<Envelope>, n: usize) -> Vec<(push::Batch, usize)> {
+    let (tx, rx) = mpsc::channel(16);
+    let (sent_tx, mut sent_rx) = mpsc::unbounded_channel();
+    let pool = Arc::new(Pool::with_factory(list_of(&["A"]), raw_factory(sent_tx)));
+    pool.refresh_once().await;
+    for env in envs {
+        tx.send(env).await.unwrap();
+    }
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let drain = tokio::spawn(drain_loop(pool, rx, stop_rx, Arc::new(Drops::new())));
+    let mut out = Vec::new();
+    for _ in 0..n {
+        let bytes = next_payload(&mut sent_rx).await;
+        out.push((push::decode_batch(&bytes).expect("a stamped batch"), bytes.len()));
+    }
+    stop_tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), drain)
+        .await
+        .expect("the drain must observe the stop signal")
+        .unwrap();
+    out
+}
+
+fn tags(batch: &push::Batch) -> Vec<String> {
+    batch.envelopes.iter().map(|e| e.msg.topic[..1].to_string()).collect()
+}
+
+/// `a` and `b` such that the widest-stamped batch `[a, b]` encodes to exactly `budget_plus`
+/// bytes (each standalone size includes the header; the second costs one separator).
+fn pair_sized_to(budget_plus: usize) -> (Envelope, Envelope) {
+    let a_total = BATCH_BYTE_BUDGET / 2;
+    let b_total = budget_plus + push::BATCH_HEADER_MAX - 1 - a_total;
+    let (a, b) = (env_of_encoded_size("a", a_total), env_of_encoded_size("b", b_total));
+    assert_eq!(
+        push::encode_batch(u64::MAX, u64::MAX, &[a.clone(), b.clone()]).unwrap().len(),
+        budget_plus
+    );
+    (a, b)
+}
+
+/// Budget boundary on the real stamped bytes: `[a, b]` encoding to exactly
+/// `BATCH_BYTE_BUDGET` ships as ONE chunk (fitting the budget even stamped) and `c` rides alone in the
+/// next; producer is constant and seq increases across the chunks.
+#[tokio::test]
+async fn drain_stamps_a_full_chunk_exactly_at_the_budget() {
+    let (a, b) = pair_sized_to(BATCH_BYTE_BUDGET);
+    let chunks = drain_chunks(vec![a, b, envelope("c", "")], 2).await;
+
+    assert_eq!(tags(&chunks[0].0), vec!["a", "b"]);
+    assert!(chunks[0].1 <= BATCH_BYTE_BUDGET, "the stamped chunk fits the budget");
+    let widest = push::encode_batch(u64::MAX, u64::MAX, &chunks[0].0.envelopes).unwrap();
+    assert_eq!(widest.len(), BATCH_BYTE_BUDGET, "and the widest stamp fills it exactly");
+    assert_eq!(tags(&chunks[1].0), vec!["c"]);
+    assert_eq!(chunks[0].0.producer, chunks[1].0.producer);
+    assert!(chunks[0].0.seq < chunks[1].0.seq);
+}
+
+/// One byte over: `[a, b]` would encode to `BATCH_BYTE_BUDGET + 1`, so `b` moves to the
+/// next chunk (with `c`), and no stamped chunk exceeds the budget.
+#[tokio::test]
+async fn drain_cuts_before_a_chunk_one_byte_over_the_budget() {
+    let (a, b) = pair_sized_to(BATCH_BYTE_BUDGET + 1);
+    let chunks = drain_chunks(vec![a, b, envelope("c", "")], 2).await;
+
+    assert_eq!(tags(&chunks[0].0), vec!["a"]);
+    assert_eq!(tags(&chunks[1].0), vec!["b", "c"]);
+    assert!(chunks.iter().all(|(_, len)| *len <= BATCH_BYTE_BUDGET));
+}
+
+/// The stamp survives across drain passes: one producer for the drain's life, seq
+/// strictly increasing from one pass to the next.
+#[tokio::test]
+async fn drain_keeps_the_producer_and_increases_seq_across_passes() {
+    let (tx, rx) = mpsc::channel(16);
+    let (sent_tx, mut sent_rx) = mpsc::unbounded_channel();
+    let pool = Arc::new(Pool::with_factory(list_of(&["A"]), raw_factory(sent_tx)));
+    pool.refresh_once().await;
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let drain = tokio::spawn(drain_loop(pool, rx, stop_rx, Arc::new(Drops::new())));
+
+    let mut batches = Vec::new();
+    for tag in ["x", "y", "z"] {
+        tx.send(envelope(tag, "")).await.unwrap();
+        batches.push(push::decode_batch(&next_payload(&mut sent_rx).await).unwrap());
+    }
+    stop_tx.send(true).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), drain).await.unwrap().unwrap();
+
+    assert!(batches.iter().all(|b| b.producer == batches[0].producer));
+    let seqs: Vec<u64> = batches.iter().map(|b| b.seq).collect();
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "{seqs:?}");
 }

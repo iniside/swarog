@@ -6,7 +6,7 @@
 //! learns where a player's connections live: it addresses a [`Target`] and hands a
 //! [`Message`] to the process's [`Push`] handle. The installed [`Sink`] either answers
 //! locally (this process owns the sockets — [`Delivered::Local`] with the number of
-//! connections written to) or hands the message to a backplane queue for fan-out to the
+//! connections enqueued to) or hands the message to a backplane queue for fan-out to the
 //! processes that do ([`Delivered::Queued`]). The two answers are deliberately distinct
 //! types of statement: a count is an observation, a queue handoff is a promise to try.
 //!
@@ -116,9 +116,10 @@ impl Envelope {
 
 /// Encodes an ORDERED batch of addressed messages for the backplane.
 ///
-/// Order is the contract, not an implementation detail: the backplane sends a whole
-/// batch in ONE call precisely so frames cannot invert between the split and the
-/// monolith, and both this encoding and [`decode_batch`] preserve the slice order.
+/// Order within a batch is preserved by this encoding and [`decode_batch`]. Across
+/// batches, order holds per `producer`: a receiver drops a batch whose `seq` is not newer
+/// than the last it applied from that producer, so a batch arriving after a newer one is
+/// lost rather than delivered out of order.
 ///
 /// **The output is already-encoded JSON.** It belongs in `edge::Client::call_raw`'s
 /// `payload`, which relays those bytes verbatim into the request envelope. Handing it
@@ -131,13 +132,40 @@ impl Envelope {
 /// unrelated small message travelling with it — the opposite of what
 /// one-ordered-batch-per-call is for. A batching sink caps its own batch against the
 /// transport's frame limit and splits into several ordered calls.
-pub fn encode_batch(batch: &[Envelope]) -> Result<Vec<u8>, Error> {
-    serde_json::to_vec(batch).map_err(|e| Error::Codec(e.to_string()))
+pub fn encode_batch(producer: u64, seq: u64, envelopes: &[Envelope]) -> Result<Vec<u8>, Error> {
+    serde_json::to_vec(&BatchRef {
+        producer,
+        seq,
+        envelopes,
+    })
+    .map_err(|e| Error::Codec(e.to_string()))
 }
 
 /// Decodes a batch produced by [`encode_batch`], preserving its order.
-pub fn decode_batch(bytes: &[u8]) -> Result<Vec<Envelope>, Error> {
+pub fn decode_batch(bytes: &[u8]) -> Result<Batch, Error> {
     serde_json::from_slice(bytes).map_err(|e| Error::Codec(e.to_string()))
+}
+
+/// One backplane batch: the sending drain's `producer` id, its per-producer `seq`, and the
+/// ordered envelopes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Batch {
+    pub producer: u64,
+    pub seq: u64,
+    pub envelopes: Vec<Envelope>,
+}
+
+/// The encoded length of [`encode_batch`] with no envelopes and the widest `producer` and
+/// `seq`: the most bytes the header can add to a batch.
+pub const BATCH_HEADER_MAX: usize = 75;
+
+/// [`Batch`]'s borrowed encoding twin; the field order must match it.
+#[derive(Serialize)]
+struct BatchRef<'a> {
+    producer: u64,
+    seq: u64,
+    envelopes: &'a [Envelope],
 }
 
 /// What a [`Sink`] did with a message. The two variants are different KINDS of answer

@@ -56,6 +56,7 @@ fn test_limits() -> PushLimits {
         handshake_grace: Duration::from_secs(30),
         write_deadline: Duration::from_secs(10),
         reverify_interval: Duration::from_secs(3600),
+        liveness_timeout: Duration::from_secs(5400),
         max_stale: Duration::from_secs(3600),
         trusted_proxies: Vec::new(),
         presence: false,
@@ -409,12 +410,14 @@ fn push_limits_unset_or_blank_values_keep_the_defaults() {
     assert_eq!(unset.write_deadline, d.write_deadline);
     assert_eq!(unset.reverify_interval, d.reverify_interval);
     assert_eq!(unset.max_stale, d.max_stale);
+    assert_eq!(unset.liveness_timeout, d.liveness_timeout);
     assert!(!unset.presence, "presence is OFF by default");
     assert!(unset.trusted_proxies.is_empty());
 
     let blank = PushLimits::from_values(values(&[
         (MAX_CONNECTIONS, ""),
         (HANDSHAKE_MS, "   "),
+        (LIVENESS_MS, ""),
         (PRESENCE, ""),
         (TRUSTED_PROXIES, ""),
     ]))
@@ -439,6 +442,7 @@ fn push_limits_parse_every_knob_from_values() {
         (WRITE_MS, "17"),
         (REVERIFY_MS, "18"),
         (MAX_STALE_MS, "19"),
+        (LIVENESS_MS, "37"),
         (PRESENCE, "1"),
         (TRUSTED_PROXIES, "10.0.0.0/8, 127.0.0.1"),
     ]))
@@ -453,11 +457,51 @@ fn push_limits_parse_every_knob_from_values() {
     assert_eq!(limits.write_deadline, Duration::from_millis(17));
     assert_eq!(limits.reverify_interval, Duration::from_millis(18));
     assert_eq!(limits.max_stale, Duration::from_millis(19));
+    assert_eq!(limits.liveness_timeout, Duration::from_millis(37));
     assert!(limits.presence);
     assert_eq!(
         limits.trusted_proxies,
         httpmw::parse_cidrs("10.0.0.0/8, 127.0.0.1").expect("the same parser")
     );
+}
+
+/// Unset or blank derives 1.5x the EFFECTIVE interval, so raising only the interval keeps
+/// booting; an explicit value must exceed the interval or every idle socket closes on the
+/// first tick.
+#[test]
+fn push_limits_liveness_timeout_derives_from_the_effective_interval() {
+    let unset = PushLimits::from_values(none()).expect("defaults parse");
+    assert_eq!(unset.liveness_timeout, Duration::from_secs(90));
+
+    let raised = PushLimits::from_values(values(&[(REVERIFY_MS, "120000")]))
+        .expect("a raised interval with no timeout still boots");
+    assert_eq!(raised.liveness_timeout, Duration::from_secs(180));
+
+    let blank = PushLimits::from_values(values(&[(LIVENESS_MS, "  "), (REVERIFY_MS, "120000")]))
+        .expect("a blank timeout is an unset timeout");
+    assert_eq!(blank.liveness_timeout, Duration::from_secs(180));
+
+    let explicit =
+        PushLimits::from_values(values(&[(LIVENESS_MS, "61000")])).expect("above the 60s default");
+    assert_eq!(explicit.liveness_timeout, Duration::from_secs(61));
+    let explicit = PushLimits::from_values(values(&[(LIVENESS_MS, "2000"), (REVERIFY_MS, "1000")]))
+        .expect("above a custom interval");
+    assert_eq!(explicit.liveness_timeout, Duration::from_secs(2));
+}
+
+#[test]
+fn push_limits_reject_a_liveness_timeout_at_or_below_the_interval() {
+    for (timeout, interval) in [("60000", "60000"), ("59999", "60000"), ("1000", "60000")] {
+        let err = PushLimits::from_values(values(&[(LIVENESS_MS, timeout), (REVERIFY_MS, interval)]))
+            .expect_err("a timeout not above the interval must fail startup");
+        assert!(err.to_string().contains(LIVENESS_MS), "names the variable: {err}");
+    }
+    assert!(PushLimits::from_values(values(&[(LIVENESS_MS, "60000")])).is_err());
+    for bad in ["0", "garbage"] {
+        let err = PushLimits::from_values(values(&[(LIVENESS_MS, bad)]))
+            .expect_err("0 and garbage fail startup");
+        assert!(err.to_string().contains(LIVENESS_MS), "names the variable: {err}");
+    }
 }
 
 /// `0` and garbage FAIL STARTUP naming the offending variable — the deliberate divergence
@@ -575,6 +619,7 @@ fn close_codes_carry_their_retry_and_protocol_contract() {
         (CloseCode::Capacity, true, 1013),
         (CloseCode::SessionExpired, true, 1000),
         (CloseCode::Shutdown, true, 1001),
+        (CloseCode::LivenessTimeout, true, 1000),
     ] {
         assert_eq!(code.retryable(), retryable, "{code:?} retryable");
         assert_eq!(code.ws_code(), ws, "{code:?} ws code");
@@ -584,6 +629,9 @@ fn close_codes_carry_their_retry_and_protocol_contract() {
         assert_eq!(frame["retryable"], retryable);
         assert_eq!(frame["reason"], code.reason());
     }
+    let frame: serde_json::Value =
+        serde_json::from_str(&CloseCode::LivenessTimeout.frame()).expect("the close frame is JSON");
+    assert_eq!(frame["code"], "liveness_timeout");
 }
 
 // ---------------------------------------------------------------------------
@@ -1468,7 +1516,7 @@ async fn deliver_batch_replays_every_target_variant_in_order() {
     let (slot, _wake) = bound(&hub, local(), "alice");
     assert!(hub.join(slot.id, "raid"));
 
-    let batch = push::encode_batch(&[
+    let batch = push::encode_batch(1, 1, &[
         push::Envelope::new(Target::Player("alice".into()), msg("one")),
         push::Envelope::new(Target::Player("nobody".into()), msg("skipped")),
         push::Envelope::new(Target::Group("raid".into()), msg("two")),
@@ -1497,7 +1545,7 @@ async fn deliver_batch_keeps_each_hubs_order_across_a_mixed_hub_batch() {
         push::Envelope::new(Target::Player("alice".into()), topic_msg(topic, payload))
     };
 
-    let batch = push::encode_batch(&[
+    let batch = push::encode_batch(1, 1, &[
         to("a.x", "a1"),
         to("b.x", "b1"),
         to("a.x", "a2"),
@@ -1514,13 +1562,156 @@ async fn deliver_batch_keeps_each_hubs_order_across_a_mixed_hub_batch() {
     assert_eq!(lane("c"), vec!["c1"]);
 }
 
+fn stamped(producer: u64, seq: u64, payload: &str) -> Vec<u8> {
+    push::encode_batch(
+        producer,
+        seq,
+        &[push::Envelope::new(Target::Player("alice".into()), msg(payload))],
+    )
+    .expect("encode")
+}
+
+/// A batch that arrives after a newer one from the SAME producer is dropped whole.
+/// `STALE` is process-global, so it is checked as increased, not by an exact delta.
+#[tokio::test]
+async fn deliver_batch_drops_a_late_batch_from_the_same_producer() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+    let stale_before = STALE.total.load(AtomicOrdering::Relaxed);
+
+    deliver_batch(&hub, &stamped(11, 2, "two")).unwrap();
+    deliver_batch(&hub, &stamped(11, 1, "one")).unwrap();
+
+    assert_eq!(queued_payloads(&slot.queue), vec!["two".to_string()]);
+    assert!(STALE.total.load(AtomicOrdering::Relaxed) > stale_before);
+}
+
+/// `seq <= hw`: the same seq twice is not delivered twice.
+#[tokio::test]
+async fn deliver_batch_drops_a_repeated_seq() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    deliver_batch(&hub, &stamped(12, 5, "first")).unwrap();
+    deliver_batch(&hub, &stamped(12, 5, "again")).unwrap();
+
+    assert_eq!(queued_payloads(&slot.queue), vec!["first".to_string()]);
+}
+
+/// High-water marks are per producer: a low seq from producer B is not late because
+/// producer A already reached a high one.
+#[tokio::test]
+async fn deliver_batch_keeps_producers_independent() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    deliver_batch(&hub, &stamped(21, 10, "a10")).unwrap();
+    deliver_batch(&hub, &stamped(22, 1, "b1")).unwrap();
+    deliver_batch(&hub, &stamped(21, 9, "a9-late")).unwrap();
+    deliver_batch(&hub, &stamped(22, 2, "b2")).unwrap();
+
+    assert_eq!(
+        queued_payloads(&slot.queue),
+        vec!["a10".to_string(), "b1".to_string(), "b2".to_string()]
+    );
+}
+
+fn tracked(hub: &PushHub, producer: u64) -> bool {
+    hub.origins.lock().unwrap().contains_key(&producer)
+}
+
+/// A producer idle past `ORIGIN_IDLE_EVICT` is evicted when a NEW producer arrives; the
+/// proof the entry is gone is that its low seq is accepted again.
+#[tokio::test(start_paused = true)]
+async fn an_idle_producer_is_evicted_when_a_new_one_arrives() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    deliver_batch(&hub, &stamped(31, 5, "old5")).unwrap();
+    deliver_batch(&hub, &stamped(33, 1, "a1")).unwrap();
+    tokio::time::advance(Duration::from_secs(200)).await;
+    deliver_batch(&hub, &stamped(33, 2, "a2")).unwrap();
+    tokio::time::advance(ORIGIN_IDLE_EVICT - Duration::from_secs(199)).await;
+
+    deliver_batch(&hub, &stamped(33, 3, "a3")).unwrap();
+    assert!(tracked(&hub, 31), "an already-tracked producer's batch does not evict");
+
+    deliver_batch(&hub, &stamped(32, 1, "new1")).unwrap();
+    assert!(!tracked(&hub, 31), "the idle producer was evicted by a new one");
+    assert!(tracked(&hub, 32) && tracked(&hub, 33), "fresh producers stay");
+
+    deliver_batch(&hub, &stamped(31, 1, "old1")).unwrap();
+    assert_eq!(
+        queued_payloads(&slot.queue),
+        ["old5", "a1", "a2", "a3", "new1", "old1"].map(String::from).to_vec(),
+        "with its entry gone the idle producer's low seq is accepted again"
+    );
+}
+
+/// A producer that kept sending is never evicted, however long the map has existed, so
+/// its high-water mark still drops a late batch.
+#[tokio::test(start_paused = true)]
+async fn a_producer_that_is_not_idle_is_never_evicted() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+
+    deliver_batch(&hub, &stamped(41, 1, "s1")).unwrap();
+    tokio::time::advance(ORIGIN_IDLE_EVICT - Duration::from_secs(1)).await;
+    deliver_batch(&hub, &stamped(41, 2, "s2")).unwrap();
+    tokio::time::advance(ORIGIN_IDLE_EVICT - Duration::from_secs(1)).await;
+
+    deliver_batch(&hub, &stamped(42, 1, "other")).unwrap();
+    assert!(tracked(&hub, 41), "last seen within the window, so it stays");
+
+    deliver_batch(&hub, &stamped(41, 1, "late")).unwrap();
+    assert_eq!(
+        queued_payloads(&slot.queue),
+        vec!["s1".to_string(), "s2".to_string(), "other".to_string()]
+    );
+}
+
+/// An idle entry that a delivery still holds is not evicted: evicting it would give a
+/// late batch a fresh high-water mark of 0. Once the holder is gone it is evicted.
+#[tokio::test(start_paused = true)]
+async fn a_held_origin_entry_is_never_evicted() {
+    let hub = hub_with(test_limits());
+    let (_slot, _wake) = bound(&hub, local(), "alice");
+
+    deliver_batch(&hub, &stamped(51, 3, "held3")).unwrap();
+    let held = hub.origin(51);
+    tokio::time::advance(ORIGIN_IDLE_EVICT + Duration::from_secs(1)).await;
+
+    deliver_batch(&hub, &stamped(52, 1, "n1")).unwrap();
+    assert!(tracked(&hub, 51), "a held entry survives idle eviction");
+
+    drop(held);
+    deliver_batch(&hub, &stamped(53, 1, "n2")).unwrap();
+    assert!(!tracked(&hub, 51), "released and idle, it is evicted");
+}
+
+/// The old wire shape (a bare envelope array) is refused at the front and enqueues nothing.
+#[tokio::test]
+async fn deliver_batch_rejects_a_bare_envelope_array() {
+    let hub = hub_with(test_limits());
+    let (slot, _wake) = bound(&hub, local(), "alice");
+    let bare = serde_json::to_vec(&vec![push::Envelope::new(
+        Target::Player("alice".into()),
+        msg("x"),
+    )])
+    .expect("encode");
+
+    assert!(deliver_batch(&hub, &bare).is_err());
+    assert!(queued(&slot.queue).is_empty());
+}
+
 /// A malformed batch is a typed error, not a panic and not a silent success — the peer
 /// learns its call failed.
 #[tokio::test]
 async fn deliver_batch_rejects_a_malformed_batch() {
     let hub = hub_with(test_limits());
     assert!(deliver_batch(&hub, b"not a batch").is_err());
-    assert!(deliver_batch(&hub, b"[]").is_ok(), "an empty batch is legal");
+    let empty = push::encode_batch(1, 1, &[]).expect("encode");
+    assert!(deliver_batch(&hub, &empty).is_ok(), "an empty batch is legal");
 }
 
 /// The registration claims exactly the wire method the sender calls. Nothing links the
@@ -1839,6 +2030,61 @@ async fn an_unavailable_reverification_holds_the_connection_until_max_stale() {
         "several ticks were attempted and none of them ended the connection early"
     );
 
+    server.abort();
+}
+
+/// The slot is released only after `serve` wrote the close, and the client is not polled
+/// before then, so no pong can refresh liveness; a regression fails at `await_live`'s guard.
+#[tokio::test]
+async fn a_silent_peer_is_closed_as_liveness_timeout() {
+    let front = dev_front(PushLimits {
+        reverify_interval: Duration::from_secs(1),
+        liveness_timeout: Duration::from_millis(1500),
+        ..test_limits()
+    });
+    let (addr, server) = serve(&front).await;
+
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+    await_live(&front.push_hub(), 0).await;
+
+    let (code, retryable) = tokio::time::timeout(GUARD, expect_close(&mut ws))
+        .await
+        .expect("the typed close is already queued on the socket");
+    assert_eq!(code, "liveness_timeout");
+    assert!(retryable, "a dead link is recoverable by reconnecting");
+
+    server.abort();
+}
+
+/// A peer that keeps reading answers every ping with a pong, so inbound traffic keeps
+/// arriving and the connection outlives ticks that a silent peer would not.
+#[tokio::test]
+async fn a_live_peer_answering_pings_is_not_closed() {
+    let front = dev_front(PushLimits {
+        reverify_interval: Duration::from_secs(1),
+        liveness_timeout: Duration::from_millis(2500),
+        ..test_limits()
+    });
+    let (addr, server) = serve(&front).await;
+
+    let mut ws = dial_authed(addr, "dev-alice", KEY).await;
+    expect_ack(&mut ws).await;
+
+    let mut pings = 0;
+    let deadline = tokio::time::Instant::now() + GUARD;
+    while pings < 4 {
+        let frame = tokio::time::timeout_at(deadline, ws.next())
+            .await
+            .expect("pings keep arriving within the hang guard");
+        match frame {
+            Some(Ok(ClientMessage::Ping(_))) => pings += 1,
+            Some(Ok(ClientMessage::Pong(_))) => {}
+            other => panic!("a live peer must not be closed, got {other:?}"),
+        }
+    }
+
+    ws.close(None).await.expect("a clean client close");
     server.abort();
 }
 

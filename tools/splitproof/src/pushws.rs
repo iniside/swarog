@@ -120,8 +120,8 @@ pub const PRESENCE_TOPIC: &str = "push.presence";
 /// One live `/push` connection.
 pub struct PushClient {
     stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
-    /// Frames read while [`PushClient::invoke`] awaited its result; `next_frame` yields
-    /// them before reading the socket again, so an invoke never swallows a push frame.
+    /// Frames read while [`PushClient::await_result`] waited for another id; `next_frame`
+    /// yields them before reading the socket again, so an invoke never swallows a frame.
     buffered: VecDeque<Frame>,
 }
 
@@ -237,9 +237,63 @@ impl PushClient {
             .context("write a client frame")
     }
 
-    /// Sends `{"type":"invoke","id":id,"method":method,"payload":payload}` and returns the
-    /// `response` envelope of the `result` carrying the same `id`, within `budget`. Every
-    /// other frame read meanwhile is buffered for later `next_frame`/`await_*` calls.
+    /// Sends `{"type":"invoke","id":id,"method":method,"payload":payload}` without waiting
+    /// for its result, so several invokes can be in flight on one socket.
+    pub async fn send_invoke(
+        &mut self,
+        id: i64,
+        method: &str,
+        payload: serde_json::Value,
+    ) -> Result<()> {
+        self.send(serde_json::json!({
+            "type": "invoke",
+            "id": id,
+            "method": method,
+            "payload": payload,
+        }))
+        .await
+    }
+
+    /// The `response` envelope of the `result` carrying `id`, within `budget`. The buffer is
+    /// scanned in arrival order: a matching `result` is removed and returned, a `close`
+    /// reached first fails (and stays buffered). Otherwise the socket is read, and every
+    /// other frame read meanwhile is buffered for later `next_frame`/`await_*`/`await_result`
+    /// calls.
+    pub async fn await_result(&mut self, id: i64, budget: Duration) -> Result<serde_json::Value> {
+        let first = self.buffered.iter().position(|f| {
+            matches!(f, Frame::Close { .. })
+                || matches!(f, Frame::Result { id: got, .. } if *got == id)
+        });
+        if let Some(at) = first {
+            if let Frame::Close { .. } = &self.buffered[at] {
+                bail!(
+                    "socket closed before the result of invoke {id}: {:?}",
+                    self.buffered[at]
+                );
+            }
+            if let Some(Frame::Result { response, .. }) = self.buffered.remove(at) {
+                return Ok(response);
+            }
+        }
+        let deadline = Instant::now() + budget;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                bail!("no result for invoke {id} within {budget:?}");
+            }
+            match self.read_frame(left).await? {
+                Some(Frame::Result { id: got, response }) if got == id => return Ok(response),
+                Some(frame @ Frame::Close { .. }) => {
+                    self.buffered.push_back(frame.clone());
+                    bail!("socket closed before the result of invoke {id}: {frame:?}");
+                }
+                Some(frame) => self.buffered.push_back(frame),
+                None => bail!("socket ended before the result of invoke {id}"),
+            }
+        }
+    }
+
+    /// [`PushClient::send_invoke`] then [`PushClient::await_result`].
     pub async fn invoke(
         &mut self,
         id: i64,
@@ -247,29 +301,10 @@ impl PushClient {
         payload: serde_json::Value,
         budget: Duration,
     ) -> Result<serde_json::Value> {
-        self.send(serde_json::json!({
-            "type": "invoke",
-            "id": id,
-            "method": method,
-            "payload": payload,
-        }))
-        .await?;
-        let deadline = Instant::now() + budget;
-        loop {
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                bail!("no result for invoke {id} ({method}) within {budget:?}");
-            }
-            match self.read_frame(left).await? {
-                Some(Frame::Result { id: got, response }) if got == id => return Ok(response),
-                Some(frame @ Frame::Close { .. }) => {
-                    self.buffered.push_back(frame.clone());
-                    bail!("socket closed before the result of invoke {id} ({method}): {frame:?}");
-                }
-                Some(frame) => self.buffered.push_back(frame),
-                None => bail!("socket ended before the result of invoke {id} ({method})"),
-            }
-        }
+        self.send_invoke(id, method, payload).await?;
+        self.await_result(id, budget)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:#} ({method})"))
     }
 
     /// Joins `group`, addressable as `push::Target::Group`. The verb is silent by design
@@ -297,13 +332,16 @@ pub async fn deliver_batch(
     edge_addr: SocketAddr,
     ca_cert: &str,
     ca_key: &str,
+    producer: u64,
+    seq: u64,
     batch: &[push::Envelope],
 ) -> Result<()> {
     let ca = DevCA::load(ca_cert, ca_key).map_err(|e| anyhow::anyhow!("load edge CA: {e}"))?;
     let client = edge::Client::dial(edge_addr, &ca)
         .await
         .map_err(|e| anyhow::anyhow!("dial the front's internal edge at {edge_addr}: {e}"))?;
-    let encoded = push::encode_batch(batch).map_err(|e| anyhow::anyhow!("encode batch: {e}"))?;
+    let encoded = push::encode_batch(producer, seq, batch)
+        .map_err(|e| anyhow::anyhow!("encode batch: {e}"))?;
     client
         .call_raw("push.deliver", &encoded)
         .await

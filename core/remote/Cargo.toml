@@ -42,6 +42,8 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# The push drain's producer id: random so a restarted process never resumes an old id.
+rand = { workspace = true }
 
 [dev-dependencies]
 # The swap is proven with LOCAL test fakes (no api/ crate): fake factories provide a

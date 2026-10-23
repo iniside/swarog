@@ -9,16 +9,17 @@
 //! process owns.
 //!
 //! **Auth happens AFTER the upgrade, deliberately.** A browser cannot set headers on a
-//! WebSocket dial, so a bearer must also be accepted as the first frame; and a refusal
-//! must be a typed close the client can act on (`retryable`) rather than an HTTP status
-//! it never sees. Credentials are read from `Authorization`/`X-Api-Key` when present and
+//! WebSocket dial, so a bearer must also be accepted as the first frame; and a credential
+//! refusal must be a typed close the client can act on (`retryable`) rather than an HTTP
+//! status it never sees. Credentials are read from `Authorization`/`X-Api-Key` when present and
 //! from that first frame otherwise — NEVER from the query string, which lands in access
 //! logs, proxy history and browser history.
 //!
 //! **The aggregate caps are taken BEFORE the upgrade** ([`PushHub::accept`]) so an
 //! unauthenticated socket cannot sit in the handshake for free: a connection occupies its
 //! slot from the accept to the moment its [`Slot`] guard drops, whether it ever
-//! authenticated or not.
+//! authenticated or not. A cap refusal is therefore an HTTP 503 before the upgrade, not a
+//! typed close.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -64,6 +65,10 @@ const PUSH_STOP_GRACE: Duration = Duration::from_millis(500);
 /// composition root (`cmd/server`, `cmd/gateway-svc`) from env and handed to the module
 /// via `Gateway::with_push_limits`; the module itself never reads env. The [`Default`]
 /// values apply to any process whose root wired none.
+///
+/// The fields are public, and only [`PushLimits::from_values`] checks that
+/// `liveness_timeout` exceeds `reverify_interval`; limits built as a struct literal must
+/// uphold it themselves, or every idle healthy connection closes on a tick.
 #[derive(Clone, Debug)]
 pub struct PushLimits {
     /// Sockets this process serves at once, authenticated or still handshaking.
@@ -86,13 +91,16 @@ pub struct PushLimits {
     pub handshake_grace: Duration,
     /// Bound on one outbound write, so a peer that stops reading cannot pin the task.
     pub write_deadline: Duration,
-    /// How often a live connection's bind-time bearer is re-verified (and a liveness
-    /// ping is written).
+    /// How often a live connection's bind-time bearer is re-verified (and a ping is
+    /// written).
     pub reverify_interval: Duration,
     /// How long a connection may keep running while re-verification is UNAVAILABLE.
     /// An accounts outage must not log every player out, so an unavailable verdict
     /// keeps the connection — but not forever.
     pub max_stale: Duration,
+    /// How long a bound connection may go without any inbound frame before the re-verify
+    /// tick closes it with `CloseCode::LivenessTimeout`.
+    pub liveness_timeout: Duration,
     /// The trusted-proxy set the per-IP cap resolves a client address against. An
     /// `X-Forwarded-For` from an UNTRUSTED direct peer is ignored, so a forged header
     /// cannot mint a fresh bucket per connection.
@@ -129,6 +137,7 @@ impl Default for PushLimits {
             write_deadline: Duration::from_secs(10),
             reverify_interval: Duration::from_secs(60),
             max_stale: Duration::from_secs(900),
+            liveness_timeout: Duration::from_secs(90),
             trusted_proxies: Vec::new(),
             presence: false,
             invoke_max_in_flight: 16,
@@ -162,9 +171,11 @@ impl PushLimits {
     /// `admission_budget_from_value` precedent, which each front main also drives from a
     /// raw value.
     ///
-    /// A name that is ABSENT or blank keeps this build's default. A name that is PRESENT
+    /// A name that is ABSENT or blank keeps this build's default (for
+    /// `PUSH_LIVENESS_TIMEOUT_MS`, 1.5x the effective re-verify interval). A name that is PRESENT
     /// but unusable — unparseable, or `0` for a cap or a deadline where zero cannot mean
-    /// "disabled" — FAILS STARTUP naming the offender. **This is deliberately stricter
+    /// "disabled", or a liveness timeout not above the re-verify interval — FAILS STARTUP
+    /// naming the offender. **This is deliberately stricter
     /// than the precedent it borrows its shape from**: `admission_budget_from_value` falls
     /// back to its default on garbage, whereas a bound an operator typed and got silently
     /// dropped is a cap they believe is in force and is not.
@@ -216,6 +227,22 @@ impl PushLimits {
         }
 
         let d = PushLimits::default();
+        let reverify_interval = ms(REVERIFY_MS, get(REVERIFY_MS), d.reverify_interval)?;
+        let liveness_timeout = match value(get(LIVENESS_MS)) {
+            None => reverify_interval.mul_f64(1.5),
+            raw => {
+                let v = ms(LIVENESS_MS, raw, reverify_interval.mul_f64(1.5))?;
+                if v <= reverify_interval {
+                    anyhow::bail!(
+                        "{LIVENESS_MS}={}ms is invalid: it must exceed {REVERIFY_MS} \
+                         ({}ms), or every idle connection closes on the first tick",
+                        v.as_millis(),
+                        reverify_interval.as_millis()
+                    );
+                }
+                v
+            }
+        };
         let limits = PushLimits {
             max_connections: count(
                 MAX_CONNECTIONS,
@@ -228,8 +255,9 @@ impl PushLimits {
             max_frame_bytes: count(MAX_FRAME_BYTES, get(MAX_FRAME_BYTES), d.max_frame_bytes)?,
             handshake_grace: ms(HANDSHAKE_MS, get(HANDSHAKE_MS), d.handshake_grace)?,
             write_deadline: ms(WRITE_MS, get(WRITE_MS), d.write_deadline)?,
-            reverify_interval: ms(REVERIFY_MS, get(REVERIFY_MS), d.reverify_interval)?,
+            reverify_interval,
             max_stale: ms(MAX_STALE_MS, get(MAX_STALE_MS), d.max_stale)?,
+            liveness_timeout,
             presence: flag(PRESENCE, get(PRESENCE), d.presence)?,
             invoke_max_in_flight: count(
                 INVOKE_MAX_IN_FLIGHT,
@@ -261,6 +289,7 @@ pub const HANDSHAKE_MS: &str = "PUSH_HANDSHAKE_TIMEOUT_MS";
 pub const WRITE_MS: &str = "PUSH_WRITE_TIMEOUT_MS";
 pub const REVERIFY_MS: &str = "PUSH_REVERIFY_INTERVAL_MS";
 pub const MAX_STALE_MS: &str = "PUSH_MAX_STALE_MS";
+pub const LIVENESS_MS: &str = "PUSH_LIVENESS_TIMEOUT_MS";
 pub const PRESENCE: &str = "PUSH_PRESENCE";
 pub const INVOKE_MAX_IN_FLIGHT: &str = "PUSH_INVOKE_MAX_IN_FLIGHT";
 pub const INVOKE_TIMEOUT_MS: &str = "PUSH_INVOKE_TIMEOUT_MS";
@@ -402,7 +431,8 @@ enum ServerFrame<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum CloseCode {
-    /// No bearer, or one the session verifier definitively rejected at bind time.
+    /// No bearer, or one the session verifier definitively rejected at bind time; also
+    /// sent on re-verify when the bearer now resolves to a different player.
     Unauthorized,
     /// No api key, or one the store definitively does not know.
     ApiKey,
@@ -413,7 +443,9 @@ enum CloseCode {
     HandshakeTimeout,
     /// A malformed handshake frame.
     Protocol,
-    /// An aggregate cap refused the connection.
+    /// A client left [`PushLimits::invoke_max_in_flight`] refused invokes unread. Its
+    /// `reason` text is also the body of the HTTP 503 an aggregate cap answers before the
+    /// upgrade.
     Capacity,
     /// This player connected from more devices than the per-player cap allows and this
     /// was the oldest.
@@ -428,6 +460,8 @@ enum CloseCode {
     /// An inbound frame over [`PushLimits::max_frame_bytes`]. Retryable: the reconnect
     /// restores every stream, and the request itself belongs on HTTP or QUIC.
     FrameTooLarge,
+    /// No inbound frame, not even a pong, within [`PushLimits::liveness_timeout`].
+    LivenessTimeout,
 }
 
 impl CloseCode {
@@ -449,7 +483,8 @@ impl CloseCode {
             | CloseCode::Capacity
             | CloseCode::SessionExpired
             | CloseCode::Shutdown
-            | CloseCode::FrameTooLarge => true,
+            | CloseCode::FrameTooLarge
+            | CloseCode::LivenessTimeout => true,
         }
     }
 
@@ -462,7 +497,9 @@ impl CloseCode {
             | CloseCode::Protocol
             | CloseCode::BadFrame => 1008,
             CloseCode::FrameTooLarge => 1009,
-            CloseCode::Replaced | CloseCode::SessionExpired => 1000,
+            CloseCode::Replaced | CloseCode::SessionExpired | CloseCode::LivenessTimeout => {
+                1000
+            }
             CloseCode::Unavailable | CloseCode::HandshakeTimeout | CloseCode::Capacity => 1013,
             CloseCode::Shutdown => 1001,
         }
@@ -481,6 +518,7 @@ impl CloseCode {
             CloseCode::Shutdown => "server shutting down",
             CloseCode::BadFrame => "malformed invoke frame",
             CloseCode::FrameTooLarge => "inbound frame over the size cap",
+            CloseCode::LivenessTimeout => "no inbound frame within the liveness timeout",
         }
     }
 
@@ -590,7 +628,7 @@ impl ConnQueue {
     ///
     /// `false` means the connection is already closing and the frame was not queued —
     /// what [`PushHub::deliver`] counts, so a `Delivered::Local(n)` counts connections
-    /// the frame actually reached.
+    /// the frame was enqueued to.
     fn push(&self, hub: &str, text: Arc<str>) -> bool {
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -710,6 +748,7 @@ impl QueueState {
 /// stalled reader from hiding a producer that is over the payload cap.
 static DROPS: Drops = Drops::new();
 static OVERSIZE: Drops = Drops::new();
+static STALE: Drops = Drops::new();
 
 /// Counts dropped frames. The first drop warns, every later one logs at `debug!` with the
 /// running total: a stalled client would otherwise emit one warning per produced message.
@@ -758,7 +797,21 @@ pub(crate) struct PushHub {
     drained: tokio::sync::Notify,
     /// The per-client-IP invoke budget, shared by every connection from one IP.
     invoke_limiter: Arc<httpmw::IpLimiter>,
+    /// Each backplane producer's high-water `seq`. The map lock is held only to fetch, insert or
+    /// evict; it never blocks on an entry lock (eviction only `try_lock`s an unshared entry).
+    origins: Mutex<HashMap<u64, Arc<Mutex<Origin>>>>,
 }
+
+/// One backplane producer's ordering state, see [`deliver_batch`].
+struct Origin {
+    hw: u64,
+    last_seen: tokio::time::Instant,
+}
+
+/// How long a producer may stay silent before a NEW producer's arrival evicts its entry.
+/// A late batch is dispatched within about `EDGE_STREAM_GRACE` (30s) of a newer one from
+/// the same producer, so an evicted entry can no longer let a late batch through.
+const ORIGIN_IDLE_EVICT: Duration = Duration::from_secs(300);
 
 struct HubState {
     /// Set by [`PushHub::shutdown`]. Tested and the insert performed under the SAME
@@ -860,6 +913,7 @@ impl PushHub {
                 groups: HashMap::new(),
             }),
             drained: tokio::sync::Notify::new(),
+            origins: Mutex::new(HashMap::new()),
         }
     }
 
@@ -1238,17 +1292,63 @@ pub(crate) fn deliver_registration(hub: Arc<PushHub>) -> edge::EdgeReg {
     })
 }
 
-/// Replays one encoded batch into the local hub IN ORDER — the property the sender pays
-/// for by batching (one call, sequentially awaited) instead of issuing a call per message.
+/// Replays one encoded batch into the local hub in order, unless a newer batch from the
+/// same producer has already been applied, in which case the whole batch is dropped.
 ///
 /// A message addressed to nobody on this front is a normal `0`, not a failure: every front
 /// receives every batch and filters locally, which is what keeps the design neutral to how
 /// many fronts the fleet runs.
 fn deliver_batch(hub: &PushHub, req: &[u8]) -> edge::HandlerResult {
-    for envelope in push::decode_batch(req)? {
+    let batch = push::decode_batch(req)?;
+    let origin = hub.origin(batch.producer);
+    // Held across every enqueue: releasing it between the seq check and the enqueue would
+    // let a newer batch enqueue in between, which is the inversion this gate exists to stop.
+    let mut origin = origin.lock().unwrap_or_else(|e| e.into_inner());
+    if batch.seq <= origin.hw {
+        STALE.record("stale backplane batch (late after a newer one)");
+        return Ok(Vec::new());
+    }
+    origin.hw = batch.seq;
+    origin.last_seen = tokio::time::Instant::now();
+    for envelope in &batch.envelopes {
         hub.deliver(&envelope.target, &envelope.msg);
     }
     Ok(Vec::new())
+}
+
+impl PushHub {
+    /// The ordering entry for `producer`, inserted on first sight. Inserting is also when
+    /// entries idle past [`ORIGIN_IDLE_EVICT`] are evicted, so the map is bounded by the
+    /// producers seen in that window.
+    fn origin(&self, producer: u64) -> Arc<Mutex<Origin>> {
+        let mut origins = self.origins.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(origin) = origins.get(&producer) {
+            return origin.clone();
+        }
+        let now = tokio::time::Instant::now();
+        let fresh = |seen: tokio::time::Instant| {
+            now.saturating_duration_since(seen) <= ORIGIN_IDLE_EVICT
+        };
+        origins.retain(|_, origin| {
+            // A clone exists only while a delivery holds it, and clones are made under this
+            // map lock, so an entry with no clone is not mid-delivery and cannot become so
+            // while it is being evicted — and its lock is free.
+            if Arc::strong_count(origin) > 1 {
+                return true;
+            }
+            match origin.try_lock() {
+                Ok(o) => fresh(o.last_seen),
+                Err(std::sync::TryLockError::Poisoned(e)) => fresh(e.into_inner().last_seen),
+                Err(std::sync::TryLockError::WouldBlock) => true,
+            }
+        });
+        let origin = Arc::new(Mutex::new(Origin {
+            hw: 0,
+            last_seen: now,
+        }));
+        origins.insert(producer, origin.clone());
+        origin
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1488,6 +1588,7 @@ async fn serve(
     let mut reverify = tokio::time::interval(limits.reverify_interval);
     reverify.tick().await; // the first tick fires immediately; the bearer was just verified
     let mut last_ok = Instant::now();
+    let mut last_inbound = tokio::time::Instant::now();
     let mut close: Option<CloseCode> = None;
 
     loop {
@@ -1516,29 +1617,34 @@ async fn serve(
                 }
                 None => break,
             },
-            msg = socket.recv() => match msg {
-                None | Some(Ok(WsMessage::Close(_))) => break,
-                Some(Err(err)) => {
-                    if is_frame_too_large(err) {
-                        close = Some(CloseCode::FrameTooLarge);
-                    }
-                    break;
+            msg = socket.recv() => {
+                if let Some(Ok(_)) = msg {
+                    last_inbound = tokio::time::Instant::now();
                 }
-                Some(Ok(WsMessage::Text(text))) => {
-                    if let Some(code) = inbound.frame(text.as_bytes()) {
-                        close = Some(code);
+                match msg {
+                    None | Some(Ok(WsMessage::Close(_))) => break,
+                    Some(Err(err)) => {
+                        if is_frame_too_large(err) {
+                            close = Some(CloseCode::FrameTooLarge);
+                        }
                         break;
                     }
-                }
-                Some(Ok(WsMessage::Binary(bytes))) => {
-                    if let Some(code) = inbound.frame(&bytes) {
-                        close = Some(code);
-                        break;
+                    Some(Ok(WsMessage::Text(text))) => {
+                        if let Some(code) = inbound.frame(text.as_bytes()) {
+                            close = Some(code);
+                            break;
+                        }
                     }
+                    Some(Ok(WsMessage::Binary(bytes))) => {
+                        if let Some(code) = inbound.frame(&bytes) {
+                            close = Some(code);
+                            break;
+                        }
+                    }
+                    // Ping/Pong: axum answers a ping itself; any inbound frame, a pong
+                    // included, refreshes `last_inbound` for the liveness check.
+                    Some(Ok(_)) => {}
                 }
-                // Ping/Pong: axum answers a ping itself, and a pong is the reply to the
-                // liveness ping written on the re-verify tick.
-                Some(Ok(_)) => {}
             },
             Some(joined) = inbound.tasks.join_next(), if !inbound.tasks.is_empty() => {
                 if let Err(err) = joined {
@@ -1549,6 +1655,10 @@ async fn serve(
             },
             _ = reverify.tick() => {
                 inbound.verbs = MAX_VERBS_PER_INTERVAL;
+                if last_inbound.elapsed() > limits.liveness_timeout {
+                    close = Some(CloseCode::LivenessTimeout);
+                    break;
+                }
                 if write(socket, WsMessage::Ping(Vec::new()), limits.write_deadline).await.is_err() {
                     break;
                 }

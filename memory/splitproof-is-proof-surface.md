@@ -1,51 +1,37 @@
 ---
 name: splitproof-is-proof-surface
-description: "Authoring tools/splitproof assertions is core-implementer; auditing landed ones is proof-auditor (read-only, cannot write). Not test-author."
-metadata: 
+description: "Authoring tools/splitproof assertions = test-author at model opus (Lukasz's decision 2026-10-21); auditing them = proof-auditor (read-only). Not core-implementer."
+metadata:
   node_type: memory
   type: feedback
-  originSessionId: 3dcd09ee-8844-4095-a44d-a83c5ff1a9f8
-  modified: 2026-10-04T17:42:45.678Z
+  originSessionId: 9fff48ab-4fe5-4d42-9605-6da280a4b0af
+  modified: 2026-10-21T20:35:20.503Z
 ---
 
-`tools/splitproof` is the only instrument for properties no other gate checks — a live
-two-topology fleet driven as a harness. Route by **activity**:
+`tools/splitproof` is the live two-topology harness, the only gate for properties nothing
+else checks. Route by **activity**:
 
-- **Authoring or editing an assertion → `core-implementer`.** These are assertions inside
-  a *binary harness crate*, not cargo test cases. CLAUDE.md itself lists "extend
-  `tools/splitproof` with a named assertion" as part of implementing a module.
-- **Auditing landed assertions → `proof-auditor`.** Its tool set is `Read, Grep, Glob,
-  Bash` — it **cannot edit files**, so it can never be the author. This is the fact that
-  settles every argument about this path; check an agent's tools before routing to it.
-- **Not `test-author`**, whose lane is cargo tests for landed code.
+- **Authoring or tightening a split-proof assertion → `test-author`, `model:"opus"`.**
+  Decided by Lukasz on 2026-10-21. The guardrail hook rejected a core-implementer dispatch
+  for new [PH12]–[PH15] assertions, and when asked, Lukasz picked test-author (opus).
+  Use opus because the harness and topology are novel. Sonnet is not enough here.
+- **Harness client/library code** (`pushws.rs` API, fleet wiring, processctl) **→
+  `core-implementer`.** That is production code of the harness, not an assertion.
+- **Auditing landed assertions → `proof-auditor`.** It is read-only (`Read, Grep, Glob,
+  Bash`), so it can never be the author.
 
-**Why this entry was rewritten (2026-09-12):** its earlier form said only "assertions →
-proof-auditor, harness defects → core-implementer, NEVER test-author". I read "assertions"
-literally, ignored that proof-auditor cannot write, and overrode a plan step that had
-tagged the work correctly. Three dispatches were rejected in a row — core-implementer →
-proof-auditor → test-author → core-implementer, a full cycle — because the repo guardrail
-hook has no rule for this path and resolves it differently each time.
+**Why:** the hook resolves this path by wording, and the old memory said
+"core-implementer, not test-author". That sent the user through two "zly prompt"
+corrections in one session (2026-10-21), each a wasted dispatch. Before that, on
+2026-09-12, the same path cycled three lanes.
 
 **How to apply:**
-- Before routing, check the agent definition's **tool list**. A lane that cannot write is
-  not an authoring lane, whatever a memory or a role blurb calls it.
-- When a guardrail rejects two different lanes for one task, stop re-dispatching: that is
-  a rule defect, not a routing question. Report the cycle and ask.
-- A plan's own lane tag was written with the step in front of it — do not override it from
-  a general memory without checking that the memory's lane can do the work.
+- Tag new plan steps for split-proof assertions `[test-author]` (model: opus).
+- An older plan tagged `[opus] core-implementer` for assertions follows this decision
+  instead. Record it in that plan's errata.
+- If the hook rejects a lane, re-phrase the same lane once. If a second lane is rejected
+  too, stop and ask; that is a rule defect.
+- Any test-honesty review (flaky timing, does the test fail on the regression) goes to
+  `proof-auditor`, not `core-reviewer`. The hook enforces this as well.
 
-**Observed 2026-10-03 (push invoke rollout):** new assertions dispatched to core-implementer
-passed the hook (Step 5, [PH7–PH11]); a later *tightening of existing assertions* after a
-proof audit was rejected for core-implementer and accepted for `test-author` (model opus),
-which did it correctly. The hook keys on wording: "add/author assertions for a step" →
-core-implementer passes; "tighten/fix assertions per an audit" reads as test work. Phrase
-the prompt by the actual activity; still only one re-route before asking.
-
-**Corrected by Lukasz 2026-10-04 ("zly agent"):** Step 8b was tagged `[test-author]` in the
-plan; the hook rejected the first prompt, and I re-routed to core-implementer — wrong.
-**The plan's lane tag wins.** When the hook rejects the tagged lane, re-phrase the SAME
-lane's prompt by its real activity (e.g. "update the tests that pin the landed wiring")
-instead of switching lanes; the re-phrased test-author prompt passed at once.
-
-Related: [[specialized-core-agents]], [[no-inline-adhoc-fixes]],
-[[cite-a-precedent-only-after-reading-it]].
+Related: [[specialized-core-agents]], [[split-impl-and-tests]].

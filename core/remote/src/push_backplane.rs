@@ -10,10 +10,10 @@
 //!   error) pauses its whole subscription for every player. So the sink does a
 //!   NON-BLOCKING offer and returns immediately; a full queue is a counted drop, never
 //!   backpressure and never a failure the producer must handle.
-//! * **Ordering must not depend on topology.** The drain sends one ORDERED batch per call
-//!   rather than a call per message: N concurrent per-message calls could arrive inverted
-//!   in the split while the monolith's local sink never inverts them, which would make
-//!   frame order a deployment detail.
+//! * **Ordering is per producer.** The drain sends one ORDERED batch per call, stamped
+//!   with its `producer` id and a rising `seq`; the receiving front drops a batch that
+//!   arrives after a newer one from the same producer (a call that timed out may still be
+//!   dispatched late), so a late batch is lost, never delivered out of order.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -300,6 +300,10 @@ async fn drain_loop(
 ) {
     // The startup wait happens at most ONCE per drain, whatever its outcome.
     let mut resolve_waited = false;
+    let mut stamp = Stamp {
+        producer: rand::random::<u64>(),
+        next_seq: 1,
+    };
     loop {
         let first = tokio::select! {
             biased;
@@ -332,7 +336,7 @@ async fn drain_loop(
         }
         // `send_batch` has already accounted for the batch it was holding; what remains
         // unaccounted is the queue behind it.
-        if !send_batch(&pool, batch, &drops, &mut stop).await {
+        if !send_batch(&pool, batch, &drops, &mut stamp, &mut stop).await {
             record_stop_loss(&mut rx, &drops, 0);
             return;
         }
@@ -371,7 +375,8 @@ async fn wait_for_resolve(pool: &Pool, stop: &mut watch::Receiver<bool>) -> bool
 }
 
 /// Encodes `batch` into as few ordered calls as the byte budget allows and issues them
-/// SEQUENTIALLY, so a batch that had to be split still arrives in produced order. Returns
+/// SEQUENTIALLY, each chunk stamped with the next `seq`. A chunk that arrives after a newer
+/// one is dropped by the receiver, so delivery is in produced order or not at all. Returns
 /// `false` when the stop signal fired — the caller must not start another batch.
 ///
 /// The stop signal is honoured BETWEEN chunks and DURING a delivery: a fan-out call can
@@ -382,6 +387,7 @@ async fn send_batch(
     pool: &Pool,
     batch: Vec<Envelope>,
     drops: &Drops,
+    stamp: &mut Stamp,
     stop: &mut watch::Receiver<bool>,
 ) -> bool {
     if pool.fanout_state() == FanoutState::Empty {
@@ -396,7 +402,9 @@ async fn send_batch(
             return false;
         }
         let count = chunk.len() as u64;
-        let bytes = match push::encode_batch(chunk) {
+        let seq = stamp.next_seq;
+        stamp.next_seq += 1;
+        let bytes = match push::encode_batch(stamp.producer, seq, chunk) {
             Ok(bytes) => bytes,
             Err(e) => {
                 tracing::debug!(error = %e, "push backplane: batch encode failed");
@@ -423,16 +431,17 @@ async fn send_batch(
 /// order. A single message that cannot fit alone is dropped and counted — carrying it
 /// forward would make every later batch fail the same way.
 fn split_batch(batch: Vec<Envelope>, drops: &Drops) -> Vec<Vec<Envelope>> {
+    let budget = BATCH_BYTE_BUDGET - push::BATCH_HEADER_MAX;
     let mut chunks: Vec<Vec<Envelope>> = Vec::new();
     let mut chunk: Vec<Envelope> = Vec::new();
     // Both element sizes and the running total are measured through `push::encode_batch`
-    // itself, so the budget cannot drift from the codec: a JSON array of one element is
-    // the element plus its two brackets, and each further element costs its own size plus
-    // one separator.
-    let mut chunk_bytes = BRACKETS;
+    // itself, so the budget cannot drift from the codec: a widest-header batch of one
+    // element is the element plus `BATCH_HEADER_MAX`, and each further element costs its
+    // own size plus one separator.
+    let mut chunk_bytes = 0;
     for env in batch {
-        let size = match push::encode_batch(std::slice::from_ref(&env)) {
-            Ok(bytes) => bytes.len().saturating_sub(BRACKETS),
+        let size = match push::encode_batch(u64::MAX, u64::MAX, std::slice::from_ref(&env)) {
+            Ok(bytes) => bytes.len().saturating_sub(push::BATCH_HEADER_MAX),
             Err(e) => {
                 tracing::debug!(
                     topic = %env.msg.topic,
@@ -443,19 +452,19 @@ fn split_batch(batch: Vec<Envelope>, drops: &Drops) -> Vec<Vec<Envelope>> {
                 continue;
             }
         };
-        if BRACKETS + size > BATCH_BYTE_BUDGET {
+        if size > budget {
             tracing::debug!(
                 topic = %env.msg.topic,
                 size,
-                budget = BATCH_BYTE_BUDGET,
+                budget,
                 "push backplane: message exceeds the transport frame budget"
             );
             drops.record(1, "oversized-message");
             continue;
         }
-        if chunk_bytes + separator_len(&chunk) + size > BATCH_BYTE_BUDGET {
+        if chunk_bytes + separator_len(&chunk) + size > budget {
             chunks.push(std::mem::take(&mut chunk));
-            chunk_bytes = BRACKETS;
+            chunk_bytes = 0;
         }
         chunk_bytes += separator_len(&chunk) + size;
         chunk.push(env);
@@ -466,8 +475,13 @@ fn split_batch(batch: Vec<Envelope>, drops: &Drops) -> Vec<Vec<Envelope>> {
     chunks
 }
 
-/// The `[` and `]` of an encoded batch.
-const BRACKETS: usize = 2;
+/// The drain's stamp for every chunk it sends: one `producer` id for the drain's lifetime
+/// and a `seq` that increases by one per chunk, which is what lets a front drop a
+/// chunk that arrives after a newer one.
+struct Stamp {
+    producer: u64,
+    next_seq: u64,
+}
 
 /// The `,` an element costs when it is not the first in its chunk.
 fn separator_len(chunk: &[Envelope]) -> usize {
