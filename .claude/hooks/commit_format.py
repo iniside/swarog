@@ -66,7 +66,7 @@ def message_lines(text: str) -> list[str]:
     for line in text.splitlines():
         if SCISSORS.match(line):
             break
-        if not line.lstrip().startswith("#"):
+        if not line.startswith("#"):
             lines.append(line.rstrip())
     return lines
 
