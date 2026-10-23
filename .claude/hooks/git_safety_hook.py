@@ -171,7 +171,8 @@ COMMIT_VALUE_LONG = {
     "--reuse-message", "--reedit-message", "--fixup", "--squash", "--trailer",
     "--pathspec-from-file",
 }
-COMMIT_VALUE_SHORT = set("mFCctuS")
+COMMIT_VALUE_SHORT = set("mFCct")
+COMMIT_GLUED_SHORT = set("uS")
 
 
 def skips_verify(args):
@@ -193,6 +194,8 @@ def skips_verify(args):
             for i, letter in enumerate(letters):
                 if letter == "n":
                     return True
+                if letter in COMMIT_GLUED_SHORT:
+                    break
                 if letter in COMMIT_VALUE_SHORT:
                     skip = i == len(letters) - 1
                     break

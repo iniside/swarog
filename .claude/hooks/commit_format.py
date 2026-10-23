@@ -91,6 +91,10 @@ def check_message(text: str) -> str | None:
     subject_at = next((i for i, l in enumerate(lines) if l.strip()), None)
     if subject_at is None:
         return None
+    if text.startswith("#") and not SCISSORS.match(text.splitlines()[0]):
+        return f"Commit subject starts with '#': git keeps it as the subject when the message is given with -m. {HELP}"
+    if lines[subject_at][:1].isspace():
+        return f"Commit subject has leading whitespace. {HELP}"
     subject = lines[subject_at].strip()
     if subject.startswith(EXEMPT):
         return None
