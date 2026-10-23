@@ -12,7 +12,7 @@ _None._
   CONFIG-02. Live-reload delivery exists; there is no per-audience targeting
   (`api/config/api/src/lib.rs:69-80` reads take only namespace and key).
   Item-level half of the partial tracker row (docs/roadmap/feature-tracker.md:250 @ fd797b3a,
-  2026-07-22); A/B experiments and live events are feature rows :251-252.
+  2026-07-22); A/B experiments and live events are feature rows :251-252 @ fd797b3a.
 - [ ] **Test namespaces left behind by a failed run**
   CONFIG-03. `config.settings` can accumulate `test_*` rows. At HEAD all 14
   tests that call `unique_ns` call `cleanup` as their last step

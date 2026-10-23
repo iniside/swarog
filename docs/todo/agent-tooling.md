@@ -31,19 +31,19 @@ _None._
   Source: docs/reference/commit-format.md:79-80 @ fd797b3a (2026-10-23).
 - [ ] **Prefix-only exempt subjects**
   AGENT-TOOLING-16. Anything after an exempt prefix is unchecked.
-  Source: docs/reference/commit-format.md:56 (2026-10-23).
+  Source: docs/reference/commit-format.md:81 @ fd797b3a (2026-10-23).
 - [ ] **Plan slug lookup reads the working tree**
   AGENT-TOOLING-17. An untracked plan file also validates.
-  Source: docs/reference/commit-format.md:47-48 (2026-10-23).
+  Source: docs/reference/commit-format.md:82 @ fd797b3a (2026-10-23).
 - [ ] **Commit cleanup modelled only from `GIT_EDITOR`**
   AGENT-TOOLING-18. Explicit `--cleanup=` and `commit.cleanup` are invisible; an
   exported `GIT_EDITOR=:` gets no-editor checking. Fail-closed one way, accepts a
   `#`-led subject git keeps the other.
-  Source: docs/reference/commit-format.md:49-52 (2026-10-23).
+  Source: docs/reference/commit-format.md:83-88 @ fd797b3a (2026-10-23).
 - [ ] **Content after a scissors line is never checked**
   AGENT-TOOLING-19. Fail-open: the hook stops at the scissors line, git cuts there only
   under `--cleanup=scissors` or `commit -v`.
-  Source: docs/reference/commit-format.md:52-53 (2026-10-23).
+  Source: docs/reference/commit-format.md:89-92 @ fd797b3a (2026-10-23).
 
 ### Deferred
 
