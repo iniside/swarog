@@ -270,7 +270,7 @@ NEW_GIT = [
     ("git commit -m 'x\n\n" + TR + "' -n", "deny"),
     ("git commit --amend -n", "deny"),
     ("git commit --allow-empty -n", "deny"),
-    ("git commit -mWIP -n", "deny"),
+    ("git commit -mWIP -n -m '" + TR + "'", "deny"),
     ("git commit --amend --no-edit -n", "deny"),
     ("git commit -m -n --amend", "silent"),
     ("git commit --author -n -m 'x\n\n" + TR + "'", "silent"),
