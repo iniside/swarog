@@ -80,6 +80,12 @@ Known gaps (not checked):
 - `git.exe` and git global options the guard's parser does not strip (e.g. `--literal-pathspecs`, `-p`).
 - Exempt prefixes are prefix-only: anything after them is unchecked.
 - The slug lookup reads the working tree, so an untracked plan file also validates.
+- Git's cleanup is modelled only from `GIT_EDITOR` (`:` = no editor, whitespace cleanup; otherwise strip). An explicit
+  `--cleanup=` overrides it: `--cleanup=strip -m "# c" -m "feat(x): ok"` is rejected though git drops the `#` line
+  (fail-closed); `-e --cleanup=whitespace|verbatim` with a `#`-led subject is accepted though git keeps it.
+- A user who exports `GIT_EDITOR=:` and uses an editor flow gets no-editor checking.
+- A scissors line typed into `-m` is not a cut point for git (whitespace cleanup), but the hook stops reading at it, so
+  content after it is unchecked.
 
 ## Kind trailer
 
