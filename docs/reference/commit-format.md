@@ -38,7 +38,7 @@ cp .claude/hooks/git-commit-msg.sh .git/hooks/commit-msg
 ```
 
 The shim tries `python`, then `python3`; if neither exists it warns and exits 0 (message unchecked).
-`.claude/hooks/git_safety_hook.py` denies `--no-verify`, its abbreviations (`--no-veri…`) and `-n` on `git commit`,
+`.claude/hooks/git_safety_hook.py` denies `--no-verify`, any prefix of it of at least six characters (from `--no-v`) and `-n` on `git commit`,
 also inside short-option clusters (`-an`, `-nm`) and after a glued-value `-u`/`-S`, so agents cannot skip the hook.
 
 Checked on the message:
@@ -46,8 +46,13 @@ Checked on the message:
 - Subject shape `<type>(<scope>[,<scope>]): <text>`; scope is `[a-z0-9][a-z0-9._-]*`, no spaces, no brackets.
 - A subject containing `step <id>` or `steps <id>` must END with `(<slug> step <id>)` or `(<slug> steps <a>-<b>)`, and
   `<slug>` must match a `docs/plans` file. Prose "step" with no id is allowed.
-- A message whose first line starts with `#` is rejected (git keeps it as the subject under `-m`); a subject with
-  leading whitespace is rejected. Only column-0 `#` lines are comments; a scissors line (`# ---- >8 ----`) ends the message.
+- The hook reads git's cleanup mode from `GIT_EDITOR`, which git sets to `:` when no editor runs (`-m`/`-F` without
+  `-e`). With no editor git keeps `#` lines, so a message whose first non-blank line starts with `#` is rejected,
+  even a one-line `-m "#123 fix"`. With an editor (template, `-e`, plain `git commit`) column-0 `#` lines are comments
+  git strips, and the hook ignores them. A subject with leading whitespace is rejected. A scissors line
+  (`# ---- >8 ----`) ends the message.
+- Whether a commit needs the step suffix or `Kind: review-fix` is not checked: the hook cannot know it. That is on the
+  committer and on review.
 - Exempt subjects (prefix only): `Merge `, `Revert "`, `fixup! `, `squash! `, `amend! `.
 
 Rejected:
