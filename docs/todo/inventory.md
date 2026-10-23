@@ -22,3 +22,11 @@ _None._
   INVENTORY-04. An owner with more than 1000 distinct items has the surplus
   dropped from list views, with no cursor or `has_more`
   (`modules/inventory/src/store.rs:6-11`, 2026-07-14; docs/reference/module-reference.md:156).
+
+### Known limits (push-routing-ordering-and-liveness step 9)
+
+- [ ] **Failing sweep-handler test**
+  `inventory::sweep_handler_survivor_untouched_and_ignores_foreign_schedule_name`
+  (`modules/inventory/src/tests.rs:1225`) failed the blocking `test` stage of the
+  Step 9 acceptance run `verify-1792616200-54429-317230a0`; unrelated to the push
+  change (docs/roadmap/feature-tracker.md:315-318, 2026-10-21).
