@@ -1,9 +1,10 @@
 #!/usr/bin/env python
-"""Single source of the commit message rule (Claude PreToolUse hook: subject; git commit-msg: subject + trailers).
+"""Single source of the commit message rule, run as the git commit-msg hook (subject + trailers).
 
 CLI: python commit_format.py <commit-msg-file>  -> exit 1 with the error on stderr.
 """
 import difflib
+import os
 import re
 import sys
 from pathlib import Path
@@ -86,13 +87,20 @@ def trailer_block(lines: list[str]) -> tuple[int, int]:
     return end, end
 
 
-def check_message(text: str) -> str | None:
+def check_message(text: str, editor_used: bool = True) -> str | None:
+    if not editor_used:
+        raw = []
+        for line in text.splitlines():
+            if SCISSORS.match(line):
+                break
+            raw.append(line)
+        if next((l for l in raw if l.strip()), "").startswith("#"):
+            return ("Commit subject starts with '#': git keeps it as the subject when the message is given "
+                    f"with -m or -F. {HELP}")
     lines = message_lines(text)
     subject_at = next((i for i, l in enumerate(lines) if l.strip()), None)
     if subject_at is None:
         return None
-    if text.startswith("#") and not SCISSORS.match(text.splitlines()[0]):
-        return f"Commit subject starts with '#': git keeps it as the subject when the message is given with -m. {HELP}"
     if lines[subject_at][:1].isspace():
         return f"Commit subject has leading whitespace. {HELP}"
     subject = lines[subject_at].strip()
@@ -124,7 +132,7 @@ def main() -> None:
         text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
     except OSError:
         sys.exit(0)
-    error = check_message(text)
+    error = check_message(text, editor_used=os.environ.get("GIT_EDITOR") != ":")
     if error:
         print(error, file=sys.stderr)
         sys.exit(1)
