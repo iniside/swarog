@@ -14,7 +14,7 @@ _None._
   Item-level half of the partial tracker row (docs/roadmap/feature-tracker.md:250,
   2026-07-22); A/B experiments and live events are feature rows :251-252.
 - [ ] **Test namespaces left behind by a failed run**
-  CONFIG-03. `config.settings` can accumulate `test_*` rows. At HEAD all 12
+  CONFIG-03. `config.settings` can accumulate `test_*` rows. At HEAD all 14
   tests that call `unique_ns` call `cleanup` as their last step
   (`modules/config/src/tests.rs`), so rows survive only when a test panics before
   it; the survey's "clean some namespaces only" is narrower than it was

@@ -8,8 +8,8 @@ _None._
 
 ## Owner checks
 
-- [ ] **Run `[W2]` on a Linux box** (SPLITPROOF-01)
-  Check that splitproof `[W2]` (tools/splitproof/src/main.rs:586-599) passes as a Linux
+- [ ] **`[W2]` unrun on Linux**
+  SPLITPROOF-01. Check that splitproof `[W2]` (tools/splitproof/src/main.rs:586-599) passes as a Linux
   runtime assertion since the enumerate-before-reap change to the `forced_remainder`
   derivation (`verifyctl --fast` or splitproof). The runtime drain is Linux-only; the
   change was reviewed and compiles on Linux but was not run there.
@@ -18,7 +18,7 @@ _None._
 
 ## Open
 
-- [ ] **Stop text-sniffing error strings in `status_or_err` and `player_burst`** (SPLITPROOF-02)
-  The `Err` arm does `e.to_string().contains(want)` (tools/splitproof/src/main.rs:7109,
+- [ ] **Error-string sniffing in `status_or_err` and `player_burst`**
+  SPLITPROOF-02. The `Err` arm does `e.to_string().contains(want)` (tools/splitproof/src/main.rs:7109,
   2026-07-11). Typed edge codes (audit-remediation step 16) allow re-pointing it.
   Source: docs/plans/2026-07-13-1415-audit-remediation-plan.md:204.
