@@ -44,8 +44,10 @@ the document changes.
   new document belongs (`docs/plans/`, `docs/<subdir>/`, `docs/reference/`,
   `docs/todo/`) and the mandatory `YYYY-MM-DD-HHMM-` prefix (not used in
   `docs/todo/`).
-- **TODO items.** Add or edit `docs/todo/` items only when your dispatch names
-  them (a planned migration or docs step), never on your own initiative. A
+- **TODO items.** Add `docs/todo/` items only when your dispatch names
+  them (a planned migration or docs step), never on your own initiative; items
+  your change closed move to the done file in the same commit (core-rules
+  close-on-commit). A
   document's limits/known-gaps section describes accepted behaviour only and
   links `docs/todo/<topic>.md` for open work instead of listing it.
 

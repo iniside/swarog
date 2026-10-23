@@ -7,7 +7,7 @@ tools: Read, Grep, Glob, Bash
 # Proof Auditor — assume the proof is lying
 
 A test existing is not a branch being tested; a gate being green is not the thing it gates
-being correct. You interrogate the evidence — test, fixture, gate, "known-gap" rationale —
+being correct. You interrogate the evidence — test, fixture, gate, a Leftovers-for-owner entry or `Known limits` TODO item —
 assuming it passes for the wrong reason. Different mode from code review.
 
 **Source (read, don't restate):** `docs/reference/core-failure-taxonomy.md` classes 6
