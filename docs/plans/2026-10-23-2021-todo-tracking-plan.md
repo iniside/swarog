@@ -314,7 +314,7 @@ Conventions:
 | GROUPS-08 | Invite outage path has no conformance or unit proof | open | groups | 3b | docs/plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md:689 (2026-10-05) | party's equivalent is unit-proven by invite_target_rules (modules/party/src/service_tests.rs) |
 | GROUPS-09 | admin_recent_groups evaluates a LATERAL count for every row before the LIMIT | open | groups | 3b | modules/groups/src/store.rs:564 (2026-09-10) | docs/roadmap/feature-tracker.md:266; Read at HEAD: JOIN LATERAL then ORDER BY ... LIMIT $2 |
 | GROUPS-10 | Groups non-goals: group search, group-delete op, member_count on summaries, channels and messages, player promote/demote | accepted | groups | 3b | docs/plans/2026-09-06-2230-groups-membership-plan.md:659 (2026-09-06) | stated non-goals; channels/messages belong to the chat tracker row; modules/groups/src/admin.rs:17 calls promote/demote a non-goal of the player contract and only ACTION_PROMOTE (operator promote) exists |
-| GROUPS-11 | Silent swept invitations (plan non-goal) | closed | groups | 3b | docs/plans/2026-09-06-2230-groups-membership-plan.md:660 (2026-09-06) | reversed by landing: group.member_left reason expired (7807980) |
+| GROUPS-11 | Silent swept invitations (plan non-goal) | closed | groups | 3b | docs/plans/2026-09-06-2230-groups-membership-plan.md:677 (2026-09-06) | reversed by landing: group.member_left reason expired (7807980) |
 | PARTY-01 | Disconnect is detected by lease expiry, not socket close | open | party | 3b | docs/roadmap/feature-tracker.md:204 (2026-10-05) | typically lease plus one 5s sweep tick; docs/plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md:679; socket-driven leases are the follow-up |
 | PARTY-02 | PARTY_LEASE_SECS has no devctl operator override | open | party | 3b | docs/plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md:618 (2026-10-05) | only PROOF_PARTY_LEASE_SECS in tools/processctl/src/fleet.rs:126,962,1025 |
 | PARTY-03 | Purge residue window leaves a player_revisions row nothing deletes | open | party | 3b | docs/plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md:683 (2026-10-05) | an op verified before the session revoke can re-insert a member row after the purge ran; the lease sweep removes the row later |
@@ -322,7 +322,7 @@ Conventions:
 | PARTY-05 | Invite outage path is proven by a unit test only, not by conformance | open | party | 3b | docs/plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md:669 (2026-10-05) | conformance drives resolve_target |
 | PARTY-06 | No admin page for parties | accepted | party | 3b | docs/plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md:619 (2026-10-05) | not a conformance convention; ephemeral lease-bound state |
 | PUSH-01 | No Target::Players: a party pushes one Target::Player per member | open | push | 3b | docs/plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md:613 (2026-10-05) | changes the backplane Envelope (fronts-before-producers rollout) |
-| PUSH-02 | Gateway-global presence view (shared store, friends-graph audience) | feature | push | 3b | docs/reference/push-hub.md:182 (2026-09-05) | presence is front-local and default off; a global view needs a friends graph and persistence; folded into the presence tracker row |
+| PUSH-02 | Gateway-global presence view (shared store, friends-graph audience) | open | push | 3b | docs/reference/push-hub.md:182 (2026-09-05) | presence is front-local and default off; a global view needs a friends graph and persistence; the item-level half of partial tracker row :202 (no fan-in across gateway instances), with no own sequence row |
 | PUSH-03 | presence online/offline announcements can reach an observer in either order, no sequence number | open | push | 3b | docs/reference/push-hub.md:188 (2026-09-05) | needs presence as sequenced state |
 | PUSH-04 | No fuzz target covers the /push frame parser | open | push | 3b | docs/reference/push-hub.md:270 (2026-10-03) | tools/verifyctl/src/stages/fuzz.rs:22 runs frame_decode and wire_decode only |
 | PUSH-05 | The fixed /push route is invisible to routecheck | open | push | 3b | docs/reference/push-hub.md:271 (2026-10-03) | a future op at the same path would shadow it with no gate noticing |
@@ -480,9 +480,9 @@ Conventions:
 
 | Class | Rows |
 |---|--:|
-| open | 102 |
+| open | 103 |
 | accepted | 68 |
-| feature | 37 |
+| feature | 36 |
 | process | 7 |
 | closed | 47 |
 | **total** | **261** |
@@ -503,7 +503,7 @@ Per topic:
 | friends | 3b | 6 | 1 | 0 | 0 | 0 | 7 |
 | groups | 3b | 8 | 2 | 0 | 0 | 1 | 11 |
 | party | 3b | 5 | 1 | 0 | 0 | 0 | 6 |
-| push | 3b | 5 | 4 | 1 | 0 | 0 | 10 |
+| push | 3b | 6 | 4 | 0 | 0 | 0 | 10 |
 | storage | 3b | 1 | 7 | 1 | 0 | 0 | 9 |
 | leaderboard | 3b | 0 | 0 | 2 | 0 | 1 | 3 |
 | match | 3b | 0 | 0 | 1 | 0 | 0 | 1 |
@@ -543,7 +543,7 @@ Topics with at least one `open` row, with the count of those rows. Topics the
 inventory added are assigned here.
 
 - **3a:** accounts (5), account-deletion (3), gateway (6), wallet (1), admin (8), apikeys (2), audit (2), notifications (4), mail (3)
-- **3b:** friends (6), groups (8), party (5), push (5), storage (1), inventory (3), characters (1), config (3), event-plane (1), core-app (1), core-lifecycle (1), core-remote (2)
+- **3b:** friends (6), groups (8), party (5), push (6), storage (1), inventory (3), characters (1), config (3), event-plane (1), core-app (1), core-lifecycle (1), core-remote (2)
 - **3c:** weles (12), processctl (3), splitproof (2), conformance (2), csharp-client (1), agent-tooling (11)
 
 Topics with rows but no `open` row (no TODO file; `lore`, `stats`, `store`,
@@ -561,7 +561,8 @@ first five for feature rows only; `rpc-macro`, `routecheck`, `requirecheck`,
   (INVENTORY-03, INVENTORY-04, CHARACTERS-02). #3 also names the characters
   `LIST_HARD_LIMIT`, which CHARACTERS-01 records as closed.
 - `docs/reference/push-hub.md` — :188 presence ordering (PUSH-03) and the Carried
-  gaps list :258, :270, :271 (CSHARP-CLIENT-01, PUSH-04, PUSH-05).
+  gaps list :258, :268, :270, :271 (CSHARP-CLIENT-01, PUSH-08, PUSH-04,
+  PUSH-05), and :182 global presence (PUSH-02).
 - `docs/roadmap/feature-tracker.md` Notes cells and subsections: :140
   (ACCOUNTS-03), :145 (ACCOUNT-DELETION-01..03, ACCOUNTS-08), :146 (ACCOUNTS-09),
   :157-175 (GATEWAY-03), :177-193 (WALLET-01), :200 (FRIENDS-02, FRIENDS-03,
