@@ -13,7 +13,7 @@ _None._
   verbatim. Nine store sites fold a non-uuid id into a green empty result:
   modules/wallet/src/store.rs:403, modules/notifications/src/store.rs:98,287,
   modules/friends/src/store.rs:412,443,475, modules/groups/src/store.rs:498,544.
-  Candidate closure: a deterministic uuid. Source: docs/roadmap/feature-tracker.md:157
+  Candidate closure: a deterministic uuid. Source: docs/roadmap/feature-tracker.md:157 @ fd797b3a
   (2026-09-12).
 - [ ] **Describe validation checks the method-id dimension only**
   GATEWAY-04. Verb, path and auth of an advertised `OpManifest` are trusted

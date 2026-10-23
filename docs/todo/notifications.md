@@ -11,7 +11,7 @@ _None._
 - [ ] **`match.finished` produces no inbox row**
   NOTIFICATIONS-01. modules/notifications/src has no match.finished reference (Grep,
   lower bound); winner and loser are opaque contestant strings. Same root as
-  ACCOUNT-DELETION-02. Source: docs/roadmap/feature-tracker.md:244 (2026-08-31); see
+  ACCOUNT-DELETION-02. Source: docs/roadmap/feature-tracker.md:244 @ fd797b3a (2026-08-31); see
   docs/plans/2026-08-31-0032-notifications-inbox-3a-plan.md:558.
 - [ ] **Shared pagination grammar**
   NOTIFICATIONS-02. The cursor lives in this module's request body

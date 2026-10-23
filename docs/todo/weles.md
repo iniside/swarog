@@ -24,7 +24,7 @@ _None._
 - [ ] **Control endpoint bound after prepare hooks (M2)**
   WELES-03. The `[[prepare]]` hooks run before `ControlServer::bind` (weles/src/supervisor.rs:807
   and :866-873, 2026-07-16), so `weles down` in the prep window gets "very early
-  startup". Source: docs/reference/weles-design.md:905,
+  startup". Source: docs/reference/weles-design.md:905 @ fd797b3a,
   docs/plans/2026-07-16-0830-weles-m1-hardening-plan.md:259,
   docs/status/2026-07-16-1342-weles-m1-readiness-review-2-status.md.
 - [ ] **Mid-run state-checkpoint failure (M3)**
@@ -53,7 +53,7 @@ _None._
   WELES-20. Nothing exercises `replicas: 2` -> mint -> `weles up` -> `/resolve` returns two
   addresses -> client spreads across both. tools/verifyctl/src/stages/weles_managed_gateway.rs
   (:760-830) proves set consumption with a stage-owned fake agent, not weles minting.
-  Source: docs/reference/weles-design.md:840 (2026-07-28).
+  Source: docs/reference/weles-design.md:840 @ fd797b3a (2026-07-28).
 - [ ] **Replica spread unobserved in the live fleet**
   WELES-21. Needs a per-instance edge counter; `core/metrics` exposes only
   `http_requests_total` (core/metrics/src/lib.rs:80). Spread is proven at unit level only.
@@ -65,7 +65,7 @@ _None._
 - [ ] **M2 liveness for resolve**
   WELES-23. The `alive` flag is a placeholder (weles/master/src/store.rs:88-89) and
   `200 {"addrs":[]}` is never produced (weles/src/agentapi.rs:34-35).
-  Source: docs/reference/weles-design.md:877-888,
+  Source: docs/reference/weles-design.md:869-880,
   docs/plans/2026-07-30-2149-weles-store-doc-replicas-remediation-plan.md:581 (2026-07-30).
 
 ### Agent

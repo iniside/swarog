@@ -12,7 +12,7 @@ _None._
   INVENTORY-01. The module holds a static catalog and per-character holdings
   only; no stack or instance model (Grep lower bound over
   `modules/inventory/src/lib.rs` found no stack/instance code). Item-level half
-  of the partial tracker row (docs/roadmap/feature-tracker.md:223, 2026-07-22).
+  of the partial tracker row (docs/roadmap/feature-tracker.md:223 @ fd797b3a, 2026-07-22).
 - [ ] **Character tombstone table without GC**
   INVENTORY-03. One permanent row per deleted character, no retention or
   watermark; acceptable only while wipe is the migration. Writer and growth
@@ -21,4 +21,4 @@ _None._
 - [ ] **Silent truncation of the holdings list at HOLDINGS_HARD_LIMIT**
   INVENTORY-04. An owner with more than 1000 distinct items has the surplus
   dropped from list views, with no cursor or `has_more`
-  (`modules/inventory/src/store.rs:6-11`, 2026-07-14; docs/reference/module-reference.md:159).
+  (`modules/inventory/src/store.rs:6-11`, 2026-07-14; docs/reference/module-reference.md:156).

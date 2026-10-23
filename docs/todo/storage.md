@@ -14,4 +14,4 @@ _None._
   address-taken one; same status, wrong remedy. The cap check runs before the
   insert (`modules/storage/src/service.rs:265-272`, comment states it);
   positive-version updates stay available
-  (docs/roadmap/feature-tracker.md:320, 2026-09-17; read at HEAD).
+  (docs/roadmap/feature-tracker.md:320 @ fd797b3a, 2026-09-17; read at HEAD).

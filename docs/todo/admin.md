@@ -19,20 +19,20 @@ _None._
 - [ ] **Fetch remote `admin_data` once and concurrently**
   ADMIN-01. `resolve_items` (modules/admin/src/lib.rs:1495) awaits every remote
   `admin_data` in sequence on every `/admin` request. Source:
-  docs/roadmap/feature-tracker.md:257 (2026-09-17); also
+  docs/roadmap/feature-tracker.md:257 @ fd797b3a (2026-09-17); also
   docs/research/2026-10-22-1707-admin-redesign-gap-analysis.md:38-43.
 - [ ] **Local-render pages run `block_in_place` that the request timeout does not cancel**
   ADMIN-02. Affects apikeys, friends, groups, mail, notifications and wallet admin
   pages (wallet: modules/wallet/src/admin.rs:389). `HTTP_REQUEST_TIMEOUT_MS` does not
-  cancel the blocked section. Source: docs/roadmap/feature-tracker.md:257 (2026-09-17).
+  cancel the blocked section. Source: docs/roadmap/feature-tracker.md:257 @ fd797b3a (2026-09-17).
 - [ ] **Seed the avatar palette from the canonical lowercase id**
   ADMIN-03. The friends drill-down seeds it from the raw URL param; the same pattern
-  is in wallet and notifications. Source: docs/roadmap/feature-tracker.md:257
+  is in wallet and notifications. Source: docs/roadmap/feature-tracker.md:257 @ fd797b3a
   (2026-09-17).
 - [ ] **Derive `PARAM_PLAYER` and `PLAYER_REF_PREFIX` instead of redeclaring them**
   ADMIN-04. Local literals in modules/{friends,notifications,storage,wallet}/src/admin.rs
   (Grep, lower bound); they should derive from
-  `accountsapi::admin::PLAYERS_ROW_MENU`. Source: docs/roadmap/feature-tracker.md:257
+  `accountsapi::admin::PLAYERS_ROW_MENU`. Source: docs/roadmap/feature-tracker.md:257 @ fd797b3a
   (2026-09-17).
 - [ ] **A remote-fetch error collapses an item's section and label to its id**
   ADMIN-05. modules/admin/src/lib.rs:1504-1509 sets section and label to `it.id`,

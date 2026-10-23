@@ -28,7 +28,7 @@ _None._
 
 - [ ] **Hook bypasses: aliases, nested shells, `git.exe`, unparsed global options**
   AGENT-TOOLING-15. The commit-msg hook does not see these forms.
-  Source: docs/reference/commit-format.md:79-80 (2026-10-23).
+  Source: docs/reference/commit-format.md:79-80 @ fd797b3a (2026-10-23).
 - [ ] **Prefix-only exempt subjects**
   AGENT-TOOLING-16. Anything after an exempt prefix is unchecked.
   Source: docs/reference/commit-format.md:56 (2026-10-23).

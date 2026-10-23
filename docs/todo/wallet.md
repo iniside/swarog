@@ -12,4 +12,4 @@ _None._
   WALLET-01. modules/wallet has no advisory lock (modules/wallet/src/store.rs:157,233
   only comment on it), so money can reappear after erasure. Storage closes the same
   race: modules/storage/src/service.rs:237, modules/storage/src/projection.rs:61.
-  Source: docs/roadmap/feature-tracker.md:177 (2026-09-12).
+  Source: docs/roadmap/feature-tracker.md:177 @ fd797b3a (2026-09-12).

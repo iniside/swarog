@@ -11,7 +11,7 @@ _None._
 - [ ] **Socket-driven disconnect detection**
   PARTY-01. A disconnect is noticed by lease expiry, typically the lease plus
   one 5s sweep tick, not by socket close; socket-driven leases are the follow-up
-  (docs/roadmap/feature-tracker.md:204, 2026-10-05;
+  (docs/roadmap/feature-tracker.md:204 @ fd797b3a, 2026-10-05;
   docs/plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md:679).
 - [ ] **devctl override for PARTY_LEASE_SECS**
   PARTY-02. Only the proof fleet sets it (`PROOF_PARTY_LEASE_SECS` in
