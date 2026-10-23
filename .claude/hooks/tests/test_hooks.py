@@ -441,7 +441,7 @@ class Wiring(unittest.TestCase):
                  for h in g["hooks"] if h["type"] == "command"}
         for name in wired:
             self.assertTrue(os.path.isfile(os.path.join(HOOKS, name)), name)
-        on_disk = {f for f in os.listdir(HOOKS) if f.endswith(".py")} - {"shell_data.py"}
+        on_disk = {f for f in os.listdir(HOOKS) if f.endswith(".py")} - {"shell_data.py", "commit_format.py"}
         self.assertEqual(wired, on_disk)
 
     def test_command_form(self):

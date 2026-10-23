@@ -166,6 +166,39 @@ def reset_allowed(args, cwd):
     return not words or words[0] in ("HEAD", "@") or is_path(words[0], cwd)
 
 
+COMMIT_VALUE_LONG = {
+    "--message", "--file", "--template", "--author", "--date", "--cleanup",
+    "--reuse-message", "--reedit-message", "--fixup", "--squash", "--trailer",
+    "--pathspec-from-file",
+}
+COMMIT_VALUE_SHORT = set("mFCctuS")
+
+
+def skips_verify(args):
+    skip = False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a == "--":
+            return False
+        if a.startswith("--"):
+            if len(a) >= 6 and "--no-verify".startswith(a):
+                return True
+            if a in COMMIT_VALUE_LONG:
+                skip = True
+            continue
+        if re.fullmatch(r"-[a-zA-Z]+", a):
+            letters = a[1:]
+            for i, letter in enumerate(letters):
+                if letter == "n":
+                    return True
+                if letter in COMMIT_VALUE_SHORT:
+                    skip = i == len(letters) - 1
+                    break
+    return False
+
+
 def deny_reason(flat, code, raw_command, cwd):
     if re.search(r"\b(rm|del|remove-item|ri)\b.*\.git[/\\]index(?!\.lock)(\b|$|['\"\s])",
                  flat, re.I):
@@ -210,6 +243,9 @@ def deny_reason(flat, code, raw_command, cwd):
                     "on master.")
 
     for args in git_args(code, "commit"):
+        if skips_verify(args):
+            return ("core-rules.md Commit Message Format: never skip the commit-msg hook "
+                    "(--no-verify / -n); fix the message instead.")
         if "--amend" in args or "--no-edit" in args:
             continue
         visible_message = (
