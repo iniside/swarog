@@ -6,6 +6,7 @@ deny / ask / silent / context. Shell cases run under both Bash and PowerShell.
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -252,6 +253,16 @@ NEW_GIT = [
     ("cat > f <<\\EOF\ngit stash\nEOF\ngit stash", "deny"),
     ("cat > f <<-EOF\n\tgit stash\n\tEOF\ngit log", "silent"),
     ("cat > f <<\"EOF\"\ngit stash\nEOF\ngit log", "silent"),
+    ("git commit --no-verify -m 'x\n\n" + TR + "'", "deny"),
+    ("git commit --no-veri -m 'x\n\n" + TR + "'", "deny"),
+    ("git commit -n -m 'x\n\n" + TR + "'", "deny"),
+    ("git commit -nm 'x\n\n" + TR + "'", "deny"),
+    ("git commit -an -m 'x\n\n" + TR + "'", "deny"),
+    ("git commit -am 'x\n\n" + TR + "'", "silent"),
+    ("git commit -uno -m 'x\n\n" + TR + "'", "silent"),
+    ("git commit --no-verbose -m 'x\n\n" + TR + "'", "silent"),
+    ("git commit --amend --no-edit", "silent"),
+    ("git commit -m 'docs(agents): deny --no-verify and -n\n\n" + TR + "'", "silent"),
 ]
 
 POST = [
@@ -305,6 +316,12 @@ class HookCases(unittest.TestCase):
             extra.append(("git_safety_hook", shc("git checkout CLAUDE.md", tool, cwd="C:/Windows"), "silent"))
         self.check("git_safety_hook", extra)
 
+    @unittest.expectedFailure
+    def test_known_gap_glued_value_flag_then_n(self):
+        for tool in SHELL_TOOLS:
+            cmd = "git commit -S -n -m 'x\n\n" + TR + "'"
+            self.assertEqual(run("git_safety_hook", shc(cmd, tool)), "deny")
+
     def test_post_commit(self):
         extra = [("post_commit_review_reminder", pc(c, t, o), w)
                  for t in SHELL_TOOLS for c, o, w in POST]
@@ -338,6 +355,128 @@ class HookCases(unittest.TestCase):
         self.assertTrue(got.startswith("context:"))
         for needle in ("core-reviewer", "test-author", "model"):
             self.assertIn(needle, got)
+
+
+sys.path.insert(0, HOOKS)
+import commit_format  # noqa: E402
+
+CF_TRAILER = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+CF_SCISSORS = "# ------------------------ >8 ------------------------"
+
+
+class CommitFormat(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.plans = os.path.join(_TEMP.name, "cf-plans")
+        os.makedirs(cls.plans)
+        with open(os.path.join(cls.plans, "2026-01-01-0000-demo-plan.md"), "w") as f:
+            f.write("x\n")
+        cls.saved = commit_format.PLANS_DIR
+        commit_format.PLANS_DIR = commit_format.Path(cls.plans)
+
+    @classmethod
+    def tearDownClass(cls):
+        commit_format.PLANS_DIR = cls.saved
+
+    def ok(self, text):
+        self.assertIsNone(commit_format.check_message(text), text)
+
+    def bad(self, text, needle=None):
+        err = commit_format.check_message(text)
+        self.assertIsNotNone(err, text)
+        if needle:
+            self.assertIn(needle, err)
+        return err
+
+    def test_subject_shape(self):
+        self.ok("feat(core): add a thing")
+        self.ok("fix(a,b): two scopes")
+        self.bad("add a thing", "Bad commit subject")
+        self.bad("feat: add a thing", "Bad commit subject")
+        self.bad("feat([Core]): add a thing", "Bad commit subject")
+        self.bad("feat(Core): add a thing", "Bad commit subject")
+        self.bad("wip(core): add a thing", "Bad commit subject")
+        self.bad("revert(x): y", "Bad commit subject")
+
+    def test_exempt_prefixes(self):
+        for s in ("Merge branch 'x'", 'Revert "feat(a): b"', "fixup! feat(a): b",
+                  "squash! feat(a): b", "amend! feat(a): b"):
+            with self.subTest(s=s):
+                self.ok(s)
+
+    def test_step_suffix(self):
+        self.ok("feat(core): add a thing (demo step 3)")
+        self.ok("feat(core): add a thing (demo steps 3-4)")
+        self.bad("feat(core): finish step 3", "does not end with")
+        self.bad("feat(core): add a thing (demo step 3) now", "does not end with")
+        self.ok("feat(core): the next step is harder")
+        self.ok("feat(core): add a step function")
+
+    def test_unknown_slug_hint(self):
+        err = self.bad("feat(core): add a thing (demo-x step 3)", "matches no file")
+        self.assertIn("Closest plan slugs: demo", err)
+        err = self.bad("feat(core): add a thing (zzzzqqqq step 3)", "matches no file")
+        self.assertNotIn("Closest", err)
+
+    def test_kind_trailer_ok(self):
+        self.ok("fix(core): fix findings\n\nbody text\n\nKind: review-fix\n" + CF_TRAILER + "\n")
+        self.ok("fix(core): fix findings (demo step 2)\n\nKind: review-fix\n" + CF_TRAILER + "\n")
+
+    def test_kind_trailer_rejected(self):
+        self.bad("fix(core): x\n\nKind: review-fix\n\nmore body\n\n" + CF_TRAILER + "\n",
+                 "outside the final trailer paragraph")
+        self.bad("fix(core): x\n\nbody\n\nKind: review-fix\nKind: review-fix\n" + CF_TRAILER + "\n",
+                 "More than one")
+        self.bad("fix(core): x\n\nbody\n\nKind: other\n" + CF_TRAILER + "\n", "Unknown `Kind: other`")
+
+    def test_comments_and_scissors_ignored(self):
+        self.ok("fix(core): x\n# Kind: other\n# a comment\n\nbody\n\n" + CF_TRAILER + "\n")
+        self.ok("# leading comment\nfix(core): x\n\nbody\n\n" + CF_TRAILER + "\n")
+        self.ok("fix(core): x\n\nbody\n\n" + CF_TRAILER + "\n" + CF_SCISSORS +
+                "\nKind: other\nbad subject\ndiff --git a b\n")
+        self.bad("fix(core): x\n\nbody\n\nKind: other\n" + CF_TRAILER + "\n" + CF_SCISSORS + "\nignored\n")
+
+
+class CommitMsgShim(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if not shutil.which("sh"):
+            raise unittest.SkipTest("sh not on PATH; the shim would not run")
+        if not shutil.which("python"):
+            raise unittest.SkipTest("python not on PATH; the shim fails open, assertions would be vacuous")
+        cls.repo = os.path.join(_TEMP.name, "shim-repo")
+        os.makedirs(cls.repo)
+        _git(cls.repo, "init", "-q", "-b", "master")
+        hooks = os.path.join(cls.repo, ".claude", "hooks")
+        os.makedirs(hooks)
+        shutil.copy(os.path.join(HOOKS, "commit_format.py"), hooks)
+        dest = os.path.join(cls.repo, ".git", "hooks", "commit-msg")
+        shutil.copy(os.path.join(HOOKS, "git-commit-msg.sh"), dest)
+        os.chmod(dest, 0o755)
+        plans = os.path.join(cls.repo, "docs", "plans")
+        os.makedirs(plans)
+        with open(os.path.join(plans, "2026-01-01-0000-demo-plan.md"), "w") as f:
+            f.write("x\n")
+
+    def commit(self, msg):
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false",
+             "commit", "-q", "--allow-empty", "-m", msg],
+            cwd=self.repo, capture_output=True, text=True, env=ENV, timeout=60)
+
+    def test_bad_subject_fails_with_checker_text(self):
+        r = self.commit("add stuff")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("Bad commit subject", r.stderr)
+
+    def test_unknown_slug_fails_with_checker_text(self):
+        r = self.commit("feat(core): add (nosuch step 1)")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("matches no file under docs/plans", r.stderr)
+
+    def test_good_subject_succeeds(self):
+        r = self.commit("feat(core): add a thing (demo step 1)")
+        self.assertEqual(r.returncode, 0, r.stderr)
 
 
 class PostCommitFixture(unittest.TestCase):
