@@ -88,6 +88,13 @@ put plan/status files at repo root or in a temp dir.
 Work lands directly on `master`; do not create a branch unless the user
 explicitly requests one. Do not use git worktrees.
 
+## Agent Effort - RULE
+
+Every subagent runs at effort `medium`. A plan may propose another effort for
+a specific step, written in that step with a one-line reason; the owner
+approves it with the plan. Outside a plan, a different effort needs the
+owner's explicit request. Never raise effort on your own judgment.
+
 ## Git Safety - MANDATORY
 
 Never `git stash`, `git checkout -- <file>`, `git restore`, or anything that

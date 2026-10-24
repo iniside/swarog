@@ -55,8 +55,8 @@ pointer stubs. Use them; do not reimplement. Never use a git worktree.
   risk surface.
 
 Effort does not inherit: set it with the Agent call's `effort:` parameter
-(`low`|`medium`|`high`|`xhigh`|`max`), never prompt wording; default
-`effort:"medium"` unless the owner or plan names another. The rust
+(`low`|`medium`|`high`|`xhigh`|`max`), never prompt wording. The value
+follows `.agents/shared/core-rules.md` **Agent Effort**. The rust
 navigation chain does not inherit; paste it into every code-touching
 subagent prompt: rust-analyzer → targeted read → research subagent → grep
 as a labelled lower bound. Comments: default NONE; name at most the one or

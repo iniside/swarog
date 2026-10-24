@@ -53,8 +53,10 @@ Never use a git worktree. Never reuse a reviewer conversation for round 2.
 Do not hardcode `model:"fable"`, `model:"opus"`, or `model:"sonnet"` in
 Codex instructions unless those exact models are exposed by a tool in the
 current session. If a tool has its own model field, set it deliberately and
-name the actual model/tool used. Effort does not inherit: set `reasoning_effort` in the live
-call when the tool has that field; prompt wording alone does not configure it.
+name the actual model/tool used. Effort follows `.agents/shared/core-rules.md`
+**Agent Effort**: `medium` unless the approved plan step or the owner names
+another. Effort does not inherit: set `reasoning_effort` in the live call when
+the tool has that field; prompt wording alone does not configure it.
 If the tool has no such field, say so in the handoff. Comments: default NONE.
 
 The rust navigation chain does not inherit; paste it into every
