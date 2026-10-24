@@ -44,8 +44,8 @@ small":
 5. Dispatch `subagent_type: "core-reviewer"` — that field is written first,
    before `description` and before the prompt. Never a generic implementer
    or explore/plan type. Do not hand-author a "grumpy senior engineer"
-   persona. Effort is the Agent `effort:` parameter, default `"medium"`
-   (`docs/reference/subagent-dispatch.md`). It checks scope substitution
+   persona. Effort is the Agent `effort:` parameter; its value follows
+   `.agents/shared/core-rules.md` **Agent Effort**. It checks scope substitution
    first, rejects only with evidence, and lists unverified concerns
    separately. It returns a punch list, never a rewrite. Address it before
    showing the user, or note deferrals with rationale.
@@ -129,7 +129,7 @@ rollout, audit commit trailers against each step's lane.
 
 Tags are approved with the plan. Ask only for untagged/ad-hoc work; an
 authorized lane is not reopened. Effort is the Agent `effort:` parameter,
-default `"medium"`; prompt wording does not set it. Commit after each task
+its value per `core-rules.md` **Agent Effort**; prompt wording does not set it. Commit after each task
 (subagents may commit their own). Mid-rollout, never flip a step's lane tag silently — ask the owner first.
 
 **Review does not gate the next task — run them in parallel when the tasks

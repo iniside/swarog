@@ -105,6 +105,10 @@ matching `AGENTS.md` row, never this file.
 
 `.agents/shared/core-rules.md` **Agent Memory Backup**.
 
+## Agent Effort — RULE
+
+`.agents/shared/core-rules.md` **Agent Effort**.
+
 ## Commit After Every Task — MANDATORY
 
 `.agents/shared/core-rules.md` **Commit After Every Task**.

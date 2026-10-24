@@ -76,7 +76,7 @@ Steps do **NOT** each have to compile or pass tests in isolation — a step may 
 
 Write `subagent_type: "core-reviewer"` first. Never a generic implementer or
 explore/plan type. Do not hand-author a persona. Effort is the Agent
-`effort:` parameter, default `"medium"` ([subagent-dispatch.md](subagent-dispatch.md));
+`effort:` parameter, its value per `.agents/shared/core-rules.md` **Agent Effort**;
 prompt wording does not set it. Punch list, never a rewrite. Address it
 before showing the user, or note deferrals.
 

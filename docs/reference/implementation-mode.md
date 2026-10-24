@@ -20,7 +20,7 @@ Claude plans may write `[opus]` / `[fable]` → `[independent]`, `[sonnet]` → 
 
 The lane is chosen for the whole plan step or named fix; never divide a feature to fit the inline threshold.
 
-The user approves the tags together with the plan (call them out at ExitPlanMode) — that approval replaces the old blanket "inline or subagents?" question. Ask it only for untagged/ad-hoc work (no plan); an authorized lane is not reopened. Effort is the Agent `effort:` parameter, default `"medium"`; prompt wording does not set it ([subagent-dispatch.md](subagent-dispatch.md)). Mid-rollout, do not re-litigate a tag: a tagged step that turns out to need different handling gets a follow-up question, not a silent lane switch.
+The user approves the tags together with the plan (call them out at ExitPlanMode) — that approval replaces the old blanket "inline or subagents?" question. Ask it only for untagged/ad-hoc work (no plan); an authorized lane is not reopened. Effort is the Agent `effort:` parameter, its value per `.agents/shared/core-rules.md` **Agent Effort**; prompt wording does not set it ([subagent-dispatch.md](subagent-dispatch.md)). Mid-rollout, do not re-litigate a tag: a tagged step that turns out to need different handling gets a follow-up question, not a silent lane switch.
 
 ## How implementation dispatch differs from research
 
