@@ -664,3 +664,6 @@ async fn find_group(gateway: &Gateway, owner: &Session, name: &str) -> Result<Op
     }
     bail!("groups.listMine: more than {MAX_PAGES} pages for one player")
 }
+
+#[cfg(test)]
+mod tests;
