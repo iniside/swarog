@@ -378,15 +378,36 @@ fn sanitized_build_path_contains_the_discovered_msvc_linker() {
         std::env::var("ProgramFiles(x86)").ok().as_deref()
     );
     let path = env.get("PATH").expect("build environment has PATH");
+    let lower_components = |directory: &std::path::Path| -> Vec<String> {
+        directory
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy().to_ascii_lowercase())
+            .collect()
+    };
+    // Git's coreutils link.exe is on the inherited PATH, so only the MSVC toolchain dir leading PATH proves discovery.
+    let first = std::env::split_paths(path).next().expect("PATH is not empty");
+    let parts = lower_components(&first);
+    assert!(first.join("link.exe").is_file(), "first PATH entry {first:?} has no link.exe");
     assert!(
-        std::env::split_paths(path).any(|directory| directory.join("link.exe").is_file()),
-        "sanitized build PATH must contain an installed MSVC linker"
+        parts.windows(3).any(|window| window == ["vc", "tools", "msvc"]),
+        "first PATH entry {first:?} is not under VC\\Tools\\MSVC"
     );
     assert!(
-        env.get("LIB")
-            .into_iter()
-            .flat_map(std::env::split_paths)
-            .any(|directory| directory.join("kernel32.lib").is_file()),
+        parts.ends_with(&["bin".into(), "hostx64".into(), "x64".into()]),
+        "first PATH entry {first:?} is not the Hostx64\\x64 linker dir"
+    );
+    let libraries: Vec<_> = env.get("LIB").into_iter().flat_map(std::env::split_paths).collect();
+    assert!(
+        libraries.iter().any(|directory| {
+            let parts = lower_components(directory);
+            parts.windows(3).any(|window| window == ["vc", "tools", "msvc"])
+                && parts.ends_with(&["lib".into(), "x64".into()])
+                && directory.join("msvcrt.lib").is_file()
+        }),
+        "sanitized build LIB must contain the MSVC lib\\x64 dir with msvcrt.lib"
+    );
+    assert!(
+        libraries.iter().any(|directory| directory.join("kernel32.lib").is_file()),
         "sanitized build LIB must contain the Windows SDK libraries"
     );
     assert!(env.contains_key("INCLUDE"));
