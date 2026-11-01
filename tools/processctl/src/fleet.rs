@@ -634,44 +634,44 @@ pub fn runtime_environment() -> BTreeMap<String, String> {
 
 #[cfg(windows)]
 fn append_msvc_linker_path(env: &mut BTreeMap<String, String>) {
-    let Some(program_files) = std::env::var_os("ProgramFiles(x86)") else {
-        return;
-    };
-    let visual_studio = PathBuf::from(program_files).join("Microsoft Visual Studio");
-    let Ok(releases) = std::fs::read_dir(visual_studio) else {
-        return;
-    };
+    let program_files_x86 = std::env::var_os("ProgramFiles(x86)").map(PathBuf::from);
+    // VS 2022+ IDE editions install under ProgramFiles; Build Tools and older releases under (x86).
+    let visual_studio_roots =
+        [std::env::var_os("ProgramFiles").map(PathBuf::from), program_files_x86.clone()];
     let mut candidates = Vec::new();
-    for release in releases.filter_map(Result::ok) {
-        let Ok(editions) = std::fs::read_dir(release.path()) else {
+    for root in visual_studio_roots.into_iter().flatten() {
+        let Ok(releases) = std::fs::read_dir(root.join("Microsoft Visual Studio")) else {
             continue;
         };
-        for edition in editions.filter_map(Result::ok) {
-            let tools = edition.path().join("VC/Tools/MSVC");
-            let Ok(versions) = std::fs::read_dir(tools) else {
+        for release in releases.filter_map(Result::ok) {
+            let Ok(editions) = std::fs::read_dir(release.path()) else {
                 continue;
             };
-            for version in versions.filter_map(Result::ok) {
-                let tool_root = version.path();
-                let bin = tool_root.join("bin/Hostx64/x64");
-                if bin.join("link.exe").is_file() {
-                    candidates.push((tool_root, bin));
+            for edition in editions.filter_map(Result::ok) {
+                let tools = edition.path().join("VC/Tools/MSVC");
+                let Ok(versions) = std::fs::read_dir(tools) else {
+                    continue;
+                };
+                for version in versions.filter_map(Result::ok) {
+                    let tool_root = version.path();
+                    let bin = tool_root.join("bin/Hostx64/x64");
+                    if bin.join("link.exe").is_file() {
+                        candidates.push((version.file_name(), tool_root, bin));
+                    }
                 }
             }
         }
     }
     candidates.sort();
-    let Some((msvc_root, linker_dir)) = candidates.pop() else {
+    let Some((_, msvc_root, linker_dir)) = candidates.pop() else {
         return;
     };
-    let sdk_root = PathBuf::from(
-        std::env::var_os("ProgramFiles(x86)").expect("ProgramFiles(x86) was present above"),
-    )
-    .join("Windows Kits/10");
-    let sdk_version = newest_directory(&sdk_root.join("Lib"));
+    let sdk = program_files_x86.map(|root| root.join("Windows Kits/10")).and_then(|sdk_root| {
+        newest_directory(&sdk_root.join("Lib")).map(|version| (sdk_root, version))
+    });
 
     let mut paths = vec![linker_dir];
-    if let Some(version) = &sdk_version {
+    if let Some((sdk_root, version)) = &sdk {
         let sdk_bin = sdk_root.join("bin").join(version).join("x64");
         if sdk_bin.is_dir() {
             paths.push(sdk_bin);
@@ -686,7 +686,7 @@ fn append_msvc_linker_path(env: &mut BTreeMap<String, String>) {
 
     let mut libraries = vec![msvc_root.join("lib/x64")];
     let mut includes = vec![msvc_root.join("include")];
-    if let Some(version) = sdk_version {
+    if let Some((sdk_root, version)) = sdk {
         libraries.extend(
             ["ucrt/x64", "um/x64"]
                 .into_iter()

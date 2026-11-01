@@ -1,6 +1,6 @@
 # Processctl
 
-Last updated: 2026-10-23
+Last updated: 2026-11-01
 
 ## In progress
 
@@ -10,8 +10,7 @@ _None._
 
 - [ ] **`BUILD_ENV_ALLOWLIST` lacks SYSTEMDRIVE and ProgramData**
   PROCESSCTL-01. tools/processctl/src/fleet.rs:9-15 lacks both (re-checked: Grep of tools/processctl/src
-  finds neither). `append_msvc_linker_path` (fleet.rs:634-640) scans only
-  `ProgramFiles(x86)`; weles/src/prep.rs:16-19 still calls it a latent gap.
+  finds neither); weles/src/prep.rs:16-19 still calls it a latent gap.
   Source: docs/status/2026-07-15-1120-weles-m0-pre-m1-backlog-status.md:92 (2026-07-15).
 - [ ] **Linux `/proc` pgrp parse untested**
   PROCESSCTL-03. `list_process_group` (tools/processctl/src/guardian.rs:495) has no test (Grep finds
