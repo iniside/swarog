@@ -384,7 +384,6 @@ fn sanitized_build_path_contains_the_discovered_msvc_linker() {
             .map(|part| part.as_os_str().to_string_lossy().to_ascii_lowercase())
             .collect()
     };
-    // Git's coreutils link.exe is on the inherited PATH, so only the MSVC toolchain dir leading PATH proves discovery.
     let first = std::env::split_paths(path).next().expect("PATH is not empty");
     let parts = lower_components(&first);
     assert!(first.join("link.exe").is_file(), "first PATH entry {first:?} has no link.exe");
