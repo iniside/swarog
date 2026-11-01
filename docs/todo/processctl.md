@@ -22,3 +22,20 @@ _None._
   its Linux-only tests never compile; guardian.rs:955-959 includes only the macOS test
   module.
   Source: docs/plans/2026-07-14-1721-guardian-argv0-shim-fix-plan.md:198 (2026-07-14).
+- [ ] **MSVC discovery has no hermetic test**
+  PROCESSCTL-05. `append_msvc_linker_path` (tools/processctl/src/fleet.rs:635-706) reads the real
+  `ProgramFiles`/`ProgramFiles(x86)` and filesystem, so `sanitized_build_path_contains_the_discovered_msvc_linker`
+  (tools/processctl/src/fleet_tests.rs:373) proves the 64-bit Program Files root only on a host with VS there;
+  on a Build-Tools-under-(x86) host it passes with or without that scan, and newest-version-wins across roots is
+  never pinned. Needs the scan extracted to a fn taking candidate roots, then a tempdir test.
+  Source: proof-auditor review of 08be12df (2026-11-01).
+- [ ] **MSVC linker test only checks INCLUDE exists**
+  PROCESSCTL-06. tools/processctl/src/fleet_tests.rs:413 asserts `contains_key("INCLUDE")`; an INCLUDE with no
+  existing dirs passes (fleet.rs inserts `join_paths` of an empty list). Should assert an entry holding
+  `vcruntime.h` and one holding `windows.h`/`stdio.h`.
+  Source: proof-auditor review of 08be12df (2026-11-01).
+- [ ] **MSVC and SDK versions compared as text**
+  PROCESSCTL-07. MSVC version dirs (tools/processctl/src/fleet.rs:662) and `newest_directory` sort `OsString`
+  names lexicographically, so a hypothetical `14.100.x` loses to `14.99.x`. Does not bite with current
+  fixed-width versions.
+  Source: core-reviewer + proof-auditor reviews of da737d80 / 08be12df (2026-11-01).
