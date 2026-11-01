@@ -4,11 +4,7 @@ Last updated: 2026-11-01
 
 ## In progress
 
-- [ ] **Tests for the group re-run gate**
-  DEMOSEED-01. `invite_needs_respond` and the request/invite convergence in `seed_group`
-  (tools/demoseed/src/lib.rs, commit 5e58e635) have no tests; test-author step, plus a review of the
-  plan errata commit 7a78621e. Blocked while a `devctl up` fleet runs (no second Cargo command).
-  Source: demoseed rollout (2026-11-01).
+_None._
 
 ## Open
 
