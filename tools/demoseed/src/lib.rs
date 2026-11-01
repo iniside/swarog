@@ -334,6 +334,14 @@ pub fn friend_needs_accept(state: &str) -> Result<bool> {
     }
 }
 
+pub fn invite_needs_respond(my_state: &str) -> Result<bool> {
+    match my_state {
+        "invited" => Ok(true),
+        "member" => Ok(false),
+        other => bail!("invited player holds a group row in unexpected state {other:?}"),
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Tally {
     pub created: usize,
@@ -608,27 +616,30 @@ async fn seed_group(gateway: &Gateway, group: &GroupPlan, sessions: &[Session], 
         let outcome = match group.join_policy.as_str() {
             "open" => join(gateway, &group_id, member).await?,
             "request" => {
-                let joined = join(gateway, &group_id, member).await?;
-                if joined == Outcome::Created {
-                    let body = json!({"subject_id": member.player_id, "decision": "accept"});
-                    gateway
-                        .call(Method::POST, &format!("/groups/{group_id}/decide"), Caller::Player(&owner.token), Some(&body))
-                        .await?;
-                }
-                joined
+                join(gateway, &group_id, member).await?;
+                let body = json!({"subject_id": member.player_id, "decision": "accept"});
+                let (decided, _) = gateway
+                    .call(Method::POST, &format!("/groups/{group_id}/decide"), Caller::Player(&owner.token), Some(&body))
+                    .await?;
+                decided
             }
             "invite" => {
                 let body = json!({"target_handle": member.handle});
-                let (invited, _) = gateway
+                gateway
                     .call(Method::POST, &format!("/groups/{group_id}/invites"), Caller::Player(&owner.token), Some(&body))
                     .await?;
-                if invited == Outcome::Created {
+                let mine = find_mine(gateway, member, |item| Ok(str_field(item, "id", "groups.listMine")? == group_id))
+                    .await?
+                    .ok_or_else(|| anyhow!("group {:?}: invitee {} holds no row after the invite", group.name, member.handle))?;
+                if invite_needs_respond(str_field(&mine, "my_state", "groups.listMine")?)? {
                     let body = json!({"decision": "accept"});
-                    gateway
+                    let (responded, _) = gateway
                         .call(Method::POST, &format!("/groups/{group_id}/respond"), Caller::Player(&member.token), Some(&body))
                         .await?;
+                    responded
+                } else {
+                    Outcome::AlreadyExists
                 }
-                invited
             }
             other => bail!("group {:?}: unknown join policy {other:?}", group.name),
         };
@@ -645,16 +656,27 @@ async fn join(gateway: &Gateway, group_id: &str, member: &Session) -> Result<Out
 }
 
 async fn find_group(gateway: &Gateway, owner: &Session, name: &str) -> Result<Option<String>> {
+    match find_mine(gateway, owner, |item| Ok(str_field(item, "name", "groups.listMine")? == name)).await? {
+        Some(item) => Ok(Some(str_field(&item, "id", "groups.listMine")?.to_string())),
+        None => Ok(None),
+    }
+}
+
+async fn find_mine(
+    gateway: &Gateway,
+    session: &Session,
+    matches: impl Fn(&Value) -> Result<bool>,
+) -> Result<Option<Value>> {
     let mut cursor = String::new();
     for _ in 0..MAX_PAGES {
         let body = json!({"cursor": cursor, "limit": PAGE_LIMIT});
-        let page = gateway.read(Method::POST, "/groups/list", Caller::Player(&owner.token), Some(&body)).await?;
+        let page = gateway.read(Method::POST, "/groups/list", Caller::Player(&session.token), Some(&body)).await?;
         let items = page
             .get("items")
             .ok_or_else(|| anyhow!("groups.listMine: response has no items: {page}"))?;
         for item in array(items, "groups.listMine")? {
-            if str_field(item, "name", "groups.listMine")? == name {
-                return Ok(Some(str_field(item, "id", "groups.listMine")?.to_string()));
+            if matches(item)? {
+                return Ok(Some(item.clone()));
             }
         }
         cursor = str_field(&page, "next_cursor", "groups.listMine")?.to_string();
