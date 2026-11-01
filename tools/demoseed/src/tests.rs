@@ -28,6 +28,25 @@ fn plan_is_identical_across_calls() {
     assert!(!first.groups.is_empty());
 }
 
+// A change to SEED or the stream mixing must update these goldens deliberately: re-runs of the tool
+// only converge because the same plan comes out of every process.
+#[test]
+fn plan_output_is_pinned_across_processes() {
+    let seed = plan(30, 100);
+    let first = &seed.matches[0];
+    assert_eq!((first.report_id.as_str(), first.winner, first.loser), ("demo-match-0000", 0, 29));
+    let last = &seed.matches[99];
+    assert_eq!((last.report_id.as_str(), last.winner, last.loser), ("demo-match-0099", 5, 14));
+    let player = &seed.players[0];
+    assert_eq!(player.email, "demo-00@demo.local");
+    assert_eq!(player.display_name, "Aldric");
+    assert_eq!(player.characters, vec![CharacterPlan { name: "Oakenshield".to_string(), class: "ranger".to_string() }]);
+    assert_eq!(player.save.value, r#"{"level":25,"playtime_secs":287755,"zone":"Emberfields"}"#);
+    let group = &seed.groups[0];
+    assert_eq!((group.name.as_str(), group.owner), ("Iron Vanguard", 0));
+    assert_eq!(group.members, vec![19, 10, 25, 17, 1]);
+}
+
 #[test]
 fn plan_is_not_constant_across_indices() {
     let seed = plan(30, 100);
