@@ -18,5 +18,9 @@ Last updated: 2026-11-01
   (`RATE_LIMIT_RPS`/`RATE_LIMIT_BURST`, core/app/src/lib.rs:1063-1069) accounts for ~30 s. Unmeasured
   hypotheses: argon2 hashing on register + login in a debug build (demoseed logs in after every
   register even though register returns a `Session`), and 429 backoff in `Gateway::call`. Owner:
-  suspicious, profile later.
+  suspicious, profile later — he expects demoseed only surfaces a deeper monolith latency problem,
+  so start at the server: time a cheap `GET /leaderboard`, an authed `GET /accounts/me`, and one
+  register separately to split per-request overhead from argon2 cost from limiter backoff. Also:
+  `run/devctl/monolith.out.log` / `.err.log` were 0 bytes during that run although the server served
+  every call — find out whether logging is off (`RUST_LOG`) or routed elsewhere before profiling.
   Source: owner live acceptance (2026-11-01).
