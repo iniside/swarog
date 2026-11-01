@@ -526,7 +526,16 @@ cargo run -p verifyctl -- --all
 cargo run -p verifyctl -- --all --strict
 cargo run -p verifyctl -- --slow
 cargo run -p admincheck        # extension-point contract validation (points vs contributed entries)
+cargo build -p demoseed        # before `devctl up`, never while the fleet runs
+target/debug/demoseed          # seed demo data into the running monolith (:8080)
+target/debug/demoseed --base-url http://127.0.0.1:8082 --players 30 --matches 100   # split front door
 ```
+
+`demoseed` seeds demo data through the gateway's public API into a running
+fleet; build it (`cargo build -p demoseed`) BEFORE `cargo run -p devctl -- up ...`,
+then run the direct binary `target/debug/demoseed` (Windows
+`target\debug\demoseed.exe`; adjust for `CARGO_TARGET_DIR`), because devctl's
+parent Cargo stays alive and no second Cargo command may start.
 
 **`weles/`** (top-level crate, binary `weles`) is the standalone mini-orchestrator
 (M0): zero-sharing (no workspace-crate imports — patterns copied from
