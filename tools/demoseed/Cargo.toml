@@ -1,0 +1,19 @@
+[package]
+name = "demoseed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Seeds deterministic demo data into an already-running fleet through the gateway's
+# public HTTP API only, so every row is written by its owning module. A client of the
+# fleet, not a rollout: no database access, no workspace-crate dependencies.
+[[bin]]
+name = "demoseed"
+path = "src/main.rs"
+
+[dependencies]
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
