@@ -206,7 +206,6 @@ impl SplitMix64 {
     }
 }
 
-/// Pure and seeded per entity, so every run (and every `--players`/`--matches` value) converges on the same rows.
 pub fn plan(players: usize, matches: usize) -> SeedPlan {
     let players_plan = (0..players).map(plan_player).collect();
     let mut seed_plan = SeedPlan {
@@ -372,7 +371,8 @@ impl Summary {
         out += &row("characters", &self.characters, "created", "already present");
         out += &row("inventory", &self.grants, "granted", "already at target");
         out += &row("saves", &self.saves, "created", "already saved");
-        out += &row("matches", &self.matches, "reported", "bound to another result (409)");
+        out += &row("matches", &self.matches, "sent", "bound to another result (409)");
+        out += "  (an identical match re-send is a 202 no-op, so re-runs still count it as sent)\n";
         out += &row("friendships", &self.friendships, "accepted", "already friends");
         out += &row("groups", &self.groups, "created", "already present");
         out += &row("memberships", &self.memberships, "added", "already held");
