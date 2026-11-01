@@ -298,3 +298,21 @@ fn parse_args_rejects_bad_counts_and_empty_url() {
     assert!(parse_args(&args(&["--base-url", ""])).is_err());
     assert!(parse_args(&args(&["--base-url", "/"])).is_err());
 }
+
+#[test]
+fn invite_rerun_responds_when_row_is_still_invited() {
+    assert!(invite_needs_respond("invited").unwrap());
+}
+
+#[test]
+fn invite_rerun_skips_respond_when_already_member() {
+    assert!(!invite_needs_respond("member").unwrap());
+}
+
+#[test]
+fn invite_rerun_rejects_any_other_state() {
+    for state in ["requested", "", "Invited", "MEMBER", "member ", "declined", "banned"] {
+        let err = invite_needs_respond(state).unwrap_err().to_string();
+        assert!(err.contains("unexpected state"), "{state:?}: {err}");
+    }
+}
