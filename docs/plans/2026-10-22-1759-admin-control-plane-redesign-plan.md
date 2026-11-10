@@ -788,10 +788,13 @@ It ships with an admincheck rule, or a test in Step 25.
    - `InvokeOutcome::NoOp { message: String }` means the request was valid but there was
      nothing to do.
    - `Flash` (`core/admin/src/engine/actions.rs` ~:235-240) gains
-     `tone: FlashTone { Success, Info }`. Old `admin.reveals` rows are wiped, not
-     migrated.
+     `tone: FlashTone { Success, Info }`. (Old rows: see below.)
    - `NoOp` answers a 303 PRG to `ok_target(None, body, entity)` with an `Info` flash. `Ok`
      keeps `Success`. The renderer shows an Info flash as a neutral toast.
+   - `tone` has no `#[serde(default)]`, since that would be a compatibility bridge. An
+     `admin.reveals` row written before this step fails to decode in `take_flash`
+     (`actions.rs` ~:268-273), shows nothing, and expires within `REVEAL_TTL`
+     (300 s, `lib.rs` ~:148). No DROP is added.
    - `audit_detail` (`actions.rs` ~:171-199) writes `noop: <message>`. The ok, timeout,
      failed, rejected and conflict formats are unchanged.
 
@@ -835,53 +838,103 @@ It ships with an admincheck rule, or a test in Step 25.
    keeping only the lines this step causes.
 
 9. **Form instances ("skąd jestem / co robię")** (owner, 2026-11-10, option 1).
-   - Applies to every portal form: a `Then::Form` or `Then::Confirm` modal, and a panel
-     with `form_submit`. Plain `Then::Invoke` buttons have no fields and stay token-less;
-     `admit` guards them as today.
-   - New portal-owned table `admin.forms`, an owner-approved exception to R1's
-     "no new tables" (portal state, like `admin.reveals`, not domain data). DDL in
-     `core/admin/src/lib.rs` beside `REVEAL_DDL`:
+   - **Scope.** Every portal form gets an instance: a `Then::Form` or `Then::Confirm`
+     modal, and a panel with `form_submit`. Plain `Then::Invoke` buttons do not (see
+     "Token-less POST" below).
+   - **Table.** `admin.forms` is a new portal-owned table, an owner-approved exception to
+     R1's "no new tables" (portal state, like `admin.reveals`, not domain data). The DDL
+     sits in `core/admin/src/lib.rs` beside `REVEAL_DDL`:
 
      ```text
      admin.forms (id text PRIMARY KEY, login text NOT NULL, module text NOT NULL,
                   action text NOT NULL, contribution text, entity_kind text,
                   entity_id text, item text, spec jsonb NOT NULL,
                   expires_at timestamptz NOT NULL)
+     CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
      ```
 
-     Pruned opportunistically, the same way `prune_expired_reveals` prunes reveals.
-   - Rendering a form inserts a row and puts `_form=<id>` in the form. The id is
-     `<contribution or action>:<uuid v4>`. `spec` is the `FormSpec`, or the `ConfirmSpec`
-     reason and type-to-confirm fields, exactly as rendered. TTL is 1 hour.
-   - On POST, the portal loads the row by `_form`. It answers 400 with zero calls, after
-     the existing CSRF check, when any of these holds:
-     - the row is missing;
-     - the row has expired;
-     - the row's `login` differs from the session's;
-     - the row's module or action differs from the URL's.
-   - On a valid row, `admit` runs, then `InvokeCall` is built only from the row:
-     - module, action and entity come from the row;
-     - `item` comes from the row;
-     - `input` = `encode_field` over the snapshot's `fields`, plus its `hidden` map;
-     - reason and `expected_revision` come from their portal keys.
+     Rows are pruned opportunistically, the way `prune_expired_reveals` prunes reveals.
+   - **Minting** (render).
+     - The id is `<contribution or action id>:<new_token()>`, reusing the existing token
+       generator `core/admin/src/lib.rs` ~:776. No `uuid` dependency.
+     - `spec` stores what was rendered:
+       - for `Then::Form`: the `FormSpec` (fields, hidden, revision);
+       - for `Then::Confirm`: the `ConfirmSpec`;
+       - for a panel form: the panel's `FormSpec`.
+     - TTL is 1 hour.
+     - A modal row is minted by the modal GET (`routes.rs` ~:630-660), which may carry
+       `?entity=` and `?item=` (item 10); both are stored in the row.
+     - A panel row is minted when the `ok` Form panel renders. A readonly, stale, denied or
+       error panel mints nothing; its Save is disabled.
+   - **POST order** (`action_submit`):
+     1. Check CSRF.
+     2. Load the row by `_form`. Each of these gives 400 with zero calls: the row is
+        missing or expired, its `login` is not the session's, or its module or action is
+        not the URL's.
+     3. Run `admit`.
+     4. Check the reason against the STORED `ConfirmSpec.reason`: Required and empty gives
+        422.
+     5. Check the typed confirmation: the new portal key `_confirm` must equal the stored
+        `type_to_confirm`, else 422. The confirm input gains `name="_confirm"`, so the
+        check is server-side, not only client-side.
+     6. Invoke.
+   - **Allowed posted keys** with a form instance:
+     - the portal keys `_csrf`, `_form`, `_reason`, `_confirm`, `_return`;
+     - every field key of the stored spec;
+     - `<money key>__currency` for each Money field.
 
-     Any other posted key that is not a portal key (`_csrf`, `_form`, `_reason`,
-     `_expected_revision`, `_return`) → 400 with zero calls.
-   - The row stays valid until expiry, so a 422/409 retry reuses the same `_form`. Nothing
-     re-fetches the panel.
-   - Field keys must not contain `__`, because `<key>__currency` is a form-local input
-     name. admincheck checks this for `Then::Form` specs; the portal refuses a panel spec
-     that breaks it, rendering an error panel and writing no row.
+     Any other key gives 400 with zero calls. In the 8a template commit, the modal stops
+     posting `_entity`, the hidden-map inputs and `_expected_revision`
+     (`templates/modal.html.tmpl` ~:9-10). The "every other field is input" rule
+     (`actions.rs` ~:25, ~:125-129) is deleted.
+   - **`InvokeCall` assembly** uses the row only:
+     - module, action, entity and `item` come from the row;
+     - `input` = `encode_field` over the stored fields, plus the stored `hidden` map;
+     - `expected_revision` = the stored `FormSpec.revision`. A 409 therefore needs a reload,
+       which shows a new form; the portal's 409 message says so;
+     - `reason` comes from `_reason`;
+     - `request_id` = the form id (item 11).
+   - **Consume and retry** (owner, 2026-11-10).
+     - `Ok` and `NoOp` delete the row before answering. A replay or double-click gets 400
+       "Already submitted — refresh".
+     - 422 and timeout keep the row. A 422 retry re-renders from the STORED spec, not the
+       live `decl`; today's `reshow` (`routes.rs` ~:696) changes to read the row.
+   - **Field keys** must not contain `__`, because `<key>__currency` is a form-local input
+     name. admincheck checks this for `Then::Form` specs. The portal refuses a panel spec
+     that breaks it, rendering an error panel and minting no row.
 
 10. **Item binding** (owner, 2026-11-10, P2 option 1).
     - `InvokeCall` gains `item: Option<String>`.
     - A primitive that binds actions to one element carries that element's id: the
       existing `QueueItem.id` with its `actions`, and a new
-      `PropertyList.item: Option<String>` used with a page's `PanelTool` actions.
-    - The portal puts the id into the action's form row, or, for a token-less Invoke
-      button, into the typed `item` it posts.
-    - Modules read `InvokeCall.item`. There is no item key in `input` and no query string.
-    - Add an Opaque `req.item` policy row.
+      `PropertyList.item: Option<String>` used with the page's `PanelTool` actions.
+    - The 8a template commit renders `ActionPoint::PanelTool` actions in the panel-tools
+      slot. Step 8 left that slot holding only the chart legend
+      (`templates/primitives.html.tmpl` ~:344).
+    - A bound action's button sends the id:
+      - as `?item=` on its modal GET (stored in the row);
+      - or, for a token-less Invoke button, as the portal key `_item`.
+
+      Modules read `InvokeCall.item`; there is never an item key in `input`.
+    - `item` is capped at 256 bytes; longer gives 400. A forged `item` can reach a module.
+      That is acceptable because the module validates it against its own data, as
+      `skip(expected)` does. The plan states this so no implementer adds a portal-side
+      membership check.
+    - Add a Validated `req.item` policy row with the 256-byte cap.
+
+11. **Request id** (owner, 2026-11-10).
+    - `InvokeCall` gains `request_id: Option<String>`. It is the form instance id, so a
+      module can de-duplicate an invoke retried after a timeout (outcome unknown).
+    - It is `None` for a token-less button.
+    - Add an Opaque `req.request_id` policy row.
+
+**Token-less POST** (`Then::Invoke` buttons, including the Invoke action named by a
+panel's `form_submit` when it is posted without `_form`):
+- `input` is always empty;
+- the allowed keys are `_csrf`, `_entity`, `_return` and `_item`;
+- any other key gives 400 with zero calls.
+
+A panel Save therefore only works through its form instance.
 
 (b) Why now: before the first provider (Step 9) codes against the strings.
 
@@ -1060,10 +1113,13 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
     values decoded;
   - a cached `search=a` copy is never served for `search=b`;
   - form instances: each of these gives 400 with zero provider calls — a missing,
-    expired, another-operator's or mismatched-action `_form`, and an extra posted key;
-  - `InvokeCall.item` comes from the row, and a forged posted `item` is ignored or
-    refused;
-  - a token-less Invoke button still passes `admit`.
+    expired, another-operator's, mismatched-action or already-consumed `_form`, and a
+    posted key outside the allowed set (incl. `_item` next to `_form`);
+  - `Ok` consumes the row; a 422 keeps it and re-renders from the stored spec;
+  - a wrong `_confirm` and a Required-but-empty `_reason` each give 422 with zero calls;
+  - `InvokeCall.item`, `expected_revision` and `request_id` come from the row;
+  - a token-less POST carries an empty `input`, rejects field keys, and still passes
+    `admit`.
 - `core/controlplane` tests for the Step 8a contract: `encode_field`/`decode_field` round
   trip for every `FieldKind`, including a Multi value that contains a comma and a Money
   value; a malformed raw value is a `FieldError`.
