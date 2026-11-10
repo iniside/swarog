@@ -773,7 +773,9 @@ Owner decisions implemented here (2026-11-10):
   state, like `admin.reveals`), consumed on success;
 - the form id passed to modules as `request_id`;
 - item binding;
-- an atomic claim, so repeated clicks are idempotent and never an error;
+- an atomic claim, so repeated clicks on forms AND plain buttons are idempotent and never
+  an error, including a nervous operator clicking many times a second;
+- writer ports use `request_id` as their idempotency key where the module has one;
 - a portal `validate_item` guard.
 
 #### A. Contract changes (`core/controlplane/src/lib.rs`)
@@ -835,6 +837,7 @@ admin.forms (id text PRIMARY KEY, login text NOT NULL, module text NOT NULL,
 CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
 ```
 
+- **Rows.** A row is a form instance (below) or a click claim (token-less path).
 - **Which forms get one.** A `Then::Form` or `Then::Confirm` modal, and an `ok`
   `Primitive::Form` panel with a `PanelForm` action. A readonly, stale, denied or error
   panel mints nothing, and its Save is disabled. So does an `ok` Form panel whose
@@ -881,7 +884,11 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
      | Reason | Answer |
      | --- | --- |
      | missing, expired, another login, other module or action | 400, zero calls |
-     | `consumed_at` set, or claimed less than 30 s ago | repeated click: 303 with an `Info` flash "Already submitted — this action is being processed or has completed", zero calls, never an error |
+     | `consumed_at` set, or claimed less than 30 s ago | repeated click: "Already submitted — this action is being processed or has completed", zero calls, never an error |
+
+     The repeated-click answer writes nothing to the database. An htmx request gets the
+     neutral toast fragment directly; a non-htmx request gets a 303 to the same target
+     with no flash.
 
   6. **Pre-invoke checks.** Each failure first releases the claim (`claimed_at = NULL`),
      then answers:
@@ -930,13 +937,21 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
        `reshow` (`routes.rs` ~:696) changes to read the row.
      - A 409 re-renders it with the reload banner and Save disabled (the row is a
        tombstone).
-- **Token-less path** (no `_form`):
-  - Allowed keys: `_csrf`, `_entity`, `_return`, `_item`.
+- **Token-less path** (no `_form`), owner 2026-11-10 option 1a:
+  - Allowed keys: `_csrf`, `_entity`, `_return`, `_item`. Any other key → 400.
   - 400 with zero calls when the action is not `Then::Invoke` (a `Then::Form` or
     `Then::Confirm` must come with a form), or when its point is `PanelForm`.
   - `_item` must pass `validate_item`.
-  - `input` is empty and `request_id` is `None`.
-  - Then `admit`, invoke and audit as above, with no row.
+  - **Click claim.** The portal derives a deterministic id
+    `click:<hex sha256(login \0 module \0 action \0 entity \0 item)>` and upserts it
+    into `admin.forms` (`spec` = `{}`, TTL 1 hour). It then runs the same claim as step 5,
+    with one change: a row whose `consumed_at` is older than 5 s may be claimed again,
+    and the claim clears `consumed_at`. A deliberate repeat after 5 s is a new action;
+    anything inside the window is a repeated click and gets the same answer as above.
+  - `admit` failures release the claim, as in step 6.
+  - `input` is empty, and `request_id` = the click id.
+  - Then invoke, settle the row (Ok/NoOp/Conflict mark it consumed; the rest release it),
+    and audit, as in steps 7–9.
 - **`Flash.tone: FlashTone { Success, Info }`** (`actions.rs` ~:235-240). It has no
   `#[serde(default)]`. A pre-8a `admin.reveals` row fails to decode in `take_flash`
   (~:268-273), shows nothing, and expires within `REVEAL_TTL` (300 s). No DROP.
@@ -971,8 +986,10 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
 4. `render.rs` `currency_key` (~:962) is deleted. The form-local Money input name is
    `<key>__currency`; field keys must not contain `__`, and the portal refuses a panel
    spec that breaks this with an error panel and no row.
-5. Template: `admin.js` stops comma-joining Multi (`admin.js:118`) and posts the
-   checkboxes as repeated keys. Primary comes from `ActionDecl.primary`
+5. Template: every POSTing button and form carries `hx-disabled-elt="this"`, which
+   disables it until the response arrives, so a normal browser sends one request per
+   click burst. The server-side claim stays the authority. `admin.js` stops comma-joining
+   Multi (`admin.js:118`) and posts the checkboxes as repeated keys. Primary comes from `ActionDecl.primary`
    (`shell.html.tmpl:47`). Info flashes render as a neutral toast.
 
 #### D. Gates
@@ -1070,6 +1087,11 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
   - `modules/<m>/Cargo.toml` adds `controlplane`;
   - a writer (`writes: true`) ships its probe in `modules/<m>/src/conformance.rs` plus
     its `policy.rs` CapCase rows;
+  - `request_id` (owner, 2026-11-10, option 2a). An action with a non-idempotent effect
+    uses `InvokeCall.request_id` as its idempotency key wherever the module already has
+    one (e.g. wallet movements). Where it has none, the step's report names the action
+    under **Leftovers for owner** as a documented double-apply risk, which arises only
+    after a timeout or a failed settle;
   - no test files (Step 25).
 - **b** (`[opus]` mockup-implementer): template or macro adjustments the module's page needs,
   checked 1:1 against its mockup page per R3. When the generic macros already render the
@@ -1195,7 +1217,10 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
   - POST decoding: repeated Multi checkboxes reach the module as one JSON array, which
     survives a value with a comma; `<key>` + `<key>__currency` reach it as one Money
     object;
-  - an `ok` Form panel without a `PanelForm` action renders readonly and mints no row.
+  - an `ok` Form panel without a `PanelForm` action renders readonly and mints no row;
+  - token-less click claim: a burst of concurrent POSTs on one button invokes once. The
+    rest get the toast with zero calls and no `admin.reveals` row. A repeat more than
+    5 s after completion invokes again. `request_id` is the deterministic click id.
 - `core/controlplane` tests for the Step 8a contract:
   - an `encode_field`/`decode_field` round trip for every `FieldKind`, including a Multi
     value containing a comma and a Money value;
