@@ -606,6 +606,12 @@ The proof is the Step 25 `core/app` test plus splitproof. The edge-less list at
 `tools/routecheck/src/main.rs:222-233` stays `server` / `admin-svc`, and its comment drops
 the `admin.adminData` example.
 
+`Manifest.writes` becomes authoritative (owner, 2026-11-10). In `core/controlplane`,
+`LocalFace::invoke` returns `opsapi::Status::Forbidden` without calling the provider when
+that provider's `manifest().writes` is `false`. `LocalFace` reads the manifests once at
+construction. Every local and remote invoke path passes through `LocalFace`, so a provider
+that does not declare `writes: true` cannot write.
+
 (d) `[opus]` core-implementer (lifecycle ordering).
 
 ### Step 5 — Move the portal into core
@@ -700,6 +706,19 @@ local and no edge is dialled. Collect `PROVIDER_SLOT` after `init` and call `man
 
 `--strict` exits 1 on any finding.
 
+The conformance writer check moves to manifests (owner, 2026-11-10):
+- `tools/conformance` derives the writer set the same way: build the monolith module list,
+  collect `PROVIDER_SLOT`, and take each manifest whose `writes` is `true`. Each writer
+  must have an `InputByteCaps` CapCase for `cp.invoke` in its entry, whose cap equals the
+  Validated `cp.invoke` `req.input.<value>` row. The entry name is `Manifest.module`, with
+  `core.events` and `portal` mapping to the `admin` entry.
+- Delete the hand-maintained `CONTROL_PLANE_WRITERS`, `control_plane_writer_dirs` (the
+  text scan for `writes: true`), and their findings from `tools/conformance/src/{checks.rs,main.rs}`.
+  This leaves one authority: the manifest that `LocalFace` enforces. The `cp.invoke`
+  rationale const in `policy.rs` drops its `CONTROL_PLANE_WRITERS` wording in the same commit.
+- Steps 9, 11, 15, 18, 20, 21 and 23 no longer add anything to a writer list. They ship
+  only their probe and CapCase rows.
+
 (d) `[opus]` core-implementer.
 
 ### Step 8 — Shell, primitives, assets
@@ -729,8 +748,7 @@ state picker.
 - `core.events` (`pages-platform.js:130-157`): real pause / `resume_retry` / retry / skip
   via `asyncevents::admin` over `ctx.db()`; rewind is `implemented: false`; FAKE per the
   data-sources table.
-- Writers: `core.events` has `writes: true`. Add `admin` to `CONTROL_PLANE_WRITERS`, and
-  add its probe in `core/admin/src/conformance.rs` (`cp.invoke` input caps for
+- Writers: `core.events` has `writes: true`. Add its probe in `core/admin/src/conformance.rs` (`cp.invoke` input caps for
   `core.events`) with the CapCase rows in the `admin()` entry of `policy.rs`. The
   `cp.invoke` `req.input.<value>` policy row becomes Validated with the byte cap, as the
   old `admin.adminSubmit` row (`policy.rs:86` before Step 1) was.
@@ -755,8 +773,8 @@ state picker.
     actions, search and data per the data-sources table and R1–R2;
   - `modules/<m>/src/lib.rs` contributes it to `controlplane::PROVIDER_SLOT` in `init`;
   - `modules/<m>/Cargo.toml` adds `controlplane`;
-  - a writer adds itself to `CONTROL_PLANE_WRITERS` and ships its probe in
-    `modules/<m>/src/conformance.rs` plus its `policy.rs` CapCase rows;
+  - a writer (`writes: true`) ships its probe in `modules/<m>/src/conformance.rs` plus
+    its `policy.rs` CapCase rows;
   - no test files (Step 25).
 - **b** (`[opus]` mockup-implementer): template or macro adjustments the module's page needs,
   checked 1:1 against its mockup page per R3. When the generic macros already render the
@@ -845,8 +863,11 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
 - One `admin_tests.rs` per ported module (mail, accounts, characters, wallet, inventory,
   friends, groups, storage, notifications, apikeys, scheduler, config, audit), covering
   its panels' data mapping and each REAL action's success and failure path.
-- `tools/conformance` tests for `CONTROL_PLANE_WRITERS`: a writer without byte-cap coverage
-  fails, and a writer in a non-`admin.rs` file is found.
+- `tools/conformance` tests for the manifest-derived writer check: a `writes: true`
+  manifest without a matching CapCase fails; a CapCase whose cap differs from the
+  Validated row fails; `core.events` maps to the `admin` entry.
+- `core/controlplane` test: `LocalFace::invoke` on a `writes: false` provider returns
+  Forbidden and never calls the provider.
 
 Splitproof:
 - **Files:** `tools/splitproof/src/main.rs` and `tools/splitproof/src/party_checks.rs`.
@@ -971,3 +992,18 @@ The report lists the declared deviations.
   No packaging context excludes it today.
 - The routecheck SERVE-PARITY treatment of `cp.*` was read only at
   `tools/routecheck/src/main.rs:215-240, 460-490`. Step 4's implementer confirms it.
+
+## Errata (during implementation)
+
+- **Step 2 (04a9ece4).**
+  - `ControlPlane` arguments are spelled `crate::PanelRequest` / `crate::SearchRequest` /
+    `crate::InvokeRequest`. rpc-macro generates same-named wire structs in a
+    `use super::*` module, so the bare names would refer to themselves.
+  - `SECTIONS` is `&[(&str, &str, i32)]` (id, label, order).
+  - The defaults are `DEFAULT_PANEL_DEADLINE_MS` / `DEFAULT_SEARCH_DEADLINE_MS`.
+  - Types, fields and wire names are unchanged.
+- **Step 3 (94d39ba7).** `PoisonEvent` follows the real schema: `event_id: String` (a text
+  uuid), and `appended_at: String` read from `created_at::text`.
+- **2026-11-10 (owner).** `Manifest.writes` is enforced by `LocalFace::invoke` (Step 4), and
+  the conformance writer check derives writers from monolith manifests instead of a text
+  scan and a hand list (Step 7).
