@@ -453,8 +453,8 @@ mod player_e2e_tests {
         let srv = PlayerServer::new();
         srv.set_handler(player_handler(|method, token, api_key, payload| {
             Box::pin(async move {
-                let token = token.map_or("<none>".into(), |t| t);
-                let api_key = api_key.map_or("<none>".into(), |k| k);
+                let token = token.unwrap_or("<none>".into());
+                let api_key = api_key.unwrap_or("<none>".into());
                 let payload = String::from_utf8_lossy(&payload).into_owned();
                 Ok(format!(
                     r#"{{"method":"{method}","token":"{token}","api_key":"{api_key}","payload":{payload}}}"#
