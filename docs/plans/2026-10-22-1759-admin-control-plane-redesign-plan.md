@@ -796,7 +796,8 @@ Owner decisions implemented here (2026-11-10):
 4. **`InvokeOutcome::NoOp { message: String }`.** The request was valid but there was
    nothing to do.
 5. **`InvokeCall`.** Add `item: Option<String>` (the bound element) and
-   `request_id: Option<String>` (the form instance id, the module's de-duplication key).
+   `request_id: Option<String>` (the form instance id, or the click request id of a
+   plain button (B); the module's de-duplication key).
    The Design sentence about idempotency via `FormSpec.hidden` / `_idem_*` is replaced by
    `request_id`.
 6. **`PropertyList.item: Option<String>`.** Binds the panel's `PanelTool` actions to one
@@ -909,8 +910,13 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
      | `consumed_at` set, or claimed less than 30 s ago | repeated click: "Already submitted — this action is being processed or has completed", zero calls, never an error |
      | free (unexpired, unclaimed, unconsumed, matching): the holder released it between the UPDATE and the SELECT | run the claim once more; if it fails again, the repeated-click answer |
 
-     The 400 does not say which reason applied. The repeated-click answer writes nothing
-     to the database. An htmx request gets the neutral toast fragment; a non-htmx request
+     The classification is a pure function, `classify_form(&FormRow, now) -> Claim`
+     in `engine/actions.rs` (`Claim { Reject, Repeated, Retry }`). The classifying
+     `SELECT` returns the row together with Postgres `now()`, so the function never reads
+     a clock and Step 25 unit-tests every boundary without a database.
+
+     The 400 does not say which reason applied. The repeated-click answer writes no flash
+     and no `admin.reveals` row (the token-less path still runs its upsert first). An htmx request gets the neutral toast fragment; a non-htmx request
      gets a bare 303 (no flash) to `_return` when it passes the existing `_return` check,
      else the row's entity page, else `/admin`.
 
@@ -1009,7 +1015,8 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
     RETURNING *
     ```
 
-    A no-row result is classified by the inverse of this WHERE, not by the step 5 table:
+    A no-row result is classified by the inverse of this WHERE, not by the step 5 table,
+    in a second pure function `classify_click(&FormRow, now) -> Claim` fed the same way:
     - login, module or action mismatch → 400;
     - claimed less than 30 s ago and not consumed, or consumed less than 5 s ago →
       the repeated-click answer;
@@ -1058,10 +1065,16 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
    ~:770-776, ~:927, ~:1107 stop writing `q`/`cursor`/`before`/`state` into `params`.
    `engine/panels.rs` `cache_key` (~:83-96) includes the four fields, distinguishing
    `None` from `Some("")`.
-4. `render.rs` `currency_key` (~:962) is deleted. The form-local Money input name is
-   `<key>__currency`. Field keys must not contain `__`, must not start with `_`, and must
-   not equal a `hidden` key; the portal refuses a panel spec that breaks this with an
-   error panel and no row.
+4. `render.rs` `currency_key` (~:962) is deleted. The Money currency input name comes
+   from one portal function, `engine::actions::money_currency_key(key) -> String`
+   (`<key>__currency`; portal-private, modules never see the suffix),
+   called by the POST decoder and by the renderer, which fills a new
+   `FieldView.currency_name`. Template: the Money select and its readonly hidden input
+   (`primitives.html.tmpl` ~:214) render `name="{{ f.currency_name }}"`; no template
+   spells the suffix.
+   Field keys must not contain `__`, must not start with `_`, and must not equal a
+   `hidden` key, and every field `default` must decode with `decode_field`; the portal
+   refuses a panel spec that breaks any of this with an error panel and no row.
    The read side follows the same codec: `render::field` (~:927-1000) decodes a stored
    `default` and a re-posted value with `decode_field`. The `value.split(',')` at ~:994
    and the `posted.get(&currency_key(..))` at ~:995 are deleted. `reshow`
@@ -1070,9 +1083,10 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
 5. Rust side (core commit): `ActionItem.primary`, a tone on `ActionResultView` and on
    the shell flash view, filled from `Flash.tone`, so no template hardcodes `err`
    (`modal.html.tmpl` ~:30).
-   Template: every POSTing button and form carries `hx-disabled-elt="this"`, which
-   disables it until the response arrives, so a normal browser sends one request per
-   click burst. The server-side claim stays the authority. Each Multi checkbox gets
+   Template: every POSTing bare button carries `hx-disabled-elt="this"`, and every
+   POSTing form carries `hx-disabled-elt="find button[type=submit]"` (a disabled `<form>`
+   disables nothing). Both disable the control until the response arrives, so a normal
+   browser sends one request per click burst. The server-side claim stays the authority. Each Multi checkbox gets
    `name="<key>"` and the hidden aggregate input (`primitives.html.tmpl` ~:212) is
    deleted. `admin.js` stops comma-joining
    Multi (`admin.js:118`) and posts the checkboxes as repeated keys. Primary comes from `ActionDecl.primary`
@@ -1290,8 +1304,14 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
     `admin.reveals` row. A POST after completion (tombstone) gets the same answer. A
     claim back-dated past 30 s can be re-taken;
   - a late release after a takeover leaves the new claim in place;
-  - a row released between the claim UPDATE and the classifying SELECT is claimed on
-    the retry;
+  - `classify_form` and `classify_click` unit tests on built rows and a given `now`:
+    each table row, each boundary (29.99/30.01 s claimed, 4.99/5.01 s consumed), and a
+    free row → `Retry`; this is where the "released between UPDATE and SELECT" case is
+    proven, since the two statements have no seam to interleave in an HTTP test;
+  - a Money form rendered by the portal, with its input names extracted from the HTML
+    and POSTed back, reaches the module as one Money object;
+  - a panel spec with an undecodable readonly default renders an error panel and mints
+    no row;
   - a computed `click:` id posted as `_form` gives 400 and releases the claim;
   - every toast answer to a panel-form POST carries `HX-Retarget: #modal-root`;
   - classify: a missing, expired, other-login or mismatched-action `_form` gives 400 with
@@ -1326,12 +1346,11 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
   - token-less click claim: a burst of concurrent POSTs on one button invokes once (the
     provider held on a `Notify`). The rest get the toast with zero calls and no
     `admin.reveals` row. With `consumed_at` back-dated past 5 s, the next POST invokes
-    again with `request_id` generation + 1. After a released claim (timeout), the retry
+    again: the row's `generation` is + 1 and the `request_id` differs from the previous
+    one. After a released claim (timeout), the retry
     keeps the same `request_id`. An upsert onto a row whose `expires_at` has passed
     invokes rather than giving 400. After the click row is deleted (prune), the next
-    click's `request_id` differs from every earlier one. A claim UPDATE that fails at
-    consumed + 4.99 s and is classified at consumed + 5.01 s (both back-dated) re-claims
-    instead of giving 400;
+    click's `request_id` differs from every earlier one;
   - blank-rule order: a required readonly field without a default is left out, not a
     422; a required String posted as `""` is a 422 "required", an optional one reaches
     the module as `Text("")`;
