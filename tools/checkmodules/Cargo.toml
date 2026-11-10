@@ -22,6 +22,12 @@ path = "src/lib.rs"
 
 [dependencies]
 lifecycle = { workspace = true }
+controlplane = { workspace = true }
+bus = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+anyhow = { workspace = true }
 
 server = { workspace = true }
 gateway-svc = { workspace = true }

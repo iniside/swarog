@@ -8,3 +8,7 @@ publish = false
 [[bin]]
 name = "admincheck"
 path = "src/main.rs"
+
+[dependencies]
+checkmodules = { workspace = true }
+controlplane = { workspace = true }

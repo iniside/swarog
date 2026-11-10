@@ -135,6 +135,10 @@ dependencies = [
 [[package]]
 name = "admincheck"
 version = "0.1.0"
+dependencies = [
+ "checkmodules",
+ "controlplane",
+]
 
 [[package]]
 name = "adminctl"
@@ -834,10 +838,14 @@ version = "0.1.0"
 dependencies = [
  "accounts-svc",
  "admin-svc",
+ "anyhow",
  "apikeys-svc",
+ "async-trait",
  "audit-svc",
+ "bus",
  "characters-svc",
  "config-svc",
+ "controlplane",
  "friends-svc",
  "gateway-svc",
  "groups-svc",
@@ -852,7 +860,9 @@ dependencies = [
  "rpc-contract-model",
  "scheduler-svc",
  "server",
+ "sqlx",
  "storage-svc",
+ "tokio",
  "wallet-svc",
 ]
 
