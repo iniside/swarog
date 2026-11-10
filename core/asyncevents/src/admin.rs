@@ -317,7 +317,6 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str) -> Result<SkipOutcome> 
     })
 }
 
-
 /// `bump-generation`: fence the current log generation (offline operator action; see
 /// [`crate::store::bump_generation`]). Returns `(before, after)` generations.
 pub async fn bump_generation(pool: &PgPool) -> Result<(i64, i64)> {
