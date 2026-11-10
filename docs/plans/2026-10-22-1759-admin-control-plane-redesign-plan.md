@@ -736,6 +736,58 @@ state picker.
 
 (d) `[opus]` mockup-implementer (skill `mockup-implementation`; checklist = mockup line ranges + R1–R3).
 
+### Step 8a — Make the portal↔module conventions a typed contract
+
+The owner's rule (2026-11-10): "powinniśmy mieć jakiś kontrakt i w sporej części ten
+kontrakt będzie wynikał z mockupów. W miarę możliwości ten kontrakt powinien być
+testowalny i/lub statycznie weryfikowalny. Część rzeczy wyjdzie wraz z implementacją
+samych mockupów."
+
+**Standing rule for every later step.** A convention that the portal and a module must
+both honour is never a string agreed in two places. It becomes one of these in
+`core/controlplane`:
+- a typed field;
+- a pure encode/decode function pair that both sides call;
+- a manifest field that admincheck validates.
+
+It ships with an admincheck rule or a test in Step 25. A port step that discovers a new
+convention adds it here first.
+
+(a) What is touched:
+- `core/controlplane/src/lib.rs`:
+  - `PanelQuery` gains typed fields replacing the Step 8 string keys: `search: Option<String>`
+    (was `params["q"]`), `cursor: Option<String>` (was `cursor`), `before: Option<String>`
+    (was `before`), `queue_state: Option<String>` (was `state`). `params` stays for
+    module-specific keys.
+  - `ActionDecl.primary: bool` replaces the `icon == "plus"` rule.
+  - `FormSpec.submit_action: Option<String>`, the id of an action of the same module that
+    the portal invokes with the form's values; used by `Primitive::Form` panels.
+  - `pub fn encode_field(kind: &FieldKind, value: &FieldValue) -> String` and
+    `pub fn decode_field(kind: &FieldKind, raw: &str) -> Result<FieldValue, FieldError>` with
+    `FieldValue` covering every `FieldKind`:
+    - Multi is a JSON array of strings;
+    - Money is one JSON object `{"amount": "...", "currency": "..."}` under the field's own
+      key, replacing `<key>_currency`;
+    - Bool is `"true"`/`"false"`.
+- `core/admin`: build `PanelQuery` from the typed fields. Render `primary` from the
+  declaration. Encode every submitted field with `encode_field`; `admin.js` posts the
+  per-kind raw value, and the server encodes it before `cp.invoke`. Wire Save on a
+  `Primitive::Form` panel to `submit_action`.
+- `tools/admincheck/src/checks.rs`:
+  - every `FormSpec.submit_action` names an action of the same module;
+  - at most one `primary` action per page head;
+  - every `Field.default` decodes with its `FieldKind`.
+- Conformance input keys change with the `PanelQuery` fields: re-bless the input golden,
+  contract-golden and public-api, keeping only lines this step causes.
+
+(b) Why now: before the first provider (Step 9) codes against the strings.
+
+(c) The Errata bullet "Step 8 conventions (provisional)" is superseded by this step. Add
+an Errata line saying so.
+
+(d) `[opus]` core-implementer for the contract and admincheck; the template and
+`admin.js` part is `[opus]` mockup-implementer, in a second commit.
+
 ### Step 9 — Portal-owned providers: backend
 
 (a) `core/admin/src/{portal_provider.rs,events_provider.rs,fakes.rs}`.
@@ -748,6 +800,17 @@ state picker.
 - `core.events` (`pages-platform.js:130-157`): real pause / `resume_retry` / retry / skip
   via `asyncevents::admin` over `ctx.db()`; rewind is `implemented: false`; FAKE per the
   data-sources table.
+- Skip what the operator saw (owner, 2026-11-10). The poison-event preview carries its
+  `event_id`, and the Skip action sends it as an input.
+  - New `asyncevents::admin::skip_expected(pool, sub_id, expected_event_id)` runs `skip`'s
+    selection and update in one transaction, and only when the next eligible event is
+    `expected_event_id`.
+  - When it is not (a retry delivered it first, or another event blocks now), it does
+    nothing and returns `SkipOutcome::AlreadyResolved`. The portal answers
+    `InvokeOutcome::Ok` with the message "Already resolved — the event was delivered or
+    the blocker changed; refresh to see the current state". This is a no-op, not an error:
+    whichever of the retry and the click comes first wins.
+  - `eventctl skip` keeps its current behaviour.
 - Writers: `core.events` has `writes: true`. Add its probe in `core/admin/src/conformance.rs` (`cp.invoke` input caps for
   `core.events`) with the CapCase rows in the `admin()` entry of `policy.rs`. The
   `cp.invoke` `req.input.<value>` policy row becomes Validated with the byte cap, as the
@@ -800,6 +863,15 @@ The ports:
 - **Step 13 — accounts.**
   - Users & players list (`pages-core.js:72-112`); kind `player` with `Point::EntityHeader`.
   - Profile & identities tab; search provider `player`; tile active players (DERIV).
+  - Engine work (owner, 2026-11-10): `EntityListColumn` fan-out in `core/admin`.
+    - For a DataTable whose `list_columns_for` names a kind, the portal calls every
+      `Point::EntityListColumn { kind, .. }` contribution once per rendered page, with the
+      page's entity ids.
+    - The ids go in a typed `PanelQuery` field `refs: Vec<String>`, added to
+      `core/controlplane` here per the Step 8a rule.
+    - The returned `Primitive::ColumnCells` is merged as extra columns.
+    - A failing column renders an error icon in its cells, not a failed table
+      (`catalog.js:15`).
 - **Step 14 — characters.** Characters tab, summary fact, tab count.
 - **Step 15 — wallet.**
   - Economy page (`pages-platform.js:164-185`; the global ledger is FAKE per R1).
@@ -822,7 +894,9 @@ The ports:
 - **Step 22 — scheduler.** Scheduler page (`pages-platform.js:74-85`); all writes disabled.
 - **Step 23 — config.**
   - Config & flags page (`pages-platform.js:88-109`).
-  - Edit via `cp.invoke` with `expected_revision` = the global revision.
+  - Edit via `cp.invoke` with `expected_revision` = the global revision. The edit form is
+    a `Primitive::Form` panel whose `FormSpec.submit_action` (Step 8a) names the edit
+    action.
   - The Revisions timeline is FAKE except for the current value and revision.
   - Writer.
 - **Step 24 — audit.** Audit log page (`pages-platform.js:112-126`), and the dashboard
@@ -852,7 +926,16 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
 - `core/asyncevents/src/admin_tests.rs`:
   - `resume_retry` resets failures and activates;
   - `poison_event` returns the first event past the cursor;
-  - `resume` still leaves failures.
+  - `resume` still leaves failures;
+  - `skip_expected` skips only the previewed event, and returns `AlreadyResolved` without
+    moving the cursor when a retry delivered it first or another event blocks.
+- `core/controlplane` tests for the Step 8a contract: `encode_field`/`decode_field` round
+  trip for every `FieldKind`, including a Multi value that contains a comma and a Money
+  value; a malformed raw value is a `FieldError`.
+- `tools/admincheck` fixtures for the Step 8a rules (dangling `submit_action`, two primary
+  head actions, an undecodable default).
+- `core/admin` engine test for the Step 13 `EntityListColumn` fan-out: one call per page,
+  and a failing column does not fail the table.
 - `core/admin/src/engine/*_tests.rs`:
   - deadline → error; deadline with last-good → stale;
   - role below `min_role` → denied with zero provider calls;
