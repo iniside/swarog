@@ -235,6 +235,7 @@ pub const SOURCE_SLOT: contrib::Slot<Source> = contrib::Slot::new("controlplane.
   | Outcome | HTTP |
   | --- | --- |
   | `Ok` | 303 PRG |
+  | `NoOp` (Step 8a) | 303 PRG with an info flash; audit `detail` `noop: <message>` |
   | `FieldErrors` | 422 with the form re-rendered |
   | `Conflict`, or `Status::Conflict` | 409 |
   | `Status::NotFound` | 404 |
@@ -280,8 +281,15 @@ SearchDecl     { kind, label, icon, deadline_ms: u32 }                  // defau
 - Several contributions with the same `EntityTab { kind, tab }` stack inside one tab by
   `order`. `EntityHeader(kind)` and `EntityTabCount` return `Primitive::EntityHeader` and
   `Primitive::Cell`. `EntitySummary` and `NavCounter` return `Primitive::Cell`.
-  `EntityListColumn` is fetched once per table page with `params["refs"]` = comma-joined ids
-  and returns `Primitive::ColumnCells`.
+  `EntityListColumn` is fetched once per table page with the typed `PanelQuery.refs`
+  (Step 13) and returns `Primitive::ColumnCells`.
+- **Amended by Step 8a (owner, 2026-11-10); the step text is authoritative:**
+  - `PanelQuery` gains typed fields `search`, `cursor`, `before`, `queue_state`, and later
+    `refs` (Step 13);
+  - `ActionDecl.primary: bool`;
+  - `ContributionDecl.form_submit: Option<String>`;
+  - `InvokeOutcome::NoOp { message }`;
+  - `encode_field`/`decode_field` over `FieldValue`.
 - **Sections.** `controlplane::SECTIONS` is fixed: `overview` "Overview" 0, `players`
   "Players" 10, `economy` "Economy" 30, `platform` "Platform" 40. A module's
   `Manifest.sections` adds sections, which merge by `id`:
@@ -744,49 +752,91 @@ testowalny i/lub statycznie weryfikowalny. Część rzeczy wyjdzie wraz z implem
 samych mockupów."
 
 **Standing rule for every later step.** A convention that the portal and a module must
-both honour is never a string agreed in two places. It becomes one of these in
-`core/controlplane`:
+both honour is never a string agreed in two places. The step that discovers it adds it to
+`core/controlplane` under this rule, as one of:
 - a typed field;
 - a pure encode/decode function pair that both sides call;
-- a manifest field that admincheck validates.
+- a static manifest field that admincheck validates.
 
-It ships with an admincheck rule or a test in Step 25. A port step that discovers a new
-convention adds it here first.
+It ships with an admincheck rule, or a test in Step 25.
 
 (a) What is touched:
-- `core/controlplane/src/lib.rs`:
-  - `PanelQuery` gains typed fields replacing the Step 8 string keys: `search: Option<String>`
-    (was `params["q"]`), `cursor: Option<String>` (was `cursor`), `before: Option<String>`
-    (was `before`), `queue_state: Option<String>` (was `state`). `params` stays for
-    module-specific keys.
-  - `ActionDecl.primary: bool` replaces the `icon == "plus"` rule.
-  - `FormSpec.submit_action: Option<String>`, the id of an action of the same module that
-    the portal invokes with the form's values; used by `Primitive::Form` panels.
-  - `pub fn encode_field(kind: &FieldKind, value: &FieldValue) -> String` and
-    `pub fn decode_field(kind: &FieldKind, raw: &str) -> Result<FieldValue, FieldError>` with
-    `FieldValue` covering every `FieldKind`:
-    - Multi is a JSON array of strings;
-    - Money is one JSON object `{"amount": "...", "currency": "..."}` under the field's own
-      key, replacing `<key>_currency`;
-    - Bool is `"true"`/`"false"`.
-- `core/admin`: build `PanelQuery` from the typed fields. Render `primary` from the
-  declaration. Encode every submitted field with `encode_field`; `admin.js` posts the
-  per-kind raw value, and the server encodes it before `cp.invoke`. Wire Save on a
-  `Primitive::Form` panel to `submit_action`.
-- `tools/admincheck/src/checks.rs`:
-  - every `FormSpec.submit_action` names an action of the same module;
-  - at most one `primary` action per page head;
-  - every `Field.default` decodes with its `FieldKind`.
-- Conformance input keys change with the `PanelQuery` fields: re-bless the input golden,
-  contract-golden and public-api, keeping only lines this step causes.
+
+1. **`core/controlplane/src/lib.rs`, panel queries.**
+   - `PanelQuery` gains `search: Option<String>`, `cursor: Option<String>`,
+     `before: Option<String>` and `queue_state: Option<String>`. They replace the Step 8
+     `params` keys `q`, `cursor`, `before` and `state`; `params` stays for module-specific
+     keys only.
+   - The portal (`core/admin/src/routes.rs` ~:536 and `render.rs` ~:570, ~:770-776, ~:927,
+     ~:1107) stops putting those four keys into `params`, so there is no dual path.
+   - `engine/panels.rs` `cache_key` (~:83-96) includes the four fields, so a stale copy for
+     one search is never served for another.
+
+2. **Primary action.** `ActionDecl.primary: bool` replaces the `icon == "plus"` rule
+   (`templates/shell.html.tmpl:47`).
+
+3. **Form panel submit target** (owner, 2026-11-10: in the manifest).
+   - `ContributionDecl.form_submit: Option<String>` names an action of the same module.
+     The Save button of that contribution's `Primitive::Form` panel invokes it with the
+     form's values.
+   - The posted fields are encoded using the panel's `FormSpec.fields` kinds. The portal
+     re-fetches the panel's `FormSpec` to get them; that spec is the field-kind source for
+     a panel form, as `Then::Form`'s spec is for a modal form.
+   - A 422 or 409 re-renders the panel form in place (not a modal), with the posted values
+     decoded back into their inputs (Money → amount and currency).
+
+4. **No-op outcome** (owner, 2026-11-10).
+   - `InvokeOutcome::NoOp { message: String }` means the request was valid but there was
+     nothing to do.
+   - The portal answers with a 303 PRG and an info flash (not success, not error).
+   - `audit_detail` (`core/admin/src/engine/actions.rs` ~:171-199) writes
+     `noop: <message>`. The Ok, timeout, failed, rejected and conflict formats are
+     unchanged.
+
+5. **Field encoding.** `pub enum FieldValue` covers every `FieldKind`. Two functions:
+   - `pub fn encode_field(kind: &FieldKind, value: &FieldValue) -> String`;
+   - `pub fn decode_field(kind: &FieldKind, raw: &str) -> Result<FieldValue, FieldError>`.
+
+   Wire forms:
+   - Multi: a JSON array of strings;
+   - Money: one JSON object `{"amount": "...", "currency": "..."}` under the field's own
+     key;
+   - Bool: `"true"`/`"false"`;
+   - every other kind: the raw text.
+
+   On the portal side:
+   - `action_submit` (`routes.rs` ~:670) takes the form body as `Vec<(String, String)>`,
+     so repeated Multi checkbox keys survive.
+   - The server builds each field's `FieldValue` from the posted pairs (Money from
+     `<key>` and `<key>__currency`, both form-local names) and encodes it with
+     `encode_field` before `cp.invoke`.
+   - `admin.js` stops comma-joining (`admin.js:118`).
+   - `render.rs` `currency_key` (~:962) is deleted; what replaces it is a form-local input
+     name, never a wire key.
+
+6. **`tools/admincheck/src/checks.rs`** gains three checks:
+   - every `ContributionDecl.form_submit` names an action of the same module;
+   - at most one `primary` action per page head;
+   - every `Then::Form` field's `default` decodes with its `FieldKind`.
+
+   Panel `FormSpec`s are runtime data, which admincheck cannot see, so a panel form's
+   defaults are checked by the Step 25 tests.
+
+7. **`tools/conformance/src/policy.rs`.** Add Opaque `CONTROL_PLANE_READ_RATIONALE` rows
+   for the new scanner keys `req.search`, `req.cursor`, `req.before` and `req.queue_state`.
+   Step 13 adds `req.refs`.
+
+8. **Goldens and baselines.** Re-bless the input golden, contract-golden and public-api,
+   keeping only the lines this step causes.
 
 (b) Why now: before the first provider (Step 9) codes against the strings.
 
-(c) The Errata bullet "Step 8 conventions (provisional)" is superseded by this step. Add
+(c) The Errata bullet "Step 8 conventions (provisional)" is superseded by this step; add
 an Errata line saying so.
 
-(d) `[opus]` core-implementer for the contract and admincheck; the template and
-`admin.js` part is `[opus]` mockup-implementer, in a second commit.
+(d) Two commits:
+- `[opus]` core-implementer: the contract, portal engine/POST, admincheck and conformance;
+- `[opus]` mockup-implementer: templates and `admin.js`.
 
 ### Step 9 — Portal-owned providers: backend
 
@@ -802,15 +852,24 @@ an Errata line saying so.
   data-sources table.
 - Skip what the operator saw (owner, 2026-11-10). The poison-event preview carries its
   `event_id`, and the Skip action sends it as an input.
-  - New `asyncevents::admin::skip_expected(pool, sub_id, expected_event_id)` runs `skip`'s
-    selection and update in one transaction, and only when the next eligible event is
-    `expected_event_id`.
-  - When it is not (a retry delivered it first, or another event blocks now), it does
-    nothing and returns `SkipOutcome::AlreadyResolved`. The portal answers
-    `InvokeOutcome::Ok` with the message "Already resolved — the event was delivered or
-    the blocker changed; refresh to see the current state". This is a no-op, not an error:
-    whichever of the retry and the click comes first wins.
-  - `eventctl skip` keeps its current behaviour.
+  - `asyncevents::admin::skip` (`core/asyncevents/src/admin.rs` ~:240-320) gains a
+    parameter `expected: Option<&str>`. It keeps ONE transaction body with the
+    subscription row locked `FOR UPDATE`; there is no copied second implementation.
+    `eventctl skip` passes `None` and keeps its current behaviour and errors.
+  - The return type becomes `pub enum SkipResult { Skipped(SkipOutcome), AlreadyResolved }`.
+    `SkipOutcome` is the existing struct, `admin.rs` ~:58.
+  - With `Some(id)`, under the lock, each of these returns `AlreadyResolved` and moves
+    nothing:
+    - the healthy guard (~:255-261) would refuse;
+    - no event is eligible (~:284-286);
+    - the next eligible event id ≠ `id`.
+
+    `AlreadyResolved` is not an error. It replaces the error those first two cases raise
+    with `None`.
+  - The portal maps `AlreadyResolved` to `InvokeOutcome::NoOp` (Step 8a) with the message
+    "Already resolved — the event was delivered or the blocker changed; refresh to see the
+    current state". The audit `detail` is `noop: Already resolved …`. Whichever of the
+    retry and the click comes first wins.
 - Writers: `core.events` has `writes: true`. Add its probe in `core/admin/src/conformance.rs` (`cp.invoke` input caps for
   `core.events`) with the CapCase rows in the `admin()` entry of `policy.rs`. The
   `cp.invoke` `req.input.<value>` policy row becomes Validated with the byte cap, as the
@@ -868,7 +927,11 @@ The ports:
       `Point::EntityListColumn { kind, .. }` contribution once per rendered page, with the
       page's entity ids.
     - The ids go in a typed `PanelQuery` field `refs: Vec<String>`, added to
-      `core/controlplane` here per the Step 8a rule.
+      `core/controlplane` here per the Step 8a rule. Add it to `cache_key`, and add an
+      Opaque `req.refs` policy row with `CONTROL_PLANE_READ_RATIONALE`.
+    - Each column honours its `min_role`: a column whose role is denied makes no call and
+      is not rendered. Each column call has its own `deadline_ms`, and the column calls for
+      one page run concurrently after the table call.
     - The returned `Primitive::ColumnCells` is merged as extra columns.
     - A failing column renders an error icon in its cells, not a failed table
       (`catalog.js:15`).
@@ -895,8 +958,8 @@ The ports:
 - **Step 23 — config.**
   - Config & flags page (`pages-platform.js:88-109`).
   - Edit via `cp.invoke` with `expected_revision` = the global revision. The edit form is
-    a `Primitive::Form` panel whose `FormSpec.submit_action` (Step 8a) names the edit
-    action.
+    a `Primitive::Form` panel whose `ContributionDecl.form_submit` (Step 8a) names the
+    edit action.
   - The Revisions timeline is FAKE except for the current value and revision.
   - Writer.
 - **Step 24 — audit.** Audit log page (`pages-platform.js:112-126`), and the dashboard
@@ -927,13 +990,18 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
   - `resume_retry` resets failures and activates;
   - `poison_event` returns the first event past the cursor;
   - `resume` still leaves failures;
-  - `skip_expected` skips only the previewed event, and returns `AlreadyResolved` without
-    moving the cursor when a retry delivered it first or another event blocks.
+  - `skip(.., Some(id))` skips only the previewed event. It returns `AlreadyResolved`
+    without moving the cursor in three cases: a retry delivered the event first (healthy
+    subscription), no event is eligible, or another event blocks. `skip(.., None)` keeps
+    the old errors.
+- `core/admin` tests: a `NoOp` outcome → 303 with an info flash, and audit `noop: …`; a
+  panel form 422 re-renders the panel with Money/Multi values decoded; a cached `search=a`
+  copy is never served for `search=b`.
 - `core/controlplane` tests for the Step 8a contract: `encode_field`/`decode_field` round
   trip for every `FieldKind`, including a Multi value that contains a comma and a Money
   value; a malformed raw value is a `FieldError`.
-- `tools/admincheck` fixtures for the Step 8a rules (dangling `submit_action`, two primary
-  head actions, an undecodable default).
+- `tools/admincheck` fixtures for the Step 8a rules: a dangling `form_submit`, two primary
+  head actions, and an undecodable `Then::Form` default.
 - `core/admin` engine test for the Step 13 `EntityListColumn` fan-out: one call per page,
   and a failing column does not fail the table.
 - `core/admin/src/engine/*_tests.rs`:
