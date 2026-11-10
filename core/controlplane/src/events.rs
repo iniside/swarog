@@ -2,9 +2,9 @@
 //! action (audit: record the ledger row) imports this; nobody imports the admin
 //! implementation.
 //!
-//! Rides the **durable** plane (`bus::emit_tx` / `bus::on_tx`), atomic with the
-//! domain write it accompanies — so the payload is `Serialize`/`Deserialize` (the
-//! transport collapses `T` to JSON at the emit_tx/on_tx boundary). The serde field
+//! Rides the **durable** plane (`bus::emit_tx` / `bus::on_tx`), so the payload is
+//! `Serialize`/`Deserialize` (the transport collapses `T` to JSON at the emit_tx/on_tx
+//! boundary). The serde field
 //! names (`actor`, `action`, `target`, `detail`) are the wire contract every durable
 //! consumer agrees on.
 
@@ -24,8 +24,11 @@ pub struct AdminAction {
     pub detail: String,
 }
 
-/// The `admin.action` topic, emitted via `bus::emit_tx` by the admin portal atomic with
-/// the write it records.
+/// The `admin.action` topic, emitted via `bus::emit_tx` by the admin portal. A login,
+/// lockout or logout event commits atomically with its session or lockout write; a
+/// control-plane invoke's event is appended in the portal's own transaction after the
+/// provider answers, so it is not atomic with that write, which for a remote provider
+/// commits in another process.
 ///
 /// `bus::define` is not `const`, so the descriptor is a `LazyLock` static; callers
 /// pass it as `&*controlplane::events::ACTION` (or just `&controlplane::events::ACTION`,

@@ -14,6 +14,7 @@ publish = false
 # password fns — one source of truth, no drift.
 [dependencies]
 controlplane = { workspace = true }
+opsapi = { workspace = true }
 lifecycle = { workspace = true }
 async-trait = { workspace = true }
 bus = { workspace = true }
@@ -22,6 +23,7 @@ axum-extra = { workspace = true }
 minijinja = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 sqlx = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }

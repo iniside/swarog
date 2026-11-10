@@ -18,15 +18,19 @@
 //!
 //! Durable audit trail: `admin.action` (`controlplane::events::ACTION`) is emitted via
 //! `emit_tx` for `login-succeeded` / `login-locked` (user-row threshold) / `logout`,
-//! each atomic with its own domain write.
+//! each atomic with its own session or lockout write, and for every control-plane invoke as
+//! `{module}.{action}`, in the portal's own transaction after the provider answered.
 //!
 //! `ADMIN_OPEN=1` (explicit-only dev knob, loud warn) disables sessions AND CSRF —
 //! a deliberately open local portal. Zero admin users is a WARNED boot, not a
 //! failure: run `./install.sh` (adminctl) to mint one.
 //!
-//! Routes (mounted via `ctx.mount`, security headers on this router only):
+//! Routes (mounted via `ctx.mount`, security headers on these routers only):
 //! `GET /admin/theme.css`, `GET /admin/admin.js`, `GET /admin/htmx.min.js` (ungated),
-//! `GET|POST /admin/login`, `POST /admin/logout`.
+//! `GET|POST /admin/login`, `POST /admin/logout`, and the control-plane portal in
+//! [`routes`]: `GET /admin`, `/admin/p/{module}/{page}`, `/admin/e/{kind}/{id}`,
+//! `/admin/_panel/{module}/{contribution}`, `/admin/_menu/{kind}/{id}`, `/admin/_search`,
+//! `GET|POST /admin/_action/{module}/{action}`.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -51,7 +55,9 @@ use sqlx::PgPool;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub mod conformance;
+mod engine;
 mod password;
+mod routes;
 pub use password::{hash_password, verify_password};
 
 /// The admin page template (adapted to minijinja). Named with a `.html` suffix so
@@ -231,6 +237,10 @@ pub struct Admin {
     /// and awaits it, leaving the same module instance restartable after normal teardown
     /// or a later module's start-unwind.
     login_reaper: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Created in `init` and shared with the router; `start` installs its sources.
+    engine: OnceLock<Arc<engine::Engine>>,
+    /// The manifest refresh task and its stop signal, owned from `start` to `stop`.
+    manifest_refresh: Mutex<Option<(tokio::sync::watch::Sender<bool>, tokio::task::JoinHandle<()>)>>,
 }
 
 /// Phase-1 captures, shared into the [`AdminState`] built at `init`.
@@ -279,6 +289,26 @@ impl Admin {
             Ok(()) => Ok(()),
             Err(error) if error.is_cancelled() => Ok(()),
             Err(error) => Err(anyhow::anyhow!("admin login reaper failed: {error}")),
+        }
+    }
+
+    fn start_manifest_refresh(&self, engine: Arc<engine::Engine>) {
+        let mut refresh = self.manifest_refresh.lock().unwrap_or_else(|e| e.into_inner());
+        if refresh.is_none() {
+            let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+            *refresh = Some((stop_tx, engine::manifests::spawn_refresh(engine, stop_rx)));
+        }
+    }
+
+    async fn stop_manifest_refresh(&self) {
+        let refresh = self.manifest_refresh.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let Some((stop_tx, mut task)) = refresh else {
+            return;
+        };
+        let _ = stop_tx.send(true);
+        if tokio::time::timeout(engine::manifests::STOP_GRACE, &mut task).await.is_err() {
+            task.abort();
+            let _ = task.await;
         }
     }
 }
@@ -361,7 +391,12 @@ impl Module for Admin {
             login_attempt_gc_requests: AtomicU64::new(0),
             verifier: Arc::new(ArgonVerifier),
         });
-        ctx.mount(router(state));
+        let engine = Arc::new(engine::Engine::new());
+        self.engine
+            .set(engine.clone())
+            .map_err(|_| anyhow::anyhow!("admin.init ran twice"))?;
+        ctx.mount(router(state.clone()));
+        ctx.mount(routes::router(routes::Portal { st: state, engine }));
         Ok(())
     }
 
@@ -371,7 +406,14 @@ impl Module for Admin {
     /// `DUMMY_HASH` LazyLock on a `spawn_blocking` thread (#8: first I/O/CPU
     /// belongs here), so the first unknown-user login never pays the 64 MiB
     /// argon2id init cost on an async Tokio worker.
-    async fn start(&self, _ctx: &Context) -> anyhow::Result<()> {
+    async fn start(&self, ctx: &Context) -> anyhow::Result<()> {
+        let engine = self
+            .engine
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("admin.init must run before start"))?
+            .clone();
+        engine.install(engine::manifests::Snapshot::seeded(engine::sources::collect(ctx)));
+
         tokio::task::spawn_blocking(|| {
             std::sync::LazyLock::force(&DUMMY_HASH);
         })
@@ -387,14 +429,16 @@ impl Module for Admin {
             );
         }
 
-        // Keep this LAST: the module owns the returned task until `stop`, while an error
+        // Keep these LAST: the module owns the spawned tasks until `stop`, while an error
         // in this module's own `start` is not followed by `stop`. A later module's start
-        // failure does stop this successfully-started prefix, aborting the task below.
+        // failure does stop this successfully-started prefix, aborting the tasks below.
         self.start_login_reaper()?;
+        self.start_manifest_refresh(engine);
         Ok(())
     }
 
     async fn stop(&self, _ctx: &Context) -> anyhow::Result<()> {
+        self.stop_manifest_refresh().await;
         self.stop_login_reaper().await
     }
 }
@@ -563,9 +607,8 @@ impl AdminState {
         httpmw::client_ip(peer.ip(), xff, xri, &self.trusted)
     }
 
-    /// Appends one `admin.action` event in its own small tx (the match `emit_tx`
-    /// shape) — for actions whose domain write already committed (form-submit) or
-    /// that have none.
+    /// Appends one `admin.action` event in its own small tx — for an action whose write,
+    /// if any, is committed by its provider, possibly in another process.
     async fn emit_action(&self, evt: &controlplane::events::AdminAction) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
         self.bus
