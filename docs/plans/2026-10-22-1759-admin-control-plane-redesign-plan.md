@@ -826,7 +826,9 @@ The ports:
   - The Revisions timeline is FAKE except for the current value and revision.
   - Writer.
 - **Step 24 — audit.** Audit log page (`pages-platform.js:112-126`), and the dashboard
-  "Recent operator activity" panel.
+  "Recent operator activity" panel. Once every port has landed, admincheck also reports
+  any peer admin-svc dials whose `<peer>-svc` hosts no provider (owner, 2026-11-10; held
+  back until now because it would fire for every not-yet-ported peer).
 
 The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KPIs) are kept.
 
