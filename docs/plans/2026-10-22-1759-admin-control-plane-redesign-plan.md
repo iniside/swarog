@@ -889,8 +889,12 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
      - The 8a core commit deletes the "every other field is input" rule (`actions.rs`
        ~:25, ~:125-129), `FIELD_REVISION` with its parse branch (~:29, ~:105-111), and
        the Required-reason check in `build_request` (~:117-123).
-     - In the template commit the modal stops posting `_entity`, hidden-map inputs and
-       `_expected_revision` (`modal.html.tmpl` ~:9-10).
+     - The modal stops posting `_entity`, hidden-map inputs and `_expected_revision`
+       (`modal.html.tmpl` ~:10-11; template commit). Their Rust producers go in the core
+       commit: `ModalView.entity` and its `entity_param` fill (`render.rs` ~:1312,
+       ~:1336, ~:1343), `FormView.hidden` (~:956, fill ~:1011) and `FormView.revision`
+       (~:959, fill ~:1014). The stored `FormSpec` in `admin.forms` is the only source of
+       the hidden map and the revision.
   5. **Claim** with one statement:
 
      ```sql
@@ -904,16 +908,23 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
      The 30 s exceeds `INVOKE_DEADLINE` (10 s). When it returns no row, a `SELECT` by id
      classifies the reason:
 
-     | Reason | Answer |
-     | --- | --- |
-     | missing, expired, another login, other module or action | 400, zero calls |
-     | `consumed_at` set, or claimed less than 30 s ago | repeated click: "Already submitted — this action is being processed or has completed", zero calls, never an error |
-     | free (unexpired, unclaimed, unconsumed, matching): the holder released it between the UPDATE and the SELECT | run the claim once more; if it fails again, the repeated-click answer |
+     Rows are checked in this order; the first that applies wins:
 
-     The classification is a pure function, `classify_form(&FormRow, now) -> Claim`
-     in `engine/actions.rs` (`Claim { Reject, Repeated, Retry }`). The classifying
-     `SELECT` returns the row together with Postgres `now()`, so the function never reads
-     a clock and Step 25 unit-tests every boundary without a database.
+     | # | Reason | Answer |
+     | --- | --- | --- |
+     | 1 | missing (no row) | 400, zero calls |
+     | 2 | `spec` is `StoredSpec::Click`, or another login, other module or action | 400, zero calls |
+     | 3 | `consumed_at` set, or claimed less than 30 s ago | repeated click: "Already submitted — this action is being processed or has completed", zero calls, never an error |
+     | 4 | expired | 400, zero calls |
+     | 5 | free (unexpired, unclaimed, unconsumed, matching): the holder released it between the UPDATE and the SELECT | run the claim once more; if it fails again, the repeated-click answer |
+
+     Row 3 comes before row 4, so a double click on a form about to expire is never an
+     error. The classification is a pure function,
+     `classify_form(Option<&FormRow>, &Claimant, now) -> Claim` in `engine/actions.rs`,
+     with `Claimant { login, module, action }` (the session login and the URL's module and
+     action) and `Claim { Reject, Repeated, Retry }`. The classifying `SELECT` returns the
+     row (if any) together with Postgres `now()`, so the function never reads a clock and
+     Step 25 unit-tests every row and boundary without a database.
 
      The 400 does not say which reason applied. The repeated-click answer writes no flash
      and no `admin.reveals` row (the token-less path still runs its upsert first). An htmx request gets the neutral toast fragment; a non-htmx request
@@ -1016,7 +1027,10 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
     ```
 
     A no-row result is classified by the inverse of this WHERE, not by the step 5 table,
-    in a second pure function `classify_click(&FormRow, now) -> Claim` fed the same way:
+    in a second pure function `classify_click(Option<&FormRow>, &Claimant, now) -> Claim`
+    fed the same way, first match wins:
+    - missing row (an admin-schema wipe between the upsert and the UPDATE) → `Retry`,
+      where the retry repeats the upsert too;
     - login, module or action mismatch → 400;
     - claimed less than 30 s ago and not consumed, or consumed less than 5 s ago →
       the repeated-click answer;
@@ -1049,6 +1063,10 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
    - or `_item` in the token-less button's `hx-vals`.
 
    Template: render them in the panel-tools slot (`primitives.html.tmpl` ~:344).
+1a. Modal form id. `ModalView` (`render.rs` ~:1307-1328) gains `form_id: String`, filled
+   from the row the modal GET minted; the 422 and 409 re-renders fill it from the same
+   row. Template: `modal.html.tmpl` carries `<input type="hidden" name="_form">` with it,
+   and the confirm input gets `name="_confirm"` (~:20).
 2. An `ok` Form panel with a `PanelForm` action mints a row (B) and renders a form posting
    to that action with `_form`, with the panel slot as the htmx target. Template: the Save
    wiring (`primitives.html.tmpl` ~:224-226).
@@ -1083,7 +1101,9 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
 5. Rust side (core commit): `ActionItem.primary`, a tone on `ActionResultView` and on
    the shell flash view, filled from `Flash.tone`, so no template hardcodes `err`
    (`modal.html.tmpl` ~:30).
-   Template: every POSTing bare button carries `hx-disabled-elt="this"`, and every
+   Template: every POSTing bare button carries `hx-disabled-elt="this"`, a row-menu
+   item (`primitives.html.tmpl` ~:101, a `<div>`) is rendered as a `<button>` so the
+   same attribute works, and every
    POSTing form carries `hx-disabled-elt="find button[type=submit]"` (a disabled `<form>`
    disables nothing). Both disable the control until the response arrives, so a normal
    browser sends one request per click burst. The server-side claim stays the authority. Each Multi checkbox gets
@@ -1119,9 +1139,11 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
 (c) Add an Errata line: the Step 8 provisional conventions are superseded by Step 8a.
 
 (d) Two commits, each reviewed:
-- `[opus]` core-implementer: A, B, C items 1–5 (Rust side), D; adds
-  `sha2 = { workspace = true }` to `core/admin/Cargo.toml`;
-- `[opus]` mockup-implementer: the template parts of C.
+- `[opus]` core-implementer: A, B and C (every Rust part, including C.1a's `form_id`
+  and the deleted Rust producers in B step 4), D; adds `sha2 = { workspace = true }` to
+  `core/admin/Cargo.toml`;
+- `[opus]` mockup-implementer: every part marked "template" in B and C, and nothing
+  else.
 
 ### Step 9 — Portal-owned providers: backend
 
@@ -1304,15 +1326,20 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
     `admin.reveals` row. A POST after completion (tombstone) gets the same answer. A
     claim back-dated past 30 s can be re-taken;
   - a late release after a takeover leaves the new claim in place;
-  - `classify_form` and `classify_click` unit tests on built rows and a given `now`:
-    each table row, each boundary (29.99/30.01 s claimed, 4.99/5.01 s consumed), and a
-    free row → `Retry`; this is where the "released between UPDATE and SELECT" case is
+  - `classify_form` and `classify_click` unit tests on built rows, a `Claimant` and a
+    given `now`: each table row in order, each boundary (29.99/30.01 s claimed,
+    4.99/5.01 s consumed), an expired row claimed < 30 s ago → Repeated, another login's
+    free row → Reject, a missing row (form → Reject, click → Retry), and a free row →
+    `Retry`; this is where the "released between UPDATE and SELECT" case is
     proven, since the two statements have no seam to interleave in an HTTP test;
   - a Money form rendered by the portal, with its input names extracted from the HTML
     and POSTed back, reaches the module as one Money object;
   - a panel spec with an undecodable readonly default renders an error panel and mints
     no row;
-  - a computed `click:` id posted as `_form` gives 400 and releases the claim;
+  - a computed `click:` id posted as `_form` gives 400 with zero calls, whether the
+    click row is free, claimed or consumed;
+  - a modal rendered by the portal carries `_form`, and posting its own inputs back
+    takes the form path and invokes;
   - every toast answer to a panel-form POST carries `HX-Retarget: #modal-root`;
   - classify: a missing, expired, other-login or mismatched-action `_form` gives 400 with
     zero calls;
