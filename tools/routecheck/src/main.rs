@@ -468,7 +468,7 @@ fn check(label: &str, monolith: &[ProcessRoutes], split: &[ProcessRoutes]) -> Ve
     // serves. `global_http` (the set of #[http] methods) is the monolith front door's op
     // set — the monolith fronts every #[http] op locally — used to filter each svc's
     // served edge methods down to its HTTP subset (an svc's edge also carries wire-only
-    // and admin-fan-out methods, which `__describe` deliberately excludes).
+    // methods, which `__describe` deliberately excludes).
     let global_http = &server.op_methods;
     for p in split.iter() {
         let served_http: BTreeSet<String> =
