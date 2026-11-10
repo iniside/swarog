@@ -5,7 +5,7 @@
 {%- macro modal(m) -%}
 {%- set gated = m.type_to_confirm or (m.reason == "required" and not m.reason_value) -%}
 <div class="scrim" data-scrim>
-<form class="modal" role="dialog" aria-modal="true" hx-post="{{ m.post_url }}" hx-target="#modal-root" hx-swap="innerHTML" data-gate>
+<form class="modal" role="dialog" aria-modal="true" hx-post="{{ m.post_url }}" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]"{% if not m.locked %} data-gate{% endif %}>
 {%- if m.csrf %}<input type="hidden" name="_csrf" value="{{ m.csrf }}">{% endif -%}
 <input type="hidden" name="_form" value="{{ m.form_id }}">
 <div class="modal-head"><div class="modal-icon {{ m.tone }}">{{ ui.icon(m.icon) }}</div><div><h2>{{ m.title }}</h2>{% if m.form and m.form.note %}<div class="muted" style="font-size:12px">{{ m.form.note }}</div>{% endif %}</div></div>

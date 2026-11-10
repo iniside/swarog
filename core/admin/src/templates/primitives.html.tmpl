@@ -82,7 +82,7 @@
 {%- endmacro %}
 
 {%- macro hx_action(a) -%}
-{%- if a.then == "invoke" %} hx-post="{{ a.url }}" hx-vals="{{ a.vals }}" hx-target="#modal-root" hx-swap="innerHTML"
+{%- if a.then == "invoke" %} hx-post="{{ a.url }}" hx-vals="{{ a.vals }}" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="this"
 {%- else %} hx-get="{{ a.url }}" hx-target="#modal-root" hx-swap="innerHTML"
 {%- endif -%}
 {%- endmacro %}
@@ -98,7 +98,7 @@
 {%- macro menu_item(a) -%}
 {%- if not a.enabled %}<div class="menu-item disabled{% if a.danger %} danger{% endif %}" title="{{ a.hint }}">{{ icon(a.icon or "right") }}<span>{{ a.label }}</span><span class="hint">{{ a.hint }}</span></div>
 {%- elif a.then == "link" %}<a class="menu-item{% if a.danger %} danger{% endif %}" href="{{ a.href }}" style="text-decoration:none">{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></a>
-{%- else %}<div class="menu-item{% if a.danger %} danger{% endif %}"{{ hx_action(a) }}>{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></div>
+{%- else %}<button type="button" class="menu-item{% if a.danger %} danger{% endif %}"{{ hx_action(a) }}>{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></button>
 {%- endif -%}
 {%- endmacro %}
 
@@ -209,9 +209,9 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- if f.control == "textarea" %}<textarea class="input{% if f.mono %} mono{% endif %}{% if f.error %} invalid{% endif %}" rows="4" style="width:100%" name="{{ f.key }}"{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}>{{ f.value }}</textarea>
 {%- elif f.control == "toggle" %}{% set on = f.value in ["true", "1", "on"] %}<span class="toggle{% if on %} on{% endif %}" role="switch" aria-checked="{{ 'true' if on else 'false' }}"{% if not off %} tabindex="0" data-toggle{% endif %}></span><input type="hidden" name="{{ f.key }}" value="{{ 'true' if on else 'false' }}"{{ " disabled" if disabled else "" }}>
 {%- elif f.control == "select" %}<select class="select" style="width:260px"{% if not off %} name="{{ f.key }}"{% endif %}{{ dis }}>{% for o in f.options %}<option{% if o == f.value %} selected{% endif %}>{{ o }}</option>{% endfor %}</select>{% if f.readonly and not disabled %}<input type="hidden" name="{{ f.key }}" value="{{ f.value }}">{% endif %}
-{%- elif f.control == "checks" %}<div class="checks"{% if not off %} data-multi{% endif %}>{% for o in f.options %}<label><input type="checkbox" value="{{ o }}"{% if o in f.selected %} checked{% endif %}{{ dis }}> <span class="mono">{{ o }}</span></label>{% endfor %}</div><input type="hidden" name="{{ f.key }}" value="{{ f.value }}"{{ " disabled" if disabled else "" }}>
+{%- elif f.control == "checks" %}<div class="checks">{% for o in f.options %}<label><input type="checkbox" name="{{ f.key }}" value="{{ o }}"{% if o in f.selected %} checked{% endif %}{{ dis }}> <span class="mono">{{ o }}</span></label>{% endfor %}</div>
 {%- elif f.control == "ref" %}<span class="input-icon">{{ icon(f.ref_icon) }}<input class="input{% if f.error %} invalid{% endif %}" style="width:260px" name="{{ f.key }}" value="{{ f.value }}" placeholder="{{ f.ref_kind }} id"{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}></span>
-{%- elif f.control == "money" %}<div class="row"><input class="input num{% if f.error %} invalid{% endif %}" style="width:140px" name="{{ f.key }}" value="{{ f.value }}" inputmode="decimal"{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}><select class="select" style="width:110px"{% if not off %} name="{{ f.key }}_currency"{% endif %}{{ dis }}>{% for o in f.options %}<option{% if o == f.currency %} selected{% endif %}>{{ o }}</option>{% endfor %}</select>{% if f.readonly and not disabled %}<input type="hidden" name="{{ f.key }}_currency" value="{{ f.currency }}">{% endif %}</div>
+{%- elif f.control == "money" %}<div class="row"><input class="input num{% if f.error %} invalid{% endif %}" style="width:140px" name="{{ f.key }}" value="{{ f.value }}" inputmode="decimal"{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}><select class="select" style="width:110px"{% if not off %} name="{{ f.currency_name }}"{% endif %}{{ dis }}>{% for o in f.options %}<option{% if o == f.currency %} selected{% endif %}>{{ o }}</option>{% endfor %}</select>{% if f.readonly and not disabled %}<input type="hidden" name="{{ f.currency_name }}" value="{{ f.currency }}">{% endif %}</div>
 {%- else %}<input class="input{% if f.mono %} mono{% endif %}{% if f.control == 'int' %} num{% endif %}{% if f.error %} invalid{% endif %}" style="width:100%;max-width:520px" name="{{ f.key }}" value="{{ f.value }}"{% if f.control == "int" %} inputmode="numeric"{% endif %}{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}>
 {%- endif -%}
 {%- if f.error %}<div class="err-msg">{{ f.error }}</div>{% endif %}{% if f.help %}<div class="help">{{ f.help }}</div>{% endif %}</div>
@@ -222,10 +222,12 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- endmacro %}
 
 {#- A Form primitive inside a panel; with a form instance it posts to its PanelForm action
-    and the answer replaces the panel. -#}
+    and the answer replaces the panel. Save is the form's only submit button, so Enter
+    submits only while Save is enabled. -#}
 {%- macro panel_form(fv, disabled=false) -%}
-{%- if fv.form_id %}<form hx-post="{{ fv.post_url }}" hx-target="closest .slot" hx-swap="outerHTML">{% if fv.csrf %}<input type="hidden" name="_csrf" value="{{ fv.csrf }}">{% endif %}<input type="hidden" name="_form" value="{{ fv.form_id }}">{% endif -%}
-<div class="form">{% for f in fv.fields %}{{ field(f, disabled) }}{% endfor %}<div class="form-actions">{% if fv.note %}<span class="muted" style="margin-right:auto;font-size:12px;align-self:center">{{ fv.note }}</span>{% endif %}<button type="button" class="btn" disabled>Cancel</button><button type="button" class="btn primary" disabled title="No submit action declared">{{ fv.submit_label or "Save" }}</button></div></div>
+{%- set can_save = fv.form_id and not disabled and not fv.locked -%}
+{%- if fv.form_id %}<form hx-post="{{ fv.post_url }}" hx-target="closest .slot" hx-swap="outerHTML" hx-disabled-elt="find button[type=submit]">{% if fv.csrf %}<input type="hidden" name="_csrf" value="{{ fv.csrf }}">{% endif %}<input type="hidden" name="_form" value="{{ fv.form_id }}">{% endif -%}
+<div class="form">{% for f in fv.fields %}{{ field(f, disabled) }}{% endfor %}<div class="form-actions">{% if fv.note %}<span class="muted" style="margin-right:auto;font-size:12px;align-self:center">{{ fv.note }}</span>{% endif %}<button type="button" class="btn" disabled>Cancel</button>{% if fv.form_id %}<button type="submit" class="btn primary"{% if not can_save %} disabled{% endif %}>{{ fv.submit_label or "Save" }}</button>{% else %}<button type="button" class="btn primary" disabled title="No submit action declared">{{ fv.submit_label or "Save" }}</button>{% endif %}</div></div>
 {%- if fv.form_id %}</form>{% endif -%}
 {%- endmacro %}
 
@@ -344,9 +346,10 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- else -%}
 {%- set ro = p.state == "readonly" -%}
 {%- set flush = (live and p.flush) or (p.state == "empty" and p.body and p.body.type in ["Queue", "Table"]) -%}
-<div class="slot" data-panel-url="{{ p.url }}"><section class="panel"><div class="panel-head">{% if p.icon %}<span class="muted">{{ icon(p.icon) }}</span>{% endif %}<span class="panel-title">{{ p.title }}</span>{% if ro %}<span class="ro-chip">{{ icon("lock") }} read-only</span>{% endif %}<div class="panel-tools">{% if live and p.body and p.body.type == "Chart" %}{{ chart_legend(p.body) }}{% endif %}</div></div>
+<div class="slot" data-panel-url="{{ p.url }}"><section class="panel"><div class="panel-head">{% if p.icon %}<span class="muted">{{ icon(p.icon) }}</span>{% endif %}<span class="panel-title">{{ p.title }}</span>{% if ro %}<span class="ro-chip">{{ icon("lock") }} read-only</span>{% endif %}<div class="panel-tools">{% if live and p.body and p.body.type == "Chart" %}{{ chart_legend(p.body) }}{% endif %}{% if live %}{% for a in p.tools %}{{ action_button(a, "sm danger-ghost" if a.danger else "sm") }}{% endfor %}{% endif %}</div></div>
 {%- if p.state == "stale" %}<div class="banner warn" title="{{ p.error or '' }}">{{ icon("clock") }} Showing cached data from {{ p.age or "a while" }} ago — {{ p.module }}-svc is lagging.<button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} <span>Refresh</span></button></div>
 {%- elif ro %}<div class="banner info">{{ icon("info") }} Read-only: the <b>{{ p.module }}</b> module does not accept remote edits from the portal.</div>
+{%- elif live and p.body and p.body.type == "Form" and p.body.banner %}<div class="banner err">{{ icon("alert") }} {{ p.body.banner }}</div>
 {%- endif -%}
 <div class="panel-body{% if flush %} flush{% endif %}">
 {%- if live and p.body %}{{ body(p.body, p) }}

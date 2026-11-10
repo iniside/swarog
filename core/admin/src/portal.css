@@ -7,3 +7,5 @@
 .q-count.err .n { color: var(--err); }
 .q-count.info .n { color: var(--info); }
 [data-theme="dark"] .theme-moon, :root:not([data-theme="dark"]) .theme-sun { display: none; }
+/* A row-menu item is a <button> so htmx can disable it in flight; it keeps the div look. */
+button.menu-item { width: 100%; border: 0; background: transparent; text-align: left; }

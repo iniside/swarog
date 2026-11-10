@@ -110,14 +110,6 @@
     go.disabled = !ok;
   }
 
-  function syncMulti(box) {
-    var hidden = box.nextElementSibling;
-    if (!hidden) return;
-    var picked = [];
-    box.querySelectorAll("input[type=checkbox]").forEach(function (c) { if (c.checked) picked.push(c.value); });
-    hidden.value = picked.join(",");
-  }
-
   function flipToggle(t) {
     var on = !t.classList.contains("on");
     t.classList.toggle("on", on);
@@ -310,8 +302,6 @@
 
   document.addEventListener("change", function (ev) {
     var t = ev.target;
-    var box = t.closest("[data-multi]");
-    if (box) syncMulti(box);
     if (t.matches("[data-ack]")) {
       var done = t.closest(".modal").querySelector("[data-ack-done]");
       if (done) done.disabled = !t.checked;

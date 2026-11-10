@@ -44,7 +44,7 @@
 {%- elif v.panels %}<div class="stack">{% for s in v.panels %}{{ ui.slot(s) }}{% endfor %}</div>{% endif -%}
 {%- if not v.tiles and not v.attention and not v.panels %}<section class="panel"><div class="panel-body">{{ ui.state_block("empty", "Nothing here yet", "No module contributes to the dashboard yet.") }}</div></section>{% endif -%}
 {%- elif screen == "page" -%}
-<div class="page-head"><div><h1>{{ v.title }}</h1>{% if v.subtitle %}<div class="sub">{{ v.subtitle }}</div>{% endif %}</div><div class="page-actions">{% for a in v.head_actions %}{{ ui.action_button(a, "primary" if a.icon == "plus" and not a.danger else "") }}{% endfor %}</div></div>
+<div class="page-head"><div><h1>{{ v.title }}</h1>{% if v.subtitle %}<div class="sub">{{ v.subtitle }}</div>{% endif %}</div><div class="page-actions">{% for a in v.head_actions %}{{ ui.action_button(a, "primary" if a.primary and not a.danger else "") }}{% endfor %}</div></div>
 {%- if v.layout == "stack" %}<div class="stack">{% for col in v.columns %}{% for s in col %}{{ ui.slot(s) }}{% endfor %}{% endfor %}</div>
 {%- elif v.layout == "tiles" %}<div class="grid g-tiles">{% for col in v.columns %}{% for s in col %}{{ ui.slot(s) }}{% endfor %}{% endfor %}</div>
 {%- else %}<div class="grid {{ v.layout }}">{% for col in v.columns %}<div class="stack">{% for s in col %}{{ ui.slot(s) }}{% endfor %}</div>{% endfor %}</div>
@@ -73,6 +73,6 @@
 </div></div>
 <div class="scrim" data-palette hidden><div class="palette" role="dialog" aria-label="Search"><div class="palette-in">{{ ui.icon("search") }}<input placeholder="Search users, repositories, API keys…" autocomplete="off" data-palette-input><span class="kbd">Esc</span></div><div class="palette-scopes"><span class="filter-chip" data-scope="" style="background:var(--selected);color:var(--accent-fg)">All</span>{% for p in shell.scopes %}<span class="filter-chip" data-scope="{{ p.kind }}">{{ ui.icon(p.icon) }} {{ p.kind }}</span>{% endfor %}</div><div class="palette-list" data-palette-list></div><div class="palette-foot"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">Tab</span> scope</span><span class="grow"></span><span>{{ shell.scopes|length }} search providers</span></div></div></div>
 <div id="modal-root">{% if shell.flash and shell.flash.reveal %}{{ md.reveal(shell.flash) }}{% endif %}</div>
-{%- if shell.flash and shell.flash.message and not shell.flash.reveal %}{{ ui.toast(shell.flash.message) }}{% endif %}
+{%- if shell.flash and shell.flash.message and not shell.flash.reveal %}{{ ui.toast(shell.flash.message, shell.flash.tone) }}{% endif %}
 </body>
 </html>
