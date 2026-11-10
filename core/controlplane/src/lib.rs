@@ -62,18 +62,25 @@ pub const DEFAULT_SEARCH_DEADLINE_MS: u32 = 800;
 /// Serves one process's local providers, dispatching each request by `req.module`.
 pub struct LocalFace {
     manifests: Vec<Manifest>,
-    by_module: BTreeMap<String, Arc<dyn Provider>>,
+    by_module: BTreeMap<String, LocalProvider>,
+}
+
+struct LocalProvider {
+    provider: Arc<dyn Provider>,
+    writes: bool,
 }
 
 impl LocalFace {
-    /// Panics when two providers declare the same `Manifest.module`.
+    /// Reads every provider's manifest once. Panics when two providers declare the same
+    /// `Manifest.module`.
     pub fn new(providers: Vec<Arc<dyn Provider>>) -> Self {
         let mut manifests = Vec::with_capacity(providers.len());
         let mut by_module = BTreeMap::new();
         for provider in providers {
             let manifest = provider.manifest();
+            let local = LocalProvider { provider, writes: manifest.writes };
             // Startup-only: a duplicate makes routing ambiguous, so the process refuses to boot.
-            if by_module.insert(manifest.module.clone(), provider).is_some() {
+            if by_module.insert(manifest.module.clone(), local).is_some() {
                 panic!("controlplane: two providers declare module {:?}", manifest.module);
             }
             manifests.push(manifest);
@@ -81,7 +88,7 @@ impl LocalFace {
         LocalFace { manifests, by_module }
     }
 
-    fn provider(&self, module: &str) -> Result<&Arc<dyn Provider>, opsapi::Error> {
+    fn local(&self, module: &str) -> Result<&LocalProvider, opsapi::Error> {
         self.by_module.get(module).ok_or_else(|| {
             opsapi::Error::not_found(format!("no control-plane provider for module {module:?}"))
         })
@@ -95,17 +102,25 @@ impl ControlPlane for LocalFace {
     }
 
     async fn panel(&self, req: PanelRequest) -> Result<Primitive, opsapi::Error> {
-        let mut primitive = self.provider(&req.module)?.panel(req).await?;
+        let mut primitive = self.local(&req.module)?.provider.panel(req).await?;
         make_finite(&mut primitive);
         Ok(primitive)
     }
 
     async fn search(&self, req: SearchRequest) -> Result<Vec<SearchHit>, opsapi::Error> {
-        self.provider(&req.module)?.search(req).await
+        self.local(&req.module)?.provider.search(req).await
     }
 
     async fn invoke(&self, req: InvokeRequest) -> Result<InvokeOutcome, opsapi::Error> {
-        self.provider(&req.module)?.invoke(req).await
+        let local = self.local(&req.module)?;
+        // `Manifest.writes` is the one write authority: an undeclared writer never sees an invoke.
+        if !local.writes {
+            return Err(opsapi::Error::forbidden(format!(
+                "control-plane module {:?} does not declare writes",
+                req.module
+            )));
+        }
+        local.provider.invoke(req).await
     }
 }
 

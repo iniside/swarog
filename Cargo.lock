@@ -240,6 +240,8 @@ dependencies = [
  "axum",
  "axum-server",
  "bus",
+ "controlplane",
+ "controlplanerpc",
  "edge",
  "futures",
  "httpmw",

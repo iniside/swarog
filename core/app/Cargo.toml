@@ -11,6 +11,8 @@ edge = { workspace = true }
 # The reserved `__describe` op's manifest type + `DESCRIBE_SLOT` (routing-as-data SERVE
 # side): `run` drains the slot and registers the ONE describe op per edge-serving process.
 opsapi = { workspace = true }
+controlplane = { workspace = true }
+controlplanerpc = { workspace = true }
 bus = { workspace = true }
 asyncevents = { workspace = true }
 invalidation = { workspace = true }

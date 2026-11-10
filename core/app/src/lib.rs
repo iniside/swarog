@@ -921,10 +921,16 @@ pub async fn run(
             // edge registration. `register_describe` reuses `Server::handle`, so this is
             // covered by the same panic-before-start reasoning documented above.
             let described = register_process_describe(&ctx, &mut server);
+            // Unconditional like `__describe`: every edge peer answers `cp.manifests`, an
+            // empty Vec when this process hosts no provider.
+            controlplanerpc::register_face(
+                &mut server,
+                ctx.contributions(controlplane::PROVIDER_SLOT),
+            );
             tracing::info!(
                 applied,
                 describe_ops = described.ops.len(),
-                "installed contributed edge registrations + reserved describe() op"
+                "installed contributed edge registrations + reserved describe() op + cp face"
             );
             Some(server)
         }
