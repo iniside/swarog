@@ -237,8 +237,9 @@ fn control_plane_writer_entry(module: &str) -> &str {
 }
 
 /// Phase 1b — every control-plane writer (a monolith manifest with `writes: true`) must
-/// carry an input-byte-caps `CapCase` naming [`CONTROL_PLANE_CAP_MARKER`] in its entry,
-/// and every such case's cap must equal the Validated `cp.invoke` `req.input.<value>` row.
+/// carry, in its entry, an input-byte-caps `CapCase` whose name contains both
+/// [`CONTROL_PLANE_CAP_MARKER`] and the writer's `Manifest.module`, and every such case's
+/// cap must equal the Validated `cp.invoke` `req.input.<value>` row.
 pub fn control_plane_cap_findings(
     writers: &BTreeSet<String>,
     entries: &[Entry],
@@ -273,7 +274,9 @@ pub fn control_plane_cap_findings(
         let caps: Vec<usize> = match entry.stance(Convention::InputByteCaps) {
             Some(Stance::Applies(Fixture::InputByteCaps(cases))) => cases
                 .iter()
-                .filter(|case| case.name.contains(CONTROL_PLANE_CAP_MARKER))
+                .filter(|case| {
+                    case.name.contains(CONTROL_PLANE_CAP_MARKER) && case.name.contains(writer.as_str())
+                })
                 .map(|case| case.cap)
                 .collect(),
             _ => Vec::new(),
@@ -281,13 +284,13 @@ pub fn control_plane_cap_findings(
         if caps.is_empty() {
             findings.push(format!(
                 "{writer} declares `writes: true` but entry {entry_name} has no executable \
-                 input-byte-caps CapCase naming {CONTROL_PLANE_CAP_MARKER}"
+                 input-byte-caps CapCase whose name contains both {CONTROL_PLANE_CAP_MARKER} and {writer}"
             ));
         }
         if let Some(row_cap) = row_cap {
             for cap in caps.into_iter().filter(|cap| *cap != row_cap) {
                 findings.push(format!(
-                    "{writer}: entry {entry_name} has a {CONTROL_PLANE_CAP_MARKER} CapCase with cap \
+                    "{writer}: entry {entry_name} has a {CONTROL_PLANE_CAP_MARKER} CapCase for {writer} with cap \
                      {cap}, but the req.input.<value> row is Validated at {row_cap}"
                 ));
             }
