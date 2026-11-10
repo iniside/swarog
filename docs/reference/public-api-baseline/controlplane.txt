@@ -1,0 +1,1683 @@
+# cargo-public-api 0.52.0 -- regenerate via cargo run -p verifyctl -- --bless-public-api
+pub mod controlplane
+pub mod controlplane::control_plane_rpc
+pub struct controlplane::control_plane_rpc::InvokeRequest
+pub controlplane::control_plane_rpc::InvokeRequest::req: controlplane::InvokeRequest
+impl serde_core::ser::Serialize for controlplane::control_plane_rpc::InvokeRequest
+pub fn controlplane::control_plane_rpc::InvokeRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::control_plane_rpc::InvokeRequest
+pub fn controlplane::control_plane_rpc::InvokeRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::control_plane_rpc::InvokeRequest
+impl core::marker::Freeze for controlplane::control_plane_rpc::InvokeRequest
+impl core::marker::Send for controlplane::control_plane_rpc::InvokeRequest
+impl core::marker::Sync for controlplane::control_plane_rpc::InvokeRequest
+impl core::marker::Unpin for controlplane::control_plane_rpc::InvokeRequest
+impl core::marker::UnsafeUnpin for controlplane::control_plane_rpc::InvokeRequest
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::control_plane_rpc::InvokeRequest
+impl core::panic::unwind_safe::UnwindSafe for controlplane::control_plane_rpc::InvokeRequest
+pub struct controlplane::control_plane_rpc::InvokeResponse
+pub controlplane::control_plane_rpc::InvokeResponse::err: alloc::string::String
+pub controlplane::control_plane_rpc::InvokeResponse::status: opsapi::Status
+pub controlplane::control_plane_rpc::InvokeResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for controlplane::control_plane_rpc::InvokeResponse
+pub fn controlplane::control_plane_rpc::InvokeResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::control_plane_rpc::InvokeResponse
+pub fn controlplane::control_plane_rpc::InvokeResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::control_plane_rpc::InvokeResponse
+impl core::marker::Freeze for controlplane::control_plane_rpc::InvokeResponse
+impl core::marker::Send for controlplane::control_plane_rpc::InvokeResponse
+impl core::marker::Sync for controlplane::control_plane_rpc::InvokeResponse
+impl core::marker::Unpin for controlplane::control_plane_rpc::InvokeResponse
+impl core::marker::UnsafeUnpin for controlplane::control_plane_rpc::InvokeResponse
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::control_plane_rpc::InvokeResponse
+impl core::panic::unwind_safe::UnwindSafe for controlplane::control_plane_rpc::InvokeResponse
+pub struct controlplane::control_plane_rpc::ManifestsRequest
+impl serde_core::ser::Serialize for controlplane::control_plane_rpc::ManifestsRequest
+pub fn controlplane::control_plane_rpc::ManifestsRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::control_plane_rpc::ManifestsRequest
+pub fn controlplane::control_plane_rpc::ManifestsRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::control_plane_rpc::ManifestsRequest
+impl core::marker::Freeze for controlplane::control_plane_rpc::ManifestsRequest
+impl core::marker::Send for controlplane::control_plane_rpc::ManifestsRequest
+impl core::marker::Sync for controlplane::control_plane_rpc::ManifestsRequest
+impl core::marker::Unpin for controlplane::control_plane_rpc::ManifestsRequest
+impl core::marker::UnsafeUnpin for controlplane::control_plane_rpc::ManifestsRequest
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::control_plane_rpc::ManifestsRequest
+impl core::panic::unwind_safe::UnwindSafe for controlplane::control_plane_rpc::ManifestsRequest
+pub struct controlplane::control_plane_rpc::ManifestsResponse
+pub controlplane::control_plane_rpc::ManifestsResponse::err: alloc::string::String
+pub controlplane::control_plane_rpc::ManifestsResponse::status: opsapi::Status
+pub controlplane::control_plane_rpc::ManifestsResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for controlplane::control_plane_rpc::ManifestsResponse
+pub fn controlplane::control_plane_rpc::ManifestsResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::control_plane_rpc::ManifestsResponse
+pub fn controlplane::control_plane_rpc::ManifestsResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::control_plane_rpc::ManifestsResponse
+impl core::marker::Freeze for controlplane::control_plane_rpc::ManifestsResponse
+impl core::marker::Send for controlplane::control_plane_rpc::ManifestsResponse
+impl core::marker::Sync for controlplane::control_plane_rpc::ManifestsResponse
+impl core::marker::Unpin for controlplane::control_plane_rpc::ManifestsResponse
+impl core::marker::UnsafeUnpin for controlplane::control_plane_rpc::ManifestsResponse
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::control_plane_rpc::ManifestsResponse
+impl core::panic::unwind_safe::UnwindSafe for controlplane::control_plane_rpc::ManifestsResponse
+pub struct controlplane::control_plane_rpc::PanelRequest
+pub controlplane::control_plane_rpc::PanelRequest::req: controlplane::PanelRequest
+impl serde_core::ser::Serialize for controlplane::control_plane_rpc::PanelRequest
+pub fn controlplane::control_plane_rpc::PanelRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::control_plane_rpc::PanelRequest
+pub fn controlplane::control_plane_rpc::PanelRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::control_plane_rpc::PanelRequest
+impl core::marker::Freeze for controlplane::control_plane_rpc::PanelRequest
+impl core::marker::Send for controlplane::control_plane_rpc::PanelRequest
+impl core::marker::Sync for controlplane::control_plane_rpc::PanelRequest
+impl core::marker::Unpin for controlplane::control_plane_rpc::PanelRequest
+impl core::marker::UnsafeUnpin for controlplane::control_plane_rpc::PanelRequest
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::control_plane_rpc::PanelRequest
+impl core::panic::unwind_safe::UnwindSafe for controlplane::control_plane_rpc::PanelRequest
+pub struct controlplane::control_plane_rpc::PanelResponse
+pub controlplane::control_plane_rpc::PanelResponse::err: alloc::string::String
+pub controlplane::control_plane_rpc::PanelResponse::status: opsapi::Status
+pub controlplane::control_plane_rpc::PanelResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for controlplane::control_plane_rpc::PanelResponse
+pub fn controlplane::control_plane_rpc::PanelResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::control_plane_rpc::PanelResponse
+pub fn controlplane::control_plane_rpc::PanelResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::control_plane_rpc::PanelResponse
+impl core::marker::Freeze for controlplane::control_plane_rpc::PanelResponse
+impl core::marker::Send for controlplane::control_plane_rpc::PanelResponse
+impl core::marker::Sync for controlplane::control_plane_rpc::PanelResponse
+impl core::marker::Unpin for controlplane::control_plane_rpc::PanelResponse
+impl core::marker::UnsafeUnpin for controlplane::control_plane_rpc::PanelResponse
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::control_plane_rpc::PanelResponse
+impl core::panic::unwind_safe::UnwindSafe for controlplane::control_plane_rpc::PanelResponse
+pub struct controlplane::control_plane_rpc::SearchRequest
+pub controlplane::control_plane_rpc::SearchRequest::req: controlplane::SearchRequest
+impl serde_core::ser::Serialize for controlplane::control_plane_rpc::SearchRequest
+pub fn controlplane::control_plane_rpc::SearchRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::control_plane_rpc::SearchRequest
+pub fn controlplane::control_plane_rpc::SearchRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::control_plane_rpc::SearchRequest
+impl core::marker::Freeze for controlplane::control_plane_rpc::SearchRequest
+impl core::marker::Send for controlplane::control_plane_rpc::SearchRequest
+impl core::marker::Sync for controlplane::control_plane_rpc::SearchRequest
+impl core::marker::Unpin for controlplane::control_plane_rpc::SearchRequest
+impl core::marker::UnsafeUnpin for controlplane::control_plane_rpc::SearchRequest
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::control_plane_rpc::SearchRequest
+impl core::panic::unwind_safe::UnwindSafe for controlplane::control_plane_rpc::SearchRequest
+pub struct controlplane::control_plane_rpc::SearchResponse
+pub controlplane::control_plane_rpc::SearchResponse::err: alloc::string::String
+pub controlplane::control_plane_rpc::SearchResponse::status: opsapi::Status
+pub controlplane::control_plane_rpc::SearchResponse::value: serde_json::value::Value
+impl serde_core::ser::Serialize for controlplane::control_plane_rpc::SearchResponse
+pub fn controlplane::control_plane_rpc::SearchResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::control_plane_rpc::SearchResponse
+pub fn controlplane::control_plane_rpc::SearchResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::control_plane_rpc::SearchResponse
+impl core::marker::Freeze for controlplane::control_plane_rpc::SearchResponse
+impl core::marker::Send for controlplane::control_plane_rpc::SearchResponse
+impl core::marker::Sync for controlplane::control_plane_rpc::SearchResponse
+impl core::marker::Unpin for controlplane::control_plane_rpc::SearchResponse
+impl core::marker::UnsafeUnpin for controlplane::control_plane_rpc::SearchResponse
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::control_plane_rpc::SearchResponse
+impl core::panic::unwind_safe::UnwindSafe for controlplane::control_plane_rpc::SearchResponse
+pub const controlplane::control_plane_rpc::METHOD_INVOKE: &str
+pub const controlplane::control_plane_rpc::METHOD_MANIFESTS: &str
+pub const controlplane::control_plane_rpc::METHOD_PANEL: &str
+pub const controlplane::control_plane_rpc::METHOD_SEARCH: &str
+pub fn controlplane::control_plane_rpc::describe() -> opsapi::DescribeManifest
+pub fn controlplane::control_plane_rpc::operations(alloc::rcs::arc::Arc<(dyn controlplane::ControlPlane + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn controlplane::control_plane_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
+pub fn controlplane::control_plane_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
+pub mod controlplane::events
+pub struct controlplane::events::AdminAction
+pub controlplane::events::AdminAction::action: alloc::string::String
+pub controlplane::events::AdminAction::actor: alloc::string::String
+pub controlplane::events::AdminAction::detail: alloc::string::String
+pub controlplane::events::AdminAction::target: alloc::string::String
+impl core::clone::Clone for controlplane::events::AdminAction
+pub fn controlplane::events::AdminAction::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::events::AdminAction
+impl core::cmp::PartialEq for controlplane::events::AdminAction
+pub fn controlplane::events::AdminAction::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::events::AdminAction
+pub fn controlplane::events::AdminAction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::events::AdminAction
+impl serde_core::ser::Serialize for controlplane::events::AdminAction
+pub fn controlplane::events::AdminAction::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::events::AdminAction
+pub fn controlplane::events::AdminAction::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::events::AdminAction
+impl core::marker::Freeze for controlplane::events::AdminAction
+impl core::marker::Send for controlplane::events::AdminAction
+impl core::marker::Sync for controlplane::events::AdminAction
+impl core::marker::Unpin for controlplane::events::AdminAction
+impl core::marker::UnsafeUnpin for controlplane::events::AdminAction
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::events::AdminAction
+impl core::panic::unwind_safe::UnwindSafe for controlplane::events::AdminAction
+pub static controlplane::events::ACTION: std::sync::lazy_lock::LazyLock<bus::EventType<controlplane::events::AdminAction>>
+pub enum controlplane::ActionPoint
+pub controlplane::ActionPoint::HeaderAction(alloc::string::String)
+pub controlplane::ActionPoint::PageHead(alloc::string::String)
+pub controlplane::ActionPoint::PanelTool(alloc::string::String)
+pub controlplane::ActionPoint::RowAction(alloc::string::String)
+impl core::clone::Clone for controlplane::ActionPoint
+pub fn controlplane::ActionPoint::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::ActionPoint
+impl core::cmp::PartialEq for controlplane::ActionPoint
+pub fn controlplane::ActionPoint::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::ActionPoint
+pub fn controlplane::ActionPoint::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::ActionPoint
+impl serde_core::ser::Serialize for controlplane::ActionPoint
+pub fn controlplane::ActionPoint::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::ActionPoint
+pub fn controlplane::ActionPoint::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::ActionPoint
+impl core::marker::Freeze for controlplane::ActionPoint
+impl core::marker::Send for controlplane::ActionPoint
+impl core::marker::Sync for controlplane::ActionPoint
+impl core::marker::Unpin for controlplane::ActionPoint
+impl core::marker::UnsafeUnpin for controlplane::ActionPoint
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::ActionPoint
+impl core::panic::unwind_safe::UnwindSafe for controlplane::ActionPoint
+pub enum controlplane::Align
+pub controlplane::Align::Left
+pub controlplane::Align::Right
+impl core::clone::Clone for controlplane::Align
+pub fn controlplane::Align::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Align
+impl core::cmp::PartialEq for controlplane::Align
+pub fn controlplane::Align::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Align
+pub fn controlplane::Align::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::Align
+impl core::marker::StructuralPartialEq for controlplane::Align
+impl serde_core::ser::Serialize for controlplane::Align
+pub fn controlplane::Align::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Align
+pub fn controlplane::Align::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Align
+impl core::marker::Freeze for controlplane::Align
+impl core::marker::Send for controlplane::Align
+impl core::marker::Sync for controlplane::Align
+impl core::marker::Unpin for controlplane::Align
+impl core::marker::UnsafeUnpin for controlplane::Align
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Align
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Align
+pub enum controlplane::Axis
+pub controlplane::Axis::Left
+pub controlplane::Axis::Right
+impl core::clone::Clone for controlplane::Axis
+pub fn controlplane::Axis::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Axis
+impl core::cmp::PartialEq for controlplane::Axis
+pub fn controlplane::Axis::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Axis
+pub fn controlplane::Axis::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::Axis
+impl core::marker::StructuralPartialEq for controlplane::Axis
+impl serde_core::ser::Serialize for controlplane::Axis
+pub fn controlplane::Axis::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Axis
+pub fn controlplane::Axis::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Axis
+impl core::marker::Freeze for controlplane::Axis
+impl core::marker::Send for controlplane::Axis
+impl core::marker::Sync for controlplane::Axis
+impl core::marker::Unpin for controlplane::Axis
+impl core::marker::UnsafeUnpin for controlplane::Axis
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Axis
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Axis
+pub enum controlplane::CellKind
+pub controlplane::CellKind::Badge
+pub controlplane::CellKind::Bytes
+pub controlplane::CellKind::Mono
+pub controlplane::CellKind::Number
+pub controlplane::CellKind::Ref
+pub controlplane::CellKind::Text
+pub controlplane::CellKind::Time
+pub controlplane::CellKind::User
+impl core::clone::Clone for controlplane::CellKind
+pub fn controlplane::CellKind::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::CellKind
+impl core::cmp::PartialEq for controlplane::CellKind
+pub fn controlplane::CellKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::CellKind
+pub fn controlplane::CellKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::CellKind
+impl core::marker::StructuralPartialEq for controlplane::CellKind
+impl serde_core::ser::Serialize for controlplane::CellKind
+pub fn controlplane::CellKind::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::CellKind
+pub fn controlplane::CellKind::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::CellKind
+impl core::marker::Freeze for controlplane::CellKind
+impl core::marker::Send for controlplane::CellKind
+impl core::marker::Sync for controlplane::CellKind
+impl core::marker::Unpin for controlplane::CellKind
+impl core::marker::UnsafeUnpin for controlplane::CellKind
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::CellKind
+impl core::panic::unwind_safe::UnwindSafe for controlplane::CellKind
+pub enum controlplane::ConfirmTone
+pub controlplane::ConfirmTone::Danger
+pub controlplane::ConfirmTone::Info
+pub controlplane::ConfirmTone::Warn
+impl core::clone::Clone for controlplane::ConfirmTone
+pub fn controlplane::ConfirmTone::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::ConfirmTone
+impl core::cmp::PartialEq for controlplane::ConfirmTone
+pub fn controlplane::ConfirmTone::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::ConfirmTone
+pub fn controlplane::ConfirmTone::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::ConfirmTone
+impl core::marker::StructuralPartialEq for controlplane::ConfirmTone
+impl serde_core::ser::Serialize for controlplane::ConfirmTone
+pub fn controlplane::ConfirmTone::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::ConfirmTone
+pub fn controlplane::ConfirmTone::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::ConfirmTone
+impl core::marker::Freeze for controlplane::ConfirmTone
+impl core::marker::Send for controlplane::ConfirmTone
+impl core::marker::Sync for controlplane::ConfirmTone
+impl core::marker::Unpin for controlplane::ConfirmTone
+impl core::marker::UnsafeUnpin for controlplane::ConfirmTone
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::ConfirmTone
+impl core::panic::unwind_safe::UnwindSafe for controlplane::ConfirmTone
+pub enum controlplane::FieldKind
+pub controlplane::FieldKind::Bool
+pub controlplane::FieldKind::Duration
+pub controlplane::FieldKind::Enum(alloc::vec::Vec<alloc::string::String>)
+pub controlplane::FieldKind::Float
+pub controlplane::FieldKind::Int
+pub controlplane::FieldKind::Json
+pub controlplane::FieldKind::Money(alloc::vec::Vec<alloc::string::String>)
+pub controlplane::FieldKind::Multi(alloc::vec::Vec<alloc::string::String>)
+pub controlplane::FieldKind::Ref(alloc::string::String)
+pub controlplane::FieldKind::String
+pub controlplane::FieldKind::Text
+impl core::clone::Clone for controlplane::FieldKind
+pub fn controlplane::FieldKind::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::FieldKind
+impl core::cmp::PartialEq for controlplane::FieldKind
+pub fn controlplane::FieldKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::FieldKind
+pub fn controlplane::FieldKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::FieldKind
+impl serde_core::ser::Serialize for controlplane::FieldKind
+pub fn controlplane::FieldKind::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::FieldKind
+pub fn controlplane::FieldKind::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::FieldKind
+impl core::marker::Freeze for controlplane::FieldKind
+impl core::marker::Send for controlplane::FieldKind
+impl core::marker::Sync for controlplane::FieldKind
+impl core::marker::Unpin for controlplane::FieldKind
+impl core::marker::UnsafeUnpin for controlplane::FieldKind
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::FieldKind
+impl core::panic::unwind_safe::UnwindSafe for controlplane::FieldKind
+pub enum controlplane::FilterKind
+pub controlplane::FilterKind::Bool
+pub controlplane::FilterKind::Enum(alloc::vec::Vec<alloc::string::String>)
+pub controlplane::FilterKind::Range
+pub controlplane::FilterKind::Ref(alloc::string::String)
+pub controlplane::FilterKind::Text
+impl core::clone::Clone for controlplane::FilterKind
+pub fn controlplane::FilterKind::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::FilterKind
+impl core::cmp::PartialEq for controlplane::FilterKind
+pub fn controlplane::FilterKind::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::FilterKind
+pub fn controlplane::FilterKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::FilterKind
+impl serde_core::ser::Serialize for controlplane::FilterKind
+pub fn controlplane::FilterKind::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::FilterKind
+pub fn controlplane::FilterKind::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::FilterKind
+impl core::marker::Freeze for controlplane::FilterKind
+impl core::marker::Send for controlplane::FilterKind
+impl core::marker::Sync for controlplane::FilterKind
+impl core::marker::Unpin for controlplane::FilterKind
+impl core::marker::UnsafeUnpin for controlplane::FilterKind
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::FilterKind
+impl core::panic::unwind_safe::UnwindSafe for controlplane::FilterKind
+pub enum controlplane::InvokeOutcome
+pub controlplane::InvokeOutcome::Conflict
+pub controlplane::InvokeOutcome::Conflict::current_revision: u64
+pub controlplane::InvokeOutcome::FieldErrors(alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>)
+pub controlplane::InvokeOutcome::Ok
+pub controlplane::InvokeOutcome::Ok::message: alloc::string::String
+pub controlplane::InvokeOutcome::Ok::redirect: core::option::Option<controlplane::Link>
+pub controlplane::InvokeOutcome::Ok::reveal: core::option::Option<controlplane::SecretReveal>
+impl core::clone::Clone for controlplane::InvokeOutcome
+pub fn controlplane::InvokeOutcome::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::InvokeOutcome
+impl core::cmp::PartialEq for controlplane::InvokeOutcome
+pub fn controlplane::InvokeOutcome::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::InvokeOutcome
+pub fn controlplane::InvokeOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::InvokeOutcome
+impl serde_core::ser::Serialize for controlplane::InvokeOutcome
+pub fn controlplane::InvokeOutcome::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::InvokeOutcome
+pub fn controlplane::InvokeOutcome::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::InvokeOutcome
+impl core::marker::Freeze for controlplane::InvokeOutcome
+impl core::marker::Send for controlplane::InvokeOutcome
+impl core::marker::Sync for controlplane::InvokeOutcome
+impl core::marker::Unpin for controlplane::InvokeOutcome
+impl core::marker::UnsafeUnpin for controlplane::InvokeOutcome
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::InvokeOutcome
+impl core::panic::unwind_safe::UnwindSafe for controlplane::InvokeOutcome
+pub enum controlplane::Layout
+pub controlplane::Layout::Grid2(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<alloc::string::String>)
+pub controlplane::Layout::Grid21(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<alloc::string::String>)
+pub controlplane::Layout::Stack(alloc::vec::Vec<alloc::string::String>)
+pub controlplane::Layout::Tiles(alloc::vec::Vec<alloc::string::String>)
+impl core::clone::Clone for controlplane::Layout
+pub fn controlplane::Layout::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Layout
+impl core::cmp::PartialEq for controlplane::Layout
+pub fn controlplane::Layout::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Layout
+pub fn controlplane::Layout::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Layout
+impl serde_core::ser::Serialize for controlplane::Layout
+pub fn controlplane::Layout::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Layout
+pub fn controlplane::Layout::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Layout
+impl core::marker::Freeze for controlplane::Layout
+impl core::marker::Send for controlplane::Layout
+impl core::marker::Sync for controlplane::Layout
+impl core::marker::Unpin for controlplane::Layout
+impl core::marker::UnsafeUnpin for controlplane::Layout
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Layout
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Layout
+pub enum controlplane::Link
+pub controlplane::Link::Entity(controlplane::EntityRef)
+pub controlplane::Link::Page
+pub controlplane::Link::Page::module: alloc::string::String
+pub controlplane::Link::Page::page: alloc::string::String
+pub controlplane::Link::Page::params: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+impl core::clone::Clone for controlplane::Link
+pub fn controlplane::Link::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Link
+impl core::cmp::PartialEq for controlplane::Link
+pub fn controlplane::Link::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Link
+pub fn controlplane::Link::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Link
+impl serde_core::ser::Serialize for controlplane::Link
+pub fn controlplane::Link::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Link
+pub fn controlplane::Link::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Link
+impl core::marker::Freeze for controlplane::Link
+impl core::marker::Send for controlplane::Link
+impl core::marker::Sync for controlplane::Link
+impl core::marker::Unpin for controlplane::Link
+impl core::marker::UnsafeUnpin for controlplane::Link
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Link
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Link
+pub enum controlplane::Point
+pub controlplane::Point::DashboardAttention
+pub controlplane::Point::DashboardPanel
+pub controlplane::Point::DashboardTile
+pub controlplane::Point::EntityHeader(alloc::string::String)
+pub controlplane::Point::EntityListColumn
+pub controlplane::Point::EntityListColumn::kind: alloc::string::String
+pub controlplane::Point::EntityListColumn::label: alloc::string::String
+pub controlplane::Point::EntitySummary(alloc::string::String)
+pub controlplane::Point::EntityTab
+pub controlplane::Point::EntityTab::kind: alloc::string::String
+pub controlplane::Point::EntityTab::tab: alloc::string::String
+pub controlplane::Point::EntityTab::tab_label: alloc::string::String
+pub controlplane::Point::EntityTabCount
+pub controlplane::Point::EntityTabCount::kind: alloc::string::String
+pub controlplane::Point::EntityTabCount::tab: alloc::string::String
+pub controlplane::Point::NavCounter
+pub controlplane::Point::Page(alloc::string::String)
+impl core::clone::Clone for controlplane::Point
+pub fn controlplane::Point::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Point
+impl core::cmp::PartialEq for controlplane::Point
+pub fn controlplane::Point::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Point
+pub fn controlplane::Point::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Point
+impl serde_core::ser::Serialize for controlplane::Point
+pub fn controlplane::Point::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Point
+pub fn controlplane::Point::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Point
+impl core::marker::Freeze for controlplane::Point
+impl core::marker::Send for controlplane::Point
+impl core::marker::Sync for controlplane::Point
+impl core::marker::Unpin for controlplane::Point
+impl core::marker::UnsafeUnpin for controlplane::Point
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Point
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Point
+pub enum controlplane::Primitive
+pub controlplane::Primitive::AttentionItems(alloc::vec::Vec<controlplane::AttentionItem>)
+pub controlplane::Primitive::Cell(controlplane::Cell)
+pub controlplane::Primitive::ColumnCells(alloc::collections::btree::map::BTreeMap<alloc::string::String, controlplane::Cell>)
+pub controlplane::Primitive::DataTable(controlplane::DataTable)
+pub controlplane::Primitive::Empty
+pub controlplane::Primitive::Empty::detail: alloc::string::String
+pub controlplane::Primitive::Empty::title: alloc::string::String
+pub controlplane::Primitive::EntityHeader(controlplane::EntityHeader)
+pub controlplane::Primitive::Form(controlplane::FormSpec)
+pub controlplane::Primitive::KpiTile(controlplane::KpiTile)
+pub controlplane::Primitive::PropertyList(controlplane::PropertyList)
+pub controlplane::Primitive::ServiceStatus(controlplane::ServiceStatus)
+pub controlplane::Primitive::TimeSeriesChart(controlplane::TimeSeriesChart)
+pub controlplane::Primitive::Timeline(controlplane::Timeline)
+pub controlplane::Primitive::WorkQueue(controlplane::WorkQueue)
+impl core::clone::Clone for controlplane::Primitive
+pub fn controlplane::Primitive::clone(&self) -> Self
+impl core::cmp::PartialEq for controlplane::Primitive
+pub fn controlplane::Primitive::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Primitive
+pub fn controlplane::Primitive::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Primitive
+impl serde_core::ser::Serialize for controlplane::Primitive
+pub fn controlplane::Primitive::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Primitive
+pub fn controlplane::Primitive::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Primitive
+impl core::marker::Freeze for controlplane::Primitive
+impl core::marker::Send for controlplane::Primitive
+impl core::marker::Sync for controlplane::Primitive
+impl core::marker::Unpin for controlplane::Primitive
+impl core::marker::UnsafeUnpin for controlplane::Primitive
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Primitive
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Primitive
+pub enum controlplane::ReasonReq
+pub controlplane::ReasonReq::None
+pub controlplane::ReasonReq::Optional
+pub controlplane::ReasonReq::Required
+impl core::clone::Clone for controlplane::ReasonReq
+pub fn controlplane::ReasonReq::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::ReasonReq
+impl core::cmp::PartialEq for controlplane::ReasonReq
+pub fn controlplane::ReasonReq::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::ReasonReq
+pub fn controlplane::ReasonReq::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::ReasonReq
+impl core::marker::StructuralPartialEq for controlplane::ReasonReq
+impl serde_core::ser::Serialize for controlplane::ReasonReq
+pub fn controlplane::ReasonReq::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::ReasonReq
+pub fn controlplane::ReasonReq::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::ReasonReq
+impl core::marker::Freeze for controlplane::ReasonReq
+impl core::marker::Send for controlplane::ReasonReq
+impl core::marker::Sync for controlplane::ReasonReq
+impl core::marker::Unpin for controlplane::ReasonReq
+impl core::marker::UnsafeUnpin for controlplane::ReasonReq
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::ReasonReq
+impl core::panic::unwind_safe::UnwindSafe for controlplane::ReasonReq
+pub enum controlplane::Role
+pub controlplane::Role::Admin
+pub controlplane::Role::Operator
+pub controlplane::Role::Viewer
+impl core::clone::Clone for controlplane::Role
+pub fn controlplane::Role::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Role
+impl core::cmp::Ord for controlplane::Role
+pub fn controlplane::Role::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for controlplane::Role
+pub fn controlplane::Role::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for controlplane::Role
+pub fn controlplane::Role::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::fmt::Debug for controlplane::Role
+pub fn controlplane::Role::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for controlplane::Role
+pub fn controlplane::Role::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for controlplane::Role
+impl core::marker::StructuralPartialEq for controlplane::Role
+impl serde_core::ser::Serialize for controlplane::Role
+pub fn controlplane::Role::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Role
+pub fn controlplane::Role::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Role
+impl core::marker::Freeze for controlplane::Role
+impl core::marker::Send for controlplane::Role
+impl core::marker::Sync for controlplane::Role
+impl core::marker::Unpin for controlplane::Role
+impl core::marker::UnsafeUnpin for controlplane::Role
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Role
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Role
+pub enum controlplane::ServiceState
+pub controlplane::ServiceState::Crashed
+pub controlplane::ServiceState::Degraded
+pub controlplane::ServiceState::Down
+pub controlplane::ServiceState::Restarting
+pub controlplane::ServiceState::Running
+impl core::clone::Clone for controlplane::ServiceState
+pub fn controlplane::ServiceState::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::ServiceState
+impl core::cmp::PartialEq for controlplane::ServiceState
+pub fn controlplane::ServiceState::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::ServiceState
+pub fn controlplane::ServiceState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::ServiceState
+impl core::marker::StructuralPartialEq for controlplane::ServiceState
+impl serde_core::ser::Serialize for controlplane::ServiceState
+pub fn controlplane::ServiceState::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::ServiceState
+pub fn controlplane::ServiceState::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::ServiceState
+impl core::marker::Freeze for controlplane::ServiceState
+impl core::marker::Send for controlplane::ServiceState
+impl core::marker::Sync for controlplane::ServiceState
+impl core::marker::Unpin for controlplane::ServiceState
+impl core::marker::UnsafeUnpin for controlplane::ServiceState
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::ServiceState
+impl core::panic::unwind_safe::UnwindSafe for controlplane::ServiceState
+pub enum controlplane::Severity
+pub controlplane::Severity::Err
+pub controlplane::Severity::Warn
+impl core::clone::Clone for controlplane::Severity
+pub fn controlplane::Severity::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Severity
+impl core::cmp::PartialEq for controlplane::Severity
+pub fn controlplane::Severity::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Severity
+pub fn controlplane::Severity::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::Severity
+impl core::marker::StructuralPartialEq for controlplane::Severity
+impl serde_core::ser::Serialize for controlplane::Severity
+pub fn controlplane::Severity::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Severity
+pub fn controlplane::Severity::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Severity
+impl core::marker::Freeze for controlplane::Severity
+impl core::marker::Send for controlplane::Severity
+impl core::marker::Sync for controlplane::Severity
+impl core::marker::Unpin for controlplane::Severity
+impl core::marker::UnsafeUnpin for controlplane::Severity
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Severity
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Severity
+pub enum controlplane::Then
+pub controlplane::Then::Confirm(controlplane::ConfirmSpec)
+pub controlplane::Then::Form(controlplane::FormSpec)
+pub controlplane::Then::Invoke
+pub controlplane::Then::Link(controlplane::Link)
+impl core::clone::Clone for controlplane::Then
+pub fn controlplane::Then::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Then
+impl core::cmp::PartialEq for controlplane::Then
+pub fn controlplane::Then::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Then
+pub fn controlplane::Then::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Then
+impl serde_core::ser::Serialize for controlplane::Then
+pub fn controlplane::Then::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Then
+pub fn controlplane::Then::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Then
+impl core::marker::Freeze for controlplane::Then
+impl core::marker::Send for controlplane::Then
+impl core::marker::Sync for controlplane::Then
+impl core::marker::Unpin for controlplane::Then
+impl core::marker::UnsafeUnpin for controlplane::Then
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Then
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Then
+pub enum controlplane::Tone
+pub controlplane::Tone::Err
+pub controlplane::Tone::Info
+pub controlplane::Tone::Ok
+pub controlplane::Tone::Warn
+impl core::clone::Clone for controlplane::Tone
+pub fn controlplane::Tone::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Tone
+impl core::cmp::PartialEq for controlplane::Tone
+pub fn controlplane::Tone::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Tone
+pub fn controlplane::Tone::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::Tone
+impl core::marker::StructuralPartialEq for controlplane::Tone
+impl serde_core::ser::Serialize for controlplane::Tone
+pub fn controlplane::Tone::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Tone
+pub fn controlplane::Tone::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Tone
+impl core::marker::Freeze for controlplane::Tone
+impl core::marker::Send for controlplane::Tone
+impl core::marker::Sync for controlplane::Tone
+impl core::marker::Unpin for controlplane::Tone
+impl core::marker::UnsafeUnpin for controlplane::Tone
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Tone
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Tone
+pub enum controlplane::Trend
+pub controlplane::Trend::Down
+pub controlplane::Trend::None
+pub controlplane::Trend::Up
+impl core::clone::Clone for controlplane::Trend
+pub fn controlplane::Trend::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Trend
+impl core::cmp::PartialEq for controlplane::Trend
+pub fn controlplane::Trend::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Trend
+pub fn controlplane::Trend::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::Trend
+impl core::marker::StructuralPartialEq for controlplane::Trend
+impl serde_core::ser::Serialize for controlplane::Trend
+pub fn controlplane::Trend::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Trend
+pub fn controlplane::Trend::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Trend
+impl core::marker::Freeze for controlplane::Trend
+impl core::marker::Send for controlplane::Trend
+impl core::marker::Sync for controlplane::Trend
+impl core::marker::Unpin for controlplane::Trend
+impl core::marker::UnsafeUnpin for controlplane::Trend
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Trend
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Trend
+pub struct controlplane::ActionDecl
+pub controlplane::ActionDecl::danger: bool
+pub controlplane::ActionDecl::icon: alloc::string::String
+pub controlplane::ActionDecl::id: alloc::string::String
+pub controlplane::ActionDecl::implemented: bool
+pub controlplane::ActionDecl::label: alloc::string::String
+pub controlplane::ActionDecl::min_role: controlplane::Role
+pub controlplane::ActionDecl::multi: bool
+pub controlplane::ActionDecl::order: i32
+pub controlplane::ActionDecl::point: controlplane::ActionPoint
+pub controlplane::ActionDecl::then: controlplane::Then
+impl core::clone::Clone for controlplane::ActionDecl
+pub fn controlplane::ActionDecl::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::ActionDecl
+impl core::cmp::PartialEq for controlplane::ActionDecl
+pub fn controlplane::ActionDecl::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::ActionDecl
+pub fn controlplane::ActionDecl::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::ActionDecl
+impl serde_core::ser::Serialize for controlplane::ActionDecl
+pub fn controlplane::ActionDecl::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::ActionDecl
+pub fn controlplane::ActionDecl::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::ActionDecl
+impl core::marker::Freeze for controlplane::ActionDecl
+impl core::marker::Send for controlplane::ActionDecl
+impl core::marker::Sync for controlplane::ActionDecl
+impl core::marker::Unpin for controlplane::ActionDecl
+impl core::marker::UnsafeUnpin for controlplane::ActionDecl
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::ActionDecl
+impl core::panic::unwind_safe::UnwindSafe for controlplane::ActionDecl
+pub struct controlplane::AttentionItem
+pub controlplane::AttentionItem::action_label: alloc::string::String
+pub controlplane::AttentionItem::link: controlplane::Link
+pub controlplane::AttentionItem::severity: controlplane::Severity
+pub controlplane::AttentionItem::since: alloc::string::String
+pub controlplane::AttentionItem::text: alloc::string::String
+pub controlplane::AttentionItem::title: alloc::string::String
+impl core::clone::Clone for controlplane::AttentionItem
+pub fn controlplane::AttentionItem::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::AttentionItem
+impl core::cmp::PartialEq for controlplane::AttentionItem
+pub fn controlplane::AttentionItem::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::AttentionItem
+pub fn controlplane::AttentionItem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::AttentionItem
+impl serde_core::ser::Serialize for controlplane::AttentionItem
+pub fn controlplane::AttentionItem::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::AttentionItem
+pub fn controlplane::AttentionItem::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::AttentionItem
+impl core::marker::Freeze for controlplane::AttentionItem
+impl core::marker::Send for controlplane::AttentionItem
+impl core::marker::Sync for controlplane::AttentionItem
+impl core::marker::Unpin for controlplane::AttentionItem
+impl core::marker::UnsafeUnpin for controlplane::AttentionItem
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::AttentionItem
+impl core::panic::unwind_safe::UnwindSafe for controlplane::AttentionItem
+pub struct controlplane::Cell
+pub controlplane::Cell::kind: controlplane::CellKind
+pub controlplane::Cell::link: core::option::Option<controlplane::Link>
+pub controlplane::Cell::tone: core::option::Option<controlplane::Tone>
+pub controlplane::Cell::value: alloc::string::String
+impl core::clone::Clone for controlplane::Cell
+pub fn controlplane::Cell::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Cell
+impl core::cmp::PartialEq for controlplane::Cell
+pub fn controlplane::Cell::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Cell
+pub fn controlplane::Cell::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Cell
+impl serde_core::ser::Serialize for controlplane::Cell
+pub fn controlplane::Cell::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Cell
+pub fn controlplane::Cell::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Cell
+impl core::marker::Freeze for controlplane::Cell
+impl core::marker::Send for controlplane::Cell
+impl core::marker::Sync for controlplane::Cell
+impl core::marker::Unpin for controlplane::Cell
+impl core::marker::UnsafeUnpin for controlplane::Cell
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Cell
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Cell
+pub struct controlplane::Column
+pub controlplane::Column::align: controlplane::Align
+pub controlplane::Column::key: alloc::string::String
+pub controlplane::Column::kind: controlplane::CellKind
+pub controlplane::Column::label: alloc::string::String
+pub controlplane::Column::sortable: bool
+impl core::clone::Clone for controlplane::Column
+pub fn controlplane::Column::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Column
+impl core::cmp::PartialEq for controlplane::Column
+pub fn controlplane::Column::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Column
+pub fn controlplane::Column::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Column
+impl serde_core::ser::Serialize for controlplane::Column
+pub fn controlplane::Column::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Column
+pub fn controlplane::Column::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Column
+impl core::marker::Freeze for controlplane::Column
+impl core::marker::Send for controlplane::Column
+impl core::marker::Sync for controlplane::Column
+impl core::marker::Unpin for controlplane::Column
+impl core::marker::UnsafeUnpin for controlplane::Column
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Column
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Column
+pub struct controlplane::ConfirmSpec
+pub controlplane::ConfirmSpec::body: alloc::string::String
+pub controlplane::ConfirmSpec::confirm_label: alloc::string::String
+pub controlplane::ConfirmSpec::impact: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub controlplane::ConfirmSpec::reason: controlplane::ReasonReq
+pub controlplane::ConfirmSpec::title: alloc::string::String
+pub controlplane::ConfirmSpec::tone: controlplane::ConfirmTone
+pub controlplane::ConfirmSpec::type_to_confirm: core::option::Option<alloc::string::String>
+impl core::clone::Clone for controlplane::ConfirmSpec
+pub fn controlplane::ConfirmSpec::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::ConfirmSpec
+impl core::cmp::PartialEq for controlplane::ConfirmSpec
+pub fn controlplane::ConfirmSpec::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::ConfirmSpec
+pub fn controlplane::ConfirmSpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::ConfirmSpec
+impl serde_core::ser::Serialize for controlplane::ConfirmSpec
+pub fn controlplane::ConfirmSpec::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::ConfirmSpec
+pub fn controlplane::ConfirmSpec::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::ConfirmSpec
+impl core::marker::Freeze for controlplane::ConfirmSpec
+impl core::marker::Send for controlplane::ConfirmSpec
+impl core::marker::Sync for controlplane::ConfirmSpec
+impl core::marker::Unpin for controlplane::ConfirmSpec
+impl core::marker::UnsafeUnpin for controlplane::ConfirmSpec
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::ConfirmSpec
+impl core::panic::unwind_safe::UnwindSafe for controlplane::ConfirmSpec
+pub struct controlplane::ContributionDecl
+pub controlplane::ContributionDecl::cache_ttl_s: core::option::Option<u32>
+pub controlplane::ContributionDecl::deadline_ms: u32
+pub controlplane::ContributionDecl::icon: alloc::string::String
+pub controlplane::ContributionDecl::id: alloc::string::String
+pub controlplane::ContributionDecl::min_role: controlplane::Role
+pub controlplane::ContributionDecl::order: i32
+pub controlplane::ContributionDecl::point: controlplane::Point
+pub controlplane::ContributionDecl::title: alloc::string::String
+impl core::clone::Clone for controlplane::ContributionDecl
+pub fn controlplane::ContributionDecl::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::ContributionDecl
+impl core::cmp::PartialEq for controlplane::ContributionDecl
+pub fn controlplane::ContributionDecl::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::ContributionDecl
+pub fn controlplane::ContributionDecl::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::ContributionDecl
+impl serde_core::ser::Serialize for controlplane::ContributionDecl
+pub fn controlplane::ContributionDecl::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::ContributionDecl
+pub fn controlplane::ContributionDecl::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::ContributionDecl
+impl core::marker::Freeze for controlplane::ContributionDecl
+impl core::marker::Send for controlplane::ContributionDecl
+impl core::marker::Sync for controlplane::ContributionDecl
+impl core::marker::Unpin for controlplane::ContributionDecl
+impl core::marker::UnsafeUnpin for controlplane::ContributionDecl
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::ContributionDecl
+impl core::panic::unwind_safe::UnwindSafe for controlplane::ContributionDecl
+pub struct controlplane::DataTable
+pub controlplane::DataTable::columns: alloc::vec::Vec<controlplane::Column>
+pub controlplane::DataTable::filters: alloc::vec::Vec<controlplane::FilterDef>
+pub controlplane::DataTable::list_columns_for: core::option::Option<alloc::string::String>
+pub controlplane::DataTable::page: controlplane::PageInfo
+pub controlplane::DataTable::rows: alloc::vec::Vec<controlplane::Row>
+pub controlplane::DataTable::search_placeholder: core::option::Option<alloc::string::String>
+pub controlplane::DataTable::selectable: bool
+impl core::clone::Clone for controlplane::DataTable
+pub fn controlplane::DataTable::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::DataTable
+impl core::cmp::PartialEq for controlplane::DataTable
+pub fn controlplane::DataTable::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::DataTable
+pub fn controlplane::DataTable::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::DataTable
+impl serde_core::ser::Serialize for controlplane::DataTable
+pub fn controlplane::DataTable::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::DataTable
+pub fn controlplane::DataTable::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::DataTable
+impl core::marker::Freeze for controlplane::DataTable
+impl core::marker::Send for controlplane::DataTable
+impl core::marker::Sync for controlplane::DataTable
+impl core::marker::Unpin for controlplane::DataTable
+impl core::marker::UnsafeUnpin for controlplane::DataTable
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::DataTable
+impl core::panic::unwind_safe::UnwindSafe for controlplane::DataTable
+pub struct controlplane::Delta
+pub controlplane::Delta::good: controlplane::Trend
+pub controlplane::Delta::period: alloc::string::String
+pub controlplane::Delta::value: alloc::string::String
+impl core::clone::Clone for controlplane::Delta
+pub fn controlplane::Delta::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Delta
+impl core::cmp::PartialEq for controlplane::Delta
+pub fn controlplane::Delta::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Delta
+pub fn controlplane::Delta::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Delta
+impl serde_core::ser::Serialize for controlplane::Delta
+pub fn controlplane::Delta::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Delta
+pub fn controlplane::Delta::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Delta
+impl core::marker::Freeze for controlplane::Delta
+impl core::marker::Send for controlplane::Delta
+impl core::marker::Sync for controlplane::Delta
+impl core::marker::Unpin for controlplane::Delta
+impl core::marker::UnsafeUnpin for controlplane::Delta
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Delta
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Delta
+pub struct controlplane::EntityHeader
+pub controlplane::EntityHeader::avatar_seed: alloc::string::String
+pub controlplane::EntityHeader::status: core::option::Option<controlplane::Cell>
+pub controlplane::EntityHeader::subtitle: alloc::string::String
+pub controlplane::EntityHeader::title: alloc::string::String
+impl core::clone::Clone for controlplane::EntityHeader
+pub fn controlplane::EntityHeader::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::EntityHeader
+impl core::cmp::PartialEq for controlplane::EntityHeader
+pub fn controlplane::EntityHeader::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::EntityHeader
+pub fn controlplane::EntityHeader::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::EntityHeader
+impl serde_core::ser::Serialize for controlplane::EntityHeader
+pub fn controlplane::EntityHeader::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::EntityHeader
+pub fn controlplane::EntityHeader::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::EntityHeader
+impl core::marker::Freeze for controlplane::EntityHeader
+impl core::marker::Send for controlplane::EntityHeader
+impl core::marker::Sync for controlplane::EntityHeader
+impl core::marker::Unpin for controlplane::EntityHeader
+impl core::marker::UnsafeUnpin for controlplane::EntityHeader
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::EntityHeader
+impl core::panic::unwind_safe::UnwindSafe for controlplane::EntityHeader
+pub struct controlplane::EntityKindDecl
+pub controlplane::EntityKindDecl::icon: alloc::string::String
+pub controlplane::EntityKindDecl::kind: alloc::string::String
+pub controlplane::EntityKindDecl::label: alloc::string::String
+impl core::clone::Clone for controlplane::EntityKindDecl
+pub fn controlplane::EntityKindDecl::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::EntityKindDecl
+impl core::cmp::PartialEq for controlplane::EntityKindDecl
+pub fn controlplane::EntityKindDecl::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::EntityKindDecl
+pub fn controlplane::EntityKindDecl::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::EntityKindDecl
+impl serde_core::ser::Serialize for controlplane::EntityKindDecl
+pub fn controlplane::EntityKindDecl::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::EntityKindDecl
+pub fn controlplane::EntityKindDecl::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::EntityKindDecl
+impl core::marker::Freeze for controlplane::EntityKindDecl
+impl core::marker::Send for controlplane::EntityKindDecl
+impl core::marker::Sync for controlplane::EntityKindDecl
+impl core::marker::Unpin for controlplane::EntityKindDecl
+impl core::marker::UnsafeUnpin for controlplane::EntityKindDecl
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::EntityKindDecl
+impl core::panic::unwind_safe::UnwindSafe for controlplane::EntityKindDecl
+pub struct controlplane::EntityRef
+pub controlplane::EntityRef::id: alloc::string::String
+pub controlplane::EntityRef::kind: alloc::string::String
+impl core::clone::Clone for controlplane::EntityRef
+pub fn controlplane::EntityRef::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::EntityRef
+impl core::cmp::PartialEq for controlplane::EntityRef
+pub fn controlplane::EntityRef::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::EntityRef
+pub fn controlplane::EntityRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::EntityRef
+impl serde_core::ser::Serialize for controlplane::EntityRef
+pub fn controlplane::EntityRef::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::EntityRef
+pub fn controlplane::EntityRef::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::EntityRef
+impl core::marker::Freeze for controlplane::EntityRef
+impl core::marker::Send for controlplane::EntityRef
+impl core::marker::Sync for controlplane::EntityRef
+impl core::marker::Unpin for controlplane::EntityRef
+impl core::marker::UnsafeUnpin for controlplane::EntityRef
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::EntityRef
+impl core::panic::unwind_safe::UnwindSafe for controlplane::EntityRef
+pub struct controlplane::Field
+pub controlplane::Field::default: core::option::Option<alloc::string::String>
+pub controlplane::Field::help: core::option::Option<alloc::string::String>
+pub controlplane::Field::key: alloc::string::String
+pub controlplane::Field::kind: controlplane::FieldKind
+pub controlplane::Field::label: alloc::string::String
+pub controlplane::Field::readonly: bool
+pub controlplane::Field::required: bool
+impl core::clone::Clone for controlplane::Field
+pub fn controlplane::Field::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Field
+impl core::cmp::PartialEq for controlplane::Field
+pub fn controlplane::Field::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Field
+pub fn controlplane::Field::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Field
+impl serde_core::ser::Serialize for controlplane::Field
+pub fn controlplane::Field::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Field
+pub fn controlplane::Field::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Field
+impl core::marker::Freeze for controlplane::Field
+impl core::marker::Send for controlplane::Field
+impl core::marker::Sync for controlplane::Field
+impl core::marker::Unpin for controlplane::Field
+impl core::marker::UnsafeUnpin for controlplane::Field
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Field
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Field
+pub struct controlplane::FilterDef
+pub controlplane::FilterDef::key: alloc::string::String
+pub controlplane::FilterDef::kind: controlplane::FilterKind
+pub controlplane::FilterDef::label: alloc::string::String
+impl core::clone::Clone for controlplane::FilterDef
+pub fn controlplane::FilterDef::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::FilterDef
+impl core::cmp::PartialEq for controlplane::FilterDef
+pub fn controlplane::FilterDef::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::FilterDef
+pub fn controlplane::FilterDef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::FilterDef
+impl serde_core::ser::Serialize for controlplane::FilterDef
+pub fn controlplane::FilterDef::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::FilterDef
+pub fn controlplane::FilterDef::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::FilterDef
+impl core::marker::Freeze for controlplane::FilterDef
+impl core::marker::Send for controlplane::FilterDef
+impl core::marker::Sync for controlplane::FilterDef
+impl core::marker::Unpin for controlplane::FilterDef
+impl core::marker::UnsafeUnpin for controlplane::FilterDef
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::FilterDef
+impl core::panic::unwind_safe::UnwindSafe for controlplane::FilterDef
+pub struct controlplane::FormSpec
+pub controlplane::FormSpec::fields: alloc::vec::Vec<controlplane::Field>
+pub controlplane::FormSpec::hidden: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub controlplane::FormSpec::note: core::option::Option<alloc::string::String>
+pub controlplane::FormSpec::revision: core::option::Option<u64>
+pub controlplane::FormSpec::submit_label: alloc::string::String
+impl core::clone::Clone for controlplane::FormSpec
+pub fn controlplane::FormSpec::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::FormSpec
+impl core::cmp::PartialEq for controlplane::FormSpec
+pub fn controlplane::FormSpec::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::FormSpec
+pub fn controlplane::FormSpec::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::FormSpec
+impl serde_core::ser::Serialize for controlplane::FormSpec
+pub fn controlplane::FormSpec::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::FormSpec
+pub fn controlplane::FormSpec::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::FormSpec
+impl core::marker::Freeze for controlplane::FormSpec
+impl core::marker::Send for controlplane::FormSpec
+impl core::marker::Sync for controlplane::FormSpec
+impl core::marker::Unpin for controlplane::FormSpec
+impl core::marker::UnsafeUnpin for controlplane::FormSpec
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::FormSpec
+impl core::panic::unwind_safe::UnwindSafe for controlplane::FormSpec
+pub struct controlplane::InvokeRequest
+pub controlplane::InvokeRequest::action: alloc::string::String
+pub controlplane::InvokeRequest::entity: core::option::Option<controlplane::EntityRef>
+pub controlplane::InvokeRequest::expected_revision: core::option::Option<u64>
+pub controlplane::InvokeRequest::input: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub controlplane::InvokeRequest::module: alloc::string::String
+pub controlplane::InvokeRequest::operator: alloc::string::String
+pub controlplane::InvokeRequest::reason: core::option::Option<alloc::string::String>
+impl core::clone::Clone for controlplane::InvokeRequest
+pub fn controlplane::InvokeRequest::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::InvokeRequest
+impl core::cmp::PartialEq for controlplane::InvokeRequest
+pub fn controlplane::InvokeRequest::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::InvokeRequest
+pub fn controlplane::InvokeRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::InvokeRequest
+impl serde_core::ser::Serialize for controlplane::InvokeRequest
+pub fn controlplane::InvokeRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::InvokeRequest
+pub fn controlplane::InvokeRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::InvokeRequest
+impl core::marker::Freeze for controlplane::InvokeRequest
+impl core::marker::Send for controlplane::InvokeRequest
+impl core::marker::Sync for controlplane::InvokeRequest
+impl core::marker::Unpin for controlplane::InvokeRequest
+impl core::marker::UnsafeUnpin for controlplane::InvokeRequest
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::InvokeRequest
+impl core::panic::unwind_safe::UnwindSafe for controlplane::InvokeRequest
+pub struct controlplane::KpiTile
+pub controlplane::KpiTile::capacity: core::option::Option<(f64, f64)>
+pub controlplane::KpiTile::delta: core::option::Option<controlplane::Delta>
+pub controlplane::KpiTile::label: alloc::string::String
+pub controlplane::KpiTile::link: core::option::Option<controlplane::Link>
+pub controlplane::KpiTile::series: alloc::vec::Vec<f64>
+pub controlplane::KpiTile::unit: core::option::Option<alloc::string::String>
+pub controlplane::KpiTile::value: alloc::string::String
+impl core::clone::Clone for controlplane::KpiTile
+pub fn controlplane::KpiTile::clone(&self) -> Self
+impl core::cmp::PartialEq for controlplane::KpiTile
+pub fn controlplane::KpiTile::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::KpiTile
+pub fn controlplane::KpiTile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::KpiTile
+impl serde_core::ser::Serialize for controlplane::KpiTile
+pub fn controlplane::KpiTile::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::KpiTile
+pub fn controlplane::KpiTile::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::KpiTile
+impl core::marker::Freeze for controlplane::KpiTile
+impl core::marker::Send for controlplane::KpiTile
+impl core::marker::Sync for controlplane::KpiTile
+impl core::marker::Unpin for controlplane::KpiTile
+impl core::marker::UnsafeUnpin for controlplane::KpiTile
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::KpiTile
+impl core::panic::unwind_safe::UnwindSafe for controlplane::KpiTile
+pub struct controlplane::LocalFace
+impl controlplane::LocalFace
+pub fn controlplane::LocalFace::new(alloc::vec::Vec<alloc::rcs::arc::Arc<dyn controlplane::Provider>>) -> Self
+impl controlplane::ControlPlane for controlplane::LocalFace
+pub fn controlplane::LocalFace::invoke<'life0, 'async_trait>(&'life0 self, controlplane::InvokeRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::InvokeOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::LocalFace::manifests<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::Manifest>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::LocalFace::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::LocalFace::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl core::marker::Forget for controlplane::LocalFace
+impl core::marker::Freeze for controlplane::LocalFace
+impl core::marker::Send for controlplane::LocalFace
+impl core::marker::Sync for controlplane::LocalFace
+impl core::marker::Unpin for controlplane::LocalFace
+impl core::marker::UnsafeUnpin for controlplane::LocalFace
+impl !core::panic::unwind_safe::RefUnwindSafe for controlplane::LocalFace
+impl !core::panic::unwind_safe::UnwindSafe for controlplane::LocalFace
+pub struct controlplane::Manifest
+pub controlplane::Manifest::actions: alloc::vec::Vec<controlplane::ActionDecl>
+pub controlplane::Manifest::contributions: alloc::vec::Vec<controlplane::ContributionDecl>
+pub controlplane::Manifest::entity_kinds: alloc::vec::Vec<controlplane::EntityKindDecl>
+pub controlplane::Manifest::entries: alloc::vec::Vec<controlplane::NavEntry>
+pub controlplane::Manifest::module: alloc::string::String
+pub controlplane::Manifest::pages: alloc::vec::Vec<controlplane::PageDecl>
+pub controlplane::Manifest::search: alloc::vec::Vec<controlplane::SearchDecl>
+pub controlplane::Manifest::sections: alloc::vec::Vec<controlplane::NavSection>
+pub controlplane::Manifest::writes: bool
+impl core::clone::Clone for controlplane::Manifest
+pub fn controlplane::Manifest::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Manifest
+impl core::cmp::PartialEq for controlplane::Manifest
+pub fn controlplane::Manifest::eq(&self, &Self) -> bool
+impl core::default::Default for controlplane::Manifest
+pub fn controlplane::Manifest::default() -> Self
+impl core::fmt::Debug for controlplane::Manifest
+pub fn controlplane::Manifest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Manifest
+impl serde_core::ser::Serialize for controlplane::Manifest
+pub fn controlplane::Manifest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Manifest
+pub fn controlplane::Manifest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Manifest
+impl core::marker::Freeze for controlplane::Manifest
+impl core::marker::Send for controlplane::Manifest
+impl core::marker::Sync for controlplane::Manifest
+impl core::marker::Unpin for controlplane::Manifest
+impl core::marker::UnsafeUnpin for controlplane::Manifest
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Manifest
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Manifest
+pub struct controlplane::NavEntry
+pub controlplane::NavEntry::counter: core::option::Option<alloc::string::String>
+pub controlplane::NavEntry::icon: alloc::string::String
+pub controlplane::NavEntry::id: alloc::string::String
+pub controlplane::NavEntry::label: alloc::string::String
+pub controlplane::NavEntry::order: i32
+pub controlplane::NavEntry::page: alloc::string::String
+pub controlplane::NavEntry::section: alloc::string::String
+impl core::clone::Clone for controlplane::NavEntry
+pub fn controlplane::NavEntry::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::NavEntry
+impl core::cmp::PartialEq for controlplane::NavEntry
+pub fn controlplane::NavEntry::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::NavEntry
+pub fn controlplane::NavEntry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::NavEntry
+impl serde_core::ser::Serialize for controlplane::NavEntry
+pub fn controlplane::NavEntry::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::NavEntry
+pub fn controlplane::NavEntry::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::NavEntry
+impl core::marker::Freeze for controlplane::NavEntry
+impl core::marker::Send for controlplane::NavEntry
+impl core::marker::Sync for controlplane::NavEntry
+impl core::marker::Unpin for controlplane::NavEntry
+impl core::marker::UnsafeUnpin for controlplane::NavEntry
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::NavEntry
+impl core::panic::unwind_safe::UnwindSafe for controlplane::NavEntry
+pub struct controlplane::NavSection
+pub controlplane::NavSection::id: alloc::string::String
+pub controlplane::NavSection::label: alloc::string::String
+pub controlplane::NavSection::order: i32
+impl core::clone::Clone for controlplane::NavSection
+pub fn controlplane::NavSection::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::NavSection
+impl core::cmp::PartialEq for controlplane::NavSection
+pub fn controlplane::NavSection::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::NavSection
+pub fn controlplane::NavSection::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::NavSection
+impl serde_core::ser::Serialize for controlplane::NavSection
+pub fn controlplane::NavSection::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::NavSection
+pub fn controlplane::NavSection::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::NavSection
+impl core::marker::Freeze for controlplane::NavSection
+impl core::marker::Send for controlplane::NavSection
+impl core::marker::Sync for controlplane::NavSection
+impl core::marker::Unpin for controlplane::NavSection
+impl core::marker::UnsafeUnpin for controlplane::NavSection
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::NavSection
+impl core::panic::unwind_safe::UnwindSafe for controlplane::NavSection
+pub struct controlplane::PageDecl
+pub controlplane::PageDecl::head_actions: alloc::vec::Vec<alloc::string::String>
+pub controlplane::PageDecl::id: alloc::string::String
+pub controlplane::PageDecl::layout: controlplane::Layout
+pub controlplane::PageDecl::subtitle: alloc::string::String
+pub controlplane::PageDecl::title: alloc::string::String
+impl core::clone::Clone for controlplane::PageDecl
+pub fn controlplane::PageDecl::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::PageDecl
+impl core::cmp::PartialEq for controlplane::PageDecl
+pub fn controlplane::PageDecl::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::PageDecl
+pub fn controlplane::PageDecl::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::PageDecl
+impl serde_core::ser::Serialize for controlplane::PageDecl
+pub fn controlplane::PageDecl::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::PageDecl
+pub fn controlplane::PageDecl::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::PageDecl
+impl core::marker::Freeze for controlplane::PageDecl
+impl core::marker::Send for controlplane::PageDecl
+impl core::marker::Sync for controlplane::PageDecl
+impl core::marker::Unpin for controlplane::PageDecl
+impl core::marker::UnsafeUnpin for controlplane::PageDecl
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::PageDecl
+impl core::panic::unwind_safe::UnwindSafe for controlplane::PageDecl
+pub struct controlplane::PageInfo
+pub controlplane::PageInfo::next_cursor: core::option::Option<alloc::string::String>
+pub controlplane::PageInfo::size: u32
+pub controlplane::PageInfo::total: core::option::Option<u64>
+impl core::clone::Clone for controlplane::PageInfo
+pub fn controlplane::PageInfo::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::PageInfo
+impl core::cmp::PartialEq for controlplane::PageInfo
+pub fn controlplane::PageInfo::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::PageInfo
+pub fn controlplane::PageInfo::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::PageInfo
+impl serde_core::ser::Serialize for controlplane::PageInfo
+pub fn controlplane::PageInfo::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::PageInfo
+pub fn controlplane::PageInfo::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::PageInfo
+impl core::marker::Freeze for controlplane::PageInfo
+impl core::marker::Send for controlplane::PageInfo
+impl core::marker::Sync for controlplane::PageInfo
+impl core::marker::Unpin for controlplane::PageInfo
+impl core::marker::UnsafeUnpin for controlplane::PageInfo
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::PageInfo
+impl core::panic::unwind_safe::UnwindSafe for controlplane::PageInfo
+pub struct controlplane::PanelRequest
+pub controlplane::PanelRequest::contribution: alloc::string::String
+pub controlplane::PanelRequest::entity: core::option::Option<controlplane::EntityRef>
+pub controlplane::PanelRequest::module: alloc::string::String
+pub controlplane::PanelRequest::params: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+impl core::clone::Clone for controlplane::PanelRequest
+pub fn controlplane::PanelRequest::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::PanelRequest
+impl core::cmp::PartialEq for controlplane::PanelRequest
+pub fn controlplane::PanelRequest::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::PanelRequest
+pub fn controlplane::PanelRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::PanelRequest
+impl serde_core::ser::Serialize for controlplane::PanelRequest
+pub fn controlplane::PanelRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::PanelRequest
+pub fn controlplane::PanelRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::PanelRequest
+impl core::marker::Freeze for controlplane::PanelRequest
+impl core::marker::Send for controlplane::PanelRequest
+impl core::marker::Sync for controlplane::PanelRequest
+impl core::marker::Unpin for controlplane::PanelRequest
+impl core::marker::UnsafeUnpin for controlplane::PanelRequest
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::PanelRequest
+impl core::panic::unwind_safe::UnwindSafe for controlplane::PanelRequest
+pub struct controlplane::PropertyList
+pub controlplane::PropertyList::columns: u8
+pub controlplane::PropertyList::items: alloc::vec::Vec<(alloc::string::String, controlplane::Cell)>
+impl core::clone::Clone for controlplane::PropertyList
+pub fn controlplane::PropertyList::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::PropertyList
+impl core::cmp::PartialEq for controlplane::PropertyList
+pub fn controlplane::PropertyList::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::PropertyList
+pub fn controlplane::PropertyList::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::PropertyList
+impl serde_core::ser::Serialize for controlplane::PropertyList
+pub fn controlplane::PropertyList::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::PropertyList
+pub fn controlplane::PropertyList::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::PropertyList
+impl core::marker::Freeze for controlplane::PropertyList
+impl core::marker::Send for controlplane::PropertyList
+impl core::marker::Sync for controlplane::PropertyList
+impl core::marker::Unpin for controlplane::PropertyList
+impl core::marker::UnsafeUnpin for controlplane::PropertyList
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::PropertyList
+impl core::panic::unwind_safe::UnwindSafe for controlplane::PropertyList
+pub struct controlplane::QueueItem
+pub controlplane::QueueItem::actions: alloc::vec::Vec<alloc::string::String>
+pub controlplane::QueueItem::attempts: u32
+pub controlplane::QueueItem::entity: core::option::Option<controlplane::EntityRef>
+pub controlplane::QueueItem::id: alloc::string::String
+pub controlplane::QueueItem::last_error: core::option::Option<alloc::string::String>
+pub controlplane::QueueItem::max_attempts: u32
+pub controlplane::QueueItem::next_attempt_at: core::option::Option<alloc::string::String>
+pub controlplane::QueueItem::payload_preview: core::option::Option<alloc::string::String>
+pub controlplane::QueueItem::state: alloc::string::String
+impl core::clone::Clone for controlplane::QueueItem
+pub fn controlplane::QueueItem::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::QueueItem
+impl core::cmp::PartialEq for controlplane::QueueItem
+pub fn controlplane::QueueItem::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::QueueItem
+pub fn controlplane::QueueItem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::QueueItem
+impl serde_core::ser::Serialize for controlplane::QueueItem
+pub fn controlplane::QueueItem::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::QueueItem
+pub fn controlplane::QueueItem::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::QueueItem
+impl core::marker::Freeze for controlplane::QueueItem
+impl core::marker::Send for controlplane::QueueItem
+impl core::marker::Sync for controlplane::QueueItem
+impl core::marker::Unpin for controlplane::QueueItem
+impl core::marker::UnsafeUnpin for controlplane::QueueItem
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::QueueItem
+impl core::panic::unwind_safe::UnwindSafe for controlplane::QueueItem
+pub struct controlplane::QueueState
+pub controlplane::QueueState::count: u64
+pub controlplane::QueueState::key: alloc::string::String
+pub controlplane::QueueState::label: alloc::string::String
+pub controlplane::QueueState::tone: core::option::Option<controlplane::Tone>
+impl core::clone::Clone for controlplane::QueueState
+pub fn controlplane::QueueState::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::QueueState
+impl core::cmp::PartialEq for controlplane::QueueState
+pub fn controlplane::QueueState::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::QueueState
+pub fn controlplane::QueueState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::QueueState
+impl serde_core::ser::Serialize for controlplane::QueueState
+pub fn controlplane::QueueState::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::QueueState
+pub fn controlplane::QueueState::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::QueueState
+impl core::marker::Freeze for controlplane::QueueState
+impl core::marker::Send for controlplane::QueueState
+impl core::marker::Sync for controlplane::QueueState
+impl core::marker::Unpin for controlplane::QueueState
+impl core::marker::UnsafeUnpin for controlplane::QueueState
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::QueueState
+impl core::panic::unwind_safe::UnwindSafe for controlplane::QueueState
+pub struct controlplane::Row
+pub controlplane::Row::cells: alloc::vec::Vec<controlplane::Cell>
+pub controlplane::Row::entity: core::option::Option<controlplane::EntityRef>
+impl core::clone::Clone for controlplane::Row
+pub fn controlplane::Row::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Row
+impl core::cmp::PartialEq for controlplane::Row
+pub fn controlplane::Row::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Row
+pub fn controlplane::Row::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Row
+impl serde_core::ser::Serialize for controlplane::Row
+pub fn controlplane::Row::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Row
+pub fn controlplane::Row::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Row
+impl core::marker::Freeze for controlplane::Row
+impl core::marker::Send for controlplane::Row
+impl core::marker::Sync for controlplane::Row
+impl core::marker::Unpin for controlplane::Row
+impl core::marker::UnsafeUnpin for controlplane::Row
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Row
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Row
+pub struct controlplane::SearchDecl
+pub controlplane::SearchDecl::deadline_ms: u32
+pub controlplane::SearchDecl::icon: alloc::string::String
+pub controlplane::SearchDecl::kind: alloc::string::String
+pub controlplane::SearchDecl::label: alloc::string::String
+impl core::clone::Clone for controlplane::SearchDecl
+pub fn controlplane::SearchDecl::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::SearchDecl
+impl core::cmp::PartialEq for controlplane::SearchDecl
+pub fn controlplane::SearchDecl::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::SearchDecl
+pub fn controlplane::SearchDecl::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::SearchDecl
+impl serde_core::ser::Serialize for controlplane::SearchDecl
+pub fn controlplane::SearchDecl::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::SearchDecl
+pub fn controlplane::SearchDecl::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::SearchDecl
+impl core::marker::Freeze for controlplane::SearchDecl
+impl core::marker::Send for controlplane::SearchDecl
+impl core::marker::Sync for controlplane::SearchDecl
+impl core::marker::Unpin for controlplane::SearchDecl
+impl core::marker::UnsafeUnpin for controlplane::SearchDecl
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::SearchDecl
+impl core::panic::unwind_safe::UnwindSafe for controlplane::SearchDecl
+pub struct controlplane::SearchHit
+pub controlplane::SearchHit::badge: core::option::Option<alloc::string::String>
+pub controlplane::SearchHit::subtitle: alloc::string::String
+pub controlplane::SearchHit::target: controlplane::EntityRef
+pub controlplane::SearchHit::title: alloc::string::String
+impl core::clone::Clone for controlplane::SearchHit
+pub fn controlplane::SearchHit::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::SearchHit
+impl core::cmp::PartialEq for controlplane::SearchHit
+pub fn controlplane::SearchHit::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::SearchHit
+pub fn controlplane::SearchHit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::SearchHit
+impl serde_core::ser::Serialize for controlplane::SearchHit
+pub fn controlplane::SearchHit::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::SearchHit
+pub fn controlplane::SearchHit::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::SearchHit
+impl core::marker::Freeze for controlplane::SearchHit
+impl core::marker::Send for controlplane::SearchHit
+impl core::marker::Sync for controlplane::SearchHit
+impl core::marker::Unpin for controlplane::SearchHit
+impl core::marker::UnsafeUnpin for controlplane::SearchHit
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::SearchHit
+impl core::panic::unwind_safe::UnwindSafe for controlplane::SearchHit
+pub struct controlplane::SearchRequest
+pub controlplane::SearchRequest::kind: alloc::string::String
+pub controlplane::SearchRequest::limit: u32
+pub controlplane::SearchRequest::module: alloc::string::String
+pub controlplane::SearchRequest::q: alloc::string::String
+impl core::clone::Clone for controlplane::SearchRequest
+pub fn controlplane::SearchRequest::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::SearchRequest
+impl core::cmp::PartialEq for controlplane::SearchRequest
+pub fn controlplane::SearchRequest::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::SearchRequest
+pub fn controlplane::SearchRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::SearchRequest
+impl serde_core::ser::Serialize for controlplane::SearchRequest
+pub fn controlplane::SearchRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::SearchRequest
+pub fn controlplane::SearchRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::SearchRequest
+impl core::marker::Freeze for controlplane::SearchRequest
+impl core::marker::Send for controlplane::SearchRequest
+impl core::marker::Sync for controlplane::SearchRequest
+impl core::marker::Unpin for controlplane::SearchRequest
+impl core::marker::UnsafeUnpin for controlplane::SearchRequest
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::SearchRequest
+impl core::panic::unwind_safe::UnwindSafe for controlplane::SearchRequest
+pub struct controlplane::SecretReveal
+pub controlplane::SecretReveal::expires_at: core::option::Option<alloc::string::String>
+pub controlplane::SecretReveal::hint: core::option::Option<alloc::string::String>
+pub controlplane::SecretReveal::label: alloc::string::String
+pub controlplane::SecretReveal::value: alloc::string::String
+impl core::clone::Clone for controlplane::SecretReveal
+pub fn controlplane::SecretReveal::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::SecretReveal
+impl core::cmp::PartialEq for controlplane::SecretReveal
+pub fn controlplane::SecretReveal::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::SecretReveal
+pub fn controlplane::SecretReveal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::SecretReveal
+impl serde_core::ser::Serialize for controlplane::SecretReveal
+pub fn controlplane::SecretReveal::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::SecretReveal
+pub fn controlplane::SecretReveal::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::SecretReveal
+impl core::marker::Freeze for controlplane::SecretReveal
+impl core::marker::Send for controlplane::SecretReveal
+impl core::marker::Sync for controlplane::SecretReveal
+impl core::marker::Unpin for controlplane::SecretReveal
+impl core::marker::UnsafeUnpin for controlplane::SecretReveal
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::SecretReveal
+impl core::panic::unwind_safe::UnwindSafe for controlplane::SecretReveal
+pub struct controlplane::Series
+pub controlplane::Series::axis: controlplane::Axis
+pub controlplane::Series::label: alloc::string::String
+pub controlplane::Series::unit: alloc::string::String
+pub controlplane::Series::values: alloc::vec::Vec<f64>
+impl core::clone::Clone for controlplane::Series
+pub fn controlplane::Series::clone(&self) -> Self
+impl core::cmp::PartialEq for controlplane::Series
+pub fn controlplane::Series::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Series
+pub fn controlplane::Series::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Series
+impl serde_core::ser::Serialize for controlplane::Series
+pub fn controlplane::Series::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Series
+pub fn controlplane::Series::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Series
+impl core::marker::Freeze for controlplane::Series
+impl core::marker::Send for controlplane::Series
+impl core::marker::Sync for controlplane::Series
+impl core::marker::Unpin for controlplane::Series
+impl core::marker::UnsafeUnpin for controlplane::Series
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Series
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Series
+pub struct controlplane::ServiceItem
+pub controlplane::ServiceItem::history: alloc::vec::Vec<(alloc::string::String, controlplane::ServiceState)>
+pub controlplane::ServiceItem::name: alloc::string::String
+pub controlplane::ServiceItem::note: core::option::Option<alloc::string::String>
+pub controlplane::ServiceItem::p99_ms: core::option::Option<u32>
+pub controlplane::ServiceItem::state: controlplane::ServiceState
+pub controlplane::ServiceItem::uptime: core::option::Option<alloc::string::String>
+pub controlplane::ServiceItem::version: core::option::Option<alloc::string::String>
+impl core::clone::Clone for controlplane::ServiceItem
+pub fn controlplane::ServiceItem::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::ServiceItem
+impl core::cmp::PartialEq for controlplane::ServiceItem
+pub fn controlplane::ServiceItem::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::ServiceItem
+pub fn controlplane::ServiceItem::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::ServiceItem
+impl serde_core::ser::Serialize for controlplane::ServiceItem
+pub fn controlplane::ServiceItem::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::ServiceItem
+pub fn controlplane::ServiceItem::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::ServiceItem
+impl core::marker::Freeze for controlplane::ServiceItem
+impl core::marker::Send for controlplane::ServiceItem
+impl core::marker::Sync for controlplane::ServiceItem
+impl core::marker::Unpin for controlplane::ServiceItem
+impl core::marker::UnsafeUnpin for controlplane::ServiceItem
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::ServiceItem
+impl core::panic::unwind_safe::UnwindSafe for controlplane::ServiceItem
+pub struct controlplane::ServiceStatus
+pub controlplane::ServiceStatus::items: alloc::vec::Vec<controlplane::ServiceItem>
+impl core::clone::Clone for controlplane::ServiceStatus
+pub fn controlplane::ServiceStatus::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::ServiceStatus
+impl core::cmp::PartialEq for controlplane::ServiceStatus
+pub fn controlplane::ServiceStatus::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::ServiceStatus
+pub fn controlplane::ServiceStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::ServiceStatus
+impl serde_core::ser::Serialize for controlplane::ServiceStatus
+pub fn controlplane::ServiceStatus::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::ServiceStatus
+pub fn controlplane::ServiceStatus::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::ServiceStatus
+impl core::marker::Freeze for controlplane::ServiceStatus
+impl core::marker::Send for controlplane::ServiceStatus
+impl core::marker::Sync for controlplane::ServiceStatus
+impl core::marker::Unpin for controlplane::ServiceStatus
+impl core::marker::UnsafeUnpin for controlplane::ServiceStatus
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::ServiceStatus
+impl core::panic::unwind_safe::UnwindSafe for controlplane::ServiceStatus
+pub struct controlplane::Source
+pub controlplane::Source::face: alloc::rcs::arc::Arc<dyn controlplane::ControlPlane>
+pub controlplane::Source::peer: alloc::string::String
+impl core::clone::Clone for controlplane::Source
+pub fn controlplane::Source::clone(&self) -> Self
+impl core::marker::Forget for controlplane::Source
+impl core::marker::Freeze for controlplane::Source
+impl core::marker::Send for controlplane::Source
+impl core::marker::Sync for controlplane::Source
+impl core::marker::Unpin for controlplane::Source
+impl core::marker::UnsafeUnpin for controlplane::Source
+impl !core::panic::unwind_safe::RefUnwindSafe for controlplane::Source
+impl !core::panic::unwind_safe::UnwindSafe for controlplane::Source
+pub struct controlplane::TimeSeriesChart
+pub controlplane::TimeSeriesChart::buckets: alloc::vec::Vec<alloc::string::String>
+pub controlplane::TimeSeriesChart::series: alloc::vec::Vec<controlplane::Series>
+impl core::clone::Clone for controlplane::TimeSeriesChart
+pub fn controlplane::TimeSeriesChart::clone(&self) -> Self
+impl core::cmp::PartialEq for controlplane::TimeSeriesChart
+pub fn controlplane::TimeSeriesChart::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::TimeSeriesChart
+pub fn controlplane::TimeSeriesChart::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::TimeSeriesChart
+impl serde_core::ser::Serialize for controlplane::TimeSeriesChart
+pub fn controlplane::TimeSeriesChart::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::TimeSeriesChart
+pub fn controlplane::TimeSeriesChart::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::TimeSeriesChart
+impl core::marker::Freeze for controlplane::TimeSeriesChart
+impl core::marker::Send for controlplane::TimeSeriesChart
+impl core::marker::Sync for controlplane::TimeSeriesChart
+impl core::marker::Unpin for controlplane::TimeSeriesChart
+impl core::marker::UnsafeUnpin for controlplane::TimeSeriesChart
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::TimeSeriesChart
+impl core::panic::unwind_safe::UnwindSafe for controlplane::TimeSeriesChart
+pub struct controlplane::Timeline
+pub controlplane::Timeline::cursor_before: core::option::Option<alloc::string::String>
+pub controlplane::Timeline::entries: alloc::vec::Vec<controlplane::TimelineEntry>
+pub controlplane::Timeline::live: bool
+impl core::clone::Clone for controlplane::Timeline
+pub fn controlplane::Timeline::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Timeline
+impl core::cmp::PartialEq for controlplane::Timeline
+pub fn controlplane::Timeline::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Timeline
+pub fn controlplane::Timeline::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Timeline
+impl serde_core::ser::Serialize for controlplane::Timeline
+pub fn controlplane::Timeline::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Timeline
+pub fn controlplane::Timeline::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Timeline
+impl core::marker::Freeze for controlplane::Timeline
+impl core::marker::Send for controlplane::Timeline
+impl core::marker::Sync for controlplane::Timeline
+impl core::marker::Unpin for controlplane::Timeline
+impl core::marker::UnsafeUnpin for controlplane::Timeline
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Timeline
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Timeline
+pub struct controlplane::TimelineEntry
+pub controlplane::TimelineEntry::actor: core::option::Option<controlplane::EntityRef>
+pub controlplane::TimelineEntry::at: alloc::string::String
+pub controlplane::TimelineEntry::detail: core::option::Option<alloc::string::String>
+pub controlplane::TimelineEntry::icon: alloc::string::String
+pub controlplane::TimelineEntry::summary: alloc::string::String
+pub controlplane::TimelineEntry::target: core::option::Option<controlplane::EntityRef>
+pub controlplane::TimelineEntry::tone: core::option::Option<controlplane::Tone>
+pub controlplane::TimelineEntry::verb: alloc::string::String
+impl core::clone::Clone for controlplane::TimelineEntry
+pub fn controlplane::TimelineEntry::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::TimelineEntry
+impl core::cmp::PartialEq for controlplane::TimelineEntry
+pub fn controlplane::TimelineEntry::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::TimelineEntry
+pub fn controlplane::TimelineEntry::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::TimelineEntry
+impl serde_core::ser::Serialize for controlplane::TimelineEntry
+pub fn controlplane::TimelineEntry::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::TimelineEntry
+pub fn controlplane::TimelineEntry::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::TimelineEntry
+impl core::marker::Freeze for controlplane::TimelineEntry
+impl core::marker::Send for controlplane::TimelineEntry
+impl core::marker::Sync for controlplane::TimelineEntry
+impl core::marker::Unpin for controlplane::TimelineEntry
+impl core::marker::UnsafeUnpin for controlplane::TimelineEntry
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::TimelineEntry
+impl core::panic::unwind_safe::UnwindSafe for controlplane::TimelineEntry
+pub struct controlplane::WorkQueue
+pub controlplane::WorkQueue::items: alloc::vec::Vec<controlplane::QueueItem>
+pub controlplane::WorkQueue::selected: alloc::string::String
+pub controlplane::WorkQueue::states: alloc::vec::Vec<controlplane::QueueState>
+impl core::clone::Clone for controlplane::WorkQueue
+pub fn controlplane::WorkQueue::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::WorkQueue
+impl core::cmp::PartialEq for controlplane::WorkQueue
+pub fn controlplane::WorkQueue::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::WorkQueue
+pub fn controlplane::WorkQueue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::WorkQueue
+impl serde_core::ser::Serialize for controlplane::WorkQueue
+pub fn controlplane::WorkQueue::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::WorkQueue
+pub fn controlplane::WorkQueue::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::WorkQueue
+impl core::marker::Freeze for controlplane::WorkQueue
+impl core::marker::Send for controlplane::WorkQueue
+impl core::marker::Sync for controlplane::WorkQueue
+impl core::marker::Unpin for controlplane::WorkQueue
+impl core::marker::UnsafeUnpin for controlplane::WorkQueue
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::WorkQueue
+impl core::panic::unwind_safe::UnwindSafe for controlplane::WorkQueue
+pub const controlplane::DEFAULT_PANEL_DEADLINE_MS: u32
+pub const controlplane::DEFAULT_SEARCH_DEADLINE_MS: u32
+pub const controlplane::PROVIDER_SLOT: contrib::Slot<alloc::rcs::arc::Arc<dyn controlplane::Provider>>
+pub const controlplane::SECTIONS: &[(&str, &str, i32)]
+pub const controlplane::SOURCE_SLOT: contrib::Slot<controlplane::Source>
+pub trait controlplane::ControlPlane: core::marker::Send + core::marker::Sync
+pub fn controlplane::ControlPlane::invoke<'life0, 'async_trait>(&'life0 self, controlplane::InvokeRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::InvokeOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::ControlPlane::manifests<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::Manifest>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::ControlPlane::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::ControlPlane::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+impl controlplane::ControlPlane for controlplane::LocalFace
+pub fn controlplane::LocalFace::invoke<'life0, 'async_trait>(&'life0 self, controlplane::InvokeRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::InvokeOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::LocalFace::manifests<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::Manifest>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::LocalFace::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::LocalFace::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait controlplane::Provider: core::marker::Send + core::marker::Sync
+pub fn controlplane::Provider::invoke<'life0, 'async_trait>(&'life0 self, controlplane::InvokeRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::InvokeOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::Provider::manifest(&self) -> controlplane::Manifest
+pub fn controlplane::Provider::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::Provider::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

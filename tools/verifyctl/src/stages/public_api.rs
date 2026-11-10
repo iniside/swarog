@@ -199,26 +199,30 @@ fn bless_tooling(root: &Path) -> Result<bool> {
 
 pub(crate) fn discover(root: &Path) -> Result<Vec<String>> {
     let api = root.join("api");
-    let mut packages = Vec::new();
+    let mut manifests = Vec::new();
     for domain in std::fs::read_dir(&api).with_context(|| format!("read {}", api.display()))? {
         let domain = domain?.path();
         if !domain.is_dir() {
             continue;
         }
         for leaf in ["api", "events"] {
-            let manifest = domain.join(leaf).join("Cargo.toml");
-            if !manifest.is_file() {
-                continue;
-            }
-            let value: toml::Table = toml::from_str(&std::fs::read_to_string(&manifest)?)
-                .with_context(|| format!("parse {}", manifest.display()))?;
-            let name = value
-                .get("package")
-                .and_then(|package| package.get("name"))
-                .and_then(toml::Value::as_str)
-                .with_context(|| format!("missing package.name in {}", manifest.display()))?;
-            packages.push(name.to_owned());
+            manifests.push(domain.join(leaf).join("Cargo.toml"));
         }
+    }
+    manifests.push(root.join("core").join("controlplane").join("Cargo.toml"));
+    let mut packages = Vec::new();
+    for manifest in manifests {
+        if !manifest.is_file() {
+            continue;
+        }
+        let value: toml::Table = toml::from_str(&std::fs::read_to_string(&manifest)?)
+            .with_context(|| format!("parse {}", manifest.display()))?;
+        let name = value
+            .get("package")
+            .and_then(|package| package.get("name"))
+            .and_then(toml::Value::as_str)
+            .with_context(|| format!("missing package.name in {}", manifest.display()))?;
+        packages.push(name.to_owned());
     }
     packages.sort();
     packages.dedup();

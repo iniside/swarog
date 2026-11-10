@@ -217,6 +217,61 @@ pub fn input_policy_prose_findings(policies: &[(InputKey, InputPolicy)]) -> Vec<
         .collect()
 }
 
+/// The conformance entries whose control-plane manifest declares `writes: true`.
+///
+/// Every `cp.invoke` input row is `Opaque` on the grounds that each writer proves its own
+/// caps, so this hand list is diffed against the sources before any assertion runs, and
+/// every writer on it must carry an executable `cp.invoke` byte-cap case.
+pub const CONTROL_PLANE_WRITERS: &[&str] = &[];
+
+/// The `CapCase` name marker that ties a byte-cap case to `cp.invoke`.
+pub const CONTROL_PLANE_CAP_MARKER: &str = "cp.invoke";
+
+/// Phase 1b — the control-plane writer tripwire. `on_disk` is the scanned set of writer
+/// entry names; every difference from [`CONTROL_PLANE_WRITERS`] is its own line, and every
+/// listed writer must have an input-byte-caps `CapCase` naming [`CONTROL_PLANE_CAP_MARKER`].
+pub fn control_plane_writer_findings(
+    on_disk: &BTreeSet<String>,
+    entries: &[Entry],
+) -> Vec<String> {
+    let listed: BTreeSet<String> = CONTROL_PLANE_WRITERS.iter().map(|m| m.to_string()).collect();
+    let mut findings = Vec::new();
+    for writer in on_disk.difference(&listed) {
+        findings.push(format!(
+            "{writer} declares a control-plane manifest with `writes: true` but is not in \
+             checks::CONTROL_PLANE_WRITERS — add it and give its conformance entry an \
+             input-byte-caps CapCase for {CONTROL_PLANE_CAP_MARKER}"
+        ));
+    }
+    for writer in listed.difference(on_disk) {
+        findings.push(format!(
+            "checks::CONTROL_PLANE_WRITERS lists {writer}, whose sources no longer declare \
+             `writes: true` — remove the stale entry"
+        ));
+    }
+    for writer in &listed {
+        let Some(entry) = entries.iter().find(|entry| entry.module == writer) else {
+            findings.push(format!(
+                "checks::CONTROL_PLANE_WRITERS lists {writer}, which has no conformance entry"
+            ));
+            continue;
+        };
+        let covered = match entry.stance(Convention::InputByteCaps) {
+            Some(Stance::Applies(Fixture::InputByteCaps(cases))) => cases
+                .iter()
+                .any(|case| case.name.contains(CONTROL_PLANE_CAP_MARKER)),
+            _ => false,
+        };
+        if !covered {
+            findings.push(format!(
+                "{writer} writes through {CONTROL_PLANE_CAP_MARKER} but declares no executable \
+                 input-byte-caps CapCase naming {CONTROL_PLANE_CAP_MARKER}"
+            ));
+        }
+    }
+    findings
+}
+
 /// Declared coverage boundaries: what an EXECUTED convention's fixture provably cannot
 /// reach, per (module, convention). A `Stance::KnownGap` is the wrong shape for this — it
 /// replaces the fixture, so declaring one would trade fourteen executing cases for a label

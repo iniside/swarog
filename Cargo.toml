@@ -28,6 +28,8 @@ members = [
     # trusted-proxy-aware client-IP resolution, and the readiness contribution slot,
     # wired by core/app + the gateway front door (Step 13).
     "core/httpmw",
+    "core/controlplane",
+    "core/controlplane-rpc",
     # Tooling — codegen + the dev-CA minter (Go's tools/).
     "tools/rpc-macro",
     "tools/rpc-contract-model",
@@ -115,7 +117,6 @@ members = [
     "api/config/api",
     "api/config/rpc",
     "api/config/events",
-    "api/admin/events",
     "api/scheduler/events",
     "api/wallet/api",
     "api/wallet/rpc",
@@ -314,6 +315,8 @@ remote = { path = "core/remote" }
 push = { path = "core/push" }
 metrics = { path = "core/metrics" }
 httpmw = { path = "core/httpmw" }
+controlplane = { path = "core/controlplane" }
+controlplanerpc = { path = "core/controlplane-rpc" }
 
 # ---- Tooling (tools/): the #[rpc] codegen. ----
 rpc-macro = { path = "tools/rpc-macro" }
@@ -326,7 +329,6 @@ testdb = { path = "tools/testdb" }
 # ---- Contract surfaces (api/<name>/): shared by modules, import no module.
 # `<name>api` is the PURE contract a domain consumer may import (rule 4);
 # `<name>rpc` is the generated transport glue (own module + remote + cmd only). ----
-adminevents = { path = "api/admin/events" }
 schedulerevents = { path = "api/scheduler/events" }
 accountsapi = { path = "api/accounts/api" }
 accountsrpc = { path = "api/accounts/rpc" }

@@ -16,7 +16,7 @@
 //!
 //! `POST /admin/logout` requires a `_csrf` field matching the session's CSRF token.
 //!
-//! Durable audit trail: `admin.action` (`adminevents::ACTION`) is emitted via
+//! Durable audit trail: `admin.action` (`controlplane::events::ACTION`) is emitted via
 //! `emit_tx` for `login-succeeded` / `login-locked` (user-row threshold) / `logout`,
 //! each atomic with its own domain write.
 //!
@@ -548,10 +548,10 @@ impl AdminState {
     /// Appends one `admin.action` event in its own small tx (the match `emit_tx`
     /// shape) — for actions whose domain write already committed (form-submit) or
     /// that have none.
-    async fn emit_action(&self, evt: &adminevents::AdminAction) -> anyhow::Result<()> {
+    async fn emit_action(&self, evt: &controlplane::events::AdminAction) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
         self.bus
-            .emit_tx(AnyTx::new(&mut *tx), &adminevents::ACTION, evt)
+            .emit_tx(AnyTx::new(&mut *tx), &controlplane::events::ACTION, evt)
             .await?;
         tx.commit().await?;
         Ok(())
@@ -664,14 +664,14 @@ impl AdminState {
                 .execute(&mut *tx)
                 .await?;
                 if is_user && fails == threshold {
-                    let evt = adminevents::AdminAction {
+                    let evt = controlplane::events::AdminAction {
                         actor: username.to_string(),
                         action: "login-locked".into(),
                         target: subject.clone(),
                         detail: format!("{fails} consecutive failures; locked for {backoff}s"),
                     };
                     self.bus
-                        .emit_tx(AnyTx::new(&mut *tx), &adminevents::ACTION, &evt)
+                        .emit_tx(AnyTx::new(&mut *tx), &controlplane::events::ACTION, &evt)
                         .await?;
                     }
                 }
@@ -698,13 +698,13 @@ impl AdminState {
         .bind(SESSION_TTL_SECS as f64)
         .execute(&mut *tx)
         .await?;
-        let evt = adminevents::AdminAction {
+        let evt = controlplane::events::AdminAction {
             actor: username.clone(),
             action: "login-succeeded".into(),
             target: user_subject,
             detail: format!("ip:{ip}"),
         };
-        self.bus.emit_tx(AnyTx::new(&mut *tx), &adminevents::ACTION, &evt).await?;
+        self.bus.emit_tx(AnyTx::new(&mut *tx), &controlplane::events::ACTION, &evt).await?;
         Ok(LoginOutcome::Success { username, token })
         }
         .await;
@@ -926,13 +926,13 @@ async fn logout(
             .bind(&authed.token)
             .execute(&mut *tx)
             .await?;
-        let evt = adminevents::AdminAction {
+        let evt = controlplane::events::AdminAction {
             actor: authed.username.clone(),
             action: "logout".into(),
             target: format!("user:{}", authed.username),
             detail: String::new(),
         };
-        st.bus.emit_tx(AnyTx::new(&mut *tx), &adminevents::ACTION, &evt).await?;
+        st.bus.emit_tx(AnyTx::new(&mut *tx), &controlplane::events::ACTION, &evt).await?;
         tx.commit().await?;
         Ok(())
     }

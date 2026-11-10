@@ -84,6 +84,7 @@ fn rpc_modules() -> Vec<(&'static str, Vec<opsapi::RouteBinding>)> {
         ("groupsapi::player_rpc", groupsapi::player_rpc::route_bindings()),
         ("storageapi::player_rpc", storageapi::player_rpc::route_bindings()),
         ("partyapi::player_rpc", partyapi::player_rpc::route_bindings()),
+        ("controlplane::control_plane_rpc", controlplane::control_plane_rpc::route_bindings()),
     ]
 }
 
@@ -164,15 +165,17 @@ fn to_snake(pascal: &str) -> String {
     out
 }
 
-/// Every `#[rpc]`-annotated trait of a SERVED domain under `<root>/api/*/api/src/`, as
-/// `"<crate>::<snake>_rpc"` labels — the source of truth the [`rpc_modules`] hand-list must
-/// match. The file set comes from [`rpc_contract_model::contract_sources`], so a trait moved
-/// out of `lib.rs` into a sibling module is still seen.
+/// Every `#[rpc]`-annotated trait of a SERVED domain under `<root>/api/*/api/src/`, plus
+/// every one under `<root>/core/controlplane/src/`, as `"<crate>::<snake>_rpc"` labels —
+/// the source of truth the [`rpc_modules`] hand-list must match. The file set comes from
+/// [`rpc_contract_model::contract_sources`], so a trait moved out of `lib.rs` into a
+/// sibling module is still seen.
 ///
 /// "Served" is [`rpc_contract_model::served_domains`]: the catalog projects the ops a
 /// process actually fronts, so a domain whose contracts landed ahead of its
 /// `modules/<name>` contributes no rows and is not required in the hand-list until the
-/// module's commit.
+/// module's commit. `core/controlplane` is served by core in every edge process, so it
+/// counts as served whenever it exists.
 ///
 /// The root is a parameter (the production caller passes [`workspace_root`]) so the
 /// served/unserved split is exercisable against a synthetic tree, which the real repo can
@@ -190,50 +193,62 @@ fn rpc_modules_from_fs_at(root: &Path) -> Result<FsRpcModules> {
             .unwrap_or_default()
             .to_owned();
         let is_served = served.contains(&domain);
-        let cargo = dir.join("api").join("Cargo.toml");
-        let src_dir = dir.join("api").join("src");
-        if !cargo.is_file() || !src_dir.is_dir() {
-            continue;
-        }
-        let crate_name = std::fs::read_to_string(&cargo)?
-            .lines()
-            .find_map(|l| {
-                l.strip_prefix("name = \"").and_then(|r| r.strip_suffix('"')).map(String::from)
-            })
-            .ok_or_else(|| anyhow::anyhow!("no `name = \"..\"` in {}", cargo.display()))?
-            .replace('-', "_");
-        for file in rpc_contract_model::contract_sources(&src_dir)? {
-            let src = std::fs::read_to_string(&file)?;
-            let lines: Vec<&str> = src.lines().collect();
-            for (i, line) in lines.iter().enumerate() {
-                if !line.trim_start().starts_with("#[rpc(") {
-                    continue;
-                }
-                let trait_name = lines[i + 1..].iter().find_map(|l| {
-                    let t = l.trim_start();
-                    t.strip_prefix("pub trait ").map(|r| {
-                        r.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("").to_string()
-                    })
-                });
-                match trait_name {
-                    Some(t) if !t.is_empty() => {
-                        let label = format!("{crate_name}::{}_rpc", to_snake(&t));
-                        if is_served {
-                            expected.served.insert(label);
-                        } else {
-                            expected.unserved.insert(label, domain.clone());
-                        }
-                    }
-                    _ => bail!(
-                        "{}:{}: found `#[rpc(` with no following `pub trait`",
-                        file.display(),
-                        i + 1
-                    ),
-                }
+        for label in rpc_trait_labels(&dir.join("api"))? {
+            if is_served {
+                expected.served.insert(label);
+            } else {
+                expected.unserved.insert(label, domain.clone());
             }
         }
     }
+    expected
+        .served
+        .extend(rpc_trait_labels(&root.join("core").join("controlplane"))?);
     Ok(expected)
+}
+
+/// The `"<crate>::<snake>_rpc"` label of every `#[rpc]` trait in the crate at `crate_dir`;
+/// empty when the directory holds no crate.
+fn rpc_trait_labels(crate_dir: &Path) -> Result<Vec<String>> {
+    let cargo = crate_dir.join("Cargo.toml");
+    let src_dir = crate_dir.join("src");
+    if !cargo.is_file() || !src_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let crate_name = std::fs::read_to_string(&cargo)?
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("name = \"").and_then(|r| r.strip_suffix('"')).map(String::from)
+        })
+        .ok_or_else(|| anyhow::anyhow!("no `name = \"..\"` in {}", cargo.display()))?
+        .replace('-', "_");
+    let mut labels = Vec::new();
+    for file in rpc_contract_model::contract_sources(&src_dir)? {
+        let src = std::fs::read_to_string(&file)?;
+        let lines: Vec<&str> = src.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if !line.trim_start().starts_with("#[rpc(") {
+                continue;
+            }
+            let trait_name = lines[i + 1..].iter().find_map(|l| {
+                let t = l.trim_start();
+                t.strip_prefix("pub trait ").map(|r| {
+                    r.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("").to_string()
+                })
+            });
+            match trait_name {
+                Some(t) if !t.is_empty() => {
+                    labels.push(format!("{crate_name}::{}_rpc", to_snake(&t)));
+                }
+                _ => bail!(
+                    "{}:{}: found `#[rpc(` with no following `pub trait`",
+                    file.display(),
+                    i + 1
+                ),
+            }
+        }
+    }
+    Ok(labels)
 }
 
 /// The `#[rpc]` trait labels found under `api/*/api`, split by whether the domain is
@@ -248,7 +263,7 @@ struct FsRpcModules {
 }
 
 /// Dies if [`rpc_modules`] drifts from the `#[rpc]` traits of SERVED domains under
-/// `api/*/api`.
+/// `api/*/api` and of `core/controlplane`.
 fn self_check_rpc_list(listed: &[&'static str]) -> Result<()> {
     self_check_rpc_list_at(&workspace_root(), listed)
 }
@@ -272,15 +287,15 @@ fn self_check_rpc_list_at(root: &Path, listed: &[&'static str]) -> Result<()> {
                  no ops for it; remove the entry and restore it with the module"
             ),
             None => format!(
-                "STALE in rpc_modules(): {m} -- no matching #[rpc] trait under api/*/api; \
-                 remove it"
+                "STALE in rpc_modules(): {m} -- no matching #[rpc] trait under api/*/api or \
+                 core/controlplane; remove it"
             ),
         });
     }
     if drift.is_empty() {
         Ok(())
     } else {
-        bail!("opscatalog-gen: rpc-module hand-list drifted from api/*/api:\n  {}", drift.join("\n  "))
+        bail!("opscatalog-gen: rpc-module hand-list drifted from its #[rpc] traits:\n  {}", drift.join("\n  "))
     }
 }
 

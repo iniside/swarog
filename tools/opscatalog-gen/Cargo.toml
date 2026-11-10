@@ -28,6 +28,7 @@ friendsapi = { workspace = true }
 groupsapi = { workspace = true }
 storageapi = { workspace = true }
 partyapi = { workspace = true }
+controlplane = { workspace = true }
 anyhow = { workspace = true }
 rpc-contract-model = { workspace = true }
 

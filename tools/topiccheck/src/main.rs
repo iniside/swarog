@@ -199,7 +199,7 @@ fn defined_topics() -> Vec<Contract> {
         of(configevents::CHANGED.contract()),
         of(matchevents::FINISHED.contract()),
         of(schedulerevents::FIRED.contract()),
-        of(adminevents::ACTION.contract()),
+        of(controlplane::events::ACTION.contract()),
         of(walletevents::CHANGED.contract()),
         of(mailevents::SEND_REQUESTED.contract()),
         of(friendsevents::REQUESTED.contract()),

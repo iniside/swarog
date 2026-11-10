@@ -90,21 +90,25 @@ const STRING_MAP_TYPES: &[&str] = &["BTreeMap", "HashMap"];
 /// text a caller can actually send, so a domain whose contracts landed ahead of its
 /// `modules/<name>` contributes no keys and needs no policy entries until the module's
 /// commit. `served_domains` errors rather than returning an empty set, so this cannot go
-/// vacuous.
+/// vacuous. `core/controlplane` is served by core in every edge process, so its contract is
+/// admitted whenever it exists.
 pub fn discover(workspace_root: &Path) -> Result<BTreeSet<InputKey>> {
     let served = rpc_contract_model::served_domains(workspace_root)
         .with_context(|| format!("list served domains under {}/modules", workspace_root.display()))?;
     let api_root = &workspace_root.join("api");
-    let mut out = BTreeSet::new();
+    let mut src_dirs = Vec::new();
     for domain in sorted_dirs(api_root)? {
         let is_served = domain
             .file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| served.contains(name));
-        if !is_served {
-            continue;
+        if is_served {
+            src_dirs.push(domain.join("api/src"));
         }
-        let src = domain.join("api/src");
+    }
+    src_dirs.push(workspace_root.join("core/controlplane/src"));
+    let mut out = BTreeSet::new();
+    for src in src_dirs {
         if !src.is_dir() {
             continue;
         }

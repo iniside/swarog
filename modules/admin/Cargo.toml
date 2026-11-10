@@ -13,7 +13,7 @@ publish = false
 # `tools/adminctl` (an operator CLI, not a module) reuses `USERS_DDL` + the pub
 # password fns — one source of truth, no drift.
 [dependencies]
-adminevents = { workspace = true }
+controlplane = { workspace = true }
 lifecycle = { workspace = true }
 async-trait = { workspace = true }
 bus = { workspace = true }

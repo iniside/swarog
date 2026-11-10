@@ -241,6 +241,13 @@ fn rpc_modules() -> Vec<RpcModule> {
             partyapi::player_rpc::body_shapes(),
             partyapi::player_rpc::describe().ops,
         ),
+        (
+            "controlplane::control_plane_rpc",
+            controlplane::control_plane_rpc::route_bindings(),
+            controlplane::control_plane_rpc::wire_ops(),
+            controlplane::control_plane_rpc::body_shapes(),
+            controlplane::control_plane_rpc::describe().ops,
+        ),
     ]
 }
 
@@ -261,8 +268,9 @@ fn rpc_modules() -> Vec<RpcModule> {
 /// delete/None). The convention is ENFORCED mechanically by
 /// [`self_check_option_none_samples`] on the gate path.
 ///
-/// Keyed by the `api/<dir>` name so the Option-None tripwire can associate the fields
-/// its filesystem scan finds in `api/<dir>/events/src/lib.rs` with THIS crate's samples.
+/// Keyed by the `api/<dir>` name (`controlplane` for `core/controlplane/src/events.rs`)
+/// so the Option-None tripwire can associate the fields its filesystem scan finds with
+/// THIS crate's samples.
 /// One golden sample: `(topic, version, payload)`.
 type TopicSample = (&'static str, u32, serde_json::Value);
 /// One events crate's samples, keyed by its `api/<dir>` name.
@@ -275,7 +283,7 @@ fn event_samples_by_crate() -> Vec<CrateSamples> {
         ("config", configevents::golden_samples()),
         ("match", matchevents::golden_samples()),
         ("scheduler", schedulerevents::golden_samples()),
-        ("admin", adminevents::golden_samples()),
+        ("controlplane", controlplane::events::golden_samples()),
         ("wallet", walletevents::golden_samples()),
         ("mail", mailevents::golden_samples()),
         ("friends", friendsevents::golden_samples()),
@@ -319,7 +327,7 @@ fn scan_option_fields(text: &str) -> BTreeSet<String> {
 /// require that flattening the crate's samples yields a `…<field>:null` leaf for each —
 /// i.e. at least one sample carries the field as `None`. Returns per-field gap messages.
 fn option_none_gaps(
-    crate_dir: &str,
+    source: &str,
     option_fields: &BTreeSet<String>,
     samples: &[(&'static str, u32, serde_json::Value)],
 ) -> Vec<String> {
@@ -335,7 +343,7 @@ fn option_none_gaps(
         })
         .map(|f| {
             format!(
-                "events crate api/{crate_dir}/events field `{f}` is Option but no golden \
+                "events source {source} field `{f}` is Option but no golden \
                  sample covers its None case -- add a None-populated sample to that \
                  crate's golden_samples()"
             )
@@ -346,34 +354,44 @@ fn option_none_gaps(
 /// Gate-path enforcement of the Option-None convention (Step 5b follow-up): the
 /// convention was previously prose-only, so the NEXT Option field added to any events
 /// crate would silently reopen the Option→T blindness. This scans every
-/// `api/*/events/src/lib.rs` for `pub <name>: Option<` fields and fails the run with a
-/// per-field fix unless that crate's samples pin the field's `:null` shape. A crate
-/// with Option fields that is missing from [`event_samples_by_crate`] is itself a
-/// finding.
+/// `api/*/events/src/lib.rs` and `core/controlplane/src/events.rs` for
+/// `pub <name>: Option<` fields and fails the run with a per-field fix unless that
+/// crate's samples pin the field's `:null` shape. A crate with Option fields that is
+/// missing from [`event_samples_by_crate`] is itself a finding.
 fn self_check_option_none_samples() -> anyhow::Result<()> {
     let by_crate: std::collections::BTreeMap<&str, Vec<(&'static str, u32, serde_json::Value)>> =
         event_samples_by_crate().into_iter().collect();
-    let api_root = workspace_root().join("api");
-    let mut findings = Vec::new();
+    let root = workspace_root();
+    let api_root = root.join("api");
+    let mut sources = Vec::new();
     for entry in std::fs::read_dir(&api_root)? {
         let dir = entry?.path();
-        let lib = dir.join("events").join("src").join("lib.rs");
-        let Ok(text) = std::fs::read_to_string(&lib) else {
+        let dir_name = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string)
+            .ok_or_else(|| anyhow::anyhow!("non-utf8 dir name under {}", api_root.display()))?;
+        let label = format!("api/{dir_name}/events");
+        sources.push((dir_name, label, dir.join("events").join("src").join("lib.rs")));
+    }
+    sources.push((
+        "controlplane".to_string(),
+        "core/controlplane/src/events.rs".to_string(),
+        root.join("core").join("controlplane").join("src").join("events.rs"),
+    ));
+    let mut findings = Vec::new();
+    for (key, label, path) in sources {
+        let Ok(text) = std::fs::read_to_string(&path) else {
             continue; // domain has no events crate -- nothing to scan
         };
         let fields = scan_option_fields(&text);
         if fields.is_empty() {
             continue;
         }
-        let dir_name = dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(str::to_string)
-            .ok_or_else(|| anyhow::anyhow!("non-utf8 dir name under {}", api_root.display()))?;
-        match by_crate.get(dir_name.as_str()) {
-            Some(samples) => findings.extend(option_none_gaps(&dir_name, &fields, samples)),
+        match by_crate.get(key.as_str()) {
+            Some(samples) => findings.extend(option_none_gaps(&label, &fields, samples)),
             None => findings.push(format!(
-                "api/{dir_name}/events declares Option payload fields but is missing from \
+                "{label} declares Option payload fields but is missing from \
                  event_samples_by_crate() -- add its golden_samples() to \
                  tools/topiccheck/src/golden.rs"
             )),
@@ -500,16 +518,22 @@ fn to_snake(pascal: &str) -> String {
 }
 
 /// The source of truth for the [`rpc_modules`] hand-list: every `#[rpc]`-annotated
-/// trait under `api/*/api/src/`, rendered as `"<crate>::<snake>_rpc"` labels. The file
-/// set comes from [`rpc_contract_model::contract_sources`], so a trait moved out of
-/// `lib.rs` into a sibling module is still seen.
+/// trait under `api/*/api/src/` and `core/controlplane/src/`, rendered as
+/// `"<crate>::<snake>_rpc"` labels. The file set comes from
+/// [`rpc_contract_model::contract_sources`], so a trait moved out of `lib.rs` into a
+/// sibling module is still seen.
 fn rpc_modules_from_fs() -> anyhow::Result<BTreeSet<String>> {
-    let api_root = workspace_root().join("api");
-    let mut expected = BTreeSet::new();
+    let root = workspace_root();
+    let api_root = root.join("api");
+    let mut crates = Vec::new();
     for entry in std::fs::read_dir(&api_root)? {
-        let dir = entry?.path();
-        let cargo = dir.join("api").join("Cargo.toml");
-        let src_dir = dir.join("api").join("src");
+        crates.push(entry?.path().join("api"));
+    }
+    crates.push(root.join("core").join("controlplane"));
+    let mut expected = BTreeSet::new();
+    for crate_dir in crates {
+        let cargo = crate_dir.join("Cargo.toml");
+        let src_dir = crate_dir.join("src");
         if !cargo.is_file() || !src_dir.is_dir() {
             continue;
         }
@@ -551,7 +575,8 @@ fn rpc_modules_from_fs() -> anyhow::Result<BTreeSet<String>> {
 }
 
 /// Dies (per house rule) if the [`rpc_modules`] hand-list drifts from the `#[rpc]`
-/// traits actually present under `api/*/api/`, with a per-entry fix.
+/// traits actually present under `api/*/api/` and `core/controlplane/`, with a per-entry
+/// fix.
 fn self_check_rpc_list(listed: &[&'static str]) -> anyhow::Result<()> {
     let expected = rpc_modules_from_fs()?;
     let listed: BTreeSet<String> = listed.iter().map(|s| s.to_string()).collect();
@@ -564,15 +589,15 @@ fn self_check_rpc_list(listed: &[&'static str]) -> anyhow::Result<()> {
     }
     for m in listed.difference(&expected) {
         drift.push(format!(
-            "STALE in rpc_modules(): {m} -- no matching #[rpc] trait under api/*/api; \
-             remove it from tools/topiccheck/src/golden.rs"
+            "STALE in rpc_modules(): {m} -- no matching #[rpc] trait under api/*/api or \
+             core/controlplane; remove it from tools/topiccheck/src/golden.rs"
         ));
     }
     if drift.is_empty() {
         Ok(())
     } else {
         anyhow::bail!(
-            "contract-golden: rpc-module hand-list drifted from api/*/api (fix before \
+            "contract-golden: rpc-module hand-list drifted from its #[rpc] traits (fix before \
              any diff runs):\n  {}",
             drift.join("\n  ")
         )

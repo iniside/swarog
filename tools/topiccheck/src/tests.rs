@@ -376,7 +376,7 @@ fn union_define_sites<'a>(
 #[test]
 fn defined_topics_matches_every_define_site_on_disk() {
     let api_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../api");
-    let mut files: Vec<(String, String)> = Vec::new();
+    let mut src_dirs = Vec::new();
     for entry in std::fs::read_dir(&api_dir)
         .unwrap_or_else(|e| panic!("failed to read {}: {e}", api_dir.display()))
     {
@@ -388,6 +388,11 @@ fn defined_topics_matches_every_define_site_on_disk() {
         if !src_dir.is_dir() {
             continue; // domain has no events crate -- nothing to scan
         }
+        src_dirs.push(src_dir);
+    }
+    src_dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../core/controlplane/src"));
+    let mut files: Vec<(String, String)> = Vec::new();
+    for src_dir in src_dirs {
         // Every source file, not just lib.rs: a `define(` moved into a sibling module
         // would otherwise be invisible to this scan AND to `defined_topics()` at once,
         // leaving the drift assert below green over a topic nothing checks.
@@ -408,7 +413,7 @@ fn defined_topics_matches_every_define_site_on_disk() {
     assert_eq!(
         from_fs, from_defined,
         "tools/topiccheck::defined_topics() has drifted from the real `bus::define(` call \
-         sites under api/*/events/src/ (filesystem scan found {from_fs:?}, \
+         sites under api/*/events/src/ and core/controlplane/src/ (filesystem scan found {from_fs:?}, \
          defined_topics() returns {from_defined:?}) -- add/remove the missing/orphaned \
          Contract in defined_topics() (tools/topiccheck/src/main.rs)"
     );

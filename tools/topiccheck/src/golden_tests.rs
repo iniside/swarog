@@ -213,7 +213,7 @@ fn option_none_gaps_flags_an_option_field_with_no_null_sample() {
     let fields = BTreeSet::from(["maybe".to_string()]);
     // Only a populated sample -- the None case is uncovered.
     let populated = vec![("x.topic", 1u32, serde_json::json!({ "maybe": "v", "req": "r" }))];
-    let gaps = option_none_gaps("fixture", &fields, &populated);
+    let gaps = option_none_gaps("api/fixture/events", &fields, &populated);
     assert_eq!(gaps.len(), 1, "exactly one gap: {gaps:?}");
     assert!(
         gaps[0].contains("api/fixture/events") && gaps[0].contains("`maybe`"),

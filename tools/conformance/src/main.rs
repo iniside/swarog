@@ -49,7 +49,7 @@ mod policy;
 mod tests;
 
 use checks::{
-    argon_parity_findings, completeness_findings, conv_label,
+    argon_parity_findings, completeness_findings, control_plane_writer_findings, conv_label,
     coverage_boundary_findings, credential_cap_findings, drift_findings, eval_cap_probe,
     input_policy_prose_findings, COVERAGE_BOUNDARIES,
 };
@@ -89,6 +89,46 @@ impl Transport for NoopTransport {
     }
 }
 
+
+/// The conformance entry names whose non-test sources declare a control-plane manifest
+/// with `writes: true` — the source of truth [`checks::CONTROL_PLANE_WRITERS`] is diffed
+/// against. `modules/<m>/src` yields `<m>`; `core/admin/src` yields `admin`. A directory
+/// that does not exist is skipped. A comment-filtered text scan, like the other
+/// filesystem tripwires.
+fn control_plane_writer_dirs(workspace_root: &Path) -> Result<BTreeSet<String>, String> {
+    let modules_dir = workspace_root.join("modules");
+    let modules = rpc_contract_model::module_dirs(&modules_dir)
+        .map_err(|e| format!("list module crate dirs under {}: {e}", modules_dir.display()))?;
+    let mut candidates: Vec<(String, PathBuf)> = modules
+        .into_iter()
+        .map(|module| {
+            let src = modules_dir.join(&module).join("src");
+            (module, src)
+        })
+        .collect();
+    candidates.push(("admin".to_owned(), workspace_root.join("core/admin/src")));
+    let mut found = BTreeSet::new();
+    for (entry, src) in candidates {
+        if !src.is_dir() {
+            continue;
+        }
+        let files = rpc_contract_model::contract_sources(&src)
+            .map_err(|e| format!("list sources under {}: {e}", src.display()))?;
+        for file in files {
+            let text = std::fs::read_to_string(&file)
+                .map_err(|e| format!("read {}: {e}", file.display()))?;
+            let declares = text.lines().any(|line| {
+                let trimmed = line.trim_start();
+                !trimmed.starts_with("//") && trimmed.contains("writes: true")
+            });
+            if declares {
+                found.insert(entry.clone());
+                break;
+            }
+        }
+    }
+    Ok(found)
+}
 
 /// `modules/` at the workspace root, located relative to this crate
 /// (`tools/conformance`).
@@ -293,6 +333,12 @@ fn main() {
     let prose = input_policy_prose_findings(&input_policies);
     if !prose.is_empty() {
         fail_phase("input policy prose", &prose);
+    }
+    let writers = control_plane_writer_dirs(&input_inventory::workspace_root())
+        .unwrap_or_else(|error| fail_phase("control-plane writer scan", &[error]));
+    let writer_drift = control_plane_writer_findings(&writers, &entries);
+    if !writer_drift.is_empty() {
+        fail_phase("control-plane writer drift", &writer_drift);
     }
     let credential_caps = credential_cap_findings(
         &accounts::conformance::credential_caps(),

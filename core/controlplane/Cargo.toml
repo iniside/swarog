@@ -1,0 +1,15 @@
+[package]
+name = "controlplane"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+contrib = { workspace = true }
+opsapi = { workspace = true }
+bus = { workspace = true }
+rpc-macro = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }

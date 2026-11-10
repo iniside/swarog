@@ -339,6 +339,10 @@ wire module=charactersapi::player_rpc method=characters.create retry=Never
 wire module=charactersapi::player_rpc method=characters.delete retry=Never
 wire module=charactersapi::player_rpc method=characters.list retry=OnceAfterReconnect
 wire module=configapi::config_snapshot_rpc method=config.snapshot retry=OnceAfterReconnect
+wire module=controlplane::control_plane_rpc method=cp.invoke retry=Never
+wire module=controlplane::control_plane_rpc method=cp.manifests retry=OnceAfterReconnect
+wire module=controlplane::control_plane_rpc method=cp.panel retry=OnceAfterReconnect
+wire module=controlplane::control_plane_rpc method=cp.search retry=OnceAfterReconnect
 wire module=friendsapi::player_rpc method=friends.accept retry=Never
 wire module=friendsapi::player_rpc method=friends.decline retry=Never
 wire module=friendsapi::player_rpc method=friends.list retry=OnceAfterReconnect

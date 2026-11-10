@@ -1,0 +1,17 @@
+[package]
+name = "controlplanerpc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+controlplane = { workspace = true }
+opsapi = { workspace = true }
+edge = { workspace = true }
+remote = { workspace = true }
+lifecycle = { workspace = true }
+registry = { workspace = true }
+rpc-macro = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }

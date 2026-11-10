@@ -114,7 +114,7 @@ fn durable_topics_match_events() {
     for (topic, _, _) in matchevents::golden_samples() {
         declared.insert(topic);
     }
-    for (topic, _, _) in adminevents::golden_samples() {
+    for (topic, _, _) in controlplane::events::golden_samples() {
         declared.insert(topic);
     }
     for (topic, _, _) in walletevents::golden_samples() {
