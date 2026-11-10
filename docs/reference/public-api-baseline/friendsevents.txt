@@ -7,10 +7,10 @@ pub friendsevents::Accepted::edge_id: alloc::string::String
 pub friendsevents::Accepted::requester_handle: alloc::string::String
 pub friendsevents::Accepted::requester_id: alloc::string::String
 impl core::clone::Clone for friendsevents::Accepted
-pub fn friendsevents::Accepted::clone(&self) -> friendsevents::Accepted
+pub fn friendsevents::Accepted::clone(&self) -> Self
 impl core::cmp::Eq for friendsevents::Accepted
 impl core::cmp::PartialEq for friendsevents::Accepted
-pub fn friendsevents::Accepted::eq(&self, &friendsevents::Accepted) -> bool
+pub fn friendsevents::Accepted::eq(&self, &Self) -> bool
 impl core::fmt::Debug for friendsevents::Accepted
 pub fn friendsevents::Accepted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for friendsevents::Accepted
@@ -18,6 +18,7 @@ impl serde_core::ser::Serialize for friendsevents::Accepted
 pub fn friendsevents::Accepted::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for friendsevents::Accepted
 pub fn friendsevents::Accepted::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for friendsevents::Accepted
 impl core::marker::Freeze for friendsevents::Accepted
 impl core::marker::Send for friendsevents::Accepted
 impl core::marker::Sync for friendsevents::Accepted
@@ -33,10 +34,10 @@ pub friendsevents::Removed::other_handle: alloc::string::String
 pub friendsevents::Removed::other_id: alloc::string::String
 pub friendsevents::Removed::reason: alloc::string::String
 impl core::clone::Clone for friendsevents::Removed
-pub fn friendsevents::Removed::clone(&self) -> friendsevents::Removed
+pub fn friendsevents::Removed::clone(&self) -> Self
 impl core::cmp::Eq for friendsevents::Removed
 impl core::cmp::PartialEq for friendsevents::Removed
-pub fn friendsevents::Removed::eq(&self, &friendsevents::Removed) -> bool
+pub fn friendsevents::Removed::eq(&self, &Self) -> bool
 impl core::fmt::Debug for friendsevents::Removed
 pub fn friendsevents::Removed::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for friendsevents::Removed
@@ -44,6 +45,7 @@ impl serde_core::ser::Serialize for friendsevents::Removed
 pub fn friendsevents::Removed::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for friendsevents::Removed
 pub fn friendsevents::Removed::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for friendsevents::Removed
 impl core::marker::Freeze for friendsevents::Removed
 impl core::marker::Send for friendsevents::Removed
 impl core::marker::Sync for friendsevents::Removed
@@ -58,10 +60,10 @@ pub friendsevents::Requested::edge_id: alloc::string::String
 pub friendsevents::Requested::requester_handle: alloc::string::String
 pub friendsevents::Requested::requester_id: alloc::string::String
 impl core::clone::Clone for friendsevents::Requested
-pub fn friendsevents::Requested::clone(&self) -> friendsevents::Requested
+pub fn friendsevents::Requested::clone(&self) -> Self
 impl core::cmp::Eq for friendsevents::Requested
 impl core::cmp::PartialEq for friendsevents::Requested
-pub fn friendsevents::Requested::eq(&self, &friendsevents::Requested) -> bool
+pub fn friendsevents::Requested::eq(&self, &Self) -> bool
 impl core::fmt::Debug for friendsevents::Requested
 pub fn friendsevents::Requested::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for friendsevents::Requested
@@ -69,6 +71,7 @@ impl serde_core::ser::Serialize for friendsevents::Requested
 pub fn friendsevents::Requested::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for friendsevents::Requested
 pub fn friendsevents::Requested::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for friendsevents::Requested
 impl core::marker::Freeze for friendsevents::Requested
 impl core::marker::Send for friendsevents::Requested
 impl core::marker::Sync for friendsevents::Requested

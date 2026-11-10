@@ -4,11 +4,12 @@ pub mod notificationsapi::player_rpc
 pub struct notificationsapi::player_rpc::DeleteRequest
 pub notificationsapi::player_rpc::DeleteRequest::notification_id: alloc::string::String
 impl core::default::Default for notificationsapi::player_rpc::DeleteRequest
-pub fn notificationsapi::player_rpc::DeleteRequest::default() -> notificationsapi::player_rpc::DeleteRequest
+pub fn notificationsapi::player_rpc::DeleteRequest::default() -> Self
 impl serde_core::ser::Serialize for notificationsapi::player_rpc::DeleteRequest
 pub fn notificationsapi::player_rpc::DeleteRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for notificationsapi::player_rpc::DeleteRequest where notificationsapi::player_rpc::DeleteRequest: core::default::Default
 pub fn notificationsapi::player_rpc::DeleteRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for notificationsapi::player_rpc::DeleteRequest
 impl core::marker::Freeze for notificationsapi::player_rpc::DeleteRequest
 impl core::marker::Send for notificationsapi::player_rpc::DeleteRequest
 impl core::marker::Sync for notificationsapi::player_rpc::DeleteRequest
@@ -23,6 +24,7 @@ impl serde_core::ser::Serialize for notificationsapi::player_rpc::DeleteResponse
 pub fn notificationsapi::player_rpc::DeleteResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for notificationsapi::player_rpc::DeleteResponse
 pub fn notificationsapi::player_rpc::DeleteResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for notificationsapi::player_rpc::DeleteResponse
 impl core::marker::Freeze for notificationsapi::player_rpc::DeleteResponse
 impl core::marker::Send for notificationsapi::player_rpc::DeleteResponse
 impl core::marker::Sync for notificationsapi::player_rpc::DeleteResponse
@@ -34,11 +36,12 @@ pub struct notificationsapi::player_rpc::ListRequest
 pub notificationsapi::player_rpc::ListRequest::cursor: alloc::string::String
 pub notificationsapi::player_rpc::ListRequest::limit: i64
 impl core::default::Default for notificationsapi::player_rpc::ListRequest
-pub fn notificationsapi::player_rpc::ListRequest::default() -> notificationsapi::player_rpc::ListRequest
+pub fn notificationsapi::player_rpc::ListRequest::default() -> Self
 impl serde_core::ser::Serialize for notificationsapi::player_rpc::ListRequest
 pub fn notificationsapi::player_rpc::ListRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for notificationsapi::player_rpc::ListRequest where notificationsapi::player_rpc::ListRequest: core::default::Default
 pub fn notificationsapi::player_rpc::ListRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for notificationsapi::player_rpc::ListRequest
 impl core::marker::Freeze for notificationsapi::player_rpc::ListRequest
 impl core::marker::Send for notificationsapi::player_rpc::ListRequest
 impl core::marker::Sync for notificationsapi::player_rpc::ListRequest
@@ -54,6 +57,7 @@ impl serde_core::ser::Serialize for notificationsapi::player_rpc::ListResponse
 pub fn notificationsapi::player_rpc::ListResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for notificationsapi::player_rpc::ListResponse
 pub fn notificationsapi::player_rpc::ListResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for notificationsapi::player_rpc::ListResponse
 impl core::marker::Freeze for notificationsapi::player_rpc::ListResponse
 impl core::marker::Send for notificationsapi::player_rpc::ListResponse
 impl core::marker::Sync for notificationsapi::player_rpc::ListResponse
@@ -64,11 +68,12 @@ impl core::panic::unwind_safe::UnwindSafe for notificationsapi::player_rpc::List
 pub struct notificationsapi::player_rpc::MarkReadRequest
 pub notificationsapi::player_rpc::MarkReadRequest::notification_id: alloc::string::String
 impl core::default::Default for notificationsapi::player_rpc::MarkReadRequest
-pub fn notificationsapi::player_rpc::MarkReadRequest::default() -> notificationsapi::player_rpc::MarkReadRequest
+pub fn notificationsapi::player_rpc::MarkReadRequest::default() -> Self
 impl serde_core::ser::Serialize for notificationsapi::player_rpc::MarkReadRequest
 pub fn notificationsapi::player_rpc::MarkReadRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for notificationsapi::player_rpc::MarkReadRequest where notificationsapi::player_rpc::MarkReadRequest: core::default::Default
 pub fn notificationsapi::player_rpc::MarkReadRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for notificationsapi::player_rpc::MarkReadRequest
 impl core::marker::Freeze for notificationsapi::player_rpc::MarkReadRequest
 impl core::marker::Send for notificationsapi::player_rpc::MarkReadRequest
 impl core::marker::Sync for notificationsapi::player_rpc::MarkReadRequest
@@ -83,6 +88,7 @@ impl serde_core::ser::Serialize for notificationsapi::player_rpc::MarkReadRespon
 pub fn notificationsapi::player_rpc::MarkReadResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for notificationsapi::player_rpc::MarkReadResponse
 pub fn notificationsapi::player_rpc::MarkReadResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for notificationsapi::player_rpc::MarkReadResponse
 impl core::marker::Freeze for notificationsapi::player_rpc::MarkReadResponse
 impl core::marker::Send for notificationsapi::player_rpc::MarkReadResponse
 impl core::marker::Sync for notificationsapi::player_rpc::MarkReadResponse
@@ -94,7 +100,7 @@ pub const notificationsapi::player_rpc::METHOD_DELETE: &str
 pub const notificationsapi::player_rpc::METHOD_LIST: &str
 pub const notificationsapi::player_rpc::METHOD_MARK_READ: &str
 pub fn notificationsapi::player_rpc::describe() -> opsapi::DescribeManifest
-pub fn notificationsapi::player_rpc::operations(alloc::sync::Arc<(dyn notificationsapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn notificationsapi::player_rpc::operations(alloc::rcs::arc::Arc<(dyn notificationsapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn notificationsapi::player_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn notificationsapi::player_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub struct notificationsapi::Notification
@@ -105,10 +111,10 @@ pub notificationsapi::Notification::kind: alloc::string::String
 pub notificationsapi::Notification::read_at: alloc::string::String
 pub notificationsapi::Notification::title: alloc::string::String
 impl core::clone::Clone for notificationsapi::Notification
-pub fn notificationsapi::Notification::clone(&self) -> notificationsapi::Notification
+pub fn notificationsapi::Notification::clone(&self) -> Self
 impl core::cmp::Eq for notificationsapi::Notification
 impl core::cmp::PartialEq for notificationsapi::Notification
-pub fn notificationsapi::Notification::eq(&self, &notificationsapi::Notification) -> bool
+pub fn notificationsapi::Notification::eq(&self, &Self) -> bool
 impl core::fmt::Debug for notificationsapi::Notification
 pub fn notificationsapi::Notification::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for notificationsapi::Notification
@@ -116,6 +122,7 @@ impl serde_core::ser::Serialize for notificationsapi::Notification
 pub fn notificationsapi::Notification::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for notificationsapi::Notification
 pub fn notificationsapi::Notification::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for notificationsapi::Notification
 impl core::marker::Freeze for notificationsapi::Notification
 impl core::marker::Send for notificationsapi::Notification
 impl core::marker::Sync for notificationsapi::Notification
@@ -127,10 +134,10 @@ pub struct notificationsapi::Page
 pub notificationsapi::Page::items: alloc::vec::Vec<notificationsapi::Notification>
 pub notificationsapi::Page::next_cursor: alloc::string::String
 impl core::clone::Clone for notificationsapi::Page
-pub fn notificationsapi::Page::clone(&self) -> notificationsapi::Page
+pub fn notificationsapi::Page::clone(&self) -> Self
 impl core::cmp::Eq for notificationsapi::Page
 impl core::cmp::PartialEq for notificationsapi::Page
-pub fn notificationsapi::Page::eq(&self, &notificationsapi::Page) -> bool
+pub fn notificationsapi::Page::eq(&self, &Self) -> bool
 impl core::fmt::Debug for notificationsapi::Page
 pub fn notificationsapi::Page::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for notificationsapi::Page
@@ -138,6 +145,7 @@ impl serde_core::ser::Serialize for notificationsapi::Page
 pub fn notificationsapi::Page::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for notificationsapi::Page
 pub fn notificationsapi::Page::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for notificationsapi::Page
 impl core::marker::Freeze for notificationsapi::Page
 impl core::marker::Send for notificationsapi::Page
 impl core::marker::Sync for notificationsapi::Page

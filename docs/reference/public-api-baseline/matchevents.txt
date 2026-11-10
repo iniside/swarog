@@ -5,10 +5,10 @@ pub matchevents::Finished::loser: alloc::string::String
 pub matchevents::Finished::match_id: alloc::string::String
 pub matchevents::Finished::winner: alloc::string::String
 impl core::clone::Clone for matchevents::Finished
-pub fn matchevents::Finished::clone(&self) -> matchevents::Finished
+pub fn matchevents::Finished::clone(&self) -> Self
 impl core::cmp::Eq for matchevents::Finished
 impl core::cmp::PartialEq for matchevents::Finished
-pub fn matchevents::Finished::eq(&self, &matchevents::Finished) -> bool
+pub fn matchevents::Finished::eq(&self, &Self) -> bool
 impl core::fmt::Debug for matchevents::Finished
 pub fn matchevents::Finished::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for matchevents::Finished
@@ -16,6 +16,7 @@ impl serde_core::ser::Serialize for matchevents::Finished
 pub fn matchevents::Finished::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for matchevents::Finished
 pub fn matchevents::Finished::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for matchevents::Finished
 impl core::marker::Freeze for matchevents::Finished
 impl core::marker::Send for matchevents::Finished
 impl core::marker::Sync for matchevents::Finished

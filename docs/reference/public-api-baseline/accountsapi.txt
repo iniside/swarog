@@ -3,11 +3,12 @@ pub mod accountsapi
 pub mod accountsapi::auth_rpc
 pub struct accountsapi::auth_rpc::BeginDeleteRequest
 impl core::default::Default for accountsapi::auth_rpc::BeginDeleteRequest
-pub fn accountsapi::auth_rpc::BeginDeleteRequest::default() -> accountsapi::auth_rpc::BeginDeleteRequest
+pub fn accountsapi::auth_rpc::BeginDeleteRequest::default() -> Self
 impl serde_core::ser::Serialize for accountsapi::auth_rpc::BeginDeleteRequest
 pub fn accountsapi::auth_rpc::BeginDeleteRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::BeginDeleteRequest where accountsapi::auth_rpc::BeginDeleteRequest: core::default::Default
 pub fn accountsapi::auth_rpc::BeginDeleteRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::BeginDeleteRequest
 impl core::marker::Freeze for accountsapi::auth_rpc::BeginDeleteRequest
 impl core::marker::Send for accountsapi::auth_rpc::BeginDeleteRequest
 impl core::marker::Sync for accountsapi::auth_rpc::BeginDeleteRequest
@@ -23,6 +24,7 @@ impl serde_core::ser::Serialize for accountsapi::auth_rpc::BeginDeleteResponse
 pub fn accountsapi::auth_rpc::BeginDeleteResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::BeginDeleteResponse
 pub fn accountsapi::auth_rpc::BeginDeleteResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::BeginDeleteResponse
 impl core::marker::Freeze for accountsapi::auth_rpc::BeginDeleteResponse
 impl core::marker::Send for accountsapi::auth_rpc::BeginDeleteResponse
 impl core::marker::Sync for accountsapi::auth_rpc::BeginDeleteResponse
@@ -32,11 +34,12 @@ impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::BeginDel
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::BeginDeleteResponse
 pub struct accountsapi::auth_rpc::CreateGuestRequest
 impl core::default::Default for accountsapi::auth_rpc::CreateGuestRequest
-pub fn accountsapi::auth_rpc::CreateGuestRequest::default() -> accountsapi::auth_rpc::CreateGuestRequest
+pub fn accountsapi::auth_rpc::CreateGuestRequest::default() -> Self
 impl serde_core::ser::Serialize for accountsapi::auth_rpc::CreateGuestRequest
 pub fn accountsapi::auth_rpc::CreateGuestRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::CreateGuestRequest where accountsapi::auth_rpc::CreateGuestRequest: core::default::Default
 pub fn accountsapi::auth_rpc::CreateGuestRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::CreateGuestRequest
 impl core::marker::Freeze for accountsapi::auth_rpc::CreateGuestRequest
 impl core::marker::Send for accountsapi::auth_rpc::CreateGuestRequest
 impl core::marker::Sync for accountsapi::auth_rpc::CreateGuestRequest
@@ -52,6 +55,7 @@ impl serde_core::ser::Serialize for accountsapi::auth_rpc::CreateGuestResponse
 pub fn accountsapi::auth_rpc::CreateGuestResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::CreateGuestResponse
 pub fn accountsapi::auth_rpc::CreateGuestResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::CreateGuestResponse
 impl core::marker::Freeze for accountsapi::auth_rpc::CreateGuestResponse
 impl core::marker::Send for accountsapi::auth_rpc::CreateGuestResponse
 impl core::marker::Sync for accountsapi::auth_rpc::CreateGuestResponse
@@ -62,11 +66,12 @@ impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::CreateGuest
 pub struct accountsapi::auth_rpc::DeleteAccountRequest
 pub accountsapi::auth_rpc::DeleteAccountRequest::ticket: alloc::string::String
 impl core::default::Default for accountsapi::auth_rpc::DeleteAccountRequest
-pub fn accountsapi::auth_rpc::DeleteAccountRequest::default() -> accountsapi::auth_rpc::DeleteAccountRequest
+pub fn accountsapi::auth_rpc::DeleteAccountRequest::default() -> Self
 impl serde_core::ser::Serialize for accountsapi::auth_rpc::DeleteAccountRequest
 pub fn accountsapi::auth_rpc::DeleteAccountRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::DeleteAccountRequest where accountsapi::auth_rpc::DeleteAccountRequest: core::default::Default
 pub fn accountsapi::auth_rpc::DeleteAccountRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::DeleteAccountRequest
 impl core::marker::Freeze for accountsapi::auth_rpc::DeleteAccountRequest
 impl core::marker::Send for accountsapi::auth_rpc::DeleteAccountRequest
 impl core::marker::Sync for accountsapi::auth_rpc::DeleteAccountRequest
@@ -82,6 +87,7 @@ impl serde_core::ser::Serialize for accountsapi::auth_rpc::DeleteAccountResponse
 pub fn accountsapi::auth_rpc::DeleteAccountResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::DeleteAccountResponse
 pub fn accountsapi::auth_rpc::DeleteAccountResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::DeleteAccountResponse
 impl core::marker::Freeze for accountsapi::auth_rpc::DeleteAccountResponse
 impl core::marker::Send for accountsapi::auth_rpc::DeleteAccountResponse
 impl core::marker::Sync for accountsapi::auth_rpc::DeleteAccountResponse
@@ -93,11 +99,12 @@ pub struct accountsapi::auth_rpc::LinkRequest
 pub accountsapi::auth_rpc::LinkRequest::credential: alloc::string::String
 pub accountsapi::auth_rpc::LinkRequest::provider: alloc::string::String
 impl core::default::Default for accountsapi::auth_rpc::LinkRequest
-pub fn accountsapi::auth_rpc::LinkRequest::default() -> accountsapi::auth_rpc::LinkRequest
+pub fn accountsapi::auth_rpc::LinkRequest::default() -> Self
 impl serde_core::ser::Serialize for accountsapi::auth_rpc::LinkRequest
 pub fn accountsapi::auth_rpc::LinkRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::LinkRequest where accountsapi::auth_rpc::LinkRequest: core::default::Default
 pub fn accountsapi::auth_rpc::LinkRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::LinkRequest
 impl core::marker::Freeze for accountsapi::auth_rpc::LinkRequest
 impl core::marker::Send for accountsapi::auth_rpc::LinkRequest
 impl core::marker::Sync for accountsapi::auth_rpc::LinkRequest
@@ -113,6 +120,7 @@ impl serde_core::ser::Serialize for accountsapi::auth_rpc::LinkResponse
 pub fn accountsapi::auth_rpc::LinkResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::LinkResponse
 pub fn accountsapi::auth_rpc::LinkResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::LinkResponse
 impl core::marker::Freeze for accountsapi::auth_rpc::LinkResponse
 impl core::marker::Send for accountsapi::auth_rpc::LinkResponse
 impl core::marker::Sync for accountsapi::auth_rpc::LinkResponse
@@ -124,11 +132,12 @@ pub struct accountsapi::auth_rpc::LoginFederatedRequest
 pub accountsapi::auth_rpc::LoginFederatedRequest::credential: alloc::string::String
 pub accountsapi::auth_rpc::LoginFederatedRequest::provider: alloc::string::String
 impl core::default::Default for accountsapi::auth_rpc::LoginFederatedRequest
-pub fn accountsapi::auth_rpc::LoginFederatedRequest::default() -> accountsapi::auth_rpc::LoginFederatedRequest
+pub fn accountsapi::auth_rpc::LoginFederatedRequest::default() -> Self
 impl serde_core::ser::Serialize for accountsapi::auth_rpc::LoginFederatedRequest
 pub fn accountsapi::auth_rpc::LoginFederatedRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::LoginFederatedRequest where accountsapi::auth_rpc::LoginFederatedRequest: core::default::Default
 pub fn accountsapi::auth_rpc::LoginFederatedRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::LoginFederatedRequest
 impl core::marker::Freeze for accountsapi::auth_rpc::LoginFederatedRequest
 impl core::marker::Send for accountsapi::auth_rpc::LoginFederatedRequest
 impl core::marker::Sync for accountsapi::auth_rpc::LoginFederatedRequest
@@ -144,6 +153,7 @@ impl serde_core::ser::Serialize for accountsapi::auth_rpc::LoginFederatedRespons
 pub fn accountsapi::auth_rpc::LoginFederatedResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::LoginFederatedResponse
 pub fn accountsapi::auth_rpc::LoginFederatedResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::LoginFederatedResponse
 impl core::marker::Freeze for accountsapi::auth_rpc::LoginFederatedResponse
 impl core::marker::Send for accountsapi::auth_rpc::LoginFederatedResponse
 impl core::marker::Sync for accountsapi::auth_rpc::LoginFederatedResponse
@@ -155,11 +165,12 @@ pub struct accountsapi::auth_rpc::LoginRequest
 pub accountsapi::auth_rpc::LoginRequest::email: alloc::string::String
 pub accountsapi::auth_rpc::LoginRequest::password: alloc::string::String
 impl core::default::Default for accountsapi::auth_rpc::LoginRequest
-pub fn accountsapi::auth_rpc::LoginRequest::default() -> accountsapi::auth_rpc::LoginRequest
+pub fn accountsapi::auth_rpc::LoginRequest::default() -> Self
 impl serde_core::ser::Serialize for accountsapi::auth_rpc::LoginRequest
 pub fn accountsapi::auth_rpc::LoginRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::LoginRequest where accountsapi::auth_rpc::LoginRequest: core::default::Default
 pub fn accountsapi::auth_rpc::LoginRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::LoginRequest
 impl core::marker::Freeze for accountsapi::auth_rpc::LoginRequest
 impl core::marker::Send for accountsapi::auth_rpc::LoginRequest
 impl core::marker::Sync for accountsapi::auth_rpc::LoginRequest
@@ -175,6 +186,7 @@ impl serde_core::ser::Serialize for accountsapi::auth_rpc::LoginResponse
 pub fn accountsapi::auth_rpc::LoginResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::LoginResponse
 pub fn accountsapi::auth_rpc::LoginResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::LoginResponse
 impl core::marker::Freeze for accountsapi::auth_rpc::LoginResponse
 impl core::marker::Send for accountsapi::auth_rpc::LoginResponse
 impl core::marker::Sync for accountsapi::auth_rpc::LoginResponse
@@ -184,11 +196,12 @@ impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::auth_rpc::LoginRes
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::LoginResponse
 pub struct accountsapi::auth_rpc::MeRequest
 impl core::default::Default for accountsapi::auth_rpc::MeRequest
-pub fn accountsapi::auth_rpc::MeRequest::default() -> accountsapi::auth_rpc::MeRequest
+pub fn accountsapi::auth_rpc::MeRequest::default() -> Self
 impl serde_core::ser::Serialize for accountsapi::auth_rpc::MeRequest
 pub fn accountsapi::auth_rpc::MeRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::MeRequest where accountsapi::auth_rpc::MeRequest: core::default::Default
 pub fn accountsapi::auth_rpc::MeRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::MeRequest
 impl core::marker::Freeze for accountsapi::auth_rpc::MeRequest
 impl core::marker::Send for accountsapi::auth_rpc::MeRequest
 impl core::marker::Sync for accountsapi::auth_rpc::MeRequest
@@ -204,6 +217,7 @@ impl serde_core::ser::Serialize for accountsapi::auth_rpc::MeResponse
 pub fn accountsapi::auth_rpc::MeResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::MeResponse
 pub fn accountsapi::auth_rpc::MeResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::MeResponse
 impl core::marker::Freeze for accountsapi::auth_rpc::MeResponse
 impl core::marker::Send for accountsapi::auth_rpc::MeResponse
 impl core::marker::Sync for accountsapi::auth_rpc::MeResponse
@@ -214,11 +228,12 @@ impl core::panic::unwind_safe::UnwindSafe for accountsapi::auth_rpc::MeResponse
 pub struct accountsapi::auth_rpc::RefreshRequest
 pub accountsapi::auth_rpc::RefreshRequest::refresh_token: alloc::string::String
 impl core::default::Default for accountsapi::auth_rpc::RefreshRequest
-pub fn accountsapi::auth_rpc::RefreshRequest::default() -> accountsapi::auth_rpc::RefreshRequest
+pub fn accountsapi::auth_rpc::RefreshRequest::default() -> Self
 impl serde_core::ser::Serialize for accountsapi::auth_rpc::RefreshRequest
 pub fn accountsapi::auth_rpc::RefreshRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::RefreshRequest where accountsapi::auth_rpc::RefreshRequest: core::default::Default
 pub fn accountsapi::auth_rpc::RefreshRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::RefreshRequest
 impl core::marker::Freeze for accountsapi::auth_rpc::RefreshRequest
 impl core::marker::Send for accountsapi::auth_rpc::RefreshRequest
 impl core::marker::Sync for accountsapi::auth_rpc::RefreshRequest
@@ -234,6 +249,7 @@ impl serde_core::ser::Serialize for accountsapi::auth_rpc::RefreshResponse
 pub fn accountsapi::auth_rpc::RefreshResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::RefreshResponse
 pub fn accountsapi::auth_rpc::RefreshResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::RefreshResponse
 impl core::marker::Freeze for accountsapi::auth_rpc::RefreshResponse
 impl core::marker::Send for accountsapi::auth_rpc::RefreshResponse
 impl core::marker::Sync for accountsapi::auth_rpc::RefreshResponse
@@ -246,11 +262,12 @@ pub accountsapi::auth_rpc::RegisterRequest::display_name: alloc::string::String
 pub accountsapi::auth_rpc::RegisterRequest::email: alloc::string::String
 pub accountsapi::auth_rpc::RegisterRequest::password: alloc::string::String
 impl core::default::Default for accountsapi::auth_rpc::RegisterRequest
-pub fn accountsapi::auth_rpc::RegisterRequest::default() -> accountsapi::auth_rpc::RegisterRequest
+pub fn accountsapi::auth_rpc::RegisterRequest::default() -> Self
 impl serde_core::ser::Serialize for accountsapi::auth_rpc::RegisterRequest
 pub fn accountsapi::auth_rpc::RegisterRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::RegisterRequest where accountsapi::auth_rpc::RegisterRequest: core::default::Default
 pub fn accountsapi::auth_rpc::RegisterRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::RegisterRequest
 impl core::marker::Freeze for accountsapi::auth_rpc::RegisterRequest
 impl core::marker::Send for accountsapi::auth_rpc::RegisterRequest
 impl core::marker::Sync for accountsapi::auth_rpc::RegisterRequest
@@ -266,6 +283,7 @@ impl serde_core::ser::Serialize for accountsapi::auth_rpc::RegisterResponse
 pub fn accountsapi::auth_rpc::RegisterResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::auth_rpc::RegisterResponse
 pub fn accountsapi::auth_rpc::RegisterResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::auth_rpc::RegisterResponse
 impl core::marker::Freeze for accountsapi::auth_rpc::RegisterResponse
 impl core::marker::Send for accountsapi::auth_rpc::RegisterResponse
 impl core::marker::Sync for accountsapi::auth_rpc::RegisterResponse
@@ -283,7 +301,7 @@ pub const accountsapi::auth_rpc::METHOD_ME: &str
 pub const accountsapi::auth_rpc::METHOD_REFRESH: &str
 pub const accountsapi::auth_rpc::METHOD_REGISTER: &str
 pub fn accountsapi::auth_rpc::describe() -> opsapi::DescribeManifest
-pub fn accountsapi::auth_rpc::operations(alloc::sync::Arc<(dyn accountsapi::Auth + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn accountsapi::auth_rpc::operations(alloc::rcs::arc::Arc<(dyn accountsapi::Auth + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn accountsapi::auth_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn accountsapi::auth_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub mod accountsapi::directory_rpc
@@ -293,6 +311,7 @@ impl serde_core::ser::Serialize for accountsapi::directory_rpc::FindByHandleRequ
 pub fn accountsapi::directory_rpc::FindByHandleRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::directory_rpc::FindByHandleRequest
 pub fn accountsapi::directory_rpc::FindByHandleRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::directory_rpc::FindByHandleRequest
 impl core::marker::Freeze for accountsapi::directory_rpc::FindByHandleRequest
 impl core::marker::Send for accountsapi::directory_rpc::FindByHandleRequest
 impl core::marker::Sync for accountsapi::directory_rpc::FindByHandleRequest
@@ -308,6 +327,7 @@ impl serde_core::ser::Serialize for accountsapi::directory_rpc::FindByHandleResp
 pub fn accountsapi::directory_rpc::FindByHandleResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::directory_rpc::FindByHandleResponse
 pub fn accountsapi::directory_rpc::FindByHandleResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::directory_rpc::FindByHandleResponse
 impl core::marker::Freeze for accountsapi::directory_rpc::FindByHandleResponse
 impl core::marker::Send for accountsapi::directory_rpc::FindByHandleResponse
 impl core::marker::Sync for accountsapi::directory_rpc::FindByHandleResponse
@@ -321,6 +341,7 @@ impl serde_core::ser::Serialize for accountsapi::directory_rpc::PlayersByIdReque
 pub fn accountsapi::directory_rpc::PlayersByIdRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::directory_rpc::PlayersByIdRequest
 pub fn accountsapi::directory_rpc::PlayersByIdRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::directory_rpc::PlayersByIdRequest
 impl core::marker::Freeze for accountsapi::directory_rpc::PlayersByIdRequest
 impl core::marker::Send for accountsapi::directory_rpc::PlayersByIdRequest
 impl core::marker::Sync for accountsapi::directory_rpc::PlayersByIdRequest
@@ -336,6 +357,7 @@ impl serde_core::ser::Serialize for accountsapi::directory_rpc::PlayersByIdRespo
 pub fn accountsapi::directory_rpc::PlayersByIdResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::directory_rpc::PlayersByIdResponse
 pub fn accountsapi::directory_rpc::PlayersByIdResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::directory_rpc::PlayersByIdResponse
 impl core::marker::Freeze for accountsapi::directory_rpc::PlayersByIdResponse
 impl core::marker::Send for accountsapi::directory_rpc::PlayersByIdResponse
 impl core::marker::Sync for accountsapi::directory_rpc::PlayersByIdResponse
@@ -346,7 +368,7 @@ impl core::panic::unwind_safe::UnwindSafe for accountsapi::directory_rpc::Player
 pub const accountsapi::directory_rpc::METHOD_FIND_BY_HANDLE: &str
 pub const accountsapi::directory_rpc::METHOD_PLAYERS_BY_ID: &str
 pub fn accountsapi::directory_rpc::describe() -> opsapi::DescribeManifest
-pub fn accountsapi::directory_rpc::operations(alloc::sync::Arc<(dyn accountsapi::Directory + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn accountsapi::directory_rpc::operations(alloc::rcs::arc::Arc<(dyn accountsapi::Directory + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn accountsapi::directory_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn accountsapi::directory_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub mod accountsapi::sessions_rpc
@@ -356,6 +378,7 @@ impl serde_core::ser::Serialize for accountsapi::sessions_rpc::VerifySessionRequ
 pub fn accountsapi::sessions_rpc::VerifySessionRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::sessions_rpc::VerifySessionRequest
 pub fn accountsapi::sessions_rpc::VerifySessionRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::sessions_rpc::VerifySessionRequest
 impl core::marker::Freeze for accountsapi::sessions_rpc::VerifySessionRequest
 impl core::marker::Send for accountsapi::sessions_rpc::VerifySessionRequest
 impl core::marker::Sync for accountsapi::sessions_rpc::VerifySessionRequest
@@ -371,6 +394,7 @@ impl serde_core::ser::Serialize for accountsapi::sessions_rpc::VerifySessionResp
 pub fn accountsapi::sessions_rpc::VerifySessionResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::sessions_rpc::VerifySessionResponse
 pub fn accountsapi::sessions_rpc::VerifySessionResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::sessions_rpc::VerifySessionResponse
 impl core::marker::Freeze for accountsapi::sessions_rpc::VerifySessionResponse
 impl core::marker::Send for accountsapi::sessions_rpc::VerifySessionResponse
 impl core::marker::Sync for accountsapi::sessions_rpc::VerifySessionResponse
@@ -380,7 +404,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for accountsapi::sessions_rpc::Veri
 impl core::panic::unwind_safe::UnwindSafe for accountsapi::sessions_rpc::VerifySessionResponse
 pub const accountsapi::sessions_rpc::METHOD_VERIFY_SESSION: &str
 pub fn accountsapi::sessions_rpc::describe() -> opsapi::DescribeManifest
-pub fn accountsapi::sessions_rpc::operations(alloc::sync::Arc<(dyn accountsapi::Sessions + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn accountsapi::sessions_rpc::operations(alloc::rcs::arc::Arc<(dyn accountsapi::Sessions + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn accountsapi::sessions_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn accountsapi::sessions_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub struct accountsapi::DeleteReceipt
@@ -388,12 +412,12 @@ pub accountsapi::DeleteReceipt::deleted_at: alloc::string::String
 pub accountsapi::DeleteReceipt::handle: alloc::string::String
 pub accountsapi::DeleteReceipt::player_id: alloc::string::String
 impl core::clone::Clone for accountsapi::DeleteReceipt
-pub fn accountsapi::DeleteReceipt::clone(&self) -> accountsapi::DeleteReceipt
+pub fn accountsapi::DeleteReceipt::clone(&self) -> Self
 impl core::cmp::Eq for accountsapi::DeleteReceipt
 impl core::cmp::PartialEq for accountsapi::DeleteReceipt
-pub fn accountsapi::DeleteReceipt::eq(&self, &accountsapi::DeleteReceipt) -> bool
+pub fn accountsapi::DeleteReceipt::eq(&self, &Self) -> bool
 impl core::default::Default for accountsapi::DeleteReceipt
-pub fn accountsapi::DeleteReceipt::default() -> accountsapi::DeleteReceipt
+pub fn accountsapi::DeleteReceipt::default() -> Self
 impl core::fmt::Debug for accountsapi::DeleteReceipt
 pub fn accountsapi::DeleteReceipt::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for accountsapi::DeleteReceipt
@@ -401,6 +425,7 @@ impl serde_core::ser::Serialize for accountsapi::DeleteReceipt
 pub fn accountsapi::DeleteReceipt::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::DeleteReceipt
 pub fn accountsapi::DeleteReceipt::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::DeleteReceipt
 impl core::marker::Freeze for accountsapi::DeleteReceipt
 impl core::marker::Send for accountsapi::DeleteReceipt
 impl core::marker::Sync for accountsapi::DeleteReceipt
@@ -412,12 +437,12 @@ pub struct accountsapi::DeleteTicket
 pub accountsapi::DeleteTicket::expires_at: alloc::string::String
 pub accountsapi::DeleteTicket::ticket: alloc::string::String
 impl core::clone::Clone for accountsapi::DeleteTicket
-pub fn accountsapi::DeleteTicket::clone(&self) -> accountsapi::DeleteTicket
+pub fn accountsapi::DeleteTicket::clone(&self) -> Self
 impl core::cmp::Eq for accountsapi::DeleteTicket
 impl core::cmp::PartialEq for accountsapi::DeleteTicket
-pub fn accountsapi::DeleteTicket::eq(&self, &accountsapi::DeleteTicket) -> bool
+pub fn accountsapi::DeleteTicket::eq(&self, &Self) -> bool
 impl core::default::Default for accountsapi::DeleteTicket
-pub fn accountsapi::DeleteTicket::default() -> accountsapi::DeleteTicket
+pub fn accountsapi::DeleteTicket::default() -> Self
 impl core::fmt::Debug for accountsapi::DeleteTicket
 pub fn accountsapi::DeleteTicket::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for accountsapi::DeleteTicket
@@ -425,6 +450,7 @@ impl serde_core::ser::Serialize for accountsapi::DeleteTicket
 pub fn accountsapi::DeleteTicket::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::DeleteTicket
 pub fn accountsapi::DeleteTicket::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::DeleteTicket
 impl core::marker::Freeze for accountsapi::DeleteTicket
 impl core::marker::Send for accountsapi::DeleteTicket
 impl core::marker::Sync for accountsapi::DeleteTicket
@@ -439,12 +465,12 @@ pub accountsapi::GuestSession::player_id: alloc::string::String
 pub accountsapi::GuestSession::refresh_token: alloc::string::String
 pub accountsapi::GuestSession::token: alloc::string::String
 impl core::clone::Clone for accountsapi::GuestSession
-pub fn accountsapi::GuestSession::clone(&self) -> accountsapi::GuestSession
+pub fn accountsapi::GuestSession::clone(&self) -> Self
 impl core::cmp::Eq for accountsapi::GuestSession
 impl core::cmp::PartialEq for accountsapi::GuestSession
-pub fn accountsapi::GuestSession::eq(&self, &accountsapi::GuestSession) -> bool
+pub fn accountsapi::GuestSession::eq(&self, &Self) -> bool
 impl core::default::Default for accountsapi::GuestSession
-pub fn accountsapi::GuestSession::default() -> accountsapi::GuestSession
+pub fn accountsapi::GuestSession::default() -> Self
 impl core::fmt::Debug for accountsapi::GuestSession
 pub fn accountsapi::GuestSession::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for accountsapi::GuestSession
@@ -452,6 +478,7 @@ impl serde_core::ser::Serialize for accountsapi::GuestSession
 pub fn accountsapi::GuestSession::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::GuestSession
 pub fn accountsapi::GuestSession::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::GuestSession
 impl core::marker::Freeze for accountsapi::GuestSession
 impl core::marker::Send for accountsapi::GuestSession
 impl core::marker::Sync for accountsapi::GuestSession
@@ -463,12 +490,12 @@ pub struct accountsapi::IdentityRef
 pub accountsapi::IdentityRef::provider: alloc::string::String
 pub accountsapi::IdentityRef::subject: alloc::string::String
 impl core::clone::Clone for accountsapi::IdentityRef
-pub fn accountsapi::IdentityRef::clone(&self) -> accountsapi::IdentityRef
+pub fn accountsapi::IdentityRef::clone(&self) -> Self
 impl core::cmp::Eq for accountsapi::IdentityRef
 impl core::cmp::PartialEq for accountsapi::IdentityRef
-pub fn accountsapi::IdentityRef::eq(&self, &accountsapi::IdentityRef) -> bool
+pub fn accountsapi::IdentityRef::eq(&self, &Self) -> bool
 impl core::default::Default for accountsapi::IdentityRef
-pub fn accountsapi::IdentityRef::default() -> accountsapi::IdentityRef
+pub fn accountsapi::IdentityRef::default() -> Self
 impl core::fmt::Debug for accountsapi::IdentityRef
 pub fn accountsapi::IdentityRef::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for accountsapi::IdentityRef
@@ -476,6 +503,7 @@ impl serde_core::ser::Serialize for accountsapi::IdentityRef
 pub fn accountsapi::IdentityRef::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::IdentityRef
 pub fn accountsapi::IdentityRef::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::IdentityRef
 impl core::marker::Freeze for accountsapi::IdentityRef
 impl core::marker::Send for accountsapi::IdentityRef
 impl core::marker::Sync for accountsapi::IdentityRef
@@ -489,12 +517,12 @@ pub accountsapi::MeView::handle: alloc::string::String
 pub accountsapi::MeView::identities: alloc::vec::Vec<accountsapi::IdentityRef>
 pub accountsapi::MeView::player_id: alloc::string::String
 impl core::clone::Clone for accountsapi::MeView
-pub fn accountsapi::MeView::clone(&self) -> accountsapi::MeView
+pub fn accountsapi::MeView::clone(&self) -> Self
 impl core::cmp::Eq for accountsapi::MeView
 impl core::cmp::PartialEq for accountsapi::MeView
-pub fn accountsapi::MeView::eq(&self, &accountsapi::MeView) -> bool
+pub fn accountsapi::MeView::eq(&self, &Self) -> bool
 impl core::default::Default for accountsapi::MeView
-pub fn accountsapi::MeView::default() -> accountsapi::MeView
+pub fn accountsapi::MeView::default() -> Self
 impl core::fmt::Debug for accountsapi::MeView
 pub fn accountsapi::MeView::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for accountsapi::MeView
@@ -502,6 +530,7 @@ impl serde_core::ser::Serialize for accountsapi::MeView
 pub fn accountsapi::MeView::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::MeView
 pub fn accountsapi::MeView::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::MeView
 impl core::marker::Freeze for accountsapi::MeView
 impl core::marker::Send for accountsapi::MeView
 impl core::marker::Sync for accountsapi::MeView
@@ -515,12 +544,12 @@ pub accountsapi::PlayerSummary::handle: alloc::string::String
 pub accountsapi::PlayerSummary::online_until: alloc::string::String
 pub accountsapi::PlayerSummary::player_id: alloc::string::String
 impl core::clone::Clone for accountsapi::PlayerSummary
-pub fn accountsapi::PlayerSummary::clone(&self) -> accountsapi::PlayerSummary
+pub fn accountsapi::PlayerSummary::clone(&self) -> Self
 impl core::cmp::Eq for accountsapi::PlayerSummary
 impl core::cmp::PartialEq for accountsapi::PlayerSummary
-pub fn accountsapi::PlayerSummary::eq(&self, &accountsapi::PlayerSummary) -> bool
+pub fn accountsapi::PlayerSummary::eq(&self, &Self) -> bool
 impl core::default::Default for accountsapi::PlayerSummary
-pub fn accountsapi::PlayerSummary::default() -> accountsapi::PlayerSummary
+pub fn accountsapi::PlayerSummary::default() -> Self
 impl core::fmt::Debug for accountsapi::PlayerSummary
 pub fn accountsapi::PlayerSummary::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for accountsapi::PlayerSummary
@@ -528,6 +557,7 @@ impl serde_core::ser::Serialize for accountsapi::PlayerSummary
 pub fn accountsapi::PlayerSummary::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::PlayerSummary
 pub fn accountsapi::PlayerSummary::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::PlayerSummary
 impl core::marker::Freeze for accountsapi::PlayerSummary
 impl core::marker::Send for accountsapi::PlayerSummary
 impl core::marker::Sync for accountsapi::PlayerSummary
@@ -541,12 +571,12 @@ pub accountsapi::Session::player_id: alloc::string::String
 pub accountsapi::Session::refresh_token: alloc::string::String
 pub accountsapi::Session::token: alloc::string::String
 impl core::clone::Clone for accountsapi::Session
-pub fn accountsapi::Session::clone(&self) -> accountsapi::Session
+pub fn accountsapi::Session::clone(&self) -> Self
 impl core::cmp::Eq for accountsapi::Session
 impl core::cmp::PartialEq for accountsapi::Session
-pub fn accountsapi::Session::eq(&self, &accountsapi::Session) -> bool
+pub fn accountsapi::Session::eq(&self, &Self) -> bool
 impl core::default::Default for accountsapi::Session
-pub fn accountsapi::Session::default() -> accountsapi::Session
+pub fn accountsapi::Session::default() -> Self
 impl core::fmt::Debug for accountsapi::Session
 pub fn accountsapi::Session::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for accountsapi::Session
@@ -554,6 +584,7 @@ impl serde_core::ser::Serialize for accountsapi::Session
 pub fn accountsapi::Session::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsapi::Session
 pub fn accountsapi::Session::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsapi::Session
 impl core::marker::Freeze for accountsapi::Session
 impl core::marker::Send for accountsapi::Session
 impl core::marker::Sync for accountsapi::Session

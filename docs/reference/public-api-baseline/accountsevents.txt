@@ -9,10 +9,10 @@ pub struct accountsevents::PlayerDeleted
 pub accountsevents::PlayerDeleted::handle: alloc::string::String
 pub accountsevents::PlayerDeleted::player_id: alloc::string::String
 impl core::clone::Clone for accountsevents::PlayerDeleted
-pub fn accountsevents::PlayerDeleted::clone(&self) -> accountsevents::PlayerDeleted
+pub fn accountsevents::PlayerDeleted::clone(&self) -> Self
 impl core::cmp::Eq for accountsevents::PlayerDeleted
 impl core::cmp::PartialEq for accountsevents::PlayerDeleted
-pub fn accountsevents::PlayerDeleted::eq(&self, &accountsevents::PlayerDeleted) -> bool
+pub fn accountsevents::PlayerDeleted::eq(&self, &Self) -> bool
 impl core::fmt::Debug for accountsevents::PlayerDeleted
 pub fn accountsevents::PlayerDeleted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for accountsevents::PlayerDeleted
@@ -20,6 +20,7 @@ impl serde_core::ser::Serialize for accountsevents::PlayerDeleted
 pub fn accountsevents::PlayerDeleted::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsevents::PlayerDeleted
 pub fn accountsevents::PlayerDeleted::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsevents::PlayerDeleted
 impl core::marker::Freeze for accountsevents::PlayerDeleted
 impl core::marker::Send for accountsevents::PlayerDeleted
 impl core::marker::Sync for accountsevents::PlayerDeleted
@@ -32,10 +33,10 @@ pub accountsevents::PlayerPromoted::from_provider: alloc::string::String
 pub accountsevents::PlayerPromoted::player_id: alloc::string::String
 pub accountsevents::PlayerPromoted::to_provider: alloc::string::String
 impl core::clone::Clone for accountsevents::PlayerPromoted
-pub fn accountsevents::PlayerPromoted::clone(&self) -> accountsevents::PlayerPromoted
+pub fn accountsevents::PlayerPromoted::clone(&self) -> Self
 impl core::cmp::Eq for accountsevents::PlayerPromoted
 impl core::cmp::PartialEq for accountsevents::PlayerPromoted
-pub fn accountsevents::PlayerPromoted::eq(&self, &accountsevents::PlayerPromoted) -> bool
+pub fn accountsevents::PlayerPromoted::eq(&self, &Self) -> bool
 impl core::fmt::Debug for accountsevents::PlayerPromoted
 pub fn accountsevents::PlayerPromoted::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for accountsevents::PlayerPromoted
@@ -43,6 +44,7 @@ impl serde_core::ser::Serialize for accountsevents::PlayerPromoted
 pub fn accountsevents::PlayerPromoted::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsevents::PlayerPromoted
 pub fn accountsevents::PlayerPromoted::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsevents::PlayerPromoted
 impl core::marker::Freeze for accountsevents::PlayerPromoted
 impl core::marker::Send for accountsevents::PlayerPromoted
 impl core::marker::Sync for accountsevents::PlayerPromoted
@@ -55,10 +57,10 @@ pub accountsevents::PlayerRegistered::display_name: alloc::string::String
 pub accountsevents::PlayerRegistered::player_id: alloc::string::String
 pub accountsevents::PlayerRegistered::provider: alloc::string::String
 impl core::clone::Clone for accountsevents::PlayerRegistered
-pub fn accountsevents::PlayerRegistered::clone(&self) -> accountsevents::PlayerRegistered
+pub fn accountsevents::PlayerRegistered::clone(&self) -> Self
 impl core::cmp::Eq for accountsevents::PlayerRegistered
 impl core::cmp::PartialEq for accountsevents::PlayerRegistered
-pub fn accountsevents::PlayerRegistered::eq(&self, &accountsevents::PlayerRegistered) -> bool
+pub fn accountsevents::PlayerRegistered::eq(&self, &Self) -> bool
 impl core::fmt::Debug for accountsevents::PlayerRegistered
 pub fn accountsevents::PlayerRegistered::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for accountsevents::PlayerRegistered
@@ -66,6 +68,7 @@ impl serde_core::ser::Serialize for accountsevents::PlayerRegistered
 pub fn accountsevents::PlayerRegistered::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for accountsevents::PlayerRegistered
 pub fn accountsevents::PlayerRegistered::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for accountsevents::PlayerRegistered
 impl core::marker::Freeze for accountsevents::PlayerRegistered
 impl core::marker::Send for accountsevents::PlayerRegistered
 impl core::marker::Sync for accountsevents::PlayerRegistered

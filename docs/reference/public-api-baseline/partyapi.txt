@@ -4,11 +4,12 @@ pub mod partyapi::player_rpc
 pub struct partyapi::player_rpc::AcceptRequest
 pub partyapi::player_rpc::AcceptRequest::invite_id: alloc::string::String
 impl core::default::Default for partyapi::player_rpc::AcceptRequest
-pub fn partyapi::player_rpc::AcceptRequest::default() -> partyapi::player_rpc::AcceptRequest
+pub fn partyapi::player_rpc::AcceptRequest::default() -> Self
 impl serde_core::ser::Serialize for partyapi::player_rpc::AcceptRequest
 pub fn partyapi::player_rpc::AcceptRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::AcceptRequest where partyapi::player_rpc::AcceptRequest: core::default::Default
 pub fn partyapi::player_rpc::AcceptRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::AcceptRequest
 impl core::marker::Freeze for partyapi::player_rpc::AcceptRequest
 impl core::marker::Send for partyapi::player_rpc::AcceptRequest
 impl core::marker::Sync for partyapi::player_rpc::AcceptRequest
@@ -24,6 +25,7 @@ impl serde_core::ser::Serialize for partyapi::player_rpc::AcceptResponse
 pub fn partyapi::player_rpc::AcceptResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::AcceptResponse
 pub fn partyapi::player_rpc::AcceptResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::AcceptResponse
 impl core::marker::Freeze for partyapi::player_rpc::AcceptResponse
 impl core::marker::Send for partyapi::player_rpc::AcceptResponse
 impl core::marker::Sync for partyapi::player_rpc::AcceptResponse
@@ -33,11 +35,12 @@ impl core::panic::unwind_safe::RefUnwindSafe for partyapi::player_rpc::AcceptRes
 impl core::panic::unwind_safe::UnwindSafe for partyapi::player_rpc::AcceptResponse
 pub struct partyapi::player_rpc::CreateRequest
 impl core::default::Default for partyapi::player_rpc::CreateRequest
-pub fn partyapi::player_rpc::CreateRequest::default() -> partyapi::player_rpc::CreateRequest
+pub fn partyapi::player_rpc::CreateRequest::default() -> Self
 impl serde_core::ser::Serialize for partyapi::player_rpc::CreateRequest
 pub fn partyapi::player_rpc::CreateRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::CreateRequest where partyapi::player_rpc::CreateRequest: core::default::Default
 pub fn partyapi::player_rpc::CreateRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::CreateRequest
 impl core::marker::Freeze for partyapi::player_rpc::CreateRequest
 impl core::marker::Send for partyapi::player_rpc::CreateRequest
 impl core::marker::Sync for partyapi::player_rpc::CreateRequest
@@ -53,6 +56,7 @@ impl serde_core::ser::Serialize for partyapi::player_rpc::CreateResponse
 pub fn partyapi::player_rpc::CreateResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::CreateResponse
 pub fn partyapi::player_rpc::CreateResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::CreateResponse
 impl core::marker::Freeze for partyapi::player_rpc::CreateResponse
 impl core::marker::Send for partyapi::player_rpc::CreateResponse
 impl core::marker::Sync for partyapi::player_rpc::CreateResponse
@@ -63,11 +67,12 @@ impl core::panic::unwind_safe::UnwindSafe for partyapi::player_rpc::CreateRespon
 pub struct partyapi::player_rpc::DeclineRequest
 pub partyapi::player_rpc::DeclineRequest::invite_id: alloc::string::String
 impl core::default::Default for partyapi::player_rpc::DeclineRequest
-pub fn partyapi::player_rpc::DeclineRequest::default() -> partyapi::player_rpc::DeclineRequest
+pub fn partyapi::player_rpc::DeclineRequest::default() -> Self
 impl serde_core::ser::Serialize for partyapi::player_rpc::DeclineRequest
 pub fn partyapi::player_rpc::DeclineRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::DeclineRequest where partyapi::player_rpc::DeclineRequest: core::default::Default
 pub fn partyapi::player_rpc::DeclineRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::DeclineRequest
 impl core::marker::Freeze for partyapi::player_rpc::DeclineRequest
 impl core::marker::Send for partyapi::player_rpc::DeclineRequest
 impl core::marker::Sync for partyapi::player_rpc::DeclineRequest
@@ -82,6 +87,7 @@ impl serde_core::ser::Serialize for partyapi::player_rpc::DeclineResponse
 pub fn partyapi::player_rpc::DeclineResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::DeclineResponse
 pub fn partyapi::player_rpc::DeclineResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::DeclineResponse
 impl core::marker::Freeze for partyapi::player_rpc::DeclineResponse
 impl core::marker::Send for partyapi::player_rpc::DeclineResponse
 impl core::marker::Sync for partyapi::player_rpc::DeclineResponse
@@ -91,11 +97,12 @@ impl core::panic::unwind_safe::RefUnwindSafe for partyapi::player_rpc::DeclineRe
 impl core::panic::unwind_safe::UnwindSafe for partyapi::player_rpc::DeclineResponse
 pub struct partyapi::player_rpc::GetRequest
 impl core::default::Default for partyapi::player_rpc::GetRequest
-pub fn partyapi::player_rpc::GetRequest::default() -> partyapi::player_rpc::GetRequest
+pub fn partyapi::player_rpc::GetRequest::default() -> Self
 impl serde_core::ser::Serialize for partyapi::player_rpc::GetRequest
 pub fn partyapi::player_rpc::GetRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::GetRequest where partyapi::player_rpc::GetRequest: core::default::Default
 pub fn partyapi::player_rpc::GetRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::GetRequest
 impl core::marker::Freeze for partyapi::player_rpc::GetRequest
 impl core::marker::Send for partyapi::player_rpc::GetRequest
 impl core::marker::Sync for partyapi::player_rpc::GetRequest
@@ -111,6 +118,7 @@ impl serde_core::ser::Serialize for partyapi::player_rpc::GetResponse
 pub fn partyapi::player_rpc::GetResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::GetResponse
 pub fn partyapi::player_rpc::GetResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::GetResponse
 impl core::marker::Freeze for partyapi::player_rpc::GetResponse
 impl core::marker::Send for partyapi::player_rpc::GetResponse
 impl core::marker::Sync for partyapi::player_rpc::GetResponse
@@ -120,11 +128,12 @@ impl core::panic::unwind_safe::RefUnwindSafe for partyapi::player_rpc::GetRespon
 impl core::panic::unwind_safe::UnwindSafe for partyapi::player_rpc::GetResponse
 pub struct partyapi::player_rpc::HeartbeatRequest
 impl core::default::Default for partyapi::player_rpc::HeartbeatRequest
-pub fn partyapi::player_rpc::HeartbeatRequest::default() -> partyapi::player_rpc::HeartbeatRequest
+pub fn partyapi::player_rpc::HeartbeatRequest::default() -> Self
 impl serde_core::ser::Serialize for partyapi::player_rpc::HeartbeatRequest
 pub fn partyapi::player_rpc::HeartbeatRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::HeartbeatRequest where partyapi::player_rpc::HeartbeatRequest: core::default::Default
 pub fn partyapi::player_rpc::HeartbeatRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::HeartbeatRequest
 impl core::marker::Freeze for partyapi::player_rpc::HeartbeatRequest
 impl core::marker::Send for partyapi::player_rpc::HeartbeatRequest
 impl core::marker::Sync for partyapi::player_rpc::HeartbeatRequest
@@ -140,6 +149,7 @@ impl serde_core::ser::Serialize for partyapi::player_rpc::HeartbeatResponse
 pub fn partyapi::player_rpc::HeartbeatResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::HeartbeatResponse
 pub fn partyapi::player_rpc::HeartbeatResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::HeartbeatResponse
 impl core::marker::Freeze for partyapi::player_rpc::HeartbeatResponse
 impl core::marker::Send for partyapi::player_rpc::HeartbeatResponse
 impl core::marker::Sync for partyapi::player_rpc::HeartbeatResponse
@@ -150,11 +160,12 @@ impl core::panic::unwind_safe::UnwindSafe for partyapi::player_rpc::HeartbeatRes
 pub struct partyapi::player_rpc::InviteRequest
 pub partyapi::player_rpc::InviteRequest::target_handle: alloc::string::String
 impl core::default::Default for partyapi::player_rpc::InviteRequest
-pub fn partyapi::player_rpc::InviteRequest::default() -> partyapi::player_rpc::InviteRequest
+pub fn partyapi::player_rpc::InviteRequest::default() -> Self
 impl serde_core::ser::Serialize for partyapi::player_rpc::InviteRequest
 pub fn partyapi::player_rpc::InviteRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::InviteRequest where partyapi::player_rpc::InviteRequest: core::default::Default
 pub fn partyapi::player_rpc::InviteRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::InviteRequest
 impl core::marker::Freeze for partyapi::player_rpc::InviteRequest
 impl core::marker::Send for partyapi::player_rpc::InviteRequest
 impl core::marker::Sync for partyapi::player_rpc::InviteRequest
@@ -170,6 +181,7 @@ impl serde_core::ser::Serialize for partyapi::player_rpc::InviteResponse
 pub fn partyapi::player_rpc::InviteResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::InviteResponse
 pub fn partyapi::player_rpc::InviteResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::InviteResponse
 impl core::marker::Freeze for partyapi::player_rpc::InviteResponse
 impl core::marker::Send for partyapi::player_rpc::InviteResponse
 impl core::marker::Sync for partyapi::player_rpc::InviteResponse
@@ -179,11 +191,12 @@ impl core::panic::unwind_safe::RefUnwindSafe for partyapi::player_rpc::InviteRes
 impl core::panic::unwind_safe::UnwindSafe for partyapi::player_rpc::InviteResponse
 pub struct partyapi::player_rpc::InvitesRequest
 impl core::default::Default for partyapi::player_rpc::InvitesRequest
-pub fn partyapi::player_rpc::InvitesRequest::default() -> partyapi::player_rpc::InvitesRequest
+pub fn partyapi::player_rpc::InvitesRequest::default() -> Self
 impl serde_core::ser::Serialize for partyapi::player_rpc::InvitesRequest
 pub fn partyapi::player_rpc::InvitesRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::InvitesRequest where partyapi::player_rpc::InvitesRequest: core::default::Default
 pub fn partyapi::player_rpc::InvitesRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::InvitesRequest
 impl core::marker::Freeze for partyapi::player_rpc::InvitesRequest
 impl core::marker::Send for partyapi::player_rpc::InvitesRequest
 impl core::marker::Sync for partyapi::player_rpc::InvitesRequest
@@ -199,6 +212,7 @@ impl serde_core::ser::Serialize for partyapi::player_rpc::InvitesResponse
 pub fn partyapi::player_rpc::InvitesResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::InvitesResponse
 pub fn partyapi::player_rpc::InvitesResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::InvitesResponse
 impl core::marker::Freeze for partyapi::player_rpc::InvitesResponse
 impl core::marker::Send for partyapi::player_rpc::InvitesResponse
 impl core::marker::Sync for partyapi::player_rpc::InvitesResponse
@@ -209,11 +223,12 @@ impl core::panic::unwind_safe::UnwindSafe for partyapi::player_rpc::InvitesRespo
 pub struct partyapi::player_rpc::KickRequest
 pub partyapi::player_rpc::KickRequest::player_id: alloc::string::String
 impl core::default::Default for partyapi::player_rpc::KickRequest
-pub fn partyapi::player_rpc::KickRequest::default() -> partyapi::player_rpc::KickRequest
+pub fn partyapi::player_rpc::KickRequest::default() -> Self
 impl serde_core::ser::Serialize for partyapi::player_rpc::KickRequest
 pub fn partyapi::player_rpc::KickRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::KickRequest where partyapi::player_rpc::KickRequest: core::default::Default
 pub fn partyapi::player_rpc::KickRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::KickRequest
 impl core::marker::Freeze for partyapi::player_rpc::KickRequest
 impl core::marker::Send for partyapi::player_rpc::KickRequest
 impl core::marker::Sync for partyapi::player_rpc::KickRequest
@@ -229,6 +244,7 @@ impl serde_core::ser::Serialize for partyapi::player_rpc::KickResponse
 pub fn partyapi::player_rpc::KickResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::KickResponse
 pub fn partyapi::player_rpc::KickResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::KickResponse
 impl core::marker::Freeze for partyapi::player_rpc::KickResponse
 impl core::marker::Send for partyapi::player_rpc::KickResponse
 impl core::marker::Sync for partyapi::player_rpc::KickResponse
@@ -238,11 +254,12 @@ impl core::panic::unwind_safe::RefUnwindSafe for partyapi::player_rpc::KickRespo
 impl core::panic::unwind_safe::UnwindSafe for partyapi::player_rpc::KickResponse
 pub struct partyapi::player_rpc::LeaveRequest
 impl core::default::Default for partyapi::player_rpc::LeaveRequest
-pub fn partyapi::player_rpc::LeaveRequest::default() -> partyapi::player_rpc::LeaveRequest
+pub fn partyapi::player_rpc::LeaveRequest::default() -> Self
 impl serde_core::ser::Serialize for partyapi::player_rpc::LeaveRequest
 pub fn partyapi::player_rpc::LeaveRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::LeaveRequest where partyapi::player_rpc::LeaveRequest: core::default::Default
 pub fn partyapi::player_rpc::LeaveRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::LeaveRequest
 impl core::marker::Freeze for partyapi::player_rpc::LeaveRequest
 impl core::marker::Send for partyapi::player_rpc::LeaveRequest
 impl core::marker::Sync for partyapi::player_rpc::LeaveRequest
@@ -258,6 +275,7 @@ impl serde_core::ser::Serialize for partyapi::player_rpc::LeaveResponse
 pub fn partyapi::player_rpc::LeaveResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::LeaveResponse
 pub fn partyapi::player_rpc::LeaveResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::LeaveResponse
 impl core::marker::Freeze for partyapi::player_rpc::LeaveResponse
 impl core::marker::Send for partyapi::player_rpc::LeaveResponse
 impl core::marker::Sync for partyapi::player_rpc::LeaveResponse
@@ -268,11 +286,12 @@ impl core::panic::unwind_safe::UnwindSafe for partyapi::player_rpc::LeaveRespons
 pub struct partyapi::player_rpc::PromoteRequest
 pub partyapi::player_rpc::PromoteRequest::player_id: alloc::string::String
 impl core::default::Default for partyapi::player_rpc::PromoteRequest
-pub fn partyapi::player_rpc::PromoteRequest::default() -> partyapi::player_rpc::PromoteRequest
+pub fn partyapi::player_rpc::PromoteRequest::default() -> Self
 impl serde_core::ser::Serialize for partyapi::player_rpc::PromoteRequest
 pub fn partyapi::player_rpc::PromoteRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::PromoteRequest where partyapi::player_rpc::PromoteRequest: core::default::Default
 pub fn partyapi::player_rpc::PromoteRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::PromoteRequest
 impl core::marker::Freeze for partyapi::player_rpc::PromoteRequest
 impl core::marker::Send for partyapi::player_rpc::PromoteRequest
 impl core::marker::Sync for partyapi::player_rpc::PromoteRequest
@@ -288,6 +307,7 @@ impl serde_core::ser::Serialize for partyapi::player_rpc::PromoteResponse
 pub fn partyapi::player_rpc::PromoteResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::PromoteResponse
 pub fn partyapi::player_rpc::PromoteResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::PromoteResponse
 impl core::marker::Freeze for partyapi::player_rpc::PromoteResponse
 impl core::marker::Send for partyapi::player_rpc::PromoteResponse
 impl core::marker::Sync for partyapi::player_rpc::PromoteResponse
@@ -298,11 +318,12 @@ impl core::panic::unwind_safe::UnwindSafe for partyapi::player_rpc::PromoteRespo
 pub struct partyapi::player_rpc::SetReadyRequest
 pub partyapi::player_rpc::SetReadyRequest::state: alloc::string::String
 impl core::default::Default for partyapi::player_rpc::SetReadyRequest
-pub fn partyapi::player_rpc::SetReadyRequest::default() -> partyapi::player_rpc::SetReadyRequest
+pub fn partyapi::player_rpc::SetReadyRequest::default() -> Self
 impl serde_core::ser::Serialize for partyapi::player_rpc::SetReadyRequest
 pub fn partyapi::player_rpc::SetReadyRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::SetReadyRequest where partyapi::player_rpc::SetReadyRequest: core::default::Default
 pub fn partyapi::player_rpc::SetReadyRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::SetReadyRequest
 impl core::marker::Freeze for partyapi::player_rpc::SetReadyRequest
 impl core::marker::Send for partyapi::player_rpc::SetReadyRequest
 impl core::marker::Sync for partyapi::player_rpc::SetReadyRequest
@@ -318,6 +339,7 @@ impl serde_core::ser::Serialize for partyapi::player_rpc::SetReadyResponse
 pub fn partyapi::player_rpc::SetReadyResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::player_rpc::SetReadyResponse
 pub fn partyapi::player_rpc::SetReadyResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::player_rpc::SetReadyResponse
 impl core::marker::Freeze for partyapi::player_rpc::SetReadyResponse
 impl core::marker::Send for partyapi::player_rpc::SetReadyResponse
 impl core::marker::Sync for partyapi::player_rpc::SetReadyResponse
@@ -337,17 +359,17 @@ pub const partyapi::player_rpc::METHOD_LEAVE: &str
 pub const partyapi::player_rpc::METHOD_PROMOTE: &str
 pub const partyapi::player_rpc::METHOD_SET_READY: &str
 pub fn partyapi::player_rpc::describe() -> opsapi::DescribeManifest
-pub fn partyapi::player_rpc::operations(alloc::sync::Arc<(dyn partyapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn partyapi::player_rpc::operations(alloc::rcs::arc::Arc<(dyn partyapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn partyapi::player_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn partyapi::player_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub struct partyapi::HeartbeatView
 pub partyapi::HeartbeatView::lease_until: alloc::string::String
 pub partyapi::HeartbeatView::revision: i64
 impl core::clone::Clone for partyapi::HeartbeatView
-pub fn partyapi::HeartbeatView::clone(&self) -> partyapi::HeartbeatView
+pub fn partyapi::HeartbeatView::clone(&self) -> Self
 impl core::cmp::Eq for partyapi::HeartbeatView
 impl core::cmp::PartialEq for partyapi::HeartbeatView
-pub fn partyapi::HeartbeatView::eq(&self, &partyapi::HeartbeatView) -> bool
+pub fn partyapi::HeartbeatView::eq(&self, &Self) -> bool
 impl core::fmt::Debug for partyapi::HeartbeatView
 pub fn partyapi::HeartbeatView::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for partyapi::HeartbeatView
@@ -355,6 +377,7 @@ impl serde_core::ser::Serialize for partyapi::HeartbeatView
 pub fn partyapi::HeartbeatView::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::HeartbeatView
 pub fn partyapi::HeartbeatView::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::HeartbeatView
 impl core::marker::Freeze for partyapi::HeartbeatView
 impl core::marker::Send for partyapi::HeartbeatView
 impl core::marker::Sync for partyapi::HeartbeatView
@@ -365,10 +388,10 @@ impl core::panic::unwind_safe::UnwindSafe for partyapi::HeartbeatView
 pub struct partyapi::InviteList
 pub partyapi::InviteList::invites: alloc::vec::Vec<partyapi::InviteView>
 impl core::clone::Clone for partyapi::InviteList
-pub fn partyapi::InviteList::clone(&self) -> partyapi::InviteList
+pub fn partyapi::InviteList::clone(&self) -> Self
 impl core::cmp::Eq for partyapi::InviteList
 impl core::cmp::PartialEq for partyapi::InviteList
-pub fn partyapi::InviteList::eq(&self, &partyapi::InviteList) -> bool
+pub fn partyapi::InviteList::eq(&self, &Self) -> bool
 impl core::fmt::Debug for partyapi::InviteList
 pub fn partyapi::InviteList::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for partyapi::InviteList
@@ -376,6 +399,7 @@ impl serde_core::ser::Serialize for partyapi::InviteList
 pub fn partyapi::InviteList::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::InviteList
 pub fn partyapi::InviteList::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::InviteList
 impl core::marker::Freeze for partyapi::InviteList
 impl core::marker::Send for partyapi::InviteList
 impl core::marker::Sync for partyapi::InviteList
@@ -389,10 +413,10 @@ pub partyapi::InviteView::invite_id: alloc::string::String
 pub partyapi::InviteView::inviter_handle: alloc::string::String
 pub partyapi::InviteView::party_id: alloc::string::String
 impl core::clone::Clone for partyapi::InviteView
-pub fn partyapi::InviteView::clone(&self) -> partyapi::InviteView
+pub fn partyapi::InviteView::clone(&self) -> Self
 impl core::cmp::Eq for partyapi::InviteView
 impl core::cmp::PartialEq for partyapi::InviteView
-pub fn partyapi::InviteView::eq(&self, &partyapi::InviteView) -> bool
+pub fn partyapi::InviteView::eq(&self, &Self) -> bool
 impl core::fmt::Debug for partyapi::InviteView
 pub fn partyapi::InviteView::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for partyapi::InviteView
@@ -400,6 +424,7 @@ impl serde_core::ser::Serialize for partyapi::InviteView
 pub fn partyapi::InviteView::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::InviteView
 pub fn partyapi::InviteView::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::InviteView
 impl core::marker::Freeze for partyapi::InviteView
 impl core::marker::Send for partyapi::InviteView
 impl core::marker::Sync for partyapi::InviteView
@@ -412,10 +437,10 @@ pub partyapi::MemberView::handle: alloc::string::String
 pub partyapi::MemberView::player_id: alloc::string::String
 pub partyapi::MemberView::ready: alloc::string::String
 impl core::clone::Clone for partyapi::MemberView
-pub fn partyapi::MemberView::clone(&self) -> partyapi::MemberView
+pub fn partyapi::MemberView::clone(&self) -> Self
 impl core::cmp::Eq for partyapi::MemberView
 impl core::cmp::PartialEq for partyapi::MemberView
-pub fn partyapi::MemberView::eq(&self, &partyapi::MemberView) -> bool
+pub fn partyapi::MemberView::eq(&self, &Self) -> bool
 impl core::fmt::Debug for partyapi::MemberView
 pub fn partyapi::MemberView::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for partyapi::MemberView
@@ -423,6 +448,7 @@ impl serde_core::ser::Serialize for partyapi::MemberView
 pub fn partyapi::MemberView::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::MemberView
 pub fn partyapi::MemberView::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::MemberView
 impl core::marker::Freeze for partyapi::MemberView
 impl core::marker::Send for partyapi::MemberView
 impl core::marker::Sync for partyapi::MemberView
@@ -436,10 +462,10 @@ pub partyapi::PartyView::members: alloc::vec::Vec<partyapi::MemberView>
 pub partyapi::PartyView::party_id: alloc::string::String
 pub partyapi::PartyView::revision: i64
 impl core::clone::Clone for partyapi::PartyView
-pub fn partyapi::PartyView::clone(&self) -> partyapi::PartyView
+pub fn partyapi::PartyView::clone(&self) -> Self
 impl core::cmp::Eq for partyapi::PartyView
 impl core::cmp::PartialEq for partyapi::PartyView
-pub fn partyapi::PartyView::eq(&self, &partyapi::PartyView) -> bool
+pub fn partyapi::PartyView::eq(&self, &Self) -> bool
 impl core::fmt::Debug for partyapi::PartyView
 pub fn partyapi::PartyView::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for partyapi::PartyView
@@ -447,6 +473,7 @@ impl serde_core::ser::Serialize for partyapi::PartyView
 pub fn partyapi::PartyView::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for partyapi::PartyView
 pub fn partyapi::PartyView::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for partyapi::PartyView
 impl core::marker::Freeze for partyapi::PartyView
 impl core::marker::Send for partyapi::PartyView
 impl core::marker::Sync for partyapi::PartyView

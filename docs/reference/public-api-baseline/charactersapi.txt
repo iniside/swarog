@@ -7,6 +7,7 @@ impl serde_core::ser::Serialize for charactersapi::ownership_rpc::OwnerOfRequest
 pub fn charactersapi::ownership_rpc::OwnerOfRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for charactersapi::ownership_rpc::OwnerOfRequest
 pub fn charactersapi::ownership_rpc::OwnerOfRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for charactersapi::ownership_rpc::OwnerOfRequest
 impl core::marker::Freeze for charactersapi::ownership_rpc::OwnerOfRequest
 impl core::marker::Send for charactersapi::ownership_rpc::OwnerOfRequest
 impl core::marker::Sync for charactersapi::ownership_rpc::OwnerOfRequest
@@ -22,6 +23,7 @@ impl serde_core::ser::Serialize for charactersapi::ownership_rpc::OwnerOfRespons
 pub fn charactersapi::ownership_rpc::OwnerOfResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for charactersapi::ownership_rpc::OwnerOfResponse
 pub fn charactersapi::ownership_rpc::OwnerOfResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for charactersapi::ownership_rpc::OwnerOfResponse
 impl core::marker::Freeze for charactersapi::ownership_rpc::OwnerOfResponse
 impl core::marker::Send for charactersapi::ownership_rpc::OwnerOfResponse
 impl core::marker::Sync for charactersapi::ownership_rpc::OwnerOfResponse
@@ -31,7 +33,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for charactersapi::ownership_rpc::O
 impl core::panic::unwind_safe::UnwindSafe for charactersapi::ownership_rpc::OwnerOfResponse
 pub const charactersapi::ownership_rpc::METHOD_OWNER_OF: &str
 pub fn charactersapi::ownership_rpc::describe() -> opsapi::DescribeManifest
-pub fn charactersapi::ownership_rpc::operations(alloc::sync::Arc<(dyn charactersapi::Ownership + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn charactersapi::ownership_rpc::operations(alloc::rcs::arc::Arc<(dyn charactersapi::Ownership + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn charactersapi::ownership_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn charactersapi::ownership_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub mod charactersapi::player_rpc
@@ -39,11 +41,12 @@ pub struct charactersapi::player_rpc::CreateRequest
 pub charactersapi::player_rpc::CreateRequest::class: alloc::string::String
 pub charactersapi::player_rpc::CreateRequest::name: alloc::string::String
 impl core::default::Default for charactersapi::player_rpc::CreateRequest
-pub fn charactersapi::player_rpc::CreateRequest::default() -> charactersapi::player_rpc::CreateRequest
+pub fn charactersapi::player_rpc::CreateRequest::default() -> Self
 impl serde_core::ser::Serialize for charactersapi::player_rpc::CreateRequest
 pub fn charactersapi::player_rpc::CreateRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for charactersapi::player_rpc::CreateRequest where charactersapi::player_rpc::CreateRequest: core::default::Default
 pub fn charactersapi::player_rpc::CreateRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for charactersapi::player_rpc::CreateRequest
 impl core::marker::Freeze for charactersapi::player_rpc::CreateRequest
 impl core::marker::Send for charactersapi::player_rpc::CreateRequest
 impl core::marker::Sync for charactersapi::player_rpc::CreateRequest
@@ -59,6 +62,7 @@ impl serde_core::ser::Serialize for charactersapi::player_rpc::CreateResponse
 pub fn charactersapi::player_rpc::CreateResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for charactersapi::player_rpc::CreateResponse
 pub fn charactersapi::player_rpc::CreateResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for charactersapi::player_rpc::CreateResponse
 impl core::marker::Freeze for charactersapi::player_rpc::CreateResponse
 impl core::marker::Send for charactersapi::player_rpc::CreateResponse
 impl core::marker::Sync for charactersapi::player_rpc::CreateResponse
@@ -69,11 +73,12 @@ impl core::panic::unwind_safe::UnwindSafe for charactersapi::player_rpc::CreateR
 pub struct charactersapi::player_rpc::DeleteRequest
 pub charactersapi::player_rpc::DeleteRequest::character_id: alloc::string::String
 impl core::default::Default for charactersapi::player_rpc::DeleteRequest
-pub fn charactersapi::player_rpc::DeleteRequest::default() -> charactersapi::player_rpc::DeleteRequest
+pub fn charactersapi::player_rpc::DeleteRequest::default() -> Self
 impl serde_core::ser::Serialize for charactersapi::player_rpc::DeleteRequest
 pub fn charactersapi::player_rpc::DeleteRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for charactersapi::player_rpc::DeleteRequest where charactersapi::player_rpc::DeleteRequest: core::default::Default
 pub fn charactersapi::player_rpc::DeleteRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for charactersapi::player_rpc::DeleteRequest
 impl core::marker::Freeze for charactersapi::player_rpc::DeleteRequest
 impl core::marker::Send for charactersapi::player_rpc::DeleteRequest
 impl core::marker::Sync for charactersapi::player_rpc::DeleteRequest
@@ -88,6 +93,7 @@ impl serde_core::ser::Serialize for charactersapi::player_rpc::DeleteResponse
 pub fn charactersapi::player_rpc::DeleteResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for charactersapi::player_rpc::DeleteResponse
 pub fn charactersapi::player_rpc::DeleteResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for charactersapi::player_rpc::DeleteResponse
 impl core::marker::Freeze for charactersapi::player_rpc::DeleteResponse
 impl core::marker::Send for charactersapi::player_rpc::DeleteResponse
 impl core::marker::Sync for charactersapi::player_rpc::DeleteResponse
@@ -97,11 +103,12 @@ impl core::panic::unwind_safe::RefUnwindSafe for charactersapi::player_rpc::Dele
 impl core::panic::unwind_safe::UnwindSafe for charactersapi::player_rpc::DeleteResponse
 pub struct charactersapi::player_rpc::ListRequest
 impl core::default::Default for charactersapi::player_rpc::ListRequest
-pub fn charactersapi::player_rpc::ListRequest::default() -> charactersapi::player_rpc::ListRequest
+pub fn charactersapi::player_rpc::ListRequest::default() -> Self
 impl serde_core::ser::Serialize for charactersapi::player_rpc::ListRequest
 pub fn charactersapi::player_rpc::ListRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for charactersapi::player_rpc::ListRequest where charactersapi::player_rpc::ListRequest: core::default::Default
 pub fn charactersapi::player_rpc::ListRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for charactersapi::player_rpc::ListRequest
 impl core::marker::Freeze for charactersapi::player_rpc::ListRequest
 impl core::marker::Send for charactersapi::player_rpc::ListRequest
 impl core::marker::Sync for charactersapi::player_rpc::ListRequest
@@ -117,6 +124,7 @@ impl serde_core::ser::Serialize for charactersapi::player_rpc::ListResponse
 pub fn charactersapi::player_rpc::ListResponse::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for charactersapi::player_rpc::ListResponse
 pub fn charactersapi::player_rpc::ListResponse::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for charactersapi::player_rpc::ListResponse
 impl core::marker::Freeze for charactersapi::player_rpc::ListResponse
 impl core::marker::Send for charactersapi::player_rpc::ListResponse
 impl core::marker::Sync for charactersapi::player_rpc::ListResponse
@@ -128,7 +136,7 @@ pub const charactersapi::player_rpc::METHOD_CREATE: &str
 pub const charactersapi::player_rpc::METHOD_DELETE: &str
 pub const charactersapi::player_rpc::METHOD_LIST: &str
 pub fn charactersapi::player_rpc::describe() -> opsapi::DescribeManifest
-pub fn charactersapi::player_rpc::operations(alloc::sync::Arc<(dyn charactersapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
+pub fn charactersapi::player_rpc::operations(alloc::rcs::arc::Arc<(dyn charactersapi::Player + core::marker::Send + core::marker::Sync)>) -> alloc::vec::Vec<opsapi::OpSet>
 pub fn charactersapi::player_rpc::route_bindings() -> alloc::vec::Vec<opsapi::RouteBinding>
 pub fn charactersapi::player_rpc::wire_ops() -> alloc::vec::Vec<opsapi::WireOp>
 pub struct charactersapi::Character
@@ -138,10 +146,10 @@ pub charactersapi::Character::id: alloc::string::String
 pub charactersapi::Character::name: alloc::string::String
 pub charactersapi::Character::player_id: alloc::string::String
 impl core::clone::Clone for charactersapi::Character
-pub fn charactersapi::Character::clone(&self) -> charactersapi::Character
+pub fn charactersapi::Character::clone(&self) -> Self
 impl core::cmp::Eq for charactersapi::Character
 impl core::cmp::PartialEq for charactersapi::Character
-pub fn charactersapi::Character::eq(&self, &charactersapi::Character) -> bool
+pub fn charactersapi::Character::eq(&self, &Self) -> bool
 impl core::fmt::Debug for charactersapi::Character
 pub fn charactersapi::Character::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::marker::StructuralPartialEq for charactersapi::Character
@@ -149,6 +157,7 @@ impl serde_core::ser::Serialize for charactersapi::Character
 pub fn charactersapi::Character::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for charactersapi::Character
 pub fn charactersapi::Character::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for charactersapi::Character
 impl core::marker::Freeze for charactersapi::Character
 impl core::marker::Send for charactersapi::Character
 impl core::marker::Sync for charactersapi::Character
