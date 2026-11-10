@@ -13,7 +13,7 @@
 use std::io::Read as _;
 use std::process::ExitCode;
 
-use adminctl::{create_user, delete_user, dsn, list_users, set_role};
+use adminctl::{create_user, delete_user, dsn, list_users, parse_args, set_role, Command};
 use anyhow::{anyhow, Result};
 use sqlx::PgPool;
 
@@ -51,8 +51,8 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let cmd = args.first().map(String::as_str).unwrap_or("");
-    if matches!(cmd, "" | "-h" | "--help" | "help") {
+    let command = parse_args(&args).map_err(|error| anyhow!("adminctl: {error}\n\n{USAGE}"))?;
+    if command == Command::Help {
         println!("{USAGE}");
         return Ok(());
     }
@@ -61,32 +61,20 @@ async fn run() -> Result<()> {
         .await
         .map_err(|e| anyhow!("adminctl: connect {}: {e}", dsn()))?;
 
-    match cmd {
-        "create-user" => cmd_create_user(&pool, &args).await,
-        "set-role" => cmd_set_role(&pool, &args).await,
-        "list" => cmd_list(&pool).await,
-        "delete" => cmd_delete(&pool, &args).await,
-        other => Err(anyhow!("adminctl: unknown command {other:?}\n\n{USAGE}")),
+    match command {
+        Command::Help => Ok(()),
+        Command::CreateUser { username, role, password_stdin } => {
+            cmd_create_user(&pool, &username, &role, password_stdin).await
+        }
+        Command::SetRole { username, role } => cmd_set_role(&pool, &username, &role).await,
+        Command::List => cmd_list(&pool).await,
+        Command::Delete { username } => cmd_delete(&pool, &username).await,
     }
-}
-
-/// The username positional: the second token (`adminctl <cmd> <username>`), run
-/// through the SAME [`admin::normalize_username`] authority the lib verbs bind —
-/// so every echoed message prints the name the row was actually touched under,
-/// never the raw padded argv (the lib re-normalizes; on an already-normalized
-/// value that is a no-op).
-fn arg_username(args: &[String], verb: &str) -> Result<String> {
-    let raw = args
-        .get(1)
-        .filter(|s| !s.starts_with('-'))
-        .ok_or_else(|| anyhow!("adminctl: {verb} requires a <username>"))?;
-    admin::normalize_username(raw).map_err(|error| anyhow!("adminctl: {error}"))
 }
 
 /// Resolve the password from the two allowed channels: `--password-stdin` (one trimmed
 /// line) XOR `ADMINCTL_PASSWORD`. Never from argv. Errors clearly when neither is given.
-fn resolve_password(args: &[String]) -> Result<String> {
-    let stdin_flag = args.iter().any(|a| a == "--password-stdin");
+fn resolve_password(stdin_flag: bool) -> Result<String> {
     let env_pw = std::env::var("ADMINCTL_PASSWORD").ok();
     match (stdin_flag, env_pw) {
         (true, _) => {
@@ -106,22 +94,14 @@ fn resolve_password(args: &[String]) -> Result<String> {
     }
 }
 
-fn arg_role(args: &[String]) -> Result<&str> {
-    match args.iter().position(|a| a == "--role") {
-        None => Ok("admin"),
-        Some(i) => args
-            .get(i + 1)
-            .filter(|s| !s.starts_with('-'))
-            .map(String::as_str)
-            .ok_or_else(|| anyhow!("adminctl: --role requires a value (admin, operator or viewer)")),
-    }
-}
-
-async fn cmd_create_user(pool: &PgPool, args: &[String]) -> Result<()> {
-    let username = arg_username(args, "create-user")?;
-    let role = arg_role(args)?;
-    let password = resolve_password(args)?;
-    let inserted = create_user(pool, &username, &password, role).await?;
+async fn cmd_create_user(
+    pool: &PgPool,
+    username: &str,
+    role: &str,
+    password_stdin: bool,
+) -> Result<()> {
+    let password = resolve_password(password_stdin)?;
+    let inserted = create_user(pool, username, &password, role).await?;
     if inserted {
         println!("created admin user {username:?}");
     } else {
@@ -130,12 +110,8 @@ async fn cmd_create_user(pool: &PgPool, args: &[String]) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_set_role(pool: &PgPool, args: &[String]) -> Result<()> {
-    let username = arg_username(args, "set-role")?;
-    let role = args
-        .get(2)
-        .ok_or_else(|| anyhow!("adminctl: set-role requires a <role> (admin, operator or viewer)"))?;
-    if set_role(pool, &username, role).await? {
+async fn cmd_set_role(pool: &PgPool, username: &str, role: &str) -> Result<()> {
+    if set_role(pool, username, role).await? {
         println!("set role of admin user {username:?} to {role:?}");
     } else {
         println!("no such admin user {username:?}");
@@ -156,9 +132,8 @@ async fn cmd_list(pool: &PgPool) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_delete(pool: &PgPool, args: &[String]) -> Result<()> {
-    let username = arg_username(args, "delete")?;
-    if delete_user(pool, &username).await? {
+async fn cmd_delete(pool: &PgPool, username: &str) -> Result<()> {
+    if delete_user(pool, username).await? {
         println!("deleted admin user {username:?}");
     } else {
         println!("no such admin user {username:?}");

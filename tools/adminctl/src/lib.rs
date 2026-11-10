@@ -17,6 +17,103 @@ pub fn dsn() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string())
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum Command {
+    Help,
+    CreateUser { username: String, role: String, password_stdin: bool },
+    SetRole { username: String, role: String },
+    List,
+    Delete { username: String },
+}
+
+pub fn parse_args(args: &[String]) -> Result<Command, String> {
+    let Some((verb, rest)) = args.split_first() else {
+        return Ok(Command::Help);
+    };
+    let verb = verb.as_str();
+    match verb {
+        "-h" | "--help" | "help" => {
+            exact_positionals(verb, rest, 0)?;
+            Ok(Command::Help)
+        }
+        "create-user" => parse_create_user(rest),
+        "set-role" => {
+            exact_positionals(verb, rest, 2)?;
+            Ok(Command::SetRole { username: username_arg(&rest[0])?, role: role_arg(&rest[1])? })
+        }
+        "list" => {
+            exact_positionals(verb, rest, 0)?;
+            Ok(Command::List)
+        }
+        "delete" => {
+            exact_positionals(verb, rest, 1)?;
+            Ok(Command::Delete { username: username_arg(&rest[0])? })
+        }
+        other => Err(format!("unknown command {other:?}")),
+    }
+}
+
+// Strict on purpose: a swallowed `--role` token would silently fall back to `admin`.
+fn parse_create_user(rest: &[String]) -> Result<Command, String> {
+    let mut username = None;
+    let mut role = None;
+    let mut password_stdin = false;
+    let mut tokens = rest.iter();
+    while let Some(token) = tokens.next() {
+        match token.as_str() {
+            "--role" => {
+                if role.is_some() {
+                    return Err("create-user: --role given more than once".into());
+                }
+                let value = tokens
+                    .next()
+                    .filter(|value| !value.starts_with('-'))
+                    .ok_or("create-user: --role requires a value (admin, operator or viewer)")?;
+                role = Some(role_arg(value)?);
+            }
+            "--password-stdin" => {
+                if password_stdin {
+                    return Err("create-user: --password-stdin given more than once".into());
+                }
+                password_stdin = true;
+            }
+            flag if flag.starts_with('-') => {
+                return Err(format!("create-user: unknown argument {flag:?}"));
+            }
+            positional => {
+                if username.is_some() {
+                    return Err(format!("create-user: unexpected extra argument {positional:?}"));
+                }
+                username = Some(username_arg(positional)?);
+            }
+        }
+    }
+    let username = username.ok_or("create-user requires a <username>")?;
+    Ok(Command::CreateUser {
+        username,
+        role: role.unwrap_or_else(|| "admin".to_string()),
+        password_stdin,
+    })
+}
+
+fn exact_positionals(verb: &str, rest: &[String], count: usize) -> Result<(), String> {
+    if let Some(flag) = rest.iter().find(|token| token.starts_with('-')) {
+        return Err(format!("{verb}: unknown argument {flag:?}"));
+    }
+    if rest.len() != count {
+        return Err(format!("{verb}: expected {count} argument(s), got {}", rest.len()));
+    }
+    Ok(())
+}
+
+fn username_arg(raw: &str) -> Result<String, String> {
+    admin::normalize_username(raw).map_err(str::to_string)
+}
+
+fn role_arg(raw: &str) -> Result<String, String> {
+    admin::parse_role(raw).map(|role| admin::role_name(role).to_string())
+}
+
 /// One `admin.users` row for the `list` table.
 pub struct UserRow {
     pub username: String,
