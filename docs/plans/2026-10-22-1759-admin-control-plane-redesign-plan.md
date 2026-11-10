@@ -821,8 +821,9 @@ Owner decisions implemented here (2026-11-10):
    | Duration | `Text` | `^[0-9]+(s\|m\|h\|d)$` |
    | Money(currencies) | `Money` | a JSON object whose `amount` matches `^-?[0-9]+(\.[0-9]+)?$` and whose `currency` is in `currencies` |
 
-   `FieldError { reason: String }`. `encode_field` is the inverse; a round trip is
-   identity.
+   `FieldError { reason: String }`. `decode_field(k, &encode_field(k, v)) == Ok(v)` for
+   every valid `v` (value → raw → value; raw → value → raw may normalise, e.g. `"01"` →
+   `"1"`). `FieldValue` derives `PartialEq` only, because of the `f64`.
 
 #### B. Form instances (`admin.forms`, in `core/admin/src/lib.rs` beside `REVEAL_DDL`)
 
@@ -836,7 +837,9 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
 
 - **Which forms get one.** A `Then::Form` or `Then::Confirm` modal, and an `ok`
   `Primitive::Form` panel with a `PanelForm` action. A readonly, stale, denied or error
-  panel mints nothing, and its Save is disabled.
+  panel mints nothing, and its Save is disabled. So does an `ok` Form panel whose
+  contribution has no `PanelForm` action: it renders readonly. admincheck cannot see this
+  case, because the primitive arrives at runtime.
 - **Minting.**
   - The id is `<action or contribution id>:<new_token()>` (`lib.rs` ~:776).
   - `spec` is what was rendered: the `FormSpec` for a `Then::Form` or a panel form, the
@@ -850,13 +853,13 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
     panel, it renders the panel `error` state "Form unavailable".
 - **POST `/admin/_action/{module}/{action}`, in this exact order:**
   1. **CSRF.**
-  2. **Parse the body** as `Vec<(String, String)>` (`routes.rs` ~:670). A repeated key is
-     a 400, except a Multi field's own key.
+  2. **Parse the body** as `Vec<(String, String)>` (`routes.rs` ~:670). Parse only:
+     repeated keys are kept; nothing is validated yet. `ok_target` (`actions.rs` ~:293)
+     gets an adapter from this list.
   3. **Path choice.** With `_form`, take the form path (steps 4–9). Without it, take the
      token-less path (below).
-  4. **Allowed keys.**
-     - With a form: `_csrf`, `_form`, `_reason`, `_confirm`, `_return`, every field key of
-       the stored spec, and `<money key>__currency`. Anything else is a 400.
+  4. **What the core commit deletes** (the allowed-key check itself is the first check of
+     step 6):
      - The 8a core commit deletes the "every other field is input" rule (`actions.rs`
        ~:25, ~:125-129), `FIELD_REVISION` with its parse branch (~:29, ~:105-111), and
        the Required-reason check in `build_request` (~:117-123).
@@ -882,8 +885,16 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
 
   6. **Pre-invoke checks.** Each failure first releases the claim (`claimed_at = NULL`),
      then answers:
+     - allowed keys → 400. The allowed set is `_csrf`, `_form`, `_reason`, `_confirm`,
+       `_return`, every field key of the stored spec, and `<money key>__currency`. Only a
+       Multi field's key may repeat;
      - `admit` (role, `implemented`, `writes`) → 403;
-     - decode every stored field with `decode_field` → 422 with the field errors:
+     - build each field's raw value, then decode it with `decode_field` → 422 with the
+       field errors:
+       - Multi: the JSON array of the field's repeated values, `[]` when absent;
+       - Money: `{"amount": <key>, "currency": <key>__currency}`;
+       - every other kind: the single posted value;
+       - a stored `default` for Multi or Money is already in this JSON form;
        - a `readonly` field takes its stored `default`, and the posted value is ignored;
        - a missing optional field, or a readonly field without a default, is left out of
          `input`;
@@ -1178,7 +1189,13 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
   - a panel spec with a `__` key renders an error panel and mints no row; a failed mint
     gives the 503 toast on a modal and "Form unavailable" on a panel;
   - a cached `search=a` copy is never served for `search=b`;
-  - `NoOp` gives a 303 with an `Info` flash and audit `noop: …`.
+  - `NoOp` gives a 303 with an `Info` flash and audit `noop: …`;
+  - an unknown or wrongly repeated key gives 400 and releases the claim, and a corrected
+    resubmit invokes;
+  - POST decoding: repeated Multi checkboxes reach the module as one JSON array, which
+    survives a value with a comma; `<key>` + `<key>__currency` reach it as one Money
+    object;
+  - an `ok` Form panel without a `PanelForm` action renders readonly and mints no row.
 - `core/controlplane` tests for the Step 8a contract:
   - an `encode_field`/`decode_field` round trip for every `FieldKind`, including a Multi
     value containing a comma and a Money value;
