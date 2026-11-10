@@ -1347,6 +1347,17 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
     subscription), no event is eligible, or another event blocks. `skip(.., None)` keeps
     the old errors. The `core.events` Skip with `item: None` returns Invalid without
     calling `skip`.
+- `core/admin` fixes found while landing Step 8a (owner, 2026-11-10: fix here):
+  - test migrate race: `core/admin/src/tests.rs` ~:643 and ~:656 call `admin.migrate`
+    outside `ensure_schema`'s once-cell, so on a freshly wiped schema two tests can run
+    `CREATE TABLE IF NOT EXISTS` for `admin.forms` at once and fail on a duplicate
+    `pg_type` key (passes on rerun). Route them through the once-cell;
+  - back/forward cache: after an `HX-Redirect`, htmx keeps `hx-disabled-elt` buttons
+    disabled, and a page restored from the browser's back/forward cache shows them
+    disabled until reload. `admin.js` re-enables `[data-disabled-by-htmx]` on a
+    `pageshow` event with `persisted` (mockup-implementer lane);
+  - a claimed row whose stored `spec` fails to decode answers 503 and stays held 30 s;
+    release it before answering.
 - `core/admin` tests for Step 8a:
   - method for every time window: never sleep and never race a real clock. A window
     test back-dates `claimed_at` or `consumed_at` with an `UPDATE` before the next POST.

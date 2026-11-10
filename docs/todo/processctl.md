@@ -1,6 +1,6 @@
 # Processctl
 
-Last updated: 2026-11-01
+Last updated: 2026-11-10
 
 ## In progress
 
@@ -39,3 +39,12 @@ _None._
   names lexicographically, so a hypothetical `14.100.x` loses to `14.99.x`. Does not bite with current
   fixed-width versions.
   Source: core-reviewer + proof-auditor reviews of da737d80 / 08be12df (2026-11-01).
+- [ ] **`devctl down` hangs on Windows after the fleet has stopped**
+  PROCESSCTL-08. After `devctl up monolith`, `devctl down` exited 1 with "timed out
+  waiting 130s for shutdown cleanup" (tools/devctl/src/supervisor.rs:165). The server
+  process had already exited and Postgres had no sessions left, but the supervising
+  `devctl.exe` (the `up` process) never published a terminal cleanup state; it was
+  stopped by hand with Stop-Process. An earlier `down` in the same rollout printed
+  "os error 32" (file in use) and still stopped cleanly. Cause not investigated
+  (report, don't fix); diagnose the supervisor's Windows shutdown path before fixing.
+  Source: mockup-implementer smoke for 01b28403, admin-control-plane-redesign step 8a (2026-11-10).
