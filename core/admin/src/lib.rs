@@ -340,7 +340,7 @@ impl Module for Admin {
     /// handlers, never here.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let deps = self.deps()?;
-        let env = template_env()?;
+        let env = render::env()?;
 
         let open = admin_open_explicitly_on();
         if open {
@@ -426,11 +426,6 @@ impl Module for Admin {
         self.stop_manifest_refresh().await;
         self.stop_login_reaper().await
     }
-}
-
-/// Compiles the embedded templates (shared by `init` and the tests).
-fn template_env() -> anyhow::Result<minijinja::Environment<'static>> {
-    render::env()
 }
 
 /// Per-request admin state captured by the router closures. The pool backs the

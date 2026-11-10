@@ -210,7 +210,7 @@ async fn wired_with_verifier(
     let transport = asyncevents::testing::transport(pool.clone());
     let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
     let st = Arc::new(AdminState {
-        env: template_env().unwrap(),
+        env: render::env().unwrap(),
         pool: pool.clone(),
         bus: ctx.bus().clone(),
         open,
@@ -683,7 +683,7 @@ async fn login_ip_limiter_returns_exact_retry_after() {
     let transport = asyncevents::testing::transport(pool.clone());
     let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
     let st = Arc::new(AdminState {
-        env: template_env().unwrap(),
+        env: render::env().unwrap(),
         pool,
         bus: ctx.bus().clone(),
         open: false,

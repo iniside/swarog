@@ -1,5 +1,5 @@
 {#- The portal shell (UILayout/redesign/assets/registry.js:134-226) and the generic
-    dashboard, page and entity hosts. -#}
+    dashboard, page and entity hosts, plus the unknown-page state. -#}
 {%- import "primitives.html" as ui -%}
 {%- import "modal.html" as md -%}
 {%- set shell = v.shell -%}
@@ -58,6 +58,8 @@
 {%- if v.tabs %}<div class="tabs">{% for t in v.tabs %}<button type="button" class="tab{% if t.id == v.selected_tab %} on{% endif %}" data-href="{{ t.url }}">{{ t.label }}{% for c in t.counts %}{{ ui.slot(c) }}{% endfor %}</button>{% endfor %}</div>{% endif -%}
 </section>
 <div class="stack">{% for s in v.tab_panels %}{{ ui.slot(s) }}{% endfor %}</div>
+{%- elif screen == "missing" -%}
+<section class="panel"><div class="panel-body">{{ ui.state_block("error", v.title, v.detail, back=true) }}</div></section>
 {%- endif -%}
 </div></main>
 </div>

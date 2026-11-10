@@ -14,16 +14,16 @@ use axum_extra::extract::CookieJar;
 use controlplane::{ActionDecl, ActionPoint, ContributionDecl, EntityRef, InvokeOutcome, Layout, Manifest, PanelRequest, Point};
 use serde::Serialize;
 
-use crate::engine::actions::{self, BuildError, Flash, Invoked, Refusal};
+use crate::engine::actions::{self, BuildError, Flash, Invoked};
 use crate::engine::manifests::Snapshot;
 use crate::engine::panels::{self, PanelView};
 use crate::engine::roles::{self, Operator};
 use crate::engine::search;
 use crate::engine::Engine;
 use crate::render::{
-    self, ActionItem, ActionResultView, Crumb, DashboardView, EntityView, FlashView, MenuView, NavSectionView, NavView,
-    OperatorView, PageView, PanelInput, ScopeView, SearchGroupView, SearchHitView, SearchView, ShellView, SlotView,
-    TabView,
+    self, ActionItem, ActionResultView, Crumb, DashboardView, EntityView, FlashView, MenuView, MissingView,
+    NavSectionView, NavView, OperatorView, PageView, PanelInput, ScopeView, SearchGroupView, SearchHitView, SearchView,
+    ShellView, SlotView, TabView,
 };
 use crate::{see_other, AdminState};
 
@@ -165,14 +165,14 @@ fn action_item(
     operator: &Operator,
     csrf: &str,
     module: &str,
+    writes: bool,
     decl: &ActionDecl,
     entity: Option<&EntityRef>,
 ) -> ActionItem {
     let url = format!("/admin/_action/{}/{}", render::encode(module), render::encode(&decl.id));
-    let (enabled, hint) = match actions::admit(operator, decl) {
+    let (enabled, hint) = match actions::admit(operator, decl, writes) {
         Ok(()) => (true, None),
-        Err(Refusal::Denied) => (false, Some("Not permitted for your role")),
-        Err(Refusal::NotImplemented) => (false, Some("Not implemented yet")),
+        Err(refusal) => (false, Some(refusal.hint())),
     };
     let mut vals = BTreeMap::new();
     if !csrf.is_empty() {
@@ -189,7 +189,7 @@ fn action_item(
         hint,
         then: render::then_name(&decl.then),
         href: match &decl.then {
-            controlplane::Then::Link(link) => Some(actions::link_url(link)),
+            controlplane::Then::Link(link) => Some(render::link_url(link)),
             _ => None,
         },
         vals,
@@ -221,14 +221,14 @@ fn action_items(
     entity: Option<&EntityRef>,
     want: impl Fn(&ActionPoint) -> bool,
 ) -> Vec<ActionItem> {
-    let mut found: Vec<(&str, &ActionDecl)> = snapshot
+    let mut found: Vec<(&str, bool, &ActionDecl)> = snapshot
         .modules
         .iter()
-        .flat_map(|(m, r)| r.manifest.actions.iter().map(move |a| (m.as_str(), a)))
-        .filter(|(_, a)| want(&a.point))
+        .flat_map(|(m, r)| r.manifest.actions.iter().map(move |a| (m.as_str(), r.manifest.writes, a)))
+        .filter(|(_, _, a)| want(&a.point))
         .collect();
-    found.sort_by(|a, b| (a.1.order, a.0, &a.1.id).cmp(&(b.1.order, b.0, &b.1.id)));
-    found.into_iter().map(|(m, a)| action_item(&ctx.operator, &ctx.csrf, m, a, entity)).collect()
+    found.sort_by(|a, b| (a.2.order, a.0, &a.2.id).cmp(&(b.2.order, b.0, &b.2.id)));
+    found.into_iter().map(|(m, w, a)| action_item(&ctx.operator, &ctx.csrf, m, w, a, entity)).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -246,8 +246,12 @@ fn html(status: StatusCode, rendered: Result<String, minijinja::Error>) -> Respo
 }
 
 fn screen<V: Serialize>(p: &Portal, name: &str, view: &V) -> Response {
+    screen_with(p, StatusCode::OK, name, view)
+}
+
+fn screen_with<V: Serialize>(p: &Portal, status: StatusCode, name: &str, view: &V) -> Response {
     let ctx = minijinja::context! { screen => name, v => minijinja::Value::from_serialize(view) };
-    html(StatusCode::OK, render::page(&p.st.env, "shell.html", &ctx))
+    html(status, render::page(&p.st.env, "shell.html", &ctx))
 }
 
 fn toast(p: &Portal, status: StatusCode, text: String) -> Response {
@@ -257,6 +261,38 @@ fn toast(p: &Portal, status: StatusCode, text: String) -> Response {
 
 fn not_found(p: &Portal, what: &str) -> Response {
     toast(p, StatusCode::NOT_FOUND, format!("{what}: not found"))
+}
+
+fn is_htmx(headers: &HeaderMap) -> bool {
+    headers.get("hx-request").is_some_and(|v| v.as_bytes() == b"true")
+}
+
+struct Missing {
+    what: String,
+    title: &'static str,
+    detail: String,
+}
+
+/// A 404 for a full-page GET: the shell around the error state, or the toast when htmx
+/// asked.
+async fn missing_page(
+    p: &Portal,
+    ctx: &Ctx,
+    snapshot: &Snapshot,
+    headers: &HeaderMap,
+    query: &HashMap<String, String>,
+    miss: Missing,
+) -> Response {
+    if is_htmx(headers) {
+        return not_found(p, &miss.what);
+    }
+    let crumbs = vec![Crumb { label: miss.title.to_string(), href: None }];
+    let view = MissingView {
+        shell: shell(p, ctx, snapshot, query, None, crumbs).await,
+        title: miss.title.to_string(),
+        detail: miss.detail,
+    };
+    screen_with(p, StatusCode::NOT_FOUND, "missing", &view)
 }
 
 /// A redirect an htmx request follows itself (`HX-Redirect`), else a 303.
@@ -304,6 +340,7 @@ async fn dashboard(
 async fn page(
     State(p): State<Portal>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path((module, page_id)): Path<(String, String)>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
@@ -313,10 +350,20 @@ async fn page(
     };
     let snapshot = p.engine.snapshot();
     let Some((manifest, _)) = snapshot.route(&module) else {
-        return not_found(&p, &module);
+        let miss = Missing {
+            what: module.clone(),
+            title: "Unknown module",
+            detail: format!("No module serves “{module}”."),
+        };
+        return missing_page(&p, &ctx, &snapshot, &headers, &query, miss).await;
     };
     let Some(decl) = manifest.pages.iter().find(|pg| pg.id == page_id) else {
-        return not_found(&p, &format!("{module}/{page_id}"));
+        let miss = Missing {
+            what: format!("{module}/{page_id}"),
+            title: "Unknown page",
+            detail: format!("The {module} module declares no page “{page_id}”."),
+        };
+        return missing_page(&p, &ctx, &snapshot, &headers, &query, miss).await;
     };
     let tiles = matches!(decl.layout, Layout::Tiles(_));
     let ids: Vec<&Vec<String>> = match &decl.layout {
@@ -343,7 +390,7 @@ async fn page(
         .head_actions
         .iter()
         .filter_map(|id| manifest.actions.iter().find(|a| &a.id == id))
-        .map(|a| action_item(&ctx.operator, &ctx.csrf, &module, a, None))
+        .map(|a| action_item(&ctx.operator, &ctx.csrf, &module, manifest.writes, a, None))
         .collect();
     let entry = snapshot.nav.iter().find(|n| n.module == module && n.page == page_id);
     let sections = nav_sections(&snapshot);
@@ -367,6 +414,7 @@ async fn page(
 async fn entity(
     State(p): State<Portal>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path((kind, id)): Path<(String, String)>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
@@ -380,7 +428,12 @@ async fn entity(
         .iter()
         .find_map(|(m, r)| r.manifest.entity_kinds.iter().find(|k| k.kind == kind).map(|k| (m.clone(), k.clone())))
     else {
-        return not_found(&p, &format!("{kind}:{id}"));
+        let miss = Missing {
+            what: format!("{kind}:{id}"),
+            title: "Unknown entity kind",
+            detail: format!("No module declares the entity kind “{kind}”."),
+        };
+        return missing_page(&p, &ctx, &snapshot, &headers, &query, miss).await;
     };
     let entity = EntityRef { kind: kind.clone(), id: id.clone() };
     let op = &ctx.operator;
@@ -397,7 +450,7 @@ async fn entity(
     for (_, c) in &tab_decls {
         if let Point::EntityTab { tab, tab_label, .. } = &c.point {
             if tabs.iter().all(|t| &t.id != tab) {
-                let url = format!("{}?tab={}", actions::entity_url(&entity), render::encode(tab));
+                let url = format!("{}?tab={}", render::entity_url(&entity), render::encode(tab));
                 tabs.push(TabView { id: tab.clone(), label: tab_label.clone(), url, counts: Vec::new() });
             }
         }
@@ -482,8 +535,11 @@ async fn panel(
     url_query.extend(query.iter().map(|(k, v)| (k.clone(), v.clone())));
     let req = PanelRequest { module: module.clone(), contribution: contribution.clone(), entity: entity.clone(), params: query };
     let view: PanelView = panels::resolve(&p.engine, &snapshot, &ctx.operator, &module, decl, req).await;
-    let queue_actions: Vec<ActionItem> =
-        manifest.actions.iter().map(|a| action_item(&ctx.operator, &ctx.csrf, &module, a, None)).collect();
+    let queue_actions: Vec<ActionItem> = manifest
+        .actions
+        .iter()
+        .map(|a| action_item(&ctx.operator, &ctx.csrf, &module, manifest.writes, a, None))
+        .collect();
     let row_menu_kinds: Vec<String> = snapshot
         .modules
         .values()
@@ -560,7 +616,7 @@ async fn search_route(
                     title: h.title.clone(),
                     subtitle: h.subtitle.clone(),
                     badge: h.badge.clone(),
-                    href: actions::entity_url(&h.target),
+                    href: render::entity_url(&h.target),
                 })
                 .collect(),
             error: g.error,
@@ -568,13 +624,6 @@ async fn search_route(
         .collect();
     let view = SearchView::new(q, kind, groups);
     html(StatusCode::OK, render::fragment(&p.st.env, "primitives.html", "search", &view))
-}
-
-fn refusal_text(refusal: Refusal) -> &'static str {
-    match refusal {
-        Refusal::Denied => "Not permitted for your role",
-        Refusal::NotImplemented => "Not implemented yet",
-    }
 }
 
 /// `GET /admin/_action/{module}/{action}?entity=kind:id` — the action's modal.
@@ -593,11 +642,11 @@ async fn action_modal(
     let Some(found) = actions::find(&snapshot, &module, &action) else {
         return not_found(&p, &format!("{module}/{action}"));
     };
-    if let Err(refusal) = actions::admit(&ctx.operator, found.decl) {
-        return toast(&p, StatusCode::FORBIDDEN, refusal_text(refusal).to_string());
+    if let Err(refusal) = actions::admit(&ctx.operator, found.decl, found.writes) {
+        return toast(&p, StatusCode::FORBIDDEN, refusal.hint().to_string());
     }
     if let controlplane::Then::Link(link) = &found.decl.then {
-        return redirect(&headers, &actions::link_url(link));
+        return redirect(&headers, &render::link_url(link));
     }
     let entity = match query.get("entity") {
         None => None,
@@ -611,8 +660,8 @@ async fn action_modal(
     html(StatusCode::OK, render::fragment(&p.st.env, "modal.html", "modal", &view))
 }
 
-/// `POST /admin/_action/{module}/{action}`: CSRF → role → `implemented` → invoke →
-/// `admin.action` → outcome mapping (Ok is a 303 PRG carrying the flash token).
+/// `POST /admin/_action/{module}/{action}`: CSRF → role → `implemented` → `writes` →
+/// invoke → `admin.action` → outcome mapping (Ok is a 303 PRG carrying the flash token).
 async fn action_submit(
     State(p): State<Portal>,
     jar: CookieJar,
@@ -635,8 +684,8 @@ async fn action_submit(
     let Some(found) = actions::find(&snapshot, &module, &action) else {
         return not_found(&p, &format!("{module}/{action}"));
     };
-    if let Err(refusal) = actions::admit(&operator, found.decl) {
-        return toast(&p, StatusCode::FORBIDDEN, refusal_text(refusal).to_string());
+    if let Err(refusal) = actions::admit(&operator, found.decl, found.writes) {
+        return toast(&p, StatusCode::FORBIDDEN, refusal.hint().to_string());
     }
     if matches!(found.decl.then, controlplane::Then::Link(_)) {
         return toast(&p, StatusCode::BAD_REQUEST, format!("{module}/{action}: a link action has no invoke"));

@@ -443,6 +443,14 @@ pub(crate) struct EntityView {
     pub(crate) tab_panels: Vec<SlotView>,
 }
 
+/// A full page whose module, page or entity kind is unknown.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct MissingView {
+    pub(crate) shell: ShellView,
+    pub(crate) title: String,
+    pub(crate) detail: String,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct MenuView {
     pub(crate) entity: EntityRef,
@@ -762,7 +770,7 @@ fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
         q: ctx.param("q").unwrap_or_default().to_string(),
         search_url: with_param(ctx.path, ctx.query, "q", None),
         filters,
-        foot: t.page.next_cursor.is_some() || t.page.total.is_some(),
+        foot: t.page.next_cursor.is_some() || t.page.total.is_some_and(|n| n > 0 || !t.rows.is_empty()),
         total,
         size: t.page.size,
         next_url: t.page.next_cursor.as_deref().map(|c| with_param(ctx.path, ctx.query, "cursor", Some(c))),

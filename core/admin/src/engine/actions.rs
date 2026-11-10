@@ -1,5 +1,6 @@
-//! Actions: admission (role, `implemented`), the invoke call, the outcome → HTTP mapping,
-//! the `admin.action` record and the show-once flash through `admin.reveals`.
+//! Actions: admission (role, `implemented`, the module's `writes`), the invoke call, the
+//! outcome → HTTP mapping, the `admin.action` record and the show-once flash through
+//! `admin.reveals`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -14,7 +15,7 @@ use sqlx::PgPool;
 
 use super::manifests::Snapshot;
 use super::roles::{self, Operator};
-pub(crate) use crate::render::{encode, entity_url, link_url};
+use crate::render::{encode, entity_url, link_url};
 use crate::AdminState;
 
 /// Bound on one invoke round trip; the edge has no response deadline of its own
@@ -31,27 +32,45 @@ pub(crate) const FIELD_RETURN: &str = "_return";
 pub(crate) struct Found<'a> {
     pub(crate) decl: &'a ActionDecl,
     pub(crate) face: Arc<dyn ControlPlane>,
+    /// The owning module's `Manifest.writes`.
+    pub(crate) writes: bool,
 }
 
 pub(crate) fn find<'a>(snapshot: &'a Snapshot, module: &str, action: &str) -> Option<Found<'a>> {
     let (manifest, face) = snapshot.route(module)?;
     let decl = manifest.actions.iter().find(|a| a.id == action)?;
-    Some(Found { decl, face })
+    Some(Found { decl, face, writes: manifest.writes })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Refusal {
     Denied,
     NotImplemented,
+    ReadOnly,
 }
 
-/// Role first, then `implemented`; a refusal means no provider call.
-pub(crate) fn admit(operator: &Operator, decl: &ActionDecl) -> Result<(), Refusal> {
+impl Refusal {
+    /// The disabled control's hint and the refused request's message.
+    pub(crate) fn hint(self) -> &'static str {
+        match self {
+            Refusal::Denied => "Not permitted for your role",
+            Refusal::NotImplemented => "Not implemented yet",
+            Refusal::ReadOnly => "Read-only: this module does not accept edits from the portal",
+        }
+    }
+}
+
+/// Role first, then `implemented`, then the module's `writes`, which refuses every action
+/// but a link; a refusal means no provider call.
+pub(crate) fn admit(operator: &Operator, decl: &ActionDecl, writes: bool) -> Result<(), Refusal> {
     if !roles::allows(operator, decl.min_role) {
         return Err(Refusal::Denied);
     }
     if !decl.implemented {
         return Err(Refusal::NotImplemented);
+    }
+    if !writes && !matches!(decl.then, Then::Link(_)) {
+        return Err(Refusal::ReadOnly);
     }
     Ok(())
 }

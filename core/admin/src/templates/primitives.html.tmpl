@@ -115,10 +115,10 @@
 <div data-toast style="position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:90;background:var(--text);color:var(--bg);padding:8px 14px;border-radius:7px;box-shadow:var(--shadow-pop);font-weight:500;display:flex;gap:8px;align-items:center">{{ icon("check" if tone == "ok" else "info") }} {{ text }}</div>
 {%- endmacro %}
 
-{%- macro state_block(kind, title, detail="", icon_name="", compact=false, retry=false) -%}
+{%- macro state_block(kind, title, detail="", icon_name="", compact=false, retry=false, back=false) -%}
 {%- set cls = {"empty": "", "error": "err", "denied": "denied"}[kind] -%}
 {%- set ico = icon_name or {"empty": "inbox", "error": "alert", "denied": "lock"}[kind] -%}
-<div class="state {{ cls }}{% if compact %} compact{% endif %}"><div class="state-icon">{{ icon(ico) }}</div><div class="state-title">{{ title }}</div>{% if detail %}<div class="state-detail">{{ detail }}</div>{% endif %}{% if retry %}<div class="row"><button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} <span>Retry</span></button><a class="btn sm ghost" href="/admin#health">Service health</a></div>{% endif %}</div>
+<div class="state {{ cls }}{% if compact %} compact{% endif %}"><div class="state-icon">{{ icon(ico) }}</div><div class="state-title">{{ title }}</div>{% if detail %}<div class="state-detail">{{ detail }}</div>{% endif %}{% if retry %}<div class="row"><button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} <span>Retry</span></button><a class="btn sm ghost" href="/admin#health">Service health</a></div>{% elif back %}<div class="row"><a class="btn sm ghost" href="/admin">Back to dashboard</a></div>{% endif %}</div>
 {%- endmacro %}
 
 {%- macro loading_block(rows=4) -%}
@@ -154,12 +154,20 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 
 {# ---------------------------------------------------------------- primitives #}
 
-{%- macro table(t) -%}
+{%- macro table_toolbar(t) -%}
 {%- if t.toolbar %}<div class="tbl-toolbar">
 {%- if t.search_placeholder %}<form class="input-icon" hx-get="{{ t.search_url }}" hx-target="closest .slot" hx-swap="outerHTML">{{ icon("search") }}<input class="input" name="q" style="width:220px" placeholder="{{ t.search_placeholder }}" value="{{ t.q }}"></form>{% endif -%}
 {%- for f in t.filters %}<span class="filter-chip">{{ f.label }}: <b>{{ f.value }}</b><span class="x">{{ icon("x") }}</span></span>{% endfor -%}
 <span class="filter-chip add">{{ icon("plus") }} Filter</span><span class="grow"></span></div>
 {%- endif -%}
+{%- endmacro %}
+
+{%- macro table_foot(t) -%}
+{%- if t.foot %}<div class="tbl-foot"><span>{{ t.total }}</span><div class="pager"><select class="select" style="height:24px;font-size:12px">{% for n in [25, 50, 100] %}<option{% if n == t.size %} selected{% endif %}>{{ n }} / page</option>{% endfor %}</select><button type="button" class="btn sm icon" disabled>{{ icon("left") }}</button><button type="button" class="btn sm icon"{% if t.next_url %} hx-get="{{ t.next_url }}" hx-target="closest .slot" hx-swap="outerHTML"{% else %} disabled{% endif %}>{{ icon("right") }}</button></div></div>{% endif -%}
+{%- endmacro %}
+
+{%- macro table(t) -%}
+{{ table_toolbar(t) -}}
 <div class="tbl-wrap"><table class="tbl"><thead><tr>
 {%- if t.selectable %}<th class="cb"><input type="checkbox"></th>{% endif -%}
 {%- for c in t.columns %}<th class="{{ 'num' if c.num else '' }}">{{ c.label }}</th>{% endfor -%}
@@ -171,7 +179,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- if t.row_menu %}<td class="act">{% if r.menu_url %}<button type="button" class="btn sm icon ghost" aria-label="Row actions" data-menu-url="{{ r.menu_url }}">{{ icon("more") }}</button>{% endif %}</td>{% endif -%}
 </tr>{% endfor -%}
 </tbody></table></div>
-{%- if t.foot %}<div class="tbl-foot"><span>{{ t.total }}</span><div class="pager"><select class="select" style="height:24px;font-size:12px">{% for n in [25, 50, 100] %}<option{% if n == t.size %} selected{% endif %}>{{ n }} / page</option>{% endfor %}</select><button type="button" class="btn sm icon" disabled>{{ icon("left") }}</button><button type="button" class="btn sm icon"{% if t.next_url %} hx-get="{{ t.next_url }}" hx-target="closest .slot" hx-swap="outerHTML"{% else %} disabled{% endif %}>{{ icon("right") }}</button></div></div>{% endif -%}
+{{- table_foot(t) }}
 {%- endmacro %}
 
 {%- macro props(p) -%}
@@ -285,6 +293,9 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- if b and b.type == "Empty" %}{{ state_block("empty", b.title or "Nothing here yet", b.detail) }}
 {%- elif b and b.type == "Timeline" %}{{ state_block("empty", "No events", "Nothing recorded in this range.", "activity", true) }}
 {%- elif b and b.type == "Queue" %}{{ queue(b) }}
+{%- elif b and b.type == "Table" %}{{ table_toolbar(b) }}
+{%- if b.q %}{{ state_block("empty", "No results", "No rows match “" ~ b.q ~ "”.") }}{% else %}{{ state_block("empty", "Nothing here yet") }}{% endif -%}
+{{ table_foot(b) }}
 {%- else %}{{ state_block("empty", "Nothing here yet") }}
 {%- endif -%}
 {%- endmacro %}
@@ -329,7 +340,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 <span class="slot" data-panel-url="{{ p.url }}">{% if live and p.body and p.body.type == "Cell" %}{{ cell(p.body) }}{% endif %}</span>
 {%- else -%}
 {%- set ro = p.state == "readonly" -%}
-{%- set flush = (live and p.flush) or (p.state == "empty" and p.body and p.body.type == "Queue") -%}
+{%- set flush = (live and p.flush) or (p.state == "empty" and p.body and p.body.type in ["Queue", "Table"]) -%}
 <div class="slot" data-panel-url="{{ p.url }}"><section class="panel"><div class="panel-head">{% if p.icon %}<span class="muted">{{ icon(p.icon) }}</span>{% endif %}<span class="panel-title">{{ p.title }}</span>{% if ro %}<span class="ro-chip">{{ icon("lock") }} read-only</span>{% endif %}<div class="panel-tools">{% if live and p.body and p.body.type == "Chart" %}{{ chart_legend(p.body) }}{% endif %}</div></div>
 {%- if p.state == "stale" %}<div class="banner warn" title="{{ p.error or '' }}">{{ icon("clock") }} Showing cached data from {{ p.age or "a while" }} ago — {{ p.module }}-svc is lagging.<button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} <span>Refresh</span></button></div>
 {%- elif ro %}<div class="banner info">{{ icon("info") }} Read-only: the <b>{{ p.module }}</b> module does not accept remote edits from the portal.</div>
