@@ -1,7 +1,7 @@
 //! `eventctl` — the durable-event-log operator CLI (plan Step 5). Inspect
 //! subscriptions and lag, and drive the recovery verbs against the shared
-//! `asyncevents` schema over `DATABASE_URL`. All mutating logic lives in the lib
-//! ([`eventctl`]); this main is a hand-rolled arg dispatcher (the `tools/` style —
+//! `asyncevents` schema over `DATABASE_URL`. All mutating logic lives in
+//! `asyncevents::admin`; this main is a hand-rolled arg dispatcher (the `tools/` style —
 //! no clap) that prints the before/after transition every mutating verb returns, so
 //! a checkpoint is never advanced silently.
 //!
@@ -17,7 +17,10 @@
 use std::process::ExitCode;
 
 use anyhow::{anyhow, Result};
-use eventctl::{bump_generation, dsn, info, pause, resume, retire, retry, skip};
+use asyncevents::admin::{
+    bump_generation, info, pause, resume, retire, retry, skip, StateSnapshot,
+};
+use eventctl::dsn;
 use sqlx::PgPool;
 
 const USAGE: &str = "\
@@ -85,7 +88,7 @@ fn arg_id(args: &[String]) -> Result<String> {
 
 fn print_transition(
     verb: &str,
-    (before, after): (eventctl::StateSnapshot, eventctl::StateSnapshot),
+    (before, after): (StateSnapshot, StateSnapshot),
 ) -> Result<()> {
     println!("{verb} {}:", before.id);
     println!("  before: {}", before.describe());

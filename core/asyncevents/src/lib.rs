@@ -21,8 +21,9 @@
 //! [`bus::Transport`] over it; [`catalog`] materializes `SubscriptionSpec`s into
 //! rows (cursor discipline); [`worker`] the pull loop + failure state machine;
 //! [`wakeup`] the NOTIFY listener; [`plane_metrics`] the lag/frontier gauges;
-//! [`retention`] the checkpoint-coupled GC task.
+//! [`retention`] the checkpoint-coupled GC task; [`admin`] the operator operations.
 
+pub mod admin;
 mod catalog;
 mod plane_metrics;
 mod retention;

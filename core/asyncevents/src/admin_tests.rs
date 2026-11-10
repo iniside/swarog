@@ -8,7 +8,7 @@ use std::time::Duration;
 
 async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
-    asyncevents::Plane::new(pool.clone(), testdb::dsn())
+    crate::Plane::new(pool.clone(), testdb::dsn())
         .unwrap()
         .migrate()
         .await
@@ -36,7 +36,7 @@ async fn append_positions(pool: &PgPool, topic: &str, n: usize) -> Vec<(i64, Str
     let mut tx = pool.begin().await.unwrap();
     for i in 0..n {
         let payload = format!(r#"{{"n":{i}}}"#);
-        asyncevents::store::append(&mut tx, &contract, payload.as_bytes())
+        crate::store::append(&mut tx, &contract, payload.as_bytes())
             .await
             .unwrap();
     }
