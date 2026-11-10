@@ -1007,3 +1007,15 @@ The report lists the declared deviations.
 - **2026-11-10 (owner).** `Manifest.writes` is enforced by `LocalFace::invoke` (Step 4), and
   the conformance writer check derives writers from monolith manifests instead of a text
   scan and a hand list (Step 7).
+- **Step 7 (0f187959).**
+  - The monolith build and `PROVIDER_SLOT` collection is `checkmodules::monolith_manifests`,
+    shared by admincheck and conformancecheck.
+  - admincheck also reports a duplicate `Manifest.module` (`LocalFace::new` panics on it)
+    and a `PageDecl.head_actions` id that names no action of the module (the portal drops
+    it silently). Unique ids per module include `entity_kinds`.
+  - Entity-kind checks cover `Point::{EntityHeader, EntityTab, EntityTabCount,
+    EntitySummary, EntityListColumn}` and `ActionPoint::{RowAction, HeaderAction}`.
+    `PageHead` and `PanelTool` carry no entity kind.
+  - The conformance check is `control_plane_cap_findings`. Every `cp.invoke` CapCase in a
+    writer's entry must equal the `req.input.<value>` row's cap, and a writer with that
+    row not Validated is a finding.

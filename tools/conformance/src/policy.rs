@@ -55,7 +55,7 @@ pub fn entries() -> Vec<Entry> {
     ]
 }
 
-const CONTROL_PLANE_INVOKE_RATIONALE: &str = "cp.* is wire-only and served only to the portal; each writer's caps are proven by its own CONTROL_PLANE_WRITERS CapCase";
+const CONTROL_PLANE_INVOKE_RATIONALE: &str = "cp.* is wire-only and served only to the portal; every monolith manifest with writes: true must carry a cp.invoke input-byte-caps CapCase in its conformance entry";
 const CONTROL_PLANE_READ_RATIONALE: &str = "cp.panel and cp.search are read-only (no write path), wire-only, and called by the portal";
 
 pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
