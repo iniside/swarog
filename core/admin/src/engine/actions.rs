@@ -16,7 +16,8 @@ use super::manifests::Snapshot;
 use super::roles::{self, Operator};
 use crate::AdminState;
 
-/// Bound on one invoke round trip; the edge has no response deadline of its own.
+/// Bound on one invoke round trip; the edge has no response deadline of its own
+/// (`core/edge/src/client.rs:113-154`).
 pub(crate) const INVOKE_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Form fields the portal consumes; every other field is the action's `input`.
@@ -146,15 +147,69 @@ pub(crate) fn http_status(invoked: &Invoked) -> StatusCode {
     }
 }
 
-/// Appends the `admin.action` record of one invoke, whatever its outcome.
-pub(crate) async fn record(st: &AdminState, operator: &Operator, req: &InvokeRequest) -> anyhow::Result<()> {
+/// Upper bound, in bytes, of an `admin.action` `detail`.
+pub(crate) const DETAIL_MAX: usize = 1024;
+
+/// Appends the `admin.action` record of one invoke attempt, whatever its outcome.
+pub(crate) async fn record(
+    st: &AdminState,
+    operator: &Operator,
+    req: &InvokeRequest,
+    invoked: &Invoked,
+) -> anyhow::Result<()> {
     let evt = controlplane::events::AdminAction {
         actor: operator.login.clone(),
         action: format!("{}.{}", req.module, req.action),
         target: req.entity.as_ref().map(|e| format!("{}:{}", e.kind, e.id)).unwrap_or_default(),
-        detail: req.reason.clone().unwrap_or_default(),
+        detail: audit_detail(invoked, req.reason.as_deref()),
     };
     st.emit_action(&evt).await
+}
+
+/// The `admin.action` `detail` of one invoke attempt: the outcome, then ` — reason: <reason>`
+/// when the operator gave one, cut to [`DETAIL_MAX`] bytes on a char boundary (`…` marks a cut).
+pub(crate) fn audit_detail(invoked: &Invoked, reason: Option<&str>) -> String {
+    let mut detail = match invoked {
+        Invoked::Outcome(InvokeOutcome::Ok { .. }) => "ok".to_string(),
+        Invoked::TimedOut => format!("unknown: timeout after {}s", INVOKE_DEADLINE.as_secs()),
+        Invoked::Outcome(InvokeOutcome::FieldErrors(errors)) => {
+            let keys: Vec<&str> = errors.keys().map(String::as_str).collect();
+            format!("rejected: field errors {}", keys.join(","))
+        }
+        Invoked::Outcome(InvokeOutcome::Conflict { current_revision }) => {
+            format!("conflict: current revision {current_revision}")
+        }
+        Invoked::Failed(error) if error.status == opsapi::Status::Conflict => format!("conflict: {}", error.msg),
+        Invoked::Failed(error) if error.msg.is_empty() => format!("failed: {}", status_name(error.status)),
+        Invoked::Failed(error) => format!("failed: {} {}", status_name(error.status), error.msg),
+    };
+    if let Some(reason) = reason {
+        detail.push_str(" — reason: ");
+        detail.push_str(reason);
+    }
+    if detail.len() > DETAIL_MAX {
+        const MARK: &str = "…";
+        let mut cut = DETAIL_MAX - MARK.len();
+        while !detail.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        detail.truncate(cut);
+        detail.push_str(MARK);
+    }
+    detail
+}
+
+fn status_name(status: opsapi::Status) -> &'static str {
+    match status {
+        opsapi::Status::Ok => "ok",
+        opsapi::Status::NotFound => "not_found",
+        opsapi::Status::Forbidden => "forbidden",
+        opsapi::Status::Invalid => "invalid",
+        opsapi::Status::Unavailable => "unavailable",
+        opsapi::Status::Internal => "internal",
+        opsapi::Status::Unauthorized => "unauthorized",
+        opsapi::Status::Conflict => "conflict",
+    }
 }
 
 /// The PRG flash: an `Ok` outcome's message and show-once reveal.
@@ -237,10 +292,11 @@ pub(crate) fn link_url(link: &Link) -> String {
     }
 }
 
-/// A posted `_return` is honoured only as a same-portal path, never an open redirect.
+/// A posted `_return` is honoured only as a same-portal path of visible ASCII, never an
+/// open redirect, so it is always a valid `Location` value.
 pub(crate) fn safe_return(raw: &str) -> Option<&str> {
     let portal = raw == "/admin" || raw.starts_with("/admin/") || raw.starts_with("/admin?");
-    let clean = !raw.contains("//") && !raw.contains('\\') && !raw.chars().any(char::is_control);
+    let clean = raw.bytes().all(|b| b.is_ascii_graphic()) && !raw.contains("//") && !raw.contains('\\');
     (portal && clean).then_some(raw)
 }
 

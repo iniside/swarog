@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use controlplane::{ControlPlane, Manifest, Source, SECTIONS};
+use controlplane::{ControlPlane, Manifest, NavSection, Source};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -13,8 +13,7 @@ use super::Engine;
 
 pub(crate) const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 pub(crate) const SOURCE_TIMEOUT: Duration = Duration::from_secs(6);
-/// Grace for the refresh task to observe the stop signal before `Admin::stop` aborts it;
-/// with the login reaper's immediate abort-join it stays under `MODULE_STOP_GRACE_MS`.
+/// Grace for the refresh task to observe the stop signal before `Admin::stop` aborts it.
 pub(crate) const STOP_GRACE: Duration = Duration::from_secs(2);
 
 /// The section an entry naming no known section is placed in.
@@ -24,13 +23,6 @@ pub(crate) const FALLBACK_SECTION: &str = "platform";
 pub(crate) struct Routed {
     pub(crate) source: usize,
     pub(crate) manifest: Manifest,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
-pub(crate) struct Section {
-    pub(crate) id: String,
-    pub(crate) label: String,
-    pub(crate) order: i32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -53,19 +45,26 @@ pub(crate) struct Snapshot {
     last_good: Vec<Option<Vec<Manifest>>>,
     healthy: Vec<bool>,
     pub(crate) modules: BTreeMap<String, Routed>,
-    pub(crate) sections: Vec<Section>,
+    pub(crate) sections: Vec<NavSection>,
     pub(crate) nav: Vec<NavItem>,
 }
 
 impl Snapshot {
     pub(crate) fn empty() -> Snapshot {
-        Snapshot::seeded(Vec::new())
+        Snapshot::build(Vec::new(), Vec::new(), Vec::new())
     }
 
-    /// `sources` with no manifest fetched yet.
-    pub(crate) fn seeded(sources: Vec<Source>) -> Snapshot {
+    /// `sources` with only `sources[0]`, the local source, holding manifests (`local`);
+    /// no peer manifest is fetched yet.
+    pub(crate) fn seeded(sources: Vec<Source>, local: Option<Vec<Manifest>>) -> Snapshot {
         let n = sources.len();
-        Snapshot::build(sources, vec![None; n], vec![false; n])
+        let mut last_good = vec![None; n];
+        let mut healthy = vec![false; n];
+        if n > 0 {
+            healthy[0] = local.is_some();
+            last_good[0] = local;
+        }
+        Snapshot::build(sources, last_good, healthy)
     }
 
     fn build(sources: Vec<Source>, last_good: Vec<Option<Vec<Manifest>>>, healthy: Vec<bool>) -> Snapshot {
@@ -87,7 +86,11 @@ impl Snapshot {
                 );
             }
         }
-        let sections = merge_sections(modules.values().map(|r| &r.manifest));
+        let sections: Vec<NavSection> = controlplane::merge_sections(modules.values().map(|r| &r.manifest))
+            .sections
+            .into_iter()
+            .map(|merged| merged.section)
+            .collect();
         let rank: HashMap<&str, usize> =
             sections.iter().enumerate().map(|(i, s)| (s.id.as_str(), i)).collect();
         let mut nav: Vec<NavItem> = Vec::new();
@@ -120,32 +123,7 @@ impl Snapshot {
     }
 }
 
-/// Fixed `SECTIONS` win; among module declarations of one `id`, the lexicographically
-/// smallest module wins. Sorted by `(order, id)`.
-pub(crate) fn merge_sections<'a>(manifests: impl Iterator<Item = &'a Manifest>) -> Vec<Section> {
-    let mut by_id: BTreeMap<String, Section> = SECTIONS
-        .iter()
-        .map(|(id, label, order)| {
-            (id.to_string(), Section { id: id.to_string(), label: label.to_string(), order: *order })
-        })
-        .collect();
-    let mut declared: Vec<(&str, &controlplane::NavSection)> = manifests
-        .flat_map(|m| m.sections.iter().map(move |s| (m.module.as_str(), s)))
-        .collect();
-    declared.sort_by(|a, b| a.0.cmp(b.0));
-    for (_, section) in declared {
-        by_id.entry(section.id.clone()).or_insert_with(|| Section {
-            id: section.id.clone(),
-            label: section.label.clone(),
-            order: section.order,
-        });
-    }
-    let mut sections: Vec<Section> = by_id.into_values().collect();
-    sections.sort_by(|a, b| (a.order, &a.id).cmp(&(b.order, &b.id)));
-    sections
-}
-
-pub(crate) fn resolve_section<'a>(sections: &[Section], id: &'a str) -> &'a str {
+pub(crate) fn resolve_section<'a>(sections: &[NavSection], id: &'a str) -> &'a str {
     if sections.iter().any(|s| s.id == id) {
         id
     } else {

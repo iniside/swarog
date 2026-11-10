@@ -25,10 +25,12 @@ pub struct AdminAction {
 }
 
 /// The `admin.action` topic, emitted via `bus::emit_tx` by the admin portal. A login,
-/// lockout or logout event commits atomically with its session or lockout write; a
-/// control-plane invoke's event is appended in the portal's own transaction after the
-/// provider answers, so it is not atomic with that write, which for a remote provider
-/// commits in another process.
+/// lockout or logout event commits atomically with its session or lockout write. Every
+/// control-plane invoke attempt appends exactly one event, `action` = `{module}.{action}`,
+/// whose `detail` states the outcome (`ok`, `unknown: …`, `failed: …`, `rejected: …`,
+/// `conflict: …`) and then the operator's reason; it is appended in the portal's own
+/// transaction after the call returns, so it is not atomic with the provider's write,
+/// which for a remote provider commits in another process.
 ///
 /// `bus::define` is not `const`, so the descriptor is a `LazyLock` static; callers
 /// pass it as `&*controlplane::events::ACTION` (or just `&controlplane::events::ACTION`,

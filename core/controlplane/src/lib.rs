@@ -54,6 +54,58 @@ pub const SECTIONS: &[(&str, &str, i32)] = &[
     ("platform", "Platform", 40),
 ];
 
+/// One sidebar section after [`merge_sections`]; `owner` is the module whose declaration
+/// won, `None` for a fixed [`SECTIONS`] entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergedSection<'a> {
+    pub section: NavSection,
+    pub owner: Option<&'a str>,
+}
+
+/// A module's section declaration that did not win its id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LostSection<'a> {
+    pub module: &'a str,
+    pub declared: &'a NavSection,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SectionMerge<'a> {
+    /// Sorted by `(order, id)`.
+    pub sections: Vec<MergedSection<'a>>,
+    /// In merge order: by module name, then declaration order within a module.
+    pub lost: Vec<LostSection<'a>>,
+}
+
+/// Merges [`SECTIONS`] with every manifest's `sections`. A fixed section wins its id;
+/// otherwise the lexicographically smallest module wins, with its first declaration on a
+/// repeat within that module.
+pub fn merge_sections<'a>(manifests: impl IntoIterator<Item = &'a Manifest>) -> SectionMerge<'a> {
+    let mut by_id: BTreeMap<String, MergedSection<'a>> = SECTIONS
+        .iter()
+        .map(|(id, label, order)| {
+            let section = NavSection { id: id.to_string(), label: label.to_string(), order: *order };
+            (id.to_string(), MergedSection { section, owner: None })
+        })
+        .collect();
+    let mut declared: Vec<(&'a str, &'a NavSection)> = manifests
+        .into_iter()
+        .flat_map(|m| m.sections.iter().map(move |s| (m.module.as_str(), s)))
+        .collect();
+    declared.sort_by(|a, b| a.0.cmp(b.0));
+    let mut lost = Vec::new();
+    for (module, section) in declared {
+        if by_id.contains_key(&section.id) {
+            lost.push(LostSection { module, declared: section });
+        } else {
+            by_id.insert(section.id.clone(), MergedSection { section: section.clone(), owner: Some(module) });
+        }
+    }
+    let mut sections: Vec<MergedSection<'a>> = by_id.into_values().collect();
+    sections.sort_by(|a, b| (a.section.order, &a.section.id).cmp(&(b.section.order, &b.section.id)));
+    SectionMerge { sections, lost }
+}
+
 /// The default [`ContributionDecl::deadline_ms`].
 pub const DEFAULT_PANEL_DEADLINE_MS: u32 = 2000;
 /// The default [`SearchDecl::deadline_ms`].

@@ -168,27 +168,19 @@ fn nav_sections(manifests: &[Manifest], out: &mut Vec<String>) {
     }
 }
 
-/// Mirrors the portal's merge: a fixed section wins, then the declaration of the
-/// lexicographically smallest module (its first, on a repeat within that module).
 fn section_merge(manifests: &[Manifest], out: &mut Vec<String>) {
-    let mut declared: Vec<(&str, &controlplane::NavSection)> = manifests
-        .iter()
-        .flat_map(|m| m.sections.iter().map(move |s| (m.module.as_str(), s)))
-        .collect();
-    declared.sort_by(|a, b| a.0.cmp(b.0));
-    let mut winners: BTreeMap<&str, (&str, &str, i32)> = SECTIONS
-        .iter()
-        .map(|(id, label, order)| (*id, ("controlplane::SECTIONS", *label, *order)))
-        .collect();
-    for (module, s) in declared {
-        let winner = *winners
-            .entry(s.id.as_str())
-            .or_insert((module, s.label.as_str(), s.order));
-        let (by, label, order) = winner;
-        if (label, order) != (s.label.as_str(), s.order) {
+    let merge = controlplane::merge_sections(manifests);
+    let winners: BTreeMap<&str, &controlplane::MergedSection> =
+        merge.sections.iter().map(|m| (m.section.id.as_str(), m)).collect();
+    for lost in &merge.lost {
+        let s = lost.declared;
+        let Some(winner) = winners.get(s.id.as_str()) else { continue };
+        let (label, order) = (&winner.section.label, winner.section.order);
+        if (label, order) != (&s.label, s.order) {
+            let by = winner.owner.unwrap_or("controlplane::SECTIONS");
             out.push(format!(
-                "{module}: section {:?} is declared as ({:?}, {}) but {by} declares it as ({label:?}, {order})",
-                s.id, s.label, s.order
+                "{}: section {:?} is declared as ({:?}, {}) but {by} declares it as ({label:?}, {order})",
+                lost.module, s.id, s.label, s.order
             ));
         }
     }

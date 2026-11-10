@@ -1019,3 +1019,4 @@ The report lists the declared deviations.
   - The conformance check is `control_plane_cap_findings`. Every `cp.invoke` CapCase in a
     writer's entry must equal the `req.input.<value>` row's cap, and a writer with that
     row not Validated is a finding.
+- Step 6 review fix: admin.action is emitted for every invoke attempt; `detail` states the outcome (`ok` / `unknown: timeout…` / `failed: …` / `rejected: …` / `conflict: …`) plus the operator reason (owner, 2026-11-10); section merge lives in `controlplane`.

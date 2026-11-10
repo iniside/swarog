@@ -19,7 +19,7 @@ use controlplane::{
 use serde::Serialize;
 
 use crate::engine::actions::{self, BuildError, Flash, Invoked, Refusal};
-use crate::engine::manifests::{NavItem, Section, Snapshot};
+use crate::engine::manifests::{NavItem, Snapshot};
 use crate::engine::panels::{self, PanelView};
 use crate::engine::roles::{self, Operator};
 use crate::engine::search::{self, SearchGroup};
@@ -59,7 +59,7 @@ pub(crate) struct OperatorView {
 pub(crate) struct ShellView {
     pub(crate) operator: OperatorView,
     pub(crate) csrf: String,
-    pub(crate) sections: Vec<Section>,
+    pub(crate) sections: Vec<controlplane::NavSection>,
     pub(crate) nav: Vec<NavItem>,
     pub(crate) flash: Option<Flash>,
 }
@@ -661,12 +661,14 @@ async fn action_submit(
         }
     };
     let invoked = actions::invoke(found.face.as_ref(), req.clone()).await;
-    if let Err(e) = actions::record(&p.st, &operator, &req).await {
-        tracing::error!(err = %e, module = %module, action = %action, "admin.action append failed");
-        let applied = matches!(invoked, Invoked::Outcome(InvokeOutcome::Ok { .. }));
-        let msg = if applied { "action applied but audit append failed" } else { "audit append failed" };
-        result.error = Some(msg.to_string());
-        return render_result(StatusCode::INTERNAL_SERVER_ERROR, &result);
+    if let Err(e) = actions::record(&p.st, &operator, &req, &invoked).await {
+        if matches!(invoked, Invoked::Outcome(InvokeOutcome::Ok { .. })) {
+            tracing::error!(err = %e, module = %module, action = %action, "admin.action append failed");
+            result.error = Some("action applied but audit append failed".to_string());
+            return render_result(StatusCode::INTERNAL_SERVER_ERROR, &result);
+        }
+        // A 500 would mask the outcome the operator must act on; only an applied action escalates.
+        tracing::warn!(err = %e, module = %module, action = %action, "admin.action append failed");
     }
     let status = actions::http_status(&invoked);
     match invoked {

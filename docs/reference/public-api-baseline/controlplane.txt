@@ -1115,6 +1115,26 @@ impl core::marker::Unpin for controlplane::LocalFace
 impl core::marker::UnsafeUnpin for controlplane::LocalFace
 impl !core::panic::unwind_safe::RefUnwindSafe for controlplane::LocalFace
 impl !core::panic::unwind_safe::UnwindSafe for controlplane::LocalFace
+pub struct controlplane::LostSection<'a>
+pub controlplane::LostSection::declared: &'a controlplane::NavSection
+pub controlplane::LostSection::module: &'a str
+impl<'a> core::clone::Clone for controlplane::LostSection<'a>
+pub fn controlplane::LostSection<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for controlplane::LostSection<'a>
+impl<'a> core::cmp::PartialEq for controlplane::LostSection<'a>
+pub fn controlplane::LostSection<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for controlplane::LostSection<'a>
+pub fn controlplane::LostSection<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::Copy for controlplane::LostSection<'a>
+impl<'a> core::marker::StructuralPartialEq for controlplane::LostSection<'a>
+impl<'a> core::marker::Forget for controlplane::LostSection<'a>
+impl<'a> core::marker::Freeze for controlplane::LostSection<'a>
+impl<'a> core::marker::Send for controlplane::LostSection<'a>
+impl<'a> core::marker::Sync for controlplane::LostSection<'a>
+impl<'a> core::marker::Unpin for controlplane::LostSection<'a>
+impl<'a> core::marker::UnsafeUnpin for controlplane::LostSection<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for controlplane::LostSection<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for controlplane::LostSection<'a>
 pub struct controlplane::Manifest
 pub controlplane::Manifest::actions: alloc::vec::Vec<controlplane::ActionDecl>
 pub controlplane::Manifest::contributions: alloc::vec::Vec<controlplane::ContributionDecl>
@@ -1147,6 +1167,25 @@ impl core::marker::Unpin for controlplane::Manifest
 impl core::marker::UnsafeUnpin for controlplane::Manifest
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Manifest
 impl core::panic::unwind_safe::UnwindSafe for controlplane::Manifest
+pub struct controlplane::MergedSection<'a>
+pub controlplane::MergedSection::owner: core::option::Option<&'a str>
+pub controlplane::MergedSection::section: controlplane::NavSection
+impl<'a> core::clone::Clone for controlplane::MergedSection<'a>
+pub fn controlplane::MergedSection<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for controlplane::MergedSection<'a>
+impl<'a> core::cmp::PartialEq for controlplane::MergedSection<'a>
+pub fn controlplane::MergedSection<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for controlplane::MergedSection<'a>
+pub fn controlplane::MergedSection<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::StructuralPartialEq for controlplane::MergedSection<'a>
+impl<'a> core::marker::Forget for controlplane::MergedSection<'a>
+impl<'a> core::marker::Freeze for controlplane::MergedSection<'a>
+impl<'a> core::marker::Send for controlplane::MergedSection<'a>
+impl<'a> core::marker::Sync for controlplane::MergedSection<'a>
+impl<'a> core::marker::Unpin for controlplane::MergedSection<'a>
+impl<'a> core::marker::UnsafeUnpin for controlplane::MergedSection<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for controlplane::MergedSection<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for controlplane::MergedSection<'a>
 pub struct controlplane::NavEntry
 pub controlplane::NavEntry::counter: core::option::Option<alloc::string::String>
 pub controlplane::NavEntry::icon: alloc::string::String
@@ -1475,6 +1514,25 @@ impl core::marker::Unpin for controlplane::SecretReveal
 impl core::marker::UnsafeUnpin for controlplane::SecretReveal
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::SecretReveal
 impl core::panic::unwind_safe::UnwindSafe for controlplane::SecretReveal
+pub struct controlplane::SectionMerge<'a>
+pub controlplane::SectionMerge::lost: alloc::vec::Vec<controlplane::LostSection<'a>>
+pub controlplane::SectionMerge::sections: alloc::vec::Vec<controlplane::MergedSection<'a>>
+impl<'a> core::clone::Clone for controlplane::SectionMerge<'a>
+pub fn controlplane::SectionMerge<'a>::clone(&self) -> Self
+impl<'a> core::cmp::Eq for controlplane::SectionMerge<'a>
+impl<'a> core::cmp::PartialEq for controlplane::SectionMerge<'a>
+pub fn controlplane::SectionMerge<'a>::eq(&self, &Self) -> bool
+impl<'a> core::fmt::Debug for controlplane::SectionMerge<'a>
+pub fn controlplane::SectionMerge<'a>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<'a> core::marker::StructuralPartialEq for controlplane::SectionMerge<'a>
+impl<'a> core::marker::Forget for controlplane::SectionMerge<'a>
+impl<'a> core::marker::Freeze for controlplane::SectionMerge<'a>
+impl<'a> core::marker::Send for controlplane::SectionMerge<'a>
+impl<'a> core::marker::Sync for controlplane::SectionMerge<'a>
+impl<'a> core::marker::Unpin for controlplane::SectionMerge<'a>
+impl<'a> core::marker::UnsafeUnpin for controlplane::SectionMerge<'a>
+impl<'a> core::panic::unwind_safe::RefUnwindSafe for controlplane::SectionMerge<'a>
+impl<'a> core::panic::unwind_safe::UnwindSafe for controlplane::SectionMerge<'a>
 pub struct controlplane::Series
 pub controlplane::Series::axis: controlplane::Axis
 pub controlplane::Series::label: alloc::string::String
@@ -1681,3 +1739,4 @@ pub fn controlplane::Provider::invoke<'life0, 'async_trait>(&'life0 self, contro
 pub fn controlplane::Provider::manifest(&self) -> controlplane::Manifest
 pub fn controlplane::Provider::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn controlplane::Provider::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::merge_sections<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a controlplane::Manifest>) -> controlplane::SectionMerge<'a>

@@ -18,8 +18,9 @@
 //!
 //! Durable audit trail: `admin.action` (`controlplane::events::ACTION`) is emitted via
 //! `emit_tx` for `login-succeeded` / `login-locked` (user-row threshold) / `logout`,
-//! each atomic with its own session or lockout write, and for every control-plane invoke as
-//! `{module}.{action}`, in the portal's own transaction after the provider answered.
+//! each atomic with its own session or lockout write, and once per control-plane invoke
+//! attempt as `{module}.{action}` with a `detail` stating the outcome, in the portal's own
+//! transaction after the call returns, so never atomic with the provider's write.
 //!
 //! `ADMIN_OPEN=1` (explicit-only dev knob, loud warn) disables sessions AND CSRF —
 //! a deliberately open local portal. Zero admin users is a WARNED boot, not a
@@ -412,7 +413,8 @@ impl Module for Admin {
             .get()
             .ok_or_else(|| anyhow::anyhow!("admin.init must run before start"))?
             .clone();
-        engine.install(engine::manifests::Snapshot::seeded(engine::sources::collect(ctx)));
+        let (sources, local) = engine::sources::collect(ctx).await;
+        engine.install(engine::manifests::Snapshot::seeded(sources, local));
 
         tokio::task::spawn_blocking(|| {
             std::sync::LazyLock::force(&DUMMY_HASH);
@@ -607,8 +609,9 @@ impl AdminState {
         httpmw::client_ip(peer.ip(), xff, xri, &self.trusted)
     }
 
-    /// Appends one `admin.action` event in its own small tx — for an action whose write,
-    /// if any, is committed by its provider, possibly in another process.
+    /// Appends the one `admin.action` event of a control-plane invoke attempt, whose
+    /// `detail` states the outcome, in its own small tx: never atomic with the provider's
+    /// write, which may commit in another process.
     async fn emit_action(&self, evt: &controlplane::events::AdminAction) -> anyhow::Result<()> {
         let mut tx = self.pool.begin().await?;
         self.bus
@@ -854,7 +857,7 @@ fn clear_session_cookie() -> HeaderValue {
 fn see_other(loc: &str) -> Response {
     (
         StatusCode::SEE_OTHER,
-        [(header::LOCATION, HeaderValue::from_str(loc).unwrap())],
+        [(header::LOCATION, HeaderValue::from_str(loc).unwrap_or_else(|_| HeaderValue::from_static("/admin")))],
     )
         .into_response()
 }
