@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use apikeysapi::KeyRecord;
-use base64::Engine as _;
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message as ClientMessage;
