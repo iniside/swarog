@@ -226,9 +226,7 @@ fn observe_profile(profile: &DeploymentProfile) -> anyhow::Result<Vec<ProcessRou
         // `app::run` SILENTLY DROPS an edge-less process's contributions: modelling one
         // of them as edge-serving would let a face landed there feed the SERVE-PARITY
         // union and pass, while the split front 503s. `cmd/server/src/main.rs` (the
-        // monolith — where applying every co-hosted `admin.adminData` to one Server
-        // would also manufacture a duplicate-method panic no real process sees) and
-        // `cmd/admin-svc/src/main.rs` (a pure aggregator: DB, stubs, no edge of its own).
+        // monolith) and `cmd/admin-svc/src/main.rs`.
         let hosts_internal_edge = process_id != "server" && process_id != "admin-svc";
         let edge_methods: BTreeSet<String> = if hosts_internal_edge {
             let mut server = edge::Server::new();

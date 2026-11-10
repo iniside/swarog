@@ -5,8 +5,7 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# The mail fortress process. Hosts mail and stands up one shared QUIC edge server
-# (EDGE_ADDR) so admin-svc can fetch/submit its admin page over the mTLS edge. mail owns
+# The mail fortress process. Hosts mail. mail owns
 # schema `mail` and a durable subscription (`mail.send-requested.v1`), so it needs a DB
 # pool and thus hosts the durable-events plane (app-owned, DB => plane). It dials NO peer:
 # `requires()` is empty, so it hosts no `remote::Stub` beyond what `metrics` brings. It

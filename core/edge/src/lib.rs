@@ -70,8 +70,7 @@ pub enum Error {
     /// The peer's dispatch table has no handler for the requested method: detected by
     /// [`Client`] via the response envelope's typed [`ResponseCode::UnknownMethod`]
     /// field (NOT the error text — see [`UNKNOWN_METHOD_PREFIX`]). Typed apart from
-    /// [`Error::Remote`] so consumers (the admin fan-out's "peer has no admin surface"
-    /// probe) never string-sniff, and so the opsapi mapping can classify it as
+    /// [`Error::Remote`] so consumers never string-sniff, and so the opsapi mapping can classify it as
     /// non-retryable. Carries the peer's full error string (still sentinel-prefixed
     /// for readability), displayed verbatim. Internal plane only — the player plane
     /// has no method table and never produces this.

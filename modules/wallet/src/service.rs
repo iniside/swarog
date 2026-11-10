@@ -46,7 +46,7 @@ pub(crate) fn currency_code_within_cap(code: &str) -> bool {
 /// Byte caps on the catalog's operator-supplied text, and the ceiling on its `decimals`.
 /// Module-private rather than `walletapi` on purpose: no wire method carries these fields —
 /// `Movement` is the whole caller-facing input shape — so publishing them would advertise a
-/// caller obligation that does not exist. They are the admin form's policy, mirrored by the
+/// caller obligation that does not exist. They are mirrored by the
 /// `currencies_*` column CHECKs.
 pub(crate) const MAX_CURRENCY_DISPLAY_NAME_BYTES: usize = 64;
 pub(crate) const MAX_CURRENCY_KIND_BYTES: usize = 32;

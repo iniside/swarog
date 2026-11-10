@@ -51,7 +51,7 @@ pub fn modules(
         Box::new(characters::Characters::new()), // player characters; owns schema "characters"
         Box::new(inventory::Inventory::new()),   // owner-scoped inventories; depends on characters + config
         Box::new(accounts::Accounts::new()),     // player identity: sessions + dev/epic auth; owns schema "accounts"
-        Box::new(admin::Admin::new()),           // GameOps portal at /admin; renders LOCAL contributions (all providers in-process)
+        Box::new(admin::Admin::new()),
         Box::new(audit::Audit::new()),           // append-only event ledger; owns schema "audit", records durable events in-process
         Box::new(scheduler::Scheduler::new()),   // data-driven durable event source; owns schema "scheduler", emits scheduler.fired
         Box::new(rating::Rating::new()),         // in-memory MMR; provides "rating.mmr_reader", reacts to match.finished (+15/-15)

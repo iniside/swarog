@@ -62,12 +62,10 @@ pub(crate) struct CatalogEntry {
     pub(crate) created_at: String,
 }
 
-/// What [`Store::write_currency_tx`] does with a code the catalog already holds — the ONE
-/// place the seed's intent and the admin form's intent are decided apart. The clause is a
-/// fixed string per variant, never caller data.
+/// What [`Store::write_currency_tx`] does with a code the catalog already holds. The clause
+/// is a fixed string per variant, never caller data.
 #[derive(Clone, Copy)]
 pub(crate) enum OnConflict {
-    /// The ADMIN form: an operator submitting a currency means to change it.
     Overwrite,
     /// The dev seed: guarantee the code EXISTS, leave an operator's edits alone.
     Skip,
@@ -501,12 +499,8 @@ impl Store {
         }
     }
 
-    /// The ONE catalog writer; `on_conflict` is the only thing the two callers decide
-    /// differently, so a new catalog column cannot reach one intent and miss the other.
-    ///
     /// An over-long `code`/`display_name`/`kind` or an out-of-range `decimals` is one of the
-    /// named `currencies_*` CHECKs as 23514, which the admin caller maps to a 400
-    /// (`admin::catalog_rejection`) because it is operator input. None can be mistaken for
+    /// named `currencies_*` CHECKs as 23514. None can be mistaken for
     /// insufficient funds: `is_out_of_range` is constraint-named to `balances_amount_check`.
     pub(crate) async fn write_currency_tx(
         &self,
