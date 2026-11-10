@@ -2,7 +2,7 @@
 pub mod controlplane
 pub mod controlplane::control_plane_rpc
 pub struct controlplane::control_plane_rpc::InvokeRequest
-pub controlplane::control_plane_rpc::InvokeRequest::req: controlplane::InvokeRequest
+pub controlplane::control_plane_rpc::InvokeRequest::req: controlplane::InvokeCall
 impl serde_core::ser::Serialize for controlplane::control_plane_rpc::InvokeRequest
 pub fn controlplane::control_plane_rpc::InvokeRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for controlplane::control_plane_rpc::InvokeRequest
@@ -61,7 +61,7 @@ impl core::marker::UnsafeUnpin for controlplane::control_plane_rpc::ManifestsRes
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::control_plane_rpc::ManifestsResponse
 impl core::panic::unwind_safe::UnwindSafe for controlplane::control_plane_rpc::ManifestsResponse
 pub struct controlplane::control_plane_rpc::PanelRequest
-pub controlplane::control_plane_rpc::PanelRequest::req: controlplane::PanelRequest
+pub controlplane::control_plane_rpc::PanelRequest::req: controlplane::PanelQuery
 impl serde_core::ser::Serialize for controlplane::control_plane_rpc::PanelRequest
 pub fn controlplane::control_plane_rpc::PanelRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for controlplane::control_plane_rpc::PanelRequest
@@ -91,7 +91,7 @@ impl core::marker::UnsafeUnpin for controlplane::control_plane_rpc::PanelRespons
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::control_plane_rpc::PanelResponse
 impl core::panic::unwind_safe::UnwindSafe for controlplane::control_plane_rpc::PanelResponse
 pub struct controlplane::control_plane_rpc::SearchRequest
-pub controlplane::control_plane_rpc::SearchRequest::req: controlplane::SearchRequest
+pub controlplane::control_plane_rpc::SearchRequest::req: controlplane::SearchQuery
 impl serde_core::ser::Serialize for controlplane::control_plane_rpc::SearchRequest
 pub fn controlplane::control_plane_rpc::SearchRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
 impl<'de> serde_core::de::Deserialize<'de> for controlplane::control_plane_rpc::SearchRequest
@@ -1044,34 +1044,34 @@ impl core::marker::Unpin for controlplane::FormSpec
 impl core::marker::UnsafeUnpin for controlplane::FormSpec
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::FormSpec
 impl core::panic::unwind_safe::UnwindSafe for controlplane::FormSpec
-pub struct controlplane::InvokeRequest
-pub controlplane::InvokeRequest::action: alloc::string::String
-pub controlplane::InvokeRequest::entity: core::option::Option<controlplane::EntityRef>
-pub controlplane::InvokeRequest::expected_revision: core::option::Option<u64>
-pub controlplane::InvokeRequest::input: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-pub controlplane::InvokeRequest::module: alloc::string::String
-pub controlplane::InvokeRequest::operator: alloc::string::String
-pub controlplane::InvokeRequest::reason: core::option::Option<alloc::string::String>
-impl core::clone::Clone for controlplane::InvokeRequest
-pub fn controlplane::InvokeRequest::clone(&self) -> Self
-impl core::cmp::Eq for controlplane::InvokeRequest
-impl core::cmp::PartialEq for controlplane::InvokeRequest
-pub fn controlplane::InvokeRequest::eq(&self, &Self) -> bool
-impl core::fmt::Debug for controlplane::InvokeRequest
-pub fn controlplane::InvokeRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for controlplane::InvokeRequest
-impl serde_core::ser::Serialize for controlplane::InvokeRequest
-pub fn controlplane::InvokeRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for controlplane::InvokeRequest
-pub fn controlplane::InvokeRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Forget for controlplane::InvokeRequest
-impl core::marker::Freeze for controlplane::InvokeRequest
-impl core::marker::Send for controlplane::InvokeRequest
-impl core::marker::Sync for controlplane::InvokeRequest
-impl core::marker::Unpin for controlplane::InvokeRequest
-impl core::marker::UnsafeUnpin for controlplane::InvokeRequest
-impl core::panic::unwind_safe::RefUnwindSafe for controlplane::InvokeRequest
-impl core::panic::unwind_safe::UnwindSafe for controlplane::InvokeRequest
+pub struct controlplane::InvokeCall
+pub controlplane::InvokeCall::action: alloc::string::String
+pub controlplane::InvokeCall::entity: core::option::Option<controlplane::EntityRef>
+pub controlplane::InvokeCall::expected_revision: core::option::Option<u64>
+pub controlplane::InvokeCall::input: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub controlplane::InvokeCall::module: alloc::string::String
+pub controlplane::InvokeCall::operator: alloc::string::String
+pub controlplane::InvokeCall::reason: core::option::Option<alloc::string::String>
+impl core::clone::Clone for controlplane::InvokeCall
+pub fn controlplane::InvokeCall::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::InvokeCall
+impl core::cmp::PartialEq for controlplane::InvokeCall
+pub fn controlplane::InvokeCall::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::InvokeCall
+pub fn controlplane::InvokeCall::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::InvokeCall
+impl serde_core::ser::Serialize for controlplane::InvokeCall
+pub fn controlplane::InvokeCall::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::InvokeCall
+pub fn controlplane::InvokeCall::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::InvokeCall
+impl core::marker::Freeze for controlplane::InvokeCall
+impl core::marker::Send for controlplane::InvokeCall
+impl core::marker::Sync for controlplane::InvokeCall
+impl core::marker::Unpin for controlplane::InvokeCall
+impl core::marker::UnsafeUnpin for controlplane::InvokeCall
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::InvokeCall
+impl core::panic::unwind_safe::UnwindSafe for controlplane::InvokeCall
 pub struct controlplane::KpiTile
 pub controlplane::KpiTile::capacity: core::option::Option<(f64, f64)>
 pub controlplane::KpiTile::delta: core::option::Option<controlplane::Delta>
@@ -1103,10 +1103,10 @@ pub struct controlplane::LocalFace
 impl controlplane::LocalFace
 pub fn controlplane::LocalFace::new(alloc::vec::Vec<alloc::rcs::arc::Arc<dyn controlplane::Provider>>) -> Self
 impl controlplane::ControlPlane for controlplane::LocalFace
-pub fn controlplane::LocalFace::invoke<'life0, 'async_trait>(&'life0 self, controlplane::InvokeRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::InvokeOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::LocalFace::invoke<'life0, 'async_trait>(&'life0 self, controlplane::InvokeCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::InvokeOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn controlplane::LocalFace::manifests<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::Manifest>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn controlplane::LocalFace::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn controlplane::LocalFace::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::LocalFace::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelQuery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::LocalFace::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchQuery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl core::marker::Forget for controlplane::LocalFace
 impl core::marker::Freeze for controlplane::LocalFace
 impl core::marker::Send for controlplane::LocalFace
@@ -1288,31 +1288,31 @@ impl core::marker::Unpin for controlplane::PageInfo
 impl core::marker::UnsafeUnpin for controlplane::PageInfo
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::PageInfo
 impl core::panic::unwind_safe::UnwindSafe for controlplane::PageInfo
-pub struct controlplane::PanelRequest
-pub controlplane::PanelRequest::contribution: alloc::string::String
-pub controlplane::PanelRequest::entity: core::option::Option<controlplane::EntityRef>
-pub controlplane::PanelRequest::module: alloc::string::String
-pub controlplane::PanelRequest::params: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-impl core::clone::Clone for controlplane::PanelRequest
-pub fn controlplane::PanelRequest::clone(&self) -> Self
-impl core::cmp::Eq for controlplane::PanelRequest
-impl core::cmp::PartialEq for controlplane::PanelRequest
-pub fn controlplane::PanelRequest::eq(&self, &Self) -> bool
-impl core::fmt::Debug for controlplane::PanelRequest
-pub fn controlplane::PanelRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for controlplane::PanelRequest
-impl serde_core::ser::Serialize for controlplane::PanelRequest
-pub fn controlplane::PanelRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for controlplane::PanelRequest
-pub fn controlplane::PanelRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Forget for controlplane::PanelRequest
-impl core::marker::Freeze for controlplane::PanelRequest
-impl core::marker::Send for controlplane::PanelRequest
-impl core::marker::Sync for controlplane::PanelRequest
-impl core::marker::Unpin for controlplane::PanelRequest
-impl core::marker::UnsafeUnpin for controlplane::PanelRequest
-impl core::panic::unwind_safe::RefUnwindSafe for controlplane::PanelRequest
-impl core::panic::unwind_safe::UnwindSafe for controlplane::PanelRequest
+pub struct controlplane::PanelQuery
+pub controlplane::PanelQuery::contribution: alloc::string::String
+pub controlplane::PanelQuery::entity: core::option::Option<controlplane::EntityRef>
+pub controlplane::PanelQuery::module: alloc::string::String
+pub controlplane::PanelQuery::params: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+impl core::clone::Clone for controlplane::PanelQuery
+pub fn controlplane::PanelQuery::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::PanelQuery
+impl core::cmp::PartialEq for controlplane::PanelQuery
+pub fn controlplane::PanelQuery::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::PanelQuery
+pub fn controlplane::PanelQuery::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::PanelQuery
+impl serde_core::ser::Serialize for controlplane::PanelQuery
+pub fn controlplane::PanelQuery::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::PanelQuery
+pub fn controlplane::PanelQuery::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::PanelQuery
+impl core::marker::Freeze for controlplane::PanelQuery
+impl core::marker::Send for controlplane::PanelQuery
+impl core::marker::Sync for controlplane::PanelQuery
+impl core::marker::Unpin for controlplane::PanelQuery
+impl core::marker::UnsafeUnpin for controlplane::PanelQuery
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::PanelQuery
+impl core::panic::unwind_safe::UnwindSafe for controlplane::PanelQuery
 pub struct controlplane::PropertyList
 pub controlplane::PropertyList::columns: u8
 pub controlplane::PropertyList::items: alloc::vec::Vec<(alloc::string::String, controlplane::Cell)>
@@ -1464,31 +1464,31 @@ impl core::marker::Unpin for controlplane::SearchHit
 impl core::marker::UnsafeUnpin for controlplane::SearchHit
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::SearchHit
 impl core::panic::unwind_safe::UnwindSafe for controlplane::SearchHit
-pub struct controlplane::SearchRequest
-pub controlplane::SearchRequest::kind: alloc::string::String
-pub controlplane::SearchRequest::limit: u32
-pub controlplane::SearchRequest::module: alloc::string::String
-pub controlplane::SearchRequest::q: alloc::string::String
-impl core::clone::Clone for controlplane::SearchRequest
-pub fn controlplane::SearchRequest::clone(&self) -> Self
-impl core::cmp::Eq for controlplane::SearchRequest
-impl core::cmp::PartialEq for controlplane::SearchRequest
-pub fn controlplane::SearchRequest::eq(&self, &Self) -> bool
-impl core::fmt::Debug for controlplane::SearchRequest
-pub fn controlplane::SearchRequest::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::StructuralPartialEq for controlplane::SearchRequest
-impl serde_core::ser::Serialize for controlplane::SearchRequest
-pub fn controlplane::SearchRequest::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for controlplane::SearchRequest
-pub fn controlplane::SearchRequest::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Forget for controlplane::SearchRequest
-impl core::marker::Freeze for controlplane::SearchRequest
-impl core::marker::Send for controlplane::SearchRequest
-impl core::marker::Sync for controlplane::SearchRequest
-impl core::marker::Unpin for controlplane::SearchRequest
-impl core::marker::UnsafeUnpin for controlplane::SearchRequest
-impl core::panic::unwind_safe::RefUnwindSafe for controlplane::SearchRequest
-impl core::panic::unwind_safe::UnwindSafe for controlplane::SearchRequest
+pub struct controlplane::SearchQuery
+pub controlplane::SearchQuery::kind: alloc::string::String
+pub controlplane::SearchQuery::limit: u32
+pub controlplane::SearchQuery::module: alloc::string::String
+pub controlplane::SearchQuery::q: alloc::string::String
+impl core::clone::Clone for controlplane::SearchQuery
+pub fn controlplane::SearchQuery::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::SearchQuery
+impl core::cmp::PartialEq for controlplane::SearchQuery
+pub fn controlplane::SearchQuery::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::SearchQuery
+pub fn controlplane::SearchQuery::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::SearchQuery
+impl serde_core::ser::Serialize for controlplane::SearchQuery
+pub fn controlplane::SearchQuery::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::SearchQuery
+pub fn controlplane::SearchQuery::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::SearchQuery
+impl core::marker::Freeze for controlplane::SearchQuery
+impl core::marker::Send for controlplane::SearchQuery
+impl core::marker::Sync for controlplane::SearchQuery
+impl core::marker::Unpin for controlplane::SearchQuery
+impl core::marker::UnsafeUnpin for controlplane::SearchQuery
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::SearchQuery
+impl core::panic::unwind_safe::UnwindSafe for controlplane::SearchQuery
 pub struct controlplane::SecretReveal
 pub controlplane::SecretReveal::expires_at: core::option::Option<alloc::string::String>
 pub controlplane::SecretReveal::hint: core::option::Option<alloc::string::String>
@@ -1725,18 +1725,18 @@ pub const controlplane::PROVIDER_SLOT: contrib::Slot<alloc::rcs::arc::Arc<dyn co
 pub const controlplane::SECTIONS: &[(&str, &str, i32)]
 pub const controlplane::SOURCE_SLOT: contrib::Slot<controlplane::Source>
 pub trait controlplane::ControlPlane: core::marker::Send + core::marker::Sync
-pub fn controlplane::ControlPlane::invoke<'life0, 'async_trait>(&'life0 self, controlplane::InvokeRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::InvokeOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::ControlPlane::invoke<'life0, 'async_trait>(&'life0 self, controlplane::InvokeCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::InvokeOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn controlplane::ControlPlane::manifests<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::Manifest>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn controlplane::ControlPlane::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn controlplane::ControlPlane::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::ControlPlane::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelQuery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::ControlPlane::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchQuery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl controlplane::ControlPlane for controlplane::LocalFace
-pub fn controlplane::LocalFace::invoke<'life0, 'async_trait>(&'life0 self, controlplane::InvokeRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::InvokeOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::LocalFace::invoke<'life0, 'async_trait>(&'life0 self, controlplane::InvokeCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::InvokeOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn controlplane::LocalFace::manifests<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::Manifest>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn controlplane::LocalFace::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn controlplane::LocalFace::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::LocalFace::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelQuery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::LocalFace::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchQuery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait controlplane::Provider: core::marker::Send + core::marker::Sync
-pub fn controlplane::Provider::invoke<'life0, 'async_trait>(&'life0 self, controlplane::InvokeRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::InvokeOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::Provider::invoke<'life0, 'async_trait>(&'life0 self, controlplane::InvokeCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::InvokeOutcome, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn controlplane::Provider::manifest(&self) -> controlplane::Manifest
-pub fn controlplane::Provider::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn controlplane::Provider::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchRequest) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::Provider::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelQuery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::Provider::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchQuery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn controlplane::merge_sections<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a controlplane::Manifest>) -> controlplane::SectionMerge<'a>

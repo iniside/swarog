@@ -16,9 +16,9 @@ pub mod events;
 pub trait Provider: Send + Sync {
     /// Static; does no I/O.
     fn manifest(&self) -> Manifest;
-    async fn panel(&self, req: PanelRequest) -> Result<Primitive, opsapi::Error>;
-    async fn search(&self, req: SearchRequest) -> Result<Vec<SearchHit>, opsapi::Error>;
-    async fn invoke(&self, req: InvokeRequest) -> Result<InvokeOutcome, opsapi::Error>;
+    async fn panel(&self, req: PanelQuery) -> Result<Primitive, opsapi::Error>;
+    async fn search(&self, req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error>;
+    async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error>;
 }
 
 pub const PROVIDER_SLOT: contrib::Slot<Arc<dyn Provider>> =
@@ -31,10 +31,10 @@ pub trait ControlPlane: Send + Sync {
     #[retry_safe]
     async fn manifests(&self) -> Result<Vec<Manifest>, opsapi::Error>;
     #[retry_safe]
-    async fn panel(&self, req: crate::PanelRequest) -> Result<Primitive, opsapi::Error>;
+    async fn panel(&self, req: PanelQuery) -> Result<Primitive, opsapi::Error>;
     #[retry_safe]
-    async fn search(&self, req: crate::SearchRequest) -> Result<Vec<SearchHit>, opsapi::Error>;
-    async fn invoke(&self, req: crate::InvokeRequest) -> Result<InvokeOutcome, opsapi::Error>;
+    async fn search(&self, req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error>;
+    async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error>;
 }
 
 /// A peer process's [`ControlPlane`] face.
@@ -153,17 +153,17 @@ impl ControlPlane for LocalFace {
         Ok(self.manifests.clone())
     }
 
-    async fn panel(&self, req: PanelRequest) -> Result<Primitive, opsapi::Error> {
+    async fn panel(&self, req: PanelQuery) -> Result<Primitive, opsapi::Error> {
         let mut primitive = self.local(&req.module)?.provider.panel(req).await?;
         make_finite(&mut primitive);
         Ok(primitive)
     }
 
-    async fn search(&self, req: SearchRequest) -> Result<Vec<SearchHit>, opsapi::Error> {
+    async fn search(&self, req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
         self.local(&req.module)?.provider.search(req).await
     }
 
-    async fn invoke(&self, req: InvokeRequest) -> Result<InvokeOutcome, opsapi::Error> {
+    async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
         let local = self.local(&req.module)?;
         // `Manifest.writes` is the one write authority: an undeclared writer never sees an invoke.
         if !local.writes {
@@ -240,7 +240,7 @@ pub enum Link {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PanelRequest {
+pub struct PanelQuery {
     pub module: String,
     pub contribution: String,
     pub entity: Option<EntityRef>,
@@ -248,7 +248,7 @@ pub struct PanelRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SearchRequest {
+pub struct SearchQuery {
     pub module: String,
     pub kind: String,
     pub q: String,
@@ -264,7 +264,7 @@ pub struct SearchHit {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InvokeRequest {
+pub struct InvokeCall {
     pub module: String,
     pub action: String,
     pub entity: Option<EntityRef>,

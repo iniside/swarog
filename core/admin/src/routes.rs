@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Form, Router};
 use axum_extra::extract::CookieJar;
-use controlplane::{ActionDecl, ActionPoint, ContributionDecl, EntityRef, InvokeOutcome, Layout, Manifest, PanelRequest, Point};
+use controlplane::{ActionDecl, ActionPoint, ContributionDecl, EntityRef, InvokeOutcome, Layout, Manifest, PanelQuery, Point};
 use serde::Serialize;
 
 use crate::engine::actions::{self, BuildError, Flash, Invoked};
@@ -533,7 +533,7 @@ async fn panel(
     };
     let mut url_query: Vec<(String, String)> = raw_entity.into_iter().map(|e| ("entity".to_string(), e)).collect();
     url_query.extend(query.iter().map(|(k, v)| (k.clone(), v.clone())));
-    let req = PanelRequest { module: module.clone(), contribution: contribution.clone(), entity: entity.clone(), params: query };
+    let req = PanelQuery { module: module.clone(), contribution: contribution.clone(), entity: entity.clone(), params: query };
     let view: PanelView = panels::resolve(&p.engine, &snapshot, &ctx.operator, &module, decl, req).await;
     let queue_actions: Vec<ActionItem> = manifest
         .actions

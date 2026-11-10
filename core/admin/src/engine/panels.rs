@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use controlplane::{ContributionDecl, PanelRequest, Primitive, DEFAULT_PANEL_DEADLINE_MS};
+use controlplane::{ContributionDecl, PanelQuery, Primitive, DEFAULT_PANEL_DEADLINE_MS};
 
 use super::manifests::Snapshot;
 use super::roles::{self, Operator};
@@ -80,7 +80,7 @@ impl PanelCache {
     }
 }
 
-fn cache_key(req: &PanelRequest) -> String {
+fn cache_key(req: &PanelQuery) -> String {
     let mut parts: Vec<&str> = vec![&req.module, &req.contribution];
     if let Some(entity) = &req.entity {
         parts.extend([entity.kind.as_str(), entity.id.as_str()]);
@@ -124,7 +124,7 @@ pub(crate) async fn resolve(
     operator: &Operator,
     module: &str,
     decl: &ContributionDecl,
-    req: PanelRequest,
+    req: PanelQuery,
 ) -> PanelView {
     let mut view = PanelView {
         module: module.to_string(),

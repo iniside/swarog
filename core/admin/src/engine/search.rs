@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use controlplane::{SearchDecl, SearchHit, SearchRequest, DEFAULT_SEARCH_DEADLINE_MS};
+use controlplane::{SearchDecl, SearchHit, SearchQuery, DEFAULT_SEARCH_DEADLINE_MS};
 
 use super::manifests::Snapshot;
 
@@ -39,7 +39,7 @@ pub(crate) async fn run(snapshot: &Snapshot, q: &str, kind: &str) -> Vec<SearchG
                 continue;
             }
             let face = snapshot.sources[routed.source].face.clone();
-            let req = SearchRequest {
+            let req = SearchQuery {
                 module: module.clone(),
                 kind: decl.kind.clone(),
                 q: q.to_string(),

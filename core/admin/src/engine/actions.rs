@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use controlplane::{
-    ActionDecl, ConfirmSpec, ControlPlane, EntityRef, InvokeOutcome, InvokeRequest, Link, ReasonReq, SecretReveal, Then,
+    ActionDecl, ConfirmSpec, ControlPlane, EntityRef, InvokeCall, InvokeOutcome, Link, ReasonReq, SecretReveal, Then,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -90,14 +90,14 @@ pub(crate) enum BuildError {
     Fields(BTreeMap<String, String>),
 }
 
-/// Splits the posted form into an [`InvokeRequest`]; a required confirm reason is
+/// Splits the posted form into an [`InvokeCall`]; a required confirm reason is
 /// enforced here, before any call.
 pub(crate) fn build_request(
     module: &str,
     decl: &ActionDecl,
     operator: &Operator,
     body: &HashMap<String, String>,
-) -> Result<InvokeRequest, BuildError> {
+) -> Result<InvokeCall, BuildError> {
     let entity = match body.get(FIELD_ENTITY).map(String::as_str).filter(|v| !v.is_empty()) {
         None => None,
         Some(raw) => Some(
@@ -127,7 +127,7 @@ pub(crate) fn build_request(
         .filter(|(k, _)| ![FIELD_CSRF, FIELD_ENTITY, FIELD_REASON, FIELD_REVISION, FIELD_RETURN].contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
-    Ok(InvokeRequest {
+    Ok(InvokeCall {
         module: module.to_string(),
         action: decl.id.clone(),
         entity,
@@ -144,7 +144,7 @@ pub(crate) enum Invoked {
     TimedOut,
 }
 
-pub(crate) async fn invoke(face: &dyn ControlPlane, req: InvokeRequest) -> Invoked {
+pub(crate) async fn invoke(face: &dyn ControlPlane, req: InvokeCall) -> Invoked {
     match tokio::time::timeout(INVOKE_DEADLINE, face.invoke(req)).await {
         Ok(Ok(outcome)) => Invoked::Outcome(outcome),
         Ok(Err(error)) => Invoked::Failed(error),
@@ -174,7 +174,7 @@ pub(crate) const DETAIL_MAX: usize = 1024;
 pub(crate) async fn record(
     st: &AdminState,
     operator: &Operator,
-    req: &InvokeRequest,
+    req: &InvokeCall,
     invoked: &Invoked,
 ) -> anyhow::Result<()> {
     let evt = controlplane::events::AdminAction {
