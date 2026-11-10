@@ -226,8 +226,8 @@ pub const SOURCE_SLOT: contrib::Slot<Source> = contrib::Slot::new("controlplane.
   `SearchHit { target: EntityRef, title: String, subtitle: String, badge: Option<String> }`.
 - `InvokeRequest { module: String, action: String, entity: Option<EntityRef>,
   input: BTreeMap<String, String>, expected_revision: Option<u64>, reason: Option<String>,
-  operator: String }`. `operator` is only an audit label. Idempotency stays a module concern
-  and uses hidden form fields (`FormSpec.hidden`), as wallet's `_idem_*` does today.
+  operator: String }`. `operator` is only an audit label. De-duplication uses
+  `InvokeCall.request_id` (Step 8a).
 - `InvokeOutcome = Ok { message: String, reveal: Option<SecretReveal>, redirect: Option<Link> }
   | FieldErrors(BTreeMap<String, String>) | Conflict { current_revision: u64 }`.
 - Portal HTTP mapping:
@@ -287,7 +287,9 @@ SearchDecl     { kind, label, icon, deadline_ms: u32 }                  // defau
   - `PanelQuery` gains typed fields `search`, `cursor`, `before`, `queue_state`, and later
     `refs` (Step 13);
   - `ActionDecl.primary: bool`;
-  - `ContributionDecl.form_submit: Option<String>`;
+  - `ActionPoint::PanelForm(contribution)` (the form panel's Save) and a defined
+    `PanelTool(contribution)`;
+  - `PropertyList.item`;
   - `InvokeOutcome::NoOp { message }`;
   - `InvokeCall.item` and `InvokeCall.request_id`;
   - the portal table `admin.forms` (form instances);
@@ -755,229 +757,240 @@ samych mockupów."
 
 **Standing rule for every later step.** A convention that the portal and a module must
 both honour is never a string agreed in two places. The step that discovers it adds it to
-`core/controlplane` under this rule, as one of:
+`core/controlplane` as one of:
 - a typed field;
 - a pure encode/decode function pair that both sides call;
 - a static manifest field that admincheck validates.
 
 It ships with an admincheck rule, or a test in Step 25.
 
-(a) What is touched:
+Owner decisions implemented here (2026-11-10):
+- typed panel queries;
+- a primary flag;
+- the form submit target in the manifest;
+- a `NoOp` outcome with an info flash;
+- server-side form instances (`admin.forms`, an exception to R1's "no new tables": portal
+  state, like `admin.reveals`), consumed on success;
+- the form id passed to modules as `request_id`;
+- item binding;
+- an atomic claim, so repeated clicks are idempotent and never an error;
+- a portal `validate_item` guard.
 
-1. **`core/controlplane/src/lib.rs`, panel queries.**
-   - `PanelQuery` gains `search: Option<String>`, `cursor: Option<String>`,
-     `before: Option<String>` and `queue_state: Option<String>`. They replace the Step 8
-     `params` keys `q`, `cursor`, `before` and `state`; `params` stays for module-specific
-     keys only.
-   - The portal (`core/admin/src/routes.rs` ~:536 and `render.rs` ~:570, ~:770-776, ~:927,
-     ~:1107) stops putting those four keys into `params`, so there is no dual path.
-   - `engine/panels.rs` `cache_key` (~:83-96) includes the four fields, so a stale copy for
-     one search is never served for another.
+#### A. Contract changes (`core/controlplane/src/lib.rs`)
 
-2. **Primary action.** `ActionDecl.primary: bool` replaces the `icon == "plus"` rule
-   (`templates/shell.html.tmpl:47`).
+1. **`PanelQuery`.** Add `search: Option<String>`, `cursor: Option<String>`,
+   `before: Option<String>` and `queue_state: Option<String>`. They replace the Step 8
+   `params` keys `q`, `cursor`, `before` and `state`; `params` stays for module-specific
+   keys only. (Step 13 adds `refs: Vec<String>` under this rule.)
+2. **`ActionDecl.primary: bool`.** Replaces the `icon == "plus"` rule.
+3. **`ActionPoint`.** `PanelTool(String)` names a contribution id of the same module; the
+   action renders in that contribution's panel-tools slot. New variant
+   `PanelForm(String)`, also naming a contribution id: the action is that contribution's
+   `Primitive::Form` Save and is never rendered as a button anywhere else. This is the
+   owner's "submit target in the manifest". It replaces the earlier
+   `ContributionDecl.form_submit` wording; no such field is added.
+4. **`InvokeOutcome::NoOp { message: String }`.** The request was valid but there was
+   nothing to do.
+5. **`InvokeCall`.** Add `item: Option<String>` (the bound element) and
+   `request_id: Option<String>` (the form instance id, the module's de-duplication key).
+   The Design sentence about idempotency via `FormSpec.hidden` / `_idem_*` is replaced by
+   `request_id`.
+6. **`PropertyList.item: Option<String>`.** Binds the panel's `PanelTool` actions to one
+   element. `QueueItem.id` already binds its `actions`.
+7. **Field values.**
 
-3. **Form panel submit target** (owner, 2026-11-10: in the manifest).
-   - `ContributionDecl.form_submit: Option<String>` names an action of the same module.
-     That action must be `Then::Invoke`; admincheck enforces this.
-   - The Save button of that contribution's `Primitive::Form` panel invokes the action
-     through a form instance (item 9).
-   - A 422 or 409 re-renders the panel form in place (not a modal), from the stored
-     snapshot, with the posted values decoded back into their inputs (Money → amount and
-     currency).
+   ```text
+   FieldValue = Text(String) | Int(i64) | Float(f64) | Bool(bool)
+              | Multi(Vec<String>) | Money { amount: String, currency: String }
+   pub fn decode_field(kind: &FieldKind, raw: &str) -> Result<FieldValue, FieldError>
+   pub fn encode_field(kind: &FieldKind, value: &FieldValue) -> String
+   ```
 
-4. **No-op outcome** (owner, 2026-11-10).
-   - `InvokeOutcome::NoOp { message: String }` means the request was valid but there was
-     nothing to do.
-   - `Flash` (`core/admin/src/engine/actions.rs` ~:235-240) gains
-     `tone: FlashTone { Success, Info }`. (Old rows: see below.)
-   - `NoOp` answers a 303 PRG to `ok_target(None, body, entity)` with an `Info` flash. `Ok`
-     keeps `Success`. The renderer shows an Info flash as a neutral toast.
-   - `tone` has no `#[serde(default)]`, since that would be a compatibility bridge. An
-     `admin.reveals` row written before this step fails to decode in `take_flash`
-     (`actions.rs` ~:268-273), shows nothing, and expires within `REVEAL_TTL`
-     (300 s, `lib.rs` ~:148). No DROP is added.
-   - `audit_detail` (`actions.rs` ~:171-199) writes `noop: <message>`. The ok, timeout,
-     failed, rejected and conflict formats are unchanged.
+   Decode rules per kind:
 
-5. **Field encoding.** `pub enum FieldValue` covers every `FieldKind`. Two functions:
-   - `pub fn encode_field(kind: &FieldKind, value: &FieldValue) -> String`;
-   - `pub fn decode_field(kind: &FieldKind, raw: &str) -> Result<FieldValue, FieldError>`.
+   | Kind | Value | Accepted raw input |
+   | --- | --- | --- |
+   | String, Text | `Text` | any |
+   | Ref(_) | `Text` | non-empty |
+   | Int | `Int` | parses as `i64` |
+   | Float | `Float` | parses as a finite `f64` |
+   | Bool | `Bool` | `"true"` or `"false"` |
+   | Enum(opts) | `Text` | a member of `opts` |
+   | Multi(opts) | `Multi` | a JSON array of distinct members of `opts` |
+   | Json | `Text` | parses as JSON |
+   | Duration | `Text` | `^[0-9]+(s\|m\|h\|d)$` |
+   | Money(currencies) | `Money` | a JSON object whose `amount` matches `^-?[0-9]+(\.[0-9]+)?$` and whose `currency` is in `currencies` |
 
-   Wire forms:
-   - Multi: a JSON array of strings;
-   - Money: one JSON object `{"amount": "...", "currency": "..."}` under the field's own
-     key;
-   - Bool: `"true"`/`"false"`;
-   - every other kind: the raw text.
+   `FieldError { reason: String }`. `encode_field` is the inverse; a round trip is
+   identity.
 
-   On the portal side:
-   - `action_submit` (`routes.rs` ~:670) takes the form body as `Vec<(String, String)>`,
-     so repeated Multi checkbox keys survive.
-   - The server builds each field's `FieldValue` from the posted pairs, using the field
-     kinds of the stored form snapshot (item 9). Money comes from `<key>` and
-     `<key>__currency`, both form-local names. Each value is encoded with `encode_field`
-     before `cp.invoke`.
-   - `admin.js` stops comma-joining (`admin.js:118`).
-   - `render.rs` `currency_key` (~:962) is deleted; what replaces it is a form-local input
-     name, never a wire key.
+#### B. Form instances (`admin.forms`, in `core/admin/src/lib.rs` beside `REVEAL_DDL`)
 
-6. **`tools/admincheck/src/checks.rs`** gains these checks:
-   - every `ContributionDecl.form_submit` names a `Then::Invoke` action of the same
-     module;
-   - no `Then::Form` field key contains `__`;
-   - at most one `primary` action per page head;
-   - every `Then::Form` field's `default` decodes with its `FieldKind`.
+```text
+admin.forms (id text PRIMARY KEY, login text NOT NULL, module text NOT NULL,
+             action text NOT NULL, contribution text, entity_kind text, entity_id text,
+             item text, spec jsonb NOT NULL, claimed_at timestamptz,
+             consumed_at timestamptz, expires_at timestamptz NOT NULL)
+CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
+```
 
-   Panel `FormSpec`s are runtime data, which admincheck cannot see, so a panel form's
-   defaults are checked by the Step 25 tests.
+- **Which forms get one.** A `Then::Form` or `Then::Confirm` modal, and an `ok`
+  `Primitive::Form` panel with a `PanelForm` action. A readonly, stale, denied or error
+  panel mints nothing, and its Save is disabled.
+- **Minting.**
+  - The id is `<action or contribution id>:<new_token()>` (`lib.rs` ~:776).
+  - `spec` is what was rendered: the `FormSpec` for a `Then::Form` or a panel form, the
+    `ConfirmSpec` for a `Then::Confirm`.
+  - TTL is 1 hour.
+  - Each mint first runs a best-effort `DELETE FROM admin.forms WHERE expires_at < now()`.
+  - A modal row is minted by the modal GET (`routes.rs` ~:630-660), which may carry
+    `?entity=` and `?item=`. `item` passes `validate_item` first; failing that, the GET
+    returns 400 and no row is minted.
+  - A failed INSERT on the modal GET returns 503 with the error toast and no modal. On a
+    panel, it renders the panel `error` state "Form unavailable".
+- **POST `/admin/_action/{module}/{action}`, in this exact order:**
+  1. **CSRF.**
+  2. **Parse the body** as `Vec<(String, String)>` (`routes.rs` ~:670). A repeated key is
+     a 400, except a Multi field's own key.
+  3. **Path choice.** With `_form`, take the form path (steps 4–9). Without it, take the
+     token-less path (below).
+  4. **Allowed keys.**
+     - With a form: `_csrf`, `_form`, `_reason`, `_confirm`, `_return`, every field key of
+       the stored spec, and `<money key>__currency`. Anything else is a 400.
+     - The 8a core commit deletes the "every other field is input" rule (`actions.rs`
+       ~:25, ~:125-129), `FIELD_REVISION` with its parse branch (~:29, ~:105-111), and
+       the Required-reason check in `build_request` (~:117-123).
+     - In the template commit the modal stops posting `_entity`, hidden-map inputs and
+       `_expected_revision` (`modal.html.tmpl` ~:9-10).
+  5. **Claim** with one statement:
 
-7. **`tools/conformance/src/policy.rs`.** Add Opaque `CONTROL_PLANE_READ_RATIONALE` rows
-   for the new scanner keys `req.search`, `req.cursor`, `req.before` and `req.queue_state`.
-   Step 13 adds `req.refs`.
-
-8. **Goldens and baselines.** Re-bless the input golden, contract-golden and public-api,
-   keeping only the lines this step causes.
-
-9. **Form instances ("skąd jestem / co robię")** (owner, 2026-11-10, option 1).
-   - **Scope.** Every portal form gets an instance: a `Then::Form` or `Then::Confirm`
-     modal, and a panel with `form_submit`. Plain `Then::Invoke` buttons do not (see
-     "Token-less POST" below).
-   - **Table.** `admin.forms` is a new portal-owned table, an owner-approved exception to
-     R1's "no new tables" (portal state, like `admin.reveals`, not domain data). The DDL
-     sits in `core/admin/src/lib.rs` beside `REVEAL_DDL`:
-
-     ```text
-     admin.forms (id text PRIMARY KEY, login text NOT NULL, module text NOT NULL,
-                  action text NOT NULL, contribution text, entity_kind text,
-                  entity_id text, item text, spec jsonb NOT NULL,
-                  claimed_at timestamptz, expires_at timestamptz NOT NULL)
-     CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
+     ```sql
+     UPDATE admin.forms SET claimed_at = now()
+     WHERE id = $1 AND login = $2 AND module = $3 AND action = $4
+       AND expires_at > now() AND consumed_at IS NULL
+       AND (claimed_at IS NULL OR claimed_at < now() - interval '30 seconds')
+     RETURNING *
      ```
 
-     Rows are pruned opportunistically, the way `prune_expired_reveals` prunes reveals.
-   - **Minting** (render).
-     - The id is `<contribution or action id>:<new_token()>`, reusing the existing token
-       generator `core/admin/src/lib.rs` ~:776. No `uuid` dependency.
-     - `spec` stores what was rendered:
-       - for `Then::Form`: the `FormSpec` (fields, hidden, revision);
-       - for `Then::Confirm`: the `ConfirmSpec`;
-       - for a panel form: the panel's `FormSpec`.
-     - TTL is 1 hour.
-     - A modal row is minted by the modal GET (`routes.rs` ~:630-660), which may carry
-       `?entity=` and `?item=` (item 10); both are stored in the row.
-     - A panel row is minted when the `ok` Form panel renders. A readonly, stale, denied or
-       error panel mints nothing; its Save is disabled.
-   - **POST order** (`action_submit`):
-     1. Check CSRF.
-     2. Load and CLAIM the row atomically (owner, 2026-11-10, option 1a), in one
-        statement: `UPDATE admin.forms SET claimed_at = now() WHERE id = $1 AND
-        expires_at > now() AND (claimed_at IS NULL OR claimed_at < now() - interval
-        '30 seconds') RETURNING …`. The 30 s exceeds `INVOKE_DEADLINE` (10 s), so a claim
-        left by a crashed request expires.
-        - Each of these gives 400 with zero calls: no such id, an expired row, a `login`
-          that is not the session's, or a module or action that is not the URL's.
-        - A row that exists but is claimed or already consumed means a repeated click.
-          Clicks are idempotent (owner): the answer is a 303 with an `Info` flash,
-          "Already submitted — this action is being processed or has completed", and zero
-          calls. It is never an error.
-     3. Run `admit`.
-     4. Check the reason against the STORED `ConfirmSpec.reason`: Required and empty gives
-        422.
-     5. Check the typed confirmation: the new portal key `_confirm` must equal the stored
-        `type_to_confirm`, else 422. The confirm input gains `name="_confirm"`, so the
-        check is server-side, not only client-side.
-     6. Invoke.
-   - **Allowed posted keys** with a form instance:
-     - the portal keys `_csrf`, `_form`, `_reason`, `_confirm`, `_return`;
-     - every field key of the stored spec;
-     - `<money key>__currency` for each Money field.
+     The 30 s exceeds `INVOKE_DEADLINE` (10 s). When it returns no row, a `SELECT` by id
+     classifies the reason:
 
-     Any other key gives 400 with zero calls. In the 8a template commit, the modal stops
-     posting `_entity`, the hidden-map inputs and `_expected_revision`
-     (`templates/modal.html.tmpl` ~:9-10). The 8a core commit deletes:
-     - the "every other field is input" rule (`actions.rs` ~:25, ~:125-129);
-     - `FIELD_REVISION` (`actions.rs` ~:29) and its parse branch (~:105-111);
-     - the Required-reason check in `build_request` (~:117-123), replaced by POST-order
-       step 4.
-   - **`InvokeCall` assembly** uses the row only:
-     - module, action, entity and `item` come from the row;
-     - `input` = `encode_field` over the stored fields, plus the stored `hidden` map;
-     - `expected_revision` = the stored `FormSpec.revision`. A 409 therefore needs a reload,
-       which shows a new form; the portal's 409 message says so;
-     - `reason` comes from `_reason`;
-     - `request_id` = the form id (item 11).
-   - **Consume and retry** (owner, 2026-11-10).
-     - Right after `invoke` returns, BEFORE `record` (audit) and before the flash stash,
-       the row is settled by outcome:
+     | Reason | Answer |
+     | --- | --- |
+     | missing, expired, another login, other module or action | 400, zero calls |
+     | `consumed_at` set, or claimed less than 30 s ago | repeated click: 303 with an `Info` flash "Already submitted — this action is being processed or has completed", zero calls, never an error |
 
-       | Outcome | Row |
-       | --- | --- |
-       | `Ok`, `NoOp` | deleted (consumed) |
-       | `Conflict` / `Status::Conflict` | deleted; the stale revision would always conflict again |
-       | `FieldErrors`, timeout, `Failed` | kept, `claimed_at` reset to NULL so the operator can retry |
+  6. **Pre-invoke checks.** Each failure first releases the claim (`claimed_at = NULL`),
+     then answers:
+     - `admit` (role, `implemented`, `writes`) → 403;
+     - decode every stored field with `decode_field` → 422 with the field errors:
+       - a `readonly` field takes its stored `default`, and the posted value is ignored;
+       - a missing optional field, or a readonly field without a default, is left out of
+         `input`;
+       - a Multi with no box ticked decodes as `[]`;
+       - a required field that is missing or empty is a `FieldError`;
+     - Required `ConfirmSpec.reason` with an empty `_reason` → 422;
+     - `_confirm` ≠ stored `type_to_confirm` → 422. The confirm input gets
+       `name="_confirm"`.
+  7. **Invoke** with an `InvokeCall` built only from the row:
+     - module, action, entity and `item` from the row;
+     - `input` = `encode_field` per decoded field, plus the stored `hidden` map;
+     - `expected_revision` = the stored `FormSpec.revision`;
+     - `reason` from `_reason`;
+     - `request_id` = the form id.
+  8. **Settle the row** immediately, before the audit and the flash:
 
-       A failed delete or reset is logged and does not change the answer.
-     - An audit append failure keeps the existing answers. After `Ok` it is the 500
-       "action applied but audit append failed"; the row is already consumed, so a retry
-       cannot apply the action twice. After `NoOp` it takes the warn path (outcome
-       status), like every non-Ok outcome. The `matches!(.., Ok)` at `routes.rs` ~:712 must
-       name `NoOp` explicitly.
-     - A 422 retry re-renders from the STORED spec, not the live `decl`. Today's `reshow`
-       (`routes.rs` ~:696) changes to read the row.
-     - A 409 re-render shows the reload banner and disables Save. A new form comes from a
-       reload.
-     - A stored field marked `readonly` takes its stored `default`; a posted value for it
-       is ignored.
-   - **Field keys** must not contain `__`, because `<key>__currency` is a form-local input
-     name. admincheck checks this for `Then::Form` specs. The portal refuses a panel spec
-     that breaks it, rendering an error panel and minting no row.
+     | Outcome | Row |
+     | --- | --- |
+     | `Ok`, `NoOp`, `Conflict` / `Status::Conflict` | `consumed_at = now()`; kept as a tombstone until `expires_at` |
+     | `FieldErrors`, timeout, `Failed` | `claimed_at = NULL` |
 
-10. **Item binding** (owner, 2026-11-10, P2 option 1).
-    - `InvokeCall` gains `item: Option<String>`.
-    - A primitive that binds actions to one element carries that element's id: the
-      existing `QueueItem.id` with its `actions`, and a new
-      `PropertyList.item: Option<String>` used with the page's `PanelTool` actions.
-    - The 8a template commit renders `ActionPoint::PanelTool` actions in the panel-tools
-      slot. Step 8 left that slot holding only the chart legend
-      (`templates/primitives.html.tmpl` ~:344).
-    - A bound action's button sends the id:
-      - as `?item=` on its modal GET (stored in the row);
-      - or, for a token-less Invoke button, as the portal key `_item`.
+     A failed settle is logged and does not change the answer. If the settle fails after
+     an `Ok`, the row stays claimed and becomes re-claimable after 30 s, so a retry could
+     reach the module again. That case relies on module de-duplication by `request_id`.
+  9. **Audit and answer.**
+     - `audit_detail` writes `noop: <message>` for `NoOp`; the other formats are unchanged.
+     - After `Ok`, an audit failure keeps the existing 500 "action applied but audit
+       append failed". After `NoOp` and every other outcome it logs a warning and keeps
+       the outcome's status. The `matches!(.., Ok)` at `routes.rs` ~:712 names only `Ok`.
+     - `Ok`: 303 with a `Success` flash.
+     - `NoOp`: 303 to `ok_target(None, body, entity)` with an `Info` flash.
+     - A 422 re-renders the same form from the stored spec with the SAME `_form`; today's
+       `reshow` (`routes.rs` ~:696) changes to read the row.
+     - A 409 re-renders it with the reload banner and Save disabled (the row is a
+       tombstone).
+- **Token-less path** (no `_form`):
+  - Allowed keys: `_csrf`, `_entity`, `_return`, `_item`.
+  - 400 with zero calls when the action is not `Then::Invoke` (a `Then::Form` or
+    `Then::Confirm` must come with a form), or when its point is `PanelForm`.
+  - `_item` must pass `validate_item`.
+  - `input` is empty and `request_id` is `None`.
+  - Then `admit`, invoke and audit as above, with no row.
+- **`Flash.tone: FlashTone { Success, Info }`** (`actions.rs` ~:235-240). It has no
+  `#[serde(default)]`. A pre-8a `admin.reveals` row fails to decode in `take_flash`
+  (~:268-273), shows nothing, and expires within `REVEAL_TTL` (300 s). No DROP.
+- **`validate_item(&str)`** in `core/admin/src/engine/actions.rs`: non-empty, at most 256
+  bytes, no control characters. A forged item can reach a module; modules validate it
+  against their own data, as `skip(expected)` does.
 
-      Modules read `InvokeCall.item`; there is never an item key in `input`.
-    - `item` is validated by one portal function, `engine::actions::validate_item(&str)`:
-      non-empty, at most 256 bytes, no control characters. It is applied to `?item=` on
-      the modal GET (400, no row minted) and to `_item` on a token-less POST (400, zero
-      calls). The Validated `req.item` policy row cites this function. A forged `item`
-      can reach a module.
-      That is acceptable because the module validates it against its own data, as
-      `skip(expected)` does. The plan states this so no implementer adds a portal-side
-      membership check.
-    - Add a Validated `req.item` policy row with the 256-byte cap.
+#### C. Rendering wiring
 
-11. **Request id** (owner, 2026-11-10).
-    - `InvokeCall` gains `request_id: Option<String>`. It is the form instance id, so a
-      module can de-duplicate an invoke retried after a timeout (outcome unknown).
-    - It is `None` for a token-less button.
-    - Add an Opaque `req.request_id` policy row.
+Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "template".
+1. The panel handler (`routes.rs` ~:520-560) selects the module's actions with
+   `ActionPoint::PanelTool(this contribution)`, binds them to `PropertyList.item` or
+   `QueueItem.id`, and builds action items carrying the item:
+   - a modal URL with `?item=`;
+   - or `_item` in the token-less button's `hx-vals`.
 
-**Token-less POST** (`Then::Invoke` buttons, including the Invoke action named by a
-panel's `form_submit` when it is posted without `_form`):
-- `input` is always empty;
-- the allowed keys are `_csrf`, `_entity`, `_return` and `_item`;
-- any other key gives 400 with zero calls.
+   Template: render them in the panel-tools slot (`primitives.html.tmpl` ~:344).
+2. An `ok` Form panel with a `PanelForm` action mints a row (B) and renders a form posting
+   to that action with `_form`, with the panel slot as the htmx target. Template: the Save
+   wiring (`primitives.html.tmpl` ~:224-226).
 
-A panel Save therefore only works through its form instance.
+   The POST answers for a panel form:
+   - `Ok` / `NoOp`: `HX-Redirect`;
+   - 422 / 409: the panel fragment, from a new `render::panel_form_result`, with the same
+     `_form`.
+
+   Modal forms keep `render_result` (`routes.rs` ~:754-756).
+3. `PanelQuery` is built from the typed fields: `routes.rs` ~:536 and `render.rs` ~:570,
+   ~:770-776, ~:927, ~:1107 stop writing `q`/`cursor`/`before`/`state` into `params`.
+   `engine/panels.rs` `cache_key` (~:83-96) includes the four fields, distinguishing
+   `None` from `Some("")`.
+4. `render.rs` `currency_key` (~:962) is deleted. The form-local Money input name is
+   `<key>__currency`; field keys must not contain `__`, and the portal refuses a panel
+   spec that breaks this with an error panel and no row.
+5. Template: `admin.js` stops comma-joining Multi (`admin.js:118`) and posts the
+   checkboxes as repeated keys. Primary comes from `ActionDecl.primary`
+   (`shell.html.tmpl:47`). Info flashes render as a neutral toast.
+
+#### D. Gates
+
+- `tools/admincheck/src/checks.rs`:
+  - every `PanelTool(c)` and `PanelForm(c)` names a contribution of the same module;
+  - a `PanelForm` action is `Then::Invoke`;
+  - at most one `PanelForm` action per contribution;
+  - at most one `primary` among the actions listed in each `PageDecl.head_actions`;
+  - no `Then::Form` field key contains `__`;
+  - every `Then::Form` field `default` decodes with `decode_field`.
+- `tools/conformance/src/policy.rs`, all Opaque:
+  - `cp.panel`: `req.search`, `req.cursor`, `req.before`, `req.queue_state` with
+    `CONTROL_PLANE_READ_RATIONALE`;
+  - `cp.invoke`: `req.item` with `CONTROL_PLANE_INVOKE_RATIONALE`, plus one sentence
+    naming `validate_item` as the portal bound;
+  - `cp.invoke`: `req.request_id` with `CONTROL_PLANE_INVOKE_RATIONALE`.
+
+  (Opaque, because `cp.*` callers other than the portal are trusted mTLS peers, §8.)
+- Re-bless the input golden, contract-golden and public-api, keeping only the lines this
+  step causes.
 
 (b) Why now: before the first provider (Step 9) codes against the strings.
 
-(c) The Errata bullet "Step 8 conventions (provisional)" is superseded by this step; add
-an Errata line saying so.
+(c) Add an Errata line: the Step 8 provisional conventions are superseded by Step 8a.
 
-(d) Two commits:
-- `[opus]` core-implementer: the contract, portal engine/POST, admincheck and conformance;
-- `[opus]` mockup-implementer: templates and `admin.js`.
+(d) Two commits, each reviewed:
+- `[opus]` core-implementer: A, B, C items 1–4 (Rust side), D;
+- `[opus]` mockup-implementer: the template parts of C.
 
 ### Step 9 — Portal-owned providers: backend
 
@@ -1107,8 +1120,8 @@ The ports:
 - **Step 23 — config.**
   - Config & flags page (`pages-platform.js:88-109`).
   - Edit via `cp.invoke` with `expected_revision` = the global revision. The edit form is
-    a `Primitive::Form` panel whose `ContributionDecl.form_submit` (Step 8a) names the
-    edit action.
+    a `Primitive::Form` panel whose edit action has point
+    `ActionPoint::PanelForm(<that contribution>)` (Step 8a).
   - The Revisions timeline is FAKE except for the current value and revision.
   - Writer.
 - **Step 24 — audit.** Audit log page (`pages-platform.js:112-126`), and the dashboard
@@ -1142,34 +1155,42 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
   - `skip(.., Some(id))` skips only the previewed event. It returns `AlreadyResolved`
     without moving the cursor in three cases: a retry delivered the event first (healthy
     subscription), no event is eligible, or another event blocks. `skip(.., None)` keeps
-    the old errors.
-- `core/admin` tests:
-  - a `NoOp` outcome gives a 303 with an `Info` flash and audit `noop: …`;
-  - a panel form 422 re-renders the panel from the stored snapshot, with Money/Multi
-    values decoded;
-  - a cached `search=a` copy is never served for `search=b`;
-  - form instances: each of these gives 400 with zero provider calls — a missing,
-    expired, another-operator's, mismatched-action or already-consumed `_form`, and a
-    posted key outside the allowed set (incl. `_item` next to `_form`);
-  - `Ok` consumes the row; a 422 keeps it and re-renders from the stored spec;
-  - a wrong `_confirm` and a Required-but-empty `_reason` each give 422 with zero calls;
-  - `InvokeCall.item`, `expected_revision` and `request_id` come from the row;
-  - a token-less POST carries an empty `input`, rejects field keys, and still passes
-    `admit`;
-  - two concurrent POSTs with one `_form` invoke once; the other gets the `Info`
-    "Already submitted" 303. A claim older than 30 s can be re-taken;
-  - a 409 consumes the row; `FieldErrors`, timeout and `Failed` keep it and release the
-    claim;
-  - an `Ok` whose audit append fails still consumes the row;
-  - `validate_item` gives 400 at 257 bytes on both `?item=` (no row) and `_item` (zero
+    the old errors. The `core.events` Skip with `item: None` returns Invalid without
+    calling `skip`.
+- `core/admin` tests for Step 8a:
+  - claim: two concurrent POSTs with one `_form` invoke once, and the other gets the
+    `Info` "Already submitted" 303. A click after completion (tombstone) gets the same
+    answer. A claim older than 30 s can be re-taken;
+  - classify: a missing, expired, other-login or mismatched-action `_form` gives 400 with
+    zero calls;
+  - pre-invoke rejections release the claim, and an immediate corrected resubmit
+    invokes. The rejections: `admit` 403, a field decode 422, an empty Required reason
+    422, a wrong `_confirm` 422;
+  - settle: `Ok`, `NoOp` and `Conflict` mark the row consumed; `FieldErrors`, timeout and
+    `Failed` release it; an `Ok` whose audit append fails is still consumed;
+  - the 422 re-render carries the same `_form`; the 409 re-render disables Save;
+  - `InvokeCall.item`, `expected_revision` and `request_id` come from the row; a readonly
+    field takes its stored default;
+  - token-less: `input` is empty; a field key, a `Then::Form`/`Then::Confirm` action and a
+    `PanelForm` action each give 400 with zero calls;
+  - `validate_item` gives 400 at 257 bytes on `?item=` (no row) and on `_item` (zero
     calls);
-  - the `core.events` skip with `item: None` returns Invalid without calling `skip`;
-  - a posted value for a `readonly` field is ignored.
-- `core/controlplane` tests for the Step 8a contract: `encode_field`/`decode_field` round
-  trip for every `FieldKind`, including a Multi value that contains a comma and a Money
-  value; a malformed raw value is a `FieldError`.
-- `tools/admincheck` fixtures for the Step 8a rules: a dangling `form_submit`, two primary
-  head actions, and an undecodable `Then::Form` default.
+  - a panel spec with a `__` key renders an error panel and mints no row; a failed mint
+    gives the 503 toast on a modal and "Form unavailable" on a panel;
+  - a cached `search=a` copy is never served for `search=b`;
+  - `NoOp` gives a 303 with an `Info` flash and audit `noop: …`.
+- `core/controlplane` tests for the Step 8a contract:
+  - an `encode_field`/`decode_field` round trip for every `FieldKind`, including a Multi
+    value containing a comma and a Money value;
+  - every rejected input in the decode table is a `FieldError`: non-member Enum/Multi,
+    non-finite Float, bad Duration, invalid Json, bad Money amount or currency.
+- `tools/admincheck` fixtures for the Step 8a rules, one each:
+  - a `PanelTool` or `PanelForm` naming an unknown contribution;
+  - a non-Invoke `PanelForm`;
+  - two `PanelForm` actions on one contribution;
+  - two primary head actions;
+  - a `__` field key;
+  - an undecodable `Then::Form` default.
 - `core/admin` engine test for the Step 13 `EntityListColumn` fan-out: one call per page,
   and a failing column does not fail the table.
 - `core/admin/src/engine/*_tests.rs`:
