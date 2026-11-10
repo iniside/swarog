@@ -429,8 +429,7 @@ impl DescribeManifest {
 }
 
 /// Contribution slot the gateway reads to build its route table (the [`Operation`]
-/// half). A module contributes `Operation`s here; the gateway reads them. Same
-/// multi-value seam as `adminapi`'s slot.
+/// half). A module contributes `Operation`s here; the gateway reads them.
 pub const SLOT: contrib::Slot<Operation> = contrib::Slot::new("ops.operation");
 
 /// Contribution slot pairing each [`Operation`] with its HTTP↔wire translation

@@ -10,15 +10,10 @@ publish = false
 # 1s tick, emits `scheduler.fired{name}` durably (bus::emit_tx) for every schedule
 # whose interval elapsed — race-safe across replicas via a per-schedule
 # `pg_try_advisory_lock`. Runs NO job closures (a closure can't cross a process
-# boundary), so it is independently deployable as its own -svc. Its OWN glue crate
-# `schedulerrpc` re-exports `register_admin` for the read-only "Schedules" admin face.
+# boundary), so it is independently deployable as its own -svc.
 [dependencies]
 bus = { workspace = true }
 lifecycle = { workspace = true }
-edge = { workspace = true }
-opsapi = { workspace = true }
-adminapi = { workspace = true }
-schedulerrpc = { workspace = true }
 schedulerevents = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

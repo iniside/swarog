@@ -1,13 +1,10 @@
 use super::*;
 
-use std::collections::HashMap;
-
 use base64::Engine as _;
 use bus::{AnyTx, TxHandler};
 use opsapi::{Identity, Status};
 use sqlx::PgPool;
 
-use crate::admin::{apply_submit, Rejection, ADMIN_LABEL, ADMIN_SLUG};
 use crate::projection::{
     retention_days_from_env, PruneHandler, DEFAULT_RETENTION_DAYS, KIND_WALLET_CREDIT,
     MAX_RETENTION_DAYS, PLAYER_PROMOTED_SUB, PRUNE_BATCH, PRUNE_SCHEDULE_NAME, PRUNE_SUB,
@@ -107,8 +104,8 @@ async fn unique_player(pool: &PgPool) -> String {
     id
 }
 
-/// A dedup key in the exact shape `admin::mint_idempotency_key` mints (its own minting is
-/// private, and a hand-built key is what proves the SHAPE check rather than the minter).
+/// A dedup key in the exact [`OPERATOR_DEDUP_PREFIX`] shape, hand-built so the tests prove
+/// the SHAPE check.
 async fn operator_key(pool: &PgPool) -> String {
     let (hex,): (String,) =
         sqlx::query_as("SELECT replace(gen_random_uuid()::text, '-', '')")
@@ -627,19 +624,6 @@ fn every_octet_cap_in_the_ddl_is_mapped_by_a_contract_cap() {
     }
 }
 
-/// The portal resolves a page's URL from `slugify(label)`, NOT from the item id, so every
-/// self-link this module builds must come from `ADMIN_SLUG`. `slugify` is PRIVATE to
-/// `modules/admin` and importing that module would be a module→module edge `archcheck`
-/// rejects, so this is the strongest in-crate pin available: it catches a label edit that
-/// leaves the slug behind. The LIVE proof — a real `GET /admin/inbox?player=<uuid>` — is
-/// Step 9's split-proof assertion; a second admin page ever labelled "Inbox" would slug to
-/// `inbox-2` and no in-crate test can see it.
-#[test]
-fn the_admin_slug_is_the_label_lowercased() {
-    assert_eq!(ADMIN_SLUG, ADMIN_LABEL.to_lowercase());
-    assert!(!ADMIN_LABEL.contains(' '), "a multi-word label would slugify with a dash");
-}
-
 // ============================================================================
 // 4. `retention_days_from_env` — ONLY an unset variable takes the default.
 // ============================================================================
@@ -911,20 +895,9 @@ async fn mark_read_twice_keeps_the_first_read_at() {
 // 7. Operator mail — the three outcomes of ONE dedup key (finding B3/19).
 // ============================================================================
 
-fn send_params(player_id: &str, title: &str, body: &str, key: &str) -> adminapi::Params {
-    HashMap::from([
-        ("_action".to_string(), "send-mail".to_string()),
-        ("player_id".to_string(), player_id.to_string()),
-        ("title".to_string(), title.to_string()),
-        ("body".to_string(), body.to_string()),
-        ("_idem_send".to_string(), key.to_string()),
-    ])
-}
-
 /// `ON CONFLICT DO NOTHING` collapses "the same form submitted twice" and "an edited form
 /// resubmitted under its old key" into ONE SQL outcome. Only the first may read as success:
-/// before the re-read, an operator's correction was silently discarded and the portal
-/// rendered a success card.
+/// before the re-read, an operator's correction was silently discarded.
 #[tokio::test]
 async fn one_dedup_key_appends_dedups_and_refuses_an_edited_resubmit() {
     let Some(pool) = test_pool().await else { return };
@@ -965,27 +938,11 @@ async fn one_dedup_key_appends_dedups_and_refuses_an_edited_resubmit() {
             .unwrap();
     assert_eq!(body, "first", "the edited resubmit must NOT have overwritten the row");
 
-    // The same three outcomes as the operator sees them, through the submit authority both
-    // topologies run.
-    assert!(
-        apply_submit(&svc, send_params(&pid, "Hello", "first", &key))
-            .await
-            .is_ok(),
-        "an identical resubmit is a success no-op"
-    );
-    let stale = apply_submit(&svc, send_params(&pid, "Hello", "edited", &key))
-        .await
-        .expect_err("an edited resubmit must be refused");
-    assert!(
-        matches!(stale, Rejection::Stale),
-        "an edited resubmit under a spent key is `reload`, never a silent success"
-    );
-
     cleanup(&pool, &[&pid]).await;
 }
 
-/// The operator entry is the ONLY caller of the insert authority that a portal reaches, so
-/// it is where a key from the durable half of the shared column has to be refused.
+/// The operator entry is where a key from the durable half of the shared column has to be
+/// refused.
 #[tokio::test]
 async fn operator_mail_refuses_a_key_that_is_not_an_operator_key() {
     let Some(pool) = test_pool().await else { return };
@@ -1007,107 +964,7 @@ async fn operator_mail_refuses_a_key_that_is_not_an_operator_key() {
     assert_eq!(e.status, Status::Invalid);
     assert!(rows_of(&pool, &pid).await.is_empty());
 
-    let stale = apply_submit(&svc, send_params(&pid, "t", "b", "not-a-minted-key"))
-        .await
-        .expect_err("a form that did not come from a render of this page is stale");
-    assert!(matches!(stale, Rejection::Stale));
-
     cleanup(&pool, &[&pid]).await;
-}
-
-/// The `22P02 ⇒ Status::Invalid` arm of the insert authority and the TOLERANT cast under it —
-/// neither reachable from the durable path, which never gets near the cast
-/// (`deliverable_player_id` is why), so the operator form is the only caller that executes
-/// them. Without the first, a mistyped id renders a 500 card instead of the rejection that
-/// tells the operator what to change; without the second, a pasted Windows-style `{ABC…}` id
-/// would write a row its owner can never read.
-#[tokio::test]
-async fn an_operator_id_is_cast_tolerantly_and_a_typo_is_a_rejection() {
-    let Some(pool) = test_pool().await else { return };
-    let _serialized = DB_LOCK.lock().await;
-    let (_ctx, svc) = wired(&pool).await;
-    let pid = unique_player(&pool).await;
-
-    let typo_key = operator_key(&pool).await;
-    let typo = apply_submit(&svc, send_params("oops", "Hello", "b", &typo_key))
-        .await
-        .expect_err("a player_id the DB cannot parse must be refused");
-    match typo {
-        Rejection::Rejected(msg) => assert!(
-            msg.contains("uuid"),
-            "the operator must be told WHAT to change, got {msg:?}"
-        ),
-        Rejection::Stale => panic!("a typo is not a stale form"),
-        Rejection::Internal(msg) => {
-            panic!("a mistyped id is operator input (400), not a server fault: {msg}")
-        }
-    }
-
-    // The tolerant half: a braced, uppercase spelling of the SAME id folds onto one player.
-    let key = operator_key(&pool).await;
-    let braced = format!("{{{}}}", pid.to_uppercase());
-    assert!(
-        apply_submit(&svc, send_params(&braced, "Hello", "b", &key))
-            .await
-            .is_ok(),
-        "a braced/uppercase id is one spelling of a real player, not a rejection"
-    );
-    assert_eq!(
-        rows_of(&pool, &pid).await.len(),
-        1,
-        "the row must land on the CANONICAL player, who is the one who reads the inbox"
-    );
-
-    // And the conflict re-read compares THROUGH the same cast: a resubmit spelling the id
-    // differently is the same message, not an edited one.
-    assert!(
-        apply_submit(&svc, send_params(&pid, "Hello", "b", &key))
-            .await
-            .is_ok(),
-        "a resubmit spelling the id differently must read as the duplicate it is, never Stale"
-    );
-    assert_eq!(rows_of(&pool, &pid).await.len(), 1);
-
-    cleanup(&pool, &[&pid]).await;
-}
-
-/// `admin_render` bridges the async store reads into the synchronous `RenderFn` with
-/// `block_in_place`, which PANICS on a current-thread runtime — so the local page is only
-/// exercised on the multi-thread flavour the monolith actually runs.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_local_inbox_page_renders_a_drill_down_and_carries_its_submit() {
-    let Some(pool) = test_pool().await else { return };
-    let _serialized = DB_LOCK.lock().await;
-    let (_ctx, svc) = wired(&pool).await;
-    let pid = unique_player(&pool).await;
-    seed_row(&svc, &pool, &pid, "rendered mail").await;
-
-    let params = adminapi::Params::from([("player".to_string(), pid.clone())]);
-    let content = admin_render_for_test(&svc, &params);
-    let table = content.table.as_ref().expect("the drill-down renders a table");
-    assert_eq!(table.rows.len(), 1);
-    let cells: Vec<&str> = table.rows[0].iter().map(|c| c.text.as_str()).collect();
-    assert!(
-        cells.contains(&"rendered mail"),
-        "the rendered row must carry the seeded title, got {cells:?}"
-    );
-    assert!(
-        content.form.as_ref().is_some_and(|f| f.submit.is_some()),
-        "the LOCAL render must carry the in-process submit closure"
-    );
-
-    // A malformed drill-down renders an error CARD, never an Err: in a split, an Err raised
-    // by another page's param would degrade this item to an error card in every sidebar.
-    let bad = adminapi::Params::from([("player".to_string(), "not-a-uuid".to_string())]);
-    let content = admin_render_for_test(&svc, &bad);
-    assert!(content.table.is_none());
-    assert_eq!(content.kpis.first().map(|k| k.label.as_str()), Some("Error"));
-
-    cleanup(&pool, &[&pid]).await;
-}
-
-fn admin_render_for_test(svc: &Arc<Service>, params: &adminapi::Params) -> adminapi::Content {
-    crate::admin::admin_render(svc, params).unwrap()
 }
 
 // ============================================================================

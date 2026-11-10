@@ -199,8 +199,8 @@ fn a_string_map_records_both_its_key_and_value_legs() {
     );
 }
 
-/// `adminapi::Params` is a type alias, not a struct — the shape that made the whole
-/// admin surface invisible. The alias must resolve before any other decision.
+/// A type alias is not a struct, so an unresolved alias hides every field behind it. The
+/// alias must resolve before any other decision.
 #[test]
 fn a_type_alias_resolves_to_its_target_before_being_classified() {
     assert_eq!(
@@ -240,8 +240,7 @@ fn a_map_whose_value_is_unresolvable_is_rejected() {
 //
 // `discover_sources` used to walk `file.items` at the TOP LEVEL only, so an `#[rpc]`
 // trait or a request DTO inside an inline `mod` was invisible: no key, no golden row,
-// every gate green. Contract crates already declare inline modules (`pub mod admin` in
-// api/accounts and api/characters).
+// every gate green.
 
 #[test]
 fn a_contract_declared_in_an_inline_mod_is_discovered() {

@@ -107,7 +107,7 @@ impl Store {
         Ok(found.is_some())
     }
 
-    /// The purge backlog the admin page shows: tombstones the sweep still owes work
+    /// The purge backlog: tombstones the sweep still owes work
     /// on, and the oldest one's `created_at` (`""` when nothing is outstanding).
     /// `purged_players_pending_idx` serves the predicate, so the cost tracks
     /// outstanding work rather than the permanent row per deleted player.

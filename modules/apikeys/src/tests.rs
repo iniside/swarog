@@ -1,7 +1,6 @@
 //! Unit tests for the dev-seed contract (pure, over the consts) + the `apikeys.keys`
 //! capability (the `Keys` trait the gateway resolves) over the live store — now hashed +
-//! role-JOINed. The pure role/key store CRUD lives in `store_tests.rs`; the admin
-//! configurator in `admin_tests.rs`.
+//! role-JOINed. The pure role/key store CRUD lives in `store_tests.rs`.
 
 use super::*;
 use crate::store::Store;
@@ -73,8 +72,7 @@ fn dev_client_policy_entries_are_wire_methods() {
 /// passes for any well-formed string, so a renamed op (`accounts.loginEpic` ->
 /// `accounts.loginFederated`) would leave this hand-maintained const stale with no
 /// gate red — the only symptom being a runtime 403 for `dev-key-client`.
-/// `opscatalog::OPERATIONS` is the codegen-freshness-gated method authority the
-/// role editor already uses (`admin::policy_method_options`).
+/// `opscatalog::OPERATIONS` is the codegen-freshness-gated method authority.
 #[test]
 fn dev_client_policy_entries_exist_in_the_op_catalog() {
     let catalog: std::collections::BTreeSet<&str> =

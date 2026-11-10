@@ -13,13 +13,11 @@
 //! to the service with the verified caller identity threaded in — never a
 //! client-supplied one. An impl crate: no other module imports it.
 
-mod admin;
 mod owner;
 mod projection;
 mod service;
 mod store;
 
-use admin::*;
 use owner::*;
 #[allow(unused_imports)] // re-exported so tests.rs's `use super::*;` sees STARTER_ITEM/STARTER_QTY/lock_key/…
 use projection::*;
@@ -41,11 +39,6 @@ pub(crate) use opsapi::Identity;
 use registry::key;
 #[allow(unused_imports)] // re-exported for tests.rs's `use super::*;`, unused by lib.rs's own code
 pub(crate) use sqlx::{PgConnection, PgPool};
-
-/// The admin surface ids (Section groups it in the sidebar; Label is the entry).
-const ADMIN_ITEM_ID: &str = "inventory";
-const ADMIN_SECTION: &str = "Game Content";
-const ADMIN_LABEL: &str = "Inventory";
 
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
 /// Idempotent. `holdings.owner_id` is a plain `uuid` ref to a player/character with
@@ -202,8 +195,8 @@ impl Module for Inventory {
     ///        contract,
     ///   4. resolve `config` (HARD — fail-loud, this is why config is in `requires`);
     ///      `grant_starter` reads it directly, no second cache/subscription needed,
-    ///   5/6. contribute the player operations (ALL unconditional; grant is gated at
-    ///        the impl) + the local admin item,
+    ///   5. contribute the player operations (ALL unconditional; grant is gated at
+    ///      the impl),
     ///   and the generated RPC face to the edge slot (applied by `app::run` iff this
     ///   process serves an internal edge).
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
@@ -324,29 +317,6 @@ impl Module for Inventory {
             ctx.contribute(opsapi::LOCAL_SLOT, op.local);
         }
 
-        // 6. The local admin page (owners list + ?owner= drill-down). The RenderFn is
-        // synchronous but the store reads are async; no admin PORTAL renders this in
-        // M1, so the closure bridges via block_in_place (needs the multi-thread runtime
-        // the app boots on).
-        let render_inner = inner.clone();
-        ctx.contribute(
-            adminapi::SLOT,
-            adminapi::Item::local(
-                ADMIN_ITEM_ID,
-                ADMIN_SECTION,
-                ADMIN_LABEL,
-                Arc::new(move |params: &adminapi::Params| {
-                    let render_inner = render_inner.clone();
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(admin_content(&render_inner.store, params))
-                    })
-                }),
-            )
-            // The cross-page contributions (Players menu + Characters card menu +
-            // character-modal footer); the SAME vec `admin_data` sends over the wire.
-            .with_extensions(admin::extension_entries()),
-        );
-
         // Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`
         // applies this iff the entrypoint stood up an internal edge server (then a
         // front gateway in a peer routes `inventory.*` here over QUIC); in the
@@ -355,9 +325,6 @@ impl Module for Inventory {
         ctx.contribute(
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
-                // The admin fan-out face (`admin.adminData`), via this module's OWN
-                // glue crate's re-export (no foreign rpc import).
-                inventoryrpc::register_admin(server, inner.clone());
                 inventoryrpc::holdings_rpc::register_server(server, inner);
             }),
         );

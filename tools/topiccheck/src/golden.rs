@@ -130,20 +130,6 @@ fn rpc_modules() -> Vec<RpcModule> {
             accountsapi::directory_rpc::describe().ops,
         ),
         (
-            "adminapi::admin_data_rpc",
-            adminapi::admin_data_rpc::route_bindings(),
-            adminapi::admin_data_rpc::wire_ops(),
-            adminapi::admin_data_rpc::body_shapes(),
-            adminapi::admin_data_rpc::describe().ops,
-        ),
-        (
-            "adminapi::admin_submit_rpc",
-            adminapi::admin_submit_rpc::route_bindings(),
-            adminapi::admin_submit_rpc::wire_ops(),
-            adminapi::admin_submit_rpc::body_shapes(),
-            adminapi::admin_submit_rpc::describe().ops,
-        ),
-        (
             "apikeysapi::keys_rpc",
             apikeysapi::keys_rpc::route_bindings(),
             apikeysapi::keys_rpc::wire_ops(),

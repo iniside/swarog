@@ -65,7 +65,7 @@ pub(crate) fn class_within_cap(class: &str) -> bool {
 
 // ============================================================================
 // Service — backs Ownership + Player (the registry capabilities + the generated
-// edge faces + the gateway's in-process invokers) and the local admin render.
+// edge faces + the gateway's in-process invokers).
 // ============================================================================
 
 /// What other modules get from `require::<dyn Ownership>` / `require::<dyn Player>`.

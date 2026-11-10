@@ -53,10 +53,6 @@ members = [
     # Topic drift check (Step 14b): builds the monolith module set with a recording bus
     # transport and flags any `bus::define`d topic that no module subscribes to.
     "tools/topiccheck",
-    # Admin extension-point contract check (admin extension points, Step 5): builds
-    # both deployment profiles (register->init, lazy pool, no-op transport), reads
-    # adminapi::SLOT contributions, and validates every contributed ExtensionEntry
-    # against the extension POINTS the page owners declare as consts.
     "tools/admincheck",
     # Registry require-vs-declare drift check: builds the monolith module set with a
     # require-observer installed and flags any mandatory `require()` whose provider is
@@ -119,19 +115,14 @@ members = [
     "api/config/api",
     "api/config/rpc",
     "api/config/events",
-    "api/admin/api",
-    "api/admin/rpc",
     "api/admin/events",
-    "api/audit/rpc",
     "api/scheduler/events",
-    "api/scheduler/rpc",
     "api/wallet/api",
     "api/wallet/rpc",
     "api/wallet/events",
     "api/notifications/api",
     "api/notifications/rpc",
     "api/mail/events",
-    "api/mail/rpc",
     "api/friends/api",
     "api/friends/rpc",
     "api/friends/events",
@@ -254,12 +245,6 @@ url = "2"
 # prefix), NOT a password-KDF (argon2 can't be indexed). RustCrypto, ring-free.
 sha2 = "0.10"
 
-# Duplicate-preserving urlencoded parsing for the admin portal's form POSTs: a
-# CheckboxGroup field posts its shared name once per checked option, so the admin
-# parses the body as ORDERED pairs (axum's `Form<HashMap>` collapses duplicates) and
-# comma-joins the group. Tiny, transitive already (via `url`/axum), pinned once here.
-form_urlencoded = "1"
-
 # Cookie parsing for the admin portal's session auth (axum 0.7 line). Only the
 # `cookie` feature — the admin module reads `admin_session` via `CookieJar` and
 # writes Set-Cookie headers itself (exact flag control, no extra `time` dep).
@@ -341,12 +326,8 @@ testdb = { path = "tools/testdb" }
 # ---- Contract surfaces (api/<name>/): shared by modules, import no module.
 # `<name>api` is the PURE contract a domain consumer may import (rule 4);
 # `<name>rpc` is the generated transport glue (own module + remote + cmd only). ----
-adminapi = { path = "api/admin/api" }
-adminrpc = { path = "api/admin/rpc" }
 adminevents = { path = "api/admin/events" }
-auditrpc = { path = "api/audit/rpc" }
 schedulerevents = { path = "api/scheduler/events" }
-schedulerrpc = { path = "api/scheduler/rpc" }
 accountsapi = { path = "api/accounts/api" }
 accountsrpc = { path = "api/accounts/rpc" }
 accountsevents = { path = "api/accounts/events" }
@@ -373,7 +354,6 @@ walletevents = { path = "api/wallet/events" }
 notificationsapi = { path = "api/notifications/api" }
 notificationsrpc = { path = "api/notifications/rpc" }
 mailevents = { path = "api/mail/events" }
-mailrpc = { path = "api/mail/rpc" }
 friendsapi = { path = "api/friends/api" }
 friendsrpc = { path = "api/friends/rpc" }
 friendsevents = { path = "api/friends/events" }

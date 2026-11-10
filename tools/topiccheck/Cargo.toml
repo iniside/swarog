@@ -50,7 +50,6 @@ groupsevents = { workspace = true }
 # `#[rpc]` traits actually present under api/*/api at runtime.
 opsapi = { workspace = true }
 accountsapi = { workspace = true }
-adminapi = { workspace = true }
 apikeysapi = { workspace = true }
 charactersapi = { workspace = true }
 configapi = { workspace = true }

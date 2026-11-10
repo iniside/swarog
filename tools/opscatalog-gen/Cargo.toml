@@ -15,7 +15,6 @@ publish = false
 [dependencies]
 opsapi = { workspace = true }
 accountsapi = { workspace = true }
-adminapi = { workspace = true }
 apikeysapi = { workspace = true }
 charactersapi = { workspace = true }
 configapi = { workspace = true }

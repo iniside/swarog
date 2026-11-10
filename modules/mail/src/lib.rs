@@ -13,7 +13,6 @@
 //! be safe to follow twice.
 
 mod address;
-mod admin;
 pub mod config;
 pub mod conformance;
 mod projection;
@@ -250,32 +249,6 @@ impl Module for MailModule {
         });
         ctx.bus()
             .on_tx_raw(projection::PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
-
-        // The local "Mail" page. The `RenderFn` is synchronous; `admin::admin_render`
-        // bridges to the async store reads via `block_in_place`.
-        let render_svc = svc.clone();
-        ctx.contribute(
-            adminapi::SLOT,
-            adminapi::Item::local(
-                admin::ADMIN_ITEM_ID,
-                admin::ADMIN_SECTION,
-                admin::ADMIN_LABEL,
-                Arc::new(move |params: &adminapi::Params| admin::admin_render(&render_svc, params)),
-            ),
-        );
-
-        // Contributed UNCONDITIONALLY — topology-blind: `app::run` applies it iff this
-        // process serves an internal edge; in the monolith it is never applied. The admin
-        // fan-out READ face and, alongside it, the opt-in WRITE face, both through this
-        // module's OWN glue crate's re-exports — the write face is what makes the Mail page
-        // editable from a REMOTE admin process.
-        ctx.contribute(
-            edge::EDGE_SLOT,
-            edge::EdgeReg::new(move |server| {
-                mailrpc::register_admin(server, svc.clone());
-                mailrpc::register_admin_submit(server, svc.clone());
-            }),
-        );
 
         // The two arms of ONE `/readyz` check, mutually exclusive by construction: an
         // unconfigured channel is permanently not-ready, a configured one reports its

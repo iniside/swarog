@@ -86,7 +86,7 @@ pub(crate) fn is_uuid_text(s: &str) -> bool {
 
 /// The dedup column's byte ceiling, enforced for BOTH write paths. It is a module const,
 /// not a contract one: no wire field carries a dedup key — the durable half is minted by
-/// the event plane and the operator half by `admin::mint_idempotency_key`. The value is
+/// the event plane and the operator half is an [`OPERATOR_DEDUP_PREFIX`] key. The value is
 /// wallet's (`MAX_IDEMPOTENCY_KEY_BYTES`), far above the two real shapes (a 36-char
 /// `event_id`, a 48-char operator key) and far below the ~2704-byte btree tuple limit that
 /// `notifications_source_event_idx` would otherwise raise 54000 on.
@@ -104,8 +104,8 @@ pub(crate) const OPERATOR_DEDUP_HEX: usize = 32;
 
 pub(crate) const MALFORMED_DEDUP_KEY: &str = "dedup key is not an operator key";
 
-/// True iff `s` is EXACTLY the shape `admin::mint_idempotency_key` mints. Checked at the
-/// operator entry point rather than at the form, so no caller of the pub authority can
+/// True iff `s` is EXACTLY [`OPERATOR_DEDUP_PREFIX`] plus [`OPERATOR_DEDUP_HEX`] hex
+/// digits. Checked at the operator entry point, so no caller of the pub authority can
 /// address a row in the durable half of the dedup column.
 pub(crate) fn is_operator_dedup_key(s: &str) -> bool {
     match s.strip_prefix(OPERATOR_DEDUP_PREFIX) {
@@ -182,8 +182,8 @@ pub(crate) fn resolve_limit(limit: i64) -> Result<i64, Error> {
 }
 
 /// One inbox row about to be written. `source_event_id` is the row's DEDUP identity, which
-/// is the durable `event_id` for the fan-in and the admin form's render-time
-/// `admin-send-mail-<hex>` key for operator mail. It is REQUIRED — [`validate_new`] refuses
+/// is the durable `event_id` for the fan-in and an `admin-send-mail-<hex>` key for
+/// operator mail. It is REQUIRED — [`validate_new`] refuses
 /// an empty one, because a keyless row deduplicates nothing. The two key spaces are kept
 /// disjoint by that prefix, which
 /// [`Service::send_operator_mail`] requires of every operator send, so no caller of the
@@ -364,7 +364,7 @@ impl Service {
     }
 
     /// Operator mail: the SAME [`Service::deliver_on`] policy, run on a pool connection, so
-    /// the admin form cannot acquire an input rule the durable fan-in does not have.
+    /// operator mail cannot acquire an input rule the durable fan-in does not have.
     ///
     /// The key's shape is enforced HERE, not at the form: this is the only operator entry to
     /// the insert authority (neither it nor [`Service::deliver_on`] leaves the crate —

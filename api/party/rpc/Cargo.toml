@@ -14,7 +14,7 @@ publish = false
 #
 # No `remote_factories()`/`provide_factories()` aggregator: no other process consumes a
 # party CAPABILITY (gateway-svc contributes party's routes via `Stub::describe_peer`, and
-# the monolith is local). No `adminrpc` re-export: party has no admin page.
+# the monolith is local).
 [dependencies]
 partyapi = { workspace = true }
 opsapi = { workspace = true }

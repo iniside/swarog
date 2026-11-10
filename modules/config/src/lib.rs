@@ -2,7 +2,7 @@
 //! Go's `modules/config`). Namespaced `key=value` settings live in schema `config`;
 //! any module reads them via the provided [`configapi::Config`] capability
 //! (`get_string`/`get_bool`/`get_int`/`get` with a code-default fallback), and edits
-//! made in `/admin` (or raw `psql`) propagate to every reader through the
+//! (a service write or raw `psql`) propagate to every reader through the
 //! `config.settings` write trigger. Secrets stay in env; only non-secret operational
 //! knobs go here.
 //!
@@ -28,7 +28,7 @@
 //! `configevents` (the `config.changed` event) — never on this crate.
 
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
 use lifecycle::{Context, Module};
@@ -160,7 +160,7 @@ async fn seed_history_contract(pool: &PgPool) -> anyhow::Result<()> {
 }
 
 /// One persisted config row (`updated_at` is intentionally not carried — the getters
-/// and admin render only need the value).
+/// only need the value).
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Setting {
     namespace: String,
@@ -192,7 +192,7 @@ impl CacheState {
 
 /// Validates a namespace/key: non-empty and `[a-z0-9_]` only. Restricting ids this
 /// way makes the `:` separator unambiguous everywhere it appears — the `pg_notify`
-/// payload (`namespace:key`) and the admin form field name. (Go's `identRe`.)
+/// payload (`namespace:key`). (Go's `identRe`.)
 fn valid_ident(s: &str) -> bool {
     !s.is_empty()
         && s.bytes()
@@ -200,9 +200,8 @@ fn valid_ident(s: &str) -> bool {
 }
 
 /// Validates a `(namespace, key)` pair (both [`valid_ident`]), returning a descriptive
-/// error naming the offending id. Shared by every write path — [`Service::set`],
-/// [`Service::set_tx`], and the admin `apply_edit` phase-1 validation — so they all
-/// reject the same ids identically.
+/// error naming the offending id. Shared by every write path — [`Service::set`] and
+/// [`Service::set_tx`] — so they all reject the same ids identically.
 fn validate_ident(ns: &str, key: &str) -> anyhow::Result<()> {
     if !valid_ident(ns) {
         anyhow::bail!("config: invalid namespace {ns:?} (must match ^[a-z0-9_]+$)");
@@ -219,8 +218,8 @@ fn validate_ident(ns: &str, key: &str) -> anyhow::Result<()> {
 
 /// The config service: a read-mostly in-memory cache of settings (kept fresh by the
 /// listener) plus a validating [`Service::set`]. Readers get it as
-/// `Arc<dyn configapi::Config>`; the concrete `set` is config-private (its own admin
-/// uses it), NOT on the reader trait.
+/// `Arc<dyn configapi::Config>`; the concrete `set` is config-private, NOT on the reader
+/// trait.
 pub struct Service {
     pool: PgPool,
     cache: RwLock<CacheState>,
@@ -254,9 +253,9 @@ impl Service {
     }
 
     /// The transactional twin of [`Service::set`]: validates the ids (defense in depth)
-    /// and runs the SAME upsert over a caller-supplied connection, so the admin
-    /// `apply_edit` can batch several settings into ONE transaction that commits (or
-    /// rolls back) as a unit. The `config.settings` AFTER-write trigger is FOR EACH ROW,
+    /// and runs the SAME upsert over a caller-supplied connection, so a caller can batch
+    /// several settings into ONE transaction that commits (or rolls back) as a unit. The
+    /// `config.settings` AFTER-write trigger is FOR EACH ROW,
     /// so each upsert still bumps the revision + `pg_notify`s + appends its own durable
     /// `config.changed` event — all made visible atomically at commit.
     pub async fn set_tx(
@@ -314,7 +313,7 @@ impl Service {
     }
 
     /// Clones one coherent cache snapshot and sorts its settings by
-    /// `(namespace, key)` for a stable admin render. Revision and map are copied while
+    /// `(namespace, key)` for a stable render. Revision and map are copied while
     /// holding the same read guard, so the hidden concurrency token always names the
     /// visible fields beside it.
     fn cached_snapshot(&self) -> (i64, Vec<Setting>) {
@@ -431,206 +430,11 @@ impl configapi::ConfigSnapshot for Service {
 }
 
 // ============================================================================
-// Admin — the config editor page (contract only; no portal renders it in M1).
-// ============================================================================
-
-/// The config editor page: KPIs, a read-only table of the current settings, and an
-/// editable [`adminapi::Form`] (one field per setting + an add-new triple). The
-/// admin portal owns the POST route/auth/rendering; config only supplies the
-/// declarative widgets and the `apply_edit` submit closure.
-fn admin_render(svc: &Arc<Service>, _params: &adminapi::Params) -> anyhow::Result<adminapi::Content> {
-    let (revision, rows) = svc.cached_snapshot();
-
-    let mut namespaces: HashSet<&str> = HashSet::new();
-    let mut table = adminapi::Table {
-        columns: vec!["Namespace".into(), "Key".into(), "Value".into()],
-        rows: Vec::with_capacity(rows.len()),
-        ..Default::default()
-    };
-    let mut fields: Vec<adminapi::Field> = Vec::with_capacity(rows.len() + 3);
-    for r in &rows {
-        namespaces.insert(r.namespace.as_str());
-        table.rows.push(vec![
-            adminapi::Cell::mono(&r.namespace),
-            adminapi::Cell::mono(&r.key),
-            adminapi::Cell::text(&r.value),
-        ]);
-        fields.push(adminapi::Field {
-            name: format!("{}:{}", r.namespace, r.key),
-            label: format!("{} / {}", r.namespace, r.key),
-            value: r.value.clone(),
-            ..Default::default()
-        });
-    }
-    // Add-new triple: config owns the "" -> insert semantics; the adminapi::Form
-    // contract stays a generic name/value list.
-    fields.push(adminapi::Field {
-        name: "_new_namespace".into(),
-        label: "New namespace".into(),
-        value: String::new(),
-        ..Default::default()
-    });
-    fields.push(adminapi::Field {
-        name: "_new_key".into(),
-        label: "New key".into(),
-        value: String::new(),
-        ..Default::default()
-    });
-    fields.push(adminapi::Field {
-        name: "_new_value".into(),
-        label: "New value".into(),
-        value: String::new(),
-        ..Default::default()
-    });
-
-    let submit_svc = svc.clone();
-    let form = adminapi::Form {
-        action: String::new(),
-        fields,
-        hidden: vec![adminapi::HiddenField {
-            name: "_expected_revision".into(),
-            value: revision.to_string(),
-        }],
-        submit: Some(Arc::new(move |values: adminapi::Params| {
-            let svc = submit_svc.clone();
-            Box::pin(async move {
-                apply_edit(&svc, values).await?;
-                Ok(adminapi::SubmitOutcome::default())
-            })
-        })),
-    };
-
-    Ok(adminapi::Content {
-        kpis: vec![
-            adminapi::Kpi {
-                label: "Settings".into(),
-                value: rows.len().to_string(),
-                sub: String::new(),
-            },
-            adminapi::Kpi {
-                label: "Namespaces".into(),
-                value: namespaces.len().to_string(),
-                sub: String::new(),
-            },
-        ],
-        table: Some(table),
-        form: Some(form),
-        ..Default::default()
-    })
-}
-
-/// The read-only settings content (KPIs + table, no editable form) — what the REMOTE
-/// admin fan-out returns, since a remote form cannot marshal its `submit` closure.
-fn admin_content_ro(svc: &Service) -> adminapi::Content {
-    let rows = svc.all();
-    let mut namespaces: HashSet<&str> = HashSet::new();
-    let mut table = adminapi::Table {
-        columns: vec!["Namespace".into(), "Key".into(), "Value".into()],
-        rows: Vec::with_capacity(rows.len()),
-        ..Default::default()
-    };
-    for r in &rows {
-        namespaces.insert(r.namespace.as_str());
-        table.rows.push(vec![
-            adminapi::Cell::mono(&r.namespace),
-            adminapi::Cell::mono(&r.key),
-            adminapi::Cell::text(&r.value),
-        ]);
-    }
-    adminapi::Content {
-        kpis: vec![
-            adminapi::Kpi { label: "Settings".into(), value: rows.len().to_string(), sub: String::new() },
-            adminapi::Kpi { label: "Namespaces".into(), value: namespaces.len().to_string(), sub: String::new() },
-        ],
-        table: Some(table),
-        form: None,
-        ..Default::default()
-    }
-}
-
-#[async_trait::async_trait]
-impl adminapi::AdminData for Service {
-    /// The admin fan-out (`admin.adminData` on the edge): the config page as
-    /// `adminapi::ItemData`. Read-only over the wire (the editable form is LOCAL-only),
-    /// same Section/Label the local `Item` carries.
-    async fn admin_data(&self, _params: adminapi::Params) -> Result<adminapi::ItemData, opsapi::Error> {
-        Ok(adminapi::ItemData {
-            id: "config".into(),
-            section: "Platform".into(),
-            label: "Game Config & Flags".into(),
-            content: admin_content_ro(self),
-            ..Default::default()
-        })
-    }
-}
-
-/// Applies a posted whole-snapshot edit with the global `config.revision` as its
-/// compare-and-swap authority. Validation/planning happens before the transaction so
-/// the short database lock section contains only the CAS and its writes. The table
-/// lock MUST precede the revision-row lock: ordinary/raw writers acquire their table
-/// lock through settings DML before the trigger bumps the revision, so using the same
-/// order avoids a row↔revision lock inversion and also covers concurrent inserts.
-async fn apply_edit(
-    svc: &Arc<Service>,
-    values: adminapi::Params,
-) -> Result<(), adminapi::SubmitError> {
-    let expected_revision = values
-        .get("_expected_revision")
-        .and_then(|value| value.parse::<i64>().ok())
-        .ok_or(adminapi::SubmitError::Conflict)?;
-
-    // Validate the whole form and build the exact write set before taking DB locks.
-    let mut planned: Vec<(String, String, String)> = Vec::new();
-
-    for s in svc.all() {
-        if let Some(v) = values.get(&format!("{}:{}", s.namespace, s.key)) {
-            if *v != s.value {
-                // These ids came from the store, so they are valid; validate defensively
-                // to keep every write path uniform.
-                validate_ident(&s.namespace, &s.key).map_err(adminapi::SubmitError::from)?;
-                planned.push((s.namespace.clone(), s.key.clone(), v.clone()));
-            }
-        }
-    }
-
-    let ns = adminapi::param(&values, "_new_namespace");
-    let key = adminapi::param(&values, "_new_key");
-    let val = adminapi::param(&values, "_new_value");
-    if !ns.is_empty() && !key.is_empty() && !val.is_empty() {
-        validate_ident(ns, key).map_err(adminapi::SubmitError::from)?;
-        planned.push((ns.to_string(), key.to_string(), val.to_string()));
-    }
-
-    let mut tx = svc.pool.begin().await.map_err(anyhow::Error::from)?;
-    sqlx::query("LOCK TABLE config.settings IN SHARE ROW EXCLUSIVE MODE")
-        .execute(&mut *tx)
-        .await
-        .map_err(anyhow::Error::from)?;
-    let current_revision: i64 = sqlx::query_scalar(
-        "SELECT revision FROM config.revision WHERE singleton FOR UPDATE",
-    )
-    .fetch_one(&mut *tx)
-    .await
-    .map_err(anyhow::Error::from)?;
-    if current_revision != expected_revision {
-        return Err(adminapi::SubmitError::Conflict);
-    }
-
-    for (ns, key, value) in planned {
-        svc.set_tx(&mut tx, &ns, &key, &value)
-            .await
-            .map_err(adminapi::SubmitError::from)?;
-    }
-    tx.commit().await.map_err(anyhow::Error::from)?;
-    Ok(())
-}
-
-// ============================================================================
 // Module — the lifecycle wiring.
 // ============================================================================
 
-/// The config module. Holds the constructed service (shared between `register`, the
-/// invalidation callback, and the admin render).
+/// The config module. Holds the constructed service (shared between `register` and the
+/// invalidation callback).
 pub struct Config {
     svc: OnceLock<Arc<Service>>,
 }
@@ -699,21 +503,10 @@ impl Module for Config {
         Ok(())
     }
 
-    /// Only wires up — no DB I/O (#8). Contributes the admin editor page + the edge
-    /// face, and registers the authoritative-refresh callback on the `config_changed`
+    /// Only wires up — no DB I/O (#8). Contributes the edge face, and registers the
+    /// authoritative-refresh callback on the `config_changed`
     /// invalidation channel (REFRESH role only — the boot-fill stays in `start`).
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
-        let svc = self.svc();
-        ctx.contribute(
-            adminapi::SLOT,
-            adminapi::Item::local(
-                "config",
-                "Platform",
-                "Game Config & Flags",
-                Arc::new(move |params: &adminapi::Params| admin_render(&svc, params)),
-            ),
-        );
-
         // Edge exposure, contributed UNCONDITIONALLY — topology-blind (Step 3 seam):
         // config's wire-only `ConfigSnapshot` face rides `edge::EDGE_SLOT`; `app::run`
         // installs it iff this process serves an internal edge (config-svc does; the
@@ -722,9 +515,6 @@ impl Module for Config {
         ctx.contribute(
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
-                // The admin fan-out face (`admin.adminData`), via this module's OWN
-                // glue crate's re-export (no foreign rpc import).
-                configrpc::register_admin(server, snap.clone());
                 configrpc::config_snapshot_rpc::register_server(server, snap);
             }),
         );

@@ -263,25 +263,3 @@ pub trait Auth: Send + Sync {
     async fn delete_account(&self, identity: Identity, ticket: String) -> Result<DeleteReceipt, Error>;
 }
 
-// The admin fan-out capability now lives in the cross-cutting `adminapi::AdminData`
-// `#[rpc]` trait (Step 7): the accounts `Service` implements it and exposes it on its
-// edge as `admin.adminData`, so a remote admin process pulls the Players page over the
-// QUIC edge. No per-domain `Admin` trait remains.
-
-/// The admin extension POINTS accounts OWNS on its portal pages. A contributor
-/// (characters, inventory) imports THIS const to target the point by id — it never
-/// imports the accounts impl, and accounts never learns who extends it (the same
-/// Open/Closed inversion the bus/registry seams enforce).
-pub mod admin {
-    use adminapi::{ExtensionKind, ExtensionPoint};
-
-    /// The `⋯` menu on each Players-page row. Contributors add drill-down entries
-    /// ("View Characters", "View Inventory"); the row `context` supplies `id` as
-    /// `"player:<uuid>"` and `name` as the player's display name (so a drill-down
-    /// page can show WHO it is scoped to without knowing the accounts module).
-    pub const PLAYERS_ROW_MENU: ExtensionPoint = ExtensionPoint {
-        id: "accounts.players.row-menu",
-        kind: ExtensionKind::EntityMenu,
-        context_keys: &["id", "name"],
-    };
-}

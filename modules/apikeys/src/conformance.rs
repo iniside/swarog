@@ -18,8 +18,8 @@ pub fn conformance_key_rejected(len: usize) -> bool {
 }
 
 /// A role's `policy` string longer than the shared byte cap is definitively rejected.
-/// `roles.policy` is admin-writable via `admin.adminSubmit` (`create_role`/
-/// `set_role_policy`) and rides every gateway key-lookup response plus its 5s cache, so
+/// `roles.policy` is operator-writable (`create_role`/`set_role_policy`) and rides every
+/// gateway key-lookup response plus its 5s cache, so
 /// `store::validate_policy` caps it at admission — and this probe CALLS that function
 /// rather than restating its comparison, so tightening the rule to `>=` cannot leave the
 /// probe green (the `characters::conformance` pattern).
@@ -28,12 +28,10 @@ pub fn conformance_policy_rejected(len: usize) -> bool {
     crate::store::validate_policy(&"a".repeat(len)).is_err()
 }
 
-/// A role or key NAME longer than the shared byte cap is definitively rejected. Names
-/// arrive from the admin configurator's `role_name`/`key_name`/`role_target`/
-/// `key_target`/`key_role` fields over `admin.adminSubmit` in BOTH topologies, and
-/// `store::validate_name` caps every writer that binds one — as an inserted value, an
-/// updated value, or a `WHERE` predicate. This probe calls that very function, on the
-/// same `ColumnCap` the role writers pass.
+/// A role or key NAME longer than the shared byte cap is definitively rejected. Names are
+/// operator input, and `store::validate_name` caps every writer that binds one — as an
+/// inserted value, an updated value, or a `WHERE` predicate. This probe calls that very
+/// function, on the same `ColumnCap` the role writers pass.
 #[doc(hidden)]
 pub fn conformance_name_rejected(len: usize) -> bool {
     crate::store::validate_name(&crate::store::ROLE_NAME, &"a".repeat(len)).is_err()

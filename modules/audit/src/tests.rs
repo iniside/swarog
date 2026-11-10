@@ -7,6 +7,8 @@
 
 use std::collections::HashSet;
 
+use sqlx::PgPool;
+
 use super::*;
 
 const DEFAULT_DSN: &str =
@@ -203,8 +205,8 @@ fn with_retention_env(val: Option<&str>, f: impl FnOnce()) {
 }
 
 /// `AUDIT_RETENTION_DAYS=-1` FAILS startup — a negative retention would delete the
-/// whole ledger on the next prune tick. The bail fires BEFORE `init` ever touches
-/// `self.svc()`, so this needs no `register()` call and no live DB: `PgPool::
+/// whole ledger on the next prune tick. The bail fires before `init` subscribes anything,
+/// so this needs no live DB: `PgPool::
 /// connect_lazy` never dials Postgres (it only needs a Tokio context to spawn its
 /// background task, hence `#[tokio::test]`).
 #[tokio::test(flavor = "multi_thread")]
@@ -239,7 +241,7 @@ async fn init_bails_on_zero_retention_days() {
 
 /// An unset `AUDIT_RETENTION_DAYS` boots normally at the compiled default —
 /// `env_int` falls back silently, so `init` must fully succeed (this test runs
-/// `register` first so `self.svc()` resolves, exercising the real boot order).
+/// `register` first, exercising the real boot order).
 /// `init` also subscribes durable handlers via `ctx.bus().on_tx_raw`, which panics
 /// on a transport-less bus — so this needs `Context::with_db_and_transport` with the
 /// `asyncevents::testing` in-memory transport handle (subscribing is pure

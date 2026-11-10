@@ -8,7 +8,7 @@
 //! is fully decoupled and independently deployable (see `cmd/scheduler-svc`).
 //!
 //! Schedules are DATA, not code: the target way to add one is a runtime INSERT into
-//! `scheduler.schedules` (via ops/admin), not an edit here. The migration seeds only a
+//! `scheduler.schedules`, not an edit here. The migration seeds only a
 //! minimal bootstrap row (`audit-prune`, 86400s).
 //!
 //! ## Exactly-once across replicas (the concurrency dance in [`fire`])
@@ -122,12 +122,6 @@ const STOP_GRACE: Duration = Duration::from_secs(4);
 /// means ticks have been failing (or wedging) across two consecutive deadline windows.
 const TICK_STALL_MAX: Duration = Duration::from_secs(60);
 
-/// The admin surface ids — shared by the contributed LOCAL `Item` and the
-/// `admin.adminData` edge reply so a remote admin renders the same Section/Label.
-const ADMIN_ITEM_ID: &str = "scheduler";
-const ADMIN_SECTION: &str = "Platform";
-const ADMIN_LABEL: &str = "Schedules";
-
 /// The largest `interval_seconds` PostgreSQL's `make_interval(secs => …)` accepts:
 /// 9_223_372_036_854 s, verified empirically against PG18 — `interval` stores
 /// microseconds in an int64; re-verify on a PG major-version bump. A row above this
@@ -191,7 +185,7 @@ INSERT INTO scheduler.schedules (name, interval_seconds)
 /// this filter is the belt to that DDL's braces — it keeps ONE legacy row from
 /// poisoning the whole scan (`make_interval` errors the entire SELECT, not just its
 /// own row). Deliberate tradeoff: such a legacy out-of-bounds row is silently
-/// never-due (visible on the admin Schedules page, no warn log) — a recorded
+/// never-due (no warn log) — a recorded
 /// decision, not an accident; the DDL CHECK keeps new rows from ever reaching that
 /// state.
 static DUE_SQL: LazyLock<String> = LazyLock::new(|| {
@@ -548,75 +542,12 @@ fn env_bool(key: &str, def: bool) -> bool {
 }
 
 // ============================================================================
-// Service — backs the read-only "Schedules" admin view (local render + edge fan-out).
-// ============================================================================
-
-/// Holds the pool for the read-only admin view. Constructed in phase-1 `register`.
-pub struct Service {
-    pool: PgPool,
-}
-
-impl Service {
-    /// The schedule catalogue as admin widgets (Go's `adminRender`): a read-only table
-    /// of Schedule / Interval (s) / Last fired.
-    async fn admin_content(&self) -> anyhow::Result<adminapi::Content> {
-        let rows: Vec<(String, i64, String)> = sqlx::query_as(
-            "SELECT name, interval_seconds, last_fired::text \
-             FROM scheduler.schedules ORDER BY name",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut table = adminapi::Table {
-            columns: vec!["Schedule".into(), "Interval (s)".into(), "Last fired".into()],
-            rows: Vec::with_capacity(rows.len()),
-            ..Default::default()
-        };
-        for (name, interval, last_fired) in rows {
-            table.rows.push(vec![
-                adminapi::Cell::mono(&name),
-                adminapi::Cell::text(interval.to_string()),
-                adminapi::Cell::text(&last_fired),
-            ]);
-        }
-        Ok(adminapi::Content {
-            kpis: Vec::new(),
-            table: Some(table),
-            form: None,
-            ..Default::default()
-        })
-    }
-}
-
-#[async_trait]
-impl adminapi::AdminData for Service {
-    /// The admin fan-out: this module's "Schedules" page as [`adminapi::ItemData`] (same
-    /// Section/Label the local `Item` carries), served on the edge as `admin.adminData`
-    /// so a remote admin process renders it cross-process.
-    async fn admin_data(&self, _params: adminapi::Params) -> Result<adminapi::ItemData, opsapi::Error> {
-        let content = self
-            .admin_content()
-            .await
-            .map_err(|e| opsapi::Error::internal(e.to_string()))?;
-        Ok(adminapi::ItemData {
-            id: ADMIN_ITEM_ID.into(),
-            section: ADMIN_SECTION.into(),
-            label: ADMIN_LABEL.into(),
-            content,
-            ..Default::default()
-        })
-    }
-}
-
-// ============================================================================
 // Module — the lifecycle wiring.
 // ============================================================================
 
-/// The scheduler module. Holds the pool-backed service (admin render + edge face), the
-/// pool + bus the emission loop needs, the enable gate, and the loop's cancel/join
-/// handles.
+/// The scheduler module. Holds the pool + bus the emission loop needs, the enable gate,
+/// and the loop's cancel/join handles.
 pub struct Scheduler {
-    svc: OnceLock<Arc<Service>>,
     pool: OnceLock<PgPool>,
     bus: OnceLock<Arc<Bus>>,
     enabled: OnceLock<bool>,
@@ -636,7 +567,6 @@ impl Default for Scheduler {
 impl Scheduler {
     pub fn new() -> Scheduler {
         Scheduler {
-            svc: OnceLock::new(),
             pool: OnceLock::new(),
             bus: OnceLock::new(),
             enabled: OnceLock::new(),
@@ -644,13 +574,6 @@ impl Scheduler {
             stop_tx: Mutex::new(None),
             tasks: Mutex::new(Vec::new()),
         }
-    }
-
-    fn svc(&self) -> Arc<Service> {
-        self.svc
-            .get()
-            .expect("scheduler.register must run before init")
-            .clone()
     }
 
     /// Signals the loop and awaits its exit, bounded by [`STOP_GRACE`] per task
@@ -705,16 +628,13 @@ impl Module for Scheduler {
         "scheduler"
     }
 
-    /// Phase 1, BEFORE any `init`: builds the pool-backed service (needed by the admin
-    /// face + render) and captures the pool for the emission loop. No subscriptions.
+    /// Phase 1, BEFORE any `init`: captures the pool for the emission loop. No
+    /// subscriptions.
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("scheduler requires a DB pool"))?
             .clone();
-        self.svc
-            .set(Arc::new(Service { pool: pool.clone() }))
-            .map_err(|_| anyhow::anyhow!("scheduler.register ran twice"))?;
         self.pool
             .set(pool)
             .map_err(|_| anyhow::anyhow!("scheduler.register ran twice"))?;
@@ -730,9 +650,7 @@ impl Module for Scheduler {
         Ok(())
     }
 
-    /// Only wires up — no DB I/O (#8). Captures the bus, reads the enable gate, and
-    /// contributes the read-only "Schedules" admin item + its `admin.adminData` edge
-    /// face (topology-blind; applied by `app::run` iff this process serves an edge).
+    /// Only wires up — no DB I/O (#8). Captures the bus and reads the enable gate.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         self.bus
             .set(ctx.bus().clone())
@@ -758,37 +676,6 @@ impl Module for Scheduler {
             );
         }
 
-        // The local admin page. RenderFn is synchronous, but the store read is async; the
-        // closure bridges via block_in_place (requires the multi-thread runtime the app
-        // boots on) — the same pattern audit/characters/inventory use.
-        let render_svc = self.svc();
-        ctx.contribute(
-            adminapi::SLOT,
-            adminapi::Item::local(
-                ADMIN_ITEM_ID,
-                ADMIN_SECTION,
-                ADMIN_LABEL,
-                Arc::new(move |_params: &adminapi::Params| {
-                    let svc = render_svc.clone();
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(svc.admin_content())
-                    })
-                }),
-            ),
-        );
-
-        // Edge exposure, contributed UNCONDITIONALLY — topology-blind (Step 3 seam):
-        // `app::run` applies this iff the entrypoint stood up an internal edge server
-        // (then a remote admin pulls the "Schedules" page over QUIC); in the monolith it
-        // is never applied. Registered through scheduler's OWN glue crate's re-export so
-        // no foreign rpc is imported.
-        let admin_svc = self.svc();
-        ctx.contribute(
-            edge::EDGE_SLOT,
-            edge::EdgeReg::new(move |server| {
-                schedulerrpc::register_admin(server, admin_svc.clone());
-            }),
-        );
         Ok(())
     }
 

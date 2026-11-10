@@ -13,12 +13,10 @@
 
 pub mod conformance;
 
-mod admin;
 mod projection;
 mod service;
 mod store;
 
-use admin::*;
 #[allow(unused_imports)] // re-exported so tests.rs's `use super::*;` sees Service/consts/name caps/…
 use service::*;
 use store::*;
@@ -40,12 +38,6 @@ pub(crate) use opsapi::Identity;
 pub(crate) use bus::Bus;
 #[allow(unused_imports)] // re-exported for tests.rs's `use super::*;`, unused by lib.rs's own code
 pub(crate) use sqlx::{PgConnection, PgPool};
-
-/// The admin surface ids — shared by the contributed `Item` and the `Admin::admin_data`
-/// reply so a (future) remote admin fetches the same Section/Label the local render carries.
-const ADMIN_ITEM_ID: &str = "characters";
-const ADMIN_SECTION: &str = "Game Content";
-const ADMIN_LABEL: &str = "Characters";
 
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
 /// Idempotent. The characters table is verbatim from Go's `schemaDDL`: `player_id` is a
@@ -80,7 +72,7 @@ pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
 // ============================================================================
 
 /// The characters module. Holds the constructed service (shared between `register`,
-/// the operations, and the admin render). Edge exposure is topology-blind: `init`
+/// and the operations). Edge exposure is topology-blind: `init`
 /// contributes the generated RPC faces to `edge::EDGE_SLOT` unconditionally, and
 /// `app::run` installs them iff this process serves an internal QUIC edge — the
 /// module never knows.
@@ -158,9 +150,9 @@ impl Module for Characters {
 
     /// Only wires up — no I/O (#8). Contributes (a) the three player operations into
     /// the opsapi slots so the gateway fronts POST/GET/DELETE /characters, (b) the
-    /// local admin `Item`, and (c) the generated Ownership + Player RPC faces to the
-    /// edge slot so a peer can reach `characters.*` over QUIC when this process
-    /// serves an internal edge, and subscribes (d) to durable `player.deleted`.
+    /// generated Ownership + Player RPC faces to the edge slot so a peer can reach
+    /// `characters.*` over QUIC when this process serves an internal edge, and
+    /// subscribes (c) to durable `player.deleted`.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let svc = self.svc();
 
@@ -180,31 +172,7 @@ impl Module for Characters {
             ctx.contribute(opsapi::LOCAL_SLOT, op.local);
         }
 
-        // (b) The local admin page. RenderFn is synchronous, but the store reads are
-        // async; no admin PORTAL renders this in M1, so the closure bridges via
-        // block_in_place (requires the multi-thread runtime the app boots on).
-        let render_svc = svc.clone();
-        ctx.contribute(
-            adminapi::SLOT,
-            adminapi::Item::local(
-                ADMIN_ITEM_ID,
-                ADMIN_SECTION,
-                ADMIN_LABEL,
-                Arc::new(move |params: &adminapi::Params| {
-                    let svc = render_svc.clone();
-                    let params = params.clone();
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current()
-                            .block_on(admin_content(&svc.store, &params))
-                    })
-                }),
-            )
-            // The cross-page contribution to the accounts Players row menu; the SAME
-            // vec `admin_data` sends over the wire (one shared `extension_entries`).
-            .with_extensions(admin::extension_entries()),
-        );
-
-        // (c) Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`
+        // (b) Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`
         // applies this iff the entrypoint stood up an internal edge server (then a
         // peer resolves ownership / fronts the player ops over QUIC); in the monolith
         // it is never applied. Own glue (sanctioned): the generated register_server
@@ -213,9 +181,6 @@ impl Module for Characters {
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
                 charactersrpc::ownership_rpc::register_server(server, svc.clone());
-                // The admin fan-out face (`admin.adminData`), registered through this
-                // module's OWN glue crate's re-export so no foreign rpc is imported.
-                charactersrpc::register_admin(server, svc.clone());
                 charactersrpc::player_rpc::register_server(server, svc);
             }),
         );
@@ -235,7 +200,7 @@ impl Module for Characters {
             ]),
         );
 
-        // (d) The purge tombstone, planted on the HANDED delivery conn so it commits with
+        // (c) The purge tombstone, planted on the HANDED delivery conn so it commits with
         // the subscription checkpoint, and does no other work: nothing bounds how many
         // characters a player owns, while `ASYNCEVENTS_HANDLER_TIMEOUT` bounds this handler
         // at 10s, so deleting them here could make no progress and burn failures toward the

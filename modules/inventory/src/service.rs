@@ -11,7 +11,7 @@ use crate::{internal, is_holdings_cap_violation, validate_quantity, Owner, Store
 // ============================================================================
 // Inner — the shared service state. Backs the `Holdings` capability (registry +
 // generated edge face + gateway invokers), the two durable event effects
-// (grant-starter/wipe), and the local admin render. One `Arc<Inner>` is handed to
+// (grant-starter/wipe). One `Arc<Inner>` is handed to
 // every path so they share the same store, ownership dep, and materialized starter.
 // ============================================================================
 

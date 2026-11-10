@@ -12,10 +12,6 @@ publish = false
 # metadata-callback macro the sibling `notificationsrpc` glue crate expands into the
 # edge-dependent glue. NO `edge`/`remote`/transport dependency (archcheck's
 # FORBIDDEN_API_DEPS).
-#
-# Deliberately NO `adminapi`: the module CONSUMES an extension point rather than
-# declaring one, and the `adminapi::Item` that does so is built inside the impl crate,
-# which imports `adminapi` directly.
 [dependencies]
 opsapi = { workspace = true }
 rpc-macro = { workspace = true }

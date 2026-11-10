@@ -11,7 +11,6 @@
 //! The domain write and its durable event append commit in ONE transaction — the event is
 //! durable iff the relation change is.
 
-mod admin;
 pub mod conformance;
 mod projection;
 mod service;
@@ -149,30 +148,10 @@ impl Module for Friends {
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
                 friendsrpc::player_rpc::register_server(server, svc.clone());
-                // The read-only admin page over the edge, through friends' OWN glue crate's
-                // re-export — archcheck forbids a module→foreign-rpc edge. No
-                // `register_admin_submit`: the page has no write surface.
-                friendsrpc::register_admin(server, svc.clone());
             }),
         );
 
         ctx.contribute(opsapi::DESCRIBE_SLOT, friendsrpc::player_rpc::describe());
-
-        // The local admin page. `RenderFn` is synchronous while the store reads are not;
-        // the closure bridges via `block_in_place` on the multi-thread runtime.
-        let render_svc = self.svc();
-        ctx.contribute(
-            adminapi::SLOT,
-            adminapi::Item::local(
-                admin::ADMIN_ITEM_ID,
-                admin::ADMIN_SECTION,
-                admin::ADMIN_LABEL,
-                Arc::new(move |params: &adminapi::Params| {
-                    admin::admin_render(&render_svc, params)
-                }),
-            )
-            .with_extensions(admin::extension_entries()),
-        );
 
         // The purge tombstone, planted on the HANDED delivery conn so it commits with the
         // subscription checkpoint, and does no other work: nothing bounds a player's

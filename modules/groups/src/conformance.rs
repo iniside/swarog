@@ -1,8 +1,8 @@
 //! Minimal factual probes consumed by `tools/conformance`.
 //!
 //! Policy and expected outcomes live in the tool. These probes only exercise the same
-//! production code real requests traverse — `Player::create`/`list_mine`/`invite` and
-//! `admin::apply_submit` themselves, never a re-stated arithmetic check.
+//! production code real requests traverse — `Player::create`/`list_mine`/`invite`
+//! themselves, never a re-stated arithmetic check.
 
 use std::sync::Arc;
 
@@ -13,13 +13,11 @@ use groupsapi::{Player as _, JOIN_OPEN};
 use opsapi::{Error, Identity};
 use sqlx::PgPool;
 
-use crate::admin::{apply_submit, Rejection, ACTION_FIELD, ACTION_PROMOTE, GROUP_FIELD, PLAYER_FIELD};
 use crate::service::MALFORMED_CURSOR;
 use crate::store::MemberRow;
 use crate::Service;
 
-/// The one length `service::is_uuid_text` admits — the spelling every group and player id
-/// reaches the admin form in.
+/// The one length `service::is_uuid_text` admits.
 pub const UUID_SHAPE_BYTES: usize = 36;
 
 const DEAD_DSN: &str = "postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable";
@@ -134,54 +132,6 @@ pub fn conformance_target_handle_rejected(len: usize) -> bool {
         "a".repeat(len),
     ));
     matches!(outcome, Err(e) if e.status == opsapi::Status::Invalid)
-}
-
-fn submit(pairs: &[(&str, &str)]) -> Result<adminapi::SubmitOutcome, Rejection> {
-    let values: adminapi::Params = pairs
-        .iter()
-        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-        .collect();
-    let rt = runtime();
-    let svc = {
-        let _guard = rt.enter();
-        service()
-    };
-    rt.block_on(apply_submit(&svc, values))
-}
-
-/// The selected group's shape, executed through `admin::apply_submit` ITSELF — the one
-/// submit authority both topologies run. At the admitted length the value passes
-/// `rendered_group` and reaches the store, which cannot connect, so it answers `Internal`;
-/// any other length is `rendered_group`'s own `Stale` verdict, ahead of the checkout.
-#[doc(hidden)]
-pub fn conformance_admin_group_rejected(len: usize) -> bool {
-    let group = uuid_shaped(len);
-    let player = uuid_shaped(UUID_SHAPE_BYTES);
-    matches!(
-        submit(&[
-            (ACTION_FIELD, ACTION_PROMOTE),
-            (GROUP_FIELD, &group),
-            (PLAYER_FIELD, &player),
-        ]),
-        Err(Rejection::Stale)
-    )
-}
-
-/// The promoted player's shape, on the same submit authority: at the admitted length the
-/// value reaches the store and answers `Internal`, any other length is `apply_submit`'s own
-/// `Rejected` verdict naming the field.
-#[doc(hidden)]
-pub fn conformance_admin_player_rejected(len: usize) -> bool {
-    let group = uuid_shaped(UUID_SHAPE_BYTES);
-    let player = uuid_shaped(len);
-    matches!(
-        submit(&[
-            (ACTION_FIELD, ACTION_PROMOTE),
-            (GROUP_FIELD, &group),
-            (PLAYER_FIELD, &player),
-        ]),
-        Err(Rejection::Rejected(_))
-    )
 }
 
 /// The directory-outage story: the paged reads' `hydrate` — the ONE call the member and

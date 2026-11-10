@@ -1645,11 +1645,6 @@ impl Module for Stub {
     /// (unread) — harmless. The address stays an UNPARSED string: the gateway parses it
     /// lazily, preserving the Unavailable-not-panic taxonomy [`EdgeDialer`] relies on.
     ///
-    /// The admin fan-out (Go's `Stub.adminFetcher`) is a `register`-time factory — a
-    /// caller passes `adminrpc::admin_remote_factory(provider)` into [`Stub::new`],
-    /// which contributes the REMOTE `adminapi::Item` there. `remote` stays `api/`-free:
-    /// the admin closure arrives boxed, this crate never names `adminapi`.
-    ///
     /// `init` ALSO contributes a per-stub `httpmw::ReadyCheck` (`stub:<provider>`) to
     /// [`httpmw::READINESS_SLOT`], so a stub-holding process's `/readyz` reflects its
     /// peers' reachability instead of answering 200 with the whole fleet dead. A stub is

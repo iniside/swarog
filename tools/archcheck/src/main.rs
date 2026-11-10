@@ -57,8 +57,7 @@ const GATEWAY_CRATE: &str = "gateway";
 const CONFORMANCE_POLICY_PACKAGE: &str = "conformancecheck";
 const SLOT_CONSTRUCTOR: &str = "contrib::Slot::new(";
 const BARE_SLOT_CONSTRUCTOR: &str = "Slot::new(";
-const SLOT_OWNER_FILES: [&str; 7] = [
-    "api/admin/api/src/lib.rs",
+const SLOT_OWNER_FILES: [&str; 6] = [
     "core/opsapi/src/lib.rs",
     "core/edge/src/reg.rs",
     "core/httpmw/src/readiness.rs",

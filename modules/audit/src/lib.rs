@@ -32,14 +32,13 @@
 //! in its own schema inside the handed tx.
 
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use bus::{Delivery, Error as BusError, TxHandler};
 use futures::future::BoxFuture;
 use lifecycle::{Context, Module};
-use opsapi::Error;
-use sqlx::{PgConnection, PgPool};
+use sqlx::PgConnection;
 
 /// The domain events audit records, each on the DURABLE plane via `on_tx_raw`. This is
 /// a conscious edit point (the bus has no wildcard subscribe). The anti-drift test
@@ -99,12 +98,6 @@ const PRUNE_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec {
 
 const DEFAULT_RETENTION_DAYS: i32 = 30;
 
-/// The admin surface ids — shared by the contributed local `Item` and the
-/// `admin.adminData` edge reply so a remote admin renders the same Section/Label.
-const ADMIN_ITEM_ID: &str = "audit";
-const ADMIN_SECTION: &str = "Platform";
-const ADMIN_LABEL: &str = "Audit Log";
-
 /// Creates this module's OWN schema and nothing else — full logical isolation (#10).
 /// Idempotent DDL only (`CREATE … IF NOT EXISTS`) — schema evolution is wipe +
 /// fresh CREATE (`DROP SCHEMA audit CASCADE`, or a full DB wipe), never `ALTER`;
@@ -119,11 +112,6 @@ CREATE TABLE IF NOT EXISTS audit.log (
 	event_id text
 );
 CREATE INDEX IF NOT EXISTS log_at_idx ON audit.log(at);"#;
-
-/// Folds any lower-level error into an `Internal` operation error (for the admin face).
-fn internal<E: std::fmt::Display>(e: E) -> Error {
-    Error::internal(e.to_string())
-}
 
 // ============================================================================
 // Durable handlers — invoked by messaging inside its per-(event_id,"audit")
@@ -214,75 +202,6 @@ impl TxHandler for PruneHandler {
     }
 }
 
-// ============================================================================
-// Service — backs the admin face (reads the pool for the read-only "Audit Log" view).
-// The durable handlers never touch it: they run on the transport-handed tx.
-// ============================================================================
-
-/// Holds the pool for the admin read-only view. Constructed in phase-1 `register`.
-pub struct Service {
-    pool: PgPool,
-}
-
-impl Service {
-    /// The most recent 100 ledger entries as admin widgets (Go's `adminRender`): a
-    /// read-only table of Topic / Payload (truncated to 80 chars, mono) / At.
-    async fn admin_content(&self) -> anyhow::Result<adminapi::Content> {
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT topic, payload::text, at::text FROM audit.log ORDER BY at DESC, id DESC LIMIT 100",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        let mut table = adminapi::Table {
-            columns: vec!["Topic".into(), "Payload".into(), "At".into()],
-            rows: Vec::with_capacity(rows.len()),
-            ..Default::default()
-        };
-        for (topic, payload, at) in rows {
-            table.rows.push(vec![
-                adminapi::Cell::mono(&topic),
-                adminapi::Cell::mono(truncate(&payload, 80)),
-                adminapi::Cell::text(&at),
-            ]);
-        }
-        Ok(adminapi::Content {
-            kpis: Vec::new(),
-            table: Some(table),
-            form: None,
-            ..Default::default()
-        })
-    }
-}
-
-#[async_trait]
-impl adminapi::AdminData for Service {
-    /// The admin fan-out: this module's page as [`adminapi::ItemData`] (same
-    /// Section/Label the local `Item` carries), served on the edge as `admin.adminData`
-    /// so a remote admin process renders it cross-process.
-    async fn admin_data(&self, _params: adminapi::Params) -> Result<adminapi::ItemData, Error> {
-        let content = self.admin_content().await.map_err(internal)?;
-        Ok(adminapi::ItemData {
-            id: ADMIN_ITEM_ID.into(),
-            section: ADMIN_SECTION.into(),
-            label: ADMIN_LABEL.into(),
-            content,
-            ..Default::default()
-        })
-    }
-}
-
-/// Shortens `s` to at most `n` chars, appending an ellipsis when cut (rune-safe so a
-/// multibyte payload never splits mid-character — Go's `truncate`).
-fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(n).collect();
-    out.push('…');
-    out
-}
-
 /// Reads `key` as an `i32`, returning `def` when unset or unparseable (Go's `envInt`).
 fn env_int(key: &str, def: i32) -> i32 {
     std::env::var(key)
@@ -295,13 +214,8 @@ fn env_int(key: &str, def: i32) -> i32 {
 // Module — the lifecycle wiring.
 // ============================================================================
 
-/// The audit module. Holds the pool-backed service (shared between the admin render and
-/// the edge fan-out face). Edge exposure is topology-blind: `init` contributes the
-/// `admin.adminData` face to `edge::EDGE_SLOT` unconditionally, and `app::run` installs
-/// it iff this process serves an internal QUIC edge.
-pub struct Audit {
-    svc: OnceLock<Arc<Service>>,
-}
+/// The audit module.
+pub struct Audit;
 
 impl Default for Audit {
     fn default() -> Self {
@@ -311,16 +225,7 @@ impl Default for Audit {
 
 impl Audit {
     pub fn new() -> Audit {
-        Audit {
-            svc: OnceLock::new(),
-        }
-    }
-
-    fn svc(&self) -> Arc<Service> {
-        self.svc
-            .get()
-            .expect("audit.register must run before init")
-            .clone()
+        Audit
     }
 }
 
@@ -328,19 +233,6 @@ impl Audit {
 impl Module for Audit {
     fn name(&self) -> &str {
         "audit"
-    }
-
-    /// Phase 1, BEFORE any `init`: builds the pool-backed service (needed by the admin
-    /// face + render). No subscriptions here — those wire up in `init`.
-    fn register(&self, ctx: &Context) -> anyhow::Result<()> {
-        let pool = ctx
-            .db()
-            .ok_or_else(|| anyhow::anyhow!("audit requires a DB pool"))?
-            .clone();
-        self.svc
-            .set(Arc::new(Service { pool }))
-            .map_err(|_| anyhow::anyhow!("audit.register ran twice"))?;
-        Ok(())
     }
 
     /// Creates this module's own schema. Idempotent.
@@ -353,18 +245,14 @@ impl Module for Audit {
     }
 
     /// Only wires up — no I/O (#8). Subscribes each durable topic (raw JSON, inserted on
-    /// the handed delivery tx), the `scheduler.fired` prune reaction, the local admin
-    /// item, and the `admin.adminData` edge face (topology-blind; applied by `app::run`
-    /// iff this process serves an internal edge).
+    /// the handed delivery tx) and the `scheduler.fired` prune reaction.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
-        // Validated BEFORE touching `self.svc()` so a bad value fails startup loudly
-        // (fail-closed at init — the apikeys/gateway explicit-gate convention; the old
-        // admin `ADMIN_USER` bail this once mirrored is gone, replaced by DB-backed
-        // session auth) without requiring `register`
-        // to have run first — a non-positive retention would delete the ledger outright
-        // on the next prune tick, so a typo must stop the process, not silently truncate
-        // history. `env_int` already falls back to `DEFAULT_RETENTION_DAYS` when unset or
-        // unparseable; only a *parseable* non-positive value reaches this bail.
+        // Validated FIRST so a bad value fails startup loudly (fail-closed at init — the
+        // apikeys/gateway explicit-gate convention) — a non-positive retention would delete
+        // the ledger outright on the next prune tick, so a typo must stop the process, not
+        // silently truncate history. `env_int` already falls back to
+        // `DEFAULT_RETENTION_DAYS` when unset or unparseable; only a *parseable*
+        // non-positive value reaches this bail.
         let retention_days = env_int("AUDIT_RETENTION_DAYS", DEFAULT_RETENTION_DAYS);
         if retention_days <= 0 {
             anyhow::bail!(
@@ -372,8 +260,6 @@ impl Module for Audit {
                  retention would delete the ledger; unset it for the default {DEFAULT_RETENTION_DAYS}"
             );
         }
-        let svc = self.svc();
-
         // Durable plane: the producer emitted via emit_tx; messaging delivers here
         // through its per-(event_id,"audit") delivery tx, in BOTH topologies. We
         // subscribe by raw string (no payload-type import) and insert the raw JSON on
@@ -399,37 +285,6 @@ impl Module for Audit {
         let prune: Arc<dyn TxHandler> = Arc::new(PruneHandler { retention_days });
         ctx.bus()
             .on_tx_raw(PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
-
-        // The local admin page. RenderFn is synchronous, but the store read is async;
-        // the closure bridges via block_in_place (requires the multi-thread runtime the
-        // app boots on) — the same pattern characters/inventory use.
-        let render_svc = svc.clone();
-        ctx.contribute(
-            adminapi::SLOT,
-            adminapi::Item::local(
-                ADMIN_ITEM_ID,
-                ADMIN_SECTION,
-                ADMIN_LABEL,
-                Arc::new(move |_params: &adminapi::Params| {
-                    let svc = render_svc.clone();
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(svc.admin_content())
-                    })
-                }),
-            ),
-        );
-
-        // Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`
-        // applies this iff the entrypoint stood up an internal edge server (then a
-        // remote admin pulls audit's page over QUIC); in the monolith it is never
-        // applied. Registered through audit's OWN glue crate's re-export so no foreign
-        // rpc is imported.
-        ctx.contribute(
-            edge::EDGE_SLOT,
-            edge::EdgeReg::new(move |server| {
-                auditrpc::register_admin(server, svc.clone());
-            }),
-        );
         Ok(())
     }
 }

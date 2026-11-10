@@ -36,10 +36,9 @@ pub const REASON_ACCOUNT_DELETED: &str = "account-deleted";
 /// `group_id`.
 pub const REASON_GROUP_DISSOLVED: &str = "group-dissolved";
 
-/// [`RoleChanged::actor_kind`] for a change made through the operator portal. The admin
-/// seam carries NO caller identity (`adminapi::AdminData`/`AdminSubmit` are
-/// process-authenticated), so [`RoleChanged::actor_id`] is empty for it: the acting human
-/// is named by the portal's own `admin.action` row, correlated by time.
+/// [`RoleChanged::actor_kind`] for a change made through the operator portal.
+/// [`RoleChanged::actor_id`] is empty for it: the acting human is named by the portal's own
+/// `admin.action` row, correlated by time.
 pub const ACTOR_OPERATOR: &str = "operator";
 /// [`RoleChanged::actor_kind`] for a change made by a player of the group, whose
 /// [`RoleChanged::actor_id`] is that player's id.

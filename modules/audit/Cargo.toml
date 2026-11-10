@@ -9,15 +9,10 @@ publish = false
 # GameOps. Owns schema `audit`, touches no other module's tables. It subscribes to the
 # bus GENERICALLY by topic string via `bus::on_tx_raw` (raw JSON, no domain payload-type
 # import — Go's zero-coupling design) and records each event on the HANDED delivery
-# tx (exactly-once). A pure sink: no api crate; `auditrpc` is its OWN glue (re-exports
-# `register_admin` for the admin fan-out edge face).
+# tx (exactly-once). A pure sink: no api crate.
 [dependencies]
 bus = { workspace = true }
 lifecycle = { workspace = true }
-edge = { workspace = true }
-opsapi = { workspace = true }
-adminapi = { workspace = true }
-auditrpc = { workspace = true }
 # The scheduler event CONTRACT crate (sanctioned dependency — a contract, not an impl):
 # audit subscribes to `scheduler.fired` by the descriptor's topic const so a rename can
 # never drift the literal. It does NOT import the payload type into its handlers — the

@@ -9,7 +9,6 @@ dependencies = [
  "accountsapi",
  "accountsevents",
  "accountsrpc",
- "adminapi",
  "anyhow",
  "argon2",
  "async-trait",
@@ -58,7 +57,6 @@ dependencies = [
 name = "accountsapi"
 version = "0.1.0"
 dependencies = [
- "adminapi",
  "async-trait",
  "opsapi",
  "rpc-macro",
@@ -80,7 +78,6 @@ name = "accountsrpc"
 version = "0.1.0"
 dependencies = [
  "accountsapi",
- "adminrpc",
  "async-trait",
  "edge",
  "lifecycle",
@@ -95,7 +92,6 @@ dependencies = [
 name = "admin"
 version = "0.1.0"
 dependencies = [
- "adminapi",
  "adminevents",
  "anyhow",
  "argon2",
@@ -105,17 +101,13 @@ dependencies = [
  "axum-extra",
  "base64 0.22.1",
  "bus",
- "contrib",
- "form_urlencoded",
  "futures",
  "httpmw",
  "ipnet",
  "lifecycle",
  "minijinja",
- "opsapi",
  "rand 0.8.6",
  "serde",
- "serde_json",
  "sqlx",
  "testdb",
  "tokio",
@@ -128,46 +120,17 @@ name = "admin-svc"
 version = "0.1.0"
 dependencies = [
  "admin",
- "adminrpc",
  "anyhow",
  "app",
  "lifecycle",
  "metrics",
- "remote",
  "tokio",
  "tracing-subscriber",
 ]
 
 [[package]]
-name = "adminapi"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "contrib",
- "futures",
- "opsapi",
- "rpc-macro",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
 name = "admincheck"
 version = "0.1.0"
-dependencies = [
- "accountsapi",
- "adminapi",
- "anyhow",
- "async-trait",
- "bus",
- "charactersapi",
- "checkmodules",
- "lifecycle",
- "sqlx",
- "tokio",
-]
 
 [[package]]
 name = "adminctl"
@@ -187,23 +150,6 @@ dependencies = [
  "bus",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "adminrpc"
-version = "0.1.0"
-dependencies = [
- "adminapi",
- "anyhow",
- "async-trait",
- "edge",
- "lifecycle",
- "opsapi",
- "registry",
- "remote",
- "rpc-macro",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -231,7 +177,6 @@ checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 name = "apikeys"
 version = "0.1.0"
 dependencies = [
- "adminapi",
  "anyhow",
  "apikeysapi",
  "apikeysrpc",
@@ -283,7 +228,6 @@ dependencies = [
 name = "apikeysrpc"
 version = "0.1.0"
 dependencies = [
- "adminrpc",
  "apikeysapi",
  "async-trait",
  "edge",
@@ -524,23 +468,19 @@ name = "audit"
 version = "0.1.0"
 dependencies = [
  "accountsevents",
- "adminapi",
  "adminevents",
  "anyhow",
  "async-trait",
  "asyncevents",
- "auditrpc",
  "bus",
  "charactersevents",
  "configevents",
- "edge",
  "friendsevents",
  "futures",
  "groupsevents",
  "lifecycle",
  "mailevents",
  "matchevents",
- "opsapi",
  "schedulerevents",
  "serde",
  "serde_json",
@@ -563,13 +503,6 @@ dependencies = [
  "metrics",
  "tokio",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "auditrpc"
-version = "0.1.0"
-dependencies = [
- "adminrpc",
 ]
 
 [[package]]
@@ -823,9 +756,7 @@ dependencies = [
 name = "characters"
 version = "0.1.0"
 dependencies = [
- "accountsapi",
  "accountsevents",
- "adminapi",
  "anyhow",
  "async-trait",
  "asyncevents",
@@ -869,7 +800,6 @@ dependencies = [
 name = "charactersapi"
 version = "0.1.0"
 dependencies = [
- "adminapi",
  "async-trait",
  "opsapi",
  "rpc-macro",
@@ -890,7 +820,6 @@ dependencies = [
 name = "charactersrpc"
 version = "0.1.0"
 dependencies = [
- "adminrpc",
  "async-trait",
  "charactersapi",
  "edge",
@@ -964,7 +893,6 @@ dependencies = [
 name = "config"
 version = "0.1.0"
 dependencies = [
- "adminapi",
  "anyhow",
  "async-trait",
  "asyncevents",
@@ -1022,7 +950,6 @@ dependencies = [
 name = "configrpc"
 version = "0.1.0"
 dependencies = [
- "adminrpc",
  "anyhow",
  "async-trait",
  "configapi",
@@ -1502,7 +1429,6 @@ version = "0.1.0"
 dependencies = [
  "accountsapi",
  "accountsevents",
- "adminapi",
  "anyhow",
  "async-trait",
  "asyncevents",
@@ -1566,7 +1492,6 @@ dependencies = [
 name = "friendsrpc"
 version = "0.1.0"
 dependencies = [
- "adminrpc",
  "async-trait",
  "edge",
  "friendsapi",
@@ -1827,7 +1752,6 @@ version = "0.1.0"
 dependencies = [
  "accountsapi",
  "accountsevents",
- "adminapi",
  "anyhow",
  "async-trait",
  "asyncevents",
@@ -1891,7 +1815,6 @@ dependencies = [
 name = "groupsrpc"
 version = "0.1.0"
 dependencies = [
- "adminrpc",
  "async-trait",
  "edge",
  "groupsapi",
@@ -2264,9 +2187,7 @@ dependencies = [
 name = "inventory"
 version = "0.1.0"
 dependencies = [
- "accountsapi",
  "accountsevents",
- "adminapi",
  "anyhow",
  "async-trait",
  "asyncevents",
@@ -2323,7 +2244,6 @@ dependencies = [
 name = "inventoryrpc"
 version = "0.1.0"
 dependencies = [
- "adminrpc",
  "async-trait",
  "edge",
  "inventoryapi",
@@ -2615,22 +2535,18 @@ checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 name = "mail"
 version = "0.1.0"
 dependencies = [
- "adminapi",
  "anyhow",
  "async-trait",
  "asyncevents",
  "bus",
- "edge",
  "futures",
  "httpmw",
  "lettre",
  "lifecycle",
  "mailevents",
- "mailrpc",
  "metrics",
  "opsapi",
  "prometheus",
- "rand 0.8.6",
  "schedulerevents",
  "serde",
  "serde_json",
@@ -2662,13 +2578,6 @@ dependencies = [
  "bus",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "mailrpc"
-version = "0.1.0"
-dependencies = [
- "adminrpc",
 ]
 
 [[package]]
@@ -2863,9 +2772,7 @@ dependencies = [
 name = "notifications"
 version = "0.1.0"
 dependencies = [
- "accountsapi",
  "accountsevents",
- "adminapi",
  "anyhow",
  "async-trait",
  "asyncevents",
@@ -2879,7 +2786,6 @@ dependencies = [
  "notificationsrpc",
  "opsapi",
  "push",
- "rand 0.8.6",
  "registry",
  "schedulerevents",
  "serde",
@@ -2921,7 +2827,6 @@ dependencies = [
 name = "notificationsrpc"
 version = "0.1.0"
 dependencies = [
- "adminrpc",
  "async-trait",
  "edge",
  "notificationsapi",
@@ -3044,7 +2949,6 @@ name = "opscatalog-gen"
 version = "0.1.0"
 dependencies = [
  "accountsapi",
- "adminapi",
  "anyhow",
  "apikeysapi",
  "charactersapi",
@@ -4037,17 +3941,13 @@ dependencies = [
 name = "scheduler"
 version = "0.1.0"
 dependencies = [
- "adminapi",
  "anyhow",
  "async-trait",
  "bus",
- "edge",
  "futures",
  "httpmw",
  "lifecycle",
- "opsapi",
  "schedulerevents",
- "schedulerrpc",
  "serde_json",
  "sqlx",
  "testdb",
@@ -4076,13 +3976,6 @@ dependencies = [
  "bus",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "schedulerrpc"
-version = "0.1.0"
-dependencies = [
- "adminrpc",
 ]
 
 [[package]]
@@ -4590,7 +4483,6 @@ name = "storage"
 version = "0.1.0"
 dependencies = [
  "accountsevents",
- "adminapi",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
@@ -4640,7 +4532,6 @@ dependencies = [
 name = "storagerpc"
 version = "0.1.0"
 dependencies = [
- "adminrpc",
  "async-trait",
  "edge",
  "opsapi",
@@ -4957,7 +4848,6 @@ version = "0.1.0"
 dependencies = [
  "accountsapi",
  "accountsevents",
- "adminapi",
  "adminevents",
  "anyhow",
  "apikeysapi",
@@ -5266,9 +5156,7 @@ dependencies = [
 name = "wallet"
 version = "0.1.0"
 dependencies = [
- "accountsapi",
  "accountsevents",
- "adminapi",
  "anyhow",
  "async-trait",
  "asyncevents",
@@ -5278,7 +5166,6 @@ dependencies = [
  "futures",
  "lifecycle",
  "opsapi",
- "rand 0.8.6",
  "registry",
  "schedulerevents",
  "serde",
@@ -5333,7 +5220,6 @@ dependencies = [
 name = "walletrpc"
 version = "0.1.0"
 dependencies = [
- "adminrpc",
  "async-trait",
  "edge",
  "opsapi",

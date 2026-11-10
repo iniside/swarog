@@ -48,11 +48,6 @@ use opsapi::Error;
 
 configapi::config_config_snapshot_meta!(rpc_macro::generate_glue);
 
-/// The admin fan-out's server-side registration, re-exported from `adminrpc` so the
-/// `config` module registers `admin.adminData` through its OWN glue crate (never a
-/// foreign rpc import — archcheck-clean).
-pub use adminrpc::register_admin;
-
 /// The atomically-swapped cache contents: the settings map plus the monotonic
 /// `config.revision` it was read at. One `RwLock` over the pair makes the refresh's
 /// revision gate race-free (a reader never sees a half-applied swap).

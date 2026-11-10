@@ -1172,19 +1172,18 @@ fn module_to_module_dev_dependency_is_a_violation() {
 
 #[test]
 fn module_to_foreign_rpc_dev_dependency_is_a_violation() {
-    // A test-only edge into a FOREIGN domain's generated `<name>rpc` glue — e.g. the
-    // removed apikeys→adminrpc dev-dep — is a fortress breach exactly like the runtime
-    // form, so it must be flagged at `kind == "dev"`.
+    // A test-only edge into a FOREIGN domain's generated `<name>rpc` glue is a fortress
+    // breach exactly like the runtime form, so it must be flagged at `kind == "dev"`.
     let pkgs = module_dep_fixture(
         "apikeys",
-        "adminrpc",
-        "/repo/api/admin/rpc/Cargo.toml",
+        "walletrpc",
+        "/repo/api/wallet/rpc/Cargo.toml",
         serde_json::json!("dev"),
     );
     let v = module_import_violations(pkgs.as_array().unwrap());
     assert_eq!(v.len(), 1, "{v:?}");
-    assert!(v[0].contains("modules/apikeys depends on adminrpc"), "{v:?}");
-    assert!(v[0].contains("api/admin/rpc"), "{v:?}");
+    assert!(v[0].contains("modules/apikeys depends on walletrpc"), "{v:?}");
+    assert!(v[0].contains("api/wallet/rpc"), "{v:?}");
 }
 
 #[test]

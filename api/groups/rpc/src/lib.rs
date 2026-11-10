@@ -11,10 +11,9 @@
 //! No `remote_factories()` / `provide_factories()` aggregator YET — not a permanent
 //! decision. An aggregator exists to turn a groups peer's capability into ANOTHER
 //! process's registry entry, and no other process consumes one today: gateway-svc
-//! contributes groups' HTTP routes through `remote::Stub::describe_peer`, admin-svc pulls
-//! the admin page through `adminrpc::admin_remote_factory`, and the monolith hosts the
-//! real service. Adding it now would pin a public symbol nothing calls; the first
-//! [`groupsapi::Membership`] consumer adds it.
+//! contributes groups' HTTP routes through `remote::Stub::describe_peer`, and the
+//! monolith hosts the real service. Adding it now would pin a public symbol nothing
+//! calls; the first [`groupsapi::Membership`] consumer adds it.
 
 // The glue's method signatures re-resolve at THIS invocation site (the metadata
 // travels as tokens), so `groupsapi`'s domain types and the identity/error types must
@@ -24,8 +23,3 @@ use opsapi::{Error, Identity};
 
 groupsapi::groups_player_meta!(rpc_macro::generate_glue);
 groupsapi::groups_membership_meta!(rpc_macro::generate_glue);
-
-/// The admin fan-out's server-side registrations, re-exported so the `groups` module
-/// reaches them through its OWN glue crate: archcheck forbids a module→foreign-rpc
-/// edge, while this module→own-rpc→adminrpc chain is fine.
-pub use adminrpc::{register_admin, register_admin_submit};

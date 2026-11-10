@@ -19,11 +19,6 @@
 //!     `apikeysrpc::remote_factories()` in a split peer). Returns `Ok(None)` for an
 //!     unknown OR revoked key; an `Err` is store/peer trouble.
 //!
-//! Remote admin write ([`adminapi::AdminSubmit`]): the "API Keys" configurator is
-//! editable in BOTH topologies — its typed form drives role/key CRUD, and `admin_submit`
-//! runs the SAME dispatch server-side (in apikeys-svc) when a remote admin process POSTs
-//! over the mTLS edge (`admin.adminSubmit`), so the store closure never crosses the wire.
-//!
 //! Dev seed (`APIKEYS_DEV_SEED`, explicitly truthy only — a well-known `full` key is a
 //! trust artifact, so it follows the gateway's explicit-only convention, NOT the
 //! module-convenience default-ON one): `migrate` upserts two well-known roles and two
@@ -31,7 +26,6 @@
 //! local harness has a working client + trusted-server key. The upserts are self-healing
 //! (`ON CONFLICT (name) DO UPDATE`), so a stray edit on a shared dev DB can't poison it.
 
-mod admin;
 pub mod conformance;
 mod store;
 
@@ -57,9 +51,9 @@ use crate::store::{KeySummary, RoleSummary, Store, WriteError};
 ///
 /// The three `*_len_check`s are `octet_length`, not `char_length`, because their Rust
 /// twins in `store::COLUMN_CAPS` are `str::len()` BYTE counts — a 128-character multibyte
-/// name is 256 octets. Every one of these columns is operator-authored over
-/// `admin.adminSubmit` in BOTH topologies, so the column CHECK is the class fail-safe
-/// under those Rust caps, not a second policy; the names are the mapping key
+/// name is 256 octets. Every one of these columns is operator-authored, so the column
+/// CHECK is the class fail-safe under those Rust caps, not a second policy; the names are
+/// the mapping key
 /// `WriteError::from_db` reads, so renaming one is a `DROP SCHEMA apikeys CASCADE` +
 /// fresh boot, never an `ALTER`. `keys.role` carries no CHECK of its own: its FK targets
 /// `roles.name`, which cannot hold an over-cap value in the first place. `secret_hash`
@@ -153,10 +147,9 @@ impl apikeysapi::Keys for Service {
     }
 }
 
-// Async CRUD wrappers over the store — the write surface the admin configurator drives
-// (both the LOCAL submit closure and the REMOTE `admin_submit`). Each preserves the
-// store's [`WriteError`] classification (Conflict vs Invalid vs Db) so the admin seam can
-// map a domain conflict to 409 and NEVER to NotFound (finding #2).
+// Async CRUD wrappers over the store. Each preserves the store's [`WriteError`]
+// classification (Conflict vs Invalid vs Db) so a caller can map a domain conflict to 409
+// and NEVER to NotFound (finding #2).
 impl Service {
     pub(crate) async fn list_roles(&self) -> Result<Vec<RoleSummary>, sqlx::Error> {
         self.store.list_roles().await
@@ -288,39 +281,17 @@ impl Module for ApiKeys {
         Ok(())
     }
 
-    /// Only wires up — no I/O (#8). Contributes the local "API Keys" admin item and the
-    /// generated Keys + admin RPC faces to the edge slot UNCONDITIONALLY (topology-blind:
-    /// `app::run` installs the edge faces iff this process serves an internal QUIC edge).
-    /// Own glue (rule 5): the generated `register_server`/`register_admin` faces live in
-    /// `apikeysrpc`.
+    /// Only wires up — no I/O (#8). Contributes the generated Keys RPC face to the edge
+    /// slot UNCONDITIONALLY (topology-blind: `app::run` installs the edge face iff this
+    /// process serves an internal QUIC edge). Own glue (rule 5): the generated
+    /// `register_server` face lives in `apikeysrpc`.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let svc = self.svc();
-
-        // Local admin page. The `RenderFn` is synchronous; `admin::admin_render` bridges
-        // to the async store read via `block_in_place` (requires the multi-thread rt).
-        let render_svc = svc.clone();
-        ctx.contribute(
-            adminapi::SLOT,
-            adminapi::Item::local(
-                admin::ADMIN_ITEM_ID,
-                admin::ADMIN_SECTION,
-                admin::ADMIN_LABEL,
-                Arc::new(move |params: &adminapi::Params| admin::admin_render(&render_svc, params)),
-            ),
-        );
 
         ctx.contribute(
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
                 apikeysrpc::keys_rpc::register_server(server, svc.clone());
-                // The admin fan-out READ face (`admin.adminData`) and, ALONGSIDE it, the
-                // opt-in WRITE face (`admin.adminSubmit`) — both via this module's OWN glue
-                // crate's re-exports (no foreign rpc import). The write face makes the "API
-                // Keys" configurator editable from a REMOTE admin process: admin-svc drives
-                // the store CRUD server-side over the mTLS edge (the submit closure never
-                // marshals across the wire).
-                apikeysrpc::register_admin(server, svc.clone());
-                apikeysrpc::register_admin_submit(server, svc.clone());
             }),
         );
         Ok(())
@@ -345,8 +316,6 @@ fn dev_seed_explicitly_on() -> bool {
 // their own rows — the shared local Postgres must never have the harness's dev rows
 // poisoned by a test.
 // ============================================================================
-#[cfg(test)]
-mod admin_tests;
 #[cfg(test)]
 mod store_tests;
 #[cfg(test)]

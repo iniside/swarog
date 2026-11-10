@@ -213,7 +213,7 @@ impl Store {
         Ok(found.is_some())
     }
 
-    /// The purge backlog the admin page shows: tombstones the sweep still owes work
+    /// The purge backlog: tombstones the sweep still owes work
     /// on, and the oldest one's `created_at` (`""` when nothing is outstanding).
     /// `purged_players_pending_idx` serves the predicate, so the cost tracks
     /// outstanding work rather than the permanent row per deleted player.
@@ -268,8 +268,7 @@ impl Store {
 
     /// `(messages, unread)` for one player. The only counted view: `notifications_inbox_idx`
     /// leads with `player_id`, so both aggregates read one player's rows — the cross-player
-    /// overview has no counts precisely because those would be whole-table scans, run on
-    /// EVERY portal request (`admin::resolve_items` fetches every item's data per request).
+    /// overview has no counts precisely because those would be whole-table scans.
     ///
     /// A `player_id` the cast rejects is an EMPTY inbox,
     /// matching [`Store::page_by_player`] — the two halves of the drill-down must not

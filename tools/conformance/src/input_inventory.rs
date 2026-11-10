@@ -185,7 +185,7 @@ fn discover_sources(sources: &[String]) -> Result<BTreeSet<InputKey>> {
 ///
 /// TOTAL BY CONSTRUCTION, like [`collect_type`]: an item either contributes, is
 /// descended into, or is a shape that cannot declare a contract. A top-level-only walk
-/// makes an `#[rpc]` trait or request DTO inside `pub mod admin { … }` invisible — no
+/// makes an `#[rpc]` trait or request DTO inside an inline `mod` invisible — no
 /// key, no golden row, and every input gate green over an unexamined caller string.
 fn walk_items<'a>(
     items: &'a [Item],

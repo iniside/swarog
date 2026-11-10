@@ -66,8 +66,8 @@ pub(crate) fn generate_secret() -> Result<(String, String, String), WriteError> 
     Ok((secret, hash, prefix))
 }
 
-/// The upper bound on a role's policy string. `roles.policy` is admin-writable
-/// (`create_role`/`set_role_policy` over `admin.adminSubmit`) and rides EVERY gateway key
+/// The upper bound on a role's policy string. `roles.policy` is operator-writable
+/// (`create_role`/`set_role_policy`) and rides EVERY gateway key
 /// lookup response — `lookup` returns `r.policy`, which the gateway caches for 5s per key
 /// — so an unbounded policy would bloat each lookup + the cache. 4 KiB comfortably fits a
 /// comma-list of every real wire method (~14 today, ~30 bytes each) with large headroom
@@ -75,11 +75,9 @@ pub(crate) fn generate_secret() -> Result<(String, String, String), WriteError> 
 /// a functional limit anyone should hit.
 pub const MAX_POLICY_BYTES: usize = 4096;
 
-/// The upper bound on a role or key NAME. Every name is operator-authored over
-/// `admin.adminSubmit` (both topologies), rides a hidden `_expected_*_rev_<name>` form
-/// field on every re-render, and is echoed in the admin table — 128 bytes is the same
-/// ceiling `accounts` puts on a display name, and no operator-chosen identifier needs
-/// more.
+/// The upper bound on a role or key NAME. Every name is operator-authored — 128 bytes is
+/// the same ceiling `accounts` puts on a display name, and no operator-chosen identifier
+/// needs more.
 pub const MAX_NAME_BYTES: usize = 128;
 
 /// One operator-supplied text column: the operator-facing name, the byte ceiling checked

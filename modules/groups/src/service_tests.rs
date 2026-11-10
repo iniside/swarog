@@ -1,39 +1,22 @@
 //! Live-Postgres `Service`-level tests: the `NotFound`-not-`Forbidden` answer, the
 //! `MAX_MEMBERS` cap under genuine concurrency, `decide`'s kick and self-kick-guard
-//! branches, `role_of`'s uniform empty answer, and the admin promote submit. Every
+//! branches and `role_of`'s uniform empty answer. Every
 //! fixture drives the REAL `Service` (never a hand-rolled proxy) over a fake
 //! `accountsapi::Directory` and a real durable plane, so an emitted event is a real
 //! `asyncevents.events` row.
 
-use super::*;
-
 use std::sync::Arc;
 
-use adminapi::{AdminData as _, AdminSubmit as _};
 use groupsapi::{
     Membership as _, Player as _, JOIN_OPEN, JOIN_REQUEST, MAX_MEMBERS, ROLE_ADMIN, ROLE_MEMBER,
     STATE_MEMBER, STATE_REQUESTED,
 };
-use groupsevents::{REASON_KICKED, ROLE_CHANGED};
+use groupsevents::REASON_KICKED;
 use opsapi::{Identity, Status};
 use sqlx::PgPool;
 
-use crate::admin::{Rejection, ACTION_FIELD, ACTION_PROMOTE, GROUP_FIELD, PLAYER_FIELD};
 use crate::service::NOT_FOUND;
 use crate::tests::{fixed_uuid, test_pool, unique_uuid, with_cleanup, wired, FakeDirectory};
-
-async fn event_count(pool: &PgPool, topic: &str, key: &str, value: &str) -> i64 {
-    let (n,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM asyncevents.events WHERE topic = $1 AND payload->>$2 = $3",
-    )
-    .bind(topic)
-    .bind(key)
-    .bind(value)
-    .fetch_one(pool)
-    .await
-    .unwrap();
-    n
-}
 
 async fn latest_member_left_reason(pool: &PgPool, group_id: &str, player_id: &str) -> (String, String) {
     let (payload,): (serde_json::Value,) = sqlx::query_as(
@@ -390,198 +373,6 @@ async fn role_of_distinguishes_admin_from_plain_member() {
     with_cleanup(&pool, ids, async move {
         assert_eq!(svc.role_of(group_id.clone(), admin).await.unwrap(), ROLE_ADMIN);
         assert_eq!(svc.role_of(group_id, member).await.unwrap(), ROLE_MEMBER);
-    })
-    .await;
-}
-
-// ============================================================================
-// `admin::apply_submit` — `Stale` vs `Rejected`, foreign/malformed-param and
-// dead-pool tolerance, and the promote/`AlreadyAdmin` event-emission split.
-// ============================================================================
-
-fn params(pairs: &[(&str, &str)]) -> adminapi::Params {
-    pairs.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect()
-}
-
-/// A vanished group (never created, or already deleted) is `Stale` — the remedy is
-/// "reload the page". Checked on BOTH authorities: the local `apply_submit` (the
-/// `Rejection` variant) and the wire `admin_submit` (the `opsapi::Status` it maps to),
-/// which must NEVER be `NotFound` — the edge makes that indistinguishable from
-/// `UnknownMethod` and would silently degrade this page to read-only.
-#[tokio::test]
-async fn apply_submit_promote_on_a_vanished_group_is_stale() {
-    let Some(pool) = test_pool().await else { return };
-    let dir = Arc::new(FakeDirectory::new());
-    let (_ctx, svc) = wired(&pool, dir.clone()).await;
-    let group_id = unique_uuid(&pool).await; // never created
-    let player_id = unique_uuid(&pool).await;
-
-    let outcome = crate::admin::apply_submit(
-        &svc,
-        params(&[(ACTION_FIELD, ACTION_PROMOTE), (GROUP_FIELD, &group_id), (PLAYER_FIELD, &player_id)]),
-    )
-    .await;
-    assert!(matches!(outcome, Err(Rejection::Stale)), "a group that does not exist must be Stale");
-
-    let wire_err = svc
-        .admin_submit(
-            "groups".into(),
-            params(&[(ACTION_FIELD, ACTION_PROMOTE), (GROUP_FIELD, &group_id), (PLAYER_FIELD, &player_id)]),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(wire_err.status, Status::Conflict);
-    assert_ne!(wire_err.status, Status::NotFound);
-}
-
-/// A malformed player id is `Rejected` — the operator's own input, 400-class, with a
-/// message. Distinct from `Stale`: this is the same authority `apply_submit` runs for
-/// a remote submit, and the two verdicts must never collapse into one.
-#[tokio::test]
-async fn apply_submit_promote_with_a_bad_player_id_is_rejected_not_stale() {
-    let Some(pool) = test_pool().await else { return };
-    let dir = Arc::new(FakeDirectory::new());
-    let (_ctx, svc) = wired(&pool, dir.clone()).await;
-
-    let admin = unique_uuid(&pool).await;
-    dir.insert(&admin, "SubmitAdmin#0001");
-    let created = svc.create(Identity::player(&admin), "Submit".into(), JOIN_OPEN.into()).await.unwrap();
-    let group_id = created.id.clone();
-
-    let ids = vec![group_id.clone()];
-    with_cleanup(&pool, ids, async move {
-        let outcome = crate::admin::apply_submit(
-            &svc,
-            params(&[(ACTION_FIELD, ACTION_PROMOTE), (GROUP_FIELD, &group_id), (PLAYER_FIELD, "not-a-uuid")]),
-        )
-        .await;
-        let label = match &outcome {
-            Ok(_) => "Ok".to_string(),
-            Err(Rejection::Stale) => "Stale".to_string(),
-            Err(Rejection::Rejected(m)) => format!("Rejected({m})"),
-            Err(Rejection::Internal(m)) => format!("Internal({m})"),
-        };
-        assert!(
-            matches!(outcome, Err(Rejection::Rejected(_))),
-            "a malformed player id must be Rejected, got {label}"
-        );
-
-        let wire_err = svc
-            .admin_submit(
-                "groups".into(),
-                params(&[(ACTION_FIELD, ACTION_PROMOTE), (GROUP_FIELD, &group_id), (PLAYER_FIELD, "not-a-uuid")]),
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(wire_err.status, Status::Invalid);
-        assert_ne!(wire_err.status, Status::NotFound);
-    })
-    .await;
-}
-
-fn dead_pool() -> PgPool {
-    sqlx::postgres::PgPoolOptions::new()
-        .acquire_timeout(std::time::Duration::from_millis(250))
-        .connect_lazy("postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable")
-        .expect("lazy pool from a well-formed DSN")
-}
-
-/// The THIRD `Rejection` class — an infrastructure failure (here: the store cannot be
-/// reached at all) — also stays clear of `Status::NotFound` on the wire. Together with
-/// the two tests above, every arm `apply_submit`/`admin_submit` can take is now pinned:
-/// deleting any one of the three `Rejection::into_ops` match arms would either fail to
-/// compile (non-exhaustive match) or collapse two classes into the same wire status —
-/// this test only catches the latter, which is why the other two tests check their OWN
-/// specific status too, not just "not NotFound".
-#[tokio::test]
-async fn apply_submit_promote_against_an_unreachable_store_is_internal_not_not_found() {
-    let svc = Service::new(dead_pool(), Arc::new(bus::Bus::new()));
-    let group_id = "00000000-0000-4000-8000-000000000000";
-    let player_id = "00000000-0000-4000-8000-000000000001";
-
-    let wire_err = svc
-        .admin_submit(
-            "groups".into(),
-            params(&[(ACTION_FIELD, ACTION_PROMOTE), (GROUP_FIELD, group_id), (PLAYER_FIELD, player_id)]),
-        )
-        .await
-        .unwrap_err();
-    assert_eq!(wire_err.status, Status::Internal);
-    assert_ne!(wire_err.status, Status::NotFound);
-}
-
-/// `admin_data` NEVER `Err`s — not on a foreign param, not on a malformed one, and not
-/// even when the store cannot be reached at all. The portal forwards every page's
-/// params to every resolved provider, so an `Err` here would degrade an UNRELATED
-/// page in the split.
-#[tokio::test]
-async fn admin_data_never_errs_on_foreign_params_malformed_params_or_a_dead_pool() {
-    let svc = Service::new(dead_pool(), Arc::new(bus::Bus::new()));
-
-    let foreign = svc.admin_data(params(&[("owner", "character:not-groups-business")])).await;
-    assert!(foreign.is_ok(), "a foreign param must not fault this page");
-
-    let malformed = svc.admin_data(params(&[("group", "not-a-uuid")])).await;
-    assert!(malformed.is_ok(), "a malformed group ref must render an error card, not Err");
-
-    let overview_against_dead_pool = svc.admin_data(adminapi::Params::new()).await;
-    assert!(
-        overview_against_dead_pool.is_ok(),
-        "a store failure (here: total unreachability) must render an error card, not Err"
-    );
-}
-
-/// A promote emits EXACTLY one `group.role_changed`; the `AlreadyAdmin` re-submit — the
-/// SAME action against a subject already holding `ROLE_ADMIN` — emits none. Without a
-/// decoy/count-based proof, "one event" and "no event" are indistinguishable from
-/// "the emit call was deleted".
-#[tokio::test]
-async fn promote_emits_exactly_one_role_changed_and_a_resubmit_emits_none() {
-    let Some(pool) = test_pool().await else { return };
-    let dir = Arc::new(FakeDirectory::new());
-    let (_ctx, svc) = wired(&pool, dir.clone()).await;
-
-    let admin = unique_uuid(&pool).await;
-    let member = unique_uuid(&pool).await;
-    dir.insert(&admin, "PromoteAdmin#0001");
-
-    let created = svc.create(Identity::player(&admin), "Promote".into(), JOIN_OPEN.into()).await.unwrap();
-    let group_id = created.id.clone();
-    insert_member(&pool, &group_id, &member, STATE_MEMBER, ROLE_MEMBER).await;
-
-    let ids = vec![group_id.clone()];
-    let pool2 = pool.clone();
-    with_cleanup(&pool, ids, async move {
-        let before = event_count(&pool2, ROLE_CHANGED.topic(), "player_id", &member).await;
-
-        let first = match crate::admin::apply_submit(
-            &svc,
-            params(&[(ACTION_FIELD, ACTION_PROMOTE), (GROUP_FIELD, &group_id), (PLAYER_FIELD, &member)]),
-        )
-        .await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => panic!("the first promotion must succeed"),
-        };
-        assert!(first.notice.unwrap().contains("is now"));
-        let after_first = event_count(&pool2, ROLE_CHANGED.topic(), "player_id", &member).await;
-        assert_eq!(after_first, before + 1, "the promotion must emit EXACTLY one role_changed");
-
-        let second = match crate::admin::apply_submit(
-            &svc,
-            params(&[(ACTION_FIELD, ACTION_PROMOTE), (GROUP_FIELD, &group_id), (PLAYER_FIELD, &member)]),
-        )
-        .await
-        {
-            Ok(outcome) => outcome,
-            Err(_) => panic!("an AlreadyAdmin resubmit must still be Ok, not a rejection"),
-        };
-        assert!(second.notice.unwrap().contains("was already"));
-        let after_second = event_count(&pool2, ROLE_CHANGED.topic(), "player_id", &member).await;
-        assert_eq!(after_second, after_first, "an AlreadyAdmin resubmit must emit NO new event");
-
-        let role = svc.role_of(group_id.clone(), member.clone()).await.unwrap();
-        assert_eq!(role, ROLE_ADMIN);
     })
     .await;
 }

@@ -28,7 +28,6 @@
 //! `player.registered` is emitted via `bus::emit_tx` INSIDE the registration store
 //! transaction — the event is durable iff the player row is.
 
-mod admin;
 pub mod conformance;
 mod epic_oauth;
 mod guest;
@@ -243,7 +242,7 @@ const TICKET_NOT_FOUND: &str = "delete ticket not found";
 
 // ============================================================================
 // Service — backs Sessions + Auth (the registry capabilities + the generated edge
-// faces + the gateway's in-process invokers) and the local admin render.
+// faces + the gateway's in-process invokers).
 // ============================================================================
 
 /// What other modules get from `require::<dyn Sessions>` / `require::<dyn Auth>`.
@@ -259,7 +258,7 @@ pub struct Service {
     /// player-QUIC plane and the internal mTLS edge face all funnel into this one
     /// guard): with the gate off both methods answer NotFound, so a peer with a
     /// dev-CA cert cannot self-register/login when dev auth is off. `me` +
-    /// `verify_session` are unaffected (needed by gateway/admin fan-out regardless).
+    /// `verify_session` are unaffected (needed by the gateway regardless).
     dev_auth: bool,
     /// The credential verifiers this process configured, filled in `init` from the
     /// validated [`ProviderConfig`]. The credential ops are contributed
@@ -1188,7 +1187,7 @@ impl TxHandler for PruneHandler {
 // ============================================================================
 
 /// The accounts module. Holds the constructed service (shared between `register`,
-/// the operations, the OAuth routes and the admin render). Edge exposure is
+/// the operations and the OAuth routes). Edge exposure is
 /// topology-blind: `init` contributes the generated Sessions + Auth faces to
 /// `edge::EDGE_SLOT` unconditionally, and `app::run` installs them iff this process
 /// serves an internal QUIC edge — the module never knows. The Auth face's
@@ -1301,8 +1300,8 @@ impl Module for Accounts {
     /// credential providers (verifier construction is pure — the JWKS fetch is
     /// LAZY — so a malformed value can only be caught here), mounts the OAuth
     /// browser routes, contributes the player operations (all unconditional — the
-    /// dev/epic gating lives at the impl), the local admin
-    /// item, and the generated Sessions + Auth RPC faces to the edge slot.
+    /// dev/epic gating lives at the impl), and the generated Sessions + Auth RPC faces
+    /// to the edge slot.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let svc = self.svc();
 
@@ -1370,24 +1369,6 @@ impl Module for Accounts {
         ctx.bus()
             .on_tx_raw(PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
 
-        // The local admin page (RenderFn is synchronous; the store reads are async —
-        // bridge via block_in_place like characters, requires the multi-thread rt).
-        let render_svc = svc.clone();
-        ctx.contribute(
-            adminapi::SLOT,
-            adminapi::Item::local(
-                admin::ADMIN_ITEM_ID,
-                admin::ADMIN_SECTION,
-                admin::ADMIN_LABEL,
-                Arc::new(move |_params: &adminapi::Params| {
-                    let svc = render_svc.clone();
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(admin::admin_content(&svc.store))
-                    })
-                }),
-            ),
-        );
-
         // Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`
         // applies this iff the entrypoint stood up an internal edge server (then a
         // peer gateway verifies sessions / fronts the auth ops over QUIC); in the
@@ -1398,16 +1379,12 @@ impl Module for Accounts {
         // installs all methods at once), but the TRUST GATES live in the impl so the
         // edge face matches the HTTP ops exactly: `register`/`login` self-reject with
         // NotFound when `dev_auth` is off, and `login_federated` answers
-        // `Unavailable` for a provider this deployment did not configure. `me` (+
-        // Sessions `verify_session` and
-        // the admin face) stay unconditional — the gateway/admin fan-out need them.
+        // `Unavailable` for a provider this deployment did not configure. `me` and
+        // Sessions `verify_session` stay unconditional — the gateway needs them.
         ctx.contribute(
             edge::EDGE_SLOT,
             edge::EdgeReg::new(move |server| {
                 accountsrpc::sessions_rpc::register_server(server, svc.clone());
-                // The admin fan-out face (`admin.adminData`), via this module's OWN
-                // glue crate's re-export (no foreign rpc import).
-                accountsrpc::register_admin(server, svc.clone());
                 accountsrpc::directory_rpc::register_server(server, svc.clone());
                 accountsrpc::auth_rpc::register_server(server, svc);
             }),

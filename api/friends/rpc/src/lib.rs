@@ -10,9 +10,8 @@
 //!
 //! There is deliberately NO `remote_factories()` / `provide_factories()` aggregator:
 //! nothing turns a friends peer's capability into a registry entry — gateway-svc
-//! contributes its HTTP routes through `remote::Stub::describe_peer`, admin-svc pulls the
-//! admin page through `adminrpc::admin_remote_factory`, and the monolith hosts the real
-//! service.
+//! contributes its HTTP routes through `remote::Stub::describe_peer`, and the monolith
+//! hosts the real service.
 
 // The glue's method signatures re-resolve at THIS invocation site (the metadata travels as
 // tokens), so `friendsapi`'s domain types and the identity/error types must be in scope
@@ -21,9 +20,3 @@ use friendsapi::*;
 use opsapi::{Error, Identity};
 
 friendsapi::friends_player_meta!(rpc_macro::generate_glue);
-
-/// The admin fan-out's server-side registration, re-exported so the `friends` module
-/// reaches it through its OWN glue crate: archcheck forbids a module→foreign-rpc edge,
-/// while this module→own-rpc→adminrpc chain is fine. The Friends page is READ-ONLY, so
-/// `register_admin_submit` is deliberately not re-exported.
-pub use adminrpc::register_admin;

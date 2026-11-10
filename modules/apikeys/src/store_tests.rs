@@ -345,7 +345,7 @@ async fn invalid_policy_rejected() {
 
 /// An over-cap policy string is an `Invalid` (never Conflict/NotFound) and writes nothing
 /// — bounding the string that rides every gateway key-lookup response + 5s cache. Covers
-/// BOTH admin-reachable write paths: create_role (no row created) and set_role_policy (the
+/// BOTH policy write paths: create_role (no row created) and set_role_policy (the
 /// existing policy preserved).
 #[tokio::test]
 async fn over_cap_policy_rejected_without_writing() {
@@ -372,9 +372,7 @@ async fn over_cap_policy_rejected_without_writing() {
 
 /// An over-cap role/key NAME is an `Invalid` naming the field (never Conflict/Db) on
 /// EVERY writer that binds one — as an inserted value, as an updated value, and as a
-/// `WHERE` predicate — and nothing is written. These are the paths the admin
-/// configurator's `role_name`/`key_name`/`role_target`/`key_target`/`key_role` fields
-/// reach over `admin.adminSubmit` in BOTH topologies.
+/// `WHERE` predicate — and nothing is written.
 #[tokio::test]
 async fn over_cap_name_rejected_on_every_writer_without_writing() {
     let _guard = db_test_lock().await;

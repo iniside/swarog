@@ -16,9 +16,6 @@ publish = false
 # imports no glue crate.
 [dependencies]
 apikeysapi = { workspace = true }
-# Cross-cutting admin fan-out glue, re-exported (`register_admin`) so the apikeys
-# module reaches it through its OWN rpc crate (archcheck-clean).
-adminrpc = { workspace = true }
 opsapi = { workspace = true }
 edge = { workspace = true }
 registry = { workspace = true }
