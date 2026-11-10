@@ -289,6 +289,8 @@ SearchDecl     { kind, label, icon, deadline_ms: u32 }                  // defau
   - `ActionDecl.primary: bool`;
   - `ContributionDecl.form_submit: Option<String>`;
   - `InvokeOutcome::NoOp { message }`;
+  - `InvokeCall.item` and `InvokeCall.request_id`;
+  - the portal table `admin.forms` (form instances);
   - `encode_field`/`decode_field` over `FieldValue`.
 - **Sections.** `controlplane::SECTIONS` is fixed: `overview` "Overview" 0, `players`
   "Players" 10, `economy` "Economy" 30, `platform` "Platform" 40. A module's
@@ -849,7 +851,7 @@ It ships with an admincheck rule, or a test in Step 25.
      admin.forms (id text PRIMARY KEY, login text NOT NULL, module text NOT NULL,
                   action text NOT NULL, contribution text, entity_kind text,
                   entity_id text, item text, spec jsonb NOT NULL,
-                  expires_at timestamptz NOT NULL)
+                  claimed_at timestamptz, expires_at timestamptz NOT NULL)
      CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
      ```
 
@@ -868,9 +870,17 @@ It ships with an admincheck rule, or a test in Step 25.
        error panel mints nothing; its Save is disabled.
    - **POST order** (`action_submit`):
      1. Check CSRF.
-     2. Load the row by `_form`. Each of these gives 400 with zero calls: the row is
-        missing or expired, its `login` is not the session's, or its module or action is
-        not the URL's.
+     2. Load and CLAIM the row atomically (owner, 2026-11-10, option 1a), in one
+        statement: `UPDATE admin.forms SET claimed_at = now() WHERE id = $1 AND
+        expires_at > now() AND (claimed_at IS NULL OR claimed_at < now() - interval
+        '30 seconds') RETURNING …`. The 30 s exceeds `INVOKE_DEADLINE` (10 s), so a claim
+        left by a crashed request expires.
+        - Each of these gives 400 with zero calls: no such id, an expired row, a `login`
+          that is not the session's, or a module or action that is not the URL's.
+        - A row that exists but is claimed or already consumed means a repeated click.
+          Clicks are idempotent (owner): the answer is a 303 with an `Info` flash,
+          "Already submitted — this action is being processed or has completed", and zero
+          calls. It is never an error.
      3. Run `admit`.
      4. Check the reason against the STORED `ConfirmSpec.reason`: Required and empty gives
         422.
@@ -885,8 +895,11 @@ It ships with an admincheck rule, or a test in Step 25.
 
      Any other key gives 400 with zero calls. In the 8a template commit, the modal stops
      posting `_entity`, the hidden-map inputs and `_expected_revision`
-     (`templates/modal.html.tmpl` ~:9-10). The "every other field is input" rule
-     (`actions.rs` ~:25, ~:125-129) is deleted.
+     (`templates/modal.html.tmpl` ~:9-10). The 8a core commit deletes:
+     - the "every other field is input" rule (`actions.rs` ~:25, ~:125-129);
+     - `FIELD_REVISION` (`actions.rs` ~:29) and its parse branch (~:105-111);
+     - the Required-reason check in `build_request` (~:117-123), replaced by POST-order
+       step 4.
    - **`InvokeCall` assembly** uses the row only:
      - module, action, entity and `item` come from the row;
      - `input` = `encode_field` over the stored fields, plus the stored `hidden` map;
@@ -895,10 +908,27 @@ It ships with an admincheck rule, or a test in Step 25.
      - `reason` comes from `_reason`;
      - `request_id` = the form id (item 11).
    - **Consume and retry** (owner, 2026-11-10).
-     - `Ok` and `NoOp` delete the row before answering. A replay or double-click gets 400
-       "Already submitted — refresh".
-     - 422 and timeout keep the row. A 422 retry re-renders from the STORED spec, not the
-       live `decl`; today's `reshow` (`routes.rs` ~:696) changes to read the row.
+     - Right after `invoke` returns, BEFORE `record` (audit) and before the flash stash,
+       the row is settled by outcome:
+
+       | Outcome | Row |
+       | --- | --- |
+       | `Ok`, `NoOp` | deleted (consumed) |
+       | `Conflict` / `Status::Conflict` | deleted; the stale revision would always conflict again |
+       | `FieldErrors`, timeout, `Failed` | kept, `claimed_at` reset to NULL so the operator can retry |
+
+       A failed delete or reset is logged and does not change the answer.
+     - An audit append failure keeps the existing answers. After `Ok` it is the 500
+       "action applied but audit append failed"; the row is already consumed, so a retry
+       cannot apply the action twice. After `NoOp` it takes the warn path (outcome
+       status), like every non-Ok outcome. The `matches!(.., Ok)` at `routes.rs` ~:712 must
+       name `NoOp` explicitly.
+     - A 422 retry re-renders from the STORED spec, not the live `decl`. Today's `reshow`
+       (`routes.rs` ~:696) changes to read the row.
+     - A 409 re-render shows the reload banner and disables Save. A new form comes from a
+       reload.
+     - A stored field marked `readonly` takes its stored `default`; a posted value for it
+       is ignored.
    - **Field keys** must not contain `__`, because `<key>__currency` is a form-local input
      name. admincheck checks this for `Then::Form` specs. The portal refuses a panel spec
      that breaks it, rendering an error panel and minting no row.
@@ -916,7 +946,11 @@ It ships with an admincheck rule, or a test in Step 25.
       - or, for a token-less Invoke button, as the portal key `_item`.
 
       Modules read `InvokeCall.item`; there is never an item key in `input`.
-    - `item` is capped at 256 bytes; longer gives 400. A forged `item` can reach a module.
+    - `item` is validated by one portal function, `engine::actions::validate_item(&str)`:
+      non-empty, at most 256 bytes, no control characters. It is applied to `?item=` on
+      the modal GET (400, no row minted) and to `_item` on a token-less POST (400, zero
+      calls). The Validated `req.item` policy row cites this function. A forged `item`
+      can reach a module.
       That is acceptable because the module validates it against its own data, as
       `skip(expected)` does. The plan states this so no implementer adds a portal-side
       membership check.
@@ -960,7 +994,9 @@ an Errata line saying so.
 - Skip what the operator saw (owner, 2026-11-10). The poison-event preview is a
   `PropertyList` with `item = Some(event_id)`. Its Skip action is a `Then::Confirm`
   `PanelTool` action, so its form row (Step 8a item 9) stores that id, and the module
-  reads it from `InvokeCall.item`.
+  reads it from `InvokeCall.item`. With `item: None` (a modal GET without `?item=`), the
+  provider returns `opsapi::Status::Invalid` "Skip needs the previewed event" and does not
+  call `skip`. The portal never skips an event the operator did not see.
   - `asyncevents::admin::skip` (`core/asyncevents/src/admin.rs` ~:240-320) gains a
     parameter `expected: Option<&str>`. It keeps ONE transaction body with the
     subscription row locked `FOR UPDATE`; there is no copied second implementation.
@@ -1119,7 +1155,16 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
   - a wrong `_confirm` and a Required-but-empty `_reason` each give 422 with zero calls;
   - `InvokeCall.item`, `expected_revision` and `request_id` come from the row;
   - a token-less POST carries an empty `input`, rejects field keys, and still passes
-    `admit`.
+    `admit`;
+  - two concurrent POSTs with one `_form` invoke once; the other gets the `Info`
+    "Already submitted" 303. A claim older than 30 s can be re-taken;
+  - a 409 consumes the row; `FieldErrors`, timeout and `Failed` keep it and release the
+    claim;
+  - an `Ok` whose audit append fails still consumes the row;
+  - `validate_item` gives 400 at 257 bytes on both `?item=` (no row) and `_item` (zero
+    calls);
+  - the `core.events` skip with `item: None` returns Invalid without calling `skip`;
+  - a posted value for a `readonly` field is ignored.
 - `core/controlplane` tests for the Step 8a contract: `encode_field`/`decode_field` round
   trip for every `FieldKind`, including a Multi value that contains a comma and a Money
   value; a malformed raw value is a `FieldError`.
