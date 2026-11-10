@@ -227,7 +227,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- macro panel_form(fv, disabled=false) -%}
 {%- set can_save = fv.form_id and not disabled and not fv.locked -%}
 {%- if fv.form_id %}<form hx-post="{{ fv.post_url }}" hx-target="closest .slot" hx-swap="outerHTML" hx-disabled-elt="find button[type=submit]">{% if fv.csrf %}<input type="hidden" name="_csrf" value="{{ fv.csrf }}">{% endif %}<input type="hidden" name="_form" value="{{ fv.form_id }}">{% endif -%}
-<div class="form">{% for f in fv.fields %}{{ field(f, disabled) }}{% endfor %}<div class="form-actions">{% if fv.note %}<span class="muted" style="margin-right:auto;font-size:12px;align-self:center">{{ fv.note }}</span>{% endif %}<button type="button" class="btn" disabled>Cancel</button>{% if fv.form_id %}<button type="submit" class="btn primary"{% if not can_save %} disabled{% endif %}>{{ fv.submit_label or "Save" }}</button>{% else %}<button type="button" class="btn primary" disabled title="No submit action declared">{{ fv.submit_label or "Save" }}</button>{% endif %}</div></div>
+<div class="form">{% for f in fv.fields %}{{ field(f, disabled) }}{% endfor %}<div class="form-actions">{% if fv.note %}<span class="muted" style="margin-right:auto;font-size:12px;align-self:center">{{ fv.note }}</span>{% endif %}<button type="button" class="btn" disabled>Cancel</button>{% if fv.form_id %}<button type="submit" class="btn primary"{% if not can_save %} disabled{% endif %}>{{ fv.submit_label or "Save" }}</button>{% else %}<button type="button" class="btn primary" disabled title="Read-only">{{ fv.submit_label or "Save" }}</button>{% endif %}</div></div>
 {%- if fv.form_id %}</form>{% endif -%}
 {%- endmacro %}
 
