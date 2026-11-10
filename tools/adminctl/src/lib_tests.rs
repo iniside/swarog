@@ -34,7 +34,7 @@ async fn create_user_stores_verifiable_hash() {
     };
     let user = unique_username("adminctl-create");
 
-    let inserted = create_user(&pool, &user, "s3cret-pw").await.unwrap();
+    let inserted = create_user(&pool, &user, "s3cret-pw", "admin").await.unwrap();
     assert!(inserted, "first create must report a new row");
 
     let hash = stored_hash(&pool, &user).await.expect("user row exists");
@@ -53,11 +53,11 @@ async fn create_user_upsert_resets_password() {
     };
     let user = unique_username("adminctl-reset");
 
-    assert!(create_user(&pool, &user, "first-pw").await.unwrap());
+    assert!(create_user(&pool, &user, "first-pw", "admin").await.unwrap());
     let first = stored_hash(&pool, &user).await.unwrap();
 
     // Re-running create-user for an existing user is a password RESET, not an insert.
-    let inserted = create_user(&pool, &user, "second-pw").await.unwrap();
+    let inserted = create_user(&pool, &user, "second-pw", "admin").await.unwrap();
     assert!(!inserted, "second create must report a reset, not a new row");
 
     let second = stored_hash(&pool, &user).await.unwrap();
@@ -75,7 +75,7 @@ async fn delete_removes_user() {
     };
     let user = unique_username("adminctl-delete");
 
-    create_user(&pool, &user, "pw").await.unwrap();
+    create_user(&pool, &user, "pw", "admin").await.unwrap();
     assert!(stored_hash(&pool, &user).await.is_some(), "user exists before delete");
 
     assert!(delete_user(&pool, &user).await.unwrap(), "delete reports removal");
@@ -98,7 +98,7 @@ async fn ensure_schema_is_idempotent_for_fresh_db() {
 
     // And create-user succeeds straight after, proving the table is usable.
     let user = unique_username("adminctl-fresh");
-    assert!(create_user(&pool, &user, "pw").await.unwrap());
+    assert!(create_user(&pool, &user, "pw", "admin").await.unwrap());
     delete_user(&pool, &user).await.unwrap();
 }
 
@@ -108,7 +108,7 @@ async fn create_user_rejects_empty_password() {
         return;
     };
     let user = unique_username("adminctl-empty");
-    let err = create_user(&pool, &user, "").await.unwrap_err();
+    let err = create_user(&pool, &user, "", "admin").await.unwrap_err();
     assert!(err.to_string().contains("password"), "empty password is rejected: {err}");
     // No row should have been created.
     assert!(stored_hash(&pool, &user).await.is_none(), "no user row for a rejected create");
@@ -125,7 +125,7 @@ async fn create_user_trims_padded_username() {
     let bare = unique_username("adminctl-pad");
     let padded = format!("  {bare}  ");
 
-    let inserted = create_user(&pool, &padded, "pw").await.unwrap();
+    let inserted = create_user(&pool, &padded, "pw", "admin").await.unwrap();
     assert!(inserted, "first create must report a new row");
 
     // Stored under the TRIMMED name, not the raw padded argv.
@@ -143,7 +143,7 @@ async fn create_user_rejects_over_cap_username() {
         return;
     };
     let too_long = "a".repeat(200);
-    let err = create_user(&pool, &too_long, "pw").await.unwrap_err();
+    let err = create_user(&pool, &too_long, "pw", "admin").await.unwrap_err();
     assert!(err.to_string().contains("128-byte cap"), "over-cap username is rejected: {err}");
     assert!(stored_hash(&pool, &too_long).await.is_none(), "no user row for a rejected create");
 }
@@ -159,7 +159,7 @@ async fn delete_user_round_trips_padded_username() {
     let bare = unique_username("adminctl-pad-del");
     let padded = format!("  {bare}  ");
 
-    create_user(&pool, &bare, "pw").await.unwrap();
+    create_user(&pool, &bare, "pw", "admin").await.unwrap();
     assert!(stored_hash(&pool, &bare).await.is_some(), "user exists before delete");
 
     assert!(delete_user(&pool, &padded).await.unwrap(), "padded-input delete finds the trimmed row");

@@ -660,7 +660,7 @@ fn grep_asyncevents_sql_excludes_plane_crate_and_tests() {
 // --- Rule 15: a module may not query a FOREIGN module's schema in SQL --------
 
 /// The 10 persisting-module schema names, as `grep_foreign_schema_sql` derives them from
-/// the `modules/` dir scan (admin/gateway own none but still appear as dir names).
+/// the `modules/` dir scan (gateway owns none but still appears as a dir name).
 fn schema_set() -> Vec<String> {
     strings(&[
         "accounts",

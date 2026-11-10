@@ -250,7 +250,7 @@ fn uniq(prefix: &str) -> String {
 
 async fn create_user(pool: &PgPool, username: &str, pass: &str) {
     let hash = hash_password(pass).unwrap();
-    sqlx::query("INSERT INTO admin.users (username, pass_hash) VALUES ($1, $2)")
+    sqlx::query("INSERT INTO admin.users (username, pass_hash, role) VALUES ($1, $2, 'admin')")
         .bind(username)
         .bind(&hash)
         .execute(pool)

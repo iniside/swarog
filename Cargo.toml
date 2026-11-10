@@ -30,6 +30,7 @@ members = [
     "core/httpmw",
     "core/controlplane",
     "core/controlplane-rpc",
+    "core/admin",
     # Tooling — codegen + the dev-CA minter (Go's tools/).
     "tools/rpc-macro",
     "tools/rpc-contract-model",
@@ -82,7 +83,7 @@ members = [
     "tools/eventctl",
     # Admin-user operator CLI (Step 3): mint/list/delete GameOps admin logins in the
     # shared `admin` schema over DATABASE_URL; wrapped by the root install.sh/.ps1.
-    # Reuses the `admin` module crate's USERS_DDL + argon2 hash fns (one source of truth).
+    # Reuses the core `admin` crate's USERS_DDL + argon2 hash fns (one source of truth).
     "tools/adminctl",
     # Demo-data seeder: drives a running fleet's public gateway API so the admin panel
     # shows deterministic data. No DB access, no workspace-crate dependencies.
@@ -141,7 +142,6 @@ members = [
     "modules/inventory",
     "modules/gateway",
     "modules/accounts",
-    "modules/admin",
     "modules/audit",
     "modules/scheduler",
     "modules/match",
@@ -317,6 +317,7 @@ metrics = { path = "core/metrics" }
 httpmw = { path = "core/httpmw" }
 controlplane = { path = "core/controlplane" }
 controlplanerpc = { path = "core/controlplane-rpc" }
+admin = { path = "core/admin" }
 
 # ---- Tooling (tools/): the #[rpc] codegen. ----
 rpc-macro = { path = "tools/rpc-macro" }
@@ -377,7 +378,6 @@ characters = { path = "modules/characters" }
 inventory = { path = "modules/inventory" }
 gateway = { path = "modules/gateway" }
 accounts = { path = "modules/accounts" }
-admin = { path = "modules/admin" }
 audit = { path = "modules/audit" }
 scheduler = { path = "modules/scheduler" }
 match_module = { path = "modules/match" }

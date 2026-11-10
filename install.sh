@@ -39,7 +39,7 @@ if [ -z "$PASSWORD" ]; then
 fi
 
 # Pipe the password over stdin -- never on argv, never in the process table.
-printf '%s\n' "$PASSWORD" | cargo run -q -p adminctl -- create-user "$USERNAME" --password-stdin
+printf '%s\n' "$PASSWORD" | cargo run -q -p adminctl -- create-user "$USERNAME" --role admin --password-stdin
 
 cat <<EOF
 

@@ -1,11 +1,12 @@
-//! `admin-svc` — the admin fortress process: session-auth owner, schema `admin`.
+//! `admin-svc` — composition root: the core admin portal plus metrics; no domain
+//! module; DB-backed.
 //!
-//! It is DB-BACKED: the admin module owns schema `admin` (users / sessions /
+//! The core admin portal owns schema `admin` (users / sessions /
 //! login_attempts — GameOps identity, argon2id session login, lockout, CSRF), and the
 //! DB brings the app-owned durable plane with it, so the `admin.action` audit events
 //! append here like anywhere else. It hosts NO edge server and no `gateway` module: it
 //! fronts no typed ops (a browser reaches `/admin` through gateway-svc's HTTP
-//! passthrough), so it needs no verifier/auth-once boundary. The admin module's own
+//! passthrough), so it needs no verifier/auth-once boundary. The portal's own
 //! session gate (DB-backed, minted by `adminctl`/`install.sh`) guards it.
 
 use lifecycle::ProcessWiring;
@@ -16,6 +17,6 @@ async fn main() -> anyhow::Result<()> {
 
     let mods = admin_svc::modules(&ProcessWiring::new());
 
-    // DB on (the admin module owns schema `admin`; DB ⇒ durable plane); no edge server.
+    // DB on (the core admin portal owns schema `admin`; DB ⇒ durable plane); no edge server.
     app::run(app::Config::from_env(), mods, None, None).await
 }

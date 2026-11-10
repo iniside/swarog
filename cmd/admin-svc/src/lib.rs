@@ -4,7 +4,8 @@
 
 use lifecycle::{Module, ProcessWiring};
 
-/// The admin module plus core metrics. The wiring carries no peers.
+/// Composition root: the core admin portal plus metrics; no domain module; DB-backed.
+/// The wiring carries no peers.
 pub fn modules(_wiring: &ProcessWiring) -> Vec<Box<dyn Module>> {
     vec![
         Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer

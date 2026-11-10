@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
-# The admin fortress process (Step 7). Hosts the `admin` module; no edge server of its
-# own, fronted for browsers through gateway-svc's HTTP passthrough.
+# Composition root: the core admin portal plus metrics; no domain module; DB-backed.
+# No edge server of its own, fronted for browsers through gateway-svc's HTTP passthrough.
 [dependencies]
 app = { workspace = true }
 lifecycle = { workspace = true }

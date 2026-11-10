@@ -17,6 +17,8 @@ use crate::model::{ArgonParams, Convention, Entry, Fixture, InputPolicy, Stance}
 /// so adding a second core-infra module is an explicit, reviewable edit here.
 pub const CORE_INFRA_MODULES: &[&str] = &["metrics"];
 
+pub const CORE_HOSTED_MODULES: &[&str] = &["admin"];
+
 /// Stable kebab label for one convention — the report's column header and the
 /// key used in every finding line.
 pub fn conv_label(c: Convention) -> &'static str {
@@ -64,7 +66,10 @@ pub fn drift_findings(
              to tools/conformance policy"
         ));
     }
-    for m in entry_names.iter().filter(|m| !disk.contains(*m)) {
+    for m in entry_names
+        .iter()
+        .filter(|m| !disk.contains(*m) && !CORE_HOSTED_MODULES.contains(&m.as_str()))
+    {
         findings.push(format!(
             "conformance entry \"{m}\" has no modules/{m} directory on disk — remove the \
              stale entry from tools/conformance policy"
@@ -89,7 +94,10 @@ pub fn drift_findings(
              cmd/server's lib"
         ));
     }
-    for m in monolith.iter().filter(|m| !disk.contains(**m)) {
+    for m in monolith
+        .iter()
+        .filter(|m| !disk.contains(**m) && !CORE_HOSTED_MODULES.contains(&m.as_str()))
+    {
         findings.push(format!(
             "monolith module \"{m}\" has no modules/{m} directory on disk"
         ));

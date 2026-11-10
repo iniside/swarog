@@ -132,6 +132,23 @@ pub fn normalize_username(input: &str) -> Result<String, &'static str> {
     Ok(trimmed.to_string())
 }
 
+pub fn parse_role(input: &str) -> Result<controlplane::Role, String> {
+    match input {
+        "admin" => Ok(controlplane::Role::Admin),
+        "operator" => Ok(controlplane::Role::Operator),
+        "viewer" => Ok(controlplane::Role::Viewer),
+        other => Err(format!("unknown role {other:?} (expected admin, operator or viewer)")),
+    }
+}
+
+pub fn role_name(role: controlplane::Role) -> &'static str {
+    match role {
+        controlplane::Role::Admin => "admin",
+        controlplane::Role::Operator => "operator",
+        controlplane::Role::Viewer => "viewer",
+    }
+}
+
 /// The ONE body every failed login answers with — wrong password, unknown user, and
 /// locked are indistinguishable (no username/lock oracle).
 const GENERIC_LOGIN_ERROR: &str = "Invalid credentials.";
@@ -153,6 +170,7 @@ pub const USERS_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS admin.users (
 	username   text PRIMARY KEY,
 	pass_hash  text NOT NULL,
+	role       text NOT NULL CHECK (role IN ('admin','operator','viewer')),
 	created_at timestamptz NOT NULL DEFAULT now()
 );"#;
 

@@ -1,7 +1,7 @@
 //! `adminctl` operator logic over the shared `admin` schema. The mutating verbs live
 //! here (not in `main.rs`) so they are unit-testable against live Postgres; `main.rs`
 //! is a thin arg dispatcher (the `tools/` style — no clap). The users-table shape and
-//! the argon2id hashing parameters come from the `admin` module crate ([`admin::USERS_DDL`],
+//! the argon2id hashing parameters come from the core `admin` crate ([`admin::USERS_DDL`],
 //! [`admin::hash_password`], [`admin::verify_password`]) — one source of truth, so the
 //! installer and the login path can never drift.
 
@@ -20,6 +20,7 @@ pub fn dsn() -> String {
 /// One `admin.users` row for the `list` table.
 pub struct UserRow {
     pub username: String,
+    pub role: String,
     pub created_at: String,
 }
 
@@ -44,7 +45,7 @@ pub async fn ensure_schema(pool: &PgPool) -> Result<()> {
 /// `INSERT … ON CONFLICT (username) DO UPDATE` — so a repeat call for an existing
 /// username is a password RESET, not an error. Returns `true` when a new row was
 /// inserted, `false` when an existing user's password was reset. Rejects an empty
-/// password (an unusable login).
+/// password (an unusable login) and a role [`admin::parse_role`] does not accept.
 ///
 /// The username is normalized through [`admin::normalize_username`] — the SAME
 /// authority the login handler trims/caps against — before it is bound. Binding the
@@ -56,9 +57,15 @@ pub async fn ensure_schema(pool: &PgPool) -> Result<()> {
 /// delete: find them with `SELECT username FROM admin.users WHERE username <>
 /// btrim(username)` and remove via psql or a schema wipe + reseed (wipe-over-migrations,
 /// no data-migration machinery).
-pub async fn create_user(pool: &PgPool, username: &str, password: &str) -> Result<bool> {
+pub async fn create_user(
+    pool: &PgPool,
+    username: &str,
+    password: &str,
+    role: &str,
+) -> Result<bool> {
     let username = admin::normalize_username(username)
         .map_err(|error| anyhow!("adminctl: {error}"))?;
+    let role = admin::parse_role(role).map_err(|error| anyhow!("adminctl: {error}"))?;
     if password.is_empty() {
         return Err(anyhow!("adminctl: password must not be empty"));
     }
@@ -67,24 +74,43 @@ pub async fn create_user(pool: &PgPool, username: &str, password: &str) -> Resul
     // `xmax = 0` on the returned row iff this was an INSERT (no prior tuple version);
     // a DO UPDATE leaves the pre-existing tuple's xmax non-zero. Lets us report
     // "created" vs "password reset" without a separate existence query.
+    // The conflict arm never touches `role`: re-running the bootstrap on an existing
+    // login must not demote or promote it; `set_role` is the only role change.
     let row = sqlx::query(
-        "INSERT INTO admin.users (username, pass_hash) VALUES ($1, $2) \
+        "INSERT INTO admin.users (username, pass_hash, role) VALUES ($1, $2, $3) \
          ON CONFLICT (username) DO UPDATE SET pass_hash = EXCLUDED.pass_hash \
          RETURNING (xmax = 0) AS inserted",
     )
     .bind(&username)
     .bind(&hash)
+    .bind(admin::role_name(role))
     .fetch_one(pool)
     .await
     .context("adminctl: upsert admin user")?;
     Ok(row.get::<bool, _>("inserted"))
 }
 
-/// `list`: every admin user with its creation time, ordered by username.
+/// `set-role`: change one existing login's role. Returns `true` iff a row was
+/// updated (`false` = no such user).
+pub async fn set_role(pool: &PgPool, username: &str, role: &str) -> Result<bool> {
+    let username = admin::normalize_username(username)
+        .map_err(|error| anyhow!("adminctl: {error}"))?;
+    let role = admin::parse_role(role).map_err(|error| anyhow!("adminctl: {error}"))?;
+    ensure_schema(pool).await?;
+    let done = sqlx::query("UPDATE admin.users SET role = $2 WHERE username = $1")
+        .bind(&username)
+        .bind(admin::role_name(role))
+        .execute(pool)
+        .await
+        .context("adminctl: set admin user role")?;
+    Ok(done.rows_affected() > 0)
+}
+
+/// `list`: every admin user with its role and creation time, ordered by username.
 pub async fn list_users(pool: &PgPool) -> Result<Vec<UserRow>> {
     ensure_schema(pool).await?;
     let rows = sqlx::query(
-        "SELECT username, created_at::text AS created_at \
+        "SELECT username, role, created_at::text AS created_at \
          FROM admin.users ORDER BY username",
     )
     .fetch_all(pool)
@@ -94,6 +120,7 @@ pub async fn list_users(pool: &PgPool) -> Result<Vec<UserRow>> {
         .into_iter()
         .map(|r| UserRow {
             username: r.get("username"),
+            role: r.get("role"),
             created_at: r.get("created_at"),
         })
         .collect())

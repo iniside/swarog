@@ -51,7 +51,7 @@ if ([string]::IsNullOrEmpty($Password)) {
 }
 
 # Pipe the password over stdin -- never on argv, never in the process table.
-$Password | cargo run -q -p adminctl -- create-user $Username --password-stdin
+$Password | cargo run -q -p adminctl -- create-user $Username --role admin --password-stdin
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

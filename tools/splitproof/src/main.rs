@@ -962,7 +962,7 @@ fn seed_admin(ctx: &Ctx, user: &str, pass: &str) -> Result<()> {
     let mut child = OwnedChild::spawn(SpawnSpec {
         label: format!("adminctl-{user}"),
         executable: bin,
-        args: ["create-user", user].into_iter().map(OsString::from).collect(),
+        args: ["create-user", user, "--role", "admin"].into_iter().map(OsString::from).collect(),
         env: env
             .into_iter()
             .map(|(key, value)| (OsString::from(key), OsString::from(value)))

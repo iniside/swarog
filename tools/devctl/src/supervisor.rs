@@ -413,7 +413,7 @@ fn seed_admin(
     let spec = SpawnSpec {
         label: "devctl-admin-seed".into(),
         executable: layout.binary("debug", "adminctl"),
-        args: ["create-user", "admin", "--password-stdin"]
+        args: ["create-user", "admin", "--role", "admin", "--password-stdin"]
             .into_iter()
             .map(OsString::from)
             .collect(),

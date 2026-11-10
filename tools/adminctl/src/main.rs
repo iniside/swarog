@@ -5,14 +5,15 @@
 //! reads one trimmed line from stdin, or `ADMINCTL_PASSWORD` supplies it — the root
 //! `install.sh`/`install.ps1` wrappers do the no-echo prompting and pipe the answer in.
 //!
-//!   adminctl create-user <username> [--password-stdin]
+//!   adminctl create-user <username> [--role R] [--password-stdin]
+//!   adminctl set-role <username> <role>
 //!   adminctl list
 //!   adminctl delete <username>
 
 use std::io::Read as _;
 use std::process::ExitCode;
 
-use adminctl::{create_user, delete_user, dsn, list_users};
+use adminctl::{create_user, delete_user, dsn, list_users, set_role};
 use anyhow::{anyhow, Result};
 use sqlx::PgPool;
 
@@ -20,9 +21,15 @@ const USAGE: &str = "\
 adminctl — admin-user operator CLI
 
 USAGE:
-  adminctl create-user <username> [--password-stdin]   mint or password-reset an admin login
-  adminctl list                                         list admin users (username + created_at)
-  adminctl delete <username>                            remove an admin login
+  adminctl create-user <username> [--role R] [--password-stdin]
+                                   mint an admin login, or reset an existing one's password
+                                   (an existing login keeps its role)
+  adminctl set-role <username> <role>
+                                   change an existing login's role
+  adminctl list                    list admin users (username + role + created_at)
+  adminctl delete <username>       remove an admin login
+
+Roles: admin (default for create-user), operator, viewer.
 
 Password (never via argv):
   --password-stdin       read one trimmed line from stdin
@@ -56,6 +63,7 @@ async fn run() -> Result<()> {
 
     match cmd {
         "create-user" => cmd_create_user(&pool, &args).await,
+        "set-role" => cmd_set_role(&pool, &args).await,
         "list" => cmd_list(&pool).await,
         "delete" => cmd_delete(&pool, &args).await,
         other => Err(anyhow!("adminctl: unknown command {other:?}\n\n{USAGE}")),
@@ -98,14 +106,39 @@ fn resolve_password(args: &[String]) -> Result<String> {
     }
 }
 
+fn arg_role(args: &[String]) -> Result<&str> {
+    match args.iter().position(|a| a == "--role") {
+        None => Ok("admin"),
+        Some(i) => args
+            .get(i + 1)
+            .filter(|s| !s.starts_with('-'))
+            .map(String::as_str)
+            .ok_or_else(|| anyhow!("adminctl: --role requires a value (admin, operator or viewer)")),
+    }
+}
+
 async fn cmd_create_user(pool: &PgPool, args: &[String]) -> Result<()> {
     let username = arg_username(args, "create-user")?;
+    let role = arg_role(args)?;
     let password = resolve_password(args)?;
-    let inserted = create_user(pool, &username, &password).await?;
+    let inserted = create_user(pool, &username, &password, role).await?;
     if inserted {
         println!("created admin user {username:?}");
     } else {
         println!("reset password for existing admin user {username:?}");
+    }
+    Ok(())
+}
+
+async fn cmd_set_role(pool: &PgPool, args: &[String]) -> Result<()> {
+    let username = arg_username(args, "set-role")?;
+    let role = args
+        .get(2)
+        .ok_or_else(|| anyhow!("adminctl: set-role requires a <role> (admin, operator or viewer)"))?;
+    if set_role(pool, &username, role).await? {
+        println!("set role of admin user {username:?} to {role:?}");
+    } else {
+        println!("no such admin user {username:?}");
     }
     Ok(())
 }
@@ -116,9 +149,9 @@ async fn cmd_list(pool: &PgPool) -> Result<()> {
         println!("(no admin users — run ./install.sh <username> to create one)");
         return Ok(());
     }
-    println!("{:<32} CREATED AT", "USERNAME");
+    println!("{:<32} {:<10} CREATED AT", "USERNAME", "ROLE");
     for u in &users {
-        println!("{:<32} {}", u.username, u.created_at);
+        println!("{:<32} {:<10} {}", u.username, u.role, u.created_at);
     }
     Ok(())
 }

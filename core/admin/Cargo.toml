@@ -33,11 +33,9 @@ rand = { workspace = true }
 # same helpers `core/app`'s rate limiter uses; honors TRUSTED_PROXY_CIDRS).
 httpmw = { workspace = true }
 ipnet = { workspace = true }
+asyncevents = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }
 tokio = { workspace = true }
-# The sanctioned test-wiring pattern: the durable plane stays app-owned at runtime
-# (never a normal dep — archcheck rule 10); tests install its transport directly.
-asyncevents = { workspace = true }
 tower = { version = "0.5", features = ["util"] }

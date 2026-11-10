@@ -21,7 +21,7 @@ args = ["--cert", "run/weles/edge-ca.crt", "--key", "run/weles/edge-ca.key"]
 [[prepare]]
 name = "admin-seed"
 run = "adminctl"
-args = ["create-user", "admin"]
+args = ["create-user", "admin", "--role", "admin"]
 passthrough = ["DATABASE_URL"]
 env = { ADMINCTL_PASSWORD = "admin" }
 
