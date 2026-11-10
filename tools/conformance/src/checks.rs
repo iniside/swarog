@@ -231,7 +231,6 @@ pub const CONTROL_PLANE_CAP_MARKER: &str = "cp.invoke";
 /// The conformance entry that proves a control-plane writer's caps.
 fn control_plane_writer_entry(module: &str) -> &str {
     match module {
-        // Both providers live in core/admin, whose conformance entry is `admin`.
         "core.events" | "portal" => "admin",
         other => other,
     }
