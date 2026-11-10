@@ -55,7 +55,8 @@ pub fn entries() -> Vec<Entry> {
     ]
 }
 
-const CONTROL_PLANE_RATIONALE: &str = "cp.* is wire-only and served only to the portal; each writer's caps are proven by its own CONTROL_PLANE_WRITERS CapCase";
+const CONTROL_PLANE_INVOKE_RATIONALE: &str = "cp.* is wire-only and served only to the portal; each writer's caps are proven by its own CONTROL_PLANE_WRITERS CapCase";
+const CONTROL_PLANE_READ_RATIONALE: &str = "cp.panel and cp.search are read-only (no write path), wire-only, and called by the portal";
 
 pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
     use Exposure::{External, Wire};
@@ -145,23 +146,23 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("wallet.debit", "movement.player_id", Wire), Opaque { rationale: "opaque player UUID passed between domain capabilities" }),
         (key("wallet.debit", "movement.currency", Wire), Validated { cap: walletapi::MAX_CURRENCY_CODE_BYTES, basis: "wallet::currency_code_within_cap runs inside validate_movement, called by every credit/debit before ledger SQL" }),
         (key("wallet.debit", "movement.reason", Wire), Validated { cap: walletapi::MAX_REASON_BYTES, basis: "wallet::reason_within_cap runs inside validate_movement, called by every credit/debit before ledger SQL" }),
-        (key("cp.invoke", "req.action", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.invoke", "req.entity.id", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.invoke", "req.entity.kind", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.invoke", "req.input.<key>", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.invoke", "req.input.<value>", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.invoke", "req.module", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.invoke", "req.operator", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.invoke", "req.reason", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.panel", "req.contribution", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.panel", "req.entity.id", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.panel", "req.entity.kind", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.panel", "req.module", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.panel", "req.params.<key>", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.panel", "req.params.<value>", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.search", "req.kind", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.search", "req.module", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
-        (key("cp.search", "req.q", Wire), Opaque { rationale: CONTROL_PLANE_RATIONALE }),
+        (key("cp.invoke", "req.action", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
+        (key("cp.invoke", "req.entity.id", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
+        (key("cp.invoke", "req.entity.kind", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
+        (key("cp.invoke", "req.input.<key>", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
+        (key("cp.invoke", "req.input.<value>", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
+        (key("cp.invoke", "req.module", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
+        (key("cp.invoke", "req.operator", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
+        (key("cp.invoke", "req.reason", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
+        (key("cp.panel", "req.contribution", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.panel", "req.entity.id", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.panel", "req.entity.kind", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.panel", "req.module", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.panel", "req.params.<key>", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.panel", "req.params.<value>", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.search", "req.kind", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.search", "req.module", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.search", "req.q", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
     ]
 }
 

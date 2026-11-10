@@ -372,17 +372,26 @@ fn self_check_option_none_samples() -> anyhow::Result<()> {
             .map(str::to_string)
             .ok_or_else(|| anyhow::anyhow!("non-utf8 dir name under {}", api_root.display()))?;
         let label = format!("api/{dir_name}/events");
-        sources.push((dir_name, label, dir.join("events").join("src").join("lib.rs")));
+        sources.push((dir_name, label, dir.join("events").join("src").join("lib.rs"), false));
     }
     sources.push((
         "controlplane".to_string(),
         "core/controlplane/src/events.rs".to_string(),
         root.join("core").join("controlplane").join("src").join("events.rs"),
+        true,
     ));
     let mut findings = Vec::new();
-    for (key, label, path) in sources {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue; // domain has no events crate -- nothing to scan
+    for (key, label, path, required) in sources {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(e) if required => {
+                findings.push(format!(
+                    "{label} could not be read ({e}) -- this scan hardcodes its path; \
+                     update tools/topiccheck/src/golden.rs if the file moved"
+                ));
+                continue;
+            }
+            Err(_) => continue, // domain has no events crate -- nothing to scan
         };
         let fields = scan_option_fields(&text);
         if fields.is_empty() {
