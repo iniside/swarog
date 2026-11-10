@@ -108,6 +108,12 @@ pub const BLOCKING: &[Stage] = &[
         run: conformance::run,
     },
     Stage {
+        id: StageId::Admincheck,
+        class: StageClass::Blocking,
+        not_applicable_on: &[],
+        run: admincheck::run,
+    },
+    Stage {
         id: StageId::DocsCurrent,
         class: StageClass::Blocking,
         not_applicable_on: &[],
@@ -187,12 +193,6 @@ pub const ADVISORY: &[Stage] = &[
         class: StageClass::Advisory,
         not_applicable_on: &[],
         run: topiccheck::run,
-    },
-    Stage {
-        id: StageId::Admincheck,
-        class: StageClass::Advisory,
-        not_applicable_on: &[],
-        run: admincheck::run,
     },
 ];
 
@@ -351,6 +351,7 @@ mod tests {
                 "codegen-freshness",
                 "contract-golden",
                 "conformance",
+                "admincheck",
                 "docs-current",
                 "supported-targets",
                 "weles-async-island",
@@ -360,8 +361,8 @@ mod tests {
             ]
         );
         assert_eq!(
-            &names(crate::cli::Level::All)[15..],
-            &["public-api", "fuzz", "csharp-client", "topiccheck", "admincheck"]
+            &names(crate::cli::Level::All)[16..],
+            &["public-api", "fuzz", "csharp-client", "topiccheck"]
         );
         assert_eq!(names(crate::cli::Level::Slow).last(), Some(&"mutants"));
         assert_eq!(manifest(crate::cli::Level::Fast, true).len(), 20);

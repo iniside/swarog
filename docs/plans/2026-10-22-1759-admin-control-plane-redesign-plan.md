@@ -1020,3 +1020,4 @@ The report lists the declared deviations.
     writer's entry must equal the `req.input.<value>` row's cap, and a writer with that
     row not Validated is a finding.
 - Step 6 review fix: admin.action is emitted for every invoke attempt; `detail` states the outcome (`ok` / `unknown: timeout…` / `failed: …` / `rejected: …` / `conflict: …`) plus the operator reason (owner, 2026-11-10); section merge lives in `controlplane`.
+- Step 7 review fix (owner, 2026-11-10): admincheck is a BLOCKING verifyctl stage; it also checks admin-svc's dialled peers against every svc that hosts a provider (and monolith/split provider parity); conformance requires a cp.invoke CapCase per writing module. The reverse peer check (a dialled peer whose svc hosts no provider) is not enforced: all 13 dialled peers host none until Steps 11–24, so it awaits an owner decision; only a dialled peer with no `<peer>-svc` process is reported.

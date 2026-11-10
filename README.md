@@ -268,11 +268,11 @@ non-zero on any applicable blocking failure.
 
 - **Blocking** (`--fast`, the default): build, clippy with warnings denied, tests,
   dependency audit, `fortress`, `routecheck`, `codegen-freshness`,
-  `contract-golden`, `conformance`, `docs-current`, `supported-targets`, three
-  `weles` contract and boot stages, and `split-proof`.
+  `contract-golden`, `conformance`, control-plane manifest checks (`admincheck`),
+  `docs-current`, `supported-targets`, three `weles` contract and boot stages, and
+  `split-proof`.
 - **Advisory** (`--all`; blocking with `--strict`): public-API snapshots, fuzzing,
-  the external C# client, event-topic checks (`topiccheck`), and admin
-  extension-point checks (`admincheck`).
+  the external C# client, and event-topic checks (`topiccheck`).
 - **Slow** (`--slow`): everything above plus mutation testing.
 
 An audit installation, invocation, or network failure is a FAIL, not a green

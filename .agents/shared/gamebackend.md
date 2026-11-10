@@ -566,11 +566,11 @@ blocking failure:
 
 - BLOCKING (default / `--fast`): build, clippy `-D warnings`, test, audit,
   fortress, routecheck, codegen-freshness, contract-golden, conformance,
-  docs-current, and split-proof. Audit install/invocation/network errors are FAIL,
+  admincheck, docs-current, and split-proof. Audit install/invocation/network errors are FAIL,
   never green SKIP;
   only a missing tool with explicit `--no-install` is labeled SKIP.
 - ADVISORY (`--all`, or included and blocking with `--strict`): public-api, fuzz,
-  external C# client, topiccheck, and admincheck.
+  external C# client, and topiccheck.
 - SLOW (`--slow`): the blocking and advisory manifests plus `cargo mutants`;
   advisory failures remain non-blocking unless `--strict` is also present.
 
