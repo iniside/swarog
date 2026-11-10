@@ -878,10 +878,13 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
     (`routes.rs` ~:647-649) and mints nothing; queue-item icon buttons rely on it
     (`primitives.html.tmpl` ~:240).
   - A modal GET of a `PanelForm` action or of a `Then::Invoke` action returns 400 and
-    mints nothing: only `Then::Form` and `Then::Confirm` have modals. The now
-    unreachable "direct invoke" modal kind is deleted in the core commit:
-    `ModalView.kind = "invoke"` (`render.rs` ~:1346), its doc comment (~:1313), and the
-    "direct invoke" branch of `modal.html.tmpl` (~:1).
+    mints nothing: only `Then::Form` and `Then::Confirm` have modals. With the
+    token-less 422/409 answers below being toasts, `render::modal` is never called for
+    `Then::Invoke` or `Then::Link`; it takes the stored `FormSpec` or `ConfirmSpec`
+    instead of the decl. The core commit deletes `ModalView.kind` (no template reads
+    it; `render.rs` ~:1313, ~:1346, ~:1390) and the words "direct invoke" from the
+    `modal.html.tmpl` header comment (~:1); the shared non-form branch (~:16-21) stays,
+    it is Confirm's body.
 - **POST `/admin/_action/{module}/{action}`, in this exact order:**
   1. **Parse the body** as `Vec<(String, String)>` (`routes.rs` ~:670). Parse only:
      repeated keys are kept; nothing is validated yet. `check_csrf` (`lib.rs` ~:558) and
@@ -898,7 +901,7 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
        ~:25, ~:125-129), `FIELD_REVISION` with its parse branch (~:29, ~:105-111), and
        the Required-reason check in `build_request` (~:117-123).
      - The modal stops posting `_entity`, hidden-map inputs and `_expected_revision`
-       (`modal.html.tmpl` ~:10-11; template commit). Their Rust producers go in the core
+       (`modal.html.tmpl` ~:10-11; core commit, see below). Their Rust producers go in the core
        commit: `ModalView.entity` and its `entity_param` fill (`render.rs` ~:1312,
        ~:1336, ~:1343), `FormView.hidden` (~:956, fill ~:1011) and `FormView.revision`
        (~:959, fill ~:1014). The stored `FormSpec` in `admin.forms` is the only source of
@@ -1059,7 +1062,10 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
   - `admit` failures release the claim, as in step 6.
   - `input` is empty.
   - Then invoke, settle the row (Ok/NoOp/Conflict mark it consumed; the rest release it),
-    and audit, as in steps 7–9.
+    and audit, as in steps 7–9. A click has no form to re-render, so its 422 and 409 are
+    toasts (retargeted as every toast, step 5): `FieldErrors` → 422 with the joined
+    `key: reason` errors; `Conflict` / `Status::Conflict` → 409 "This changed since you
+    opened it — reload".
 - **`Flash.tone: FlashTone { Success, Info }`** (`actions.rs` ~:235-240). It has no
   `#[serde(default)]`. A pre-8a `admin.reveals` row fails to decode in `take_flash`
   (~:268-273), shows nothing, and expires within `REVEAL_TTL` (300 s). No DROP.
@@ -1085,9 +1091,13 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
 2. An `ok` Form panel with a `PanelForm` action mints a row (B) and renders a form posting
    to that action with `_form`, with the panel slot as the htmx target. Rust carrier
    (core commit): a `PanelFormView { form: FormView, post_url, csrf, form_id }` in
-   `render.rs`, built by `render::panel` for `Primitive::Form` (~:643) from `Ctx.csrf`
-   threaded through `PanelInput` (`routes.rs` ~:575-591), and filled again by
-   `panel_form_result` on 422/409 from the same row. The core commit renders its
+   `render.rs`, built by `render::panel` for `Primitive::Form` (~:643) from the routes
+   `ctx.csrf` (`routes.rs` ~:541) threaded through `PanelInput` (declared `render.rs`
+   ~:517-536, built `routes.rs` ~:554-570), and filled again by `panel_form_result` on
+   422/409 from the same row; `panel_form_result` takes the panel frame (title, icon,
+   mode) from the row's `contribution` in the manifest snapshot. `form` is
+   `#[serde(flatten)]`, so the existing `panel_form` reads (`primitives.html.tmpl`
+   ~:226, ~:280) keep working in the core commit. The core commit renders its
    `_csrf` and `_form` hidden inputs and the `hx-post` target. Template: the Save wiring
    and layout (`primitives.html.tmpl` ~:224-226).
 
@@ -1369,6 +1379,8 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
   - a modal GET of a `Then::Link` action answers `HX-Redirect` and mints no row; of a
     `Then::Invoke` action, 400;
   - a `Retry` that fails again answers repeated-click without a third attempt;
+  - token-less `FieldErrors` gives a 422 toast and `Conflict` a 409 toast, with no
+    modal; the click row is released or consumed as the settle table says;
   - every toast answer to a panel-form POST carries `HX-Retarget: #modal-root`;
   - classify: a missing, expired, other-login or mismatched-action `_form` gives 400 with
     zero calls;
