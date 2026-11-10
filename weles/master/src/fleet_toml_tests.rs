@@ -882,7 +882,12 @@ fn the_split_fixture_parses_and_validates() {
     assert_eq!(fleet.prepare[1].run, "adminctl");
     assert_eq!(
         fleet.prepare[1].args,
-        vec!["create-user".to_string(), "admin".to_string()]
+        vec![
+            "create-user".to_string(),
+            "admin".to_string(),
+            "--role".to_string(),
+            "admin".to_string(),
+        ]
     );
     assert_eq!(fleet.prepare[1].passthrough, vec!["DATABASE_URL".to_string()]);
     assert_eq!(
