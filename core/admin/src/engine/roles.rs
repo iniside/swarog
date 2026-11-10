@@ -16,7 +16,7 @@ pub(crate) struct Operator {
 }
 
 /// `ADMIN_OPEN=1` acts as `Admin`; otherwise the session user's `admin.users.role`.
-pub(crate) async fn resolve(st: &AdminState, authed: &Authed) -> Result<Operator, Response> {
+pub(crate) async fn resolve(st: &AdminState, authed: &Authed) -> Result<Operator, Box<Response>> {
     if st.open {
         return Ok(Operator { login: OPEN_OPERATOR.to_string(), role: Role::Admin });
     }
@@ -26,14 +26,14 @@ pub(crate) async fn resolve(st: &AdminState, authed: &Authed) -> Result<Operator
         .await
         .map_err(|e| {
             tracing::error!(err = %e, "admin role lookup failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "role lookup failed").into_response()
+            Box::new((StatusCode::INTERNAL_SERVER_ERROR, "role lookup failed").into_response())
         })?;
     let Some((raw,)) = row else {
-        return Err((StatusCode::UNAUTHORIZED, "unauthorized").into_response());
+        return Err(Box::new((StatusCode::UNAUTHORIZED, "unauthorized").into_response()));
     };
     let role = crate::parse_role(&raw).map_err(|e| {
         tracing::error!(err = %e, user = %authed.username, "admin.users holds an unknown role");
-        (StatusCode::INTERNAL_SERVER_ERROR, "role lookup failed").into_response()
+        Box::new((StatusCode::INTERNAL_SERVER_ERROR, "role lookup failed").into_response())
     })?;
     Ok(Operator { login: authed.username.clone(), role })
 }

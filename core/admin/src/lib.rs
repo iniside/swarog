@@ -526,12 +526,12 @@ impl AdminState {
     /// The session gate. `ADMIN_OPEN=1` bypasses entirely; otherwise the
     /// `admin_session` cookie must match a live `admin.sessions` row. A miss is a
     /// 303 → `/admin/login` for a page GET, a 401 for a POST.
-    async fn gate(&self, jar: &CookieJar, is_post: bool) -> Result<Authed, Response> {
+    async fn gate(&self, jar: &CookieJar, is_post: bool) -> Result<Authed, Box<Response>> {
         if self.open {
             return Ok(Authed::open());
         }
         let Some(token) = jar.get(SESSION_COOKIE).map(|c| c.value().to_string()) else {
-            return Err(deny(is_post));
+            return Err(Box::new(deny(is_post)));
         };
         let row: Option<(String, String)> = sqlx::query_as(
             "SELECT username, csrf_token FROM admin.sessions WHERE token = $1 AND expires_at > now()",
@@ -541,7 +541,7 @@ impl AdminState {
         .await
         .map_err(|e| {
             tracing::error!(err = %e, "admin session lookup failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "session check failed").into_response()
+            Box::new((StatusCode::INTERNAL_SERVER_ERROR, "session check failed").into_response())
         })?;
         match row {
             Some((username, csrf)) => Ok(Authed {
@@ -549,7 +549,7 @@ impl AdminState {
                 csrf,
                 token,
             }),
-            None => Err(deny(is_post)),
+            None => Err(Box::new(deny(is_post))),
         }
     }
 
@@ -942,7 +942,7 @@ async fn logout(
 ) -> Response {
     let authed = match st.gate(&jar, true).await {
         Ok(a) => a,
-        Err(resp) => return resp,
+        Err(resp) => return *resp,
     };
     if st.open {
         return see_other("/admin"); // no session to end

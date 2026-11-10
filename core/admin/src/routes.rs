@@ -55,7 +55,7 @@ struct Ctx {
     operator: Operator,
 }
 
-async fn authorize(p: &Portal, jar: &CookieJar, is_post: bool) -> Result<Ctx, Response> {
+async fn authorize(p: &Portal, jar: &CookieJar, is_post: bool) -> Result<Ctx, Box<Response>> {
     let authed = p.st.gate(jar, is_post).await?;
     let operator = roles::resolve(&p.st, &authed).await?;
     Ok(Ctx { csrf: authed.csrf, operator })
@@ -201,10 +201,10 @@ fn action_item(
 }
 
 /// Every `(module, decl)` across all manifests matching `want`, sorted by `(order, module, id)`.
-fn contributions<'a>(
-    snapshot: &'a Snapshot,
+fn contributions(
+    snapshot: &Snapshot,
     want: impl Fn(&Point) -> bool,
-) -> Vec<(&'a str, &'a ContributionDecl)> {
+) -> Vec<(&str, &ContributionDecl)> {
     let mut found: Vec<(&str, &ContributionDecl)> = snapshot
         .modules
         .iter()
@@ -317,7 +317,7 @@ async fn dashboard(
 ) -> Response {
     let ctx = match authorize(&p, &jar, false).await {
         Ok(c) => c,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let snapshot = p.engine.snapshot();
     let pick = |point: Point| {
@@ -346,7 +346,7 @@ async fn page(
 ) -> Response {
     let ctx = match authorize(&p, &jar, false).await {
         Ok(c) => c,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let snapshot = p.engine.snapshot();
     let Some((manifest, _)) = snapshot.route(&module) else {
@@ -420,7 +420,7 @@ async fn entity(
 ) -> Response {
     let ctx = match authorize(&p, &jar, false).await {
         Ok(c) => c,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let snapshot = p.engine.snapshot();
     let Some((owner, kind_decl)) = snapshot
@@ -514,7 +514,7 @@ async fn panel(
 ) -> Response {
     let ctx = match authorize(&p, &jar, false).await {
         Ok(c) => c,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let snapshot = p.engine.snapshot();
     let Some((manifest, decl)) = snapshot
@@ -576,7 +576,7 @@ async fn panel(
 async fn menu(State(p): State<Portal>, jar: CookieJar, Path((kind, id)): Path<(String, String)>) -> Response {
     let ctx = match authorize(&p, &jar, false).await {
         Ok(c) => c,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let snapshot = p.engine.snapshot();
     let entity = EntityRef { kind: kind.clone(), id };
@@ -593,7 +593,7 @@ async fn search_route(
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
     if let Err(r) = authorize(&p, &jar, false).await {
-        return r;
+        return *r;
     }
     let q = query.get("q").cloned().unwrap_or_default();
     let kind = query.get("kind").cloned().unwrap_or_default();
@@ -636,7 +636,7 @@ async fn action_modal(
 ) -> Response {
     let ctx = match authorize(&p, &jar, false).await {
         Ok(c) => c,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let snapshot = p.engine.snapshot();
     let Some(found) = actions::find(&snapshot, &module, &action) else {
@@ -671,14 +671,14 @@ async fn action_submit(
 ) -> Response {
     let authed = match p.st.gate(&jar, true).await {
         Ok(a) => a,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     if let Some(r) = p.st.check_csrf(&authed, &body) {
         return r;
     }
     let operator = match roles::resolve(&p.st, &authed).await {
         Ok(o) => o,
-        Err(r) => return r,
+        Err(r) => return *r,
     };
     let snapshot = p.engine.snapshot();
     let Some(found) = actions::find(&snapshot, &module, &action) else {
