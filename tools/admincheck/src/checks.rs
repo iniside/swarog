@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use checkmodules::ProcessControlPlane;
 use controlplane::{ActionPoint, Layout, Manifest, Point, SECTIONS};
 
 /// Every finding over the union of `manifests`, each one line naming its module.
@@ -182,6 +183,65 @@ fn section_merge(manifests: &[Manifest], out: &mut Vec<String>) {
                 "{}: section {:?} is declared as ({:?}, {}) but {by} declares it as ({label:?}, {order})",
                 lost.module, s.id, s.label, s.order
             ));
+        }
+    }
+}
+
+/// The split process that dials every peer's control-plane face.
+pub const PORTAL_PROCESS: &str = "admin-svc";
+
+/// `characters-svc` → `characters`, the peer name admin-svc dials it by.
+fn peer_of(process: &str) -> &str {
+    process.strip_suffix("-svc").unwrap_or(process)
+}
+
+/// Every finding about where providers are hosted and dialled across the topologies.
+pub fn peer_findings(monolith: &[Manifest], split: &[ProcessControlPlane]) -> Vec<String> {
+    let mut out = Vec::new();
+    match split.iter().find(|p| p.process == PORTAL_PROCESS) {
+        Some(portal) => dialled_peers(portal, split, &mut out),
+        None => out.push(format!("no split process is named {PORTAL_PROCESS}, so no dial list is checked")),
+    }
+
+    let mut hosts: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for p in split {
+        for m in &p.manifests {
+            hosts.entry(m.module.as_str()).or_default().insert(p.process);
+        }
+    }
+    for (module, processes) in hosts.iter().filter(|(_, processes)| processes.len() > 1) {
+        let processes: Vec<&str> = processes.iter().copied().collect();
+        out.push(format!("{module}: hosted by more than one split process: {}", processes.join(", ")));
+    }
+
+    let in_monolith: BTreeSet<&str> = monolith.iter().map(|m| m.module.as_str()).collect();
+    for module in in_monolith.iter().filter(|m| !hosts.contains_key(*m)) {
+        out.push(format!("{module}: the monolith hosts this provider but no split process does"));
+    }
+    for module in hosts.keys().filter(|m| !in_monolith.contains(*m)) {
+        out.push(format!("{module}: a split process hosts this provider but the monolith does not"));
+    }
+    out
+}
+
+fn dialled_peers(portal: &ProcessControlPlane, split: &[ProcessControlPlane], out: &mut Vec<String>) {
+    // admin-svc's dial list is hand-written, so it is checked against the hosts the split builds.
+    let dialled: BTreeSet<&str> = portal.dialled.iter().map(String::as_str).collect();
+    for p in split.iter().filter(|p| p.process != PORTAL_PROCESS && !p.manifests.is_empty()) {
+        if !dialled.contains(peer_of(p.process)) {
+            let mut modules: Vec<&str> = p.manifests.iter().map(|m| m.module.as_str()).collect();
+            modules.sort_unstable();
+            out.push(format!(
+                "{}: hosts provider(s) {} but {PORTAL_PROCESS} does not dial peer {:?}",
+                p.process,
+                modules.join(", "),
+                peer_of(p.process)
+            ));
+        }
+    }
+    for peer in dialled {
+        if !split.iter().any(|p| peer_of(p.process) == peer) {
+            out.push(format!("{PORTAL_PROCESS} dials peer {peer:?}, but no split process is {peer}-svc"));
         }
     }
 }

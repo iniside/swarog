@@ -16,7 +16,7 @@ use lifecycle::{Module, ProcessWiring};
 
 mod manifests;
 
-pub use manifests::monolith_manifests;
+pub use manifests::{control_planes, monolith_manifests, ProcessControlPlane};
 
 /// A dummy wiring for the checker harnesses: empty, so every `peer_or` call falls
 /// back to that lib's own default address. Safe because `register`/`init` never

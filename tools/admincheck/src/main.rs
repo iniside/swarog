@@ -1,4 +1,4 @@
-//! `admincheck` — validates every control-plane manifest the monolith serves.
+//! `admincheck` — validates the control-plane manifests the monolith and every split process serve.
 
 mod checks;
 
@@ -36,7 +36,33 @@ fn main() {
         );
     }
 
-    let findings = checks::findings(&manifests);
+    let split = checkmodules::control_planes(&checkmodules::DeploymentProfile::Split)
+        .unwrap_or_else(|error| {
+            eprintln!("admincheck: build the split processes: {error:#}");
+            std::process::exit(1);
+        });
+    let hosts: Vec<String> = split
+        .iter()
+        .filter(|p| !p.manifests.is_empty())
+        .map(|p| format!("{} ({})", p.process, p.manifests.len()))
+        .collect();
+    if hosts.is_empty() {
+        println!(
+            "admincheck: split: 0 processes host a control-plane provider, so the dialled-peer, \
+             single-host and monolith/split parity checks run over empty sets"
+        );
+    } else {
+        println!("admincheck: split: provider hosts: {}", hosts.join(", "));
+    }
+    let dialled = split
+        .iter()
+        .find(|p| p.process == checks::PORTAL_PROCESS)
+        .map(|p| p.dialled.join(", "))
+        .unwrap_or_default();
+    println!("admincheck: {} dials: {dialled}", checks::PORTAL_PROCESS);
+
+    let mut findings = checks::findings(&manifests);
+    findings.extend(checks::peer_findings(&manifests, &split));
     if findings.is_empty() {
         println!("admincheck: 0 findings");
         return;
