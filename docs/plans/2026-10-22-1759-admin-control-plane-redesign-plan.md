@@ -856,7 +856,9 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
   `Primitive::Form` panel with a `PanelForm` action. A readonly, stale, denied or error
   panel mints nothing, and its Save is disabled. So does an `ok` Form panel whose
   contribution has no `PanelForm` action: it renders readonly. admincheck cannot see this
-  case, because the primitive arrives at runtime.
+  case, because the primitive arrives at runtime. A panel whose `PanelForm` action fails
+  `admit` for the viewer (role, `implemented`, `writes`) also renders readonly and mints
+  nothing.
 - **Minting.**
   - The id is `<action or contribution id>:<new_token()>` (`lib.rs` ~:776);
     `incarnation` stores the same token. admincheck caps action and contribution ids at
@@ -872,8 +874,14 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
     returns 400 and no row is minted.
   - A failed INSERT on the modal GET returns 503 with the error toast and no modal. On a
     panel, it renders the panel `error` state "Form unavailable".
-  - A modal GET of a `PanelForm` action, or of a `Then::Invoke` or `Then::Link` action,
-    returns 400 and mints nothing: only `Then::Form` and `Then::Confirm` have modals.
+  - A modal GET of a `Then::Link` action keeps today's `HX-Redirect`
+    (`routes.rs` ~:647-649) and mints nothing; queue-item icon buttons rely on it
+    (`primitives.html.tmpl` ~:240).
+  - A modal GET of a `PanelForm` action or of a `Then::Invoke` action returns 400 and
+    mints nothing: only `Then::Form` and `Then::Confirm` have modals. The now
+    unreachable "direct invoke" modal kind is deleted in the core commit:
+    `ModalView.kind = "invoke"` (`render.rs` ~:1346), its doc comment (~:1313), and the
+    "direct invoke" branch of `modal.html.tmpl` (~:1).
 - **POST `/admin/_action/{module}/{action}`, in this exact order:**
   1. **Parse the body** as `Vec<(String, String)>` (`routes.rs` ~:670). Parse only:
      repeated keys are kept; nothing is validated yet. `check_csrf` (`lib.rs` ~:558) and
@@ -894,12 +902,17 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
        commit: `ModalView.entity` and its `entity_param` fill (`render.rs` ~:1312,
        ~:1336, ~:1343), `FormView.hidden` (~:956, fill ~:1011) and `FormView.revision`
        (~:959, fill ~:1014). The stored `FormSpec` in `admin.forms` is the only source of
-       the hidden map and the revision.
+       the hidden map and the revision. So that the core commit renders correctly on its
+       own, it also deletes the template lines that read the deleted fields
+       (`modal.html.tmpl` ~:10-11) and adds the hidden `_form`, `_csrf` and
+       `name="_confirm"` inputs (C.1a, C.2); these are mechanical carriers, not layout.
+       The template commit owns every visual change.
   5. **Claim** with one statement:
 
      ```sql
      UPDATE admin.forms SET claimed_at = now()
      WHERE id = $1 AND login = $2 AND module = $3 AND action = $4
+       AND spec->>'kind' <> 'Click'
        AND expires_at > now() AND consumed_at IS NULL
        AND (claimed_at IS NULL OR claimed_at < now() - interval '30 seconds')
      RETURNING *
@@ -938,8 +951,6 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
 
   6. **Pre-invoke checks.** Each failure first releases the claim (`claimed_at = NULL`),
      then answers:
-     - a `StoredSpec::Click` row on the form path → 400 (a computed click id posted as
-       `_form`);
      - allowed keys → 400. The allowed set is `_csrf`, `_form`, `_reason`, `_confirm`,
        `_return`, every field key of the stored spec, and `<money key>__currency`. Only a
        Multi field's key may repeat;
@@ -961,8 +972,7 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
          with no box ticked is left out, not sent as `[]`); then a blank required field
          is a `FieldError` "required";
      - Required `ConfirmSpec.reason` with an empty `_reason` → 422;
-     - `_confirm` ≠ stored `type_to_confirm` → 422. The confirm input gets
-       `name="_confirm"`. When the stored `type_to_confirm` is `None`, `_confirm` is not
+     - `_confirm` ≠ stored `type_to_confirm` → 422 (the input's name: C.1a). When the stored `type_to_confirm` is `None`, `_confirm` is not
        checked and not forwarded.
   7. **Invoke** with an `InvokeCall` built only from the row:
      - module, action, entity and `item` from the row;
@@ -1036,6 +1046,10 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
       the repeated-click answer;
     - anything else (the row became claimable between the UPDATE and the SELECT) → run
       the claim once more; if it fails again, the repeated-click answer.
+
+    **Retry bound (both paths).** A `Retry` runs exactly once: for a form the claim, for a
+    click the upsert plus the claim. If that attempt returns no row, the answer is the
+    repeated-click answer without classifying again.
   - **`request_id` = `click:` + hex sha256(row id \0 incarnation \0 generation)**, 70
     bytes. The generation grows only when a claim takes over a consumed row, i.e. a
     deliberate repeat after the 5 s window; the incarnation changes when a pruned or
@@ -1065,11 +1079,17 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
    Template: render them in the panel-tools slot (`primitives.html.tmpl` ~:344).
 1a. Modal form id. `ModalView` (`render.rs` ~:1307-1328) gains `form_id: String`, filled
    from the row the modal GET minted; the 422 and 409 re-renders fill it from the same
-   row. Template: `modal.html.tmpl` carries `<input type="hidden" name="_form">` with it,
-   and the confirm input gets `name="_confirm"` (~:20).
+   row. Core commit (a carrier, B step 4): `modal.html.tmpl` carries
+   `<input type="hidden" name="_form">` with it, and the confirm input gets
+   `name="_confirm"` (~:20).
 2. An `ok` Form panel with a `PanelForm` action mints a row (B) and renders a form posting
-   to that action with `_form`, with the panel slot as the htmx target. Template: the Save
-   wiring (`primitives.html.tmpl` ~:224-226).
+   to that action with `_form`, with the panel slot as the htmx target. Rust carrier
+   (core commit): a `PanelFormView { form: FormView, post_url, csrf, form_id }` in
+   `render.rs`, built by `render::panel` for `Primitive::Form` (~:643) from `Ctx.csrf`
+   threaded through `PanelInput` (`routes.rs` ~:575-591), and filled again by
+   `panel_form_result` on 422/409 from the same row. The core commit renders its
+   `_csrf` and `_form` hidden inputs and the `hx-post` target. Template: the Save wiring
+   and layout (`primitives.html.tmpl` ~:224-226).
 
    The POST answers for a panel form:
    - `Ok` / `NoOp`: `HX-Redirect`;
@@ -1143,7 +1163,8 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
   and the deleted Rust producers in B step 4), D; adds `sha2 = { workspace = true }` to
   `core/admin/Cargo.toml`;
 - `[opus]` mockup-implementer: every part marked "template" in B and C, and nothing
-  else.
+  else. Hidden carrier inputs (`_csrf`, `_form`, `_confirm` name) and the deleted reads
+  of deleted fields are already in the core commit (B step 4).
 
 ### Step 9 — Portal-owned providers: backend
 
@@ -1340,6 +1361,14 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
     click row is free, claimed or consumed;
   - a modal rendered by the portal carries `_form`, and posting its own inputs back
     takes the form path and invokes;
+  - a panel form rendered by the portal carries `_csrf` and `_form`, and posting its own
+    inputs back takes the form path and invokes; its 422 re-render carries the same
+    `_csrf` and `_form`;
+  - a panel whose `PanelForm` action the viewer cannot `admit` renders readonly and
+    mints no row;
+  - a modal GET of a `Then::Link` action answers `HX-Redirect` and mints no row; of a
+    `Then::Invoke` action, 400;
+  - a `Retry` that fails again answers repeated-click without a third attempt;
   - every toast answer to a panel-form POST carries `HX-Retarget: #modal-root`;
   - classify: a missing, expired, other-login or mismatched-action `_form` gives 400 with
     zero calls;
