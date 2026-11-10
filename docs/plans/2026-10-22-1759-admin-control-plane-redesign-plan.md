@@ -775,7 +775,9 @@ Owner decisions implemented here (2026-11-10):
 - item binding;
 - an atomic claim, so repeated clicks on forms AND plain buttons are idempotent and never
   an error, including a nervous operator clicking many times a second;
-- writer ports use `request_id` as their idempotency key where the module has one;
+- writer ports use `request_id` as their idempotency key where the module has one; a
+  deliberate repeat of a plain button gets a new `request_id` (a click generation), so a
+  module never mistakes it for a duplicate;
 - a portal `validate_item` guard.
 
 #### A. Contract changes (`core/controlplane/src/lib.rs`)
@@ -832,12 +834,22 @@ Owner decisions implemented here (2026-11-10):
 ```text
 admin.forms (id text PRIMARY KEY, login text NOT NULL, module text NOT NULL,
              action text NOT NULL, contribution text, entity_kind text, entity_id text,
-             item text, spec jsonb NOT NULL, claimed_at timestamptz,
-             consumed_at timestamptz, expires_at timestamptz NOT NULL)
+             item text, spec jsonb NOT NULL, generation bigint NOT NULL DEFAULT 0,
+             claimed_at timestamptz, consumed_at timestamptz,
+             expires_at timestamptz NOT NULL)
 CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
 ```
 
 - **Rows.** A row is a form instance (below) or a click claim (token-less path).
+- **`spec` is tagged.** It holds `StoredSpec`, a portal-private serde enum in
+  `core/admin/src/engine/actions.rs`: `Form(FormSpec) | Confirm(ConfirmSpec) | Click`,
+  `#[serde(tag = "kind")]`. A row is never classified by its id prefix (a contribution may
+  be named `click`).
+- **Clock.** Every time comparison uses Postgres `now()`; the portal never compares its
+  own clock with a stored timestamp.
+- **Prune.** `DELETE FROM admin.forms WHERE expires_at < now() AND (claimed_at IS NULL OR
+  claimed_at < now() - interval '30 seconds')`. Best-effort: a failure is logged. A row
+  claimed by a request in flight is never pruned, so its settle always finds it.
 - **Which forms get one.** A `Then::Form` or `Then::Confirm` modal, and an `ok`
   `Primitive::Form` panel with a `PanelForm` action. A readonly, stale, denied or error
   panel mints nothing, and its Save is disabled. So does an `ok` Form panel whose
@@ -845,20 +857,24 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
   case, because the primitive arrives at runtime.
 - **Minting.**
   - The id is `<action or contribution id>:<new_token()>` (`lib.rs` ~:776).
-  - `spec` is what was rendered: the `FormSpec` for a `Then::Form` or a panel form, the
-    `ConfirmSpec` for a `Then::Confirm`.
+  - `spec` is what was rendered: `StoredSpec::Form` for a `Then::Form` or a panel form,
+    `StoredSpec::Confirm` for a `Then::Confirm`.
   - TTL is 1 hour.
-  - Each mint first runs a best-effort `DELETE FROM admin.forms WHERE expires_at < now()`.
+  - Each mint, and each click upsert, first runs the prune.
   - A modal row is minted by the modal GET (`routes.rs` ~:630-660), which may carry
     `?entity=` and `?item=`. `item` passes `validate_item` first; failing that, the GET
     returns 400 and no row is minted.
   - A failed INSERT on the modal GET returns 503 with the error toast and no modal. On a
     panel, it renders the panel `error` state "Form unavailable".
+  - A modal GET of a `PanelForm` action, or of a `Then::Invoke` or `Then::Link` action,
+    returns 400 and mints nothing: only `Then::Form` and `Then::Confirm` have modals.
 - **POST `/admin/_action/{module}/{action}`, in this exact order:**
-  1. **CSRF.**
-  2. **Parse the body** as `Vec<(String, String)>` (`routes.rs` ~:670). Parse only:
-     repeated keys are kept; nothing is validated yet. `ok_target` (`actions.rs` ~:293)
-     gets an adapter from this list.
+  1. **Parse the body** as `Vec<(String, String)>` (`routes.rs` ~:670). Parse only:
+     repeated keys are kept; nothing is validated yet. `check_csrf` (`lib.rs` ~:558) and
+     `ok_target` (`actions.rs` ~:293) read this list through one adapter (first value of
+     a key); neither keeps a `HashMap` signature.
+  2. **CSRF** → 403, zero calls. Then `actions::find` → 404, and a `Then::Link` action →
+     400, both with zero calls and no row touched.
   3. **Path choice.** With `_form`, take the form path (steps 4–9). Without it, take the
      token-less path (below).
   4. **What the core commit deletes** (the allowed-key check itself is the first check of
@@ -885,31 +901,44 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
      | --- | --- |
      | missing, expired, another login, other module or action | 400, zero calls |
      | `consumed_at` set, or claimed less than 30 s ago | repeated click: "Already submitted — this action is being processed or has completed", zero calls, never an error |
+     | free (unexpired, unclaimed, unconsumed, matching): the holder released it between the UPDATE and the SELECT | run the claim once more; if it fails again, the repeated-click answer |
 
-     The repeated-click answer writes nothing to the database. An htmx request gets the
-     neutral toast fragment directly; a non-htmx request gets a 303 to the same target
-     with no flash.
+     The 400 does not say which reason applied. The repeated-click answer writes nothing
+     to the database. An htmx request gets the neutral toast fragment; a non-htmx request
+     gets a bare 303 (no flash) to `_return` when it passes the existing `_return` check,
+     else the row's entity page, else `/admin`.
+
+     **Every toast answer** (repeated click, 400, 403, 503, timeout, `Failed`) carries
+     `HX-Retarget: #modal-root` and `HX-Reswap: innerHTML`, whatever the request's target,
+     so a toast never replaces a panel form (the shell swaps 4xx/5xx,
+     `shell.html.tmpl` ~:12).
 
   6. **Pre-invoke checks.** Each failure first releases the claim (`claimed_at = NULL`),
      then answers:
+     - a `StoredSpec::Click` row on the form path → 400 (a computed click id posted as
+       `_form`);
      - allowed keys → 400. The allowed set is `_csrf`, `_form`, `_reason`, `_confirm`,
        `_return`, every field key of the stored spec, and `<money key>__currency`. Only a
        Multi field's key may repeat;
      - `admit` (role, `implemented`, `writes`) → 403;
      - build each field's raw value, then decode it with `decode_field` → 422 with the
        field errors:
-       - Multi: the JSON array of the field's repeated values, `[]` when absent;
+       - Multi: the JSON array of the field's repeated values (`[]` when none is posted);
        - Money: `{"amount": <key>, "currency": <key>__currency}`;
        - every other kind: the single posted value;
        - a stored `default` for Multi or Money is already in this JSON form;
        - a `readonly` field takes its stored `default`, and the posted value is ignored;
-       - a missing optional field, or a readonly field without a default, is left out of
-         `input`;
-       - a Multi with no box ticked decodes as `[]`;
-       - a required field that is missing or empty is a `FieldError`;
+       - **blank** means: for String/Text, absent; for Multi, `[]`; for Money, an absent
+         or empty amount; for every other kind, absent or `""` (browsers post empty
+         inputs);
+       - a blank optional field, or a readonly field without a default, is left out of
+         `input`; this is the only Multi rule (an optional Multi with no box ticked is
+         left out, not sent as `[]`);
+       - a blank required field is a `FieldError` "required";
      - Required `ConfirmSpec.reason` with an empty `_reason` → 422;
      - `_confirm` ≠ stored `type_to_confirm` → 422. The confirm input gets
-       `name="_confirm"`.
+       `name="_confirm"`. When the stored `type_to_confirm` is `None`, `_confirm` is not
+       checked and not forwarded.
   7. **Invoke** with an `InvokeCall` built only from the row:
      - module, action, entity and `item` from the row;
      - `input` = `encode_field` per decoded field, plus the stored `hidden` map;
@@ -923,9 +952,11 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
      | `Ok`, `NoOp`, `Conflict` / `Status::Conflict` | `consumed_at = now()`; kept as a tombstone until `expires_at` |
      | `FieldErrors`, timeout, `Failed` | `claimed_at = NULL` |
 
-     A failed settle is logged and does not change the answer. If the settle fails after
-     an `Ok`, the row stays claimed and becomes re-claimable after 30 s, so a retry could
-     reach the module again. That case relies on module de-duplication by `request_id`.
+     Settle and every release match `id` AND the `claimed_at` the claim returned, so a
+     late release never clears a later takeover. A failed settle is logged and does not
+     change the answer. If the settle fails after an `Ok`, the row stays claimed and
+     becomes re-claimable after 30 s, so a retry could reach the module again. That case
+     relies on module de-duplication by `request_id`.
   9. **Audit and answer.**
      - `audit_detail` writes `noop: <message>` for `NoOp`; the other formats are unchanged.
      - After `Ok`, an audit failure keeps the existing 500 "action applied but audit
@@ -938,18 +969,45 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
      - A 409 re-renders it with the reload banner and Save disabled (the row is a
        tombstone).
 - **Token-less path** (no `_form`), owner 2026-11-10 option 1a:
-  - Allowed keys: `_csrf`, `_entity`, `_return`, `_item`. Any other key → 400.
-  - 400 with zero calls when the action is not `Then::Invoke` (a `Then::Form` or
-    `Then::Confirm` must come with a form), or when its point is `PanelForm`.
-  - `_item` must pass `validate_item`.
-  - **Click claim.** The portal derives a deterministic id
-    `click:<hex sha256(login \0 module \0 action \0 entity \0 item)>` and upserts it
-    into `admin.forms` (`spec` = `{}`, TTL 1 hour). It then runs the same claim as step 5,
-    with one change: a row whose `consumed_at` is older than 5 s may be claimed again,
-    and the claim clears `consumed_at`. A deliberate repeat after 5 s is a new action;
-    anything inside the window is a repeated click and gets the same answer as above.
+  - These checks run before any row is touched, each with zero calls: allowed keys
+    `_csrf`, `_entity`, `_return`, `_item` (any other key → 400); `_entity` parses as
+    `kind:id` or is absent (else 400); the action is `Then::Invoke` and its point is not
+    `PanelForm` (else 400: a `Then::Form` or `Then::Confirm` must come with a form);
+    `_item` passes `validate_item` (else 400).
+  - **Click claim.** The portal derives a deterministic row id
+    `click:<hex sha256(login \0 module \0 action \0 entity \0 item)>` (absent entity or
+    item hash as the empty string) and upserts it with `spec` = `StoredSpec::Click`:
+
+    ```sql
+    INSERT INTO admin.forms (id, login, module, action, entity_kind, entity_id, item,
+                             spec, expires_at)
+    VALUES (…, now() + interval '1 hour')
+    ON CONFLICT (id) DO UPDATE SET expires_at = now() + interval '1 hour'
+    ```
+
+    The conflict branch touches only `expires_at`, so a click row never classifies as
+    expired and the upsert never disturbs a claim. It then claims with:
+
+    ```sql
+    UPDATE admin.forms
+    SET claimed_at = now(), consumed_at = NULL,
+        generation = generation + CASE WHEN consumed_at IS NULL THEN 0 ELSE 1 END
+    WHERE id = $1 AND login = $2 AND module = $3 AND action = $4
+      AND (claimed_at IS NULL OR claimed_at < now() - interval '30 seconds'
+           OR consumed_at IS NOT NULL)
+      AND (consumed_at IS NULL OR consumed_at < now() - interval '5 seconds')
+    RETURNING *
+    ```
+
+    A no-row result is classified as in step 5, with "consumed less than 5 s ago" as the
+    repeated-click reason.
+  - **`request_id` = `<row id>:<generation>`.** The generation grows only when a claim
+    takes over a consumed row, i.e. a deliberate repeat after the 5 s window: the module
+    sees a new key and runs the action again. A retry after a release (timeout,
+    `Failed`, `FieldErrors`) keeps the generation, so the module recognises the same
+    logical click (option 2a).
   - `admit` failures release the claim, as in step 6.
-  - `input` is empty, and `request_id` = the click id.
+  - `input` is empty.
   - Then invoke, settle the row (Ok/NoOp/Conflict mark it consumed; the rest release it),
     and audit, as in steps 7–9.
 - **`Flash.tone: FlashTone { Success, Info }`** (`actions.rs` ~:235-240). It has no
@@ -976,7 +1034,9 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
    The POST answers for a panel form:
    - `Ok` / `NoOp`: `HX-Redirect`;
    - 422 / 409: the panel fragment, from a new `render::panel_form_result`, with the same
-     `_form`.
+     `_form`;
+   - every other answer is a toast retargeted to `#modal-root` (B, step 5), so the form
+     stays on screen.
 
    Modal forms keep `render_result` (`routes.rs` ~:754-756).
 3. `PanelQuery` is built from the typed fields: `routes.rs` ~:536 and `render.rs` ~:570,
@@ -984,9 +1044,18 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
    `engine/panels.rs` `cache_key` (~:83-96) includes the four fields, distinguishing
    `None` from `Some("")`.
 4. `render.rs` `currency_key` (~:962) is deleted. The form-local Money input name is
-   `<key>__currency`; field keys must not contain `__`, and the portal refuses a panel
-   spec that breaks this with an error panel and no row.
-5. Template: every POSTing button and form carries `hx-disabled-elt="this"`, which
+   `<key>__currency`. Field keys must not contain `__`, must not start with `_`, and must
+   not equal a `hidden` key; the portal refuses a panel spec that breaks this with an
+   error panel and no row.
+   The read side follows the same codec: `render::field` (~:927-1000) decodes a stored
+   `default` and a re-posted value with `decode_field`. The `value.split(',')` at ~:994
+   and the `posted.get(&currency_key(..))` at ~:964 are deleted. `reshow`
+   (`routes.rs` ~:693) takes the parsed `Vec<(String, String)>`, not a
+   `BTreeMap<String, String>`, so a 422 re-render keeps every ticked Multi box.
+5. Rust side (core commit): `ActionItem.primary`, a tone on `ActionResultView` and on
+   the shell flash view, filled from `Flash.tone`, so no template hardcodes `err`
+   (`modal.html.tmpl` ~:30).
+   Template: every POSTing button and form carries `hx-disabled-elt="this"`, which
    disables it until the response arrives, so a normal browser sends one request per
    click burst. The server-side claim stays the authority. `admin.js` stops comma-joining
    Multi (`admin.js:118`) and posts the checkboxes as repeated keys. Primary comes from `ActionDecl.primary`
@@ -999,7 +1068,8 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
   - a `PanelForm` action is `Then::Invoke`;
   - at most one `PanelForm` action per contribution;
   - at most one `primary` among the actions listed in each `PageDecl.head_actions`;
-  - no `Then::Form` field key contains `__`;
+  - no `Then::Form` field key contains `__` or starts with `_`, and none equals a
+    `hidden` key of the same spec;
   - every `Then::Form` field `default` decodes with `decode_field`.
 - `tools/conformance/src/policy.rs`, all Opaque:
   - `cp.panel`: `req.search`, `req.cursor`, `req.before`, `req.queue_state` with
@@ -1017,7 +1087,8 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
 (c) Add an Errata line: the Step 8 provisional conventions are superseded by Step 8a.
 
 (d) Two commits, each reviewed:
-- `[opus]` core-implementer: A, B, C items 1–4 (Rust side), D;
+- `[opus]` core-implementer: A, B, C items 1–5 (Rust side), D; adds
+  `sha2 = { workspace = true }` to `core/admin/Cargo.toml`;
 - `[opus]` mockup-implementer: the template parts of C.
 
 ### Step 9 — Portal-owned providers: backend
@@ -1034,7 +1105,7 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
   data-sources table.
 - Skip what the operator saw (owner, 2026-11-10). The poison-event preview is a
   `PropertyList` with `item = Some(event_id)`. Its Skip action is a `Then::Confirm`
-  `PanelTool` action, so its form row (Step 8a item 9) stores that id, and the module
+  `PanelTool` action, so its form row (Step 8a, B) stores that id, and the module
   reads it from `InvokeCall.item`. With `item: None` (a modal GET without `?item=`), the
   provider returns `opsapi::Status::Invalid` "Skip needs the previewed event" and does not
   call `skip`. The portal never skips an event the operator did not see.
@@ -1091,7 +1162,8 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
     uses `InvokeCall.request_id` as its idempotency key wherever the module already has
     one (e.g. wallet movements). Where it has none, the step's report names the action
     under **Leftovers for owner** as a documented double-apply risk, which arises only
-    after a timeout or a failed settle;
+    after a timeout, a `Failed` transport error after the module already applied the
+    action, or a failed settle;
   - no test files (Step 25).
 - **b** (`[opus]` mockup-implementer): template or macro adjustments the module's page needs,
   checked 1:1 against its mockup page per R3. When the generic macros already render the
@@ -1191,9 +1263,19 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
     the old errors. The `core.events` Skip with `item: None` returns Invalid without
     calling `skip`.
 - `core/admin` tests for Step 8a:
-  - claim: two concurrent POSTs with one `_form` invoke once, and the other gets the
-    `Info` "Already submitted" 303. A click after completion (tombstone) gets the same
-    answer. A claim older than 30 s can be re-taken;
+  - method for every time window: never sleep and never race a real clock. A window
+    test back-dates `claimed_at` or `consumed_at` with an `UPDATE` before the next POST.
+    A concurrency test holds the fake provider on a `Notify` until every competing
+    request has answered, so the overlap is structural;
+  - claim: two concurrent POSTs with one `_form` invoke once. The other gets the
+    "Already submitted" toast (htmx) or a bare 303 with no flash (non-htmx), and no
+    `admin.reveals` row. A POST after completion (tombstone) gets the same answer. A
+    claim back-dated past 30 s can be re-taken;
+  - a late release after a takeover leaves the new claim in place;
+  - a row released between the claim UPDATE and the classifying SELECT is claimed on
+    the retry;
+  - a computed `click:` id posted as `_form` gives 400 and releases the claim;
+  - every toast answer to a panel-form POST carries `HX-Retarget: #modal-root`;
   - classify: a missing, expired, other-login or mismatched-action `_form` gives 400 with
     zero calls;
   - pre-invoke rejections release the claim, and an immediate corrected resubmit
@@ -1217,10 +1299,18 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
   - POST decoding: repeated Multi checkboxes reach the module as one JSON array, which
     survives a value with a comma; `<key>` + `<key>__currency` reach it as one Money
     object;
+  - blank optional fields: an empty Int, Float, Json, Duration and Ref, a Money with an
+    empty amount, and a Multi with no box ticked are left out of `input`; the same blanks
+    on a required field are a 422 "required";
+  - a 422 re-render keeps every ticked Multi box, and a Multi default `["a,b"]` renders
+    exactly one ticked box;
   - an `ok` Form panel without a `PanelForm` action renders readonly and mints no row;
-  - token-less click claim: a burst of concurrent POSTs on one button invokes once. The
-    rest get the toast with zero calls and no `admin.reveals` row. A repeat more than
-    5 s after completion invokes again. `request_id` is the deterministic click id.
+  - token-less click claim: a burst of concurrent POSTs on one button invokes once (the
+    provider held on a `Notify`). The rest get the toast with zero calls and no
+    `admin.reveals` row. With `consumed_at` back-dated past 5 s, the next POST invokes
+    again with `request_id` generation + 1. After a released claim (timeout), the retry
+    keeps the same `request_id`. An upsert onto a row whose `expires_at` has passed
+    invokes rather than giving 400.
 - `core/controlplane` tests for the Step 8a contract:
   - an `encode_field`/`decode_field` round trip for every `FieldKind`, including a Multi
     value containing a comma and a Money value;
@@ -1231,7 +1321,7 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
   - a non-Invoke `PanelForm`;
   - two `PanelForm` actions on one contribution;
   - two primary head actions;
-  - a `__` field key;
+  - a `__` field key, a `_`-prefixed field key, a field key equal to a `hidden` key;
   - an undecodable `Then::Form` default.
 - `core/admin` engine test for the Step 13 `EntityListColumn` fan-out: one call per page,
   and a failing column does not fail the table.
