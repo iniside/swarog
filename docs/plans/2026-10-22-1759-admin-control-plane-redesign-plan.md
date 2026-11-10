@@ -835,6 +835,7 @@ Owner decisions implemented here (2026-11-10):
 admin.forms (id text PRIMARY KEY, login text NOT NULL, module text NOT NULL,
              action text NOT NULL, contribution text, entity_kind text, entity_id text,
              item text, spec jsonb NOT NULL, generation bigint NOT NULL DEFAULT 0,
+             incarnation text NOT NULL,
              claimed_at timestamptz, consumed_at timestamptz,
              expires_at timestamptz NOT NULL)
 CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
@@ -856,7 +857,11 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
   contribution has no `PanelForm` action: it renders readonly. admincheck cannot see this
   case, because the primitive arrives at runtime.
 - **Minting.**
-  - The id is `<action or contribution id>:<new_token()>` (`lib.rs` ~:776).
+  - The id is `<action or contribution id>:<new_token()>` (`lib.rs` ~:776);
+    `incarnation` stores the same token. admincheck caps action and contribution ids at
+    64 bytes, so a form `request_id` stays within the 128-byte idempotency-key cap of
+    wallet and mail (`api/wallet/api/src/lib.rs` ~:79, `api/mail/events/src/lib.rs`
+    ~:40).
   - `spec` is what was rendered: `StoredSpec::Form` for a `Then::Form` or a panel form,
     `StoredSpec::Confirm` for a `Then::Confirm`.
   - TTL is 1 hour.
@@ -872,7 +877,8 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
   1. **Parse the body** as `Vec<(String, String)>` (`routes.rs` ~:670). Parse only:
      repeated keys are kept; nothing is validated yet. `check_csrf` (`lib.rs` ~:558) and
      `ok_target` (`actions.rs` ~:293) read this list through one adapter (first value of
-     a key); neither keeps a `HashMap` signature.
+     a key); neither keeps a `HashMap` signature. `check_csrf`'s other caller, `logout`
+     (`lib.rs` ~:950), uses the same adapter.
   2. **CSRF** → 403, zero calls. Then `actions::find` → 404, and a `Then::Link` action →
      400, both with zero calls and no row touched.
   3. **Path choice.** With `_form`, take the form path (steps 4–9). Without it, take the
@@ -928,13 +934,15 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
        - every other kind: the single posted value;
        - a stored `default` for Multi or Money is already in this JSON form;
        - a `readonly` field takes its stored `default`, and the posted value is ignored;
-       - **blank** means: for String/Text, absent; for Multi, `[]`; for Money, an absent
-         or empty amount; for every other kind, absent or `""` (browsers post empty
-         inputs);
-       - a blank optional field, or a readonly field without a default, is left out of
-         `input`; this is the only Multi rule (an optional Multi with no box ticked is
-         left out, not sent as `[]`);
-       - a blank required field is a `FieldError` "required";
+       - **blank** means: for String/Text, absent, or `""` when the field is required;
+         for Multi, `[]`; for Money, an absent or empty amount; for every other kind,
+         absent or `""` (browsers post empty inputs). An optional String/Text posted as
+         `""` is sent as `Text("")`;
+       - the rules apply in this order: a `readonly` field takes its stored default, or
+         is left out of `input` when it has none, and is never "required"; then a blank
+         optional field is left out of `input` (the only Multi rule: an optional Multi
+         with no box ticked is left out, not sent as `[]`); then a blank required field
+         is a `FieldError` "required";
      - Required `ConfirmSpec.reason` with an empty `_reason` → 422;
      - `_confirm` ≠ stored `type_to_confirm` → 422. The confirm input gets
        `name="_confirm"`. When the stored `type_to_confirm` is `None`, `_confirm` is not
@@ -980,13 +988,15 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
 
     ```sql
     INSERT INTO admin.forms (id, login, module, action, entity_kind, entity_id, item,
-                             spec, expires_at)
-    VALUES (…, now() + interval '1 hour')
+                             spec, incarnation, expires_at)
+    VALUES (…, $incarnation, now() + interval '1 hour')
     ON CONFLICT (id) DO UPDATE SET expires_at = now() + interval '1 hour'
     ```
 
-    The conflict branch touches only `expires_at`, so a click row never classifies as
-    expired and the upsert never disturbs a claim. It then claims with:
+    `$incarnation` is a fresh `new_token()`. The conflict branch touches only
+    `expires_at`, so a click row never classifies as expired, the upsert never disturbs a
+    claim, and the incarnation changes only when the row is inserted again (after a prune
+    or an admin-schema wipe). It then claims with:
 
     ```sql
     UPDATE admin.forms
@@ -999,13 +1009,18 @@ CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at)
     RETURNING *
     ```
 
-    A no-row result is classified as in step 5, with "consumed less than 5 s ago" as the
-    repeated-click reason.
-  - **`request_id` = `<row id>:<generation>`.** The generation grows only when a claim
-    takes over a consumed row, i.e. a deliberate repeat after the 5 s window: the module
-    sees a new key and runs the action again. A retry after a release (timeout,
-    `Failed`, `FieldErrors`) keeps the generation, so the module recognises the same
-    logical click (option 2a).
+    A no-row result is classified by the inverse of this WHERE, not by the step 5 table:
+    - login, module or action mismatch → 400;
+    - claimed less than 30 s ago and not consumed, or consumed less than 5 s ago →
+      the repeated-click answer;
+    - anything else (the row became claimable between the UPDATE and the SELECT) → run
+      the claim once more; if it fails again, the repeated-click answer.
+  - **`request_id` = `click:` + hex sha256(row id \0 incarnation \0 generation)**, 70
+    bytes. The generation grows only when a claim takes over a consumed row, i.e. a
+    deliberate repeat after the 5 s window; the incarnation changes when a pruned or
+    wiped row is inserted again. Either way the module sees a key it has never seen and
+    runs the action. A retry after a release (timeout, `Failed`, `FieldErrors`) keeps
+    both, so the module recognises the same logical click (option 2a).
   - `admit` failures release the claim, as in step 6.
   - `input` is empty.
   - Then invoke, settle the row (Ok/NoOp/Conflict mark it consumed; the rest release it),
@@ -1049,7 +1064,7 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
    error panel and no row.
    The read side follows the same codec: `render::field` (~:927-1000) decodes a stored
    `default` and a re-posted value with `decode_field`. The `value.split(',')` at ~:994
-   and the `posted.get(&currency_key(..))` at ~:964 are deleted. `reshow`
+   and the `posted.get(&currency_key(..))` at ~:995 are deleted. `reshow`
    (`routes.rs` ~:693) takes the parsed `Vec<(String, String)>`, not a
    `BTreeMap<String, String>`, so a 422 re-render keeps every ticked Multi box.
 5. Rust side (core commit): `ActionItem.primary`, a tone on `ActionResultView` and on
@@ -1057,7 +1072,9 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
    (`modal.html.tmpl` ~:30).
    Template: every POSTing button and form carries `hx-disabled-elt="this"`, which
    disables it until the response arrives, so a normal browser sends one request per
-   click burst. The server-side claim stays the authority. `admin.js` stops comma-joining
+   click burst. The server-side claim stays the authority. Each Multi checkbox gets
+   `name="<key>"` and the hidden aggregate input (`primitives.html.tmpl` ~:212) is
+   deleted. `admin.js` stops comma-joining
    Multi (`admin.js:118`) and posts the checkboxes as repeated keys. Primary comes from `ActionDecl.primary`
    (`shell.html.tmpl:47`). Info flashes render as a neutral toast.
 
@@ -1067,6 +1084,7 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
   - every `PanelTool(c)` and `PanelForm(c)` names a contribution of the same module;
   - a `PanelForm` action is `Then::Invoke`;
   - at most one `PanelForm` action per contribution;
+  - every action id and contribution id is at most 64 bytes;
   - at most one `primary` among the actions listed in each `PageDecl.head_actions`;
   - no `Then::Form` field key contains `__` or starts with `_`, and none equals a
     `hidden` key of the same spec;
@@ -1310,7 +1328,13 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
     `admin.reveals` row. With `consumed_at` back-dated past 5 s, the next POST invokes
     again with `request_id` generation + 1. After a released claim (timeout), the retry
     keeps the same `request_id`. An upsert onto a row whose `expires_at` has passed
-    invokes rather than giving 400.
+    invokes rather than giving 400. After the click row is deleted (prune), the next
+    click's `request_id` differs from every earlier one. A claim UPDATE that fails at
+    consumed + 4.99 s and is classified at consumed + 5.01 s (both back-dated) re-claims
+    instead of giving 400;
+  - blank-rule order: a required readonly field without a default is left out, not a
+    422; a required String posted as `""` is a 422 "required", an optional one reaches
+    the module as `Text("")`;
 - `core/controlplane` tests for the Step 8a contract:
   - an `encode_field`/`decode_field` round trip for every `FieldKind`, including a Multi
     value containing a comma and a Money value;
@@ -1322,6 +1346,7 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
   - two `PanelForm` actions on one contribution;
   - two primary head actions;
   - a `__` field key, a `_`-prefixed field key, a field key equal to a `hidden` key;
+  - a 65-byte action id and a 65-byte contribution id;
   - an undecodable `Then::Form` default.
 - `core/admin` engine test for the Step 13 `EntityListColumn` fan-out: one call per page,
   and a failing column does not fail the table.
