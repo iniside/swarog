@@ -1,0 +1,33 @@
+{#- The sign-in page. The mockup has none; it is built from the design-system brand mark,
+    panel, banner, input and primary button. -#}
+{%- import "primitives.html" as ui -%}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Swarog Admin</title>
+<link rel="stylesheet" href="/admin/assets/tokens.css">
+<link rel="stylesheet" href="/admin/assets/bundle.css">
+<link rel="stylesheet" href="/admin/assets/portal.css">
+<script src="/admin/assets/admin.js"></script>
+</head>
+<body>
+<div style="min-height:100vh;display:flex;align-items:flex-start;justify-content:center;padding:14vh 16px 0">
+<div style="width:360px;max-width:100%">
+<div class="row" style="gap:10px;margin-bottom:14px"><div class="brand-mark">S</div><div class="brand-name">Swarog Admin</div></div>
+<section class="panel">
+<div class="panel-head"><span class="panel-title">Sign in</span></div>
+{%- if error %}<div class="banner err">{{ ui.icon("alert") }} {{ error }}</div>{% endif %}
+<div class="panel-body">
+<form method="post" action="/admin/login" class="stack">
+<label class="stack" style="gap:4px"><span class="dim" style="font-weight:500">Username</span><input class="input" type="text" name="username" autofocus autocomplete="username" required></label>
+<label class="stack" style="gap:4px"><span class="dim" style="font-weight:500">Password</span><input class="input" type="password" name="password" autocomplete="current-password" required></label>
+<button type="submit" class="btn primary" style="justify-content:center">Sign in</button>
+</form>
+</div>
+</section>
+</div>
+</div>
+</body>
+</html>

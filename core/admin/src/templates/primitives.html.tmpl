@@ -1,0 +1,357 @@
+{#- Icons, atoms, panel chrome and one macro per controlplane::Primitive, lifted from
+    UILayout/design-system/components/bundle.js. -#}
+
+{%- macro icon(name, cls="") -%}
+{%- set paths = {
+  "home": '<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/>',
+  "users": '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M18 14.8c1.8.8 3 2.6 3.5 5.2"/>',
+  "user": '<circle cx="12" cy="8" r="4"/><path d="M4 21c1-4.2 4.2-6.5 8-6.5s7 2.3 8 6.5"/>',
+  "repo": '<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H19v-3"/><path d="M9 7h6"/>',
+  "lock": '<rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>',
+  "unlock": '<rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 7.6-1.7"/>',
+  "shield": '<path d="M12 3 4.5 6v5.5c0 4.6 3.1 8.2 7.5 9.5 4.4-1.3 7.5-4.9 7.5-9.5V6z"/>',
+  "server": '<rect x="3.5" y="4" width="17" height="7" rx="1.5"/><rect x="3.5" y="13" width="17" height="7" rx="1.5"/><path d="M7 7.5h.01M7 16.5h.01"/>',
+  "activity": '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+  "chart": '<path d="M4 20V4"/><path d="M4 20h16"/><path d="m7 15 4-5 3 3 5-7"/>',
+  "key": '<circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 8.7-8.7"/><path d="m16.5 6.5 2.5 2.5"/><path d="m14 9 2 2"/>',
+  "mail": '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.5 6.5 8.5 6.5 8.5-6.5"/>',
+  "clock": '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+  "sliders": '<path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/>',
+  "list": '<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4.5 6h.01M4.5 12h.01M4.5 18h.01"/>',
+  "zap": '<path d="M13 3 5 13.5h6L10 21l8-10.5h-6z"/>',
+  "coins": '<ellipse cx="9" cy="7" rx="5.5" ry="2.5"/><path d="M3.5 7v4c0 1.4 2.5 2.5 5.5 2.5"/><path d="M3.5 11v4c0 1.4 2.5 2.5 5.5 2.5"/><ellipse cx="15" cy="13" rx="5.5" ry="2.5"/><path d="M9.5 13v4c0 1.4 2.5 2.5 5.5 2.5s5.5-1.1 5.5-2.5v-4"/>',
+  "search": '<circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/>',
+  "bell": '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/>',
+  "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/>',
+  "moon": '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  "layers": '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 13 9 5 9-5"/>',
+  "menu": '<path d="M4 6h16M4 12h16M4 18h16"/>',
+  "more": '<circle cx="5" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="19" cy="12" r="1.2"/>',
+  "right": '<path d="m9 5 7 7-7 7"/>',
+  "left": '<path d="m15 5-7 7 7 7"/>',
+  "down": '<path d="m5 9 7 7 7-7"/>',
+  "refresh": '<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 3.5V8h4.5"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 20.5V16h-4.5"/>',
+  "x": '<path d="M6 6l12 12M18 6 6 18"/>',
+  "check": '<path d="m5 12.5 4.5 4.5L19 7"/>',
+  "alert": '<path d="M12 3.5 2.5 20h19z"/><path d="M12 10v4.5M12 17.5h.01"/>',
+  "info": '<circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.5h.01"/>',
+  "plus": '<path d="M12 5v14M5 12h14"/>',
+  "filter": '<path d="M4 5h16l-6 7.5V19l-4 1.5v-8z"/>',
+  "download": '<path d="M12 4v11"/><path d="m7 10.5 5 5 5-5"/><path d="M5 20h14"/>',
+  "external": '<path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>',
+  "copy": '<rect x="8.5" y="8.5" width="11" height="11" rx="1.5"/><path d="M15.5 8.5V5.5A1.5 1.5 0 0 0 14 4H5.5A1.5 1.5 0 0 0 4 5.5V14a1.5 1.5 0 0 0 1.5 1.5h3"/>',
+  "eye": '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+  "branch": '<circle cx="6" cy="5.5" r="2.2"/><circle cx="6" cy="18.5" r="2.2"/><circle cx="18" cy="8" r="2.2"/><path d="M6 7.7v8.6"/><path d="M18 10.2c0 4-6 3-11 6.5"/>',
+  "up": '<path d="M12 20V5"/><path d="m6 11 6-6 6 6"/>',
+  "box": '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/>',
+  "heart": '<path d="M12 20s-7.5-4.6-7.5-10A4.3 4.3 0 0 1 12 7.4 4.3 4.3 0 0 1 19.5 10c0 5.4-7.5 10-7.5 10z"/>',
+  "group": '<circle cx="12" cy="8" r="3"/><circle cx="5" cy="10" r="2.2"/><circle cx="19" cy="10" r="2.2"/><path d="M7 20c.6-3.4 2.6-5.5 5-5.5s4.4 2.1 5 5.5"/><path d="M2 18.5c.3-2.2 1.4-3.6 3-4"/><path d="M22 18.5c-.3-2.2-1.4-3.6-3-4"/>',
+  "cloud": '<path d="M7 18.5a4.5 4.5 0 0 1-.6-9 6 6 0 0 1 11.6 1.5 3.8 3.8 0 0 1-.5 7.5z"/>',
+  "inbox": '<path d="M3.5 13 6 5h12l2.5 8v6h-17z"/><path d="M3.5 13H9l1 2.5h4L15 13h5.5"/>',
+  "book": '<path d="M4 4.5h6a2 2 0 0 1 2 2V20a1.5 1.5 0 0 0-1.5-1.5H4z"/><path d="M20 4.5h-6a2 2 0 0 0-2 2V20a1.5 1.5 0 0 1 1.5-1.5H20z"/>',
+  "grid": '<rect x="4" y="4" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1"/>',
+  "play": '<path d="M7 4.5v15l12-7.5z"/>',
+  "pause": '<path d="M8 5v14M16 5v14"/>',
+  "skip": '<path d="M5 5v14l10-7z"/><path d="M19 5v14"/>',
+  "park": '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M10 16.5v-9h3a2.5 2.5 0 0 1 0 5h-3"/>',
+  "trash": '<path d="M4 7h16"/><path d="M9 7V4.5h6V7"/><path d="M6 7l1 13h10l1-13"/>',
+  "edit": '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
+  "ban": '<circle cx="12" cy="12" r="8.5"/><path d="m6 6 12 12"/>',
+  "gift": '<rect x="3.5" y="8" width="17" height="4" rx="1"/><path d="M5 12v8.5h14V12M12 8v12.5"/><path d="M12 8c-1.5-3.5-5.5-4-5.5-1.5S10 8 12 8zM12 8c1.5-3.5 5.5-4 5.5-1.5S14 8 12 8z"/>',
+  "send": '<path d="M21 3 10 14"/><path d="M21 3 14.5 21 10 14 3 9.5z"/>',
+  "swords": '<path d="M14.5 17.5 3 6V3h3l11.5 11.5"/><path d="m13 19 6-6M16 16l4 4M19 21l2-2"/><path d="M9.5 6.5 14 2h3v3l-4.5 4.5"/><path d="M5 14l-2 2 4 4 2-2"/>',
+  "db": '<ellipse cx="12" cy="5.5" rx="7.5" ry="2.5"/><path d="M4.5 5.5v13c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5v-13"/><path d="M4.5 12c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5"/>',
+  "puzzle": '<path d="M9 4h3a1.8 1.8 0 1 1 3.5 0H19v4a1.8 1.8 0 1 0 0 3.5V15h-4a1.8 1.8 0 1 1-3.5 0H8v-4a1.8 1.8 0 1 0 0-3.5z"/>',
+  "hash": '<path d="M5 9h15M4 15h15M10 4 8 20M16 4l-2 16"/>',
+} -%}
+<svg class="i {{ cls }}" viewBox="0 0 24 24" aria-hidden="true">{{ (paths[name] or "")|safe }}</svg>
+{%- endmacro %}
+
+{%- macro cell(c) -%}
+{%- set inner -%}
+{%- if c.kind == "badge" %}<span class="badge {{ c.tone }}">{{ c.value }}</span>
+{%- elif c.kind == "ref" %}<span class="tag">{{ c.value }}</span>
+{%- elif c.kind == "user" %}<span class="user-cell"><span class="avatar" style="background:{{ c.color }}">{{ c.initials }}</span><span>{{ c.value }}</span></span>
+{%- elif c.kind == "mono" %}<span class="mono"{% if c.tone %} style="color:var(--{{ c.tone }})"{% endif %}>{{ c.value }}</span>
+{%- elif c.kind == "time" %}<span class="dim"{% if c.tone %} style="color:var(--{{ c.tone }})"{% endif %}>{{ c.value }}</span>
+{%- elif c.tone %}<span style="color:var(--{{ c.tone }})">{{ c.value }}</span>
+{%- else %}{{ c.value }}
+{%- endif -%}
+{%- endset -%}
+{%- if c.href %}<a href="{{ c.href }}"{% if c.kind == "user" %} style="color:inherit"{% endif %}>{{ inner }}</a>{% else %}{{ inner }}{% endif -%}
+{%- endmacro %}
+
+{%- macro hx_action(a) -%}
+{%- if a.then == "invoke" %} hx-post="{{ a.url }}" hx-vals="{{ a.vals }}" hx-target="#modal-root" hx-swap="innerHTML"
+{%- else %} hx-get="{{ a.url }}" hx-target="#modal-root" hx-swap="innerHTML"
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro action_button(a, cls="") -%}
+{%- set c = cls ~ (" danger-ghost" if a.danger and not cls else "") -%}
+{%- if not a.enabled %}<button type="button" class="btn {{ c }}" disabled title="{{ a.hint }}">{{ icon(a.icon) }} {{ a.label }}</button>
+{%- elif a.then == "link" %}<a class="btn {{ c }}" href="{{ a.href }}" style="text-decoration:none">{{ icon(a.icon) }} {{ a.label }}</a>
+{%- else %}<button type="button" class="btn {{ c }}"{{ hx_action(a) }}>{{ icon(a.icon) }} {{ a.label }}</button>
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro menu_item(a) -%}
+{%- if not a.enabled %}<div class="menu-item disabled{% if a.danger %} danger{% endif %}" title="{{ a.hint }}">{{ icon(a.icon or "right") }}<span>{{ a.label }}</span><span class="hint">{{ a.hint }}</span></div>
+{%- elif a.then == "link" %}<a class="menu-item{% if a.danger %} danger{% endif %}" href="{{ a.href }}" style="text-decoration:none">{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></a>
+{%- else %}<div class="menu-item{% if a.danger %} danger{% endif %}"{{ hx_action(a) }}>{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></div>
+{%- endif -%}
+{%- endmacro %}
+
+{#- GET /admin/_menu/{kind}/{id}: the row-action popover body, grouped by module. -#}
+{%- macro menu(m) -%}
+{%- for g in m.groups -%}
+{%- if not loop.first %}<div class="menu-sep"></div>{% endif -%}
+<div class="menu-group"><span>{{ g.module }}</span></div>
+{%- for it in g.items %}{{ menu_item(it) }}{% endfor -%}
+{%- endfor -%}
+{%- endmacro %}
+
+{%- macro toast(text, tone="ok") -%}
+<div data-toast style="position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:90;background:var(--text);color:var(--bg);padding:8px 14px;border-radius:7px;box-shadow:var(--shadow-pop);font-weight:500;display:flex;gap:8px;align-items:center">{{ icon("check" if tone == "ok" else "info") }} {{ text }}</div>
+{%- endmacro %}
+
+{%- macro state_block(kind, title, detail="", icon_name="", compact=false, retry=false) -%}
+{%- set cls = {"empty": "", "error": "err", "denied": "denied"}[kind] -%}
+{%- set ico = icon_name or {"empty": "inbox", "error": "alert", "denied": "lock"}[kind] -%}
+<div class="state {{ cls }}{% if compact %} compact{% endif %}"><div class="state-icon">{{ icon(ico) }}</div><div class="state-title">{{ title }}</div>{% if detail %}<div class="state-detail">{{ detail }}</div>{% endif %}{% if retry %}<div class="row"><button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} <span>Retry</span></button><a class="btn sm ghost" href="/admin#health">Service health</a></div>{% endif %}</div>
+{%- endmacro %}
+
+{%- macro loading_block(rows=4) -%}
+<div style="padding:14px 12px;display:flex;flex-direction:column;gap:12px" aria-busy="true">{% for i in range(rows) %}<div class="row"><div class="sk" style="width:{{ 22 + (i * 17) % 30 }}%"></div><div class="sk" style="width:{{ 12 + (i * 23) % 20 }}%"></div><div class="sk grow"></div></div>{% endfor %}</div>
+{%- endmacro %}
+
+{%- macro denied_detail(role) -%}
+Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to grant it.
+{%- endmacro %}
+
+{%- macro fetch_attrs(s) -%}
+{%- if not s.denied %} hx-get="{{ s.url }}" hx-trigger="load" hx-swap="outerHTML"{% endif -%}
+{%- endmacro %}
+
+{#- A contribution's placeholder: the loading skeleton that fetches itself, or the denied
+    state drawn without a fetch. -#}
+{%- macro slot(s) -%}
+{%- if s.mode == "tile" -%}
+<div class="slot"{{ fetch_attrs(s) }}><a class="panel" style="color:inherit;text-decoration:none">
+{%- if s.denied %}<div class="kpi state-mini"><div class="kpi-label">{{ s.title }}</div><div class="row" style="color:var(--warn);margin-top:6px">{{ icon("lock") }} Requires role {{ s.min_role }}</div></div>
+{%- else %}<div class="kpi"><div class="kpi-label">{{ s.title }}</div><div class="sk" style="width:50%;height:20px;margin:6px 0"></div><div class="sk" style="width:70%"></div></div>
+{%- endif %}</a></div>
+{%- elif s.mode == "attention" -%}
+<div class="slot"{{ fetch_attrs(s) }}>{% if not s.denied %}<div class="pop-row" style="align-items:center" aria-busy="true"><div class="sk" style="width:28px;height:28px"></div><div class="grow"><div class="sk" style="width:55%"></div></div></div>{% endif %}</div>
+{%- elif s.mode in ["fact", "count", "nav", "inline"] -%}
+<span class="slot"{{ fetch_attrs(s) }}></span>
+{%- else -%}
+<div class="slot"{{ fetch_attrs(s) }}><section class="panel"><div class="panel-head">{% if s.icon %}<span class="muted">{{ icon(s.icon) }}</span>{% endif %}<span class="panel-title">{{ s.title }}</span><div class="panel-tools"></div></div><div class="panel-body">
+{%- if s.denied %}{{ state_block("denied", "Permission denied", denied_detail(s.min_role)) }}{% else %}{{ loading_block() }}{% endif -%}
+</div></section></div>
+{%- endif -%}
+{%- endmacro %}
+
+{# ---------------------------------------------------------------- primitives #}
+
+{%- macro table(t) -%}
+{%- if t.toolbar %}<div class="tbl-toolbar">
+{%- if t.search_placeholder %}<form class="input-icon" hx-get="{{ t.search_url }}" hx-target="closest .slot" hx-swap="outerHTML">{{ icon("search") }}<input class="input" name="q" style="width:220px" placeholder="{{ t.search_placeholder }}" value="{{ t.q }}"></form>{% endif -%}
+{%- for f in t.filters %}<span class="filter-chip">{{ f.label }}: <b>{{ f.value }}</b><span class="x">{{ icon("x") }}</span></span>{% endfor -%}
+<span class="filter-chip add">{{ icon("plus") }} Filter</span><span class="grow"></span></div>
+{%- endif -%}
+<div class="tbl-wrap"><table class="tbl"><thead><tr>
+{%- if t.selectable %}<th class="cb"><input type="checkbox"></th>{% endif -%}
+{%- for c in t.columns %}<th class="{{ 'num' if c.num else '' }}">{{ c.label }}</th>{% endfor -%}
+{%- if t.row_menu %}<th class="act"></th>{% endif -%}
+</tr></thead><tbody>
+{%- for r in t.rows %}<tr class="{{ 'clickable' if r.href else '' }}"{% if r.href %} data-href="{{ r.href }}"{% endif %}>
+{%- if t.selectable %}<td class="cb"><input type="checkbox"></td>{% endif -%}
+{%- for c in r.cells %}<td class="{{ 'num' if c.num else '' }}">{{ cell(c.cell) }}</td>{% endfor -%}
+{%- if t.row_menu %}<td class="act">{% if r.menu_url %}<button type="button" class="btn sm icon ghost" aria-label="Row actions" data-menu-url="{{ r.menu_url }}">{{ icon("more") }}</button>{% endif %}</td>{% endif -%}
+</tr>{% endfor -%}
+</tbody></table></div>
+{%- if t.foot %}<div class="tbl-foot"><span>{{ t.total }}</span><div class="pager"><select class="select" style="height:24px;font-size:12px">{% for n in [25, 50, 100] %}<option{% if n == t.size %} selected{% endif %}>{{ n }} / page</option>{% endfor %}</select><button type="button" class="btn sm icon" disabled>{{ icon("left") }}</button><button type="button" class="btn sm icon"{% if t.next_url %} hx-get="{{ t.next_url }}" hx-target="closest .slot" hx-swap="outerHTML"{% else %} disabled{% endif %}>{{ icon("right") }}</button></div></div>{% endif -%}
+{%- endmacro %}
+
+{%- macro props(p) -%}
+<dl class="props"{% if p.columns > 1 %} style="grid-template-columns:{% for i in range(p.columns) %}max-content 1fr {% endfor %}"{% endif %}>{% for k, v in p.items %}<dt>{{ k }}</dt><dd>{{ cell(v) }}</dd>{% endfor %}</dl>
+{%- endmacro %}
+
+{%- macro kpi(k, p) -%}
+<a class="panel"{% if k.href %} href="{{ k.href }}"{% endif %} style="color:inherit;text-decoration:none"><div class="kpi"><div class="kpi-label">{% if p.icon %}{{ icon(p.icon) }}{% endif %}{{ k.label }}{% if p.state == "stale" %} <span class="badge warn" style="margin-left:auto">stale {{ p.age_short }}</span>{% endif %}</div><div class="kpi-value">{{ k.value }}{% if k.unit %}<small>{{ k.unit }}</small>{% endif %}</div>
+{%- if k.delta_value %}<div class="kpi-delta"><span class="{{ k.delta_class }}">{{ k.delta_value }}</span> {{ k.delta_period }}</div>{% endif -%}
+{%- if k.bar is not none %}<div class="bar"><i style="width:{{ k.bar }}%"></i></div>{% endif -%}
+{%- if k.spark %}<svg class="spark" viewBox="0 0 160 26" preserveAspectRatio="none"><path d="{{ k.spark.area }}" fill="{{ k.spark.color }}" opacity=".1"/><path d="{{ k.spark.line }}" fill="none" stroke="{{ k.spark.color }}" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>{% endif -%}
+</div></a>
+{%- endmacro %}
+
+{%- macro timeline(tl) -%}
+{%- for d in tl.days -%}
+{%- if d.label %}<div class="tl-day">{{ d.label }}</div>{% endif %}<ul class="tl">
+{%- for it in d.items %}<li><span class="when">{{ it.time }}</span><span class="ico {{ it.tone }}">{{ icon(it.icon) }}</span><div class="body"><div>{% if it.actor %}{{ cell(it.actor) }} {% endif %}{% if it.verb %}<span class="mono">{{ it.verb }}</span> {% endif %}{{ it.summary }}</div>{% if it.target or it.detail %}<div class="meta">{% if it.target %}{{ cell(it.target) }}{% endif %}{% if it.target and it.detail %} · {% endif %}{{ it.detail or "" }}</div>{% endif %}</div></li>{% endfor -%}
+</ul>
+{%- endfor -%}
+{%- endmacro %}
+
+{%- macro field(f, disabled=false) -%}
+{%- set off = disabled or f.readonly -%}
+{%- set dis = " disabled" if off else "" -%}
+<label class="fl">{{ f.label }}{% if f.required %} <span style="color:var(--err)">*</span>{% endif %}<span class="type">{{ f.type_name }}</span></label><div>
+{%- if f.control == "textarea" %}<textarea class="input{% if f.mono %} mono{% endif %}{% if f.error %} invalid{% endif %}" rows="4" style="width:100%" name="{{ f.key }}"{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}>{{ f.value }}</textarea>
+{%- elif f.control == "toggle" %}{% set on = f.value in ["true", "1", "on"] %}<span class="toggle{% if on %} on{% endif %}" role="switch" aria-checked="{{ 'true' if on else 'false' }}"{% if not off %} tabindex="0" data-toggle{% endif %}></span><input type="hidden" name="{{ f.key }}" value="{{ 'true' if on else 'false' }}"{{ " disabled" if disabled else "" }}>
+{%- elif f.control == "select" %}<select class="select" style="width:260px"{% if not off %} name="{{ f.key }}"{% endif %}{{ dis }}>{% for o in f.options %}<option{% if o == f.value %} selected{% endif %}>{{ o }}</option>{% endfor %}</select>{% if f.readonly and not disabled %}<input type="hidden" name="{{ f.key }}" value="{{ f.value }}">{% endif %}
+{%- elif f.control == "checks" %}<div class="checks"{% if not off %} data-multi{% endif %}>{% for o in f.options %}<label><input type="checkbox" value="{{ o }}"{% if o in f.selected %} checked{% endif %}{{ dis }}> <span class="mono">{{ o }}</span></label>{% endfor %}</div><input type="hidden" name="{{ f.key }}" value="{{ f.value }}"{{ " disabled" if disabled else "" }}>
+{%- elif f.control == "ref" %}<span class="input-icon">{{ icon(f.ref_icon) }}<input class="input{% if f.error %} invalid{% endif %}" style="width:260px" name="{{ f.key }}" value="{{ f.value }}" placeholder="{{ f.ref_kind }} id"{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}></span>
+{%- elif f.control == "money" %}<div class="row"><input class="input num{% if f.error %} invalid{% endif %}" style="width:140px" name="{{ f.key }}" value="{{ f.value }}" inputmode="decimal"{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}><select class="select" style="width:110px"{% if not off %} name="{{ f.key }}_currency"{% endif %}{{ dis }}>{% for o in f.options %}<option{% if o == f.currency %} selected{% endif %}>{{ o }}</option>{% endfor %}</select>{% if f.readonly and not disabled %}<input type="hidden" name="{{ f.key }}_currency" value="{{ f.currency }}">{% endif %}</div>
+{%- else %}<input class="input{% if f.mono %} mono{% endif %}{% if f.control == 'int' %} num{% endif %}{% if f.error %} invalid{% endif %}" style="width:100%;max-width:520px" name="{{ f.key }}" value="{{ f.value }}"{% if f.control == "int" %} inputmode="numeric"{% endif %}{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}>
+{%- endif -%}
+{%- if f.error %}<div class="err-msg">{{ f.error }}</div>{% endif %}{% if f.help %}<div class="help">{{ f.help }}</div>{% endif %}</div>
+{%- endmacro %}
+
+{%- macro form_fields(fv, disabled=false) -%}
+<div class="form">{% for f in fv.fields %}{{ field(f, disabled) }}{% endfor %}</div>
+{%- endmacro %}
+
+{#- A Form primitive inside a panel; the contract names no submit target for it. -#}
+{%- macro panel_form(fv, disabled=false) -%}
+<div class="form">{% for f in fv.fields %}{{ field(f, disabled) }}{% endfor %}<div class="form-actions">{% if fv.note %}<span class="muted" style="margin-right:auto;font-size:12px;align-self:center">{{ fv.note }}</span>{% endif %}<button type="button" class="btn" disabled>Cancel</button><button type="button" class="btn primary" disabled title="No submit action declared">{{ fv.submit_label or "Save" }}</button></div></div>
+{%- endmacro %}
+
+{%- macro queue_counts(q) -%}
+<div class="q-counts">{% for s in q.states %}<div class="q-count{% if s.on %} on{% endif %}{% if s.tone %} {{ s.tone }}{% endif %}" hx-get="{{ s.url }}" hx-target="closest .slot" hx-swap="outerHTML"><div class="n">{{ s.count }}</div><div class="l">{{ s.label }}</div></div>{% endfor %}</div>
+{%- endmacro %}
+
+{#- The first non-danger action is a labelled button; the rest are ghost icons
+    (pages-platform.js:49-52). -#}
+{%- macro queue_action(a, labelled) -%}
+{%- if labelled -%}
+{{ action_button(a, "sm") }}
+{%- else -%}
+{%- set c = "btn sm ghost" ~ (" danger-ghost" if a.danger else "") -%}
+{%- if a.enabled %}<button type="button" class="{{ c }}" title="{{ a.label }}"{{ hx_action(a) }}>{{ icon(a.icon) }}</button>{% else %}<button type="button" class="{{ c }}" disabled title="{{ a.hint }}">{{ icon(a.icon) }}</button>{% endif -%}
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro queue(q) -%}
+{{ queue_counts(q) }}
+{%- if q.items -%}
+<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Item</th>{% if q.has_entity %}<th>Ref</th>{% endif %}<th>State</th><th>Attempts</th><th>Next attempt</th><th>Last error</th>{% if q.has_payload %}<th>Payload</th>{% endif %}<th></th></tr></thead><tbody>
+{%- for it in q.items %}<tr><td><span class="mono">{{ it.id }}</span></td>{% if q.has_entity %}<td>{% if it.entity %}{{ cell(it.entity) }}{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}<td>{{ cell(it.state) }}</td><td><span class="attempts" title="{{ it.attempts_title }}">{% for a in it.attempts %}<i class="{{ a }}"></i>{% endfor %}</span></td><td><span class="dim">{{ it.next_attempt or "—" }}</span></td><td class="wrap">{% if it.last_error %}<span class="mono" style="font-size:11.5px;color:{{ it.error_color }}">{{ it.last_error }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>{% if q.has_payload %}<td><span class="mono muted ellip">{{ it.payload or "—" }}</span></td>{% endif %}<td><span class="row" style="justify-content:flex-end;gap:4px">{% for a in it.actions %}{{ queue_action(a, loop.first and not a.danger) }}{% endfor %}</span></td></tr>{% endfor -%}
+</tbody></table></div><div class="tbl-foot"><span>{{ q.items|length }} items</span></div>
+{%- else -%}
+{{ state_block("empty", "Queue is empty", "Nothing in this state.", "check") }}
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro services(sv, bars=true) -%}
+{%- for s in sv.items %}<div class="svc"><span class="dot {{ s.tone }}"></span><span class="row"><span class="name">{{ s.name }}</span>{% if not s.running %}<span class="badge {{ s.tone }}">{{ s.state }}</span>{% endif %}</span><span class="row">{% if bars and s.bars %}<span class="hide-tablet"><span class="uptime" style="width:140px">{% for b in s.bars %}<i class="{{ b }}"></i>{% endfor %}</span></span>{% endif %}<span class="muted mono" style="width:64px;text-align:right">{{ s.p99 }}</span></span>{% if s.note %}<span class="detail">{{ s.note }}</span>{% endif %}</div>{% endfor -%}
+{%- endmacro %}
+
+{%- macro chart(c, label="") -%}
+<svg class="chart" viewBox="0 0 640 220" preserveAspectRatio="none" role="img" aria-label="{{ label }}">
+{%- for g in c.grid %}<line x1="{{ c.left }}" x2="{{ c.right }}" y1="{{ g.y }}" y2="{{ g.y }}" stroke="var(--chart-grid)"/><text x="{{ c.left_text_x }}" y="{{ g.ty }}" text-anchor="end">{{ g.left }}</text>{% if g.right is not none %}<text x="{{ c.right_text_x }}" y="{{ g.ty }}">{{ g.right }}</text>{% endif %}{% endfor -%}
+{%- for l in c.labels %}<text x="{{ l.x }}" y="214" text-anchor="middle">{{ l.text }}</text>{% endfor -%}
+{%- for s in c.series %}<path d="{{ s.path }}" fill="none" stroke="{{ s.color }}" stroke-width="2" vector-effect="non-scaling-stroke"/>{% for d in s.dots %}<circle cx="{{ d.x }}" cy="{{ d.y }}" r="2.6" fill="var(--panel)" stroke="{{ s.color }}" stroke-width="1.6"><title>{{ d.title }}</title></circle>{% endfor %}{% endfor -%}
+</svg>
+{%- endmacro %}
+
+{%- macro chart_legend(c) -%}
+<div class="legend">{% for s in c.series %}<span><i style="background:{{ s.color }}"></i>{{ s.label }}</span>{% endfor %}</div>
+{%- endmacro %}
+
+{%- macro attention_rows(a) -%}
+{%- for it in a.items %}<div class="pop-row" style="align-items:center"><span class="modal-icon {{ it.tone }}" style="width:28px;height:28px">{{ icon(it.icon) }}</span><div class="grow"><div class="t">{{ it.title }}</div><div class="d">{{ it.text }}</div></div><a class="btn sm" href="{{ it.href }}">{{ it.action_label }}</a></div>{% endfor -%}
+{%- endmacro %}
+
+{%- macro body(b, p) -%}
+{%- if b.type == "Table" %}{{ table(b) }}
+{%- elif b.type == "Props" %}{{ props(b) }}
+{%- elif b.type == "Kpi" %}{{ kpi(b, p) }}
+{%- elif b.type == "Timeline" %}{{ timeline(b) }}
+{%- elif b.type == "Form" %}{{ panel_form(b, p.state == "readonly") }}
+{%- elif b.type == "Queue" %}{{ queue(b) }}
+{%- elif b.type == "Services" %}{{ services(b) }}
+{%- elif b.type == "Chart" %}{{ chart(b, p.title) }}
+{%- elif b.type == "Attention" %}{{ attention_rows(b) }}
+{%- elif b.type == "Cell" %}{{ cell(b) }}
+{%- elif b.type == "Header" %}<div class="row"><h1>{{ b.title }}</h1>{% if b.subtitle %}<span class="muted">{{ b.subtitle }}</span>{% endif %}{% if b.status %}{{ cell(b.status) }}{% endif %}</div>
+{%- elif b.type == "Empty" %}{{ state_block("empty", b.title or "Nothing here yet", b.detail) }}
+{%- endif -%}
+{%- endmacro %}
+
+{%- macro empty_body(p) -%}
+{%- set b = p.body -%}
+{%- if b and b.type == "Empty" %}{{ state_block("empty", b.title or "Nothing here yet", b.detail) }}
+{%- elif b and b.type == "Timeline" %}{{ state_block("empty", "No events", "Nothing recorded in this range.", "activity", true) }}
+{%- elif b and b.type == "Queue" %}{{ queue(b) }}
+{%- else %}{{ state_block("empty", "Nothing here yet") }}
+{%- endif -%}
+{%- endmacro %}
+
+{#- GET /admin/_panel/...: the fragment that replaces a contribution's slot. -#}
+{%- macro panel_fragment(p) -%}
+{%- set live = p.state in ["ok", "stale", "readonly"] -%}
+{%- if p.mode == "tile" or (p.body and p.body.type == "Kpi" and live) -%}
+<div class="slot" data-panel-url="{{ p.url }}">
+{%- if live and p.body and p.body.type == "Kpi" %}{{ kpi(p.body, p) }}
+{%- else %}<a class="panel" style="color:inherit;text-decoration:none">
+{%- if p.state == "denied" %}<div class="kpi state-mini"><div class="kpi-label">{{ p.title }}</div><div class="row" style="color:var(--warn);margin-top:6px">{{ icon("lock") }} Requires role {{ p.min_role }}</div></div>
+{%- elif p.state == "empty" %}<div class="kpi"><div class="kpi-label">{{ p.title }}</div><div class="kpi-value muted">—</div><div class="kpi-delta">No data reported yet</div></div>
+{%- else %}<div class="kpi state-mini"><div class="kpi-label">{{ p.title }}</div><div class="row" style="color:var(--err);font-weight:500;margin:6px 0 2px" title="{{ p.error or '' }}">{{ icon("alert") }} {{ p.module }} module unavailable</div><div class="row"><button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} <span>Retry</span></button></div></div>
+{%- endif %}</a>
+{%- endif %}</div>
+{%- elif p.mode == "attention" -%}
+<div class="slot" data-panel-url="{{ p.url }}">
+{%- if live and p.body %}{{ body(p.body, p) }}
+{%- elif p.state == "error" %}<div class="pop-row" style="align-items:center"><span class="modal-icon danger" style="width:28px;height:28px">{{ icon("alert") }}</span><div class="grow"><div class="t">{{ p.module }} module unavailable</div><div class="d">{{ p.error or "" }}</div></div><button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} <span>Retry</span></button></div>
+{%- endif %}</div>
+{%- elif p.mode == "header" -%}
+<div class="slot" data-panel-url="{{ p.url }}">
+{%- if live and p.body and p.body.type == "Header" %}{{ body(p.body, p) }}</div><span class="avatar lg" id="entity-avatar" hx-swap-oob="true" style="background:{{ p.body.color }}">{{ p.body.initials }}</span>
+{%- else %}<div class="row"><h1>{{ p.fallback_title }}</h1>{% if p.state == "error" %}<span class="dot err" title="{{ p.module }} module unavailable"></span>{% endif %}</div></div>
+{%- endif -%}
+{%- elif p.mode == "fact" -%}
+<span class="slot" data-panel-url="{{ p.url }}">
+{%- if live and p.body %}<span>{{ body(p.body, p) }}</span>
+{%- elif p.state == "error" %}<span style="color:var(--err)" title="{{ p.error or '' }}">{{ icon("alert") }} {{ p.module }} unavailable</span>
+{%- endif %}</span>
+{%- elif p.mode == "count" -%}
+<span class="slot" data-panel-url="{{ p.url }}">
+{%- if live and p.body and p.body.type == "Cell" %} <span class="count">{{ p.body.value }}</span>
+{%- elif p.state == "error" %}<span class="dot err" title="module unavailable"></span>
+{%- endif %}</span>
+{%- elif p.mode == "nav" -%}
+<span class="slot" data-panel-url="{{ p.url }}">
+{%- if live and p.body and p.body.type == "Cell" %}<span class="count {{ {'err': 'alert', 'warn': 'warn'}[p.body.tone] or '' }}">{{ p.body.value }}</span>{% endif -%}
+</span>
+{%- elif p.mode == "inline" -%}
+<span class="slot" data-panel-url="{{ p.url }}">{% if live and p.body and p.body.type == "Cell" %}{{ cell(p.body) }}{% endif %}</span>
+{%- else -%}
+{%- set ro = p.state == "readonly" -%}
+{%- set flush = (live and p.flush) or (p.state == "empty" and p.body and p.body.type == "Queue") -%}
+<div class="slot" data-panel-url="{{ p.url }}"><section class="panel"><div class="panel-head">{% if p.icon %}<span class="muted">{{ icon(p.icon) }}</span>{% endif %}<span class="panel-title">{{ p.title }}</span>{% if ro %}<span class="ro-chip">{{ icon("lock") }} read-only</span>{% endif %}<div class="panel-tools">{% if live and p.body and p.body.type == "Chart" %}{{ chart_legend(p.body) }}{% endif %}</div></div>
+{%- if p.state == "stale" %}<div class="banner warn" title="{{ p.error or '' }}">{{ icon("clock") }} Showing cached data from {{ p.age or "a while" }} ago — {{ p.module }}-svc is lagging.<button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} <span>Refresh</span></button></div>
+{%- elif ro %}<div class="banner info">{{ icon("info") }} Read-only: the <b>{{ p.module }}</b> module does not accept remote edits from the portal.</div>
+{%- endif -%}
+<div class="panel-body{% if flush %} flush{% endif %}">
+{%- if live and p.body %}{{ body(p.body, p) }}
+{%- elif p.state == "empty" %}{{ empty_body(p) }}
+{%- elif p.state == "denied" %}{{ state_block("denied", "Permission denied", denied_detail(p.min_role)) }}
+{%- else %}{{ state_block("error", p.module ~ " module unavailable", (p.error or "No answer") ~ ". The rest of this page is unaffected.", retry=true) }}
+{%- endif -%}
+</div>
+{%- if live and p.body and p.body.type == "Timeline" and p.body.older_url %}<div class="panel-foot"><button type="button" class="btn sm ghost" hx-get="{{ p.body.older_url }}" hx-target="closest .slot" hx-swap="outerHTML">Load older</button></div>{% endif -%}
+</section></div>
+{%- endif -%}
+{%- endmacro %}
+
+{#- GET /admin/_search: the palette's result list. -#}
+{%- macro search(s) -%}
+{%- for g in s.groups -%}
+{%- if g.error %}<div class="palette-group"><span>{{ g.label }}</span><span>{{ g.module }}</span></div><div class="palette-item" style="color:var(--text-3);cursor:default">{{ icon("alert") }} {{ g.error }} — other results are unaffected <button type="button" class="btn sm" style="margin-left:auto" data-palette-retry>Retry</button></div>
+{%- elif g.hits %}<div class="palette-group"><span>{{ g.label }}</span><span>{{ g.module }}</span></div>{% for h in g.hits %}<a class="palette-item{% if h.hl %} hl{% endif %}" href="{{ h.href }}" style="color:inherit;text-decoration:none">{{ icon(g.icon) }}<div><div>{{ h.title }}</div><div class="sub">{{ h.subtitle }}</div></div><span class="right">{{ h.badge or "" }}</span></a>{% endfor %}
+{%- endif -%}
+{%- endfor -%}
+{%- if s.q and not s.any %}<div class="state compact"><div class="state-title">No matches</div><div class="state-detail">Try a handle, user id, repository or key name.</div></div>{% endif -%}
+{%- endmacro %}

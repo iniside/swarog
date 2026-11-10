@@ -36,7 +36,8 @@ impl PanelState {
     }
 }
 
-/// One resolved panel; `primitive` is set for ok, readonly and stale.
+/// One resolved panel; `primitive` is set for ok, readonly, stale and a provider's empty
+/// payload.
 #[derive(Clone, Debug, serde::Serialize)]
 pub(crate) struct PanelView {
     pub(crate) module: String,
@@ -45,33 +46,37 @@ pub(crate) struct PanelView {
     pub(crate) state: PanelState,
     pub(crate) primitive: Option<Primitive>,
     pub(crate) error: Option<String>,
+    /// Seconds since a stale panel's cached copy was fetched.
+    pub(crate) age_s: Option<u64>,
 }
 
 /// Last-good panels for contributions that declare `cache_ttl_s`.
 #[derive(Default)]
 pub(crate) struct PanelCache {
-    entries: HashMap<String, (Primitive, Instant)>,
+    entries: HashMap<String, (Primitive, Instant, Instant)>,
 }
 
 impl PanelCache {
-    fn get(&self, key: &str) -> Option<Primitive> {
-        let (primitive, expires) = self.entries.get(key)?;
-        (Instant::now() < *expires).then(|| primitive.clone())
+    /// The cached copy and its age.
+    fn get(&self, key: &str) -> Option<(Primitive, Duration)> {
+        let (primitive, fetched, expires) = self.entries.get(key)?;
+        let now = Instant::now();
+        (now < *expires).then(|| (primitive.clone(), now.saturating_duration_since(*fetched)))
     }
 
     fn put(&mut self, key: String, primitive: Primitive, ttl: Duration) {
         let now = Instant::now();
         if self.entries.len() >= PANEL_CACHE_CAP && !self.entries.contains_key(&key) {
-            self.entries.retain(|_, (_, expires)| *expires > now);
+            self.entries.retain(|_, (_, _, expires)| *expires > now);
             if self.entries.len() >= PANEL_CACHE_CAP {
                 if let Some(oldest) =
-                    self.entries.iter().min_by_key(|(_, (_, expires))| *expires).map(|(k, _)| k.clone())
+                    self.entries.iter().min_by_key(|(_, (_, _, expires))| *expires).map(|(k, _)| k.clone())
                 {
                     self.entries.remove(&oldest);
                 }
             }
         }
-        self.entries.insert(key, (primitive, now + ttl));
+        self.entries.insert(key, (primitive, now, now + ttl));
     }
 }
 
@@ -128,6 +133,7 @@ pub(crate) async fn resolve(
         state: PanelState::Error,
         primitive: None,
         error: None,
+        age_s: None,
     };
     if !roles::allows(operator, decl.min_role) {
         view.state = PanelState::Denied;
@@ -143,6 +149,7 @@ pub(crate) async fn resolve(
         Ok(Ok(primitive)) => {
             if is_empty(&primitive) {
                 view.state = PanelState::Empty;
+                view.primitive = Some(primitive);
                 return view;
             }
             if let Some(ttl) = decl.cache_ttl_s {
@@ -167,7 +174,8 @@ pub(crate) async fn resolve(
         .cache_ttl_s
         .and_then(|_| engine.panel_cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key));
     view.state = if cached.is_some() { PanelState::Stale } else { PanelState::Error };
-    view.primitive = cached;
+    view.age_s = cached.as_ref().map(|(_, age)| age.as_secs());
+    view.primitive = cached.map(|(primitive, _)| primitive);
     view.error = Some(failure);
     view
 }

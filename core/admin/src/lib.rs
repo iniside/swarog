@@ -27,7 +27,7 @@
 //! failure: run `./install.sh` (adminctl) to mint one.
 //!
 //! Routes (mounted via `ctx.mount`, security headers on these routers only):
-//! `GET /admin/theme.css`, `GET /admin/admin.js`, `GET /admin/htmx.min.js` (ungated),
+//! `GET /admin/assets/{tokens.css,bundle.css,portal.css,admin.js,htmx.min.js}` (ungated),
 //! `GET|POST /admin/login`, `POST /admin/logout`, and the control-plane portal in
 //! [`routes`]: `GET /admin`, `/admin/p/{module}/{page}`, `/admin/e/{kind}/{id}`,
 //! `/admin/_panel/{module}/{contribution}`, `/admin/_menu/{kind}/{id}`, `/admin/_search`,
@@ -58,32 +58,15 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 pub mod conformance;
 mod engine;
 mod password;
+mod render;
 mod routes;
 pub use password::{hash_password, verify_password};
 
-/// The admin page template (adapted to minijinja). Named with a `.html` suffix so
-/// minijinja auto-escapes value interpolations (player-supplied text in tables, the
-/// session-derived `_csrf` value).
-const TEMPLATE: &str = include_str!("admin.html.tmpl");
-
-/// The login page (same theme, `.html` for auto-escape of the error line).
-const LOGIN_TEMPLATE: &str = include_str!("login.html.tmpl");
-
-/// The modal fragment template (`.html` for auto-escape). Rendered for
-/// `GET /admin/{slug}?partial=modal` on an htmx request — modal chrome only, NO page
-/// shell (the step-3 visual layer restyles it).
-const MODAL_TEMPLATE: &str = include_str!("modal.html.tmpl");
-
-/// The embedded dark GameOps theme. Served ungated at `/admin/theme.css`.
-const THEME_CSS: &str = include_str!("theme.css");
-
-/// The portal's only client script (vanilla: kebab-menu delegation + modal dismiss).
-/// Served ungated at `/admin/admin.js`, same-origin so the strict CSP permits it.
+const TOKENS_CSS: &str = include_str!("../../../UILayout/design-system/tokens.css");
+const BUNDLE_CSS: &str = include_str!("../../../UILayout/design-system/components/bundle.css");
+const PORTAL_CSS: &str = include_str!("portal.css");
 const ADMIN_JS: &str = include_str!("admin.js");
-
-/// Vendored, pinned htmx (2.0.4) — a single minified same-origin file (no npm/build
-/// step). Drives the modal fragment swaps declaratively via `hx-*` attributes (no
-/// `hx-on:`, which would need eval). Served ungated at `/admin/htmx.min.js`.
+/// Vendored, pinned htmx 2.0.4.
 const HTMX_JS: &str = include_str!("htmx.min.js");
 
 /// The session cookie name.
@@ -445,16 +428,9 @@ impl Module for Admin {
     }
 }
 
-/// Compiles the two embedded templates (shared by `init` and the tests).
+/// Compiles the embedded templates (shared by `init` and the tests).
 fn template_env() -> anyhow::Result<minijinja::Environment<'static>> {
-    let mut env = minijinja::Environment::new();
-    env.add_template("admin.html", TEMPLATE)
-        .map_err(|e| anyhow::anyhow!("admin: template compile: {e}"))?;
-    env.add_template("login.html", LOGIN_TEMPLATE)
-        .map_err(|e| anyhow::anyhow!("admin: login template compile: {e}"))?;
-    env.add_template("modal.html", MODAL_TEMPLATE)
-        .map_err(|e| anyhow::anyhow!("admin: modal template compile: {e}"))?;
-    Ok(env)
+    render::env()
 }
 
 /// Per-request admin state captured by the router closures. The pool backs the
@@ -500,27 +476,26 @@ enum LoginOutcome {
 /// security-headers layer wraps THIS router only.
 fn router(state: Arc<AdminState>) -> Router {
     Router::new()
-        .route("/admin/theme.css", get(theme_css))
-        .route("/admin/admin.js", get(admin_js))
-        .route("/admin/htmx.min.js", get(htmx_js))
+        .route("/admin/assets/tokens.css", get(|| asset(CSS, TOKENS_CSS)))
+        .route("/admin/assets/bundle.css", get(|| asset(CSS, BUNDLE_CSS)))
+        .route("/admin/assets/portal.css", get(|| asset(CSS, PORTAL_CSS)))
+        .route("/admin/assets/admin.js", get(|| asset(JS, ADMIN_JS)))
+        .route("/admin/assets/htmx.min.js", get(|| asset(JS, HTMX_JS)))
         .route("/admin/login", get(login_page).post(login_submit))
         .route("/admin/logout", post(logout))
         .layer(middleware::from_fn(security_headers))
         .with_state(state)
 }
 
-/// Hardening headers on every admin response. CSP keeps the shell functional (the
-/// embedded theme uses inline `style=` attributes and the Google-Fonts stylesheet)
-/// while forbidding scripts/frames from anywhere: `default-src 'self'` +
-/// `frame-ancestors 'none'` per the plan, widened ONLY for styles/fonts.
+/// Hardening headers on every admin response: `default-src 'self'` and
+/// `frame-ancestors 'none'`, widened only for the templates' inline `style=` attributes.
 async fn security_headers(req: Request, next: Next) -> Response {
     let mut resp = next.run(req).await;
     let h = resp.headers_mut();
     h.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
-             font-src https://fonts.gstatic.com; frame-ancestors 'none'",
+            "default-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'",
         ),
     );
     h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
@@ -540,7 +515,6 @@ struct Authed {
     username: String,
     csrf: String,
     token: String,
-    user: UserView,
 }
 
 impl Authed {
@@ -549,7 +523,6 @@ impl Authed {
             username: "local-admin".into(),
             csrf: String::new(),
             token: String::new(),
-            user: UserView::new(""),
         }
     }
 }
@@ -577,7 +550,6 @@ impl AdminState {
         })?;
         match row {
             Some((username, csrf)) => Ok(Authed {
-                user: UserView::new(&username),
                 username,
                 csrf,
                 token,
@@ -1015,32 +987,13 @@ async fn logout(
 // Handlers: static assets
 // ---------------------------------------------------------------------------
 
-/// `GET /admin/theme.css` — the embedded stylesheet, ungated.
-async fn theme_css() -> Response {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        THEME_CSS,
-    )
-        .into_response()
-}
+const CSS: &str = "text/css; charset=utf-8";
+const JS: &str = "application/javascript; charset=utf-8";
 
-/// `GET /admin/admin.js` — the embedded portal script, ungated like the stylesheet
-/// (a static asset leaks nothing; the CSP `default-src 'self'` requires it be a file).
-async fn admin_js() -> Response {
-    (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
-        ADMIN_JS,
-    )
-        .into_response()
-}
-
-/// `GET /admin/htmx.min.js` — the vendored htmx runtime, ungated.
-async fn htmx_js() -> Response {
-    (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
-        HTMX_JS,
-    )
-        .into_response()
+/// An embedded asset, ungated: a static file leaks nothing, and the CSP requires scripts
+/// to be same-origin files.
+async fn asset(content_type: &'static str, body: &'static str) -> Response {
+    ([(header::CONTENT_TYPE, content_type)], body).into_response()
 }
 
 /// Length-checked constant-time byte compare (Go's `subtle.ConstantTimeCompare`):
@@ -1076,37 +1029,6 @@ fn cookie_secure_on() -> bool {
         std::env::var("ADMIN_COOKIE_SECURE"),
         Ok(v) if v == "0" || v.eq_ignore_ascii_case("false") || v.eq_ignore_ascii_case("off")
     )
-}
-
-// ---------------------------------------------------------------------------
-// Template view models (serde → minijinja)
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize, Clone)]
-struct UserView {
-    name: String,
-    initials: String,
-}
-
-impl UserView {
-    /// The footer/avatar identity: the session user's name + up-to-2-char initials,
-    /// else the "Local Admin"/"LA" default under `ADMIN_OPEN=1`.
-    fn new(name: &str) -> UserView {
-        if name.is_empty() {
-            return UserView {
-                name: "Local Admin".into(),
-                initials: "LA".into(),
-            };
-        }
-        let mut ini = name.to_uppercase();
-        if ini.chars().count() > 2 {
-            ini = ini.chars().take(2).collect();
-        }
-        UserView {
-            name: name.to_string(),
-            initials: ini,
-        }
-    }
 }
 
 // ============================================================================

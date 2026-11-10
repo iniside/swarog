@@ -1,0 +1,9 @@
+/* Portal rules the design system has no class for; token values come from tokens.css */
+[hidden] { display: none !important; }
+.slot { display: contents; }
+.modal-icon.info { background: var(--info-soft); color: var(--info); }
+.q-count.ok .n { color: var(--ok); }
+.q-count.warn .n { color: var(--warn); }
+.q-count.err .n { color: var(--err); }
+.q-count.info .n { color: var(--info); }
+[data-theme="dark"] .theme-moon, :root:not([data-theme="dark"]) .theme-sun { display: none; }

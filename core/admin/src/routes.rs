@@ -1,29 +1,30 @@
 //! The control-plane portal routes. Each handler resolves a typed view model through the
-//! engine and renders it as an interim plain-text status listing.
+//! engine and renders it through the templates in `crate::render`.
 
 use std::collections::{BTreeMap, HashMap};
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Form, Router};
 use axum_extra::extract::CookieJar;
-use controlplane::{
-    ActionDecl, ActionPoint, ContributionDecl, EntityKindDecl, EntityRef, InvokeOutcome, Layout, PageDecl,
-    PanelRequest, Point,
-};
+use controlplane::{ActionDecl, ActionPoint, ContributionDecl, EntityRef, InvokeOutcome, Layout, Manifest, PanelRequest, Point};
 use serde::Serialize;
 
 use crate::engine::actions::{self, BuildError, Flash, Invoked, Refusal};
-use crate::engine::manifests::{NavItem, Snapshot};
+use crate::engine::manifests::Snapshot;
 use crate::engine::panels::{self, PanelView};
 use crate::engine::roles::{self, Operator};
-use crate::engine::search::{self, SearchGroup};
+use crate::engine::search;
 use crate::engine::Engine;
+use crate::render::{
+    self, ActionItem, ActionResultView, Crumb, DashboardView, EntityView, FlashView, MenuView, NavSectionView, NavView,
+    OperatorView, PageView, PanelInput, ScopeView, SearchGroupView, SearchHitView, SearchView, ShellView, SlotView,
+    TabView,
+};
 use crate::{see_other, AdminState};
 
 #[derive(Clone)]
@@ -46,121 +47,6 @@ pub(crate) fn router(portal: Portal) -> Router {
 }
 
 // ---------------------------------------------------------------------------
-// View models
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct OperatorView {
-    pub(crate) login: String,
-    pub(crate) role: &'static str,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct ShellView {
-    pub(crate) operator: OperatorView,
-    pub(crate) csrf: String,
-    pub(crate) sections: Vec<controlplane::NavSection>,
-    pub(crate) nav: Vec<NavItem>,
-    pub(crate) flash: Option<Flash>,
-}
-
-/// A panel the view loads from `url`; `denied` panels are never fetched.
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct SlotView {
-    pub(crate) module: String,
-    pub(crate) contribution: String,
-    pub(crate) title: String,
-    pub(crate) icon: String,
-    pub(crate) url: String,
-    pub(crate) denied: bool,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct ActionItem {
-    pub(crate) module: String,
-    pub(crate) id: String,
-    pub(crate) label: String,
-    pub(crate) icon: String,
-    pub(crate) danger: bool,
-    pub(crate) url: String,
-    pub(crate) enabled: bool,
-    pub(crate) hint: Option<&'static str>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct DashboardView {
-    pub(crate) shell: ShellView,
-    pub(crate) tiles: Vec<SlotView>,
-    pub(crate) attention: Vec<SlotView>,
-    pub(crate) panels: Vec<SlotView>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct PageView {
-    pub(crate) shell: ShellView,
-    pub(crate) module: String,
-    pub(crate) page: PageDecl,
-    pub(crate) head_actions: Vec<ActionItem>,
-    /// Layout columns in declaration order, each a list of panels.
-    pub(crate) columns: Vec<Vec<SlotView>>,
-    /// Layout ids naming no contribution of this module.
-    pub(crate) missing: Vec<String>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct TabView {
-    pub(crate) id: String,
-    pub(crate) label: String,
-    pub(crate) url: String,
-    pub(crate) counts: Vec<SlotView>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct EntityView {
-    pub(crate) shell: ShellView,
-    pub(crate) kind: EntityKindDecl,
-    pub(crate) entity: EntityRef,
-    pub(crate) headers: Vec<SlotView>,
-    pub(crate) summaries: Vec<SlotView>,
-    pub(crate) header_actions: Vec<ActionItem>,
-    pub(crate) tabs: Vec<TabView>,
-    pub(crate) selected_tab: Option<String>,
-    pub(crate) tab_panels: Vec<SlotView>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct MenuView {
-    pub(crate) entity: EntityRef,
-    pub(crate) actions: Vec<ActionItem>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct SearchView {
-    pub(crate) q: String,
-    pub(crate) kind: String,
-    pub(crate) groups: Vec<SearchGroup>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct ActionModalView {
-    pub(crate) module: String,
-    pub(crate) action: ActionDecl,
-    pub(crate) entity: Option<EntityRef>,
-    pub(crate) csrf: String,
-    pub(crate) post_url: String,
-}
-
-/// A non-redirect POST result: the 422 form errors, a 409, or the error toast.
-#[derive(Clone, Debug, Serialize)]
-pub(crate) struct ActionResultView {
-    pub(crate) module: String,
-    pub(crate) action: String,
-    pub(crate) field_errors: BTreeMap<String, String>,
-    pub(crate) current_revision: Option<u64>,
-    pub(crate) error: Option<String>,
-}
-
-// ---------------------------------------------------------------------------
 // Shared resolution
 // ---------------------------------------------------------------------------
 
@@ -175,24 +61,93 @@ async fn authorize(p: &Portal, jar: &CookieJar, is_post: bool) -> Result<Ctx, Re
     Ok(Ctx { csrf: authed.csrf, operator })
 }
 
-async fn shell(p: &Portal, ctx: &Ctx, snapshot: &Snapshot, query: &HashMap<String, String>) -> ShellView {
+fn nav_key(module: &str, id: &str) -> String {
+    format!("{module}/{id}")
+}
+
+fn panel_url(module: &str, contribution: &str) -> String {
+    format!("/admin/_panel/{}/{}", render::encode(module), render::encode(contribution))
+}
+
+fn nav_sections(snapshot: &Snapshot) -> Vec<NavSectionView> {
+    snapshot
+        .sections
+        .iter()
+        .map(|section| NavSectionView {
+            id: section.id.clone(),
+            label: section.label.clone(),
+            items: snapshot
+                .nav
+                .iter()
+                .filter(|n| n.section == section.id)
+                .map(|n| NavView {
+                    key: nav_key(&n.module, &n.id),
+                    label: n.label.clone(),
+                    icon: n.icon.clone(),
+                    href: render::page_url(&n.module, &n.page),
+                    module: n.module.clone(),
+                    down: !n.source_ok,
+                    counter_url: n.counter.as_ref().map(|c| panel_url(&n.module, c)),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// The breadcrumb of a nav entry's section, linked to the section's first entry.
+fn section_crumb(sections: &[NavSectionView], section: &str) -> Option<Crumb> {
+    let s = sections.iter().find(|s| s.id == section)?;
+    Some(Crumb { label: s.label.clone(), href: s.items.first().map(|n| n.href.clone()) })
+}
+
+async fn shell(
+    p: &Portal,
+    ctx: &Ctx,
+    snapshot: &Snapshot,
+    query: &HashMap<String, String>,
+    active: Option<String>,
+    crumbs: Vec<Crumb>,
+) -> ShellView {
     let flash = match query.get("reveal") {
         Some(token) => actions::take_flash(&p.st.pool, token).await,
         None => None,
     };
+    let mut scopes: Vec<ScopeView> = Vec::new();
+    for decl in snapshot.modules.values().flat_map(|r| r.manifest.search.iter()) {
+        if scopes.iter().all(|s| s.kind != decl.kind) {
+            scopes.push(ScopeView { kind: decl.kind.clone(), label: decl.label.clone(), icon: decl.icon.clone() });
+        }
+    }
     ShellView {
-        operator: OperatorView { login: ctx.operator.login.clone(), role: crate::role_name(ctx.operator.role) },
+        operator: OperatorView::new(&ctx.operator.login, crate::role_name(ctx.operator.role)),
         csrf: ctx.csrf.clone(),
-        sections: snapshot.sections.clone(),
-        nav: snapshot.nav.clone(),
-        flash,
+        sections: nav_sections(snapshot),
+        active,
+        crumbs,
+        scopes,
+        flash: flash.map(|f: Flash| FlashView { message: f.message, reveal: f.reveal.as_ref().map(render::reveal) }),
+        deployment: None,
+        health: None,
+        notifications: None,
     }
 }
 
-fn slot(operator: &Operator, module: &str, decl: &ContributionDecl, entity: Option<&EntityRef>) -> SlotView {
-    let mut url = format!("/admin/_panel/{}/{}", actions::encode(module), actions::encode(&decl.id));
+/// Whether `decl` is laid out in a `Tiles` page of `manifest`.
+fn in_tiles(manifest: &Manifest, decl: &ContributionDecl) -> bool {
+    let Point::Page(page) = &decl.point else {
+        return false;
+    };
+    manifest
+        .pages
+        .iter()
+        .filter(|pg| &pg.id == page)
+        .any(|pg| matches!(&pg.layout, Layout::Tiles(ids) if ids.contains(&decl.id)))
+}
+
+fn slot(operator: &Operator, module: &str, decl: &ContributionDecl, entity: Option<&EntityRef>, tiles: bool) -> SlotView {
+    let mut url = panel_url(module, &decl.id);
     if let Some(e) = entity {
-        url.push_str(&format!("?entity={}", actions::encode(&format!("{}:{}", e.kind, e.id))));
+        url.push_str(&format!("?entity={}", render::encode(&render::entity_param(e))));
     }
     SlotView {
         module: module.to_string(),
@@ -201,20 +156,29 @@ fn slot(operator: &Operator, module: &str, decl: &ContributionDecl, entity: Opti
         icon: decl.icon.clone(),
         url,
         denied: !roles::allows(operator, decl.min_role),
+        min_role: crate::role_name(decl.min_role),
+        mode: render::mode_of(&decl.point, tiles),
     }
 }
 
-fn action_item(operator: &Operator, module: &str, decl: &ActionDecl, entity: Option<&EntityRef>) -> ActionItem {
-    let mut url = format!("/admin/_action/{}/{}", actions::encode(module), actions::encode(&decl.id));
-    if let Some(e) = entity {
-        url.push_str(&format!("?entity={}", actions::encode(&format!("{}:{}", e.kind, e.id))));
-    }
+fn action_item(
+    operator: &Operator,
+    csrf: &str,
+    module: &str,
+    decl: &ActionDecl,
+    entity: Option<&EntityRef>,
+) -> ActionItem {
+    let url = format!("/admin/_action/{}/{}", render::encode(module), render::encode(&decl.id));
     let (enabled, hint) = match actions::admit(operator, decl) {
         Ok(()) => (true, None),
         Err(Refusal::Denied) => (false, Some("Not permitted for your role")),
         Err(Refusal::NotImplemented) => (false, Some("Not implemented yet")),
     };
-    ActionItem {
+    let mut vals = BTreeMap::new();
+    if !csrf.is_empty() {
+        vals.insert(actions::FIELD_CSRF.to_string(), csrf.to_string());
+    }
+    let item = ActionItem {
         module: module.to_string(),
         id: decl.id.clone(),
         label: decl.label.clone(),
@@ -223,6 +187,16 @@ fn action_item(operator: &Operator, module: &str, decl: &ActionDecl, entity: Opt
         url,
         enabled,
         hint,
+        then: render::then_name(&decl.then),
+        href: match &decl.then {
+            controlplane::Then::Link(link) => Some(actions::link_url(link)),
+            _ => None,
+        },
+        vals,
+    };
+    match entity {
+        Some(e) => render::for_entity(&item, e),
+        None => item,
     }
 }
 
@@ -243,7 +217,7 @@ fn contributions<'a>(
 
 fn action_items(
     snapshot: &Snapshot,
-    operator: &Operator,
+    ctx: &Ctx,
     entity: Option<&EntityRef>,
     want: impl Fn(&ActionPoint) -> bool,
 ) -> Vec<ActionItem> {
@@ -254,51 +228,45 @@ fn action_items(
         .filter(|(_, a)| want(&a.point))
         .collect();
     found.sort_by(|a, b| (a.1.order, a.0, &a.1.id).cmp(&(b.1.order, b.0, &b.1.id)));
-    found.into_iter().map(|(m, a)| action_item(operator, m, a, entity)).collect()
+    found.into_iter().map(|(m, a)| action_item(&ctx.operator, &ctx.csrf, m, a, entity)).collect()
 }
 
 // ---------------------------------------------------------------------------
-// Interim rendering (plain text; the view models are the stable surface)
+// Rendering
 // ---------------------------------------------------------------------------
 
-fn text(status: StatusCode, body: String) -> Response {
-    (status, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body).into_response()
-}
-
-fn render_shell(out: &mut String, title: &str, shell: &ShellView) {
-    let _ = writeln!(out, "{title}: working");
-    let _ = writeln!(out, "operator: {} ({})", shell.operator.login, shell.operator.role);
-    for item in &shell.nav {
-        let state = if item.source_ok { "ok" } else { "not working" };
-        let _ = writeln!(out, "nav {}/{}/{}: {state}", item.section, item.module, item.id);
-    }
-    if let Some(flash) = &shell.flash {
-        let _ = writeln!(out, "flash: {}", flash.message);
-        if let Some(reveal) = &flash.reveal {
-            let _ = writeln!(out, "reveal {}: {}", reveal.label, reveal.value);
+fn html(status: StatusCode, rendered: Result<String, minijinja::Error>) -> Response {
+    match rendered {
+        Ok(body) => (status, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], body).into_response(),
+        Err(e) => {
+            tracing::error!(err = %e, "admin render failed");
+            (StatusCode::INTERNAL_SERVER_ERROR, "render failed").into_response()
         }
     }
 }
 
-fn render_slots(out: &mut String, slots: &[SlotView]) {
-    for s in slots {
-        if s.denied {
-            let _ = writeln!(out, "{}/{}: denied", s.module, s.contribution);
-        } else {
-            let _ = writeln!(out, "{}/{}: deferred {}", s.module, s.contribution, s.url);
-        }
-    }
+fn screen<V: Serialize>(p: &Portal, name: &str, view: &V) -> Response {
+    let ctx = minijinja::context! { screen => name, v => minijinja::Value::from_serialize(view) };
+    html(StatusCode::OK, render::page(&p.st.env, "shell.html", &ctx))
 }
 
-fn render_actions(out: &mut String, items: &[ActionItem]) {
-    for a in items {
-        let state = a.hint.unwrap_or("enabled");
-        let _ = writeln!(out, "action {}/{}: {state}", a.module, a.id);
-    }
+fn toast(p: &Portal, status: StatusCode, text: String) -> Response {
+    let view = ActionResultView { modal: None, toast: Some(text) };
+    html(status, render::fragment(&p.st.env, "modal.html", "result", &view))
 }
 
-fn not_working(status: StatusCode, what: &str) -> Response {
-    text(status, format!("{what}: not working\n"))
+fn not_found(p: &Portal, what: &str) -> Response {
+    toast(p, StatusCode::NOT_FOUND, format!("{what}: not found"))
+}
+
+/// A redirect an htmx request follows itself (`HX-Redirect`), else a 303.
+fn redirect(headers: &HeaderMap, target: &str) -> Response {
+    if headers.contains_key("hx-request") {
+        let value = HeaderValue::from_str(target).unwrap_or_else(|_| HeaderValue::from_static("/admin"));
+        (StatusCode::OK, [("hx-redirect", value)]).into_response()
+    } else {
+        see_other(target)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -319,21 +287,17 @@ async fn dashboard(
     let pick = |point: Point| {
         contributions(&snapshot, |pt| *pt == point)
             .into_iter()
-            .map(|(m, c)| slot(&ctx.operator, m, c, None))
+            .map(|(m, c)| slot(&ctx.operator, m, c, None, false))
             .collect::<Vec<_>>()
     };
+    let crumbs = vec![Crumb { label: "Dashboard".to_string(), href: None }];
     let view = DashboardView {
-        shell: shell(&p, &ctx, &snapshot, &query).await,
+        shell: shell(&p, &ctx, &snapshot, &query, None, crumbs).await,
         tiles: pick(Point::DashboardTile),
         attention: pick(Point::DashboardAttention),
         panels: pick(Point::DashboardPanel),
     };
-    let mut out = String::new();
-    render_shell(&mut out, "dashboard", &view.shell);
-    render_slots(&mut out, &view.tiles);
-    render_slots(&mut out, &view.attention);
-    render_slots(&mut out, &view.panels);
-    text(StatusCode::OK, out)
+    screen(&p, "dashboard", &view)
 }
 
 /// `GET /admin/p/{module}/{page}`.
@@ -349,11 +313,12 @@ async fn page(
     };
     let snapshot = p.engine.snapshot();
     let Some((manifest, _)) = snapshot.route(&module) else {
-        return not_working(StatusCode::NOT_FOUND, &module);
+        return not_found(&p, &module);
     };
     let Some(decl) = manifest.pages.iter().find(|pg| pg.id == page_id) else {
-        return not_working(StatusCode::NOT_FOUND, &format!("{module}/{page_id}"));
+        return not_found(&p, &format!("{module}/{page_id}"));
     };
+    let tiles = matches!(decl.layout, Layout::Tiles(_));
     let ids: Vec<&Vec<String>> = match &decl.layout {
         Layout::Stack(a) | Layout::Tiles(a) => vec![a],
         Layout::Grid21(a, b) | Layout::Grid2(a, b) => vec![a, b],
@@ -369,7 +334,7 @@ async fn page(
                     if found.is_none() {
                         missing.push(id.clone());
                     }
-                    found.map(|c| slot(&ctx.operator, &module, c, None))
+                    found.map(|c| slot(&ctx.operator, &module, c, None, tiles))
                 })
                 .collect()
         })
@@ -378,26 +343,24 @@ async fn page(
         .head_actions
         .iter()
         .filter_map(|id| manifest.actions.iter().find(|a| &a.id == id))
-        .map(|a| action_item(&ctx.operator, &module, a, None))
+        .map(|a| action_item(&ctx.operator, &ctx.csrf, &module, a, None))
         .collect();
+    let entry = snapshot.nav.iter().find(|n| n.module == module && n.page == page_id);
+    let sections = nav_sections(&snapshot);
+    let mut crumbs: Vec<Crumb> = entry.and_then(|n| section_crumb(&sections, &n.section)).into_iter().collect();
+    crumbs.push(Crumb { label: decl.title.clone(), href: None });
+    let active = entry.map(|n| nav_key(&n.module, &n.id));
     let view = PageView {
-        shell: shell(&p, &ctx, &snapshot, &query).await,
+        shell: shell(&p, &ctx, &snapshot, &query, active, crumbs).await,
         module: module.clone(),
-        page: decl.clone(),
+        title: decl.title.clone(),
+        subtitle: decl.subtitle.clone(),
+        layout: render::layout_name(&decl.layout),
         head_actions,
         columns,
         missing,
     };
-    let mut out = String::new();
-    render_shell(&mut out, &format!("{}/{}", view.module, view.page.id), &view.shell);
-    render_actions(&mut out, &view.head_actions);
-    for column in &view.columns {
-        render_slots(&mut out, column);
-    }
-    for id in &view.missing {
-        let _ = writeln!(out, "{}/{id}: not working (no such contribution)", view.module);
-    }
-    text(StatusCode::OK, out)
+    screen(&p, "page", &view)
 }
 
 /// `GET /admin/e/{kind}/{id}?tab=`.
@@ -412,31 +375,29 @@ async fn entity(
         Err(r) => return r,
     };
     let snapshot = p.engine.snapshot();
-    let Some(kind_decl) = snapshot
+    let Some((owner, kind_decl)) = snapshot
         .modules
-        .values()
-        .flat_map(|r| r.manifest.entity_kinds.iter())
-        .find(|k| k.kind == kind)
-        .cloned()
+        .iter()
+        .find_map(|(m, r)| r.manifest.entity_kinds.iter().find(|k| k.kind == kind).map(|k| (m.clone(), k.clone())))
     else {
-        return not_working(StatusCode::NOT_FOUND, &format!("{kind}:{id}"));
+        return not_found(&p, &format!("{kind}:{id}"));
     };
     let entity = EntityRef { kind: kind.clone(), id: id.clone() };
     let op = &ctx.operator;
     let headers = contributions(&snapshot, |pt| matches!(pt, Point::EntityHeader(k) if *k == kind))
         .into_iter()
-        .map(|(m, c)| slot(op, m, c, Some(&entity)))
+        .map(|(m, c)| slot(op, m, c, Some(&entity), false))
         .collect();
     let summaries = contributions(&snapshot, |pt| matches!(pt, Point::EntitySummary(k) if *k == kind))
         .into_iter()
-        .map(|(m, c)| slot(op, m, c, Some(&entity)))
+        .map(|(m, c)| slot(op, m, c, Some(&entity), false))
         .collect();
     let tab_decls = contributions(&snapshot, |pt| matches!(pt, Point::EntityTab { kind: k, .. } if *k == kind));
     let mut tabs: Vec<TabView> = Vec::new();
     for (_, c) in &tab_decls {
         if let Point::EntityTab { tab, tab_label, .. } = &c.point {
             if tabs.iter().all(|t| &t.id != tab) {
-                let url = format!("{}?tab={}", actions::entity_url(&entity), actions::encode(tab));
+                let url = format!("{}?tab={}", actions::entity_url(&entity), render::encode(tab));
                 tabs.push(TabView { id: tab.clone(), label: tab_label.clone(), url, counts: Vec::new() });
             }
         }
@@ -444,7 +405,7 @@ async fn entity(
     for (m, c) in contributions(&snapshot, |pt| matches!(pt, Point::EntityTabCount { kind: k, .. } if *k == kind)) {
         if let Point::EntityTabCount { tab, .. } = &c.point {
             if let Some(t) = tabs.iter_mut().find(|t| &t.id == tab) {
-                t.counts.push(slot(op, m, c, Some(&entity)));
+                t.counts.push(slot(op, m, c, Some(&entity), false));
             }
         }
     }
@@ -456,14 +417,30 @@ async fn entity(
     let tab_panels = tab_decls
         .iter()
         .filter(|(_, c)| matches!(&c.point, Point::EntityTab { tab, .. } if Some(tab) == selected_tab.as_ref()))
-        .map(|(m, c)| slot(op, m, c, Some(&entity)))
+        .map(|(m, c)| slot(op, m, c, Some(&entity), false))
         .collect();
     let header_actions =
-        action_items(&snapshot, op, Some(&entity), |pt| matches!(pt, ActionPoint::HeaderAction(k) if *k == kind));
+        action_items(&snapshot, &ctx, Some(&entity), |pt| matches!(pt, ActionPoint::HeaderAction(k) if *k == kind));
+    let has_menu = snapshot
+        .modules
+        .values()
+        .flat_map(|r| r.manifest.actions.iter())
+        .any(|a| matches!(&a.point, ActionPoint::RowAction(k) if *k == kind));
+    let entry = snapshot.nav.iter().find(|n| n.module == owner);
+    let sections = nav_sections(&snapshot);
+    let mut crumbs: Vec<Crumb> = entry.and_then(|n| section_crumb(&sections, &n.section)).into_iter().collect();
+    if let Some(n) = entry {
+        crumbs.push(Crumb { label: n.label.clone(), href: Some(render::page_url(&n.module, &n.page)) });
+    }
+    crumbs.push(Crumb { label: id.clone(), href: None });
+    let active = entry.map(|n| nav_key(&n.module, &n.id));
     let view = EntityView {
-        shell: shell(&p, &ctx, &snapshot, &query).await,
-        kind: kind_decl,
-        entity,
+        shell: shell(&p, &ctx, &snapshot, &query, active, crumbs).await,
+        kind_label: kind_decl.label.clone(),
+        avatar_color: render::avatar_color(&id),
+        avatar_initials: render::initials(&id),
+        menu_url: has_menu.then(|| format!("/admin/_menu/{}/{}", render::encode(&kind), render::encode(&id))),
+        entity_id: id,
         headers,
         summaries,
         header_actions,
@@ -471,17 +448,7 @@ async fn entity(
         selected_tab,
         tab_panels,
     };
-    let mut out = String::new();
-    render_shell(&mut out, &format!("{}:{}", view.entity.kind, view.entity.id), &view.shell);
-    render_slots(&mut out, &view.headers);
-    render_slots(&mut out, &view.summaries);
-    render_actions(&mut out, &view.header_actions);
-    for tab in &view.tabs {
-        let _ = writeln!(out, "tab {}: {}", tab.id, tab.url);
-        render_slots(&mut out, &tab.counts);
-    }
-    render_slots(&mut out, &view.tab_panels);
-    text(StatusCode::OK, out)
+    screen(&p, "entity", &view)
 }
 
 /// `GET /admin/_panel/{module}/{contribution}?entity=kind:id&...` — one panel; every
@@ -497,30 +464,59 @@ async fn panel(
         Err(r) => return r,
     };
     let snapshot = p.engine.snapshot();
-    let Some(decl) = snapshot
+    let Some((manifest, decl)) = snapshot
         .route(&module)
-        .and_then(|(m, _)| m.contributions.iter().find(|c| c.id == contribution))
-        .cloned()
+        .and_then(|(m, _)| m.contributions.iter().find(|c| c.id == contribution).map(|c| (m, c)))
     else {
-        return not_working(StatusCode::NOT_FOUND, &format!("{module}/{contribution}"));
+        return not_found(&p, &format!("{module}/{contribution}"));
     };
-    let entity = match query.remove("entity") {
+    let raw_entity = query.remove("entity");
+    let entity = match &raw_entity {
         None => None,
-        Some(raw) => match actions::parse_entity(&raw) {
+        Some(raw) => match actions::parse_entity(raw) {
             Some(e) => Some(e),
-            None => return text(StatusCode::BAD_REQUEST, "entity must be kind:id\n".to_string()),
+            None => return toast(&p, StatusCode::BAD_REQUEST, "entity must be kind:id".to_string()),
         },
     };
-    let req = PanelRequest { module: module.clone(), contribution, entity, params: query };
-    let view: PanelView = panels::resolve(&p.engine, &snapshot, &ctx.operator, &module, &decl, req).await;
-    let mut out = format!("{}/{}: {}\n", view.module, view.contribution, view.state.as_str());
-    if let Some(error) = &view.error {
-        let _ = writeln!(out, "error: {error}");
-    }
-    text(StatusCode::OK, out)
+    let mut url_query: Vec<(String, String)> = raw_entity.into_iter().map(|e| ("entity".to_string(), e)).collect();
+    url_query.extend(query.iter().map(|(k, v)| (k.clone(), v.clone())));
+    let req = PanelRequest { module: module.clone(), contribution: contribution.clone(), entity: entity.clone(), params: query };
+    let view: PanelView = panels::resolve(&p.engine, &snapshot, &ctx.operator, &module, decl, req).await;
+    let queue_actions: Vec<ActionItem> =
+        manifest.actions.iter().map(|a| action_item(&ctx.operator, &ctx.csrf, &module, a, None)).collect();
+    let row_menu_kinds: Vec<String> = snapshot
+        .modules
+        .values()
+        .flat_map(|r| r.manifest.actions.iter())
+        .filter_map(|a| match &a.point {
+            ActionPoint::RowAction(kind) => Some(kind.clone()),
+            _ => None,
+        })
+        .collect();
+    let path = panel_url(&module, &contribution);
+    let fallback = entity.as_ref().map(|e| e.id.clone()).unwrap_or_default();
+    let input = PanelInput {
+        module: &view.module,
+        contribution: &view.contribution,
+        title: &view.title,
+        icon: &decl.icon,
+        mode: render::mode_of(&decl.point, in_tiles(manifest, decl)),
+        state: view.state.as_str(),
+        path: &path,
+        query: &url_query,
+        error: view.error.as_deref(),
+        age_s: view.age_s,
+        min_role: crate::role_name(decl.min_role),
+        fallback_title: &fallback,
+        primitive: view.primitive.as_ref(),
+        actions: &queue_actions,
+        row_menu_kinds: &row_menu_kinds,
+    };
+    let rendered = render::panel(&input);
+    html(StatusCode::OK, render::fragment(&p.st.env, "primitives.html", "panel_fragment", &rendered))
 }
 
-/// `GET /admin/_menu/{kind}/{id}` — the row actions for one entity.
+/// `GET /admin/_menu/{kind}/{id}` — the row actions for one entity, grouped by module.
 async fn menu(State(p): State<Portal>, jar: CookieJar, Path((kind, id)): Path<(String, String)>) -> Response {
     let ctx = match authorize(&p, &jar, false).await {
         Ok(c) => c,
@@ -528,15 +524,10 @@ async fn menu(State(p): State<Portal>, jar: CookieJar, Path((kind, id)): Path<(S
     };
     let snapshot = p.engine.snapshot();
     let entity = EntityRef { kind: kind.clone(), id };
-    let view = MenuView {
-        actions: action_items(&snapshot, &ctx.operator, Some(&entity), |pt| {
-            matches!(pt, ActionPoint::RowAction(k) if *k == kind)
-        }),
-        entity,
-    };
-    let mut out = format!("menu {}:{}: working\n", view.entity.kind, view.entity.id);
-    render_actions(&mut out, &view.actions);
-    text(StatusCode::OK, out)
+    let items =
+        action_items(&snapshot, &ctx, Some(&entity), |pt| matches!(pt, ActionPoint::RowAction(k) if *k == kind));
+    let view = MenuView { entity, groups: render::menu_groups(items) };
+    html(StatusCode::OK, render::fragment(&p.st.env, "primitives.html", "menu", &view))
 }
 
 /// `GET /admin/_search?q=&kind=`.
@@ -551,32 +542,46 @@ async fn search_route(
     let q = query.get("q").cloned().unwrap_or_default();
     let kind = query.get("kind").cloned().unwrap_or_default();
     if q.len() > search::MAX_QUERY_BYTES {
-        return text(StatusCode::BAD_REQUEST, format!("q exceeds {} bytes\n", search::MAX_QUERY_BYTES));
+        return toast(&p, StatusCode::BAD_REQUEST, format!("q exceeds {} bytes", search::MAX_QUERY_BYTES));
     }
     let snapshot = p.engine.snapshot();
-    let groups = search::run(&snapshot, &q, &kind).await;
-    let view = SearchView { q, kind, groups };
-    let mut out = String::from("search: working\n");
-    for g in &view.groups {
-        match &g.error {
-            None => {
-                let _ = writeln!(out, "{}/{}: ok {} hits", g.module, g.kind, g.hits.len());
-            }
-            Some(e) => {
-                let _ = writeln!(out, "{}/{}: error {e}", g.module, g.kind);
-            }
-        }
-        for hit in &g.hits {
-            let _ = writeln!(out, "  {}:{} {}", hit.target.kind, hit.target.id, hit.title);
-        }
-    }
-    text(StatusCode::OK, out)
+    let groups = search::run(&snapshot, &q, &kind)
+        .await
+        .into_iter()
+        .map(|g| SearchGroupView {
+            module: g.module,
+            label: g.label,
+            icon: g.icon,
+            hits: g
+                .hits
+                .iter()
+                .map(|h| SearchHitView {
+                    hl: false,
+                    title: h.title.clone(),
+                    subtitle: h.subtitle.clone(),
+                    badge: h.badge.clone(),
+                    href: actions::entity_url(&h.target),
+                })
+                .collect(),
+            error: g.error,
+        })
+        .collect();
+    let view = SearchView::new(q, kind, groups);
+    html(StatusCode::OK, render::fragment(&p.st.env, "primitives.html", "search", &view))
 }
 
-/// `GET /admin/_action/{module}/{action}?entity=kind:id` — the modal's view model.
+fn refusal_text(refusal: Refusal) -> &'static str {
+    match refusal {
+        Refusal::Denied => "Not permitted for your role",
+        Refusal::NotImplemented => "Not implemented yet",
+    }
+}
+
+/// `GET /admin/_action/{module}/{action}?entity=kind:id` — the action's modal.
 async fn action_modal(
     State(p): State<Portal>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path((module, action)): Path<(String, String)>,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
@@ -586,30 +591,24 @@ async fn action_modal(
     };
     let snapshot = p.engine.snapshot();
     let Some(found) = actions::find(&snapshot, &module, &action) else {
-        return not_working(StatusCode::NOT_FOUND, &format!("{module}/{action}"));
+        return not_found(&p, &format!("{module}/{action}"));
     };
-    match actions::admit(&ctx.operator, found.decl) {
-        Ok(()) => {}
-        Err(Refusal::Denied) => return text(StatusCode::FORBIDDEN, format!("{module}/{action}: denied\n")),
-        Err(Refusal::NotImplemented) => {
-            return text(StatusCode::FORBIDDEN, format!("{module}/{action}: Not implemented yet\n"))
-        }
+    if let Err(refusal) = actions::admit(&ctx.operator, found.decl) {
+        return toast(&p, StatusCode::FORBIDDEN, refusal_text(refusal).to_string());
+    }
+    if let controlplane::Then::Link(link) = &found.decl.then {
+        return redirect(&headers, &actions::link_url(link));
     }
     let entity = match query.get("entity") {
         None => None,
         Some(raw) => match actions::parse_entity(raw) {
             Some(e) => Some(e),
-            None => return text(StatusCode::BAD_REQUEST, "entity must be kind:id\n".to_string()),
+            None => return toast(&p, StatusCode::BAD_REQUEST, "entity must be kind:id".to_string()),
         },
     };
-    let view = ActionModalView {
-        post_url: format!("/admin/_action/{}/{}", actions::encode(&module), actions::encode(&action)),
-        module,
-        action: found.decl.clone(),
-        entity,
-        csrf: ctx.csrf,
-    };
-    text(StatusCode::OK, format!("{}/{}: working\n", view.module, view.action.id))
+    let post_url = format!("/admin/_action/{}/{}", render::encode(&module), render::encode(&action));
+    let view = render::modal(found.decl, post_url, ctx.csrf, entity.as_ref(), &BTreeMap::new(), &BTreeMap::new());
+    html(StatusCode::OK, render::fragment(&p.st.env, "modal.html", "modal", &view))
 }
 
 /// `POST /admin/_action/{module}/{action}`: CSRF → role → `implemented` → invoke →
@@ -617,6 +616,7 @@ async fn action_modal(
 async fn action_submit(
     State(p): State<Portal>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path((module, action)): Path<(String, String)>,
     Form(body): Form<HashMap<String, String>>,
 ) -> Response {
@@ -633,93 +633,75 @@ async fn action_submit(
     };
     let snapshot = p.engine.snapshot();
     let Some(found) = actions::find(&snapshot, &module, &action) else {
-        return not_working(StatusCode::NOT_FOUND, &format!("{module}/{action}"));
+        return not_found(&p, &format!("{module}/{action}"));
     };
-    match actions::admit(&operator, found.decl) {
-        Ok(()) => {}
-        Err(Refusal::Denied) => return text(StatusCode::FORBIDDEN, format!("{module}/{action}: denied\n")),
-        Err(Refusal::NotImplemented) => {
-            return text(StatusCode::FORBIDDEN, format!("{module}/{action}: Not implemented yet\n"))
-        }
+    if let Err(refusal) = actions::admit(&operator, found.decl) {
+        return toast(&p, StatusCode::FORBIDDEN, refusal_text(refusal).to_string());
     }
     if matches!(found.decl.then, controlplane::Then::Link(_)) {
-        return text(StatusCode::BAD_REQUEST, format!("{module}/{action}: a link action has no invoke\n"));
+        return toast(&p, StatusCode::BAD_REQUEST, format!("{module}/{action}: a link action has no invoke"));
     }
-    let mut result = ActionResultView {
-        module: module.clone(),
-        action: action.clone(),
-        field_errors: BTreeMap::new(),
-        current_revision: None,
-        error: None,
+    let posted: BTreeMap<String, String> = body.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let post_url = format!("/admin/_action/{}/{}", render::encode(&module), render::encode(&action));
+    let reshow = |entity: Option<&EntityRef>, errors: &BTreeMap<String, String>, banner: Option<String>| {
+        let mut modal = render::modal(found.decl, post_url.clone(), authed.csrf.clone(), entity, &posted, errors);
+        if banner.is_some() {
+            modal.banner = banner;
+        }
+        ActionResultView { modal: Some(modal), toast: None }
     };
     let req = match actions::build_request(&module, found.decl, &operator, &body) {
         Ok(req) => req,
-        Err(BuildError::Malformed(msg)) => return text(StatusCode::BAD_REQUEST, format!("{msg}\n")),
+        Err(BuildError::Malformed(msg)) => return toast(&p, StatusCode::BAD_REQUEST, msg),
         Err(BuildError::Fields(errors)) => {
-            result.field_errors = errors;
-            return render_result(StatusCode::UNPROCESSABLE_ENTITY, &result);
+            let entity = body.get(actions::FIELD_ENTITY).and_then(|raw| actions::parse_entity(raw));
+            return render_result(&p, StatusCode::UNPROCESSABLE_ENTITY, &reshow(entity.as_ref(), &errors, None));
         }
     };
     let invoked = actions::invoke(found.face.as_ref(), req.clone()).await;
     if let Err(e) = actions::record(&p.st, &operator, &req, &invoked).await {
         if matches!(invoked, Invoked::Outcome(InvokeOutcome::Ok { .. })) {
             tracing::error!(err = %e, module = %module, action = %action, "admin.action append failed");
-            result.error = Some("action applied but audit append failed".to_string());
-            return render_result(StatusCode::INTERNAL_SERVER_ERROR, &result);
+            return toast(&p, StatusCode::INTERNAL_SERVER_ERROR, "action applied but audit append failed".to_string());
         }
         // A 500 would mask the outcome the operator must act on; only an applied action escalates.
         tracing::warn!(err = %e, module = %module, action = %action, "admin.action append failed");
     }
     let status = actions::http_status(&invoked);
     match invoked {
-        Invoked::Outcome(InvokeOutcome::Ok { message, reveal, redirect }) => {
-            let target = actions::ok_target(redirect.as_ref(), &body, req.entity.as_ref());
+        Invoked::Outcome(InvokeOutcome::Ok { message, reveal, redirect: link }) => {
+            let target = actions::ok_target(link.as_ref(), &body, req.entity.as_ref());
             if message.is_empty() && reveal.is_none() {
-                return see_other(&target);
+                return redirect(&headers, &target);
             }
             match actions::stash_flash(&p.st.pool, &Flash { message, reveal }).await {
-                Ok(token) => see_other(&actions::with_flash(&target, &token)),
+                Ok(token) => redirect(&headers, &actions::with_flash(&target, &token)),
                 // The provider already applied the action; the show-once value is lost
                 // rather than ever served twice.
                 Err(err) => {
                     tracing::error!(%err, "admin flash: stash failed; redirecting without it");
-                    see_other(&target)
+                    redirect(&headers, &target)
                 }
             }
         }
         Invoked::Outcome(InvokeOutcome::FieldErrors(errors)) => {
-            result.field_errors = errors;
-            render_result(status, &result)
+            render_result(&p, status, &reshow(req.entity.as_ref(), &errors, None))
         }
         Invoked::Outcome(InvokeOutcome::Conflict { current_revision }) => {
-            result.current_revision = Some(current_revision);
-            render_result(status, &result)
+            let banner = format!(
+                "This changed since you opened it (now revision {current_revision}). Reload the page and try again."
+            );
+            render_result(&p, status, &reshow(req.entity.as_ref(), &BTreeMap::new(), Some(banner)))
         }
-        Invoked::Failed(error) => {
-            result.error = Some(error.to_string());
-            render_result(status, &result)
-        }
-        Invoked::TimedOut => {
-            result.error = Some(format!(
-                "no answer within {}ms; the outcome is unknown",
-                actions::INVOKE_DEADLINE.as_millis()
-            ));
-            render_result(status, &result)
-        }
+        Invoked::Failed(error) => toast(&p, status, error.to_string()),
+        Invoked::TimedOut => toast(
+            &p,
+            status,
+            format!("no answer within {}ms; the outcome is unknown", actions::INVOKE_DEADLINE.as_millis()),
+        ),
     }
 }
 
-fn render_result(status: StatusCode, view: &ActionResultView) -> Response {
-    let state = if status == StatusCode::UNPROCESSABLE_ENTITY { "field errors" } else { "not working" };
-    let mut out = format!("{}/{}: {state}\n", view.module, view.action);
-    for (field, msg) in &view.field_errors {
-        let _ = writeln!(out, "field {field}: {msg}");
-    }
-    if let Some(rev) = view.current_revision {
-        let _ = writeln!(out, "conflict: current revision {rev}");
-    }
-    if let Some(error) = &view.error {
-        let _ = writeln!(out, "error: {error}");
-    }
-    text(status, out)
+fn render_result(p: &Portal, status: StatusCode, view: &ActionResultView) -> Response {
+    html(status, render::fragment(&p.st.env, "modal.html", "result", view))
 }

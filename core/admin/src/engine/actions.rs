@@ -14,6 +14,7 @@ use sqlx::PgPool;
 
 use super::manifests::Snapshot;
 use super::roles::{self, Operator};
+pub(crate) use crate::render::{encode, entity_url, link_url};
 use crate::AdminState;
 
 /// Bound on one invoke round trip; the edge has no response deadline of its own
@@ -256,38 +257,6 @@ pub(crate) async fn take_flash(pool: &PgPool, token: &str) -> Option<Flash> {
         Err(err) => {
             tracing::error!(%err, "admin flash: redemption query failed");
             None
-        }
-    }
-}
-
-/// Percent-encodes everything outside RFC 3986's unreserved set.
-pub(crate) fn encode(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for b in raw.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
-pub(crate) fn entity_url(entity: &EntityRef) -> String {
-    format!("/admin/e/{}/{}", encode(&entity.kind), encode(&entity.id))
-}
-
-pub(crate) fn link_url(link: &Link) -> String {
-    match link {
-        Link::Entity(entity) => entity_url(entity),
-        Link::Page { module, page, params } => {
-            let mut url = format!("/admin/p/{}/{}", encode(module), encode(page));
-            let query: Vec<String> = params.iter().map(|(k, v)| format!("{}={}", encode(k), encode(v))).collect();
-            if !query.is_empty() {
-                url.push('?');
-                url.push_str(&query.join("&"));
-            }
-            url
         }
     }
 }

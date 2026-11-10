@@ -1,0 +1,76 @@
+{#- The portal shell (UILayout/redesign/assets/registry.js:134-226) and the generic
+    dashboard, page and entity hosts. -#}
+{%- import "primitives.html" as ui -%}
+{%- import "modal.html" as md -%}
+{%- set shell = v.shell -%}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ shell.crumbs[-1].label if shell.crumbs else "Swarog Admin" }} · Swarog Admin</title>
+<meta name="htmx-config" content='{"responseHandling":[{"code":"204","swap":false},{"code":"[23]..","swap":true},{"code":"[45]..","swap":true,"error":true}]}'>
+<link rel="stylesheet" href="/admin/assets/tokens.css">
+<link rel="stylesheet" href="/admin/assets/bundle.css">
+<link rel="stylesheet" href="/admin/assets/portal.css">
+<script src="/admin/assets/admin.js"></script>
+<script src="/admin/assets/htmx.min.js" defer></script>
+</head>
+<body>
+<div class="app">
+<aside class="sidebar"><div class="brand"><div class="brand-mark">S</div><div><div class="brand-name">Swarog Admin</div><div class="brand-sub">{{ shell.deployment or "—" }}</div></div></div>
+<nav class="nav">
+{%- for s in shell.sections if s.items -%}
+<div class="nav-section"><div class="nav-title">{{ s.label }}</div>
+{%- for n in s.items %}<a class="nav-item{% if n.key == shell.active %} active{% endif %}{% if n.down %} down{% endif %}" href="{{ n.href }}" title="{% if n.down %}{{ n.module }} module unavailable{% endif %}">{{ ui.icon(n.icon) }}<span>{{ n.label }}</span>{% if n.counter_url and not n.down %}<span class="slot" hx-get="{{ n.counter_url }}" hx-trigger="load" hx-swap="outerHTML"></span>{% endif %}</a>{% endfor -%}
+</div>
+{%- endfor -%}
+</nav>
+<div class="sidebar-foot"><div class="me"><span class="avatar" style="background:{{ shell.operator.color }}">{{ shell.operator.initials }}</span><div class="grow"><div style="font-weight:500">{{ shell.operator.login }}</div><div class="muted" style="font-size:11.5px">{{ shell.operator.role }} · admin.users</div></div>{% if shell.csrf %}<form method="post" action="/admin/logout"><input type="hidden" name="_csrf" value="{{ shell.csrf }}"><button type="submit" class="btn sm ghost">Sign out</button></form>{% endif %}</div></div>
+</aside>
+<header class="topbar">
+<button type="button" class="top-btn menu-toggle" data-action="nav-toggle" aria-label="Menu">{{ ui.icon("menu") }}</button>
+<div class="crumbs">{% for c in shell.crumbs %}{% if loop.last %}<span class="cur">{{ c.label }}</span>{% elif c.href %}<a href="{{ c.href }}">{{ c.label }}</a><span class="sep">/</span>{% else %}<span>{{ c.label }}</span><span class="sep">/</span>{% endif %}{% endfor %}</div>
+<button type="button" class="search-trigger" data-action="palette">{{ ui.icon("search") }}<span class="grow" style="text-align:left">Search users, repositories, keys…</span><span class="kbd">Ctrl K</span></button>
+<button type="button" class="top-btn" id="health-btn" data-popover="health" title="System health"><span class="health-pill">{% if shell.health %}<span class="dot {{ 'err' if shell.health.unhealthy else 'ok' }}"></span><span class="hide-tablet">{{ shell.health.healthy }}/{{ shell.health.total }} healthy</span>{% else %}<span class="dot muted"></span><span class="hide-tablet">—</span>{% endif %}</span></button>
+<button type="button" class="top-btn" id="notif-btn" data-popover="notif" aria-label="Notifications">{{ ui.icon("bell") }}{% if shell.notifications %}<span class="pip"></span>{% endif %}</button>
+<button type="button" class="top-btn" data-action="theme" aria-label="Toggle theme">{{ ui.icon("sun", "theme-sun") }}{{ ui.icon("moon", "theme-moon") }}</button>
+</header>
+<main class="main"><div class="page">
+{%- if screen == "dashboard" -%}
+<div class="page-head"><div><h1>Dashboard</h1>{% if shell.deployment %}<div class="sub">{{ shell.deployment }}</div>{% endif %}</div><div class="page-actions"></div></div>
+{%- if v.tiles %}<div class="grid g-tiles" style="margin-bottom:12px">{% for s in v.tiles %}{{ ui.slot(s) }}{% endfor %}</div>{% endif -%}
+{%- if v.attention %}<div class="grid g-21" style="margin-bottom:12px"><section class="panel"><div class="panel-head"><span class="panel-title">Needs attention</span></div><div class="panel-body flush">{% for s in v.attention %}{{ ui.slot(s) }}{% endfor %}</div></section><div class="stack">{% for s in v.panels %}{{ ui.slot(s) }}{% endfor %}</div></div>
+{%- elif v.panels %}<div class="stack">{% for s in v.panels %}{{ ui.slot(s) }}{% endfor %}</div>{% endif -%}
+{%- if not v.tiles and not v.attention and not v.panels %}<section class="panel"><div class="panel-body">{{ ui.state_block("empty", "Nothing here yet", "No module contributes to the dashboard yet.") }}</div></section>{% endif -%}
+{%- elif screen == "page" -%}
+<div class="page-head"><div><h1>{{ v.title }}</h1>{% if v.subtitle %}<div class="sub">{{ v.subtitle }}</div>{% endif %}</div><div class="page-actions">{% for a in v.head_actions %}{{ ui.action_button(a, "primary" if a.icon == "plus" and not a.danger else "") }}{% endfor %}</div></div>
+{%- if v.layout == "stack" %}<div class="stack">{% for col in v.columns %}{% for s in col %}{{ ui.slot(s) }}{% endfor %}{% endfor %}</div>
+{%- elif v.layout == "tiles" %}<div class="grid g-tiles">{% for col in v.columns %}{% for s in col %}{{ ui.slot(s) }}{% endfor %}{% endfor %}</div>
+{%- else %}<div class="grid {{ v.layout }}">{% for col in v.columns %}<div class="stack">{% for s in col %}{{ ui.slot(s) }}{% endfor %}</div>{% endfor %}</div>
+{%- endif -%}
+{%- for id in v.missing %}<section class="panel" style="margin-top:12px"><div class="panel-body">{{ ui.state_block("error", "No contribution " ~ id, v.module ~ " lays out a contribution it does not declare.", compact=true) }}</div></section>{% endfor -%}
+{%- elif screen == "entity" -%}
+<section class="panel" style="margin-bottom:12px"><div class="entity-head"><span class="avatar lg" id="entity-avatar" style="background:{{ v.avatar_color }}">{{ v.avatar_initials }}</span><div class="grow">
+{%- if v.headers %}<div class="slot"{{ ui.fetch_attrs(v.headers[0]) }}><div class="row"><h1>{{ v.entity_id }}</h1></div></div>{% else %}<div class="row"><h1>{{ v.entity_id }}</h1><span class="muted">{{ v.kind_label }}</span></div>{% endif -%}
+<div class="entity-facts">{% for s in v.summaries %}{{ ui.slot(s) }}{% endfor %}</div></div>
+<div class="page-actions">{% for a in v.header_actions %}{{ ui.action_button(a) }}{% endfor %}{% if v.menu_url %}<button type="button" class="btn icon" aria-label="More actions" data-menu-url="{{ v.menu_url }}">{{ ui.icon("more") }}</button>{% endif %}</div></div>
+{%- if v.tabs %}<div class="tabs">{% for t in v.tabs %}<button type="button" class="tab{% if t.id == v.selected_tab %} on{% endif %}" data-href="{{ t.url }}">{{ t.label }}{% for c in t.counts %}{{ ui.slot(c) }}{% endfor %}</button>{% endfor %}</div>{% endif -%}
+</section>
+<div class="stack">{% for s in v.tab_panels %}{{ ui.slot(s) }}{% endfor %}</div>
+{%- endif -%}
+</div></main>
+</div>
+<div class="popover" data-popover-panel="health" hidden><div class="popover-head">{{ ui.icon("activity") }} System health<span class="grow"></span><a href="/admin#health" style="font-weight:500;font-size:12px">All services</a></div><div class="pop-list">
+{%- if shell.health %}{{ ui.services({"items": shell.health.unhealthy}, false) }}<div class="pop-row"><span class="dot ok" style="margin-top:4px"></span><div><div class="t">{{ shell.health.healthy }} services healthy</div><div class="d">{{ shell.health.note }}</div></div></div>
+{%- else %}<div class="state compact"><div class="state-title">No health source</div><div class="state-detail">No service reports its health to the portal yet.</div></div>{% endif -%}
+</div></div>
+<div class="popover" data-popover-panel="notif" hidden><div class="popover-head">{{ ui.icon("bell") }} Notifications<span class="grow"></span>{% if shell.notifications %}<button type="button" class="btn sm ghost">Mark all read</button>{% endif %}</div><div class="pop-list">
+{%- for n in shell.notifications or [] %}<div class="pop-row"><span class="dot {{ n.tone }}" style="margin-top:5px"></span><div class="grow"><div class="t">{{ n.title }}</div><div class="d">{{ n.text }}</div></div><span class="muted" style="font-size:11.5px">{{ n.when }}</span></div>{% endfor -%}
+{%- if not shell.notifications %}<div class="state compact"><div class="state-title">No notifications</div></div>{% endif -%}
+</div></div>
+<div class="scrim" data-palette hidden><div class="palette" role="dialog" aria-label="Search"><div class="palette-in">{{ ui.icon("search") }}<input placeholder="Search users, repositories, API keys…" autocomplete="off" data-palette-input><span class="kbd">Esc</span></div><div class="palette-scopes"><span class="filter-chip" data-scope="" style="background:var(--selected);color:var(--accent-fg)">All</span>{% for p in shell.scopes %}<span class="filter-chip" data-scope="{{ p.kind }}">{{ ui.icon(p.icon) }} {{ p.kind }}</span>{% endfor %}</div><div class="palette-list" data-palette-list></div><div class="palette-foot"><span><span class="kbd">↑↓</span> navigate</span><span><span class="kbd">↵</span> open</span><span><span class="kbd">Tab</span> scope</span><span class="grow"></span><span>{{ shell.scopes|length }} search providers</span></div></div></div>
+<div id="modal-root">{% if shell.flash and shell.flash.reveal %}{{ md.reveal(shell.flash) }}{% endif %}</div>
+{%- if shell.flash and shell.flash.message and not shell.flash.reveal %}{{ ui.toast(shell.flash.message) }}{% endif %}
+</body>
+</html>

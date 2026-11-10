@@ -16,6 +16,7 @@ pub(crate) struct SearchGroup {
     pub(crate) module: String,
     pub(crate) kind: String,
     pub(crate) label: String,
+    pub(crate) icon: String,
     pub(crate) hits: Vec<SearchHit>,
     pub(crate) error: Option<String>,
 }
@@ -56,7 +57,7 @@ pub(crate) async fn run(snapshot: &Snapshot, q: &str, kind: &str) -> Vec<SearchG
                     Ok(Err(e)) => (Vec::new(), Some(e.to_string())),
                     Err(_) => (Vec::new(), Some(format!("deadline of {}ms elapsed", bound.as_millis()))),
                 };
-                SearchGroup { module, kind: decl.kind, label: decl.label, hits, error }
+                SearchGroup { module, kind: decl.kind, label: decl.label, icon: decl.icon, hits, error }
             });
         }
     }
