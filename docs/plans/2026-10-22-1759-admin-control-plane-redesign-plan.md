@@ -32,10 +32,13 @@ the whole admin becomes part of core and there is no admin module.
 - "Mockup przenosisz 1:1… jak część informacji nie może być wyświetlona, używasz mockowanych
   danych i je oznaczasz" — no artistic freedom. Missing actions render disabled with a hint.
   Lore fragments on in-scope screens render as marked fakes.
-- Owner choices on the revision-1 review (2026-11-10): raze the old contract first; one
-  registration mechanism (in revision 2, modules make **no** rpc call at all: core
-  registers the edge face, see Step 4); every screen-port step is split into a
-  `core-implementer` part (backend) and a `mockup-implementer` part (view).
+- Owner choices on the revision-1 review (2026-11-10): raze the old contract first; every
+  screen-port step is split into a `core-implementer` part (backend) and a
+  `mockup-implementer` part (view).
+- Registration: the owner picked "modules call `controlplanerpc` directly" while the portal
+  was still a module. Under revision 2, "carrying a split process's registrations… is core's
+  job", so modules make **no** rpc call and `app::run` registers the edge face (Step 4).
+  This substitution needs the owner's one-line confirmation before Step 2 dispatches.
 
 ### Rules derived from the owner's shape (apply to every UI step)
 
@@ -158,7 +161,9 @@ the whole admin becomes part of core and there is no admin module.
   - `remote_factory(peer: &'static str) -> remote::RemoteFactory`, which contributes
     `Source { peer, face: Arc::new(Client::new(caller)) }` to `SOURCE_SLOT`.
 
-  Its deps are `controlplane`, `opsapi`, `edge`, `remote`, `lifecycle` and `rpc-macro`.
+  Its deps are `controlplane`, `opsapi`, `edge`, `remote`, `lifecycle`, `registry`
+  (generated `provide_remote`, `tools/rpc-macro/src/lib.rs:481`), `rpc-macro`,
+  `async-trait` and `serde_json`.
 - **`core/admin`** (package `admin`): the portal, moved from `modules/admin`. It is a
   `lifecycle::Module` (the `core/metrics` precedent) and owns schema `admin`, the
   routes, sessions, auth, engine, templates, `portal` and `core.events` providers, and
@@ -202,10 +207,11 @@ pub const SOURCE_SLOT: contrib::Slot<Source> = contrib::Slot::new("controlplane.
 
 - `LocalFace::new(providers)` panics on a duplicate `Manifest.module` (startup, before I/O).
   An unknown `req.module` → `opsapi::Status::NotFound`.
-- `app::run` registers `LocalFace` over `ctx.contributions(PROVIDER_SLOT)` on the process's
-  edge server whenever an edge server exists and the slot is non-empty (Step 4). Every
-  domain svc therefore serves `cp.*` for its own module. The monolith and admin-svc have no
-  edge server and serve nothing.
+- `app::run` registers `LocalFace` over `ctx.contributions(PROVIDER_SLOT)` on every
+  edge-serving process, **unconditionally**, even when the slot is empty (Step 4). This
+  follows the `__describe` precedent (`core/app/src/lib.rs:626-629`): every peer answers
+  `cp.manifests` uniformly, and an empty `Vec` means "no providers", never an error. The
+  monolith and admin-svc have no edge server and serve nothing.
 - The portal reads `PROVIDER_SLOT` (local providers, wrapped in one `LocalFace` with
   `peer = "local"`) plus `SOURCE_SLOT` (admin-svc's remote peer faces). It routes by
   `Manifest.module` → source. In the monolith, `SOURCE_SLOT` is empty and everything is local.
@@ -330,7 +336,9 @@ Primitive = DataTable(DataTable) | PropertyList(PropertyList) | KpiTile(KpiTile)
 ```
 
 - No HTML crosses the wire. Every string is rendered escaped. Numbers in KPI and Cell
-  values arrive preformatted by the module.
+  values arrive preformatted by the module. `f64` fields (`series`, `capacity`, `values`)
+  must be finite: `serde_json` writes NaN as `null`, which then fails to decode.
+  `LocalFace` replaces non-finite values with `0.0` before returning.
 - `SecretReveal` implements `Debug` with the value redacted.
 - `PermissionMatrix` is not built (Lore screens only).
 
@@ -379,10 +387,20 @@ Primitive = DataTable(DataTable) | PropertyList(PropertyList) | KpiTile(KpiTile)
 
 ## Steps
 
-**Intermediate gate (Steps 1–23).**
+**Intermediate gate (Steps 1–24).**
 - Run `cargo check -p <touched crates> --all-targets` (tests compile too), after the
   `safe-verification` pre-flight (no live cargo or rustc, no fleet).
-- `verifyctl` runs once, in Step 27, after the tests are rewritten (Step 25).
+- The full `verifyctl` manifest runs once, in Step 27, after the tests are rewritten
+  (Step 25).
+- The bless invocations are allowed where a step names them, one at a time:
+  - `cargo run -p verifyctl -- --bless-public-api`
+  - `cargo run -p verifyctl -- --bless-contract-golden`
+  - `cargo run -p verifyctl -- --bless-input-golden`
+
+  After each bless, `git diff --stat` the baseline directory and restore every file the
+  step did not cause.
+- The admincheck stub (Steps 1–6) is an empty gate. Nothing runs it before Step 27, and
+  Step 7 replaces it.
 - **Red by design from Step 1 until Step 25:**
   - splitproof's admin groups;
   - every non-admin group driven through the admin wallet grant: PH3, PH6, PH11, NT4, NT4m
@@ -407,10 +425,23 @@ Primitive = DataTable(DataTable) | PropertyList(PropertyList) | KpiTile(KpiTile)
     `modules/audit/src/lib.rs:230-270, 408-430`;
   - delete the probes that import `crate::admin` (`modules/mail/src/conformance.rs:9-12`
     and `modules/groups/src/conformance.rs:16`) and their CapCase rows
-    (`tools/conformance/src/policy.rs:576-582` and `:876-882`). Steps 13b and 18b restore
-    them.
+    (`tools/conformance/src/policy.rs:576-582` and `:876-882`). Steps 11a and 18a restore
+    them;
+  - delete every `EDGE_SLOT` contribution that becomes empty: mail `lib.rs:268-277`, audit
+    (~`:425-432`) and scheduler (~`:782-791`). A closure that still registers a non-admin
+    method keeps only those lines;
+  - delete the chains that become orphans: scheduler's admin-only `Service`, its `svc` cell
+    and construction (`:551-615`, ~`:715`), and the admin id consts (scheduler ~`:125`,
+    audit ~`:102`). Check audit's `self.svc()` use at `:375` first: if the `Service` there
+    serves anything besides admin, keep it.
 - **rpc and api crates:**
   - `api/<m>/rpc/src/lib.rs`: remove the `adminrpc` re-exports;
+  - `api/mail/rpc`, `api/audit/rpc` and `api/scheduler/rpc` contain only that re-export.
+    Delete those three crates, their workspace members and `[workspace.dependencies]`
+    entries (`Cargo.toml:347, 349, 376` and the members list), and their deps
+    (`modules/mail/Cargo.toml:41`, `modules/audit/Cargo.toml:20`,
+    `modules/scheduler/Cargo.toml:21`, and every `cmd/*` and `tools/*` Cargo.toml naming
+    them);
   - drop `adminapi`/`adminrpc` from `modules/<m>/Cargo.toml`, `api/<m>/rpc/Cargo.toml`,
     `api/accounts/api/Cargo.toml:22` and `api/characters/api/Cargo.toml:22`;
   - delete `PLAYERS_ROW_MENU` (`api/accounts/api/src/lib.rs:282`), `CHARACTERS_CARD_MENU`
@@ -418,21 +449,35 @@ Primitive = DataTable(DataTable) | PropertyList(PropertyList) | KpiTile(KpiTile)
 - **Tests:** delete the tests that exercise deleted admin code, including those inside mixed
   test files (e.g. `modules/groups/src/service_tests.rs:12, 402, 527` and the `adminapi`
   uses in `modules/config/src/tests.rs`). This is deletion only; replacements come in Step 25.
-- **`modules/admin/src/lib.rs`:** delete the old engine (`resolve_items`,
-  `collect_extensions`, `build_menu`, `page_view`, the slug routes `/admin` and
-  `/admin/:slug`) and its tests in `modules/admin/src/tests.rs`. Login, session, CSRF,
-  lockout, rate limit and reveals stay. Drop the `adminapi` dependency.
+- **`modules/admin/src/lib.rs`:** delete everything typed on `adminapi`, with its tests in
+  `modules/admin/src/tests.rs`:
+  - the engine: `resolve_items`, `collect_extensions`, `build_menu`, `page_view`,
+    `build_page_view`, `render_modal`, and the `PageView`/`CardView` types
+    (`:1822-1916`, `:2053-2111`);
+  - the submit chain: `item_post`, `collect_submit_params`, `emit_form_submit`,
+    `render_after_submit` (`:1210-1433`);
+  - the reveal stash: `stash_outcome`/`take_outcome` (`:801-857`);
+  - the slug routes `/admin` and `/admin/:slug`.
+
+  Login, logout, session, CSRF, lockout, rate limit, `REVEAL_DDL` and
+  `prune_expired_reveals` stay. Drop the `adminapi` dependency. Until Step 6, `GET /admin`
+  returns 404 and a successful login still redirects there.
 - **`cmd/admin-svc/src/lib.rs`:** remove the 13 `admin_stub` entries and the `adminrpc`
   dependency. `modules()` = `[metrics, admin]`.
-- **Delete** `api/admin/api` and `api/admin/rpc`. `api/admin/events` stays until Step 2.
-- **`tools/admincheck/src/main.rs`:** reduced to a `main` that exits 0 (rewritten in Step 7).
+- **Delete** `api/admin/api` and `api/admin/rpc`, together with their root `Cargo.toml`
+  members (`:122-123`) and `[workspace.dependencies]` entries (`:344-345`).
+  `api/admin/events` stays until Step 2.
+- **`tools/admincheck/src/main.rs`:** reduced to a `main` that exits 0 (rewritten in
+  Step 7). Drop its `adminapi` dependency (`tools/admincheck/Cargo.toml:30`).
 - **Tool entries:**
   - `tools/archcheck/src/main.rs:60-68` (drop `api/admin/api/src/lib.rs`; the array
     becomes `[&str; 6]`) and the stale fixture `tools/archcheck/src/tests.rs:1176-1187`;
   - `tools/topiccheck/src/golden.rs:133-144` and `tools/topiccheck/Cargo.toml:53`;
   - `tools/opscatalog-gen/src/main.rs:71-72` and `Cargo.toml:18`;
   - `tools/conformance/src/{checks.rs:100-150 (ADMIN_SUBMIT_MODULES), policy.rs:82-86,
-    main.rs:92-123, tests.rs:227-238}`.
+    main.rs:92-123, tests.rs:146-202, 227-238, 255+}` (every `ADMIN_SUBMIT_MODULES` test);
+  - stale comments `policy.rs:836-842, 1165-1172` (they name `admin::apply_submit` and
+    `admin.adminSubmit`).
 - **Baselines:**
   - delete `docs/reference/public-api-baseline/adminapi.txt`;
   - re-bless `accountsapi` and `charactersapi`;
@@ -457,10 +502,13 @@ Primitive = DataTable(DataTable) | PropertyList(PropertyList) | KpiTile(KpiTile)
 The `admin.action` move:
 - move `api/admin/events/src/lib.rs` (descriptor, `AdminAction`, `golden_samples`) into
   `core/controlplane/src/events.rs` (`pub mod events`), then delete `api/admin/events`;
-- consumers: `modules/admin` (emit sites `lib.rs:604,724,757,1041,1367`),
-  `modules/audit/src/lib.rs:56,79`, `modules/audit/src/tests.rs:115`, `modules/audit/Cargo.toml:43`;
+- consumers:
+  - `modules/admin`: the `Cargo.toml` swap from `adminevents` to `controlplane`, and the
+    emit sites that survive Step 1 (`lib.rs:604, 724, 757, 1041`);
+  - `modules/audit/src/lib.rs:56,79`, `modules/audit/src/tests.rs:115`, `modules/audit/Cargo.toml:43`;
 - topiccheck: `tools/topiccheck/src/main.rs:202`, `golden.rs:292` and `Cargo.toml:39`. The
-  events drift test `tests.rs:377-402` is extended to scan `core/controlplane/src`;
+  events drift test `tests.rs:377-402` and the Option-None self-check `golden.rs:367-395`
+  are extended to scan `core/controlplane/src`;
 - `tools/splitproof/src/main.rs:318-335` keeps its SQL. The topic name is unchanged.
 
 Gates that must see core:
@@ -482,14 +530,16 @@ Gates that must see core:
   | `cp.search` | `req.module`, `req.kind`, `req.q` |
   | `cp.invoke` | `req.module`, `req.action`, `req.entity.kind`, `req.entity.id`, `req.input.<key>`, `req.input.<value>`, `req.reason`, `req.operator` |
 
-  Each row's `basis` states only what is true at Step 2: "no provider serves cp yet". If
-  the scanner's real key spelling differs, the implementer uses the scanner's output and
-  reports it.
+  Each row's `rationale` states the invariant, not a stage: "cp.* is wire-only and served
+  only to the portal; each writer's caps are proven by its own `CONTROL_PLANE_WRITERS`
+  CapCase". If the scanner's real key spelling differs, the implementer uses the scanner's
+  output and reports it.
 - conformance `CONTROL_PLANE_WRITERS` tripwire in `tools/conformance/src/main.rs`, beside
   `admin_submit_impl_modules` (`:92-123`). It scans **all non-test sources** under
-  `modules/<m>/src` and `core/admin/src` for a manifest with `writes: true`. Each writer
-  must have an `InputByteCaps` CapCase for `cp.invoke`. The list starts empty, and writer
-  steps add themselves.
+  `modules/<m>/src` and `core/admin/src` (each directory skipped when absent) for a
+  manifest with `writes: true`. The entry name is `<m>` for `modules/<m>`, and `admin` for
+  `core/admin`. Each writer must have an `InputByteCaps` CapCase for `cp.invoke` in that
+  entry. The list starts empty, and writer steps add themselves.
 - `tools/verifyctl/src/stages/public_api.rs:201-209`: `discover` also yields `core/controlplane`.
 
 (b) Why now: everything compiles against these types. The gates must see `cp.*` before any
@@ -513,6 +563,8 @@ provider exists.
 - new `core/asyncevents/src/admin.rs` (`pub mod admin`): `info`, `snapshot`, `retry`,
   `pause`, `resume`, `retire`, `skip` and `bump_generation`, moved from
   `tools/eventctl/src/lib.rs:79-330` with SQL and doc comments unchanged;
+- the types and helpers they use move with them (`SubInfo`, `StateSnapshot`, `SkipOutcome`,
+  `tools/eventctl/src/lib.rs:1-78`). `dsn()` stays in eventctl (CLI env parsing);
 - new `poison_event(pool, id) -> Result<Option<PoisonEvent>>`, where
   `PoisonEvent { event_id: i64, topic: String, version: i32, payload: serde_json::Value,
   appended_at: String }`, using the `skip` predicate `:265-275` without the update. The
@@ -539,12 +591,20 @@ to `retry`, `tools/eventctl/src/lib.rs:171-173`), and the CLI does not change.
 (b) Why now: after Step 2's types, and before any provider exists, so the first provider
 (Step 12a) is reachable in the split the moment it contributes.
 
-(c) How: in the edge block at `:909-932`, after `apply_edge_registrations` and before
-`register_process_describe`, if `ctx.contributions(controlplane::PROVIDER_SLOT)` is
-non-empty, call `controlplanerpc::register_face(&mut server, providers)`. The face's
-methods then appear in `__describe` and routecheck's SERVE-PARITY union. A process with no
-edge server does nothing. The edge-less list at `tools/routecheck/src/main.rs:222-233` stays
-`server` / `admin-svc`, and its comment drops the `admin.adminData` example.
+(c) How: in the edge block at `:909-932`, after `apply_edge_registrations` and beside
+`register_process_describe`, call
+`controlplanerpc::register_face(&mut server, ctx.contributions(controlplane::PROVIDER_SLOT))`
+unconditionally, with a doc comment naming the `__describe` precedent. A process with no
+edge server does nothing.
+
+No static gate sees `cp.*` served:
+- `__describe` carries only the `DESCRIBE_SLOT` concat (`:632-637`), and wire-only ops are
+  excluded from it by design (`tools/rpc-macro/src/lib.rs:322`);
+- routecheck models only `EDGE_SLOT` (`tools/routecheck/src/main.rs:233-238`).
+
+The proof is the Step 25 `core/app` test plus splitproof. The edge-less list at
+`tools/routecheck/src/main.rs:222-233` stays `server` / `admin-svc`, and its comment drops
+the `admin.adminData` example.
 
 (d) `[opus]` core-implementer (lifecycle ordering).
 
@@ -552,10 +612,18 @@ edge server does nothing. The edge-less list at `tools/routecheck/src/main.rs:22
 
 (a) Move the crate:
 - `git mv modules/admin core/admin`;
-- workspace `Cargo.toml` (`:398` members path);
-- `core/admin/Cargo.toml` drops `adminevents` (now `controlplane::events`) and adds
-  `controlplane` and `asyncevents`. Its comment at `modules/admin/Cargo.toml:53-55` goes,
-  because rule 10 does not apply to core.
+- workspace `Cargo.toml` (`:398` members path and the `admin` workspace dependency path);
+- `core/admin/Cargo.toml` moves `asyncevents` from dev-dependencies to dependencies and
+  deletes its comment at `modules/admin/Cargo.toml:53-55`, because rule 10 does not apply
+  to core.
+
+Conformance must keep covering the moved crate. Its drift preflight requires entries to
+match `modules/*` on disk, and every monolith module except `CORE_INFRA_MODULES` to have
+an entry (`tools/conformance/src/checks.rs:18, 60-78`; run at `main.rs:378-393`,
+`tests.rs:664-677`).
+- Add `CORE_HOSTED_MODULES: &[&str] = &["admin"]` beside `CORE_INFRA_MODULES`. These
+  modules are exempt from the on-disk check but still require an entry.
+- The `admin()` entry (`policy.rs:303-332`: login caps, argon parity, probes) stays.
 
 Roles:
 - DDL `admin.users.role text NOT NULL CHECK (role IN ('admin','operator','viewer'))` in the
@@ -600,7 +668,7 @@ makes the pilot provable in the split (Step 12c).
 
 (c) How: implements **Portal**:
 - sources: local `LocalFace` plus `SOURCE_SLOT`, routed by module;
-- the manifest cache task;
+- the manifest cache task (an empty `cp.manifests` reply is "no providers", not a failure);
 - section merge and fallback;
 - panel states;
 - the invoke mapping;
@@ -661,9 +729,11 @@ state picker.
 - `core.events` (`pages-platform.js:130-157`): real pause / `resume_retry` / retry / skip
   via `asyncevents::admin` over `ctx.db()`; rewind is `implemented: false`; FAKE per the
   data-sources table.
-- Writers: `core.events` has `writes: true`. Add the `core/admin` entry to
-  `CONTROL_PLANE_WRITERS`, its probe `core/admin/src/conformance.rs` (`cp.invoke` input caps
-  for `core.events`), and the `policy.rs` CapCase rows.
+- Writers: `core.events` has `writes: true`. Add `admin` to `CONTROL_PLANE_WRITERS`, and
+  add its probe in `core/admin/src/conformance.rs` (`cp.invoke` input caps for
+  `core.events`) with the CapCase rows in the `admin()` entry of `policy.rs`. The
+  `cp.invoke` `req.input.<value>` policy row becomes Validated with the byte cap, as the
+  old `admin.adminSubmit` row (`policy.rs:86` before Step 1) was.
 
 (d) `[opus]` core-implementer.
 
@@ -700,10 +770,14 @@ The ports:
   - Disabled: pause sending, retry-now, park, cancel parked.
   - Writer: restores the mail probe deleted in Step 1.
 - **Step 12 — pilot gate in the split (c).** No files.
+  - Wipe schema `admin` first (`DROP SCHEMA admin CASCADE` via `psql`, per the wipe rule),
+    because `CREATE TABLE IF NOT EXISTS` does not add the Step 5 `role` column to an
+    existing table. `devctl up` then migrates it fresh and seeds `admin/admin`.
   - Run the `safe-verification` pre-flight, then `devctl up split`, then log in.
   - Fetch the mail page, each of its panel fragments and the row menu.
   - Make one real invoke (cancel a pending test message), then stop the fleet.
-  - Findings go back to Steps 4, 6, 8 and 11 before any further port.
+  - On any failure: stop, diagnose, and report to the owner with options. No fix loop
+    inside this step (live-acceptance rule).
   - `[inline]` orchestration.
 - **Step 13 — accounts.**
   - Users & players list (`pages-core.js:72-112`); kind `player` with `Point::EntityHeader`.
@@ -749,8 +823,8 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KP
 - `core/controlplane-rpc/src/tests.rs`:
   - round trip of all four methods over a loopback edge;
   - `invoke` is not replayed after a connection-fatal error.
-- `core/app` test: an edge process with one contributed provider serves `cp.manifests`.
-  With an empty slot it serves no `cp.*` method.
+- `core/app` test: an edge process with one contributed provider serves `cp.manifests`
+  with that manifest. With an empty slot it answers `cp.manifests` with an empty `Vec`.
 - `core/asyncevents/src/admin_tests.rs`:
   - `resume_retry` resets failures and activates;
   - `poison_event` returns the first event past the cursor;
@@ -831,7 +905,12 @@ Splitproof:
   them to `admin-done.md` with this plan's slug;
 - dead-crate prose: `api/wallet/api/Cargo.toml:18-22`, `api/notifications/api/Cargo.toml:16-18`,
   `api/party/rpc/Cargo.toml:17`, `api/groups/events/src/lib.rs:40`, `core/opsapi/src/lib.rs:433`,
-  `core/remote/src/lib.rs:1649-1650`, `Cargo.toml:58`;
+  `core/remote/src/lib.rs:1649-1650`, `Cargo.toml:58`, the admin prose in
+  `cmd/{scheduler,audit,wallet,notifications}-svc` (Cargo.toml and lib.rs),
+  `modules/apikeys/src/{store.rs,conformance.rs}` and `tools/opscatalog/src/lib.rs:20`;
+- the hook path `.claude/hooks/ref_reminder.py:29` and its test `.claude/hooks/tests/test_hooks.py:693`
+  (`modules/admin/templates/` → `core/admin/src/templates/`). Without this the
+  mockup-skill reminder never fires on `core/admin`;
 - errata in `docs/research/2026-10-22-1707-admin-redesign-gap-analysis.md` (D1, and §8
   superseded by revision 2);
 - memory: `memory/admin-extension-points-shipped.md`, `memory/generic-remote-admin-write-seam.md`
