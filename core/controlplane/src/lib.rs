@@ -244,6 +244,15 @@ pub struct PanelQuery {
     pub module: String,
     pub contribution: String,
     pub entity: Option<EntityRef>,
+    /// A data table's search text.
+    pub search: Option<String>,
+    /// A data table's next-page cursor, from `PageInfo::next_cursor`.
+    pub cursor: Option<String>,
+    /// The timeline position older entries are read from, from `Timeline::cursor_before`.
+    pub before: Option<String>,
+    /// The selected work-queue state, a `QueueState::key`.
+    pub queue_state: Option<String>,
+    /// Module-specific keys only.
     pub params: BTreeMap<String, String>,
 }
 
@@ -273,6 +282,12 @@ pub struct InvokeCall {
     pub reason: Option<String>,
     /// The operator's login, carried only as an audit label.
     pub operator: String,
+    /// The bound element: a `PropertyList::item` or a `QueueItem::id`. Unverified: the
+    /// module checks it against its own data.
+    pub item: Option<String>,
+    /// The module's de-duplication key: equal for a repeat of one logical submit, new for
+    /// a deliberate repeat.
+    pub request_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +295,8 @@ pub enum InvokeOutcome {
     Ok { message: String, reveal: Option<SecretReveal>, redirect: Option<Link> },
     FieldErrors(BTreeMap<String, String>),
     Conflict { current_revision: u64 },
+    /// The request was valid but there was nothing to do.
+    NoOp { message: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +398,8 @@ pub struct ActionDecl {
     pub min_role: Role,
     pub then: Then,
     pub implemented: bool,
+    /// Renders as the page's primary button; at most one per `PageDecl::head_actions`.
+    pub primary: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -388,7 +407,12 @@ pub enum ActionPoint {
     RowAction(String),
     HeaderAction(String),
     PageHead(String),
+    /// A contribution id of the same module: the action renders in that panel's tools,
+    /// bound to its `PropertyList::item` or to each `QueueItem` listing it.
     PanelTool(String),
+    /// A contribution id of the same module: the action is the Save of that
+    /// contribution's `Primitive::Form` and renders nowhere else. It is `Then::Invoke`.
+    PanelForm(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,6 +456,139 @@ pub enum FieldKind {
     Ref(String),
     Money(Vec<String>),
     Duration,
+}
+
+/// A decoded field value; [`decode_field`] and [`encode_field`] are the one codec between
+/// a field's raw string (as carried in `InvokeCall::input` and `Field::default`) and it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum FieldValue {
+    Text(String),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Multi(Vec<String>),
+    Money { amount: String, currency: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldError {
+    pub reason: String,
+}
+
+impl FieldError {
+    fn new(reason: impl Into<String>) -> FieldError {
+        FieldError { reason: reason.into() }
+    }
+}
+
+/// Decodes `raw` as a value of `kind`. Multi is a JSON array of distinct members; Money is a
+/// JSON object `{"amount": "<decimal>", "currency": "<member>"}`.
+pub fn decode_field(kind: &FieldKind, raw: &str) -> Result<FieldValue, FieldError> {
+    match kind {
+        FieldKind::String | FieldKind::Text => Ok(FieldValue::Text(raw.to_string())),
+        FieldKind::Ref(_) if raw.is_empty() => Err(FieldError::new("must not be empty")),
+        FieldKind::Ref(_) => Ok(FieldValue::Text(raw.to_string())),
+        FieldKind::Int => raw.parse().map(FieldValue::Int).map_err(|_| FieldError::new("must be an integer")),
+        FieldKind::Float => match raw.parse::<f64>() {
+            Ok(v) if v.is_finite() => Ok(FieldValue::Float(v)),
+            _ => Err(FieldError::new("must be a finite number")),
+        },
+        FieldKind::Bool => match raw {
+            "true" => Ok(FieldValue::Bool(true)),
+            "false" => Ok(FieldValue::Bool(false)),
+            _ => Err(FieldError::new("must be true or false")),
+        },
+        FieldKind::Enum(options) if options.iter().any(|o| o == raw) => Ok(FieldValue::Text(raw.to_string())),
+        FieldKind::Enum(_) => Err(FieldError::new("is not one of the options")),
+        FieldKind::Multi(options) => {
+            let picked: Vec<String> =
+                serde_json::from_str(raw).map_err(|_| FieldError::new("must be a JSON array of strings"))?;
+            for (i, value) in picked.iter().enumerate() {
+                if !options.contains(value) {
+                    return Err(FieldError::new(format!("{value:?} is not one of the options")));
+                }
+                if picked[..i].contains(value) {
+                    return Err(FieldError::new(format!("{value:?} is picked twice")));
+                }
+            }
+            Ok(FieldValue::Multi(picked))
+        }
+        FieldKind::Json => serde_json::from_str::<serde::de::IgnoredAny>(raw)
+            .map(|_| FieldValue::Text(raw.to_string()))
+            .map_err(|_| FieldError::new("must be valid JSON")),
+        FieldKind::Duration => {
+            let digits = raw.strip_suffix(['s', 'm', 'h', 'd']).unwrap_or("");
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                Ok(FieldValue::Text(raw.to_string()))
+            } else {
+                Err(FieldError::new("must be digits followed by s, m, h or d"))
+            }
+        }
+        FieldKind::Money(currencies) => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Raw {
+                amount: String,
+                currency: String,
+            }
+            let Raw { amount, currency } = serde_json::from_str(raw)
+                .map_err(|_| FieldError::new("must be a JSON object with amount and currency"))?;
+            if !is_decimal(&amount) {
+                return Err(FieldError::new("amount must be a decimal number"));
+            }
+            if !currencies.contains(&currency) {
+                return Err(FieldError::new(format!("currency {currency:?} is not one of the options")));
+            }
+            Ok(FieldValue::Money { amount, currency })
+        }
+    }
+}
+
+/// The raw string of `value`; `decode_field(kind, &encode_field(kind, v)) == Ok(v)` for every
+/// `v` that `decode_field` can return for `kind`.
+pub fn encode_field(_kind: &FieldKind, value: &FieldValue) -> String {
+    match value {
+        FieldValue::Text(text) => text.clone(),
+        FieldValue::Int(v) => v.to_string(),
+        FieldValue::Float(v) => v.to_string(),
+        FieldValue::Bool(v) => v.to_string(),
+        FieldValue::Multi(picked) => serde_json::to_string(picked).unwrap_or_default(),
+        FieldValue::Money { amount, currency } => {
+            serde_json::json!({ "amount": amount, "currency": currency }).to_string()
+        }
+    }
+}
+
+/// `-?[0-9]+(\.[0-9]+)?`
+fn is_decimal(raw: &str) -> bool {
+    let unsigned = raw.strip_prefix('-').unwrap_or(raw);
+    let (whole, fraction) = match unsigned.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (unsigned, None),
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    digits(whole) && fraction.is_none_or(digits)
+}
+
+/// Every reason `spec` cannot be served as a form: a field key that contains `__`, starts
+/// with `_` or equals a `hidden` key, or a `default` that does not decode.
+pub fn form_spec_errors(spec: &FormSpec) -> Vec<String> {
+    let mut errors = Vec::new();
+    for field in &spec.fields {
+        let key = &field.key;
+        if key.contains("__") || key.starts_with('_') {
+            errors.push(format!("field key {key:?} contains `__` or starts with `_`"));
+        }
+        if spec.hidden.contains_key(key) {
+            errors.push(format!("field key {key:?} is also a hidden key"));
+        }
+        if let Some(default) = &field.default {
+            if let Err(e) = decode_field(&field.kind, default) {
+                errors.push(format!("field {key:?} default does not decode: {}", e.reason));
+            }
+        }
+    }
+    errors
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -567,6 +724,8 @@ pub struct DataTable {
 pub struct PropertyList {
     pub items: Vec<(String, Cell)>,
     pub columns: u8,
+    /// The element the panel's `PanelTool` actions act on.
+    pub item: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

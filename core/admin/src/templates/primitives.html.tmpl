@@ -221,9 +221,12 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 <div class="form">{% for f in fv.fields %}{{ field(f, disabled) }}{% endfor %}</div>
 {%- endmacro %}
 
-{#- A Form primitive inside a panel; the contract names no submit target for it. -#}
+{#- A Form primitive inside a panel; with a form instance it posts to its PanelForm action
+    and the answer replaces the panel. -#}
 {%- macro panel_form(fv, disabled=false) -%}
+{%- if fv.form_id %}<form hx-post="{{ fv.post_url }}" hx-target="closest .slot" hx-swap="outerHTML">{% if fv.csrf %}<input type="hidden" name="_csrf" value="{{ fv.csrf }}">{% endif %}<input type="hidden" name="_form" value="{{ fv.form_id }}">{% endif -%}
 <div class="form">{% for f in fv.fields %}{{ field(f, disabled) }}{% endfor %}<div class="form-actions">{% if fv.note %}<span class="muted" style="margin-right:auto;font-size:12px;align-self:center">{{ fv.note }}</span>{% endif %}<button type="button" class="btn" disabled>Cancel</button><button type="button" class="btn primary" disabled title="No submit action declared">{{ fv.submit_label or "Save" }}</button></div></div>
+{%- if fv.form_id %}</form>{% endif -%}
 {%- endmacro %}
 
 {%- macro queue_counts(q) -%}

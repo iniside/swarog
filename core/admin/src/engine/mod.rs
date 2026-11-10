@@ -2,6 +2,7 @@
 //! search and roles. Routes (`crate::routes`) render what it resolves.
 
 pub(crate) mod actions;
+pub(crate) mod forms;
 pub(crate) mod manifests;
 pub(crate) mod panels;
 pub(crate) mod roles;

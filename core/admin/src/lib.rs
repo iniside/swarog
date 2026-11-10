@@ -202,6 +202,27 @@ CREATE TABLE IF NOT EXISTS admin.reveals (
 );
 CREATE INDEX IF NOT EXISTS admin_reveals_created_idx ON admin.reveals(created_at);"#;
 
+/// Form instances and click claims (`engine::forms`): one row per rendered form or per
+/// operator button, claimed by the submit that invokes it.
+const FORMS_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS admin.forms (
+	id           text PRIMARY KEY,
+	login        text NOT NULL,
+	module       text NOT NULL,
+	action       text NOT NULL,
+	contribution text,
+	entity_kind  text,
+	entity_id    text,
+	item         text,
+	spec         jsonb NOT NULL,
+	generation   bigint NOT NULL DEFAULT 0,
+	incarnation  text NOT NULL,
+	claimed_at   timestamptz,
+	consumed_at  timestamptz,
+	expires_at   timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at);"#;
+
 // ---------------------------------------------------------------------------
 // Module
 // ---------------------------------------------------------------------------
@@ -329,6 +350,7 @@ impl Module for Admin {
         sqlx::raw_sql(USERS_DDL).execute(pool).await?;
         sqlx::raw_sql(AUTH_DDL).execute(pool).await?;
         sqlx::raw_sql(REVEAL_DDL).execute(pool).await?;
+        sqlx::raw_sql(FORMS_DDL).execute(pool).await?;
         Ok(())
     }
 
@@ -555,11 +577,11 @@ impl AdminState {
 
     /// CSRF check for mutating posts: `_csrf` in the form body must equal the
     /// session's token (constant-time). Skipped entirely under `ADMIN_OPEN=1`.
-    fn check_csrf(&self, authed: &Authed, body: &HashMap<String, String>) -> Option<Response> {
+    fn check_csrf(&self, authed: &Authed, body: &[(String, String)]) -> Option<Response> {
         if self.open {
             return None;
         }
-        let sent = body.get("_csrf").map(String::as_str).unwrap_or("");
+        let sent = engine::actions::first(body, engine::actions::FIELD_CSRF).unwrap_or("");
         if ct_eq(sent.as_bytes(), authed.csrf.as_bytes()) {
             None
         } else {
@@ -938,7 +960,7 @@ fn too_many_logins() -> Response {
 async fn logout(
     State(st): State<Arc<AdminState>>,
     jar: CookieJar,
-    Form(body): Form<HashMap<String, String>>,
+    Form(body): Form<Vec<(String, String)>>,
 ) -> Response {
     let authed = match st.gate(&jar, true).await {
         Ok(a) => a,

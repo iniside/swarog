@@ -1,4 +1,4 @@
-{#- Action modals (ConfirmAction, Form, direct invoke), the POST results and the show-once
+{#- Action modals (ConfirmAction, Form), the POST results and the show-once
     SecretReveal, lifted from bundle.js `modal`/`confirm`/`secret` and pages-platform.js. -#}
 {%- import "primitives.html" as ui -%}
 
@@ -7,8 +7,7 @@
 <div class="scrim" data-scrim>
 <form class="modal" role="dialog" aria-modal="true" hx-post="{{ m.post_url }}" hx-target="#modal-root" hx-swap="innerHTML" data-gate>
 {%- if m.csrf %}<input type="hidden" name="_csrf" value="{{ m.csrf }}">{% endif -%}
-{%- if m.entity %}<input type="hidden" name="_entity" value="{{ m.entity }}">{% endif -%}
-{%- if m.form %}{% for k, v in m.form.hidden %}<input type="hidden" name="{{ k }}" value="{{ v }}">{% endfor %}{% if m.form.revision is not none %}<input type="hidden" name="_expected_revision" value="{{ m.form.revision }}">{% endif %}{% endif -%}
+<input type="hidden" name="_form" value="{{ m.form_id }}">
 <div class="modal-head"><div class="modal-icon {{ m.tone }}">{{ ui.icon(m.icon) }}</div><div><h2>{{ m.title }}</h2>{% if m.form and m.form.note %}<div class="muted" style="font-size:12px">{{ m.form.note }}</div>{% endif %}</div></div>
 {%- if m.banner %}<div class="banner err">{{ ui.icon("alert") }} {{ m.banner }}</div>{% endif -%}
 <div class="modal-body">
@@ -17,17 +16,17 @@
 {{ m.body }}
 {%- if m.impact %}<div class="impact">{% for k, v in m.impact %}<div><span>{{ k }}</span><b>{{ v }}</b></div>{% endfor %}</div>{% endif -%}
 {%- if m.reason != "none" %}<div style="margin-top:10px"><div style="font-size:12px;margin-bottom:4px">Reason <span class="muted">(recorded in audit log)</span></div><input class="input" style="width:100%{% if m.reason_error %};border-color:var(--err){% endif %}" name="_reason" value="{{ m.reason_value }}" autocomplete="off"{% if m.reason == "required" %} data-reason-required{% endif %}>{% if m.reason_error %}<div style="font-size:11.5px;color:var(--err);margin-top:4px">{{ m.reason_error }}</div>{% endif %}</div>{% endif -%}
-{%- if m.type_to_confirm %}<div style="margin-top:10px"><div style="font-size:12px;margin-bottom:4px">Type <b class="mono">{{ m.type_to_confirm }}</b> to confirm</div><input class="input mono" style="width:100%" data-confirm-type="{{ m.type_to_confirm }}" autocomplete="off"></div>{% endif -%}
+{%- if m.type_to_confirm %}<div style="margin-top:10px"><div style="font-size:12px;margin-bottom:4px">Type <b class="mono">{{ m.type_to_confirm }}</b> to confirm</div><input class="input mono" style="width:100%" name="_confirm" data-confirm-type="{{ m.type_to_confirm }}" autocomplete="off"></div>{% endif -%}
 {%- endif -%}
 </div>
-<div class="modal-foot"><span class="muted" style="margin-right:auto;font-size:12px;align-self:center"></span><button type="button" class="btn" data-modal-close>Cancel</button><button type="submit" class="btn {{ m.go }} go"{% if gated %} disabled{% endif %}>{{ m.form.submit_label if m.form else m.confirm_label }}</button></div>
+<div class="modal-foot"><span class="muted" style="margin-right:auto;font-size:12px;align-self:center"></span><button type="button" class="btn" data-modal-close>Cancel</button><button type="submit" class="btn {{ m.go }} go"{% if gated or m.locked %} disabled{% endif %}>{{ m.form.submit_label if m.form else m.confirm_label }}</button></div>
 </form>
 </div>
 {%- endmacro %}
 
-{#- A non-redirect POST result: the modal again with its errors, or an error toast. -#}
+{#- A non-redirect POST result: the modal again with its errors, or a toast. -#}
 {%- macro result(r) -%}
-{%- if r.modal %}{{ modal(r.modal) }}{% else %}{{ ui.toast(r.toast, "err") }}{% endif -%}
+{%- if r.modal %}{{ modal(r.modal) }}{% else %}{{ ui.toast(r.toast, r.tone) }}{% endif -%}
 {%- endmacro %}
 
 {%- macro reveal(f) -%}

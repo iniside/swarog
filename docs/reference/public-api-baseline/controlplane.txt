@@ -158,6 +158,7 @@ pub static controlplane::events::ACTION: std::sync::lazy_lock::LazyLock<bus::Eve
 pub enum controlplane::ActionPoint
 pub controlplane::ActionPoint::HeaderAction(alloc::string::String)
 pub controlplane::ActionPoint::PageHead(alloc::string::String)
+pub controlplane::ActionPoint::PanelForm(alloc::string::String)
 pub controlplane::ActionPoint::PanelTool(alloc::string::String)
 pub controlplane::ActionPoint::RowAction(alloc::string::String)
 impl core::clone::Clone for controlplane::ActionPoint
@@ -315,6 +316,30 @@ impl core::marker::Unpin for controlplane::FieldKind
 impl core::marker::UnsafeUnpin for controlplane::FieldKind
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::FieldKind
 impl core::panic::unwind_safe::UnwindSafe for controlplane::FieldKind
+pub enum controlplane::FieldValue
+pub controlplane::FieldValue::Bool(bool)
+pub controlplane::FieldValue::Float(f64)
+pub controlplane::FieldValue::Int(i64)
+pub controlplane::FieldValue::Money
+pub controlplane::FieldValue::Money::amount: alloc::string::String
+pub controlplane::FieldValue::Money::currency: alloc::string::String
+pub controlplane::FieldValue::Multi(alloc::vec::Vec<alloc::string::String>)
+pub controlplane::FieldValue::Text(alloc::string::String)
+impl core::clone::Clone for controlplane::FieldValue
+pub fn controlplane::FieldValue::clone(&self) -> Self
+impl core::cmp::PartialEq for controlplane::FieldValue
+pub fn controlplane::FieldValue::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::FieldValue
+pub fn controlplane::FieldValue::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::FieldValue
+impl core::marker::Forget for controlplane::FieldValue
+impl core::marker::Freeze for controlplane::FieldValue
+impl core::marker::Send for controlplane::FieldValue
+impl core::marker::Sync for controlplane::FieldValue
+impl core::marker::Unpin for controlplane::FieldValue
+impl core::marker::UnsafeUnpin for controlplane::FieldValue
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::FieldValue
+impl core::panic::unwind_safe::UnwindSafe for controlplane::FieldValue
 pub enum controlplane::FilterKind
 pub controlplane::FilterKind::Bool
 pub controlplane::FilterKind::Enum(alloc::vec::Vec<alloc::string::String>)
@@ -345,6 +370,8 @@ pub enum controlplane::InvokeOutcome
 pub controlplane::InvokeOutcome::Conflict
 pub controlplane::InvokeOutcome::Conflict::current_revision: u64
 pub controlplane::InvokeOutcome::FieldErrors(alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>)
+pub controlplane::InvokeOutcome::NoOp
+pub controlplane::InvokeOutcome::NoOp::message: alloc::string::String
 pub controlplane::InvokeOutcome::Ok
 pub controlplane::InvokeOutcome::Ok::message: alloc::string::String
 pub controlplane::InvokeOutcome::Ok::redirect: core::option::Option<controlplane::Link>
@@ -686,6 +713,7 @@ pub controlplane::ActionDecl::min_role: controlplane::Role
 pub controlplane::ActionDecl::multi: bool
 pub controlplane::ActionDecl::order: i32
 pub controlplane::ActionDecl::point: controlplane::ActionPoint
+pub controlplane::ActionDecl::primary: bool
 pub controlplane::ActionDecl::then: controlplane::Then
 impl core::clone::Clone for controlplane::ActionDecl
 pub fn controlplane::ActionDecl::clone(&self) -> Self
@@ -994,6 +1022,24 @@ impl core::marker::Unpin for controlplane::Field
 impl core::marker::UnsafeUnpin for controlplane::Field
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Field
 impl core::panic::unwind_safe::UnwindSafe for controlplane::Field
+pub struct controlplane::FieldError
+pub controlplane::FieldError::reason: alloc::string::String
+impl core::clone::Clone for controlplane::FieldError
+pub fn controlplane::FieldError::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::FieldError
+impl core::cmp::PartialEq for controlplane::FieldError
+pub fn controlplane::FieldError::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::FieldError
+pub fn controlplane::FieldError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::FieldError
+impl core::marker::Forget for controlplane::FieldError
+impl core::marker::Freeze for controlplane::FieldError
+impl core::marker::Send for controlplane::FieldError
+impl core::marker::Sync for controlplane::FieldError
+impl core::marker::Unpin for controlplane::FieldError
+impl core::marker::UnsafeUnpin for controlplane::FieldError
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::FieldError
+impl core::panic::unwind_safe::UnwindSafe for controlplane::FieldError
 pub struct controlplane::FilterDef
 pub controlplane::FilterDef::key: alloc::string::String
 pub controlplane::FilterDef::kind: controlplane::FilterKind
@@ -1049,9 +1095,11 @@ pub controlplane::InvokeCall::action: alloc::string::String
 pub controlplane::InvokeCall::entity: core::option::Option<controlplane::EntityRef>
 pub controlplane::InvokeCall::expected_revision: core::option::Option<u64>
 pub controlplane::InvokeCall::input: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub controlplane::InvokeCall::item: core::option::Option<alloc::string::String>
 pub controlplane::InvokeCall::module: alloc::string::String
 pub controlplane::InvokeCall::operator: alloc::string::String
 pub controlplane::InvokeCall::reason: core::option::Option<alloc::string::String>
+pub controlplane::InvokeCall::request_id: core::option::Option<alloc::string::String>
 impl core::clone::Clone for controlplane::InvokeCall
 pub fn controlplane::InvokeCall::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::InvokeCall
@@ -1289,10 +1337,14 @@ impl core::marker::UnsafeUnpin for controlplane::PageInfo
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::PageInfo
 impl core::panic::unwind_safe::UnwindSafe for controlplane::PageInfo
 pub struct controlplane::PanelQuery
+pub controlplane::PanelQuery::before: core::option::Option<alloc::string::String>
 pub controlplane::PanelQuery::contribution: alloc::string::String
+pub controlplane::PanelQuery::cursor: core::option::Option<alloc::string::String>
 pub controlplane::PanelQuery::entity: core::option::Option<controlplane::EntityRef>
 pub controlplane::PanelQuery::module: alloc::string::String
 pub controlplane::PanelQuery::params: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub controlplane::PanelQuery::queue_state: core::option::Option<alloc::string::String>
+pub controlplane::PanelQuery::search: core::option::Option<alloc::string::String>
 impl core::clone::Clone for controlplane::PanelQuery
 pub fn controlplane::PanelQuery::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::PanelQuery
@@ -1315,6 +1367,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for controlplane::PanelQuery
 impl core::panic::unwind_safe::UnwindSafe for controlplane::PanelQuery
 pub struct controlplane::PropertyList
 pub controlplane::PropertyList::columns: u8
+pub controlplane::PropertyList::item: core::option::Option<alloc::string::String>
 pub controlplane::PropertyList::items: alloc::vec::Vec<(alloc::string::String, controlplane::Cell)>
 impl core::clone::Clone for controlplane::PropertyList
 pub fn controlplane::PropertyList::clone(&self) -> Self
@@ -1739,4 +1792,7 @@ pub fn controlplane::Provider::invoke<'life0, 'async_trait>(&'life0 self, contro
 pub fn controlplane::Provider::manifest(&self) -> controlplane::Manifest
 pub fn controlplane::Provider::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelQuery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Primitive, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn controlplane::Provider::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchQuery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn controlplane::decode_field(&controlplane::FieldKind, &str) -> core::result::Result<controlplane::FieldValue, controlplane::FieldError>
+pub fn controlplane::encode_field(&controlplane::FieldKind, &controlplane::FieldValue) -> alloc::string::String
+pub fn controlplane::form_spec_errors(&controlplane::FormSpec) -> alloc::vec::Vec<alloc::string::String>
 pub fn controlplane::merge_sections<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a controlplane::Manifest>) -> controlplane::SectionMerge<'a>

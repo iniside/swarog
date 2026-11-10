@@ -4,11 +4,13 @@
 use std::collections::BTreeMap;
 
 use controlplane::{
-    Align, CellKind, ConfirmTone, EntityRef, Field, FieldKind, FormSpec, Link, Point, Primitive,
-    ReasonReq, Severity, ServiceState, Tone, Trend,
+    decode_field, Align, CellKind, ConfirmSpec, ConfirmTone, EntityRef, Field, FieldKind, FieldValue, FormSpec, Link,
+    Point, Primitive, ReasonReq, Severity, ServiceState, Tone, Trend,
 };
 use minijinja::{Environment, Value};
 use serde::Serialize;
+
+use crate::engine::actions::{self, money_currency_key};
 
 const SHELL: &str = include_str!("templates/shell.html.tmpl");
 const PRIMITIVES: &str = include_str!("templates/primitives.html.tmpl");
@@ -87,6 +89,14 @@ pub(crate) fn page_url(module: &str, page: &str) -> String {
 pub(crate) fn entity_param(entity: &EntityRef) -> String {
     format!("{}:{}", entity.kind, entity.id)
 }
+
+/// Panel URL query keys of the typed `PanelQuery` fields.
+pub(crate) const QUERY_SEARCH: &str = "q";
+pub(crate) const QUERY_CURSOR: &str = "cursor";
+pub(crate) const QUERY_BEFORE: &str = "before";
+pub(crate) const QUERY_STATE: &str = "state";
+/// A modal URL's bound element.
+pub(crate) const QUERY_ITEM: &str = "item";
 
 /// `path` with `query` appended, `key` replaced by `value` (dropped when `value` is `None`).
 pub(crate) fn with_param(path: &str, query: &[(String, String)], key: &str, value: Option<&str>) -> String {
@@ -225,6 +235,7 @@ pub(crate) struct ActionItem {
     pub(crate) label: String,
     pub(crate) icon: String,
     pub(crate) danger: bool,
+    pub(crate) primary: bool,
     /// `GET` opens the modal, `POST` invokes.
     pub(crate) url: String,
     pub(crate) enabled: bool,
@@ -250,11 +261,20 @@ pub(crate) fn then_name(then: &controlplane::Then) -> &'static str {
     }
 }
 
-pub(crate) fn for_entity(item: &ActionItem, entity: &EntityRef) -> ActionItem {
-    let mut bound = item.clone();
-    let param = entity_param(entity);
-    bound.url = with_param(&item.url, &[], "entity", Some(&param));
-    bound.vals.insert("_entity".to_string(), param);
+/// `action` bound to an entity and an element: the modal URL carries `?entity=` and
+/// `?item=`, a token-less invoke posts `_entity` and `_item`.
+pub(crate) fn bind(action: &ActionItem, entity: Option<&EntityRef>, element: Option<&str>) -> ActionItem {
+    let mut bound = action.clone();
+    let mut query = Vec::new();
+    if let Some(e) = entity {
+        query.push(("entity".to_string(), entity_param(e)));
+        bound.vals.insert(actions::FIELD_ENTITY.to_string(), entity_param(e));
+    }
+    if let Some(element) = element {
+        query.push((QUERY_ITEM.to_string(), element.to_string()));
+        bound.vals.insert(actions::FIELD_ITEM.to_string(), element.to_string());
+    }
+    bound.url = with_param(&action.url, &query, "", None);
     bound
 }
 
@@ -336,6 +356,8 @@ pub(crate) struct RevealView {
 pub(crate) struct FlashView {
     pub(crate) message: String,
     pub(crate) reveal: Option<RevealView>,
+    /// `ok` or `info`.
+    pub(crate) tone: &'static str,
 }
 
 pub(crate) fn reveal(r: &controlplane::SecretReveal) -> RevealView {
@@ -525,14 +547,31 @@ pub(crate) struct PanelInput<'a> {
     pub(crate) path: &'a str,
     /// The request's query (entity first), cursors included.
     pub(crate) query: &'a [(String, String)],
+    pub(crate) entity: Option<&'a EntityRef>,
+    /// `PanelQuery::search`.
+    pub(crate) search: Option<&'a str>,
     pub(crate) error: Option<&'a str>,
     pub(crate) age_s: Option<u64>,
     pub(crate) min_role: &'static str,
     pub(crate) fallback_title: &'a str,
     pub(crate) primitive: Option<&'a Primitive>,
-    /// The module's actions, unbound, for work-queue items.
+    /// This contribution's `PanelTool` actions, unbound.
     pub(crate) actions: &'a [ActionItem],
     pub(crate) row_menu_kinds: &'a [String],
+    pub(crate) csrf: &'a str,
+    /// The form instance a `Primitive::Form` posts as; `None` renders it without a submit.
+    pub(crate) form: Option<FormInstance<'a>>,
+}
+
+/// A panel form's claimed instance and, when it is shown again, what was posted.
+pub(crate) struct FormInstance<'a> {
+    pub(crate) post_url: String,
+    pub(crate) form_id: String,
+    pub(crate) posted: Option<&'a [(String, String)]>,
+    pub(crate) errors: &'a BTreeMap<String, String>,
+    pub(crate) banner: Option<String>,
+    /// Save stays disabled: the instance is consumed.
+    pub(crate) locked: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -552,6 +591,8 @@ pub(crate) struct PanelRender {
     pub(crate) fallback_title: String,
     pub(crate) flush: bool,
     pub(crate) body: Option<PrimView>,
+    /// The `PanelTool` actions shown in the panel head, bound to the panel's element.
+    pub(crate) tools: Vec<ActionItem>,
 }
 
 /// `"42 s"`, `"3 min"` or `"2 h"`.
@@ -567,9 +608,16 @@ pub(crate) fn age_text(secs: u64) -> String {
 
 pub(crate) fn panel(input: &PanelInput<'_>) -> PanelRender {
     let paging: Vec<(String, String)> =
-        input.query.iter().filter(|(k, _)| k != "cursor" && k != "before").cloned().collect();
+        input.query.iter().filter(|(k, _)| k != QUERY_CURSOR && k != QUERY_BEFORE).cloned().collect();
     let ctx = Ctx { path: input.path, query: &paging, params: input.query, input };
     let body = input.primitive.map(|p| prim(p, &ctx));
+    let tools = match input.primitive {
+        Some(Primitive::WorkQueue(_)) => Vec::new(),
+        Some(Primitive::PropertyList(list)) => {
+            input.actions.iter().map(|a| bind(a, input.entity, list.item.as_deref())).collect()
+        }
+        _ => input.actions.iter().map(|a| bind(a, input.entity, None)).collect(),
+    };
     let flush = matches!(
         body,
         Some(
@@ -595,6 +643,7 @@ pub(crate) fn panel(input: &PanelInput<'_>) -> PanelRender {
         fallback_title: input.fallback_title.to_string(),
         flush,
         body,
+        tools,
     }
 }
 
@@ -618,7 +667,7 @@ pub(crate) enum PrimView {
     Props(PropsView),
     Kpi(KpiView),
     Timeline(TimelineView),
-    Form(FormView),
+    Form(PanelFormView),
     Queue(QueueView),
     Services(ServicesView),
     Chart(ChartView),
@@ -640,7 +689,7 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
         }
         Primitive::KpiTile(k) => PrimView::Kpi(kpi(k)),
         Primitive::Timeline(t) => PrimView::Timeline(timeline(t, ctx)),
-        Primitive::Form(f) => PrimView::Form(form(f, &BTreeMap::new(), &BTreeMap::new())),
+        Primitive::Form(f) => PrimView::Form(panel_form(f, ctx.input)),
         Primitive::WorkQueue(q) => PrimView::Queue(queue(q, ctx)),
         Primitive::ServiceStatus(s) => PrimView::Services(services(&s.items)),
         Primitive::TimeSeriesChart(c) => PrimView::Chart(chart(c)),
@@ -767,13 +816,13 @@ fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
         selectable: t.selectable,
         toolbar: !t.filters.is_empty() || t.search_placeholder.is_some(),
         search_placeholder: t.search_placeholder.clone(),
-        q: ctx.param("q").unwrap_or_default().to_string(),
-        search_url: with_param(ctx.path, ctx.query, "q", None),
+        q: ctx.input.search.unwrap_or_default().to_string(),
+        search_url: with_param(ctx.path, ctx.query, QUERY_SEARCH, None),
         filters,
         foot: t.page.next_cursor.is_some() || t.page.total.is_some_and(|n| n > 0 || !t.rows.is_empty()),
         total,
         size: t.page.size,
-        next_url: t.page.next_cursor.as_deref().map(|c| with_param(ctx.path, ctx.query, "cursor", Some(c))),
+        next_url: t.page.next_cursor.as_deref().map(|c| with_param(ctx.path, ctx.query, QUERY_CURSOR, Some(c))),
     }
 }
 
@@ -924,7 +973,7 @@ fn timeline(t: &controlplane::Timeline, ctx: &Ctx<'_>) -> TimelineView {
     }
     TimelineView {
         days: days.into_iter().map(|(_, d)| d).collect(),
-        older_url: t.cursor_before.as_deref().map(|c| with_param(ctx.path, ctx.query, "before", Some(c))),
+        older_url: t.cursor_before.as_deref().map(|c| with_param(ctx.path, ctx.query, QUERY_BEFORE, Some(c))),
     }
 }
 
@@ -945,6 +994,8 @@ pub(crate) struct FieldView {
     pub(crate) options: Vec<String>,
     pub(crate) selected: Vec<String>,
     pub(crate) currency: String,
+    /// The body key of a Money field's currency input.
+    pub(crate) currency_name: String,
     pub(crate) ref_icon: &'static str,
     pub(crate) ref_kind: String,
     pub(crate) error: Option<String>,
@@ -953,18 +1004,49 @@ pub(crate) struct FieldView {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct FormView {
     pub(crate) fields: Vec<FieldView>,
-    pub(crate) hidden: Vec<(String, String)>,
     pub(crate) submit_label: String,
     pub(crate) note: Option<String>,
-    pub(crate) revision: Option<u64>,
 }
 
-pub(crate) fn currency_key(key: &str) -> String {
-    format!("{key}_currency")
+/// A `Primitive::Form` in a panel; `form_id` and `post_url` are set when it has a form
+/// instance to post as.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct PanelFormView {
+    #[serde(flatten)]
+    pub(crate) form: FormView,
+    pub(crate) post_url: Option<String>,
+    pub(crate) csrf: String,
+    pub(crate) form_id: Option<String>,
+    pub(crate) banner: Option<String>,
+    /// Save stays disabled: the instance is consumed.
+    pub(crate) locked: bool,
 }
 
-fn field(f: &Field, posted: &BTreeMap<String, String>, errors: &BTreeMap<String, String>) -> FieldView {
-    let value = posted.get(&f.key).cloned().or_else(|| f.default.clone()).unwrap_or_default();
+fn posted_values(posted: Option<&[(String, String)]>, key: &str) -> Vec<String> {
+    posted.unwrap_or_default().iter().filter(|(k, _)| k == key).map(|(_, v)| v.clone()).collect()
+}
+
+/// A field shows its stored default when the form is fresh or the field readonly, else what
+/// was posted; Multi and Money show the decoded value where it decodes.
+fn field(f: &Field, posted: Option<&[(String, String)]>, errors: &BTreeMap<String, String>) -> FieldView {
+    let raw = match posted {
+        Some(body) if !f.readonly => actions::posted_raw(f, body),
+        _ => f.default.clone(),
+    };
+    let decoded = raw.as_deref().and_then(|r| decode_field(&f.kind, r).ok());
+    let currency_name = money_currency_key(&f.key);
+    let reposted = posted.filter(|_| !f.readonly);
+    let (value, selected, currency) = match (&f.kind, decoded) {
+        (_, Some(FieldValue::Multi(picked))) => (String::new(), picked, String::new()),
+        (_, Some(FieldValue::Money { amount, currency })) => (amount, Vec::new(), currency),
+        (FieldKind::Multi(_), _) => (String::new(), posted_values(reposted, &f.key), String::new()),
+        (FieldKind::Money(_), _) => {
+            let amount = posted_values(reposted, &f.key).into_iter().next().unwrap_or_default();
+            let currency = posted_values(reposted, &currency_name).into_iter().next().unwrap_or_default();
+            (amount, Vec::new(), currency)
+        }
+        _ => (raw.unwrap_or_default(), Vec::new(), String::new()),
+    };
     let (control, type_name, options, mono) = match &f.kind {
         FieldKind::String => ("input", "string".to_string(), Vec::new(), false),
         FieldKind::Text => ("textarea", "text".to_string(), Vec::new(), false),
@@ -991,8 +1073,9 @@ fn field(f: &Field, posted: &BTreeMap<String, String>, errors: &BTreeMap<String,
         required: f.required,
         readonly: f.readonly,
         help: f.help.clone(),
-        selected: value.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect(),
-        currency: posted.get(&currency_key(&f.key)).cloned().unwrap_or_default(),
+        selected,
+        currency,
+        currency_name,
         value,
         options,
         ref_icon: if matches!(ref_kind.as_str(), "player" | "user") { "user" } else { "hash" },
@@ -1001,18 +1084,69 @@ fn field(f: &Field, posted: &BTreeMap<String, String>, errors: &BTreeMap<String,
     }
 }
 
+/// `posted` is the body being shown again, `None` for a fresh form.
 pub(crate) fn form(
     spec: &FormSpec,
-    posted: &BTreeMap<String, String>,
+    posted: Option<&[(String, String)]>,
     errors: &BTreeMap<String, String>,
 ) -> FormView {
     FormView {
         fields: spec.fields.iter().map(|f| field(f, posted, errors)).collect(),
-        hidden: spec.hidden.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         submit_label: spec.submit_label.clone(),
         note: spec.note.clone(),
-        revision: spec.revision,
     }
+}
+
+fn panel_form(spec: &FormSpec, input: &PanelInput<'_>) -> PanelFormView {
+    let none = BTreeMap::new();
+    let instance = input.form.as_ref();
+    PanelFormView {
+        form: form(spec, instance.and_then(|i| i.posted), instance.map_or(&none, |i| i.errors)),
+        post_url: instance.map(|i| i.post_url.clone()),
+        csrf: input.csrf.to_string(),
+        form_id: instance.map(|i| i.form_id.clone()),
+        banner: instance.and_then(|i| i.banner.clone()),
+        locked: instance.is_some_and(|i| i.locked),
+    }
+}
+
+/// A panel form's frame: the contribution its instance was minted for.
+pub(crate) struct FormFrame<'a> {
+    pub(crate) module: &'a str,
+    pub(crate) decl: &'a controlplane::ContributionDecl,
+    pub(crate) mode: &'static str,
+    pub(crate) path: &'a str,
+    pub(crate) query: &'a [(String, String)],
+    pub(crate) entity: Option<&'a EntityRef>,
+    pub(crate) actions: &'a [ActionItem],
+    pub(crate) csrf: &'a str,
+}
+
+/// The panel fragment of a panel form shown again from its stored spec after a 422 or 409.
+pub(crate) fn panel_form_result(frame: &FormFrame<'_>, spec: &FormSpec, instance: FormInstance<'_>) -> PanelRender {
+    let primitive = Primitive::Form(spec.clone());
+    let input = PanelInput {
+        module: frame.module,
+        contribution: &frame.decl.id,
+        title: &frame.decl.title,
+        icon: &frame.decl.icon,
+        mode: frame.mode,
+        state: "ok",
+        path: frame.path,
+        query: frame.query,
+        entity: frame.entity,
+        search: None,
+        error: None,
+        age_s: None,
+        min_role: crate::role_name(frame.decl.min_role),
+        fallback_title: "",
+        primitive: Some(&primitive),
+        actions: frame.actions,
+        row_menu_kinds: &[],
+        csrf: frame.csrf,
+        form: Some(instance),
+    };
+    panel(&input)
 }
 
 // ---- WorkQueue ----
@@ -1069,10 +1203,7 @@ fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
                 .actions
                 .iter()
                 .filter_map(|id| ctx.input.actions.iter().find(|a| &a.id == id))
-                .map(|a| match &it.entity {
-                    Some(e) => for_entity(a, e),
-                    None => a.clone(),
-                })
+                .map(|a| bind(a, it.entity.as_ref(), Some(&it.id)))
                 .collect();
             QueueItemView {
                 id: it.id.clone(),
@@ -1104,7 +1235,7 @@ fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
                 count: thousands(s.count),
                 tone: s.tone.map(tone).unwrap_or(""),
                 on: s.key == q.selected,
-                url: with_param(ctx.path, ctx.query, "state", Some(&s.key)),
+                url: with_param(ctx.path, ctx.query, QUERY_STATE, Some(&s.key)),
             })
             .collect(),
         has_entity: items.iter().any(|i| i.entity.is_some()),
@@ -1303,14 +1434,20 @@ pub(crate) struct HeaderView {
 // Modals
 // ---------------------------------------------------------------------------
 
+/// What a modal renders: the form or the confirmation its instance stored.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ModalSpec<'a> {
+    Form(&'a FormSpec),
+    Confirm(&'a ConfirmSpec),
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ModalView {
     pub(crate) label: String,
     pub(crate) post_url: String,
     pub(crate) csrf: String,
-    pub(crate) entity: Option<String>,
-    /// `form`, `confirm` or `invoke`.
-    pub(crate) kind: &'static str,
+    /// The form instance the modal posts as `_form`.
+    pub(crate) form_id: String,
     /// The `modal-icon` class.
     pub(crate) tone: &'static str,
     pub(crate) icon: String,
@@ -1327,23 +1464,27 @@ pub(crate) struct ModalView {
     pub(crate) confirm_label: String,
     pub(crate) form: Option<FormView>,
     pub(crate) banner: Option<String>,
+    /// Submit stays disabled: the instance is consumed.
+    pub(crate) locked: bool,
 }
 
-/// The modal of `decl`, re-filled from `posted` with `errors` when it is shown again.
+/// The modal of `decl` for its form instance `form_id`; `posted` is the body being shown
+/// again with `errors`, `None` for a fresh modal.
 pub(crate) fn modal(
     decl: &controlplane::ActionDecl,
+    spec: ModalSpec<'_>,
     post_url: String,
     csrf: String,
-    entity: Option<&EntityRef>,
-    posted: &BTreeMap<String, String>,
+    form_id: String,
+    posted: Option<&[(String, String)]>,
     errors: &BTreeMap<String, String>,
 ) -> ModalView {
+    let reason_value = posted.and_then(|b| actions::first(b, actions::FIELD_REASON)).unwrap_or_default();
     let mut view = ModalView {
         label: decl.label.clone(),
         post_url,
         csrf,
-        entity: entity.map(entity_param),
-        kind: "invoke",
+        form_id,
         tone: "info",
         icon: if decl.icon.is_empty() { "info".to_string() } else { decl.icon.clone() },
         go: if decl.danger { "danger" } else { "primary" },
@@ -1351,22 +1492,21 @@ pub(crate) fn modal(
         body: String::new(),
         impact: Vec::new(),
         reason: "none",
-        reason_value: posted.get("_reason").cloned().unwrap_or_default(),
-        reason_error: errors.get("_reason").cloned(),
+        reason_value: reason_value.to_string(),
+        reason_error: errors.get(actions::FIELD_REASON).cloned(),
         type_to_confirm: None,
         confirm_label: decl.label.clone(),
         form: None,
         banner: None,
+        locked: false,
     };
-    match &decl.then {
-        controlplane::Then::Form(spec) => {
-            view.kind = "form";
+    match spec {
+        ModalSpec::Form(spec) => {
             view.tone = "ok";
             view.go = "primary";
             view.form = Some(form(spec, posted, errors));
         }
-        controlplane::Then::Confirm(spec) => {
-            view.kind = "confirm";
+        ModalSpec::Confirm(spec) => {
             view.tone = match spec.tone {
                 ConfirmTone::Danger => "danger",
                 ConfirmTone::Warn => "warn",
@@ -1387,12 +1527,13 @@ pub(crate) fn modal(
             view.type_to_confirm = spec.type_to_confirm.clone();
             view.confirm_label = spec.confirm_label.clone();
         }
-        controlplane::Then::Invoke | controlplane::Then::Link(_) => {}
     }
     let shown: Vec<&str> = view.form.iter().flat_map(|f| f.fields.iter().map(|x| x.key.as_str())).collect();
     let stray: Vec<String> = errors
         .iter()
-        .filter(|(k, _)| !shown.contains(&k.as_str()) && !(k.as_str() == "_reason" && view.reason != "none"))
+        .filter(|(k, _)| {
+            !shown.contains(&k.as_str()) && !(k.as_str() == actions::FIELD_REASON && view.reason != "none")
+        })
         .map(|(k, v)| format!("{k}: {v}"))
         .collect();
     if !stray.is_empty() {
@@ -1406,4 +1547,6 @@ pub(crate) fn modal(
 pub(crate) struct ActionResultView {
     pub(crate) modal: Option<ModalView>,
     pub(crate) toast: Option<String>,
+    /// The toast's tone: `err` or `info`.
+    pub(crate) tone: &'static str,
 }

@@ -1,7 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use checkmodules::ProcessControlPlane;
-use controlplane::{ActionPoint, Layout, Manifest, Point, SECTIONS};
+use controlplane::{ActionPoint, Layout, Manifest, Point, Then, SECTIONS};
+
+/// The longest action or contribution id: a form instance id `<id>:<43-byte token>` then
+/// stays within the 128-byte idempotency keys modules accept.
+pub const MAX_ID_BYTES: usize = 64;
 
 /// Every finding over the union of `manifests`, each one line naming its module.
 pub fn findings(manifests: &[Manifest]) -> Vec<String> {
@@ -15,6 +19,9 @@ pub fn findings(manifests: &[Manifest]) -> Vec<String> {
         layouts(m, &mut out);
         head_actions(m, &mut out);
         nav_entries(m, &mut out);
+        panel_actions(m, &mut out);
+        id_lengths(m, &mut out);
+        form_specs(m, &mut out);
     }
     nav_sections(manifests, &mut out);
     section_merge(manifests, &mut out);
@@ -65,7 +72,7 @@ fn point_kind(point: &Point) -> Option<&str> {
 fn action_kind(point: &ActionPoint) -> Option<&str> {
     match point {
         ActionPoint::RowAction(kind) | ActionPoint::HeaderAction(kind) => Some(kind),
-        ActionPoint::PageHead(_) | ActionPoint::PanelTool(_) => None,
+        ActionPoint::PageHead(_) | ActionPoint::PanelTool(_) | ActionPoint::PanelForm(_) => None,
     }
 }
 
@@ -123,6 +130,71 @@ fn head_actions(m: &Manifest, out: &mut Vec<String>) {
                     "{}: page {:?} names head action {id:?}, which is not an action of this module",
                     m.module, page.id
                 ));
+            }
+        }
+        let primary: Vec<&str> = page
+            .head_actions
+            .iter()
+            .filter(|id| m.actions.iter().any(|a| &a.id == *id && a.primary))
+            .map(String::as_str)
+            .collect();
+        if primary.len() > 1 {
+            out.push(format!(
+                "{}: page {:?} has more than one primary head action: {}",
+                m.module,
+                page.id,
+                primary.join(", ")
+            ));
+        }
+    }
+}
+
+fn panel_actions(m: &Manifest, out: &mut Vec<String>) {
+    let mut forms: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for a in &m.actions {
+        let (point, contribution) = match &a.point {
+            ActionPoint::PanelTool(c) => ("PanelTool", c),
+            ActionPoint::PanelForm(c) => ("PanelForm", c),
+            ActionPoint::RowAction(_) | ActionPoint::HeaderAction(_) | ActionPoint::PageHead(_) => continue,
+        };
+        if !m.contributions.iter().any(|c| &c.id == contribution) {
+            out.push(format!(
+                "{}: action {:?} is {point}({contribution:?}), which is not a contribution of this module",
+                m.module, a.id
+            ));
+        }
+        if point == "PanelForm" {
+            if !matches!(a.then, Then::Invoke) {
+                out.push(format!("{}: PanelForm action {:?} is not Then::Invoke", m.module, a.id));
+            }
+            forms.entry(contribution.as_str()).or_default().push(a.id.as_str());
+        }
+    }
+    for (contribution, actions) in forms.iter().filter(|(_, actions)| actions.len() > 1) {
+        out.push(format!(
+            "{}: contribution {contribution:?} has more than one PanelForm action: {}",
+            m.module,
+            actions.join(", ")
+        ));
+    }
+}
+
+fn id_lengths(m: &Manifest, out: &mut Vec<String>) {
+    let ids = m
+        .actions
+        .iter()
+        .map(|a| ("action", &a.id))
+        .chain(m.contributions.iter().map(|c| ("contribution", &c.id)));
+    for (what, id) in ids.filter(|(_, id)| id.len() > MAX_ID_BYTES) {
+        out.push(format!("{}: {what} id {id:?} is longer than {MAX_ID_BYTES} bytes", m.module));
+    }
+}
+
+fn form_specs(m: &Manifest, out: &mut Vec<String>) {
+    for a in &m.actions {
+        if let Then::Form(spec) = &a.then {
+            for error in controlplane::form_spec_errors(spec) {
+                out.push(format!("{}: action {:?} form: {error}", m.module, a.id));
             }
         }
     }

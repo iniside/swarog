@@ -80,15 +80,24 @@ impl PanelCache {
     }
 }
 
+/// Every part is length-prefixed and every optional field tagged, so distinct queries
+/// (an absent field and `Some("")` included) never share a key.
 fn cache_key(req: &PanelQuery) -> String {
-    let mut parts: Vec<&str> = vec![&req.module, &req.contribution];
-    if let Some(entity) = &req.entity {
-        parts.extend([entity.kind.as_str(), entity.id.as_str()]);
+    let mut parts: Vec<String> = vec![req.module.clone(), req.contribution.clone()];
+    match &req.entity {
+        Some(entity) => parts.extend(["e".to_string(), entity.kind.clone(), entity.id.clone()]),
+        None => parts.push("-".to_string()),
     }
-    let mut key = format!("{}/", parts.len());
+    for field in [&req.search, &req.cursor, &req.before, &req.queue_state] {
+        parts.push(match field {
+            Some(value) => format!("+{value}"),
+            None => "-".to_string(),
+        });
+    }
     for (k, v) in &req.params {
-        parts.extend([k.as_str(), v.as_str()]);
+        parts.extend([k.clone(), v.clone()]);
     }
+    let mut key = String::new();
     for part in parts {
         key.push_str(&format!("{}:{part}", part.len()));
     }
