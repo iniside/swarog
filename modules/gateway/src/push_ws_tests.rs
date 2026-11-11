@@ -3039,12 +3039,36 @@ async fn a_malformed_invoke_closes_bad_frame_and_a_method_at_the_cap_does_not() 
     server.abort();
 }
 
+/// The header of a masked client TEXT frame declaring `len` (> 125) payload bytes, with NO
+/// payload following it. The length uses the minimal extended encoding RFC 6455 requires.
+fn masked_text_header(len: usize) -> Vec<u8> {
+    assert!(len > 125, "a length this short has no extended encoding");
+    let mut header = vec![0x81];
+    match u16::try_from(len) {
+        Ok(short) => {
+            header.push(0x80 | 126);
+            header.extend_from_slice(&short.to_be_bytes());
+        }
+        _ => {
+            header.push(0x80 | 127);
+            header.extend_from_slice(&(len as u64).to_be_bytes());
+        }
+    }
+    header.extend_from_slice(&[0x5a, 0x5a, 0x5a, 0x5a]);
+    header
+}
+
 /// An inbound frame over `max_frame_bytes` closes `frame_too_large`, RETRYABLE (the
-/// reconnect restores every stream) — distinct from `bad_frame`. A frame just under the cap
-/// is served. The protocol-level 1009 close is not asserted: the server closes with the
-/// rest of the oversize frame unread, so the peer may see a reset before it.
+/// reconnect restores every stream) — distinct from `bad_frame` — then with the protocol
+/// 1009 close. A frame just under the cap is served first on the same connection. The
+/// oversize frame is a bare HEADER declaring cap + 1 bytes, written straight onto the TCP
+/// stream with no payload: the server rejects it from the declared length alone, so it
+/// closes with nothing unread and the peer gets a clean FIN, never a reset that would race
+/// the typed close (Windows resets a socket closed over unread bytes).
 #[tokio::test]
 async fn an_over_cap_frame_closes_frame_too_large_retryably() {
+    use tokio::io::AsyncWriteExt as _;
+
     let front = ops_front(test_limits(), vec![("demo.echo", echo_invoker(Probe::new()))]);
     let (addr, server) = serve(&front).await;
     let cap = front.push_hub().limits().max_frame_bytes;
@@ -3055,11 +3079,32 @@ async fn an_over_cap_frame_closes_frame_too_large_retryably() {
     send(&mut ws, invoke_frame(1, "demo.echo", Some(&under))).await;
     assert_eq!(status_of(&next_result(&mut ws).await.1), "Ok", "a frame under the cap is served");
 
-    let over = format!(r#"{{"pad":"{}"}}"#, "x".repeat(cap + 1024));
-    send(&mut ws, invoke_frame(2, "demo.echo", Some(&over))).await;
+    // `send` flushed the client's own buffer, so these bytes start a fresh frame.
+    let MaybeTlsStream::Plain(tcp) = ws.get_mut() else {
+        panic!("the test dials plain ws://");
+    };
+    let header = masked_text_header(cap + 1);
+    tokio::time::timeout(GUARD, tcp.write_all(&header))
+        .await
+        .expect("the header write settles within the hang guard")
+        .expect("the socket accepts the header");
+
     let (code, retryable) = expect_close(&mut ws).await;
     assert_eq!(code, "frame_too_large");
     assert!(retryable, "the reconnect restores every hub stream");
+
+    let frame = tokio::time::timeout(GUARD, ws.next())
+        .await
+        .expect("the protocol close arrives")
+        .expect("a frame")
+        .expect("a frame");
+    match frame {
+        ClientMessage::Close(Some(close)) => {
+            assert_eq!(u16::from(close.code), CloseCode::FrameTooLarge.ws_code());
+            assert_eq!(close.reason, CloseCode::FrameTooLarge.reason());
+        }
+        other => panic!("expected a protocol close, got {other:?}"),
+    }
 
     server.abort();
 }
