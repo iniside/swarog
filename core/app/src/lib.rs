@@ -208,7 +208,7 @@ pub struct Config {
     /// the pure-transport `gateway-svc`, which hosts no schema). [`Config::from_env`]
     /// always yields `Some`; [`Config::without_db`] is the explicit opt-out.
     pub database_url: Option<String>,
-    /// HTTP listen address, e.g. `:8080` (`PORT`).
+    /// HTTP listen address, e.g. `:8080` or `127.0.0.1:8080` (`PORT`).
     pub listen_addr: String,
     /// QUIC edge listen address, e.g. `:9000` (`EDGE_ADDR`) — only used when an edge
     /// server is passed to [`run`].
@@ -279,7 +279,9 @@ pub struct Config {
 impl Config {
     /// Reads the standard process env (`DATABASE_URL`, `PORT`, `EDGE_ADDR`,
     /// `PLAYER_EDGE_ADDR`) into a [`Config`], applying the same defaults the Go
-    /// monolith used. Both `:8080` and `8080` forms of `PORT` are accepted. The DSN
+    /// monolith used. `PORT` accepts `8080`, `:8080` (all interfaces) or `IP:port`
+    /// (e.g. `127.0.0.1:8080`, `[::1]:8080`); a hostname works only for plain HTTP,
+    /// since the TLS bind parses a `SocketAddr`. The DSN
     /// is always `Some` here — a process that wants no DB calls [`Config::without_db`].
     pub fn from_env() -> Config {
         let mut cfg = Config::from_values(
@@ -603,13 +605,15 @@ fn env_rate_pair(
     Ok((rps, burst))
 }
 
-/// Accepts both `:8080` and `8080` forms and returns `:8080`; empty → the default.
+/// Normalizes `PORT` into a listen spec: a value containing `:` (`IP:port`,
+/// `[::1]:port`, `:port`) is returned trimmed and unchanged, a bare port `8080`
+/// becomes `:8080`, blank → [`DEFAULT_LISTEN_ADDR`].
 fn normalize_addr(port: &str) -> String {
     let port = port.trim();
     if port.is_empty() {
         return DEFAULT_LISTEN_ADDR.to_string();
     }
-    if port.starts_with(':') {
+    if port.contains(':') {
         return port.to_string();
     }
     format!(":{port}")
