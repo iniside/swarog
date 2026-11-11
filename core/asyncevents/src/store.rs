@@ -62,7 +62,7 @@ const V2_MIGRATE_LOCK_TIMEOUT: &str = "60s";
 /// in `core/asyncevents/src/store.rs`.
 const V2_DDL_STATEMENT_COUNT: usize = 14;
 
-/// The V2 DDL, normative in the plan. Idempotent; runs in ONE transaction under
+/// The V2 DDL. Idempotent; runs in ONE transaction under
 /// the exclusive migrate advisory lock (`{migrate_key}`), bounded by
 /// `SET LOCAL lock_timeout = '{lock_timeout}'` (see [`V2_MIGRATE_LOCK_TIMEOUT`]).
 /// `asyncevents.append_event`
@@ -71,8 +71,7 @@ const V2_DDL_STATEMENT_COUNT: usize = 14;
 /// `pg_current_xact_id()` -> return the stable `event_id`. `ensure_history_contract`
 /// is the plane-owned history-seed surface a module-owned writer (config's trigger
 /// seed) calls WITHOUT touching the plane's tables (archcheck-enforced); it mirrors
-/// [`ensure_history_contract`]'s ON-CONFLICT-then-drift-check semantics in SQL. The
-/// `AFTER INSERT` trigger fires the wake-up NOTIFY the Step-3 worker will LISTEN on.
+/// [`ensure_history_contract`]'s ON-CONFLICT-then-drift-check semantics in SQL.
 /// `tie_breaker` is a table-wide identity: within one transaction it is strictly
 /// increasing in append order, which is all the position ordering needs.
 ///
