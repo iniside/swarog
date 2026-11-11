@@ -545,8 +545,9 @@ async fn count_events_at_or_above(pool: &PgPool, topic: &str, cursor: &(i64, Str
 /// cursor on the first deleted row of batch 1 (`ON CONFLICT DO NOTHING` makes the
 /// per-row trigger idempotent — it fires once effectively). The insert commits with
 /// batch 1's autocommit DELETE, so batch 2's fresh READ COMMITTED snapshot observes
-/// it. (WRITER_LOCK_CHOREOGRAPHY from `store_tests` does NOT apply: this test never
-/// holds an appended-but-uncommitted tx across a lock await — gc_topic runs plain
+/// it. (The test holds `WRITER_LOCK_CHOREOGRAPHY` from `store_tests` only because the
+/// trigger DDL takes ACCESS EXCLUSIVE on the events table; it holds no
+/// appended-but-uncommitted tx across a lock await — gc_topic runs plain
 /// autocommit DELETEs and the trigger's insert rides each statement's own tx.)
 #[tokio::test]
 async fn mid_sweep_registered_subscription_survives_stale_floor() {

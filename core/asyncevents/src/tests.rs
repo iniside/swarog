@@ -226,16 +226,16 @@ fn liveness_retention_dead_is_independent_of_delivery_dead() {
 /// Step 4a (Decision 2, DB-bound): a PANICKING retention task flips ONLY the
 /// `asyncevents-retention` readyz flag (`Liveness::retention_dead`); the delivery
 /// `dead` flag stays green — per-task isolation through the real `Plane::start`/
-/// `stop` harness. Uses the `#[cfg(test)]` `RETENTION_PANIC_ONCE` seam: the
-/// retention task panics on entry, before its first tick, so no interval elapses.
+/// `stop` harness. The plane is built with the per-plane `#[cfg(test)]`
+/// `with_retention_panic_once` seam: its own supervised retention future panics on
+/// entry, before its first tick, so no interval elapses.
 #[tokio::test]
 async fn retention_panic_flips_retention_flag_but_not_delivery_dead() {
     let Some(pool) = test_pool().await else { return };
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-    let mut plane = Plane::new(pool.clone(), dsn).unwrap();
+    let mut plane = Plane::new(pool.clone(), dsn).unwrap().with_retention_panic_once();
     let liveness = plane.liveness();
 
-    retention::RETENTION_PANIC_ONCE.store(true, Ordering::SeqCst);
     plane.start().await.unwrap();
 
     let mut flipped = false;
@@ -255,6 +255,47 @@ async fn retention_panic_flips_retention_flag_but_not_delivery_dead() {
     plane.stop().await;
     assert!(!liveness.dead(), "controlled stop must not flip the delivery dead flag");
     assert!(liveness.retention_dead(), "the retention flag is sticky across stop");
+}
+
+/// The retention panic seam belongs to one plane: an unflagged plane running
+/// beside a flagged one must never have its retention marked dead. The bystander
+/// starts first and the flagged plane's flip is awaited, so by the time the flag
+/// is observed the bystander's retention task has been live for the whole window
+/// in which a shared panic switch could have been consumed.
+#[tokio::test]
+async fn retention_panic_seam_does_not_leak_to_another_plane() {
+    let Some(pool) = test_pool().await else { return };
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let mut bystander = Plane::new(pool.clone(), dsn.clone()).unwrap();
+    let mut flagged = Plane::new(pool.clone(), dsn).unwrap().with_retention_panic_once();
+    let bystander_live = bystander.liveness();
+    let flagged_live = flagged.liveness();
+
+    bystander.start().await.unwrap();
+    flagged.start().await.unwrap();
+
+    // Hang-guard only: the flagged panic fires on entry of its own task.
+    let mut flipped = false;
+    for _ in 0..100 {
+        if flagged_live.retention_dead() {
+            flipped = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(flipped, "the flagged plane's retention panic never flipped its flag");
+    assert!(
+        !bystander_live.retention_dead(),
+        "another plane's retention panic must not mark this plane's retention dead"
+    );
+    assert!(!bystander_live.dead(), "bystander delivery flag must stay green");
+
+    flagged.stop().await;
+    bystander.stop().await;
+    assert!(
+        !bystander_live.retention_dead(),
+        "a controlled stop must not mark the bystander's retention dead"
+    );
 }
 
 #[tokio::test]
