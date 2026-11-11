@@ -38,15 +38,15 @@ pub const WRITER_LOCK_KEY: i64 = 0x6173_796E_6365_7674;
 /// concurrently updated". ASCII `"asyncmig"`.
 const MIGRATE_LOCK_KEY: i64 = 0x6173_796E_636D_6967;
 
-/// Bound on how long the V2 DDL's `pg_advisory_xact_lock` wait may take before
-/// giving up loudly (SQLSTATE `55P03`), mirroring `core/lifecycle`'s
-/// `MODULE_MIGRATE_LOCK_TIMEOUT` (same 60s convention — module migrate already
-/// got this bound; the plane DDL was the missed sibling). `SET LOCAL`, not
-/// `SET` + `RESET`: this lock is transaction-scoped (`pg_advisory_xact_lock`,
-/// not `_lock`), so `SET LOCAL` self-resets at `COMMIT`/`ROLLBACK` — simpler
-/// than lifecycle's session-lock dance (`SET` before, `RESET` after on the same
-/// connection) which exists only because that lock spans many independent
-/// transactions.
+/// Bound on EVERY lock wait in the V2 DDL transaction before it gives up loudly
+/// (SQLSTATE `55P03`): the `pg_advisory_xact_lock` wait on the migrate key and
+/// any relation lock a later statement waits for alike ([`lock_timeout_message`]
+/// names which one). Mirrors `core/lifecycle`'s `MODULE_MIGRATE_LOCK_TIMEOUT`
+/// (same 60s convention). `SET LOCAL`, not `SET` + `RESET`: the migrate lock is
+/// transaction-scoped (`pg_advisory_xact_lock`, not `_lock`), so `SET LOCAL`
+/// self-resets at `COMMIT`/`ROLLBACK` — simpler than lifecycle's session-lock
+/// dance (`SET` before, `RESET` after on the same connection) which exists only
+/// because that lock spans many independent transactions.
 const V2_MIGRATE_LOCK_TIMEOUT: &str = "60s";
 
 /// The exact number of top-level statements in [`V2_DDL_TEMPLATE`], INCLUDING
@@ -195,6 +195,35 @@ END
 $$;
 COMMIT;"#;
 
+/// How many characters of a failing statement a relation-lock timeout quotes:
+/// enough, after whitespace collapsing, to reach the object name inside the
+/// `DO` blocks of [`V2_DDL_TEMPLATE`] (`events_notify` ends ~130 chars in).
+const LOCK_TIMEOUT_STMT_EXCERPT_CHARS: usize = 160;
+
+/// The context for a `55P03` in the V2 DDL transaction. `SET LOCAL lock_timeout`
+/// bounds every lock wait there, so the error names the migrate advisory lock
+/// only when the failing statement IS that acquisition — a prefix match, never
+/// `contains`: `append_event`'s body mentions `pg_advisory_xact_lock_shared`.
+/// Any other statement waited on a relation lock, and the message quotes it.
+pub(crate) fn lock_timeout_message(stmt: &str, lock_timeout: &str) -> String {
+    if stmt.trim_start().starts_with("SELECT pg_advisory_xact_lock(") {
+        return format!(
+            "asyncevents: V2 plane advisory lock not acquired within {lock_timeout} — \
+             another process is stuck mid plane-DDL; see pg_stat_activity"
+        );
+    }
+    let collapsed = stmt.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut excerpt: String = collapsed.chars().take(LOCK_TIMEOUT_STMT_EXCERPT_CHARS).collect();
+    if excerpt.len() < collapsed.len() {
+        excerpt.push('…');
+    }
+    format!(
+        "asyncevents: lock on a plane relation not acquired within {lock_timeout} while \
+         running `{excerpt}` — an open transaction holds a conflicting lock; see pg_locks / \
+         pg_blocking_pids"
+    )
+}
+
 /// Creates the V2 schema (idempotent, advisory-locked — see [`V2_DDL_TEMPLATE`])
 /// and seeds the `plane_meta` singleton: generation 1, the CURRENT cluster's
 /// `pg_control_system().system_identifier`, `ON CONFLICT DO NOTHING` so an
@@ -323,12 +352,7 @@ pub(crate) async fn ensure_schema_with_lock_timeout(
                 sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")
             );
             return if timed_out {
-                Err(err).with_context(|| {
-                    format!(
-                        "asyncevents: V2 plane advisory lock not acquired within {lock_timeout} — \
-                         another process is stuck mid plane-DDL; see pg_stat_activity"
-                    )
-                })
+                Err(err).with_context(|| lock_timeout_message(&stmt, lock_timeout))
             } else {
                 Err(err).context("asyncevents: V2 schema DDL failed")
             };
