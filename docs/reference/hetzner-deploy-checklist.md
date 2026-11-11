@@ -16,7 +16,7 @@ Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
       and distributed to all processes (never the ephemeral in-memory dev CA —
       watch for its loud warn in logs).
 
-## Gateway (cmd/gateway-svc) env
+## Public front (cmd/gateway-svc or cmd/server) env
 
 - [ ] `TLS_MODE=acme`
 - [ ] `ACME_DOMAINS=api.example.com` (comma-separated for more)
@@ -26,7 +26,8 @@ Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
 - [ ] `ACME_CACHE_DIR=<persistent path>` (default `run/acme-cache`; MUST survive
       restarts or you re-issue on every boot and hit LE rate limits)
 - [ ] `PORT=:443`
-- [ ] `ADMIN_HTTP_ADDR=<admin-svc host:port>` (the `/admin` passthrough origin)
+- [ ] `ADMIN_HTTP_ADDR=<admin-svc host:port>` (the `/admin` passthrough origin;
+      `cmd/gateway-svc` only — `cmd/server` does not read it)
 - [ ] Dev knobs NOT set: no `APIKEYS_DEV_ALLOW`, no `ACCOUNTS_DEV_AUTH` unless
       deliberately on.
 
@@ -34,7 +35,9 @@ Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
 
 - [ ] `TRUSTED_PROXY_CIDRS=<gateway host IP>/32` — REQUIRED for correct per-IP
       lockout: without it every client resolves to the gateway's address and one
-      attacker's failures throttle everyone (IP row locks at 20 fails).
+      attacker's failures throttle everyone (IP row locks at 20 fails). With
+      `cmd/server` as the public front, leave it unset when nothing proxies it,
+      or set it to the reverse proxy's range.
 - [ ] `ADMIN_COOKIE_SECURE` NOT set (defaults to Secure ON — correct behind
       https). Never set `=0` in production.
 - [ ] `ADMIN_OPEN` NOT set (it disables sessions AND CSRF).

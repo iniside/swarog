@@ -275,13 +275,32 @@ docker compose run --rm -T -e ADMINCTL_PASSWORD \
   --entrypoint /usr/local/bin/adminctl server create-user <name>
 ```
 
+Git Bash on Windows (MSYS) rewrites POSIX-looking arguments, so that command
+fails with `exec: "C:/Program": stat C:/Program: no such file or directory`.
+Prefix it with `MSYS_NO_PATHCONV=1`. In PowerShell:
+
+```powershell
+$secure = Read-Host -AsSecureString -Prompt "Admin password"
+$bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+try { $env:ADMINCTL_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+docker compose run --rm -T -e ADMINCTL_PASSWORD `
+  --entrypoint /usr/local/bin/adminctl server create-user <name>
+Remove-Item Env:ADMINCTL_PASSWORD
+```
+
+Set `SWAROG_DB_PASSWORD` by editing `.env`: a `SWAROG_DB_PASSWORD` exported in
+your shell (`$env:SWAROG_DB_PASSWORD` in PowerShell) overrides the `.env` value.
+
 The HTTP port is published on `127.0.0.1:8080` only; change it with `SWAROG_BIND`
 and `SWAROG_HTTP_PORT`. For TLS, either:
 
 - `TLS_MODE=files` with `TLS_CERT_PATH=/tls/cert.pem` and
   `TLS_KEY_PATH=/tls/key.pem`, the files placed in `./tls` (mounted read-only at
   `/tls`). On a Linux host the key must be readable by uid 65532 (for example
-  `chown 65532` or mode 644).
+  `chown 65532` or mode 644). Put the `TLS_*` values in `.env` (compose reads it
+  itself) rather than exporting them in Git Bash, which would rewrite `/tls/...`
+  into a Windows path.
 - `TLS_MODE=acme` with `ACME_DOMAINS`, which needs `SWAROG_BIND=0.0.0.0`,
   `SWAROG_HTTP_PORT=443` and public DNS.
 - Or terminate TLS in a reverse proxy and set `TRUSTED_PROXY_CIDRS` to its
