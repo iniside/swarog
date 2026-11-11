@@ -5,6 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: fb10aade-7f3e-4b87-9d35-e9f2dfc074bf
+  modified: 2026-11-11T16:55:36.938Z
 ---
 
 **The design is in the repo, not here: `docs/reference/weles-design.md`** (written
@@ -38,7 +39,9 @@ one-line `processctl` BUILD_ENV_ALLOWLIST gap (SYSTEMDRIVE/ProgramData). Deferre
 by decision: deploy-scoped lock for concurrent `weles deploy` (one-deploy-at-a-time
 is operator discipline for now).
 
-**How to apply:** never propose Docker/k8s/containerd, never fold Weles into
+**How to apply:** never make Docker/k8s/containerd Weles's RUNTIME (Weles supervises
+native processes) — but Docker as a distribution path and multi-host test bench IS
+wanted (2026-11-11, [[docker-is-distribution-and-multihost-bench]]); never fold Weles into
 `core/` or the module system, never let a crate cross the Weles↔backend boundary.
 Related: [[server-management-is-a-domain-module]], [[config-as-code-anti-magic]],
 [[didnt-forget-scripts-must-self-check]], [[team-is-solo-plus-agents-forever]].
