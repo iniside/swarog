@@ -264,8 +264,8 @@ password of URL-safe characters (it is embedded in `DATABASE_URL`), then:
 docker compose up
 ```
 
-Do not write a `KEY=` line with an empty value in `.env`; the server rejects an
-empty variable. Nothing is seeded in this variant: no dev keys, no admin login,
+Do not write a `KEY=` line with an empty value in `.env`: the mail settings fail
+startup when set but empty, and other keys read blank as unset. Nothing is seeded in this variant: no dev keys, no admin login,
 and `/readyz` stays red until `MAIL_PROVIDER` and `MAIL_FROM` are configured (by
 design). Create an admin login without echoing the password or putting it in argv:
 
