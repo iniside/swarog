@@ -243,9 +243,7 @@ pub struct Plane {
     listen_dsn: String,
     liveness: Liveness,
     retention: retention::Config,
-    /// Test-only: the retention task of THIS plane panics on entry, inside the
-    /// supervised future, so `retention_dead` supervision is testable without a
-    /// process-global switch another plane's task could consume.
+    /// Test-only: this plane's retention task panics on its first poll, inside the supervised future.
     #[cfg(test)]
     retention_panic_once: bool,
     /// Cancellation + background tasks, present between `start` and `stop`.
