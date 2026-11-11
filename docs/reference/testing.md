@@ -7,8 +7,9 @@ coverage** (Kover), gated at **85%** in `check`. Plan: `docs/plans/2026-07-06-12
 ## How the DB tests work (READ THIS before adding a test)
 
 - **DB = local `jvmsketch` Postgres** (`gamebackend`/`gamebackend`, `jdbc:postgresql://localhost:5432/jvmsketch`).
-  **NO Docker / Testcontainers / Dev Services** — this repo does not use them; integration tests need a running
+  **NO Docker / Testcontainers / Dev Services** — tests do not use them; integration tests need a running
   local Postgres, which is the correct target for an integration test (see [[local-postgres-is-the-test-db]]).
+  The compose files at the repo root are a distribution path for the monolith, not a test dependency.
 - **`app/src/test/resources/application.properties`**: `quarkus.http.test-port=8090` (so the outbox relay's default
   subscriber URL lands on the test's own server — exercises the REAL fanout) + `app.seed.enabled=false` (Seed
   `TRUNCATE`s every table on monolith boot — must stay off in test or it wipes the dev DB).

@@ -31,7 +31,8 @@ origin in games — identities resolve to a `player_id`, and the front door
 includes a player QUIC plane.
 
 It runs as native processes on one machine with one PostgreSQL database; no
-container orchestrator or cloud-provider service is required. No capacity or
+container orchestrator or cloud-provider service is required. The monolith also
+ships a Docker Compose setup. No capacity or
 cost figures have been measured yet.
 
 ## Highlights
@@ -51,8 +52,8 @@ cost figures have been measured yet.
   checks, per-process boot checks, wire-contract snapshots, and a
   split-versus-monolith parity proof, with advisory public-API snapshots.
 - Self-hosted on native processes. Development, verification, and supervision
-  tooling run on Linux, macOS, and Windows without containers; the code is
-  licensed under the EUPL-1.2.
+  tooling run on Linux, macOS, and Windows without containers; Docker Compose is
+  an additional way to run the monolith. The code is licensed under the EUPL-1.2.
 
 ## Architecture
 
@@ -225,7 +226,7 @@ Prerequisites:
   `postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable`.
   `scripts/db-provision.sh` (or `scripts/db-provision.ps1`) creates the role and
   database. Module schemas are created by the services at boot. Integration tests
-  use this database directly; there are no containers.
+  use this database directly; Docker is not a test dependency.
 
 Run either topology under the development supervisor:
 
@@ -250,6 +251,56 @@ curl -X POST localhost:8080/match/report -H "X-Api-Key: dev-key-server" \
   -d '{"ReportId":"demo-1","Winner":"alice","Loser":"bob"}'
 curl localhost:8080/leaderboard -H "X-Api-Key: dev-key-client"
 ```
+
+### Run with Docker
+
+`compose.yaml` runs the monolith and its PostgreSQL in containers (a distroless
+image built from the `Dockerfile`). The split topology is not in compose yet.
+
+Secure default: copy `.env.example` to `.env`, set `SWAROG_DB_PASSWORD` to a
+password of URL-safe characters (it is embedded in `DATABASE_URL`), then:
+
+```sh
+docker compose up
+```
+
+Do not write a `KEY=` line with an empty value in `.env`; the server rejects an
+empty variable. Nothing is seeded in this variant: no dev keys, no admin login,
+and `/readyz` stays red until `MAIL_PROVIDER` and `MAIL_FROM` are configured (by
+design). Create an admin login without echoing the password or putting it in argv:
+
+```sh
+read -rs ADMINCTL_PASSWORD; export ADMINCTL_PASSWORD
+docker compose run --rm -T -e ADMINCTL_PASSWORD \
+  --entrypoint /usr/local/bin/adminctl server create-user <name>
+```
+
+The HTTP port is published on `127.0.0.1:8080` only; change it with `SWAROG_BIND`
+and `SWAROG_HTTP_PORT`. For TLS, either:
+
+- `TLS_MODE=files` with `TLS_CERT_PATH=/tls/cert.pem` and
+  `TLS_KEY_PATH=/tls/key.pem`, the files placed in `./tls` (mounted read-only at
+  `/tls`). On a Linux host the key must be readable by uid 65532 (for example
+  `chown 65532` or mode 644).
+- `TLS_MODE=acme` with `ACME_DOMAINS`, which needs `SWAROG_BIND=0.0.0.0`,
+  `SWAROG_HTTP_PORT=443` and public DNS.
+- Or terminate TLS in a reverse proxy and set `TRUSTED_PROXY_CIDRS` to its
+  address range.
+
+The player QUIC port `9100/udp` is published too, but it presents a certificate
+from an ephemeral development CA, so verifying clients cannot use it from outside
+yet (tracked as GATEWAY-07 in [docs/todo/gateway.md](docs/todo/gateway.md)).
+
+Development variant: the overlay seeds the `admin` / `admin` login, enables the
+development conveniences and dev API keys, and sends mail to the log.
+
+```sh
+docker compose -f compose.yaml -f compose.dev.yaml up
+```
+
+It runs as the separate project `swarog-dev` with its own containers and data, so
+it never shares a database with the secure variant. The smoke test above works
+against it.
 
 Per-platform details (Linux, macOS, Windows) are in
 [docs/reference/platform-notes.md](docs/reference/platform-notes.md).

@@ -204,6 +204,8 @@ to guard it, and the answer belongs to the panel plan, not here.
   binary + supervise. Resource limits, if ever needed, are direct cgroups/Job
   Objects. Reference point: Guild Wars 1 (2005) ran a custom native-process
   orchestrator with live no-downtime updates, small team, no container tooling.
+  Docker is a distribution path and multi-host test bench outside Weles; Weles
+  still supervises native processes.
 - **Zero-sharing, both directions — stated precisely (corrected 2026-07-17).**
   Weles never imports a workspace crate, in any direction, ever. The reverse arrow
   is narrower than earlier revisions of this file claimed: **the shipping graph
