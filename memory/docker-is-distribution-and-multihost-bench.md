@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: fb0529fe-4b60-43b5-a11a-9d60ec9ddba8
-  modified: 2026-11-11T16:55:34.960Z
+  modified: 2026-11-11T16:57:17.540Z
 ---
 
 Lukasz reversed the blanket "no Docker" stance on 2026-11-11: many users expect
@@ -14,7 +14,11 @@ change alone". Prior docs saying "no containers" (README, weles-design.md
 Non-negotiables, testing.md) are to be UPDATED to match, not cited as blockers.
 
 Scope of the decision:
-- **Distribution:** a Dockerfile + compose (monolith first; split later).
+- **Distribution:** a Dockerfile + compose for BOTH topologies. The split in compose
+  is a first-class goal, not an optional extra — a prospective repo user expects
+  `docker compose up` to bring up the split (all `*-svc` + gateway) just as easily
+  as the monolith. Monolith may land first, but the split is part of the deliverable
+  (consistent with [[never-monolith-only-features]]).
 - **Multi-host test bench:** each container plays a MACHINE (own IP/netns), running
   native processes (eventually under a Weles agent) — exposes hidden 127.0.0.1 /
   `localhost`-SNI assumptions, allows kill / network-partition / netem fault drills.
