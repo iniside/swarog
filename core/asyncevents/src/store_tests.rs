@@ -499,9 +499,7 @@ fn trigger_do_block() -> String {
 
 /// A migrate against a fully-migrated plane must not wait on a writer: with an
 /// appended-but-uncommitted tx open (holding ROW EXCLUSIVE on `events`), the
-/// steady-state run completes within its 2s `lock_timeout`. The old template's
-/// `CREATE INDEX IF NOT EXISTS` (SHARE) and `CREATE OR REPLACE TRIGGER` (SHARE
-/// ROW EXCLUSIVE) queued behind that lock and died with 55P03.
+/// steady-state run completes within its 2s `lock_timeout`.
 /// Takes WRITER_LOCK_CHOREOGRAPHY: it holds an appended tx across an await on
 /// another connection.
 #[tokio::test]
@@ -525,8 +523,8 @@ async fn steady_state_migrate_does_not_wait_on_an_open_append() {
 /// drop the index and trigger, run the real rendered blocks, and both come back;
 /// a second run changes nothing. All inside one short transaction that is rolled
 /// back, so the shared DB is untouched. DROP TRIGGER takes ACCESS EXCLUSIVE on
-/// `events`, hence the WRITER_LOCK_CHOREOGRAPHY guard and the short
-/// `lock_timeout` so it can never hang.
+/// `events`, hence the WRITER_LOCK_CHOREOGRAPHY guard; the short `lock_timeout`
+/// bounds the lock waits, not the index build over `events`.
 #[tokio::test]
 async fn do_blocks_recreate_missing_scan_index_and_notify_trigger() {
     let _choreo = WRITER_LOCK_CHOREOGRAPHY.lock().await;
