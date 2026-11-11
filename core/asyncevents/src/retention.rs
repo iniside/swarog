@@ -139,15 +139,6 @@ impl Config {
     }
 }
 
-/// Test-only panic injection: when set, the retention task panics immediately on
-/// entry (before its first tick), so the plane's per-task supervision
-/// (`Liveness::retention_dead` → the `asyncevents-retention` readyz check) is
-/// testable without waiting out an interval. `#[cfg(test)]`-gated — never
-/// compiled into a shipping binary.
-#[cfg(test)]
-pub(crate) static RETENTION_PANIC_ONCE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
 /// Single-unit Go-duration parser (`h`/`m`/`s`/`ms`, or a bare seconds integer).
 /// Restored from the pre-cutover housekeeping helper; the plane's other knob
 /// ([`crate::worker`]) has its own copy without `h` (a delivery timeout in hours is
@@ -196,10 +187,6 @@ pub(crate) async fn run(
     liveness: Liveness,
     mut stop: watch::Receiver<bool>,
 ) {
-    #[cfg(test)]
-    if RETENTION_PANIC_ONCE.swap(false, std::sync::atomic::Ordering::SeqCst) {
-        panic!("test-injected retention panic (RETENTION_PANIC_ONCE)");
-    }
     let mut ticker = tokio::time::interval(interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     ticker.tick().await; // consume the immediate first tick

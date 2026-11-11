@@ -243,6 +243,11 @@ pub struct Plane {
     listen_dsn: String,
     liveness: Liveness,
     retention: retention::Config,
+    /// Test-only: the retention task of THIS plane panics on entry, inside the
+    /// supervised future, so `retention_dead` supervision is testable without a
+    /// process-global switch another plane's task could consume.
+    #[cfg(test)]
+    retention_panic_once: bool,
     /// Cancellation + background tasks, present between `start` and `stop`.
     stop: Option<(watch::Sender<bool>, Vec<JoinHandle<()>>)>,
     stop_grace: Duration,
@@ -262,6 +267,8 @@ impl Plane {
             listen_dsn,
             liveness: Liveness::default(),
             retention,
+            #[cfg(test)]
+            retention_panic_once: false,
             stop: None,
             stop_grace: Duration::from_millis(DEFAULT_PLANE_STOP_GRACE_MS),
             active_deliveries: worker::ActiveDeliveries::default(),
@@ -383,6 +390,16 @@ impl Plane {
             self.liveness.clone(),
             stop_rx.clone(),
         );
+        #[cfg(test)]
+        let gc = {
+            let panic_once = self.retention_panic_once;
+            async move {
+                if panic_once {
+                    panic!("test-injected retention panic");
+                }
+                gc.await
+            }
+        };
         tasks.push(tokio::spawn(async move {
             let result = std::panic::AssertUnwindSafe(gc).catch_unwind().await;
             if !liveness.stopping.load(Ordering::SeqCst) {
@@ -462,6 +479,12 @@ impl Plane {
     #[allow(dead_code)]
     fn with_stop_grace(mut self, grace: Duration) -> Self {
         self.stop_grace = grace;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_retention_panic_once(mut self) -> Self {
+        self.retention_panic_once = true;
         self
     }
 }
