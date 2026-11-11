@@ -49,19 +49,6 @@ const MIGRATE_LOCK_KEY: i64 = 0x6173_796E_636D_6967;
 /// transactions.
 const V2_MIGRATE_LOCK_TIMEOUT: &str = "60s";
 
-/// The V2 DDL, normative in the plan. Idempotent; runs in ONE transaction under
-/// the exclusive migrate advisory lock (`{migrate_key}`), bounded by
-/// `SET LOCAL lock_timeout = '{lock_timeout}'` (see [`V2_MIGRATE_LOCK_TIMEOUT`]).
-/// `asyncevents.append_event`
-/// owns the WHOLE writer protocol so there is exactly one implementation:
-/// shared advisory lock -> read `plane_meta.generation` -> INSERT stamped with
-/// `pg_current_xact_id()` -> return the stable `event_id`. `ensure_history_contract`
-/// is the plane-owned history-seed surface a module-owned writer (config's trigger
-/// seed) calls WITHOUT touching the plane's tables (archcheck-enforced); it mirrors
-/// [`ensure_history_contract`]'s ON-CONFLICT-then-drift-check semantics in SQL. The
-/// `AFTER INSERT` trigger fires the wake-up NOTIFY the Step-3 worker will LISTEN on.
-/// `tie_breaker` is a table-wide identity: within one transaction it is strictly
-/// increasing in append order, which is all the position ordering needs.
 /// The exact number of top-level statements in [`V2_DDL_TEMPLATE`], INCLUDING
 /// the literal `BEGIN;`/`COMMIT;` pair (which the executor skips). Pinned as a
 /// loud tripwire for [`split_sql_statements`]: the splitter is deliberately
@@ -75,6 +62,29 @@ const V2_MIGRATE_LOCK_TIMEOUT: &str = "60s";
 /// in `core/asyncevents/src/store.rs`.
 const V2_DDL_STATEMENT_COUNT: usize = 14;
 
+/// The V2 DDL, normative in the plan. Idempotent; runs in ONE transaction under
+/// the exclusive migrate advisory lock (`{migrate_key}`), bounded by
+/// `SET LOCAL lock_timeout = '{lock_timeout}'` (see [`V2_MIGRATE_LOCK_TIMEOUT`]).
+/// `asyncevents.append_event`
+/// owns the WHOLE writer protocol so there is exactly one implementation:
+/// shared advisory lock -> read `plane_meta.generation` -> INSERT stamped with
+/// `pg_current_xact_id()` -> return the stable `event_id`. `ensure_history_contract`
+/// is the plane-owned history-seed surface a module-owned writer (config's trigger
+/// seed) calls WITHOUT touching the plane's tables (archcheck-enforced); it mirrors
+/// [`ensure_history_contract`]'s ON-CONFLICT-then-drift-check semantics in SQL. The
+/// `AFTER INSERT` trigger fires the wake-up NOTIFY the Step-3 worker will LISTEN on.
+/// `tie_breaker` is a table-wide identity: within one transaction it is strictly
+/// increasing in append order, which is all the position ordering needs.
+///
+/// A steady-state run (every object already present) takes no lock on
+/// `asyncevents.events`, so a booting process never queues live appends behind
+/// it: the scan index and the notify trigger are created inside `DO` blocks only
+/// when a catalog probe finds them missing, because `CREATE INDEX IF NOT EXISTS`
+/// (SHARE) and `CREATE OR REPLACE TRIGGER` (SHARE ROW EXCLUSIVE) lock the table
+/// even when the object exists. The probes run after the migrate advisory lock,
+/// so two migrators cannot both see "missing". A changed index or trigger
+/// definition is therefore never applied in place; it follows the wipe policy
+/// (DROP + boot fresh).
 const V2_DDL_TEMPLATE: &str = r#"
 BEGIN;
 SET LOCAL lock_timeout = '{lock_timeout}';
@@ -96,8 +106,14 @@ CREATE TABLE IF NOT EXISTS asyncevents.events (
 	created_at       timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (generation, producer_xid, tie_breaker)
 );
-CREATE INDEX IF NOT EXISTS events_scan
-	ON asyncevents.events (topic, generation, producer_xid, tie_breaker);
+DO $$
+BEGIN
+	IF to_regclass('asyncevents.events_scan') IS NULL THEN
+		CREATE INDEX events_scan
+			ON asyncevents.events (topic, generation, producer_xid, tie_breaker);
+	END IF;
+END
+$$;
 CREATE TABLE IF NOT EXISTS asyncevents.subscriptions (
 	subscription_id      text        PRIMARY KEY,
 	topic                text        NOT NULL,
@@ -163,9 +179,20 @@ BEGIN
 	RETURN NULL;
 END;
 $$;
-CREATE OR REPLACE TRIGGER events_notify
-	AFTER INSERT ON asyncevents.events
-	FOR EACH ROW EXECUTE FUNCTION asyncevents.notify_events();
+DO $$
+BEGIN
+	IF NOT EXISTS (
+		SELECT 1 FROM pg_trigger
+		WHERE tgrelid = 'asyncevents.events'::regclass
+			AND tgname = 'events_notify'
+			AND NOT tgisinternal
+	) THEN
+		CREATE TRIGGER events_notify
+			AFTER INSERT ON asyncevents.events
+			FOR EACH ROW EXECUTE FUNCTION asyncevents.notify_events();
+	END IF;
+END
+$$;
 COMMIT;"#;
 
 /// Creates the V2 schema (idempotent, advisory-locked — see [`V2_DDL_TEMPLATE`])
