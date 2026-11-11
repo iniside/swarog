@@ -467,3 +467,141 @@ async fn migrate_lock_timeout_fails_fast_without_poisoning_pool() {
         .await
         .expect("ensure_schema must succeed once the migrate lock is free");
 }
+
+/// [`V2_DDL_TEMPLATE`] rendered and split exactly as
+/// [`ensure_schema_with_lock_timeout`] does it, so tests execute the production
+/// statements and not a hand-copied variant.
+fn rendered_ddl_statements() -> Vec<String> {
+    let ddl = V2_DDL_TEMPLATE
+        .replace("{lock_timeout}", "5s")
+        .replace("{migrate_key}", &MIGRATE_LOCK_KEY.to_string())
+        .replace("{writer_key}", &WRITER_LOCK_KEY.to_string());
+    split_sql_statements(&ddl)
+}
+
+/// The one rendered statement that starts with `prefix` and contains `needle`.
+fn rendered_statement(prefix: &str, needle: &str) -> String {
+    let mut hits: Vec<String> = rendered_ddl_statements()
+        .into_iter()
+        .filter(|s| s.starts_with(prefix) && s.contains(needle))
+        .collect();
+    assert_eq!(hits.len(), 1, "expected exactly one `{prefix}…{needle}` statement");
+    hits.remove(0)
+}
+
+fn index_do_block() -> String {
+    rendered_statement("DO $$", "events_scan")
+}
+
+fn trigger_do_block() -> String {
+    rendered_statement("DO $$", "events_notify")
+}
+
+/// A migrate against a fully-migrated plane must not wait on a writer: with an
+/// appended-but-uncommitted tx open (holding ROW EXCLUSIVE on `events`), the
+/// steady-state run completes within its 2s `lock_timeout`. The old template's
+/// `CREATE INDEX IF NOT EXISTS` (SHARE) and `CREATE OR REPLACE TRIGGER` (SHARE
+/// ROW EXCLUSIVE) queued behind that lock and died with 55P03.
+/// Takes WRITER_LOCK_CHOREOGRAPHY: it holds an appended tx across an await on
+/// another connection.
+#[tokio::test]
+async fn steady_state_migrate_does_not_wait_on_an_open_append() {
+    let _choreo = WRITER_LOCK_CHOREOGRAPHY.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let topic = unique_topic("store.steady");
+    let c = contract(topic);
+
+    let mut tx = pool.begin().await.unwrap();
+    append(&mut tx, &c, br#"{"n":1}"#).await.unwrap();
+
+    let result = ensure_schema_with_lock_timeout(&pool, "2s").await;
+
+    tx.rollback().await.unwrap();
+    result.expect("a steady-state migrate must not wait on an open append");
+    cleanup_topic(&pool, topic).await;
+}
+
+/// The create branch of the `DO` blocks, which a long-lived DB never reaches:
+/// drop the index and trigger, run the real rendered blocks, and both come back;
+/// a second run changes nothing. All inside one short transaction that is rolled
+/// back, so the shared DB is untouched. DROP TRIGGER takes ACCESS EXCLUSIVE on
+/// `events`, hence the WRITER_LOCK_CHOREOGRAPHY guard and the short
+/// `lock_timeout` so it can never hang.
+#[tokio::test]
+async fn do_blocks_recreate_missing_scan_index_and_notify_trigger() {
+    let _choreo = WRITER_LOCK_CHOREOGRAPHY.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let index_block = index_do_block();
+    let trigger_block = trigger_do_block();
+
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL lock_timeout = '5s'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("DROP TRIGGER events_notify ON asyncevents.events")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("DROP INDEX asyncevents.events_scan")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    let state = "SELECT (to_regclass('asyncevents.events_scan') IS NOT NULL), \
+                 (SELECT count(*) FROM pg_trigger \
+                  WHERE tgrelid = 'asyncevents.events'::regclass \
+                    AND tgname = 'events_notify' AND NOT tgisinternal), \
+                 coalesce(to_regclass('asyncevents.events_scan')::oid::text, '')";
+    let (has_index, triggers, _): (bool, i64, String) =
+        sqlx::query_as(state).fetch_one(&mut *tx).await.unwrap();
+    assert!(!has_index && triggers == 0, "the drops must have removed both objects");
+
+    sqlx::query(&index_block).execute(&mut *tx).await.unwrap();
+    sqlx::query(&trigger_block).execute(&mut *tx).await.unwrap();
+    let (has_index, triggers, index_oid): (bool, i64, String) =
+        sqlx::query_as(state).fetch_one(&mut *tx).await.unwrap();
+    assert!(has_index, "the index DO block must create events_scan when missing");
+    assert_eq!(triggers, 1, "the trigger DO block must create events_notify when missing");
+
+    sqlx::query(&index_block).execute(&mut *tx).await.unwrap();
+    sqlx::query(&trigger_block).execute(&mut *tx).await.unwrap();
+    let (has_index, triggers, index_oid_again): (bool, i64, String) =
+        sqlx::query_as(state).fetch_one(&mut *tx).await.unwrap();
+    assert!(has_index && triggers == 1, "a second run must leave both objects in place");
+    assert_eq!(index_oid, index_oid_again, "a second run must not rebuild the index");
+
+    tx.rollback().await.unwrap();
+}
+
+#[test]
+fn lock_timeout_message_names_the_advisory_lock_for_the_acquisition() {
+    let stmt = rendered_statement("SELECT pg_advisory_xact_lock(", "pg_advisory_xact_lock(");
+    let msg = lock_timeout_message(&stmt, "60s");
+    assert!(msg.contains("V2 plane advisory lock"), "{msg}");
+    assert!(msg.contains("60s"), "{msg}");
+}
+
+#[test]
+fn lock_timeout_message_names_a_relation_wait_for_append_event_not_the_advisory_lock() {
+    // `append_event`'s body mentions `pg_advisory_xact_lock_shared`; it must not
+    // be mistaken for the migrate-lock acquisition.
+    let stmt = rendered_statement(
+        "CREATE OR REPLACE FUNCTION asyncevents.append_event",
+        "pg_advisory_xact_lock_shared",
+    );
+    let msg = lock_timeout_message(&stmt, "60s");
+    assert!(!msg.contains("V2 plane advisory lock"), "{msg}");
+    assert!(msg.contains("lock on a plane relation"), "{msg}");
+    assert!(msg.contains("CREATE OR REPLACE FUNCTION asyncevents.append_event"), "{msg}");
+}
+
+#[test]
+fn lock_timeout_message_names_the_object_of_each_do_block() {
+    let index_msg = lock_timeout_message(&index_do_block(), "60s");
+    assert!(index_msg.contains("events_scan"), "{index_msg}");
+    assert!(!index_msg.contains("V2 plane advisory lock"), "{index_msg}");
+    let trigger_msg = lock_timeout_message(&trigger_do_block(), "60s");
+    assert!(trigger_msg.contains("events_notify"), "{trigger_msg}");
+    assert!(!trigger_msg.contains("V2 plane advisory lock"), "{trigger_msg}");
+}
