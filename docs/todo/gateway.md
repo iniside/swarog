@@ -1,6 +1,6 @@
 # Gateway
 
-Last updated: 2026-10-23
+Last updated: 2026-11-11
 
 ## In progress
 
@@ -30,6 +30,8 @@ _None._
   `server_tls_public` derived from the shared dev CA; `TLS_MODE=acme` covers HTTP only
   (docs/reference/hetzner-deploy-checklist.md:21). Source:
   docs/plans/2026-07-08-1330-rust-sketch-quic-player-front-plan.md:365 (2026-07-08).
+  Owner priority (2026-11-11): next after the docker-compose monolith work — needed to
+  expose players publicly in both topologies (monolith and gateway-svc).
 
 ### Deferred
 
