@@ -491,8 +491,9 @@ never a silent last-writer-wins overwrite.
   (`/admin`, `/accounts/epic` → origins passed in by `cmd/gateway-svc` via
   `Gateway::with_passthrough`, env read in the main, not the module), always-on
   rate limit in gateway-svc (20 rps/burst 40), and **native TLS termination**
-  (mechanism in `core/app` — `Config::with_tls(TlsFront::Files|Acme)`; env parsed
-  ONLY in `cmd/gateway-svc` main: `TLS_MODE=off|files|acme` (default off),
+  (mechanism in `core/app` — `Config::with_tls(TlsFront::Files|Acme)`; env read in
+  each public front main (`cmd/gateway-svc`, `cmd/server`) and parsed by
+  `app::TlsFront::from_values`: `TLS_MODE=off|files|acme` (default off),
   `TLS_CERT_PATH`+`TLS_KEY_PATH`, `ACME_DOMAINS`/`ACME_CONTACT`/`ACME_CACHE_DIR`;
   rustls-acme TLS-ALPN-01 auto-renew, ring-pinned — `aws-lc-rs` must never enter
   the tree). The FrontDoor is hosted ONLY by the front
