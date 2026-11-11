@@ -3060,7 +3060,7 @@ fn masked_text_header(len: usize) -> Vec<u8> {
 
 /// An inbound frame over `max_frame_bytes` closes `frame_too_large`, RETRYABLE (the
 /// reconnect restores every stream) — distinct from `bad_frame` — then with the protocol
-/// 1009 close. A frame just under the cap is served first on the same connection. The
+/// 1009 close. An in-cap frame is served first on the same connection. The
 /// oversize frame is a bare HEADER declaring cap + 1 bytes, written straight onto the TCP
 /// stream with no payload: the server rejects it from the declared length alone, so it
 /// closes with nothing unread and the peer gets a clean FIN, never a reset that would race
