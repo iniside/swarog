@@ -4,7 +4,7 @@
 //! poll below never succeeds and the test fails there (no HTTPS answer).
 //!
 //! `PORT` is a loopback `host:port` (`127.0.0.1:{port}`), so this also proves a
-//! host:port `PORT` binds under TLS (it used to be mangled into `:127.0.0.1:{port}`).
+//! host:port `PORT` binds under TLS.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};

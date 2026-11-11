@@ -991,7 +991,6 @@ fn to_bind_addr_expands_colon_port() {
 
 #[test]
 fn normalize_addr_passes_host_port_through_and_prefixes_bare_port() {
-    // Previously-wrong branch: a host:port used to become ":127.0.0.1:9000".
     assert_eq!(normalize_addr("127.0.0.1:9000"), "127.0.0.1:9000");
     assert_eq!(normalize_addr("[::1]:9000"), "[::1]:9000");
     assert_eq!(normalize_addr(":9000"), ":9000");
