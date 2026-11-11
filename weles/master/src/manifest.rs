@@ -369,8 +369,9 @@ pub struct ServiceDef {
 /// re-lookup by name is a chance to format the WRONG def's port (see
 /// [`PeerAddrs::from_fleet`], which must not re-find what it already holds).
 ///
-/// Every fleet process binds loopback (`PORT`/`EDGE_ADDR` are `:<port>`), so
-/// the host is `127.0.0.1` by construction, not per-service data.
+/// Every fleet process binds all IPv4 interfaces of its host (`PORT`/`EDGE_ADDR`
+/// are `:<port>`) and peers share that host, so `127.0.0.1` reaches them by
+/// construction — the host is not per-service data.
 ///
 /// `pub(crate)` for the composed-env and `resolve`-map paths, both of which run
 /// AFTER the mint pass, so every port here is a resolved literal (a `Mint` would

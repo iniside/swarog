@@ -279,7 +279,7 @@ pub struct Config {
 impl Config {
     /// Reads the standard process env (`DATABASE_URL`, `PORT`, `EDGE_ADDR`,
     /// `PLAYER_EDGE_ADDR`) into a [`Config`], applying the same defaults the Go
-    /// monolith used. `PORT` accepts `8080`, `:8080` (all interfaces) or `IP:port`
+    /// monolith used. `PORT` accepts `8080`, `:8080` (all IPv4 interfaces) or `IP:port`
     /// (e.g. `127.0.0.1:8080`, `[::1]:8080`); a hostname works only for plain HTTP,
     /// since the TLS bind parses a `SocketAddr`. The DSN
     /// is always `Some` here — a process that wants no DB calls [`Config::without_db`].
