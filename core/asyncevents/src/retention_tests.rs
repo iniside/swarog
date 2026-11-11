@@ -12,6 +12,13 @@ use sqlx::PgPool;
 const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 
+/// A database-wide `sweep`/`run` GCs EVERY topic with a `min_retention` contract, so it
+/// deletes other parallel tests' fixtures. Tests that sweep database-wide (directly, via
+/// `run`, or through a fault pool) take `.write()`; tests that seed a contract and rely
+/// on their data surviving until their own `gc_topic` take `.read()`. Lock order:
+/// this guard first, then `WRITER_LOCK_CHOREOGRAPHY`.
+static GLOBAL_SWEEP: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
 /// Runs trigger DDL against the SHARED `asyncevents.events` table with a bounded
 /// `lock_timeout` and a short retry, inside one tx (`SET LOCAL` cannot poison the
 /// pooled connection). Trigger DDL needs ACCESS EXCLUSIVE on the table every other
@@ -256,6 +263,7 @@ async fn cleanup(pool: &PgPool, topic: &str) {
 /// `min_retention_days` are deleted; events at/above the cursor stay.
 #[tokio::test]
 async fn deletes_below_active_floor_only() {
+    let _global_sweep = GLOBAL_SWEEP.read().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique("ret.active");
     let pos = append_positions(&pool, topic, 5).await;
@@ -274,6 +282,7 @@ async fn deletes_below_active_floor_only() {
 /// position (generation ≥ 1) is strictly below it, so GC deletes nothing.
 #[tokio::test]
 async fn genesis_never_run_pins_everything() {
+    let _global_sweep = GLOBAL_SWEEP.read().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique("ret.genesis");
     append_positions(&pool, topic, 4).await;
@@ -291,6 +300,7 @@ async fn genesis_never_run_pins_everything() {
 /// an active one would, and raises the blocked-age gauge.
 #[tokio::test]
 async fn paused_subscription_blocks_gc_and_raises_gauge() {
+    let _global_sweep = GLOBAL_SWEEP.read().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique("ret.paused");
     let pos = append_positions(&pool, topic, 5).await;
@@ -319,6 +329,7 @@ async fn paused_subscription_blocks_gc_and_raises_gauge() {
 /// GC, so the active subscription's cursor alone governs deletion.
 #[tokio::test]
 async fn retired_subscription_does_not_block_gc() {
+    let _global_sweep = GLOBAL_SWEEP.read().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique("ret.retired");
     let pos = append_positions(&pool, topic, 5).await;
@@ -338,6 +349,7 @@ async fn retired_subscription_does_not_block_gc() {
 /// below the checkpoint floor.
 #[tokio::test]
 async fn min_retention_protects_recent_events() {
+    let _global_sweep = GLOBAL_SWEEP.read().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique("ret.recent");
     let pos = append_positions(&pool, topic, 4).await;
@@ -355,6 +367,7 @@ async fn min_retention_protects_recent_events() {
 /// contracts, so an old below-floor event on a `keep_forever` topic stays.
 #[tokio::test]
 async fn keep_forever_never_deletes() {
+    let _global_sweep = GLOBAL_SWEEP.write().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique("ret.keep");
     let pos = append_positions(&pool, topic, 4).await;
@@ -372,6 +385,7 @@ async fn keep_forever_never_deletes() {
 /// even with old below-floor events and an advanced cursor.
 #[tokio::test]
 async fn topic_without_contract_is_never_deleted() {
+    let _global_sweep = GLOBAL_SWEEP.write().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique("ret.nocontract");
     let pos = append_positions(&pool, topic, 4).await;
@@ -390,6 +404,7 @@ async fn topic_without_contract_is_never_deleted() {
 /// still swept; the aggregate error identifies the failed topic.
 #[tokio::test]
 async fn sweep_continues_after_topic_failure_and_returns_contextual_error() {
+    let _global_sweep = GLOBAL_SWEEP.write().await;
     // Trigger DDL on the shared events table takes ACCESS EXCLUSIVE — hold the
     // choreography guard so it can never queue behind (and wedge against) a
     // store test's open appended tx. See the guard's doc for the observed cycle.
@@ -478,6 +493,7 @@ async fn sweep_continues_after_topic_failure_and_returns_contextual_error() {
 /// both events survive (buggy floor would leave 1).
 #[tokio::test]
 async fn floor_uses_numeric_xid_order_not_text() {
+    let _global_sweep = GLOBAL_SWEEP.read().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique("ret.xidorder");
     let t999 = unique_tie();
@@ -534,6 +550,7 @@ async fn count_events_at_or_above(pool: &PgPool, topic: &str, cursor: &(i64, Str
 /// autocommit DELETEs and the trigger's insert rides each statement's own tx.)
 #[tokio::test]
 async fn mid_sweep_registered_subscription_survives_stale_floor() {
+    let _global_sweep = GLOBAL_SWEEP.read().await;
     // Trigger DDL on the shared events table takes ACCESS EXCLUSIVE — hold the
     // choreography guard (same reasoning as
     // `sweep_continues_after_topic_failure_and_returns_contextual_error`).
@@ -642,6 +659,7 @@ async fn mid_sweep_registered_subscription_survives_stale_floor() {
 /// pos[1]..pos[4] and this assertion (1 survivor) would fail.
 #[tokio::test]
 async fn retired_low_cursor_does_not_pin_new_delete() {
+    let _global_sweep = GLOBAL_SWEEP.read().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique("ret.retired.low");
     let pos = append_positions(&pool, topic, 5).await;
@@ -670,6 +688,7 @@ async fn retired_low_cursor_does_not_pin_new_delete() {
 /// retain the xid-2 event. Asserts exactly one survivor (the xid-10 event).
 #[tokio::test]
 async fn new_subquery_uses_numeric_xid_order_in_delete() {
+    let _global_sweep = GLOBAL_SWEEP.read().await;
     let Some(pool) = test_pool().await else { return };
     let topic = unique("ret.xidorder.delete");
     let t2 = unique_tie();
@@ -732,6 +751,7 @@ async fn persistent_sweep_failure_flips_retention_stalled() {
 /// contracts), so the task marks progress every interval.
 #[tokio::test]
 async fn healthy_sweeps_keep_retention_unstalled() {
+    let _global_sweep = GLOBAL_SWEEP.write().await;
     let Some(pool) = test_pool().await else { return };
     let liveness = crate::Liveness::default();
     liveness.mark_retention_ok();
