@@ -233,13 +233,30 @@ pub(crate) async fn ensure_schema(pool: &PgPool) -> anyhow::Result<()> {
     ensure_schema_with_lock_timeout(pool, V2_MIGRATE_LOCK_TIMEOUT).await
 }
 
+/// [`V2_DDL_TEMPLATE`] with every placeholder filled — the one renderer, so
+/// tests split and execute exactly the text production runs.
+pub(crate) fn render_v2_ddl(lock_timeout: &str) -> String {
+    // Tripwire, not a security boundary: the value is crate-internal (const or
+    // test literal), but it is spliced into quoted SQL, so a malformed value
+    // should die loudly here rather than as a cryptic DDL syntax error.
+    assert!(
+        !lock_timeout.is_empty() && lock_timeout.chars().all(|c| c.is_ascii_alphanumeric()),
+        "asyncevents: lock_timeout {lock_timeout:?} must be ASCII alphanumeric \
+         (digits + unit, e.g. \"60s\")"
+    );
+    V2_DDL_TEMPLATE
+        .replace("{lock_timeout}", lock_timeout)
+        .replace("{migrate_key}", &MIGRATE_LOCK_KEY.to_string())
+        .replace("{writer_key}", &WRITER_LOCK_KEY.to_string())
+}
+
 /// [`ensure_schema`]'s body, parameterized on the `lock_timeout` GUC value so
 /// tests can wait milliseconds instead of [`V2_MIGRATE_LOCK_TIMEOUT`]'s real
 /// 60s (mirrors `core/lifecycle`'s `App::migrate_with_lock_timeout`).
 /// `lock_timeout` is a trusted crate-internal/test string, never user/network
 /// input — it is spliced into the DDL text because `SET LOCAL` cannot take a
-/// bind parameter; the alphanumeric assert below is a tripwire for a malformed
-/// caller value, not a security boundary.
+/// bind parameter; [`render_v2_ddl`]'s alphanumeric assert is a tripwire for a
+/// malformed caller value, not a security boundary.
 ///
 /// Runs the DDL statement-by-statement inside ONE `sqlx::Transaction` (an
 /// EXPLICIT connection, held for the whole batch, not `.execute(pool)`
@@ -298,18 +315,7 @@ pub(crate) async fn ensure_schema_with_lock_timeout(
     pool: &PgPool,
     lock_timeout: &str,
 ) -> anyhow::Result<()> {
-    // Tripwire, not a security boundary: the value is crate-internal (const or
-    // test literal), but it is spliced into quoted SQL, so a malformed value
-    // should die loudly here rather than as a cryptic DDL syntax error.
-    assert!(
-        !lock_timeout.is_empty() && lock_timeout.chars().all(|c| c.is_ascii_alphanumeric()),
-        "asyncevents: lock_timeout {lock_timeout:?} must be ASCII alphanumeric \
-         (digits + unit, e.g. \"60s\")"
-    );
-    let ddl = V2_DDL_TEMPLATE
-        .replace("{lock_timeout}", lock_timeout)
-        .replace("{migrate_key}", &MIGRATE_LOCK_KEY.to_string())
-        .replace("{writer_key}", &WRITER_LOCK_KEY.to_string());
+    let ddl = render_v2_ddl(lock_timeout);
 
     let mut tx = pool
         .begin()

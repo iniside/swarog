@@ -472,11 +472,7 @@ async fn migrate_lock_timeout_fails_fast_without_poisoning_pool() {
 /// [`ensure_schema_with_lock_timeout`] does it, so tests execute the production
 /// statements and not a hand-copied variant.
 fn rendered_ddl_statements() -> Vec<String> {
-    let ddl = V2_DDL_TEMPLATE
-        .replace("{lock_timeout}", "5s")
-        .replace("{migrate_key}", &MIGRATE_LOCK_KEY.to_string())
-        .replace("{writer_key}", &WRITER_LOCK_KEY.to_string());
-    split_sql_statements(&ddl)
+    split_sql_statements(&render_v2_ddl("5s"))
 }
 
 /// The one rendered statement that starts with `prefix` and contains `needle`.
