@@ -30,3 +30,4 @@ UILayout/.thumbnail
 
 # runtime logs / pids and built binaries (Go dual-mode run/ + Quarkus sketch run/)
 /run/
+tls/

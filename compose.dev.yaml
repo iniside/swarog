@@ -1,0 +1,33 @@
+name: swarog-dev
+
+services:
+  postgres:
+    environment:
+      - POSTGRES_PASSWORD=gamebackend
+
+  # Seeds the admin login before the server starts, as devctl does.
+  admin-seed:
+    image: swarog:local
+    entrypoint: ["/usr/local/bin/adminctl"]
+    command: ["create-user", "admin", "--role", "admin"]
+    environment:
+      - ADMINCTL_PASSWORD=admin
+      - DATABASE_URL=postgres://gamebackend:gamebackend@postgres:5432/gamebackend?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  server:
+    environment:
+      - DATABASE_URL=postgres://gamebackend:gamebackend@postgres:5432/gamebackend?sslmode=disable
+      - APIKEYS_DEV_SEED=1
+      - ACCOUNTS_DEV_AUTH=1
+      - INVENTORY_DEV_GRANT=1
+      - WALLET_DEV_SEED=1
+      - ADMIN_COOKIE_SECURE=0
+      - MAIL_PROVIDER=log
+      - MAIL_FROM=dev@localhost
+    depends_on:
+      admin-seed:
+        condition: service_completed_successfully

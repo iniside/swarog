@@ -1,0 +1,57 @@
+name: swarog
+
+services:
+  postgres:
+    image: postgres:17.11-alpine
+    environment:
+      - POSTGRES_USER=gamebackend
+      - POSTGRES_DB=gamebackend
+      - POSTGRES_PASSWORD=${SWAROG_DB_PASSWORD:-}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U gamebackend -d gamebackend"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  server:
+    build: .
+    image: swarog:local
+    environment:
+      - DATABASE_URL=postgres://gamebackend:${SWAROG_DB_PASSWORD:-}@postgres:5432/gamebackend?sslmode=disable
+      - PORT=:8080
+      - PLAYER_EDGE_ADDR=:9100
+      - DATABASE_POOL_MAX_CONNECTIONS=20
+      - ACME_CACHE_DIR=/var/lib/swarog/acme
+      - TLS_MODE
+      - TLS_CERT_PATH
+      - TLS_KEY_PATH
+      - ACME_DOMAINS
+      - ACME_CONTACT
+      - TRUSTED_PROXY_CIDRS
+      - MAIL_PROVIDER
+      - MAIL_FROM
+      - MAIL_SMTP_HOST
+      - MAIL_SMTP_PORT
+      - MAIL_SMTP_USERNAME
+      - MAIL_SMTP_PASSWORD
+      - MAIL_SMTP_TLS
+    ports:
+      - "${SWAROG_BIND:-127.0.0.1}:${SWAROG_HTTP_PORT:-8080}:8080"
+      - "${SWAROG_BIND:-127.0.0.1}:9100:9100/udp"
+    volumes:
+      - acme:/var/lib/swarog/acme
+      - ${SWAROG_TLS_DIR:-./tls}:/tls:ro
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  acme:

@@ -1,0 +1,19 @@
+target/
+run/
+deploy/
+*.exe
+*.zip
+mutants.out/
+nocommit/
+memory/
+experiments/
+clients/
+docs/
+.git/
+.claude/
+tls/
+.env
+.env*
+# core/admin/src/lib.rs include_str!s these two CSS files at compile time.
+UILayout/
+!UILayout/design-system/
