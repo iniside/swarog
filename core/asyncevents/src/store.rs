@@ -217,7 +217,7 @@ pub(crate) fn lock_timeout_message(stmt: &str, lock_timeout: &str) -> String {
         excerpt.push('…');
     }
     format!(
-        "asyncevents: lock on a plane relation not acquired within {lock_timeout} while \
+        "asyncevents: plane lock (relation or catalog row) not acquired within {lock_timeout} while \
          running `{excerpt}` — an open transaction holds a conflicting lock; see pg_locks / \
          pg_blocking_pids"
     )

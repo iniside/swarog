@@ -592,7 +592,7 @@ fn lock_timeout_message_names_a_relation_wait_for_append_event_not_the_advisory_
     );
     let msg = lock_timeout_message(&stmt, "60s");
     assert!(!msg.contains("V2 plane advisory lock"), "{msg}");
-    assert!(msg.contains("lock on a plane relation"), "{msg}");
+    assert!(msg.contains("plane lock (relation or catalog row)"), "{msg}");
     assert!(msg.contains("CREATE OR REPLACE FUNCTION asyncevents.append_event"), "{msg}");
 }
 
