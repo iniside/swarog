@@ -17,9 +17,9 @@ database. Everything else has an owner:
   `#[cfg(test)] #[path = "x_tests.rs"] mod x_tests;` (e.g.
   `core/asyncevents/src/retention.rs`), or `#[cfg(test)] mod tests;` for the
   crate-wide `src/tests.rs`.
-- Integration tests that boot a real `main` live in `cmd/<name>/tests/` (today
-  `cmd/server/tests/tls_front.rs`, `cmd/gateway-svc/tests/boots.rs`,
-  `cmd/gateway-svc/tests/stub_swap.rs`).
+- Tests that need a `cmd` crate's real wiring — its binary, its module set, or the
+  glue crates only a composition root may depend on — live in `cmd/<name>/tests/`;
+  `cmd/server/tests/tls_front.rs` is the one that spawns the real binary.
 
 ## Fixture isolation on the shared database
 

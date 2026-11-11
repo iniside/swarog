@@ -280,12 +280,13 @@ fails with `exec: "C:/Program": stat C:/Program: no such file or directory`.
 Prefix it with `MSYS_NO_PATHCONV=1`. In PowerShell:
 
 ```powershell
+$user = Read-Host -Prompt "Admin username"
 $secure = Read-Host -AsSecureString -Prompt "Admin password"
 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
 try { $env:ADMINCTL_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
 finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
 docker compose run --rm -T -e ADMINCTL_PASSWORD `
-  --entrypoint /usr/local/bin/adminctl server create-user <name>
+  --entrypoint /usr/local/bin/adminctl server create-user $user
 Remove-Item Env:ADMINCTL_PASSWORD
 ```
 
