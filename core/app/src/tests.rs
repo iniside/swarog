@@ -989,6 +989,22 @@ fn to_bind_addr_expands_colon_port() {
     assert_eq!(to_bind_addr("127.0.0.1:9000"), "127.0.0.1:9000");
 }
 
+#[test]
+fn normalize_addr_passes_host_port_through_and_prefixes_bare_port() {
+    // Previously-wrong branch: a host:port used to become ":127.0.0.1:9000".
+    assert_eq!(normalize_addr("127.0.0.1:9000"), "127.0.0.1:9000");
+    assert_eq!(normalize_addr("[::1]:9000"), "[::1]:9000");
+    assert_eq!(normalize_addr(":9000"), ":9000");
+    assert_eq!(normalize_addr("9000"), ":9000");
+    assert_eq!(normalize_addr("  "), DEFAULT_LISTEN_ADDR);
+    assert_eq!(normalize_addr(" 127.0.0.1:9000 "), "127.0.0.1:9000");
+    let bind = to_bind_addr(&normalize_addr("127.0.0.1:9000"));
+    assert!(
+        bind.parse::<std::net::SocketAddr>().is_ok(),
+        "normalized host:port must be a bindable SocketAddr, got {bind:?}"
+    );
+}
+
 // ============================================================================
 // Native TLS front (admin hardening Step 4): `Config::with_tls` plumbing + the
 // files-mode TLS branch served for real — rcgen-minted localhost cert, reqwest

@@ -1,7 +1,10 @@
 //! The real monolith binary under `TLS_MODE=files`. Previously-wrong branch: before
 //! `cmd/server` passed `TlsFront::from_values` into `Config::with_tls`, the monolith
 //! ignored `TLS_MODE` and served plain HTTP — with `.with_tls(tls)` removed, the HTTPS
-//! poll below never succeeds and the plain-HTTP assertion fails.
+//! poll below never succeeds and the test fails there (no HTTPS answer).
+//!
+//! `PORT` is a loopback `host:port` (`127.0.0.1:{port}`), so this also proves a
+//! host:port `PORT` binds under TLS (it used to be mangled into `:127.0.0.1:{port}`).
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -81,7 +84,7 @@ fn spawn_server(dir: &Path, tls_env: &[(&str, &Path)], http_port: u16) -> Server
         }
     }
     cmd.env("TLS_MODE", "files")
-        .env("PORT", format!(":{http_port}"))
+        .env("PORT", format!("127.0.0.1:{http_port}"))
         .env("PLAYER_EDGE_ADDR", format!("127.0.0.1:{}", free_udp_port()))
         .env("DATABASE_URL", testdb::dsn())
         .env("DATABASE_POOL_MAX_CONNECTIONS", "4")
