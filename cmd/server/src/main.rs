@@ -59,6 +59,14 @@ mod admission_budget_tests;
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
 
+    // Pin the process-global rustls crypto provider to ring before any TLS config is
+    // built, so the default-provider builders in axum-server/rustls-acme resolve to the
+    // workspace's only provider. `install_default` errs only if one is already set.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // Every public front main parses TLS via `TlsFront::from_values` and pins ring above.
+    let tls = app::TlsFront::from_values(|k| std::env::var(k).ok())?;
+
     // One shared player-facing QUIC server for this process; `Gateway::with_player_edge`
     // installs the front's dispatch handler onto it during `init`, and `app::run`
     // `listen`s the same handle after Build — the monolith serves players over QUIC too.
@@ -85,5 +93,5 @@ async fn main() -> anyhow::Result<()> {
     // No internal edge server: every provider is in-process in the monolith, so no
     // cross-module call ever crosses the mTLS edge. The player QUIC front IS wired
     // (all ops resolve Local — see `select_kind` in `modules/gateway`).
-    app::run(app::Config::from_env(), mods, None, Some(player)).await
+    app::run(app::Config::from_env().with_tls(tls), mods, None, Some(player)).await
 }

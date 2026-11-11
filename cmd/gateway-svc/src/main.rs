@@ -27,9 +27,6 @@
 use std::sync::{Arc, Mutex};
 
 mod addrs;
-mod tlsenv;
-#[cfg(test)]
-mod tlsenv_tests;
 
 /// Parses `CREDENTIAL_ADMISSION_TIMEOUT_MS` — the front door's whole-credential-
 /// admission deadline (api-key check + session verify, both public planes). Env is
@@ -87,10 +84,8 @@ async fn main() -> anyhow::Result<()> {
     // idempotent-install shape).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // TLS front for the public HTTP plane: TLS_MODE=off (default) | files | acme —
-    // parsed HERE in the composition root ([R12]: no other cmd/* main is TLS-aware;
-    // core/app carries only the mechanism). Partial config fails startup loudly.
-    let tls = tlsenv::tls_front_from_env()?;
+    // Every public front main parses TLS via `TlsFront::from_values` and pins ring above.
+    let tls = app::TlsFront::from_values(|k| std::env::var(k).ok())?;
 
     // One shared player-facing QUIC server for this process; `Gateway::with_player_edge`
     // installs the front's dispatch handler onto it during `init`, and `app::run`

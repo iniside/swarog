@@ -119,11 +119,9 @@ fn snapshot_readiness_checks(ctx: &Context) -> Vec<httpmw::ReadyCheck> {
     ctx.contributions(httpmw::READINESS_SLOT)
 }
 
-/// How the HTTP front terminates TLS (admin hardening Step 4). The MECHANISM lives
-/// here in `core/app` (the serve path owns the listener); the ENV PARSING lives in the
-/// one composition root that fronts the public internet (`cmd/gateway-svc` reads
-/// `TLS_MODE`/`TLS_CERT_PATH`/… and calls [`Config::with_tls`]) — modules see nothing,
-/// and no other `cmd/*` main is TLS-aware today (single public front door).
+/// How the HTTP front terminates TLS. Every public front main (`cmd/server`,
+/// `cmd/gateway-svc`) reads the env, parses it via [`TlsFront::from_values`] and
+/// hands the result to [`Config::with_tls`]; modules see nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TlsFront {
     /// Serve HTTPS from an operator-provided PEM cert chain + private key.
@@ -143,6 +141,62 @@ pub enum TlsFront {
         /// Optional operator contact (an email address; rendered as `mailto:`).
         contact: Option<String>,
     },
+}
+
+/// Default ACME account/cert cache directory, next to the repo's other `run/` state.
+const DEFAULT_ACME_CACHE_DIR: &str = "run/acme-cache";
+
+impl TlsFront {
+    /// Parses the TLS front from env-shaped values; `Ok(None)` = plain HTTP. Unset and
+    /// blank read the same, and partial config fails startup loudly:
+    /// - `TLS_MODE` — `off` (default) | `files` | `acme`; anything else is an error,
+    ///   never silently "off".
+    /// - `files`: `TLS_CERT_PATH` + `TLS_KEY_PATH` both required (PEM paths).
+    /// - `acme`: `ACME_DOMAINS` required (comma-separated, at least one non-blank),
+    ///   `ACME_CONTACT` optional, `ACME_CACHE_DIR` optional (default `run/acme-cache`).
+    pub fn from_values(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Option<TlsFront>> {
+        let non_blank = |key: &str| get(key).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let mode = non_blank("TLS_MODE").unwrap_or_else(|| "off".to_string());
+        match mode.to_ascii_lowercase().as_str() {
+            "off" => Ok(None),
+            "files" => {
+                let cert = non_blank("TLS_CERT_PATH")
+                    .ok_or_else(|| anyhow::anyhow!("TLS_MODE=files requires TLS_CERT_PATH"))?;
+                let key = non_blank("TLS_KEY_PATH")
+                    .ok_or_else(|| anyhow::anyhow!("TLS_MODE=files requires TLS_KEY_PATH"))?;
+                Ok(Some(TlsFront::Files {
+                    cert: std::path::PathBuf::from(cert),
+                    key: std::path::PathBuf::from(key),
+                }))
+            }
+            "acme" => {
+                let domains: Vec<String> = get("ACME_DOMAINS")
+                    .as_deref()
+                    .unwrap_or_default()
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|d| !d.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if domains.is_empty() {
+                    anyhow::bail!(
+                        "TLS_MODE=acme requires ACME_DOMAINS (comma-separated, at least one domain)"
+                    );
+                }
+                let cache_dir = non_blank("ACME_CACHE_DIR")
+                    .unwrap_or_else(|| DEFAULT_ACME_CACHE_DIR.to_string());
+                Ok(Some(TlsFront::Acme {
+                    domains,
+                    cache_dir: std::path::PathBuf::from(cache_dir),
+                    contact: non_blank("ACME_CONTACT"),
+                }))
+            }
+            other => anyhow::bail!(
+                "unknown TLS_MODE {other:?} — expected \"off\", \"files\" or \"acme\" \
+                 (refusing to guess; unset means off)"
+            ),
+        }
+    }
 }
 
 /// The process-level configuration [`run`] needs. Deliberately tiny: everything
@@ -195,8 +249,8 @@ pub struct Config {
     /// TLS termination for the HTTP front. `None` (the [`Config::from_env`] default)
     /// serves plain HTTP exactly as before; `Some` switches the serve path to
     /// axum-server over rustls ([`TlsFront::Files`]) or rustls-acme
-    /// ([`TlsFront::Acme`]). Set ONLY via [`Config::with_tls`] by a composition root
-    /// that parsed its own env — never read from env here.
+    /// ([`TlsFront::Acme`]). Set ONLY via [`Config::with_tls`] by a public front main
+    /// that parsed its env with [`TlsFront::from_values`] — never read from env here.
     pub tls: Option<TlsFront>,
     /// Global cap on concurrent player-QUIC connections (`PLAYER_MAX_CONNS`, default
     /// [`DEFAULT_PLAYER_MAX_CONNS`]) — threaded to the player edge before it listens.
@@ -301,8 +355,8 @@ impl Config {
     }
 
     /// Sets how the HTTP front terminates TLS — `None` leaves the plain-HTTP path
-    /// untouched. Called by the composition root that parsed the TLS env
-    /// (`cmd/gateway-svc` today); `core/app` itself never reads TLS env vars.
+    /// untouched. Called by every public front main with the result of
+    /// [`TlsFront::from_values`]; `core/app` itself never reads TLS env vars.
     pub fn with_tls(self, tls: Option<TlsFront>) -> Config {
         Config { tls, ..self }
     }
@@ -1335,8 +1389,8 @@ async fn serve_http(
 ///
 /// Crypto-provider note: both TLS arms build rustls configs through the process
 /// default provider. The workspace compiles rustls with ONLY the `ring` provider
-/// feature (single-provider auto-detection covers us), and the front-door main
-/// (`cmd/gateway-svc`) additionally pins it via
+/// feature (single-provider auto-detection covers us), and every public front main
+/// (`cmd/server`, `cmd/gateway-svc`) additionally pins it via
 /// `rustls::crypto::ring::default_provider().install_default()` — never aws-lc-rs.
 async fn serve_https(
     front: TlsFront,

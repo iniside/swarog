@@ -5,8 +5,7 @@
 //! `cmd/gateway-svc/tests/` is an INTEGRATION target: it reaches the
 //! `gateway_svc` LIB and nothing else — never `main.rs` or the modules it
 //! declares. So the proof for a `main.rs`-side decision goes in a `#[cfg(test)]
-//! mod` within the bin crate, the way `tlsenv_tests` and `admission_budget_tests`
-//! already do.
+//! mod` within the bin crate, the way `admission_budget_tests` already does.
 //!
 //! # What the fakes are, and what they are not
 //!
