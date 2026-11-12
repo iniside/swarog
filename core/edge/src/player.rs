@@ -2,7 +2,8 @@
 //! the internal plane (persistent conn, stream-per-call, 4-byte frames, JSON
 //! envelopes) but a DIFFERENT trust model, and therefore a different envelope:
 //!
-//! - TLS is server-cert-only ([`DevCA::server_tls_public`]): a real player cannot
+//! - TLS is server-cert-only ([`crate::PlayerTlsConfig`], whose certificate comes
+//!   from PEM files, an ACME-style resolver or a dev CA leaf): a real player cannot
 //!   hold a CA-signed client leaf, so the transport authenticates only the server.
 //!   The CLIENT is authenticated per-call by the bearer `token` in
 //!   [`PlayerRequest`] — verified by the front (gateway), never trusted here.
@@ -31,7 +32,7 @@ use serde_json::value::RawValue;
 use crate::client::raw_from_bytes;
 use crate::frame::{read_frame_max, write_frame};
 use crate::server::{err_response, ok_response, run_caught, HandlerResult, RunningServer, ShutdownState};
-use crate::tls::{client_bind_addr, DevCA, TrustAnchor};
+use crate::tls::{client_bind_addr, PlayerTlsConfig, TrustAnchor};
 // The reply envelope is shared with the internal plane, but the player plane never
 // sets its `code` field: it builds replies only via `err_response`/`ok_response`
 // (both `code: None`) and reads only `ok`/`error`/`payload` back, so the typed
@@ -208,8 +209,8 @@ impl PlayerServer {
         self
     }
 
-    /// Binds the public QUIC listener on `addr` with server-cert-only TLS
-    /// ([`DevCA::server_tls_public`]) and an EXPLICIT transport config — the
+    /// Binds the public QUIC listener on `addr` with the server-cert-only TLS of
+    /// `tls` ([`crate::PlayerTlsConfig`]) and an EXPLICIT transport config — the
     /// internal plane keeps quinn defaults, but a public port faces untrusted,
     /// certless peers, so per-connection cost is capped: [`MAX_PLAYER_BIDI_STREAMS`]
     /// concurrent streams, [`PLAYER_IDLE_TIMEOUT_MS`] idle reap, and the stream
@@ -232,9 +233,8 @@ impl PlayerServer {
     /// when the connection (or a failed handshake) ends — no separate evictor. The
     /// Retry costs every first dial one extra RTT — acceptable under the plane's
     /// persistent-connection model (paid once per dial, not per call).
-    pub fn listen(self, addr: SocketAddr, ca: &DevCA) -> Result<RunningServer, Error> {
-        let server_cfg = ca.server_tls_public()?;
-        let qsc = QuicServerConfig::try_from(server_cfg)
+    pub fn listen(self, addr: SocketAddr, tls: PlayerTlsConfig) -> Result<RunningServer, Error> {
+        let qsc = QuicServerConfig::try_from(tls.server_config())
             .map_err(|e| Error::Tls(format!("quic player server config: {e}")))?;
         let mut quinn_cfg = quinn::ServerConfig::with_crypto(Arc::new(qsc));
 

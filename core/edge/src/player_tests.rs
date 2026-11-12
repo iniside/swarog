@@ -1,4 +1,5 @@
 use super::*;
+use crate::tls::DevCA;
 
 use std::time::Duration;
 
@@ -34,7 +35,7 @@ async fn try_dial(addr: SocketAddr, trust: &TrustAnchor) -> Result<Option<Player
 #[tokio::test]
 async fn player_global_conn_cap_refuses_over_limit_and_frees_on_drop() {
     let ca = DevCA::generate().unwrap();
-    let running = echo_server().with_conn_limits(2, 2).listen(loopback(), &ca).unwrap();
+    let running = echo_server().with_conn_limits(2, 2).listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
     let addr = running.local_addr();
     let trust = ca.trust_anchor();
 
@@ -74,7 +75,7 @@ async fn player_global_conn_cap_refuses_over_limit_and_frees_on_drop() {
 #[tokio::test]
 async fn player_per_ip_conn_cap_refuses_second_from_same_ip() {
     let ca = DevCA::generate().unwrap();
-    let running = echo_server().with_conn_limits(10, 1).listen(loopback(), &ca).unwrap();
+    let running = echo_server().with_conn_limits(10, 1).listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
     let addr = running.local_addr();
     let trust = ca.trust_anchor();
 
@@ -102,7 +103,7 @@ async fn player_per_ip_conn_cap_refuses_second_from_same_ip() {
 #[tokio::test]
 async fn player_dial_traverses_retry_gate_and_reserves_slot_exactly_once() {
     let ca = DevCA::generate().unwrap();
-    let running = echo_server().with_conn_limits(1, 1).listen(loopback(), &ca).unwrap();
+    let running = echo_server().with_conn_limits(1, 1).listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
     let addr = running.local_addr();
     let trust = ca.trust_anchor();
 
@@ -283,7 +284,7 @@ async fn hung_request_read_is_reaped_after_grace() {
     let ca = DevCA::generate().unwrap();
     let mut srv = echo_server();
     srv.set_stream_grace(Duration::from_millis(200));
-    let running = srv.listen(loopback(), &ca).unwrap();
+    let running = srv.listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
 
     let (_endpoint, conn) = raw_player_conn(running.local_addr(), &ca, 1024).await;
     // One connection task in flight.
@@ -325,7 +326,7 @@ async fn undrained_response_is_reaped_after_grace() {
         Box::pin(async move { Ok(big) })
     }));
     srv.set_stream_grace(Duration::from_millis(200));
-    let running = srv.listen(loopback(), &ca).unwrap();
+    let running = srv.listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
 
     let (_endpoint, conn) = raw_player_conn(running.local_addr(), &ca, 1024).await;
     wait_in_flight(&running.shutdown, 1).await;
@@ -363,7 +364,7 @@ async fn rate_denied_response_is_reaped_after_grace() {
         Box::pin(async move { Ok(payload) })
     }));
     srv.set_stream_grace(Duration::from_millis(200));
-    let running = srv.listen(loopback(), &ca).unwrap();
+    let running = srv.listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
 
     // ZERO receive window: the server cannot write even one response byte.
     let (_endpoint, conn) = raw_player_conn(running.local_addr(), &ca, 0).await;
@@ -420,7 +421,7 @@ async fn request_denial_is_exact_and_handler_is_not_called() {
         seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Box::pin(async move { Ok(payload) })
     }));
-    let running = srv.listen(loopback(), &ca).unwrap();
+    let running = srv.listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
     let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
     assert!(client.call("echo", None, None, br#"{}"#).await.is_ok());
     let err = client.call("echo", None, None, br#"{}"#).await.unwrap_err();

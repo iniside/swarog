@@ -20,6 +20,7 @@
 //!    server-auth vs client-auth EKU on the leaves.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use rcgen::{
@@ -27,7 +28,8 @@ use rcgen::{
     KeyUsagePurpose, SanType,
 };
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use rustls::server::WebPkiClientVerifier;
+use rustls::server::{ResolvesServerCert, WebPkiClientVerifier};
+use rustls::sign::{CertifiedKey, SingleCertAndKey};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use rustls_pki_types::pem::PemObject;
 
@@ -229,17 +231,12 @@ impl DevCA {
     /// so the public port authenticates only the SERVER (the client is instead
     /// authenticated per-call, by the bearer token in the player envelope). ALPN is
     /// [`PLAYER_ALPN`], never [`ALPN`], so this config can never serve an internal
-    /// peer by accident.
-    pub fn server_tls_public(&self) -> Result<ServerConfig, Error> {
+    /// peer by accident. The leaf is a dev certificate (SANs localhost / 127.0.0.1 /
+    /// ::1) that only clients trusting this CA accept.
+    pub fn server_tls_public(&self) -> Result<PlayerTlsConfig, Error> {
         let (chain, key) = self.leaf(true)?;
-        let mut cfg = ServerConfig::builder_with_provider(self.provider.clone())
-            .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(Error::Rustls)?
-            .with_no_client_auth()
-            .with_single_cert(chain, key)
-            .map_err(Error::Rustls)?;
-        cfg.alpn_protocols = vec![PLAYER_ALPN.to_vec()];
-        Ok(cfg)
+        let certified = CertifiedKey::from_der(chain, key, &self.provider).map_err(Error::Rustls)?;
+        PlayerTlsConfig::with_provider(Arc::new(SingleCertAndKey::from(certified)), self.provider.clone())
     }
 
     /// The key-less trust view of this CA — what a player distribution actually
@@ -277,10 +274,69 @@ impl DevCA {
     }
 }
 
+/// The player plane's server TLS config: TLS 1.3 only, ALPN [`PLAYER_ALPN`], no
+/// client certificate, early data off. The certificate comes from any
+/// [`ResolvesServerCert`] ([`PlayerTlsConfig::new`], e.g. a resolver that swaps in
+/// renewed certificates), a static chain from PEM files
+/// ([`PlayerTlsConfig::from_pem_files`]), or a dev CA leaf
+/// ([`DevCA::server_tls_public`]).
+#[derive(Clone)]
+pub struct PlayerTlsConfig {
+    config: Arc<ServerConfig>,
+}
+
+impl PlayerTlsConfig {
+    /// Builds the player config around `certs` with the ring crypto provider.
+    pub fn new(certs: Arc<dyn ResolvesServerCert>) -> Result<PlayerTlsConfig, Error> {
+        Self::with_provider(certs, Arc::new(rustls::crypto::ring::default_provider()))
+    }
+
+    /// Loads a PEM certificate chain (leaf first) and a PEM private key and serves
+    /// them as a static certificate. Errors name the offending path.
+    pub fn from_pem_files(cert_path: &Path, key_path: &Path) -> Result<PlayerTlsConfig, Error> {
+        let cert_pem = std::fs::read(cert_path)
+            .map_err(|e| Error::Tls(format!("read player TLS cert {cert_path:?}: {e}")))?;
+        let key_pem = std::fs::read(key_path)
+            .map_err(|e| Error::Tls(format!("read player TLS key {key_path:?}: {e}")))?;
+        let chain = CertificateDer::pem_slice_iter(&cert_pem)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| Error::Tls(format!("parse player TLS cert {cert_path:?}: {e}")))?;
+        if chain.is_empty() {
+            return Err(Error::Tls(format!("player TLS cert {cert_path:?} has no PEM CERTIFICATE")));
+        }
+        let key = PrivateKeyDer::from_pem_slice(&key_pem)
+            .map_err(|e| Error::Tls(format!("parse player TLS key {key_path:?}: {e}")))?;
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let certified = CertifiedKey::from_der(chain, key, &provider).map_err(|e| {
+            Error::Tls(format!("player TLS key {key_path:?} for cert {cert_path:?}: {e}"))
+        })?;
+        Self::with_provider(Arc::new(SingleCertAndKey::from(certified)), provider)
+    }
+
+    fn with_provider(
+        certs: Arc<dyn ResolvesServerCert>,
+        provider: Arc<rustls::crypto::CryptoProvider>,
+    ) -> Result<PlayerTlsConfig, Error> {
+        let mut cfg = ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(Error::Rustls)?
+            .with_no_client_auth()
+            .with_cert_resolver(certs);
+        cfg.alpn_protocols = vec![PLAYER_ALPN.to_vec()];
+        // QUIC needs TLS 1.3 and early data of 0 or u32::MAX; 0 keeps 0-RTT off (quinn-proto 0.11.16 src/crypto/rustls.rs:435-437).
+        cfg.max_early_data_size = 0;
+        Ok(PlayerTlsConfig { config: Arc::new(cfg) })
+    }
+
+    pub(crate) fn server_config(&self) -> Arc<ServerConfig> {
+        self.config.clone()
+    }
+}
+
 /// The trust-anchor-only side of the player plane: the CA CERTIFICATE without the
 /// signing key. It can verify a server that chains to the anchor but cannot mint or
-/// present any certificate itself — exactly the material a shipped player client
-/// holds (a dev stand-in for trusting a real WebPKI cert in production).
+/// present any certificate itself. It trusts only servers presenting a leaf from
+/// that CA (a [`DevCA`] leaf or another certificate the CA signed).
 pub struct TrustAnchor {
     /// One root store containing EXACTLY the anchor cert — no system-roots fallback,
     /// same rule as the mTLS plane (point 4).

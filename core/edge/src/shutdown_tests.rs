@@ -217,7 +217,7 @@ async fn player_shutdown_drains_inflight_call() {
             })
         })
     });
-    let running = srv.listen(loopback(), &ca).unwrap();
+    let running = srv.listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
     let client =
         Arc::new(PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap());
 
@@ -298,7 +298,7 @@ async fn player_shutdown_grace_drops_straggler_future_which_never_resumes() {
             })
         })
     });
-    let running = srv.listen(loopback(), &ca).unwrap();
+    let running = srv.listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
     let client =
         Arc::new(PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap());
 

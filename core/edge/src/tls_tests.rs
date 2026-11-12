@@ -31,7 +31,7 @@ fn write_then_load_roundtrips_and_chains() {
 fn public_configs_carry_the_player_alpn() {
     let ca = DevCA::generate().unwrap();
     let s = ca.server_tls_public().unwrap();
-    assert_eq!(s.alpn_protocols, vec![PLAYER_ALPN.to_vec()]);
+    assert_eq!(s.server_config().alpn_protocols, vec![PLAYER_ALPN.to_vec()]);
     let c = ca.client_tls_public().unwrap();
     assert_eq!(c.alpn_protocols, vec![PLAYER_ALPN.to_vec()]);
     // The two planes must never share an ALPN id.

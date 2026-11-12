@@ -1090,7 +1090,8 @@ pub async fn run(
                 let player_bind: SocketAddr = to_bind_addr(&cfg.player_edge_addr)
                     .parse()
                     .with_context(|| format!("parse player edge addr {:?}", cfg.player_edge_addr))?;
-                let running = player.listen(player_bind, &ca).context("player edge listen")?;
+                let tls = ca.server_tls_public().context("player edge tls")?;
+                let running = player.listen(player_bind, tls).context("player edge listen")?;
                 tracing::info!(addr = %running.local_addr(), "player edge listening (server-cert-only TLS)");
                 Some(running)
             }

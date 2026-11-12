@@ -37,7 +37,7 @@ pub use server::{
     ForwardHandler, Handler, HandlerResult, IdentityHandler, InvalidRequestBody, RunningServer,
     Server,
 };
-pub use tls::{dev_ca_from_env, shared_dev_ca, DevCA, TrustAnchor, ALPN, PLAYER_ALPN};
+pub use tls::{dev_ca_from_env, shared_dev_ca, DevCA, PlayerTlsConfig, TrustAnchor, ALPN, PLAYER_ALPN};
 pub use wire::{Response, ResponseCode};
 
 /// Errors from the edge transport.
@@ -472,7 +472,7 @@ mod player_e2e_tests {
     #[tokio::test]
     async fn player_roundtrip_with_and_without_token_and_api_key() {
         let ca = DevCA::generate().unwrap();
-        let running = reflecting_server().listen(loopback(), &ca).unwrap();
+        let running = reflecting_server().listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
 
         let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
 
@@ -510,7 +510,7 @@ mod player_e2e_tests {
             .unwrap();
 
         let server_ca = DevCA::load(cert.to_str().unwrap(), key.to_str().unwrap()).unwrap();
-        let running = reflecting_server().listen(loopback(), &server_ca).unwrap();
+        let running = reflecting_server().listen(loopback(), server_ca.server_tls_public().unwrap()).unwrap();
 
         // The player side: cert only, key gone.
         std::fs::remove_file(&key).unwrap();
@@ -536,7 +536,7 @@ mod player_e2e_tests {
         let ca = DevCA::generate().unwrap();
 
         // Sanity: the same client shape IS served on the player plane.
-        let player_running = reflecting_server().listen(loopback(), &ca).unwrap();
+        let player_running = reflecting_server().listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
         let ok_client =
             PlayerClient::dial(player_running.local_addr(), &ca.trust_anchor()).await.unwrap();
         ok_client.call("echo", None, None, b"null").await.unwrap();
@@ -563,7 +563,7 @@ mod player_e2e_tests {
     #[tokio::test]
     async fn internal_client_is_rejected_by_the_player_server() {
         let ca = DevCA::generate().unwrap();
-        let running = reflecting_server().listen(loopback(), &ca).unwrap();
+        let running = reflecting_server().listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
         let addr = running.local_addr();
 
         match Client::dial(addr, &ca).await {
@@ -583,7 +583,7 @@ mod player_e2e_tests {
     #[tokio::test]
     async fn oversize_player_frame_is_rejected_without_killing_the_connection() {
         let ca = DevCA::generate().unwrap();
-        let running = reflecting_server().listen(loopback(), &ca).unwrap();
+        let running = reflecting_server().listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
         let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
 
         // A 2 MiB JSON string payload — well over MAX_PLAYER_FRAME but under the
@@ -616,7 +616,7 @@ mod player_e2e_tests {
     #[tokio::test]
     async fn unwired_player_server_reports_front_not_wired() {
         let ca = DevCA::generate().unwrap();
-        let running = PlayerServer::new().listen(loopback(), &ca).unwrap();
+        let running = PlayerServer::new().listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
         let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
 
         let err = client.call("anything", None, None, b"null").await.unwrap_err();
