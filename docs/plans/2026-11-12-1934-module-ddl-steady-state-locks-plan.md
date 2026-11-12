@@ -182,6 +182,29 @@ Windows set `PGSUPERUSER` as platform-notes says; drop the throwaway DB afterwar
 report the evidence (no retry loop). Fix their comments either way.
 (b) After Steps 4, 5, 5b.
 (d) `test-author`, `model:"sonnet"`. Commit `test(config,characters,rating): migrate per test now that module DDL is lock-free and race-free (module-ddl-steady-state-locks step 7)`.
+(e) Erratum 2026-11-12 (Step 7 review): the same `SCHEMA_READY` `OnceCell`, blaming
+idempotent DDL deadlocks, also lives in wallet, groups, party, friends, accounts,
+notifications, inventory, match and mail `src/tests.rs`; Step 7 removes those too, with
+their "migrated once" doc lines and `modules/characters/src/tests.rs:~139-140`, under the
+same rule (any deadlock/duplicate/55P03 ⇒ keep and report). The fresh-DB run needs the
+owner's superuser credential; without it, Step 7 is proven on the warm DB only and says so.
+
+### Step 7b — characters purge tests share one sweep lock `[test-author]`
+(Erratum 2026-11-12.) `modules/characters/src/tests/purge.rs`: every test that plants or
+sweeps `characters.purged_players` holds one test `DB_LOCK`, mirroring
+`modules/friends/src/tests.rs:~36-44` and groups' `purge_tests::DB_LOCK`; cleanup runs on
+failure too. Cause (Step 7 review): a sibling's whole-table `FOR UPDATE SKIP LOCKED` batch
+holds this test's rows until it commits, after this test asserts. Same check for the other
+modules with a `purged_players` sweep test lacking such a lock. Before the fix, show the
+interleaving deterministically (no sleeps). Commit
+`test(characters): serialize the purge sweep tests on one lock (module-ddl-steady-state-locks step 7b)`.
+
+### Step 7c — bound the plane_meta seed `[opus]`
+(Erratum 2026-11-12.) `core/asyncevents/src/store.rs` `plane_meta` seed (`INSERT … ON
+CONFLICT DO NOTHING`, ~369-376) waits on an in-flight `bump_generation` without any
+`lock_timeout`, now once per test migrate. Run it under the same bound as the rest of the
+plane migrate. `core-implementer`; tests by `test-author` after. Commit
+`fix(asyncevents): bound the plane_meta seed by the migrate lock_timeout (module-ddl-steady-state-locks step 7c)`.
 
 ### Step 8 — docs `[docs]`
 (a) Module DDL goes through `lifecycle::Ddl` (`sql`/`index`/`trigger`); never raw
