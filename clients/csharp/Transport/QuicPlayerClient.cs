@@ -11,8 +11,8 @@ namespace GameBackend.Client.Transport;
 /// <summary>
 /// The player-plane QUIC transport — the C# port of Rust's <c>edge::PlayerClient</c>.
 /// One persistent QUIC connection; each call opens a fresh bidirectional stream
-/// (persistent conn, stream-per-call). TLS 1.3 with ALPN <c>edge-player</c>, SNI
-/// <c>localhost</c>, server-cert-only (no client certificate is presented). Framing is
+/// (persistent conn, stream-per-call). TLS 1.3 with ALPN <c>edge-player</c>, a
+/// configurable target host, server-cert-only (no client certificate is presented). Framing is
 /// a 4-byte big-endian length prefix + JSON body, one framed request/response per
 /// stream.
 /// </summary>
@@ -34,19 +34,19 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     }
 
     /// <summary>
-    /// Establishes the persistent QUIC connection. Two trust modes, exactly one of
-    /// which applies:
-    /// <list type="bullet">
-    /// <item><paramref name="insecure"/> = <c>true</c> — dev trust-any (accept any
-    /// server cert, no CA file needed; pairs with the server's ephemeral-CA auto-gen).</item>
-    /// <item><paramref name="insecure"/> = <c>false</c> — prod-like CA pinning:
-    /// <paramref name="caCertPath"/> is REQUIRED and the server chain is validated
-    /// against ONLY that CA (custom root trust, no system-roots fallback — mirrors the
-    /// Rust <c>TrustAnchor</c> with exactly one anchor).</item>
-    /// </list>
-    /// Either way the client presents NO client certificate (the player plane is
-    /// server-cert-only; the caller is authenticated per-call by the bearer token).
+    /// Establishes the persistent QUIC connection to <paramref name="host"/>:<paramref name="port"/>.
+    /// An IP literal is dialed directly; a DNS name is resolved and every address is
+    /// dialed in resolver order until one connects (once one does, each earlier failure
+    /// is reported to <paramref name="onDialFailure"/>; if none connects, the thrown
+    /// <see cref="IOException"/> names every failed address). The client presents NO
+    /// client certificate (the player plane is server-cert-only; the caller is
+    /// authenticated per-call by the bearer token).
     /// </summary>
+    /// <param name="trust">How the server certificate is validated (see <see cref="PlayerTrust"/>).</param>
+    /// <param name="targetHost">
+    /// The TLS server name (SNI and the name the certificate must carry); <c>null</c>
+    /// means <paramref name="host"/> when it is a DNS name, else <c>localhost</c>.
+    /// </param>
     /// <param name="apiKey">
     /// The connection-scoped API key (mirrors the Rust gateway's <c>X-Api-Key</c>
     /// policy check), or <c>null</c> to send no key. Stamped into every call's
@@ -57,46 +57,72 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     public static async Task<QuicPlayerClient> ConnectAsync(
         string host,
         int port,
-        string? caCertPath,
-        bool insecure,
+        PlayerTrust trust,
+        string? targetHost = null,
         string? apiKey = null,
+        Action<IPEndPoint, Exception>? onDialFailure = null,
         CancellationToken ct = default)
     {
         if (!QuicConnection.IsSupported)
             throw new PlatformNotSupportedException(
                 "System.Net.Quic (msquic) is not available on this platform.");
 
+        bool isIpLiteral = IPAddress.TryParse(host, out IPAddress? literal);
         var ssl = new SslClientAuthenticationOptions
         {
             // Arbitrary ALPN string is allowed (not restricted to h2/h3).
             ApplicationProtocols = new List<SslApplicationProtocol> { new(Alpn) },
-            // The server leaf carries a `localhost` SAN + loopback IPs; dial by name.
-            TargetHost = "localhost",
+            TargetHost = targetHost ?? (isIpLiteral ? "localhost" : host),
         };
-        if (insecure)
+        switch (trust)
         {
-            ssl.RemoteCertificateValidationCallback = static (_, _, _, _) => true;
-        }
-        else
-        {
-            if (string.IsNullOrEmpty(caCertPath))
-                throw new ArgumentException(
-                    "prod mode requires a CA certificate path (caCertPath); pass insecure:true for dev trust-any.",
-                    nameof(caCertPath));
-            ssl.RemoteCertificateValidationCallback = PinToCa(caCertPath);
+            case PlayerTrust.Insecure:
+                ssl.RemoteCertificateValidationCallback = static (_, _, _, _) => true;
+                break;
+            case PlayerTrust.PinnedCa pinned:
+                if (string.IsNullOrEmpty(pinned.CaCertPath))
+                    throw new ArgumentException(
+                        "pinned-CA trust requires a CA certificate path.", nameof(trust));
+                ssl.RemoteCertificateValidationCallback = PinToCa(pinned.CaCertPath);
+                break;
+            case PlayerTrust.SystemRoots:
+                break;
+            default:
+                throw new ArgumentException($"unknown trust mode {trust}", nameof(trust));
         }
         // No ClientCertificates: the player plane is server-cert-only.
 
-        var opts = new QuicClientConnectionOptions
-        {
-            RemoteEndPoint = new IPEndPoint(IPAddress.Parse(host), port),
-            ClientAuthenticationOptions = ssl,
-            DefaultStreamErrorCode = 0,
-            DefaultCloseErrorCode = 0,
-        };
+        IPAddress[] addresses = isIpLiteral
+            ? new[] { literal! }
+            : await Dns.GetHostAddressesAsync(host, ct).ConfigureAwait(false);
+        if (addresses.Length == 0)
+            throw new IOException($"dial {host}:{port}: host resolved to no address");
 
-        var conn = await QuicConnection.ConnectAsync(opts, ct).ConfigureAwait(false);
-        return new QuicPlayerClient(conn, apiKey);
+        var failures = new List<(IPEndPoint EndPoint, Exception Error)>();
+        foreach (IPAddress address in addresses)
+        {
+            var endPoint = new IPEndPoint(address, port);
+            var opts = new QuicClientConnectionOptions
+            {
+                RemoteEndPoint = endPoint,
+                ClientAuthenticationOptions = ssl,
+                DefaultStreamErrorCode = 0,
+                DefaultCloseErrorCode = 0,
+            };
+            try
+            {
+                var conn = await QuicConnection.ConnectAsync(opts, ct).ConfigureAwait(false);
+                foreach (var failure in failures)
+                    onDialFailure?.Invoke(failure.EndPoint, failure.Error);
+                return new QuicPlayerClient(conn, apiKey);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                failures.Add((endPoint, ex));
+            }
+        }
+        string detail = string.Join("; ", failures.Select(f => $"{f.EndPoint}: {f.Error.GetType().Name}: {f.Error.Message}"));
+        throw new IOException($"dial {host}:{port}: {detail}", failures[^1].Error);
     }
 
     /// <summary>
@@ -105,7 +131,9 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     /// <c>edgeca</c> writes and Rust's <c>TrustAnchor::load_cert_only</c> reads). The
     /// server chain must chain to that one root: <see cref="X509ChainTrustMode.CustomRootTrust"/>
     /// with a single custom trust anchor and NO system-roots fallback, revocation
-    /// checking off (the ephemeral dev CA publishes no CRL/OCSP).
+    /// checking off (the ephemeral dev CA publishes no CRL/OCSP). Every policy error
+    /// other than a chain error (which the custom chain build replaces) fails the
+    /// handshake, so the leaf must also match the target host.
     /// </summary>
     private static RemoteCertificateValidationCallback PinToCa(string caCertPath)
     {
@@ -115,9 +143,11 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
         string pem = File.ReadAllText(caCertPath);
         X509Certificate2 caCert = X509Certificate2.CreateFromPem(pem);
 
-        return (_, serverCert, _, _) =>
+        return (_, serverCert, _, sslPolicyErrors) =>
         {
             if (serverCert is null)
+                return false;
+            if ((sslPolicyErrors & ~SslPolicyErrors.RemoteCertificateChainErrors) != SslPolicyErrors.None)
                 return false;
             using var leaf = new X509Certificate2(serverCert);
             using var chain = new X509Chain();

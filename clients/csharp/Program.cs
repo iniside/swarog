@@ -17,8 +17,8 @@ using GameBackend.Client.Transport;
 //   exit 3  QUIC (System.Net.Quic / msquic) unsupported on this platform.
 //
 // Two modes:
-//   gbclient raw  --addr HOST:PORT (--ca PATH | --insecure) [--token TOK] METHOD [JSON]
-//   gbclient flow --addr HOST:PORT (--ca PATH | --insecure)
+//   gbclient raw  --addr HOST:PORT (--ca PATH | --system-roots | --insecure) [--server-name NAME] [--token TOK] METHOD [JSON]
+//   gbclient flow --addr HOST:PORT (--ca PATH | --system-roots | --insecure) [--server-name NAME]
 //
 // raw drives the untyped IPlayerTransport (can call ANY method string, including
 // wire-only ones — for negative scenarios). flow drives the GENERATED typed client
@@ -31,8 +31,8 @@ const int ExitNoQuic = 3;
 
 const string Usage =
     "usage:\n" +
-    "  gbclient raw  --addr HOST:PORT (--ca PATH | --insecure) [--token TOK] [--api-key KEY] METHOD [JSON-PAYLOAD]\n" +
-    "  gbclient flow --addr HOST:PORT (--ca PATH | --insecure) [--api-key KEY]";
+    "  gbclient raw  --addr HOST:PORT (--ca PATH | --system-roots | --insecure) [--server-name NAME] [--token TOK] [--api-key KEY] METHOD [JSON-PAYLOAD]\n" +
+    "  gbclient flow --addr HOST:PORT (--ca PATH | --system-roots | --insecure) [--server-name NAME] [--api-key KEY]";
 
 if (args.Length == 0)
 {
@@ -180,8 +180,8 @@ static string Truncate(string s) => s.Length <= 12 ? s : s[..12] + "…";
 sealed class CliOptions
 {
     public required string Addr { get; init; }
-    public string? CaCertPath { get; init; }
-    public bool Insecure { get; init; }
+    public required PlayerTrust Trust { get; init; }
+    public string? ServerName { get; init; }
     public string? Token { get; init; }
     public string? ApiKey { get; init; }
     public string? Method { get; init; }
@@ -189,7 +189,12 @@ sealed class CliOptions
 
     public string Host => SplitAddr().Host;
     public int Port => SplitAddr().Port;
-    public string TrustLabel => Insecure ? "trust-any" : $"pinned CA {CaCertPath}";
+    public string TrustLabel => Trust switch
+    {
+        PlayerTrust.Insecure => "trust-any",
+        PlayerTrust.PinnedCa pinned => $"pinned CA {pinned.CaCertPath}",
+        _ => "system roots",
+    };
 
     private (string Host, int Port) SplitAddr()
     {
@@ -197,19 +202,30 @@ sealed class CliOptions
         if (colon <= 0 || colon == Addr.Length - 1)
             throw new ArgumentException($"bad --addr {Addr.QuoteArg()} (expected HOST:PORT)");
         string host = Addr[..colon];
+        if (host.StartsWith('[') && host.EndsWith(']'))
+            host = host[1..^1];
         if (!int.TryParse(Addr[(colon + 1)..], out int port))
             throw new ArgumentException($"bad --addr {Addr.QuoteArg()} (port not a number)");
         return (host, port);
     }
 
     public Task<QuicPlayerClient> ConnectAsync() =>
-        QuicPlayerClient.ConnectAsync(Host, Port, CaCertPath, Insecure, ApiKey);
+        QuicPlayerClient.ConnectAsync(
+            Host,
+            Port,
+            Trust,
+            ServerName,
+            ApiKey,
+            (endPoint, ex) => Console.Error.WriteLine(
+                $"gbclient: warning: dial {Addr}: {endPoint}: {ex.GetType().Name}: {ex.Message}"));
 
     public static CliOptions Parse(string[] args, bool wantMethod)
     {
         string? addr = null;
         string? ca = null;
         bool insecure = false;
+        bool systemRoots = false;
+        string? serverName = null;
         string? token = null;
         string? apiKey = null;
         var positional = new List<string>();
@@ -228,6 +244,12 @@ sealed class CliOptions
                 case "--insecure":
                     insecure = true;
                     break;
+                case "--system-roots":
+                    systemRoots = true;
+                    break;
+                case "--server-name":
+                    serverName = Next(args, ref i, "--server-name");
+                    break;
                 case "--token" or "-token":
                     token = Next(args, ref i, "--token");
                     break;
@@ -244,8 +266,11 @@ sealed class CliOptions
 
         if (string.IsNullOrEmpty(addr))
             throw new ArgumentException("--addr HOST:PORT is required");
-        if (insecure == (ca is not null))
-            throw new ArgumentException("exactly one of --insecure or --ca PATH is required (mutually exclusive)");
+        if ((insecure ? 1 : 0) + (systemRoots ? 1 : 0) + (ca is not null ? 1 : 0) != 1)
+            throw new ArgumentException("exactly one of --ca PATH, --system-roots or --insecure is required");
+        PlayerTrust trust = ca is not null
+            ? new PlayerTrust.PinnedCa(ca)
+            : systemRoots ? new PlayerTrust.SystemRoots() : new PlayerTrust.Insecure();
 
         string? method = null;
         string? payload = null;
@@ -264,8 +289,8 @@ sealed class CliOptions
         return new CliOptions
         {
             Addr = addr,
-            CaCertPath = ca,
-            Insecure = insecure,
+            Trust = trust,
+            ServerName = serverName,
             Token = token,
             ApiKey = apiKey,
             Method = method,
