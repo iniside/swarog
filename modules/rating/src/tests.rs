@@ -13,9 +13,10 @@ async fn test_pool() -> Option<PgPool> {
     // `CREATE SCHEMA IF NOT EXISTS` is not atomic against concurrent creation — parallel
     // tests can race to a unique-violation. One retry suffices: the loser re-runs the
     // fully-idempotent DDL once the winner has created the schema.
-    if sqlx::raw_sql(SCHEMA_DDL).execute(&pool).await.is_err() {
-        sqlx::raw_sql(SCHEMA_DDL)
-            .execute(&pool)
+    let ctx = Context::with_db(pool.clone());
+    if Rating::new().migrate(&ctx).await.is_err() {
+        Rating::new()
+            .migrate(&ctx)
             .await
             .expect("migrate rating schema");
     }

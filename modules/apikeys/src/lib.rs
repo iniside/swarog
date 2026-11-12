@@ -86,6 +86,12 @@ CREATE TABLE IF NOT EXISTS apikeys.keys (
 	revoked_at  timestamptz
 );"#;
 
+/// The apikeys schema; shared by `migrate` and the test pool (which must not run the
+/// dev seed `migrate` also performs).
+pub(crate) fn ddl(pool: &sqlx::PgPool) -> Ddl {
+    Ddl::new(pool).sql(SCHEMA_DDL)
+}
+
 /// Folds any lower-level error into an `Internal` operation error.
 fn internal<E: std::fmt::Display>(e: E) -> Error {
     Error::internal(e.to_string())
@@ -261,7 +267,7 @@ impl Module for ApiKeys {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("apikeys requires a DB pool"))?;
-        Ddl::new(pool).sql(SCHEMA_DDL).run().await?;
+        ddl(pool).run().await?;
 
         if dev_seed_explicitly_on() {
             tracing::warn!(

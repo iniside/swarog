@@ -16,10 +16,7 @@ const DEFAULT_DSN: &str =
 
 async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
-    sqlx::raw_sql(SCHEMA_DDL)
-        .execute(&pool)
-        .await
-        .expect("migrate audit schema");
+    ddl(&pool).run().await.expect("migrate audit schema");
     Some(pool)
 }
 

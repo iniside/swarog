@@ -11,8 +11,8 @@ use super::*;
 /// The leaderboard schema on top of the shared pool.
 async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
-    sqlx::raw_sql(SCHEMA_DDL)
-        .execute(&pool)
+    LeaderboardModule::new()
+        .migrate(&Context::with_db(pool.clone()))
         .await
         .expect("migrate leaderboard schema");
     Some(pool)

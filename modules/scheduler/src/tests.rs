@@ -35,8 +35,8 @@ fn dsn() -> String {
 
 async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
-    sqlx::raw_sql(&SCHEMA_DDL)
-        .execute(&pool)
+    Scheduler::new()
+        .migrate(&Context::with_db(pool.clone()))
         .await
         .expect("migrate scheduler schema");
     Some(pool)

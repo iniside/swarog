@@ -152,10 +152,7 @@ async fn ensure_asyncevents_schema(pool: &PgPool) {
 async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
     ensure_asyncevents_schema(&pool).await;
-    sqlx::raw_sql(SCHEMA_DDL)
-        .execute(&pool)
-        .await
-        .expect("migrate config schema");
+    ddl(&pool).run().await.expect("migrate config schema");
     Some(pool)
 }
 
@@ -561,9 +558,9 @@ async fn trigger_and_native_writer_share_position_semantics() {
 /// `asyncevents.append_event` SQL function directly, bypassing both Rust seed paths
 /// (native writer, typed-subscription reconcile) every OTHER topic gets seeded
 /// through — without this, retention's conservative "no row = never GC" rule would
-/// keep `config.changed` history forever. `test_pool` applies `SCHEMA_DDL` directly
-/// (no module involved), so this drives the real `Module::migrate` to also exercise
-/// `seed_history_contract`.
+/// keep `config.changed` history forever. `test_pool` runs only the
+/// module's `ddl` steps (no seed), so this drives the real `Module::migrate` to also
+/// exercise `seed_history_contract`.
 #[tokio::test]
 async fn migrate_seeds_config_changed_history_contract() {
     let _guard = CONFIG_DB_TEST_GUARD.lock().await;

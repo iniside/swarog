@@ -18,10 +18,7 @@ pub(crate) async fn db_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
 /// The apikeys schema on top of the shared pool.
 pub(crate) async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
-    sqlx::raw_sql(SCHEMA_DDL)
-        .execute(&pool)
-        .await
-        .expect("migrate apikeys schema");
+    ddl(&pool).run().await.expect("migrate apikeys schema");
     Some(pool)
 }
 
