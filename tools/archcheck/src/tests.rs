@@ -1903,10 +1903,51 @@ fn ddl_text_homes_are_green() {
 
 #[test]
 fn a_char_literal_does_not_swallow_the_following_const() {
-    // If `'\''` were mis-lexed the `*_DDL` const below would lose its home and go red;
-    // and a CREATE text after it must still be flagged (lexing resumed correctly).
-    let text = "let q = '\\'';\nconst B_DDL: &str = \"CREATE TABLE s.t (a int)\";\nsqlx::query(\"CREATE TABLE m.t (a int)\");\n";
+    // A `'"'` char literal mis-lexed as a string start would swallow the const below, so
+    // its CREATE text would go red (or the stray one go unseen); lexing must resume.
+    let text = "let q = '\"';\nconst B_DDL: &str = \"CREATE TABLE s.t (a int)\";\nsqlx::query(\"CREATE TABLE m.t (a int)\");\n";
     assert_one_violation_at(NON_TEST, text, 3, "`CREATE TABLE`");
+}
+
+#[test]
+fn index_call_inside_a_comment_or_string_is_not_a_home() {
+    assert_one_violation_at(
+        NON_TEST,
+        "// call .index( later\nsqlx::query(\"CREATE TABLE m.t (a int)\");",
+        2,
+        "`CREATE TABLE`",
+    );
+    assert_one_violation_at(
+        NON_TEST,
+        "let s = \"x.index(\"; sqlx::query(\"CREATE TABLE m.t (a int)\");",
+        1,
+        "`CREATE TABLE`",
+    );
+    // A `;` inside the const's string does not end the item early.
+    let semi = "const A_DDL: &str = \"CREATE SCHEMA s; CREATE TABLE s.t (a int)\";";
+    assert!(locking_ddl_violations(NON_TEST, semi).is_empty());
+    assert!(locking_ddl_violations(NON_TEST, "b.index(X_DDL);").is_empty());
+}
+
+#[test]
+fn ddl_const_names_in_strings_and_use_items_are_not_uses() {
+    for text in [
+        "x.context(\"SCHEMA_DDL failed\");",
+        "use crate::store::SCHEMA_DDL;",
+        "use crate::{\n    other::USERS_DDL,\n    x\n};",
+    ] {
+        assert!(locking_ddl_violations(NON_TEST, text).is_empty(), "{text}");
+    }
+    // A real use next to those mentions is still the one violation.
+    let text = "use crate::store::SCHEMA_DDL;\nx.context(\"SCHEMA_DDL failed\");\npool.execute(SCHEMA_DDL);\n";
+    assert_one_violation_at(NON_TEST, text, 3, "`SCHEMA_DDL`");
+    // CREATE text in a plain string is still stray.
+    assert_one_violation_at(
+        NON_TEST,
+        "sqlx::query(\"CREATE TABLE m.t\");",
+        1,
+        "`CREATE TABLE`",
+    );
 }
 
 #[test]
@@ -1918,7 +1959,10 @@ fn comment_spans_skip_raw_and_byte_strings() {
     assert_eq!(spans(r#"let a = b"/* no */"; /* yes */ x"#), ["/* yes */"]);
     assert_eq!(spans(r###"let a = br#"// no"#; // yes"###), ["// yes"]);
     assert_eq!(spans(r#"let u = "http://x"; // tail"#), ["// tail"]);
-    assert!(spans("fn f<'a>(x: &'a str) {}").is_empty());
+    // A lifetime is not a char literal: lexing continues and still finds the comment.
+    assert_eq!(spans("fn f<'a>(x: &'a /* c */ str) {}"), ["/* c */"]);
+    // A `'/'` char literal is not a comment start.
+    assert_eq!(spans("let q = '/'; // yes"), ["// yes"]);
 }
 
 #[test]
@@ -1942,6 +1986,11 @@ fn missing_scope_names_the_absent_directory() {
     assert!(v[0].starts_with("core/admin/: "), "{v:?}");
     std::fs::create_dir_all(root.join("core/admin")).unwrap();
     assert!(missing_scope_violations(&root).is_empty());
+    // A directory only in LOCKING_DDL_SCOPE (not RAW_DDL_SCOPE) is checked too.
+    std::fs::remove_dir(root.join("demos")).unwrap();
+    let v = missing_scope_violations(&root);
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].starts_with("demos/: "), "{v:?}");
     let _ = std::fs::remove_dir_all(root);
 }
 
