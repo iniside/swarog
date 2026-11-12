@@ -274,8 +274,8 @@ impl DevCA {
     }
 }
 
-/// Loads a PEM certificate chain (leaf first) and a PEM private key as a static
-/// certificate. Errors name the offending path.
+/// Loads a PEM certificate chain (leaf first) and a PEM file holding exactly one
+/// private key as a static certificate. Errors name the offending path.
 pub fn pem_cert_resolver(cert_path: &Path, key_path: &Path) -> Result<Arc<dyn ResolvesServerCert>, Error> {
     let cert_pem =
         std::fs::read(cert_path).map_err(|e| Error::Tls(format!("read TLS cert {cert_path:?}: {e}")))?;
@@ -287,8 +287,16 @@ pub fn pem_cert_resolver(cert_path: &Path, key_path: &Path) -> Result<Arc<dyn Re
     if chain.is_empty() {
         return Err(Error::Tls(format!("TLS cert {cert_path:?} has no PEM CERTIFICATE")));
     }
-    let key = PrivateKeyDer::from_pem_slice(&key_pem)
+    let mut keys = PrivateKeyDer::pem_slice_iter(&key_pem)
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| Error::Tls(format!("parse TLS key {key_path:?}: {e}")))?;
+    if keys.len() != 1 {
+        return Err(Error::Tls(format!(
+            "TLS key {key_path:?} holds {} private keys, expected exactly one",
+            keys.len()
+        )));
+    }
+    let key = keys.remove(0);
     let provider = rustls::crypto::ring::default_provider();
     let certified = CertifiedKey::from_der(chain, key, &provider)
         .map_err(|e| Error::Tls(format!("TLS key {key_path:?} for cert {cert_path:?}: {e}")))?;
