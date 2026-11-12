@@ -18,6 +18,14 @@
 //! transport `Err` (framing/handshake/ALPN fault) AND a transport-`Ok` domain failure
 //! (e.g. `{"status":"Unauthorized",...}`, which the pinned error grammar delivers as
 //! `ok:true`). Testing `ok` alone would wrongly call an auth failure a success.
+//!
+//! `--addr` may resolve to several addresses; they are dialed in resolver order until
+//! one connects. Every failed address gets its own stderr line,
+//! `playercli: dial <addr>: <socket-addr>: <error>`, or `playercli: dial <addr>: <error>`
+//! when the error text already names the socket address, so it appears once. If none
+//! connects, those lines are the
+//! output and the exit code is 1; if a later address connects, the earlier failures
+//! are printed as `playercli: warning: dial ...` lines and do not change the exit code.
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::process::ExitCode;
@@ -129,20 +137,28 @@ async fn main() -> ExitCode {
     };
 
     let mut dialed = None;
-    let mut last_err = String::new();
+    let mut failures: Vec<String> = Vec::new();
     for socket_addr in socket_addrs {
         match PlayerClient::dial(socket_addr, &server_name, &trust).await {
             Ok(c) => {
                 dialed = Some(c);
                 break;
             }
-            Err(e) => last_err = format!("{socket_addr}: {e}"),
+            Err(e) => {
+                let msg = e.to_string();
+                failures.push(if msg.contains(&socket_addr.to_string()) { msg } else { format!("{socket_addr}: {msg}") });
+            }
         }
     }
     let Some(client) = dialed else {
-        eprintln!("playercli: dial {}: {last_err}", args.addr);
+        for failure in &failures {
+            eprintln!("playercli: dial {}: {failure}", args.addr);
+        }
         return ExitCode::FAILURE;
     };
+    for failure in &failures {
+        eprintln!("playercli: warning: dial {}: {failure}", args.addr);
+    }
 
     // `PlayerClient::call` already unwraps the transport envelope: `Err` here is a
     // TRANSPORT fault (the peer's `ok:false`); a domain outcome — auth failure
