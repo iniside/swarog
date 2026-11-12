@@ -174,6 +174,7 @@ pub fn emit_client(m: &Manifest) -> String {
          /// </summary>\n",
     );
     s.push_str("public sealed class GameBackendClient(IPlayerTransport transport)\n{\n");
+    s.push_str("    private readonly IPlayerTransport _transport = transport;\n\n");
     s.push_str(
         "    private static readonly JsonSerializerOptions JsonOpts = new()\n\
          \x20   {\n\
@@ -251,7 +252,7 @@ fn emit_method(method: &MethodDef) -> String {
         params.push("string token".to_string());
     }
     for a in &method.args {
-        params.push(format!("{} {}", cs_type(&a.ty), escape_ident(&camel_from_snake(&a.name))));
+        params.push(format!("{} {}", cs_type(&a.ty), param_ident(&a.name)));
     }
     params.push("CancellationToken ct = default".to_string());
 
@@ -259,7 +260,7 @@ fn emit_method(method: &MethodDef) -> String {
     let ctor_args: Vec<String> = method
         .args
         .iter()
-        .map(|a| escape_ident(&camel_from_snake(&a.name)))
+        .map(|a| param_ident(&a.name))
         .collect();
     let token_expr = if player { "token" } else { "null" };
 
@@ -275,25 +276,25 @@ fn emit_method(method: &MethodDef) -> String {
         params.join(", ")
     ));
     s.push_str(&format!(
-        "        var request = new {req_name}({});\n",
+        "        var _request = new {req_name}({});\n",
         ctor_args.join(", ")
     ));
-    s.push_str("        byte[] payload = JsonSerializer.SerializeToUtf8Bytes(request, JsonOpts);\n");
+    s.push_str("        byte[] _payload = JsonSerializer.SerializeToUtf8Bytes(_request, JsonOpts);\n");
     s.push_str(&format!(
-        "        PlayerResponse resp = await transport.CallAsync(\"{}\", {token_expr}, payload, ct).ConfigureAwait(false);\n",
+        "        PlayerResponse _resp = await _transport.CallAsync(\"{}\", {token_expr}, _payload, ct).ConfigureAwait(false);\n",
         method.wire_method
     ));
     match &method.ret {
         TypeRef::Unit => {
-            s.push_str("        Unwrap(resp);\n");
+            s.push_str("        Unwrap(_resp);\n");
         }
         _ => {
             let cs = cs_type(&method.ret);
-            s.push_str("        JsonNode envelope = Unwrap(resp);\n");
+            s.push_str("        JsonNode _envelope = Unwrap(_resp);\n");
             s.push_str(&format!(
-                "        JsonNode value = envelope[\"value\"]\n\
+                "        JsonNode _value = _envelope[\"value\"]\n\
                  \x20           ?? throw new GameBackendTransportException(\"Ok response missing 'value'\");\n\
-                 \x20       return value.Deserialize<{cs}>(JsonOpts)!;\n"
+                 \x20       return _value.Deserialize<{cs}>(JsonOpts)!;\n"
             ));
         }
     }
@@ -367,6 +368,21 @@ fn lower_first(s: &str) -> String {
         None => String::new(),
     }
 }
+
+/// Generator locals and `_transport` start with `_`, which `camel_from_snake` never
+/// yields, so only the generator-owned `token`/`ct` parameters can collide with an arg.
+fn param_ident(name: &str) -> String {
+    let camel = camel_from_snake(name);
+    if GENERATOR_PARAMS.contains(&camel.as_str()) {
+        format!("{camel}_")
+    } else if camel == "await" {
+        format!("@{camel}")
+    } else {
+        escape_ident(&camel)
+    }
+}
+
+const GENERATOR_PARAMS: &[&str] = &["token", "ct"];
 
 /// Prefixes a C# reserved keyword with `@` so it is a legal identifier (e.g. the
 /// `class` arg → `@class`).

@@ -17,7 +17,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use crate::emit::{emit_client, emit_dtos, emit_status};
-use crate::model::{Manifest, TypeRef};
+use crate::model::{ArgDef, Manifest, MethodDef, TypeRef};
 use crate::scrape::{check_completeness, check_drift, map_type, parse_sources, scrape};
 
 /// The committed golden manifest — regenerate with
@@ -209,6 +209,43 @@ fn emitted_client_matches_golden() {
         CLIENT_GOLDEN,
         "Client.cs drifted from the committed golden — regenerate with --out"
     );
+}
+
+#[test]
+fn args_named_like_generator_identifiers_stay_distinct() {
+    let arg = |name: &str| ArgDef { name: name.into(), wire_name: name.into(), ty: TypeRef::String };
+    let m = Manifest {
+        methods: vec![MethodDef {
+            provider: "storage".into(),
+            wire_method: "storage.put".into(),
+            verb: "POST".into(),
+            path: "/storage".into(),
+            auth: "player".into(),
+            success: 200,
+            args: [
+                "value", "request", "payload", "resp", "envelope", "transport", "token", "ct", "await",
+                "class",
+            ]
+            .into_iter()
+            .map(arg)
+            .collect(),
+            ret: TypeRef::String,
+        }],
+        dtos: vec![],
+        statuses: vec![],
+    };
+    let cs = emit_client(&m);
+    assert!(cs.contains(
+        "StoragePutAsync(string token, string value, string request, string payload, string resp, \
+         string envelope, string transport, string token_, string ct_, string @await, string @class, \
+         CancellationToken ct = default)"
+    ));
+    assert!(cs.contains(
+        "var _request = new StoragePutRequest(value, request, payload, resp, envelope, transport, \
+         token_, ct_, @await, @class);"
+    ));
+    assert!(cs.contains("await _transport.CallAsync(\"storage.put\", token, _payload, ct)"));
+    assert!(cs.contains("JsonNode _value = _envelope[\"value\"]"));
 }
 
 // --- Gate 1: drift ---------------------------------------------------------
