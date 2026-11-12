@@ -1636,6 +1636,7 @@ fn purge_payload(name: &str) -> Vec<u8> {
 #[tokio::test]
 async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool).await;
     let pid = unique_player(&pool).await;
 
@@ -1667,6 +1668,7 @@ async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
 #[tokio::test]
 async fn sweep_deletes_target_survivor_untouched_and_ignores_foreign_schedule_name() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool).await;
     let target = unique_player(&pool).await;
     let survivor = unique_player(&pool).await;
@@ -1722,6 +1724,7 @@ async fn sweep_deletes_target_survivor_untouched_and_ignores_foreign_schedule_na
 #[tokio::test]
 async fn deliver_or_skip_answers_ok_for_a_purged_recipient_without_pausing_the_subscription() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool).await;
     let purged = unique_player(&pool).await;
     let other = unique_player(&pool).await;

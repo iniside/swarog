@@ -19,6 +19,13 @@ const DEFAULT_DSN: &str =
 
 use testdb::test_pool;
 
+/// ONE lock for every test that plants or sweeps `wallet.purged_players`. The sweep walks the
+/// WHOLE shared table with `FOR UPDATE SKIP LOCKED`, so a sibling's open sweep transaction
+/// holds row locks on this test's planted rows and this test's sweep skips them, leaving them
+/// unswept when it asserts. Process-local: a runner that gives each test its own process
+/// (nextest) loses the isolation.
+static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn ensure_schema(pool: &PgPool) {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     asyncevents::Plane::new(pool.clone(), dsn)
@@ -2258,6 +2265,7 @@ fn purge_payload(name: &str) -> Vec<u8> {
 #[tokio::test]
 async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool).await;
     let pid = unique_player(&pool).await;
 
@@ -2291,6 +2299,7 @@ async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
 #[tokio::test]
 async fn sweep_clears_balances_reassigns_ledger_to_sentinel_key_stays_claimed() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool).await;
     let pid = unique_player(&pool).await;
     let currency = unique_currency(&pool).await;
@@ -2346,6 +2355,7 @@ async fn sweep_clears_balances_reassigns_ledger_to_sentinel_key_stays_claimed() 
 #[tokio::test]
 async fn apply_on_purged_player_claims_no_key_so_a_live_player_can_reuse_it() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool).await;
     let purged = unique_player(&pool).await;
     let live = unique_player(&pool).await;
@@ -2388,6 +2398,7 @@ async fn apply_on_purged_player_claims_no_key_so_a_live_player_can_reuse_it() {
 #[tokio::test]
 async fn grant_starter_skips_a_purged_player_on_first_and_redelivered_calls() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool).await;
     let pid = unique_player(&pool).await;
     let currency = unique_currency(&pool).await;

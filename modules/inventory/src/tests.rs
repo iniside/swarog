@@ -181,6 +181,13 @@ fn validate_quantity_boundaries() {
 
 use testdb::test_pool;
 
+/// ONE lock for every test that plants or sweeps `inventory.purged_players`. The sweep walks the
+/// WHOLE shared table with `FOR UPDATE SKIP LOCKED`, so a sibling's open sweep transaction
+/// holds row locks on this test's planted rows and this test's sweep skips them, leaving them
+/// unswept when it asserts. Process-local: a runner that gives each test its own process
+/// (nextest) loses the isolation.
+static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 async fn ensure_schema(pool: &PgPool) {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     asyncevents::Plane::new(pool.clone(), dsn)
@@ -1003,6 +1010,7 @@ fn purge_payload(name: &str) -> Vec<u8> {
 #[tokio::test]
 async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     ensure_schema(&pool).await;
     let pid = unique_uuid(&pool).await;
     let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
@@ -1038,6 +1046,7 @@ async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
 #[tokio::test]
 async fn sweep_clears_player_owned_holdings_but_keeps_character_owned_rows() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     ensure_schema(&pool).await;
     let pid = unique_uuid(&pool).await;
     let cid = unique_uuid(&pool).await; // a character owned by the same purged player
@@ -1072,6 +1081,7 @@ async fn sweep_clears_player_owned_holdings_but_keeps_character_owned_rows() {
 #[tokio::test]
 async fn sweep_handler_survivor_untouched_and_ignores_foreign_schedule_name() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     ensure_schema(&pool).await;
     let target = unique_uuid(&pool).await;
     let survivor = unique_uuid(&pool).await;
@@ -1124,6 +1134,7 @@ async fn sweep_handler_survivor_untouched_and_ignores_foreign_schedule_name() {
 #[tokio::test]
 async fn grant_is_blocked_by_tombstone_predicate_not_presence() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     ensure_schema(&pool).await;
     let purged = unique_uuid(&pool).await;
     let other = unique_uuid(&pool).await;
