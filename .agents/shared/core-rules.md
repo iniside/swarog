@@ -172,7 +172,8 @@ Wipe is the migration strategy (current phase). When a schema or event-contract
 change would need a data migration, DROP the affected schemas (or the whole
 DB) and boot fresh. Do not build bridges, dual-writes, backfills, versioned
 data-migration machinery, or "kept for compatibility" fields. Module `migrate`
-stays idempotent DDL (`CREATE … IF NOT EXISTS`), nothing more. If losing dev
+is create-only DDL through `lifecycle::Ddl` (`core/lifecycle/src/ddl.rs`), never
+an alter or replace of an existing object, nothing more. If losing dev
 data hurts, the answer is a seed script, not a migration.
 
 Modules are topology-blind. No `Option<transport>`, no `if split`, no env
