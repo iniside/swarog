@@ -108,7 +108,7 @@ async fn main() -> ExitCode {
         }
     };
 
-    let (socket_addr, default_server_name) = match resolve(&args.addr) {
+    let (socket_addrs, default_server_name) = match resolve(&args.addr) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("playercli: bad --addr {:?}: {e}", args.addr);
@@ -128,12 +128,20 @@ async fn main() -> ExitCode {
         None => TrustAnchor::system_roots(),
     };
 
-    let client = match PlayerClient::dial(socket_addr, &server_name, &trust).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("playercli: dial {}: {e}", args.addr);
-            return ExitCode::FAILURE;
+    let mut dialed = None;
+    let mut last_err = String::new();
+    for socket_addr in socket_addrs {
+        match PlayerClient::dial(socket_addr, &server_name, &trust).await {
+            Ok(c) => {
+                dialed = Some(c);
+                break;
+            }
+            Err(e) => last_err = format!("{socket_addr}: {e}"),
         }
+    }
+    let Some(client) = dialed else {
+        eprintln!("playercli: dial {}: {last_err}", args.addr);
+        return ExitCode::FAILURE;
     };
 
     // `PlayerClient::call` already unwraps the transport envelope: `Err` here is a
@@ -168,17 +176,17 @@ async fn main() -> ExitCode {
     }
 }
 
-/// Resolves `host:port` to its first address and the default server name: the
-/// host when it is a DNS name, `localhost` when it is an IP literal.
-fn resolve(addr: &str) -> Result<(SocketAddr, String), String> {
+/// Resolves `host:port` to every address it names, in resolver order, and the
+/// default server name: the host when it is a DNS name, `localhost` when it is an
+/// IP literal.
+fn resolve(addr: &str) -> Result<(Vec<SocketAddr>, String), String> {
     if let Ok(socket_addr) = addr.parse::<SocketAddr>() {
-        return Ok((socket_addr, "localhost".to_string()));
+        return Ok((vec![socket_addr], "localhost".to_string()));
     }
     let (host, _) = addr.rsplit_once(':').ok_or("expected host:port")?;
-    let socket_addr = addr
-        .to_socket_addrs()
-        .map_err(|e| e.to_string())?
-        .next()
-        .ok_or("host resolved to no address")?;
-    Ok((socket_addr, host.to_string()))
+    let socket_addrs: Vec<SocketAddr> = addr.to_socket_addrs().map_err(|e| e.to_string())?.collect();
+    if socket_addrs.is_empty() {
+        return Err("host resolved to no address".to_string());
+    }
+    Ok((socket_addrs, host.to_string()))
 }
