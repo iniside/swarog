@@ -6,18 +6,10 @@
 use super::*;
 use bus::{AnyTx, Delivery, TxHandler};
 
-/// ONE lock for every test that plants or sweeps `characters.purged_players`.
-/// `sweep_purged_players` walks the WHOLE shared table with `FOR UPDATE SKIP LOCKED`, so a
-/// sibling's open sweep transaction holds row locks on this test's planted rows and this
-/// test's sweep silently skips them, leaving them unswept when it asserts. Serializing the
-/// tests keeps exactly one sweeper alive at a time. Process-local: a runner that gives each
-/// test its own process (nextest) loses the isolation.
+/// Serializes the tests that plant or sweep `characters.purged_players`: the whole-table `FOR UPDATE SKIP LOCKED` sweep skips rows a sibling's open sweep has locked.
 static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// Runs `body` on its own task and removes `players`' characters and events plus every
-/// `tombstones` row even when it panicked, then re-raises the panic (a `Drop` guard cannot
-/// `await`). A red run must never leave unswept tombstones in the shared table for the next
-/// run's sweeps to trip over.
+/// A red run must not leave unswept tombstones, and a `Drop` guard cannot `await`.
 async fn with_purge_cleanup<Fut>(
     pool: &PgPool,
     players: Vec<String>,

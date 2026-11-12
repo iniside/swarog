@@ -181,11 +181,7 @@ fn validate_quantity_boundaries() {
 
 use testdb::test_pool;
 
-/// ONE lock for every test that plants or sweeps `inventory.purged_players`. The sweep walks the
-/// WHOLE shared table with `FOR UPDATE SKIP LOCKED`, so a sibling's open sweep transaction
-/// holds row locks on this test's planted rows and this test's sweep skips them, leaving them
-/// unswept when it asserts. Process-local: a runner that gives each test its own process
-/// (nextest) loses the isolation.
+/// Serializes the tests that plant or sweep `inventory.purged_players`: the whole-table `FOR UPDATE SKIP LOCKED` sweep skips rows a sibling's open sweep has locked.
 static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn ensure_schema(pool: &PgPool) {
