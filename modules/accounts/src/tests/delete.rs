@@ -434,6 +434,9 @@ async fn migrate_fails_loudly_on_a_player_with_no_handles_claim() {
     ensure_schema(&pool).await;
     let ctx = Context::with_db(pool.clone());
 
+    // Exclusive for the whole committed life of the ghost row, so no sibling's migrate sees it.
+    let _exclusive = GHOST_PLAYER.write().await;
+
     // A player row inserted directly, bypassing the handles claim `register` always takes
     // atomically — the shape a pre-`accounts.handles` schema would have left behind.
     let (ghost_id,): (String,) = sqlx::query_as(
@@ -444,21 +447,15 @@ async fn migrate_fails_loudly_on_a_player_with_no_handles_claim() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    let _cleanup = on_drop({
-        let pool = pool.clone();
-        let ghost_id = ghost_id.clone();
-        move || async move {
-            let _ = sqlx::query("DELETE FROM accounts.players WHERE id = $1::uuid")
-                .bind(&ghost_id)
-                .execute(&pool)
-                .await;
-        }
-    });
 
-    let err = Accounts::new()
-        .migrate(&ctx)
+    let res = Accounts::new().migrate(&ctx).await;
+    // Removed before the write lock drops, so the ghost is never visible once it is released.
+    sqlx::query("DELETE FROM accounts.players WHERE id = $1::uuid")
+        .bind(&ghost_id)
+        .execute(&pool)
         .await
-        .expect_err("a player with no accounts.handles claim must fail migrate loudly");
+        .unwrap();
+    let err = res.expect_err("a player with no accounts.handles claim must fail migrate loudly");
     assert!(
         err.to_string().contains("accounts.handles claim"),
         "unexpected migrate error: {err}"

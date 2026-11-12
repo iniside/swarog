@@ -618,28 +618,24 @@ async fn third_login_queues_and_thirty_third_is_shed() {
 
 use testdb::test_pool;
 
-/// Migrates BOTH the asyncevents (durable plane's event log) and accounts schemas
-/// EXACTLY ONCE per test binary. The module DDL no longer needs this; the guard is for
-/// `Accounts::migrate`'s closing whole-table check that every `accounts.players` row has an
-/// `accounts.handles` claim, which fails the boot when it runs while another test has a
-/// claimless player row in flight.
-static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+/// Held for write by the one test that commits a claimless `accounts.players` row, and for
+/// read around every `Accounts::migrate` call: that migrate ends with a whole-table check
+/// that fails when ANY committed player has no `accounts.handles` claim, so a sibling
+/// test's migrate must never run while the ghost row is committed.
+static GHOST_PLAYER: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
 
 async fn ensure_schema(pool: &PgPool) {
-    SCHEMA_READY
-        .get_or_init(|| async {
-            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-            asyncevents::Plane::new(pool.clone(), dsn)
-                .unwrap()
-                .migrate()
-                .await
-                .unwrap();
-            let ctx = Context::with_db(pool.clone());
-            let a = Accounts::new();
-            a.register(&ctx).unwrap();
-            a.migrate(&ctx).await.unwrap();
-        })
-        .await;
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    asyncevents::Plane::new(pool.clone(), dsn)
+        .unwrap()
+        .migrate()
+        .await
+        .unwrap();
+    let ctx = Context::with_db(pool.clone());
+    let a = Accounts::new();
+    a.register(&ctx).unwrap();
+    let _no_ghost = GHOST_PLAYER.read().await;
+    a.migrate(&ctx).await.unwrap();
 }
 
 /// Builds a real durable plane over the live pool: schemas migrated once, then the
