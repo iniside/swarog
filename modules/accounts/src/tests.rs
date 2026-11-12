@@ -619,8 +619,10 @@ async fn third_login_queues_and_thirty_third_is_shed() {
 use testdb::test_pool;
 
 /// Migrates BOTH the asyncevents (durable plane's event log) and accounts schemas
-/// EXACTLY ONCE per test binary (concurrent idempotent DDL deadlocks on catalog
-/// locks — same serialization as the characters tests).
+/// EXACTLY ONCE per test binary. The module DDL no longer needs this; the guard is for
+/// `Accounts::migrate`'s closing whole-table check that every `accounts.players` row has an
+/// `accounts.handles` claim, which fails the boot when it runs while another test has a
+/// claimless player row in flight.
 static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
 
 async fn ensure_schema(pool: &PgPool) {

@@ -39,23 +39,17 @@ pub(crate) static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_ne
 /// Serializes the tests that read or write `PARTY_LEASE_SECS` (process-global).
 pub(crate) static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
-/// Migrates the durable plane and the party schema exactly once per test binary.
+/// Migrates the durable plane and the party schema.
 pub(crate) async fn ensure_schema(pool: &PgPool) {
-    SCHEMA_READY
-        .get_or_init(|| async {
-            asyncevents::Plane::new(pool.clone(), testdb::dsn())
-                .unwrap()
-                .migrate()
-                .await
-                .unwrap();
-            Party::new()
-                .migrate(&Context::with_db(pool.clone()))
-                .await
-                .unwrap();
-        })
-        .await;
+    asyncevents::Plane::new(pool.clone(), testdb::dsn())
+        .unwrap()
+        .migrate()
+        .await
+        .unwrap();
+    Party::new()
+        .migrate(&Context::with_db(pool.clone()))
+        .await
+        .unwrap();
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(1);

@@ -18,30 +18,21 @@ const DEFAULT_DSN: &str =
 
 use testdb::test_pool;
 
-/// Migrates BOTH the asyncevents (durable plane's event log) and match schemas EXACTLY
-/// ONCE per test binary — concurrent idempotent DDL across parallel tests can deadlock on
-/// catalog locks.
-static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
 async fn ensure_schema(pool: &PgPool) {
-    SCHEMA_READY
-        .get_or_init(|| async {
-            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-            asyncevents::Plane::new(pool.clone(), dsn)
-                .unwrap()
-                .migrate()
-                .await
-                .unwrap();
-            let ctx = Context::with_db(pool.clone());
-            let mm = MatchModule::new();
-            mm.register(&ctx).unwrap();
-            mm.migrate(&ctx).await.unwrap();
-        })
-        .await;
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    asyncevents::Plane::new(pool.clone(), dsn)
+        .unwrap()
+        .migrate()
+        .await
+        .unwrap();
+    let ctx = Context::with_db(pool.clone());
+    let mm = MatchModule::new();
+    mm.register(&ctx).unwrap();
+    mm.migrate(&ctx).await.unwrap();
 }
 
 /// Builds a real durable plane over the live pool with a FAKE `MmrReader` filling
-/// match's sync `rating` dependency: schemas migrated once, the asyncevents transport is
+/// match's sync `rating` dependency: schemas migrated, the asyncevents transport is
 /// injected at `Context` construction, a `CountingReader` (returns `Ok(1000)` — the same
 /// value the real `rating` yields for an unseen player; these tests never assert the MMR
 /// value, only that the sync seam resolves) is provided into the registry under rating's

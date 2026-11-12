@@ -181,26 +181,17 @@ fn validate_quantity_boundaries() {
 
 use testdb::test_pool;
 
-/// Migrates asyncevents (durable plane's event log) + inventory schemas EXACTLY
-/// ONCE per test binary — concurrent idempotent DDL across parallel tests can
-/// deadlock on catalog locks, so serialize to a single run.
-static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
 async fn ensure_schema(pool: &PgPool) {
-    SCHEMA_READY
-        .get_or_init(|| async {
-            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-            asyncevents::Plane::new(pool.clone(), dsn)
-                .unwrap()
-                .migrate()
-                .await
-                .unwrap();
-            let ctx = Context::with_db(pool.clone());
-            let inv = Inventory::new();
-            inv.register(&ctx).unwrap();
-            inv.migrate(&ctx).await.unwrap();
-        })
-        .await;
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    asyncevents::Plane::new(pool.clone(), dsn)
+        .unwrap()
+        .migrate()
+        .await
+        .unwrap();
+    let ctx = Context::with_db(pool.clone());
+    let inv = Inventory::new();
+    inv.register(&ctx).unwrap();
+    inv.migrate(&ctx).await.unwrap();
 }
 
 async fn unique_uuid(pool: &PgPool) -> String {

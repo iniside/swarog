@@ -136,7 +136,7 @@ async fn ensure_schema(pool: &PgPool) {
     c.migrate(&ctx).await.unwrap();
 }
 
-/// Builds a real durable plane over the live pool: schemas are migrated once
+/// Builds a real durable plane over the live pool: schemas are migrated
 /// (`ensure_schema`), then the asyncevents `bus::Transport` is injected at `Context`
 /// construction (needed before any `emit_tx`), and characters registers/inits against
 /// the same ctx. Returns the ctx (owns the bus + registry) and the wired service.

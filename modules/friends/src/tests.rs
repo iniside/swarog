@@ -29,10 +29,6 @@ const DEFAULT_DSN: &str =
 
 use testdb::test_pool;
 
-/// Migrates BOTH the asyncevents plane and the friends schema EXACTLY ONCE per test
-/// binary — concurrent idempotent DDL across parallel tests can deadlock on catalog locks.
-static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
 /// `sweep_purged_players` scans the WHOLE shared `friends.purged_players` table (not just
 /// one test's rows) and `pending_purges()` counts across it too — an unfiltered `count(*)`,
 /// not scoped to any one test's ids. Every purge test that plants a row (even one that never
@@ -44,20 +40,16 @@ static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_ne
 pub(crate) static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn ensure_schema(pool: &PgPool) {
-    SCHEMA_READY
-        .get_or_init(|| async {
-            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-            asyncevents::Plane::new(pool.clone(), dsn)
-                .unwrap()
-                .migrate()
-                .await
-                .unwrap();
-            let ctx = Context::with_db(pool.clone());
-            let module = Friends::new();
-            module.register(&ctx).unwrap();
-            module.migrate(&ctx).await.unwrap();
-        })
-        .await;
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    asyncevents::Plane::new(pool.clone(), dsn)
+        .unwrap()
+        .migrate()
+        .await
+        .unwrap();
+    let ctx = Context::with_db(pool.clone());
+    let module = Friends::new();
+    module.register(&ctx).unwrap();
+    module.migrate(&ctx).await.unwrap();
 }
 
 /// A real durable plane over the live pool, with a fake `Directory` filling friends' sync

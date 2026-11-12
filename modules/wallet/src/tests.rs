@@ -19,29 +19,20 @@ const DEFAULT_DSN: &str =
 
 use testdb::test_pool;
 
-/// Migrates BOTH the asyncevents (durable plane's event log) and wallet schemas
-/// EXACTLY ONCE per test binary — concurrent idempotent DDL across parallel tests
-/// can deadlock on catalog locks, so it is serialized to a single run.
-static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
 async fn ensure_schema(pool: &PgPool) {
-    SCHEMA_READY
-        .get_or_init(|| async {
-            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-            asyncevents::Plane::new(pool.clone(), dsn)
-                .unwrap()
-                .migrate()
-                .await
-                .unwrap();
-            let ctx = Context::with_db(pool.clone());
-            let w = WalletModule::new();
-            w.register(&ctx).unwrap();
-            w.migrate(&ctx).await.unwrap();
-        })
-        .await;
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    asyncevents::Plane::new(pool.clone(), dsn)
+        .unwrap()
+        .migrate()
+        .await
+        .unwrap();
+    let ctx = Context::with_db(pool.clone());
+    let w = WalletModule::new();
+    w.register(&ctx).unwrap();
+    w.migrate(&ctx).await.unwrap();
 }
 
-/// Builds a real durable plane over the live pool (schema migrated once via
+/// Builds a real durable plane over the live pool (schema migrated via
 /// `ensure_schema`), then registers `WalletModule` against a `Context` carrying that
 /// plane's transport — so `apply_on`'s `emit_tx` is a REAL durable append, not a
 /// no-op. Returns the ctx (kept alive; owns the bus) and the concrete `Service`
