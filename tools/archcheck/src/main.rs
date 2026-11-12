@@ -155,7 +155,7 @@ const LOCKING_DDL_SCOPE: [&str; 5] = ["core/", "modules/", "cmd/", "tools/", "de
 
 /// Rule 22: DDL forms (uppercase, single-spaced) that lock an EXISTING table on every
 /// boot, each with the lock it takes.
-const LOCKING_DDL_FORMS: [(&str, &str); 4] = [
+const LOCKING_DDL_FORMS: [(&str, &str); 7] = [
     ("INDEX IF NOT EXISTS", "takes SHARE on the table even when the index exists"),
     (
         "OR REPLACE TRIGGER",
@@ -172,10 +172,25 @@ const LOCKING_DDL_FORMS: [(&str, &str); 4] = [
         "takes ACCESS EXCLUSIVE on the table on every boot; declare the column in CREATE \
          TABLE and wipe (DROP + boot fresh)",
     ),
+    (
+        "ALTER TABLE",
+        "locks the table (ACCESS EXCLUSIVE for most subcommands) on every boot; declare the \
+         shape in CREATE TABLE and wipe (DROP + boot fresh)",
+    ),
+    (
+        "DROP TRIGGER",
+        "takes ACCESS EXCLUSIVE on the table; a changed trigger follows the wipe policy \
+         (DROP + boot fresh)",
+    ),
+    (
+        "DROP INDEX",
+        "takes ACCESS EXCLUSIVE on the table; a changed index follows the wipe policy \
+         (DROP + boot fresh)",
+    ),
 ];
 
-/// Rule 22: the module-DDL owners, where a `*_DDL` text must run through `lifecycle::Ddl`
-/// instead of a bare `sqlx::raw_sql`.
+/// Rule 22: the module-DDL owners. Their non-test source may not name `raw_sql` at all
+/// (DDL runs through `lifecycle::Ddl`); their tests may not pass it a `*_DDL` text.
 const RAW_DDL_SCOPE: [&str; 3] = ["modules/", "core/admin/", "tools/adminctl/"];
 
 /// Rule 22 exclusions (root-relative file or dir prefix). Each must exist, so an entry
@@ -695,14 +710,15 @@ fn main() {
     violations.extend(rpc_contract_model::contract_only_violations(&root));
 
     // --- 22: boot-time DDL never locks an existing table ------------------------
-    // `CREATE INDEX IF NOT EXISTS`, `CREATE OR REPLACE TRIGGER`, `ADD COLUMN` and
-    // `ADD IF NOT EXISTS` lock the table even when the object exists, so every boot would
-    // queue live writers behind module DDL; `lifecycle::Ddl` probes first and bounds the
-    // wait.
+    // `INDEX IF NOT EXISTS`, `OR REPLACE TRIGGER`, `ADD COLUMN`, `ADD IF NOT EXISTS`,
+    // `ALTER TABLE`, `DROP TRIGGER` and `DROP INDEX` lock the table even when nothing
+    // changes, so every boot would queue live writers behind module DDL; `lifecycle::Ddl`
+    // probes first and bounds the wait. Module-DDL owners may not use `raw_sql` outside
+    // tests, and their tests may not feed it a `*_DDL` text.
     violations.extend(grep_locking_ddl(&root));
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no boot-time DDL that locks an existing table (INDEX IF NOT EXISTS / OR REPLACE TRIGGER / ADD COLUMN / ADD IF NOT EXISTS / raw_sql(*_DDL)) outside lifecycle::Ddl");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no boot-time DDL that locks an existing table (INDEX IF NOT EXISTS / OR REPLACE TRIGGER / ADD COLUMN / ADD IF NOT EXISTS / ALTER TABLE / DROP TRIGGER / DROP INDEX) outside lifecycle::Ddl, no raw_sql in non-test modules/ + core/admin/ + tools/adminctl/ source and no raw_sql(*_DDL) in their tests");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -1539,36 +1555,50 @@ fn locking_ddl_excluded(rel: &str) -> bool {
         .any(|p| rel == *p || rel.strip_prefix(p).is_some_and(|rest| rest.starts_with('/')))
 }
 
-/// Rule 22 for ONE file (root-relative `rel` + its `text`): a [`LOCKING_DDL_FORMS`]
-/// phrase anywhere in NON-TEST source under [`LOCKING_DDL_SCOPE`] (comments included,
-/// case-insensitive), and under [`RAW_DDL_SCOPE`] — test files INCLUDED, so a test
-/// helper cannot bypass the module's `migrate` — a `raw_sql(` whose argument is a
-/// `*_DDL` const/static. Out-of-scope and [`LOCKING_DDL_EXCLUDE`] paths yield none.
+/// Rule 22 for ONE file (root-relative `rel` + its `text`). Under [`LOCKING_DDL_SCOPE`]:
+/// a [`LOCKING_DDL_FORMS`] phrase as whole words anywhere in NON-TEST source (comments
+/// included, case-insensitive). Under [`RAW_DDL_SCOPE`]: in NON-TEST source any
+/// `raw_sql` token (call, import or alias), and in TEST source a `raw_sql(` whose
+/// argument is a `*_DDL` const/static, so a test helper cannot bypass the module's
+/// `migrate`. Out-of-scope and [`LOCKING_DDL_EXCLUDE`] paths yield none.
 fn locking_ddl_violations(rel: &str, text: &str) -> Vec<String> {
     if !LOCKING_DDL_SCOPE.iter().any(|p| rel.starts_with(p)) || locking_ddl_excluded(rel) {
         return Vec::new();
     }
+    let test = is_test_source(rel);
     let (collapsed, lines) = collapse_ws(text);
     let upper = collapsed.to_ascii_uppercase();
     let mut out = Vec::new();
     // Tests keep raw locking forms as positive controls for the runner.
-    let forms: &[(&str, &str)] = if is_test_source(rel) { &[] } else { &LOCKING_DDL_FORMS };
+    let forms: &[(&str, &str)] = if test { &[] } else { &LOCKING_DDL_FORMS };
     for (form, why) in forms {
-        for at in find_all(&upper, form) {
-            if at > 0 && is_ident_byte(upper.as_bytes()[at - 1]) {
-                continue;
-            }
+        for at in find_all_words(&upper, form) {
             out.push(format!(
                 "{rel}:{}: `{form}` {why} — use lifecycle::Ddl (index/trigger/sql)",
                 lines[at]
             ));
         }
     }
-    if RAW_DDL_SCOPE.iter().any(|p| rel.starts_with(p)) {
-        for (at, arg) in raw_sql_ddl_args(&collapsed) {
+    if !RAW_DDL_SCOPE.iter().any(|p| rel.starts_with(p)) {
+        return out;
+    }
+    let ddl_args = raw_sql_ddl_args(&collapsed);
+    for (at, arg) in &ddl_args {
+        out.push(format!(
+            "{rel}:{}: `raw_sql({arg})` runs module DDL outside the bounded, \
+             advisory-locked runner — use lifecycle::Ddl (index/trigger/sql)",
+            lines[*at]
+        ));
+    }
+    if !test {
+        for at in find_all_words(&collapsed, "raw_sql") {
+            if ddl_args.iter().any(|(ddl_at, _)| *ddl_at == at) {
+                continue;
+            }
             out.push(format!(
-                "{rel}:{}: `raw_sql({arg})` runs module DDL outside the bounded, \
-                 advisory-locked runner — use lifecycle::Ddl (index/trigger/sql)",
+                "{rel}:{}: `raw_sql` in module-DDL owner code runs SQL outside the bounded, \
+                 advisory-locked runner — use lifecycle::Ddl (index/trigger/sql), or \
+                 sqlx::query for non-DDL",
                 lines[at]
             ));
         }
@@ -1578,6 +1608,19 @@ fn locking_ddl_violations(rel: &str, text: &str) -> Vec<String> {
 
 fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// [`find_all`] hits of `pat` that are not glued to an identifier byte on either side.
+fn find_all_words(text: &str, pat: &str) -> Vec<usize> {
+    let bytes = text.as_bytes();
+    find_all(text, pat)
+        .into_iter()
+        .filter(|&at| {
+            let end = at + pat.len();
+            (at == 0 || !is_ident_byte(bytes[at - 1]))
+                && (end == bytes.len() || !is_ident_byte(bytes[end]))
+        })
+        .collect()
 }
 
 /// Every `raw_sql(` in whitespace-collapsed `text` whose argument is a (possibly
