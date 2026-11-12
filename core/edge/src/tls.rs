@@ -32,6 +32,7 @@ use rustls::server::{ResolvesServerCert, WebPkiClientVerifier};
 use rustls::sign::{CertifiedKey, SingleCertAndKey};
 use rustls::{ClientConfig, RootCertStore, ServerConfig};
 use rustls_pki_types::pem::PemObject;
+use rustls_platform_verifier::BuilderVerifierExt;
 
 use crate::Error;
 
@@ -243,7 +244,7 @@ impl DevCA {
     /// holds. Handy for in-process tests dialing a [`crate::PlayerServer`] without
     /// writing the cert to disk first.
     pub fn trust_anchor(&self) -> TrustAnchor {
-        TrustAnchor { roots: self.roots.clone(), provider: self.provider.clone() }
+        TrustAnchor { roots: Roots::Anchor(self.roots.clone()), provider: self.provider.clone() }
     }
 
     /// [`TrustAnchor::client_tls_public`] via [`DevCA::trust_anchor`] — the player
@@ -255,7 +256,7 @@ impl DevCA {
     /// Loads ONLY the CA certificate from a PEM file, yielding a [`TrustAnchor`]. A
     /// real player holds the anchor cert and NOTHING else — never the signing key
     /// ([`DevCA::load`] demands both because internal peers must mint leaves; a
-    /// player must not be able to). This is the trust path the `playercli` tool uses.
+    /// player must not be able to). This is the trust path of `playercli --ca`.
     pub fn load_cert_only(cert_path: &str) -> Result<TrustAnchor, Error> {
         let cert_pem = std::fs::read_to_string(cert_path)
             .map_err(|e| Error::Ca(format!("read CA cert {cert_path:?}: {e}")))?;
@@ -268,7 +269,7 @@ impl DevCA {
             .add(ca_der)
             .map_err(|e| Error::Ca(format!("add CA to root store: {e}")))?;
         Ok(TrustAnchor {
-            roots: Arc::new(roots),
+            roots: Roots::Anchor(Arc::new(roots)),
             provider: Arc::new(rustls::crypto::ring::default_provider()),
         })
     }
@@ -339,30 +340,44 @@ impl PlayerTlsConfig {
     }
 }
 
-/// The trust-anchor-only side of the player plane: the CA CERTIFICATE without the
-/// signing key. It can verify a server that chains to the anchor but cannot mint or
-/// present any certificate itself. It trusts only servers presenting a leaf from
-/// that CA (a [`DevCA`] leaf or another certificate the CA signed).
+/// What a player client trusts when it verifies the server; it can never mint or
+/// present a certificate itself. Either one CA certificate held without its signing
+/// key ([`DevCA::load_cert_only`], [`DevCA::trust_anchor`]), which accepts only a
+/// server whose chain ends at that CA, or the operating system's trust store
+/// ([`TrustAnchor::system_roots`]).
 pub struct TrustAnchor {
-    /// One root store containing EXACTLY the anchor cert — no system-roots fallback,
-    /// same rule as the mTLS plane (point 4).
-    roots: Arc<RootCertStore>,
+    roots: Roots,
     /// The explicit ring crypto provider (no process-global default reliance).
     provider: Arc<rustls::crypto::CryptoProvider>,
 }
 
+enum Roots {
+    /// One root store containing EXACTLY the anchor cert, no system-roots fallback.
+    Anchor(Arc<RootCertStore>),
+    /// The OS's own verifier and store: a CA installed in the OS is trusted as by any OS-validating client.
+    System,
+}
+
 impl TrustAnchor {
-    /// Builds the PLAYER-facing client config: verifies the server against the
-    /// anchor, presents NO client certificate (a player has none to present), TLS
+    /// Trusts the server certificates the operating system's trust store accepts.
+    pub fn system_roots() -> TrustAnchor {
+        TrustAnchor { roots: Roots::System, provider: Arc::new(rustls::crypto::ring::default_provider()) }
+    }
+
+    /// Builds the PLAYER-facing client config: verifies the server against this
+    /// trust, presents NO client certificate (a player has none to present), TLS
     /// 1.3 only, ALPN [`PLAYER_ALPN`]. Against the internal mTLS server this config
     /// MUST fail the handshake (no client cert AND wrong ALPN) — the planes don't
     /// cross.
     pub fn client_tls_public(&self) -> Result<ClientConfig, Error> {
-        let mut cfg = ClientConfig::builder_with_provider(self.provider.clone())
+        let builder = ClientConfig::builder_with_provider(self.provider.clone())
             .with_protocol_versions(&[&rustls::version::TLS13])
-            .map_err(Error::Rustls)?
-            .with_root_certificates((*self.roots).clone())
-            .with_no_client_auth();
+            .map_err(Error::Rustls)?;
+        let builder = match &self.roots {
+            Roots::Anchor(roots) => builder.with_root_certificates((**roots).clone()),
+            Roots::System => builder.with_platform_verifier().map_err(Error::Rustls)?,
+        };
+        let mut cfg = builder.with_no_client_auth();
         cfg.alpn_protocols = vec![PLAYER_ALPN.to_vec()];
         Ok(cfg)
     }

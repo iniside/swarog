@@ -7026,7 +7026,7 @@ async fn player_session(ctx: &Ctx, calls: &[(&str, String)]) -> Result<Vec<serde
     let ca = ctx.ca_cert.to_str().context("CA cert path not UTF-8")?;
     let trust = DevCA::load_cert_only(ca).map_err(|e| anyhow::anyhow!("load CA: {e}"))?;
     let addr = format!("127.0.0.1:{}", ctx.player_port()).parse().context("player addr")?;
-    let client = PlayerClient::dial(addr, &trust)
+    let client = PlayerClient::dial(addr, "localhost", &trust)
         .await
         .map_err(|e| anyhow::anyhow!("dial: {e}"))?;
     let mut out = Vec::new();
@@ -7287,7 +7287,7 @@ async fn player_call(
     let ca = ctx.ca_cert.to_str().context("CA cert path not UTF-8")?;
     let trust = DevCA::load_cert_only(ca).map_err(|e| anyhow::anyhow!("load CA: {e}"))?;
     let addr = format!("127.0.0.1:{}", ctx.player_port()).parse().context("player addr")?;
-    let client = PlayerClient::dial(addr, &trust)
+    let client = PlayerClient::dial(addr, "localhost", &trust)
         .await
         .map_err(|e| anyhow::anyhow!("dial: {e}"))?;
     let resp = client
@@ -7437,7 +7437,7 @@ async fn player_burst(ctx: &Ctx) -> bool {
     let Some(ca) = ctx.ca_cert.to_str() else { return false };
     let Ok(trust) = DevCA::load_cert_only(ca) else { return false };
     let Ok(addr) = format!("127.0.0.1:{}", ctx.player_port()).parse() else { return false };
-    let Ok(client) = PlayerClient::dial(addr, &trust).await else { return false };
+    let Ok(client) = PlayerClient::dial(addr, "localhost", &trust).await else { return false };
     let client = std::sync::Arc::new(client);
 
     // Fan out 60 concurrent calls on the ONE connection (burst 20, refill 10 rps).

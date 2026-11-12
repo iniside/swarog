@@ -18,6 +18,7 @@ serde_json = { workspace = true }
 quinn = { workspace = true }
 rustls = { workspace = true }
 rustls-pki-types = { workspace = true }
+rustls-platform-verifier = { workspace = true }
 rcgen = { workspace = true }
 
 [dev-dependencies]

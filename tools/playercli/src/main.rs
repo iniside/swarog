@@ -1,13 +1,16 @@
 //! `playercli` drives the QUIC player front (`edge::PlayerServer`, fronted by
-//! `gateway-svc`'s or the monolith's `PLAYER_EDGE_ADDR`) for the split-proof script.
-//! It loads the trust anchor via `edge::DevCA::load_cert_only` — the CA CERTIFICATE
-//! only, never the signing key: the exact material a real player distribution holds
-//! (`DevCA::load` demands both because an internal peer must mint leaves; a player
-//! must not be able to) — dials `edge::PlayerClient`, fires ONE call, and prints the
-//! raw response payload bytes to stdout.
+//! `gateway-svc`'s or the monolith's `PLAYER_EDGE_ADDR`).
+//! It trusts exactly one of: `--ca <file>`, loaded via `edge::DevCA::load_cert_only`
+//! — the CA CERTIFICATE only, never the signing key (`DevCA::load` demands both
+//! because an internal peer must mint leaves; a player must not be able to) — or
+//! `--system-roots`, the operating system's trust store. It resolves `--addr`
+//! (`host:port`), dials `edge::PlayerClient` with `--server-name` (default: the host
+//! when it is a DNS name, else `localhost`), fires ONE call, and prints the raw
+//! response payload bytes to stdout.
 //!
 //!   playercli --addr 127.0.0.1:9100 --ca run/edge-ca.crt [--token dev-alice] \
 //!       [--api-key dev-key-client] characters.create '{"name":"hero","class":""}'
+//!   playercli --addr play.example.com:9100 --system-roots characters.list
 //!
 //! Exit code is the PINNED grammar from the QUIC player-front plan: 0 iff the
 //! transport call succeeded (`PlayerClient::call` returned `Ok` — transport `ok:true`)
@@ -16,17 +19,19 @@
 //! (e.g. `{"status":"Unauthorized",...}`, which the pinned error grammar delivers as
 //! `ok:true`). Testing `ok` alone would wrongly call an auth failure a success.
 
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::process::ExitCode;
 
-use edge::{DevCA, PlayerClient};
+use edge::{DevCA, PlayerClient, TrustAnchor};
 
 fn usage() -> &'static str {
-    "playercli --addr 127.0.0.1:9100 --ca <path> [--token <t>] [--api-key <k>] [--repeat <n>] [--interval-ms <ms>] [--pause-before-last-ms <ms>] <method> [json-payload]"
+    "playercli --addr <host:port> (--ca <path> | --system-roots) [--server-name <name>] [--token <t>] [--api-key <k>] [--repeat <n>] [--interval-ms <ms>] [--pause-before-last-ms <ms>] <method> [json-payload]"
 }
 
 struct Args {
     addr: String,
-    ca: String,
+    server_name: Option<String>,
+    ca: Option<String>,
     token: Option<String>,
     api_key: Option<String>,
     method: String,
@@ -40,7 +45,9 @@ struct Args {
 /// pairs, then the first two bare tokens are `<method>` and `[json-payload]`.
 fn parse_args() -> Result<Args, String> {
     let mut addr = "127.0.0.1:9100".to_string();
-    let mut ca = String::new();
+    let mut server_name: Option<String> = None;
+    let mut ca: Option<String> = None;
+    let mut system_roots = false;
     let mut token: Option<String> = None;
     let mut api_key: Option<String> = None;
     let mut positional: Vec<String> = Vec::new();
@@ -55,7 +62,11 @@ fn parse_args() -> Result<Args, String> {
             "--addr" | "-addr" => {
                 addr = args.next().ok_or("playercli: --addr requires a value")?
             }
-            "--ca" | "-ca" => ca = args.next().ok_or("playercli: --ca requires a value")?,
+            "--server-name" => {
+                server_name = Some(args.next().ok_or("playercli: --server-name requires a value")?)
+            }
+            "--ca" | "-ca" => ca = Some(args.next().ok_or("playercli: --ca requires a value")?),
+            "--system-roots" => system_roots = true,
             "--token" | "-token" => {
                 token = Some(args.next().ok_or("playercli: --token requires a value")?)
             }
@@ -72,8 +83,8 @@ fn parse_args() -> Result<Args, String> {
         }
     }
 
-    if ca.is_empty() {
-        return Err("playercli: --ca is required".to_string());
+    if ca.is_some() == system_roots {
+        return Err("playercli: exactly one of --ca or --system-roots is required".to_string());
     }
     let Some(method) = positional.first().cloned() else {
         return Err("playercli: a <method> argument is required".to_string());
@@ -81,7 +92,7 @@ fn parse_args() -> Result<Args, String> {
     let payload = positional.get(1).cloned().unwrap_or_else(|| "null".to_string());
 
     if repeat == 0 { return Err("playercli: --repeat must be positive".to_string()); }
-    Ok(Args { addr, ca, token, api_key, method, payload, repeat, interval_ms, pause_before_last_ms })
+    Ok(Args { addr, server_name, ca, token, api_key, method, payload, repeat, interval_ms, pause_before_last_ms })
 }
 
 #[tokio::main]
@@ -97,23 +108,27 @@ async fn main() -> ExitCode {
         }
     };
 
-    let socket_addr = match args.addr.parse() {
+    let (socket_addr, default_server_name) = match resolve(&args.addr) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("playercli: bad --addr {:?}: {e}", args.addr);
             return ExitCode::from(2);
         }
     };
+    let server_name = args.server_name.unwrap_or(default_server_name);
 
-    let trust = match DevCA::load_cert_only(&args.ca) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("playercli: load CA cert {:?}: {e}", args.ca);
-            return ExitCode::FAILURE;
-        }
+    let trust = match &args.ca {
+        Some(ca) => match DevCA::load_cert_only(ca) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("playercli: load CA cert {ca:?}: {e}");
+                return ExitCode::FAILURE;
+            }
+        },
+        None => TrustAnchor::system_roots(),
     };
 
-    let client = match PlayerClient::dial(socket_addr, &trust).await {
+    let client = match PlayerClient::dial(socket_addr, &server_name, &trust).await {
         Ok(c) => c,
         Err(e) => {
             eprintln!("playercli: dial {}: {e}", args.addr);
@@ -151,4 +166,19 @@ async fn main() -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// Resolves `host:port` to its first address and the default server name: the
+/// host when it is a DNS name, `localhost` when it is an IP literal.
+fn resolve(addr: &str) -> Result<(SocketAddr, String), String> {
+    if let Ok(socket_addr) = addr.parse::<SocketAddr>() {
+        return Ok((socket_addr, "localhost".to_string()));
+    }
+    let (host, _) = addr.rsplit_once(':').ok_or("expected host:port")?;
+    let socket_addr = addr
+        .to_socket_addrs()
+        .map_err(|e| e.to_string())?
+        .next()
+        .ok_or("host resolved to no address")?;
+    Ok((socket_addr, host.to_string()))
 }

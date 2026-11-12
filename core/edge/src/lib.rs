@@ -477,7 +477,7 @@ mod player_e2e_tests {
         let ca = DevCA::generate().unwrap();
         let running = reflecting_server().listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
 
-        let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
+        let client = PlayerClient::dial(running.local_addr(), "localhost", &ca.trust_anchor()).await.unwrap();
 
         let resp = client
             .call("characters.create", Some("dev-alice"), Some("dev-key-client"), br#"{"name":"hero"}"#)
@@ -518,7 +518,7 @@ mod player_e2e_tests {
         // The player side: cert only, key gone.
         std::fs::remove_file(&key).unwrap();
         let anchor = DevCA::load_cert_only(cert.to_str().unwrap()).unwrap();
-        let client = PlayerClient::dial(running.local_addr(), &anchor).await.unwrap();
+        let client = PlayerClient::dial(running.local_addr(), "localhost", &anchor).await.unwrap();
         let resp = client.call("echo", None, None, br#"{"anchor":true}"#).await.unwrap();
         assert_eq!(
             resp,
@@ -541,7 +541,7 @@ mod player_e2e_tests {
         // Sanity: the same client shape IS served on the player plane.
         let player_running = reflecting_server().listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
         let ok_client =
-            PlayerClient::dial(player_running.local_addr(), &ca.trust_anchor()).await.unwrap();
+            PlayerClient::dial(player_running.local_addr(), "localhost", &ca.trust_anchor()).await.unwrap();
         ok_client.call("echo", None, None, b"null").await.unwrap();
         ok_client.close();
         player_running.close();
@@ -551,7 +551,7 @@ mod player_e2e_tests {
         srv.handle("echo", internal_handler(|p| Box::pin(async move { Ok(p) })));
         let running = srv.listen(loopback(), &ca).unwrap();
 
-        match PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await {
+        match PlayerClient::dial(running.local_addr(), "localhost", &ca.trust_anchor()).await {
             Err(_) => { /* rejected at handshake — the expected path */ }
             Ok(client) => {
                 let r = client.call("echo", None, None, b"null").await;
@@ -587,7 +587,7 @@ mod player_e2e_tests {
     async fn oversize_player_frame_is_rejected_without_killing_the_connection() {
         let ca = DevCA::generate().unwrap();
         let running = reflecting_server().listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
-        let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
+        let client = PlayerClient::dial(running.local_addr(), "localhost", &ca.trust_anchor()).await.unwrap();
 
         // A 2 MiB JSON string payload — well over MAX_PLAYER_FRAME but under the
         // internal MAX_FRAME, so only the player-plane cap can be what rejects it.
@@ -620,7 +620,7 @@ mod player_e2e_tests {
     async fn unwired_player_server_reports_front_not_wired() {
         let ca = DevCA::generate().unwrap();
         let running = PlayerServer::new().listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
-        let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
+        let client = PlayerClient::dial(running.local_addr(), "localhost", &ca.trust_anchor()).await.unwrap();
 
         let err = client.call("anything", None, None, b"null").await.unwrap_err();
         assert!(matches!(&err, Error::Remote(msg) if msg.contains("not wired")), "{err:?}");

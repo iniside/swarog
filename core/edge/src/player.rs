@@ -621,17 +621,16 @@ pub struct PlayerClient {
 }
 
 impl PlayerClient {
-    /// Establishes the persistent QUIC connection to `addr`, verifying the server
-    /// against `trust` and presenting NO client certificate. Dials with
-    /// `ServerName = "localhost"` for the same rustls IP-SNI reason as
-    /// [`crate::Client::dial`].
-    pub async fn dial(addr: SocketAddr, trust: &TrustAnchor) -> Result<PlayerClient, Error> {
+    /// Establishes the persistent QUIC connection to `addr`, verifying the server's
+    /// certificate against `trust` and `server_name`, and presenting NO client
+    /// certificate. A dev CA leaf names `localhost`.
+    pub async fn dial(addr: SocketAddr, server_name: &str, trust: &TrustAnchor) -> Result<PlayerClient, Error> {
         let qcc = QuicClientConfig::try_from(trust.client_tls_public()?)
             .map_err(|e| Error::Tls(format!("quic player client config: {e}")))?;
         let mut endpoint = quinn::Endpoint::client(client_bind_addr(addr)).map_err(Error::Io)?;
         endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(qcc)));
         let conn = endpoint
-            .connect(addr, "localhost")
+            .connect(addr, server_name)
             .map_err(|e| Error::Connect(e.to_string()))?
             .await
             .map_err(|e| Error::Connection(e.to_string()))?;

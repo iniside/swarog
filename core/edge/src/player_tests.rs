@@ -21,7 +21,7 @@ fn echo_server() -> PlayerServer {
 /// surfaces as a connection error) can't hang the test. `Ok(Some)` = admitted,
 /// `Ok(None)` = refused/failed, `Err` = the dial didn't resolve within the window.
 async fn try_dial(addr: SocketAddr, trust: &TrustAnchor) -> Result<Option<PlayerClient>, ()> {
-    match tokio::time::timeout(Duration::from_secs(3), PlayerClient::dial(addr, trust)).await {
+    match tokio::time::timeout(Duration::from_secs(3), PlayerClient::dial(addr, "localhost", trust)).await {
         Ok(Ok(client)) => Ok(Some(client)),
         Ok(Err(_)) => Ok(None),
         Err(_) => Err(()),
@@ -422,7 +422,7 @@ async fn request_denial_is_exact_and_handler_is_not_called() {
         Box::pin(async move { Ok(payload) })
     }));
     let running = srv.listen(loopback(), ca.server_tls_public().unwrap()).unwrap();
-    let client = PlayerClient::dial(running.local_addr(), &ca.trust_anchor()).await.unwrap();
+    let client = PlayerClient::dial(running.local_addr(), "localhost", &ca.trust_anchor()).await.unwrap();
     assert!(client.call("echo", None, None, br#"{}"#).await.is_ok());
     let err = client.call("echo", None, None, br#"{}"#).await.unwrap_err();
     assert!(err.to_string().contains("player request rate limit exceeded"));

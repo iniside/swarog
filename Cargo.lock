@@ -1286,6 +1286,7 @@ dependencies = [
  "rcgen",
  "rustls",
  "rustls-pki-types",
+ "rustls-platform-verifier",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
