@@ -9,7 +9,8 @@ use super::{
     is_inline_test_mod, locking_ddl_excluded, locking_ddl_violations, missing_exclusion_violations,
     missing_svc_violations, mod_test_ident_end, module_import_violations,
     Kind, DEMO_HOST, FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE, LOCKING_DDL_EXCLUDE,
-    grep_locking_ddl, missing_scope_violations, LOCKING_DDL_SCOPE, SVC_EXEMPT_MODULES, WORKSPACE_SRC_DIRS,
+    comment_spans, grep_locking_ddl, missing_scope_violations, skip_literal_or_comment,
+    DDL_CREATE_PHRASES, LOCKING_DDL_SCOPE, SVC_EXEMPT_MODULES, WORKSPACE_SRC_DIRS,
 };
 
 #[test]
@@ -1462,7 +1463,7 @@ fn assert_violations_at(rel: &str, text: &str, expected: &[(usize, &str)]) {
 
 #[test]
 fn locking_ddl_flags_alter_table_subcommands() {
-    let text = "\nconst S: &str = \"ALTER TABLE t ALTER COLUMN c SET DEFAULT 1\";\n";
+    let text = "\nconst S_DDL: &str = \"ALTER TABLE t ALTER COLUMN c SET DEFAULT 1\";\n";
     assert_one_violation_at(NON_TEST, text, 2, "ALTER TABLE");
 }
 
@@ -1470,13 +1471,13 @@ fn locking_ddl_flags_alter_table_subcommands() {
 fn locking_ddl_flags_drop_trigger_and_drop_index() {
     assert_one_violation_at(
         NON_TEST,
-        "\n\nconst S: &str = \"DROP TRIGGER IF EXISTS tg ON s.t\";\n",
+        "\n\nconst S_DDL: &str = \"DROP TRIGGER IF EXISTS tg ON s.t\";\n",
         3,
         "DROP TRIGGER",
     );
     assert_one_violation_at(
         NON_TEST,
-        "\nconst S: &str = \"DROP INDEX IF EXISTS s.i\";\n",
+        "\nconst S_DDL: &str = \"DROP INDEX IF EXISTS s.i\";\n",
         2,
         "DROP INDEX",
     );
@@ -1499,7 +1500,7 @@ fn locking_ddl_passes_prose_and_test_files_for_the_alter_drop_class() {
     let prose = "// we alter tables lazily and drop indexes by hand\n";
     assert!(locking_ddl_violations(NON_TEST, prose).is_empty());
     // The DDL forms are exempt in test files, and a bare raw_sql there is fine too.
-    let ddl = "const S: &str = \"ALTER TABLE t ADD c int; DROP TRIGGER tg ON t; DROP INDEX i\";\n\
+    let ddl = "const S_DDL: &str = \"ALTER TABLE t ADD c int; DROP TRIGGER tg ON t; DROP INDEX i\";\n\
                use sqlx::raw_sql;\n";
     assert!(locking_ddl_violations("modules/x/src/tests.rs", ddl).is_empty());
     // raw_sql outside the module-DDL owners is not this rule's business.
@@ -1508,32 +1509,32 @@ fn locking_ddl_passes_prose_and_test_files_for_the_alter_drop_class() {
 
 #[test]
 fn locking_ddl_flags_create_index_if_not_exists() {
-    let text = "fn a() {}\nfn b() {}\nconst S: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
+    let text = "fn a() {}\nfn b() {}\nconst S_DDL: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
     assert_one_violation_at(NON_TEST, text, 3, "INDEX IF NOT EXISTS");
 }
 
 #[test]
 fn locking_ddl_flags_unique_index_if_not_exists() {
-    let text = "\n\nconst S: &str = \"CREATE UNIQUE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
+    let text = "\n\nconst S_DDL: &str = \"CREATE UNIQUE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
     assert_one_violation_at(NON_TEST, text, 3, "INDEX IF NOT EXISTS");
 }
 
 #[test]
 fn locking_ddl_flags_lowercase_form() {
-    let text = "\nconst S: &str = \"create index if not exists y on s.t (a)\";\n";
+    let text = "\nconst S_DDL: &str = \"create index if not exists y on s.t (a)\";\n";
     assert_one_violation_at(NON_TEST, text, 2, "INDEX IF NOT EXISTS");
 }
 
 #[test]
 fn locking_ddl_flags_multiline_literal_on_the_line_of_the_phrase() {
     // The form straddles lines 3-4; the report names the line where it starts.
-    let text = "fn a() {}\n\nconst S: &str = \"CREATE INDEX\n  IF NOT EXISTS y ON s.t (a)\";\n";
+    let text = "fn a() {}\n\nconst S_DDL: &str = \"CREATE INDEX\n  IF NOT EXISTS y ON s.t (a)\";\n";
     assert_one_violation_at(NON_TEST, text, 3, "INDEX IF NOT EXISTS");
 }
 
 #[test]
 fn locking_ddl_flags_backslash_continuation() {
-    let text = "fn a() {}\nconst S: &str = \"CREATE INDEX \\
+    let text = "fn a() {}\nconst S_DDL: &str = \"CREATE INDEX \\
     IF NOT EXISTS y ON s.t (a)\";\n";
     assert_one_violation_at(NON_TEST, text, 2, "INDEX IF NOT EXISTS");
 }
@@ -1542,19 +1543,19 @@ fn locking_ddl_flags_backslash_continuation() {
 fn locking_ddl_line_numbers_survive_earlier_multiline_literals() {
     // Two continuation/newline runs before the phrase: the mapping must keep counting.
     let text = "const A: &str = \"x \\
-   y\";\nconst B: &str = \"p\n\nq\";\nconst S: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
+   y\";\nconst B: &str = \"p\n\nq\";\nconst S_DDL: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
     assert_one_violation_at(NON_TEST, text, 6, "INDEX IF NOT EXISTS");
 }
 
 #[test]
 fn locking_ddl_flags_create_or_replace_trigger() {
-    let text = "\n\n\nconst S: &str = \"CREATE OR REPLACE TRIGGER t BEFORE INSERT ON s.t\";\n";
+    let text = "\n\n\nconst S_DDL: &str = \"CREATE OR REPLACE TRIGGER t BEFORE INSERT ON s.t\";\n";
     assert_one_violation_at(NON_TEST, text, 4, "OR REPLACE TRIGGER");
 }
 
 #[test]
 fn locking_ddl_flags_add_column_if_not_exists() {
-    let text = "\nconst S: &str = \"ALTER TABLE x ADD COLUMN IF NOT EXISTS y int\";\n";
+    let text = "\nconst S_DDL: &str = \"ALTER TABLE x ADD COLUMN IF NOT EXISTS y int\";\n";
     assert_violations_at(NON_TEST, text, &[(2, "ADD COLUMN"), (2, "ALTER TABLE")]);
 }
 
@@ -1580,7 +1581,7 @@ fn locking_ddl_flags_raw_sql_of_a_borrowed_ddl_const() {
 
 #[test]
 fn locking_ddl_flags_add_if_not_exists_without_column_keyword() {
-    let text = "\nconst S: &str = \"ALTER TABLE t ADD IF NOT EXISTS c int\";\n";
+    let text = "\nconst S_DDL: &str = \"ALTER TABLE t ADD IF NOT EXISTS c int\";\n";
     assert_violations_at(NON_TEST, text, &[(2, "ADD IF NOT EXISTS"), (2, "ALTER TABLE")]);
 }
 
@@ -1622,7 +1623,7 @@ fn locking_ddl_passes_converted_ddl_runner_calls() {
 
 #[test]
 fn locking_ddl_exempts_banned_forms_in_test_files() {
-    let text = "const S: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
+    let text = "const S_DDL: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
     for rel in [
         "modules/x/src/tests.rs",
         "modules/x/tests/foo.rs",
@@ -1666,7 +1667,7 @@ fn locking_ddl_ignores_excluded_paths() {
 #[test]
 fn locking_ddl_flags_the_escape_sequence_whitespace_branch() {
     // A literal backslash + `n` inside a Rust string counts as whitespace.
-    let text = "const S: &str = \"CREATE INDEX\\nIF NOT EXISTS y\";";
+    let text = "const S_DDL: &str = \"CREATE INDEX\\nIF NOT EXISTS y\";";
     assert_one_violation_at(NON_TEST, text, 1, "INDEX IF NOT EXISTS");
 }
 
@@ -1687,7 +1688,7 @@ fn grep_locking_ddl_walks_scope_and_reports_the_expected_files() {
         std::fs::write(p, body).unwrap();
     };
     std::fs::create_dir_all(root.join("tools/archcheck")).unwrap();
-    let banned = "const S: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
+    let banned = "const S_DDL: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
     put("modules/x/src/lib.rs", banned);
     put("demos/x/src/lib.rs", banned);
     put("modules/x/src/tests.rs", "sqlx::raw_sql(SCHEMA_DDL);\n");
@@ -1723,7 +1724,7 @@ fn ddl_ident_escapes() {
         "\nsqlx::Executor::execute(&pool, SCHEMA_DDL);\n",
         "\nsqlx::query(X_DDL);\n",
     ] {
-        assert_one_violation_at(NON_TEST, text, 2, "other than as the direct argument");
+        assert_one_violation_at(NON_TEST, text, 2, "is used outside a `.sql(`");
     }
     assert_one_violation_at(
         "core/admin/src/store.rs",
@@ -1767,7 +1768,9 @@ fn locking_ddl_flags_each_additional_form() {
         ("LOCK TABLE s.t IN ACCESS EXCLUSIVE MODE", "`LOCK`"),
         ("lock s.v", "`LOCK`"),
     ] {
-        assert_one_violation_at(NON_TEST, &format!("\n{text}\n"), 2, needle);
+        // Wrapped in a `*_DDL` const so only the locking form is under test.
+        let wrapped = format!("\nconst S_DDL: &str = \"{text}\";\n");
+        assert_one_violation_at(NON_TEST, &wrapped, 2, needle);
     }
 }
 
@@ -1805,6 +1808,127 @@ fn locking_ddl_remedy_text_matches_the_form_class() {
         assert!(locking_ddl_violations(NON_TEST, text)[0].contains("wiping")
             || locking_ddl_violations(NON_TEST, text)[0].contains("wipe"), "{text}");
     }
+}
+
+#[test]
+fn stray_create_text_is_flagged_outside_ddl_homes() {
+    assert_one_violation_at(
+        NON_TEST,
+        "\nsqlx::query(\"CREATE TABLE m.t (a int)\");\n",
+        2,
+        "`CREATE TABLE`",
+    );
+    // A non-`*_DDL` const holding trigger text is stray even when later passed to
+    // `.trigger(`: only the argument position is a home, not the const.
+    let text = "const T: &str = \"CREATE TRIGGER t BEFORE INSERT ON s.t\";\n\
+                Ddl::new(p).trigger(\"s.t\", \"t\", T);\n";
+    assert_one_violation_at(NON_TEST, text, 1, "`CREATE TRIGGER`");
+    // `.sql(` takes a `*_DDL` const, not inline text.
+    assert_one_violation_at(
+        NON_TEST,
+        "\nDdl::new(p).sql(\"CREATE OR REPLACE FUNCTION f() RETURNS int AS $$ SELECT 1 $$\");\n",
+        2,
+        "`CREATE OR REPLACE FUNCTION`",
+    );
+    assert_one_violation_at(
+        NON_TEST,
+        "\nlet s = \"x // CREATE TABLE inside a string\";\n",
+        2,
+        "`CREATE TABLE`",
+    );
+    assert_one_violation_at(
+        NON_TEST,
+        "\npool.execute(TRIG_DDL);\n",
+        2,
+        "is used outside a `.sql(`",
+    );
+}
+
+#[test]
+fn stray_create_text_covers_every_phrase() {
+    // An independent list, so renaming or dropping a rule phrase cannot move the test with it.
+    let expected = [
+        "CREATE TABLE",
+        "CREATE TEMP TABLE",
+        "CREATE TEMPORARY TABLE",
+        "CREATE UNLOGGED TABLE",
+        "CREATE INDEX",
+        "CREATE UNIQUE INDEX",
+        "CREATE TRIGGER",
+        "CREATE SCHEMA",
+        "CREATE FUNCTION",
+        "CREATE OR REPLACE FUNCTION",
+        "CREATE VIEW",
+        "CREATE MATERIALIZED VIEW",
+        "CREATE TYPE",
+        "CREATE SEQUENCE",
+        "CREATE EXTENSION",
+    ];
+    assert_eq!(DDL_CREATE_PHRASES.len(), expected.len());
+    for phrase in expected {
+        let lower = phrase.to_ascii_lowercase();
+        let text = format!("\nsqlx::query(\"{lower} m.x\");\n");
+        assert_one_violation_at(NON_TEST, &text, 2, &format!("`{phrase}`"));
+        // The same text is fine in the homes: a `*_DDL` const and an `.index(` argument.
+        let home = format!("const X_DDL: &str = \"{phrase} m.x\";\nb.index(\"m.x\", \"{phrase} m.x\");\n");
+        assert!(locking_ddl_violations(NON_TEST, &home).is_empty(), "{phrase}");
+        // And fine anywhere in a test file.
+        assert!(locking_ddl_violations("modules/x/src/tests.rs", &text).is_empty(), "{phrase}");
+    }
+}
+
+#[test]
+fn ddl_text_homes_are_green() {
+    for text in [
+        "foo(); // CREATE TABLE",
+        "bar(/* CREATE TABLE */)",
+        "/// Creates the table: CREATE TABLE s.t.",
+        "static A_DDL: LazyLock<String> = LazyLock::new(|| {\n    format!(\"CREATE SCHEMA {s}; CREATE TABLE {s}.t (a int)\")\n});",
+        "Ddl::new(p).index(\"s.i\", \"CREATE UNIQUE INDEX i ON s.t (a)\");",
+        "const TRIG_DDL: &str = \"CREATE TRIGGER t BEFORE INSERT ON s.t\";\nDdl::new(p).trigger(\"s.t\", \"t\", TRIG_DDL);",
+        "static A_DDL: LazyLock<String> = LazyLock::new(f);\nDdl::new(p).sql(&A_DDL);",
+        "let q = '\\'';\nconst B_DDL: &str = \"CREATE TABLE s.t (a int)\";",
+    ] {
+        assert!(locking_ddl_violations(NON_TEST, text).is_empty(), "{text}");
+    }
+    // Every red shape is allowed in a test file.
+    for text in [
+        "sqlx::query(\"CREATE TABLE m.t (a int)\");",
+        "let s = \"x // CREATE TABLE inside a string\";",
+        "pool.execute(TRIG_DDL);",
+    ] {
+        assert!(locking_ddl_violations("modules/x/src/tests.rs", text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn a_char_literal_does_not_swallow_the_following_const() {
+    // If `'\''` were mis-lexed the `*_DDL` const below would lose its home and go red;
+    // and a CREATE text after it must still be flagged (lexing resumed correctly).
+    let text = "let q = '\\'';\nconst B_DDL: &str = \"CREATE TABLE s.t (a int)\";\nsqlx::query(\"CREATE TABLE m.t (a int)\");\n";
+    assert_one_violation_at(NON_TEST, text, 3, "`CREATE TABLE`");
+}
+
+#[test]
+fn comment_spans_skip_raw_and_byte_strings() {
+    let spans = |t: &str| -> Vec<String> {
+        comment_spans(t).into_iter().map(|r| t[r].to_string()).collect()
+    };
+    assert_eq!(spans(r##"let a = r#"x // no"#; // yes"##), ["// yes"]);
+    assert_eq!(spans(r#"let a = b"/* no */"; /* yes */ x"#), ["/* yes */"]);
+    assert_eq!(spans(r###"let a = br#"// no"#; // yes"###), ["// yes"]);
+    assert_eq!(spans(r#"let u = "http://x"; // tail"#), ["// tail"]);
+    assert!(spans("fn f<'a>(x: &'a str) {}").is_empty());
+}
+
+#[test]
+fn skip_literal_or_comment_returns_the_offset_past_the_token() {
+    assert_eq!(skip_literal_or_comment(r##"r#"a // b"# tail"##, 0), Some(11));
+    assert_eq!(skip_literal_or_comment(r#"b"x" y"#, 0), Some(4));
+    assert_eq!(skip_literal_or_comment("// c\nx", 0), Some(4));
+    assert_eq!(skip_literal_or_comment("/* c */x", 0), Some(7));
+    assert_eq!(skip_literal_or_comment("'a str", 0), None);
+    assert_eq!(skip_literal_or_comment("x", 0), None);
 }
 
 #[test]
