@@ -780,7 +780,7 @@ fn main() {
     violations.extend(grep_locking_ddl(&root));
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no table-locking DDL (INDEX [CONCURRENTLY] IF NOT EXISTS / OR REPLACE TRIGGER|RULE|VIEW / ADD COLUMN / ADD IF NOT EXISTS / ALTER TABLE|INDEX / DROP TRIGGER|INDEX|POLICY|RULE / TRUNCATE|LOCK <schema>.<table>) in non-test source, in non-test modules/ + core/admin/ + tools/adminctl/ source no raw_sql, no *_DDL outside a .sql(/.index(/.trigger( argument, and no CREATE TABLE|INDEX|UNIQUE INDEX|TRIGGER|SCHEMA|FUNCTION|OR REPLACE FUNCTION text outside a *_DDL item or an .index(/.trigger( argument, no raw_sql(*_DDL) in their tests");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no table-locking DDL (INDEX [CONCURRENTLY] IF NOT EXISTS / OR REPLACE TRIGGER|RULE|VIEW / ADD COLUMN / ADD IF NOT EXISTS / ALTER TABLE|INDEX / DROP TRIGGER|INDEX|POLICY|RULE / TRUNCATE|LOCK <schema>.<table>) in non-test source, in non-test modules/ + core/admin/ + tools/adminctl/ source no raw_sql, no *_DDL outside a .sql(/.index(/.trigger( argument, and no CREATE TABLE|TEMP TABLE|TEMPORARY TABLE|UNLOGGED TABLE|INDEX|UNIQUE INDEX|TRIGGER|SCHEMA|FUNCTION|OR REPLACE FUNCTION|VIEW|MATERIALIZED VIEW|TYPE|SEQUENCE|EXTENSION text outside comments, a *_DDL item or an .index(/.trigger( argument, no raw_sql(*_DDL) in their tests");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -1630,9 +1630,9 @@ fn locking_ddl_excluded(rel: &str) -> bool {
 /// Rule 22 for ONE file (root-relative `rel` + its `text`). Under [`LOCKING_DDL_SCOPE`]:
 /// a [`LOCKING_DDL_FORMS`] phrase as whole words anywhere in NON-TEST source (comments
 /// included, case-insensitive). Under [`RAW_DDL_SCOPE`]: in NON-TEST source any
-/// `raw_sql` token (call, import or alias), any `*_DDL` identifier on a code line outside
-/// its own definition and a `.sql(` / `.index(` / `.trigger(` argument, and any
-/// [`DDL_CREATE_PHRASES`] text on a code line outside a `*_DDL` item and an `.index(` /
+/// `raw_sql` token (call, import or alias), any `*_DDL` identifier outside comments, its
+/// own definition and a `.sql(` / `.index(` / `.trigger(` argument, and any
+/// [`DDL_CREATE_PHRASES`] text outside comments, a `*_DDL` item and an `.index(` /
 /// `.trigger(` argument; in TEST source only a `raw_sql(` whose argument is a `*_DDL`
 /// const/static, so a test helper cannot bypass the module's `migrate`. Out-of-scope
 /// and [`LOCKING_DDL_EXCLUDE`] paths yield none.
@@ -1712,10 +1712,23 @@ fn qualified_target_follows(rest: &str) -> bool {
         && bytes.get(schema + 1).is_some_and(|&b| is_ident_byte(b))
 }
 
-/// True if the source line holding byte offset `at` is a `//` comment line.
-fn on_comment_line(text: &str, at: usize) -> bool {
-    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
-    text[start..].trim_start().starts_with("//")
+/// Byte ranges of every `//` and `/* */` comment in `text`, found by
+/// [`skip_literal_or_comment`] so comment markers inside string literals do not count.
+fn comment_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let b = text.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if let Some(end) = skip_literal_or_comment(text, i) {
+            if b[i] == b'/' {
+                spans.push(i..end);
+            }
+            i = end;
+            continue;
+        }
+        i += text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    spans
 }
 
 /// The 1-based line of byte offset `at` in `text`.
@@ -1850,28 +1863,37 @@ fn ddl_spans(text: &str, methods: &[&str]) -> Vec<std::ops::Range<usize>> {
 /// Rule 22: DDL keywords whose text module-DDL owner code may hold only inside a
 /// [`ddl_spans`] span, so an inline `sqlx::query("CREATE …")` cannot bypass
 /// `lifecycle::Ddl`.
-const DDL_CREATE_PHRASES: [&str; 7] = [
+const DDL_CREATE_PHRASES: [&str; 15] = [
     "CREATE TABLE",
+    "CREATE TEMP TABLE",
+    "CREATE TEMPORARY TABLE",
+    "CREATE UNLOGGED TABLE",
     "CREATE INDEX",
     "CREATE UNIQUE INDEX",
     "CREATE TRIGGER",
     "CREATE SCHEMA",
     "CREATE FUNCTION",
     "CREATE OR REPLACE FUNCTION",
+    "CREATE VIEW",
+    "CREATE MATERIALIZED VIEW",
+    "CREATE TYPE",
+    "CREATE SEQUENCE",
+    "CREATE EXTENSION",
 ];
 
 /// Every [`DDL_CREATE_PHRASES`] hit in `text` (whole words, case-insensitive, whitespace
-/// collapsed) that is on a code line and outside every `*_DDL` item and `.index(` /
-/// `.trigger(` argument list: `(source byte offset, phrase)`.
+/// collapsed) outside every comment, `*_DDL` item and `.index(` / `.trigger(` argument
+/// list: `(source byte offset, phrase)`.
 fn stray_ddl_text(text: &str) -> Vec<(usize, &'static str)> {
     let (collapsed, _, src) = collapse_ws_mapped(text);
     let upper = collapsed.to_ascii_uppercase();
-    let spans = ddl_spans(text, &["index", "trigger"]);
+    let mut spans = ddl_spans(text, &["index", "trigger"]);
+    spans.extend(comment_spans(text));
     let mut out = Vec::new();
     for phrase in DDL_CREATE_PHRASES {
         for at in find_all_words(&upper, phrase) {
             let at = src[at];
-            if !on_comment_line(text, at) && !spans.iter().any(|s| s.contains(&at)) {
+            if !spans.iter().any(|s| s.contains(&at)) {
                 out.push((at, phrase));
             }
         }
@@ -1880,12 +1902,13 @@ fn stray_ddl_text(text: &str) -> Vec<(usize, &'static str)> {
 }
 
 /// Every `*_DDL` identifier in `text` that escapes the runner: `(byte offset, path as
-/// written)`. Not escapes: comment lines, anything inside a `*_DDL` item or a `.sql(` /
+/// written)`. Not escapes: comments, anything inside a `*_DDL` item or a `.sql(` /
 /// `.index(` / `.trigger(` argument list, and a direct `raw_sql(` argument (reported by
 /// [`raw_sql_ddl_args`]).
 fn ddl_ident_escapes(text: &str) -> Vec<(usize, String)> {
     let bytes = text.as_bytes();
-    let spans = ddl_spans(text, &["sql", "index", "trigger"]);
+    let mut spans = ddl_spans(text, &["sql", "index", "trigger"]);
+    spans.extend(comment_spans(text));
     let mut out = Vec::new();
     for at in find_all(text, "_DDL") {
         let end = at + "_DDL".len();
@@ -1895,7 +1918,7 @@ fn ddl_ident_escapes(text: &str) -> Vec<(usize, String)> {
         let path_start = text[..at]
             .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
             .map_or(0, |i| i + 1);
-        if on_comment_line(text, path_start) || spans.iter().any(|s| s.contains(&path_start)) {
+        if spans.iter().any(|s| s.contains(&path_start)) {
             continue;
         }
         let call = text[..path_start]
