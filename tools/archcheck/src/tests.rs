@@ -1446,6 +1446,66 @@ fn assert_one_violation_at(rel: &str, text: &str, line: usize, needle: &str) {
     assert!(v[0].contains(needle), "{v:?} should mention {needle:?}");
 }
 
+/// Asserts `text` (at `rel`) yields exactly `expected.len()` violations, each expected
+/// `(line, needle)` matched by one of them.
+fn assert_violations_at(rel: &str, text: &str, expected: &[(usize, &str)]) {
+    let v = locking_ddl_violations(rel, text);
+    assert_eq!(v.len(), expected.len(), "for {text:?}, got {v:?}");
+    for (line, needle) in expected {
+        let prefix = format!("{rel}:{line}: ");
+        assert!(
+            v.iter().any(|x| x.starts_with(&prefix) && x.contains(needle)),
+            "no violation at {prefix:?} naming {needle:?} in {v:?}"
+        );
+    }
+}
+
+#[test]
+fn locking_ddl_flags_alter_table_subcommands() {
+    let text = "\nconst S: &str = \"ALTER TABLE t ALTER COLUMN c SET DEFAULT 1\";\n";
+    assert_one_violation_at(NON_TEST, text, 2, "ALTER TABLE");
+}
+
+#[test]
+fn locking_ddl_flags_drop_trigger_and_drop_index() {
+    assert_one_violation_at(
+        NON_TEST,
+        "\n\nconst S: &str = \"DROP TRIGGER IF EXISTS tg ON s.t\";\n",
+        3,
+        "DROP TRIGGER",
+    );
+    assert_one_violation_at(
+        NON_TEST,
+        "\nconst S: &str = \"DROP INDEX IF EXISTS s.i\";\n",
+        2,
+        "DROP INDEX",
+    );
+}
+
+#[test]
+fn locking_ddl_flags_raw_sql_imports_in_module_code() {
+    assert_one_violation_at(NON_TEST, "\nuse sqlx::raw_sql;\n", 2, "`raw_sql`");
+    assert_one_violation_at(NON_TEST, "\n\nuse sqlx::raw_sql as rs;\n", 3, "`raw_sql`");
+}
+
+#[test]
+fn locking_ddl_flags_any_raw_sql_call_in_module_code() {
+    assert_one_violation_at(NON_TEST, "\nsqlx::raw_sql(other).execute(p);\n", 2, "`raw_sql`");
+}
+
+#[test]
+fn locking_ddl_passes_prose_and_test_files_for_the_alter_drop_class() {
+    // Whole-word on both sides: plurals and prose do not trip the forms.
+    let prose = "// we alter tables lazily and drop indexes by hand\n";
+    assert!(locking_ddl_violations(NON_TEST, prose).is_empty());
+    // The DDL forms are exempt in test files, and a bare raw_sql there is fine too.
+    let ddl = "const S: &str = \"ALTER TABLE t ADD c int; DROP TRIGGER tg ON t; DROP INDEX i\";\n\
+               use sqlx::raw_sql;\n";
+    assert!(locking_ddl_violations("modules/x/src/tests.rs", ddl).is_empty());
+    // raw_sql outside the module-DDL owners is not this rule's business.
+    assert!(locking_ddl_violations("core/foo/src/lib.rs", "use sqlx::raw_sql;\n").is_empty());
+}
+
 #[test]
 fn locking_ddl_flags_create_index_if_not_exists() {
     let text = "fn a() {}\nfn b() {}\nconst S: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
@@ -1495,7 +1555,7 @@ fn locking_ddl_flags_create_or_replace_trigger() {
 #[test]
 fn locking_ddl_flags_add_column_if_not_exists() {
     let text = "\nconst S: &str = \"ALTER TABLE x ADD COLUMN IF NOT EXISTS y int\";\n";
-    assert_one_violation_at(NON_TEST, text, 2, "ADD COLUMN");
+    assert_violations_at(NON_TEST, text, &[(2, "ADD COLUMN"), (2, "ALTER TABLE")]);
 }
 
 #[test]
@@ -1521,7 +1581,7 @@ fn locking_ddl_flags_raw_sql_of_a_borrowed_ddl_const() {
 #[test]
 fn locking_ddl_flags_add_if_not_exists_without_column_keyword() {
     let text = "\nconst S: &str = \"ALTER TABLE t ADD IF NOT EXISTS c int\";\n";
-    assert_one_violation_at(NON_TEST, text, 2, "ADD IF NOT EXISTS");
+    assert_violations_at(NON_TEST, text, &[(2, "ADD IF NOT EXISTS"), (2, "ALTER TABLE")]);
 }
 
 #[test]
@@ -1644,7 +1704,10 @@ fn grep_locking_ddl_walks_scope_and_reports_the_expected_files() {
 
 #[test]
 fn locking_ddl_raw_sql_matches_only_ddl_consts_at_a_call_boundary() {
-    assert!(locking_ddl_violations(NON_TEST, "sqlx::raw_sql(other).execute(p);").is_empty());
+    // A non-DDL argument is still red in non-test module code (blanket raw_sql ban) but
+    // green in a test file, where only `raw_sql(*_DDL)` is checked.
+    assert!(!locking_ddl_violations(NON_TEST, "sqlx::raw_sql(other).execute(p);").is_empty());
+    assert!(locking_ddl_violations("modules/x/src/tests.rs", "sqlx::raw_sql(other);").is_empty());
     assert!(locking_ddl_violations(NON_TEST, "my_raw_sql(X_DDL);").is_empty());
     // Outside RAW_DDL_SCOPE the call is not this rule's business.
     assert!(locking_ddl_violations("core/foo/src/lib.rs", "raw_sql(X_DDL);").is_empty());
