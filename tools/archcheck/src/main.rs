@@ -34,7 +34,7 @@
 //!      else forges a client-fault verdict for a server-side fault.
 //!
 //! (The above is a curated summary; the numbered rule comments in `main()` are the full
-//! set, currently 1–21 plus the two svc-parity legs of rule 12.)
+//! set, currently 1–22 plus the two svc-parity legs of rule 12.)
 //!
 //! "Own" is defined by path prefix: `modules/<name>/` owns `api/<name>/rpc/`. It also
 //! greps `modules/` for a resurrected `Option<… edge::Server>` — the topology-leak
@@ -149,6 +149,40 @@ const ASYNCEVENTS_SQL_ALLOW: &[&str] = &["append_event(", "ensure_history_contra
 /// patterns, rule docs, unit-test fixtures) — excluded from both bans so the checker
 /// does not flag itself. Path-prefix under the workspace root.
 const BAN_SELF_EXCLUDE: &str = "tools/archcheck";
+
+/// Rule 22 scope: the workspace dirs whose non-test source may hold boot-time DDL.
+const LOCKING_DDL_SCOPE: [&str; 5] = ["core/", "modules/", "cmd/", "tools/", "demos/"];
+
+/// Rule 22: DDL forms (uppercase, single-spaced) that lock an EXISTING table on every
+/// boot, each with the lock it takes.
+const LOCKING_DDL_FORMS: [(&str, &str); 3] = [
+    ("INDEX IF NOT EXISTS", "takes SHARE on the table even when the index exists"),
+    (
+        "OR REPLACE TRIGGER",
+        "takes SHARE ROW EXCLUSIVE on the table even when the trigger exists",
+    ),
+    (
+        "ADD COLUMN",
+        "takes ACCESS EXCLUSIVE on the table on every boot; declare the column in CREATE \
+         TABLE and wipe (DROP + boot fresh)",
+    ),
+];
+
+/// Rule 22: the module-DDL owners, where a `*_DDL` text must run through `lifecycle::Ddl`
+/// instead of a bare `sqlx::raw_sql`.
+const RAW_DDL_SCOPE: [&str; 3] = ["modules/", "core/admin/", "tools/adminctl/"];
+
+/// Rule 22 exclusions (root-relative file or dir prefix). Each must exist, so an entry
+/// cannot outlive the file it excuses.
+const LOCKING_DDL_EXCLUDE: [&str; 4] = [
+    // The plane template: its index and trigger run only inside catalog-probing DO blocks.
+    "core/asyncevents/src/store.rs",
+    // `LEGACY_DROP_DDL` drops legacy objects that are absent in steady state.
+    "core/asyncevents/src/lib.rs",
+    // The runner itself; its docs name the forms it replaces.
+    "core/lifecycle/src/ddl.rs",
+    BAN_SELF_EXCLUDE,
+];
 
 /// The textual marker that means "this domain exposes player-facing HTTP ops" — owned by
 /// [`rpc_contract_model::HTTP_OP_MARKER`] so rules 17 and 21 and every other served-surface
@@ -662,8 +696,14 @@ fn main() {
     // entry (module landed, or the contract's HTTP surface is gone).
     violations.extend(rpc_contract_model::contract_only_violations(&root));
 
+    // --- 22: boot-time DDL never locks an existing table ------------------------
+    // `CREATE INDEX IF NOT EXISTS`, `CREATE OR REPLACE TRIGGER` and `ADD COLUMN` lock
+    // the table even when the object exists, so every boot would queue live writers
+    // behind module DDL; `lifecycle::Ddl` probes first and bounds the wait.
+    violations.extend(grep_locking_ddl(&root));
+
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no boot-time DDL that locks an existing table (INDEX IF NOT EXISTS / OR REPLACE TRIGGER / ADD COLUMN / raw_sql(*_DDL)) outside lifecycle::Ddl");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -1450,6 +1490,151 @@ fn is_test_source(rel: &str) -> bool {
     name == "tests.rs"
         || name.ends_with("_tests.rs")
         || rel.split('/').any(|seg| seg == "tests")
+}
+
+/// `text` with every whitespace run collapsed to one space — a `\`-newline string
+/// continuation and the `\n`/`\r`/`\t` escapes count as whitespace, so a statement split
+/// across a multi-line literal reads as one line — plus the 1-based source line of each
+/// output byte.
+fn collapse_ws(text: &str) -> (String, Vec<usize>) {
+    let mut out = String::with_capacity(text.len());
+    let mut lines = Vec::with_capacity(text.len());
+    let mut line = 1;
+    let mut pending_ws = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let ws = if c == '\\' {
+            match chars.peek() {
+                Some('n' | 'r' | 't') => {
+                    chars.next();
+                    true
+                }
+                Some('\n' | '\r') => true,
+                _ => false,
+            }
+        } else {
+            c.is_whitespace()
+        };
+        if ws {
+            if c == '\n' {
+                line += 1;
+            }
+            pending_ws = true;
+            continue;
+        }
+        if pending_ws && !out.is_empty() {
+            out.push(' ');
+            lines.push(line);
+        }
+        pending_ws = false;
+        out.push(c);
+        lines.extend(std::iter::repeat_n(line, c.len_utf8()));
+    }
+    (out, lines)
+}
+
+/// True if `rel` is (or lies under) a [`LOCKING_DDL_EXCLUDE`] entry.
+fn locking_ddl_excluded(rel: &str) -> bool {
+    LOCKING_DDL_EXCLUDE
+        .iter()
+        .any(|p| rel == *p || rel.strip_prefix(p).is_some_and(|rest| rest.starts_with('/')))
+}
+
+/// Rule 22 for ONE file (root-relative `rel` + its `text`): a [`LOCKING_DDL_FORMS`]
+/// phrase anywhere in non-test source under [`LOCKING_DDL_SCOPE`] (comments included,
+/// case-insensitive), and under [`RAW_DDL_SCOPE`] a `raw_sql(` whose argument is a
+/// `*_DDL` const/static. Out-of-scope, test and [`LOCKING_DDL_EXCLUDE`] paths yield none.
+fn locking_ddl_violations(rel: &str, text: &str) -> Vec<String> {
+    if !LOCKING_DDL_SCOPE.iter().any(|p| rel.starts_with(p))
+        || is_test_source(rel)
+        || locking_ddl_excluded(rel)
+    {
+        return Vec::new();
+    }
+    let (collapsed, lines) = collapse_ws(text);
+    let upper = collapsed.to_ascii_uppercase();
+    let mut out = Vec::new();
+    for (form, why) in LOCKING_DDL_FORMS {
+        for at in find_all(&upper, form) {
+            if at > 0 && is_ident_byte(upper.as_bytes()[at - 1]) {
+                continue;
+            }
+            out.push(format!(
+                "{rel}:{}: `{form}` {why} — use lifecycle::Ddl (index/trigger/sql)",
+                lines[at]
+            ));
+        }
+    }
+    if RAW_DDL_SCOPE.iter().any(|p| rel.starts_with(p)) {
+        for (at, arg) in raw_sql_ddl_args(&collapsed) {
+            out.push(format!(
+                "{rel}:{}: `raw_sql({arg})` runs module DDL outside the bounded, \
+                 advisory-locked runner — use lifecycle::Ddl (index/trigger/sql)",
+                lines[at]
+            ));
+        }
+    }
+    out
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Every `raw_sql(` in whitespace-collapsed `text` whose argument is a (possibly
+/// borrowed, possibly path-qualified) identifier whose last segment ends in `_DDL`:
+/// `(byte offset of the call, argument as written)`.
+fn raw_sql_ddl_args(text: &str) -> Vec<(usize, String)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    for at in find_all(text, "raw_sql") {
+        if at > 0 && is_ident_byte(bytes[at - 1]) {
+            continue;
+        }
+        let rest = text[at + "raw_sql".len()..].trim_start();
+        let Some(rest) = rest.strip_prefix('(') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let borrowed = rest.starts_with('&');
+        let rest = rest.trim_start_matches('&').trim_start();
+        let path_len = rest
+            .bytes()
+            .take_while(|&b| is_ident_byte(b) || b == b':')
+            .count();
+        let path = &rest[..path_len];
+        if path.rsplit("::").next().is_some_and(|last| last.ends_with("_DDL")) {
+            out.push((at, format!("{}{path}", if borrowed { "&" } else { "" })));
+        }
+    }
+    out
+}
+
+/// Rule 22's self-check: one violation per `excluded` entry that no longer exists under
+/// `root`, so the exclusion list cannot silently outlive the files it excuses.
+fn missing_exclusion_violations(root: &Path, excluded: &[&str]) -> Vec<String> {
+    excluded
+        .iter()
+        .filter(|p| !root.join(p).exists())
+        .map(|p| {
+            format!(
+                "{p}: listed in LOCKING_DDL_EXCLUDE but does not exist — drop or fix the \
+                 entry so the locking-DDL rule (rule 22) cannot excuse a path that is gone"
+            )
+        })
+        .collect()
+}
+
+fn grep_locking_ddl(root: &Path) -> Vec<String> {
+    let mut findings = missing_exclusion_violations(root, &LOCKING_DDL_EXCLUDE);
+    for path in workspace_rs_files(root, &[]) {
+        let rel = workspace_rel(root, &path);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        findings.extend(locking_ddl_violations(&rel, &text));
+    }
+    findings
 }
 
 /// Bans the retired producer-push vocabulary ([`RETIRED_EVENT_TOKENS`]) anywhere in
