@@ -434,7 +434,6 @@ async fn migrate_fails_loudly_on_a_player_with_no_handles_claim() {
     ensure_schema(&pool).await;
     let ctx = Context::with_db(pool.clone());
 
-    // Exclusive for the whole committed life of the ghost row, so no sibling's migrate sees it.
     let _exclusive = GHOST_PLAYER.write().await;
 
     // A player row inserted directly, bypassing the handles claim `register` always takes
@@ -449,7 +448,6 @@ async fn migrate_fails_loudly_on_a_player_with_no_handles_claim() {
     .unwrap();
 
     let res = Accounts::new().migrate(&ctx).await;
-    // Removed before the write lock drops, so the ghost is never visible once it is released.
     sqlx::query("DELETE FROM accounts.players WHERE id = $1::uuid")
         .bind(&ghost_id)
         .execute(&pool)

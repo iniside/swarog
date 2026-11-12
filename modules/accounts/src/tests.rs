@@ -618,10 +618,7 @@ async fn third_login_queues_and_thirty_third_is_shed() {
 
 use testdb::test_pool;
 
-/// Held for write by the one test that commits a claimless `accounts.players` row, and for
-/// read around every `Accounts::migrate` call: that migrate ends with a whole-table check
-/// that fails when ANY committed player has no `accounts.handles` claim, so a sibling
-/// test's migrate must never run while the ghost row is committed.
+/// Migrate's closing check fails while any committed player lacks a claim; hold for write while committing one.
 static GHOST_PLAYER: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
 
 async fn ensure_schema(pool: &PgPool) {
@@ -638,7 +635,7 @@ async fn ensure_schema(pool: &PgPool) {
     a.migrate(&ctx).await.unwrap();
 }
 
-/// Builds a real durable plane over the live pool: schemas migrated once, then the
+/// Builds a real durable plane over the live pool: the
 /// asyncevents `bus::Transport` is injected at `Context` construction (needed before any
 /// `emit_tx`), and accounts registers against the same ctx.
 async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
