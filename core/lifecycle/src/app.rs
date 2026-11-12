@@ -123,7 +123,7 @@ impl App {
     /// `build`, before `start`.
     ///
     /// On a DB-backed process the whole module loop runs under a session-level
-    /// advisory lock ([`MODULE_MIGRATE_LOCK_KEY`]) so concurrent replica/process
+    /// advisory lock (`MODULE_MIGRATE_LOCK_KEY`) so concurrent replica/process
     /// boots serialize their module `migrate`s (which run their DDL through
     /// [`crate::Ddl`]) instead of racing them (catalog-lock deadlocks / "tuple
     /// concurrently updated"). A DB-less process has no DDL to
@@ -134,7 +134,7 @@ impl App {
     }
 
     /// [`App::migrate`]'s body, parameterized on the `lock_timeout` GUC value so
-    /// tests can wait milliseconds instead of [`MODULE_MIGRATE_LOCK_TIMEOUT`]'s
+    /// tests can wait milliseconds instead of `MODULE_MIGRATE_LOCK_TIMEOUT`'s
     /// real 60s. `t` is a trusted crate-internal/test string, never
     /// user/network input — it is spliced into the `SET` statement via `format!`
     /// because `SET` cannot take a bind parameter.

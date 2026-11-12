@@ -19,7 +19,7 @@ pub(crate) const ADVISORY_LOCK_STEP: &str = "advisory DDL lock";
 const SQL_EXCERPT_CHARS: usize = 120;
 
 /// A module's boot-time DDL, run create-only in ONE transaction under
-/// `lock_timeout` and [`DDL_LOCK_KEY`].
+/// `lock_timeout` and the `DDL_LOCK_KEY` transaction advisory lock.
 ///
 /// [`Ddl::index`] and [`Ddl::trigger`] probe the catalog and create only what is
 /// missing, so with the object present they take no lock on module tables.
@@ -163,7 +163,7 @@ impl Ddl {
         self
     }
 
-    /// Runs the steps under [`MODULE_MIGRATE_LOCK_TIMEOUT`].
+    /// Runs the steps under `MODULE_MIGRATE_LOCK_TIMEOUT`.
     pub async fn run(self) -> anyhow::Result<()> {
         self.run_with_lock_timeout(MODULE_MIGRATE_LOCK_TIMEOUT).await
     }
