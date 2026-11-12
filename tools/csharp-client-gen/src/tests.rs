@@ -1,23 +1,12 @@
-//! Tests for the scraper (Step 2). Kept in a SEPARATE file per CLAUDE.md; wired from
-//! the crate root via `#[cfg(test)] #[path = "tests.rs"] mod tests;`.
-//!
-//! Four things are pinned:
-//!
-//! 1. the produced manifest matches the committed golden (the 52 methods, 28 DTOs,
-//!    `Status` variants) — the whole scrape end-to-end;
-//! 2. the drift gate fires on a route_bindings-without-signature mismatch;
-//! 3. the completeness gate fires on a #[http]-bearing provider missing from the list;
-//! 4. a Rust scalar outside the type lattice bails naming the lattice, not a missing DTO.
-//!
-//! The gate functions are exercised directly with hand-built inputs (no need to mutate
-//! real crates).
+//! Tests for the scraper, its gates and the C# emitter. Gate functions take hand-built
+//! inputs, so no real crate is mutated.
 
 use std::collections::BTreeSet;
 
 use std::path::PathBuf;
 
 use crate::emit::{emit_client, emit_dtos, emit_status};
-use crate::model::{ArgDef, Manifest, MethodDef, TypeRef};
+use crate::model::{ArgDef, DtoDef, FieldDef, Manifest, MethodDef, TypeRef};
 use crate::scrape::{check_completeness, check_drift, map_type, parse_sources, scrape};
 
 /// The committed golden manifest — regenerate with
@@ -195,7 +184,7 @@ fn emitted_status_matches_golden() {
 fn emitted_dtos_matches_golden() {
     let m = scrape().expect("scrape must succeed on a healthy tree");
     assert_eq!(
-        emit_dtos(&m),
+        emit_dtos(&m).unwrap(),
         DTOS_GOLDEN,
         "Dtos.cs drifted from the committed golden — regenerate with --out"
     );
@@ -205,7 +194,7 @@ fn emitted_dtos_matches_golden() {
 fn emitted_client_matches_golden() {
     let m = scrape().expect("scrape must succeed on a healthy tree");
     assert_eq!(
-        emit_client(&m),
+        emit_client(&m).unwrap(),
         CLIENT_GOLDEN,
         "Client.cs drifted from the committed golden — regenerate with --out"
     );
@@ -234,7 +223,7 @@ fn args_named_like_generator_identifiers_stay_distinct() {
         dtos: vec![],
         statuses: vec![],
     };
-    let cs = emit_client(&m);
+    let cs = emit_client(&m).unwrap();
     assert!(cs.contains(
         "StoragePutAsync(string token, string value, string request, string payload, string resp, \
          string envelope, string transport, string token_, string ct_, string @await, string @class, \
@@ -246,6 +235,96 @@ fn args_named_like_generator_identifiers_stay_distinct() {
     ));
     assert!(cs.contains("await _transport.CallAsync(\"storage.put\", token, _payload, ct)"));
     assert!(cs.contains("JsonNode _value = _envelope[\"value\"]"));
+}
+
+fn dto_with_fields(dto: &str, fields: &[&str]) -> Manifest {
+    let field = |name: &&str| FieldDef { name: (*name).into(), wire_name: (*name).into(), ty: TypeRef::String };
+    Manifest {
+        methods: vec![],
+        dtos: vec![DtoDef { name: dto.into(), fields: fields.iter().map(field).collect() }],
+        statuses: vec![],
+    }
+}
+
+fn method_with_args(args: &[&str]) -> Manifest {
+    let arg = |name: &&str| ArgDef { name: (*name).into(), wire_name: (*name).into(), ty: TypeRef::String };
+    Manifest {
+        methods: vec![MethodDef {
+            provider: "storage".into(),
+            wire_method: "storage.put".into(),
+            verb: "POST".into(),
+            path: "/storage".into(),
+            auth: "player".into(),
+            success: 200,
+            args: args.iter().map(arg).collect(),
+            ret: TypeRef::Unit,
+        }],
+        dtos: vec![],
+        statuses: vec![],
+    }
+}
+
+fn assert_refused(err: anyhow::Error, record: &str, field: &str, why: &str) {
+    let msg = format!("{err:#}");
+    assert!(msg.contains(record), "err must name the record {record}: {msg}");
+    assert!(msg.contains(&format!("{field:?}")), "err must name the field {field}: {msg}");
+    assert!(msg.contains(why), "err must say why ({why}): {msg}");
+}
+
+#[test]
+fn fields_named_like_record_synthesized_members_are_refused() {
+    for (field, prop) in [
+        ("equals", "Equals"),
+        ("get_hash_code", "GetHashCode"),
+        ("to_string", "ToString"),
+        ("print_members", "PrintMembers"),
+        ("equality_contract", "EqualityContract"),
+        ("deconstruct", "Deconstruct"),
+    ] {
+        let err = emit_dtos(&dto_with_fields("Score", &["value", field])).expect_err(field);
+        assert_refused(err, "Score", field, &format!("record-synthesized {prop}"));
+        let err = emit_client(&method_with_args(&[field])).expect_err(field);
+        assert_refused(err, "StoragePutRequest", field, &format!("record-synthesized {prop}"));
+    }
+}
+
+#[test]
+fn fields_named_like_inherited_object_methods_are_refused() {
+    for (field, prop) in [
+        ("get_type", "GetType"),
+        ("memberwise_clone", "MemberwiseClone"),
+        ("finalize", "Finalize"),
+    ] {
+        let err = emit_dtos(&dto_with_fields("Score", &[field])).expect_err(field);
+        assert_refused(err, "Score", field, &format!("object.{prop}"));
+        let err = emit_client(&method_with_args(&[field])).expect_err(field);
+        assert_refused(err, "StoragePutRequest", field, &format!("object.{prop}"));
+    }
+}
+
+#[test]
+fn field_named_like_its_enclosing_record_is_refused() {
+    let err = emit_dtos(&dto_with_fields("Score", &["score"])).expect_err("dto own name");
+    assert_refused(err, "Score", "score", "record's own name");
+    let err = emit_client(&method_with_args(&["storage_put_request"])).expect_err("request own name");
+    assert_refused(err, "StoragePutRequest", "storage_put_request", "record's own name");
+}
+
+#[test]
+fn fields_mapping_to_one_property_are_refused() {
+    let err = emit_dtos(&dto_with_fields("Score", &["player_id", "player__id"])).expect_err("dto dup");
+    assert_refused(err, "Score", "player__id", "both become property PlayerId");
+    let err = emit_client(&method_with_args(&["token", "token_"])).expect_err("request dup");
+    assert_refused(err, "StoragePutRequest", "token_", "both become property Token");
+}
+
+#[test]
+fn near_miss_member_names_are_emitted() {
+    let fields = ["clone", "reference_equals", "hash_code", "type", "scores"];
+    let cs = emit_dtos(&dto_with_fields("Score", &fields)).unwrap();
+    for prop in ["Clone", "ReferenceEquals", "HashCode", "Type", "Scores"] {
+        assert!(cs.contains(&format!("string {prop}")), "missing {prop}: {cs}");
+    }
 }
 
 // --- Gate 1: drift ---------------------------------------------------------

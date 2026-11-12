@@ -20,7 +20,7 @@
 
 use std::path::Path;
 
-use anyhow::{Context as _, Result};
+use anyhow::{bail, Context as _, Result};
 
 use crate::model::{DtoDef, Manifest, MethodDef, TypeRef};
 
@@ -43,8 +43,8 @@ pub fn emit(manifest: &Manifest, out_dir: &Path) -> Result<()> {
         .with_context(|| format!("create output dir {}", out_dir.display()))?;
     for (name, body) in [
         ("Status.cs", emit_status(manifest)),
-        ("Dtos.cs", emit_dtos(manifest)),
-        ("Client.cs", emit_client(manifest)),
+        ("Dtos.cs", emit_dtos(manifest)?),
+        ("Client.cs", emit_client(manifest)?),
     ] {
         let path = out_dir.join(name);
         std::fs::write(&path, body).with_context(|| format!("write {}", path.display()))?;
@@ -81,7 +81,7 @@ pub fn emit_status(m: &Manifest) -> String {
 
 /// One positional `record` per DTO. Every field carries `[property: JsonPropertyName]`
 /// (not only renamed ones) — the wire keys are snake_case and STJ is case-sensitive.
-pub fn emit_dtos(m: &Manifest) -> String {
+pub fn emit_dtos(m: &Manifest) -> Result<String> {
     let mut s = String::new();
     s.push_str(HEADER);
     s.push('\n');
@@ -89,33 +89,25 @@ pub fn emit_dtos(m: &Manifest) -> String {
     s.push_str(&format!("namespace {NS};\n"));
     for dto in &m.dtos {
         s.push('\n');
-        s.push_str(&emit_dto(dto));
+        s.push_str(&emit_dto(dto)?);
     }
-    s
+    Ok(s)
 }
 
-fn emit_dto(dto: &DtoDef) -> String {
+fn emit_dto(dto: &DtoDef) -> Result<String> {
     let mut s = String::new();
     s.push_str(&format!(
         "/// <summary>The <c>{}</c> DTO.</summary>\n",
         dto.name
     ));
-    let members: Vec<String> = dto
-        .fields
-        .iter()
-        .map(|f| {
-            format!(
-                "    [property: JsonPropertyName(\"{}\")] {} {}",
-                f.wire_name,
-                cs_type(&f.ty),
-                pascal_from_snake(&f.name)
-            )
-        })
-        .collect();
+    let members = record_members(
+        &dto.name,
+        dto.fields.iter().map(|f| (f.name.as_str(), f.wire_name.as_str(), &f.ty)),
+    )?;
     s.push_str(&format!("public sealed record {}(\n", dto.name));
     s.push_str(&members.join(",\n"));
     s.push_str(");\n");
-    s
+    Ok(s)
 }
 
 // ---------------------------------------------------------------------------
@@ -123,7 +115,7 @@ fn emit_dto(dto: &DtoDef) -> String {
 // ---------------------------------------------------------------------------
 
 /// The exceptions, the per-method request records, and `GameBackendClient`.
-pub fn emit_client(m: &Manifest) -> String {
+pub fn emit_client(m: &Manifest) -> Result<String> {
     let mut s = String::new();
     s.push_str(HEADER);
     s.push('\n');
@@ -159,7 +151,7 @@ pub fn emit_client(m: &Manifest) -> String {
 
     // --- Request records (one per method, in manifest order) ---
     for method in &m.methods {
-        s.push_str(&emit_request_record(method));
+        s.push_str(&emit_request_record(method)?);
         s.push('\n');
     }
 
@@ -209,39 +201,83 @@ pub fn emit_client(m: &Manifest) -> String {
          \x20   }\n",
     );
     s.push_str("}\n");
-    s
+    Ok(s)
 }
 
 /// The request `record` for one method — one positional param per arg (empty when none,
 /// which serializes to `{}`). `[property: JsonPropertyName]` carries the wire key.
-fn emit_request_record(method: &MethodDef) -> String {
+fn emit_request_record(method: &MethodDef) -> Result<String> {
     let name = format!("{}Request", op_base(method));
     if method.args.is_empty() {
-        return format!(
+        return Ok(format!(
             "/// <summary>Request for <c>{}</c> (no arguments — serializes to <c>{{}}</c>).</summary>\n\
              public sealed record {name}();\n",
             method.wire_method
-        );
+        ));
     }
-    let members: Vec<String> = method
-        .args
-        .iter()
-        .map(|a| {
-            format!(
-                "    [property: JsonPropertyName(\"{}\")] {} {}",
-                a.wire_name,
-                cs_type(&a.ty),
-                pascal_from_snake(&a.name)
-            )
-        })
-        .collect();
-    format!(
+    let members = record_members(
+        &name,
+        method.args.iter().map(|a| (a.name.as_str(), a.wire_name.as_str(), &a.ty)),
+    )?;
+    Ok(format!(
         "/// <summary>Request for <c>{}</c>.</summary>\n\
          public sealed record {name}(\n{});\n",
         method.wire_method,
         members.join(",\n")
-    )
+    ))
 }
+
+/// Renders the positional members of `record`, bailing on a property name C# rejects;
+/// renaming instead would silently change the client's public shape.
+fn record_members<'a>(
+    record: &str,
+    fields: impl Iterator<Item = (&'a str, &'a str, &'a TypeRef)>,
+) -> Result<Vec<String>> {
+    let mut seen: Vec<(String, &str)> = Vec::new();
+    let mut members = Vec::new();
+    for (name, wire_name, ty) in fields {
+        let prop = pascal_from_snake(name);
+        if prop == record {
+            bail!(
+                "record {record}: field {name:?} becomes property {prop}, the record's own \
+                 name (CS0542); rename the field in the Rust contract"
+            );
+        }
+        if let Some((_, why)) = RECORD_RESERVED_MEMBERS.iter().find(|(n, _)| *n == prop) {
+            bail!(
+                "record {record}: field {name:?} becomes property {prop}, which collides \
+                 with {why}; rename the field in the Rust contract"
+            );
+        }
+        if let Some((_, first)) = seen.iter().find(|(p, _)| *p == prop) {
+            bail!(
+                "record {record}: fields {first:?} and {name:?} both become property \
+                 {prop}; rename one in the Rust contract"
+            );
+        }
+        seen.push((prop.clone(), name));
+        members.push(format!(
+            "    [property: JsonPropertyName(\"{wire_name}\")] {} {prop}",
+            cs_type(ty)
+        ));
+    }
+    Ok(members)
+}
+
+/// Names a positional property of a `sealed record` cannot take: record-synthesized
+/// members (CS0102) and inherited `object` instance methods (CS8866). `<Clone>$` is
+/// unspeakable, and static `ReferenceEquals` is only hidden (warning CS0108).
+const RECORD_RESERVED_MEMBERS: &[(&str, &str)] = &[
+    ("Equals", "the record-synthesized Equals methods"),
+    ("GetHashCode", "the record-synthesized GetHashCode override"),
+    ("ToString", "the record-synthesized ToString override"),
+    ("PrintMembers", "the record-synthesized PrintMembers method"),
+    ("EqualityContract", "the record-synthesized EqualityContract property"),
+    ("Deconstruct", "the record-synthesized Deconstruct method"),
+    ("GetType", "the inherited object.GetType method"),
+    ("MemberwiseClone", "the inherited object.MemberwiseClone method"),
+    ("Finalize", "the inherited object.Finalize method"),
+];
 
 /// One typed async client method.
 fn emit_method(method: &MethodDef) -> String {
