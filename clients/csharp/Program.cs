@@ -40,7 +40,6 @@ if (args.Length == 0)
     return ExitUsage;
 }
 
-// QUIC guard up front — this is the SKIP signal the verify stage keys on.
 if (!QuicConnection.IsSupported)
 {
     Console.Error.WriteLine("QUIC (System.Net.Quic / msquic) is not supported on this platform.");
