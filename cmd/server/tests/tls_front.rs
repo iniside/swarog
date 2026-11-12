@@ -356,11 +356,8 @@ async fn player_front_serves_the_tls_mode_files_certificate_not_the_dev_ca_leaf(
     wait_for_handshake(&mut server, addr, PLAYER_NAME, &minted_anchor(&certs)).await;
 
     let rejected = dial_once(addr, "localhost", &dev_anchor, DIAL_REJECT_GUARD).await;
-    assert!(
-        rejected.is_err(),
-        "a dev CA anchor accepted the QUIC front under TLS_MODE=files, so it still serves the dev leaf; log:\n{}",
-        server.log_text()
-    );
+    assert_certificate_rejected(rejected, "a dev CA anchor on the QUIC front under TLS_MODE=files", &server.log_text());
+    assert_no_dev_certificate_warning(&server.log_text());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -391,11 +388,8 @@ async fn player_tls_files_serve_on_quic_even_with_tls_mode_off() {
     wait_for_handshake(&mut server, addr, PLAYER_NAME, &minted_anchor(&certs)).await;
 
     let rejected = dial_once(addr, "localhost", &dev_anchor, DIAL_REJECT_GUARD).await;
-    assert!(
-        rejected.is_err(),
-        "a dev CA anchor accepted the QUIC front with PLAYER_TLS_* set, so it still serves the dev leaf; log:\n{}",
-        server.log_text()
-    );
+    assert_certificate_rejected(rejected, "a dev CA anchor on the QUIC front with PLAYER_TLS_* set", &server.log_text());
+    assert_no_dev_certificate_warning(&server.log_text());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -456,6 +450,7 @@ fn only_one_player_tls_path_fails_startup() {
         };
         let log = server.log_text();
         assert!(!exit.success(), "server exited cleanly with only {set}; log:\n{log}");
-        assert!(log.contains(missing), "server did not name the missing {missing}; log:\n{log}");
+        let expected = format!("{set} is set but {missing} is not");
+        assert!(log.contains(&expected), "server did not report {expected:?}; log:\n{log}");
     }
 }

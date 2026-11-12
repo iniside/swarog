@@ -225,11 +225,7 @@ async fn gateway_svc_player_front_serves_the_tls_mode_files_certificate() {
     wait_for_handshake(&mut gateway, addr, PLAYER_NAME, &anchor_of(&certs)).await;
 
     let rejected = dial_once(addr, "localhost", &dev_anchor, DIAL_REJECT_GUARD).await;
-    assert!(
-        rejected.is_err(),
-        "a dev CA anchor accepted the QUIC front under TLS_MODE=files, so it still serves the dev leaf; log:\n{}",
-        gateway.log_text()
-    );
+    assert_certificate_rejected(rejected, "a dev CA anchor on the QUIC front under TLS_MODE=files", &gateway.log_text());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -257,11 +253,7 @@ async fn gateway_svc_player_tls_files_beat_the_https_certificate() {
     wait_for_handshake(&mut gateway, addr, PLAYER_NAME, &anchor_of(&player)).await;
 
     let rejected = dial_once(addr, HTTPS_NAME, &anchor_of(&https), DIAL_REJECT_GUARD).await;
-    assert!(
-        rejected.is_err(),
-        "the HTTPS certificate was served on QUIC although PLAYER_TLS_* is set; log:\n{}",
-        gateway.log_text()
-    );
+    assert_certificate_rejected(rejected, "the HTTPS certificate on the QUIC front although PLAYER_TLS_* is set", &gateway.log_text());
 }
 
 #[test]
@@ -291,6 +283,7 @@ fn gateway_svc_with_only_one_player_tls_path_fails_startup() {
         };
         let log = gateway.log_text();
         assert!(!exit.success(), "gateway-svc exited cleanly with only {set}; log:\n{log}");
-        assert!(log.contains(missing), "gateway-svc did not name the missing {missing}; log:\n{log}");
+        let expected = format!("{set} is set but {missing} is not");
+        assert!(log.contains(&expected), "gateway-svc did not report {expected:?}; log:\n{log}");
     }
 }

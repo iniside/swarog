@@ -369,7 +369,8 @@ async fn acme_mode_player_front_refuses_handshakes_until_a_certificate_exists() 
     let res = dial(tls, "localhost", &dev.trust_anchor()).await;
     match res {
         Err(edge::Error::Connection(text)) => {
-            assert!(!text.contains("invalid peer certificate"), "the server presented a certificate: {text}")
+            assert!(!text.contains("invalid peer certificate"), "the server presented a certificate: {text}");
+            assert!(text.contains("error 49"), "not the access_denied abort of a resolver with no certificate: {text}");
         }
         other => panic!("an empty ACME resolver must fail the handshake, got {other:?}"),
     }
