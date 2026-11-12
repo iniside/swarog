@@ -160,7 +160,7 @@ const DESCRIBE_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 ///
 /// FLOOR — it must exceed a COLD DIAL plus one describe round-trip. The fetch it wraps is
 /// `remote::describe` → `Pool::call` → `Reconnecting::get()` → `edge::Client::dial`, and that
-/// dial is itself allowed 5s (`DIAL_DEADLINE`, `core/edge/src/client.rs:34,82` — `pub(crate)`,
+/// dial is itself allowed 5s (`DIAL_DEADLINE`, `core/edge/src/client.rs:43,91` — `pub(crate)`,
 /// hence named by file:line rather than imported). `Reconnecting::get` caches the connection
 /// only on SUCCESS (`core/remote/src/lib.rs:331-336`), so cancelling mid-handshake DISCARDS the
 /// partial dial: the next pass starts from zero. A timeout below the dial budget therefore does
