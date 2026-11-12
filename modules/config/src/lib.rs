@@ -31,7 +31,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use sqlx::{PgConnection, PgPool};
 
 /// Fallback DSN — same default as the shared pool. Test-only now that the module owns
@@ -44,8 +44,9 @@ const DEFAULT_DSN: &str =
 /// and every config cache LISTENs on for its authoritative refresh.
 const NOTIFY_CHANNEL: &str = "config_changed";
 
-/// Creates this module's OWN schema and nothing else — full logical isolation (#10).
-/// Idempotent (`IF NOT EXISTS` / `OR REPLACE`).
+/// This module's OWN schema, tables, revision seed and trigger function, nothing else —
+/// full logical isolation (#10). Idempotent; [`SETTINGS_NOTIFY_TRIGGER`] attaches the
+/// function to `config.settings`.
 ///
 /// `config.revision` is a monotonic singleton (one row, `revision` bigint). The
 /// `AFTER INSERT OR UPDATE OR DELETE` trigger is the single source of change
@@ -118,8 +119,11 @@ BEGIN
 
 	RETURN NULL;
 END;
-$$;
-CREATE OR REPLACE TRIGGER settings_notify
+$$;"#;
+
+/// The write trigger [`SCHEMA_DDL`] describes.
+const SETTINGS_NOTIFY_TRIGGER: &str = r#"
+CREATE TRIGGER settings_notify
 	AFTER INSERT OR UPDATE OR DELETE ON config.settings
 	FOR EACH ROW EXECUTE FUNCTION config.notify_changed();"#;
 
@@ -498,7 +502,11 @@ impl Module for Config {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("config requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .trigger("config.settings", "settings_notify", SETTINGS_NOTIFY_TRIGGER)
+            .run()
+            .await?;
         seed_history_contract(pool).await?;
         Ok(())
     }

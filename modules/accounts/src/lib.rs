@@ -42,7 +42,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use bus::{AnyTx, Bus, Delivery, Error as BusError, TxHandler};
 use futures::future::BoxFuture;
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use opsapi::{Error, Identity};
 use sqlx::PgConnection;
 
@@ -112,9 +112,9 @@ pub(crate) fn delete_ticket_within_cap(ticket: &str) -> bool {
 /// unknown or the input invalid — never the caller's real password against a decoy.
 const DECOY_CANDIDATE: &str = "accounts-invalid-credentials";
 
-/// Creates this module's OWN schema and nothing else — full logical isolation (#10).
-/// Idempotent. The identities/sessions FKs are INTERNAL to the accounts schema
-/// (allowed; the ban is on cross-module FKs).
+/// This module's OWN schema and tables, nothing else — full logical isolation (#10).
+/// Idempotent; `migrate` adds the indexes. The identities/sessions FKs are INTERNAL to
+/// the accounts schema (allowed; the ban is on cross-module FKs).
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS accounts;
 
@@ -124,12 +124,6 @@ CREATE TABLE IF NOT EXISTS accounts.players (
 	discriminator text        NOT NULL,
 	created_at    timestamptz NOT NULL DEFAULT now()
 );
--- Kept as a second, DB-level constraint on `players` itself (see `migrate`'s claim-
--- coverage check below) — `accounts.handles` decides freeness at mint time, this index
--- backs `player_by_handle`'s lookup and still refuses a duplicate pair on the row.
-CREATE UNIQUE INDEX IF NOT EXISTS accounts_handle_idx
-	ON accounts.players (lower(display_name), discriminator);
-
 -- The handle authority: display names are NOT unique, so `Name#1234` is what addresses a
 -- player, and THIS table decides which pairs are free. Minting INSERTs a claim here and
 -- retries what the unique key rejects; deleting a player NULLs `player_id` and keeps the
@@ -174,20 +168,16 @@ CREATE TABLE IF NOT EXISTS accounts.identities (
 	created_at  timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (provider, subject)
 );
-CREATE INDEX IF NOT EXISTS identities_player_idx ON accounts.identities(player_id);
 
 CREATE TABLE IF NOT EXISTS accounts.sessions (
 	token      text PRIMARY KEY,
 	player_id  uuid        NOT NULL REFERENCES accounts.players(id) ON DELETE CASCADE,
 	created_at timestamptz NOT NULL DEFAULT now(),
-	expires_at timestamptz NOT NULL
+	expires_at timestamptz NOT NULL,
+	-- The refresh family this access token was minted under: what scopes a revocation
+	-- to one compromised login instead of every device the player owns.
+	family_id  uuid
 );
--- The refresh family this access token was minted under: what scopes a revocation to
--- one compromised login instead of every device the player owns.
-ALTER TABLE accounts.sessions ADD COLUMN IF NOT EXISTS family_id uuid;
-CREATE INDEX IF NOT EXISTS sessions_player_idx ON accounts.sessions(player_id);
-CREATE INDEX IF NOT EXISTS sessions_expires_idx ON accounts.sessions(expires_at);
-CREATE INDEX IF NOT EXISTS sessions_family_idx ON accounts.sessions(family_id);
 
 -- Rotating refresh tokens. A consumed row is KEPT (until it expires) with the successor
 -- it minted: it is the only record that can tell a replay from an unknown token.
@@ -200,9 +190,6 @@ CREATE TABLE IF NOT EXISTS accounts.refresh_tokens (
 	used_at     timestamptz,
 	replaced_by text
 );
-CREATE INDEX IF NOT EXISTS refresh_family_idx ON accounts.refresh_tokens(family_id);
-CREATE INDEX IF NOT EXISTS refresh_player_idx ON accounts.refresh_tokens(player_id);
-CREATE INDEX IF NOT EXISTS refresh_expires_idx ON accounts.refresh_tokens(expires_at);
 
 -- Epic web-OAuth in-flight redemption store (Step B1). Shared, NOT process memory,
 -- so the /accounts/epic/callback can LB-route to ANY replica: new_state INSERTs and
@@ -217,8 +204,7 @@ CREATE TABLE IF NOT EXISTS accounts.oauth_states (
 	session_token   text        NOT NULL,
 	browser_binding text        NOT NULL,
 	created_at      timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS oauth_states_created_idx ON accounts.oauth_states(created_at);"#;
+);"#;
 
 /// Folds any lower-level error into an `Internal` operation error.
 fn internal<E: std::fmt::Display>(e: E) -> Error {
@@ -1270,7 +1256,50 @@ impl Module for Accounts {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("accounts requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            // A second, DB-level constraint on `players` itself (see the claim-coverage
+            // check below): `accounts.handles` decides freeness at mint time, this index
+            // backs `player_by_handle`'s lookup and still refuses a duplicate pair.
+            .index(
+                "accounts.accounts_handle_idx",
+                "CREATE UNIQUE INDEX accounts_handle_idx \
+                 ON accounts.players (lower(display_name), discriminator)",
+            )
+            .index(
+                "accounts.identities_player_idx",
+                "CREATE INDEX identities_player_idx ON accounts.identities(player_id)",
+            )
+            .index(
+                "accounts.sessions_player_idx",
+                "CREATE INDEX sessions_player_idx ON accounts.sessions(player_id)",
+            )
+            .index(
+                "accounts.sessions_expires_idx",
+                "CREATE INDEX sessions_expires_idx ON accounts.sessions(expires_at)",
+            )
+            .index(
+                "accounts.sessions_family_idx",
+                "CREATE INDEX sessions_family_idx ON accounts.sessions(family_id)",
+            )
+            .index(
+                "accounts.refresh_family_idx",
+                "CREATE INDEX refresh_family_idx ON accounts.refresh_tokens(family_id)",
+            )
+            .index(
+                "accounts.refresh_player_idx",
+                "CREATE INDEX refresh_player_idx ON accounts.refresh_tokens(player_id)",
+            )
+            .index(
+                "accounts.refresh_expires_idx",
+                "CREATE INDEX refresh_expires_idx ON accounts.refresh_tokens(expires_at)",
+            )
+            .index(
+                "accounts.oauth_states_created_idx",
+                "CREATE INDEX oauth_states_created_idx ON accounts.oauth_states(created_at)",
+            )
+            .run()
+            .await?;
 
         // `CREATE TABLE IF NOT EXISTS` is silent on a schema that predates
         // `accounts.handles`, leaving `accounts_handle_idx` as a SECOND uniqueness
