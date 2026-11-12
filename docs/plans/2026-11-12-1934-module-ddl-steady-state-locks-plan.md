@@ -198,6 +198,20 @@ rebinding/alias bypasses. Fixtures for each new form follow on the test-author l
 `feat(archcheck): ban the ALTER and DROP DDL class and raw_sql in module code (module-ddl-steady-state-locks step 6c)`
 and `test(archcheck): pin the ALTER and DROP DDL class (module-ddl-steady-state-locks step 6c)`.
 
+### Step 6d — module DDL text lives only in what reaches `Ddl` `[opus]` + `[test-author]`
+(Erratum 2026-11-12, owner-approved.) Rule 22 also rejects, in non-test files under
+modules/, core/admin/, tools/adminctl/, `CREATE TABLE` / `CREATE INDEX` / `CREATE TRIGGER`
+/ `CREATE SCHEMA` / `CREATE FUNCTION` text anywhere except the value of a `*_DDL` const and
+the create-SQL argument of `.index(` / `.trigger(`, so an inline `sqlx::query("CREATE …")`
+cannot bypass `Ddl`. Fixtures follow on the test-author lane. Then the docs may say rule 22
+enforces that module DDL goes through `Ddl`. Commits
+`feat(archcheck): keep module DDL text inside what reaches Ddl (module-ddl-steady-state-locks step 6d)`
+and `test(archcheck): pin module DDL text placement (module-ddl-steady-state-locks step 6d)`.
+
+Follow-up after this plan (owner, 2026-11-12): archcheck classifies test files by name only;
+a module-tree resolver that requires every test-named file to be reached through
+`#[cfg(test)]` strengthens rules 9, 15 and 22. Its own plan.
+
 ### Step 7b — characters purge tests share one sweep lock `[test-author]`
 (Erratum 2026-11-12.) `modules/characters/src/tests/purge.rs`: every test that plants or
 sweeps `characters.purged_players` holds one test `DB_LOCK`, mirroring
