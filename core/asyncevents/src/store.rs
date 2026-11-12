@@ -39,9 +39,10 @@ pub const WRITER_LOCK_KEY: i64 = 0x6173_796E_6365_7674;
 const MIGRATE_LOCK_KEY: i64 = 0x6173_796E_636D_6967;
 
 /// Bound on EVERY lock wait in the V2 DDL transaction before it gives up loudly
-/// (SQLSTATE `55P03`): the `pg_advisory_xact_lock` wait on the migrate key and
-/// any relation lock a later statement waits for alike ([`lock_timeout_message`]
-/// names which one). Mirrors `core/lifecycle`'s `MODULE_MIGRATE_LOCK_TIMEOUT`
+/// (SQLSTATE `55P03`): the `pg_advisory_xact_lock` wait on the migrate key, any
+/// relation lock a later statement waits for, and the `plane_meta` seed's wait
+/// on an open updater of that row alike ([`lock_timeout_message`] names which
+/// one). Mirrors `core/lifecycle`'s `MODULE_MIGRATE_LOCK_TIMEOUT`
 /// (same 60s convention). `SET LOCAL`, not `SET` + `RESET`: the migrate lock is
 /// transaction-scoped (`pg_advisory_xact_lock`, not `_lock`), so `SET LOCAL`
 /// self-resets at `COMMIT`/`ROLLBACK` — simpler than lifecycle's session-lock
@@ -199,16 +200,31 @@ COMMIT;"#;
 /// `DO` blocks of [`V2_DDL_TEMPLATE`] (`events_notify` ends ~130 chars in).
 const LOCK_TIMEOUT_STMT_EXCERPT_CHARS: usize = 160;
 
+/// The `plane_meta` singleton seed, run last in the V2 DDL transaction:
+/// generation 1 and the current cluster's identity (`$1`), never overwriting
+/// an existing row.
+const PLANE_META_SEED_SQL: &str = "INSERT INTO asyncevents.plane_meta (generation, system_identifier) \
+     VALUES (1, $1::numeric) ON CONFLICT DO NOTHING";
+
 /// The context for a `55P03` in the V2 DDL transaction. `SET LOCAL lock_timeout`
 /// bounds every lock wait there, so the error names the migrate advisory lock
 /// only when the failing statement IS that acquisition — a prefix match, never
 /// `contains`: `append_event`'s body mentions `pg_advisory_xact_lock_shared`.
-/// Any other statement waited on a relation lock, and the message quotes it.
+/// The [`PLANE_META_SEED_SQL`] seed waits on the transaction holding the
+/// `plane_meta` row. Any other statement waited on a relation lock, and the
+/// message quotes it.
 pub(crate) fn lock_timeout_message(stmt: &str, lock_timeout: &str) -> String {
     if stmt.trim_start().starts_with("SELECT pg_advisory_xact_lock(") {
         return format!(
             "asyncevents: V2 plane advisory lock not acquired within {lock_timeout} — \
              another process is stuck mid plane-DDL; see pg_stat_activity"
+        );
+    }
+    if stmt == PLANE_META_SEED_SQL {
+        return format!(
+            "asyncevents: plane_meta seed waited {lock_timeout} on an open transaction that \
+             changed the plane_meta row (e.g. `eventctl bump-generation`); see pg_locks / \
+             pg_blocking_pids"
         );
     }
     let collapsed = stmt.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -317,6 +333,11 @@ pub(crate) async fn ensure_schema_with_lock_timeout(
 ) -> anyhow::Result<()> {
     let ddl = render_v2_ddl(lock_timeout);
 
+    // Read before `begin`: `control_identity` borrows its own pooled
+    // connection, which would never come while this one holds the only
+    // connection of a `max_connections(1)` pool.
+    let identity = control_identity(pool).await?;
+
     let mut tx = pool
         .begin()
         .await
@@ -363,17 +384,27 @@ pub(crate) async fn ensure_schema_with_lock_timeout(
             };
         }
     }
-    tx.commit().await.context("asyncevents: V2 schema DDL commit failed")?;
 
-    let identity = control_identity(pool).await?;
-    sqlx::query(
-        "INSERT INTO asyncevents.plane_meta (generation, system_identifier) \
-         VALUES (1, $1::numeric) ON CONFLICT DO NOTHING",
-    )
-    .bind(&identity)
-    .execute(pool)
-    .await
-    .context("asyncevents: plane_meta seed failed")?;
+    // The seed runs in the DDL transaction, so the template's `SET LOCAL
+    // lock_timeout` bounds it too: against a seeded row whose updater is still
+    // open (an in-flight `bump_generation`), `ON CONFLICT DO NOTHING` waits for
+    // that transaction to end.
+    if let Err(err) = sqlx::query(PLANE_META_SEED_SQL)
+        .bind(&identity)
+        .execute(&mut *tx)
+        .await
+    {
+        let timed_out = matches!(
+            &err,
+            sqlx::Error::Database(db) if db.code().as_deref() == Some("55P03")
+        );
+        return if timed_out {
+            Err(err).with_context(|| lock_timeout_message(PLANE_META_SEED_SQL, lock_timeout))
+        } else {
+            Err(err).context("asyncevents: plane_meta seed failed")
+        };
+    }
+    tx.commit().await.context("asyncevents: V2 schema DDL commit failed")?;
     Ok(())
 }
 
