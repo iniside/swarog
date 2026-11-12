@@ -1,9 +1,6 @@
-//! `csharp-client-gen` — the external C# player-client generator (Step 2 = the scraper
-//! half). It scrapes the player-reachable API into an internal typed [`model::Manifest`]
+//! `csharp-client-gen` — the external C# player-client generator. It scrapes the player-reachable API into an internal typed [`model::Manifest`]
 //! and can dump it as JSON (`--emit-manifest`), cross-checking the runtime allow-list
 //! against the parsed source via two hard gates (see [`scrape`]).
-//!
-//! The C# emitter (`--out <dir>`) is Step 3 — a clearly-marked stub here.
 //!
 //! ```text
 //! csharp-client-gen --emit-manifest [path]   # dump the manifest as pretty JSON
@@ -80,7 +77,7 @@ fn run() -> Result<()> {
 
 fn print_usage() {
     eprintln!(
-        "csharp-client-gen — external C# player-client generator (Step 2: scraper)\n\
+        "csharp-client-gen — external C# player-client generator\n\
          \n\
          USAGE:\n\
          \x20 csharp-client-gen --emit-manifest [path]   dump the scraped manifest as pretty JSON\n\
