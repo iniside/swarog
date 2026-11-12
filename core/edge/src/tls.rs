@@ -275,8 +275,7 @@ impl DevCA {
 }
 
 /// Loads a PEM certificate chain (leaf first) and a PEM private key as a static
-/// certificate — the one PEM loader for every TLS front of a process. Errors name the
-/// offending path.
+/// certificate. Errors name the offending path.
 pub fn pem_cert_resolver(cert_path: &Path, key_path: &Path) -> Result<Arc<dyn ResolvesServerCert>, Error> {
     let cert_pem =
         std::fs::read(cert_path).map_err(|e| Error::Tls(format!("read TLS cert {cert_path:?}: {e}")))?;

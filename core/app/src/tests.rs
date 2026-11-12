@@ -1025,7 +1025,6 @@ fn with_tls_sets_the_front_and_default_is_off() {
     assert_eq!(cfg.tls.https, Some(front));
     // The other builder opt-outs survive alongside it.
     assert_eq!(cfg.database_url, None);
-    // And with_tls(None) is an explicit off.
     assert_eq!(cfg.with_tls(TlsFronts::default()).tls, TlsFronts::default());
 }
 
