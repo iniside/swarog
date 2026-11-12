@@ -6,8 +6,10 @@
 use super::{
     classify, cmd_is_a_main, contains_boundary_checked, core_bus_sqlx_violations,
     cross_schema_fk_violations, forbidden_api_deps, has_non_dev_dep, http_op_domains,
-    is_inline_test_mod, missing_svc_violations, mod_test_ident_end, module_import_violations,
-    Kind, DEMO_HOST, FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE, SVC_EXEMPT_MODULES,
+    is_inline_test_mod, locking_ddl_excluded, locking_ddl_violations, missing_exclusion_violations,
+    missing_svc_violations, mod_test_ident_end, module_import_violations,
+    Kind, DEMO_HOST, FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE, LOCKING_DDL_EXCLUDE,
+    SVC_EXEMPT_MODULES,
 };
 
 #[test]
@@ -1430,4 +1432,194 @@ fn a_divergently_named_module_is_skipped_by_rule_17_and_caught_by_rule_21() {
         "{violations:?}"
     );
     let _ = std::fs::remove_dir_all(root);
+}
+
+// ---- Rule 22: boot-time locking DDL ----
+
+const NON_TEST: &str = "modules/x/src/lib.rs";
+
+/// Asserts `text` (at `rel`) yields exactly one violation, reported on source line `line`.
+fn assert_one_violation_at(rel: &str, text: &str, line: usize, needle: &str) {
+    let v = locking_ddl_violations(rel, text);
+    assert_eq!(v.len(), 1, "expected one violation for {text:?}, got {v:?}");
+    assert!(v[0].starts_with(&format!("{rel}:{line}: ")), "wrong line: {v:?}");
+    assert!(v[0].contains(needle), "{v:?} should mention {needle:?}");
+}
+
+#[test]
+fn locking_ddl_flags_create_index_if_not_exists() {
+    let text = "fn a() {}\nfn b() {}\nconst S: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
+    assert_one_violation_at(NON_TEST, text, 3, "INDEX IF NOT EXISTS");
+}
+
+#[test]
+fn locking_ddl_flags_unique_index_if_not_exists() {
+    let text = "\n\nconst S: &str = \"CREATE UNIQUE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
+    assert_one_violation_at(NON_TEST, text, 3, "INDEX IF NOT EXISTS");
+}
+
+#[test]
+fn locking_ddl_flags_lowercase_form() {
+    let text = "\nconst S: &str = \"create index if not exists y on s.t (a)\";\n";
+    assert_one_violation_at(NON_TEST, text, 2, "INDEX IF NOT EXISTS");
+}
+
+#[test]
+fn locking_ddl_flags_multiline_literal_on_the_line_of_the_phrase() {
+    // The form straddles lines 3-4; the report names the line where it starts.
+    let text = "fn a() {}\n\nconst S: &str = \"CREATE INDEX\n  IF NOT EXISTS y ON s.t (a)\";\n";
+    assert_one_violation_at(NON_TEST, text, 3, "INDEX IF NOT EXISTS");
+}
+
+#[test]
+fn locking_ddl_flags_backslash_continuation() {
+    let text = "fn a() {}\nconst S: &str = \"CREATE INDEX \\
+    IF NOT EXISTS y ON s.t (a)\";\n";
+    assert_one_violation_at(NON_TEST, text, 2, "INDEX IF NOT EXISTS");
+}
+
+#[test]
+fn locking_ddl_line_numbers_survive_earlier_multiline_literals() {
+    // Two continuation/newline runs before the phrase: the mapping must keep counting.
+    let text = "const A: &str = \"x \\
+   y\";\nconst B: &str = \"p\n\nq\";\nconst S: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
+    assert_one_violation_at(NON_TEST, text, 6, "INDEX IF NOT EXISTS");
+}
+
+#[test]
+fn locking_ddl_flags_create_or_replace_trigger() {
+    let text = "\n\n\nconst S: &str = \"CREATE OR REPLACE TRIGGER t BEFORE INSERT ON s.t\";\n";
+    assert_one_violation_at(NON_TEST, text, 4, "OR REPLACE TRIGGER");
+}
+
+#[test]
+fn locking_ddl_flags_add_column_if_not_exists() {
+    let text = "\nconst S: &str = \"ALTER TABLE x ADD COLUMN IF NOT EXISTS y int\";\n";
+    assert_one_violation_at(NON_TEST, text, 2, "ADD COLUMN");
+}
+
+#[test]
+fn locking_ddl_flags_raw_sql_of_a_ddl_const() {
+    assert_one_violation_at(
+        NON_TEST,
+        "fn a() {}\nsqlx::raw_sql(SCHEMA_DDL).execute(p);\n",
+        2,
+        "raw_sql(SCHEMA_DDL)",
+    );
+}
+
+#[test]
+fn locking_ddl_flags_raw_sql_of_a_borrowed_ddl_const() {
+    assert_one_violation_at(
+        NON_TEST,
+        "\n\nsqlx::raw_sql(&SCHEMA_DDL).execute(p);\n",
+        3,
+        "raw_sql(&SCHEMA_DDL)",
+    );
+}
+
+#[test]
+fn locking_ddl_flags_add_if_not_exists_without_column_keyword() {
+    let text = "\nconst S: &str = \"ALTER TABLE t ADD IF NOT EXISTS c int\";\n";
+    assert_one_violation_at(NON_TEST, text, 2, "ADD IF NOT EXISTS");
+}
+
+#[test]
+fn locking_ddl_flags_raw_sql_of_a_deref_borrowed_ddl_const() {
+    assert_one_violation_at(
+        NON_TEST,
+        "\n\nsqlx::raw_sql(&*SCHEMA_DDL).execute(p);\n",
+        3,
+        "raw_sql(",
+    );
+}
+
+#[test]
+fn locking_ddl_flags_raw_sql_of_a_path_qualified_ddl_const() {
+    assert_one_violation_at(
+        "core/admin/src/store.rs",
+        "\nsqlx::raw_sql(admin::USERS_DDL).execute(p);\n",
+        2,
+        "raw_sql(admin::USERS_DDL)",
+    );
+}
+
+#[test]
+fn locking_ddl_flags_raw_sql_ddl_even_in_a_test_file() {
+    assert_one_violation_at(
+        "modules/x/src/tests.rs",
+        "\nsqlx::raw_sql(SCHEMA_DDL).execute(p);\n",
+        2,
+        "raw_sql(SCHEMA_DDL)",
+    );
+}
+
+#[test]
+fn locking_ddl_passes_converted_ddl_runner_calls() {
+    let text = "Ddl::new(p)\n    .index(\"s.y\", \"CREATE INDEX y ON s.t (a)\")\n    .trigger(\"s.t\", \"t\", \"CREATE TRIGGER t BEFORE INSERT ON s.t\");\n";
+    assert!(locking_ddl_violations(NON_TEST, text).is_empty());
+}
+
+#[test]
+fn locking_ddl_exempts_banned_forms_in_test_files() {
+    let text = "const S: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
+    for rel in [
+        "modules/x/src/tests.rs",
+        "modules/x/tests/foo.rs",
+        "modules/x/src/store_tests.rs",
+    ] {
+        assert!(locking_ddl_violations(rel, text).is_empty(), "{rel}");
+    }
+    // The exemption is for the banned forms only; the same file is still red for raw_sql.
+    assert!(!locking_ddl_violations(
+        "modules/x/tests/foo.rs",
+        "raw_sql(SCHEMA_DDL);"
+    )
+    .is_empty());
+}
+
+#[test]
+fn locking_ddl_ignores_out_of_scope_paths() {
+    let text = "CREATE INDEX IF NOT EXISTS y; raw_sql(SCHEMA_DDL); ADD COLUMN z";
+    assert!(locking_ddl_violations("api/x/api/src/lib.rs", text).is_empty());
+    assert!(locking_ddl_violations("docs/x.rs", text).is_empty());
+}
+
+#[test]
+fn locking_ddl_ignores_excluded_paths() {
+    let text = "CREATE INDEX IF NOT EXISTS y; CREATE OR REPLACE TRIGGER t; ADD COLUMN z";
+    let rel = "core/asyncevents/src/store.rs";
+    assert!(locking_ddl_excluded(rel));
+    assert!(locking_ddl_violations(rel, text).is_empty());
+    assert!(!locking_ddl_excluded("core/asyncevents/src/store.rs.bak"));
+    // The runner and the plane's lib.rs are NOT excused: they are scanned like any source.
+    assert!(!locking_ddl_excluded("core/lifecycle/src/ddl.rs"));
+    assert!(!locking_ddl_excluded("core/asyncevents/src/lib.rs"));
+    assert!(!locking_ddl_violations("core/lifecycle/src/ddl.rs", text).is_empty());
+}
+
+#[test]
+fn locking_ddl_raw_sql_matches_only_ddl_consts_at_a_call_boundary() {
+    assert!(locking_ddl_violations(NON_TEST, "sqlx::raw_sql(other).execute(p);").is_empty());
+    assert!(locking_ddl_violations(NON_TEST, "my_raw_sql(X_DDL);").is_empty());
+    // Outside RAW_DDL_SCOPE the call is not this rule's business.
+    assert!(locking_ddl_violations("core/foo/src/lib.rs", "raw_sql(X_DDL);").is_empty());
+}
+
+#[test]
+fn missing_exclusion_names_the_absent_entry() {
+    let root = unique_temp_dir();
+    std::fs::write(root.join("present.rs"), "").unwrap();
+    let v = missing_exclusion_violations(&root, &["present.rs", "gone/file.rs"]);
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].starts_with("gone/file.rs: "), "{v:?}");
+    assert!(missing_exclusion_violations(&root, &["present.rs"]).is_empty());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn real_locking_ddl_exclude_entries_all_exist() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let v = missing_exclusion_violations(&root, &LOCKING_DDL_EXCLUDE);
+    assert!(v.is_empty(), "{v:?}");
 }
