@@ -330,6 +330,46 @@ async fn advisory_lock_wait_is_bounded_and_named() {
         .expect("the run succeeds once the key is free");
 }
 
+/// The run holds [`DDL_LOCK_KEY`] and its `lock_timeout` for the whole step
+/// sequence, not just somewhere in it: guard steps at the first and last
+/// position assert both from inside the run's own backend. A `bigint` advisory
+/// key appears in `pg_locks` as `objsubid = 1` with `classid` the high and
+/// `objid` the low 32 bits.
+#[tokio::test]
+async fn lock_and_lock_timeout_are_held_across_every_step() {
+    let _gate = DDL_KEY_GATE.read().await;
+    let Some(pool) = test_pool().await else {
+        return;
+    };
+    let schema = Schema::fresh(&pool, "guard").await;
+    let s = &schema.name;
+    let guard = leak(format!(
+        "DO $$ BEGIN \
+         IF NOT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' \
+         AND pid = pg_backend_pid() AND granted AND objsubid = 1 \
+         AND ((classid::int8 << 32) | objid::int8) = {DDL_LOCK_KEY}) \
+         THEN RAISE EXCEPTION 'DDL_LOCK_KEY not held'; END IF; \
+         IF current_setting('lock_timeout') <> '7s' \
+         THEN RAISE EXCEPTION 'lock_timeout not set'; END IF; \
+         END $$;"
+    ));
+    let ddl = Ddl::new(&pool)
+        .sql(guard)
+        .sql(leak(format!(
+            "CREATE SCHEMA IF NOT EXISTS {s}; \
+             CREATE TABLE IF NOT EXISTS {s}.t (id bigint PRIMARY KEY, v bigint NOT NULL DEFAULT 0);"
+        )))
+        .index(
+            leak(format!("{s}.t_v_idx")),
+            leak(format!("CREATE INDEX t_v_idx ON {s}.t (v)")),
+        )
+        .sql(guard);
+    bounded(ddl.run_with_lock_timeout("7s")).await.unwrap();
+    assert_eq!(schema.index_count(&pool).await, 1);
+
+    schema.cleanup(&pool).await;
+}
+
 async fn lazy_pool() -> PgPool {
     sqlx::postgres::PgPoolOptions::new()
         .connect_lazy("postgres://unused@localhost/unused")
