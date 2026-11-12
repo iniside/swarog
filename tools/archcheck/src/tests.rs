@@ -9,7 +9,7 @@ use super::{
     is_inline_test_mod, locking_ddl_excluded, locking_ddl_violations, missing_exclusion_violations,
     missing_svc_violations, mod_test_ident_end, module_import_violations,
     Kind, DEMO_HOST, FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE, LOCKING_DDL_EXCLUDE,
-    SVC_EXEMPT_MODULES,
+    grep_locking_ddl, LOCKING_DDL_SCOPE, SVC_EXEMPT_MODULES, WORKSPACE_SRC_DIRS,
 };
 
 #[test]
@@ -1530,7 +1530,7 @@ fn locking_ddl_flags_raw_sql_of_a_deref_borrowed_ddl_const() {
         NON_TEST,
         "\n\nsqlx::raw_sql(&*SCHEMA_DDL).execute(p);\n",
         3,
-        "raw_sql(",
+        "raw_sql(&*SCHEMA_DDL)",
     );
 }
 
@@ -1588,14 +1588,58 @@ fn locking_ddl_ignores_out_of_scope_paths() {
 #[test]
 fn locking_ddl_ignores_excluded_paths() {
     let text = "CREATE INDEX IF NOT EXISTS y; CREATE OR REPLACE TRIGGER t; ADD COLUMN z";
-    let rel = "core/asyncevents/src/store.rs";
+    let rel = "tools/archcheck/src/main.rs";
     assert!(locking_ddl_excluded(rel));
     assert!(locking_ddl_violations(rel, text).is_empty());
-    assert!(!locking_ddl_excluded("core/asyncevents/src/store.rs.bak"));
-    // The runner and the plane's lib.rs are NOT excused: they are scanned like any source.
-    assert!(!locking_ddl_excluded("core/lifecycle/src/ddl.rs"));
-    assert!(!locking_ddl_excluded("core/asyncevents/src/lib.rs"));
-    assert!(!locking_ddl_violations("core/lifecycle/src/ddl.rs", text).is_empty());
+    assert!(!locking_ddl_excluded("tools/archcheck2/src/main.rs"));
+    // The plane template, the runner and the plane's lib.rs are scanned like any source.
+    for rel in [
+        "core/asyncevents/src/store.rs",
+        "core/lifecycle/src/ddl.rs",
+        "core/asyncevents/src/lib.rs",
+    ] {
+        assert!(!locking_ddl_excluded(rel), "{rel}");
+        assert!(!locking_ddl_violations(rel, text).is_empty(), "{rel}");
+    }
+}
+
+#[test]
+fn locking_ddl_flags_the_escape_sequence_whitespace_branch() {
+    // A literal backslash + `n` inside a Rust string counts as whitespace.
+    let text = "const S: &str = \"CREATE INDEX\\nIF NOT EXISTS y\";";
+    assert_one_violation_at(NON_TEST, text, 1, "INDEX IF NOT EXISTS");
+}
+
+#[test]
+fn locking_ddl_scope_dirs_are_all_walked() {
+    for p in LOCKING_DDL_SCOPE {
+        let dir = p.trim_end_matches('/');
+        assert!(WORKSPACE_SRC_DIRS.contains(&dir), "{dir} is scoped but never walked");
+    }
+}
+
+#[test]
+fn grep_locking_ddl_walks_scope_and_reports_the_expected_files() {
+    let root = unique_temp_dir();
+    let put = |rel: &str, body: &str| {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    };
+    std::fs::create_dir_all(root.join("tools/archcheck")).unwrap();
+    let banned = "const S: &str = \"CREATE INDEX IF NOT EXISTS y ON s.t (a)\";\n";
+    put("modules/x/src/lib.rs", banned);
+    put("demos/x/src/lib.rs", banned);
+    put("modules/x/src/tests.rs", "sqlx::raw_sql(SCHEMA_DDL);\n");
+    put("api/x/src/lib.rs", banned);
+    put("tools/archcheck/src/main.rs", banned);
+
+    let found = grep_locking_ddl(&root);
+    assert_eq!(found.len(), 3, "{found:?}");
+    for rel in ["modules/x/src/lib.rs", "demos/x/src/lib.rs", "modules/x/src/tests.rs"] {
+        assert!(found.iter().any(|f| f.starts_with(&format!("{rel}:1: "))), "{rel}: {found:?}");
+    }
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
