@@ -31,7 +31,7 @@ usually breaks a modular monolith once you have more than three modules
 | Event descriptors | `api/characters/events/src/lib.rs:42-48` (`define("character.created"/".deleted", 1, HistoryPolicy::MinRetention{days:7})`) |
 | `requires()` names capabilities only | `modules/characters/src/lib.rs:111-113` (`config`, a real sync dep — infra is never declared) |
 | `register`: provide under EVERY key a consumer uses | `modules/characters/src/lib.rs:119-138` (offers the one `Service` under BOTH `characters.ownership` and `characters.player` in phase 1, no I/O) |
-| `migrate`: own schema only | `modules/characters/src/lib.rs:52-61` (SCHEMA_DDL, plain `player_id` id column, no cross-module FK) + `:141-147` |
+| `migrate`: own schema only, through `lifecycle::Ddl` | `modules/characters/src/lib.rs:46-60` (SCHEMA_DDL, plain `player_id` id column, no cross-module FK) + `:140-158` (`sql` for tables, `index(...)` without `IF NOT EXISTS`, `run()`). Copy the `Ddl` shape, do NOT write `CREATE INDEX IF NOT EXISTS`, `ALTER TABLE` or `raw_sql` DDL: archcheck rule 22 rejects them |
 | `init`: wire only, contribute unconditionally | `modules/characters/src/lib.rs:154-208` — player ops to the opsapi slots `:167-171`, local admin `Item` `:177-190`, edge faces to `EDGE_SLOT` `:197-206` (topology-blind: `app::run` applies them iff this process serves an edge) |
 
 ### The atomic pattern every later module copies

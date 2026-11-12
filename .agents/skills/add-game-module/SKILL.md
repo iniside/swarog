@@ -50,8 +50,12 @@ capability or projection).
 
 `lifecycle::Module`: `name`, `requires` (domain capabilities from modules/
 ONLY — never infra/DB/HTTP), `register` (provide capabilities, no I/O), `init`
-(wiring only, no I/O), `migrate` (own schema, idempotent DDL —
-`CREATE … IF NOT EXISTS`; no data migrations, wipe is the strategy),
+(wiring only, no I/O), `migrate` (own schema; all DDL through
+`lifecycle::Ddl` — `sql` for schema/tables/functions/seeds, `index(...)` and
+`trigger(...)` with plain `CREATE INDEX` / `CREATE TRIGGER`, never raw
+`CREATE INDEX IF NOT EXISTS`, `CREATE OR REPLACE TRIGGER`, `ALTER TABLE` or
+`raw_sql`; archcheck rule 22 enforces it; no data migrations, wipe is the
+strategy; test helpers build schemas through the module's `migrate`),
 `start`/`stop`. In `init`:
 
 - contribute ops to `opsapi` slots, edge face to `edge::EDGE_SLOT`, admin item

@@ -167,7 +167,11 @@ never a silent last-writer-wins overwrite.
 
 1. `modules/<name>/`: implement `lifecycle::Module` (`name`, `requires`, `init`; +
    `register` if it provides a capability, `migrate` if it persists, `start`/`stop`
-   for background work). Tests in `src/tests.rs`.
+   for background work). Tests in `src/tests.rs`. `migrate` runs its DDL through
+   `lifecycle::Ddl` (`sql` for schema/tables/functions/seeds, `index(...)` and
+   `trigger(...)` with plain `CREATE`, no `IF NOT EXISTS`/`OR REPLACE`; never raw
+   `ALTER TABLE` or `raw_sql`); archcheck rule 22 enforces it. Test helpers build
+   the schema through the module's own `migrate`.
 2. Contracts in `api/<name>/`: `<name>events` (if it publishes), `<name>api` with
    `#[rpc]` traits (if it exposes sync capability — `#[http(...)]` for player-facing
    ops, plain for wire-only), `<name>rpc` containing the one-line
@@ -709,8 +713,9 @@ pre-production with no persistent users yet: when a schema or event-contract
 change would need a data migration, DROP the affected schemas (or the whole DB)
 and boot fresh — do NOT build bridges, dual-writes, backfills, or versioned
 data-migration machinery (the event-log rollout deliberately deleted exactly that
-class of code). Module `migrate` stays idempotent DDL (`CREATE … IF NOT EXISTS`),
-nothing more. If losing dev data hurts, the answer is a **seed script** minting
+class of code). Module `migrate` is create-only DDL through `lifecycle::Ddl`
+(`core/lifecycle/src/ddl.rs`: one bounded transaction, indexes and triggers
+created only when missing), nothing more. If losing dev data hurts, the answer is a **seed script** minting
 fake data (like the `APIKEYS_DEV_SEED` dev-keys upsert), not a migration.
 Revisit only if this ever grows real persistent users.
 
