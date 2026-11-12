@@ -56,10 +56,23 @@ CREATE TABLE IF NOT EXISTS asyncevents.t (id int);
 pub(crate) static WRITER_LOCK_CHOREOGRAPHY: tokio::sync::Mutex<()> =
     tokio::sync::Mutex::const_new(());
 
+/// Keeps every migrate out of the window in which a test holds an uncommitted
+/// change to the `plane_meta` row. Each migrate takes the migrate advisory lock and
+/// then waits on that row in its seed, so a migrate that slips in would hold the
+/// advisory lock while it waits, and a short-`lock_timeout` migrate under test
+/// would fail on the ADVISORY lock instead of the seed. Every crate `test_pool`
+/// helper holds `.read()` only around its migrate call; a test that holds a
+/// `plane_meta` row lock (open UPDATE) takes `.write()` from before that UPDATE
+/// until it ends. Lock order: `WRITER_LOCK_CHOREOGRAPHY` first, then this guard,
+/// and call `test_pool()` BEFORE taking `.write()` (the read would self-deadlock).
+pub(crate) static PLANE_META_MIGRATE_GUARD: tokio::sync::RwLock<()> =
+    tokio::sync::RwLock::const_new(());
+
 /// The plane's V2 schema on top of the shared pool. Guards run only in their dedicated
 /// test — a guard failure mid-suite must not silently skip unrelated tests.
 async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
+    let _migrate = PLANE_META_MIGRATE_GUARD.read().await;
     ensure_schema(&pool)
         .await
         .expect("migrate the asyncevents V2 schema");
@@ -368,11 +381,13 @@ async fn history_contract_seeds_and_is_idempotent() {
 /// the mismatch is never visible to concurrently running suites; the healthy
 /// path is asserted on the same pool first.
 /// Takes WRITER_LOCK_CHOREOGRAPHY: its uncommitted `plane_meta` UPDATE would make
-/// the short-`lock_timeout` migrates in the tests below 55P03 on the seed.
+/// the short-`lock_timeout` migrates in the tests below 55P03 on the seed; it
+/// also takes PLANE_META_MIGRATE_GUARD for write, which keeps the unguarded ones out.
 #[tokio::test]
 async fn identity_mismatch_guard_fails_startup() {
     let _choreo = WRITER_LOCK_CHOREOGRAPHY.lock().await;
     let Some(pool) = test_pool().await else { return };
+    let _no_migrates = PLANE_META_MIGRATE_GUARD.write().await;
 
     startup_guards(&pool).await.expect("guards must pass on a healthy DB");
 
@@ -477,11 +492,13 @@ async fn migrate_lock_timeout_fails_fast_without_poisoning_pool() {
 /// and that wait must fail fast with the plane_meta label, never hang unbounded,
 /// and leave the single pooled connection usable. A hang-guard bounds the call so
 /// a regression fails the test instead of wedging it. Takes
-/// WRITER_LOCK_CHOREOGRAPHY: it holds a `plane_meta` row lock across awaits.
+/// WRITER_LOCK_CHOREOGRAPHY and PLANE_META_MIGRATE_GUARD (write): it holds a
+/// `plane_meta` row lock across awaits.
 #[tokio::test]
 async fn plane_meta_seed_wait_is_bounded_by_lock_timeout() {
     let _choreo = WRITER_LOCK_CHOREOGRAPHY.lock().await;
     let Some(pool) = test_pool().await else { return };
+    let _no_migrates = PLANE_META_MIGRATE_GUARD.write().await;
 
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
     let small_pool = sqlx::postgres::PgPoolOptions::new()
@@ -515,7 +532,11 @@ async fn plane_meta_seed_wait_is_bounded_by_lock_timeout() {
         .expect("the plane_meta seed wait was not bounded by lock_timeout (hang-guard fired)")
         .expect_err("a held plane_meta row must fail the seed, not succeed");
     let msg = format!("{err:#}");
-    assert!(msg.contains("plane_meta"), "error must name plane_meta: {msg}");
+    assert!(msg.contains("plane_meta seed waited"), "error must carry the seed label: {msg}");
+    assert!(
+        !msg.contains("plane lock (relation or catalog row)"),
+        "the seed must not fall through to the generic relation label: {msg}"
+    );
     assert!(msg.contains("pg_blocking_pids"), "error must name the remedial: {msg}");
     assert!(
         !msg.contains("V2 plane advisory lock"),
@@ -665,9 +686,10 @@ fn lock_timeout_message_names_a_relation_wait_for_append_event_not_the_advisory_
 #[test]
 fn lock_timeout_message_names_plane_meta_for_the_seed_not_the_advisory_lock() {
     let msg = lock_timeout_message(PLANE_META_SEED_SQL, "60s");
-    assert!(msg.contains("plane_meta"), "{msg}");
+    assert!(msg.contains("plane_meta seed waited"), "{msg}");
     assert!(msg.contains("60s"), "{msg}");
     assert!(!msg.contains("V2 plane advisory lock"), "{msg}");
+    assert!(!msg.contains("plane lock (relation or catalog row)"), "{msg}");
 }
 
 #[test]

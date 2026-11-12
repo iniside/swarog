@@ -8,6 +8,7 @@ use std::time::Duration;
 
 async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
+    let _migrate = crate::store::store_tests::PLANE_META_MIGRATE_GUARD.read().await;
     crate::Plane::new(pool.clone(), testdb::dsn())
         .unwrap()
         .migrate()

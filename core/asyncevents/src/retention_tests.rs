@@ -101,6 +101,7 @@ fn housekeep_config_is_strict_checked_and_authoritative() {
 
 async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
+    let _migrate = crate::store::store_tests::PLANE_META_MIGRATE_GUARD.read().await;
     crate::Plane::new(pool.clone(), testdb::dsn())
         .unwrap()
         .migrate()

@@ -13,6 +13,7 @@ const DEFAULT_DSN: &str =
 /// The plane's schema (V2 + legacy drop) on top of the shared pool.
 async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
+    let _migrate = crate::store::store_tests::PLANE_META_MIGRATE_GUARD.read().await;
     Plane::new(pool.clone(), testdb::dsn())
         .unwrap()
         .migrate()
