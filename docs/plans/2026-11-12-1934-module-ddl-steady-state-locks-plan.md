@@ -170,7 +170,8 @@ Commit `test(archcheck): pin the boot-time locking DDL rule (module-ddl-steady-s
 
 ### Step 7 — remove the deadlock workarounds `[test-author]`
 (a) `modules/config/src/tests.rs` `ASYNCEVENTS_READY` and `modules/characters/src/tests.rs`
-`SCHEMA_READY` `OnceCell`s and the rating retry (`modules/rating/src/tests.rs:13-17`): their
+`SCHEMA_READY` `OnceCell`s, the `core/admin/src/tests.rs` `SCHEMA_READY` `OnceCell` (~173-195;
+erratum 2026-11-12: found during Step 3, its comment blames idempotent DDL deadlocks), and the rating retry (`modules/rating/src/tests.rs:13-17`): their
 causes (locking idempotent DDL; unguarded first-creation race) are removed by the plane fix
 and Steps 1-5 (`Ddl`'s own xact lock). Replace with plain per-test migrate. Prove on a
 FRESH schema, not only the warm DB: before the runs, the orchestrator-approved recipe is to
