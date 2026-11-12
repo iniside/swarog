@@ -29,7 +29,7 @@ use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-use crate::client::raw_from_bytes;
+use crate::client::{raw_from_bytes, DIAL_DEADLINE};
 use crate::frame::{read_frame_max, write_frame};
 use crate::server::{err_response, ok_response, run_caught, HandlerResult, RunningServer, ShutdownState};
 use crate::tls::{client_bind_addr, PlayerTlsConfig, TrustAnchor};
@@ -629,10 +629,12 @@ impl PlayerClient {
             .map_err(|e| Error::Tls(format!("quic player client config: {e}")))?;
         let mut endpoint = quinn::Endpoint::client(client_bind_addr(addr)).map_err(Error::Io)?;
         endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(qcc)));
-        let conn = endpoint
+        let connecting = endpoint
             .connect(addr, server_name)
-            .map_err(|e| Error::Connect(e.to_string()))?
+            .map_err(|e| Error::Connect(e.to_string()))?;
+        let conn = tokio::time::timeout(DIAL_DEADLINE, connecting)
             .await
+            .map_err(|_| Error::Connect(format!("player dial to {addr} timed out after {DIAL_DEADLINE:?}")))?
             .map_err(|e| Error::Connection(e.to_string()))?;
         Ok(PlayerClient { _endpoint: endpoint, conn })
     }
