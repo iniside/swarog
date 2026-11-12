@@ -1,5 +1,5 @@
 //! The real monolith binary under `TLS_MODE=files`. Previously-wrong branch: before
-//! `cmd/server` passed `TlsFront::from_values` into `Config::with_tls`, the monolith
+//! `cmd/server` passed `TlsFronts::from_values` into `Config::with_tls`, the monolith
 //! ignored `TLS_MODE` and served plain HTTP — with `.with_tls(tls)` removed, the HTTPS
 //! poll below never succeeds and the test fails there (no HTTPS answer).
 //!

@@ -28,6 +28,8 @@ services:
       - TLS_MODE
       - TLS_CERT_PATH
       - TLS_KEY_PATH
+      - PLAYER_TLS_CERT_PATH
+      - PLAYER_TLS_KEY_PATH
       - ACME_DOMAINS
       - ACME_CONTACT
       - TRUSTED_PROXY_CIDRS

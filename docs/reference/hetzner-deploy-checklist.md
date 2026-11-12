@@ -75,6 +75,6 @@ Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
 - Player QUIC (:9100) is rate-limited both per validated source IP across
   reconnects and per persistent connection. Stateless Retry happens before a
   connection slot is reserved.
-- TLS environment parsing is `app::TlsFront::from_values`, called by both public
+- TLS environment parsing is `app::TlsFronts::from_values`, called by both public
   front mains (`cmd/gateway-svc` and `cmd/server`). Domain services remain
   internal mTLS peers.

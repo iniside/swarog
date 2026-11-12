@@ -37,7 +37,10 @@ pub use server::{
     ForwardHandler, Handler, HandlerResult, IdentityHandler, InvalidRequestBody, RunningServer,
     Server,
 };
-pub use tls::{dev_ca_from_env, shared_dev_ca, DevCA, PlayerTlsConfig, TrustAnchor, ALPN, PLAYER_ALPN};
+pub use tls::{
+    dev_ca_from_env, pem_cert_resolver, shared_dev_ca, DevCA, PlayerTlsConfig, TrustAnchor, ALPN,
+    PLAYER_ALPN,
+};
 pub use wire::{Response, ResponseCode};
 
 /// Errors from the edge transport.

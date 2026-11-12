@@ -274,12 +274,33 @@ impl DevCA {
     }
 }
 
+/// Loads a PEM certificate chain (leaf first) and a PEM private key as a static
+/// certificate — the one PEM loader for every TLS front of a process. Errors name the
+/// offending path.
+pub fn pem_cert_resolver(cert_path: &Path, key_path: &Path) -> Result<Arc<dyn ResolvesServerCert>, Error> {
+    let cert_pem =
+        std::fs::read(cert_path).map_err(|e| Error::Tls(format!("read TLS cert {cert_path:?}: {e}")))?;
+    let key_pem =
+        std::fs::read(key_path).map_err(|e| Error::Tls(format!("read TLS key {key_path:?}: {e}")))?;
+    let chain = CertificateDer::pem_slice_iter(&cert_pem)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| Error::Tls(format!("parse TLS cert {cert_path:?}: {e}")))?;
+    if chain.is_empty() {
+        return Err(Error::Tls(format!("TLS cert {cert_path:?} has no PEM CERTIFICATE")));
+    }
+    let key = PrivateKeyDer::from_pem_slice(&key_pem)
+        .map_err(|e| Error::Tls(format!("parse TLS key {key_path:?}: {e}")))?;
+    let provider = rustls::crypto::ring::default_provider();
+    let certified = CertifiedKey::from_der(chain, key, &provider)
+        .map_err(|e| Error::Tls(format!("TLS key {key_path:?} for cert {cert_path:?}: {e}")))?;
+    Ok(Arc::new(SingleCertAndKey::from(certified)))
+}
+
 /// The player plane's server TLS config: TLS 1.3 only, ALPN [`PLAYER_ALPN`], no
 /// client certificate, early data off. The certificate comes from any
-/// [`ResolvesServerCert`] ([`PlayerTlsConfig::new`], e.g. a resolver that swaps in
-/// renewed certificates), a static chain from PEM files
-/// ([`PlayerTlsConfig::from_pem_files`]), or a dev CA leaf
-/// ([`DevCA::server_tls_public`]).
+/// [`ResolvesServerCert`] ([`PlayerTlsConfig::new`]): a resolver that swaps in
+/// renewed certificates, a static chain from PEM files ([`pem_cert_resolver`]), or a
+/// dev CA leaf ([`DevCA::server_tls_public`]).
 #[derive(Clone)]
 pub struct PlayerTlsConfig {
     config: Arc<ServerConfig>,
@@ -289,28 +310,6 @@ impl PlayerTlsConfig {
     /// Builds the player config around `certs` with the ring crypto provider.
     pub fn new(certs: Arc<dyn ResolvesServerCert>) -> Result<PlayerTlsConfig, Error> {
         Self::with_provider(certs, Arc::new(rustls::crypto::ring::default_provider()))
-    }
-
-    /// Loads a PEM certificate chain (leaf first) and a PEM private key and serves
-    /// them as a static certificate. Errors name the offending path.
-    pub fn from_pem_files(cert_path: &Path, key_path: &Path) -> Result<PlayerTlsConfig, Error> {
-        let cert_pem = std::fs::read(cert_path)
-            .map_err(|e| Error::Tls(format!("read player TLS cert {cert_path:?}: {e}")))?;
-        let key_pem = std::fs::read(key_path)
-            .map_err(|e| Error::Tls(format!("read player TLS key {key_path:?}: {e}")))?;
-        let chain = CertificateDer::pem_slice_iter(&cert_pem)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| Error::Tls(format!("parse player TLS cert {cert_path:?}: {e}")))?;
-        if chain.is_empty() {
-            return Err(Error::Tls(format!("player TLS cert {cert_path:?} has no PEM CERTIFICATE")));
-        }
-        let key = PrivateKeyDer::from_pem_slice(&key_pem)
-            .map_err(|e| Error::Tls(format!("parse player TLS key {key_path:?}: {e}")))?;
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let certified = CertifiedKey::from_der(chain, key, &provider).map_err(|e| {
-            Error::Tls(format!("player TLS key {key_path:?} for cert {cert_path:?}: {e}"))
-        })?;
-        Self::with_provider(Arc::new(SingleCertAndKey::from(certified)), provider)
     }
 
     fn with_provider(

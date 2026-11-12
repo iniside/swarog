@@ -1015,18 +1015,18 @@ fn normalize_addr_passes_host_port_through_and_prefixes_bare_port() {
 #[test]
 fn with_tls_sets_the_front_and_default_is_off() {
     let cfg = Config::from_values(None, None, None, None, None, None, None, None, None, None);
-    assert_eq!(cfg.tls, None, "TLS is opt-in; every existing process stays plain");
+    assert_eq!(cfg.tls, TlsFronts::default(), "TLS is opt-in; every existing process stays plain");
 
     let front = TlsFront::Files {
         cert: std::path::PathBuf::from("c.pem"),
         key: std::path::PathBuf::from("k.pem"),
     };
-    let cfg = cfg.without_db().with_tls(Some(front.clone()));
-    assert_eq!(cfg.tls, Some(front));
+    let cfg = cfg.without_db().with_tls(TlsFronts { https: Some(front.clone()), player_files: None });
+    assert_eq!(cfg.tls.https, Some(front));
     // The other builder opt-outs survive alongside it.
     assert_eq!(cfg.database_url, None);
     // And with_tls(None) is an explicit off.
-    assert_eq!(cfg.with_tls(None).tls, None);
+    assert_eq!(cfg.with_tls(TlsFronts::default()).tls, TlsFronts::default());
 }
 
 /// Mints a self-signed localhost cert (SANs: localhost + 127.0.0.1) and writes the
@@ -1089,9 +1089,11 @@ async fn serve_https_files_serves_router_and_drains_on_signal() {
 
     let router = axum::Router::new().route("/hello", get(|| async { "tls ok" }));
     let (sig_tx, sig_rx) = tokio::sync::watch::channel(false);
+    let (front, _) = resolve_https_tls(Some(&TlsFront::Files { cert, key })).unwrap();
+    let front = front.expect("files mode resolves an HTTPS front");
     let server = tokio::spawn(async move {
         serve_https(
-            TlsFront::Files { cert, key },
+            front,
             &bind,
             router,
             std::time::Duration::from_secs(2),
@@ -1132,7 +1134,7 @@ async fn run_with_tls_files_serves_https() {
     let mut cfg =
         Config::from_values(None, None, None, None, None, None, None, None, None, None).without_db();
     cfg.listen_addr = format!("127.0.0.1:{port}");
-    let cfg = cfg.with_tls(Some(TlsFront::Files { cert, key }));
+    let cfg = cfg.with_tls(TlsFronts { https: Some(TlsFront::Files { cert, key }), player_files: None });
 
     tokio::select! {
         res = run(cfg, Vec::new(), None, None) => panic!("server exited early: {res:?}"),

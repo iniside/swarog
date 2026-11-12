@@ -34,6 +34,8 @@ tower-http = { version = "0.6", features = ["timeout"] }
 # Cargo.toml note; `futures` for the ACME state driver stream.
 axum-server = { workspace = true }
 rustls-acme = { workspace = true }
+# Builds the HTTPS rustls config around the certificate the player front shares.
+rustls = { workspace = true }
 futures = { workspace = true }
 sqlx = { workspace = true }
 anyhow = { workspace = true }
@@ -51,7 +53,6 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 # ring — same provider stack) trusts it and round-trips through the real TLS branch.
 rcgen = { workspace = true }
 reqwest = { workspace = true }
-rustls = { workspace = true }
 # The Step 9a WebSocket-upgrade proof needs a real client speaking RFC 6455 against a
 # bound listener (`oneshot` carries no `hyper::upgrade::OnUpgrade`, so no upgrade can
 # happen off-socket). Same 0.24 line axum's `ws` feature already locks, default

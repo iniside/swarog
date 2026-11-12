@@ -18,6 +18,7 @@ use anyhow::Context as _;
 use axum::http::StatusCode;
 use axum::routing::get;
 use lifecycle::{App, Context, Module};
+use rustls::server::ResolvesServerCert;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
@@ -119,9 +120,53 @@ fn snapshot_readiness_checks(ctx: &Context) -> Vec<httpmw::ReadyCheck> {
     ctx.contributions(httpmw::READINESS_SLOT)
 }
 
-/// How the HTTP front terminates TLS. Every public front main (`cmd/server`,
-/// `cmd/gateway-svc`) reads the env, parses it via [`TlsFront::from_values`] and
-/// hands the result to [`Config::with_tls`]; modules see nothing.
+/// The certificate settings of a process's public fronts (HTTPS and player QUIC).
+/// Every public front main (`cmd/server`, `cmd/gateway-svc`) reads the env, parses it
+/// via [`TlsFronts::from_values`] and hands the result to [`Config::with_tls`]; modules
+/// see nothing. [`run`] resolves the player certificate source from it once at boot.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct TlsFronts {
+    /// How the HTTP front terminates TLS; `None` = plain HTTP.
+    pub https: Option<TlsFront>,
+    /// The player QUIC front's own PEM cert chain + key (`PLAYER_TLS_CERT_PATH`,
+    /// `PLAYER_TLS_KEY_PATH`), for a deployment whose HTTPS terminates elsewhere.
+    /// `None` = the player front follows `https`.
+    pub player_files: Option<PemFiles>,
+}
+
+/// A PEM certificate chain file (leaf first) and its private key file.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PemFiles {
+    pub cert: std::path::PathBuf,
+    pub key: std::path::PathBuf,
+}
+
+impl TlsFronts {
+    /// Parses both fronts from env-shaped values; unset and blank read the same.
+    /// `TLS_MODE` and its keys select the HTTPS front (`off` | `files` | `acme`, see
+    /// [`TlsFront`]); `PLAYER_TLS_CERT_PATH` and `PLAYER_TLS_KEY_PATH` are both set or
+    /// both unset, one alone is an error naming the missing key.
+    pub fn from_values(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<TlsFronts> {
+        let https = TlsFront::from_values(&get)?;
+        let non_blank = |key: &str| get(key).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let player_files = match (non_blank("PLAYER_TLS_CERT_PATH"), non_blank("PLAYER_TLS_KEY_PATH")) {
+            (Some(cert), Some(key)) => Some(PemFiles {
+                cert: std::path::PathBuf::from(cert),
+                key: std::path::PathBuf::from(key),
+            }),
+            (None, None) => None,
+            (Some(_), None) => anyhow::bail!(
+                "PLAYER_TLS_CERT_PATH is set but PLAYER_TLS_KEY_PATH is not (set both or neither)"
+            ),
+            (None, Some(_)) => anyhow::bail!(
+                "PLAYER_TLS_KEY_PATH is set but PLAYER_TLS_CERT_PATH is not (set both or neither)"
+            ),
+        };
+        Ok(TlsFronts { https, player_files })
+    }
+}
+
+/// How the HTTP front terminates TLS — the `https` half of [`TlsFronts`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum TlsFront {
     /// Serve HTTPS from an operator-provided PEM cert chain + private key.
@@ -154,7 +199,7 @@ impl TlsFront {
     /// - `files`: `TLS_CERT_PATH` + `TLS_KEY_PATH` both required (PEM paths).
     /// - `acme`: `ACME_DOMAINS` required (comma-separated, at least one non-blank),
     ///   `ACME_CONTACT` optional, `ACME_CACHE_DIR` optional (default `run/acme-cache`).
-    pub fn from_values(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Option<TlsFront>> {
+    fn from_values(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Option<TlsFront>> {
         let non_blank = |key: &str| get(key).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
         let mode = non_blank("TLS_MODE").unwrap_or_else(|| "off".to_string());
         match mode.to_ascii_lowercase().as_str() {
@@ -246,12 +291,13 @@ pub struct Config {
     /// `0` → `None`), overridable by [`Config::with_request_timeout_default`]. A
     /// process/topology knob read HERE, never by a module.
     pub http_request_timeout: Option<std::time::Duration>,
-    /// TLS termination for the HTTP front. `None` (the [`Config::from_env`] default)
-    /// serves plain HTTP exactly as before; `Some` switches the serve path to
-    /// axum-server over rustls ([`TlsFront::Files`]) or rustls-acme
-    /// ([`TlsFront::Acme`]). Set ONLY via [`Config::with_tls`] by a public front main
-    /// that parsed its env with [`TlsFront::from_values`] — never read from env here.
-    pub tls: Option<TlsFront>,
+    /// Certificates of the public fronts. `https: None` (the [`Config::from_env`]
+    /// default) serves plain HTTP; `Some` switches the serve path to axum-server over
+    /// rustls ([`TlsFront::Files`]) or rustls-acme ([`TlsFront::Acme`]). The player
+    /// QUIC front's certificate is resolved from the same value in [`run`]. Set ONLY
+    /// via [`Config::with_tls`] by a public front main that parsed its env with
+    /// [`TlsFronts::from_values`] — never read from env here.
+    pub tls: TlsFronts,
     /// Global cap on concurrent player-QUIC connections (`PLAYER_MAX_CONNS`, default
     /// [`DEFAULT_PLAYER_MAX_CONNS`]) — threaded to the player edge before it listens.
     /// `0` disables the cap (opt-out). Only used when a player server is passed to
@@ -356,10 +402,11 @@ impl Config {
         }
     }
 
-    /// Sets how the HTTP front terminates TLS — `None` leaves the plain-HTTP path
-    /// untouched. Called by every public front main with the result of
-    /// [`TlsFront::from_values`]; `core/app` itself never reads TLS env vars.
-    pub fn with_tls(self, tls: Option<TlsFront>) -> Config {
+    /// Sets the certificates of the public fronts — the default leaves the plain-HTTP
+    /// path untouched and the player front on the dev CA. Called by every public front
+    /// main with the result of [`TlsFronts::from_values`]; `core/app` itself never
+    /// reads TLS env vars.
+    pub fn with_tls(self, tls: TlsFronts) -> Config {
         Config { tls, ..self }
     }
 
@@ -444,7 +491,7 @@ impl Config {
             http_drain_grace: std::time::Duration::from_millis(http_drain_grace_ms),
             module_stop_grace: std::time::Duration::from_millis(module_stop_grace_ms),
             http_request_timeout,
-            tls: None,
+            tls: TlsFronts::default(),
             player_max_conns,
             player_max_conns_per_ip,
             player_rate_limit_rps: DEFAULT_PLAYER_RATE_LIMIT_RPS,
@@ -738,13 +785,14 @@ fn apply_http_layers(ctx: &Context, mut router: axum::Router) -> axum::Router {
 ///    a cold replica-local cache. This is the OPPOSITE order from teardown (step 10
 ///    below halts the durable plane before the invalidation plane) — do not "fix"
 ///    one order to match the other; they are deliberately asymmetric.
-/// 7. if `edge_server` is `Some`, bind the internal mutual-TLS QUIC listener, and if
-///    `player_server` is `Some`, bind the player-facing server-cert-only QUIC listener
-///    — both AFTER build (so every handler a module registered during init exists),
-///    sharing the same dev CA,
+/// 7. if `edge_server` is `Some`, bind the internal mutual-TLS QUIC listener on the
+///    shared dev CA, and if `player_server` is `Some`, bind the player-facing
+///    server-cert-only QUIC listener with the certificate resolved at boot (its own
+///    PEM files, else the HTTPS front's files or ACME resolver, else a dev CA leaf) —
+///    both AFTER build (so every handler a module registered during init exists),
 /// 8. serve HTTP (the router the modules merged into the [`Context`], plus
 ///    `/healthz`/`/readyz`) on `cfg.listen_addr` — `/readyz` pings the DB only when a
-///    pool exists, else answers a plain 200; when [`Config::with_tls`] set a
+///    pool exists, else answers a plain 200; when [`Config::with_tls`] set an HTTPS
 ///    [`TlsFront`], the same router is served over rustls instead ([`serve_https`]),
 ///
 /// 9. block until SIGINT (Ctrl-C — cross-platform),
@@ -994,7 +1042,10 @@ pub async fn run(
         }
         None => None,
     };
-    let mut player_built: Option<edge::PlayerServer> = match &player_server {
+    // Certificate sources are decided here, once, before anything starts: a bad PEM file
+    // fails boot with nothing to tear down, and the one ACME state serves both fronts.
+    let (mut https_tls, https_certs) = resolve_https_tls(cfg.tls.https.as_ref())?;
+    let mut player_built: Option<(edge::PlayerServer, edge::PlayerTlsConfig)> = match &player_server {
         Some(shared) => {
             // The gateway registered its dispatch handler onto this shared handle
             // during Build; `mem::take` hands us the fully-wired server. The limit
@@ -1007,7 +1058,8 @@ pub async fn run(
                     cfg.player_conn_rate_limit_rps,
                     cfg.player_conn_rate_limit_burst,
                 );
-            Some(player)
+            let tls = resolve_player_tls(cfg.tls.player_files.as_ref(), https_certs)?;
+            Some((player, tls))
         }
         None => None,
     };
@@ -1080,17 +1132,14 @@ pub async fn run(
 
         // 7b. Bind the player-facing QUIC front (first I/O), same lifecycle as the
         //     internal edge: the fully-wired `PlayerServer` (dispatch handler + conn/
-        //     request limits) was built pre-start above; only the socket bind happens
-        //     here. Server-cert-only TLS (no client cert) off the SAME dev CA —
-        //     `server_tls_public` derives from it — so external players can handshake;
-        //     per-call auth is the front's job.
+        //     request limits) and its certificate were resolved pre-start above; only
+        //     the socket bind happens here. Server-cert-only TLS (no client cert), so
+        //     external players can handshake; per-call auth is the front's job.
         running_player = match player_built.take() {
-            Some(player) => {
-                let ca = edge::shared_dev_ca().context("edge ca")?;
+            Some((player, tls)) => {
                 let player_bind: SocketAddr = to_bind_addr(&cfg.player_edge_addr)
                     .parse()
                     .with_context(|| format!("parse player edge addr {:?}", cfg.player_edge_addr))?;
-                let tls = ca.server_tls_public().context("player edge tls")?;
                 let running = player.listen(player_bind, tls).context("player edge listen")?;
                 tracing::info!(addr = %running.local_addr(), "player edge listening (server-cert-only TLS)");
                 Some(running)
@@ -1193,7 +1242,7 @@ pub async fn run(
         // branch below, so the teardown choreography after this block is identical.
         // `None` (every process except the public front door) falls through to the
         // plain-HTTP path, served by [`serve_http`] with the same contract.
-        if let Some(front) = cfg.tls.clone() {
+        if let Some(front) = https_tls.take() {
             let (sig_tx, sig_rx) = tokio::sync::watch::channel(false);
             tokio::spawn(async move {
                 shutdown_signal().await;
@@ -1392,13 +1441,13 @@ async fn serve_http(
 /// the drain is time-bounded exactly like [`serve_http`]'s drain task, and the
 /// ordered teardown that follows in [`run`] starts on time either way.
 ///
-/// Crypto-provider note: both TLS arms build rustls configs through the process
-/// default provider. The workspace compiles rustls with ONLY the `ring` provider
-/// feature (single-provider auto-detection covers us), and every public front main
+/// Crypto-provider note: the HTTPS rustls configs are built through the process default
+/// provider. The workspace compiles rustls with ONLY the `ring` provider feature
+/// (single-provider auto-detection covers us), and every public front main
 /// (`cmd/server`, `cmd/gateway-svc`) additionally pins it via
 /// `rustls::crypto::ring::default_provider().install_default()` — never aws-lc-rs.
 async fn serve_https(
-    front: TlsFront,
+    front: HttpsTls,
     bind: &str,
     router: axum::Router,
     drain_grace: std::time::Duration,
@@ -1421,10 +1470,7 @@ async fn serve_https(
 
     let make = router.into_make_service_with_connect_info::<SocketAddr>();
     match front {
-        TlsFront::Files { cert, key } => {
-            let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(&cert, &key)
-                .await
-                .with_context(|| format!("load TLS cert {cert:?} / key {key:?}"))?;
+        HttpsTls::Files { config, cert } => {
             tracing::info!(addr = %bind, cert = ?cert, "listening (https, cert/key files)");
             axum_server::bind_rustls(addr, config)
                 .handle(handle)
@@ -1432,23 +1478,15 @@ async fn serve_https(
                 .await
                 .context("https serve")?;
         }
-        TlsFront::Acme {
+        HttpsTls::Acme {
+            acceptor,
+            mut state,
             domains,
             cache_dir,
-            contact,
         } => {
-            // TLS-ALPN-01 against Let's Encrypt production: the challenge is answered
-            // inline on this listener via the acceptor's cert resolver — no :80
-            // listener, no extra route. Account key + issued certs persist in
-            // `cache_dir` so restarts don't re-issue (rate limits).
-            let mut state = rustls_acme::AcmeConfig::new(domains.clone())
-                .contact(contact.iter().map(|c| normalize_mailto(c)))
-                .cache(rustls_acme::caches::DirCache::new(cache_dir.clone()))
-                .directory_lets_encrypt(true)
-                .state();
-            let acceptor = state.axum_acceptor(state.default_rustls_config());
-            // The state driver: polling this stream IS the ACME machinery (order,
-            // validate, renew). Logged via tracing; aborted once serving ends.
+            // Spawned with the listener and aborted with it: TLS-ALPN-01 is answered by
+            // this listener's acceptor (rustls-acme 0.15.3 src/acceptor.rs:72), so an
+            // order placed before it serves would fail validation.
             let driver = tokio::spawn(async move {
                 use futures::StreamExt as _;
                 loop {
@@ -1474,6 +1512,90 @@ async fn serve_https(
         }
     }
     Ok(())
+}
+
+/// The HTTPS front's certificate, resolved at boot by [`resolve_https_tls`] and served
+/// by [`serve_https`].
+enum HttpsTls {
+    Files {
+        config: axum_server::tls_rustls::RustlsConfig,
+        cert: std::path::PathBuf,
+    },
+    /// The process's one ACME state: `acceptor` and the player front read its resolver,
+    /// and `state` is driven by [`serve_https`].
+    Acme {
+        acceptor: rustls_acme::axum::AxumAcceptor,
+        state: rustls_acme::AcmeState<std::io::Error>,
+        domains: Vec<String>,
+        cache_dir: std::path::PathBuf,
+    },
+}
+
+/// Resolves the HTTPS front, returning it with the certificate resolver the player
+/// front falls back to. PEM files go through the same loader as the player front's,
+/// with the ALPN list axum-server's own PEM loader sets (`h2`, `http/1.1`).
+fn resolve_https_tls(
+    front: Option<&TlsFront>,
+) -> anyhow::Result<(Option<HttpsTls>, Option<Arc<dyn ResolvesServerCert>>)> {
+    match front {
+        None => Ok((None, None)),
+        Some(TlsFront::Files { cert, key }) => {
+            let certs = edge::pem_cert_resolver(cert, key).context("https front certificate")?;
+            let mut config = rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_cert_resolver(certs.clone());
+            config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            let https = HttpsTls::Files {
+                config: axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(config)),
+                cert: cert.clone(),
+            };
+            Ok((Some(https), Some(certs)))
+        }
+        Some(TlsFront::Acme {
+            domains,
+            cache_dir,
+            contact,
+        }) => {
+            let state = rustls_acme::AcmeConfig::new(domains.clone())
+                .contact(contact.iter().map(|c| normalize_mailto(c)))
+                .cache(rustls_acme::caches::DirCache::new(cache_dir.clone()))
+                .directory_lets_encrypt(true)
+                .state();
+            let acceptor = state.axum_acceptor(state.default_rustls_config());
+            let certs: Arc<dyn ResolvesServerCert> = state.resolver();
+            let https = HttpsTls::Acme {
+                acceptor,
+                state,
+                domains: domains.clone(),
+                cache_dir: cache_dir.clone(),
+            };
+            Ok((Some(https), Some(certs)))
+        }
+    }
+}
+
+/// Resolves the player QUIC front's certificate: its own PEM files, else the HTTPS
+/// front's certificate (`https_certs`), else a dev CA leaf. A bad file is an error,
+/// never a fallback.
+fn resolve_player_tls(
+    player_files: Option<&PemFiles>,
+    https_certs: Option<Arc<dyn ResolvesServerCert>>,
+) -> anyhow::Result<edge::PlayerTlsConfig> {
+    let certs = match (player_files, https_certs) {
+        (Some(files), _) => {
+            edge::pem_cert_resolver(&files.cert, &files.key).context("player front certificate")?
+        }
+        (None, Some(certs)) => certs,
+        (None, None) => {
+            tracing::warn!(
+                "TLS_MODE=off and no PLAYER_TLS_CERT_PATH/PLAYER_TLS_KEY_PATH: the player QUIC \
+                 front serves a dev certificate that only clients trusting the dev CA accept"
+            );
+            let ca = edge::shared_dev_ca().context("edge ca")?;
+            return ca.server_tls_public().context("player edge tls");
+        }
+    };
+    edge::PlayerTlsConfig::new(certs).context("player edge tls")
 }
 
 /// Builds the `/readyz` response: the baseline DB ping (when a pool exists) plus every

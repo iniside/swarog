@@ -1,15 +1,15 @@
-//! Unit tests for `TlsFront::from_values` — pure values in/out through a map-backed
+//! Unit tests for `TlsFronts::from_values` — pure values in/out through a map-backed
 //! getter, no process-global env mutation.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::TlsFront;
+use crate::{TlsFront, TlsFronts};
 
 fn parse(vars: &[(&str, &str)]) -> anyhow::Result<Option<TlsFront>> {
     let map: HashMap<String, String> =
         vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-    TlsFront::from_values(|k| map.get(k).cloned())
+    TlsFronts::from_values(|k| map.get(k).cloned()).map(|fronts| fronts.https)
 }
 
 #[test]

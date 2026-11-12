@@ -64,8 +64,8 @@ async fn main() -> anyhow::Result<()> {
     // workspace's only provider. `install_default` errs only if one is already set.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // Every public front main parses TLS via `TlsFront::from_values` and pins ring above.
-    let tls = app::TlsFront::from_values(|k| std::env::var(k).ok())?;
+    // Every public front main parses TLS via `TlsFronts::from_values` and pins ring above.
+    let tls = app::TlsFronts::from_values(|k| std::env::var(k).ok())?;
 
     // One shared player-facing QUIC server for this process; `Gateway::with_player_edge`
     // installs the front's dispatch handler onto it during `init`, and `app::run`
