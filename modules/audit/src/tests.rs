@@ -16,7 +16,10 @@ const DEFAULT_DSN: &str =
 
 async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
-    ddl(&pool).run().await.expect("migrate audit schema");
+    Audit::new()
+        .migrate(&Context::with_db(pool.clone()))
+        .await
+        .expect("migrate audit schema");
     Some(pool)
 }
 

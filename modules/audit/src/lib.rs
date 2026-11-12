@@ -112,14 +112,6 @@ CREATE TABLE IF NOT EXISTS audit.log (
 	event_id text
 );"#;
 
-/// The audit schema and its `at` index; shared by `migrate` and the test pool.
-pub(crate) fn ddl(pool: &sqlx::PgPool) -> Ddl {
-    Ddl::new(pool).sql(SCHEMA_DDL).index(
-        "audit.log_at_idx",
-        "CREATE INDEX log_at_idx ON audit.log(at)",
-    )
-}
-
 // ============================================================================
 // Durable handlers — invoked by messaging inside its per-(event_id,"audit")
 // delivery tx, so the ledger effect commits atomically with the checkpoint.
@@ -247,7 +239,14 @@ impl Module for Audit {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("audit requires a DB pool"))?;
-        ddl(pool).run().await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .index(
+                "audit.log_at_idx",
+                "CREATE INDEX log_at_idx ON audit.log(at)",
+            )
+            .run()
+            .await?;
         Ok(())
     }
 

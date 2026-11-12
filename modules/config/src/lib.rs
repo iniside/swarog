@@ -127,13 +127,6 @@ CREATE TRIGGER settings_notify
 	AFTER INSERT OR UPDATE OR DELETE ON config.settings
 	FOR EACH ROW EXECUTE FUNCTION config.notify_changed();"#;
 
-/// The config schema and its write trigger; shared by `migrate` and the test pool.
-pub(crate) fn ddl(pool: &PgPool) -> Ddl {
-    Ddl::new(pool)
-        .sql(SCHEMA_DDL)
-        .trigger("config.settings", "settings_notify", SETTINGS_NOTIFY_TRIGGER)
-}
-
 /// Seeds `config.changed`'s row in `asyncevents.history_contracts` — the retention
 /// GC's per-`(topic, version)` policy source — by calling the plane-owned
 /// `asyncevents.ensure_history_contract` function (never the plane's tables directly).
@@ -509,7 +502,11 @@ impl Module for Config {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("config requires a DB pool"))?;
-        ddl(pool).run().await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .trigger("config.settings", "settings_notify", SETTINGS_NOTIFY_TRIGGER)
+            .run()
+            .await?;
         seed_history_contract(pool).await?;
         Ok(())
     }
