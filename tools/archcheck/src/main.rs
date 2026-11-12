@@ -771,16 +771,20 @@ fn main() {
     violations.extend(rpc_contract_model::contract_only_violations(&root));
 
     // --- 22: boot-time DDL never locks an existing table ------------------------
-    // Every `LOCKING_DDL_FORMS` entry locks the table and contradicts the wipe policy;
-    // the create-if-missing forms also lock when the object exists, queueing live writers
-    // behind every boot. `lifecycle::Ddl` probes first and bounds the wait. Module-DDL
-    // owners keep CREATE text in `*_DDL` items or `Ddl::index`/`trigger` arguments, pass
-    // `*_DDL` only to `Ddl::sql`/`index`/`trigger`, and never use `raw_sql` outside tests.
+    // Non-test source under core/, modules/, cmd/, tools/ and demos/ (not api/) may not
+    // hold a `LOCKING_DDL_FORMS` phrase: the create-if-missing forms lock the table even
+    // when the object exists (`lifecycle::Ddl` probes first instead), the ALTER/DROP/
+    // TRUNCATE forms lock it and contradict the wipe policy, and LOCK takes a table lock
+    // the Ddl advisory lock makes unnecessary. Module-DDL owners keep CREATE text in
+    // `*_DDL` items or `Ddl::index`/`trigger` arguments, pass `*_DDL` only to
+    // `Ddl::sql`/`index`/`trigger`, and never use `raw_sql` outside tests. A textual
+    // tripwire, not a SQL parser: it matches literal phrases and calls by method name
+    // (receiver unchecked), so text assembled by format!/concat! is not seen.
     violations.extend(missing_scope_violations(&root));
     violations.extend(grep_locking_ddl(&root));
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no table-locking DDL (INDEX [CONCURRENTLY] IF NOT EXISTS / OR REPLACE TRIGGER|RULE|VIEW / ADD COLUMN / ADD IF NOT EXISTS / ALTER TABLE|INDEX / DROP TRIGGER|INDEX|POLICY|RULE / TRUNCATE|LOCK <schema>.<table>) in non-test source, in non-test modules/ + core/admin/ + tools/adminctl/ source no raw_sql, no *_DDL outside a .sql(/.index(/.trigger( argument, and no CREATE TABLE|TEMP TABLE|TEMPORARY TABLE|UNLOGGED TABLE|INDEX|UNIQUE INDEX|TRIGGER|SCHEMA|FUNCTION|OR REPLACE FUNCTION|VIEW|MATERIALIZED VIEW|TYPE|SEQUENCE|EXTENSION text outside comments, a *_DDL item or an .index(/.trigger( argument, no raw_sql(*_DDL) in their tests");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, in non-test core/ + modules/ + cmd/ + tools/ + demos/ source no table-locking DDL (INDEX [CONCURRENTLY] IF NOT EXISTS / OR REPLACE TRIGGER|RULE|VIEW / ADD COLUMN / ADD IF NOT EXISTS / ALTER TABLE|INDEX / DROP TRIGGER|INDEX|POLICY|RULE / TRUNCATE|LOCK <schema>.<table>), in non-test modules/ + core/admin/ + tools/adminctl/ source no raw_sql, no *_DDL outside a .sql(/.index(/.trigger( argument, and no CREATE TABLE|TEMP TABLE|TEMPORARY TABLE|UNLOGGED TABLE|INDEX|UNIQUE INDEX|TRIGGER|SCHEMA|FUNCTION|OR REPLACE FUNCTION|VIEW|MATERIALIZED VIEW|TYPE|SEQUENCE|EXTENSION text outside comments, a *_DDL item or an .index(/.trigger( argument, no raw_sql(*_DDL) in their tests");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -1712,17 +1716,43 @@ fn qualified_target_follows(rest: &str) -> bool {
         && bytes.get(schema + 1).is_some_and(|&b| is_ident_byte(b))
 }
 
-/// Byte ranges of every `//` and `/* */` comment in `text`, found by
-/// [`skip_literal_or_comment`] so comment markers inside string literals do not count.
-fn comment_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+/// Byte ranges of every `//` and `/* */` comment in `text` — plus every string/char
+/// literal when `literals` — found by [`skip_literal_or_comment`], so comment markers
+/// inside a string literal do not count.
+fn lexed_spans(text: &str, literals: bool) -> Vec<std::ops::Range<usize>> {
     let b = text.as_bytes();
     let mut spans = Vec::new();
     let mut i = 0;
     while i < b.len() {
         if let Some(end) = skip_literal_or_comment(text, i) {
-            if b[i] == b'/' {
+            if literals || b[i] == b'/' {
                 spans.push(i..end);
             }
+            i = end;
+            continue;
+        }
+        i += text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    spans
+}
+
+fn comment_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    lexed_spans(text, false)
+}
+
+/// Byte ranges of every `use` item in `text` (through its closing `;`).
+fn use_item_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let b = text.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if let Some(end) = skip_literal_or_comment(text, i) {
+            i = end;
+            continue;
+        }
+        if (i == 0 || !is_ident_byte(b[i - 1])) && text[i..].starts_with("use ") {
+            let end = end_at_depth_zero(text, i, b';');
+            spans.push(i..end);
             i = end;
             continue;
         }
@@ -1902,13 +1932,15 @@ fn stray_ddl_text(text: &str) -> Vec<(usize, &'static str)> {
 }
 
 /// Every `*_DDL` identifier in `text` that escapes the runner: `(byte offset, path as
-/// written)`. Not escapes: comments, anything inside a `*_DDL` item or a `.sql(` /
-/// `.index(` / `.trigger(` argument list, and a direct `raw_sql(` argument (reported by
-/// [`raw_sql_ddl_args`]).
+/// written)`. Not escapes: comments and string/char literals (a mention, not a use), a
+/// `use` item (the imported name is checked where it is used), anything inside a `*_DDL`
+/// item or a `.sql(` / `.index(` / `.trigger(` argument list, and a direct `raw_sql(`
+/// argument (reported by [`raw_sql_ddl_args`]).
 fn ddl_ident_escapes(text: &str) -> Vec<(usize, String)> {
     let bytes = text.as_bytes();
     let mut spans = ddl_spans(text, &["sql", "index", "trigger"]);
-    spans.extend(comment_spans(text));
+    spans.extend(lexed_spans(text, true));
+    spans.extend(use_item_spans(text));
     let mut out = Vec::new();
     for at in find_all(text, "_DDL") {
         let end = at + "_DDL".len();
