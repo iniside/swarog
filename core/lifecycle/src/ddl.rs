@@ -7,8 +7,8 @@ use crate::app::MODULE_MIGRATE_LOCK_TIMEOUT;
 /// one shared DB, so probe→create and parallel first creation never race. It
 /// differs from `MODULE_MIGRATE_LOCK_KEY` because `App::migrate` holds that one
 /// as a SESSION lock on a separate connection while module `migrate`s run: the
-/// same key here would wait on its own process forever. ASCII `"lifeddl!"` as a
-/// positive i64.
+/// same key here would always fail with `55P03` once the `lock_timeout` expires.
+/// ASCII `"lifeddl!"` as a positive i64.
 pub(crate) const DDL_LOCK_KEY: i64 = 0x6C69_6665_6464_6C21;
 
 /// Step label a `55P03` on the advisory-lock acquisition carries.
@@ -22,8 +22,8 @@ const SQL_EXCERPT_CHARS: usize = 120;
 /// `lock_timeout` and [`DDL_LOCK_KEY`].
 ///
 /// [`Ddl::index`] and [`Ddl::trigger`] probe the catalog and create only what is
-/// missing, so a steady-state run (every object present) takes no lock on module
-/// tables. They never alter an existing object: a changed index or trigger
+/// missing, so with the object present they take no lock on module tables.
+/// They never alter an existing object: a changed index or trigger
 /// definition follows the wipe policy (`.agents/shared/core-rules.md`
 /// **No Dual-Write, No Topology Branch, Wipe**). Every lock wait in the run —
 /// including an `INSERT … ON CONFLICT DO NOTHING` seed waiting on an in-flight
@@ -101,9 +101,9 @@ impl Ddl {
         }
     }
 
-    /// Idempotent statements that take no lock on an existing object:
-    /// `CREATE SCHEMA/TABLE IF NOT EXISTS`, `CREATE OR REPLACE FUNCTION`,
-    /// `ON CONFLICT DO NOTHING` seeds. Multi-statement text is allowed.
+    /// Idempotent statements: `CREATE SCHEMA/TABLE IF NOT EXISTS`,
+    /// `CREATE OR REPLACE FUNCTION`, `ON CONFLICT DO NOTHING` seeds.
+    /// Multi-statement text is allowed.
     pub fn sql(mut self, sql: &'static str) -> Self {
         self.steps.push(Step::Sql(sql));
         self
