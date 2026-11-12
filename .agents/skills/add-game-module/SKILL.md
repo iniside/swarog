@@ -55,10 +55,10 @@ ONLY — never infra/DB/HTTP), `register` (provide capabilities, no I/O), `init`
 `trigger(...)` with plain `CREATE INDEX` / `CREATE TRIGGER`, never raw
 `CREATE INDEX IF NOT EXISTS`, `CREATE OR REPLACE TRIGGER`, `ALTER TABLE` or
 `raw_sql`; DDL text lives in `*_DDL` consts (trigger SQL too, e.g.
-`SETTINGS_NOTIFY_TRIGGER_DDL`) or `index(...)`/`trigger(...)` args; archcheck
-rule 22 bans the locking forms and `raw_sql` in module code, and rejects `CREATE`
-text outside those places or a `*_DDL` reaching anything but
-`Ddl::sql`/`index`/`trigger`; no data migrations, wipe is the strategy; test helpers build schemas through the module's `migrate`),
+`SETTINGS_NOTIFY_TRIGGER_DDL`) or `index(...)`/`trigger(...)` args, and a
+`*_DDL` reaches only `Ddl::sql`/`index`/`trigger`; archcheck rule 22 is a textual
+tripwire that catches the common violations (see its banner in
+`tools/archcheck/src/main.rs`); no data migrations, wipe is the strategy; test helpers build schemas through the module's `migrate`),
 `start`/`stop`. In `init`:
 
 - contribute ops to `opsapi` slots, edge face to `edge::EDGE_SLOT`, admin item

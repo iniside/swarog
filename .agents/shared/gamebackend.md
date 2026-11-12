@@ -172,11 +172,10 @@ never a silent last-writer-wins overwrite.
    `trigger(...)` with plain `CREATE`, no `IF NOT EXISTS`/`OR REPLACE`; never raw
    `ALTER TABLE` or `raw_sql`). DDL text lives in a `*_DDL` const (trigger SQL
    included, e.g. config's `SETTINGS_NOTIFY_TRIGGER_DDL`) or in the `index(...)`/
-   `trigger(...)` argument. Archcheck rule 22 enforces this by intent: it bans the
-   table-locking and wipe-contradicting DDL forms, `raw_sql` in module code, `CREATE`
-   text outside those places, and a `*_DDL` const reaching anything but
-   `Ddl::sql`/`index`/`trigger`. Test helpers build the schema through the module's
-   own `migrate`.
+   `trigger(...)` argument, and every `*_DDL` reaches only `Ddl::sql`/`index`/
+   `trigger`. Archcheck rule 22 is a textual tripwire that catches the common
+   violations of this convention (see its banner in `tools/archcheck/src/main.rs`).
+   Test helpers build the schema through the module's own `migrate`.
 2. Contracts in `api/<name>/`: `<name>events` (if it publishes), `<name>api` with
    `#[rpc]` traits (if it exposes sync capability — `#[http(...)]` for player-facing
    ops, plain for wire-only), `<name>rpc` containing the one-line
