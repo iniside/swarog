@@ -54,8 +54,9 @@ ONLY — never infra/DB/HTTP), `register` (provide capabilities, no I/O), `init`
 `lifecycle::Ddl` — `sql` for schema/tables/functions/seeds, `index(...)` and
 `trigger(...)` with plain `CREATE INDEX` / `CREATE TRIGGER`, never raw
 `CREATE INDEX IF NOT EXISTS`, `CREATE OR REPLACE TRIGGER`, `ALTER TABLE` or
-`raw_sql`; archcheck rule 22 enforces it; no data migrations, wipe is the
-strategy; test helpers build schemas through the module's `migrate`),
+`raw_sql`; archcheck rule 22 rejects the table-locking forms, `raw_sql` in
+module code and a `*_DDL` const passed anywhere but `Ddl::sql`; no data
+migrations, wipe is the strategy; test helpers build schemas through the module's `migrate`),
 `start`/`stop`. In `init`:
 
 - contribute ops to `opsapi` slots, edge face to `edge::EDGE_SLOT`, admin item

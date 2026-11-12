@@ -8,8 +8,8 @@ use crate::Context;
 ///     `init`, so every service exists by the time inits run.
 ///   - `init` (phase 2) — only WIRE UP: subscribe to the bus, mount routes,
 ///     `require` services, contribute admin items. No I/O, no background work.
-///   - `migrate` — create/upgrade this module's OWN schema, idempotent
-///     (`CREATE ... IF NOT EXISTS`).
+///   - `migrate` — creates this module's OWN schema through
+///     [`crate::Ddl`], create-only.
 ///   - `start` — background work (tickers, workers), after every module's `init`,
 ///     in registration order.
 ///   - `stop` — release resources, in REVERSE registration order. Don't emit

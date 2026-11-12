@@ -77,7 +77,7 @@ edge-backed client under the SAME registry key the local impl would, so
 | 503 / 404 / 403 distinction at the consumer seam | `modules/inventory/src/service.rs:73-82` (transport `Err` → 503 unavailable, `Ok(None)` → 404, owned-by-other → 403) |
 | Durable consumer: effect + checkpoint in ONE `on_tx` tx | `modules/inventory/src/lib.rs:231-259` (two INDEPENDENT subs, ids `inventory.character-created.v1` / `.character-deleted.v1`, `StartPosition::Genesis`) |
 | Atomic effect bodies on the handed delivery conn | `modules/inventory/src/projection.rs:103-155` (`grant_starter`), `:165-179` (`wipe_character`, tombstone-before-delete) |
-| Reordering guard across independent subs | tombstone check/skip `modules/inventory/src/projection.rs:104-116`, plant-before-delete `:166-178`, per-character advisory xact lock `lock_character` `:56-62`, namespaced FNV key `lock_key` `:33-52` |
+| Reordering guard across independent subs | tombstone check/skip `modules/inventory/src/projection.rs:104-116`, plant-before-delete `:166-178`, per-character advisory xact lock `lock_character` `:56-62`, namespaced FNV key `lock_key` `:33-48` |
 | Unit-test a consumer against a FAKE of the trait | `modules/inventory/src/tests.rs:12-26` (`FakeOwnership`), the 503/404/403 mapping test drives it (no real producer needed) |
 
 The subscription id is a durable CONTRACT and the `StartPosition` has no default

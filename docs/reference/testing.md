@@ -28,16 +28,20 @@ database. Everything else has an owner:
   `unique` in `retention_tests.rs`) and asserts only on those, never on global
   counts.
 - When a test needs something global, serialize it with a named guard instead of
-  relying on timing. Both live in `core/asyncevents/src/` and their doc comments are
+  relying on timing. These live in `core/asyncevents/src/` and their doc comments are
   the contract:
   - `GLOBAL_SWEEP` (`retention_tests.rs`): tests that sweep database-wide take
     `.write()`, tests that depend on their fixtures surviving take `.read()`.
   - `WRITER_LOCK_CHOREOGRAPHY` (`store_tests.rs`): taken by any test that holds an
     uncommitted write across an await on another connection or takes a conflicting
     lock on `asyncevents.events`. Lock order: `GLOBAL_SWEEP` first.
+  - `PLANE_META_MIGRATE_GUARD` (`store_tests.rs`): tests that migrate take `.read()`;
+    tests that hold a conflicting lock on the plane metadata take `.write()`.
 - A test builds its schema through the module's own `migrate` (`Context::with_db`),
   once per test; module DDL is create-only and takes its own advisory lock
-  (`lifecycle::Ddl`), so there is no "migrate once" cache.
+  (`lifecycle::Ddl`), so there is no "migrate once" cache. Where a crate has a migrate
+  guard, its test migrate helper takes `.read()` around the migrate (asyncevents
+  `PLANE_META_MIGRATE_GUARD`; accounts `GHOST_PLAYER`).
 - Tests in one crate that plant or sweep `purged_players` rows share one crate-level
   `DB_LOCK`: the sweep is a whole-table `FOR UPDATE SKIP LOCKED` batch, so it skips rows
   a sibling's open sweep holds (`modules/friends/src/tests.rs`,

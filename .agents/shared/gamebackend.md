@@ -170,8 +170,9 @@ never a silent last-writer-wins overwrite.
    for background work). Tests in `src/tests.rs`. `migrate` runs its DDL through
    `lifecycle::Ddl` (`sql` for schema/tables/functions/seeds, `index(...)` and
    `trigger(...)` with plain `CREATE`, no `IF NOT EXISTS`/`OR REPLACE`; never raw
-   `ALTER TABLE` or `raw_sql`); archcheck rule 22 enforces it. Test helpers build
-   the schema through the module's own `migrate`.
+   `ALTER TABLE` or `raw_sql`). Archcheck rule 22 rejects the table-locking forms,
+   `raw_sql` in module code, and a `*_DDL` const passed anywhere but `Ddl::sql`.
+   Test helpers build the schema through the module's own `migrate`.
 2. Contracts in `api/<name>/`: `<name>events` (if it publishes), `<name>api` with
    `#[rpc]` traits (if it exposes sync capability — `#[http(...)]` for player-facing
    ops, plain for wire-only), `<name>rpc` containing the one-line
@@ -715,8 +716,9 @@ and boot fresh — do NOT build bridges, dual-writes, backfills, or versioned
 data-migration machinery (the event-log rollout deliberately deleted exactly that
 class of code). Module `migrate` is create-only DDL through `lifecycle::Ddl`
 (`core/lifecycle/src/ddl.rs`: one bounded transaction, indexes and triggers
-created only when missing), nothing more. If losing dev data hurts, the answer is a **seed script** minting
-fake data (like the `APIKEYS_DEV_SEED` dev-keys upsert), not a migration.
+created only when missing), nothing more. If losing dev data hurts, the answer
+is a **seed script** minting fake data (like the `APIKEYS_DEV_SEED` dev-keys
+upsert), not a migration.
 Revisit only if this ever grows real persistent users.
 
 ```

@@ -124,8 +124,9 @@ impl App {
     ///
     /// On a DB-backed process the whole module loop runs under a session-level
     /// advisory lock ([`MODULE_MIGRATE_LOCK_KEY`]) so concurrent replica/process
-    /// boots serialize their idempotent DDL instead of racing it (catalog-lock
-    /// deadlocks / "tuple concurrently updated"). A DB-less process has no DDL to
+    /// boots serialize their module `migrate`s (which run their DDL through
+    /// [`crate::Ddl`]) instead of racing them (catalog-lock deadlocks / "tuple
+    /// concurrently updated"). A DB-less process has no DDL to
     /// run and loops unlocked.
     pub async fn migrate(&self) -> anyhow::Result<()> {
         self.migrate_with_lock_timeout(MODULE_MIGRATE_LOCK_TIMEOUT)
