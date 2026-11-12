@@ -646,8 +646,7 @@ impl Module for Scheduler {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("scheduler requires a DB pool"))?;
-        let schema_ddl: &'static str = &SCHEMA_DDL;
-        Ddl::new(pool).sql(schema_ddl).run().await?;
+        Ddl::new(pool).sql(&SCHEMA_DDL).run().await?;
         Ok(())
     }
 

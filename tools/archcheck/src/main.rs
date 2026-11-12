@@ -153,44 +153,104 @@ const BAN_SELF_EXCLUDE: &str = "tools/archcheck";
 /// Rule 22 scope: the workspace dirs whose non-test source may hold boot-time DDL.
 const LOCKING_DDL_SCOPE: [&str; 5] = ["core/", "modules/", "cmd/", "tools/", "demos/"];
 
-/// Rule 22: DDL forms (uppercase, single-spaced) that lock an EXISTING table on every
-/// boot, each with the lock it takes.
-const LOCKING_DDL_FORMS: [(&str, &str); 7] = [
-    ("INDEX IF NOT EXISTS", "takes SHARE on the table even when the index exists"),
-    (
-        "OR REPLACE TRIGGER",
-        "takes SHARE ROW EXCLUSIVE on the table even when the trigger exists",
+/// One rule-22 banned form: `phrase` (uppercase, single-spaced, matched as whole words)
+/// and the violation text naming its lock and its remedy. `qualified_target` forms match
+/// only when a schema-qualified name follows (after optional `TABLE`/`ONLY`), so the
+/// Rust `.truncate(` and English prose do not trip them.
+struct LockingForm {
+    phrase: &'static str,
+    qualified_target: bool,
+    why: &'static str,
+}
+
+const fn form(phrase: &'static str, why: &'static str) -> LockingForm {
+    LockingForm { phrase, qualified_target: false, why }
+}
+
+/// Rule 22: DDL that locks an existing table, or contradicts the wipe policy, in boot code.
+const LOCKING_DDL_FORMS: [LockingForm; 15] = [
+    form(
+        "INDEX IF NOT EXISTS",
+        "takes SHARE on the table even when the index exists — use lifecycle::Ddl::index",
     ),
-    (
+    form(
+        "INDEX CONCURRENTLY IF NOT EXISTS",
+        "takes SHARE UPDATE EXCLUSIVE on the table even when the index exists and cannot run \
+         inside the Ddl transaction — use lifecycle::Ddl::index",
+    ),
+    form(
+        "OR REPLACE TRIGGER",
+        "takes SHARE ROW EXCLUSIVE on the table even when the trigger exists — use \
+         lifecycle::Ddl::trigger",
+    ),
+    form(
         "ADD COLUMN",
-        "takes ACCESS EXCLUSIVE on the table on every boot; declare the column in CREATE \
-         TABLE and wipe (DROP + boot fresh)",
+        "takes ACCESS EXCLUSIVE on the table and contradicts the wipe policy — declare the \
+         column in CREATE TABLE and wipe (DROP + boot fresh)",
     ),
     // `ADD [COLUMN] IF NOT EXISTS` — Postgres makes the COLUMN keyword optional.
-    (
+    form(
         "ADD IF NOT EXISTS",
-        "takes ACCESS EXCLUSIVE on the table on every boot; declare the column in CREATE \
-         TABLE and wipe (DROP + boot fresh)",
+        "takes ACCESS EXCLUSIVE on the table and contradicts the wipe policy — declare the \
+         column in CREATE TABLE and wipe (DROP + boot fresh)",
     ),
-    (
+    form(
         "ALTER TABLE",
-        "locks the table (ACCESS EXCLUSIVE for most subcommands) on every boot; declare the \
-         shape in CREATE TABLE and wipe (DROP + boot fresh)",
+        "locks the table (ACCESS EXCLUSIVE for most subcommands) and contradicts the wipe \
+         policy — declare the shape in CREATE TABLE and wipe (DROP + boot fresh)",
     ),
-    (
+    form(
+        "ALTER INDEX",
+        "locks the index (up to ACCESS EXCLUSIVE by subcommand) and contradicts the wipe \
+         policy — create the index in its final shape and wipe (DROP + boot fresh)",
+    ),
+    form(
         "DROP TRIGGER",
-        "takes ACCESS EXCLUSIVE on the table; a changed trigger follows the wipe policy \
-         (DROP + boot fresh)",
+        "takes ACCESS EXCLUSIVE on the table and contradicts the wipe policy — a changed \
+         trigger is applied by wiping (DROP + boot fresh)",
     ),
-    (
+    form(
         "DROP INDEX",
-        "takes ACCESS EXCLUSIVE on the table; a changed index follows the wipe policy \
-         (DROP + boot fresh)",
+        "takes ACCESS EXCLUSIVE on the table and contradicts the wipe policy — a changed \
+         index is applied by wiping (DROP + boot fresh)",
     ),
+    form(
+        "DROP POLICY",
+        "takes ACCESS EXCLUSIVE on the table and contradicts the wipe policy — a changed \
+         policy is applied by wiping (DROP + boot fresh)",
+    ),
+    form(
+        "DROP RULE",
+        "takes ACCESS EXCLUSIVE on the table and contradicts the wipe policy — a changed \
+         rule is applied by wiping (DROP + boot fresh)",
+    ),
+    form(
+        "OR REPLACE RULE",
+        "takes ACCESS EXCLUSIVE on the table even when the rule is unchanged — create it \
+         in a catalog-probing DO block and apply a change by wiping (DROP + boot fresh)",
+    ),
+    form(
+        "OR REPLACE VIEW",
+        "takes ACCESS EXCLUSIVE on the view even when its definition is unchanged — create \
+         it in a catalog-probing DO block and apply a change by wiping (DROP + boot fresh)",
+    ),
+    LockingForm {
+        phrase: "TRUNCATE",
+        qualified_target: true,
+        why: "takes ACCESS EXCLUSIVE on the table and discards its rows — boot never \
+              deletes data; a wipe is DROP + boot fresh, outside the process",
+    },
+    LockingForm {
+        phrase: "LOCK",
+        qualified_target: true,
+        why: "takes an explicit table lock — lifecycle::Ddl's advisory lock already \
+              serializes migrators",
+    },
 ];
 
-/// Rule 22: the module-DDL owners. Their non-test source may not name `raw_sql` at all
-/// (DDL runs through `lifecycle::Ddl`); their tests may not pass it a `*_DDL` text.
+/// Rule 22: the module-DDL owners. Their non-test source may not name `raw_sql` at all and
+/// may pass a `*_DDL` text only straight to `Ddl::sql`; their tests may not pass a `*_DDL`
+/// text to `raw_sql`.
 const RAW_DDL_SCOPE: [&str; 3] = ["modules/", "core/admin/", "tools/adminctl/"];
 
 /// Rule 22 exclusions (root-relative file or dir prefix). Each must exist, so an entry
@@ -710,15 +770,15 @@ fn main() {
     violations.extend(rpc_contract_model::contract_only_violations(&root));
 
     // --- 22: boot-time DDL never locks an existing table ------------------------
-    // `INDEX IF NOT EXISTS`, `OR REPLACE TRIGGER`, `ADD COLUMN`, `ADD IF NOT EXISTS`,
-    // `ALTER TABLE`, `DROP TRIGGER` and `DROP INDEX` lock the table even when nothing
-    // changes, so every boot would queue live writers behind module DDL; `lifecycle::Ddl`
-    // probes first and bounds the wait. Module-DDL owners may not use `raw_sql` outside
-    // tests, and their tests may not feed it a `*_DDL` text.
+    // Every `LOCKING_DDL_FORMS` entry locks the table and contradicts the wipe policy;
+    // the create-if-missing forms also lock when the object exists, queueing live writers
+    // behind every boot. `lifecycle::Ddl` probes first and bounds the wait. Module-DDL
+    // owners pass `*_DDL` texts only to `Ddl::sql`, never `raw_sql` outside tests.
+    violations.extend(missing_scope_violations(&root));
     violations.extend(grep_locking_ddl(&root));
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no boot-time DDL that locks an existing table (INDEX IF NOT EXISTS / OR REPLACE TRIGGER / ADD COLUMN / ADD IF NOT EXISTS / ALTER TABLE / DROP TRIGGER / DROP INDEX) outside lifecycle::Ddl, no raw_sql in non-test modules/ + core/admin/ + tools/adminctl/ source and no raw_sql(*_DDL) in their tests");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no table-locking DDL (INDEX [CONCURRENTLY] IF NOT EXISTS / OR REPLACE TRIGGER|RULE|VIEW / ADD COLUMN / ADD IF NOT EXISTS / ALTER TABLE|INDEX / DROP TRIGGER|INDEX|POLICY|RULE / TRUNCATE|LOCK <schema>.<table>) in non-test source, no raw_sql and no *_DDL outside Ddl::sql( in non-test modules/ + core/admin/ + tools/adminctl/ source, no raw_sql(*_DDL) in their tests");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -1558,9 +1618,11 @@ fn locking_ddl_excluded(rel: &str) -> bool {
 /// Rule 22 for ONE file (root-relative `rel` + its `text`). Under [`LOCKING_DDL_SCOPE`]:
 /// a [`LOCKING_DDL_FORMS`] phrase as whole words anywhere in NON-TEST source (comments
 /// included, case-insensitive). Under [`RAW_DDL_SCOPE`]: in NON-TEST source any
-/// `raw_sql` token (call, import or alias), and in TEST source a `raw_sql(` whose
-/// argument is a `*_DDL` const/static, so a test helper cannot bypass the module's
-/// `migrate`. Out-of-scope and [`LOCKING_DDL_EXCLUDE`] paths yield none.
+/// `raw_sql` token (call, import or alias) and any `*_DDL` identifier on a code line that
+/// is neither its own `const`/`static` definition nor the direct argument of `.sql(`; in
+/// TEST source only a `raw_sql(` whose argument is a `*_DDL` const/static, so a test
+/// helper cannot bypass the module's `migrate`. Out-of-scope and [`LOCKING_DDL_EXCLUDE`]
+/// paths yield none.
 fn locking_ddl_violations(rel: &str, text: &str) -> Vec<String> {
     if !LOCKING_DDL_SCOPE.iter().any(|p| rel.starts_with(p)) || locking_ddl_excluded(rel) {
         return Vec::new();
@@ -1570,13 +1632,13 @@ fn locking_ddl_violations(rel: &str, text: &str) -> Vec<String> {
     let upper = collapsed.to_ascii_uppercase();
     let mut out = Vec::new();
     // Tests keep raw locking forms as positive controls for the runner.
-    let forms: &[(&str, &str)] = if test { &[] } else { &LOCKING_DDL_FORMS };
-    for (form, why) in forms {
-        for at in find_all_words(&upper, form) {
-            out.push(format!(
-                "{rel}:{}: `{form}` {why} — use lifecycle::Ddl (index/trigger/sql)",
-                lines[at]
-            ));
+    let forms: &[LockingForm] = if test { &[] } else { &LOCKING_DDL_FORMS };
+    for f in forms {
+        for at in find_all_words(&upper, f.phrase) {
+            if f.qualified_target && !qualified_target_follows(&upper[at + f.phrase.len()..]) {
+                continue;
+            }
+            out.push(format!("{rel}:{}: `{}` {}", lines[at], f.phrase, f.why));
         }
     }
     if !RAW_DDL_SCOPE.iter().any(|p| rel.starts_with(p)) {
@@ -1590,18 +1652,76 @@ fn locking_ddl_violations(rel: &str, text: &str) -> Vec<String> {
             lines[*at]
         ));
     }
-    if !test {
-        for at in find_all_words(&collapsed, "raw_sql") {
-            if ddl_args.iter().any(|(ddl_at, _)| *ddl_at == at) {
+    if test {
+        return out;
+    }
+    for at in find_all_words(&collapsed, "raw_sql") {
+        if ddl_args.iter().any(|(ddl_at, _)| *ddl_at == at) {
+            continue;
+        }
+        out.push(format!(
+            "{rel}:{}: `raw_sql` in module-DDL owner code runs SQL outside the bounded, \
+             advisory-locked runner — run DDL through lifecycle::Ddl (index/trigger/sql)",
+            lines[at]
+        ));
+    }
+    let src_lines: Vec<&str> = text.lines().collect();
+    for (at, path) in ddl_ident_escapes(&collapsed) {
+        let line = lines[at];
+        if src_lines.get(line - 1).is_some_and(|l| l.trim_start().starts_with("//")) {
+            continue;
+        }
+        out.push(format!(
+            "{rel}:{line}: `{path}` is used other than as the direct argument of `.sql(` — \
+             module DDL runs only through lifecycle::Ddl; pass the const straight to              `Ddl::sql` (e.g. `.sql(&SCHEMA_DDL)` for a LazyLock)"
+        ));
+    }
+    out
+}
+
+/// True if `rest` (uppercase, collapsed, right after a qualified-target form) starts with
+/// a schema-qualified name `<ident>.<ident>`, after optional `TABLE` and `ONLY` keywords.
+fn qualified_target_follows(rest: &str) -> bool {
+    let mut rest = rest.trim_start();
+    for kw in ["TABLE ", "ONLY "] {
+        rest = rest.strip_prefix(kw).unwrap_or(rest);
+    }
+    let bytes = rest.as_bytes();
+    let schema = bytes.iter().take_while(|&&b| is_ident_byte(b)).count();
+    schema > 0
+        && bytes.get(schema) == Some(&b'.')
+        && bytes.get(schema + 1).is_some_and(|&b| is_ident_byte(b))
+}
+
+/// Every `*_DDL` identifier in collapsed `text` that escapes the runner:
+/// `(byte offset, path as written)`. Not escapes: its `const`/`static` definition, the
+/// direct (optionally `&`/`*`) argument of `.sql(`, and a `raw_sql(` argument (reported
+/// by [`raw_sql_ddl_args`]).
+fn ddl_ident_escapes(text: &str) -> Vec<(usize, String)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    for at in find_all(text, "_DDL") {
+        let end = at + "_DDL".len();
+        if end < bytes.len() && is_ident_byte(bytes[end]) {
+            continue;
+        }
+        let path_start = text[..at]
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+            .map_or(0, |i| i + 1);
+        let before = text[..path_start].trim_end();
+        if before.ends_with("const") || before.ends_with("static") {
+            continue;
+        }
+        let call = before.trim_end_matches(|c| c == '&' || c == '*' || c == ' ');
+        if let Some(callee) = call.strip_suffix('(').map(str::trim_end) {
+            let raw_sql_call = callee.strip_suffix("raw_sql").is_some_and(|head| {
+                head.bytes().next_back().is_none_or(|b| !is_ident_byte(b))
+            });
+            if callee.ends_with(".sql") || raw_sql_call {
                 continue;
             }
-            out.push(format!(
-                "{rel}:{}: `raw_sql` in module-DDL owner code runs SQL outside the bounded, \
-                 advisory-locked runner — use lifecycle::Ddl (index/trigger/sql), or \
-                 sqlx::query for non-DDL",
-                lines[at]
-            ));
         }
+        out.push((path_start, text[path_start..end].to_string()));
     }
     out
 }
@@ -1665,6 +1785,23 @@ fn missing_exclusion_violations(root: &Path, excluded: &[&str]) -> Vec<String> {
             format!(
                 "{p}: listed in LOCKING_DDL_EXCLUDE but does not exist — drop or fix the \
                  entry so the locking-DDL rule (rule 22) cannot excuse a path that is gone"
+            )
+        })
+        .collect()
+}
+
+/// Rule 22's scope self-check: one violation per [`LOCKING_DDL_SCOPE`] or
+/// [`RAW_DDL_SCOPE`] directory missing under `root`, so a rename cannot silently empty
+/// the scan.
+fn missing_scope_violations(root: &Path) -> Vec<String> {
+    LOCKING_DDL_SCOPE
+        .iter()
+        .chain(RAW_DDL_SCOPE.iter())
+        .filter(|p| !root.join(p.trim_end_matches('/')).is_dir())
+        .map(|p| {
+            format!(
+                "{p}: a locking-DDL rule (rule 22) scope directory that does not exist — fix \
+                 the scope entry so the rule does not silently scan nothing"
             )
         })
         .collect()
