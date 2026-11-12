@@ -128,7 +128,7 @@ pub struct UserRow {
 pub async fn ensure_schema(pool: &PgPool) -> Result<()> {
     admin::migrate_users(pool)
         .await
-        .context("adminctl: create schema admin and table admin.users")
+        .context("adminctl: ensure the admin schema and the admin.users table")
 }
 
 /// `create-user`: upsert one admin login. Ensures the schema/table, argon2id-hashes

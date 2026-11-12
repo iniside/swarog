@@ -45,7 +45,7 @@ const DEFAULT_DSN: &str =
 const NOTIFY_CHANNEL: &str = "config_changed";
 
 /// This module's OWN schema, tables, revision seed and trigger function, nothing else —
-/// full logical isolation (#10). Idempotent; [`SETTINGS_NOTIFY_TRIGGER`] attaches the
+/// full logical isolation (#10). Idempotent; [`SETTINGS_NOTIFY_TRIGGER_DDL`] attaches the
 /// function to `config.settings`.
 ///
 /// `config.revision` is a monotonic singleton (one row, `revision` bigint). The
@@ -122,7 +122,7 @@ END;
 $$;"#;
 
 /// The write trigger [`SCHEMA_DDL`] describes.
-const SETTINGS_NOTIFY_TRIGGER: &str = r#"
+const SETTINGS_NOTIFY_TRIGGER_DDL: &str = r#"
 CREATE TRIGGER settings_notify
 	AFTER INSERT OR UPDATE OR DELETE ON config.settings
 	FOR EACH ROW EXECUTE FUNCTION config.notify_changed();"#;
@@ -504,7 +504,7 @@ impl Module for Config {
             .ok_or_else(|| anyhow::anyhow!("config requires a DB pool"))?;
         Ddl::new(pool)
             .sql(SCHEMA_DDL)
-            .trigger("config.settings", "settings_notify", SETTINGS_NOTIFY_TRIGGER)
+            .trigger("config.settings", "settings_notify", SETTINGS_NOTIFY_TRIGGER_DDL)
             .run()
             .await?;
         seed_history_contract(pool).await?;

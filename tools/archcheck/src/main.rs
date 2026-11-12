@@ -248,9 +248,10 @@ const LOCKING_DDL_FORMS: [LockingForm; 15] = [
     },
 ];
 
-/// Rule 22: the module-DDL owners. Their non-test source may not name `raw_sql` at all and
-/// may pass a `*_DDL` text only straight to `Ddl::sql`; their tests may not pass a `*_DDL`
-/// text to `raw_sql`.
+/// Rule 22: the module-DDL owners. Their non-test source may not name `raw_sql` at all,
+/// keeps `CREATE` DDL text only in `*_DDL` consts/statics or `Ddl::index`/`trigger`
+/// arguments, and passes a `*_DDL` only to `Ddl::sql`/`index`/`trigger`; their tests may
+/// not pass a `*_DDL` text to `raw_sql`.
 const RAW_DDL_SCOPE: [&str; 3] = ["modules/", "core/admin/", "tools/adminctl/"];
 
 /// Rule 22 exclusions (root-relative file or dir prefix). Each must exist, so an entry
@@ -773,12 +774,13 @@ fn main() {
     // Every `LOCKING_DDL_FORMS` entry locks the table and contradicts the wipe policy;
     // the create-if-missing forms also lock when the object exists, queueing live writers
     // behind every boot. `lifecycle::Ddl` probes first and bounds the wait. Module-DDL
-    // owners pass `*_DDL` texts only to `Ddl::sql`, never `raw_sql` outside tests.
+    // owners keep CREATE text in `*_DDL` items or `Ddl::index`/`trigger` arguments, pass
+    // `*_DDL` only to `Ddl::sql`/`index`/`trigger`, and never use `raw_sql` outside tests.
     violations.extend(missing_scope_violations(&root));
     violations.extend(grep_locking_ddl(&root));
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no table-locking DDL (INDEX [CONCURRENTLY] IF NOT EXISTS / OR REPLACE TRIGGER|RULE|VIEW / ADD COLUMN / ADD IF NOT EXISTS / ALTER TABLE|INDEX / DROP TRIGGER|INDEX|POLICY|RULE / TRUNCATE|LOCK <schema>.<table>) in non-test source, no raw_sql and no *_DDL outside Ddl::sql( in non-test modules/ + core/admin/ + tools/adminctl/ source, no raw_sql(*_DDL) in their tests");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no table-locking DDL (INDEX [CONCURRENTLY] IF NOT EXISTS / OR REPLACE TRIGGER|RULE|VIEW / ADD COLUMN / ADD IF NOT EXISTS / ALTER TABLE|INDEX / DROP TRIGGER|INDEX|POLICY|RULE / TRUNCATE|LOCK <schema>.<table>) in non-test source, in non-test modules/ + core/admin/ + tools/adminctl/ source no raw_sql, no *_DDL outside a .sql(/.index(/.trigger( argument, and no CREATE TABLE|INDEX|UNIQUE INDEX|TRIGGER|SCHEMA|FUNCTION|OR REPLACE FUNCTION text outside a *_DDL item or an .index(/.trigger( argument, no raw_sql(*_DDL) in their tests");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -1572,19 +1574,26 @@ fn is_test_source(rel: &str) -> bool {
 /// across a multi-line literal reads as one line — plus the 1-based source line of each
 /// output byte.
 fn collapse_ws(text: &str) -> (String, Vec<usize>) {
+    let (out, lines, _) = collapse_ws_mapped(text);
+    (out, lines)
+}
+
+/// [`collapse_ws`] plus the byte offset in `text` of each output byte.
+fn collapse_ws_mapped(text: &str) -> (String, Vec<usize>, Vec<usize>) {
     let mut out = String::with_capacity(text.len());
     let mut lines = Vec::with_capacity(text.len());
+    let mut src = Vec::with_capacity(text.len());
     let mut line = 1;
-    let mut pending_ws = false;
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
+    let mut pending_ws = None;
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
         let ws = if c == '\\' {
             match chars.peek() {
-                Some('n' | 'r' | 't') => {
+                Some((_, 'n' | 'r' | 't')) => {
                     chars.next();
                     true
                 }
-                Some('\n' | '\r') => true,
+                Some((_, '\n' | '\r')) => true,
                 _ => false,
             }
         } else {
@@ -1594,18 +1603,21 @@ fn collapse_ws(text: &str) -> (String, Vec<usize>) {
             if c == '\n' {
                 line += 1;
             }
-            pending_ws = true;
+            pending_ws.get_or_insert(at);
             continue;
         }
-        if pending_ws && !out.is_empty() {
-            out.push(' ');
-            lines.push(line);
+        if let Some(ws_at) = pending_ws.take() {
+            if !out.is_empty() {
+                out.push(' ');
+                lines.push(line);
+                src.push(ws_at);
+            }
         }
-        pending_ws = false;
         out.push(c);
         lines.extend(std::iter::repeat_n(line, c.len_utf8()));
+        src.extend(at..at + c.len_utf8());
     }
-    (out, lines)
+    (out, lines, src)
 }
 
 /// True if `rel` is (or lies under) a [`LOCKING_DDL_EXCLUDE`] entry.
@@ -1618,11 +1630,12 @@ fn locking_ddl_excluded(rel: &str) -> bool {
 /// Rule 22 for ONE file (root-relative `rel` + its `text`). Under [`LOCKING_DDL_SCOPE`]:
 /// a [`LOCKING_DDL_FORMS`] phrase as whole words anywhere in NON-TEST source (comments
 /// included, case-insensitive). Under [`RAW_DDL_SCOPE`]: in NON-TEST source any
-/// `raw_sql` token (call, import or alias) and any `*_DDL` identifier on a code line that
-/// is neither its own `const`/`static` definition nor the direct argument of `.sql(`; in
-/// TEST source only a `raw_sql(` whose argument is a `*_DDL` const/static, so a test
-/// helper cannot bypass the module's `migrate`. Out-of-scope and [`LOCKING_DDL_EXCLUDE`]
-/// paths yield none.
+/// `raw_sql` token (call, import or alias), any `*_DDL` identifier on a code line outside
+/// its own definition and a `.sql(` / `.index(` / `.trigger(` argument, and any
+/// [`DDL_CREATE_PHRASES`] text on a code line outside a `*_DDL` item and an `.index(` /
+/// `.trigger(` argument; in TEST source only a `raw_sql(` whose argument is a `*_DDL`
+/// const/static, so a test helper cannot bypass the module's `migrate`. Out-of-scope
+/// and [`LOCKING_DDL_EXCLUDE`] paths yield none.
 fn locking_ddl_violations(rel: &str, text: &str) -> Vec<String> {
     if !LOCKING_DDL_SCOPE.iter().any(|p| rel.starts_with(p)) || locking_ddl_excluded(rel) {
         return Vec::new();
@@ -1665,15 +1678,21 @@ fn locking_ddl_violations(rel: &str, text: &str) -> Vec<String> {
             lines[at]
         ));
     }
-    let src_lines: Vec<&str> = text.lines().collect();
-    for (at, path) in ddl_ident_escapes(&collapsed) {
-        let line = lines[at];
-        if src_lines.get(line - 1).is_some_and(|l| l.trim_start().starts_with("//")) {
-            continue;
-        }
+    for (at, path) in ddl_ident_escapes(text) {
         out.push(format!(
-            "{rel}:{line}: `{path}` is used other than as the direct argument of `.sql(` — \
-             module DDL runs only through lifecycle::Ddl; pass the const straight to              `Ddl::sql` (e.g. `.sql(&SCHEMA_DDL)` for a LazyLock)"
+            "{rel}:{}: `{path}` is used outside a `.sql(` / `.index(` / `.trigger(` \
+             argument — module DDL runs only through lifecycle::Ddl; pass the const \
+             straight to it (e.g. `.sql(&SCHEMA_DDL)` for a LazyLock)",
+            line_of(text, at)
+        ));
+    }
+    for (at, phrase) in stray_ddl_text(text) {
+        out.push(format!(
+            "{rel}:{}: `{phrase}` text outside a `*_DDL` const/static and outside an \
+             `.index(` / `.trigger(` argument can reach Postgres without lifecycle::Ddl — \
+             move it into a `*_DDL` const passed to `Ddl::sql`, or inline it in \
+             `Ddl::index` / `Ddl::trigger`",
+            line_of(text, at)
         ));
     }
     out
@@ -1693,12 +1712,180 @@ fn qualified_target_follows(rest: &str) -> bool {
         && bytes.get(schema + 1).is_some_and(|&b| is_ident_byte(b))
 }
 
-/// Every `*_DDL` identifier in collapsed `text` that escapes the runner:
-/// `(byte offset, path as written)`. Not escapes: its `const`/`static` definition, the
-/// direct (optionally `&`/`*`) argument of `.sql(`, and a `raw_sql(` argument (reported
-/// by [`raw_sql_ddl_args`]).
+/// True if the source line holding byte offset `at` is a `//` comment line.
+fn on_comment_line(text: &str, at: usize) -> bool {
+    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    text[start..].trim_start().starts_with("//")
+}
+
+/// The 1-based line of byte offset `at` in `text`.
+fn line_of(text: &str, at: usize) -> usize {
+    text.as_bytes()[..at].iter().filter(|&&b| b == b'\n').count() + 1
+}
+
+/// If a comment or a string/char literal starts at byte `i` of `text`, the offset just
+/// past it. A lexer for span-finding only: a lifetime yields `None`, an unterminated
+/// literal runs to the end.
+fn skip_literal_or_comment(text: &str, i: usize) -> Option<usize> {
+    let b = text.as_bytes();
+    let rest = &b[i..];
+    if rest.starts_with(b"//") {
+        return Some(text[i..].find('\n').map_or(b.len(), |n| i + n));
+    }
+    if rest.starts_with(b"/*") {
+        return Some(text[i + 2..].find("*/").map_or(b.len(), |n| i + 2 + n + 2));
+    }
+    let mut q = i;
+    if i == 0 || !is_ident_byte(b[i - 1]) {
+        let mut j = i;
+        if b[j] == b'b' {
+            j += 1;
+        }
+        if b.get(j) == Some(&b'r') {
+            let mut k = j + 1;
+            while b.get(k) == Some(&b'#') {
+                k += 1;
+            }
+            if b.get(k) == Some(&b'"') {
+                let close = format!("\"{}", "#".repeat(k - j - 1));
+                return Some(
+                    text[k + 1..].find(&close).map_or(b.len(), |n| k + 1 + n + close.len()),
+                );
+            }
+        }
+        if b.get(j) == Some(&b'"') {
+            q = j;
+        }
+    }
+    if b[q] == b'"' {
+        let mut k = q + 1;
+        while k < b.len() {
+            match b[k] {
+                b'\\' => k += 2,
+                b'"' => return Some(k + 1),
+                _ => k += 1,
+            }
+        }
+        return Some(b.len());
+    }
+    if b[i] == b'\'' {
+        if b.get(i + 1) == Some(&b'\\') {
+            // An escape is at least two bytes, so `'\''` closes on its third quote.
+            return text.get(i + 3..)?.find('\'').map(|n| i + 3 + n + 1);
+        }
+        let c = text[i + 1..].chars().next()?;
+        let close = i + 1 + c.len_utf8();
+        return (b.get(close) == Some(&b'\'')).then_some(close + 1);
+    }
+    None
+}
+
+/// The offset just past the first `stop` byte at bracket depth 0 at or after `from`,
+/// skipping comments and literals (the end of `text` if there is none).
+fn end_at_depth_zero(text: &str, from: usize, stop: u8) -> usize {
+    let b = text.as_bytes();
+    let mut depth = 0i32;
+    let mut i = from;
+    while i < b.len() {
+        if let Some(end) = skip_literal_or_comment(text, i) {
+            i = end;
+            continue;
+        }
+        match b[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => {}
+        }
+        if depth <= 0 && b[i] == stop {
+            return i + 1;
+        }
+        i += text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    b.len()
+}
+
+/// Byte ranges of `text` allowed to carry module DDL: every `const`/`static` item whose
+/// name ends `_DDL` (through its closing `;`), and the argument list of every
+/// `.<method>(` call for `method` in `methods`.
+fn ddl_spans(text: &str, methods: &[&str]) -> Vec<std::ops::Range<usize>> {
+    let b = text.as_bytes();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if let Some(end) = skip_literal_or_comment(text, i) {
+            i = end;
+            continue;
+        }
+        if i == 0 || !is_ident_byte(b[i - 1]) {
+            for kw in ["const ", "static "] {
+                let Some(rest) = text[i..].strip_prefix(kw) else {
+                    continue;
+                };
+                let rest = rest.trim_start();
+                let rest = rest.strip_prefix("mut ").map_or(rest, str::trim_start);
+                let name_len = rest.bytes().take_while(|&c| is_ident_byte(c)).count();
+                if rest[..name_len].ends_with("_DDL") {
+                    spans.push(i..end_at_depth_zero(text, i, b';'));
+                }
+            }
+        }
+        if b[i] == b'.' {
+            for m in methods {
+                let after = i + 1 + m.len();
+                if !text[i + 1..].starts_with(m) || b.get(after).is_some_and(|&c| is_ident_byte(c))
+                {
+                    continue;
+                }
+                let open = after + (text[after..].len() - text[after..].trim_start().len());
+                if b.get(open) == Some(&b'(') {
+                    spans.push(open..end_at_depth_zero(text, open, b')'));
+                }
+            }
+        }
+        i += text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    spans
+}
+
+/// Rule 22: DDL keywords whose text module-DDL owner code may hold only inside a
+/// [`ddl_spans`] span, so an inline `sqlx::query("CREATE …")` cannot bypass
+/// `lifecycle::Ddl`.
+const DDL_CREATE_PHRASES: [&str; 7] = [
+    "CREATE TABLE",
+    "CREATE INDEX",
+    "CREATE UNIQUE INDEX",
+    "CREATE TRIGGER",
+    "CREATE SCHEMA",
+    "CREATE FUNCTION",
+    "CREATE OR REPLACE FUNCTION",
+];
+
+/// Every [`DDL_CREATE_PHRASES`] hit in `text` (whole words, case-insensitive, whitespace
+/// collapsed) that is on a code line and outside every `*_DDL` item and `.index(` /
+/// `.trigger(` argument list: `(source byte offset, phrase)`.
+fn stray_ddl_text(text: &str) -> Vec<(usize, &'static str)> {
+    let (collapsed, _, src) = collapse_ws_mapped(text);
+    let upper = collapsed.to_ascii_uppercase();
+    let spans = ddl_spans(text, &["index", "trigger"]);
+    let mut out = Vec::new();
+    for phrase in DDL_CREATE_PHRASES {
+        for at in find_all_words(&upper, phrase) {
+            let at = src[at];
+            if !on_comment_line(text, at) && !spans.iter().any(|s| s.contains(&at)) {
+                out.push((at, phrase));
+            }
+        }
+    }
+    out
+}
+
+/// Every `*_DDL` identifier in `text` that escapes the runner: `(byte offset, path as
+/// written)`. Not escapes: comment lines, anything inside a `*_DDL` item or a `.sql(` /
+/// `.index(` / `.trigger(` argument list, and a direct `raw_sql(` argument (reported by
+/// [`raw_sql_ddl_args`]).
 fn ddl_ident_escapes(text: &str) -> Vec<(usize, String)> {
     let bytes = text.as_bytes();
+    let spans = ddl_spans(text, &["sql", "index", "trigger"]);
     let mut out = Vec::new();
     for at in find_all(text, "_DDL") {
         let end = at + "_DDL".len();
@@ -1708,16 +1895,16 @@ fn ddl_ident_escapes(text: &str) -> Vec<(usize, String)> {
         let path_start = text[..at]
             .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
             .map_or(0, |i| i + 1);
-        let before = text[..path_start].trim_end();
-        if before.ends_with("const") || before.ends_with("static") {
+        if on_comment_line(text, path_start) || spans.iter().any(|s| s.contains(&path_start)) {
             continue;
         }
-        let call = before.trim_end_matches(|c| c == '&' || c == '*' || c == ' ');
+        let call = text[..path_start]
+            .trim_end_matches(|c: char| c == '&' || c == '*' || c.is_whitespace());
         if let Some(callee) = call.strip_suffix('(').map(str::trim_end) {
             let raw_sql_call = callee.strip_suffix("raw_sql").is_some_and(|head| {
                 head.bytes().next_back().is_none_or(|b| !is_ident_byte(b))
             });
-            if callee.ends_with(".sql") || raw_sql_call {
+            if raw_sql_call {
                 continue;
             }
         }
