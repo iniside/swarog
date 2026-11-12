@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Quic;
 using System.Net.Security;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -99,6 +100,7 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
             throw new IOException($"dial {host}:{port}: host resolved to no address");
 
         var failures = new List<(IPEndPoint EndPoint, Exception Error)>();
+        QuicConnection? conn = null;
         foreach (IPAddress address in addresses)
         {
             var endPoint = new IPEndPoint(address, port);
@@ -111,28 +113,42 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
             };
             try
             {
-                var conn = await QuicConnection.ConnectAsync(opts, ct).ConfigureAwait(false);
-                foreach (var failure in failures)
-                    onDialFailure?.Invoke(failure.EndPoint, failure.Error);
-                return new QuicPlayerClient(conn, apiKey);
+                conn = await QuicConnection.ConnectAsync(opts, ct).ConfigureAwait(false);
+                break;
             }
             catch (Exception ex) when (!ct.IsCancellationRequested)
             {
                 failures.Add((endPoint, ex));
             }
         }
-        string detail = string.Join("; ", failures.Select(f => $"{f.EndPoint}: {f.Error.GetType().Name}: {f.Error.Message}"));
-        throw new IOException($"dial {host}:{port}: {detail}", failures[^1].Error);
+        if (conn is null)
+        {
+            string detail = string.Join("; ", failures.Select(f => $"{f.EndPoint}: {f.Error.GetType().Name}: {f.Error.Message}"));
+            throw new IOException($"dial {host}:{port}: {detail}", failures[^1].Error);
+        }
+        try
+        {
+            foreach (var failure in failures)
+                onDialFailure?.Invoke(failure.EndPoint, failure.Error);
+            return new QuicPlayerClient(conn, apiKey);
+        }
+        catch
+        {
+            await conn.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
     }
 
     /// <summary>
     /// Builds a server-cert validation callback that pins to exactly the CA loaded
-    /// from <paramref name="caCertPath"/> (a PEM CERTIFICATE — the same anchor
-    /// <c>edgeca</c> writes and Rust's <c>TrustAnchor::load_cert_only</c> reads). The
-    /// server chain must chain to that one root: <see cref="X509ChainTrustMode.CustomRootTrust"/>
-    /// with a single custom trust anchor and NO system-roots fallback, revocation
-    /// checking off (the ephemeral dev CA publishes no CRL/OCSP). Every policy error
-    /// other than a chain error (which the custom chain build replaces) fails the
+    /// from <paramref name="caCertPath"/> (a PEM CERTIFICATE — the anchor
+    /// <c>edgeca</c> writes). The server chain must chain to that one root:
+    /// <see cref="X509ChainTrustMode.CustomRootTrust"/> with a single custom trust
+    /// anchor and NO system-roots fallback, revocation checking off (the ephemeral dev
+    /// CA publishes no CRL/OCSP). Certificates the server sends are intermediates
+    /// only; the built chain's root must be byte-equal to the pinned CA. The leaf must
+    /// be valid for server authentication (EKU <c>1.3.6.1.5.5.7.3.1</c>). Every policy
+    /// error other than a chain error (which the custom chain build replaces) fails the
     /// handshake, so the leaf must also match the target host.
     /// </summary>
     private static RemoteCertificateValidationCallback PinToCa(string caCertPath)
@@ -143,7 +159,7 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
         string pem = File.ReadAllText(caCertPath);
         X509Certificate2 caCert = X509Certificate2.CreateFromPem(pem);
 
-        return (_, serverCert, _, sslPolicyErrors) =>
+        return (_, serverCert, presented, sslPolicyErrors) =>
         {
             if (serverCert is null)
                 return false;
@@ -154,7 +170,17 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
             chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
             chain.ChainPolicy.CustomTrustStore.Add(caCert);
             chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-            return chain.Build(leaf);
+            chain.ChainPolicy.ApplicationPolicy.Add(new Oid("1.3.6.1.5.5.7.3.1"));
+            if (presented is not null)
+            {
+                chain.ChainPolicy.ExtraStore.AddRange(presented.ChainPolicy.ExtraStore);
+                foreach (X509ChainElement element in presented.ChainElements)
+                    chain.ChainPolicy.ExtraStore.Add(element.Certificate);
+            }
+            if (!chain.Build(leaf))
+                return false;
+            X509Certificate2 root = chain.ChainElements[chain.ChainElements.Count - 1].Certificate;
+            return root.RawDataMemory.Span.SequenceEqual(caCert.RawDataMemory.Span);
         };
     }
 
