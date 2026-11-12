@@ -180,11 +180,7 @@ const RAW_DDL_SCOPE: [&str; 3] = ["modules/", "core/admin/", "tools/adminctl/"];
 
 /// Rule 22 exclusions (root-relative file or dir prefix). Each must exist, so an entry
 /// cannot outlive the file it excuses.
-const LOCKING_DDL_EXCLUDE: [&str; 2] = [
-    // Its doc prose names the banned forms to explain the DO-block probes.
-    "core/asyncevents/src/store.rs",
-    BAN_SELF_EXCLUDE,
-];
+const LOCKING_DDL_EXCLUDE: [&str; 1] = [BAN_SELF_EXCLUDE];
 
 /// The textual marker that means "this domain exposes player-facing HTTP ops" — owned by
 /// [`rpc_contract_model::HTTP_OP_MARKER`] so rules 17 and 21 and every other served-surface
@@ -699,13 +695,14 @@ fn main() {
     violations.extend(rpc_contract_model::contract_only_violations(&root));
 
     // --- 22: boot-time DDL never locks an existing table ------------------------
-    // `CREATE INDEX IF NOT EXISTS`, `CREATE OR REPLACE TRIGGER` and `ADD COLUMN` lock
-    // the table even when the object exists, so every boot would queue live writers
-    // behind module DDL; `lifecycle::Ddl` probes first and bounds the wait.
+    // `CREATE INDEX IF NOT EXISTS`, `CREATE OR REPLACE TRIGGER`, `ADD COLUMN` and
+    // `ADD IF NOT EXISTS` lock the table even when the object exists, so every boot would
+    // queue live writers behind module DDL; `lifecycle::Ddl` probes first and bounds the
+    // wait.
     violations.extend(grep_locking_ddl(&root));
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no boot-time DDL that locks an existing table (INDEX IF NOT EXISTS / OR REPLACE TRIGGER / ADD [COLUMN] / raw_sql(*_DDL)) outside lifecycle::Ddl");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no boot-time DDL that locks an existing table (INDEX IF NOT EXISTS / OR REPLACE TRIGGER / ADD COLUMN / ADD IF NOT EXISTS / raw_sql(*_DDL)) outside lifecycle::Ddl");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());

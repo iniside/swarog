@@ -78,9 +78,9 @@ const V2_DDL_STATEMENT_COUNT: usize = 14;
 /// A steady-state run (every object already present) takes no lock on
 /// `asyncevents.events`, so a booting process never queues live appends behind
 /// it: the scan index and the notify trigger are created inside `DO` blocks only
-/// when a catalog probe finds them missing, because `CREATE INDEX IF NOT EXISTS`
-/// (SHARE) and `CREATE OR REPLACE TRIGGER` (SHARE ROW EXCLUSIVE) lock the table
-/// even when the object exists. The probes run after the migrate advisory lock,
+/// when a catalog probe finds them missing, because an index create guarded only
+/// by `IF NOT EXISTS` (SHARE) and a trigger create using `OR REPLACE` (SHARE ROW
+/// EXCLUSIVE) lock the table even when the object exists. The probes run after the migrate advisory lock,
 /// so two migrators cannot both see "missing". A changed index or trigger
 /// definition is therefore never applied in place; it follows the wipe policy
 /// (DROP + boot fresh).
