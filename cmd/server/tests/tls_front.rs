@@ -3,15 +3,25 @@
 //! ignored `TLS_MODE` and served plain HTTP — with `.with_tls(tls)` removed, the HTTPS
 //! poll below never succeeds and the test fails there (no HTTPS answer).
 //!
+//! The player QUIC front shares the process, so the same binary is also dialed on
+//! `PLAYER_EDGE_ADDR`. Previously-wrong branch: before the player front chose its
+//! certificate from `TLS_MODE` / `PLAYER_TLS_*` it always served the dev CA leaf
+//! (SAN `localhost`), so the minted-CA handshakes below never complete and the dev-CA
+//! `localhost` handshakes against a minted certificate succeed.
+//!
 //! `PORT` is a loopback `host:port` (`127.0.0.1:{port}`), so this also proves a
 //! host:port `PORT` binds under TLS.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 const BOOT_HANG_GUARD: Duration = Duration::from_secs(60);
 const EXIT_HANG_GUARD: Duration = Duration::from_secs(30);
+const DIAL_ATTEMPT_GUARD: Duration = Duration::from_secs(5);
+const DIAL_REJECT_GUARD: Duration = Duration::from_secs(30);
+const PLAYER_NAME: &str = "player.test";
 
 struct ServerProcess {
     child: Child,
@@ -56,6 +66,90 @@ fn mint_localhost_cert(dir: &Path) -> (PathBuf, PathBuf, String) {
     (cert_path, key_path, cert_pem)
 }
 
+struct PlayerCerts {
+    ca: PathBuf,
+    cert: PathBuf,
+    key: PathBuf,
+}
+
+/// A CA-signed leaf whose only SAN is `PLAYER_NAME` — not `localhost`, which is all a
+/// dev CA leaf names.
+fn mint_player_certs(dir: &Path) -> PlayerCerts {
+    use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
+    let ca_key = KeyPair::generate().expect("ca key");
+    let mut ca_params = CertificateParams::new(Vec::<String>::new()).expect("ca params");
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    let ca = ca_params.self_signed(&ca_key).expect("ca cert");
+    let leaf_key = KeyPair::generate().expect("leaf key");
+    let leaf = CertificateParams::new(vec![PLAYER_NAME.to_string()])
+        .expect("leaf params")
+        .signed_by(&leaf_key, &ca, &ca_key)
+        .expect("leaf cert");
+    let certs = PlayerCerts {
+        ca: dir.join("player-ca.pem"),
+        cert: dir.join("player-cert.pem"),
+        key: dir.join("player-key.pem"),
+    };
+    std::fs::write(&certs.ca, ca.pem()).expect("write ca");
+    std::fs::write(&certs.cert, leaf.pem()).expect("write cert");
+    std::fs::write(&certs.key, leaf_key.serialize_pem()).expect("write key");
+    certs
+}
+
+/// The process's dev CA, minted here so the test knows what the default leaf chains to.
+fn write_dev_ca(dir: &Path) -> (PathBuf, PathBuf, edge::TrustAnchor) {
+    let ca = edge::DevCA::generate().expect("dev ca");
+    let (cert, key) = (dir.join("edge-ca.pem"), dir.join("edge-ca.key"));
+    ca.write_pem(cert.to_str().unwrap(), key.to_str().unwrap()).expect("write dev ca");
+    (cert, key, ca.trust_anchor())
+}
+
+fn minted_anchor(certs: &PlayerCerts) -> edge::TrustAnchor {
+    edge::DevCA::load_cert_only(certs.ca.to_str().unwrap()).expect("load minted ca")
+}
+
+async fn dial_once(
+    addr: SocketAddr,
+    name: &str,
+    trust: &edge::TrustAnchor,
+    guard: Duration,
+) -> Result<(), String> {
+    match tokio::time::timeout(guard, edge::PlayerClient::dial(addr, name, trust)).await {
+        Ok(Ok(_client)) => Ok(()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!("no answer within {guard:?}")),
+    }
+}
+
+/// Retries until the QUIC front completes a handshake: it binds only after boot, and
+/// a dial before that gets no answer.
+async fn wait_for_handshake(
+    server: &mut ServerProcess,
+    addr: SocketAddr,
+    name: &str,
+    trust: &edge::TrustAnchor,
+) {
+    let deadline = Instant::now() + BOOT_HANG_GUARD;
+    let mut backoff = Duration::from_millis(100);
+    loop {
+        if let Some(exit) = server.exited() {
+            panic!("server exited before serving QUIC ({exit}); log:\n{}", server.log_text());
+        }
+        match dial_once(addr, name, trust, DIAL_ATTEMPT_GUARD).await {
+            Ok(()) => return,
+            Err(e) if Instant::now() >= deadline => panic!(
+                "no QUIC handshake with {name:?} at {addr} within {BOOT_HANG_GUARD:?} (last error: {e}); log:\n{}",
+                server.log_text()
+            ),
+            Err(_) => {
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(1));
+            }
+        }
+    }
+}
+
 fn free_tcp_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0")
         .expect("probe tcp port")
@@ -72,20 +166,31 @@ fn free_udp_port() -> u16 {
         .port()
 }
 
-fn spawn_server(dir: &Path, tls_env: &[(&str, &Path)], http_port: u16) -> ServerProcess {
+fn spawn_server(
+    dir: &Path,
+    mode: &str,
+    tls_env: &[(&str, &Path)],
+    http_port: u16,
+    quic_port: u16,
+) -> ServerProcess {
     let log = dir.join("server.log");
     let out = std::fs::File::create(&log).expect("create server log");
     let err = out.try_clone().expect("clone server log handle");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_server"));
     for (key, _) in std::env::vars_os() {
         let key = key.to_string_lossy().into_owned();
-        if key.starts_with("TLS_") || key.starts_with("ACME_") || key.starts_with("MAIL_") {
+        if key.starts_with("TLS_")
+            || key.starts_with("PLAYER_TLS_")
+            || key.starts_with("EDGE_CA_")
+            || key.starts_with("ACME_")
+            || key.starts_with("MAIL_")
+        {
             cmd.env_remove(&key);
         }
     }
-    cmd.env("TLS_MODE", "files")
+    cmd.env("TLS_MODE", mode)
         .env("PORT", format!("127.0.0.1:{http_port}"))
-        .env("PLAYER_EDGE_ADDR", format!("127.0.0.1:{}", free_udp_port()))
+        .env("PLAYER_EDGE_ADDR", format!("127.0.0.1:{quic_port}"))
         .env("DATABASE_URL", testdb::dsn())
         .env("DATABASE_POOL_MAX_CONNECTIONS", "4")
         .env("MAIL_PROVIDER", "log")
@@ -114,11 +219,13 @@ async fn monolith_serves_https_and_refuses_plain_http_under_tls_mode_files() {
     let port = free_tcp_port();
     let mut server = spawn_server(
         &dir,
+        "files",
         &[("TLS_CERT_PATH", cert.as_path()), ("TLS_KEY_PATH", key.as_path())],
         port,
+        free_udp_port(),
     );
 
-    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
     let https = reqwest::Client::builder()
         .add_root_certificate(reqwest::Certificate::from_pem(cert_pem.as_bytes()).expect("parse test ca"))
         .resolve("localhost", addr)
@@ -166,7 +273,13 @@ async fn monolith_serves_https_and_refuses_plain_http_under_tls_mode_files() {
 fn tls_mode_files_without_key_path_fails_startup() {
     let dir = fresh_dir("nokey");
     let (cert, _key, _) = mint_localhost_cert(&dir);
-    let mut server = spawn_server(&dir, &[("TLS_CERT_PATH", cert.as_path())], free_tcp_port());
+    let mut server = spawn_server(
+        &dir,
+        "files",
+        &[("TLS_CERT_PATH", cert.as_path())],
+        free_tcp_port(),
+        free_udp_port(),
+    );
 
     let deadline = Instant::now() + EXIT_HANG_GUARD;
     let mut backoff = Duration::from_millis(50);
@@ -188,4 +301,132 @@ fn tls_mode_files_without_key_path_fails_startup() {
         log.contains("TLS_MODE=files requires TLS_KEY_PATH"),
         "server did not name the missing TLS_KEY_PATH; log:\n{log}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn player_front_serves_the_tls_mode_files_certificate_not_the_dev_ca_leaf() {
+    let Some(pool) = testdb::test_pool().await else {
+        return;
+    };
+    drop(pool);
+
+    let dir = fresh_dir("quic-files");
+    let certs = mint_player_certs(&dir);
+    let (ca_cert, ca_key, dev_anchor) = write_dev_ca(&dir);
+    let quic_port = free_udp_port();
+    let mut server = spawn_server(
+        &dir,
+        "files",
+        &[
+            ("TLS_CERT_PATH", certs.cert.as_path()),
+            ("TLS_KEY_PATH", certs.key.as_path()),
+            ("EDGE_CA_CERT", ca_cert.as_path()),
+            ("EDGE_CA_KEY", ca_key.as_path()),
+        ],
+        free_tcp_port(),
+        quic_port,
+    );
+    let addr: SocketAddr = format!("127.0.0.1:{quic_port}").parse().unwrap();
+
+    wait_for_handshake(&mut server, addr, PLAYER_NAME, &minted_anchor(&certs)).await;
+
+    let rejected = dial_once(addr, "localhost", &dev_anchor, DIAL_REJECT_GUARD).await;
+    assert!(
+        rejected.is_err(),
+        "a dev CA anchor accepted the QUIC front under TLS_MODE=files, so it still serves the dev leaf; log:\n{}",
+        server.log_text()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn player_tls_files_serve_on_quic_even_with_tls_mode_off() {
+    let Some(pool) = testdb::test_pool().await else {
+        return;
+    };
+    drop(pool);
+
+    let dir = fresh_dir("quic-player-files");
+    let certs = mint_player_certs(&dir);
+    let (ca_cert, ca_key, dev_anchor) = write_dev_ca(&dir);
+    let quic_port = free_udp_port();
+    let mut server = spawn_server(
+        &dir,
+        "off",
+        &[
+            ("PLAYER_TLS_CERT_PATH", certs.cert.as_path()),
+            ("PLAYER_TLS_KEY_PATH", certs.key.as_path()),
+            ("EDGE_CA_CERT", ca_cert.as_path()),
+            ("EDGE_CA_KEY", ca_key.as_path()),
+        ],
+        free_tcp_port(),
+        quic_port,
+    );
+    let addr: SocketAddr = format!("127.0.0.1:{quic_port}").parse().unwrap();
+
+    wait_for_handshake(&mut server, addr, PLAYER_NAME, &minted_anchor(&certs)).await;
+
+    let rejected = dial_once(addr, "localhost", &dev_anchor, DIAL_REJECT_GUARD).await;
+    assert!(
+        rejected.is_err(),
+        "a dev CA anchor accepted the QUIC front with PLAYER_TLS_* set, so it still serves the dev leaf; log:\n{}",
+        server.log_text()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tls_mode_off_without_player_files_keeps_the_dev_ca_leaf() {
+    let Some(pool) = testdb::test_pool().await else {
+        return;
+    };
+    drop(pool);
+
+    let dir = fresh_dir("quic-off");
+    let certs = mint_player_certs(&dir);
+    let (ca_cert, ca_key, dev_anchor) = write_dev_ca(&dir);
+    let quic_port = free_udp_port();
+    let mut server = spawn_server(
+        &dir,
+        "off",
+        &[("EDGE_CA_CERT", ca_cert.as_path()), ("EDGE_CA_KEY", ca_key.as_path())],
+        free_tcp_port(),
+        quic_port,
+    );
+    let addr: SocketAddr = format!("127.0.0.1:{quic_port}").parse().unwrap();
+
+    wait_for_handshake(&mut server, addr, "localhost", &dev_anchor).await;
+
+    let rejected = dial_once(addr, PLAYER_NAME, &minted_anchor(&certs), DIAL_REJECT_GUARD).await;
+    assert!(rejected.is_err(), "the default front must not present an unrelated CA's certificate");
+}
+
+#[test]
+fn only_one_player_tls_path_fails_startup() {
+    for (set, missing) in [
+        ("PLAYER_TLS_CERT_PATH", "PLAYER_TLS_KEY_PATH"),
+        ("PLAYER_TLS_KEY_PATH", "PLAYER_TLS_CERT_PATH"),
+    ] {
+        let dir = fresh_dir(&format!("player-half-{set}"));
+        let certs = mint_player_certs(&dir);
+        let path = if set == "PLAYER_TLS_CERT_PATH" { &certs.cert } else { &certs.key };
+        let mut server =
+            spawn_server(&dir, "off", &[(set, path.as_path())], free_tcp_port(), free_udp_port());
+
+        let deadline = Instant::now() + EXIT_HANG_GUARD;
+        let mut backoff = Duration::from_millis(50);
+        let exit = loop {
+            if let Some(exit) = server.exited() {
+                break exit;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "server still running {EXIT_HANG_GUARD:?} after start with only {set}; log:\n{}",
+                server.log_text()
+            );
+            std::thread::sleep(backoff);
+            backoff = (backoff * 2).min(Duration::from_secs(1));
+        };
+        let log = server.log_text();
+        assert!(!exit.success(), "server exited cleanly with only {set}; log:\n{log}");
+        assert!(log.contains(missing), "server did not name the missing {missing}; log:\n{log}");
+    }
 }

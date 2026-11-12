@@ -1,4 +1,6 @@
 use super::*;
+use crate::player::{PlayerClient, PlayerServer};
+use std::time::Duration;
 
 #[test]
 fn generate_builds_configs() {
@@ -55,4 +57,178 @@ fn load_cert_only_builds_a_client_config_without_the_key() {
     assert_eq!(cfg.alpn_protocols, vec![PLAYER_ALPN.to_vec()]);
 
     let _ = std::fs::remove_file(cert);
+}
+
+struct Minted {
+    ca_pem: String,
+    cert_pem: String,
+    key_pem: String,
+}
+
+fn mint(name: &str) -> Minted {
+    let ca_key = KeyPair::generate().unwrap();
+    let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    let ca = ca_params.self_signed(&ca_key).unwrap();
+    let leaf_key = KeyPair::generate().unwrap();
+    let leaf = CertificateParams::new(vec![name.to_string()])
+        .unwrap()
+        .signed_by(&leaf_key, &ca, &ca_key)
+        .unwrap();
+    Minted { ca_pem: ca.pem(), cert_pem: leaf.pem(), key_pem: leaf_key.serialize_pem() }
+}
+
+fn fresh_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("edge-player-tls-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn write_all(dir: &Path, m: &Minted) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let (ca, cert, key) = (dir.join("ca.pem"), dir.join("cert.pem"), dir.join("key.pem"));
+    std::fs::write(&ca, &m.ca_pem).unwrap();
+    std::fs::write(&cert, &m.cert_pem).unwrap();
+    std::fs::write(&key, &m.key_pem).unwrap();
+    (ca, cert, key)
+}
+
+fn anchor(ca: &Path) -> TrustAnchor {
+    DevCA::load_cert_only(ca.to_str().unwrap()).unwrap()
+}
+
+fn resolver_config(m: &Minted, tag: &str) -> PlayerTlsConfig {
+    let dir = fresh_dir(tag);
+    let (_, cert, key) = write_all(&dir, m);
+    PlayerTlsConfig::new(pem_cert_resolver(&cert, &key).unwrap()).unwrap()
+}
+
+fn transfer(from: &mut rustls::Connection, to: &mut rustls::Connection) -> Result<(), String> {
+    let mut buf = Vec::new();
+    while from.wants_write() {
+        from.write_tls(&mut buf).map_err(|e| e.to_string())?;
+    }
+    if !buf.is_empty() {
+        to.read_tls(&mut &buf[..]).map_err(|e| e.to_string())?;
+        to.process_new_packets().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// In-memory TLS handshake; returns the ALPN and protocol version the client negotiated.
+fn handshake(
+    server: Arc<ServerConfig>,
+    client: ClientConfig,
+    name: &str,
+) -> Result<(Option<Vec<u8>>, Option<rustls::ProtocolVersion>), String> {
+    let server_name = rustls::pki_types::ServerName::try_from(name.to_string()).unwrap();
+    let mut c: rustls::Connection =
+        rustls::ClientConnection::new(Arc::new(client), server_name).unwrap().into();
+    let mut s: rustls::Connection = rustls::ServerConnection::new(server).unwrap().into();
+    for _ in 0..16 {
+        if !c.is_handshaking() && !s.is_handshaking() {
+            return Ok((c.alpn_protocol().map(<[u8]>::to_vec), c.protocol_version()));
+        }
+        transfer(&mut c, &mut s)?;
+        transfer(&mut s, &mut c)?;
+    }
+    Err("handshake did not finish".to_string())
+}
+
+fn assert_player_invariants(cfg: &PlayerTlsConfig, client: ClientConfig, name: &str) {
+    let server = cfg.server_config();
+    assert_eq!(server.alpn_protocols, vec![PLAYER_ALPN.to_vec()]);
+    assert_eq!(server.max_early_data_size, 0, "0-RTT must stay off");
+    let (alpn, version) = handshake(server, client, name)
+        .expect("a TLS 1.3 client presenting no client certificate completes the handshake");
+    assert_eq!(alpn.as_deref(), Some(PLAYER_ALPN));
+    assert_eq!(version, Some(rustls::ProtocolVersion::TLSv1_3));
+}
+
+#[test]
+fn resolver_backed_player_config_enforces_the_player_invariants() {
+    let m = mint("player.test");
+    let cfg = resolver_config(&m, "invariants-resolver");
+    let dir = fresh_dir("invariants-resolver-ca");
+    let (ca, _, _) = write_all(&dir, &m);
+    let client = anchor(&ca).client_tls_public().unwrap();
+    assert_player_invariants(&cfg, client, "player.test");
+}
+
+#[test]
+fn dev_ca_player_config_enforces_the_player_invariants() {
+    let ca = DevCA::generate().unwrap();
+    let cfg = ca.server_tls_public().unwrap();
+    assert_player_invariants(&cfg, ca.client_tls_public().unwrap(), "localhost");
+}
+
+#[test]
+fn pem_cert_resolver_loads_a_good_pair() {
+    let m = mint("player.test");
+    let dir = fresh_dir("good-pair");
+    let (_, cert, key) = write_all(&dir, &m);
+    assert!(pem_cert_resolver(&cert, &key).is_ok());
+}
+
+#[test]
+fn pem_cert_resolver_errors_name_the_path() {
+    let m = mint("player.test");
+    let other = mint("other.test");
+    let dir = fresh_dir("errors");
+    let (_, cert, key) = write_all(&dir, &m);
+    let missing = dir.join("missing.pem");
+    let err = |c: &Path, k: &Path| pem_cert_resolver(c, k).err().expect("must fail").to_string();
+
+    let msg = err(&missing, &key);
+    assert!(msg.contains(&format!("{missing:?}")), "missing cert: {msg}");
+    let msg = err(&cert, &missing);
+    assert!(msg.contains(&format!("{missing:?}")), "missing key: {msg}");
+
+    let empty = dir.join("empty.pem");
+    std::fs::write(&empty, "").unwrap();
+    let msg = err(&empty, &key);
+    assert!(msg.contains(&format!("{empty:?}")) && msg.contains("no PEM CERTIFICATE"), "empty chain: {msg}");
+
+    let other_key = dir.join("other-key.pem");
+    std::fs::write(&other_key, &other.key_pem).unwrap();
+    let msg = err(&cert, &other_key);
+    assert!(msg.contains(&format!("{other_key:?}")), "key/cert mismatch: {msg}");
+
+    let two_keys = dir.join("two-keys.pem");
+    std::fs::write(&two_keys, format!("{}{}", m.key_pem, other.key_pem)).unwrap();
+    let msg = err(&cert, &two_keys);
+    assert!(msg.contains(&format!("{two_keys:?}")) && msg.contains("holds 2 private keys"), "two keys: {msg}");
+
+    let msg = err(&cert, &empty);
+    assert!(msg.contains(&format!("{empty:?}")) && msg.contains("holds 0 private keys"), "no key: {msg}");
+}
+
+#[tokio::test]
+async fn resolver_backed_player_server_presents_the_resolvers_certificate() {
+    let m = mint("player.test");
+    let dir = fresh_dir("quic-serves");
+    let (ca, _, _) = write_all(&dir, &m);
+    let running = PlayerServer::new()
+        .listen("127.0.0.1:0".parse().unwrap(), resolver_config(&m, "quic-serves-cfg"))
+        .unwrap();
+    let addr = running.local_addr();
+    let guard = Duration::from_secs(30);
+
+    tokio::time::timeout(guard, PlayerClient::dial(addr, "player.test", &anchor(&ca)))
+        .await
+        .expect("dial hang-guard")
+        .expect("trusting the minted CA and the cert's name must handshake");
+
+    let wrong_name = tokio::time::timeout(guard, PlayerClient::dial(addr, "other.test", &anchor(&ca)))
+        .await
+        .expect("dial hang-guard");
+    assert!(wrong_name.is_err(), "a server name outside the cert's SANs must fail verification");
+
+    let dev = DevCA::generate().unwrap().trust_anchor();
+    let wrong_anchor = tokio::time::timeout(guard, PlayerClient::dial(addr, "player.test", &dev))
+        .await
+        .expect("dial hang-guard");
+    assert!(wrong_anchor.is_err(), "a DevCA anchor must not accept the minted certificate");
+    running.close();
 }

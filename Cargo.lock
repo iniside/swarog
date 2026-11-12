@@ -1718,6 +1718,7 @@ dependencies = [
  "metrics",
  "opsapi",
  "opscatalog",
+ "rcgen",
  "registry",
  "remote",
  "rustls",
