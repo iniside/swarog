@@ -155,7 +155,7 @@ const LOCKING_DDL_SCOPE: [&str; 5] = ["core/", "modules/", "cmd/", "tools/", "de
 
 /// Rule 22: DDL forms (uppercase, single-spaced) that lock an EXISTING table on every
 /// boot, each with the lock it takes.
-const LOCKING_DDL_FORMS: [(&str, &str); 3] = [
+const LOCKING_DDL_FORMS: [(&str, &str); 4] = [
     ("INDEX IF NOT EXISTS", "takes SHARE on the table even when the index exists"),
     (
         "OR REPLACE TRIGGER",
@@ -163,6 +163,12 @@ const LOCKING_DDL_FORMS: [(&str, &str); 3] = [
     ),
     (
         "ADD COLUMN",
+        "takes ACCESS EXCLUSIVE on the table on every boot; declare the column in CREATE \
+         TABLE and wipe (DROP + boot fresh)",
+    ),
+    // `ADD [COLUMN] IF NOT EXISTS` — Postgres makes the COLUMN keyword optional.
+    (
+        "ADD IF NOT EXISTS",
         "takes ACCESS EXCLUSIVE on the table on every boot; declare the column in CREATE \
          TABLE and wipe (DROP + boot fresh)",
     ),
@@ -174,13 +180,9 @@ const RAW_DDL_SCOPE: [&str; 3] = ["modules/", "core/admin/", "tools/adminctl/"];
 
 /// Rule 22 exclusions (root-relative file or dir prefix). Each must exist, so an entry
 /// cannot outlive the file it excuses.
-const LOCKING_DDL_EXCLUDE: [&str; 4] = [
-    // The plane template: its index and trigger run only inside catalog-probing DO blocks.
+const LOCKING_DDL_EXCLUDE: [&str; 2] = [
+    // Its doc prose names the banned forms to explain the DO-block probes.
     "core/asyncevents/src/store.rs",
-    // `LEGACY_DROP_DDL` drops legacy objects that are absent in steady state.
-    "core/asyncevents/src/lib.rs",
-    // The runner itself; its docs name the forms it replaces.
-    "core/lifecycle/src/ddl.rs",
     BAN_SELF_EXCLUDE,
 ];
 
@@ -703,7 +705,7 @@ fn main() {
     violations.extend(grep_locking_ddl(&root));
 
     if violations.is_empty() {
-        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no boot-time DDL that locks an existing table (INDEX IF NOT EXISTS / OR REPLACE TRIGGER / ADD COLUMN / raw_sql(*_DDL)) outside lifecycle::Ddl");
+        println!("archcheck: OK — no module→module / module→foreign-rpc edges, shipping process graphs exclude `conformancecheck`, canonical typed slots are constructed only by owner files, single front door (only gateway-svc + server host `gateway`), no Option<edge::Server> in modules/, <name>api/<name>events crates stay transport-free, every cmd/*-svc + server lists `metrics`, no cross-schema FKs in modules/ DDL, no inline test modules in modules/, core/bus stays sqlx-free, no module runtime-deps `asyncevents`, no EVENTS_ env knobs read inside modules/, no retired push-plane tokens (EVENTS_*/\"/events\") in workspace source, no schema-qualified asyncevents.<table> access outside the plane, no module queries a foreign module's schema in SQL, every modules/<name> boots as cmd/<name>-svc (and its svc lib.rs constructs it), demos/* imported only by cmd/server, no core/* foundation deps a module or api/ crate, every SERVED #[http( domain is stubbed in cmd/gateway-svc, every unserved #[http( domain is a reviewed rpc_contract_model::CONTRACT_ONLY entry, `edge::InvalidRequestBody` is named only by core/edge + tools/rpc-macro, push sinks are installed only by core/app, no boot-time DDL that locks an existing table (INDEX IF NOT EXISTS / OR REPLACE TRIGGER / ADD [COLUMN] / raw_sql(*_DDL)) outside lifecycle::Ddl");
         return;
     }
     eprintln!("archcheck: FAIL — {} violation(s):", violations.len());
@@ -1582,8 +1584,8 @@ fn is_ident_byte(b: u8) -> bool {
 }
 
 /// Every `raw_sql(` in whitespace-collapsed `text` whose argument is a (possibly
-/// borrowed, possibly path-qualified) identifier whose last segment ends in `_DDL`:
-/// `(byte offset of the call, argument as written)`.
+/// borrowed or `&*`-dereferenced, possibly path-qualified) identifier whose last segment
+/// ends in `_DDL`: `(byte offset of the call, argument without spaces)`.
 fn raw_sql_ddl_args(text: &str) -> Vec<(usize, String)> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
@@ -1596,15 +1598,18 @@ fn raw_sql_ddl_args(text: &str) -> Vec<(usize, String)> {
             continue;
         };
         let rest = rest.trim_start();
-        let borrowed = rest.starts_with('&');
-        let rest = rest.trim_start_matches('&').trim_start();
+        let deref_len = rest
+            .bytes()
+            .take_while(|&b| b == b'&' || b == b'*' || b == b' ')
+            .count();
+        let (deref, rest) = rest.split_at(deref_len);
         let path_len = rest
             .bytes()
             .take_while(|&b| is_ident_byte(b) || b == b':')
             .count();
         let path = &rest[..path_len];
         if path.rsplit("::").next().is_some_and(|last| last.ends_with("_DDL")) {
-            out.push((at, format!("{}{path}", if borrowed { "&" } else { "" })));
+            out.push((at, format!("{}{path}", deref.replace(' ', ""))));
         }
     }
     out
