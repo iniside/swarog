@@ -200,9 +200,7 @@ COMMIT;"#;
 /// `DO` blocks of [`V2_DDL_TEMPLATE`] (`events_notify` ends ~130 chars in).
 const LOCK_TIMEOUT_STMT_EXCERPT_CHARS: usize = 160;
 
-/// The `plane_meta` singleton seed, run last in the V2 DDL transaction:
-/// generation 1 and the current cluster's identity (`$1`), never overwriting
-/// an existing row.
+/// Run last in the V2 DDL transaction.
 const PLANE_META_SEED_SQL: &str = "INSERT INTO asyncevents.plane_meta (generation, system_identifier) \
      VALUES (1, $1::numeric) ON CONFLICT DO NOTHING";
 
@@ -333,9 +331,6 @@ pub(crate) async fn ensure_schema_with_lock_timeout(
 ) -> anyhow::Result<()> {
     let ddl = render_v2_ddl(lock_timeout);
 
-    // Read before `begin`: `control_identity` borrows its own pooled
-    // connection, which would never come while this one holds the only
-    // connection of a `max_connections(1)` pool.
     let identity = control_identity(pool).await?;
 
     let mut tx = pool
@@ -385,10 +380,6 @@ pub(crate) async fn ensure_schema_with_lock_timeout(
         }
     }
 
-    // The seed runs in the DDL transaction, so the template's `SET LOCAL
-    // lock_timeout` bounds it too: against a seeded row whose updater is still
-    // open (an in-flight `bump_generation`), `ON CONFLICT DO NOTHING` waits for
-    // that transaction to end.
     if let Err(err) = sqlx::query(PLANE_META_SEED_SQL)
         .bind(&identity)
         .execute(&mut *tx)
