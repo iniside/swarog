@@ -1541,20 +1541,20 @@ fn locking_ddl_excluded(rel: &str) -> bool {
 }
 
 /// Rule 22 for ONE file (root-relative `rel` + its `text`): a [`LOCKING_DDL_FORMS`]
-/// phrase anywhere in non-test source under [`LOCKING_DDL_SCOPE`] (comments included,
-/// case-insensitive), and under [`RAW_DDL_SCOPE`] a `raw_sql(` whose argument is a
-/// `*_DDL` const/static. Out-of-scope, test and [`LOCKING_DDL_EXCLUDE`] paths yield none.
+/// phrase anywhere in NON-TEST source under [`LOCKING_DDL_SCOPE`] (comments included,
+/// case-insensitive), and under [`RAW_DDL_SCOPE`] — test files INCLUDED, so a test
+/// helper cannot bypass the module's `migrate` — a `raw_sql(` whose argument is a
+/// `*_DDL` const/static. Out-of-scope and [`LOCKING_DDL_EXCLUDE`] paths yield none.
 fn locking_ddl_violations(rel: &str, text: &str) -> Vec<String> {
-    if !LOCKING_DDL_SCOPE.iter().any(|p| rel.starts_with(p))
-        || is_test_source(rel)
-        || locking_ddl_excluded(rel)
-    {
+    if !LOCKING_DDL_SCOPE.iter().any(|p| rel.starts_with(p)) || locking_ddl_excluded(rel) {
         return Vec::new();
     }
     let (collapsed, lines) = collapse_ws(text);
     let upper = collapsed.to_ascii_uppercase();
     let mut out = Vec::new();
-    for (form, why) in LOCKING_DDL_FORMS {
+    // Tests keep raw locking forms as positive controls for the runner.
+    let forms: &[(&str, &str)] = if is_test_source(rel) { &[] } else { &LOCKING_DDL_FORMS };
+    for (form, why) in forms {
         for at in find_all(&upper, form) {
             if at > 0 && is_ident_byte(upper.as_bytes()[at - 1]) {
                 continue;
