@@ -35,6 +35,13 @@ database. Everything else has an owner:
   - `WRITER_LOCK_CHOREOGRAPHY` (`store_tests.rs`): taken by any test that holds an
     uncommitted write across an await on another connection or takes a conflicting
     lock on `asyncevents.events`. Lock order: `GLOBAL_SWEEP` first.
+- A test builds its schema through the module's own `migrate` (`Context::with_db`),
+  once per test; module DDL is create-only and takes its own advisory lock
+  (`lifecycle::Ddl`), so there is no "migrate once" cache.
+- Tests in one crate that plant or sweep `purged_players` rows share one crate-level
+  `DB_LOCK`: the sweep is a whole-table `FOR UPDATE SKIP LOCKED` batch, so it skips rows
+  a sibling's open sweep holds (`modules/friends/src/tests.rs`,
+  `modules/characters/src/tests/purge.rs`).
 - Tests prove correctness, not speed. Wait on an explicit signal (for example
   `Notify`) wrapped in a `tokio::time::timeout` with generous headroom, a hang-guard
   and not a latency bound (`core/asyncevents/src/tests.rs`,
