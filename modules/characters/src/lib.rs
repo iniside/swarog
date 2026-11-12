@@ -30,7 +30,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use charactersapi::{Ownership, Player};
 use configapi::Config;
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use registry::key;
 #[allow(unused_imports)] // re-exported for tests.rs's `use super::*;`, unused by lib.rs's own code
 pub(crate) use opsapi::Identity;
@@ -52,15 +52,12 @@ CREATE TABLE IF NOT EXISTS characters.characters (
 	class      text        NOT NULL DEFAULT 'novice',
 	created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS characters_player_idx ON characters.characters(player_id);
 CREATE TABLE IF NOT EXISTS characters.purged_players (
 	player_id  uuid PRIMARY KEY,
 	handle     text        NOT NULL DEFAULT '',
 	created_at timestamptz NOT NULL DEFAULT now(),
 	swept_at   timestamptz
-);
-CREATE INDEX IF NOT EXISTS purged_players_pending_idx
-    ON characters.purged_players (player_id) WHERE swept_at IS NULL;"#;
+);"#;
 
 /// Folds any lower-level error into an `Internal` operation error.
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
@@ -144,7 +141,19 @@ impl Module for Characters {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("characters requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .index(
+                "characters.characters_player_idx",
+                "CREATE INDEX characters_player_idx ON characters.characters(player_id)",
+            )
+            .index(
+                "characters.purged_players_pending_idx",
+                "CREATE INDEX purged_players_pending_idx \
+                 ON characters.purged_players (player_id) WHERE swept_at IS NULL",
+            )
+            .run()
+            .await?;
         Ok(())
     }
 

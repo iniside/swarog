@@ -27,7 +27,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use accountsapi::Directory;
 use async_trait::async_trait;
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use partyapi::Player;
 use registry::key;
 use tokio::sync::watch;
@@ -56,8 +56,6 @@ CREATE TABLE IF NOT EXISTS party.members (
     lease_until timestamptz NOT NULL,
     CONSTRAINT members_ready_check CHECK (ready IN ('ready','not_ready'))
 );
-CREATE INDEX IF NOT EXISTS members_party_idx ON party.members (party_id);
-CREATE INDEX IF NOT EXISTS members_lease_idx ON party.members (lease_until);
 CREATE TABLE IF NOT EXISTS party.invites (
     id          uuid        PRIMARY KEY,
     party_id    uuid        NOT NULL,
@@ -65,10 +63,7 @@ CREATE TABLE IF NOT EXISTS party.invites (
     invitee_id  uuid        NOT NULL,
     expires_at  timestamptz NOT NULL,
     UNIQUE (party_id, invitee_id)
-);
-CREATE INDEX IF NOT EXISTS invites_invitee_idx ON party.invites (invitee_id);
-CREATE INDEX IF NOT EXISTS invites_inviter_idx ON party.invites (inviter_id);
-CREATE INDEX IF NOT EXISTS invites_expires_idx ON party.invites (expires_at);"#;
+);"#;
 
 /// The durable purge subscription: a contract, renaming it abandons the checkpoint.
 /// `AfterRegistration`: party rows are lease-bound, so a deletion from before this module
@@ -175,7 +170,30 @@ impl Module for Party {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("party requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .index(
+                "party.members_party_idx",
+                "CREATE INDEX members_party_idx ON party.members (party_id)",
+            )
+            .index(
+                "party.members_lease_idx",
+                "CREATE INDEX members_lease_idx ON party.members (lease_until)",
+            )
+            .index(
+                "party.invites_invitee_idx",
+                "CREATE INDEX invites_invitee_idx ON party.invites (invitee_id)",
+            )
+            .index(
+                "party.invites_inviter_idx",
+                "CREATE INDEX invites_inviter_idx ON party.invites (inviter_id)",
+            )
+            .index(
+                "party.invites_expires_idx",
+                "CREATE INDEX invites_expires_idx ON party.invites (expires_at)",
+            )
+            .run()
+            .await?;
         Ok(())
     }
 

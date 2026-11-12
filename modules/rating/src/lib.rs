@@ -17,7 +17,7 @@
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use opsapi::Error;
 use ratingapi::MmrReader;
 use registry::key;
@@ -167,7 +167,7 @@ impl Module for Rating {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("rating requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool).sql(SCHEMA_DDL).run().await?;
         Ok(())
     }
 

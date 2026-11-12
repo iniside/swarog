@@ -20,7 +20,7 @@ pub use service::Service;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use notificationsapi::Player;
 use registry::key;
 
@@ -67,23 +67,12 @@ CREATE TABLE IF NOT EXISTS notifications.messages (
 	CONSTRAINT notifications_kind_len_check  CHECK (octet_length(kind)  <= 64)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS notifications_source_event_idx
-	ON notifications.messages (source_event_id) WHERE source_event_id IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS notifications_inbox_idx
-	ON notifications.messages (player_id, created_at DESC, id DESC);
-
-CREATE INDEX IF NOT EXISTS notifications_created_at_idx
-	ON notifications.messages (created_at);
-
 CREATE TABLE IF NOT EXISTS notifications.purged_players (
 	player_id  uuid        PRIMARY KEY,
 	handle     text        NOT NULL DEFAULT '',
 	created_at timestamptz NOT NULL DEFAULT now(),
 	swept_at   timestamptz
-);
-CREATE INDEX IF NOT EXISTS purged_players_pending_idx
-    ON notifications.purged_players (player_id) WHERE swept_at IS NULL;"#;
+);"#;
 
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
     opsapi::Error::internal(e.to_string())
@@ -146,7 +135,30 @@ impl Module for NotificationsModule {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("notifications requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .index(
+                "notifications.notifications_source_event_idx",
+                "CREATE UNIQUE INDEX notifications_source_event_idx \
+                 ON notifications.messages (source_event_id) WHERE source_event_id IS NOT NULL",
+            )
+            .index(
+                "notifications.notifications_inbox_idx",
+                "CREATE INDEX notifications_inbox_idx \
+                 ON notifications.messages (player_id, created_at DESC, id DESC)",
+            )
+            .index(
+                "notifications.notifications_created_at_idx",
+                "CREATE INDEX notifications_created_at_idx \
+                 ON notifications.messages (created_at)",
+            )
+            .index(
+                "notifications.purged_players_pending_idx",
+                "CREATE INDEX purged_players_pending_idx \
+                 ON notifications.purged_players (player_id) WHERE swept_at IS NULL",
+            )
+            .run()
+            .await?;
         Ok(())
     }
 

@@ -38,16 +38,12 @@ CREATE TABLE IF NOT EXISTS storage.objects (
     CONSTRAINT storage_value_len_check      CHECK (octet_length(value::text) <= 131072),
     CONSTRAINT storage_acl_check            CHECK (acl IN ('private','public_read'))
 );
-CREATE INDEX IF NOT EXISTS storage_list_idx
-    ON storage.objects (owner_id, collection, created_at DESC, key DESC);
 CREATE TABLE IF NOT EXISTS storage.purged_players (
     player_id  uuid PRIMARY KEY,
     handle     text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     swept_at   timestamptz
-);
-CREATE INDEX IF NOT EXISTS purged_players_pending_idx
-    ON storage.purged_players (player_id) WHERE swept_at IS NULL;"#;
+);"#;
 
 /// One caller-authored text column: the caller-facing name, the byte ceiling checked in
 /// Rust before the statement, and the named column CHECK that backstops it. ONE table
@@ -249,7 +245,20 @@ pub(crate) struct Store {
 
 impl Store {
     pub(crate) async fn migrate(&self) -> anyhow::Result<()> {
-        sqlx::raw_sql(SCHEMA_DDL).execute(&self.pool).await?;
+        lifecycle::Ddl::new(&self.pool)
+            .sql(SCHEMA_DDL)
+            .index(
+                "storage.storage_list_idx",
+                "CREATE INDEX storage_list_idx \
+                 ON storage.objects (owner_id, collection, created_at DESC, key DESC)",
+            )
+            .index(
+                "storage.purged_players_pending_idx",
+                "CREATE INDEX purged_players_pending_idx \
+                 ON storage.purged_players (player_id) WHERE swept_at IS NULL",
+            )
+            .run()
+            .await?;
         Ok(())
     }
 

@@ -77,7 +77,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use bus::{AnyTx, Bus};
 use futures::FutureExt;
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use sqlx::{Connection, PgConnection, PgPool};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -646,7 +646,8 @@ impl Module for Scheduler {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("scheduler requires a DB pool"))?;
-        sqlx::raw_sql(&SCHEMA_DDL).execute(pool).await?;
+        let schema_ddl: &'static str = &SCHEMA_DDL;
+        Ddl::new(pool).sql(schema_ddl).run().await?;
         Ok(())
     }
 

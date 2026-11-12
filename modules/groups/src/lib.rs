@@ -39,7 +39,7 @@ use std::sync::{Arc, OnceLock};
 use accountsapi::Directory;
 use async_trait::async_trait;
 use groupsapi::{Membership, Player};
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use registry::key;
 
 /// `memberships_role_check` is an EQUIVALENCE, not an implication: a `member` row must
@@ -76,20 +76,12 @@ CREATE TABLE IF NOT EXISTS groups.memberships (
         CHECK ((state = 'member') = (role <> '')
                AND (role = '' OR role IN ('admin','member')))
 );
-CREATE INDEX IF NOT EXISTS memberships_player_idx
-    ON groups.memberships (player_id, state, created_at DESC, group_id DESC);
-CREATE INDEX IF NOT EXISTS memberships_group_idx
-    ON groups.memberships (group_id, state, created_at DESC, player_id DESC);
-CREATE INDEX IF NOT EXISTS memberships_pending_idx
-    ON groups.memberships (created_at) WHERE state IN ('invited','requested');
 CREATE TABLE IF NOT EXISTS groups.purged_players (
     player_id  uuid PRIMARY KEY,
     handle     text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     swept_at   timestamptz
-);
-CREATE INDEX IF NOT EXISTS purged_players_pending_idx
-    ON groups.purged_players (player_id) WHERE swept_at IS NULL;"#;
+);"#;
 
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
     opsapi::Error::internal(e.to_string())
@@ -155,7 +147,30 @@ impl Module for Groups {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("groups requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .index(
+                "groups.memberships_player_idx",
+                "CREATE INDEX memberships_player_idx \
+                 ON groups.memberships (player_id, state, created_at DESC, group_id DESC)",
+            )
+            .index(
+                "groups.memberships_group_idx",
+                "CREATE INDEX memberships_group_idx \
+                 ON groups.memberships (group_id, state, created_at DESC, player_id DESC)",
+            )
+            .index(
+                "groups.memberships_pending_idx",
+                "CREATE INDEX memberships_pending_idx \
+                 ON groups.memberships (created_at) WHERE state IN ('invited','requested')",
+            )
+            .index(
+                "groups.purged_players_pending_idx",
+                "CREATE INDEX purged_players_pending_idx \
+                 ON groups.purged_players (player_id) WHERE swept_at IS NULL",
+            )
+            .run()
+            .await?;
         Ok(())
     }
 

@@ -16,7 +16,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use leaderboardapi::{Leaderboard, Score};
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use opsapi::Error;
 use sqlx::{PgConnection, PgPool};
 
@@ -140,7 +140,7 @@ impl Module for LeaderboardModule {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("leaderboard requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool).sql(SCHEMA_DDL).run().await?;
         Ok(())
     }
 

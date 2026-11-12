@@ -79,7 +79,7 @@ pub(crate) fn retention_days_from_env() -> anyhow::Result<i32> {
 /// Enumerated POSITIVELY and spelled out HERE rather than reused from `store`'s
 /// `PENDING_ROWS`: that const answers "which rows does the pending list show", and a state
 /// added to it later must not thereby become a state this statement destroys. The
-/// `memberships_pending_idx` partial index in `SCHEMA_DDL` carries the SAME predicate — the
+/// `memberships_pending_idx` partial index (created by `Module::migrate`'s `Ddl` runner) carries the SAME predicate — the
 /// planner only uses a partial index it can prove this `WHERE` implies, and the batching in
 /// [`PRUNE_BATCH`] assumes it does.
 ///

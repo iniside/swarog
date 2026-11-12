@@ -24,7 +24,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use configapi::Config;
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use registry::key;
 use walletapi::{Player, Wallet};
 
@@ -90,16 +90,13 @@ CREATE TABLE IF NOT EXISTS wallet.ledger (
 	at              timestamptz NOT NULL DEFAULT clock_timestamp(),
 	UNIQUE (idempotency_key)
 );
-CREATE INDEX IF NOT EXISTS ledger_player_seq_idx ON wallet.ledger(player_id, seq DESC);
 
 CREATE TABLE IF NOT EXISTS wallet.purged_players (
 	player_id  uuid        PRIMARY KEY,
 	handle     text        NOT NULL DEFAULT '',
 	created_at timestamptz NOT NULL DEFAULT now(),
 	swept_at   timestamptz
-);
-CREATE INDEX IF NOT EXISTS purged_players_pending_idx
-    ON wallet.purged_players (player_id) WHERE swept_at IS NULL;"#;
+);"#;
 
 /// `(code, display_name, kind, decimals)`.
 const DEV_SEED_CURRENCIES: &[(&str, &str, &str, i32)] = &[
@@ -183,7 +180,19 @@ impl Module for WalletModule {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("wallet requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .index(
+                "wallet.ledger_player_seq_idx",
+                "CREATE INDEX ledger_player_seq_idx ON wallet.ledger(player_id, seq DESC)",
+            )
+            .index(
+                "wallet.purged_players_pending_idx",
+                "CREATE INDEX purged_players_pending_idx \
+                 ON wallet.purged_players (player_id) WHERE swept_at IS NULL",
+            )
+            .run()
+            .await?;
 
         let svc = self.svc();
         if svc.dev_seed {

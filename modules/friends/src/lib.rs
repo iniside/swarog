@@ -25,7 +25,7 @@ use std::sync::{Arc, OnceLock};
 use accountsapi::Directory;
 use async_trait::async_trait;
 use friendsapi::Player;
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use registry::key;
 
 /// `CHECK (low_id < high_id)` plus `friends_pair_idx` are the pair authority: the ordered
@@ -49,17 +49,12 @@ CREATE TABLE IF NOT EXISTS friends.edges (
     CONSTRAINT friends_pair_ordered CHECK (low_id < high_id),
     CONSTRAINT friends_state_check  CHECK (state IN ('pending','accepted'))
 );
-CREATE UNIQUE INDEX IF NOT EXISTS friends_pair_idx ON friends.edges (low_id, high_id);
-CREATE INDEX IF NOT EXISTS friends_low_idx  ON friends.edges (low_id,  state, created_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS friends_high_idx ON friends.edges (high_id, state, created_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS friends.purged_players (
     player_id  uuid PRIMARY KEY,
     handle     text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     swept_at   timestamptz
-);
-CREATE INDEX IF NOT EXISTS purged_players_pending_idx
-    ON friends.purged_players (player_id) WHERE swept_at IS NULL;"#;
+);"#;
 
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
     opsapi::Error::internal(e.to_string())
@@ -122,7 +117,29 @@ impl Module for Friends {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("friends requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .index(
+                "friends.friends_pair_idx",
+                "CREATE UNIQUE INDEX friends_pair_idx ON friends.edges (low_id, high_id)",
+            )
+            .index(
+                "friends.friends_low_idx",
+                "CREATE INDEX friends_low_idx \
+                 ON friends.edges (low_id,  state, created_at DESC, id DESC)",
+            )
+            .index(
+                "friends.friends_high_idx",
+                "CREATE INDEX friends_high_idx \
+                 ON friends.edges (high_id, state, created_at DESC, id DESC)",
+            )
+            .index(
+                "friends.purged_players_pending_idx",
+                "CREATE INDEX purged_players_pending_idx \
+                 ON friends.purged_players (player_id) WHERE swept_at IS NULL",
+            )
+            .run()
+            .await?;
         Ok(())
     }
 

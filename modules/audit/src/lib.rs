@@ -37,7 +37,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bus::{Delivery, Error as BusError, TxHandler};
 use futures::future::BoxFuture;
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use sqlx::PgConnection;
 
 /// The domain events audit records, each on the DURABLE plane via `on_tx_raw`. This is
@@ -110,8 +110,7 @@ CREATE TABLE IF NOT EXISTS audit.log (
 	payload  jsonb       NOT NULL,
 	at       timestamptz NOT NULL DEFAULT now(),
 	event_id text
-);
-CREATE INDEX IF NOT EXISTS log_at_idx ON audit.log(at);"#;
+);"#;
 
 // ============================================================================
 // Durable handlers — invoked by messaging inside its per-(event_id,"audit")
@@ -240,7 +239,14 @@ impl Module for Audit {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("audit requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .index(
+                "audit.log_at_idx",
+                "CREATE INDEX log_at_idx ON audit.log(at)",
+            )
+            .run()
+            .await?;
         Ok(())
     }
 

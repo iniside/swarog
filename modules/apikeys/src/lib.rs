@@ -32,7 +32,7 @@ mod store;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use opsapi::Error;
 
 use crate::store::{KeySummary, RoleSummary, Store, WriteError};
@@ -261,7 +261,7 @@ impl Module for ApiKeys {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("apikeys requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool).sql(SCHEMA_DDL).run().await?;
 
         if dev_seed_explicitly_on() {
             tracing::warn!(

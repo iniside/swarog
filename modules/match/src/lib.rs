@@ -22,7 +22,7 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use bus::{AnyTx, Bus};
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use matchapi::Match;
 use opsapi::Error;
 use ratingapi::MmrReader;
@@ -327,7 +327,7 @@ impl Module for MatchModule {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("match requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool).sql(SCHEMA_DDL).run().await?;
         Ok(())
     }
 

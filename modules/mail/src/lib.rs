@@ -41,7 +41,7 @@ mod worker_tests;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use sqlx::PgPool;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
@@ -103,19 +103,7 @@ CREATE TABLE IF NOT EXISTS mail.outbox (
 	CONSTRAINT mail_outbox_body_len_check      CHECK (octet_length(body)      <= 65536),
 	CONSTRAINT mail_outbox_kind_len_check      CHECK (octet_length(kind)      <= 64),
 	CONSTRAINT mail_outbox_key_len_check       CHECK (octet_length(idempotency_key) <= 128)
-);
-
-CREATE INDEX IF NOT EXISTS mail_outbox_due_idx
-	ON mail.outbox (next_attempt_at) WHERE state = 'pending';
-
-CREATE INDEX IF NOT EXISTS mail_outbox_parked_idx
-	ON mail.outbox (created_at) WHERE state = 'parked';
-
-CREATE INDEX IF NOT EXISTS mail_outbox_sent_idx
-	ON mail.outbox (sent_at) WHERE state = 'sent';
-
-CREATE INDEX IF NOT EXISTS mail_outbox_recent_idx
-	ON mail.outbox (created_at DESC, id DESC);"#;
+);"#;
 
 /// The `/readyz` verdict of a process that accepts mail it can never deliver. A boot
 /// warning that scrolled past is not a signal: with no provider the channel still enqueues
@@ -225,7 +213,30 @@ impl Module for MailModule {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("mail requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .index(
+                "mail.mail_outbox_due_idx",
+                "CREATE INDEX mail_outbox_due_idx \
+                 ON mail.outbox (next_attempt_at) WHERE state = 'pending'",
+            )
+            .index(
+                "mail.mail_outbox_parked_idx",
+                "CREATE INDEX mail_outbox_parked_idx \
+                 ON mail.outbox (created_at) WHERE state = 'parked'",
+            )
+            .index(
+                "mail.mail_outbox_sent_idx",
+                "CREATE INDEX mail_outbox_sent_idx \
+                 ON mail.outbox (sent_at) WHERE state = 'sent'",
+            )
+            .index(
+                "mail.mail_outbox_recent_idx",
+                "CREATE INDEX mail_outbox_recent_idx \
+                 ON mail.outbox (created_at DESC, id DESC)",
+            )
+            .run()
+            .await?;
         Ok(())
     }
 

@@ -32,7 +32,7 @@ use configapi::Config;
 use inventoryapi::holdings_rpc;
 #[allow(unused_imports)] // Holding: re-exported for tests.rs's `use super::*;`, unused by lib.rs's own code
 pub(crate) use inventoryapi::{Holding, Holdings};
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use opsapi::Error;
 #[allow(unused_imports)] // re-exported for tests.rs's `use super::*;`, unused by lib.rs's own code
 pub(crate) use opsapi::Identity;
@@ -71,7 +71,6 @@ CREATE TABLE IF NOT EXISTS inventory.holdings (
 	quantity   bigint NOT NULL CHECK (quantity >= 0 AND quantity <= 2000000),
 	PRIMARY KEY (owner_type, owner_id, item_id)
 );
-CREATE INDEX IF NOT EXISTS holdings_owner_idx ON inventory.holdings(owner_type, owner_id);
 
 -- Tombstones for wiped characters: character.created and character.deleted ride
 -- INDEPENDENT durable subscriptions, and the plane's ordering contract is
@@ -89,9 +88,7 @@ CREATE TABLE IF NOT EXISTS inventory.purged_players (
 	handle     text        NOT NULL DEFAULT '',
 	created_at timestamptz NOT NULL DEFAULT now(),
 	swept_at   timestamptz
-);
-CREATE INDEX IF NOT EXISTS purged_players_pending_idx
-    ON inventory.purged_players (player_id) WHERE swept_at IS NULL;"#;
+);"#;
 
 /// Folds any lower-level error into an `Internal` operation error.
 fn internal<E: std::fmt::Display>(e: E) -> Error {
@@ -182,7 +179,19 @@ impl Module for Inventory {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("inventory requires a DB pool"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
+        Ddl::new(pool)
+            .sql(SCHEMA_DDL)
+            .index(
+                "inventory.holdings_owner_idx",
+                "CREATE INDEX holdings_owner_idx ON inventory.holdings(owner_type, owner_id)",
+            )
+            .index(
+                "inventory.purged_players_pending_idx",
+                "CREATE INDEX purged_players_pending_idx \
+                 ON inventory.purged_players (player_id) WHERE swept_at IS NULL",
+            )
+            .run()
+            .await?;
         Ok(())
     }
 
