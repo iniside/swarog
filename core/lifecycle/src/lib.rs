@@ -5,11 +5,13 @@
 
 mod app;
 mod context;
+mod ddl;
 mod module;
 mod wiring;
 
 pub use app::App;
 pub use context::Context;
+pub use ddl::Ddl;
 pub use module::Module;
 pub use wiring::ProcessWiring;
 
