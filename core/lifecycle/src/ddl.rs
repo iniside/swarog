@@ -242,3 +242,7 @@ impl Ddl {
 fn run_future_is_send(ddl: Ddl) -> impl std::future::Future<Output = anyhow::Result<()>> + Send {
     ddl.run()
 }
+
+#[cfg(test)]
+#[path = "ddl_tests.rs"]
+mod tests;
