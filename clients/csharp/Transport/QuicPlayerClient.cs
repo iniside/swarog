@@ -2,6 +2,8 @@ using System.Buffers.Binary;
 using System.Net;
 using System.Net.Quic;
 using System.Net.Security;
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
@@ -145,12 +147,19 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     /// <c>edgeca</c> writes). The server chain must chain to that one root:
     /// <see cref="X509ChainTrustMode.CustomRootTrust"/> with a single custom trust
     /// anchor and NO system-roots fallback, revocation checking off (the ephemeral dev
-    /// CA publishes no CRL/OCSP). Certificates the server sends are intermediates
-    /// only; the built chain's root must be byte-equal to the pinned CA. The leaf must
-    /// be valid for server authentication (EKU <c>1.3.6.1.5.5.7.3.1</c>). Every policy
-    /// error other than a chain error (which the custom chain build replaces) fails the
-    /// handshake, so the leaf must also match the target host.
+    /// CA publishes no CRL/OCSP). The chain is built from the intermediates the server
+    /// sent and the built chain's root must be byte-equal to the pinned CA. The leaf
+    /// must be valid for server authentication (EKU <c>1.3.6.1.5.5.7.3.1</c>). Every
+    /// policy error other than a chain error (which the custom chain build replaces)
+    /// fails the handshake, so the leaf must also match the target host.
     /// </summary>
+    /// <remarks>
+    /// The runtime puts the server's intermediates in the presented chain's
+    /// <see cref="X509ChainPolicy.ExtraStore"/> only for a non-SChannel msquic. On
+    /// Windows (SChannel) they stay in the store of the leaf's certificate context, which
+    /// neither that chain nor <see cref="SslClientAuthenticationOptions.CertificateChainPolicy"/>
+    /// searches, so the build reads that store too, as <c>SslStream</c> does on Windows.
+    /// </remarks>
     private static RemoteCertificateValidationCallback PinToCa(string caCertPath)
     {
         // Load the CA cert once (cert-only PEM; no private key — a player holds only
@@ -172,17 +181,43 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
             chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
             chain.ChainPolicy.ApplicationPolicy.Add(new Oid("1.3.6.1.5.5.7.3.1"));
             if (presented is not null)
-            {
                 chain.ChainPolicy.ExtraStore.AddRange(presented.ChainPolicy.ExtraStore);
-                foreach (X509ChainElement element in presented.ChainElements)
-                    chain.ChainPolicy.ExtraStore.Add(element.Certificate);
-            }
+            if (OperatingSystem.IsWindows())
+                chain.ChainPolicy.ExtraStore.AddRange(CertificateContextStore(leaf));
             if (!chain.Build(leaf))
                 return false;
             X509Certificate2 root = chain.ChainElements[chain.ChainElements.Count - 1].Certificate;
             return root.RawDataMemory.Span.SequenceEqual(caCert.RawDataMemory.Span);
         };
     }
+
+    /// <summary>
+    /// The certificates in the store that <paramref name="certificate"/>'s Windows
+    /// <c>CERT_CONTEXT</c> belongs to (empty when it has none).
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private static X509Certificate2Collection CertificateContextStore(X509Certificate2 certificate)
+    {
+        IntPtr storeHandle = Marshal.ReadIntPtr(certificate.Handle, CertContextStoreOffset);
+        if (storeHandle == IntPtr.Zero)
+            return new X509Certificate2Collection();
+        using var store = new X509Store(storeHandle);
+        return store.Certificates;
+    }
+
+    /// <summary>The layout of the Windows <c>CERT_CONTEXT</c> struct (wincrypt.h).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CertContext
+    {
+        public uint CertEncodingType;
+        public IntPtr CertEncoded;
+        public uint CertEncodedLength;
+        public IntPtr CertInfo;
+        public IntPtr CertStore;
+    }
+
+    private static readonly int CertContextStoreOffset =
+        (int)Marshal.OffsetOf<CertContext>(nameof(CertContext.CertStore));
 
     /// <inheritdoc/>
     public async Task<PlayerResponse> CallAsync(
