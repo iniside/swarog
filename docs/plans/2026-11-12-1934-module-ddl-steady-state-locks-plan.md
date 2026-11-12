@@ -189,6 +189,15 @@ their "migrated once" doc lines and `modules/characters/src/tests.rs:~139-140`, 
 same rule (any deadlock/duplicate/55P03 ⇒ keep and report). The fresh-DB run needs the
 owner's superuser credential; without it, Step 7 is proven on the warm DB only and says so.
 
+### Step 6c — widen the gate to the whole ALTER/DROP class `[opus]` + `[test-author]`
+(Erratum 2026-11-12, owner-approved after the Step 6 proof audit.) Rule 22 also bans, in
+non-test source of its scope, `ALTER TABLE`, `DROP TRIGGER` and `DROP INDEX`, and bans
+`raw_sql` outright in non-test files under modules/, core/admin/, tools/adminctl/ (the
+`*_DDL` argument check stays for test files). Closes the ALTER family and local
+rebinding/alias bypasses. Fixtures for each new form follow on the test-author lane. Commits
+`feat(archcheck): ban the ALTER and DROP DDL class and raw_sql in module code (module-ddl-steady-state-locks step 6c)`
+and `test(archcheck): pin the ALTER and DROP DDL class (module-ddl-steady-state-locks step 6c)`.
+
 ### Step 7b — characters purge tests share one sweep lock `[test-author]`
 (Erratum 2026-11-12.) `modules/characters/src/tests/purge.rs`: every test that plants or
 sweeps `characters.purged_players` holds one test `DB_LOCK`, mirroring
