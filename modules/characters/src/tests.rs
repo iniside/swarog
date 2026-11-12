@@ -121,27 +121,19 @@ async fn list_and_delete_require_identity() {
 
 use testdb::test_pool;
 
-/// Migrates BOTH the asyncevents (durable plane's event log) and characters schemas
-/// EXACTLY ONCE per test binary. Concurrent `CREATE INDEX`/`CREATE OR REPLACE
-/// TRIGGER` across parallel tests take catalog locks that cycle into a Postgres
-/// deadlock, so the idempotent DDL must be serialized to a single run.
-static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
+/// Migrates BOTH the asyncevents plane (the durable event log) and the characters
+/// schema; the DDL runners serialize concurrent callers.
 async fn ensure_schema(pool: &PgPool) {
-    SCHEMA_READY
-        .get_or_init(|| async {
-            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-            asyncevents::Plane::new(pool.clone(), dsn)
-                .unwrap()
-                .migrate()
-                .await
-                .unwrap();
-            let ctx = Context::with_db(pool.clone());
-            let c = Characters::new();
-            c.register(&ctx).unwrap();
-            c.migrate(&ctx).await.unwrap();
-        })
-        .await;
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    asyncevents::Plane::new(pool.clone(), dsn)
+        .unwrap()
+        .migrate()
+        .await
+        .unwrap();
+    let ctx = Context::with_db(pool.clone());
+    let c = Characters::new();
+    c.register(&ctx).unwrap();
+    c.migrate(&ctx).await.unwrap();
 }
 
 /// Builds a real durable plane over the live pool: schemas are migrated once

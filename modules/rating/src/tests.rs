@@ -10,16 +10,11 @@ use super::*;
 /// The rating schema on top of the shared pool.
 async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
-    // `CREATE SCHEMA IF NOT EXISTS` is not atomic against concurrent creation — parallel
-    // tests can race to a unique-violation. One retry suffices: the loser re-runs the
-    // fully-idempotent DDL once the winner has created the schema.
     let ctx = Context::with_db(pool.clone());
-    if Rating::new().migrate(&ctx).await.is_err() {
-        Rating::new()
-            .migrate(&ctx)
-            .await
-            .expect("migrate rating schema");
-    }
+    Rating::new()
+        .migrate(&ctx)
+        .await
+        .expect("migrate rating schema");
     Some(pool)
 }
 

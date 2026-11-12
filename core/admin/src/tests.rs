@@ -172,26 +172,19 @@ fn password_roundtrip() {
 
 use testdb::test_pool;
 
-/// Migrates BOTH the asyncevents plane and the admin schema EXACTLY ONCE per test
-/// binary — concurrent idempotent DDL across parallel tests can deadlock on catalog
-/// locks.
-static SCHEMA_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
+/// Migrates BOTH the asyncevents plane and the admin schema; the DDL runners
+/// serialize concurrent callers.
 async fn ensure_schema(pool: &PgPool) {
-    SCHEMA_READY
-        .get_or_init(|| async {
-            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-            asyncevents::Plane::new(pool.clone(), dsn)
-                .unwrap()
-                .migrate()
-                .await
-                .unwrap();
-            let ctx = Context::with_db(pool.clone());
-            let admin = Admin::new();
-            admin.register(&ctx).unwrap();
-            admin.migrate(&ctx).await.unwrap();
-        })
-        .await;
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    asyncevents::Plane::new(pool.clone(), dsn)
+        .unwrap()
+        .migrate()
+        .await
+        .unwrap();
+    let ctx = Context::with_db(pool.clone());
+    let admin = Admin::new();
+    admin.register(&ctx).unwrap();
+    admin.migrate(&ctx).await.unwrap();
 }
 
 /// A wired live state: real pool, real durable transport (`emit_tx` appends to

@@ -124,26 +124,17 @@ async fn register_provides_reader_capability() {
 
 // ---- Live Postgres integration (the local DB is the test DB) ----------
 
-/// Migrates the asyncevents schema (the durable plane's event log) EXACTLY ONCE per
-/// test binary — its `CREATE INDEX`/`CREATE OR REPLACE TRIGGER` deadlock under
-/// parallel idempotent re-runs, so serialize them (mirrors the characters tests).
-static ASYNCEVENTS_READY: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
-
 /// Config's optimistic token is the one global revision, so DB-writing tests must not
 /// invalidate each other's freshly rendered forms inside this test binary.
 static CONFIG_DB_TEST_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn ensure_asyncevents_schema(pool: &PgPool) {
-    ASYNCEVENTS_READY
-        .get_or_init(|| async {
-            let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
-            asyncevents::Plane::new(pool.clone(), dsn)
-                .unwrap()
-                .migrate()
-                .await
-                .unwrap();
-        })
-        .await;
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    asyncevents::Plane::new(pool.clone(), dsn)
+        .unwrap()
+        .migrate()
+        .await
+        .unwrap();
 }
 
 /// Migrates BOTH the asyncevents plane (so the config trigger's
