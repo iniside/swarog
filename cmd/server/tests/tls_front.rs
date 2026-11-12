@@ -22,6 +22,7 @@ const EXIT_HANG_GUARD: Duration = Duration::from_secs(30);
 const DIAL_ATTEMPT_GUARD: Duration = Duration::from_secs(5);
 const DIAL_REJECT_GUARD: Duration = Duration::from_secs(30);
 const PLAYER_NAME: &str = "player.test";
+const DEV_CERT_WARNING: &str = "serves a dev certificate";
 
 struct ServerProcess {
     child: Child,
@@ -114,11 +115,26 @@ async fn dial_once(
     name: &str,
     trust: &edge::TrustAnchor,
     guard: Duration,
-) -> Result<(), String> {
+) -> Result<(), edge::Error> {
     match tokio::time::timeout(guard, edge::PlayerClient::dial(addr, name, trust)).await {
         Ok(Ok(_client)) => Ok(()),
-        Ok(Err(e)) => Err(e.to_string()),
-        Err(_) => Err(format!("no answer within {guard:?}")),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(edge::Error::Connect(format!("no answer within {guard:?}"))),
+    }
+}
+
+/// The client refused the server's certificate: a handshake failure
+/// (`Error::Connection`) naming the invalid peer certificate. A dial timeout
+/// (`Error::Connect`) is not a rejection.
+fn assert_certificate_rejected(res: Result<(), edge::Error>, what: &str, log: &str) {
+    match res {
+        Err(edge::Error::Connection(text)) => assert!(
+            text.contains("invalid peer certificate"),
+            "{what}: handshake failed but not on the certificate: {text}; log:
+{log}"
+        ),
+        other => panic!("{what}: expected a certificate rejection, got {other:?}; log:
+{log}"),
     }
 }
 
@@ -148,6 +164,14 @@ async fn wait_for_handshake(
             }
         }
     }
+}
+
+fn assert_no_dev_certificate_warning(log: &str) {
+    assert!(
+        !log.contains(DEV_CERT_WARNING),
+        "a configured player certificate must not log the dev-certificate warning; log:
+{log}"
+    );
 }
 
 fn free_tcp_port() -> u16 {
@@ -180,7 +204,8 @@ fn spawn_server(
     for (key, _) in std::env::vars_os() {
         let key = key.to_string_lossy().into_owned();
         if key.starts_with("TLS_")
-            || key.starts_with("PLAYER_TLS_")
+            || key.starts_with("PLAYER_")
+            || key.starts_with("RATE_LIMIT_")
             || key.starts_with("EDGE_CA_")
             || key.starts_with("ACME_")
             || key.starts_with("MAIL_")
@@ -381,7 +406,6 @@ async fn tls_mode_off_without_player_files_keeps_the_dev_ca_leaf() {
     drop(pool);
 
     let dir = fresh_dir("quic-off");
-    let certs = mint_player_certs(&dir);
     let (ca_cert, ca_key, dev_anchor) = write_dev_ca(&dir);
     let quic_port = free_udp_port();
     let mut server = spawn_server(
@@ -395,8 +419,13 @@ async fn tls_mode_off_without_player_files_keeps_the_dev_ca_leaf() {
 
     wait_for_handshake(&mut server, addr, "localhost", &dev_anchor).await;
 
-    let rejected = dial_once(addr, PLAYER_NAME, &minted_anchor(&certs), DIAL_REJECT_GUARD).await;
-    assert!(rejected.is_err(), "the default front must not present an unrelated CA's certificate");
+    let log = server.log_text();
+    assert_eq!(
+        log.matches(DEV_CERT_WARNING).count(),
+        1,
+        "TLS_MODE=off with no PLAYER_TLS_* must log the dev-certificate warning exactly once; log:
+{log}"
+    );
 }
 
 #[test]

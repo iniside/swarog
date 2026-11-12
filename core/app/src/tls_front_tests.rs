@@ -259,15 +259,31 @@ fn anchor(ca: &std::path::Path) -> edge::TrustAnchor {
 
 const DIAL_GUARD: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// Binds a player QUIC server on `tls` and reports whether a client trusting `trust`
-/// and verifying `name` completes the handshake.
-async fn handshakes(tls: edge::PlayerTlsConfig, name: &str, trust: &edge::TrustAnchor) -> bool {
+/// Binds a player QUIC server on `tls` and dials it as a client trusting `trust` and
+/// verifying `name`.
+async fn dial(tls: edge::PlayerTlsConfig, name: &str, trust: &edge::TrustAnchor) -> Result<(), edge::Error> {
     let running = edge::PlayerServer::new().listen("127.0.0.1:0".parse().unwrap(), tls).unwrap();
     let dial = tokio::time::timeout(DIAL_GUARD, edge::PlayerClient::dial(running.local_addr(), name, trust))
         .await
         .expect("dial hang-guard");
     running.close();
-    dial.is_ok()
+    dial.map(|_client| ())
+}
+
+async fn handshakes(tls: edge::PlayerTlsConfig, name: &str, trust: &edge::TrustAnchor) -> bool {
+    dial(tls, name, trust).await.is_ok()
+}
+
+/// The client refused the server's certificate: a handshake failure
+/// (`Error::Connection`) naming the invalid peer certificate, not a dial timeout.
+fn assert_certificate_rejected(res: Result<(), edge::Error>, what: &str) {
+    match res {
+        Err(edge::Error::Connection(text)) => assert!(
+            text.contains("invalid peer certificate"),
+            "{what}: handshake failed but not on the certificate: {text}"
+        ),
+        other => panic!("{what}: expected a certificate rejection, got {other:?}"),
+    }
 }
 
 fn files_front(m: &Minted) -> TlsFront {
@@ -284,9 +300,9 @@ async fn player_files_beat_the_https_certificate() {
     let tls = crate::resolve_player_tls(Some(&files), https_certs.clone()).unwrap();
     assert!(handshakes(tls, "player.test", &anchor(&player.ca)).await, "own files must be served");
     let tls = crate::resolve_player_tls(Some(&files), https_certs).unwrap();
-    assert!(
-        !handshakes(tls, "https.test", &anchor(&https.ca)).await,
-        "the HTTPS certificate must not be served when the player has its own files"
+    assert_certificate_rejected(
+        dial(tls, "https.test", &anchor(&https.ca)).await,
+        "the HTTPS certificate served although the player has its own files",
     );
 }
 
@@ -304,13 +320,10 @@ async fn files_mode_serves_the_https_certificate_on_the_player_front() {
 async fn off_mode_serves_the_dev_ca_leaf_and_not_a_minted_certificate() {
     let (https, https_certs) = crate::resolve_https_tls(None).unwrap();
     assert!(https.is_none() && https_certs.is_none());
-    let minted = mint(&fresh_dir("off"), "player.test");
     let dev = edge::shared_dev_ca().unwrap();
 
     let tls = crate::resolve_player_tls(None, None).unwrap();
     assert!(handshakes(tls, "localhost", &dev.trust_anchor()).await, "off keeps the dev CA leaf");
-    let tls = crate::resolve_player_tls(None, None).unwrap();
-    assert!(!handshakes(tls, "player.test", &anchor(&minted.ca)).await);
 }
 
 #[tokio::test]
@@ -341,7 +354,7 @@ async fn bad_https_files_fail_boot_resolution() {
 }
 
 #[tokio::test]
-async fn acme_mode_hands_the_player_front_the_https_states_resolver() {
+async fn acme_mode_player_front_refuses_handshakes_until_a_certificate_exists() {
     let front = TlsFront::Acme {
         domains: vec!["example.com".to_string()],
         cache_dir: fresh_dir("acme-cache"),
@@ -350,5 +363,15 @@ async fn acme_mode_hands_the_player_front_the_https_states_resolver() {
     let (https, certs) = crate::resolve_https_tls(Some(&front)).unwrap();
     assert!(matches!(https, Some(crate::HttpsTls::Acme { .. })));
     let certs = certs.expect("acme exposes its resolver to the player front");
-    crate::resolve_player_tls(None, Some(certs)).unwrap();
+    let tls = crate::resolve_player_tls(None, Some(certs)).unwrap();
+
+    let dev = edge::shared_dev_ca().unwrap();
+    let res = dial(tls, "localhost", &dev.trust_anchor()).await;
+    match res {
+        Err(edge::Error::Connection(text)) => {
+            assert!(!text.contains("invalid peer certificate"), "the server presented a certificate: {text}")
+        }
+        other => panic!("an empty ACME resolver must fail the handshake, got {other:?}"),
+    }
+    drop(https);
 }

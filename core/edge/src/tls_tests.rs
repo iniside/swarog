@@ -136,14 +136,51 @@ fn handshake(
     Err("handshake did not finish".to_string())
 }
 
-fn assert_player_invariants(cfg: &PlayerTlsConfig, client: ClientConfig, name: &str) {
+fn tls12_only_client(roots: RootCertStore) -> ClientConfig {
+    let mut cfg = ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_protocol_versions(&[&rustls::version::TLS12])
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    cfg.alpn_protocols = vec![PLAYER_ALPN.to_vec()];
+    cfg
+}
+
+/// The same certificate behind a server that also speaks TLS 1.2: the TLS 1.2 client
+/// completes against it, so a failure against the player config is the version alone.
+fn tls12_server(certs: Arc<dyn ResolvesServerCert>) -> Arc<ServerConfig> {
+    let mut cfg = ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .with_protocol_versions(&[&rustls::version::TLS12])
+        .unwrap()
+        .with_no_client_auth()
+        .with_cert_resolver(certs);
+    cfg.alpn_protocols = vec![PLAYER_ALPN.to_vec()];
+    Arc::new(cfg)
+}
+
+fn assert_player_invariants(
+    cfg: &PlayerTlsConfig,
+    client: ClientConfig,
+    tls12_client: ClientConfig,
+    tls12_control: (Arc<ServerConfig>, ClientConfig),
+    name: &str,
+) {
     let server = cfg.server_config();
     assert_eq!(server.alpn_protocols, vec![PLAYER_ALPN.to_vec()]);
     assert_eq!(server.max_early_data_size, 0, "0-RTT must stay off");
-    let (alpn, version) = handshake(server, client, name)
+    let (alpn, version) = handshake(server.clone(), client, name)
         .expect("a TLS 1.3 client presenting no client certificate completes the handshake");
     assert_eq!(alpn.as_deref(), Some(PLAYER_ALPN));
     assert_eq!(version, Some(rustls::ProtocolVersion::TLSv1_3));
+
+    let (control_server, control_client) = tls12_control;
+    let (_, control_version) = handshake(control_server, control_client, name)
+        .expect("the TLS 1.2 client must complete against a server that allows TLS 1.2");
+    assert_eq!(control_version, Some(rustls::ProtocolVersion::TLSv1_2));
+    assert!(
+        handshake(server, tls12_client, name).is_err(),
+        "a TLS 1.2-only client must not complete a handshake with the player config"
+    );
 }
 
 #[test]
@@ -153,14 +190,35 @@ fn resolver_backed_player_config_enforces_the_player_invariants() {
     let dir = fresh_dir("invariants-resolver-ca");
     let (ca, _, _) = write_all(&dir, &m);
     let client = anchor(&ca).client_tls_public().unwrap();
-    assert_player_invariants(&cfg, client, "player.test");
+    let roots = |ca: &Path| {
+        let mut store = RootCertStore::empty();
+        store.add(CertificateDer::from_pem_slice(&std::fs::read(ca).unwrap()).unwrap()).unwrap();
+        store
+    };
+    let certs = pem_cert_resolver(&dir.join("cert.pem"), &dir.join("key.pem")).unwrap();
+    assert_player_invariants(
+        &cfg,
+        client,
+        tls12_only_client(roots(&ca)),
+        (tls12_server(certs), tls12_only_client(roots(&ca))),
+        "player.test",
+    );
 }
 
 #[test]
 fn dev_ca_player_config_enforces_the_player_invariants() {
     let ca = DevCA::generate().unwrap();
     let cfg = ca.server_tls_public().unwrap();
-    assert_player_invariants(&cfg, ca.client_tls_public().unwrap(), "localhost");
+    let (chain, key) = ca.leaf(true).unwrap();
+    let certified = CertifiedKey::from_der(chain, key, &ca.provider).unwrap();
+    let control = tls12_server(Arc::new(SingleCertAndKey::from(certified)));
+    assert_player_invariants(
+        &cfg,
+        ca.client_tls_public().unwrap(),
+        tls12_only_client((*ca.roots).clone()),
+        (control, tls12_only_client((*ca.roots).clone())),
+        "localhost",
+    );
 }
 
 #[test]
@@ -204,6 +262,19 @@ fn pem_cert_resolver_errors_name_the_path() {
     assert!(msg.contains(&format!("{empty:?}")) && msg.contains("holds 0 private keys"), "no key: {msg}");
 }
 
+/// A dial that failed because the client refused the server's certificate: a handshake
+/// failure (`Error::Connection`), not a dial timeout (`Error::Connect`).
+fn assert_certificate_rejected<T>(res: Result<T, Error>, what: &str) {
+    match res {
+        Err(Error::Connection(text)) => assert!(
+            text.contains("invalid peer certificate"),
+            "{what}: handshake failed but not on the certificate: {text}"
+        ),
+        Err(other) => panic!("{what}: expected a certificate rejection, got {other:?}"),
+        Ok(_) => panic!("{what}: the dial succeeded"),
+    }
+}
+
 #[tokio::test]
 async fn resolver_backed_player_server_presents_the_resolvers_certificate() {
     let m = mint("player.test");
@@ -223,12 +294,12 @@ async fn resolver_backed_player_server_presents_the_resolvers_certificate() {
     let wrong_name = tokio::time::timeout(guard, PlayerClient::dial(addr, "other.test", &anchor(&ca)))
         .await
         .expect("dial hang-guard");
-    assert!(wrong_name.is_err(), "a server name outside the cert's SANs must fail verification");
+    assert_certificate_rejected(wrong_name, "a server name outside the cert's SANs");
 
     let dev = DevCA::generate().unwrap().trust_anchor();
     let wrong_anchor = tokio::time::timeout(guard, PlayerClient::dial(addr, "player.test", &dev))
         .await
         .expect("dial hang-guard");
-    assert!(wrong_anchor.is_err(), "a DevCA anchor must not accept the minted certificate");
+    assert_certificate_rejected(wrong_anchor, "a DevCA anchor accepting the minted certificate");
     running.close();
 }

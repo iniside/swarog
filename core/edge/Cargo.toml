@@ -24,3 +24,4 @@ rcgen = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "io-util"] }
 proptest = { workspace = true }
+rustls = { workspace = true, features = ["tls12"] }

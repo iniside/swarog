@@ -429,3 +429,33 @@ async fn request_denial_is_exact_and_handler_is_not_called() {
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     running.close();
 }
+
+/// A player dial to a bound UDP socket that never answers must end in `Error::Connect`
+/// once `DIAL_DEADLINE` elapses — not wait out quinn's idle timeout, and not be
+/// reported as a handshake failure.
+#[tokio::test]
+async fn player_dial_to_silent_socket_times_out_as_connect_within_the_deadline() {
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let addr = silent.local_addr().unwrap();
+    let ca = DevCA::generate().unwrap();
+    let headroom = Duration::from_secs(10);
+
+    let started = std::time::Instant::now();
+    let res = tokio::time::timeout(
+        crate::client::DIAL_DEADLINE + headroom,
+        PlayerClient::dial(addr, "localhost", &ca.trust_anchor()),
+    )
+    .await
+    .expect("dial must be bounded by DIAL_DEADLINE, not by the outer hang guard");
+    let elapsed = started.elapsed();
+
+    match res {
+        Err(Error::Connect(text)) => assert!(text.contains("timed out"), "{text}"),
+        other => panic!("expected Error::Connect on a dial timeout, got {:?}", other.err()),
+    }
+    assert!(
+        elapsed >= crate::client::DIAL_DEADLINE,
+        "the dial failed after {elapsed:?}, before the deadline: it was not a deadline timeout"
+    );
+    drop(silent);
+}

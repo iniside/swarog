@@ -98,11 +98,26 @@ async fn dial_once(
     name: &str,
     trust: &edge::TrustAnchor,
     guard: Duration,
-) -> Result<(), String> {
+) -> Result<(), edge::Error> {
     match tokio::time::timeout(guard, edge::PlayerClient::dial(addr, name, trust)).await {
         Ok(Ok(_client)) => Ok(()),
-        Ok(Err(e)) => Err(e.to_string()),
-        Err(_) => Err(format!("no answer within {guard:?}")),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(edge::Error::Connect(format!("no answer within {guard:?}"))),
+    }
+}
+
+/// The client refused the server's certificate: a handshake failure
+/// (`Error::Connection`) naming the invalid peer certificate. A dial timeout
+/// (`Error::Connect`) is not a rejection.
+fn assert_certificate_rejected(res: Result<(), edge::Error>, what: &str, log: &str) {
+    match res {
+        Err(edge::Error::Connection(text)) => assert!(
+            text.contains("invalid peer certificate"),
+            "{what}: handshake failed but not on the certificate: {text}; log:
+{log}"
+        ),
+        other => panic!("{what}: expected a certificate rejection, got {other:?}; log:
+{log}"),
     }
 }
 
@@ -161,7 +176,8 @@ fn spawn_gateway(
     for (key, _) in std::env::vars_os() {
         let key = key.to_string_lossy().into_owned();
         if key.starts_with("TLS_")
-            || key.starts_with("PLAYER_TLS_")
+            || key.starts_with("PLAYER_")
+            || key.starts_with("RATE_LIMIT_")
             || key.starts_with("EDGE_CA_")
             || key.starts_with("ACME_")
             || key == "ORCHESTRATOR_URL"
