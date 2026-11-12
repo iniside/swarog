@@ -9,7 +9,7 @@ use super::{
     is_inline_test_mod, locking_ddl_excluded, locking_ddl_violations, missing_exclusion_violations,
     missing_svc_violations, mod_test_ident_end, module_import_violations,
     Kind, DEMO_HOST, FORBIDDEN_API_DEPS, FRONT_DOOR_HOSTS, GATEWAY_CRATE, LOCKING_DDL_EXCLUDE,
-    grep_locking_ddl, LOCKING_DDL_SCOPE, SVC_EXEMPT_MODULES, WORKSPACE_SRC_DIRS,
+    grep_locking_ddl, missing_scope_violations, LOCKING_DDL_SCOPE, SVC_EXEMPT_MODULES, WORKSPACE_SRC_DIRS,
 };
 
 #[test]
@@ -1708,9 +1708,124 @@ fn locking_ddl_raw_sql_matches_only_ddl_consts_at_a_call_boundary() {
     // green in a test file, where only `raw_sql(*_DDL)` is checked.
     assert!(!locking_ddl_violations(NON_TEST, "sqlx::raw_sql(other).execute(p);").is_empty());
     assert!(locking_ddl_violations("modules/x/src/tests.rs", "sqlx::raw_sql(other);").is_empty());
-    assert!(locking_ddl_violations(NON_TEST, "my_raw_sql(X_DDL);").is_empty());
+    // `my_raw_sql` is not the `raw_sql` token, but a `*_DDL` reaching anything other than
+    // `.sql(` is an escape in non-test module code; a test file may do it.
+    assert_one_violation_at(NON_TEST, "\nmy_raw_sql(X_DDL);\n", 2, "`X_DDL`");
+    assert!(locking_ddl_violations("modules/x/src/tests.rs", "my_raw_sql(X_DDL);").is_empty());
     // Outside RAW_DDL_SCOPE the call is not this rule's business.
     assert!(locking_ddl_violations("core/foo/src/lib.rs", "raw_sql(X_DDL);").is_empty());
+}
+
+#[test]
+fn ddl_ident_escapes() {
+    for text in [
+        "\nlet s = &SCHEMA_DDL;\n",
+        "\nsqlx::Executor::execute(&pool, SCHEMA_DDL);\n",
+        "\nsqlx::query(X_DDL);\n",
+    ] {
+        assert_one_violation_at(NON_TEST, text, 2, "other than as the direct argument");
+    }
+    assert_one_violation_at(
+        "core/admin/src/store.rs",
+        "\npool.execute(admin::USERS_DDL);\n",
+        2,
+        "`admin::USERS_DDL`",
+    );
+    // Test files may hold every red shape.
+    for text in [
+        "let s = &SCHEMA_DDL;",
+        "sqlx::Executor::execute(&pool, SCHEMA_DDL);",
+        "pool.execute(admin::USERS_DDL);",
+        "sqlx::query(X_DDL);",
+    ] {
+        assert!(locking_ddl_violations("modules/x/src/tests.rs", text).is_empty(), "{text}");
+    }
+    // Direct `.sql(` arguments, the definition and a doc mention are not escapes.
+    for text in [
+        "Ddl::new(p).sql(SCHEMA_DDL);",
+        "Ddl::new(p).sql(&SCHEMA_DDL);",
+        "Ddl::new(p).sql(&*SCHEMA_DDL);",
+        "pub const X_DDL: &str = \"CREATE TABLE s.t (a int)\";",
+        "static Y_DDL: LazyLock<String> = LazyLock::new(f);",
+        "/// Applied by [`migrate`] from [SCHEMA_DDL].",
+    ] {
+        assert!(locking_ddl_violations(NON_TEST, text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn locking_ddl_flags_each_additional_form() {
+    for (text, needle) in [
+        ("CREATE INDEX CONCURRENTLY IF NOT EXISTS i ON s.t (a)", "INDEX CONCURRENTLY IF NOT EXISTS"),
+        ("ALTER INDEX s.i RENAME TO j", "ALTER INDEX"),
+        ("DROP POLICY IF EXISTS p ON s.t", "DROP POLICY"),
+        ("DROP RULE IF EXISTS r ON s.t", "DROP RULE"),
+        ("CREATE OR REPLACE RULE r AS ON INSERT TO s.t DO NOTHING", "OR REPLACE RULE"),
+        ("CREATE OR REPLACE VIEW s.v AS SELECT 1", "OR REPLACE VIEW"),
+        ("TRUNCATE TABLE s.t", "`TRUNCATE`"),
+        ("truncate only s.u", "`TRUNCATE`"),
+        ("LOCK TABLE s.t IN ACCESS EXCLUSIVE MODE", "`LOCK`"),
+        ("lock s.v", "`LOCK`"),
+    ] {
+        assert_one_violation_at(NON_TEST, &format!("\n{text}\n"), 2, needle);
+    }
+}
+
+#[test]
+fn locking_ddl_qualified_target_forms_pass_code_and_prose() {
+    for text in [
+        "rows.truncate(3);",
+        "use x::{truncate, y};",
+        "// we truncate history nightly",
+        "// the shared lock table is gone",
+        // The rule needs a schema-qualified name right after the keyword (optionally
+        // TABLE/ONLY); a backticked name is not one, so this prose is not flagged.
+        "// take the lock `a.b` first",
+    ] {
+        assert!(locking_ddl_violations(NON_TEST, text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn locking_ddl_remedy_text_matches_the_form_class() {
+    let say_ddl = |text: &str| locking_ddl_violations(NON_TEST, text)[0].contains("use lifecycle::Ddl");
+    // Create-if-missing forms have a Ddl equivalent to point at.
+    assert!(say_ddl("CREATE INDEX IF NOT EXISTS i ON s.t (a)"));
+    assert!(say_ddl("CREATE OR REPLACE TRIGGER t BEFORE INSERT ON s.t"));
+    // ALTER/DROP contradict the wipe policy: the remedy is the wipe, not the runner.
+    for text in [
+        "ALTER TABLE s.t ADD c int",
+        "ALTER INDEX s.i RENAME TO j",
+        "DROP TRIGGER tg ON s.t",
+        "DROP INDEX s.i",
+        "DROP POLICY p ON s.t",
+        "DROP RULE r ON s.t",
+    ] {
+        assert!(!say_ddl(text), "{text}");
+        assert!(locking_ddl_violations(NON_TEST, text)[0].contains("wiping")
+            || locking_ddl_violations(NON_TEST, text)[0].contains("wipe"), "{text}");
+    }
+}
+
+#[test]
+fn missing_scope_names_the_absent_directory() {
+    let root = unique_temp_dir();
+    for d in ["core", "modules", "cmd", "tools", "demos", "tools/adminctl"] {
+        std::fs::create_dir_all(root.join(d)).unwrap();
+    }
+    let v = missing_scope_violations(&root);
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert!(v[0].starts_with("core/admin/: "), "{v:?}");
+    std::fs::create_dir_all(root.join("core/admin")).unwrap();
+    assert!(missing_scope_violations(&root).is_empty());
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn real_locking_ddl_scope_dirs_all_exist() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let v = missing_scope_violations(&root);
+    assert!(v.is_empty(), "{v:?}");
 }
 
 #[test]
