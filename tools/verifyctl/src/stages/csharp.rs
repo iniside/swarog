@@ -1,13 +1,17 @@
 use std::{
     ffi::OsString,
     net::{TcpListener, UdpSocket},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 use anyhow::Result;
 use processctl::{
     OutputDestination, OwnedChild, ProcessGroupPolicy, ShutdownPolicy, SpawnSpec, WorkspaceLayout,
+};
+use rcgen::{
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
+    KeyPair, KeyUsagePurpose,
 };
 
 use crate::{
@@ -27,6 +31,8 @@ const SHUTDOWN: ShutdownPolicy = ShutdownPolicy {
     graceful_timeout: Duration::from_secs(2),
     force_timeout: Duration::from_secs(5),
 };
+const PIN_REJECTED: &str = "rejected by the provided RemoteCertificateValidationCallback";
+const CHAIN_REJECTED: &str = "errors in the certificate chain: RemoteCertificateChainErrors";
 
 pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
     if ctx.resolve("dotnet").is_none() {
@@ -62,33 +68,9 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
     if !server.is_file() {
         return Ok(Outcome::Fail);
     }
-    let mut environment = ctx.environment().clone();
-    environment.insert("PORT".into(), format!(":{HTTP_PORT}"));
-    environment.insert("PLAYER_EDGE_ADDR".into(), format!(":{PLAYER_PORT}"));
-    environment.insert(
-        "DATABASE_URL".into(),
-        ctx.database_url().unwrap_or(DEFAULT_DSN).into(),
-    );
-    environment.insert("APIKEYS_DEV_SEED".into(), "1".into());
-    environment.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
-    environment.insert("INVENTORY_DEV_GRANT".into(), "1".into());
-    let mut child = OwnedChild::spawn(SpawnSpec {
-        label: "verify-csharp-server".into(),
-        executable: server,
-        args: Vec::new(),
-        env: environment
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect(),
-        cwd: ctx.root.clone(),
-        stdout: OutputDestination::File(ctx.stage_log("server", "out")),
-        stderr: OutputDestination::File(ctx.stage_log("server", "err")),
-        process_group: ProcessGroupPolicy::Owned,
-    })?;
-    if !wait_healthy(&mut child)? {
-        let _ = child.shutdown(SHUTDOWN);
+    let Some(mut child) = boot(ctx, &server, "server", &[])? else {
         return Ok(Outcome::Fail);
-    }
+    };
 
     let run_id = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -189,9 +171,87 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
             Expected::Success,
         ),
     ];
+    let cases = cases
+        .into_iter()
+        .map(|(label, cli, expected)| (label, cli.into_iter().map(String::from).collect(), expected))
+        .collect();
+    let mut result = run_cases(ctx, &dotnet, &mut child, cases)?;
+    let _ = child.shutdown(SHUTDOWN);
+
+    let tls = mint_player_chain(&ctx.log_dir.join("csharp-player-tls"))?;
+    if ports_occupied() {
+        ctx.note("csharp TLS fixture requested port 8099/TCP or 9100/UDP is occupied")?;
+        return Ok(Outcome::Fail);
+    }
+    let Some(mut child) = boot(
+        ctx,
+        &server,
+        "tls-server",
+        &[
+            ("PLAYER_TLS_CERT_PATH", tls.chain.display().to_string()),
+            ("PLAYER_TLS_KEY_PATH", tls.key.display().to_string()),
+        ],
+    )?
+    else {
+        return Ok(Outcome::Fail);
+    };
+    if run_cases(ctx, &dotnet, &mut child, tls_cases(&tls.root.display().to_string()))? != Outcome::Pass {
+        result = Outcome::Fail;
+    }
+    let _ = child.shutdown(SHUTDOWN);
+    Ok(result)
+}
+
+/// Boots the fixture server with `extra` on top of the stage environment and waits
+/// for `/healthz`; `None` when it never became healthy.
+fn boot(
+    ctx: &Context<'_>,
+    server: &Path,
+    label: &str,
+    extra: &[(&str, String)],
+) -> Result<Option<OwnedChild>> {
+    let mut environment = ctx.environment().clone();
+    environment.insert("PORT".into(), format!(":{HTTP_PORT}"));
+    environment.insert("PLAYER_EDGE_ADDR".into(), format!(":{PLAYER_PORT}"));
+    environment.insert(
+        "DATABASE_URL".into(),
+        ctx.database_url().unwrap_or(DEFAULT_DSN).into(),
+    );
+    environment.insert("APIKEYS_DEV_SEED".into(), "1".into());
+    environment.insert("ACCOUNTS_DEV_AUTH".into(), "1".into());
+    environment.insert("INVENTORY_DEV_GRANT".into(), "1".into());
+    for (key, value) in extra {
+        environment.insert((*key).into(), value.clone());
+    }
+    let mut child = OwnedChild::spawn(SpawnSpec {
+        label: format!("verify-csharp-{label}"),
+        executable: server.to_path_buf(),
+        args: Vec::new(),
+        env: environment
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect(),
+        cwd: ctx.root.clone(),
+        stdout: OutputDestination::File(ctx.stage_log(label, "out")),
+        stderr: OutputDestination::File(ctx.stage_log(label, "err")),
+        process_group: ProcessGroupPolicy::Owned,
+    })?;
+    if !wait_healthy(&mut child)? {
+        let _ = child.shutdown(SHUTDOWN);
+        return Ok(None);
+    }
+    Ok(Some(child))
+}
+
+fn run_cases(
+    ctx: &mut Context<'_>,
+    dotnet: &Path,
+    child: &mut OwnedChild,
+    cases: Vec<(&str, Vec<String>, Expected)>,
+) -> Result<Outcome> {
     let mut result = Outcome::Pass;
     for (label, cli, expected) in cases {
-        let mut args = vec![
+        let mut args: Vec<String> = [
             "run",
             "--project",
             "clients/csharp",
@@ -199,11 +259,14 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
             "Release",
             "--no-build",
             "--",
-        ];
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
         args.extend(cli);
         let code = ctx.command_code(
             label,
-            dotnet.clone(),
+            dotnet.to_path_buf(),
             args.into_iter().map(OsString::from).collect(),
             Duration::from_secs(30),
         )?;
@@ -220,8 +283,80 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
             break;
         }
     }
-    let _ = child.shutdown(SHUTDOWN);
     Ok(result)
+}
+
+/// The cases against the fixture serving [`mint_player_chain`]'s leaf: the pin to the
+/// root accepts it for `localhost` through the intermediate and refuses it for another
+/// name; the OS trust store refuses the self-made root.
+fn tls_cases(root: &str) -> Vec<(&'static str, Vec<String>, Expected)> {
+    let case = |trust: &[&str], server_name: &str| {
+        let mut cli = vec!["raw", "--addr", "127.0.0.1:9100"];
+        cli.extend(trust);
+        cli.extend([
+            "--server-name",
+            server_name,
+            "--api-key",
+            "dev-key-client",
+            "leaderboard.topScores",
+        ]);
+        cli.into_iter().map(String::from).collect::<Vec<_>>()
+    };
+    vec![
+        ("t1", case(&["--ca", root], "localhost"), Expected::Success),
+        (
+            "t2",
+            case(&["--ca", root], "not-localhost.verifyctl.test"),
+            Expected::Error(PIN_REJECTED),
+        ),
+        (
+            "t3",
+            case(&["--system-roots"], "localhost"),
+            Expected::Error(CHAIN_REJECTED),
+        ),
+    ]
+}
+
+struct PlayerChain {
+    root: PathBuf,
+    chain: PathBuf,
+    key: PathBuf,
+}
+
+/// Mints a root CA, an intermediate CA under it and a `localhost` server leaf under
+/// the intermediate into `dir`: the root alone, the chain file (leaf then
+/// intermediate) and the leaf key.
+fn mint_player_chain(dir: &Path) -> Result<PlayerChain> {
+    std::fs::create_dir_all(dir)?;
+    let ca_params = |name: &str, constraint: BasicConstraints| -> Result<CertificateParams> {
+        let mut params = CertificateParams::new(Vec::<String>::new())?;
+        params.distinguished_name = DistinguishedName::new();
+        params.distinguished_name.push(DnType::CommonName, name);
+        params.is_ca = IsCa::Ca(constraint);
+        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        Ok(params)
+    };
+    let root_key = KeyPair::generate()?;
+    let root = ca_params("verifyctl csharp root", BasicConstraints::Unconstrained)?
+        .self_signed(&root_key)?;
+    let intermediate_key = KeyPair::generate()?;
+    let intermediate = ca_params("verifyctl csharp intermediate", BasicConstraints::Constrained(0))?
+        .signed_by(&intermediate_key, &root, &root_key)?;
+    let leaf_key = KeyPair::generate()?;
+    let mut leaf_params = CertificateParams::new(vec!["localhost".to_string()])?;
+    leaf_params.distinguished_name = DistinguishedName::new();
+    leaf_params.distinguished_name.push(DnType::CommonName, "localhost");
+    leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    let leaf = leaf_params.signed_by(&leaf_key, &intermediate, &intermediate_key)?;
+    let chain = PlayerChain {
+        root: dir.join("root.pem"),
+        chain: dir.join("chain.pem"),
+        key: dir.join("key.pem"),
+    };
+    std::fs::write(&chain.root, root.pem())?;
+    std::fs::write(&chain.chain, format!("{}{}", leaf.pem(), intermediate.pem()))?;
+    std::fs::write(&chain.key, leaf_key.serialize_pem())?;
+    Ok(chain)
 }
 
 #[derive(Clone, Copy)]

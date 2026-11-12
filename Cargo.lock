@@ -3192,6 +3192,7 @@ name = "playercli"
 version = "0.1.0"
 dependencies = [
  "edge",
+ "rcgen",
  "serde_json",
  "tokio",
 ]
@@ -5165,9 +5166,11 @@ name = "verifyctl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "edge",
  "libc",
  "processctl",
  "rand 0.8.6",
+ "rcgen",
  "remote",
  "reqwest",
  "serde",

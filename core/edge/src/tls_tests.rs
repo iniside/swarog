@@ -303,3 +303,26 @@ async fn resolver_backed_player_server_presents_the_resolvers_certificate() {
     assert_certificate_rejected(wrong_anchor, "a DevCA anchor accepting the minted certificate");
     running.close();
 }
+
+#[tokio::test]
+async fn system_roots_reject_a_self_made_ca_on_the_certificate() {
+    let m = mint("player.test");
+    let dir = fresh_dir("system-roots");
+    let (ca, _, _) = write_all(&dir, &m);
+    let running = PlayerServer::new()
+        .listen("127.0.0.1:0".parse().unwrap(), resolver_config(&m, "system-roots-cfg"))
+        .unwrap();
+    let addr = running.local_addr();
+    let guard = Duration::from_secs(60);
+
+    tokio::time::timeout(guard, PlayerClient::dial(addr, "player.test", &anchor(&ca)))
+        .await
+        .expect("dial hang-guard")
+        .expect("the minted CA's anchor must accept its own leaf");
+
+    let system = tokio::time::timeout(guard, PlayerClient::dial(addr, "player.test", &TrustAnchor::system_roots()))
+        .await
+        .expect("dial hang-guard");
+    assert_certificate_rejected(system, "the OS trust store accepting a self-made CA's leaf");
+    running.close();
+}

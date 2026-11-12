@@ -201,3 +201,7 @@ fn resolve(addr: &str) -> Result<(Vec<SocketAddr>, String), String> {
     }
     Ok((socket_addrs, host.to_string()))
 }
+
+#[cfg(test)]
+#[path = "main_tests.rs"]
+mod tests;
