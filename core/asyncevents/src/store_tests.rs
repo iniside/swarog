@@ -367,8 +367,11 @@ async fn history_contract_seeds_and_is_idempotent() {
 /// the boot with the bump remedial. Staged inside an uncommitted transaction so
 /// the mismatch is never visible to concurrently running suites; the healthy
 /// path is asserted on the same pool first.
+/// Takes WRITER_LOCK_CHOREOGRAPHY: its uncommitted `plane_meta` UPDATE would make
+/// the short-`lock_timeout` migrates in the tests below 55P03 on the seed.
 #[tokio::test]
 async fn identity_mismatch_guard_fails_startup() {
+    let _choreo = WRITER_LOCK_CHOREOGRAPHY.lock().await;
     let Some(pool) = test_pool().await else { return };
 
     startup_guards(&pool).await.expect("guards must pass on a healthy DB");
@@ -466,6 +469,75 @@ async fn migrate_lock_timeout_fails_fast_without_poisoning_pool() {
     ensure_schema_with_lock_timeout(&small_pool, "5s")
         .await
         .expect("ensure_schema must succeed once the migrate lock is free");
+}
+
+/// The `plane_meta` seed runs inside the migrate transaction under its
+/// `lock_timeout`: an open transaction that changed the `plane_meta` row (what
+/// `bump_generation` does mid-flight) makes the seed's `ON CONFLICT` wait on it,
+/// and that wait must fail fast with the plane_meta label, never hang unbounded,
+/// and leave the single pooled connection usable. A hang-guard bounds the call so
+/// a regression fails the test instead of wedging it. Takes
+/// WRITER_LOCK_CHOREOGRAPHY: it holds a `plane_meta` row lock across awaits.
+#[tokio::test]
+async fn plane_meta_seed_wait_is_bounded_by_lock_timeout() {
+    let _choreo = WRITER_LOCK_CHOREOGRAPHY.lock().await;
+    let Some(pool) = test_pool().await else { return };
+
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let small_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&dsn)
+        .await
+        .expect("test_pool connected, so a second pool must too");
+
+    let gen_before: i64 =
+        sqlx::query_scalar("SELECT generation FROM asyncevents.plane_meta WHERE singleton")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+    let mut blocker = pool.acquire().await.unwrap();
+    sqlx::raw_sql("BEGIN;").execute(&mut *blocker).await.unwrap();
+    sqlx::query("UPDATE asyncevents.plane_meta SET generation = generation + 1 WHERE singleton")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        ensure_schema_with_lock_timeout(&small_pool, "1s"),
+    )
+    .await;
+    // Release the blocker before asserting so a failure cannot leave the row locked.
+    sqlx::raw_sql("ROLLBACK;").execute(&mut *blocker).await.unwrap();
+    drop(blocker);
+    let err = result
+        .expect("the plane_meta seed wait was not bounded by lock_timeout (hang-guard fired)")
+        .expect_err("a held plane_meta row must fail the seed, not succeed");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("plane_meta"), "error must name plane_meta: {msg}");
+    assert!(msg.contains("pg_blocking_pids"), "error must name the remedial: {msg}");
+    assert!(
+        !msg.contains("V2 plane advisory lock"),
+        "the seed wait must not be mislabelled as the migrate advisory lock: {msg}"
+    );
+
+    // Same single connection the failed migrate ran on: must not be poisoned.
+    let one: i32 = sqlx::query_scalar("SELECT 1")
+        .fetch_one(&small_pool)
+        .await
+        .expect("the migrate connection must not be left mid-aborted-tx");
+    assert_eq!(one, 1);
+
+    ensure_schema_with_lock_timeout(&small_pool, "5s")
+        .await
+        .expect("the migrate must succeed once the plane_meta row is free");
+    let gen_after: i64 =
+        sqlx::query_scalar("SELECT generation FROM asyncevents.plane_meta WHERE singleton")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(gen_after, gen_before, "the rolled-back blocker and the seed must not change generation");
 }
 
 /// [`V2_DDL_TEMPLATE`] rendered and split exactly as
@@ -588,6 +660,14 @@ fn lock_timeout_message_names_a_relation_wait_for_append_event_not_the_advisory_
     assert!(!msg.contains("V2 plane advisory lock"), "{msg}");
     assert!(msg.contains("plane lock (relation or catalog row)"), "{msg}");
     assert!(msg.contains("CREATE OR REPLACE FUNCTION asyncevents.append_event"), "{msg}");
+}
+
+#[test]
+fn lock_timeout_message_names_plane_meta_for_the_seed_not_the_advisory_lock() {
+    let msg = lock_timeout_message(PLANE_META_SEED_SQL, "60s");
+    assert!(msg.contains("plane_meta"), "{msg}");
+    assert!(msg.contains("60s"), "{msg}");
+    assert!(!msg.contains("V2 plane advisory lock"), "{msg}");
 }
 
 #[test]
