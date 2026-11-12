@@ -21,10 +21,8 @@
 //!
 //! `--addr` may resolve to several addresses; they are dialed in resolver order until
 //! one connects. Every failed address gets its own stderr line,
-//! `playercli: dial <addr>: <socket-addr>: <error>`, or `playercli: dial <addr>: <error>`
-//! when the error text already names the socket address, so it appears once. If none
-//! connects, those lines are the
-//! output and the exit code is 1; if a later address connects, the earlier failures
+//! `playercli: dial <addr>: <socket-addr>: <error>`. If none connects, those lines are
+//! the output and the exit code is 1; if a later address connects, the earlier failures
 //! are printed as `playercli: warning: dial ...` lines and do not change the exit code.
 
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -144,10 +142,7 @@ async fn main() -> ExitCode {
                 dialed = Some(c);
                 break;
             }
-            Err(e) => {
-                let msg = e.to_string();
-                failures.push(if msg.contains(&socket_addr.to_string()) { msg } else { format!("{socket_addr}: {msg}") });
-            }
+            Err(e) => failures.push(format!("{socket_addr}: {e}")),
         }
     }
     let Some(client) = dialed else {

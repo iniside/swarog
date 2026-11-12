@@ -634,7 +634,7 @@ impl PlayerClient {
             .map_err(|e| Error::Connect(e.to_string()))?;
         let conn = tokio::time::timeout(DIAL_DEADLINE, connecting)
             .await
-            .map_err(|_| Error::Connect(format!("player dial to {addr} timed out after {DIAL_DEADLINE:?}")))?
+            .map_err(|_| Error::Connect(format!("player dial timed out after {DIAL_DEADLINE:?}")))?
             .map_err(|e| Error::Connection(e.to_string()))?;
         Ok(PlayerClient { _endpoint: endpoint, conn })
     }
