@@ -83,7 +83,7 @@ members = [
     "tools/eventctl",
     # Admin-user operator CLI (Step 3): mint/list/delete GameOps admin logins in the
     # shared `admin` schema over DATABASE_URL; wrapped by the root install.sh/.ps1.
-    # Reuses the core `admin` crate's USERS_DDL + argon2 hash fns (one source of truth).
+    # Reuses the core `admin` crate's migrate_users + argon2 hash fns (one source of truth).
     "tools/adminctl",
     # Demo-data seeder: drives a running fleet's public gateway API so the admin panel
     # shows deterministic data. No DB access, no workspace-crate dependencies.

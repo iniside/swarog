@@ -1,7 +1,7 @@
 //! `adminctl` operator logic over the shared `admin` schema. The mutating verbs live
 //! here (not in `main.rs`) so they are unit-testable against live Postgres; `main.rs`
 //! is a thin arg dispatcher (the `tools/` style — no clap). The users-table shape and
-//! the argon2id hashing parameters come from the core `admin` crate ([`admin::USERS_DDL`],
+//! the argon2id hashing parameters come from the core `admin` crate ([`admin::migrate_users`],
 //! [`admin::hash_password`], [`admin::verify_password`]) — one source of truth, so the
 //! installer and the login path can never drift.
 
@@ -121,20 +121,14 @@ pub struct UserRow {
     pub created_at: String,
 }
 
-/// Ensures schema `admin` and the `admin.users` table exist. Runs the SAME
-/// `admin::USERS_DDL` the module applies in `migrate` — the CLI creates admin users on
-/// a fresh database (the installer precondition), so it must be self-sufficient without
-/// having booted the module. Both statements are idempotent (`IF NOT EXISTS`).
+/// Ensures schema `admin` and the `admin.users` table exist via
+/// [`admin::migrate_users`], the same users DDL the module applies in `migrate` — the
+/// CLI creates admin users on a fresh database (the installer precondition), so it must
+/// be self-sufficient without having booted the module. Idempotent.
 pub async fn ensure_schema(pool: &PgPool) -> Result<()> {
-    sqlx::raw_sql("CREATE SCHEMA IF NOT EXISTS admin;")
-        .execute(pool)
+    admin::migrate_users(pool)
         .await
-        .context("adminctl: create schema admin")?;
-    sqlx::raw_sql(admin::USERS_DDL)
-        .execute(pool)
-        .await
-        .context("adminctl: create table admin.users")?;
-    Ok(())
+        .context("adminctl: create schema admin and table admin.users")
 }
 
 /// `create-user`: upsert one admin login. Ensures the schema/table, argon2id-hashes

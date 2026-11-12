@@ -10,7 +10,7 @@ publish = false
 # login_attempts), argon2id session login with asymmetric lockout, CSRF on logout,
 # and the durable `admin.action` audit trail. Imports only contract crates +
 # foundations.
-# `tools/adminctl` (an operator CLI, not a module) reuses `USERS_DDL` + the pub
+# `tools/adminctl` (an operator CLI, not a module) reuses `migrate_users` + the pub
 # password fns — one source of truth, no drift.
 [dependencies]
 controlplane = { workspace = true }

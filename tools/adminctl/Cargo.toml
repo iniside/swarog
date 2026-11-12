@@ -10,7 +10,7 @@ publish = false
 # `install.ps1`. Hand-rolled arg parsing (like the other tools/ crates); the mutating
 # logic lives in the lib so it is unit-testable, main is a thin dispatcher. Depends on
 # the `admin` module crate for the ONE source of truth on the users table shape
-# (`USERS_DDL`) and the argon2id `hash_password`/`verify_password` fns — no DDL or
+# (`migrate_users`) and the argon2id `hash_password`/`verify_password` fns — no DDL or
 # hashing parameters are duplicated here. Tools are not modules: archcheck's fortress
 # rules constrain `modules/*` edges, not a `tools/*` consumer of a module crate (same
 # spirit as `checkmodules` importing the `cmd/*` libs).

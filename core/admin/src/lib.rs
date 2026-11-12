@@ -3,8 +3,8 @@
 //! ## GameOps identity (session auth — replaces the old Basic-auth gate)
 //!
 //! The module owns schema **`admin`**: `admin.users` (argon2id PHC hashes, minted by
-//! the `adminctl` operator CLI — [`USERS_DDL`] is `pub` so the CLI executes the SAME
-//! DDL), `admin.sessions` (opaque token + per-session CSRF token, 12h TTL, cookie
+//! the `adminctl` operator CLI — [`migrate_users`] is `pub` so the CLI creates the
+//! SAME table), `admin.sessions` (opaque token + per-session CSRF token, 12h TTL, cookie
 //! `admin_session`: HttpOnly + SameSite=Strict + Path=/admin, `Secure` unless the
 //! dev knob `ADMIN_COOKIE_SECURE=0` opts out — loud warn), and `admin.login_attempts`
 //! (asymmetric lockout: a `user:<name>` row locks after 5 consecutive fails, an
@@ -49,7 +49,7 @@ use axum_extra::extract::CookieJar;
 use base64::Engine as _;
 use bus::{AnyTx, Bus};
 use ipnet::IpNet;
-use lifecycle::{Context, Module};
+use lifecycle::{Context, Ddl, Module};
 use rand::RngCore as _;
 use serde::Serialize;
 use sqlx::PgPool;
@@ -153,10 +153,9 @@ const REVEAL_TTL: Duration = Duration::from_secs(300);
 
 const SCHEMA_DDL: &str = "CREATE SCHEMA IF NOT EXISTS admin;";
 
-/// The `admin.users` DDL — `pub` on purpose: `tools/adminctl` (the operator CLI
-/// that mints admin users on a fresh database) executes this SAME const before its
-/// upsert, so the installer and the module can never drift on the table shape.
-pub const USERS_DDL: &str = r#"
+/// The `admin.users` table. [`migrate_users`] applies it for `tools/adminctl`, so
+/// the installer and the module share one table shape.
+const USERS_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS admin.users (
 	username   text PRIMARY KEY,
 	pass_hash  text NOT NULL,
@@ -164,43 +163,33 @@ CREATE TABLE IF NOT EXISTS admin.users (
 	created_at timestamptz NOT NULL DEFAULT now()
 );"#;
 
-/// Sessions + login-attempt bookkeeping (module-private tables).
-///
-/// LOCK ORDER (deliberate): `login_attempts` is created BEFORE `sessions`, matching
-/// the order the login write path acquires table locks (`authenticate_and_mint`
-/// DELETEs `login_attempts` before INSERTing `sessions`). A re-run of this idempotent
-/// DDL (`CREATE INDEX IF NOT EXISTS` still takes a ShareLock even on an existing
-/// index) therefore acquires the two tables in the SAME order as a concurrent login,
-/// so the two transactions can only serialize — never form a deadlock cycle. The
-/// reverse order deadlocked a live login against a concurrent migrate under parallel
-/// test load (login killed → 500, or migrate killed → "deadlock detected").
-const AUTH_DDL: &str = r#"
+/// Login-attempt bookkeeping (module-private table).
+const LOGIN_ATTEMPTS_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS admin.login_attempts (
 	subject      text PRIMARY KEY,   -- 'user:<name>' | 'ip:<addr>'
 	fails        int  NOT NULL DEFAULT 0,
 	locked_until timestamptz,
 	updated_at   timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS admin_login_attempts_updated_idx
-ON admin.login_attempts(updated_at);
+);"#;
+
+/// Sessions (module-private table).
+const SESSIONS_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS admin.sessions (
 	token      text PRIMARY KEY,
 	username   text NOT NULL REFERENCES admin.users(username) ON DELETE CASCADE,
 	csrf_token text NOT NULL,
 	created_at timestamptz NOT NULL DEFAULT now(),
 	expires_at timestamptz NOT NULL
-);
-CREATE INDEX IF NOT EXISTS admin_sessions_expires_idx ON admin.sessions(expires_at);"#;
+);"#;
 
 /// Show-once reveal redemption store. Shared Postgres, NOT process memory, so a
 /// follow-up GET can LB-route to ANY replica.
-const REVEAL_DDL: &str = r#"
+const REVEALS_DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS admin.reveals (
 	token      text PRIMARY KEY,
 	reveal     text NOT NULL,
 	created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS admin_reveals_created_idx ON admin.reveals(created_at);"#;
+);"#;
 
 /// Form instances and click claims (`engine::forms`): one row per rendered form or per
 /// operator button, claimed by the submit that invokes it.
@@ -220,8 +209,20 @@ CREATE TABLE IF NOT EXISTS admin.forms (
 	claimed_at   timestamptz,
 	consumed_at  timestamptz,
 	expires_at   timestamptz NOT NULL
-);
-CREATE INDEX IF NOT EXISTS forms_expires_at ON admin.forms (expires_at);"#;
+);"#;
+
+/// Adds schema `admin` and the `admin.users` table to `ddl` — the one definition
+/// both [`Admin`]'s `migrate` and [`migrate_users`] run.
+fn users_ddl(ddl: Ddl) -> Ddl {
+    ddl.sql(SCHEMA_DDL).sql(USERS_DDL)
+}
+
+/// Creates schema `admin` and the `admin.users` table, for `tools/adminctl`, which
+/// mints admin users on a database no module has booted against. Runs through the
+/// same [`Ddl`] runner (and its DDL lock) as the module's `migrate`.
+pub async fn migrate_users(pool: &PgPool) -> anyhow::Result<()> {
+    users_ddl(Ddl::new(pool)).run().await
+}
 
 // ---------------------------------------------------------------------------
 // Module
@@ -340,18 +341,35 @@ impl Module for Admin {
         Ok(())
     }
 
-    /// Creates this module's own schema (users / sessions / login_attempts).
-    /// Idempotent; `USERS_DDL` is the same const `adminctl` executes.
+    /// Creates this module's own schema (users / login_attempts / sessions / reveals /
+    /// forms). Idempotent; the users part is the same one [`migrate_users`] runs.
     async fn migrate(&self, ctx: &Context) -> anyhow::Result<()> {
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("admin requires a DB pool (schema admin)"))?;
-        sqlx::raw_sql(SCHEMA_DDL).execute(pool).await?;
-        sqlx::raw_sql(USERS_DDL).execute(pool).await?;
-        sqlx::raw_sql(AUTH_DDL).execute(pool).await?;
-        sqlx::raw_sql(REVEAL_DDL).execute(pool).await?;
-        sqlx::raw_sql(FORMS_DDL).execute(pool).await?;
-        Ok(())
+        users_ddl(Ddl::new(pool))
+            .sql(LOGIN_ATTEMPTS_DDL)
+            .index(
+                "admin.admin_login_attempts_updated_idx",
+                "CREATE INDEX admin_login_attempts_updated_idx ON admin.login_attempts(updated_at)",
+            )
+            .sql(SESSIONS_DDL)
+            .index(
+                "admin.admin_sessions_expires_idx",
+                "CREATE INDEX admin_sessions_expires_idx ON admin.sessions(expires_at)",
+            )
+            .sql(REVEALS_DDL)
+            .index(
+                "admin.admin_reveals_created_idx",
+                "CREATE INDEX admin_reveals_created_idx ON admin.reveals(created_at)",
+            )
+            .sql(FORMS_DDL)
+            .index(
+                "admin.forms_expires_at",
+                "CREATE INDEX forms_expires_at ON admin.forms (expires_at)",
+            )
+            .run()
+            .await
     }
 
     /// Wiring only, no I/O: compiles the templates, reads the dev knobs
