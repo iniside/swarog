@@ -11,6 +11,9 @@ Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
       (e.g. `api.example.com`); propagation confirmed (`nslookup`).
 - [ ] Port **443** reachable from the internet on the gateway host (ACME here is
       TLS-ALPN-01 — **no port 80 needed**, no HTTP→HTTPS redirect exists).
+- [ ] Port **9100/udp** (`PLAYER_EDGE_ADDR`) reachable from the internet if players
+      connect over QUIC. It is a separate UDP listener: the 443 rule above does not
+      cover it.
 - [ ] Postgres provisioned; `DATABASE_URL` set for every backend process.
 - [ ] Real (non-dev) `EDGE_CA_CERT`/`EDGE_CA_KEY` minted via `cargo run -p edgeca`
       and distributed to all processes (never the ephemeral in-memory dev CA —
@@ -26,6 +29,11 @@ Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
 - [ ] `ACME_CACHE_DIR=<persistent path>` (default `run/acme-cache`; MUST survive
       restarts or you re-issue on every boot and hit LE rate limits)
 - [ ] `PORT=:443`
+- [ ] Player QUIC (:9100) serves the same certificate as HTTPS under `TLS_MODE=acme`
+      (one ACME order; `ACME_DOMAINS` must include the host players dial) and the
+      `TLS_CERT_PATH` pair under `TLS_MODE=files`. `PLAYER_TLS_CERT_PATH` +
+      `PLAYER_TLS_KEY_PATH` (both or neither) override both. With `TLS_MODE=off`
+      and no `PLAYER_TLS_*` it serves a dev certificate and logs a warning.
 - [ ] `ADMIN_HTTP_ADDR=<admin-svc host:port>` (the `/admin` passthrough origin;
       `cmd/gateway-svc` only — `cmd/server` does not read it)
 - [ ] Dev knobs NOT set: no `APIKEYS_DEV_ALLOW`, no `ACCOUNTS_DEV_AUTH` unless
@@ -51,6 +59,10 @@ Companion plan: `docs/plans/2026-07-10-2314-admin-hardening-plan.md`.
       cert). First request may be slow while the order completes.
 - [ ] `curl -I https://api.example.com/leaderboard -H "X-Api-Key: <real key>"` →
       200, valid LE chain (no `-k`!).
+- [ ] Player QUIC: `cargo run -p playercli -- --addr api.example.com:9100
+      --system-roots --api-key <real key> leaderboard.topScores` → exit 0 (the
+      OS trust store validates the chain and the host name; no `--ca`). Until the
+      first ACME certificate exists the QUIC handshake fails, like HTTPS.
 - [ ] Browser: `https://api.example.com/admin` → redirects to `/admin/login` →
       log in → portal renders; devtools shows `admin_session` cookie with
       `Secure; HttpOnly; SameSite=Strict; Path=/admin`.

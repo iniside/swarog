@@ -504,7 +504,10 @@ never a silent last-writer-wins overwrite.
   `app::TlsFronts::from_values`: `TLS_MODE=off|files|acme` (default off),
   `TLS_CERT_PATH`+`TLS_KEY_PATH`, `ACME_DOMAINS`/`ACME_CONTACT`/`ACME_CACHE_DIR`;
   rustls-acme TLS-ALPN-01 auto-renew, ring-pinned — `aws-lc-rs` must never enter
-  the tree). The FrontDoor is hosted ONLY by the front
+  the tree). The player QUIC front's certificate is chosen once at boot by
+  `resolve_player_tls`: `PLAYER_TLS_CERT_PATH`+`PLAYER_TLS_KEY_PATH` (both or
+  neither) > the HTTPS front's cert (`files`, or the one shared ACME state) > a
+  dev-CA leaf with a boot `warn!` when `TLS_MODE=off`. The FrontDoor is hosted ONLY by the front
   processes (`cmd/gateway-svc`, the monolith `cmd/server`); a domain svc NEVER hosts it —
   it serves ops over the internal mTLS edge and gateway-svc dispatches Remote. Enforced by
   `archcheck` (only gateway-svc + server may depend on the `gateway` crate).

@@ -25,9 +25,12 @@ The client speaks the player-edge plane implemented in `core/edge/`:
 - **Address:** `:9100` by default (`PLAYER_EDGE_ADDR`).
 - **ALPN:** `edge-player`, **TLS 1.3** only.
 - **Trust:** server-cert-only — the client presents no client certificate; it
-  verifies the server against a CA (dev: trust-any; prod-like: pin to exactly one
-  CA file).
-- **SNI:** `localhost` (the server leaf carries a `localhost` SAN + loopback IPs).
+  verifies the server by one of three modes: the OS trust store (`--system-roots`),
+  a pin to exactly one CA file (`--ca`), or trust-any (`--insecure`).
+- **Server name (SNI):** `--server-name`; default is the host of `--addr` when it
+  is a DNS name, else `localhost`. The server's dev-CA leaf (`TLS_MODE=off`, no
+  `PLAYER_TLS_*`) carries a `localhost` SAN + loopback IPs; a production certificate
+  must carry the name players dial.
 - **Framing:** one bidirectional QUIC stream per call. Each side writes a **4-byte
   big-endian length prefix + JSON body**, single contiguous write, `completeWrites`
   on the request to signal EOF.
@@ -94,18 +97,22 @@ pretty JSON for debugging/golden tests without touching the C# output.
 
 ## Dev vs prod-like mode
 
-Both `gbclient` modes and `QuicPlayerClient.ConnectAsync` take mutually exclusive
-`--insecure` / `--ca <path>` trust options:
+`gbclient` takes exactly one of `--insecure` / `--ca <path>` / `--system-roots`
+(`PlayerTrust` in `QuicPlayerClient.ConnectAsync`):
 
 - **`--insecure`** — dev trust-any: `RemoteCertificateValidationCallback` always
   returns `true`, no CA file needed. Pairs with the server's ephemeral-CA
   auto-generation in dev (`core/edge`'s `dev_ca_from_env`).
-- **`--ca <edge-ca.crt>`** — prod-like: loads exactly one CA cert (PEM,
+- **`--ca <ca.crt>`** — pinned: loads exactly one CA cert (PEM,
   `X509Certificate2.CreateFromPem`, cert-only — no private key, matching an
-  anchor) and validates the server chain against it via
-  `X509ChainTrustMode.CustomRootTrust` with **no system-roots fallback**
-  (mirrors Rust's `TrustAnchor` with exactly one anchor). Revocation checking is
-  off (the dev CA publishes no CRL/OCSP).
+  anchor). The chain is built via `X509ChainTrustMode.CustomRootTrust` from the
+  intermediates the server sent, with **no system-roots fallback**; the built
+  chain's root must be byte-equal to the pinned CA, the leaf must carry the
+  serverAuth EKU, and any policy error other than a chain error (a host-name
+  mismatch included) rejects it. Revocation checking is off (the dev CA publishes
+  no CRL/OCSP).
+- **`--system-roots`** — no validation callback: .NET checks the chain against the
+  OS trust store and the host name against `--server-name`.
 
 **The `dev-<pid>` token shortcut is NOT available to this client.** That path only
 activates in `DevSessionVerifier` when a process's gateway has no `accounts.sessions`
@@ -121,9 +128,13 @@ the blocking split-proof stage does), or just run `gbclient flow` which performs
 `gbclient` (built from `clients/csharp/`, entry point `Program.cs`) has two modes:
 
 ```
-gbclient raw  --addr HOST:PORT (--ca PATH | --insecure) [--token TOK] [--api-key KEY] METHOD [JSON-PAYLOAD]
-gbclient flow --addr HOST:PORT (--ca PATH | --insecure) [--api-key KEY]
+gbclient raw  --addr HOST:PORT (--ca PATH | --system-roots | --insecure) [--server-name NAME] [--token TOK] [--api-key KEY] METHOD [JSON-PAYLOAD]
+gbclient flow --addr HOST:PORT (--ca PATH | --system-roots | --insecure) [--server-name NAME] [--api-key KEY]
 ```
+
+`HOST` is an IP literal (dialed directly) or a DNS name (every resolved address is
+tried in order; earlier failures are printed as warnings when a later one
+connects).
 
 - **`raw`** — drives the untyped `IPlayerTransport` directly with any method
   string (including wire-only ones like `characters.ownerOf`, which the generated
@@ -135,8 +146,7 @@ gbclient flow --addr HOST:PORT (--ca PATH | --insecure) [--api-key KEY]
   character appears in the list.
 - **`--api-key KEY`** — the connection-scoped API key (gateway's per-key method
   policy, `X-Api-Key` on HTTP / `api_key` in the player envelope). Bound once at
-  `QuicPlayerClient.ConnectAsync`/`--insecure`|`--ca` connect time (like the trust
-  mode), then stamped into every call's envelope automatically — both `raw` and
+  `QuicPlayerClient.ConnectAsync` connect time (like the trust mode), then stamped into every call's envelope automatically — both `raw` and
   `flow` honor it. Omit it (or point at a key whose policy forbids the method) to
   exercise the 401/403 paths.
 
@@ -147,7 +157,7 @@ Exit codes (both modes):
 | 0 | Transport ok AND domain `status == "Ok"` (raw), or the flow completed and asserted (flow) |
 | 1 | Reached the server but outcome not `Ok` — transport fault OR non-Ok domain status (auth failures arrive as `ok:true` per the pinned error grammar) — or a typed-client exception in flow mode |
 | 2 | Usage / argument error |
-| 3 | QUIC (`System.Net.Quic`/msquic) unsupported on this platform |
+| 3 | QUIC (`System.Net.Quic`/msquic) unsupported on this platform (checked before the mode is parsed) |
 
 ## The verify stages
 
@@ -157,7 +167,7 @@ Two independent `verifyctl` stages are deliberately split by runtime dependency:
   output in an isolated directory and compares it byte-for-byte with
   `clients/csharp/Generated`. Pure Rust — no `dotnet`, no QUIC — so it runs on
   every machine and catches a contract change that was not regenerated.
-- **`csharp-client` (advisory, SKIP-aware).** Builds `clients/csharp` with
+- **`csharp-client` (advisory).** Builds `clients/csharp` with
   `dotnet build -c Release --disable-build-servers` so the verifier-owned process
   tree exits with the build instead of waiting for a persistent compiler server,
   then boots a self-contained monolith
@@ -174,10 +184,15 @@ Two independent `verifyctl` stages are deliberately split by runtime dependency:
   with `dev-key-client` (C5, expect exit 1 + `Forbidden` — the client-facing dev
   key's policy deliberately omits `match.report`), and `match.report` with
   `dev-key-server` (C6, `full` policy, expect exit 0 — the key-policy proof on the
-  external C# client). A missing `dotnet` is FAIL by default and SKIP only when the
-  operator explicitly passed `--no-install`; an available runtime whose first
-  scenario exits `3` (`QuicConnection.IsSupported` false) is a documented platform
-  SKIP.
+  external C# client). The stage then stops that server and boots a second one with
+  `PLAYER_TLS_CERT_PATH`/`PLAYER_TLS_KEY_PATH` set to a leaf (CN/SAN `localhost`,
+  serverAuth) issued by an intermediate under a root the stage mints, and runs three
+  more scenarios on `--server-name`: `--ca <root>` with `localhost` passes (T1);
+  `--ca <root>` with another name is rejected by the pin (T2); `--system-roots`
+  rejects the self-made root (T3). A missing `dotnet` is FAIL by default and SKIP
+  only when the operator explicitly passed `--no-install`. The stage is declared
+  not applicable on macOS (no msquic build) and skips there; on any other platform
+  a scenario that exits `3` is a FAIL, not a SKIP.
 
 Run the blocking freshness proof with `cargo run -p verifyctl -- --fast`; run the
 live external-client stage with `cargo run -p verifyctl -- --all` (or add
@@ -185,12 +200,12 @@ live external-client stage with `cargo run -p verifyctl -- --all` (or add
 
 ## The msquic / Linux-CI caveat
 
-`System.Net.Quic` is stable from .NET 9 but depends on `msquic`. On Windows 11
-(this repo's dev box, where `verifyctl` runs locally) msquic ships in-box, so the
-`csharp-client` stage runs cleanly. On
-Linux, `msquic` requires the separate `libmsquic` package, and recent-distro
-packaging has known gaps — so the stage is written to SKIP cleanly there
-(`QuicConnection.IsSupported == false` → exit 3) rather than FAIL. The
+The client targets `net10.0` (`clients/csharp/GameBackend.Client.csproj`);
+`System.Net.Quic` depends on `msquic`. On Windows 11 (this repo's dev box, where
+`verifyctl` runs locally) msquic ships in-box, so the `csharp-client` stage runs
+cleanly. On Linux, `msquic` requires the separate `libmsquic` package, and
+recent-distro packaging has known gaps; without it `gbclient` exits `3` and the
+stage FAILs. On macOS the stage is skipped by platform declaration. The
 `codegen-freshness` stage has no such dependency and is
 the one guaranteed to run everywhere.
 

@@ -305,11 +305,16 @@ and `SWAROG_HTTP_PORT`. For TLS, either:
 - `TLS_MODE=acme` with `ACME_DOMAINS`, which needs `SWAROG_BIND=0.0.0.0`,
   `SWAROG_HTTP_PORT=443` and public DNS.
 - Or terminate TLS in a reverse proxy and set `TRUSTED_PROXY_CIDRS` to its
-  address range.
+  address range. The proxy does not carry QUIC: set `PLAYER_TLS_CERT_PATH` and
+  `PLAYER_TLS_KEY_PATH` (both or neither; PEM files under `/tls`) to give the
+  player port its own certificate.
 
-The player QUIC port `9100/udp` is published too, but it presents a certificate
-from an ephemeral development CA, so verifying clients cannot use it from outside
-yet (tracked as GATEWAY-07 in [docs/todo/gateway.md](docs/todo/gateway.md)).
+The player QUIC port `9100/udp` is published too. It presents the certificate of
+the TLS front: the `TLS_CERT_PATH` pair under `TLS_MODE=files`, or the same ACME
+certificate as HTTPS under `TLS_MODE=acme` (`ACME_DOMAINS` must include the host
+players dial). `PLAYER_TLS_CERT_PATH` and `PLAYER_TLS_KEY_PATH`, when set, win
+over both. With `TLS_MODE=off` and no `PLAYER_TLS_*` it serves a development
+certificate and logs a warning; only clients that trust the dev CA accept it.
 
 Development variant: the overlay seeds the `admin` / `admin` login, enables the
 development conveniences and dev API keys, and sends mail to the log.

@@ -46,6 +46,8 @@ cat <<EOF
 Admin user '$USERNAME' is ready. Next steps for a public deployment:
   - TLS_MODE=acme ACME_DOMAINS=admin.example.com ACME_CONTACT=you@example.com
       (or TLS_MODE=files TLS_CERT_PATH=... TLS_KEY_PATH=...) on cmd/gateway-svc.
+      The player QUIC port (9100/udp) serves the same certificate; behind a TLS-terminating
+      proxy set PLAYER_TLS_CERT_PATH and PLAYER_TLS_KEY_PATH instead.
   - ADMIN_HTTP_ADDR=0.0.0.0:8085   (bind the admin process publicly / behind the proxy).
   - TRUSTED_PROXY_CIDRS=<proxy-hop-cidr>   so the login lockout sees the real client IP,
       not the gateway. Required whenever admin runs behind a reverse proxy.
