@@ -97,7 +97,8 @@ fn parse_args() -> Result<Args, String> {
     let Some(method) = positional.first().cloned() else {
         return Err("playercli: a <method> argument is required".to_string());
     };
-    let payload = positional.get(1).cloned().unwrap_or_else(|| "null".to_string());
+    // No-arg methods decode into an empty request struct, which rejects `null`.
+    let payload = positional.get(1).cloned().unwrap_or_else(|| "{}".to_string());
 
     if repeat == 0 { return Err("playercli: --repeat must be positive".to_string()); }
     Ok(Args { addr, server_name, ca, token, api_key, method, payload, repeat, interval_ms, pause_before_last_ms })
