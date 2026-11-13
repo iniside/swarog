@@ -58,8 +58,8 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     /// threaded through <see cref="IPlayerTransport.CallAsync"/>.
     /// </param>
     /// <param name="onCertificateRejected">
-    /// Receives the reason each time <see cref="PlayerTrust.PinnedCa"/> validation
-    /// rejects the server certificate.
+    /// Receives the reason each time <see cref="PlayerTrust.PinnedCa"/> or
+    /// <see cref="PlayerTrust.SystemRoots"/> validation rejects the server certificate.
     /// </param>
     public static async Task<QuicPlayerClient> ConnectAsync(
         string host,
@@ -94,6 +94,7 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
                 ssl.RemoteCertificateValidationCallback = PinToCa(pinned.CaCertPath, onCertificateRejected);
                 break;
             case PlayerTrust.SystemRoots:
+                ssl.RemoteCertificateValidationCallback = ReportSystemRejection(onCertificateRejected);
                 break;
             default:
                 throw new ArgumentException($"unknown trust mode {trust}", nameof(trust));
@@ -172,10 +173,10 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
         return (_, serverCert, presented, sslPolicyErrors) =>
         {
             if (serverCert is null)
-                return Reject("no server certificate");
+                return Reject(onReject, "no server certificate");
             SslPolicyErrors nonChainErrors = sslPolicyErrors & ~SslPolicyErrors.RemoteCertificateChainErrors;
             if (nonChainErrors != SslPolicyErrors.None)
-                return Reject($"policy errors {nonChainErrors}");
+                return Reject(onReject, $"policy errors {nonChainErrors}");
             using var leaf = new X509Certificate2(serverCert);
             using var chain = new X509Chain();
             chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
@@ -187,21 +188,42 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
             if (OperatingSystem.IsWindows())
                 chain.ChainPolicy.ExtraStore.AddRange(CertificateContextStore(leaf));
             if (!chain.Build(leaf))
-            {
-                string status = string.Join(", ", chain.ChainStatus.Select(s => s.Status));
-                return Reject($"chain does not build to the pinned CA: {status}");
-            }
+                return Reject(onReject, $"chain does not build to the pinned CA: {ChainStatusList(chain)}");
             X509Certificate2 root = chain.ChainElements[chain.ChainElements.Count - 1].Certificate;
             if (!root.RawDataMemory.Span.SequenceEqual(caCert.RawDataMemory.Span))
-                return Reject($"chain does not end at the pinned CA: root {root.Subject}");
+                return Reject(onReject, $"chain does not end at the pinned CA: root {root.Subject}");
             return true;
         };
+    }
 
-        bool Reject(string reason)
+    /// <summary>
+    /// Builds a server-cert validation callback that keeps .NET's own system-trust
+    /// decision (accept exactly when <see cref="SslPolicyErrors.None"/>) and passes
+    /// every rejection's policy errors, plus the chain statuses when the chain failed,
+    /// to <paramref name="onReject"/>.
+    /// </summary>
+    private static RemoteCertificateValidationCallback ReportSystemRejection(Action<string>? onReject)
+    {
+        return (_, _, chain, sslPolicyErrors) =>
         {
-            onReject?.Invoke(reason);
-            return false;
-        }
+            if (sslPolicyErrors == SslPolicyErrors.None)
+                return true;
+            string reason = $"policy errors {sslPolicyErrors}";
+            if (sslPolicyErrors.HasFlag(SslPolicyErrors.RemoteCertificateChainErrors)
+                && chain is not null
+                && chain.ChainStatus.Length > 0)
+                reason += $": {ChainStatusList(chain)}";
+            return Reject(onReject, reason);
+        };
+    }
+
+    private static string ChainStatusList(X509Chain chain) =>
+        string.Join(", ", chain.ChainStatus.Select(s => s.Status));
+
+    private static bool Reject(Action<string>? onReject, string reason)
+    {
+        onReject?.Invoke(reason);
+        return false;
     }
 
     /// <summary>
