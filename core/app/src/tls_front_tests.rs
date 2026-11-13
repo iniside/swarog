@@ -228,18 +228,18 @@ struct Minted {
 }
 
 fn mint(dir: &std::path::Path, name: &str) -> Minted {
-    use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
     std::fs::create_dir_all(dir).unwrap();
     let ca_key = KeyPair::generate().unwrap();
     let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    ca_params.distinguished_name.push(DnType::CommonName, "app tls_front test CA");
     let ca = ca_params.self_signed(&ca_key).unwrap();
     let leaf_key = KeyPair::generate().unwrap();
-    let leaf = CertificateParams::new(vec![name.to_string()])
-        .unwrap()
-        .signed_by(&leaf_key, &ca, &ca_key)
-        .unwrap();
+    let mut leaf_params = CertificateParams::new(vec![name.to_string()]).unwrap();
+    leaf_params.distinguished_name.push(DnType::CommonName, name);
+    let leaf = leaf_params.signed_by(&leaf_key, &ca, &ca_key).unwrap();
     let minted = Minted { ca: dir.join("ca.pem"), cert: dir.join("cert.pem"), key: dir.join("key.pem") };
     std::fs::write(&minted.ca, ca.pem()).unwrap();
     std::fs::write(&minted.cert, leaf.pem()).unwrap();

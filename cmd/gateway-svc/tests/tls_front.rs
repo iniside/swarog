@@ -59,17 +59,17 @@ struct Certs {
 /// A CA-signed leaf whose only SAN is `name` — never `localhost`, which is all a dev
 /// CA leaf names.
 fn mint_certs(dir: &Path, prefix: &str, name: &str) -> Certs {
-    use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
     let ca_key = KeyPair::generate().expect("ca key");
     let mut ca_params = CertificateParams::new(Vec::<String>::new()).expect("ca params");
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    ca_params.distinguished_name.push(DnType::CommonName, format!("gateway-svc tls_front {prefix} CA"));
     let ca = ca_params.self_signed(&ca_key).expect("ca cert");
     let leaf_key = KeyPair::generate().expect("leaf key");
-    let leaf = CertificateParams::new(vec![name.to_string()])
-        .expect("leaf params")
-        .signed_by(&leaf_key, &ca, &ca_key)
-        .expect("leaf cert");
+    let mut leaf_params = CertificateParams::new(vec![name.to_string()]).expect("leaf params");
+    leaf_params.distinguished_name.push(DnType::CommonName, name);
+    let leaf = leaf_params.signed_by(&leaf_key, &ca, &ca_key).expect("leaf cert");
     let certs = Certs {
         ca: dir.join(format!("{prefix}-ca.pem")),
         cert: dir.join(format!("{prefix}-cert.pem")),
