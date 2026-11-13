@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use edge::{pem_cert_resolver, PlayerHandler, PlayerServer, PlayerTlsConfig, RunningServer};
-use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair, KeyUsagePurpose};
+use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
 
 struct Run {
     code: Option<i32>,
@@ -62,12 +62,15 @@ fn mint(tag: &str, names: &[&str]) -> Minted {
     let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    // rcgen gives every cert the same default subject (certificate.rs:98); distinct names
+    // keep the leaf from being self-issued (issuer == subject, RFC 5280 6.1).
+    ca_params.distinguished_name.push(DnType::CommonName, "playercli test CA");
     let ca = ca_params.self_signed(&ca_key).unwrap();
     let leaf_key = KeyPair::generate().unwrap();
-    let leaf = CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
-        .unwrap()
-        .signed_by(&leaf_key, &ca, &ca_key)
-        .unwrap();
+    let mut leaf_params =
+        CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>()).unwrap();
+    leaf_params.distinguished_name.push(DnType::CommonName, "playercli test leaf");
+    let leaf = leaf_params.signed_by(&leaf_key, &ca, &ca_key).unwrap();
     let minted = Minted { ca: dir.join("ca.pem"), cert: dir.join("cert.pem"), key: dir.join("key.pem") };
     std::fs::write(&minted.ca, ca.pem()).unwrap();
     std::fs::write(&minted.cert, leaf.pem()).unwrap();
@@ -160,6 +163,10 @@ async fn system_roots_flag_rejects_a_self_made_ca() {
     assert_eq!(run.code, Some(1), "{}", run.stderr);
     assert!(run.stderr.starts_with(&format!("playercli: dial {addr}: {addr}: ")), "{}", run.stderr);
     assert!(run.stderr.contains("invalid peer certificate"), "{}", run.stderr);
+    // The macOS verifier's wording has not been observed.
+    if cfg!(any(windows, target_os = "linux")) {
+        assert!(run.stderr.contains("UnknownIssuer"), "{}", run.stderr);
+    }
     running.close();
 }
 

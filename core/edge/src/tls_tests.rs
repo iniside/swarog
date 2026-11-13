@@ -70,12 +70,14 @@ fn mint(name: &str) -> Minted {
     let mut ca_params = CertificateParams::new(Vec::<String>::new()).unwrap();
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
     ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    // rcgen gives every cert the same default subject (certificate.rs:98); distinct names
+    // keep the leaf from being self-issued (issuer == subject, RFC 5280 6.1).
+    ca_params.distinguished_name.push(DnType::CommonName, "edge test CA");
     let ca = ca_params.self_signed(&ca_key).unwrap();
     let leaf_key = KeyPair::generate().unwrap();
-    let leaf = CertificateParams::new(vec![name.to_string()])
-        .unwrap()
-        .signed_by(&leaf_key, &ca, &ca_key)
-        .unwrap();
+    let mut leaf_params = CertificateParams::new(vec![name.to_string()]).unwrap();
+    leaf_params.distinguished_name.push(DnType::CommonName, name);
+    let leaf = leaf_params.signed_by(&leaf_key, &ca, &ca_key).unwrap();
     Minted { ca_pem: ca.pem(), cert_pem: leaf.pem(), key_pem: leaf_key.serialize_pem() }
 }
 
@@ -328,12 +330,10 @@ async fn system_roots_reject_a_self_made_ca_on_the_certificate() {
     running.close();
 }
 
-/// rustls-platform-verifier's reason for refusing `mint`'s leaf, which differs per OS
-/// verifier. Windows reports TRUST_E_CERT_SIGNATURE by its code, which no locale
-/// translates; Linux goes through webpki; the macOS wording has not been observed.
-#[cfg(windows)]
-const SYSTEM_ROOTS_REFUSAL: &str = "os error -2146869244";
-#[cfg(target_os = "linux")]
+/// rustls-platform-verifier's reason for refusing `mint`'s leaf: Windows maps
+/// CERT_E_UNTRUSTEDROOT to it (rustls-platform-verifier 0.7.0 windows.rs:686) and Linux
+/// uses webpki (others.rs:144); the macOS wording has not been observed.
+#[cfg(any(windows, target_os = "linux"))]
 const SYSTEM_ROOTS_REFUSAL: &str = "UnknownIssuer";
 #[cfg(not(any(windows, target_os = "linux")))]
 const SYSTEM_ROOTS_REFUSAL: &str = "";
