@@ -25,6 +25,8 @@
 //! the output and the exit code is 1; if a later address connects, the earlier failures
 //! are printed as `playercli: warning: dial ...` lines and do not change the exit code.
 
+use std::fmt::Display;
+use std::future::Future;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::process::ExitCode;
 
@@ -134,26 +136,24 @@ async fn main() -> ExitCode {
         None => TrustAnchor::system_roots(),
     };
 
-    let mut dialed = None;
-    let mut failures: Vec<String> = Vec::new();
-    for socket_addr in socket_addrs {
-        match PlayerClient::dial(socket_addr, &server_name, &trust).await {
-            Ok(c) => {
-                dialed = Some(c);
-                break;
+    let dialed = dial_each(socket_addrs, |socket_addr| {
+        PlayerClient::dial(socket_addr, &server_name, &trust)
+    })
+    .await;
+    let client = match dialed {
+        Ok((client, failures)) => {
+            for failure in &failures {
+                eprintln!("playercli: warning: dial {}: {failure}", args.addr);
             }
-            Err(e) => failures.push(format!("{socket_addr}: {e}")),
+            client
         }
-    }
-    let Some(client) = dialed else {
-        for failure in &failures {
-            eprintln!("playercli: dial {}: {failure}", args.addr);
+        Err(failures) => {
+            for failure in &failures {
+                eprintln!("playercli: dial {}: {failure}", args.addr);
+            }
+            return ExitCode::FAILURE;
         }
-        return ExitCode::FAILURE;
     };
-    for failure in &failures {
-        eprintln!("playercli: warning: dial {}: {failure}", args.addr);
-    }
 
     // `PlayerClient::call` already unwraps the transport envelope: `Err` here is a
     // TRANSPORT fault (the peer's `ok:false`); a domain outcome — auth failure
@@ -185,6 +185,25 @@ async fn main() -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+async fn dial_each<T, E, Dial, Dialing>(
+    socket_addrs: impl IntoIterator<Item = SocketAddr>,
+    mut dial: Dial,
+) -> Result<(T, Vec<String>), Vec<String>>
+where
+    Dial: FnMut(SocketAddr) -> Dialing,
+    Dialing: Future<Output = Result<T, E>>,
+    E: Display,
+{
+    let mut failures = Vec::new();
+    for socket_addr in socket_addrs {
+        match dial(socket_addr).await {
+            Ok(connected) => return Ok((connected, failures)),
+            Err(e) => failures.push(format!("{socket_addr}: {e}")),
+        }
+    }
+    Err(failures)
 }
 
 /// Resolves `host:port` to every address it names, in resolver order, and the
