@@ -236,7 +236,7 @@ fn pem_cert_resolver_errors_name_the_path() {
     let dir = fresh_dir("errors");
     let (_, cert, key) = write_all(&dir, &m);
     let missing = dir.join("missing.pem");
-    let err = |c: &Path, k: &Path| pem_cert_resolver(c, k).err().expect("must fail").to_string();
+    let err = |c: &Path, k: &Path| pem_cert_resolver(c, k).expect_err("must fail").to_string();
 
     let msg = err(&missing, &key);
     assert!(msg.contains(&format!("{missing:?}")), "missing cert: {msg}");
