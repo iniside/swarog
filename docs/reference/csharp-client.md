@@ -110,9 +110,12 @@ pretty JSON for debugging/golden tests without touching the C# output.
   chain's root must be byte-equal to the pinned CA, the leaf must carry the
   serverAuth EKU, and any policy error other than a chain error (a host-name
   mismatch included) rejects it. Revocation checking is off (the dev CA publishes
-  no CRL/OCSP).
-- **`--system-roots`** — no validation callback: .NET checks the chain against the
-  OS trust store and the host name against `--server-name`.
+  no CRL/OCSP). Every rejection prints `gbclient: certificate rejected: <reason>`
+  to stderr.
+- **`--system-roots`** — .NET's own decision stands: accept exactly when there are
+  no policy errors (chain checked against the OS trust store, host name against
+  `--server-name`). A rejection prints `gbclient: certificate rejected: policy errors
+  <errors>`, plus the chain statuses when the chain failed.
 
 **The `dev-<pid>` token shortcut is NOT available to this client.** That path only
 activates in `DevSessionVerifier` when a process's gateway has no `accounts.sessions`
@@ -186,10 +189,13 @@ Two independent `verifyctl` stages are deliberately split by runtime dependency:
   `dev-key-server` (C6, `full` policy, expect exit 0 — the key-policy proof on the
   external C# client). The stage then stops that server and boots a second one with
   `PLAYER_TLS_CERT_PATH`/`PLAYER_TLS_KEY_PATH` set to a leaf (CN/SAN `localhost`,
-  serverAuth) issued by an intermediate under a root the stage mints, and runs three
-  more scenarios on `--server-name`: `--ca <root>` with `localhost` passes (T1);
-  `--ca <root>` with another name is rejected by the pin (T2); `--system-roots`
-  rejects the self-made root (T3). A missing `dotnet` is FAIL by default and SKIP
+  serverAuth) issued by an intermediate under a root the stage mints (it also mints a
+  stranger root with the same subject but its own key), and runs four more scenarios
+  against `127.0.0.1:9100`: `--ca <root>` with no `--server-name` passes (t1);
+  `--ca <root>` with another `--server-name` exits 1 with a name-mismatch reason (t2);
+  `--system-roots` exits 1 with a chain-errors reason (t3); `--ca <stranger root>`
+  exits 1 with "chain does not … the pinned CA" (t4). Each rejection must also print
+  gbclient's `gbclient: certificate rejected: <reason>` line. A missing `dotnet` is FAIL by default and SKIP
   only when the operator explicitly passed `--no-install`. The stage is declared
   not applicable on macOS (no msquic build) and skips there; on any other platform
   a scenario that exits `3` is a FAIL, not a SKIP.
