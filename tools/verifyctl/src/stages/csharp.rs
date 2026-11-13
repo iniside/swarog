@@ -34,8 +34,7 @@ const SHUTDOWN: ShutdownPolicy = ShutdownPolicy {
 const CALLBACK_REJECTED: &str = "rejected by the provided RemoteCertificateValidationCallback";
 const SYSTEM_CHAIN_REJECTED: &str = "gbclient: certificate rejected: policy errors RemoteCertificateChainErrors";
 const NAME_MISMATCH: &str = "gbclient: certificate rejected: policy errors RemoteCertificateNameMismatch";
-const ROOT_NOT_PINNED: &str = "gbclient: certificate rejected: chain does not";
-const PINNED_CA: &str = "the pinned CA";
+const ROOT_NOT_PINNED: &str = "gbclient: certificate rejected: chain does not build to the pinned CA";
 
 pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
     if ctx.resolve("dotnet").is_none() {
@@ -319,7 +318,7 @@ fn tls_cases(root: &str, stranger_root: &str) -> Vec<(&'static str, Vec<String>,
         (
             "t4",
             case(&["--ca", stranger_root], None),
-            Expected::Error(&[CALLBACK_REJECTED, ROOT_NOT_PINNED, PINNED_CA]),
+            Expected::Error(&[CALLBACK_REJECTED, ROOT_NOT_PINNED]),
         ),
     ]
 }

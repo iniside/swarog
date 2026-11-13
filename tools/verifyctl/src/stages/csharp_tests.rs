@@ -83,13 +83,14 @@ fn tls_cases_differ_from_the_pinned_pass_in_one_dimension_each() {
         .map(|a| if a == "root.pem" { "stranger.pem".to_string() } else { a.clone() })
         .collect();
     assert_eq!(cases[3].1, stranger);
-    assert!(matches!(cases[3].2, Expected::Error(&[CALLBACK_REJECTED, ROOT_NOT_PINNED, PINNED_CA])));
+    assert!(matches!(cases[3].2, Expected::Error(&[CALLBACK_REJECTED, ROOT_NOT_PINNED])));
 }
 
 /// Each refusing case's markers match the output of its own cause and of no other.
-/// The outputs are gbclient's stderr lines as `Program.cs`, `PinToCa` and
-/// `ReportSystemRejection` format them; `bare callback` is a refusal with no reason
-/// line, so no case may pass on the generic callback refusal alone.
+/// The outputs are hand-copied from the C# format strings (the `Program.cs` sink,
+/// `PinToCa` and `ReportSystemRejection`), so only a live stage run proves gbclient
+/// prints them; `bare callback` is a refusal with no reason line, so no case may
+/// pass on the generic callback refusal alone.
 #[test]
 fn tls_case_markers_match_only_their_own_cause() {
     let callback = concat!(
@@ -104,10 +105,6 @@ fn tls_case_markers_match_only_their_own_cause() {
             format!("gbclient: certificate rejected: policy errors RemoteCertificateChainErrors: PartialChain, UntrustedRoot\n{callback}"),
         ),
         ("t4", format!("gbclient: certificate rejected: chain does not build to the pinned CA: PartialChain\n{callback}")),
-        (
-            "t4",
-            format!("gbclient: certificate rejected: chain does not end at the pinned CA: root CN=verifyctl csharp root\n{callback}"),
-        ),
         ("bare callback", callback.to_string()),
     ];
     let cases = tls_cases("root.pem", "stranger.pem");

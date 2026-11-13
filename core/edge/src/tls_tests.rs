@@ -263,8 +263,8 @@ fn pem_cert_resolver_errors_name_the_path() {
 }
 
 /// A dial that failed because the client refused the server's certificate for `cause`
-/// (a substring of rustls' reason): a handshake failure (`Error::Connection`), not a
-/// dial timeout (`Error::Connect`).
+/// (a substring of rustls' reason; empty pins no reason): a handshake failure
+/// (`Error::Connection`), not a dial timeout (`Error::Connect`).
 fn assert_certificate_rejected<T>(res: Result<T, Error>, what: &str, cause: &str) {
     match res {
         Err(Error::Connection(text)) => assert!(
@@ -324,6 +324,16 @@ async fn system_roots_reject_a_self_made_ca_on_the_certificate() {
     let system = tokio::time::timeout(guard, PlayerClient::dial(addr, "player.test", &TrustAnchor::system_roots()))
         .await
         .expect("dial hang-guard");
-    assert_certificate_rejected(system, "the OS trust store accepting a self-made CA's leaf", "");
+    assert_certificate_rejected(system, "the OS trust store accepting a self-made CA's leaf", SYSTEM_ROOTS_REFUSAL);
     running.close();
 }
+
+/// rustls-platform-verifier's reason for refusing `mint`'s leaf, which differs per OS
+/// verifier. Windows reports TRUST_E_CERT_SIGNATURE by its code, which no locale
+/// translates; Linux goes through webpki; the macOS wording has not been observed.
+#[cfg(windows)]
+const SYSTEM_ROOTS_REFUSAL: &str = "os error -2146869244";
+#[cfg(target_os = "linux")]
+const SYSTEM_ROOTS_REFUSAL: &str = "UnknownIssuer";
+#[cfg(not(any(windows, target_os = "linux")))]
+const SYSTEM_ROOTS_REFUSAL: &str = "";
