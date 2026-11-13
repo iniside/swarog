@@ -153,13 +153,6 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     /// policy error other than a chain error (which the custom chain build replaces)
     /// fails the handshake, so the leaf must also match the target host.
     /// </summary>
-    /// <remarks>
-    /// The runtime puts the server's intermediates in the presented chain's
-    /// <see cref="X509ChainPolicy.ExtraStore"/> only for a non-SChannel msquic. On
-    /// Windows (SChannel) they stay in the store of the leaf's certificate context, which
-    /// neither that chain nor <see cref="SslClientAuthenticationOptions.CertificateChainPolicy"/>
-    /// searches, so the build reads that store too, as <c>SslStream</c> does on Windows.
-    /// </remarks>
     private static RemoteCertificateValidationCallback PinToCa(string caCertPath)
     {
         // Load the CA cert once (cert-only PEM; no private key — a player holds only
