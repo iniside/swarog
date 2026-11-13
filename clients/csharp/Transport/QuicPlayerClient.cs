@@ -189,9 +189,6 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
                 chain.ChainPolicy.ExtraStore.AddRange(CertificateContextStore(leaf));
             if (!chain.Build(leaf))
                 return Reject(onReject, $"chain does not build to the pinned CA: {ChainStatusList(chain)}");
-            X509Certificate2 root = chain.ChainElements[chain.ChainElements.Count - 1].Certificate;
-            if (!root.RawDataMemory.Span.SequenceEqual(caCert.RawDataMemory.Span))
-                return Reject(onReject, $"chain does not end at the pinned CA: root {root.Subject}");
             return true;
         };
     }
