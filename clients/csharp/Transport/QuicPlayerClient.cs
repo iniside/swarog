@@ -57,6 +57,10 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     /// the whole connection, not a single call, so it is bound here rather than
     /// threaded through <see cref="IPlayerTransport.CallAsync"/>.
     /// </param>
+    /// <param name="onCertificateRejected">
+    /// Receives the reason each time <see cref="PlayerTrust.PinnedCa"/> validation
+    /// rejects the server certificate.
+    /// </param>
     public static async Task<QuicPlayerClient> ConnectAsync(
         string host,
         int port,
@@ -64,6 +68,7 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
         string? targetHost = null,
         string? apiKey = null,
         Action<IPEndPoint, Exception>? onDialFailure = null,
+        Action<string>? onCertificateRejected = null,
         CancellationToken ct = default)
     {
         if (!QuicConnection.IsSupported)
@@ -86,7 +91,7 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
                 if (string.IsNullOrEmpty(pinned.CaCertPath))
                     throw new ArgumentException(
                         "pinned-CA trust requires a CA certificate path.", nameof(trust));
-                ssl.RemoteCertificateValidationCallback = PinToCa(pinned.CaCertPath);
+                ssl.RemoteCertificateValidationCallback = PinToCa(pinned.CaCertPath, onCertificateRejected);
                 break;
             case PlayerTrust.SystemRoots:
                 break;
@@ -151,9 +156,12 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     /// sent and the built chain's root must be byte-equal to the pinned CA. The leaf
     /// must be valid for server authentication (EKU <c>1.3.6.1.5.5.7.3.1</c>). Every
     /// policy error other than a chain error (which the custom chain build replaces)
-    /// fails the handshake, so the leaf must also match the target host.
+    /// fails the handshake, so the leaf must also match the target host. Every
+    /// rejection passes its reason to <paramref name="onReject"/>.
     /// </summary>
-    private static RemoteCertificateValidationCallback PinToCa(string caCertPath)
+    private static RemoteCertificateValidationCallback PinToCa(
+        string caCertPath,
+        Action<string>? onReject)
     {
         // Load the CA cert once (cert-only PEM; no private key — a player holds only
         // the anchor). CreateFromPem(certPem) loads the CERTIFICATE alone; the *FromPemFile
@@ -164,9 +172,10 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
         return (_, serverCert, presented, sslPolicyErrors) =>
         {
             if (serverCert is null)
-                return false;
-            if ((sslPolicyErrors & ~SslPolicyErrors.RemoteCertificateChainErrors) != SslPolicyErrors.None)
-                return false;
+                return Reject("no server certificate");
+            SslPolicyErrors nonChainErrors = sslPolicyErrors & ~SslPolicyErrors.RemoteCertificateChainErrors;
+            if (nonChainErrors != SslPolicyErrors.None)
+                return Reject($"policy errors {nonChainErrors}");
             using var leaf = new X509Certificate2(serverCert);
             using var chain = new X509Chain();
             chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
@@ -178,10 +187,21 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
             if (OperatingSystem.IsWindows())
                 chain.ChainPolicy.ExtraStore.AddRange(CertificateContextStore(leaf));
             if (!chain.Build(leaf))
-                return false;
+            {
+                string status = string.Join(", ", chain.ChainStatus.Select(s => s.Status));
+                return Reject($"chain does not build to the pinned CA: {status}");
+            }
             X509Certificate2 root = chain.ChainElements[chain.ChainElements.Count - 1].Certificate;
-            return root.RawDataMemory.Span.SequenceEqual(caCert.RawDataMemory.Span);
+            if (!root.RawDataMemory.Span.SequenceEqual(caCert.RawDataMemory.Span))
+                return Reject($"chain does not end at the pinned CA: root {root.Subject}");
+            return true;
         };
+
+        bool Reject(string reason)
+        {
+            onReject?.Invoke(reason);
+            return false;
+        }
     }
 
     /// <summary>

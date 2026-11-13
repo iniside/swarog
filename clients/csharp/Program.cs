@@ -216,7 +216,8 @@ sealed class CliOptions
             ServerName,
             ApiKey,
             (endPoint, ex) => Console.Error.WriteLine(
-                $"gbclient: warning: dial {Addr}: {endPoint}: {ex.GetType().Name}: {ex.Message}"));
+                $"gbclient: warning: dial {Addr}: {endPoint}: {ex.GetType().Name}: {ex.Message}"),
+            reason => Console.Error.WriteLine($"gbclient: certificate rejected: {reason}"));
 
     public static CliOptions Parse(string[] args, bool wantMethod)
     {
