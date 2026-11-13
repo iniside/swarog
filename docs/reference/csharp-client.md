@@ -107,8 +107,8 @@ pretty JSON for debugging/golden tests without touching the C# output.
   `X509Certificate2.CreateFromPem`, cert-only — no private key, matching an
   anchor). The chain is built via `X509ChainTrustMode.CustomRootTrust` from the
   intermediates the server sent, with **no system-roots fallback**; the built
-  chain's root must be byte-equal to the pinned CA, the leaf must carry the
-  serverAuth EKU, and any policy error other than a chain error (a host-name
+  chain must build with the pinned CA as its only trusted root, the leaf must
+  carry the serverAuth EKU, and any policy error other than a chain error (a host-name
   mismatch included) rejects it. Revocation checking is off (the dev CA publishes
   no CRL/OCSP). Every rejection prints `gbclient: certificate rejected: <reason>`
   to stderr.

@@ -154,7 +154,7 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     /// <see cref="X509ChainTrustMode.CustomRootTrust"/> with a single custom trust
     /// anchor and NO system-roots fallback, revocation checking off (the ephemeral dev
     /// CA publishes no CRL/OCSP). The chain is built from the intermediates the server
-    /// sent and the built chain's root must be byte-equal to the pinned CA. The leaf
+    /// sent and must build with the pinned CA as its only trusted root. The leaf
     /// must be valid for server authentication (EKU <c>1.3.6.1.5.5.7.3.1</c>). Every
     /// policy error other than a chain error (which the custom chain build replaces)
     /// fails the handshake, so the leaf must also match the target host. Every
