@@ -197,10 +197,9 @@ public sealed class QuicPlayerClient : IPlayerTransport, IAsyncDisposable
     }
 
     /// <summary>
-    /// Builds a server-cert validation callback that keeps .NET's own system-trust
-    /// decision (accept exactly when <see cref="SslPolicyErrors.None"/>) and passes
-    /// every rejection's policy errors, plus the chain statuses when the chain failed,
-    /// to <paramref name="onReject"/>.
+    /// Builds a server-cert validation callback that accepts exactly when
+    /// <see cref="SslPolicyErrors.None"/> and passes every rejection's policy errors,
+    /// plus the chain statuses when the chain failed, to <paramref name="onReject"/>.
     /// </summary>
     private static RemoteCertificateValidationCallback ReportSystemRejection(Action<string>? onReject)
     {
