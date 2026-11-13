@@ -262,13 +262,14 @@ fn pem_cert_resolver_errors_name_the_path() {
     assert!(msg.contains(&format!("{empty:?}")) && msg.contains("holds 0 private keys"), "no key: {msg}");
 }
 
-/// A dial that failed because the client refused the server's certificate: a handshake
-/// failure (`Error::Connection`), not a dial timeout (`Error::Connect`).
-fn assert_certificate_rejected<T>(res: Result<T, Error>, what: &str) {
+/// A dial that failed because the client refused the server's certificate for `cause`
+/// (a substring of rustls' reason): a handshake failure (`Error::Connection`), not a
+/// dial timeout (`Error::Connect`).
+fn assert_certificate_rejected<T>(res: Result<T, Error>, what: &str, cause: &str) {
     match res {
         Err(Error::Connection(text)) => assert!(
-            text.contains("invalid peer certificate"),
-            "{what}: handshake failed but not on the certificate: {text}"
+            text.contains("invalid peer certificate") && text.contains(cause),
+            "{what}: handshake failed but not on the certificate for {cause:?}: {text}"
         ),
         Err(other) => panic!("{what}: expected a certificate rejection, got {other:?}"),
         Ok(_) => panic!("{what}: the dial succeeded"),
@@ -294,13 +295,13 @@ async fn resolver_backed_player_server_presents_the_resolvers_certificate() {
     let wrong_name = tokio::time::timeout(guard, PlayerClient::dial(addr, "other.test", &anchor(&ca)))
         .await
         .expect("dial hang-guard");
-    assert_certificate_rejected(wrong_name, "a server name outside the cert's SANs");
+    assert_certificate_rejected(wrong_name, "a server name outside the cert's SANs", r#"certificate not valid for name "other.test""#);
 
     let dev = DevCA::generate().unwrap().trust_anchor();
     let wrong_anchor = tokio::time::timeout(guard, PlayerClient::dial(addr, "player.test", &dev))
         .await
         .expect("dial hang-guard");
-    assert_certificate_rejected(wrong_anchor, "a DevCA anchor accepting the minted certificate");
+    assert_certificate_rejected(wrong_anchor, "a DevCA anchor accepting the minted certificate", "UnknownIssuer");
     running.close();
 }
 
@@ -323,6 +324,6 @@ async fn system_roots_reject_a_self_made_ca_on_the_certificate() {
     let system = tokio::time::timeout(guard, PlayerClient::dial(addr, "player.test", &TrustAnchor::system_roots()))
         .await
         .expect("dial hang-guard");
-    assert_certificate_rejected(system, "the OS trust store accepting a self-made CA's leaf");
+    assert_certificate_rejected(system, "the OS trust store accepting a self-made CA's leaf", "");
     running.close();
 }

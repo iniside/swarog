@@ -31,8 +31,11 @@ const SHUTDOWN: ShutdownPolicy = ShutdownPolicy {
     graceful_timeout: Duration::from_secs(2),
     force_timeout: Duration::from_secs(5),
 };
-const PIN_REJECTED: &str = "rejected by the provided RemoteCertificateValidationCallback";
-const CHAIN_REJECTED: &str = "errors in the certificate chain: RemoteCertificateChainErrors";
+const CALLBACK_REJECTED: &str = "rejected by the provided RemoteCertificateValidationCallback";
+const SYSTEM_CHAIN_REJECTED: &str = "gbclient: certificate rejected: policy errors RemoteCertificateChainErrors";
+const NAME_MISMATCH: &str = "gbclient: certificate rejected: policy errors RemoteCertificateNameMismatch";
+const ROOT_NOT_PINNED: &str = "gbclient: certificate rejected: chain does not";
+const PINNED_CA: &str = "the pinned CA";
 
 pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
     if ctx.resolve("dotnet").is_none() {
@@ -102,7 +105,7 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
                 "characters.create",
                 r#"{"name":"x","class":""}"#,
             ],
-            Expected::Error("Unauthorized"),
+            Expected::Error(&["Unauthorized"]),
         ),
         (
             "c3",
@@ -118,7 +121,7 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
                 "characters.ownerOf",
                 r#"{"character_id":"z"}"#,
             ],
-            Expected::Error("NotFound"),
+            Expected::Error(&["NotFound"]),
         ),
         (
             "c4",
@@ -149,7 +152,7 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
                     .into_boxed_str(),
                 ),
             ],
-            Expected::Error("Forbidden"),
+            Expected::Error(&["Forbidden"]),
         ),
         (
             "c6",
@@ -195,7 +198,8 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
     else {
         return Ok(Outcome::Fail);
     };
-    if run_cases(ctx, &dotnet, &mut child, tls_cases(&tls.root.display().to_string()))? != Outcome::Pass {
+    let cases = tls_cases(&tls.root.display().to_string(), &tls.stranger_root.display().to_string());
+    if run_cases(ctx, &dotnet, &mut child, cases)? != Outcome::Pass {
         result = Outcome::Fail;
     }
     let _ = child.shutdown(SHUTDOWN);
@@ -287,45 +291,50 @@ fn run_cases(
 }
 
 /// The cases against the fixture serving [`mint_player_chain`]'s leaf: the pin to the
-/// root accepts it for `localhost` through the intermediate and refuses it for another
-/// name; the OS trust store refuses the self-made root.
-fn tls_cases(root: &str) -> Vec<(&'static str, Vec<String>, Expected)> {
-    let case = |trust: &[&str], server_name: &str| {
+/// root accepts it through the intermediate under the IP-literal default name
+/// `localhost`; another name, the OS trust store and a stranger root each refuse it,
+/// and each refusal's markers name its own cause.
+fn tls_cases(root: &str, stranger_root: &str) -> Vec<(&'static str, Vec<String>, Expected)> {
+    let case = |trust: &[&str], server_name: Option<&str>| {
         let mut cli = vec!["raw", "--addr", "127.0.0.1:9100"];
         cli.extend(trust);
-        cli.extend([
-            "--server-name",
-            server_name,
-            "--api-key",
-            "dev-key-client",
-            "leaderboard.topScores",
-        ]);
+        if let Some(server_name) = server_name {
+            cli.extend(["--server-name", server_name]);
+        }
+        cli.extend(["--api-key", "dev-key-client", "leaderboard.topScores"]);
         cli.into_iter().map(String::from).collect::<Vec<_>>()
     };
     vec![
-        ("t1", case(&["--ca", root], "localhost"), Expected::Success),
+        ("t1", case(&["--ca", root], None), Expected::Success),
         (
             "t2",
-            case(&["--ca", root], "not-localhost.verifyctl.test"),
-            Expected::Error(PIN_REJECTED),
+            case(&["--ca", root], Some("not-localhost.verifyctl.test")),
+            Expected::Error(&[CALLBACK_REJECTED, NAME_MISMATCH]),
         ),
         (
             "t3",
-            case(&["--system-roots"], "localhost"),
-            Expected::Error(CHAIN_REJECTED),
+            case(&["--system-roots"], None),
+            Expected::Error(&[CALLBACK_REJECTED, SYSTEM_CHAIN_REJECTED]),
+        ),
+        (
+            "t4",
+            case(&["--ca", stranger_root], None),
+            Expected::Error(&[CALLBACK_REJECTED, ROOT_NOT_PINNED, PINNED_CA]),
         ),
     ]
 }
 
 struct PlayerChain {
     root: PathBuf,
+    stranger_root: PathBuf,
     chain: PathBuf,
     key: PathBuf,
 }
 
 /// Mints a root CA, an intermediate CA under it and a `localhost` server leaf under
 /// the intermediate into `dir`: the root alone, the chain file (leaf then
-/// intermediate) and the leaf key.
+/// intermediate) and the leaf key. Also mints a stranger root with the root's name
+/// but its own key, which signed nothing in the chain.
 fn mint_player_chain(dir: &Path) -> Result<PlayerChain> {
     std::fs::create_dir_all(dir)?;
     let ca_params = |name: &str, constraint: BasicConstraints| -> Result<CertificateParams> {
@@ -348,12 +357,16 @@ fn mint_player_chain(dir: &Path) -> Result<PlayerChain> {
     leaf_params.distinguished_name.push(DnType::CommonName, "localhost");
     leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     let leaf = leaf_params.signed_by(&leaf_key, &intermediate, &intermediate_key)?;
+    let stranger_root = ca_params("verifyctl csharp root", BasicConstraints::Unconstrained)?
+        .self_signed(&KeyPair::generate()?)?;
     let chain = PlayerChain {
         root: dir.join("root.pem"),
+        stranger_root: dir.join("stranger-root.pem"),
         chain: dir.join("chain.pem"),
         key: dir.join("key.pem"),
     };
     std::fs::write(&chain.root, root.pem())?;
+    std::fs::write(&chain.stranger_root, stranger_root.pem())?;
     std::fs::write(&chain.chain, format!("{}{}", leaf.pem(), intermediate.pem()))?;
     std::fs::write(&chain.key, leaf_key.serialize_pem())?;
     Ok(chain)
@@ -362,13 +375,14 @@ fn mint_player_chain(dir: &Path) -> Result<PlayerChain> {
 #[derive(Clone, Copy)]
 enum Expected {
     Success,
-    Error(&'static str),
+    /// Exit code 1 with every marker in the output.
+    Error(&'static [&'static str]),
 }
 
 fn predicate(code: i32, output: &str, expected: Expected) -> bool {
     match expected {
         Expected::Success => code == 0,
-        Expected::Error(marker) => code == 1 && output.contains(marker),
+        Expected::Error(markers) => code == 1 && markers.iter().all(|marker| output.contains(marker)),
     }
 }
 

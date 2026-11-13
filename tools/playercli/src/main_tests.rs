@@ -86,3 +86,59 @@ async fn no_address_is_an_empty_failure() {
     assert_eq!(outcome, Err(Vec::new()));
     assert!(dialed.is_empty());
 }
+
+#[test]
+fn dial_target_names_a_dns_host_as_spelled_unless_overridden() {
+    let expected: Vec<SocketAddr> = ("localhost", 9100).to_socket_addrs().unwrap().collect();
+    assert_eq!(dial_target("LocalHost:9100", None).unwrap(), (expected.clone(), "LocalHost".to_string()));
+    assert_eq!(
+        dial_target("LocalHost:9100", Some("player.test".to_string())).unwrap(),
+        (expected, "player.test".to_string())
+    );
+}
+
+#[test]
+fn dial_target_names_an_ip_literal_localhost_unless_overridden() {
+    let addrs = vec!["127.0.0.1:9100".parse::<SocketAddr>().unwrap()];
+    assert_eq!(dial_target("127.0.0.1:9100", None).unwrap(), (addrs.clone(), "localhost".to_string()));
+    assert_eq!(
+        dial_target("127.0.0.1:9100", Some("player.test".to_string())).unwrap(),
+        (addrs, "player.test".to_string())
+    );
+}
+
+#[test]
+fn dial_target_refuses_a_bad_addr_even_with_a_server_name() {
+    assert_eq!(dial_target("localhost", Some("player.test".to_string())).unwrap_err(), "expected host:port");
+}
+
+fn strings(list: &[&str]) -> Vec<String> {
+    list.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn dial_report_warns_on_failures_before_a_connect() {
+    let (client, lines) = dial_report("play.test:9100", Ok((7u16, strings(&["[::1]:9100: refused", "127.0.0.1:9100: timed out"]))));
+    assert_eq!(client, Some(7));
+    assert_eq!(
+        lines,
+        strings(&[
+            "playercli: warning: dial play.test:9100: [::1]:9100: refused",
+            "playercli: warning: dial play.test:9100: 127.0.0.1:9100: timed out",
+        ])
+    );
+
+    let (client, lines) = dial_report("play.test:9100", Ok((7u16, Vec::new())));
+    assert_eq!(client, Some(7));
+    assert!(lines.is_empty(), "{lines:?}");
+}
+
+#[test]
+fn dial_report_has_no_client_and_reports_every_failure_without_a_connect() {
+    let (client, lines) = dial_report::<u16>("play.test:9100", Err(strings(&["[::1]:9100: refused", "127.0.0.1:9100: timed out"])));
+    assert_eq!(client, None);
+    assert_eq!(
+        lines,
+        strings(&["playercli: dial play.test:9100: [::1]:9100: refused", "playercli: dial play.test:9100: 127.0.0.1:9100: timed out"])
+    );
+}

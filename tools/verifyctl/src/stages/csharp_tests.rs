@@ -14,18 +14,18 @@ fn c1_to_c6_predicates_are_exact() {
     assert!(predicate(
         1,
         "status Unauthorized",
-        Expected::Error("Unauthorized")
+        Expected::Error(&["Unauthorized"])
     ));
     assert!(!predicate(
         0,
         "Unauthorized",
-        Expected::Error("Unauthorized")
+        Expected::Error(&["Unauthorized"])
     ));
-    assert!(!predicate(1, "Forbidden", Expected::Error("NotFound")));
+    assert!(!predicate(1, "Forbidden", Expected::Error(&["NotFound"])));
     assert!(predicate(
         1,
         "status Forbidden",
-        Expected::Error("Forbidden")
+        Expected::Error(&["Forbidden"])
     ));
     assert!(predicate(0, "flow complete", Expected::Success));
 }
@@ -53,21 +53,22 @@ fn cleanup_never_names_unowned_processes() {
 }
 
 #[test]
-fn tls_cases_differ_from_the_pinned_pass_only_in_the_name_or_the_trust() {
-    let cases = tls_cases("root.pem");
+fn tls_cases_differ_from_the_pinned_pass_in_one_dimension_each() {
+    let cases = tls_cases("root.pem", "stranger.pem");
     let labels: Vec<&str> = cases.iter().map(|(label, _, _)| *label).collect();
-    assert_eq!(labels, ["t1", "t2", "t3"]);
+    assert_eq!(labels, ["t1", "t2", "t3", "t4"]);
     let pinned = &cases[0].1;
     assert!(matches!(cases[0].2, Expected::Success));
     assert!(pinned.windows(2).any(|w| w == ["--ca", "root.pem"]), "{pinned:?}");
-    assert!(pinned.windows(2).any(|w| w == ["--server-name", "localhost"]), "{pinned:?}");
+    assert!(pinned.windows(2).any(|w| w == ["--addr", "127.0.0.1:9100"]), "{pinned:?}");
+    assert!(!pinned.iter().any(|a| a == "--server-name"), "t1 must take the IP-literal default name: {pinned:?}");
 
-    let renamed: Vec<String> = pinned
-        .iter()
-        .map(|a| if a == "localhost" { "not-localhost.verifyctl.test".to_string() } else { a.clone() })
-        .collect();
-    assert_eq!(cases[1].1, renamed);
-    assert!(matches!(cases[1].2, Expected::Error(PIN_REJECTED)));
+    let named = &cases[1].1;
+    let at = named.iter().position(|a| a == "--server-name").expect("t2 names the server");
+    assert_eq!(named[at + 1], "not-localhost.verifyctl.test");
+    let unnamed: Vec<String> = named[..at].iter().chain(&named[at + 2..]).cloned().collect();
+    assert_eq!(&unnamed, pinned);
+    assert!(matches!(cases[1].2, Expected::Error(&[CALLBACK_REJECTED, NAME_MISMATCH])));
 
     let system: Vec<String> = pinned
         .iter()
@@ -75,24 +76,47 @@ fn tls_cases_differ_from_the_pinned_pass_only_in_the_name_or_the_trust() {
         .map(|a| if a == "--ca" { "--system-roots".to_string() } else { a.clone() })
         .collect();
     assert_eq!(cases[2].1, system);
-    assert!(matches!(cases[2].2, Expected::Error(CHAIN_REJECTED)));
+    assert!(matches!(cases[2].2, Expected::Error(&[CALLBACK_REJECTED, SYSTEM_CHAIN_REJECTED])));
+
+    let stranger: Vec<String> = pinned
+        .iter()
+        .map(|a| if a == "root.pem" { "stranger.pem".to_string() } else { a.clone() })
+        .collect();
+    assert_eq!(cases[3].1, stranger);
+    assert!(matches!(cases[3].2, Expected::Error(&[CALLBACK_REJECTED, ROOT_NOT_PINNED, PINNED_CA])));
 }
 
+/// Each refusing case's markers match the output of its own cause and of no other.
+/// The outputs are gbclient's stderr lines as `Program.cs`, `PinToCa` and
+/// `ReportSystemRejection` format them; `bare callback` is a refusal with no reason
+/// line, so no case may pass on the generic callback refusal alone.
 #[test]
-fn tls_rejection_markers_tell_the_pin_from_the_os_chain() {
-    let pin = concat!(
+fn tls_case_markers_match_only_their_own_cause() {
+    let callback = concat!(
         "gbclient: IOException: dial 127.0.0.1:9100: 127.0.0.1:9100: AuthenticationException: ",
         "The remote certificate was rejected by the provided RemoteCertificateValidationCallback."
     );
-    let chain = concat!(
-        "gbclient: IOException: dial 127.0.0.1:9100: 127.0.0.1:9100: AuthenticationException: ",
-        "The remote certificate is invalid because of errors in the certificate chain: RemoteCertificateChainErrors"
-    );
-    assert!(predicate(1, pin, Expected::Error(PIN_REJECTED)));
-    assert!(!predicate(1, chain, Expected::Error(PIN_REJECTED)));
-    assert!(predicate(1, chain, Expected::Error(CHAIN_REJECTED)));
-    assert!(!predicate(1, pin, Expected::Error(CHAIN_REJECTED)));
-    assert!(!predicate(0, pin, Expected::Error(PIN_REJECTED)));
+    let outputs = [
+        ("t2", format!("gbclient: certificate rejected: policy errors RemoteCertificateNameMismatch\n{callback}")),
+        ("t3", format!("gbclient: certificate rejected: policy errors RemoteCertificateChainErrors: UntrustedRoot\n{callback}")),
+        (
+            "t3",
+            format!("gbclient: certificate rejected: policy errors RemoteCertificateChainErrors: PartialChain, UntrustedRoot\n{callback}"),
+        ),
+        ("t4", format!("gbclient: certificate rejected: chain does not build to the pinned CA: PartialChain\n{callback}")),
+        (
+            "t4",
+            format!("gbclient: certificate rejected: chain does not end at the pinned CA: root CN=verifyctl csharp root\n{callback}"),
+        ),
+        ("bare callback", callback.to_string()),
+    ];
+    let cases = tls_cases("root.pem", "stranger.pem");
+    for (label, _, expected) in &cases[1..] {
+        for (cause, output) in &outputs {
+            assert_eq!(predicate(1, output, *expected), label == cause, "{label} against {cause}: {output}");
+            assert!(!predicate(0, output, *expected), "{label}: a zero exit must never pass");
+        }
+    }
 }
 
 #[tokio::test]
@@ -118,6 +142,18 @@ async fn minted_chain_reaches_the_root_only_through_the_intermediate() {
         .await
         .expect("dial hang-guard")
         .expect("the root accepts the leaf for localhost through the served intermediate");
+    assert_ne!(std::fs::read(&chain.stranger_root).unwrap(), std::fs::read(&chain.root).unwrap());
+    let stranger = edge::DevCA::load_cert_only(chain.stranger_root.to_str().unwrap()).unwrap();
+    let refused = tokio::time::timeout(guard, edge::PlayerClient::dial(full.local_addr(), "localhost", &stranger))
+        .await
+        .expect("dial hang-guard");
+    match refused {
+        // BadSignature, not UnknownIssuer: the stranger matches the intermediate's
+        // issuer name, so only its key tells it from the root.
+        Err(edge::Error::Connection(text)) => assert!(text.contains("BadSignature"), "{text}"),
+        Err(other) => panic!("expected a certificate rejection, got {other:?}"),
+        Ok(_) => panic!("the stranger root must not accept the leaf"),
+    }
     full.close();
 
     let bare = edge::PlayerServer::new()
