@@ -116,14 +116,13 @@ async fn main() -> ExitCode {
         }
     };
 
-    let (socket_addrs, default_server_name) = match resolve(&args.addr) {
+    let (socket_addrs, server_name) = match dial_target(&args.addr, args.server_name) {
         Ok(a) => a,
         Err(e) => {
             eprintln!("playercli: bad --addr {:?}: {e}", args.addr);
             return ExitCode::from(2);
         }
     };
-    let server_name = args.server_name.unwrap_or(default_server_name);
 
     let trust = match &args.ca {
         Some(ca) => match DevCA::load_cert_only(ca) {
@@ -140,19 +139,12 @@ async fn main() -> ExitCode {
         PlayerClient::dial(socket_addr, &server_name, &trust)
     })
     .await;
-    let client = match dialed {
-        Ok((client, failures)) => {
-            for failure in &failures {
-                eprintln!("playercli: warning: dial {}: {failure}", args.addr);
-            }
-            client
-        }
-        Err(failures) => {
-            for failure in &failures {
-                eprintln!("playercli: dial {}: {failure}", args.addr);
-            }
-            return ExitCode::FAILURE;
-        }
+    let (client, lines) = dial_report(&args.addr, dialed);
+    for line in &lines {
+        eprintln!("{line}");
+    }
+    let Some(client) = client else {
+        return ExitCode::FAILURE;
     };
 
     // `PlayerClient::call` already unwraps the transport envelope: `Err` here is a
@@ -204,6 +196,29 @@ where
         }
     }
     Err(failures)
+}
+
+/// Resolves `addr` and picks the TLS server name: `server_name` when given, else
+/// `resolve`'s default.
+fn dial_target(addr: &str, server_name: Option<String>) -> Result<(Vec<SocketAddr>, String), String> {
+    let (socket_addrs, default_server_name) = resolve(addr)?;
+    Ok((socket_addrs, server_name.unwrap_or(default_server_name)))
+}
+
+/// The stderr lines for `dial_each`'s outcome and the client to proceed with:
+/// failures before a connect are warnings; with no connect they are the error and
+/// there is no client.
+fn dial_report<T>(addr: &str, dialed: Result<(T, Vec<String>), Vec<String>>) -> (Option<T>, Vec<String>) {
+    match dialed {
+        Ok((client, failures)) => {
+            let lines = failures.iter().map(|failure| format!("playercli: warning: dial {addr}: {failure}")).collect();
+            (Some(client), lines)
+        }
+        Err(failures) => {
+            let lines = failures.iter().map(|failure| format!("playercli: dial {addr}: {failure}")).collect();
+            (None, lines)
+        }
+    }
 }
 
 /// Resolves `host:port` to every address it names, in resolver order, and the
