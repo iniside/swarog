@@ -685,5 +685,11 @@ fn audit_fails_without_running_cargo_audit_when_the_sqlite_premise_breaks() {
             !record.contains("cargo-audit"),
             "{control}: cargo-audit ran on a broken premise:\n{record}"
         );
+        // The other spelling: cargo-audit reached through the cargo subcommand,
+        // which the fake cargo records as `cargo audit …`.
+        assert!(
+            !record.lines().any(|line| line.starts_with("cargo audit")),
+            "{control}: cargo audit ran on a broken premise:\n{record}"
+        );
     }
 }
