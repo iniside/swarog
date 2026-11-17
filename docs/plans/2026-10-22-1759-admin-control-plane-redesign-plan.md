@@ -1614,6 +1614,15 @@ model tokens. Step 10's cost came from:
        drawing inside an `svg` is compared only with `--text`.
      - A panel or tile key is the title's or label's own text: a nested element's text
        (a heading, a badge) is left out and a trailing colon trimmed.
+     - Only the containers in the named `REPEAT` list collapse to their distinct shapes:
+       `tbody > tr`, `ul > li`, `.svc`, `.pop-row`, and `.uptime > i`, whose bars count
+       by tag alone because a bar's class is data. The list is validated against every
+       mapped and pending mockup page; the portal side is not checked, as most of its
+       pages are not ported yet. Every other sibling list compares by position, with
+       `order` and `moved` lines. A unit's placeholder in the frame carries its key
+       (`[panel "Paused"]`), and a line naming an element with children carries a short
+       hash of its skeleton (`div.uptime#3f0d1e`).
+     - `crawl` writes a `CLEAN` marker only when clean, and `diff` refuses a run without it.
      - Accept entries are `<difference> | <reason>`. The password comes from
        `ADMINDIFF_PASSWORD` (default `admin`), so it never sits in argv.
 3. **Skill `mockup-implementation`, rewritten for the control-plane portal.** It drops the

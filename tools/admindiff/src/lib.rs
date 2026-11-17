@@ -30,11 +30,13 @@ USAGE:
   admindiff diff --page <page> --portal <crawl dir> [--text]
 
   crawl     log in, fetch every nav page and mapped page, load their slots with HX-Request,
-            fetch row menus for status; writes target/admindiff/<run>/ and fails on any
-            non-2xx, an error-state fragment (unless --allow-errors), no nav page or no fragment
+            fetch row menus for status; writes target/admindiff/<run>/ (and its CLEAN marker
+            when clean) and fails on any non-2xx, an error-state fragment (unless
+            --allow-errors), a fragment without data-state, no nav page or no fragment
   mock      render the mockup page through node into target/admindiff/mock/<page>.html
-  diff      compare the page's class skeleton with the crawl's assembled page; fails on a
-            difference not in tools/admindiff/accept/<page>.txt or a stale accept entry
+  diff      compare the page's class skeleton with the crawl's assembled page; refuses a
+            crawl without its CLEAN marker, and fails on a difference not in
+            tools/admindiff/accept/<page>.txt, a stale accept entry or zero matched panels
 
   --base-url <url>   portal origin (default http://localhost:8080; split: http://localhost:8085)
   --user <name>      admin login (default admin); the password is $ADMINDIFF_PASSWORD (default admin)
@@ -140,6 +142,19 @@ pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
     Ok(())
 }
 
+/// Checks [`skeleton::REPEAT`] against every mapped and pending mockup page. The mockup is
+/// its side: most portal pages are not ported yet.
+fn validate_repeats(repo: &Path) -> Result<()> {
+    let mockup = validated_mockup(repo)?;
+    let mut roots = Vec::new();
+    for p in pages::PAGE_MAP {
+        let key = mockup.get(p.page).ok_or_else(|| anyhow!("page {} has no mockup file", p.page))?;
+        let doc = html::parse(&mock::render(repo, key, p.search)?).with_context(|| format!("parse the P.{key} render"))?;
+        roots.push(skeleton::prepare(&doc, skeleton::MOCK_STRIP, "mock")?);
+    }
+    skeleton::validate_repeats(&roots)
+}
+
 /// Runs the diff; `Ok(false)` when the page fails, which it has printed.
 pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Result<bool> {
     let (entry, key) = resolve(repo, page)?;
@@ -152,6 +167,10 @@ pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Resul
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Default::default(),
         Err(e) => return Err(e).with_context(|| format!("read {}", accept_path.display())),
     };
+    if !portal_dir.join(crawl::CLEAN_MARKER).is_file() {
+        bail!("{} has no {} marker: its crawl failed or did not finish", portal_dir.display(), crawl::CLEAN_MARKER);
+    }
+    validate_repeats(repo)?;
     let portal_file = portal_dir.join(format!("{page}.html"));
     let portal_src =
         std::fs::read_to_string(&portal_file).with_context(|| format!("read {} (run crawl first)", portal_file.display()))?;

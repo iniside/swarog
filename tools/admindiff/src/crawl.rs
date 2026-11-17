@@ -12,6 +12,8 @@ use crate::html::{self, find_all, find_in, Element, Node};
 use crate::pages::{Route, PAGE_MAP};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Written into the run directory only by a clean crawl; `diff` refuses a run without it.
+pub const CLEAN_MARKER: &str = "CLEAN";
 /// A fragment may hold slots of its own; past this many load rounds the page fails.
 const MAX_ROUNDS: usize = 4;
 
@@ -75,6 +77,7 @@ pub async fn run(cfg: &Config) -> Result<bool> {
     }
     println!("wrote {}", cfg.out.display());
     if failures.is_empty() {
+        write(&cfg.out.join(CLEAN_MARKER), "")?;
         println!("crawl: {} page(s), {fragments} fragment(s), clean", targets.len());
         return Ok(true);
     }
