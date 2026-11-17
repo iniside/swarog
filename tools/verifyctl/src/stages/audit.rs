@@ -88,8 +88,9 @@ fn sqlite_premise_finding(ctx: &mut Context<'_>) -> Result<Option<String>> {
     Ok(premise_finding(outcome == Outcome::Pass, &stdout, &stderr))
 }
 
-/// Classifies `cargo tree -i libsqlite3-sys --locked` as observed: a lock-only crate exits 0 with empty stdout and "nothing to print" on
-/// stderr; a compiled crate exits 0 and prints its inverted tree; a crate absent
+/// Classifies `cargo tree -i libsqlite3-sys --locked` as observed: a lock-only
+/// crate exits 0 with empty stdout and "nothing to print" on stderr; a
+/// compiled crate exits 0 and prints its inverted tree; a crate absent
 /// from the lock exits non-zero with "did not match any packages". Anything
 /// else is a cargo failure and never reads as "not compiled".
 fn premise_finding(passed: bool, stdout: &str, stderr: &str) -> Option<String> {
