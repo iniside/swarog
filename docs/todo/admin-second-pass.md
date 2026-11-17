@@ -121,6 +121,15 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
   exists. Replaced by: a rewind operation in the event plane (a fenced, danger-level
   write).
 
+### Guard gaps
+
+- [ ] **Unlisted page-head action renders nowhere**
+  ADMIN2-20. The page head draws only the ids in `PageDecl.head_actions`
+  (core/admin/src/routes.rs:487-493), so a `PageHead(p)` action that page `p` does not
+  list renders nowhere. admincheck checks each listed id (tools/admincheck/src/checks.rs:135-152)
+  but does not refuse an unlisted `PageHead` action. Closed by: an admincheck finding for
+  it. Source: the 593010bf hand-off.
+
 ## Accepted contract gaps
 
 One item per `contract gap` entry in `tools/admindiff/accept/*.txt`; remaining mockup

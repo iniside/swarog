@@ -75,15 +75,36 @@ rows):
   kind with its reason.
 
 Per panel, a states row: what the mockup draws in `ok`, `empty`, `readonly`, `stale`
-and `error`:
+and `error`, plus `narrowed to zero` for a panel with search or filters:
 
 - `empty`: a `Primitive::Empty` title/detail, and the `when_empty` tools.
+- `narrowed to zero`: a search or filter leaves no rows; the toolbar must stay. Name
+  the golden case that covers it (`table_empty_search` for a `DataTable`); with none,
+  it is a gap for part `a`. `crawl` never searches, so `admindiff` cannot see it.
 - `readonly`: `Manifest.writes: false` on a panel with a write affordance
   (`core/admin/src/engine/panels.rs:84-91`).
 - `stale`: needs `ContributionDecl.cache_ttl_s`.
 
 Per module: `writes` (true/false) and every tool, meaning each `ActionDecl` with
 point, `Emphasis`, `danger`, `implemented` and `then`.
+
+Per panel, every URL the renderer builds for it (state tabs, search, pager): which
+query keys it keeps and which it drops (`with_param`, `core/admin/src/render.rs`). A
+key that should not survive, such as a pager cursor on a tab or search URL, is a gap
+for part `a`.
+
+An accept-plan section predicts every accept entry the page needs, each with its kind
+and reason: the shell-frame copies above, every declared deviation, contract gap and
+data difference, a template-choice pair that repeats another accept file's pair (the
+toolbar `span.input-icon` / `form.input-icon` pair of `events.txt`), and a frame
+placeholder a wrapper makes mock-only (`mock-only [panel "<title>"]` beside a
+`div.stack`). Where the exact `<difference>` text needs a crawl, it names the element
+and the kind.
+
+Once the owner decides the checklist's gaps, the checklist file is updated in place
+before part `a`: each decided gap gets its decision, and each overruled proposal is
+struck through (`~~…~~`). Part `b` reads the checklist literally, so a stale proposal
+becomes work.
 
 The checklist goes into the part `a` and part `b` prompts and anchors the review.
 
@@ -208,9 +229,13 @@ iteration.
   - `declared deviation Dn`
 - `#` lines and blank lines are skipped. A line without ` | ` or a duplicate entry is
   an error. An entry that matches no current difference is `STALE` and fails the diff.
-- Part `b` writes `not ported yet` entries for elements of later ports, and entries
-  of other kinds only when the checklist names them. Any other `NEW` line is fixed
-  in the template or returned.
+- Part `b` writes `not ported yet` entries for elements of later ports. Every other
+  entry copies the kind and reason the checklist's accept plan predicts, verbatim; an
+  element the checklist names under one kind never gets another.
+- A `NEW` line the accept plan does not predict is fixed in the template or returned
+  to the orchestrator. The one exception is a line that repeats, word for word apart
+  from the panel name, a pair already in another accept file: `b` copies that pair's
+  kind and reason and flags the line in its report.
 - Part `b` removes, from every accept file, the `not ported yet` entries the port
   resolves. Every mapped page's accept file carries the sidebar and shell-frame
   entries; only `index.txt` carries the dashboard tiles and panels.

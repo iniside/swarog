@@ -209,9 +209,11 @@ checkmodules, conformance, csharp-client-gen, demoseed, devctl, edgeca, eventctl
 opscatalog-gen, playercli, processctl, requirecheck, routecheck, rpc-contract-model,
 rpc-macro(-tests), splitproof, testdb, topiccheck and verifyctl. There is no `mailctl`.
 
-So part `a` must add the seed itself (decision G13). Under the skill's Seed rule
+~~So part `a` must add the seed itself (decision G13). Under the skill's Seed rule
 (`SKILL.md` §5), a `data difference` accept entry is not allowed while a module-owned tool
-can produce the data, and one can.
+can produce the data, and one can.~~ **Overruled by G13 (owner, 2026-11-17):** no seed
+tool and no `mailctl`. Each designed state above that a fresh fleet lacks is a
+`data difference` accept entry until plan Step 24b.
 
 ---
 
@@ -229,6 +231,8 @@ can produce the data, and one can.
     such rows, row actions pop into the tools.
 - **Recommend (a).** It keeps "where it renders" in the point, as everywhere else. A
   golden case for the new variant is a top-tier gate test.
+- **Decided (owner, 2026-11-17): (a).** `ActionPoint::QueueRow` for per-item actions; a
+  `PanelTool` on a WorkQueue draws as a panel tool.
 
 **G2. WorkQueue table toolbar (search + filters) and the foot/pager.**
 - Problem: `WorkQueue` has no `search_placeholder`, `filters` or `PageInfo` (`cp:861-865`),
@@ -249,6 +253,8 @@ can produce the data, and one can.
 - Also add the "1 / 1" `span` that `table_foot` lacks (`tmpl:172` against `bundle.js:163`),
   and a noun for the total ("N messages", `pp:67`). The table foot's
   `total` text is built in `render.rs:893-916`.
+- **Decided (owner, 2026-11-17): (a).** WorkQueue gains the search box, a filter and the
+  pager foot.
 
 **G3. Selectable column.**
 - Problem: there is no `selectable` on `WorkQueue`, and bulk actions are NEW (`ds:126`).
@@ -257,6 +263,7 @@ can produce the data, and one can.
     checkboxes.
   - (b) Accept it as a contract gap.
 - **Recommend (a).**
+- **Decided (owner, 2026-11-17): (a).** A selectable checkbox column.
 
 **G4. Failed versus Parked (D4).**
 - Problem: there is no real `failed` state; `parked` covers both permanent rejections and
@@ -271,6 +278,8 @@ can produce the data, and one can.
   - (b) Six tabs, with "Failed" listing real parked rows and "Parked" showing 0
     (operator-park is NEW). This contradicts D4's vocabulary.
 - **Recommend (a).** D4 is a recorded decision, and research does not overrule it.
+- **Decided (owner, 2026-11-17): (a).** Five tabs; the mockup's Failed tab and failed row
+  are D4 accept entries.
 
 **G5. WorkQueue columns: labels, To and Template.**
 - Problem: the queue headers are literals "Item" and "Ref" (`tmpl:266`). There is no
@@ -284,6 +293,8 @@ can produce the data, and one can.
   - (b) Keep `entity` (`kind: "user"`, id email) and accept the Template column as a gap.
 - **Recommend (a).** Avatar and initials derive from the value (`render.rs:239-240`),
   which R1 allows as a deterministic fake. `payload_preview` stays unused.
+- **Decided (owner, 2026-11-17): (a), with To as a plain email.** Declared extra columns
+  with cells per item (Template, To).
 
 **G6. Test-send idempotency key and the attempts bar.**
 - (a) Key: `FormSpec.hidden` is static in the manifest, so the old render-time minting
@@ -307,6 +318,8 @@ can produce the data, and one can.
     because part `b` may not touch `render.rs` (SKILL §4).
   - (ii) Have the provider send a FAKE `max_attempts: 5`.
   - **Recommend (i).** The field then stays honest.
+- **Decided (owner, 2026-11-17): (a)(ii) and (b)(i).** The key is `admin-send-test-` +
+  `request_id` and `is_test_key` widens to match; the bar draws a fixed 5 squares.
 
 **G7. Message id display and next-attempt format.**
 - Id: `QueueItem.id` is both the displayed text and the bound `item` (`render.rs:1322`).
@@ -320,6 +333,8 @@ can produce the data, and one can.
   - (ii) Absolute `day_time`.
   - **Recommend (i).** It needs a new `recent_tx` column; `store.rs:468-471` does not
     select it today.
+- **Decided (owner, 2026-11-17): (i) and (i).** The full uuid; relative next attempt from
+  SQL.
 
 **G8. Meta, banner and attention title (throttling).**
 - Problem: there is no throttle signal (`ds:123`).
@@ -333,7 +348,10 @@ can produce the data, and one can.
     attention item.
   - (b) Always show it (FAKE, unconditional).
   - **Recommend (a)**, with a `// FAKE:` comment on the "421 / throttling" wording.
-- Under (a), the seed's retrying rows make both appear for the crawl.
+- ~~Under (a), the seed's retrying rows make both appear for the crawl.~~
+- **Decided (owner, 2026-11-17): (a) and (a).** Meta from `MAIL_SMTP_HOST`; the banner and
+  the attention item show only while a row is retrying. With no seed (G13), the crawl
+  sees neither.
 
 **G9. Single-panel page wrapper.**
 - Problem: `Layout::Stack` wraps the panel in `div.stack`; the mock has none (`pp:68`).
@@ -341,6 +359,7 @@ can produce the data, and one can.
   - (a) A template-choice accept entry, like `index.txt:19`.
   - (b) A `Layout::Single` variant.
 - **Recommend (a).** The difference is only the wrapper.
+- **Decided (owner, 2026-11-17): (a).**
 
 **G10. Retrying and pending counts are not index-only.**
 - Problem: `stats_tx` is deliberately four partial-index counts (`store.rs:406-410,
@@ -351,6 +370,7 @@ can produce the data, and one can.
     `mail_outbox_due_idx`, within `ADMIN_BUDGET` (`service.rs:107`).
   - (b) Show only the total pending count, which drops the mock's partition.
 - **Recommend (a)**, with a comment naming the cost.
+- **Decided (owner, 2026-11-17): (a).** No new index (R1).
 
 **G11. "Requeue all parked" has no element in the mockup.**
 - Problem: the plan lists it as REAL (plan `:1794`), but R3 and the skill forbid invented
@@ -360,6 +380,7 @@ can produce the data, and one can.
   - (b) Add it as an extra element, which needs a D6-style owner approval and a portal-only
     accept entry.
 - **Recommend (a), and ask the owner.** The plan text and R3 conflict here.
+- **Decided (owner, 2026-11-17): (a).** Not built; the plan's REAL list loses it.
 
 **G12. "Restore the mail probe deleted in Step 1" (plan `:1796`).**
 - What was deleted (`git show b8435c9a -- modules/mail/src/conformance.rs
@@ -377,6 +398,8 @@ can produce the data, and one can.
     shape (G6) and the item uuid shape;
   - add the mandatory cp.invoke CapCase;
   - put the restore in part `a` per the template (plan `:1762-1763`).
+- **Decided (owner, 2026-11-17):** restore the probe from `b8435c9a^` with its `cp.invoke`
+  CapCase.
 
 **G13. The seed vehicle (from §5).**
 - Options:
@@ -390,10 +413,12 @@ can produce the data, and one can.
     It seeds at boot and needs the new key in `weles/fleet.*.toml` and in processctl's
     sized `MAIL_OVERRIDEABLE_ENV: &[&str; 10]` (`tools/processctl/src/fleet.rs:36-39`).
     Boot-time rows also age before the crawl.
-- **Recommend (a).** It matches the skill's "module's own operator tool", and its re-run
-  resets rows that a test-cancel or resume moved.
-- The run order then gains `target/debug/mailctl seed-mockup` (SKILL §7 placeholder line).
-- This is a new workspace member under Dev tooling scope (`.agents/shared/gamebackend.md:594-610`).
+- ~~**Recommend (a).** It matches the skill's "module's own operator tool", and its re-run
+  resets rows that a test-cancel or resume moved.~~
+- ~~The run order then gains `target/debug/mailctl seed-mockup` (SKILL §7 placeholder line).~~
+- ~~This is a new workspace member under Dev tooling scope (`.agents/shared/gamebackend.md:594-610`).~~
+- **Decided (owner, 2026-11-17): neither.** No seed tool (plan Step 10b item 5 **Ports**,
+  as superseded); missing data is a `data difference` accept entry until Step 24b.
 
 **Gap count: 13 decisions (G1–G13).** The contract-shape gaps that change
 `core/controlplane` or `render.rs` are G1, G2, G3, G5 and G6(b). The rest are data,
@@ -433,6 +458,14 @@ with the header comment naming `/admin/p/mail/outbox` and `mail.html`:**
 - G9(a): the `div.stack` wrapper, template choice. The exact `<difference>` text comes from
   the first `diff` `NEW` lines.
 - G4(a): the 6th `div.q-count` and the mock-only "failed" row shape, `declared deviation D4`.
+  The failed row is `tr#d4bd69`: D4, never a data difference.
+- G13 (no seed): the other two mock-only row shapes (`tr#34fee4`, `tr#83c6e0`) and the
+  throttle banner, `data difference`.
+- Not predicted at first, found by the first diff:
+  - the toolbar `span.input-icon` / `form.input-icon` pair, `template choice`, copied from
+    `events.txt:12-13`;
+  - `frame … div.page: mock-only [panel "Outbox"]`, `template choice` (G9: the panel sits
+    inside the `div.stack` wrapper).
 - If G1, G2, G3 or G5 is accepted instead of fixed: one `contract gap` line each.
 - The mock-only "1 / 1" pager span, if G2 reuses `table_foot` unfixed.
 

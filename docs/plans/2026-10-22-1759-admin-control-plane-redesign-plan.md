@@ -1680,6 +1680,42 @@ model tokens. Step 10's cost came from:
    - A post-mortem also runs after Step 13 (accounts, the first port with new engine
      work), and after any port whose review needs more than one fix round. Its fixes
      land before the next port.
+   - **Pilot result (Step 11, 2026-11-17).** Part `b` ran on sonnet (b84775cf, 6753541e,
+     8d025b32). `admindiff diff` and `crawl` were clean; the first core-reviewer round was
+     a REJECT, so the pilot failed its third criterion.
+     - Findings: (1) the queue search box disappears when a search narrows the queue to
+       zero items (template defect); (2) the mock's "failed" row (`tr#d4bd69`) was
+       labelled a data difference, not declared deviation D4, although the checklist
+       named D4.
+     - Causes:
+       - P1. The checklist went stale after the owner's G1–G13 decisions. Its §5 still
+         proposed `mailctl seed-mockup`, which G13 overruled, and `b` went looking for it.
+       - P2. `admindiff diff` labels a collapsed mock-only row only by its skeleton hash,
+         so `b` could not tell the failed row from the retrying rows and gave all three
+         one reason.
+       - P3. Accept kinds are free text; nothing ties an entry's kind to the kind the
+         checklist predicted.
+       - P4. The states column has no "narrowed to zero by search or filter" state,
+         although `table_empty_search` was a known table case. `crawl` never searches, so
+         `admindiff` cannot see that state either.
+       - P5. The checklist did not predict two entries: the toolbar span/form pair and the
+         frame `[panel "Outbox"]` placeholder. SKILL §6 allowed `b` no kind the checklist
+         did not name, but `b` copied both from precedent, so rule and practice disagreed.
+       - Outside the view part: `with_param` keeps `cursor` on the tab and search URLs
+         (`core/admin/src/render.rs:935`, `:1404`, `:1415`). No per-element check sees it.
+     - Fixes:
+       - Skill §1: the checklist is updated in place once the owner decides its gaps,
+         before part `a` (P1); the states row gains "narrowed to zero" with its golden
+         case (P4); the accept plan predicts every entry with its kind and reason (P3,
+         P5); every URL the renderer builds for a panel is audited for the query keys it
+         keeps and drops.
+       - Skill §6: `b` copies the predicted kind verbatim and returns any unpredicted
+         line, except a word-for-word repeat of another accept file's pair, which it
+         copies and flags (P3, P5).
+       - The Step 11 checklist gets the decisions, the overruled §5 proposal, D4 on
+         `tr#d4bd69` and the two unpredicted entries.
+       - Code, dispatched separately: a readable label for a collapsed row in
+         `admindiff diff` (P2), and the `cursor` kept by `with_param`.
 
 5. **Mockup-state seed** (owner, 2026-11-17). A fresh dev fleet has no paused and no
    lagging subscription, so about a third of the Event plane's and the dashboard's accept
