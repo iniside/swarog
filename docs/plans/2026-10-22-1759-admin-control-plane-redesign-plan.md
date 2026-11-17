@@ -1711,10 +1711,13 @@ model tokens. Step 10's cost came from:
      data-difference entries the seed resolves are removed from
      `tools/admindiff/accept/{index,events}.txt`, which `diff` enforces, as such an
      entry is now stale.
-   - **Ports.** A port's part `a` adds the data its page's designed state needs: through
-     `demoseed` when the module's public API can produce it, otherwise through the
-     module's own operator tool. A data-difference accept entry is allowed only when
-     neither can.
+   - **Ports.** ~~A port's part `a` adds the data its page's designed state needs:
+     through `demoseed` when the module's public API can produce it, otherwise through
+     the module's own operator tool.~~ Superseded (owner, 2026-11-17): no per-module seed
+     tools. `demoseed` becomes the one seeder and seeds every kind of data each module
+     can create (Step 24b). Until then a port adds no seed: a designed state a fresh
+     fleet lacks is a `data difference` accept entry, and Step 24b removes those
+     entries. `eventctl seed-mockup` stays until Step 24b folds it into `demoseed`.
    - **Errata (as built, 2026-11-17).**
      - archcheck bans `asyncevents.<table>` SQL outside the plane, splitproof and tests,
        so `tools/eventctl/src/seed.rs` (that one file) joins its skip list.
@@ -1768,7 +1771,8 @@ and an empty log is refused.
     after a timeout, a `Failed` transport error after the module already applied the
     action, or a failed settle;
   - no test files (Step 25);
-  - the seed data the page's designed state needs (Step 10b item 5, **Ports**);
+  - no seed data (Step 10b item 5, **Ports**, as superseded): missing data is a
+    `data difference` accept entry until Step 24b;
   - `order` values follow the mockup's order, around the ones Step 9 took:
     - dashboard tiles: accounts 10, storage 40, mail 50, wallet 70 (portal holds 20,
       30, 80; core.events holds 60);
@@ -1791,9 +1795,33 @@ and an empty log is refused.
 The ports:
 
 - **Step 11 — mail (pilot).** Outbox page (`pages-platform.js:53-71`), tile, attention.
-  - REAL: counts, rows, cancel (pending), resume parked, requeue all, test send.
+  - REAL: counts, rows, cancel (pending), resume parked, test send (requeue all dropped, G11).
   - Disabled: pause sending, retry-now, park, cancel parked.
   - Writer: restores the mail probe deleted in Step 1.
+  - **Decisions (owner, 2026-11-17, from the checklist
+    `docs/plans/2026-11-17-step11-mail-checklist.md`, gaps G1–G13): "do the visual part and add the missing
+    contract".**
+    - Contract, in part `a`:
+      - G1: new `ActionPoint::QueueRow` for per-item actions. A `PanelTool` on a
+        WorkQueue panel draws as a panel tool ("Pause sending", disabled).
+      - G2, G3, G5: WorkQueue gains what the mockup's outbox table has. That covers the
+        search box, a filter, the pager foot, a selectable checkbox column, and declared
+        extra columns with cells per item (Template, To as a plain email).
+      - G6(b): the attempt bar draws a fixed 5 squares, as the mockup does.
+    - Data and module:
+      - G4: 5 state tabs (attention, pending, retrying, parked, sent). The mockup's
+        separate Failed tab is a D4 accept entry.
+      - G6(a): the test-send idempotency key is `admin-send-test-` + `request_id`, and
+        `is_test_key` widens to match.
+      - G7: the message id is shown in full, and "next attempt" is relative time from SQL.
+      - G8: panel meta comes from `MAIL_SMTP_HOST`. The throttle banner and the
+        attention item show only while a row is retrying.
+      - G9: the page's `div.stack` wrapper is a template-choice accept entry.
+      - G10: the Retrying count runs without a new index (R1).
+      - G11: "requeue all" has no mockup element, so it is not built. The plan's REAL
+        list loses it.
+      - G12: the probe is restored from `b8435c9a^` with its `cp.invoke` CapCase.
+      - G13: no seed tool (item 5 **Ports**, as superseded).
 - **Step 12 — pilot gate in the split (c).** No files.
   - Wipe schema `admin` first (`DROP SCHEMA admin CASCADE` via `psql`, per the wipe rule),
     because `CREATE TABLE IF NOT EXISTS` does not add the Step 5 `role` column to an
@@ -1880,6 +1908,18 @@ Tests for Step 25: each variant reaches the provider as its mapped status; an un
 NotFound with no pre-read.
 
 (d) `[opus]` core-implementer.
+
+### Step 24b — `demoseed` seeds every module (owner, 2026-11-17)
+
+`demoseed` becomes the one seeder. It fills a fresh fleet with every kind of data each
+module can create, including the states the mockup designs: a parked and a retrying
+mail, a paused and a lagging subscription, and the rest. Per-module seed tools are not
+built, and `eventctl seed-mockup` folds into it. Afterwards the `data difference` accept
+entries that the seed resolves are removed.
+
+Open for this step's own planning: `demoseed` writes only through the gateway's public
+API (`tools/demoseed/Cargo.toml`), but some designed states (mail retry and park, event
+pause) have no public API. The step decides how `demoseed` reaches them.
 
 ### Step 25 — Tests
 
