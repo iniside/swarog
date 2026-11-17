@@ -266,12 +266,13 @@ target/debug/admindiff diff --page <page> --portal <that path>
 target/debug/devctl down
 ```
 
-- Diff every page with a `Route::Mapped` entry, not only the ported one.
+- Diff every page with a `Route::Mapped` or `Route::FirstRow` entry, not only the ported one.
 - The loop is closed when all three hold:
   - the golden test passes;
   - `crawl` is clean: it wrote the run's `CLEAN` marker, which `diff` refuses to run
-    without;
-  - `diff` prints `clean` for every mapped page: no `NEW` line, no `STALE` line, at
+    without. A `FirstRow` follower that finds no row fails the crawl; on a demoseeded
+    fleet that is a defect, and `--allow-empty` is only the opt-out for an empty fleet;
+  - `diff` prints `clean` for every mapped and first-row page: no `NEW` line, no `STALE` line, at
     least one matched panel.
 - `NEW` and `STALE` lines go back to part `b` as a fix round.
 - `crawl --base-url http://localhost:8085` checks the split.
