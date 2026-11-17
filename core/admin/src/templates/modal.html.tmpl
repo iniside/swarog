@@ -15,7 +15,7 @@
 {%- else -%}
 {{ m.body }}
 {%- if m.impact %}<div class="impact">{% for k, v in m.impact %}<div><span>{{ k }}</span><b>{{ ui.cell(v) }}</b></div>{% endfor %}</div>{% endif -%}
-{%- if m.reason != "none" %}<div style="margin-top:10px"><div style="font-size:12px;margin-bottom:4px">Reason <span class="muted">(recorded in audit log)</span></div><input class="input" style="width:100%{% if m.reason_error %};border-color:var(--err){% endif %}" name="_reason" value="{{ m.reason_value }}" autocomplete="off"{% if m.reason == "required" %} data-reason-required{% endif %}>{% if m.reason_error %}<div style="font-size:11.5px;color:var(--err);margin-top:4px">{{ m.reason_error }}</div>{% endif %}</div>{% endif -%}
+{%- if m.reason != "none" %}<div style="margin-top:10px"><div style="font-size:12px;margin-bottom:4px">Reason <span class="muted">(recorded in audit log)</span></div><input class="input" style="width:100%{% if m.reason_error %};border-color:var(--err){% endif %}" name="_reason" value="{{ m.reason_value }}"{% if m.reason_hint %} placeholder="{{ m.reason_hint }}"{% endif %} autocomplete="off"{% if m.reason == "required" %} data-reason-required{% endif %}>{% if m.reason_error %}<div style="font-size:11.5px;color:var(--err);margin-top:4px">{{ m.reason_error }}</div>{% endif %}</div>{% endif -%}
 {%- if m.type_to_confirm %}<div style="margin-top:10px"><div style="font-size:12px;margin-bottom:4px">Type <b class="mono">{{ m.type_to_confirm }}</b> to confirm</div><input class="input mono" style="width:100%" name="_confirm" data-confirm-type="{{ m.type_to_confirm }}" autocomplete="off"></div>{% endif -%}
 {%- endif -%}
 </div>

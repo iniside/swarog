@@ -110,12 +110,23 @@
     go.disabled = !ok;
   }
 
-  function flipToggle(t) {
-    var on = !t.classList.contains("on");
+  function setToggle(t, on) {
     t.classList.toggle("on", on);
     t.setAttribute("aria-checked", on ? "true" : "false");
     var hidden = t.nextElementSibling;
     if (hidden && hidden.type === "hidden") hidden.value = on ? "true" : "false";
+  }
+
+  function flipToggle(t) {
+    setToggle(t, !t.classList.contains("on"));
+  }
+
+  // A form reset leaves a toggle's hidden input alone (setting a hidden input's value
+  // rewrites its default), so each toggle goes back to its rendered `data-default`.
+  function resetToggles(form) {
+    form.querySelectorAll("[data-toggle]").forEach(function (t) {
+      setToggle(t, t.dataset.default === "true");
+    });
   }
 
   // ---------- panels ----------
@@ -126,6 +137,36 @@
     var label = btn.querySelector("span");
     if (label) label.textContent = "Retrying…";
     htmx.ajax("GET", slot.dataset.panelUrl, { target: slot, swap: "outerHTML" });
+  }
+
+  // Refetches every loaded panel on the page. A slot still loading has no
+  // `data-panel-url`; a slot inside another is replaced with its outer one.
+  function refreshPanels() {
+    if (!window.htmx) return;
+    document.querySelectorAll(".page .slot[data-panel-url]").forEach(function (slot) {
+      if (slot.parentElement.closest(".slot[data-panel-url]")) return;
+      htmx.ajax("GET", slot.dataset.panelUrl, { target: slot, swap: "outerHTML" });
+    });
+  }
+
+  // The attention host's meta: the loaded rows and the modules that sent them, without
+  // the rows of modules that did not answer.
+  function countAttention() {
+    document.querySelectorAll("[data-attention-meta]").forEach(function (meta) {
+      var host = meta.closest(".panel");
+      var rows = 0, modules = {};
+      host.querySelectorAll(".slot[data-module]").forEach(function (slot) {
+        var n = slot.querySelectorAll(".pop-row:not([data-attention-error])").length;
+        if (n) {
+          rows += n;
+          modules[slot.dataset.module] = true;
+        }
+      });
+      var m = Object.keys(modules).length;
+      meta.textContent = rows
+        ? rows + (rows === 1 ? " item" : " items") + " from " + m + (m === 1 ? " module" : " modules")
+        : "";
+    });
   }
 
   // ---------- toasts ----------
@@ -227,6 +268,10 @@
       toggleTheme();
       return;
     }
+    if ((el = t.closest("[data-action=refresh]"))) {
+      refreshPanels();
+      return;
+    }
     if ((el = t.closest("[data-popover]"))) {
       togglePopover(el);
       return;
@@ -308,6 +353,10 @@
     }
   });
 
+  document.addEventListener("reset", function (ev) {
+    resetToggles(ev.target);
+  });
+
   document.addEventListener("keydown", function (ev) {
     if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "k") {
       ev.preventDefault();
@@ -362,8 +411,11 @@
     }
   });
 
+  document.addEventListener("htmx:afterSettle", countAttention);
+
   document.addEventListener("DOMContentLoaded", function () {
     armToasts(document);
     focusModal();
+    countAttention();
   });
 })();

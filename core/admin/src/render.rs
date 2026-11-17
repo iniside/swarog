@@ -949,17 +949,14 @@ pub(crate) struct SparkView {
     pub(crate) color: &'static str,
 }
 
-/// The delta's colour class: the value's sign gives the direction, `good` says whether
-/// that direction is good.
+/// The delta's colour class (`bundle.css:251-252`) from `good` alone, never from the
+/// value's text: `Up` is a good change (`up`), `Down` a bad one (`bad-up`), `None` neither
+/// (`flat`). No `Trend` gives the mockup's fourth class, `down`.
 fn delta_class(d: &controlplane::Delta) -> &'static str {
-    let v = d.value.trim_start();
-    let rising = v.starts_with(['▲', '+', '↑']);
-    let falling = v.starts_with(['▼', '-', '−', '↓']);
-    match (d.good, rising, falling) {
-        (Trend::Up, true, _) | (Trend::Down, _, true) => "up",
-        (Trend::Down, true, _) => "bad-up",
-        (Trend::Up, _, true) => "down",
-        _ => "flat",
+    match d.good {
+        Trend::Up => "up",
+        Trend::Down => "bad-up",
+        Trend::None => "flat",
     }
 }
 

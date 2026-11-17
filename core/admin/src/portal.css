@@ -2,6 +2,7 @@
 [hidden] { display: none !important; }
 .slot { display: contents; }
 .modal-icon.info { background: var(--info-soft); color: var(--info); }
+.banner.ok { background: var(--ok-soft); color: var(--ok); }
 .q-count.ok .n { color: var(--ok); }
 .q-count.warn .n { color: var(--warn); }
 .q-count.err .n { color: var(--err); }
