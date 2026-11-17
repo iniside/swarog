@@ -15,10 +15,11 @@
 //!
 //! Two gaps, stated so Step 13 copies them rather than paraphrasing:
 //!
-//! 1. **Production hostname checking is not reached.** Production never trusts the minted CA,
-//!    so no test can complete a handshake through [`SmtpSender::new`]; a hostname mismatch is
-//!    never separated from an untrusted issuer there.
-//! 2.**A relay that answers `5xx` and then goes SILENT is reported as infrastructure.**
+//! 1. **Hostname checking is unproven on every constructor.** No test mints a certificate
+//!    for the wrong name. Through [`SmtpSender::new`] none can complete a handshake at all,
+//!    because production never trusts the minted CA, so a hostname mismatch there is never
+//!    separated from an untrusted issuer.
+//! 2. **A relay that answers `5xx` and then goes SILENT is reported as infrastructure.**
 //!    lettre answers a rejected command by sending `QUIT` and blocking in `read_response`,
 //!    which nothing in lettre bounds, so `worker::attempt`'s budget is what returns — as
 //!    `Infra` carrying `"send exceeded …"`. The row then spends its whole attempt ladder

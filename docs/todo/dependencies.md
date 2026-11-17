@@ -14,7 +14,7 @@ _None._
   `tools/verifyctl/src/stages/audit.rs` ignores RUSTSEC-2026-0459 (libsqlite3-sys
   0.30.1, in `Cargo.lock` only through sqlx's weak `sqlx-sqlite?/…` entries; only
   `postgres` is enabled, so sqlite is never compiled). The fix needs libsqlite3-sys
-  >=0.39. The workspace is on sqlx 0.8.6, whose sqlx-sqlite pins `0.30.1`; the latest
+  >=0.39. The workspace is on sqlx 0.8.6, whose sqlx-sqlite requires `^0.30.1`; the latest
   release, 0.9.0, still caps it at `>=0.30.1, <0.38.0` (crates.io dependency list of
   sqlx-sqlite 0.9.0, 2026-11-17). Once a released sqlx allows >=0.39, upgrade sqlx and
   remove the ignore; until then the `audit` stage's premise guard

@@ -22,32 +22,43 @@ _None._
   ACCOUNT-DELETION-03. `mail.outbox` has no `player_id`, and mail does not
   subscribe to `player.deleted`. Source: docs/roadmap/feature-tracker.md:145 @ fd797b3a
   (2026-09-10); README.md:140-141 @ fd797b3a.
-- [ ] **Purge sweeps race the writers that guard on the tombstone**
-  ACCOUNT-DELETION-04. Suspected, not exercised by any test: a WALLET-01-class race
-  (fixed in wallet by one per-player advisory lock shared by writer and sweep, 39e2f802).
-  A writer reads "no tombstone" and inserts; the tombstone and the sweep commit before the
-  writer does; the sweep's DELETE never sees the writer's uncommitted row, so the row
-  survives erasure. Read at HEAD on 2026-11-17, per module (writer, then sweep):
-  - **characters** — `create` takes `player_lock_key` and then checks the tombstone
-    (`modules/characters/src/service.rs:136-148`); the sweep
-    (`modules/characters/src/projection.rs:67-130`) takes no lock before its
-    `DELETE … RETURNING`. The lock is not shared.
-  - **friends** — `request` takes the requester lock and then checks the tombstone
-    (`modules/friends/src/service.rs:397-410`, `store.rs:49-85`); the sweep
-    (`modules/friends/src/projection.rs:67-133`, `purge_edges_tx`) takes no lock.
-  - **notifications** — `deliver_on` checks the tombstone and inserts with no lock
-    (`modules/notifications/src/service.rs:329-359`); the sweep
-    (`modules/notifications/src/projection.rs:415-474`) deletes with no lock.
-  - **inventory** — only the player-owned path is in question: the dev-gated HTTP `grant`
-    checks the tombstone on the pool and then `grant_pool` in a separate autocommit
-    (`modules/inventory/src/service.rs:108,125-138`); the sweep
-    (`modules/inventory/src/projection.rs:253-290`) states it takes no lock. The
-    per-character `lock_character` guards the character-owned path, a different tombstone.
-  - **groups** — `join` and the sweep share the per-GROUP lock (`service.rs:496-508`,
-    `projection.rs:436-445`), so `join` is not affected. `create` checks the tombstone and
-    inserts a new group and membership with no lock (`service.rs:364-378`), and the sweep
-    finds a player's groups from committed rows (`projection.rs:382-389`), so `create` is
-    in question.
-  No module reviewed shares a per-player lock between its tombstone-guarded writer and its
-  sweep, so none was dropped. Verify each with a staged-interleaving test like wallet's
-  before fixing; the fix pattern is `modules/wallet/src/store.rs` `lock_player_tx`.
+## Notes
+
+### Not doing
+
+- **Orphan-row race window between the tombstone guard and the purge sweep**
+  (ACCOUNT-DELETION-05, accepted; owner decision 2026-11-17: stays accepted).
+  - Decision: docs/plans/2026-09-10-1917-account-deletion-purge-plan.md:437-460 ("Known
+    gap ... Not taken"). A write that read "no tombstone" before the plant, and commits
+    after the player's sweep stamped `swept_at`, leaves one row no later sweep revisits.
+    Closing it needs one shared per-player advisory lock on every guarded write path.
+  - Recoverability from that analysis: the orphan is unreachable for characters,
+    inventory and notifications, because every read path is keyed on the deleted identity.
+    In friends and groups it is visible to, and removable by, the counterparty or
+    co-members. The one unrecoverable shape is `groups.create`: the deleted player is the
+    group's sole admin, so nobody can act on that group.
+  - WALLET-01 reversed the decision for wallet only (39e2f802: `Store::lock_player_tx`,
+    shared by `apply_on` and the sweep).
+  - Per-module state, read at HEAD on 2026-11-17 (writer, then sweep). None shares a
+    per-player lock between its guarded writer and its sweep, and none is exercised by a
+    test:
+    - characters: `create` takes `player_lock_key`, then checks the tombstone
+      (`modules/characters/src/service.rs:136-148`); the sweep
+      (`modules/characters/src/projection.rs:67-130`) takes no lock.
+    - friends: `request` takes the requester lock, then checks the tombstone
+      (`modules/friends/src/service.rs:397-410`, `store.rs:49-85`); the sweep
+      (`modules/friends/src/projection.rs:67-133`) takes no lock.
+    - notifications: `deliver_on` checks the tombstone and inserts with no lock
+      (`modules/notifications/src/service.rs:329-359`); the sweep
+      (`modules/notifications/src/projection.rs:415-474`) deletes with no lock.
+    - inventory, player-owned path only: the dev-gated HTTP `grant` checks the tombstone on
+      the pool, then `grant_pool` in a separate autocommit
+      (`modules/inventory/src/service.rs:108,125-138`); the sweep
+      (`modules/inventory/src/projection.rs:253-290`) takes no lock. The per-character
+      `lock_character` covers the character-owned path, a different tombstone.
+    - groups: the lock is per group, and the sweep locks only the groups
+      `player_groups_tx` finds, from committed memberships
+      (`modules/groups/src/store.rs:152-160`, `projection.rs:382-389,436-445`). A `join`
+      in flight holds the group lock with its membership uncommitted
+      (`service.rs:496-508`), so the sweep never locks that group and the membership
+      survives. `create` guards with no lock (`service.rs:364-378`).

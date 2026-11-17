@@ -23,7 +23,7 @@ _None._
   2026-07-11). Typed edge codes (audit-remediation step 16) allow re-pointing it.
   Source: docs/plans/2026-07-13-1415-audit-remediation-plan.md:204.
 - [ ] **`[M3b]` posts `create_role` to the razed `/admin/api-keys`**
-  SPLITPROOF-03. The monolith-local `[M3b]` block (`tools/splitproof/src/main.rs:324-385`)
+  SPLITPROOF-06. The monolith-local `[M3b]` block (`tools/splitproof/src/main.rs:324-385`)
   GETs `/admin/api-keys` for a `_csrf` field and POSTs `_action=create_role` with
   `role_name` and `role_policy`, then checks the `apikeys.roles` row. The admin that served
   that route was razed by b8435c9a and no code outside splitproof references the path, so the

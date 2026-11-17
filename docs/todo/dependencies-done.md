@@ -3,7 +3,7 @@
 Last updated: 2026-11-17
 
 - [x] **RustSec advisories in the dependency tree** (2026-11-17, security-quick-wins step 1)
-  Lockfile-only patch bumps inside the existing requirements: quinn-proto, quinn-udp,
+  Lockfile-only bumps within the existing requirements: quinn-proto, quinn-udp,
   rustls, rustls-webpki, webpki-roots, webpki-root-certs, event-listener, rustix and
   tokio (0fedd251, version list in its message); the yanked chacha20 and spin releases
   moved in 41d6f369. RUSTSEC-2026-0459 stays ignored with a premise guard
