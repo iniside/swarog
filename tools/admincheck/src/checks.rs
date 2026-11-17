@@ -135,11 +135,19 @@ fn layouts(m: &Manifest, out: &mut Vec<String>) {
 fn head_actions(m: &Manifest, out: &mut Vec<String>) {
     for page in &m.pages {
         for id in &page.head_actions {
-            if !m.actions.iter().any(|a| &a.id == id) {
-                out.push(format!(
+            match m.actions.iter().find(|a| &a.id == id) {
+                None => out.push(format!(
                     "{}: page {:?} names head action {id:?}, which is not an action of this module",
                     m.module, page.id
-                ));
+                )),
+                // The page head renders an action bound to no item or entity, so only a
+                // `PageHead` of this page belongs there; any other point would render
+                // unbound, and a `PanelForm` not at all.
+                Some(a) if !matches!(&a.point, ActionPoint::PageHead(p) if *p == page.id) => out.push(format!(
+                    "{}: page {:?} names head action {id:?}, which is {:?}, not PageHead({:?})",
+                    m.module, page.id, a.point, page.id
+                )),
+                Some(_) => {}
             }
         }
         let primary: Vec<&str> = page

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use controlplane::{InvokeCall, InvokeOutcome, Provider};
 use sqlx::PgPool;
 
-use crate::admin::{self, MailAdmin, OUTBOX_ID_BYTES};
+use crate::admin::{MailAdmin, OUTBOX_ID_BYTES};
 use crate::config::{MailConfig, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETENTION_DAYS, DEFAULT_SEND_TIMEOUT_MS};
 use crate::service::{validate_new, NewMail, Service, TEST_KEY_PREFIX};
 use crate::store::IDEMPOTENCY_KEY;
@@ -119,11 +119,15 @@ pub fn conformance_kind_rejected(len: usize) -> bool {
     })
 }
 
-/// The provider's own first check on every `cp.invoke`, before it reads any input.
+/// The provider's own first check on every `cp.invoke`, executed through `MailAdmin::invoke`
+/// against a store that cannot connect. `resume` with a well-formed message id reads no
+/// input, so at the cap the call reaches `Service::requeue_parked` and answers `Internal`
+/// off the dead pool; one byte over, the cap's `Invalid` is the only refusal it can meet.
+/// Deleting the guard sends the long value to the pool too, and the case goes red.
 #[doc(hidden)]
 pub fn conformance_cp_invoke_input_rejected(len: usize) -> bool {
     let input = BTreeMap::from([("value".to_string(), "a".repeat(len))]);
-    !admin::input_within_cap(&input)
+    refused(call("resume", input, Some(uuid_shaped(OUTBOX_ID_BYTES)), None))
 }
 
 /// The test-send key ceiling, executed through `MailAdmin::invoke` itself against a store

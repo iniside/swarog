@@ -84,7 +84,7 @@ impl MailAdmin {
 }
 
 /// Every input value is at most [`controlplane::MAX_INPUT_VALUE_BYTES`].
-pub(crate) fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
+fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
     input.values().all(|v| v.len() <= controlplane::MAX_INPUT_VALUE_BYTES)
 }
 
@@ -112,13 +112,24 @@ fn cursor_of(row: &OutboxListRow) -> String {
     format!("{}.{}", row.created_at_micros, row.id)
 }
 
+/// The largest cursor µs `store::list_tx` compares exactly. Its `$3 * interval '1
+/// microsecond'` multiplies through float8, which carries every integer up to 2^53 and
+/// fails as `interval out of range` near `i64::MAX`. 2^53 µs after the epoch is mid-2255,
+/// past any `created_at` a row stamped by `now()` holds.
+const MAX_CURSOR_MICROS: i64 = 1 << 53;
+
+/// A hand-edited cursor is `Invalid` here, never a database error from the page query.
 fn parse_cursor(raw: &str) -> Result<(i64, &str), Error> {
     let invalid = || Error::invalid("mail: the page cursor is malformed");
     let (micros, id) = raw.split_once('.').ok_or_else(invalid)?;
     if micros.is_empty() || !micros.bytes().all(|b| b.is_ascii_digit()) || !is_outbox_id(id) {
         return Err(invalid());
     }
-    Ok((micros.parse().map_err(|_| invalid())?, id))
+    let micros: i64 = micros.parse().map_err(|_| invalid())?;
+    if micros > MAX_CURSOR_MICROS {
+        return Err(invalid());
+    }
+    Ok((micros, id))
 }
 
 /// `"in 40 s"`, `"in 2 min"`, `"in 3 h"`, `"in 2 d"`, or `"now"` once due.

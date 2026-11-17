@@ -19,7 +19,7 @@ use crate::render::{day_and_time, thousands};
 
 pub(crate) const MODULE: &str = "core.events";
 const PAGE: &str = "events";
-const KIND: &str = "subscription";
+pub(crate) const KIND: &str = "subscription";
 
 pub(crate) const MAX_INPUT_VALUE_BYTES: usize = controlplane::MAX_INPUT_VALUE_BYTES;
 /// The byte cap on a skip reason, which is stored in the subscription's `last_error`.
@@ -55,7 +55,7 @@ const DETAILS: &str = "subscription.details";
 const POISON_RESUME: &str = "poison.resume";
 const POISON_SKIP: &str = "poison.skip";
 const POISON_COPY: &str = "poison.copy";
-const SUB_PAUSE: &str = "sub.pause";
+pub(crate) const SUB_PAUSE: &str = "sub.pause";
 const SUB_RESUME: &str = "sub.resume";
 const SUB_RETRY: &str = "sub.retry";
 const SUB_REWIND: &str = "sub.rewind";
@@ -111,7 +111,7 @@ fn since(at: &str) -> String {
 
 /// Every input value is at most [`MAX_INPUT_VALUE_BYTES`]. This provider declares no form
 /// fields, so an accepted value is never read.
-pub(crate) fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
+fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
     input.values().all(|v| v.len() <= MAX_INPUT_VALUE_BYTES)
 }
 
