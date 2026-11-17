@@ -208,4 +208,4 @@ The rows above are kept as written. Five are wrong at the time of the Step 13 ch
   is DERIV from `refresh_tokens.issued_at`.
 - Users & players "Search": exact email is REAL, not NEW. A `dev` subject is the email, so the
   lookup is the `(provider, subject)` primary key with provider `dev`
-  (`Store::password_identity`, `modules/accounts/src/store.rs`). Substring search stays NEW.
+  (`Store::password_identity`, `modules/accounts/src/store.rs`). Substring search on `display_name` is DERIV (a seq scan under a `LIMIT`, Step 13 G13), not NEW.
