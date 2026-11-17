@@ -119,6 +119,36 @@ pub async fn info(pool: &PgPool) -> Result<Vec<SubInfo>> {
         .collect())
 }
 
+/// One subscription's delivery state, without the lag [`info`] counts.
+pub struct SubState {
+    pub id: String,
+    pub state: String,
+    pub consecutive_failures: i32,
+    /// As [`SubInfo::paused_since`].
+    pub paused_since: Option<String>,
+}
+
+/// Every subscription's delivery state, by id. Reads only the subscription rows.
+pub async fn states(pool: &PgPool) -> Result<Vec<SubState>> {
+    let rows = sqlx::query(
+        "SELECT subscription_id, state, consecutive_failures, \
+                CASE WHEN state = 'paused' THEN updated_at::text END AS paused_since \
+         FROM asyncevents.subscriptions ORDER BY subscription_id",
+    )
+    .fetch_all(pool)
+    .await
+    .context("asyncevents: read subscription states")?;
+    Ok(rows
+        .into_iter()
+        .map(|r| SubState {
+            id: r.get("subscription_id"),
+            state: r.get("state"),
+            consecutive_failures: r.get("consecutive_failures"),
+            paused_since: r.get("paused_since"),
+        })
+        .collect())
+}
+
 /// A before/after snapshot of one subscription (its identity, state, cursor, failure
 /// state). Errors if the id is unknown.
 pub async fn snapshot(pool: &PgPool, id: &str) -> Result<StateSnapshot> {

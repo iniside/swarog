@@ -412,6 +412,7 @@ pub(crate) struct SlotView {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct DashboardView {
     pub(crate) shell: ShellView,
+    pub(crate) subtitle: String,
     pub(crate) tiles: Vec<SlotView>,
     pub(crate) attention: Vec<SlotView>,
     pub(crate) panels: Vec<SlotView>,
@@ -765,7 +766,7 @@ pub(crate) struct TableView {
     pub(crate) next_url: Option<String>,
 }
 
-fn thousands(n: u64) -> String {
+pub(crate) fn thousands(n: u64) -> String {
     let digits = n.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {

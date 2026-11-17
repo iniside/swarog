@@ -57,7 +57,10 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub mod conformance;
 mod engine;
+mod events_provider;
+mod fakes;
 mod password;
+mod portal_provider;
 mod render;
 mod routes;
 pub use password::{hash_password, verify_password};
@@ -419,6 +422,10 @@ impl Module for Admin {
         self.engine
             .set(engine.clone())
             .map_err(|_| anyhow::anyhow!("admin.init ran twice"))?;
+        let portal: Arc<dyn controlplane::Provider> = Arc::new(portal_provider::PortalProvider);
+        let events: Arc<dyn controlplane::Provider> = Arc::new(events_provider::EventsProvider::new(deps.pool.clone()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, portal);
+        ctx.contribute(controlplane::PROVIDER_SLOT, events);
         ctx.mount(router(state.clone()));
         ctx.mount(routes::router(routes::Portal { st: state, engine }));
         Ok(())

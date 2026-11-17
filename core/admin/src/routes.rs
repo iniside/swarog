@@ -26,10 +26,10 @@ use crate::engine::search;
 use crate::engine::Engine;
 use crate::render::{
     self, ActionItem, ActionResultView, Crumb, DashboardView, EntityView, FlashView, FormFrame, FormInstance,
-    MenuView, MissingView, ModalSpec, NavSectionView, NavView, OperatorView, PageView, PanelInput, ScopeView,
-    SearchGroupView, SearchHitView, SearchView, ShellView, SlotView, TabView,
+    HealthView, MenuView, MissingView, ModalSpec, NavSectionView, NavView, NotificationView, OperatorView,
+    PageView, PanelInput, ScopeView, SearchGroupView, SearchHitView, SearchView, ShellView, SlotView, TabView,
 };
-use crate::{see_other, AdminState};
+use crate::{fakes, see_other, AdminState};
 
 #[derive(Clone)]
 pub(crate) struct Portal {
@@ -134,9 +134,32 @@ async fn shell(
             reveal: f.reveal.as_ref().map(render::reveal),
             tone: f.tone.name(),
         }),
-        deployment: None,
-        health: None,
-        notifications: None,
+        deployment: Some(fakes::DEPLOYMENT.to_string()),
+        health: Some(health()),
+        notifications: Some(
+            fakes::notifications()
+                .into_iter()
+                .map(|(tone, title, text, when)| NotificationView {
+                    tone,
+                    title: title.to_string(),
+                    text: text.to_string(),
+                    when: when.to_string(),
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// The top-bar health pill and its popover.
+fn health() -> HealthView {
+    let services = fakes::services();
+    let (running, unhealthy): (Vec<_>, Vec<_>) =
+        services.iter().cloned().partition(|s| s.state == controlplane::ServiceState::Running);
+    HealthView {
+        healthy: running.len(),
+        total: services.len(),
+        unhealthy: render::services(&unhealthy).items,
+        note: fakes::HEALTH_NOTE.to_string(),
     }
 }
 
@@ -370,6 +393,7 @@ async fn dashboard(
     let crumbs = vec![Crumb { label: "Dashboard".to_string(), href: None }];
     let view = DashboardView {
         shell: shell(&p, &ctx, &snapshot, &query, None, crumbs).await,
+        subtitle: fakes::DASHBOARD_SUBTITLE.to_string(),
         tiles: pick(Point::DashboardTile),
         attention: pick(Point::DashboardAttention),
         panels: pick(Point::DashboardPanel),
