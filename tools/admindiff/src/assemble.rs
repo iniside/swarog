@@ -92,3 +92,7 @@ fn swap_by_id(nodes: &mut [Node], id: &str, with: &mut Option<Element>) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "assemble_tests.rs"]
+mod assemble_tests;

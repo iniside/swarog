@@ -44,3 +44,7 @@ pub fn judge(diffs: &BTreeSet<String>, accept: &BTreeMap<String, String>) -> Ver
     let stale = accept.keys().filter(|k| !diffs.contains(*k)).cloned().collect();
     Verdict { accepted, unaccepted, stale }
 }
+
+#[cfg(test)]
+#[path = "accept_tests.rs"]
+mod accept_tests;

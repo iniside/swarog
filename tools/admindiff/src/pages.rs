@@ -112,3 +112,7 @@ pub fn lookup(page: &str) -> Result<&'static Page> {
     }
     bail!("unknown page {page}; pages: {}", PAGE_MAP.iter().map(|p| p.page).collect::<Vec<_>>().join(", "))
 }
+
+#[cfg(test)]
+#[path = "pages_tests.rs"]
+mod pages_tests;

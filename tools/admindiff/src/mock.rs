@@ -90,3 +90,7 @@ pub fn render(repo: &Path, key: &str, search: &str) -> Result<String> {
     }
     String::from_utf8(out.stdout).context("node output is not UTF-8")
 }
+
+#[cfg(test)]
+#[path = "mock_tests.rs"]
+pub(crate) mod mock_tests;

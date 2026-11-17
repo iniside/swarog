@@ -210,3 +210,7 @@ fn write(path: &Path, body: &str) -> Result<()> {
     }
     std::fs::write(path, body).with_context(|| format!("write {}", path.display()))
 }
+
+#[cfg(test)]
+#[path = "crawl_tests.rs"]
+mod crawl_tests;

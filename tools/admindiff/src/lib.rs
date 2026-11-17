@@ -211,3 +211,6 @@ pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Resul
     }
     Ok(!failed)
 }
+
+#[cfg(test)]
+mod tests;

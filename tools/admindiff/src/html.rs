@@ -311,3 +311,7 @@ fn write_nodes(nodes: &[Node], out: &mut String) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "html_tests.rs"]
+mod html_tests;

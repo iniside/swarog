@@ -557,3 +557,7 @@ fn similarity(a: &Skel, b: &Skel) -> usize {
     let shared = b.children.iter().filter(|c| canons.contains(c.canon.as_str())).count();
     3 * classes(&a.head).intersection(&classes(&b.head)).count() + 2 * shared + heads.intersection(&b_heads).count()
 }
+
+#[cfg(test)]
+#[path = "skeleton_tests.rs"]
+mod skeleton_tests;
