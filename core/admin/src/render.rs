@@ -885,7 +885,6 @@ pub(crate) struct RowView {
     pub(crate) href: Option<String>,
     pub(crate) menu_url: Option<String>,
     pub(crate) highlight: bool,
-    /// The row's `TableRow` actions, bound to its entity and `item`.
     pub(crate) actions: Vec<ActionItem>,
 }
 
