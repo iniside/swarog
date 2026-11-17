@@ -16,4 +16,3 @@ panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > tabl
 panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr* > tr.sel > td.num: mock span.mono.muted portal span.mono | contract gap: no CellKind gives a muted mono value, so the Head cell is not muted
 panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr*: mock tr portal tr.clickable | template choice: a row with an entity links to its entity page (primitives.html.tmpl table rows)
 panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr*: mock tr.sel portal tr.clickable.sel | template choice: a row with an entity links to its entity page (primitives.html.tmpl table rows)
-tile "Max lag" a.panel > div.kpi > div.kpi-delta: mock-only span.bad-up | data difference: the delta is toned by the top subscription's own lag, which is below warn on this fleet
