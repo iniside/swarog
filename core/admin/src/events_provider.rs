@@ -15,7 +15,7 @@ use controlplane::{
 use sqlx::PgPool;
 
 use crate::fakes;
-use crate::render::thousands;
+use crate::render::{day_and_time, thousands};
 
 pub(crate) const MODULE: &str = "core.events";
 const PAGE: &str = "events";
@@ -92,6 +92,15 @@ fn short_id(event_id: &str) -> Option<&str> {
 
 fn event_name(topic: &str, short: &str) -> String {
     format!("{topic} #{short}")
+}
+
+/// `"since Nov 17 14:02"` from Postgres timestamptz text. The date is always shown: the
+/// provider reads no clock, so it cannot tell a pause from today from an older one.
+fn since(at: &str) -> String {
+    match day_and_time(at) {
+        (_, day, time) if !day.is_empty() => format!("since {day} {time}"),
+        _ => format!("since {at}"),
+    }
 }
 
 /// Every input value is at most [`MAX_INPUT_VALUE_BYTES`]. This provider declares no form
@@ -503,7 +512,7 @@ impl EventsProvider {
                 item: Some(poison_item(&sub.id, event_id)),
                 code,
             }),
-            meta: sub.paused_since.as_ref().map(|since| format!("since {since}")),
+            meta: sub.paused_since.as_deref().map(since),
             heading: Some(sub.id.clone()),
             note: Some(POISON_HINT.to_string()),
             banner: Some(banner),

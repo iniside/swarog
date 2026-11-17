@@ -38,7 +38,7 @@ fn health() -> PanelBody {
     let items = fakes::services();
     let running = items.iter().filter(|s| s.state == ServiceState::Running).count();
     PanelBody {
-        meta: Some(format!("{running}/{} healthy · {}", items.len(), fakes::HEALTH_PROBE)),
+        meta: Some(format!("{running}/{} healthy · {}", items.len(), fakes::health_probe())),
         note: Some(fakes::history_window()),
         ..PanelBody::new(Primitive::ServiceStatus(ServiceStatus { items }))
     }

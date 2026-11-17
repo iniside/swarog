@@ -12,12 +12,12 @@ use axum::routing::get;
 use axum::{Form, Router};
 use axum_extra::extract::CookieJar;
 use controlplane::{
-    ActionDecl, ActionPoint, ContributionDecl, EntityRef, FormSpec, InvokeCall, InvokeOutcome, Layout, Manifest,
-    PanelQuery, Point, PrepareCall, Primitive, Then,
+    ActionDecl, ActionPoint, ContributionDecl, EntityRef, InvokeCall, InvokeOutcome, Layout, Manifest,
+    PanelBody, PanelQuery, Point, PrepareCall, Primitive, Then,
 };
 use serde::Serialize;
 
-use crate::engine::actions::{self, Claim, Claimant, Flash, FlashTone, FormRow, Invoked, StoredSpec};
+use crate::engine::actions::{self, Chrome, Claim, Claimant, Flash, FlashTone, FormRow, Invoked, StoredSpec};
 use crate::engine::forms;
 use crate::engine::manifests::Snapshot;
 use crate::engine::panels::{self, PanelState, PanelView};
@@ -159,7 +159,7 @@ fn health() -> HealthView {
         healthy: running.len(),
         total: services.len(),
         unhealthy: render::services(&unhealthy).items,
-        note: fakes::HEALTH_NOTE.to_string(),
+        note: fakes::health_note(),
     }
 }
 
@@ -637,12 +637,12 @@ async fn panel(
     };
     let mut view: PanelView = panels::resolve(&p.engine, &snapshot, &ctx.operator, &module, decl, req).await;
     let mut form = None;
-    let spec = match (view.state, view.body.as_ref().map(|b| &b.primitive)) {
-        (PanelState::Ok, Some(Primitive::Form(spec))) => Some(spec.clone()),
+    let form_body = match (view.state, &view.body) {
+        (PanelState::Ok, Some(body @ PanelBody { primitive: Primitive::Form(_), .. })) => Some(body.clone()),
         _ => None,
     };
-    if let Some(spec) = spec {
-        match panel_form_instance(&p, &ctx, manifest, &module, decl, entity.as_ref(), &spec).await {
+    if let Some(body) = form_body {
+        match panel_form_instance(&p, &ctx, manifest, &module, decl, entity.as_ref(), &body).await {
             Ok(Some((post_url, form_id))) => form = Some((post_url, form_id)),
             Ok(None) => view.state = PanelState::Readonly,
             Err(msg) => {
@@ -697,9 +697,10 @@ async fn panel(
     html(StatusCode::OK, render::fragment(&p.st.env, "primitives.html", "panel_fragment", &rendered))
 }
 
-/// The form instance an `ok` Form panel posts as: `Ok(None)` (readonly) when the
-/// contribution has no `PanelForm` action or the viewer cannot use it, `Err` (an error
-/// panel) when the spec cannot be served or the instance cannot be stored.
+/// The form instance an `ok` Form panel's `body` posts as, storing the form with its
+/// chrome: `Ok(None)` (readonly) when the contribution has no `PanelForm` action or the
+/// viewer cannot use it, `Err` (an error panel) when the spec cannot be served or the
+/// instance cannot be stored.
 async fn panel_form_instance(
     p: &Portal,
     ctx: &Ctx,
@@ -707,8 +708,11 @@ async fn panel_form_instance(
     module: &str,
     decl: &ContributionDecl,
     entity: Option<&EntityRef>,
-    spec: &FormSpec,
+    body: &PanelBody,
 ) -> Result<Option<(String, String)>, String> {
+    let Primitive::Form(spec) = &body.primitive else {
+        return Ok(None);
+    };
     let Some(action) = panel_form_action(manifest, &decl.id) else {
         return Ok(None);
     };
@@ -719,7 +723,7 @@ async fn panel_form_instance(
     if !errors.is_empty() {
         return Err(format!("Form unavailable: {}", errors.join("; ")));
     }
-    let stored = StoredSpec::Form(spec.clone());
+    let stored = StoredSpec::Form { form: spec.clone(), chrome: Chrome::of(body) };
     let mint = forms::Mint {
         login: &ctx.operator.login,
         module,
@@ -794,7 +798,7 @@ async fn search_route(
 
 fn modal_spec(spec: &StoredSpec) -> Option<ModalSpec<'_>> {
     match spec {
-        StoredSpec::Form(form) => Some(ModalSpec::Form(form)),
+        StoredSpec::Form { form, .. } => Some(ModalSpec::Form(form)),
         StoredSpec::Confirm(confirm) => Some(ModalSpec::Confirm(confirm)),
         StoredSpec::Click => None,
     }
@@ -826,7 +830,7 @@ async fn action_modal(
     }
     let declared = match &found.decl.then {
         _ if matches!(found.decl.point, ActionPoint::PanelForm(_)) => None,
-        Then::Form(form) => Some(StoredSpec::Form(form.clone())),
+        Then::Form(form) => Some(StoredSpec::Form { form: form.clone(), chrome: Chrome::default() }),
         Then::Confirm(confirm) => Some(StoredSpec::Confirm(confirm.clone())),
         Then::Invoke | Then::Link(_) => None,
     };
@@ -1203,7 +1207,7 @@ fn render_instance(
     status: StatusCode,
 ) -> Response {
     let post_url = action_url(&row.module, &row.action);
-    if let (Some(contribution), StoredSpec::Form(spec)) = (&row.contribution, &row.spec) {
+    if let (Some(contribution), StoredSpec::Form { form: spec, chrome }) = (&row.contribution, &row.spec) {
         let Some((manifest, decl)) = s
             .snapshot
             .route(&row.module)
@@ -1226,7 +1230,7 @@ fn render_instance(
             csrf: s.csrf,
         };
         let instance = FormInstance { post_url, form_id: row.id.clone(), posted: Some(s.body), errors, banner, locked };
-        let rendered = render::panel_form_result(&frame, spec, instance);
+        let rendered = render::panel_form_result(&frame, spec, chrome, instance);
         return html(status, render::fragment(&s.p.st.env, "primitives.html", "panel_fragment", &rendered));
     }
     let Some(shown) = modal_spec(&row.spec) else {

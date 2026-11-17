@@ -10,7 +10,7 @@ use controlplane::{
 use minijinja::{Environment, Value};
 use serde::Serialize;
 
-use crate::engine::actions::{self, money_currency_key};
+use crate::engine::actions::{self, money_currency_key, Chrome};
 use crate::engine::panels::{self, PanelState};
 
 const SHELL: &str = include_str!("templates/shell.html.tmpl");
@@ -982,8 +982,9 @@ pub(crate) struct TimelineView {
 
 const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/// `("2026-10-20", "Oct 20", "17:44")` from an RFC 3339 UTC timestamp.
-fn day_and_time(at: &str) -> (String, String, String) {
+/// `("2026-10-20", "Oct 20", "17:44")` from an RFC 3339 timestamp or Postgres timestamptz
+/// text (`2026-10-20 17:44:05+01`); unparseable `at` gives `("", "", at)`.
+pub(crate) fn day_and_time(at: &str) -> (String, String, String) {
     let date = at.get(0..10).unwrap_or("");
     let time = at.get(11..16).unwrap_or(at);
     let month = date.get(5..7).and_then(|m| m.parse::<usize>().ok()).filter(|m| (1..=12).contains(m));
@@ -1171,9 +1172,15 @@ pub(crate) struct FormFrame<'a> {
     pub(crate) csrf: &'a str,
 }
 
-/// The panel fragment of a panel form shown again from its stored spec after a 422 or 409.
-pub(crate) fn panel_form_result(frame: &FormFrame<'_>, spec: &FormSpec, instance: FormInstance<'_>) -> PanelRender {
-    let body = PanelBody::new(Primitive::Form(spec.clone()));
+/// The panel fragment of a panel form shown again from its stored spec and chrome after a
+/// 422 or 409.
+pub(crate) fn panel_form_result(
+    frame: &FormFrame<'_>,
+    spec: &FormSpec,
+    chrome: &Chrome,
+    instance: FormInstance<'_>,
+) -> PanelRender {
+    let body = chrome.around(Primitive::Form(spec.clone()));
     let input = PanelInput {
         module: frame.module,
         contribution: &frame.decl.id,

@@ -21,7 +21,8 @@ pub trait Provider: Send + Sync {
     async fn search(&self, req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error>;
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error>;
     /// The spec a `prepare: true` action's modal shows for `req.item`, of the declared
-    /// `Then` variant. Only actions declaring `prepare` are asked.
+    /// `Then` variant. Only actions declaring `prepare` are asked. It must write nothing:
+    /// `ControlPlane::prepare` is `#[retry_safe]`, so a call may run more than once.
     async fn prepare(&self, req: PrepareCall) -> Result<Then, opsapi::Error> {
         Err(opsapi::Error::not_found(format!("{} prepares no action {:?}", req.module, req.action)))
     }

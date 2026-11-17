@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use controlplane::{
-    decode_field, encode_field, ActionDecl, ConfirmSpec, ControlPlane, EntityRef, Field, FieldKind, FormSpec,
-    InvokeOutcome, Link, PrepareCall, ReasonReq, SecretReveal, Then,
+    decode_field, encode_field, ActionDecl, Banner, ConfirmSpec, ControlPlane, EntityRef, Field, FieldKind, FormSpec,
+    InvokeOutcome, Link, PanelBody, PrepareCall, Primitive, ReasonReq, SecretReveal, Then,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -148,7 +148,7 @@ pub(crate) fn prepared_spec(declared: &Then, prepared: Prepared) -> Result<Store
         (Then::Form(_), Prepared::Then(Then::Form(form))) => {
             let errors = controlplane::form_spec_errors(&form);
             if errors.is_empty() {
-                Ok(StoredSpec::Form(form))
+                Ok(StoredSpec::Form { form, chrome: Chrome::default() })
             } else {
                 Err(unusable(errors.join("; ")))
             }
@@ -165,9 +165,40 @@ pub(crate) fn prepared_spec(declared: &Then, prepared: Prepared) -> Result<Store
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub(crate) enum StoredSpec {
-    Form(FormSpec),
+    Form { form: FormSpec, chrome: Chrome },
     Confirm(ConfirmSpec),
     Click,
+}
+
+/// The `PanelBody` around a panel form, so the form shown again after a 422 or 409 keeps
+/// what its panel showed. Empty for a modal form.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Chrome {
+    pub(crate) meta: Option<String>,
+    pub(crate) heading: Option<String>,
+    pub(crate) note: Option<String>,
+    pub(crate) banner: Option<Banner>,
+}
+
+impl Chrome {
+    pub(crate) fn of(body: &PanelBody) -> Chrome {
+        Chrome {
+            meta: body.meta.clone(),
+            heading: body.heading.clone(),
+            note: body.note.clone(),
+            banner: body.banner.clone(),
+        }
+    }
+
+    pub(crate) fn around(&self, primitive: Primitive) -> PanelBody {
+        PanelBody {
+            primitive,
+            meta: self.meta.clone(),
+            heading: self.heading.clone(),
+            note: self.note.clone(),
+            banner: self.banner.clone(),
+        }
+    }
 }
 
 /// One `admin.forms` row; timestamps are Postgres microseconds since the Unix epoch.
@@ -284,7 +315,7 @@ pub(crate) fn check_click_keys(body: &[(String, String)]) -> Result<(), String> 
 /// currency key; only a Multi field's key repeats.
 pub(crate) fn check_form_keys(spec: &StoredSpec, body: &[(String, String)]) -> Result<(), String> {
     let fields: &[Field] = match spec {
-        StoredSpec::Form(form) => &form.fields,
+        StoredSpec::Form { form, .. } => &form.fields,
         StoredSpec::Confirm(_) | StoredSpec::Click => &[],
     };
     let portal = [FIELD_CSRF, FIELD_FORM, FIELD_REASON, FIELD_CONFIRM, FIELD_RETURN];
@@ -356,7 +387,7 @@ pub(crate) fn build_submission(
     let reason = first(body, FIELD_REASON).map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
     let mut expected_revision = None;
     match spec {
-        StoredSpec::Form(form) => {
+        StoredSpec::Form { form, .. } => {
             for field in &form.fields {
                 let raw = if field.readonly { field.default.clone() } else { posted_raw(field, body) };
                 let Some(raw) = raw else {

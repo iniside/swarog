@@ -320,7 +320,7 @@ fn collect_type(
             out,
         );
     }
-    if let Some(shape) = types.get(&name) {
+    if let Some(shape) = types.get(&name).filter(|_| is_local_path(ty)) {
         if !visiting.insert(name.clone()) {
             bail!("recursive request DTO {name:?} is unsupported");
         }
@@ -435,6 +435,18 @@ fn is_string(ty: &Type) -> bool {
 fn type_name(ty: &Type) -> Option<String> {
     let Type::Path(path) = ty else { return None };
     Some(path.path.segments.last()?.ident.to_string())
+}
+
+/// Whether `ty` names a type of the crate under scan: one segment, or a `crate::`,
+/// `self::` or `super::` path. The type index is keyed by the last segment, so a foreign
+/// `other::Kind` must not resolve to a local `Kind`.
+fn is_local_path(ty: &Type) -> bool {
+    let Type::Path(path) = ty else { return false };
+    let segments = &path.path.segments;
+    let relative = |s: &syn::PathSegment| s.ident == "crate" || s.ident == "self" || s.ident == "super";
+    path.qself.is_none()
+        && path.path.leading_colon.is_none()
+        && (segments.len() == 1 || segments.first().is_some_and(relative))
 }
 
 fn written_path(ty: &Type) -> Option<String> {

@@ -16,10 +16,17 @@ pub(crate) const DEPLOYMENT: &str = "emberline-prod";
 pub(crate) const DASHBOARD_SUBTITLE: &str = "emberline-prod · Swarog 0.42.1 · 20 processes (split topology)";
 
 // FAKE: no health probe exists until Weles exposes its API.
-pub(crate) const HEALTH_NOTE: &str = "Probed every 10 s by the portal · last probe 2 s ago";
+const HEALTH_PROBE_S: u32 = 10;
 
-// FAKE: no health probe exists until Weles exposes its API.
-pub(crate) const HEALTH_PROBE: &str = "probed every 10 s";
+/// The top-bar health popover's note.
+pub(crate) fn health_note() -> String {
+    format!("Probed every {HEALTH_PROBE_S} s by the portal · last probe 2 s ago")
+}
+
+/// The dashboard Service health panel's probe interval.
+pub(crate) fn health_probe() -> String {
+    format!("probed every {HEALTH_PROBE_S} s")
+}
 
 /// The number and width of a service's health history buckets.
 const HISTORY_BUCKETS: u64 = 48;
