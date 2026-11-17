@@ -67,19 +67,26 @@
 <svg class="i {{ cls }}" viewBox="0 0 24 24" aria-hidden="true">{{ (paths[name] or "")|safe }}</svg>
 {%- endmacro %}
 
-{%- macro cell(c) -%}
+{#- One value without its `more`; a user cell with `inner_link` links its name, not itself. -#}
+{%- macro cell_one(c) -%}
 {%- set inner -%}
 {%- if c.bar is not none %}<span class="row"><span class="lag-bar"><i class="{{ c.bar_tone }}" style="width:{{ c.bar }}%"></i></span><span class="mono" style="font-size:11.5px">{{ c.value }}</span></span>
 {%- elif c.kind == "badge" %}<span class="badge {{ c.tone }}">{{ c.value }}</span>
+{%- elif c.kind == "label" %}<span class="badge plain{{ ' ' ~ c.tone if c.tone }}">{{ c.value }}</span>
+{%- elif c.kind == "muted" %}<span class="muted">{{ c.value }}</span>
 {%- elif c.kind == "ref" %}<span class="tag">{{ c.value }}</span>
-{%- elif c.kind == "user" %}<span class="user-cell"><span class="avatar" style="background:{{ c.color }}">{{ c.initials }}</span><span>{{ c.value }}</span></span>
+{%- elif c.kind == "user" %}<span class="user-cell"><span class="avatar" style="background:{{ c.color }}">{{ c.initials }}</span><span>{% if c.inner_link %}<a href="{{ c.href }}" style="color:var(--text);font-weight:500">{{ c.value }}</a>{% else %}{{ c.value }}{% endif %}</span></span>
 {%- elif c.kind == "mono" %}<span class="mono"{% if c.tone %} style="color:var(--{{ c.tone }})"{% endif %}>{{ c.value }}</span>
 {%- elif c.kind == "time" %}<span class="dim"{% if c.tone %} style="color:var(--{{ c.tone }})"{% endif %}>{{ c.value }}</span>
 {%- elif c.tone %}<span style="color:var(--{{ c.tone }})">{{ c.value }}</span>
 {%- else %}{{ c.value }}
 {%- endif -%}
 {%- endset -%}
-{%- if c.href %}<a href="{{ c.href }}"{% if c.kind == "user" %} style="color:inherit"{% endif %}>{{ inner }}</a>{% else %}{{ inner }}{% endif -%}
+{%- if c.href and not c.inner_link %}<a href="{{ c.href }}"{% if c.kind == "user" %} style="color:inherit"{% endif %}>{{ inner }}</a>{% else %}{{ inner }}{% endif -%}
+{%- endmacro %}
+
+{%- macro cell(c) -%}
+{{ cell_one(c) }}{% for m in c.more %} {{ cell_one(m) }}{% endfor %}
 {%- endmacro %}
 
 {%- macro hx_action(a) -%}
@@ -88,16 +95,32 @@
 {%- endif -%}
 {%- endmacro %}
 
+{#- An action with no icon draws its label alone. -#}
+{%- macro action_content(a) -%}
+{%- if not a.icon %}{{ a.label }}
+{%- elif a.trailing_icon %}{{ a.label }} {{ icon(a.icon) }}
+{%- else %}{{ icon(a.icon) }} {{ a.label }}
+{%- endif -%}
+{%- endmacro %}
+
 {#- `size` is `""` or `"sm"`. A danger action is `danger-ghost` whatever its emphasis. -#}
 {%- macro action_button(a, size="") -%}
 {%- set look = "danger-ghost" if a.danger else {"primary": "primary", "ghost": "ghost"}[a.emphasis] or "" -%}
 {%- set c = (size ~ " " ~ look)|trim -%}
-{%- set content -%}
-{%- if a.trailing_icon %}{{ a.label }} {{ icon(a.icon) }}{% else %}{{ icon(a.icon) }} {{ a.label }}{% endif -%}
-{%- endset -%}
+{%- set content = action_content(a) -%}
 {%- if not a.enabled %}<button type="button" class="btn{{ ' ' ~ c if c }}" disabled title="{{ a.hint }}">{{ content }}</button>
 {%- elif a.then == "link" %}<a class="btn{{ ' ' ~ c if c }}" href="{{ a.href }}" style="text-decoration:none">{{ content }}</a>
 {%- else %}<button type="button" class="btn{{ ' ' ~ c if c }}"{{ hx_action(a) }}>{{ content }}</button>
+{%- endif -%}
+{%- endmacro %}
+
+{#- A `TableRow` action in its row's trailing cell: a ghost emphasis keeps `ghost` beside a
+    danger's `danger-ghost` (pages-core.js:122,124). -#}
+{%- macro row_button(a) -%}
+{%- set c = "btn sm" ~ (" ghost" if a.emphasis == "ghost" else "") ~ (" danger-ghost" if a.danger else "") -%}
+{%- if not a.enabled %}<button type="button" class="{{ c }}" disabled title="{{ a.hint }}">{{ action_content(a) }}</button>
+{%- elif a.then == "link" %}<a class="{{ c }}" href="{{ a.href }}" style="text-decoration:none">{{ action_content(a) }}</a>
+{%- else %}<button type="button" class="{{ c }}"{{ hx_action(a) }}>{{ action_content(a) }}</button>
 {%- endif -%}
 {%- endmacro %}
 
@@ -149,10 +172,11 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- endif %}</a></div>
 {%- elif s.mode == "attention" -%}
 <div class="slot"{{ fetch_attrs(s) }}>{% if not s.denied %}<div class="pop-row" style="align-items:center" aria-busy="true"><div class="sk" style="width:28px;height:28px"></div><div class="grow"><div class="sk" style="width:55%"></div></div></div>{% endif %}</div>
-{%- elif s.mode in ["fact", "count", "nav", "inline"] -%}
+{%- elif s.mode in ["fact", "count", "nav"] -%}
 <span class="slot"{{ fetch_attrs(s) }}></span>
 {%- else -%}
-<div class="slot"{{ fetch_attrs(s) }}><section class="panel"><div class="panel-head">{% if s.icon %}<span class="muted">{{ icon(s.icon) }}</span>{% endif %}<span class="panel-title">{{ s.title }}</span><div class="panel-tools"></div></div><div class="panel-body">
+{#- An untitled contribution draws no head (bundle.js:144). -#}
+<div class="slot"{{ fetch_attrs(s) }}><section class="panel">{% if s.title %}<div class="panel-head">{% if s.icon %}<span class="muted">{{ icon(s.icon) }}</span>{% endif %}<span class="panel-title">{{ s.title }}</span><div class="panel-tools"></div></div>{% endif %}<div class="panel-body">
 {%- if s.denied %}{{ state_block("denied", "Permission denied", denied_detail(s.min_role)) }}{% else %}{{ loading_block() }}{% endif -%}
 </div></section></div>
 {%- endif -%}
@@ -176,12 +200,14 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {{ table_toolbar(t) -}}
 <div class="tbl-wrap"><table class="tbl"><thead><tr>
 {%- if t.selectable %}<th class="cb"><input type="checkbox"></th>{% endif -%}
-{%- for c in t.columns %}<th class="{{ 'num' if c.num else '' }}">{{ c.label }}</th>{% endfor -%}
+{%- for c in t.columns %}<th class="{{ 'num' if c.num else '' }}{{ ' sorted' if c.sorted }}">{% if c.contributed %}<span>{{ c.label }}</span>{% else %}{{ c.label }}{% endif %}{% if c.sorted %} <span>{{ c.sorted }}</span>{% endif %}</th>{% endfor -%}
+{%- if t.row_actions %}<th></th>{% endif -%}
 {%- if t.row_menu %}<th class="act"></th>{% endif -%}
 </tr></thead><tbody>
 {%- for r in t.rows %}<tr class="{{ 'clickable' if r.href else '' }}{{ ' sel' if r.highlight else '' }}"{% if r.href %} data-href="{{ r.href }}"{% endif %}>
 {%- if t.selectable %}<td class="cb"><input type="checkbox"{% if r.highlight %} checked{% endif %}></td>{% endif -%}
-{%- for c in r.cells %}<td class="{{ 'num' if c.num else '' }}">{{ cell(c.cell) }}</td>{% endfor -%}
+{%- for c in r.cells %}<td class="{{ 'num' if c.num else '' }}">{% if c.failed %}<span class="muted" title="{{ c.failed }}">{{ icon("alert") }}</span>{% else %}{{ cell(c.cell) }}{% endif %}</td>{% endfor -%}
+{%- if t.row_actions %}<td>{% for a in r.actions %}{{ row_button(a) }}{% endfor %}</td>{% endif -%}
 {%- if t.row_menu %}<td class="act">{% if r.menu_url %}<button type="button" class="btn sm icon ghost" aria-label="Row actions" data-menu-url="{{ r.menu_url }}">{{ icon("more") }}</button>{% endif %}</td>{% endif -%}
 </tr>{% endfor -%}
 </tbody></table></div>
@@ -256,7 +282,8 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {{ action_button(a, "sm") }}
 {%- else -%}
 {%- set c = "btn sm ghost" ~ (" danger-ghost" if a.danger else "") -%}
-{%- if a.enabled %}<button type="button" class="{{ c }}" title="{{ a.label }}"{{ hx_action(a) }}>{{ icon(a.icon) }}</button>{% else %}<button type="button" class="{{ c }}" disabled title="{{ a.hint }}">{{ icon(a.icon) }}</button>{% endif -%}
+{%- set shown -%}{% if a.icon %}{{ icon(a.icon) }}{% else %}{{ a.label }}{% endif %}{%- endset -%}
+{%- if a.enabled %}<button type="button" class="{{ c }}" title="{{ a.label }}"{{ hx_action(a) }}>{{ shown }}</button>{% else %}<button type="button" class="{{ c }}" disabled title="{{ a.hint }}">{{ shown }}</button>{% endif -%}
 {%- endif -%}
 {%- endmacro %}
 
@@ -316,7 +343,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- elif b.type == "Chart" %}{{ chart(b, p.title) }}
 {%- elif b.type == "Attention" %}{{ attention_rows(b) }}
 {%- elif b.type == "Cell" %}{{ cell(b) }}
-{%- elif b.type == "Header" %}<div class="row"><h1>{{ b.title }}</h1>{% if b.subtitle %}<span class="muted">{{ b.subtitle }}</span>{% endif %}{% if b.status %}{{ cell(b.status) }}{% endif %}</div>
+{%- elif b.type == "Header" %}<div class="row"><h1>{{ b.title }}</h1>{% if b.subtitle %}<span class="muted">{{ b.subtitle }}</span>{% endif %}{% if b.status %}{{ cell(b.status) }}{% endif %}{% for x in b.badges %}{{ cell(x) }}{% endfor %}</div>
 {%- elif b.type == "Empty" %}{{ state_block("empty", b.title or "Nothing here yet", b.detail) }}
 {%- endif -%}
 {%- endmacro %}
@@ -354,12 +381,12 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- endif %}</div>
 {%- elif p.mode == "header" -%}
 <div class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}">
-{%- if live and p.body and p.body.type == "Header" %}{{ body(p.body, p) }}</div><span class="avatar lg" id="entity-avatar" hx-swap-oob="true" style="background:{{ p.body.color }}">{{ p.body.initials }}</span>
+{%- if live and p.body and p.body.type == "Header" %}{{ body(p.body, p) }}</div><span class="avatar lg" id="entity-avatar" hx-swap-oob="true" style="background:{{ p.body.color }}">{{ p.body.initials }}</span><span class="cur" id="crumb-cur" hx-swap-oob="true">{{ p.body.title }}</span>
 {%- else %}<div class="row"><h1>{{ p.fallback_title }}</h1>{% if p.state == "error" %}<span class="dot err" title="{{ p.module }} module unavailable"></span>{% endif %}</div></div>
 {%- endif -%}
 {%- elif p.mode == "fact" -%}
 <span class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}">
-{%- if live and p.body %}<span>{{ body(p.body, p) }}</span>
+{%- if live and p.body %}<span>{% if p.icon %}{{ icon(p.icon) }} {% endif %}{{ body(p.body, p) }}</span>
 {%- elif p.state == "error" %}<span style="color:var(--err)" title="{{ p.error or '' }}">{{ icon("alert") }} {{ p.module }} unavailable</span>
 {%- endif %}</span>
 {%- elif p.mode == "count" -%}
@@ -371,8 +398,6 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 <span class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}">
 {%- if live and p.body and p.body.type == "Cell" %}<span class="count {{ {'err': 'alert', 'warn': 'warn'}[p.body.tone] or '' }}">{{ p.body.value }}</span>{% endif -%}
 </span>
-{%- elif p.mode == "inline" -%}
-<span class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}">{% if live and p.body and p.body.type == "Cell" %}{{ cell(p.body) }}{% endif %}</span>
 {%- else -%}
 {%- set ro = p.state == "readonly" -%}
 {%- set flush = (live and p.flush) or (p.state == "empty" and p.body and p.body.type in ["Queue", "Table"]) -%}
@@ -382,18 +407,20 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
     the head with the note first. -#}
 {%- set tooled = live or p.state == "empty" -%}
 {%- set footer = live and p.body and p.body.type == "Props" and p.body.code -%}
-<div class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}"><section class="panel"><div class="panel-head">{% if p.icon %}<span class="muted">{{ icon(p.icon) }}</span>{% endif %}<span class="panel-title">{{ p.title }}{% if p.heading %}: <span class="mono">{{ p.heading }}</span>{% endif %}</span>{% if p.meta %}<span class="panel-meta">{{ p.meta }}</span>{% endif %}{% if ro %}<span class="ro-chip">{{ icon("lock") }} read-only</span>{% endif %}<div class="panel-tools">
+{#- An untitled contribution draws no head, so no tools, meta or read-only chip (bundle.js:144). -#}
+<div class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}"><section class="panel">{% if p.title %}<div class="panel-head">{% if p.icon %}<span class="muted">{{ icon(p.icon) }}</span>{% endif %}<span class="panel-title">{{ p.title }}{% if p.heading %}: <span class="mono">{{ p.heading }}</span>{% endif %}</span>{% if p.meta %}<span class="panel-meta">{{ p.meta }}</span>{% endif %}{% if ro %}<span class="ro-chip">{{ icon("lock") }} read-only</span>{% endif %}<div class="panel-tools">
 {%- if live and p.body and p.body.type == "Chart" %}{{ chart_legend(p.body) }}{% endif -%}
 {%- if tooled and not footer -%}
 {%- if p.note %}<span class="muted hide-tablet" style="font-size:11.5px">{{ p.note }}</span>{% endif -%}
 {%- if live and p.body and p.body.type == "Services" and p.body.value_label %}<span class="muted" style="font-size:11.5px;width:64px;text-align:right">{{ p.body.value_label }}</span>{% endif -%}
 {%- for a in p.tools %}{{ action_button(a, "sm") }}{% endfor -%}
 {%- endif -%}
-</div></div>
+</div></div>{% endif -%}
 {%- if p.state == "stale" %}<div class="banner warn" title="{{ p.error or '' }}">{{ icon("clock") }} Showing cached data from {{ p.age or "a while" }} ago — {{ p.module }}-svc is lagging.<button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} <span>Refresh</span></button></div>
 {%- elif ro %}<div class="banner info">{{ icon("info") }} Read-only: the <b>{{ p.module }}</b> module does not accept remote edits from the portal.</div>
 {%- endif -%}
 {%- if p.banner %}<div class="banner {{ p.banner.tone }}">{{ icon({"err": "alert", "warn": "alert", "ok": "check"}[p.banner.tone] or "info") }} {{ p.banner.text }}</div>{% endif -%}
+{%- for text in p.column_banners %}<div class="banner warn">{{ icon("alert") }} {{ text }}<button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} Retry</button></div>{% endfor -%}
 {%- if p.state == "ok" and p.body and p.body.type == "Form" and p.body.banner %}<div class="banner err">{{ icon("alert") }} {{ p.body.banner }}</div>{% endif -%}
 <div class="panel-body{% if flush %} flush{% endif %}">
 {%- if live and p.body %}{{ body(p.body, p) }}

@@ -32,7 +32,7 @@
 </aside>
 <header class="topbar">
 <button type="button" class="top-btn menu-toggle" data-action="nav-toggle" aria-label="Menu">{{ ui.icon("menu") }}</button>
-<div class="crumbs">{% for c in shell.crumbs %}{% if loop.last %}<span class="cur">{{ c.label }}</span>{% elif c.href %}<a href="{{ c.href }}">{{ c.label }}</a><span class="sep">/</span>{% else %}<span>{{ c.label }}</span><span class="sep">/</span>{% endif %}{% endfor %}</div>
+<div class="crumbs">{% for c in shell.crumbs %}{% if loop.last %}<span class="cur" id="crumb-cur">{{ c.label }}</span>{% elif c.href %}<a href="{{ c.href }}">{{ c.label }}</a><span class="sep">/</span>{% else %}<span>{{ c.label }}</span><span class="sep">/</span>{% endif %}{% endfor %}</div>
 <button type="button" class="search-trigger" data-action="palette">{{ ui.icon("search") }}<span class="grow" style="text-align:left">Search users, repositories, keys…</span><span class="kbd">Ctrl K</span></button>
 <button type="button" class="top-btn" id="health-btn" data-popover="health" title="System health"><span class="health-pill">{% if shell.health %}<span class="dot {{ 'err' if shell.health.unhealthy else 'ok' }}"></span><span class="hide-tablet">{{ shell.health.healthy }}/{{ shell.health.total }} healthy</span>{% else %}<span class="dot muted"></span><span class="hide-tablet">—</span>{% endif %}</span></button>
 <button type="button" class="top-btn" id="notif-btn" data-popover="notif" aria-label="Notifications">{{ ui.icon("bell") }}{% if shell.notifications %}<span class="pip"></span>{% endif %}</button>
@@ -61,7 +61,7 @@
 <div class="page-actions">{% for a in v.header_actions %}{{ ui.action_button(a) }}{% endfor %}{% if v.menu_url %}<button type="button" class="btn icon" aria-label="More actions" data-menu-url="{{ v.menu_url }}">{{ ui.icon("more") }}</button>{% endif %}</div></div>
 {%- if v.tabs %}<div class="tabs">{% for t in v.tabs %}<button type="button" class="tab{% if t.id == v.selected_tab %} on{% endif %}" data-href="{{ t.url }}">{{ t.label }}{% for c in t.counts %}{{ ui.slot(c) }}{% endfor %}</button>{% endfor %}</div>{% endif -%}
 </section>
-<div class="stack">{% for s in v.tab_panels %}{{ ui.slot(s) }}{% endfor %}</div>
+<div class="{{ 'grid g-2' if v.tab_grid else 'stack' }}">{% for s in v.tab_panels %}{{ ui.slot(s) }}{% endfor %}</div>
 {%- elif screen == "missing" -%}
 <section class="panel"><div class="panel-body">{{ ui.state_block("error", v.title, v.detail, back=true) }}</div></section>
 {%- endif -%}

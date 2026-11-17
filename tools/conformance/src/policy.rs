@@ -189,6 +189,7 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("cp.panel", "req.params.<value>", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.panel", "req.queue_state", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.panel", "req.range", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.panel", "req.refs", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.panel", "req.search", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.prepare", "req.action", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.prepare", "req.entity.id", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),

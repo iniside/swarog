@@ -79,13 +79,16 @@ pub(crate) fn module_banner(state: PanelState, banner: Option<&Banner>) -> Optio
 }
 
 /// Whether `body` of contribution `decl` in `manifest` offers a write: a `Form` body, a
-/// `PanelForm` action, or a `PanelTool` or `QueueRow` action that is not a `Then::Link`. A
-/// module that does not write gets the read-only chrome only on such a panel.
+/// `PanelForm` action, or an implemented `PanelTool`, `QueueRow` or `TableRow` action that
+/// is not a `Then::Link`. A module that does not write gets the read-only chrome only on
+/// such a panel; an `implemented: false` action is refused by `admit` before any write.
 fn has_write_affordance(manifest: &Manifest, decl: &ContributionDecl, body: &Primitive) -> bool {
     matches!(body, Primitive::Form(_))
         || manifest.actions.iter().any(|a| match &a.point {
             ActionPoint::PanelForm(c) => *c == decl.id,
-            ActionPoint::PanelTool(c) | ActionPoint::QueueRow(c) => *c == decl.id && !matches!(a.then, Then::Link(_)),
+            ActionPoint::PanelTool(c) | ActionPoint::QueueRow(c) | ActionPoint::TableRow(c) => {
+                *c == decl.id && a.implemented && !matches!(a.then, Then::Link(_))
+            }
             _ => false,
         })
 }
@@ -168,8 +171,8 @@ impl PanelCache {
     }
 }
 
-/// Every part is length-prefixed and every optional field tagged, so distinct queries
-/// (an absent field and `Some("")` included) never share a key.
+/// Every part is length-prefixed, every optional field tagged and `refs` counted, so
+/// distinct queries (an absent field and `Some("")` included) never share a key.
 fn cache_key(req: &PanelQuery) -> String {
     let mut parts: Vec<String> = vec![req.module.clone(), req.contribution.clone()];
     match &req.entity {
@@ -186,6 +189,8 @@ fn cache_key(req: &PanelQuery) -> String {
         Some(range) => format!("+{}", range_key(range)),
         None => "-".to_string(),
     });
+    parts.push(req.refs.len().to_string());
+    parts.extend(req.refs.iter().cloned());
     for (k, v) in &req.params {
         parts.extend([k.clone(), v.clone()]);
     }
@@ -247,6 +252,10 @@ pub(crate) async fn resolve(
     };
     let key = cache_key(&req);
     let failure = match tokio::time::timeout(deadline(decl), face.panel(req)).await {
+        // A list column's cells draw only inside its table (`engine::columns`).
+        Ok(Ok(body)) if matches!(body.primitive, Primitive::ColumnCells(_)) => {
+            "answered ColumnCells, which only a table's list column draws".to_string()
+        }
         Ok(Ok(body)) => {
             if is_empty(&body.primitive) {
                 view.state = PanelState::Empty;

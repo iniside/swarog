@@ -280,6 +280,9 @@ pub struct PanelQuery {
     pub range: Option<TimeRange>,
     /// Module-specific keys only.
     pub params: BTreeMap<String, String>,
+    /// The entity ids of one table page an `EntityListColumn` answers for, in row order;
+    /// empty on every other request.
+    pub refs: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -429,10 +432,14 @@ pub enum Point {
     /// Full width, below the attention and activity grid.
     DashboardWide,
     EntityHeader(String),
-    EntityTab { kind: String, tab: String, tab_label: String },
+    /// `columns` 2 lays the tab's panels out in two columns; the portal reads it from the
+    /// tab's first contribution by `order`.
+    EntityTab { kind: String, tab: String, tab_label: String, columns: u8 },
     EntityTabCount { kind: String, tab: String },
     EntitySummary(String),
-    EntityListColumn { kind: String, label: String },
+    /// A column the portal adds to every `DataTable` whose `list_columns_for` is `kind`,
+    /// fetched once per table page with `PanelQuery::refs`; answers `Primitive::ColumnCells`.
+    EntityListColumn { kind: String, label: String, align: Align },
     NavCounter,
 }
 
@@ -480,6 +487,9 @@ pub enum ActionPoint {
     /// A contribution id of the same module: the action is the Save of that
     /// contribution's `Primitive::Form` and renders nowhere else. It is `Then::Invoke`.
     PanelForm(String),
+    /// A contribution id of the same module whose body is a `Primitive::DataTable`: the
+    /// action renders on each `Row` listing it, bound to that row's `item`.
+    TableRow(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -721,6 +731,10 @@ pub enum CellKind {
     Bytes,
     Time,
     User,
+    /// Dimmed plain text.
+    Muted,
+    /// A plain badge: no status colour unless `tone` sets one.
+    Label,
 }
 
 /// One value; numbers arrive preformatted by the module.
@@ -733,6 +747,8 @@ pub struct Cell {
     /// A fill percentage drawn as a bar before the value; the portal clamps it to 100. With
     /// a bar, `tone` colours the fill only.
     pub bar: Option<u8>,
+    /// Further values drawn after this one in the same place, space-separated.
+    pub more: Vec<Cell>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -742,6 +758,14 @@ pub struct Column {
     pub kind: CellKind,
     pub sortable: bool,
     pub align: Align,
+    /// Set on the column the rows are ordered by.
+    pub sorted: Option<SortDir>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SortDir {
+    Asc,
+    Desc,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -749,6 +773,10 @@ pub struct Row {
     pub entity: Option<EntityRef>,
     pub cells: Vec<Cell>,
     pub highlight: bool,
+    /// The element the row's `ActionPoint::TableRow` actions act on.
+    pub item: Option<String>,
+    /// `ActionDecl` ids of `ActionPoint::TableRow` actions.
+    pub actions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -784,6 +812,11 @@ pub struct DataTable {
     pub selectable: bool,
     /// The entity kind whose `EntityListColumn` contributions apply to this table.
     pub list_columns_for: Option<String>,
+    /// The index in `columns` the `EntityListColumn` columns are inserted at; past the
+    /// end appends them.
+    pub list_columns_at: usize,
+    /// The plural noun the foot counts rows in ("accounts"); empty counts "rows".
+    pub item_noun: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -978,9 +1011,12 @@ impl std::fmt::Debug for SecretReveal {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntityHeader {
+    /// Also replaces the entity id in the page's last breadcrumb.
     pub title: String,
     pub subtitle: String,
     pub status: Option<Cell>,
+    /// Drawn after `status`.
+    pub badges: Vec<Cell>,
     pub avatar_seed: String,
 }
 

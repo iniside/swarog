@@ -132,7 +132,7 @@ fn events_page() -> Link {
 }
 
 fn text(kind: CellKind, value: impl Into<String>, tone: Option<Tone>) -> Cell {
-    Cell { kind, value: value.into(), tone, link: None, bar: None }
+    Cell { kind, value: value.into(), tone, link: None, bar: None, more: Vec::new() }
 }
 
 /// The mockup's lag bar fill (`pages-platform.js:129`): a third of the lag, between 3 and
@@ -298,6 +298,7 @@ fn manifest() -> Manifest {
                     kind: KIND.to_string(),
                     tab: "details".to_string(),
                     tab_label: "Details".to_string(),
+                    columns: 1,
                 },
                 0,
                 "Delivery state",
@@ -456,6 +457,8 @@ impl EventsProvider {
                         state_cell(&s.state, s.consecutive_failures),
                     ],
                     highlight: s.state == "paused",
+                    item: None,
+                    actions: Vec::new(),
                 }
             })
             .collect();
@@ -465,6 +468,7 @@ impl EventsProvider {
             kind,
             sortable: false,
             align,
+            sorted: None,
         };
         Ok(Primitive::DataTable(DataTable {
             columns: vec![
@@ -486,6 +490,8 @@ impl EventsProvider {
             search_placeholder: Some("Subscription id or topic".to_string()),
             selectable: false,
             list_columns_for: None,
+            list_columns_at: 0,
+            item_noun: String::new(),
         }))
     }
 
@@ -582,6 +588,7 @@ impl EventsProvider {
             title: sub.id.clone(),
             subtitle: format!("checkpoint {}", snap.cursor),
             status: Some(state_cell(&snap.state, snap.consecutive_failures)),
+            badges: Vec::new(),
             avatar_seed: sub.id,
         }))
     }

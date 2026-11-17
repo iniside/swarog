@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use controlplane::{ControlPlane, Manifest, NavSection, Source};
+use controlplane::{ContributionDecl, ControlPlane, Manifest, NavSection, Point, Source};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -120,6 +120,19 @@ impl Snapshot {
     pub(crate) fn route(&self, module: &str) -> Option<(&Manifest, Arc<dyn ControlPlane>)> {
         let routed = self.modules.get(module)?;
         Some((&routed.manifest, self.sources[routed.source].face.clone()))
+    }
+
+    /// Every `(module, decl)` across all manifests whose point matches `want`, sorted by
+    /// `(order, module, id)`.
+    pub(crate) fn contributions(&self, want: impl Fn(&Point) -> bool) -> Vec<(&str, &ContributionDecl)> {
+        let mut found: Vec<(&str, &ContributionDecl)> = self
+            .modules
+            .iter()
+            .flat_map(|(m, r)| r.manifest.contributions.iter().map(move |c| (m.as_str(), c)))
+            .filter(|(_, c)| want(&c.point))
+            .collect();
+        found.sort_by(|a, b| (a.1.order, a.0, &a.1.id).cmp(&(b.1.order, b.0, &b.1.id)));
+        found
     }
 }
 

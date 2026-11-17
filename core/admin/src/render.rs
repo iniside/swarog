@@ -5,12 +5,13 @@ use std::collections::BTreeMap;
 
 use controlplane::{
     decode_field, Align, CellKind, ConfirmSpec, ConfirmTone, EntityRef, Field, FieldKind, FieldValue, FormSpec, Link,
-    PanelBody, Point, Primitive, ReasonReq, Severity, ServiceState, Tone,
+    PanelBody, Point, Primitive, ReasonReq, Severity, ServiceState, SortDir, Tone,
 };
 use minijinja::{Environment, Value};
 use serde::Serialize;
 
 use crate::engine::actions::{self, money_currency_key, Chrome};
+use crate::engine::columns::{ColumnOutcome, ListColumn};
 use crate::engine::panels::{self, LastValue, PanelState};
 
 const SHELL: &str = include_str!("templates/shell.html.tmpl");
@@ -188,6 +189,11 @@ pub(crate) struct CellView {
     pub(crate) bar: Option<u8>,
     /// The bar fill's `lag-bar` class: `""`, `w` or `e`.
     pub(crate) bar_tone: &'static str,
+    /// `Cell::more`, flattened to one level; each has an empty `more`.
+    pub(crate) more: Vec<CellView>,
+    /// A user cell in a table row that opens an entity: its link sits on the name inside
+    /// the cell, not around it.
+    pub(crate) inner_link: bool,
 }
 
 /// With a bar, the cell's tone colours the fill only: `Warn` is `w`, `Err` is `e`, every
@@ -201,6 +207,17 @@ fn bar_tone(t: Option<Tone>) -> &'static str {
 }
 
 pub(crate) fn cell(c: &controlplane::Cell) -> CellView {
+    let mut more = Vec::new();
+    let mut pending: Vec<&controlplane::Cell> = c.more.iter().rev().collect();
+    while let Some(next) = pending.pop() {
+        more.push(one_cell(next));
+        pending.extend(next.more.iter().rev());
+    }
+    CellView { more, ..one_cell(c) }
+}
+
+/// `c` without its `more`.
+fn one_cell(c: &controlplane::Cell) -> CellView {
     let kind = match c.kind {
         CellKind::Text => "text",
         CellKind::Mono => "mono",
@@ -210,6 +227,8 @@ pub(crate) fn cell(c: &controlplane::Cell) -> CellView {
         CellKind::Bytes => "bytes",
         CellKind::Time => "time",
         CellKind::User => "user",
+        CellKind::Muted => "muted",
+        CellKind::Label => "label",
     };
     let tone = match (c.bar, c.tone, c.kind) {
         (Some(_), _, _) => "",
@@ -226,6 +245,8 @@ pub(crate) fn cell(c: &controlplane::Cell) -> CellView {
         initials: initials(&c.value),
         bar: c.bar.map(|pct| pct.min(100)),
         bar_tone: c.bar.map_or("", |_| bar_tone(c.tone)),
+        more: Vec::new(),
+        inner_link: false,
     }
 }
 
@@ -240,6 +261,8 @@ fn ref_cell(e: &EntityRef) -> CellView {
         initials: initials(&e.id),
         bar: None,
         bar_tone: "",
+        more: Vec::new(),
+        inner_link: false,
     }
 }
 
@@ -264,6 +287,9 @@ pub(crate) struct ActionItem {
     /// An `ActionPoint::QueueRow` action: drawn on the queue items listing it, never in the
     /// panel tools.
     pub(crate) queue_row: bool,
+    /// An `ActionPoint::TableRow` action: drawn on the table rows listing it, never in the
+    /// panel tools.
+    pub(crate) table_row: bool,
     /// `GET` opens the modal, `POST` invokes.
     pub(crate) url: String,
     pub(crate) enabled: bool,
@@ -523,6 +549,8 @@ pub(crate) struct EntityView {
     pub(crate) header_actions: Vec<ActionItem>,
     pub(crate) tabs: Vec<TabView>,
     pub(crate) selected_tab: Option<String>,
+    /// The selected tab's panels sit in two columns (`Point::EntityTab::columns`).
+    pub(crate) tab_grid: bool,
     pub(crate) tab_panels: Vec<SlotView>,
 }
 
@@ -582,7 +610,8 @@ impl SearchView {
 // ---------------------------------------------------------------------------
 
 /// How a contribution's fragment is drawn: inside panel chrome, as a KPI tile, as rows of
-/// the attention host, or inline in the entity header, a tab or the sidebar.
+/// the attention host, or inline in the entity header, a tab or the sidebar. A `column`
+/// has no fragment of its own: the panel route refuses it, and its table draws its cells.
 pub(crate) fn mode_of(point: &Point, in_tiles: bool) -> &'static str {
     match point {
         Point::DashboardTile => "tile",
@@ -591,7 +620,7 @@ pub(crate) fn mode_of(point: &Point, in_tiles: bool) -> &'static str {
         Point::EntitySummary(_) => "fact",
         Point::EntityTabCount { .. } => "count",
         Point::NavCounter => "nav",
-        Point::EntityListColumn { .. } => "inline",
+        Point::EntityListColumn { .. } => "column",
         Point::Page(_) if in_tiles => "tile",
         Point::Page(_) | Point::DashboardPanel | Point::DashboardWide | Point::EntityTab { .. } => "panel",
     }
@@ -616,8 +645,10 @@ pub(crate) struct PanelInput<'a> {
     pub(crate) min_role: &'static str,
     pub(crate) fallback_title: &'a str,
     pub(crate) body: Option<&'a PanelBody>,
-    /// This contribution's `PanelTool` and `QueueRow` actions, unbound.
+    /// This contribution's `PanelTool`, `QueueRow` and `TableRow` actions, unbound.
     pub(crate) actions: &'a [ActionItem],
+    /// A table's `EntityListColumn` columns for this page, in contribution order.
+    pub(crate) list_columns: &'a [ListColumn],
     pub(crate) row_menu_kinds: &'a [String],
     pub(crate) csrf: &'a str,
     /// The form instance a `Primitive::Form` posts as; `None` renders it without a submit.
@@ -663,6 +694,8 @@ pub(crate) struct PanelRender {
     pub(crate) body: Option<PrimView>,
     /// The `PanelTool` actions shown in the panel head, bound to the panel's element.
     pub(crate) tools: Vec<ActionItem>,
+    /// One warn banner per failed list column.
+    pub(crate) column_banners: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -695,7 +728,10 @@ pub(crate) fn panel(input: &PanelInput<'_>) -> PanelRender {
     let ctx = Ctx { path: input.path, query: &paging, params: input.query, input };
     let primitive = input.body.map(|b| &b.primitive);
     let body = primitive.map(|p| prim(p, &ctx));
-    let shown = input.actions.iter().filter(|a| !a.queue_row && (input.state != PanelState::Empty || a.when_empty));
+    let shown = input
+        .actions
+        .iter()
+        .filter(|a| !a.queue_row && !a.table_row && (input.state != PanelState::Empty || a.when_empty));
     let tools = match primitive {
         Some(Primitive::PropertyList(list)) => shown.map(|a| bind(a, input.entity, list.item.as_deref())).collect(),
         _ => shown.map(|a| bind(a, input.entity, None)).collect(),
@@ -734,6 +770,14 @@ pub(crate) fn panel(input: &PanelInput<'_>) -> PanelRender {
         flush,
         body,
         tools,
+        column_banners: input
+            .list_columns
+            .iter()
+            .filter(|c| matches!(c.outcome, ColumnOutcome::Failed(_)))
+            .map(|c| {
+                format!("{} column unavailable — {} module did not answer. Other columns are live.", c.label, c.module)
+            })
+            .collect(),
     }
 }
 
@@ -777,11 +821,8 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
             items: p.items.iter().map(|(k, v)| (k.clone(), cell(v))).collect(),
             code: p.code.clone(),
         }),
-        Primitive::ColumnCells(cells) => PrimView::Props(PropsView {
-            columns: 1,
-            items: cells.iter().map(|(k, v)| (k.clone(), cell(v))).collect(),
-            code: None,
-        }),
+        // `panels::resolve` turns a ColumnCells body into the error state, so no panel draws one.
+        Primitive::ColumnCells(_) => PrimView::Empty { title: String::new(), detail: String::new() },
         Primitive::KpiTile(k) => PrimView::Kpi(kpi(k)),
         Primitive::Timeline(t) => PrimView::Timeline(timeline(t, ctx)),
         Primitive::Form(f) => PrimView::Form(panel_form(f, ctx.input)),
@@ -809,6 +850,7 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
             title: h.title.clone(),
             subtitle: h.subtitle.clone(),
             status: h.status.as_ref().map(cell),
+            badges: h.badges.iter().map(cell).collect(),
             color: avatar_color(&h.avatar_seed),
             initials: initials(&h.title),
         }),
@@ -822,12 +864,18 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
 pub(crate) struct ColumnView {
     pub(crate) label: String,
     pub(crate) num: bool,
+    /// The sort arrow of the column the rows are ordered by.
+    pub(crate) sorted: Option<&'static str>,
+    /// An `EntityListColumn`: its label is wrapped in a `span`.
+    pub(crate) contributed: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct TableCell {
     pub(crate) cell: CellView,
     pub(crate) num: bool,
+    /// A failed list column's marker title; the cell draws the marker instead of `cell`.
+    pub(crate) failed: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -836,6 +884,8 @@ pub(crate) struct RowView {
     pub(crate) href: Option<String>,
     pub(crate) menu_url: Option<String>,
     pub(crate) highlight: bool,
+    /// The row's `TableRow` actions, bound to its entity and `item`.
+    pub(crate) actions: Vec<ActionItem>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -850,6 +900,8 @@ pub(crate) struct TableView {
     pub(crate) rows: Vec<RowView>,
     pub(crate) selectable: bool,
     pub(crate) row_menu: bool,
+    /// Some row has `TableRow` actions: every row gets a trailing actions cell.
+    pub(crate) row_actions: bool,
     pub(crate) toolbar: bool,
     pub(crate) search_placeholder: Option<String>,
     pub(crate) q: String,
@@ -883,15 +935,63 @@ fn filter_views(filters: &[controlplane::FilterDef], ctx: &Ctx<'_>) -> Vec<Filte
 }
 
 fn column_views(columns: &[controlplane::Column]) -> Vec<ColumnView> {
-    columns.iter().map(|c| ColumnView { label: c.label.clone(), num: c.align == Align::Right }).collect()
+    columns
+        .iter()
+        .map(|c| ColumnView {
+            label: c.label.clone(),
+            num: c.align == Align::Right,
+            sorted: c.sorted.map(|dir| match dir {
+                SortDir::Asc => "↑",
+                SortDir::Desc => "↓",
+            }),
+            contributed: false,
+        })
+        .collect()
 }
 
-fn table_cells(cells: &[controlplane::Cell], columns: &[controlplane::Column]) -> Vec<TableCell> {
+/// `in_list`: the cells belong to a table row that opens an entity, so a linked user cell
+/// carries its link inside.
+fn table_cells(cells: &[controlplane::Cell], columns: &[controlplane::Column], in_list: bool) -> Vec<TableCell> {
     cells
         .iter()
         .enumerate()
-        .map(|(i, c)| TableCell { cell: cell(c), num: columns.get(i).is_some_and(|col| col.align == Align::Right) })
+        .map(|(i, c)| TableCell {
+            cell: list_cell(c, in_list),
+            num: columns.get(i).is_some_and(|col| col.align == Align::Right),
+            failed: None,
+        })
         .collect()
+}
+
+fn list_cell(c: &controlplane::Cell, in_list: bool) -> CellView {
+    let mut view = cell(c);
+    view.inner_link = in_list && view.kind == "user" && view.href.is_some();
+    view
+}
+
+/// The cell of list column `column` in a row whose entity id is `id`: the column's cell for
+/// it, an empty cell when it has none, or the failure marker.
+fn list_column_cell(column: &ListColumn, id: Option<&str>, in_list: bool) -> TableCell {
+    let num = column.align == Align::Right;
+    let blank = controlplane::Cell {
+        kind: CellKind::Text,
+        value: String::new(),
+        tone: None,
+        link: None,
+        bar: None,
+        more: Vec::new(),
+    };
+    match &column.outcome {
+        ColumnOutcome::Cells(cells) => {
+            let found = id.and_then(|id| cells.get(id)).unwrap_or(&blank);
+            TableCell { cell: list_cell(found, in_list), num, failed: None }
+        }
+        ColumnOutcome::Failed(_) => TableCell {
+            cell: cell(&blank),
+            num,
+            failed: Some(format!("{} module unavailable", column.module)),
+        },
+    }
 }
 
 pub(crate) fn thousands(n: u64) -> String {
@@ -906,29 +1006,68 @@ pub(crate) fn thousands(n: u64) -> String {
     out
 }
 
+/// The foot's count: with an `item_noun`, `"M accounts · showing 1–N"` on the first page
+/// and `"M accounts"` past it (a cursor does not say how far in it is), `"N accounts"`
+/// without a total; without one, `"N of M"` or `"N rows"`.
+fn table_total(t: &controlplane::DataTable, shown: u64, ctx: &Ctx<'_>) -> String {
+    let noun = &t.item_noun;
+    match t.page.total {
+        Some(total) if noun.is_empty() => format!("{} of {}", thousands(shown), thousands(total)),
+        None if noun.is_empty() => format!("{} rows", thousands(shown)),
+        Some(total) if ctx.param(QUERY_CURSOR).is_none() => {
+            format!("{} {noun} · showing 1–{}", thousands(total), thousands(shown))
+        }
+        Some(total) => format!("{} {noun}", thousands(total)),
+        None => format!("{} {noun}", thousands(shown)),
+    }
+}
+
 fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
+    let kind = t.list_columns_for.as_deref();
+    let at = t.list_columns_at.min(t.columns.len());
+    let list_columns = ctx.input.list_columns;
     let rows: Vec<RowView> = t
         .rows
         .iter()
-        .map(|r| RowView {
-            cells: table_cells(&r.cells, &t.columns),
-            href: r.entity.as_ref().map(entity_url),
-            menu_url: r
-                .entity
-                .as_ref()
-                .filter(|e| ctx.input.row_menu_kinds.contains(&e.kind))
-                .map(|e| format!("/admin/_menu/{}/{}", encode(&e.kind), encode(&e.id))),
-            highlight: r.highlight,
+        .map(|r| {
+            let in_list = r.entity.is_some();
+            let mut cells = table_cells(&r.cells, &t.columns, in_list);
+            let id = r.entity.as_ref().filter(|e| Some(e.kind.as_str()) == kind).map(|e| e.id.as_str());
+            let at = at.min(cells.len());
+            cells.splice(at..at, list_columns.iter().map(|c| list_column_cell(c, id, in_list)));
+            RowView {
+                cells,
+                href: r.entity.as_ref().map(entity_url),
+                menu_url: r
+                    .entity
+                    .as_ref()
+                    .filter(|e| ctx.input.row_menu_kinds.contains(&e.kind))
+                    .map(|e| format!("/admin/_menu/{}/{}", encode(&e.kind), encode(&e.id))),
+                highlight: r.highlight,
+                actions: r
+                    .actions
+                    .iter()
+                    .filter_map(|id| ctx.input.actions.iter().find(|a| a.table_row && &a.id == id))
+                    .map(|a| bind(a, r.entity.as_ref(), r.item.as_deref()))
+                    .collect(),
+            }
         })
         .collect();
-    let shown = rows.len() as u64;
-    let total = match t.page.total {
-        Some(total) => format!("{} of {}", thousands(shown), thousands(total)),
-        None => format!("{} rows", thousands(shown)),
-    };
+    let mut columns = column_views(&t.columns);
+    columns.splice(
+        at..at,
+        list_columns.iter().map(|c| ColumnView {
+            label: c.label.clone(),
+            num: c.align == Align::Right,
+            sorted: None,
+            contributed: true,
+        }),
+    );
+    let total = table_total(t, rows.len() as u64, ctx);
     TableView {
-        columns: column_views(&t.columns),
+        columns,
         row_menu: rows.iter().any(|r| r.menu_url.is_some()),
+        row_actions: rows.iter().any(|r| !r.actions.is_empty()),
         rows,
         selectable: t.selectable,
         toolbar: !t.filters.is_empty() || t.search_placeholder.is_some(),
@@ -1090,6 +1229,8 @@ fn timeline(t: &controlplane::Timeline, ctx: &Ctx<'_>) -> TimelineView {
                 initials: String::new(),
                 bar: None,
                 bar_tone: "",
+                more: Vec::new(),
+                inner_link: false,
             }),
             detail: e.detail.clone(),
         };
@@ -1284,6 +1425,7 @@ pub(crate) fn panel_form_result(
         body: Some(&body),
         actions: frame.actions,
         row_menu_kinds: &[],
+        list_columns: &[],
         csrf: frame.csrf,
         form: Some(instance),
     };
@@ -1368,7 +1510,7 @@ fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
             QueueItemView {
                 id: it.id.clone(),
                 entity: it.entity.as_ref().map(ref_cell),
-                cells: table_cells(&it.cells, &q.columns),
+                cells: table_cells(&it.cells, &q.columns, false),
                 state: CellView {
                     kind: "badge",
                     value: it.state.clone(),
@@ -1378,6 +1520,8 @@ fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
                     initials: String::new(),
                     bar: None,
                     bar_tone: "",
+                    more: Vec::new(),
+                    inner_link: false,
                 },
                 attempts,
                 attempts_title: format!("{} attempts", it.attempts),
@@ -1611,6 +1755,7 @@ pub(crate) struct HeaderView {
     pub(crate) title: String,
     pub(crate) subtitle: String,
     pub(crate) status: Option<CellView>,
+    pub(crate) badges: Vec<CellView>,
     pub(crate) color: &'static str,
     pub(crate) initials: String,
 }

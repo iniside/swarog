@@ -165,7 +165,7 @@ fn row_actions(shown: &str) -> Vec<String> {
 }
 
 fn text(kind: CellKind, value: impl Into<String>) -> Cell {
-    Cell { kind, value: value.into(), tone: None, link: None, bar: None }
+    Cell { kind, value: value.into(), tone: None, link: None, bar: None, more: Vec::new() }
 }
 
 fn outbox_page(params: BTreeMap<String, String>) -> Link {
@@ -418,6 +418,7 @@ impl MailAdmin {
             kind,
             sortable: false,
             align: Align::Left,
+            sorted: None,
         };
         let queue = WorkQueue {
             states: TABS

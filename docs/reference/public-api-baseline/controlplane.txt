@@ -193,6 +193,7 @@ pub controlplane::ActionPoint::PanelForm(alloc::string::String)
 pub controlplane::ActionPoint::PanelTool(alloc::string::String)
 pub controlplane::ActionPoint::QueueRow(alloc::string::String)
 pub controlplane::ActionPoint::RowAction(alloc::string::String)
+pub controlplane::ActionPoint::TableRow(alloc::string::String)
 impl core::clone::Clone for controlplane::ActionPoint
 pub fn controlplane::ActionPoint::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::ActionPoint
@@ -264,7 +265,9 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::Axis
 pub enum controlplane::CellKind
 pub controlplane::CellKind::Badge
 pub controlplane::CellKind::Bytes
+pub controlplane::CellKind::Label
 pub controlplane::CellKind::Mono
+pub controlplane::CellKind::Muted
 pub controlplane::CellKind::Number
 pub controlplane::CellKind::Ref
 pub controlplane::CellKind::Text
@@ -535,10 +538,12 @@ pub controlplane::Point::DashboardTile
 pub controlplane::Point::DashboardWide
 pub controlplane::Point::EntityHeader(alloc::string::String)
 pub controlplane::Point::EntityListColumn
+pub controlplane::Point::EntityListColumn::align: controlplane::Align
 pub controlplane::Point::EntityListColumn::kind: alloc::string::String
 pub controlplane::Point::EntityListColumn::label: alloc::string::String
 pub controlplane::Point::EntitySummary(alloc::string::String)
 pub controlplane::Point::EntityTab
+pub controlplane::Point::EntityTab::columns: u8
 pub controlplane::Point::EntityTab::kind: alloc::string::String
 pub controlplane::Point::EntityTab::tab: alloc::string::String
 pub controlplane::Point::EntityTab::tab_label: alloc::string::String
@@ -709,6 +714,30 @@ impl core::marker::Unpin for controlplane::Severity
 impl core::marker::UnsafeUnpin for controlplane::Severity
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Severity
 impl core::panic::unwind_safe::UnwindSafe for controlplane::Severity
+pub enum controlplane::SortDir
+pub controlplane::SortDir::Asc
+pub controlplane::SortDir::Desc
+impl core::clone::Clone for controlplane::SortDir
+pub fn controlplane::SortDir::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::SortDir
+impl core::cmp::PartialEq for controlplane::SortDir
+pub fn controlplane::SortDir::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::SortDir
+pub fn controlplane::SortDir::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::SortDir
+impl core::marker::StructuralPartialEq for controlplane::SortDir
+impl serde_core::ser::Serialize for controlplane::SortDir
+pub fn controlplane::SortDir::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::SortDir
+pub fn controlplane::SortDir::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::SortDir
+impl core::marker::Freeze for controlplane::SortDir
+impl core::marker::Send for controlplane::SortDir
+impl core::marker::Sync for controlplane::SortDir
+impl core::marker::Unpin for controlplane::SortDir
+impl core::marker::UnsafeUnpin for controlplane::SortDir
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::SortDir
+impl core::panic::unwind_safe::UnwindSafe for controlplane::SortDir
 pub enum controlplane::Then
 pub controlplane::Then::Confirm(controlplane::ConfirmSpec)
 pub controlplane::Then::Form(controlplane::FormSpec)
@@ -876,6 +905,7 @@ pub struct controlplane::Cell
 pub controlplane::Cell::bar: core::option::Option<u8>
 pub controlplane::Cell::kind: controlplane::CellKind
 pub controlplane::Cell::link: core::option::Option<controlplane::Link>
+pub controlplane::Cell::more: alloc::vec::Vec<controlplane::Cell>
 pub controlplane::Cell::tone: core::option::Option<controlplane::Tone>
 pub controlplane::Cell::value: alloc::string::String
 impl core::clone::Clone for controlplane::Cell
@@ -904,6 +934,7 @@ pub controlplane::Column::key: alloc::string::String
 pub controlplane::Column::kind: controlplane::CellKind
 pub controlplane::Column::label: alloc::string::String
 pub controlplane::Column::sortable: bool
+pub controlplane::Column::sorted: core::option::Option<controlplane::SortDir>
 impl core::clone::Clone for controlplane::Column
 pub fn controlplane::Column::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Column
@@ -985,7 +1016,9 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::ContributionDecl
 pub struct controlplane::DataTable
 pub controlplane::DataTable::columns: alloc::vec::Vec<controlplane::Column>
 pub controlplane::DataTable::filters: alloc::vec::Vec<controlplane::FilterDef>
+pub controlplane::DataTable::item_noun: alloc::string::String
 pub controlplane::DataTable::list_columns_for: core::option::Option<alloc::string::String>
+pub controlplane::DataTable::list_columns_at: usize
 pub controlplane::DataTable::page: controlplane::PageInfo
 pub controlplane::DataTable::rows: alloc::vec::Vec<controlplane::Row>
 pub controlplane::DataTable::search_placeholder: core::option::Option<alloc::string::String>
@@ -1036,6 +1069,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Delta
 impl core::panic::unwind_safe::UnwindSafe for controlplane::Delta
 pub struct controlplane::EntityHeader
 pub controlplane::EntityHeader::avatar_seed: alloc::string::String
+pub controlplane::EntityHeader::badges: alloc::vec::Vec<controlplane::Cell>
 pub controlplane::EntityHeader::status: core::option::Option<controlplane::Cell>
 pub controlplane::EntityHeader::subtitle: alloc::string::String
 pub controlplane::EntityHeader::title: alloc::string::String
@@ -1487,6 +1521,7 @@ pub controlplane::PanelQuery::module: alloc::string::String
 pub controlplane::PanelQuery::params: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
 pub controlplane::PanelQuery::queue_state: core::option::Option<alloc::string::String>
 pub controlplane::PanelQuery::range: core::option::Option<controlplane::TimeRange>
+pub controlplane::PanelQuery::refs: alloc::vec::Vec<alloc::string::String>
 pub controlplane::PanelQuery::search: core::option::Option<alloc::string::String>
 impl core::clone::Clone for controlplane::PanelQuery
 pub fn controlplane::PanelQuery::clone(&self) -> Self
@@ -1616,9 +1651,11 @@ impl core::marker::UnsafeUnpin for controlplane::QueueState
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::QueueState
 impl core::panic::unwind_safe::UnwindSafe for controlplane::QueueState
 pub struct controlplane::Row
+pub controlplane::Row::actions: alloc::vec::Vec<alloc::string::String>
 pub controlplane::Row::cells: alloc::vec::Vec<controlplane::Cell>
 pub controlplane::Row::entity: core::option::Option<controlplane::EntityRef>
 pub controlplane::Row::highlight: bool
+pub controlplane::Row::item: core::option::Option<alloc::string::String>
 impl core::clone::Clone for controlplane::Row
 pub fn controlplane::Row::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Row
