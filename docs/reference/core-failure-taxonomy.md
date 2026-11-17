@@ -163,7 +163,7 @@ matches zero targets, tests a hand-built fixture that bypasses the real classifi
   blind to `Option<T>→T` demotion and testing the Rust struct instead of the production SQL
   trigger (`be3aae3 → 606d321`); the admin golden enum guard (Step 13 of the admin redesign)
   restated the templates' drawing rules in test code, and four audit rounds each found a new
-  drift (`9ce5eb84 → 97df9b4c`), replaced by coverage observed from the render (plan Step 28).
+  drift (`9ce5eb84`, `97df9b4c`); the cause-fix is coverage observed from the render (plan Step 28).
 - **Attack:** for any string/enum tripwire, write a test that calls the **actual production
   function** against a fixture proven to trigger the real violation — never assert on a
   hand-built array that skips the classifier. Ask "**if I renamed/aliased/re-imported the
