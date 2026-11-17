@@ -1067,8 +1067,15 @@ fn timeline(t: &controlplane::Timeline, ctx: &Ctx<'_>) -> TimelineView {
             }),
             detail: e.detail.clone(),
         };
+        // An entry whose `at` does not parse (empty key) joins the current run, and a run of
+        // only such entries takes the day of the first parsed entry after them.
         match days.last_mut() {
-            Some((k, day)) if *k == key => day.items.push(item),
+            Some((k, day)) if *k == key || key.is_empty() => day.items.push(item),
+            Some((k, day)) if k.is_empty() => {
+                *k = key;
+                day.label = label;
+                day.items.push(item);
+            }
             _ => days.push((key, TimelineDay { label, items: vec![item] })),
         }
     }

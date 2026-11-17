@@ -135,10 +135,19 @@
     if (!slot || !slot.dataset.panelUrl || !window.htmx) return;
     btn.disabled = true;
     var label = btn.querySelector("span");
+    var idle = label ? label.textContent : "";
     if (label) label.textContent = "Retrying…";
+    // A swap replaces the button. A transport failure (network error, timeout, abort)
+    // swaps nothing and rejects the promise, so the still-attached button is reset.
+    function settle() {
+      if (!btn.isConnected) return;
+      btn.disabled = false;
+      if (label) label.textContent = idle;
+    }
     // Synced on its own slot, as in refreshPanels, so retries of other panels never wait
     // in one queue.
-    htmx.ajax("GET", slot.dataset.panelUrl, { source: slot, target: slot, swap: "outerHTML" });
+    htmx.ajax("GET", slot.dataset.panelUrl, { source: slot, target: slot, swap: "outerHTML" })
+      .then(settle, settle);
   }
 
   // Refetches every loaded panel on the page. A slot still loading has no

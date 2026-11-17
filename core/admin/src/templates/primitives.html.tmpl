@@ -201,11 +201,12 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 </div></a>
 {%- endmacro %}
 
-{#- Day labels show only when the entries span more than one day. bundle.js:192-201 writes
+{#- Day labels show only when the parsed entries span more than one day. bundle.js:192-201 writes
     a label at each change of `day`, even when every item shares one, and the dashboard's
     activity panel passes no `day` (pages-core.js:56). This rule is stricter: a timeline
-    within one day draws no label, as that panel does; an entry whose `at` does not parse
-    has no label. -#}
+    within one day draws no label, as that panel does. An entry whose `at` does not parse
+    joins the day run it sits in (render.rs `timeline`), so it never adds a label; a
+    timeline of only such entries has none. -#}
 {%- macro timeline(tl) -%}
 {%- for d in tl.days -%}
 {%- if d.label and tl.days|length > 1 %}<div class="tl-day">{{ d.label }}</div>{% endif %}<ul class="tl">
