@@ -2274,6 +2274,43 @@ report cites them.
 
 (d) `[inline]` orchestration; report per the `mockup-implementation` skill's closing step.
 
+### Step 28 — Enum-variant coverage observed from the render, not mirrored (owner, 2026-11-17)
+
+Why: the golden gate's `SEEN_ENUMS` / `NOT_SEEN` partition and the `panel_variants`
+walker in `core/admin/src/golden_tests.rs` (Step 13 commits 9ce5eb84, 97df9b4c) restate
+the template's drawing rules in test code: when a head or footer draws tools, that a
+disabled action draws no `then`, that `ColumnCells` renders `Empty`, that danger overrides
+emphasis. That second copy drifts from the templates, and each of four audit rounds found
+a new spot where it did (leftovers L1–L5 and the unguarded `Point` variants in the
+Step 13 post-mortem). Patching the copy grows it. This step replaces it.
+
+(a) What is touched: `core/controlplane` (each drawn enum derives its variant list),
+`core/admin/src/render.rs` (a test-build-only record of each variant converted into a
+view model), `core/admin/src/golden_tests.rs` (the walker, `SEEN_ENUMS`, `NOT_SEEN`,
+`UNREAD_ENUMS`, `VIEW_SOURCES` and their tests are removed), the public-api baseline.
+
+(b) Invariants:
+- The set of variants to cover comes from the enum type itself, never from a hand list
+  or a source parse.
+- The set of variants seen comes from what the render path actually converted while
+  rendering the golden cases, never from the case's model JSON or a restatement of
+  template rules.
+- A new variant with no golden that renders it fails the gate; a variant recorded only
+  outside the golden run does not count.
+- The record exists only in test builds; production rendering is unchanged.
+- An enum the render path never converts (placement, role, outcome) needs no exception
+  list: it is simply not in the observed set, and the gate covers only enums the render
+  path converts.
+
+(c) Tests: a new variant added to a covered enum in a scratch build fails the gate with
+its name; deleting the golden case that is the only holder of a variant fails the gate;
+the existing golden renders are unchanged.
+
+(d) Lanes: `[opus]` core-implementer for the derive and the render record; `[opus]`
+test-author for the gate and its tests, after the implementation lands; `[review]`
+core-reviewer plus proof-auditor (the gate is the risk surface). One review pass each,
+no fix-on-fix: a finding that needs the mirror back is an owner question.
+
 ## Owner answers
 
 - **Q1 (answered: keep).** Groups "promote member to admin" (Step 18), wallet "create
