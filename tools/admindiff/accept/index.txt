@@ -3,7 +3,6 @@
 # A reason names its kind: data difference, not ported yet, template choice, contract gap,
 # or a declared deviation (Dn in the plan).
 frame div.app > aside.sidebar > div.sidebar-foot > div.me: portal-only form#a96e26 | template choice: shell.html.tmpl puts the Sign out form in the sidebar foot; the mockup has no session
-frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item#848c49 | not ported yet: the Mail outbox nav entry (with its warn count) arrives with the mail port
 frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item#ecbb9a | not ported yet: the API keys, Scheduler, Config and Audit nav entries arrive with their ports
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#1089c4 | not ported yet: the Lore section; no Lore module exists
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#5694ed | not ported yet: the Economy section arrives with the wallet port
@@ -15,12 +14,11 @@ frame div.app > main.main > div.page > div.g-21.grid: portal-only div.stack | te
 frame div.app > main.main > div.page > div.g-tiles.grid: mock-only [tile "Active players (24 h)"] | not ported yet: accounts' tile arrives with the accounts port
 frame div.app > main.main > div.page > div.g-tiles.grid: mock-only [tile "Cloud saves used"] | not ported yet: storage's tile arrives with the storage port
 frame div.app > main.main > div.page > div.g-tiles.grid: mock-only [tile "Embers spent (24 h)"] | not ported yet: wallet's tile arrives with the wallet port
-frame div.app > main.main > div.page > div.g-tiles.grid: mock-only [tile "Mail queue"] | not ported yet: mail's tile arrives with the mail port
 frame div.app > main.main > div.page: mock div portal div.stack | template choice: shell.html.tmpl's #health row is a .stack holding every DashboardWide contribution; the mockup's is a plain div holding one
 mock-only panel "Recent operator activity" | not ported yet: audit's dashboard panel arrives with the audit port
 mock-only tile "Active players (24 h)" | not ported yet: accounts' tile arrives with the accounts port
 mock-only tile "Cloud saves used" | not ported yet: storage's tile arrives with the storage port
 mock-only tile "Embers spent (24 h)" | not ported yet: wallet's tile arrives with the wallet port
-mock-only tile "Mail queue" | not ported yet: mail's tile arrives with the mail port
 panel "Service health" section.panel > div.flush.panel-body > div.g-2.grid > div > .svc* > div.svc > span.row > span.hide-tablet: mock-only div.uptime#3f0d1e | template choice: the services macro uses span.uptime, since a div inside a span is invalid HTML; .uptime is display:flex, so it renders the same
 panel "Service health" section.panel > div.flush.panel-body > div.g-2.grid > div > .svc* > div.svc > span.row > span.hide-tablet: portal-only span.uptime#17b8fb | template choice: the span.uptime of the div.uptime entry
+tile "Mail queue" a.panel > div.kpi > div.kpi-delta: mock-only span.bad-up | data difference: the tile delta "relay throttled" shows only while a row is retrying (FAKE wording); the fresh fleet has none

@@ -3,7 +3,6 @@
 # matches no difference fails the diff. A reason names its kind: data difference, not
 # ported yet, template choice, contract gap, or a declared deviation (Dn in the plan).
 frame div.app > aside.sidebar > div.sidebar-foot > div.me: portal-only form#a96e26 | template choice: shell.html.tmpl puts the Sign out form in the sidebar foot; the mockup has no session
-frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item#848c49 | not ported yet: the Mail outbox nav entry (with its warn count) arrives with the mail port
 frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item#ecbb9a | not ported yet: the API keys, Scheduler, Config and Audit nav entries arrive with their ports
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#1089c4 | not ported yet: the Lore section; no Lore module exists
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#5694ed | not ported yet: the Economy section arrives with the wallet port
