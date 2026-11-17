@@ -74,7 +74,8 @@ const CONTROL_PLANE_INVOKE_RATIONALE: &str = control_plane_invoke_rationale!();
 const CONTROL_PLANE_INVOKE_ITEM_RATIONALE: &str =
     concat!(control_plane_invoke_rationale!(), control_plane_item_bound!());
 const CONTROL_PLANE_READ_RATIONALE: &str = control_plane_read_rationale!();
-const CONTROL_PLANE_PREPARE_ITEM_RATIONALE: &str = concat!(control_plane_read_rationale!(), control_plane_item_bound!());
+const CONTROL_PLANE_PREPARE_ITEM_RATIONALE: &str =
+    concat!(control_plane_read_rationale!(), control_plane_item_bound!());
 
 pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
     use Exposure::{External, Wire};

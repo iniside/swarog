@@ -6,11 +6,11 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use asyncevents::admin::{self as plane, SkipResult, StateSnapshot, SubInfo, SubState};
 use controlplane::{
-    ActionDecl, ActionPoint, Align, AttentionItem, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
+    ActionDecl, ActionPoint, Align, AttentionItem, Banner, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
     ContributionDecl, DataTable, Delta, EntityHeader, EntityKindDecl, EntityRef, FilterDef, FilterKind,
     InvokeCall, InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, PageDecl, PageInfo, PanelBody, PanelQuery,
-    Point, Primitive, PropertyList, Provider, ReasonReq, Role, Row, SearchHit, SearchQuery, Severity, Then,
-    Tone, Trend, DEFAULT_PANEL_DEADLINE_MS,
+    Point, PrepareCall, Primitive, PropertyList, Provider, ReasonReq, Role, Row, SearchHit, SearchQuery, Severity,
+    Then, Tone, Trend, DEFAULT_PANEL_DEADLINE_MS,
 };
 use sqlx::PgPool;
 
@@ -33,6 +33,9 @@ const ATTENTION_LIMIT: usize = 5;
 const LAG_WARN: i64 = 100;
 
 const SKIP_NEEDS_ITEM: &str = "Skip needs the previewed event";
+const SKIP_BODY: &str = "The checkpoint advances past this event and the subscription resumes. The consumer never \
+                         applies this event unless it is done by hand.";
+const POISON_HINT: &str = "Fix the consumer first, then Resume. Skip advances the checkpoint past this event.";
 const NOTHING_TO_SKIP: &str = "Nothing to skip — the subscription is healthy";
 const ALREADY_RESOLVED: &str =
     "Already resolved — the event was delivered or another event blocks now; refresh to see the current state";
@@ -79,6 +82,16 @@ fn poison_item(subscription: &str, event_id: &str) -> String {
 /// `(subscription, event_id)`; event ids are uuids, so the last `#` separates them.
 fn parse_poison_item(item: &str) -> Option<(&str, &str)> {
     item.rsplit_once('#').filter(|(subscription, _)| !subscription.is_empty())
+}
+
+/// The name an operator reads and types for an event: the first 8 hex characters of its
+/// uuid. The plane exposes no event sequence number.
+fn short_id(event_id: &str) -> Option<&str> {
+    event_id.get(..8).filter(|s| s.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+fn event_name(topic: &str, short: &str) -> String {
+    format!("{topic} #{short}")
 }
 
 /// Every input value is at most [`MAX_INPUT_VALUE_BYTES`]. This provider declares no form
@@ -197,18 +210,14 @@ fn manifest() -> Manifest {
     let page = || Point::Page(PAGE.to_string());
     let tool = || ActionPoint::PanelTool(POISON.to_string());
     let row = || ActionPoint::RowAction(KIND.to_string());
+    // Fixes only the variant: the shown spec comes from `prepare` for the previewed event.
     let skip = ConfirmSpec {
         title: "Skip the previewed event?".to_string(),
-        body: "The checkpoint advances past this event and the subscription resumes. The consumer \
-               never applies this event unless it is done by hand."
-            .to_string(),
+        body: SKIP_BODY.to_string(),
         tone: ConfirmTone::Danger,
-        impact: vec![
-            ("Moves".to_string(), "the checkpoint, past exactly this event".to_string()),
-            ("Recorded in".to_string(), "the subscription's last error, with your reason".to_string()),
-        ],
+        impact: Vec::new(),
         reason: ReasonReq::Required,
-        type_to_confirm: Some("skip".to_string()),
+        type_to_confirm: None,
         confirm_label: "Skip and resume".to_string(),
     };
     let pause = ConfirmSpec {
@@ -239,12 +248,8 @@ fn manifest() -> Manifest {
             title: "Event plane".to_string(),
             subtitle: "Durable topics, subscription checkpoints and lag.".to_string(),
             head_actions: Vec::new(),
-            tiles: Vec::new(),
-            layout: Layout::Stack(
-                [KPI_HEAD, KPI_SUBSCRIPTIONS, KPI_MAX_LAG, KPI_DEAD_LETTERED, POISON, SUBSCRIPTIONS]
-                    .map(str::to_string)
-                    .to_vec(),
-            ),
+            tiles: [KPI_HEAD, KPI_SUBSCRIPTIONS, KPI_MAX_LAG, KPI_DEAD_LETTERED].map(str::to_string).to_vec(),
+            layout: Layout::Stack([POISON, SUBSCRIPTIONS].map(str::to_string).to_vec()),
         }],
         entity_kinds: vec![EntityKindDecl {
             kind: KIND.to_string(),
@@ -259,7 +264,7 @@ fn manifest() -> Manifest {
             contribution(KPI_SUBSCRIPTIONS, page(), 20, "Subscriptions", "zap"),
             contribution(KPI_MAX_LAG, page(), 30, "Max lag", "chart"),
             contribution(KPI_DEAD_LETTERED, page(), 40, "Dead-lettered (7 d)", "inbox"),
-            contribution(POISON, page(), 50, "Paused subscription", "alert"),
+            contribution(POISON, page(), 50, "Paused:", "alert"),
             contribution(SUBSCRIPTIONS, page(), 60, "Subscriptions", "zap"),
             contribution(HEADER, Point::EntityHeader(KIND.to_string()), 0, "Subscription", "zap"),
             contribution(
@@ -276,7 +281,10 @@ fn manifest() -> Manifest {
         ],
         actions: vec![
             act(POISON_RESUME, tool(), "Resume (retry event)", "play", 10, Then::Invoke).decl(false, true, true),
-            act(POISON_SKIP, tool(), "Skip event…", "skip", 20, Then::Confirm(skip)).decl(false, false, true),
+            ActionDecl {
+                prepare: true,
+                ..act(POISON_SKIP, tool(), "Skip event…", "skip", 20, Then::Confirm(skip)).decl(false, false, true)
+            },
             // NEW: copying to the clipboard is a client action no backend call performs.
             act(POISON_COPY, tool(), "Copy payload", "download", 30, Then::Invoke).decl(false, false, false),
             act(SUB_PAUSE, row(), "Pause…", "pause", 10, Then::Confirm(pause)).decl(false, false, true),
@@ -413,7 +421,7 @@ impl EventsProvider {
                         text(CellKind::Number, count(s.lag_events), lag_tone(&s)),
                         state_cell(&s.state, s.consecutive_failures),
                     ],
-                    highlight: false,
+                    highlight: s.state == "paused",
                 }
             })
             .collect();
@@ -447,51 +455,89 @@ impl EventsProvider {
         }))
     }
 
-    async fn poison(&self) -> Result<Primitive, opsapi::Error> {
+    async fn poison(&self) -> Result<PanelBody, opsapi::Error> {
         let infos = self.infos().await?;
-        let target = infos
-            .iter()
-            .find(|s| s.state == "paused")
-            .or_else(|| infos.iter().find(|s| s.state == "active" && s.consecutive_failures > 0));
-        let Some(sub) = target else {
-            return Ok(Primitive::Empty {
+        let Some(sub) = infos.iter().find(|s| s.state == "paused") else {
+            return Ok(PanelBody::new(Primitive::Empty {
                 title: "Nothing is paused".to_string(),
-                detail: "Every subscription is delivering.".to_string(),
-            });
+                detail: "No subscription is paused.".to_string(),
+            }));
         };
         let event = plane::poison_event(&self.pool, &sub.id).await.map_err(internal)?;
-        let mut items = vec![
-            prop("Subscription", text(CellKind::Mono, sub.id.clone(), None)),
-            prop("State", state_cell(&sub.state, sub.consecutive_failures)),
-        ];
-        if let Some(since) = &sub.paused_since {
-            items.push(prop("Since", text(CellKind::Text, since.clone(), None)));
-        }
-        items.push(prop("Failures", text(CellKind::Number, sub.consecutive_failures.to_string(), None)));
-        let waiting = format!("{} events behind the checkpoint", count(sub.lag_events));
-        items.push(prop("Waiting", text(CellKind::Text, waiting, None)));
-        let consumer = format!("{} · handler {}", fakes::consumer(&sub.id), fakes::handler(&sub.id));
-        items.push(prop("Consumer", text(CellKind::Text, consumer, None)));
-        if let Some(error) = &sub.last_error {
-            items.push(prop("Error", text(CellKind::Mono, error.clone(), Some(Tone::Err))));
-        }
+        let mut items = Vec::new();
         match &event {
             Some(ev) => {
-                let name = format!("{} v{} · {}", ev.topic, ev.version, ev.event_id);
+                let name = event_name(&ev.topic, short_id(&ev.event_id).unwrap_or(&ev.event_id));
                 items.push(prop("Event", text(CellKind::Mono, name, None)));
-                items.push(prop("Appended", text(CellKind::Text, ev.appended_at.clone(), None)));
-                let payload = serde_json::to_string_pretty(&ev.payload).unwrap_or_default();
-                items.push(prop("Payload", text(CellKind::Mono, preview(payload), None)));
             }
             None => {
                 let none = "No event past the checkpoint is eligible yet";
                 items.push(prop("Event", text(CellKind::Text, none, None)));
             }
         }
-        let hint = "Fix the consumer first, then Resume. Skip advances the checkpoint past this event.";
-        items.push(prop("Next step", text(CellKind::Text, hint, None)));
+        let consumer = format!("{} · handler {}", fakes::consumer(&sub.id), fakes::handler(&sub.id));
+        items.push(prop("Consumer", text(CellKind::Text, consumer, None)));
+        if let Some(error) = &sub.last_error {
+            items.push(prop("Error", text(CellKind::Mono, error.clone(), Some(Tone::Err))));
+        }
+        let waiting = count(sub.lag_events);
+        let banner = match sub.consecutive_failures {
+            0 => Banner {
+                tone: Tone::Warn,
+                text: format!("Delivery is paused. {waiting} events are waiting behind it."),
+            },
+            failures => Banner {
+                tone: Tone::Err,
+                text: format!(
+                    "Consumer failed {failures}× on the same event and stopped to preserve ordering. {waiting} \
+                     events are waiting behind it."
+                ),
+            },
+        };
         let event_id = event.as_ref().map_or("", |ev| ev.event_id.as_str());
-        Ok(Primitive::PropertyList(PropertyList { items, columns: 1, item: Some(poison_item(&sub.id, event_id)), code: None }))
+        let code = event.as_ref().map(|ev| preview(serde_json::to_string_pretty(&ev.payload).unwrap_or_default()));
+        Ok(PanelBody {
+            primitive: Primitive::PropertyList(PropertyList {
+                items,
+                columns: 1,
+                item: Some(poison_item(&sub.id, event_id)),
+                code,
+            }),
+            meta: sub.paused_since.as_ref().map(|since| format!("since {since}")),
+            heading: Some(sub.id.clone()),
+            note: Some(POISON_HINT.to_string()),
+            banner: Some(banner),
+        })
+    }
+
+    /// The skip confirmation for the previewed event in `req.item`. The topic is fixed per
+    /// subscription, so reading it does not substitute the event the operator saw.
+    async fn prepare_skip(&self, req: &PrepareCall) -> Result<Then, opsapi::Error> {
+        let (id, short) = req
+            .item
+            .as_deref()
+            .and_then(parse_poison_item)
+            .and_then(|(id, event_id)| Some((id, short_id(event_id)?)))
+            .ok_or_else(|| opsapi::Error::invalid(SKIP_NEEDS_ITEM))?;
+        let topic = self
+            .infos()
+            .await?
+            .into_iter()
+            .find(|s| s.id == id)
+            .map(|s| s.topic)
+            .ok_or_else(|| opsapi::Error::not_found(format!("no subscription {id:?}")))?;
+        Ok(Then::Confirm(ConfirmSpec {
+            title: format!("Skip event {short}?"),
+            body: SKIP_BODY.to_string(),
+            tone: ConfirmTone::Danger,
+            impact: vec![
+                ("Subscription".to_string(), id.to_string()),
+                ("Event".to_string(), event_name(&topic, short)),
+            ],
+            reason: ReasonReq::Required,
+            type_to_confirm: Some(short.to_string()),
+            confirm_label: "Skip and resume".to_string(),
+        }))
     }
 
     async fn header(&self, entity: &EntityRef) -> Result<Primitive, opsapi::Error> {
@@ -586,61 +632,7 @@ impl EventsProvider {
             SkipResult::AlreadyResolved { healthy: false } => Ok(noop(ALREADY_RESOLVED)),
         }
     }
-}
 
-/// `payload` cut to [`PAYLOAD_PREVIEW_BYTES`] on a char boundary.
-fn preview(mut payload: String) -> String {
-    if payload.len() > PAYLOAD_PREVIEW_BYTES {
-        let mut end = PAYLOAD_PREVIEW_BYTES;
-        while !payload.is_char_boundary(end) {
-            end -= 1;
-        }
-        payload.truncate(end);
-        payload.push('…');
-    }
-    payload
-}
-
-#[async_trait]
-impl Provider for EventsProvider {
-    fn manifest(&self) -> Manifest {
-        manifest()
-    }
-
-    async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
-        self.primitive(&req).await.map(PanelBody::new)
-    }
-
-    async fn search(&self, _req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
-        Ok(Vec::new())
-    }
-
-    async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
-        if !input_within_cap(&req.input) {
-            return Err(opsapi::Error::invalid(format!("an input value is longer than {MAX_INPUT_VALUE_BYTES} bytes")));
-        }
-        match req.action.as_str() {
-            POISON_RESUME => self.resume_previewed(&req).await,
-            POISON_SKIP => self.skip_previewed(&req).await,
-            SUB_PAUSE => {
-                let verb = |pool: PgPool, id: String| async move { plane::pause(&pool, &id).await };
-                self.transition(&req, verb, "Paused").await
-            }
-            SUB_RESUME => {
-                let verb = |pool: PgPool, id: String| async move { plane::resume_retry(&pool, &id).await };
-                self.transition(&req, verb, "Resumed").await
-            }
-            SUB_RETRY => {
-                let verb = |pool: PgPool, id: String| async move { plane::retry(&pool, &id).await };
-                self.transition(&req, verb, "Retry scheduled for").await
-            }
-            POISON_COPY | SUB_REWIND => Err(opsapi::Error::forbidden("not implemented yet")),
-            other => Err(opsapi::Error::not_found(format!("{MODULE} has no action {other:?}"))),
-        }
-    }
-}
-
-impl EventsProvider {
     async fn primitive(&self, req: &PanelQuery) -> Result<Primitive, opsapi::Error> {
         let entity = || {
             req.entity.as_ref().filter(|e| e.kind == KIND).ok_or_else(|| opsapi::Error::invalid("needs a subscription"))
@@ -674,11 +666,72 @@ impl EventsProvider {
                 capacity: None,
                 link: None,
             })),
-            POISON => self.poison().await,
             SUBSCRIPTIONS => self.table(req).await,
             HEADER => self.header(entity()?).await,
             DETAILS => self.details(entity()?).await,
             other => Err(opsapi::Error::not_found(format!("{MODULE} has no contribution {other:?}"))),
+        }
+    }
+}
+
+/// `payload` cut to [`PAYLOAD_PREVIEW_BYTES`] on a char boundary.
+fn preview(mut payload: String) -> String {
+    if payload.len() > PAYLOAD_PREVIEW_BYTES {
+        let mut end = PAYLOAD_PREVIEW_BYTES;
+        while !payload.is_char_boundary(end) {
+            end -= 1;
+        }
+        payload.truncate(end);
+        payload.push('…');
+    }
+    payload
+}
+
+#[async_trait]
+impl Provider for EventsProvider {
+    fn manifest(&self) -> Manifest {
+        manifest()
+    }
+
+    async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
+        match req.contribution.as_str() {
+            POISON => self.poison().await,
+            _ => self.primitive(&req).await.map(PanelBody::new),
+        }
+    }
+
+    async fn search(&self, _req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
+        Ok(Vec::new())
+    }
+
+    async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
+        if !input_within_cap(&req.input) {
+            return Err(opsapi::Error::invalid(format!("an input value is longer than {MAX_INPUT_VALUE_BYTES} bytes")));
+        }
+        match req.action.as_str() {
+            POISON_RESUME => self.resume_previewed(&req).await,
+            POISON_SKIP => self.skip_previewed(&req).await,
+            SUB_PAUSE => {
+                let verb = |pool: PgPool, id: String| async move { plane::pause(&pool, &id).await };
+                self.transition(&req, verb, "Paused").await
+            }
+            SUB_RESUME => {
+                let verb = |pool: PgPool, id: String| async move { plane::resume_retry(&pool, &id).await };
+                self.transition(&req, verb, "Resumed").await
+            }
+            SUB_RETRY => {
+                let verb = |pool: PgPool, id: String| async move { plane::retry(&pool, &id).await };
+                self.transition(&req, verb, "Retry scheduled for").await
+            }
+            POISON_COPY | SUB_REWIND => Err(opsapi::Error::forbidden("not implemented yet")),
+            other => Err(opsapi::Error::not_found(format!("{MODULE} has no action {other:?}"))),
+        }
+    }
+
+    async fn prepare(&self, req: PrepareCall) -> Result<Then, opsapi::Error> {
+        match req.action.as_str() {
+            POISON_SKIP => self.prepare_skip(&req).await,
+            other => Err(opsapi::Error::not_found(format!("{MODULE} prepares no action {other:?}"))),
         }
     }
 }

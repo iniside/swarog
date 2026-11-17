@@ -3,7 +3,9 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use controlplane::{Banner, ContributionDecl, PanelBody, PanelQuery, Point, Primitive, TimeRange, DEFAULT_PANEL_DEADLINE_MS};
+use controlplane::{
+    Banner, ContributionDecl, PanelBody, PanelQuery, Point, Primitive, TimeRange, DEFAULT_PANEL_DEADLINE_MS,
+};
 
 use super::manifests::Snapshot;
 use super::roles::{self, Operator};

@@ -19,6 +19,13 @@ pub(crate) const DASHBOARD_SUBTITLE: &str = "emberline-prod · Swarog 0.42.1 · 
 pub(crate) const HEALTH_NOTE: &str = "Probed every 10 s by the portal · last probe 2 s ago";
 
 // FAKE: no health probe exists until Weles exposes its API.
+pub(crate) const HEALTH_PROBE: &str = "probed every 10 s";
+
+/// The number and width of a service's health history buckets.
+const HISTORY_BUCKETS: u64 = 48;
+const HISTORY_BUCKET_MIN: u64 = 5;
+
+// FAKE: no health probe exists until Weles exposes its API.
 pub(crate) fn services() -> Vec<ServiceItem> {
     use ServiceState::{Degraded, Down, Running};
     const RUNNING: &str = "6 d 4 h";
@@ -57,12 +64,17 @@ pub(crate) fn services() -> Vec<ServiceItem> {
         .collect()
 }
 
-/// 48 five-minute buckets over the last 4 h, oldest first, as the mockup's `uptimeBar`
-/// draws them.
+/// The span [`history`] covers: `"last 4 h"`.
+pub(crate) fn history_window() -> String {
+    format!("last {} h", HISTORY_BUCKETS * HISTORY_BUCKET_MIN / 60)
+}
+
+/// [`HISTORY_BUCKETS`] buckets of [`HISTORY_BUCKET_MIN`] minutes, oldest first, as the
+/// mockup's `uptimeBar` draws them.
 // FAKE: no health history is stored.
 fn history(name: &str, now: ServiceState) -> Vec<(String, ServiceState)> {
     let seed = hash(name);
-    (0..48u64)
+    (0..HISTORY_BUCKETS)
         .map(|i| {
             let state = match now {
                 ServiceState::Down if i > 41 => if i % 2 == 1 { ServiceState::Down } else { ServiceState::Degraded },
@@ -70,7 +82,7 @@ fn history(name: &str, now: ServiceState) -> Vec<(String, ServiceState)> {
                 _ if (seed.wrapping_mul(31).wrapping_add(i * 17)) % 97 == 3 => ServiceState::Degraded,
                 _ => ServiceState::Running,
             };
-            (format!("{} min ago", (48 - i) * 5), state)
+            (format!("{} min ago", (HISTORY_BUCKETS - i) * HISTORY_BUCKET_MIN), state)
         })
         .collect()
 }
