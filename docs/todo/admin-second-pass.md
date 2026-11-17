@@ -7,7 +7,8 @@ The admin redesign ships mockup elements the backend cannot back as deterministi
 disabled (R2). This is the one list of them, so a second pass can replace each with a
 real feature. Found with Grep over `*.rs` (`// FAKE:`, `implemented: false` and the
 `.decl(.., false)` calls), which is a lower bound: a marker written another way is missed.
-A port adds its own markers here in its part `a` commit (mockup-implementation skill).
+A port adds its own markers here in its part `a` commit (mockup-implementation skill);
+a port that writes a new `contract gap` accept entry adds its item under Accepted contract gaps.
 Rule source: docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:45-53.
 
 ## In progress
@@ -69,32 +70,31 @@ _None._
   (`handler`, hash-picked): neither is stored. Replaced by: the subscription registry
   recording its module and handler.
 
-### Fake data and actions of the mail port (Step 11, landing)
+### Fake data and actions of the mail port
 
-modules/mail/src/admin.rs is uncommitted at the time of writing; the line numbers are
-its current ones.
+modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed ones.
 
-- [ ] **Relay throttle signal** (Step 11, landing)
+- [ ] **Relay throttle signal**
   ADMIN2-11. Mockup: the "▲ relay throttled" tile delta, the "Mail relay throttling"
   attention item and the SMTP 421 banner. Fakes: modules/mail/src/admin.rs:336, :366,
   :441: no throttle signal exists; a retrying row stands for one. Replaced by: the mail
   drain recording relay throttling (SMTP 421) as a state.
-- [ ] **Queue-length history** (Step 11, landing)
+- [ ] **Queue-length history**
   ADMIN2-12. Mockup: the Mail queue tile's sparkline. Fake: modules/mail/src/admin.rs:351:
   the outbox keeps no queue-length history. Replaced by: sampled queue length.
-- [ ] **Pause sending** (Step 11, landing)
+- [ ] **Pause sending**
   ADMIN2-13. Mockup: the outbox "Pause sending" tool. Action `PAUSE_SENDING`,
   `implemented: false`: modules/mail/src/admin.rs:289-300, refused at :568; the drain has
   no pause switch. Replaced by: a persisted pause flag the drain honours.
-- [ ] **Retry now** (Step 11, landing)
+- [ ] **Retry now**
   ADMIN2-14. Mockup: the per-row "Retry". Action `RETRY_NOW`, `implemented: false`:
   modules/mail/src/admin.rs:302-303; the drain owns every retry time. Replaced by: a
   per-row "due now" operation on the outbox.
-- [ ] **Park and cancel parked** (Step 11, landing)
+- [ ] **Park and cancel parked**
   ADMIN2-15. Mockup: "Park: keep but stop retrying" and the parked row's "Cancel".
   Actions `PARK` and `CANCEL_PARKED`, `implemented: false`: modules/mail/src/admin.rs:304-306
-  and :313; no operator park exists (resume parked is real). Replaced by: an operator
-  park transition and a cancel for parked rows.
+  and :313; no operator park exists (resume parked is real) and `cancel` refuses a row
+  that is not pending. Replaced by: an operator park transition and a cancel for parked rows.
 
 ### Not-implemented actions
 
@@ -108,6 +108,19 @@ its current ones.
   `implemented: false`: core/admin/src/events_provider.rs:320-322; no checkpoint rewind
   exists. Replaced by: a rewind operation in the event plane (a fenced, danger-level
   write).
+
+## Accepted contract gaps
+
+One item per `contract gap` entry in `tools/admindiff/accept/*.txt`; remaining mockup
+gaps go to the next iteration.
+
+- [ ] **Muted mono value (Event plane Head cell)**
+  ADMIN2-18. Accept lines: tools/admindiff/accept/events.txt:15 and :16 (the plain and
+  the `tr.sel` row), `td.num: mock span.mono.muted portal span.mono | contract gap: no
+  CellKind gives a muted mono value, so the Head cell is not muted`. Mockup: the
+  Subscriptions Head value in dimmed mono. Closed by: a muted variant in
+  `core/controlplane` (a `CellKind` or a `Cell` flag) that `core/admin/src/render.rs`
+  maps to `span.mono.muted`; then delete both accept lines.
 
 ## Data a dev fleet never produces
 

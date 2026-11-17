@@ -25,7 +25,9 @@ fake rows in `assets/data.js`. The portal that renders it is `core/admin`.
     marked `// FAKE: <why>`;
   - every `// FAKE:` marker and every `implemented: false` action a port adds gets an
     item in `docs/todo/admin-second-pass.md` in the same part `a` commit; part `a`
-    owns it.
+    owns it;
+  - a port that writes a new `contract gap` accept entry adds its item under
+    **Accepted contract gaps** in the same file.
 - Lanes: `.agents/shared/planning-dispatch.md` **Implementation Mode**. The view part
   runs at the cheap tier on `mockup-implementer`; checklist, contract decisions and
   review stay at the top tier. No fallback to a stronger model: a port that goes
