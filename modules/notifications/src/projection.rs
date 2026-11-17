@@ -455,7 +455,7 @@ impl TxHandler for PurgeSweepHandler {
                     // The budget is spent only at a player boundary — after the stamp, never
                     // between a player's delete and its stamp. The sweeps that emit a
                     // terminal event per deleted row depend on that placement; this one keeps
-                    // it so all six read the same.
+                    // it for the same shape.
                     if started.elapsed() >= SWEEP_BUDGET {
                         tracing::warn!(
                             elapsed_ms = started.elapsed().as_millis() as u64,

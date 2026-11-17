@@ -185,9 +185,9 @@ impl Store {
         Ok(())
     }
 
-    /// `true` once this player's deletion tombstone is committed. A plain read, no
-    /// advisory lock: the row is permanent, so every statement taken after the plant
-    /// commits sees it.
+    /// `true` once this player's deletion tombstone is committed. A plain read: its caller
+    /// holds [`Store::lock_player_tx`] first, so the sweep either committed before the read
+    /// or waits for the caller's transaction.
     pub(crate) async fn is_player_purged_tx(
         &self,
         conn: &mut PgConnection,
@@ -262,8 +262,9 @@ impl Store {
     /// (409) even if that credit commits in between — no key is consumed, so the caller
     /// retries.
     ///
-    /// No advisory lock: a single `amount + $delta` means the row lock serializes concurrent
-    /// movements on one `(player, currency)` and the CHECK rejects the loser.
+    /// This statement takes no lock of its own (the caller holds [`Store::lock_player_tx`]):
+    /// a single `amount + $delta` means the row lock serializes concurrent movements on one
+    /// `(player, currency)` and the CHECK rejects the loser.
     pub(crate) async fn apply_balance_tx(
         &self,
         conn: &mut PgConnection,

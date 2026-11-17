@@ -52,13 +52,22 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
         executable.expect("resolved above"),
         vec![
             OsString::from("audit"),
+            // rsa 0.9.10 (Marvin timing side channel): `cargo tree -i rsa --workspace
+            // --target all -e normal,build --locked` shows only `tools/splitproof` as a
+            // dependent, so sqlx-mysql does not pull it into any build. Its two users
+            // (`tools/splitproof` and `modules/accounts` as a dev-dependency) only generate
+            // throwaway 2048-bit keys and export n/e plus PKCS#8 PEM for JWKS fixtures; the
+            // signing is jsonwebtoken via ring, and production OIDC verification
+            // (`modules/accounts/src/oidc.rs`) is public-key only and never touches `rsa`.
+            // Revisit if `rsa` is used for decryption or signing, or a patched release lands.
             OsString::from("--ignore"),
             OsString::from("RUSTSEC-2023-0071"),
             // libsqlite3-sys is in Cargo.lock only through sqlx's weak
             // `sqlx-sqlite?/…` feature entries and is never compiled;
             // `sqlite_premise_finding` fails the stage once that stops being
-            // true. Remove this ignore once a released sqlx allows
-            // libsqlite3-sys >=0.39; the sqlx-sqlite of sqlx 0.9.0 caps it at <0.38.
+            // true. The workspace is on sqlx 0.8, whose sqlx-sqlite pins libsqlite3-sys
+            // 0.30.1; the latest release, 0.9.0, still caps it at <0.38, and the fix needs
+            // >=0.39. Remove this ignore once a released sqlx allows >=0.39.
             OsString::from("--ignore"),
             OsString::from(SQLITE_ADVISORY),
         ],

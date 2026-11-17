@@ -158,8 +158,7 @@ foreign identity is a 409 with no merge, because merging accounts post-wallet me
 balances and is its own feature. `player.promoted`'s `from_provider`:
 [docs/todo/accounts.md](../todo/accounts.md).
 
-Cross-cutting dev-verifier ids (`DevSessionVerifier` mints non-uuid player ids): [docs/todo/gateway.md](../todo/gateway.md). `wallet`'s purge-sweep/movement-guard lock: [docs/todo/wallet.md](../todo/wallet.md).
-
+Cross-cutting dev-verifier ids (`DevSessionVerifier` mints non-uuid player ids): [docs/todo/gateway.md](../todo/gateway.md).
 
 ## Social
 

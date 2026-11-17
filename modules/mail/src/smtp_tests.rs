@@ -3,21 +3,22 @@
 //! it turns "did the I/O happen?" into an assertion instead of an absence of errors, the
 //! `serve_counting_jwks` instrument from `modules/accounts/src/oidc_tests.rs`.
 //!
-//! Two constructors are exercised, and which one a test uses is load-bearing. The
-//! PRODUCTION one ([`SmtpSender::new`], reached through `MailConfig`) decides between
-//! `starttls_relay` and `relay`, and against a plaintext peer both abandon the dialogue at
-//! EHLO — so those tests pin the TLS choice and the error taxonomy, and can never reach a
-//! delivery. The whole dialogue is reached through [`SmtpSender::plaintext_for_tests`], a
-//! `#[cfg(test)]` constructor that adds no production surface and no third [`TlsMode`] arm.
+//! Which constructor a test uses is load-bearing. The PRODUCTION one ([`SmtpSender::new`],
+//! reached through `MailConfig`) decides between `starttls_relay` and `relay`, and trusts
+//! only `webpki-roots`: against a plaintext peer both arms abandon the dialogue at EHLO, and
+//! against a minted-CA relay both refuse the certificate — so those tests pin the TLS
+//! choice, the certificate check and the error taxonomy, and never reach a delivery. Two
+//! `#[cfg(test)]` constructors reach delivery without adding production surface or a third
+//! [`TlsMode`] arm: [`SmtpSender::plaintext_for_tests`] (the dialogue in the clear) and
+//! [`SmtpSender::tls_trusting_for_tests`] (STARTTLS and implicit TLS, `AUTH` included, against
+//! a relay whose minted CA it trusts).
 //!
 //! Two gaps, stated so Step 13 copies them rather than paraphrasing:
 //!
-//! 1. **TLS is never NEGOTIATED here at all** — no handshake completes, so nothing proves
-//!    the STARTTLS upgrade, the certificate/trust check (`webpki-roots`, which is also why
-//!    a self-signed loopback TLS fixture cannot be validated), or SMTP `AUTH`, which lettre
-//!    applies only after a successful upgrade. What IS pinned is the CHOICE between `relay`
-//!    and `starttls_relay`, and that an implicit dial emits no cleartext command.
-//! 2. **A relay that answers `5xx` and then goes SILENT is reported as infrastructure.**
+//! 1. **Production hostname checking is not reached.** Production never trusts the minted CA,
+//!    so no test can complete a handshake through [`SmtpSender::new`]; a hostname mismatch is
+//!    never separated from an untrusted issuer there.
+//! 2.**A relay that answers `5xx` and then goes SILENT is reported as infrastructure.**
 //!    lettre answers a rejected command by sending `QUIT` and blocking in `read_response`,
 //!    which nothing in lettre bounds, so `worker::attempt`'s budget is what returns — as
 //!    `Infra` carrying `"send exceeded …"`. The row then spends its whole attempt ladder
@@ -467,8 +468,8 @@ fn smtp_sender_with(
     (sender, cfg.send_timeout)
 }
 
-/// The same `SmtpSender`, dialled in the clear. Test-only, and the only way the dialogue
-/// past the upgrade is reachable at all.
+/// The same `SmtpSender`, dialled in the clear. Test-only: the one dial that reaches
+/// delivery without TLS.
 fn plaintext_sender(addr: SocketAddr) -> Arc<dyn Sender> {
     Arc::new(
         SmtpSender::plaintext_for_tests(
@@ -923,9 +924,10 @@ async fn the_production_starttls_dial_refuses_an_untrusted_certificate_before_au
 
 /// The deployed constructor's IMPLICIT arm verifies the certificate too. The fixture
 /// wraps the socket from the first byte with the same minted leaf, so the handshake is the
-/// only thing that can fail. The client must give up inside it: the fixture never records
-/// a completed handshake, and the client writes no SMTP line at all — not even an EHLO,
-/// let alone the credential it was configured with.
+/// only thing that can fail. The transcript is empty because no handshake completed, so no
+/// SMTP line crossed a session; the `UnknownIssuer` verdict shows the client stopped inside
+/// the handshake. That nothing went out in the clear is pinned by
+/// `an_implicit_dial_never_lets_an_smtp_command_out_in_the_clear`, not by this transcript.
 #[tokio::test]
 async fn the_production_implicit_dial_refuses_an_untrusted_certificate_before_any_smtp() {
     let minted = mint(RELAY_HOST);
@@ -943,8 +945,8 @@ async fn the_production_implicit_dial_refuses_an_untrusted_certificate_before_an
     assert_eq!(relay.hits(), 1, "the client did dial the relay");
     assert!(
         transcript.is_empty(),
-        "no handshake may complete and no SMTP line may be written on an untrusted \
-         certificate, got {transcript:?}"
+        "no handshake may complete on an untrusted certificate, so no SMTP line may cross a \
+         session, got {transcript:?}"
     );
     assert_eq!(
         rustls_failure(&result),

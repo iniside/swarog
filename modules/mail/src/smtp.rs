@@ -147,10 +147,10 @@ impl SmtpSender {
 
     /// A PLAINTEXT transport for the loopback-relay tests. `#[cfg(test)]`, so it adds no
     /// production surface and gives [`TlsMode`] no third arm: the deployed sender still
-    /// cannot be talked out of TLS. Without it nothing past the upgrade — `MAIL FROM`,
-    /// `RCPT TO`, `DATA`, and a `250` acceptance — is reachable by any test, because both
-    /// `TlsMode` arms abandon a plaintext peer at EHLO and `webpki-roots` will not validate
-    /// a loopback certificate.
+    /// cannot be talked out of TLS. It reaches the dialogue without TLS — `MAIL FROM`,
+    /// `RCPT TO`, `DATA`, and a `250` acceptance — which both `TlsMode` arms abandon at EHLO
+    /// against a plaintext peer. The TLS delivery path is
+    /// [`SmtpSender::tls_trusting_for_tests`].
     ///
     /// It repeats [`SmtpSender::new`]'s port/timeout/hello chain rather than sharing it,
     /// because the branch under test is what `new` does with `settings.tls` — a helper both

@@ -1,6 +1,6 @@
 # Apikeys
 
-Last updated: 2026-10-23
+Last updated: 2026-11-17
 
 ## In progress
 
@@ -8,11 +8,16 @@ _None._
 
 ## Open
 
-- [ ] **Role-policy editor is a blind full replace**
-  APIKEYS-01. `policy_method_options` renders every checkbox unchecked
-  (modules/apikeys/src/admin.rs:152), so saving replaces the whole policy. Source:
-  modules/apikeys/src/admin.rs:121 (2026-07-14); see
-  docs/plans/2026-07-14-1421-apikeys-configurator-plan.md:316.
+- [ ] **Role-policy editor must pre-check the stored policy**
+  APIKEYS-01. The old editor (`modules/apikeys/src/admin.rs`, `policy_method_options`)
+  no longer exists: the admin was razed by b8435c9a, and `modules/apikeys/src` has no
+  `admin.rs`. The requirement stays for its replacement: a policy `Multi` pre-checked
+  from the stored policy and a revision-checked save, so saving is not a blind full
+  replace. The control plane already supports a pre-checked `FieldKind::Multi` through
+  `Field.default` (`core/controlplane/src/lib.rs:436-454`, `core/admin/src/render.rs:1029-1042`).
+  It belongs to step 21 (apikeys) of
+  docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md, whose text does not
+  yet name it.
 - [ ] **`conformance_key_rejected` executes no production code**
   APIKEYS-06. modules/apikeys/src/conformance.rs:16 is `len > MAX_KEY_BYTES`. Source:
   modules/apikeys/src/conformance.rs:16 (2026-07-12); see

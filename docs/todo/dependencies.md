@@ -1,6 +1,6 @@
 # Dependencies
 
-Last updated: 2026-10-23
+Last updated: 2026-11-17
 
 ## In progress
 
@@ -8,12 +8,19 @@ _None._
 
 ## Open
 
-### Known limits (push-routing-ordering-and-liveness step 9)
+### Known limits (security-quick-wins step 1b)
 
-- [ ] **RustSec advisories in the dependency tree**
-  The blocking `audit` stage of the Step 9 acceptance run
-  `verify-1792616200-54429-317230a0` failed on 12 advisories published after the
-  last green run: quinn-proto (5), rustls (4), rustls-webpki, webpki-roots,
-  webpki-root-certs, event-listener (docs/roadmap/feature-tracker.md:319-321,
-  2026-10-21). Fix is a dependency upgrade; every blocking `verifyctl` run stays red
-  until then.
+- [ ] **Drop the RUSTSEC-2026-0459 ignore by upgrading sqlx**
+  `tools/verifyctl/src/stages/audit.rs` ignores RUSTSEC-2026-0459 (libsqlite3-sys
+  0.30.1, in `Cargo.lock` only through sqlx's weak `sqlx-sqlite?/…` entries; only
+  `postgres` is enabled, so sqlite is never compiled). The fix needs libsqlite3-sys
+  >=0.39. The workspace is on sqlx 0.8.6, whose sqlx-sqlite pins `0.30.1`; the latest
+  release, 0.9.0, still caps it at `>=0.30.1, <0.38.0` (crates.io dependency list of
+  sqlx-sqlite 0.9.0, 2026-11-17). Once a released sqlx allows >=0.39, upgrade sqlx and
+  remove the ignore; until then the `audit` stage's premise guard
+  (`sqlite_premise_finding`) fails if libsqlite3-sys is compiled or leaves the lock.
+  The upgrade costs about 77 call sites across about 29 files (sqlx 0.9
+  `SqlSafeStr`, launchbadge/sqlx#3723) plus the archcheck rule-22 `raw_sql` pattern,
+  and all three sqlx pins move together: the root `Cargo.toml`, `weles/Cargo.toml` and
+  `tools/processctl/Cargo.toml` (each is `version = "0.8"`). The 77/29 figure is from
+  the 2026-11-13 research and was not re-counted. This upgrade needs its own plan.

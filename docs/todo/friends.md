@@ -1,6 +1,6 @@
 # Friends
 
-Last updated: 2026-10-23
+Last updated: 2026-11-17
 
 ## In progress
 
@@ -29,11 +29,15 @@ _None._
   tracker row "Friends (add/remove/block, states)" is marked shipped and names
   blocking in its title (docs/plans/2026-09-05-1921-friends-module-plan.md:586,
   2026-09-05; docs/roadmap/feature-tracker.md:200 @ fd797b3a).
-- [ ] **Handle-existence oracle on request**
+- [ ] **Handle-existence oracle on request and party invite**
   FRIENDS-03. `request` answers an unknown handle with 404
   (`service.rs:381`, `NO_SUCH_PLAYER`) and a known one with 201, so handles can
   be enumerated; it is only rate-limited, not closed
-  (docs/roadmap/feature-tracker.md:200 @ fd797b3a, 2026-09-06).
+  (docs/roadmap/feature-tracker.md:200 @ fd797b3a, 2026-09-06). `party.invite` has the
+  same oracle for a party leader: an unknown handle is `NotFound`
+  (`api/party/api/src/lib.rs:134-139`, `modules/party/src/service.rs:175-181`), a known
+  one 201. Closing it changes the player-API contract of both modules and needs its
+  own plan; closing friends alone buys nothing.
 - [ ] **admin_recent ordering on the text-cast id**
   FRIENDS-06. The select list projects `id::text`, so the unqualified
   `ORDER BY created_at DESC, id DESC` tie-break resolves to the output column

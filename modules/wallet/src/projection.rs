@@ -210,7 +210,7 @@ impl Service {
             .await
             .map_err(bus::Error::transport)?;
             // The budget is spent only at a player boundary — after the stamp, never
-            // between a player's writes and its stamp. All six sweeps place it here.
+            // between a player's writes and its stamp.
             if started.elapsed() >= SWEEP_BUDGET {
                 tracing::warn!(
                     elapsed_ms = started.elapsed().as_millis() as u64,
