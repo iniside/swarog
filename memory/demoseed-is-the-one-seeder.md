@@ -1,20 +1,25 @@
 ---
 name: demoseed-is-the-one-seeder
-description: "Owner rule 2026-11-17 — no per-module seed tools (no mailctl etc.); demoseed seeds every module's data; until then missing designed data is a data-difference accept entry"
+description: "Owner rule 2026-11-17 — no per-module seed tools; demoseed seeds via public API only (realistic); states no API produces stay data-difference accept entries; mockup gaps go to the next iteration, don't polish endlessly"
 metadata:
   node_type: memory
   type: feedback
   originSessionId: 6694aaef-849f-495c-bec1-e211bdc7a370
-  modified: 2026-11-17T15:31:34.819Z
+  modified: 2026-11-17T15:35:11.667Z
 ---
 
-Do not propose a new per-module seed tool, such as `mailctl seed-mockup`, when a port's page needs data that a fresh fleet lacks. `demoseed` is the one seeder. It will seed every kind of data each module can create (admin redesign plan, Step 24b). `eventctl seed-mockup` folds into it there.
+Do not propose a new per-module seed tool such as `mailctl seed-mockup`. `demoseed` is the one seeder, and it writes ONLY through the public API, because that is how real data arrives. Admin redesign plan Step 24b widens it to every kind of data each module's API can create.
 
-**Why:** owner: "nie będziemy ciągle dorabiać seedów, mamy demoseed i on powinien po prostu zaseedować bazę wszystkimi danymi z każdego modułu, które może tworzyć. Tak będzie prościej." For now: "zróbmy część wizualną i dodajmy brakujący kontrakt".
+A designed mockup state that no public API can produce, such as a mail that retries or parks, stays a `data difference` accept entry. The admin panel does not have to show what never happens. `eventctl seed-mockup` stays as the Event plane's dev fixture.
+
+**Why:** owner, in three statements:
+- "nie będziemy ciągle dorabiać seedów"
+- "demoseed dalej będzie pisał tylko przez publiczne API, bo tak jest realistycznie, panel admina nie musi pokazywać dosłownie wszystkiego"
+- "ewentualne dziury z funkcjonalności z mockupa naprawimy kolejną iteracją, bo inaczej będziemy tu rzeźbić w nieskończoność"
 
 **How to apply:**
-- A port adds no seed. A designed state that a fresh fleet lacks becomes a `data difference` accept entry, and Step 24b removes those entries.
-- Contract gaps are still closed in part `a`.
-- Step 24b itself must decide how demoseed reaches states that have no public API (mail retry and park, event pause), because today it writes only through the gateway.
+- A port adds no seed.
+- Close only the contract gaps the checklist decided, then move on.
+- A leftover mockup gap goes to the next iteration, not into this plan's fix loop. Don't let a port grow into polishing.
 
 Related: [[cheap-tier-ports-fix-workflow-not-model]].

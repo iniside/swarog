@@ -175,11 +175,13 @@ Mockup: `UILayout/design-system/components/bundle.js:130-149`. Portal:
 
 ## 5. Seed rule
 
-There are no per-module seed tools. `demoseed` becomes the one seeder and seeds every
-kind of data each module can create (plan Step 24b). Until then a port adds no seed:
-a designed state a fresh fleet lacks is a `data difference` accept entry, and Step 24b
-removes those entries. `eventctl seed-mockup` stays until Step 24b folds it into
-`demoseed`.
+There are no per-module seed tools. `demoseed` is the one seeder and writes only
+through the public API (plan Step 24b). A port adds no seed. A designed state that a
+fresh fleet lacks is a `data difference` accept entry. Step 24b removes the entries its
+API seeding resolves. A state no public API can produce, such as a retrying or parked
+mail, stays an entry for good. `eventctl seed-mockup` stays as the Event plane's dev
+fixture. Do not chase a mockup gap beyond the checklist's decisions; it goes to the next
+iteration.
 
 ## 6. Accept file — `tools/admindiff/accept/<page>.txt`
 

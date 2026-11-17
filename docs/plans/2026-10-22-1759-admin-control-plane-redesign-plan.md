@@ -1717,7 +1717,7 @@ model tokens. Step 10's cost came from:
      tools. `demoseed` becomes the one seeder and seeds every kind of data each module
      can create (Step 24b). Until then a port adds no seed: a designed state a fresh
      fleet lacks is a `data difference` accept entry, and Step 24b removes those
-     entries. `eventctl seed-mockup` stays until Step 24b folds it into `demoseed`.
+     entries. `eventctl seed-mockup` stays as the Event plane's dev fixture (Step 24b).
    - **Errata (as built, 2026-11-17).**
      - archcheck bans `asyncevents.<table>` SQL outside the plane, splitproof and tests,
        so `tools/eventctl/src/seed.rs` (that one file) joins its skip list.
@@ -1911,15 +1911,16 @@ NotFound with no pre-read.
 
 ### Step 24b — `demoseed` seeds every module (owner, 2026-11-17)
 
-`demoseed` becomes the one seeder. It fills a fresh fleet with every kind of data each
-module can create, including the states the mockup designs: a parked and a retrying
-mail, a paused and a lagging subscription, and the rest. Per-module seed tools are not
-built, and `eventctl seed-mockup` folds into it. Afterwards the `data difference` accept
-entries that the seed resolves are removed.
+`demoseed` becomes the one seeder. Through the gateway's public API only, as today, it
+creates every kind of data each module's API can create; that is how real data arrives.
+Per-module seed tools are not built. Afterwards the `data difference` accept entries the
+seed resolves are removed.
 
-Open for this step's own planning: `demoseed` writes only through the gateway's public
-API (`tools/demoseed/Cargo.toml`), but some designed states (mail retry and park, event
-pause) have no public API. The step decides how `demoseed` reaches them.
+A designed state that no public API can produce stays a `data difference` accept entry:
+a mail that retries or parks, or a paused subscription. The portal does not have to
+show what never happens on a dev fleet (owner: "panel admina nie musi pokazywać
+dosłownie wszystkiego"). Remaining mockup gaps go to the next iteration, not into this
+plan. `eventctl seed-mockup` stays as the Event plane's dev fixture.
 
 ### Step 25 — Tests
 
