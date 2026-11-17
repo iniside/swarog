@@ -4,7 +4,8 @@
 //! `asyncevents::admin`; this main is a hand-rolled arg dispatcher (the `tools/` style —
 //! no clap) that prints the before/after transition every mutating verb returns, so
 //! a checkpoint is never advanced silently. Retirement is permanent: retry, pause,
-//! resume and skip refuse a retired subscription.
+//! resume and skip refuse a retired subscription. `seed-mockup` is the one dev fixture
+//! verb: it writes the admin mockup's paused and lagging rows ([`eventctl::seed`]).
 //!
 //!   eventctl list
 //!   eventctl lag
@@ -14,15 +15,17 @@
 //!   eventctl skip    <subscription-id> --reason "<text>"
 //!   eventctl retire  <subscription-id>
 //!   eventctl bump-generation
+//!   eventctl seed-mockup
 
 use std::process::ExitCode;
 
 use anyhow::{anyhow, Result};
 use asyncevents::admin::{
-    bump_generation, info, pause, resume, retire, retry, skip, Retired, SkipResult,
-    StateSnapshot,
+    bump_generation, info, pause, resume, retire, retry, skip, snapshot, Retired,
+    SkipResult, StateSnapshot,
 };
 use eventctl::dsn;
+use eventctl::seed::{seed_mockup, LAGGING_ID, PAUSED_ID};
 use sqlx::PgPool;
 
 const USAGE: &str = "\
@@ -37,8 +40,15 @@ USAGE:
   eventctl skip    <id> --reason <text>      step past the CURRENT failing event only
   eventctl retire  <id>                      mark retired (permanent; excluded from GC floor)
   eventctl bump-generation                   fence the current log generation
+  eventctl seed-mockup                       dev only: reset the admin mockup's paused
+                                             and lagging rows (seed.mockup-paused.v1,
+                                             seed.mockup-lagging.v1) on the busiest topic
 
 Retry, pause, resume and skip refuse a retired subscription.
+
+seed-mockup needs events in the log (run demoseed first) and resets both rows from
+any state, retired included. No process consumes them. They hold the topic's
+retention floor until retired or the database is wiped.
 
 Connection: DATABASE_URL (default local dev DSN).";
 
@@ -87,6 +97,7 @@ async fn run() -> Result<()> {
             println!("bump-generation: generation {before} -> {after}");
             Ok(())
         }
+        "seed-mockup" => cmd_seed_mockup(&pool).await,
         other => Err(anyhow!("eventctl: unknown command {other:?}\n\n{USAGE}")),
     }
 }
@@ -179,6 +190,18 @@ async fn cmd_skip(pool: &PgPool, args: &[String]) -> Result<()> {
     println!("skip {id}:");
     println!("  before: {}", outcome.before.describe());
     println!("  after:  {}", outcome.after.describe());
+    Ok(())
+}
+
+async fn cmd_seed_mockup(pool: &PgPool) -> Result<()> {
+    let seeded = seed_mockup(pool).await?;
+    println!(
+        "seed-mockup: topic {} v{} ({} events)",
+        seeded.topic, seeded.version, seeded.events
+    );
+    for id in [PAUSED_ID, LAGGING_ID] {
+        println!("  {id}: {}", snapshot(pool, id).await?.describe());
+    }
     Ok(())
 }
 

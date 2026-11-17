@@ -1,5 +1,8 @@
-//! `eventctl` connection settings. The operations themselves are
-//! `asyncevents::admin`; `main.rs` is a thin arg dispatcher over them.
+//! `eventctl` connection settings and the `seed-mockup` fixture ([`seed`]). The
+//! operations themselves are `asyncevents::admin`; `main.rs` is a thin arg dispatcher
+//! over them.
+
+pub mod seed;
 
 /// Dev-default DSN (mirrors CLAUDE.md); overridden by `DATABASE_URL`.
 pub const DEFAULT_DSN: &str =

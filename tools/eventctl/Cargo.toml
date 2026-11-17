@@ -9,7 +9,8 @@ publish = false
 # recovery verbs (retry/pause/resume/skip/retire/bump-generation) against the shared
 # `asyncevents` schema over `DATABASE_URL`. Hand-rolled arg parsing (like the other
 # tools/ crates); the operations live in `asyncevents::admin`, main is a thin
-# dispatcher that prints their results.
+# dispatcher that prints their results. `seed-mockup` (src/seed.rs) is a dev fixture
+# that writes the admin mockup's paused and lagging subscription rows.
 [[bin]]
 name = "eventctl"
 path = "src/main.rs"

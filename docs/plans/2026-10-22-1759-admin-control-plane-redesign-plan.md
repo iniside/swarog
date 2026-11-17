@@ -1711,6 +1711,14 @@ model tokens. Step 10's cost came from:
      `demoseed` when the module's public API can produce it, otherwise through the
      module's own operator tool. A data-difference accept entry is allowed only when
      neither can.
+   - **Errata (as built, 2026-11-17).**
+     - archcheck bans `asyncevents.<table>` SQL outside the plane, splitproof and tests,
+       so `tools/eventctl/src/seed.rs` (that one file) joins its skip list.
+     - The rows sit on the `(topic, contract_version)` stream with the most events, since
+       lag and `poison_event` match on the version. The cursor is the genesis position
+       (`start_kind` `genesis`, `spec_hash` `<topic>|v<n>|genesis`).
+     - The lagging row carries 3 failures and a `last_error`, because only an active row
+       with failures gets the warn badge.
 
 This revision also changes the port template (b → `[sonnet]` mockup-implementer under
 item 4; checklist first), Step 12 (use `admindiff crawl` against the split) and Step 27
