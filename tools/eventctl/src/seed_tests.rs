@@ -126,26 +126,44 @@ async fn busiest_floor(pool: &PgPool) -> i64 {
     .unwrap()
 }
 
-/// Branch: the `rows` table + UPSERT bind order. Any swapped state / failures / error
-/// constant, a wrong cursor, a leftover `next_attempt_at`, or a wrong
-/// `spec_hash`/`start_kind` fails the exact-row comparison. The poison read proves the
-/// genesis cursor really sits before the topic's first event.
+/// Branch: the `rows` table + UPSERT bind order, and the paused row's mid-stream cursor.
+/// Any swapped state / failures / error constant, a leftover `next_attempt_at`, or a wrong
+/// `spec_hash`/`start_kind` fails the exact-row comparison. The paused cursor must equal
+/// the position of the event at index `n / 2 - 1` (read here straight from the log in the
+/// plane's `(generation, producer_xid, tie_breaker)` order), so a regression to the
+/// genesis cursor fails the cursor comparison, the poison read (`payload["n"] == n / 2`,
+/// not the first event, 0) and the lag ordering (paused lag `n - n / 2` strictly below the
+/// lagging row's `n`). The lagging row must stay at genesis with lag `n`. Removing the
+/// `events < 2` guard is covered by the one-event refusal test.
 #[tokio::test]
-async fn seeds_both_rows_with_the_designed_state_and_the_first_event_as_poison() {
+async fn seeds_both_rows_with_the_designed_state_and_the_paused_row_mid_stream() {
     with_plane(|pool| async move {
         let t = topic("designed");
-        let n = busiest_floor(&pool).await + 1;
+        let n = busiest_floor(&pool).await + 2;
         events(&pool, &t, 1, n).await;
         let seeded = seed_mockup(&pool).await.unwrap();
         assert_eq!((seeded.topic.as_str(), seeded.version, seeded.events), (t.as_str(), 1, n));
 
-        let designed = |state: &str, failures: i32, error: &str| Row {
+        // The event just before the middle one (0-based index `n / 2 - 1`).
+        let before_mid: (i64, String, i64) = sqlx::query_as(
+            "SELECT generation, producer_xid::text AS producer_xid_text, tie_breaker \
+             FROM asyncevents.events WHERE topic = $1 AND contract_version = 1 \
+             ORDER BY generation, producer_xid, tie_breaker OFFSET $2 LIMIT 1",
+        )
+        .bind(&t)
+        .bind(n / 2 - 1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_ne!(before_mid.1, "0", "a real event position, not genesis");
+
+        let designed = |state: &str, failures: i32, error: &str, cursor: (i64, String, i64)| Row {
             topic: t.clone(),
             version: 1,
             state: state.into(),
             failures,
             last_error: Some(error.into()),
-            cursor: (0, "0".into(), 0),
+            cursor,
             next_attempt_is_null: true,
             spec_hash: format!("{t}|v1|genesis"),
             start_kind: "genesis".into(),
@@ -155,12 +173,13 @@ async fn seeds_both_rows_with_the_designed_state_and_the_first_event_as_poison()
             designed(
                 "paused",
                 5,
-                r#"decode: unknown currency code "TOK2" at $.amount.currency"#
+                r#"decode: unknown currency code "TOK2" at $.amount.currency"#,
+                before_mid
             )
         );
         assert_eq!(
             row(&pool, LAGGING_ID).await,
-            designed("active", 3, "wallet-svc is unavailable")
+            designed("active", 3, "wallet-svc is unavailable", (0, "0".into(), 0))
         );
 
         let poison = admin::poison_event(&pool, PAUSED_ID)
@@ -168,7 +187,13 @@ async fn seeds_both_rows_with_the_designed_state_and_the_first_event_as_poison()
             .unwrap()
             .expect("the paused row has a next event");
         assert_eq!(poison.topic, t);
-        assert_eq!(poison.payload["n"].as_i64(), Some(0), "the topic's FIRST event");
+        assert_eq!(poison.payload["n"].as_i64(), Some(n / 2), "the stream's MIDDLE event");
+
+        let infos = admin::info(&pool).await.unwrap();
+        let lag = |id: &str| infos.iter().find(|i| i.id == id).expect("seeded row listed").lag_events;
+        let (paused_lag, lagging_lag) = (lag(PAUSED_ID), lag(LAGGING_ID));
+        assert_eq!((paused_lag, lagging_lag), (n - n / 2, n));
+        assert!(paused_lag < lagging_lag, "the Max lag tile must name the lagging row");
     })
     .await;
 }
@@ -206,7 +231,7 @@ async fn the_busiest_topic_version_stream_is_chosen() {
 async fn the_chosen_contract_version_is_carried_onto_the_rows() {
     with_plane(|pool| async move {
         let t = topic("versions");
-        let n = busiest_floor(&pool).await + 1;
+        let n = busiest_floor(&pool).await + 2;
         events(&pool, &t, 1, 1).await;
         events(&pool, &t, 2, n).await;
         let seeded = seed_mockup(&pool).await.unwrap();
@@ -285,16 +310,18 @@ async fn seed_rows(conn: &mut sqlx::PgConnection) -> i64 {
     .unwrap()
 }
 
-/// Branch: the `let Some(..) = busiest else { bail!(..) }` empty-log refusal. The log is
-/// emptied inside a transaction that is rolled back (`asyncevents.events` has no foreign
-/// keys and only an AFTER INSERT trigger, so the DELETE is never blocked and the shared
-/// log is untouched). Removing the `bail!` leaves no way to produce a `Seeded` from zero
-/// rows, so the call could not return this exact error and no refusal would be observed;
-/// the "no seed row" assertion also fails if rows were upserted anyway. The clean twin
-/// (same transaction shape, one event) must succeed, so the refusal comes from the empty
-/// log alone, not from the transaction or the connection.
+/// Branch: the `let Some(..) = busiest else { bail!(..) }` empty-log refusal and the
+/// `events < 2` refusal. The log is emptied inside a transaction that is rolled back
+/// (`asyncevents.events` has no foreign keys and only an AFTER INSERT trigger, so the
+/// DELETE is never blocked and the shared log is untouched). Removing the empty-log
+/// `bail!` leaves no way to produce a `Seeded` from zero rows, so the exact error could
+/// not be returned; removing the `events < 2` guard sends the one-event case into the
+/// cursor lookup (`OFFSET -1` errors with a different message), so the exact-text
+/// assertion fails. The "no seed row" assertions fail if rows were upserted anyway. The
+/// two-event clean twin (same transaction shape) must succeed, so each refusal comes from
+/// the log size alone, not from the transaction or the connection.
 #[tokio::test]
-async fn an_empty_event_log_is_refused_and_writes_no_rows() {
+async fn an_empty_or_one_event_log_is_refused_and_writes_no_rows() {
     with_plane(|pool| async move {
         let mut tx = pool.begin().await.unwrap();
         sqlx::query("DELETE FROM asyncevents.events").execute(&mut *tx).await.unwrap();
@@ -312,21 +339,29 @@ async fn an_empty_event_log_is_refused_and_writes_no_rows() {
         assert_eq!(seed_rows(&mut tx).await, 0, "a refused seed writes no seed.mockup-* row");
         tx.rollback().await.unwrap();
 
-        // Clean twin: the same shape with one event succeeds.
+        // One event: the busiest stream has no event to put before the poison event.
+        let one = topic("one");
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("DELETE FROM asyncevents.events").execute(&mut *tx).await.unwrap();
+        append(&mut tx, &one, 1).await;
+        let err = seed_mockup_on(&mut tx).await.err().expect("a one-event stream is refused");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "eventctl: seed-mockup: the busiest stream {one} v1 has 1 event; \
+                 the paused row needs one event before its poison event, so run demoseed first"
+            )
+        );
+        assert_eq!(seed_rows(&mut tx).await, 0, "a refused seed writes no seed.mockup-* row");
+        tx.rollback().await.unwrap();
+
+        // Clean twin: the same shape with two events succeeds.
         let t = topic("twin");
         let mut tx = pool.begin().await.unwrap();
         sqlx::query("DELETE FROM asyncevents.events").execute(&mut *tx).await.unwrap();
-        sqlx::query(
-            "INSERT INTO asyncevents.events \
-               (generation, producer_xid, topic, contract_version, payload) \
-             VALUES (0, '100'::xid8, $1, 1, '{}'::jsonb)",
-        )
-        .bind(&t)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        let seeded = seed_mockup_on(&mut tx).await.expect("a one-event log is seeded");
-        assert_eq!((seeded.topic.as_str(), seeded.version, seeded.events), (t.as_str(), 1, 1));
+        append(&mut tx, &t, 2).await;
+        let seeded = seed_mockup_on(&mut tx).await.expect("a two-event log is seeded");
+        assert_eq!((seeded.topic.as_str(), seeded.version, seeded.events), (t.as_str(), 1, 2));
         assert_eq!(seed_rows(&mut tx).await, 2);
         tx.rollback().await.unwrap();
 
@@ -337,7 +372,22 @@ async fn an_empty_event_log_is_refused_and_writes_no_rows() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(after, 0, "both transactions rolled back");
+        assert_eq!(after, 0, "all transactions rolled back");
     })
     .await;
+}
+
+/// Appends `n` events on `(topic, 1)` inside `conn`'s transaction.
+async fn append(conn: &mut sqlx::PgConnection, topic: &str, n: i64) {
+    sqlx::query(
+        "INSERT INTO asyncevents.events \
+           (generation, producer_xid, topic, contract_version, payload) \
+         SELECT 0, (100 + g)::text::xid8, $1, 1, '{}'::jsonb \
+         FROM generate_series(0, $2::int - 1) AS g",
+    )
+    .bind(topic)
+    .bind(n)
+    .execute(conn)
+    .await
+    .unwrap();
 }
