@@ -5,12 +5,13 @@ use std::collections::BTreeMap;
 
 use controlplane::{
     decode_field, Align, CellKind, ConfirmSpec, ConfirmTone, EntityRef, Field, FieldKind, FieldValue, FormSpec, Link,
-    Point, Primitive, ReasonReq, Severity, ServiceState, Tone, Trend,
+    PanelBody, Point, Primitive, ReasonReq, Severity, ServiceState, Tone, Trend,
 };
 use minijinja::{Environment, Value};
 use serde::Serialize;
 
 use crate::engine::actions::{self, money_currency_key};
+use crate::engine::panels::{self, PanelState};
 
 const SHELL: &str = include_str!("templates/shell.html.tmpl");
 const PRIMITIVES: &str = include_str!("templates/primitives.html.tmpl");
@@ -409,6 +410,14 @@ pub(crate) struct SlotView {
     pub(crate) mode: &'static str,
 }
 
+/// One button of the dashboard's time-range switch.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct RangeView {
+    pub(crate) label: &'static str,
+    pub(crate) href: String,
+    pub(crate) on: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct DashboardView {
     pub(crate) shell: ShellView,
@@ -416,6 +425,21 @@ pub(crate) struct DashboardView {
     pub(crate) tiles: Vec<SlotView>,
     pub(crate) attention: Vec<SlotView>,
     pub(crate) panels: Vec<SlotView>,
+    /// `Point::DashboardWide`, full width below the attention grid.
+    pub(crate) wide: Vec<SlotView>,
+    pub(crate) ranges: Vec<RangeView>,
+}
+
+/// The time-range switch with `selected` on; each button reloads the dashboard.
+pub(crate) fn ranges(selected: controlplane::TimeRange) -> Vec<RangeView> {
+    panels::RANGES
+        .iter()
+        .map(|(range, key, label)| RangeView {
+            label,
+            href: format!("/admin?{}={key}", panels::QUERY_RANGE),
+            on: *range == selected,
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -424,19 +448,20 @@ pub(crate) struct PageView {
     pub(crate) module: String,
     pub(crate) title: String,
     pub(crate) subtitle: String,
-    /// `stack`, `tiles`, `g-21` or `g-2`.
-    pub(crate) layout: &'static str,
     pub(crate) head_actions: Vec<ActionItem>,
+    /// `PageDecl::tiles`, one KPI tile row above the layout.
+    pub(crate) tiles: Vec<SlotView>,
+    /// `stack`, `g-21` or `g-2`.
+    pub(crate) layout: &'static str,
     /// Layout columns in declaration order, each a list of panels.
     pub(crate) columns: Vec<Vec<SlotView>>,
-    /// Layout ids naming no contribution of this module.
+    /// Tile and layout ids naming no contribution of this module.
     pub(crate) missing: Vec<String>,
 }
 
 pub(crate) fn layout_name(layout: &controlplane::Layout) -> &'static str {
     match layout {
         controlplane::Layout::Stack(_) => "stack",
-        controlplane::Layout::Tiles(_) => "tiles",
         controlplane::Layout::Grid21(..) => "g-21",
         controlplane::Layout::Grid2(..) => "g-2",
     }
@@ -533,7 +558,7 @@ pub(crate) fn mode_of(point: &Point, in_tiles: bool) -> &'static str {
         Point::NavCounter => "nav",
         Point::EntityListColumn { .. } => "inline",
         Point::Page(_) if in_tiles => "tile",
-        Point::Page(_) | Point::DashboardPanel | Point::EntityTab { .. } => "panel",
+        Point::Page(_) | Point::DashboardPanel | Point::DashboardWide | Point::EntityTab { .. } => "panel",
     }
 }
 
@@ -543,8 +568,7 @@ pub(crate) struct PanelInput<'a> {
     pub(crate) title: &'a str,
     pub(crate) icon: &'a str,
     pub(crate) mode: &'static str,
-    /// `ok`, `empty`, `stale`, `error`, `readonly` or `denied`.
-    pub(crate) state: &'static str,
+    pub(crate) state: PanelState,
     pub(crate) path: &'a str,
     /// The request's query (entity first), cursors included.
     pub(crate) query: &'a [(String, String)],
@@ -555,7 +579,7 @@ pub(crate) struct PanelInput<'a> {
     pub(crate) age_s: Option<u64>,
     pub(crate) min_role: &'static str,
     pub(crate) fallback_title: &'a str,
-    pub(crate) primitive: Option<&'a Primitive>,
+    pub(crate) body: Option<&'a PanelBody>,
     /// This contribution's `PanelTool` actions, unbound.
     pub(crate) actions: &'a [ActionItem],
     pub(crate) row_menu_kinds: &'a [String],
@@ -582,8 +606,14 @@ pub(crate) struct PanelRender {
     pub(crate) title: String,
     pub(crate) icon: String,
     pub(crate) mode: &'static str,
+    /// `ok`, `empty`, `stale`, `error`, `readonly` or `denied`.
     pub(crate) state: &'static str,
     pub(crate) url: String,
+    /// The provider's `PanelBody` chrome, plain text.
+    pub(crate) meta: Option<String>,
+    pub(crate) heading: Option<String>,
+    pub(crate) note: Option<String>,
+    pub(crate) banner: Option<BannerView>,
     pub(crate) error: Option<String>,
     pub(crate) age: Option<String>,
     /// The KPI tile's stale badge: `"3m"`.
@@ -594,6 +624,12 @@ pub(crate) struct PanelRender {
     pub(crate) body: Option<PrimView>,
     /// The `PanelTool` actions shown in the panel head, bound to the panel's element.
     pub(crate) tools: Vec<ActionItem>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct BannerView {
+    pub(crate) tone: &'static str,
+    pub(crate) text: String,
 }
 
 /// `"42 s"`, `"3 min"` or `"2 h"`.
@@ -611,8 +647,9 @@ pub(crate) fn panel(input: &PanelInput<'_>) -> PanelRender {
     let paging: Vec<(String, String)> =
         input.query.iter().filter(|(k, _)| k != QUERY_CURSOR && k != QUERY_BEFORE).cloned().collect();
     let ctx = Ctx { path: input.path, query: &paging, params: input.query, input };
-    let body = input.primitive.map(|p| prim(p, &ctx));
-    let tools = match input.primitive {
+    let primitive = input.body.map(|b| &b.primitive);
+    let body = primitive.map(|p| prim(p, &ctx));
+    let tools = match primitive {
         Some(Primitive::WorkQueue(_)) => Vec::new(),
         Some(Primitive::PropertyList(list)) => {
             input.actions.iter().map(|a| bind(a, input.entity, list.item.as_deref())).collect()
@@ -635,8 +672,13 @@ pub(crate) fn panel(input: &PanelInput<'_>) -> PanelRender {
         title: input.title.to_string(),
         icon: input.icon.to_string(),
         mode: input.mode,
-        state: input.state,
+        state: input.state.as_str(),
         url: with_param(input.path, input.query, "", None),
+        meta: input.body.and_then(|b| b.meta.clone()),
+        heading: input.body.and_then(|b| b.heading.clone()),
+        note: input.body.and_then(|b| b.note.clone()),
+        banner: panels::module_banner(input.state, input.body.and_then(|b| b.banner.as_ref()))
+            .map(|b| BannerView { tone: tone(b.tone), text: b.text.clone() }),
         error: input.error.map(str::to_string),
         age: input.age_s.map(age_text),
         age_short: input.age_s.map(|s| age_text(s).replace(" min", "m").replace(' ', "")),
@@ -684,10 +726,13 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
         Primitive::PropertyList(p) => PrimView::Props(PropsView {
             columns: p.columns.max(1),
             items: p.items.iter().map(|(k, v)| (k.clone(), cell(v))).collect(),
+            code: p.code.clone(),
         }),
-        Primitive::ColumnCells(cells) => {
-            PrimView::Props(PropsView { columns: 1, items: cells.iter().map(|(k, v)| (k.clone(), cell(v))).collect() })
-        }
+        Primitive::ColumnCells(cells) => PrimView::Props(PropsView {
+            columns: 1,
+            items: cells.iter().map(|(k, v)| (k.clone(), cell(v))).collect(),
+            code: None,
+        }),
         Primitive::KpiTile(k) => PrimView::Kpi(kpi(k)),
         Primitive::Timeline(t) => PrimView::Timeline(timeline(t, ctx)),
         Primitive::Form(f) => PrimView::Form(panel_form(f, ctx.input)),
@@ -741,6 +786,7 @@ pub(crate) struct RowView {
     pub(crate) cells: Vec<TableCell>,
     pub(crate) href: Option<String>,
     pub(crate) menu_url: Option<String>,
+    pub(crate) highlight: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -795,6 +841,7 @@ fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
                 .as_ref()
                 .filter(|e| ctx.input.row_menu_kinds.contains(&e.kind))
                 .map(|e| format!("/admin/_menu/{}/{}", encode(&e.kind), encode(&e.id))),
+            highlight: r.highlight,
         })
         .collect();
     let shown = rows.len() as u64;
@@ -833,6 +880,7 @@ fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
 pub(crate) struct PropsView {
     pub(crate) columns: u8,
     pub(crate) items: Vec<(String, CellView)>,
+    pub(crate) code: Option<String>,
 }
 
 // ---- KpiTile ----
@@ -1125,14 +1173,14 @@ pub(crate) struct FormFrame<'a> {
 
 /// The panel fragment of a panel form shown again from its stored spec after a 422 or 409.
 pub(crate) fn panel_form_result(frame: &FormFrame<'_>, spec: &FormSpec, instance: FormInstance<'_>) -> PanelRender {
-    let primitive = Primitive::Form(spec.clone());
+    let body = PanelBody::new(Primitive::Form(spec.clone()));
     let input = PanelInput {
         module: frame.module,
         contribution: &frame.decl.id,
         title: &frame.decl.title,
         icon: &frame.decl.icon,
         mode: frame.mode,
-        state: "ok",
+        state: PanelState::Ok,
         path: frame.path,
         query: frame.query,
         entity: frame.entity,
@@ -1141,7 +1189,7 @@ pub(crate) fn panel_form_result(frame: &FormFrame<'_>, spec: &FormSpec, instance
         age_s: None,
         min_role: crate::role_name(frame.decl.min_role),
         fallback_title: "",
-        primitive: Some(&primitive),
+        body: Some(&body),
         actions: frame.actions,
         row_menu_kinds: &[],
         csrf: frame.csrf,

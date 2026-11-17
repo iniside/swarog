@@ -11,14 +11,20 @@ use serde::{Deserialize, Serialize};
 
 pub mod events;
 
-/// What a module writes: one static manifest plus the panel, search and invoke handlers.
+/// What a module writes: one static manifest plus the panel, search, invoke and prepare
+/// handlers.
 #[async_trait]
 pub trait Provider: Send + Sync {
     /// Static; does no I/O.
     fn manifest(&self) -> Manifest;
-    async fn panel(&self, req: PanelQuery) -> Result<Primitive, opsapi::Error>;
+    async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error>;
     async fn search(&self, req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error>;
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error>;
+    /// The spec a `prepare: true` action's modal shows for `req.item`, of the declared
+    /// `Then` variant. Only actions declaring `prepare` are asked.
+    async fn prepare(&self, req: PrepareCall) -> Result<Then, opsapi::Error> {
+        Err(opsapi::Error::not_found(format!("{} prepares no action {:?}", req.module, req.action)))
+    }
 }
 
 pub const PROVIDER_SLOT: contrib::Slot<Arc<dyn Provider>> =
@@ -31,10 +37,12 @@ pub trait ControlPlane: Send + Sync {
     #[retry_safe]
     async fn manifests(&self) -> Result<Vec<Manifest>, opsapi::Error>;
     #[retry_safe]
-    async fn panel(&self, req: PanelQuery) -> Result<Primitive, opsapi::Error>;
+    async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error>;
     #[retry_safe]
     async fn search(&self, req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error>;
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error>;
+    #[retry_safe]
+    async fn prepare(&self, req: PrepareCall) -> Result<Then, opsapi::Error>;
 }
 
 /// A peer process's [`ControlPlane`] face.
@@ -153,10 +161,10 @@ impl ControlPlane for LocalFace {
         Ok(self.manifests.clone())
     }
 
-    async fn panel(&self, req: PanelQuery) -> Result<Primitive, opsapi::Error> {
-        let mut primitive = self.local(&req.module)?.provider.panel(req).await?;
-        make_finite(&mut primitive);
-        Ok(primitive)
+    async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
+        let mut body = self.local(&req.module)?.provider.panel(req).await?;
+        make_finite(&mut body.primitive);
+        Ok(body)
     }
 
     async fn search(&self, req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
@@ -173,6 +181,10 @@ impl ControlPlane for LocalFace {
             )));
         }
         local.provider.invoke(req).await
+    }
+
+    async fn prepare(&self, req: PrepareCall) -> Result<Then, opsapi::Error> {
+        self.local(&req.module)?.provider.prepare(req).await
     }
 }
 
@@ -252,8 +264,18 @@ pub struct PanelQuery {
     pub before: Option<String>,
     /// The selected work-queue state, a `QueueState::key`.
     pub queue_state: Option<String>,
+    /// The dashboard's time range: `Some` on every dashboard-point request, `None`
+    /// elsewhere. A contribution may ignore it.
+    pub range: Option<TimeRange>,
     /// Module-specific keys only.
     pub params: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TimeRange {
+    H1,
+    H24,
+    D7,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -288,6 +310,20 @@ pub struct InvokeCall {
     /// The module's de-duplication key: equal for a repeat of one logical submit, new for
     /// a deliberate repeat.
     pub request_id: Option<String>,
+}
+
+/// Asks for the spec of a `prepare: true` action's modal, bound to the element the
+/// operator opened it on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrepareCall {
+    pub module: String,
+    pub action: String,
+    pub entity: Option<EntityRef>,
+    /// As `InvokeCall::item`; the provider builds the text from it, never from a fresh read
+    /// of the element current now.
+    pub item: Option<String>,
+    /// The operator's login, carried only as an audit label.
+    pub operator: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +377,8 @@ pub struct PageDecl {
     pub title: String,
     pub subtitle: String,
     pub head_actions: Vec<String>,
+    /// Contribution ids rendered as one KPI tile row above `layout`.
+    pub tiles: Vec<String>,
     pub layout: Layout,
 }
 
@@ -350,7 +388,6 @@ pub enum Layout {
     Stack(Vec<String>),
     Grid21(Vec<String>, Vec<String>),
     Grid2(Vec<String>, Vec<String>),
-    Tiles(Vec<String>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -378,6 +415,8 @@ pub enum Point {
     DashboardTile,
     DashboardAttention,
     DashboardPanel,
+    /// Full width, below the attention and activity grid.
+    DashboardWide,
     EntityHeader(String),
     EntityTab { kind: String, tab: String, tab_label: String },
     EntityTabCount { kind: String, tab: String },
@@ -400,6 +439,9 @@ pub struct ActionDecl {
     pub implemented: bool,
     /// Renders as the page's primary button; at most one per `PageDecl::head_actions`.
     pub primary: bool,
+    /// The modal's spec comes from `Provider::prepare` for the bound item; the declared
+    /// `Then::Confirm` or `Then::Form` fixes only its variant.
+    pub prepare: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -683,6 +725,7 @@ pub struct Column {
 pub struct Row {
     pub entity: Option<EntityRef>,
     pub cells: Vec<Cell>,
+    pub highlight: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -726,6 +769,8 @@ pub struct PropertyList {
     pub columns: u8,
     /// The element the panel's `PanelTool` actions act on.
     pub item: Option<String>,
+    /// Plain text shown below the items as a code block; the provider bounds its size.
+    pub code: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -883,6 +928,32 @@ pub struct EntityHeader {
     pub subtitle: String,
     pub status: Option<Cell>,
     pub avatar_seed: String,
+}
+
+/// A panel's answer: its primitive plus the plain-text chrome around it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PanelBody {
+    pub primitive: Primitive,
+    /// Muted text right of the title.
+    pub meta: Option<String>,
+    /// Shown after the declared `ContributionDecl::title`.
+    pub heading: Option<String>,
+    /// Muted text in the tools row.
+    pub note: Option<String>,
+    /// Shown only while the panel is `ok` or `readonly`.
+    pub banner: Option<Banner>,
+}
+
+impl PanelBody {
+    pub fn new(primitive: Primitive) -> PanelBody {
+        PanelBody { primitive, meta: None, heading: None, note: None, banner: None }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Banner {
+    pub tone: Tone,
+    pub text: String,
 }
 
 /// The closed set of things a panel can return.

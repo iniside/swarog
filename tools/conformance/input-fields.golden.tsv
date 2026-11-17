@@ -37,7 +37,14 @@ cp.panel	req.module	wire
 cp.panel	req.params.<key>	wire
 cp.panel	req.params.<value>	wire
 cp.panel	req.queue_state	wire
+cp.panel	req.range	wire
 cp.panel	req.search	wire
+cp.prepare	req.action	wire
+cp.prepare	req.entity.id	wire
+cp.prepare	req.entity.kind	wire
+cp.prepare	req.item	wire
+cp.prepare	req.module	wire
+cp.prepare	req.operator	wire
 cp.search	req.kind	wire
 cp.search	req.module	wire
 cp.search	req.q	wire

@@ -46,7 +46,6 @@
 {%- elif screen == "page" -%}
 <div class="page-head"><div><h1>{{ v.title }}</h1>{% if v.subtitle %}<div class="sub">{{ v.subtitle }}</div>{% endif %}</div><div class="page-actions">{% for a in v.head_actions %}{{ ui.action_button(a, "primary" if a.primary and not a.danger else "") }}{% endfor %}</div></div>
 {%- if v.layout == "stack" %}<div class="stack">{% for col in v.columns %}{% for s in col %}{{ ui.slot(s) }}{% endfor %}{% endfor %}</div>
-{%- elif v.layout == "tiles" %}<div class="grid g-tiles">{% for col in v.columns %}{% for s in col %}{{ ui.slot(s) }}{% endfor %}{% endfor %}</div>
 {%- else %}<div class="grid {{ v.layout }}">{% for col in v.columns %}<div class="stack">{% for s in col %}{{ ui.slot(s) }}{% endfor %}</div>{% endfor %}</div>
 {%- endif -%}
 {%- for id in v.missing %}<section class="panel" style="margin-top:12px"><div class="panel-body">{{ ui.state_block("error", "No contribution " ~ id, v.module ~ " lays out a contribution it does not declare.", compact=true) }}</div></section>{% endfor -%}

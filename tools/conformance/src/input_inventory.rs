@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context as _, Result};
 use syn::{
-    Attribute, Fields, GenericArgument, Item, ItemStruct, ItemTrait, PathArguments, TraitItem, Type,
+    Attribute, Fields, GenericArgument, Item, ItemEnum, ItemStruct, ItemTrait, PathArguments, TraitItem,
+    Type,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -41,6 +42,11 @@ enum Shape {
     Unnamed,
     /// A `type X = ...;` alias, resolved to its target before any other decision.
     Alias(Type),
+    /// An enum whose variants are all unit: on the wire one of its variant names, so a
+    /// field of it is one key.
+    UnitEnum,
+    /// An enum with a data-carrying variant, rejected like [`Shape::Unnamed`].
+    DataEnum,
 }
 
 type Types = BTreeMap<String, Shape>;
@@ -199,6 +205,7 @@ fn walk_items<'a>(
     for item in items {
         let (name, shape) = match item {
             Item::Struct(item) => (item.ident.to_string(), parse_struct(item)?),
+            Item::Enum(item) => (item.ident.to_string(), parse_enum(item)),
             Item::Type(item) => (item.ident.to_string(), Shape::Alias((*item.ty).clone())),
             Item::Trait(item) => {
                 traits.push(item);
@@ -280,15 +287,7 @@ fn collect_type(
         return collect_type(&reference.elem, method, field, exposure, types, visiting, out);
     }
     if is_string(ty) {
-        let key = InputKey {
-            wire_method: method.to_owned(),
-            wire_field_name: field.to_owned(),
-            exposure,
-        };
-        if !out.insert(key.clone()) {
-            bail!("duplicate discovered input key: {}", render_key(&key));
-        }
-        return Ok(());
+        return record(method, field, exposure, out);
     }
     if let Some(inner) = container_inner(ty) {
         return collect_type(inner, method, field, exposure, types, visiting, out);
@@ -347,6 +346,12 @@ fn collect_type(
                  its members have no wire field names, so no input policy can be attached to \
                  them. Give it named fields."
             ),
+            Shape::UnitEnum => record(method, field, exposure, out)?,
+            Shape::DataEnum => bail!(
+                "{method} request field {field:?} has type {name:?}, an enum with a \
+                 data-carrying variant: its members have no wire field names, so no input \
+                 policy can be attached to them. Use a struct with named fields."
+            ),
         }
         visiting.remove(&name);
         return Ok(());
@@ -363,8 +368,8 @@ fn collect_type(
     }
     bail!(
         "{method} request field {field:?} has type {written:?}, which the input inventory \
-         cannot traverse: it is not a String, a container or string map of one, a DTO or \
-         alias declared in this API crate, a primitive scalar, or a listed opaque type. \
+         cannot traverse: it is not a String, a container or string map of one, a DTO, \
+         alias or enum declared in this API crate, a primitive scalar, or a listed opaque type. \
          Either give it named String fields in its own api crate, or — if it genuinely \
          carries no caller-supplied text — add it to OPAQUE_REQUEST_TYPES in \
          tools/conformance/src/input_inventory.rs together with the reason."
@@ -435,6 +440,26 @@ fn type_name(ty: &Type) -> Option<String> {
 fn written_path(ty: &Type) -> Option<String> {
     let Type::Path(path) = ty else { return None };
     path.qself.is_none().then(|| path_string(&path.path))
+}
+
+fn record(method: &str, field: &str, exposure: Exposure, out: &mut BTreeSet<InputKey>) -> Result<()> {
+    let key = InputKey {
+        wire_method: method.to_owned(),
+        wire_field_name: field.to_owned(),
+        exposure,
+    };
+    if !out.insert(key.clone()) {
+        bail!("duplicate discovered input key: {}", render_key(&key));
+    }
+    Ok(())
+}
+
+fn parse_enum(item: &ItemEnum) -> Shape {
+    if item.variants.iter().all(|v| matches!(v.fields, Fields::Unit)) {
+        Shape::UnitEnum
+    } else {
+        Shape::DataEnum
+    }
 }
 
 fn parse_struct(item: &ItemStruct) -> Result<Shape> {

@@ -20,6 +20,7 @@ pub fn findings(manifests: &[Manifest]) -> Vec<String> {
         head_actions(m, &mut out);
         nav_entries(m, &mut out);
         panel_actions(m, &mut out);
+        prepared_actions(m, &mut out);
         id_lengths(m, &mut out);
         form_specs(m, &mut out);
     }
@@ -65,6 +66,7 @@ fn point_kind(point: &Point) -> Option<&str> {
         | Point::DashboardTile
         | Point::DashboardAttention
         | Point::DashboardPanel
+        | Point::DashboardWide
         | Point::NavCounter => None,
     }
 }
@@ -103,11 +105,14 @@ fn entity_kinds(manifests: &[Manifest], out: &mut Vec<String>) {
 
 fn layouts(m: &Manifest, out: &mut Vec<String>) {
     for page in &m.pages {
-        let ids: Vec<&String> = match &page.layout {
-            Layout::Stack(ids) | Layout::Tiles(ids) => ids.iter().collect(),
+        let laid_out: Vec<&String> = match &page.layout {
+            Layout::Stack(ids) => ids.iter().collect(),
             Layout::Grid21(a, b) | Layout::Grid2(a, b) => a.iter().chain(b).collect(),
         };
-        for id in ids {
+        for id in page.tiles.iter().filter(|id| laid_out.contains(id)) {
+            out.push(format!("{}: page {:?} places {id:?} in both its tiles and its layout", m.module, page.id));
+        }
+        for id in page.tiles.iter().chain(laid_out) {
             let on_page = m
                 .contributions
                 .iter()
@@ -176,6 +181,17 @@ fn panel_actions(m: &Manifest, out: &mut Vec<String>) {
             m.module,
             actions.join(", ")
         ));
+    }
+}
+
+fn prepared_actions(m: &Manifest, out: &mut Vec<String>) {
+    for a in m.actions.iter().filter(|a| a.prepare) {
+        if !matches!(a.then, Then::Confirm(_) | Then::Form(_)) {
+            out.push(format!("{}: action {:?} sets prepare but is not Then::Confirm or Then::Form", m.module, a.id));
+        }
+        if matches!(a.point, ActionPoint::PanelForm(_)) {
+            out.push(format!("{}: PanelForm action {:?} sets prepare, but a panel form has no modal", m.module, a.id));
+        }
     }
 }
 

@@ -60,12 +60,21 @@ macro_rules! control_plane_invoke_rationale {
         "cp.* is wire-only and served only to the portal; every monolith manifest with writes: true must carry, in its conformance entry, an input-byte-caps CapCase whose name contains cp.invoke and that manifest's module, with the cap of the cp.invoke req.input.<value> row, which must then be Validated"
     };
 }
+macro_rules! control_plane_read_rationale {
+    () => {
+        "cp.panel, cp.search and cp.prepare are read-only (no write path), wire-only, and called by the portal"
+    };
+}
+macro_rules! control_plane_item_bound {
+    () => {
+        "; the portal bounds req.item with validate_item (non-empty, at most 256 bytes, no control characters)"
+    };
+}
 const CONTROL_PLANE_INVOKE_RATIONALE: &str = control_plane_invoke_rationale!();
-const CONTROL_PLANE_INVOKE_ITEM_RATIONALE: &str = concat!(
-    control_plane_invoke_rationale!(),
-    "; the portal bounds req.item with validate_item (non-empty, at most 256 bytes, no control characters)"
-);
-const CONTROL_PLANE_READ_RATIONALE: &str = "cp.panel and cp.search are read-only (no write path), wire-only, and called by the portal";
+const CONTROL_PLANE_INVOKE_ITEM_RATIONALE: &str =
+    concat!(control_plane_invoke_rationale!(), control_plane_item_bound!());
+const CONTROL_PLANE_READ_RATIONALE: &str = control_plane_read_rationale!();
+const CONTROL_PLANE_PREPARE_ITEM_RATIONALE: &str = concat!(control_plane_read_rationale!(), control_plane_item_bound!());
 
 pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
     use Exposure::{External, Wire};
@@ -174,7 +183,14 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("cp.panel", "req.params.<key>", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.panel", "req.params.<value>", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.panel", "req.queue_state", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.panel", "req.range", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.panel", "req.search", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.prepare", "req.action", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.prepare", "req.entity.id", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.prepare", "req.entity.kind", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.prepare", "req.item", Wire), Opaque { rationale: CONTROL_PLANE_PREPARE_ITEM_RATIONALE }),
+        (key("cp.prepare", "req.module", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.prepare", "req.operator", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.search", "req.kind", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.search", "req.module", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.search", "req.q", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),

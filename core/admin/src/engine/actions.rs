@@ -1,7 +1,7 @@
-//! Actions: admission (role, `implemented`, the module's `writes`), the claimed form
-//! instances and click claims of `admin.forms`, the posted-body decoding, the invoke call,
-//! the outcome → HTTP mapping, the `admin.action` record and the show-once flash through
-//! `admin.reveals`.
+//! Actions: admission (role, `implemented`, the module's `writes`), a prepared modal's
+//! spec, the claimed form instances and click claims of `admin.forms`, the posted-body
+//! decoding, the invoke call, the outcome → HTTP mapping, the `admin.action` record and the
+//! show-once flash through `admin.reveals`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -10,7 +10,7 @@ use std::time::Duration;
 use axum::http::StatusCode;
 use controlplane::{
     decode_field, encode_field, ActionDecl, ConfirmSpec, ControlPlane, EntityRef, Field, FieldKind, FormSpec,
-    InvokeOutcome, Link, ReasonReq, SecretReveal, Then,
+    InvokeOutcome, Link, PrepareCall, ReasonReq, SecretReveal, Then,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -112,6 +112,49 @@ pub(crate) fn money_currency_key(key: &str) -> String {
 /// The first value of `key` in a posted body.
 pub(crate) fn first<'a>(body: &'a [(String, String)], key: &str) -> Option<&'a str> {
     body.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
+}
+
+// ---------------------------------------------------------------------------
+// Prepared modals
+// ---------------------------------------------------------------------------
+
+pub(crate) enum Prepared {
+    Then(Then),
+    Failed(opsapi::Error),
+    TimedOut,
+}
+
+/// One `prepare` round trip, bounded by [`INVOKE_DEADLINE`].
+pub(crate) async fn prepare(face: &dyn ControlPlane, req: PrepareCall) -> Prepared {
+    match tokio::time::timeout(INVOKE_DEADLINE, face.prepare(req)).await {
+        Ok(Ok(then)) => Prepared::Then(then),
+        Ok(Err(error)) => Prepared::Failed(error),
+        Err(_) => Prepared::TimedOut,
+    }
+}
+
+/// The spec a prepared modal stores, or the toast status and text: a timeout is a 504, a
+/// provider error keeps its status, and a variant other than `declared`'s or a form that
+/// fails `form_spec_errors` is a 503. There is no fallback to the declared spec.
+pub(crate) fn prepared_spec(declared: &Then, prepared: Prepared) -> Result<StoredSpec, (StatusCode, String)> {
+    let unusable = |why: String| (StatusCode::SERVICE_UNAVAILABLE, format!("This action cannot be opened: {why}"));
+    match (declared, prepared) {
+        (_, Prepared::TimedOut) => Err((
+            StatusCode::GATEWAY_TIMEOUT,
+            format!("no answer within {}ms; try again", INVOKE_DEADLINE.as_millis()),
+        )),
+        (_, Prepared::Failed(error)) => Err((error_status(&error), error.to_string())),
+        (Then::Confirm(_), Prepared::Then(Then::Confirm(confirm))) => Ok(StoredSpec::Confirm(confirm)),
+        (Then::Form(_), Prepared::Then(Then::Form(form))) => {
+            let errors = controlplane::form_spec_errors(&form);
+            if errors.is_empty() {
+                Ok(StoredSpec::Form(form))
+            } else {
+                Err(unusable(errors.join("; ")))
+            }
+        }
+        (_, Prepared::Then(_)) => Err(unusable("the module prepared a different kind of modal".to_string())),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -390,11 +433,14 @@ pub(crate) fn http_status(invoked: &Invoked) -> StatusCode {
         Invoked::Outcome(InvokeOutcome::Conflict { .. }) => StatusCode::CONFLICT,
         Invoked::Failed(e) if e.status == opsapi::Status::Conflict => StatusCode::CONFLICT,
         Invoked::Failed(e) if e.status == opsapi::Status::NotFound => StatusCode::NOT_FOUND,
-        Invoked::Failed(e) => {
-            StatusCode::from_u16(e.status.http()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
-        }
+        Invoked::Failed(e) => error_status(e),
         Invoked::TimedOut => StatusCode::GATEWAY_TIMEOUT,
     }
+}
+
+/// The HTTP status of a provider error.
+pub(crate) fn error_status(error: &opsapi::Error) -> StatusCode {
+    StatusCode::from_u16(error.status.http()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
 }
 
 /// Upper bound, in bytes, of an `admin.action` `detail`.

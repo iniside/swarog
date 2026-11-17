@@ -8,7 +8,7 @@ use asyncevents::admin::{self as plane, SkipResult, StateSnapshot, SubInfo, SubS
 use controlplane::{
     ActionDecl, ActionPoint, Align, AttentionItem, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
     ContributionDecl, DataTable, Delta, EntityHeader, EntityKindDecl, EntityRef, FilterDef, FilterKind,
-    InvokeCall, InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, PageDecl, PageInfo, PanelQuery,
+    InvokeCall, InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, PageDecl, PageInfo, PanelBody, PanelQuery,
     Point, Primitive, PropertyList, Provider, ReasonReq, Role, Row, SearchHit, SearchQuery, Severity, Then,
     Tone, Trend, DEFAULT_PANEL_DEADLINE_MS,
 };
@@ -188,6 +188,7 @@ impl Act {
             then: self.then,
             implemented,
             primary,
+            prepare: false,
         }
     }
 }
@@ -238,6 +239,7 @@ fn manifest() -> Manifest {
             title: "Event plane".to_string(),
             subtitle: "Durable topics, subscription checkpoints and lag.".to_string(),
             head_actions: Vec::new(),
+            tiles: Vec::new(),
             layout: Layout::Stack(
                 [KPI_HEAD, KPI_SUBSCRIPTIONS, KPI_MAX_LAG, KPI_DEAD_LETTERED, POISON, SUBSCRIPTIONS]
                     .map(str::to_string)
@@ -411,6 +413,7 @@ impl EventsProvider {
                         text(CellKind::Number, count(s.lag_events), lag_tone(&s)),
                         state_cell(&s.state, s.consecutive_failures),
                     ],
+                    highlight: false,
                 }
             })
             .collect();
@@ -488,7 +491,7 @@ impl EventsProvider {
         let hint = "Fix the consumer first, then Resume. Skip advances the checkpoint past this event.";
         items.push(prop("Next step", text(CellKind::Text, hint, None)));
         let event_id = event.as_ref().map_or("", |ev| ev.event_id.as_str());
-        Ok(Primitive::PropertyList(PropertyList { items, columns: 1, item: Some(poison_item(&sub.id, event_id)) }))
+        Ok(Primitive::PropertyList(PropertyList { items, columns: 1, item: Some(poison_item(&sub.id, event_id)), code: None }))
     }
 
     async fn header(&self, entity: &EntityRef) -> Result<Primitive, opsapi::Error> {
@@ -514,7 +517,7 @@ impl EventsProvider {
             prop("Last error", text(CellKind::Mono, snap.last_error.clone().unwrap_or_else(none), None)),
             prop("Consumer", text(CellKind::Text, fakes::consumer(&sub.id), None)),
         ];
-        Ok(Primitive::PropertyList(PropertyList { items, columns: 2, item: None }))
+        Ok(Primitive::PropertyList(PropertyList { items, columns: 2, item: None, code: None }))
     }
 
     /// Runs one state-setting verb; an unchanged snapshot is a `NoOp`.
@@ -604,7 +607,41 @@ impl Provider for EventsProvider {
         manifest()
     }
 
-    async fn panel(&self, req: PanelQuery) -> Result<Primitive, opsapi::Error> {
+    async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
+        self.primitive(&req).await.map(PanelBody::new)
+    }
+
+    async fn search(&self, _req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
+        Ok(Vec::new())
+    }
+
+    async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
+        if !input_within_cap(&req.input) {
+            return Err(opsapi::Error::invalid(format!("an input value is longer than {MAX_INPUT_VALUE_BYTES} bytes")));
+        }
+        match req.action.as_str() {
+            POISON_RESUME => self.resume_previewed(&req).await,
+            POISON_SKIP => self.skip_previewed(&req).await,
+            SUB_PAUSE => {
+                let verb = |pool: PgPool, id: String| async move { plane::pause(&pool, &id).await };
+                self.transition(&req, verb, "Paused").await
+            }
+            SUB_RESUME => {
+                let verb = |pool: PgPool, id: String| async move { plane::resume_retry(&pool, &id).await };
+                self.transition(&req, verb, "Resumed").await
+            }
+            SUB_RETRY => {
+                let verb = |pool: PgPool, id: String| async move { plane::retry(&pool, &id).await };
+                self.transition(&req, verb, "Retry scheduled for").await
+            }
+            POISON_COPY | SUB_REWIND => Err(opsapi::Error::forbidden("not implemented yet")),
+            other => Err(opsapi::Error::not_found(format!("{MODULE} has no action {other:?}"))),
+        }
+    }
+}
+
+impl EventsProvider {
+    async fn primitive(&self, req: &PanelQuery) -> Result<Primitive, opsapi::Error> {
         let entity = || {
             req.entity.as_ref().filter(|e| e.kind == KIND).ok_or_else(|| opsapi::Error::invalid("needs a subscription"))
         };
@@ -638,38 +675,10 @@ impl Provider for EventsProvider {
                 link: None,
             })),
             POISON => self.poison().await,
-            SUBSCRIPTIONS => self.table(&req).await,
+            SUBSCRIPTIONS => self.table(req).await,
             HEADER => self.header(entity()?).await,
             DETAILS => self.details(entity()?).await,
             other => Err(opsapi::Error::not_found(format!("{MODULE} has no contribution {other:?}"))),
-        }
-    }
-
-    async fn search(&self, _req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
-        Ok(Vec::new())
-    }
-
-    async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
-        if !input_within_cap(&req.input) {
-            return Err(opsapi::Error::invalid(format!("an input value is longer than {MAX_INPUT_VALUE_BYTES} bytes")));
-        }
-        match req.action.as_str() {
-            POISON_RESUME => self.resume_previewed(&req).await,
-            POISON_SKIP => self.skip_previewed(&req).await,
-            SUB_PAUSE => {
-                let verb = |pool: PgPool, id: String| async move { plane::pause(&pool, &id).await };
-                self.transition(&req, verb, "Paused").await
-            }
-            SUB_RESUME => {
-                let verb = |pool: PgPool, id: String| async move { plane::resume_retry(&pool, &id).await };
-                self.transition(&req, verb, "Resumed").await
-            }
-            SUB_RETRY => {
-                let verb = |pool: PgPool, id: String| async move { plane::retry(&pool, &id).await };
-                self.transition(&req, verb, "Retry scheduled for").await
-            }
-            POISON_COPY | SUB_REWIND => Err(opsapi::Error::forbidden("not implemented yet")),
-            other => Err(opsapi::Error::not_found(format!("{MODULE} has no action {other:?}"))),
         }
     }
 }

@@ -61,8 +61,8 @@ fn an_unresolvable_named_type_is_rejected_naming_type_method_field_and_remedy() 
 }
 
 #[test]
-fn an_enum_request_argument_is_rejected() {
-    let message = rejection(&contract("Mode", "pub enum Mode { A, B }"));
+fn a_data_carrying_enum_request_argument_is_rejected() {
+    let message = rejection(&contract("Mode", "pub enum Mode { A(String), B }"));
     assert!(message.contains("\"Mode\""), "{message}");
 }
 

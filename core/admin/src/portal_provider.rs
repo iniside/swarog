@@ -3,7 +3,7 @@
 
 use async_trait::async_trait;
 use controlplane::{
-    ContributionDecl, InvokeCall, InvokeOutcome, Manifest, PanelQuery, Point, Primitive, Provider, Role,
+    ContributionDecl, InvokeCall, InvokeOutcome, Manifest, PanelBody, PanelQuery, Point, Primitive, Provider, Role,
     SearchHit, SearchQuery, ServiceStatus, DEFAULT_PANEL_DEADLINE_MS,
 };
 
@@ -53,8 +53,8 @@ impl Provider for PortalProvider {
         }
     }
 
-    async fn panel(&self, req: PanelQuery) -> Result<Primitive, opsapi::Error> {
-        Ok(match req.contribution.as_str() {
+    async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
+        Ok(PanelBody::new(match req.contribution.as_str() {
             TILE_LORE_SEATS => Primitive::KpiTile(fakes::lore_seats()),
             TILE_LORE_STORE => Primitive::KpiTile(fakes::lore_store()),
             TILE_MATCHES => Primitive::KpiTile(fakes::matches_in_progress()),
@@ -63,7 +63,7 @@ impl Provider for PortalProvider {
             ATTENTION_SCHEDULER => Primitive::AttentionItems(fakes::attention_scheduler()),
             HEALTH => Primitive::ServiceStatus(ServiceStatus { items: fakes::services() }),
             other => return Err(opsapi::Error::not_found(format!("{MODULE} has no contribution {other:?}"))),
-        })
+        }))
     }
 
     async fn search(&self, _req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {

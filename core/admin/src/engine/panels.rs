@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use controlplane::{ContributionDecl, PanelQuery, Primitive, DEFAULT_PANEL_DEADLINE_MS};
+use controlplane::{Banner, ContributionDecl, PanelBody, PanelQuery, Point, Primitive, TimeRange, DEFAULT_PANEL_DEADLINE_MS};
 
 use super::manifests::Snapshot;
 use super::roles::{self, Operator};
@@ -36,7 +36,7 @@ impl PanelState {
     }
 }
 
-/// One resolved panel; `primitive` is set for ok, readonly, stale and a provider's empty
+/// One resolved panel; `body` is set for ok, readonly, stale and a provider's empty
 /// payload.
 #[derive(Clone, Debug, serde::Serialize)]
 pub(crate) struct PanelView {
@@ -44,27 +44,71 @@ pub(crate) struct PanelView {
     pub(crate) contribution: String,
     pub(crate) title: String,
     pub(crate) state: PanelState,
-    pub(crate) primitive: Option<Primitive>,
+    pub(crate) body: Option<PanelBody>,
     pub(crate) error: Option<String>,
     /// Seconds since a stale panel's cached copy was fetched.
     pub(crate) age_s: Option<u64>,
 }
 
+/// The module's banner, shown only in `ok` and `readonly`; every other state shows the
+/// portal's own banner.
+pub(crate) fn module_banner(state: PanelState, banner: Option<&Banner>) -> Option<&Banner> {
+    banner.filter(|_| matches!(state, PanelState::Ok | PanelState::Readonly))
+}
+
+/// Whether `point` is on the dashboard, whose requests carry the time range.
+pub(crate) fn is_dashboard(point: &Point) -> bool {
+    match point {
+        Point::DashboardTile | Point::DashboardAttention | Point::DashboardPanel | Point::DashboardWide => true,
+        Point::Page(_)
+        | Point::EntityHeader(_)
+        | Point::EntityTab { .. }
+        | Point::EntityTabCount { .. }
+        | Point::EntitySummary(_)
+        | Point::EntityListColumn { .. }
+        | Point::NavCounter => false,
+    }
+}
+
+/// The dashboard range switch's query key.
+pub(crate) const QUERY_RANGE: &str = "range";
+/// The range a dashboard request without `range` asks for.
+pub(crate) const DEFAULT_RANGE: TimeRange = TimeRange::H24;
+/// Every range in switch order, with its query value and label.
+pub(crate) const RANGES: [(TimeRange, &str, &str); 3] =
+    [(TimeRange::H1, "1h", "1 h"), (TimeRange::H24, "24h", "24 h"), (TimeRange::D7, "7d", "7 d")];
+
+pub(crate) fn range_key(range: TimeRange) -> &'static str {
+    RANGES.iter().find(|(r, _, _)| *r == range).map_or("", |(_, key, _)| key)
+}
+
+/// A request's range: absent is [`DEFAULT_RANGE`], an unknown value is `Err` (a 400).
+pub(crate) fn parse_range(raw: Option<&str>) -> Result<TimeRange, String> {
+    match raw {
+        None => Ok(DEFAULT_RANGE),
+        Some(raw) => RANGES
+            .iter()
+            .find(|(_, key, _)| *key == raw)
+            .map(|(range, _, _)| *range)
+            .ok_or_else(|| format!("unknown {QUERY_RANGE} {raw:?}")),
+    }
+}
+
 /// Last-good panels for contributions that declare `cache_ttl_s`.
 #[derive(Default)]
 pub(crate) struct PanelCache {
-    entries: HashMap<String, (Primitive, Instant, Instant)>,
+    entries: HashMap<String, (PanelBody, Instant, Instant)>,
 }
 
 impl PanelCache {
     /// The cached copy and its age.
-    fn get(&self, key: &str) -> Option<(Primitive, Duration)> {
-        let (primitive, fetched, expires) = self.entries.get(key)?;
+    fn get(&self, key: &str) -> Option<(PanelBody, Duration)> {
+        let (body, fetched, expires) = self.entries.get(key)?;
         let now = Instant::now();
-        (now < *expires).then(|| (primitive.clone(), now.saturating_duration_since(*fetched)))
+        (now < *expires).then(|| (body.clone(), now.saturating_duration_since(*fetched)))
     }
 
-    fn put(&mut self, key: String, primitive: Primitive, ttl: Duration) {
+    fn put(&mut self, key: String, body: PanelBody, ttl: Duration) {
         let now = Instant::now();
         if self.entries.len() >= PANEL_CACHE_CAP && !self.entries.contains_key(&key) {
             self.entries.retain(|_, (_, _, expires)| *expires > now);
@@ -76,7 +120,7 @@ impl PanelCache {
                 }
             }
         }
-        self.entries.insert(key, (primitive, now, now + ttl));
+        self.entries.insert(key, (body, now, now + ttl));
     }
 }
 
@@ -94,6 +138,10 @@ fn cache_key(req: &PanelQuery) -> String {
             None => "-".to_string(),
         });
     }
+    parts.push(match req.range {
+        Some(range) => format!("+{}", range_key(range)),
+        None => "-".to_string(),
+    });
     for (k, v) in &req.params {
         parts.extend([k.clone(), v.clone()]);
     }
@@ -140,7 +188,7 @@ pub(crate) async fn resolve(
         contribution: decl.id.clone(),
         title: decl.title.clone(),
         state: PanelState::Error,
-        primitive: None,
+        body: None,
         error: None,
         age_s: None,
     };
@@ -155,10 +203,10 @@ pub(crate) async fn resolve(
     let writes = manifest.writes;
     let key = cache_key(&req);
     let failure = match tokio::time::timeout(deadline(decl), face.panel(req)).await {
-        Ok(Ok(primitive)) => {
-            if is_empty(&primitive) {
+        Ok(Ok(body)) => {
+            if is_empty(&body.primitive) {
                 view.state = PanelState::Empty;
-                view.primitive = Some(primitive);
+                view.body = Some(body);
                 return view;
             }
             if let Some(ttl) = decl.cache_ttl_s {
@@ -166,10 +214,10 @@ pub(crate) async fn resolve(
                     .panel_cache
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .put(key, primitive.clone(), Duration::from_secs(u64::from(ttl)));
+                    .put(key, body.clone(), Duration::from_secs(u64::from(ttl)));
             }
             view.state = if writes { PanelState::Ok } else { PanelState::Readonly };
-            view.primitive = Some(primitive);
+            view.body = Some(body);
             return view;
         }
         Ok(Err(error)) if error.status == opsapi::Status::NotFound => {
@@ -184,7 +232,7 @@ pub(crate) async fn resolve(
         .and_then(|_| engine.panel_cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key));
     view.state = if cached.is_some() { PanelState::Stale } else { PanelState::Error };
     view.age_s = cached.as_ref().map(|(_, age)| age.as_secs());
-    view.primitive = cached.map(|(primitive, _)| primitive);
+    view.body = cached.map(|(body, _)| body);
     view.error = Some(failure);
     view
 }

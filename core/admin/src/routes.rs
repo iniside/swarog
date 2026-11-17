@@ -13,7 +13,7 @@ use axum::{Form, Router};
 use axum_extra::extract::CookieJar;
 use controlplane::{
     ActionDecl, ActionPoint, ContributionDecl, EntityRef, FormSpec, InvokeCall, InvokeOutcome, Layout, Manifest,
-    PanelQuery, Point, Primitive, Then,
+    PanelQuery, Point, PrepareCall, Primitive, Then,
 };
 use serde::Serialize;
 
@@ -163,16 +163,12 @@ fn health() -> HealthView {
     }
 }
 
-/// Whether `decl` is laid out in a `Tiles` page of `manifest`.
+/// Whether `decl` is in the tile row of its page in `manifest`.
 fn in_tiles(manifest: &Manifest, decl: &ContributionDecl) -> bool {
     let Point::Page(page) = &decl.point else {
         return false;
     };
-    manifest
-        .pages
-        .iter()
-        .filter(|pg| &pg.id == page)
-        .any(|pg| matches!(&pg.layout, Layout::Tiles(ids) if ids.contains(&decl.id)))
+    manifest.pages.iter().filter(|pg| &pg.id == page).any(|pg| pg.tiles.contains(&decl.id))
 }
 
 fn slot(operator: &Operator, module: &str, decl: &ContributionDecl, entity: Option<&EntityRef>, tiles: bool) -> SlotView {
@@ -332,13 +328,13 @@ fn is_htmx(headers: &HeaderMap) -> bool {
 }
 
 struct Missing {
+    status: StatusCode,
     what: String,
     title: &'static str,
     detail: String,
 }
 
-/// A 404 for a full-page GET: the shell around the error state, or the toast when htmx
-/// asked.
+/// A failed full-page GET: the shell around the error state, or the toast when htmx asked.
 async fn missing_page(
     p: &Portal,
     ctx: &Ctx,
@@ -348,7 +344,10 @@ async fn missing_page(
     miss: Missing,
 ) -> Response {
     if is_htmx(headers) {
-        return not_found(p, &miss.what);
+        return match miss.status {
+            StatusCode::NOT_FOUND => not_found(p, &miss.what),
+            status => toast(p, status, miss.detail),
+        };
     }
     let crumbs = vec![Crumb { label: miss.title.to_string(), href: None }];
     let view = MissingView {
@@ -356,7 +355,7 @@ async fn missing_page(
         title: miss.title.to_string(),
         detail: miss.detail,
     };
-    screen_with(p, StatusCode::NOT_FOUND, "missing", &view)
+    screen_with(p, miss.status, "missing", &view)
 }
 
 /// A redirect an htmx request follows itself (`HX-Redirect`), else a 303.
@@ -373,10 +372,11 @@ fn redirect(headers: &HeaderMap, target: &str) -> Response {
 // Handlers
 // ---------------------------------------------------------------------------
 
-/// `GET /admin`.
+/// `GET /admin?range=`.
 async fn dashboard(
     State(p): State<Portal>,
     jar: CookieJar,
+    headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> Response {
     let ctx = match authorize(&p, &jar, false).await {
@@ -384,10 +384,22 @@ async fn dashboard(
         Err(r) => return *r,
     };
     let snapshot = p.engine.snapshot();
+    let range = match panels::parse_range(query.get(panels::QUERY_RANGE).map(String::as_str)) {
+        Ok(range) => range,
+        Err(detail) => {
+            let miss =
+                Missing { status: StatusCode::BAD_REQUEST, what: "/admin".to_string(), title: "Bad request", detail };
+            return missing_page(&p, &ctx, &snapshot, &headers, &query, miss).await;
+        }
+    };
     let pick = |point: Point| {
         contributions(&snapshot, |pt| *pt == point)
             .into_iter()
-            .map(|(m, c)| slot(&ctx.operator, m, c, None, false))
+            .map(|(m, c)| {
+                let mut s = slot(&ctx.operator, m, c, None, false);
+                s.url = render::with_param(&s.url, &[], panels::QUERY_RANGE, Some(panels::range_key(range)));
+                s
+            })
             .collect::<Vec<_>>()
     };
     let crumbs = vec![Crumb { label: "Dashboard".to_string(), href: None }];
@@ -397,6 +409,8 @@ async fn dashboard(
         tiles: pick(Point::DashboardTile),
         attention: pick(Point::DashboardAttention),
         panels: pick(Point::DashboardPanel),
+        wide: pick(Point::DashboardWide),
+        ranges: render::ranges(range),
     };
     screen(&p, "dashboard", &view)
 }
@@ -416,6 +430,7 @@ async fn page(
     let snapshot = p.engine.snapshot();
     let Some((manifest, _)) = snapshot.route(&module) else {
         let miss = Missing {
+            status: StatusCode::NOT_FOUND,
             what: module.clone(),
             title: "Unknown module",
             detail: format!("No module serves “{module}”."),
@@ -424,33 +439,31 @@ async fn page(
     };
     let Some(decl) = manifest.pages.iter().find(|pg| pg.id == page_id) else {
         let miss = Missing {
+            status: StatusCode::NOT_FOUND,
             what: format!("{module}/{page_id}"),
             title: "Unknown page",
             detail: format!("The {module} module declares no page “{page_id}”."),
         };
         return missing_page(&p, &ctx, &snapshot, &headers, &query, miss).await;
     };
-    let tiles = matches!(decl.layout, Layout::Tiles(_));
     let ids: Vec<&Vec<String>> = match &decl.layout {
-        Layout::Stack(a) | Layout::Tiles(a) => vec![a],
+        Layout::Stack(a) => vec![a],
         Layout::Grid21(a, b) | Layout::Grid2(a, b) => vec![a, b],
     };
     let mut missing = Vec::new();
-    let columns: Vec<Vec<SlotView>> = ids
-        .into_iter()
-        .map(|column| {
-            column
-                .iter()
-                .filter_map(|id| {
-                    let found = manifest.contributions.iter().find(|c| &c.id == id);
-                    if found.is_none() {
-                        missing.push(id.clone());
-                    }
-                    found.map(|c| slot(&ctx.operator, &module, c, None, tiles))
-                })
-                .collect()
-        })
-        .collect();
+    let mut slots = |ids: &[String]| -> Vec<SlotView> {
+        ids.iter()
+            .filter_map(|id| {
+                let found = manifest.contributions.iter().find(|c| &c.id == id);
+                if found.is_none() {
+                    missing.push(id.clone());
+                }
+                found.map(|c| slot(&ctx.operator, &module, c, None, in_tiles(manifest, c)))
+            })
+            .collect()
+    };
+    let tiles = slots(&decl.tiles);
+    let columns: Vec<Vec<SlotView>> = ids.into_iter().map(|column| slots(column)).collect();
     let head_actions = decl
         .head_actions
         .iter()
@@ -468,8 +481,9 @@ async fn page(
         module: module.clone(),
         title: decl.title.clone(),
         subtitle: decl.subtitle.clone(),
-        layout: render::layout_name(&decl.layout),
         head_actions,
+        tiles,
+        layout: render::layout_name(&decl.layout),
         columns,
         missing,
     };
@@ -495,6 +509,7 @@ async fn entity(
         .find_map(|(m, r)| r.manifest.entity_kinds.iter().find(|k| k.kind == kind).map(|k| (m.clone(), k.clone())))
     else {
         let miss = Missing {
+            status: StatusCode::NOT_FOUND,
             what: format!("{kind}:{id}"),
             title: "Unknown entity kind",
             detail: format!("No module declares the entity kind “{kind}”."),
@@ -599,6 +614,15 @@ async fn panel(
     };
     let mut url_query: Vec<(String, String)> = raw_entity.into_iter().map(|e| ("entity".to_string(), e)).collect();
     url_query.extend(query.iter().map(|(k, v)| (k.clone(), v.clone())));
+    let raw_range = query.remove(panels::QUERY_RANGE);
+    let range = if panels::is_dashboard(&decl.point) {
+        match panels::parse_range(raw_range.as_deref()) {
+            Ok(range) => Some(range),
+            Err(msg) => return toast(&p, StatusCode::BAD_REQUEST, msg),
+        }
+    } else {
+        None
+    };
     let search = query.remove(render::QUERY_SEARCH);
     let req = PanelQuery {
         module: module.clone(),
@@ -608,17 +632,22 @@ async fn panel(
         cursor: query.remove(render::QUERY_CURSOR),
         before: query.remove(render::QUERY_BEFORE),
         queue_state: query.remove(render::QUERY_STATE),
+        range,
         params: query,
     };
     let mut view: PanelView = panels::resolve(&p.engine, &snapshot, &ctx.operator, &module, decl, req).await;
     let mut form = None;
-    if let (PanelState::Ok, Some(Primitive::Form(spec))) = (view.state, &view.primitive) {
-        match panel_form_instance(&p, &ctx, manifest, &module, decl, entity.as_ref(), spec).await {
+    let spec = match (view.state, view.body.as_ref().map(|b| &b.primitive)) {
+        (PanelState::Ok, Some(Primitive::Form(spec))) => Some(spec.clone()),
+        _ => None,
+    };
+    if let Some(spec) = spec {
+        match panel_form_instance(&p, &ctx, manifest, &module, decl, entity.as_ref(), &spec).await {
             Ok(Some((post_url, form_id))) => form = Some((post_url, form_id)),
             Ok(None) => view.state = PanelState::Readonly,
             Err(msg) => {
                 view.state = PanelState::Error;
-                view.primitive = None;
+                view.body = None;
                 view.error = Some(msg);
             }
         }
@@ -642,7 +671,7 @@ async fn panel(
         title: &view.title,
         icon: &decl.icon,
         mode: render::mode_of(&decl.point, in_tiles(manifest, decl)),
-        state: view.state.as_str(),
+        state: view.state,
         path: &path,
         query: &url_query,
         entity: entity.as_ref(),
@@ -651,7 +680,7 @@ async fn panel(
         age_s: view.age_s,
         min_role: crate::role_name(decl.min_role),
         fallback_title: &fallback,
-        primitive: view.primitive.as_ref(),
+        body: view.body.as_ref(),
         actions: &tools,
         row_menu_kinds: &row_menu_kinds,
         csrf: &ctx.csrf,
@@ -772,7 +801,8 @@ fn modal_spec(spec: &StoredSpec) -> Option<ModalSpec<'_>> {
 }
 
 /// `GET /admin/_action/{module}/{action}?entity=kind:id&item=` — the modal of a
-/// `Then::Form` or `Then::Confirm` action over a freshly minted form instance.
+/// `Then::Form` or `Then::Confirm` action over a freshly minted form instance; a
+/// `prepare` action's spec comes from its provider for the bound item.
 async fn action_modal(
     State(p): State<Portal>,
     jar: CookieJar,
@@ -794,13 +824,13 @@ async fn action_modal(
     if let Then::Link(link) = &found.decl.then {
         return redirect(&headers, &render::link_url(link));
     }
-    let spec = match &found.decl.then {
+    let declared = match &found.decl.then {
         _ if matches!(found.decl.point, ActionPoint::PanelForm(_)) => None,
         Then::Form(form) => Some(StoredSpec::Form(form.clone())),
         Then::Confirm(confirm) => Some(StoredSpec::Confirm(confirm.clone())),
         Then::Invoke | Then::Link(_) => None,
     };
-    let Some((spec, shown)) = spec.as_ref().and_then(|spec| modal_spec(spec).map(|shown| (spec, shown))) else {
+    let Some(declared) = declared else {
         return toast(&p, StatusCode::BAD_REQUEST, format!("{module}/{action} has no modal"));
     };
     let entity = match query.get("entity") {
@@ -814,6 +844,28 @@ async fn action_modal(
     if item.is_some_and(|i| !actions::validate_item(i)) {
         return toast(&p, StatusCode::BAD_REQUEST, "item is empty, too long or has control characters".to_string());
     }
+    let spec = if found.decl.prepare {
+        let req = PrepareCall {
+            module: module.clone(),
+            action: action.clone(),
+            entity: entity.clone(),
+            item: item.map(str::to_string),
+            operator: ctx.operator.login.clone(),
+        };
+        let prepared = actions::prepare(found.face.as_ref(), req).await;
+        match actions::prepared_spec(&found.decl.then, prepared) {
+            Ok(spec) => spec,
+            Err((status, msg)) => {
+                tracing::warn!(module = %module, action = %action, %status, %msg, "admin: preparing a modal failed");
+                return toast(&p, status, msg);
+            }
+        }
+    } else {
+        declared
+    };
+    let Some(shown) = modal_spec(&spec) else {
+        return toast(&p, StatusCode::BAD_REQUEST, format!("{module}/{action} has no modal"));
+    };
     let mint = forms::Mint {
         login: &ctx.operator.login,
         module: &module,
@@ -821,7 +873,7 @@ async fn action_modal(
         contribution: None,
         entity: entity.as_ref(),
         item,
-        spec,
+        spec: &spec,
     };
     let form_id = match forms::mint(&p.st.pool, &action, &mint).await {
         Ok(id) => id,
