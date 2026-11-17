@@ -609,3 +609,81 @@ fn weles_async_island_fails_on_a_banned_feature_and_on_a_vacuous_check() {
         );
     }
 }
+
+/// The exact premise call the audit stage makes before cargo-audit. The fake
+/// cargo pins the same argv, so a dropped flag is a mismatch there too.
+const SQLITE_PREMISE_CALL: &str =
+    "cargo tree -i libsqlite3-sys --workspace --target all -e all --locked";
+
+/// The audit stage passes, and passes BOTH ignores to cargo-audit, only after
+/// the premise call has run and reported a lock-only crate.
+#[test]
+fn audit_passes_both_ignores_when_the_sqlite_premise_holds() {
+    // Poison-tolerant: see `fake_path_covers_outcomes_audit_install_lease_and_summary_exits`.
+    let _serial = VERIFY_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let run = FakeRun::new("sqlite-premise-holds", true);
+    let output = run.command(&[]).output().unwrap();
+    assert_exit(&output, 1);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(fail_rows(&stdout), [LIVE_ONLY_STAGE_2, LIVE_ONLY_STAGE]);
+    assert!(stdout.contains("audit                | PASS"), "stdout:\n{stdout}");
+    let record = std::fs::read_to_string(&run.record).unwrap();
+    assert!(!record.contains("argv mismatch"), "record:\n{record}");
+    let premise = record
+        .lines()
+        .position(|line| line == SQLITE_PREMISE_CALL)
+        .unwrap_or_else(|| panic!("no premise call in the record:\n{record}"));
+    let audit = record
+        .lines()
+        .position(|line| {
+            line == "cargo-audit audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0459"
+        })
+        .unwrap_or_else(|| panic!("no cargo-audit call with both ignores:\n{record}"));
+    assert!(premise < audit, "the premise must run before cargo-audit:\n{record}");
+}
+
+/// Each way the sqlite ignore's premise can break FAILS the audit stage with
+/// its own reason, and cargo-audit never runs: the ignore is never applied on
+/// a premise the stage could not confirm.
+#[test]
+fn audit_fails_without_running_cargo_audit_when_the_sqlite_premise_breaks() {
+    // Poison-tolerant: see `fake_path_covers_outcomes_audit_install_lease_and_summary_exits`.
+    let _serial = VERIFY_RUN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for (control, reason) in [
+        // libsqlite3-sys left the lock: exit 101, "did not match any packages".
+        ("sqlite-stale", "RUSTSEC-2026-0459 ignore is stale; remove it"),
+        // libsqlite3-sys is in the build graph: exit 0 with a tree on stdout.
+        ("sqlite-compiled", "libsqlite3-sys is compiled;"),
+        // Any other cargo tree failure is an error, never "not compiled".
+        ("sqlite-tree-error", "cargo tree -i libsqlite3-sys failed"),
+        // Exit 0 and empty stdout without "nothing to print" is not a pass.
+        ("sqlite-silent", "printed nothing without its \"nothing to print\" warning"),
+    ] {
+        let run = FakeRun::new(control, true);
+        let output = run.command(&[]).env("RUSTFLAGS", control).output().unwrap();
+        assert_exit(&output, 1);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            fail_rows(&stdout),
+            ["audit", LIVE_ONLY_STAGE_2, LIVE_ONLY_STAGE],
+            "{control}: stdout:\n{stdout}"
+        );
+        assert!(
+            stderr
+                .lines()
+                .any(|line| line.starts_with("verifyctl: audit: ") && line.contains(reason)),
+            "{control}: expected the reason {reason:?}\nstderr:\n{stderr}"
+        );
+        let record = std::fs::read_to_string(&run.record).unwrap();
+        assert!(
+            record.lines().any(|line| line == SQLITE_PREMISE_CALL),
+            "{control}: no premise call in the record:\n{record}"
+        );
+        assert!(!record.contains("argv mismatch"), "{control}: record:\n{record}");
+        assert!(
+            !record.contains("cargo-audit"),
+            "{control}: cargo-audit ran on a broken premise:\n{record}"
+        );
+    }
+}

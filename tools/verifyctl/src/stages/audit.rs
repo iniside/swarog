@@ -122,3 +122,7 @@ fn read_log(ctx: &Context<'_>, stream: &str) -> Result<String> {
     std::fs::read_to_string(&log)
         .with_context(|| format!("read cargo tree output {}", log.display()))
 }
+
+#[cfg(test)]
+#[path = "audit_tests.rs"]
+mod audit_tests;

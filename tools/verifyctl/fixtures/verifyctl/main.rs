@@ -126,10 +126,7 @@ fn tree(args: &[String]) -> ExitCode {
     // pass on a check that can no longer see anything.
     let control_present = !control("island-no-control");
     if args.iter().any(|arg| arg == "libsqlite3-sys") {
-        // The audit stage's premise check: real cargo's answer for a crate
-        // that is in the lock but not in the build graph.
-        eprintln!("warning: nothing to print.");
-        return ExitCode::SUCCESS;
+        return sqlite_premise(args);
     }
     if args.iter().any(|arg| arg == "--workspace") {
         // `cargo tree -i tokio`: who enables tokio, and with what features.
@@ -153,6 +150,58 @@ fn tree(args: &[String]) -> ExitCode {
     if control("island-weles-signal") {
         println!("├── tokio feature \"signal\"");
     }
+    ExitCode::SUCCESS
+}
+
+/// Fake `cargo tree -i libsqlite3-sys` for the audit stage's premise check.
+///
+/// The argv is pinned exactly, like `audit`'s: a stage that drops a flag gets
+/// a failing exit with no "did not match" text, so the stage reports a cargo
+/// failure and every audit test that expects a pass goes red. By default it
+/// gives real cargo's answer for a crate that is in the lock but not in the
+/// build graph. Each `sqlite-*` control gives one of the other answers the
+/// stage must refuse.
+fn sqlite_premise(args: &[String]) -> ExitCode {
+    if args
+        != [
+            "tree",
+            "-i",
+            "libsqlite3-sys",
+            "--workspace",
+            "--target",
+            "all",
+            "-e",
+            "all",
+            "--locked",
+        ]
+    {
+        record("cargo tree premise argv mismatch");
+        return ExitCode::FAILURE;
+    }
+    if control("sqlite-stale") {
+        // The crate left the lock.
+        eprintln!(
+            "error: package ID specification `libsqlite3-sys` did not match any packages"
+        );
+        return ExitCode::from(101);
+    }
+    if control("sqlite-compiled") {
+        // The crate is in the build graph.
+        println!("libsqlite3-sys v0.30.1");
+        println!("└── sqlx-sqlite v0.8.6");
+        println!("    └── sqlx v0.8.6");
+        return ExitCode::SUCCESS;
+    }
+    if control("sqlite-tree-error") {
+        // Any other cargo failure, e.g. a lock that needs updating.
+        eprintln!("error: the lock file needs to be updated but --locked was passed");
+        return ExitCode::from(101);
+    }
+    if control("sqlite-silent") {
+        // Exit 0 and empty stdout, but without the warning that says why.
+        return ExitCode::SUCCESS;
+    }
+    eprintln!("warning: nothing to print.");
     ExitCode::SUCCESS
 }
 
