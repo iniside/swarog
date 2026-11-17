@@ -161,13 +161,16 @@ matches zero targets, tests a hand-built fixture that bypasses the real classifi
   subcommand, fixture never asserted argv (`8e297f5`); splitproof asserting 201 but not that
   the created row is reachable through the remote list binding (`d0512a6`); golden fingerprint
   blind to `Option<T>→T` demotion and testing the Rust struct instead of the production SQL
-  trigger (`be3aae3 → 606d321`).
+  trigger (`be3aae3 → 606d321`); the admin golden enum guard (Step 13 of the admin redesign)
+  restated the templates' drawing rules in test code, and four audit rounds each found a new
+  drift (`9ce5eb84 → 97df9b4c`), replaced by coverage observed from the render (plan Step 28).
 - **Attack:** for any string/enum tripwire, write a test that calls the **actual production
   function** against a fixture proven to trigger the real violation — never assert on a
   hand-built array that skips the classifier. Ask "**if I renamed/aliased/re-imported the
   target, would this rule still fire?**" A rule that can silently match zero targets must
   itself be a violation. For a scenario assertion ask "does this prove the seam it claims, or
-  just that *a* response returned".
+  just that *a* response returned". If the proof restates production logic instead of
+  observing it, the mirror is the defect: one structural finding, not a list of missing rules.
 - **Authority:** the match guard / constant / argv / stance itself, compile- or test-coupled
   to the real source of truth (a rule that matches zero packages fails loudly; a golden gen
   driven from the same artifact production uses).

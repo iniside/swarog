@@ -212,6 +212,18 @@ Mechanics:
    never silently absorb them. A punch list of only comment findings ends
    the round; the orchestrator deletes the flagged comments inline.
 
+Every finding states its origin, not only its symptom: a local slip, or a
+structural cause. Structural causes include a second copy of a rule (a test,
+gate or tool that restates production logic, a hand list beside the real
+source), a mechanism where each fix adds another special case, a seam where
+new code meets differently-shaped old code, and a plan scope that leaves part
+of the subsystem behind. A finding in a mechanism that an earlier round of the
+same task already fixed is structural by default. Before dispatching any fix,
+the main session groups the findings by origin. Structural findings are not
+patched one by one, and an owner-approved extra round does not change that:
+the main session proposes a fix for the cause (replace the mechanism, delete
+the copy, derive from the real source) and brings it to the owner.
+
 If a fix exists only because the task introduced an unrequested mechanism,
 the verdict is `REJECT — scope loop`: remove it or return to the approved
 boundary. A fix that needs a new abstraction, module, storage layer, or

@@ -14,7 +14,7 @@ assuming it passes for the wrong reason. Different mode from code review.
 (coverage-gap / false-pass) and 7 (notapplicable-hides-gap), plus the verify-net precedents
 for the concrete cases.
 
-## The five attacks
+## The six attacks
 
 1. For a fix: does the negative test EXECUTE the failing branch — is the assertion dependent
    on the once-wrong line running? (Not a test merely sitting near it.) For a new feature:
@@ -25,6 +25,12 @@ for the concrete cases.
 4. Does a hand-maintained list catch the NEXT drift, or only the entry just added?
 5. Is a NotApplicable / Opaque / Unrestricted stance, or a claimed Leftovers-for-owner entry or `Known limits` TODO item / skip /
    expected-fail, verified against the code, or accepted on prose?
+6. Does the proof restate the logic it checks? A test, gate or tool that re-implements
+   production rules (which branch draws, which state counts, which name is read) is a second
+   source of truth, and every audit will find another place where it drifts. Report it as ONE
+   structural finding with the alternative: observe the production path (derive the expected
+   set from the type, the real classifier or the rendered output) instead of mirroring it.
+   Never as a list of rules the mirror is missing.
 
 ## Boundaries & output
 
@@ -35,4 +41,6 @@ coverage of a new feature's required behaviour) · **vacuous** (assertions canno
 claimed violation) · **wrong-topology** · **wrong-artifact** (tests a proxy, not the
 production path) · **green-on-real-failure** (the gate would wave the bug through) ·
 **unenumerated-drift**. For each non-green verdict, state the concrete failure it would wave
-through and the minimal proof that closes it.
+through, its origin (`local` or `structural`, per **Adversarial Diff Review** in
+`.agents/shared/planning-dispatch.md`) and the minimal proof that closes it; for a structural
+one, the fix for the cause.

@@ -41,9 +41,12 @@ violation, or missing required validation, each with a source anchor and a
 failing scenario or affected requirement. **A clean verdict is valid** — but it
 MUST enumerate the taxonomy classes you attacked for the files touched; a clean
 bill with no class list is a skim, not a review, and is rejected as such.
-Findings go back as a punch list, most-severe first: **class** · **`file:line`**
-· **failing scenario or affected requirement** (concrete input/state → wrong
-output) · **what it should be**. Unverified concerns go in a separate list and
+Findings go back as a punch list, most-severe first: **class** · **origin**
+(`local` or `structural`, per **Adversarial Diff Review** in
+`planning-dispatch.md`) · **`file:line`** · **failing scenario or affected
+requirement** (concrete input/state → wrong output) · **what it should be**. A
+structural finding names the cause and the fix for the cause, not one more
+patch beside it. Unverified concerns go in a separate list and
 do not change the verdict. Banned phrases: "looks fine", "mostly matches",
 "pass with reservations", "minor nits" without a list. No "pass with
 reservations" that carries the reservation forward as a future bug — it is
