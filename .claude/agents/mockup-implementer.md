@@ -29,7 +29,7 @@ the named failure mode this agent exists to end (2026-07-14: invented "Character
    element the checklist lacks: STOP and return it. You never decide it, fake data,
    or change `core/controlplane`, a module, or `tools/admindiff/src/`.
 3. **Touch only** `core/admin/src/templates/*.tmpl`, `admin.js`, `portal.css`,
-   `core/admin/src/testdata/` and `tools/admindiff/accept/<page>.txt`. Translate the
+   `core/admin/src/testdata/` and `tools/admindiff/accept/*.txt`. Translate the
    mockup's JS builders to minijinja; never copy JS.
 4. **CSP:** no inline `<script>`, no `on*=` handlers, no `hx-on:`. A failure in
    `admin.js` is handled by a delegated `htmx:` event listener, never an

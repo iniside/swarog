@@ -133,7 +133,7 @@ Mockup: `UILayout/design-system/components/bundle.js:130-149`. Portal:
 ## 4. View-part rules (part `b`)
 
 - Touch only `core/admin/src/templates/*.tmpl`, `admin.js`, `portal.css`, `testdata/`
-  and `tools/admindiff/accept/<page>.txt`. Never `core/controlplane`, a module, or
+  and `tools/admindiff/accept/*.txt`. Never `core/controlplane`, a module, or
   `pages.rs`: those are part `a`.
 - Translate the mockup's JS string builders to minijinja; never copy JS.
 - The CSP allows inline `style` but no inline script (`core/admin/src/lib.rs:540`):
@@ -181,7 +181,9 @@ A `data difference` accept entry is allowed only when neither can produce the da
 - Kinds, as the existing files use them:
   - `data difference`
   - `not ported yet`: names a port step other than the current one. An element the
-    module under port owns never takes it (R3, and the pilot needs `diff` clean)
+    module under port owns never takes it (R3, and the pilot needs `diff` clean).
+    An element of a module that does not exist yet says `no <module> module exists`
+    instead of a port step, as the Lore entries do
   - `template choice`
   - `contract gap`
   - `declared deviation Dn`
@@ -190,13 +192,18 @@ A `data difference` accept entry is allowed only when neither can produce the da
 - Part `b` writes `not ported yet` entries for elements of later ports, and entries
   of other kinds only when the checklist names them. Any other `NEW` line is fixed
   in the template or returned.
-- A port removes the `not ported yet` entries it resolves from every accept file.
-  Both `index.txt` and `events.txt` carry the sidebar nav entries; `index.txt` also
+- Part `b` removes, from every accept file, the `not ported yet` entries the port
+  resolves. Both `index.txt` and `events.txt` carry the sidebar nav entries; `index.txt` also
   carries the dashboard tiles and the "Recent operator activity" panel.
+- A `STALE` line that is a `not ported yet` entry this port resolves is deleted. Any
+  other `STALE` line is returned to the orchestrator.
 - The file is the step report's declared-deviations source. The report cites it and
   does not re-list deviations.
 
 ## 7. Live sequence — orchestrator only, after the `b` commit
+
+When the generic macros already render the page exactly, `b` changes no template
+and makes no commit; this sequence then runs on the part `a` commit.
 
 Templates are compiled into the binary (`include_str!`, `render.rs:16-19`), so the
 fleet is booted after the commit. Run the `safe-verification` pre-flight first. The
