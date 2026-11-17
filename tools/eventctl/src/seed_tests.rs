@@ -6,7 +6,7 @@
 //! subscription ids are fixed, so the tests serialize on [`LOCK`] and clear the ids and
 //! their own events before and after.
 
-use crate::seed::{seed_mockup, LAGGING_ID, PAUSED_ID};
+use crate::seed::{seed_mockup, seed_mockup_on, LAGGING_ID, PAUSED_ID};
 use asyncevents::admin;
 use sqlx::{PgPool, Row as _};
 use std::future::Future;
@@ -270,6 +270,74 @@ async fn a_rerun_resets_rows_that_were_resumed_skipped_or_retired() {
         .await
         .unwrap();
         assert_eq!(rows, 2, "a re-run upserts, never duplicates");
+    })
+    .await;
+}
+
+/// How many of the two seed rows exist on `conn`.
+async fn seed_rows(conn: &mut sqlx::PgConnection) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM asyncevents.subscriptions WHERE subscription_id = ANY($1)",
+    )
+    .bind([PAUSED_ID, LAGGING_ID].map(String::from).to_vec())
+    .fetch_one(conn)
+    .await
+    .unwrap()
+}
+
+/// Branch: the `let Some(..) = busiest else { bail!(..) }` empty-log refusal. The log is
+/// emptied inside a transaction that is rolled back (`asyncevents.events` has no foreign
+/// keys and only an AFTER INSERT trigger, so the DELETE is never blocked and the shared
+/// log is untouched). Removing the `bail!` leaves no way to produce a `Seeded` from zero
+/// rows, so the call could not return this exact error and no refusal would be observed;
+/// the "no seed row" assertion also fails if rows were upserted anyway. The clean twin
+/// (same transaction shape, one event) must succeed, so the refusal comes from the empty
+/// log alone, not from the transaction or the connection.
+#[tokio::test]
+async fn an_empty_event_log_is_refused_and_writes_no_rows() {
+    with_plane(|pool| async move {
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("DELETE FROM asyncevents.events").execute(&mut *tx).await.unwrap();
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM asyncevents.events")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "the log is empty inside the transaction");
+
+        let err = seed_mockup_on(&mut tx).await.err().expect("an empty log is refused");
+        assert_eq!(
+            err.to_string(),
+            "eventctl: seed-mockup: the event log is empty; run demoseed first"
+        );
+        assert_eq!(seed_rows(&mut tx).await, 0, "a refused seed writes no seed.mockup-* row");
+        tx.rollback().await.unwrap();
+
+        // Clean twin: the same shape with one event succeeds.
+        let t = topic("twin");
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("DELETE FROM asyncevents.events").execute(&mut *tx).await.unwrap();
+        sqlx::query(
+            "INSERT INTO asyncevents.events \
+               (generation, producer_xid, topic, contract_version, payload) \
+             VALUES (0, '100'::xid8, $1, 1, '{}'::jsonb)",
+        )
+        .bind(&t)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        let seeded = seed_mockup_on(&mut tx).await.expect("a one-event log is seeded");
+        assert_eq!((seeded.topic.as_str(), seeded.version, seeded.events), (t.as_str(), 1, 1));
+        assert_eq!(seed_rows(&mut tx).await, 2);
+        tx.rollback().await.unwrap();
+
+        let after: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM asyncevents.subscriptions WHERE subscription_id = ANY($1)",
+        )
+        .bind([PAUSED_ID, LAGGING_ID].map(String::from).to_vec())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(after, 0, "both transactions rolled back");
     })
     .await;
 }
