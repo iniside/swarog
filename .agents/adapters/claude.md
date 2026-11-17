@@ -37,12 +37,15 @@ pointer stubs. Use them; do not reimplement. Never use a git worktree.
   boundaries.
 - `[mechanical]` / `[sonnet]` — `model:"sonnet"`. Renames, scaffolding,
   N-similar edits, applying a fully specified step, compile fixes,
-  JSON/config. Visual/UI is never this lane. Tests are never this lane.
+  JSON/config. Tests are never this lane. Visual/UI is never this lane
+  except a provider port's view part (shared rule in `planning-dispatch.md`
+  **Implementation Mode**): `subagent_type: "mockup-implementer"`,
+  `model:"sonnet"`.
 - `[docs]` — `subagent_type: "docs-writer"`, `model:"sonnet"` default;
   `"opus"` / `"fable"` only when the doc must judge what a seam means.
 - `[test-author]` — `subagent_type: "test-author"`, `model:"sonnet"` default;
-  `"opus"` / `"fable"` only for a novel harness/topology. The only lane that
-  writes tests.
+  `"opus"` / `"fable"` for the tests the shared `[test-author]` rule puts at
+  the top tier. The only lane that writes tests.
 - `[review]` — `subagent_type: "core-reviewer"` written first, before
   `description` and before the prompt; `model:` ≥ the author's tier.
   Never resume a `core-reviewer` or `proof-auditor`. Round 2 is a fresh

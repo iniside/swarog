@@ -32,9 +32,10 @@ to close the gaps generic agents missed:
   notapplicable — the verify-net class that ships bugs green). Use on diffs touching
   tests or verify stages, or that claim "proven".
 - **mockup-implementer** — UI work against `UILayout/redesign/` (built on `UILayout/design-system/`): mockup = exact spec
-  for layout AND data shape; data gap ⇒ deterministic decorative fake (or stop and
-  ask), deviations declared, live render-vs-mockup smoke. Dispatch at [opus]+, never
-  mechanical. Orchestration lives in the `mockup-implementation` skill
+  for layout AND data shape; data gaps are decided in the checklist, never by the
+  implementer; deviations declared as `admindiff` accept entries. Tier per the UI rule
+  in `.agents/shared/planning-dispatch.md` **Implementation Mode** (a port's view part
+  runs at the cheap tier). Orchestration lives in the `mockup-implementation` skill
   (`.claude/skills/mockup-implementation/SKILL.md`) — invoke it for any "make it
   look like the mockup" task.
 - **test-author** — the ONLY lane that writes tests, on a landed+compiling diff,

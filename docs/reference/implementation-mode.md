@@ -11,7 +11,7 @@ Dispatch is decided **per plan step at plan-writing time**, not per session. Tag
 
 - `[inline]` — main agent. Closed dispatch-threshold list only, or a typo/compile fix in a file this turn already has open.
 - `[independent]` — top-tier separate context (`core-implementer`; visual/UI uses `mockup-implementer`).
-- `[mechanical]` — cheap implementation. Visual/UI never this. Tests never this.
+- `[mechanical]` — cheap implementation. Visual/UI never this, except a provider port's view part (`planning-dispatch.md` **Implementation Mode**). Tests never this.
 - `[test-author]` — only lane that writes tests; always a later step.
 - `[docs]` — the `docs-writer` agent (`.claude/agents/docs-writer.md`, `subagent_type: "docs-writer"`). The lane for documentation prose written as a planned docs step — root guidance, `docs/reference`, `docs/roadmap`, plan errata, and Rust doc-comments. A standalone comment edit stays `[inline]`. It runs last, against landed code, and its job is as much DELETING false prose as adding true prose (a comment asserting behaviour the code lacks is a correctness defect). Cheap default; escalate only when the doc must judge what a seam *means*. A plan's docs step names the exact files — an unnamed file is never found. Carve-out: comment-only review findings end the round and are fixed inline by the orchestrator (flagged comments deleted, not reworded); no `[docs]` dispatch.
 - `[review]` — `core-reviewer` (read-only).

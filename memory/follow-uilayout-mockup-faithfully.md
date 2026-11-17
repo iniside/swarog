@@ -1,6 +1,6 @@
 ---
 name: follow-uilayout-mockup-faithfully
-description: "When building UI that has a UILayout/ mockup, translate it verbatim — never improvise visuals; UI translation is [subagent-complex], never mechanical"
+description: "When building UI that has a UILayout/ mockup, translate it verbatim — never improvise visuals; lane per the UI rule in .agents/shared/planning-dispatch.md"
 metadata: 
   node_type: memory
   type: feedback
@@ -22,11 +22,14 @@ mockup is the only source (it gets replaced wholesale, e.g. a new darker scheme 
 2026-07-10). It's a spec, not runnable — port it, keeping dynamic data via the template
 engine.
 
-**Dispatch (user-mandated):** UI translation is substantive, judgment-heavy — use
-`[subagent-complex]`, never `[subagent-mechanical]`. For mockup-file rewrites Opus
-suffices ("do przepisywania pliku opus starczy") — don't burn the top tier.
+**Dispatch:** per the UI rule in `.agents/shared/planning-dispatch.md`
+**Implementation Mode** (owner, 2026-11-17: a provider port's view part with a complete
+checklist runs at the cheap tier; checklist, contract decisions and review stay at the
+top tier; no fallback to a stronger model). Current workflow: the
+`mockup-implementation` skill.
 
-**Proven workflow (admin restyle 2026-07-14, worked first-try):**
+**Proven workflow (admin restyle 2026-07-14, worked first-try; superseded for the
+control-plane portal by the skill):**
 1. One research subagent extracts the FULL spec from the mockup page (token table,
    per-component inline-CSS values, state/transition map from the JS at the bottom,
    menu contents verbatim with line numbers) — this becomes the plan's Context and

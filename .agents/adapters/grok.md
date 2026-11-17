@@ -49,11 +49,13 @@ Project Grok agents live in `.grok/agents/`. Project Grok rules live in
   `general-purpose`.
 - `[mechanical]` — `spawn_subagent` with
   `subagent_type: "general-purpose"`, `model: "grok-4.5"`,
-  `isolation: "none"`. Visual/UI is never this lane. Tests are never this
-  lane.
+  `isolation: "none"`. Tests are never this lane. Visual/UI is never this
+  lane except a provider port's view part (shared rule in
+  `planning-dispatch.md` **Implementation Mode**): `subagent_type:
+  "mockup-implementer"`, `model: "grok-4.5"`, `isolation: "none"`.
 - `[test-author]` — `spawn_subagent` with `subagent_type: "test-author"`,
-  `model: "grok-4.5"` by default; `"grok-4.6"` only for a novel
-  harness/topology.
+  `model: "grok-4.5"` by default; `"grok-4.6"` for the tests the shared
+  `[test-author]` rule puts at the top tier.
 - `[review]` — `spawn_subagent` with `subagent_type: "core-reviewer"`
   written first, before `description` and before `prompt`;
   `capability_mode: "execute"` (shell for `git show` / `git diff`; the

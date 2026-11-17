@@ -35,14 +35,16 @@ Never use a git worktree. Never reuse a reviewer conversation for round 2.
 - `[independent]` — a separate Codex/multi-agent context only if an actual
   multi-agent tool exists in this session; otherwise do the work inline and
   disclose that it was not an independent context. Visual/UI uses
-  `mockup-implementer` when that persona is available; never the mechanical
-  lane.
+  `mockup-implementer` when that persona is available.
 - `[mechanical]` — use the cheapest available implementation tool/model only
   if the environment exposes one; otherwise do it inline and say why.
-  Visual/UI is never this lane. Tests are never this lane.
+  Tests are never this lane. Visual/UI is never this lane except a provider
+  port's view part (shared rule in `planning-dispatch.md` **Implementation
+  Mode**), which uses the `mockup-implementer` persona, when available, at
+  that cheapest tier.
 - `[test-author]` — tests only, after the implementation they cover. Use the
-  cheapest available writer; escalate only for a novel harness/topology
-  (new splitproof assertion, event-plane fixture).
+  cheapest available writer; escalate for the tests the shared
+  `[test-author]` rule puts at the top tier.
 - `[review]` — use an available `core-reviewer` (or equivalent read-only
   reviewer) if one exists; otherwise perform an explicit main-agent review
   and disclose that it was not an independent review. Do not reuse a

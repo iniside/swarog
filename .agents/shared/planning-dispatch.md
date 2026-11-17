@@ -64,7 +64,7 @@ Shared tags:
 |---|---|
 | `[inline]` | Main agent. Closed dispatch-threshold list only, or a typo/compile fix in a file this turn already has open. |
 | `[independent]` | Top-tier separate context (`core-implementer`; visual/UI uses `mockup-implementer`). |
-| `[mechanical]` | Cheap implementation. Visual/UI never this. Tests never this. |
+| `[mechanical]` | Cheap implementation. Visual/UI never this, except a port's view part (below). Tests never this. |
 | `[test-author]` | Only lane that writes tests; always a later step. |
 | `[docs]` | `docs-writer`. Documentation prose in a planned docs step; a standalone comment edit stays `[inline]`. Runs last, against landed code. |
 | `[review]` | `core-reviewer` (read-only). |
@@ -94,12 +94,22 @@ Do not ban `[fable]`.
 - `[mechanical]` — cheaper implementation lane: renames, scaffolding,
   N-similar edits, applying a fully specified step, compile fixes,
   JSON/config. Never spend a higher tier on a rename. Visual/UI design is
-  never `[mechanical]`. Tests are never `[mechanical]`. Documentation prose is
-  never `[mechanical]`; it goes through `[docs]`.
+  never `[mechanical]`, with one exception: a provider port's view part
+  (`b`) whose `mockup-implementation` checklist is complete and has no open
+  contract gap runs `[mechanical]` on the `mockup-implementer` persona.
+  Checklist extraction, contract decisions and review of that part stay at
+  the top tier. A gap found during the view part goes back to the backend
+  part. A port that goes badly is fixed in the skill, its tooling and its
+  tests, never by moving the view part to a higher tier. Tests are never
+  `[mechanical]`. Documentation prose is never `[mechanical]`; it goes
+  through `[docs]`.
 - `[test-author]` — the only lane that writes tests, always a separate step
-  after the implementation it covers. Cheap/mechanical default; escalate
-  only for a novel harness/topology (new splitproof assertion, event-plane
-  fixture).
+  after the implementation it covers. Top tier for a test that is a gate
+  (golden render coverage, `admindiff`, admincheck and conformance
+  findings, splitproof, any test proving a guard fails closed) and for a
+  novel harness/topology (a new event-plane fixture). Cheap tier for repeated patterns (per-module admin
+  provider tests, small fixture tests), copying a reference file written at
+  the top tier.
 - `[docs]` — the `docs-writer` agent (`.claude/agents/docs-writer.md`). The
   lane for documentation prose written as a planned docs step — root guidance,
   `docs/reference`, `docs/roadmap`, `docs/todo`, plan errata, and Rust doc-comments. A

@@ -13,11 +13,11 @@ not pass `model:"opus"`, `model:"sonnet"`, `model:"haiku"`, or
 `model:"fable"`. Do not invent Task `model:` slugs. Use only identifiers the
 current session's Task schema actually lists. Preferred families:
 
-- **Composer 2.5, Fast off** — mechanical, explore, listing research, default
-  test-author. Pass the schema's Composer id that is not `*-fast` (e.g.
-  `composer-2.5`).
-- **Grok 4.6, Fast off** — independent, review, proof-audit, mockup, novel
-  test harness. Pass the schema's Grok 4.6 id that is not `*-fast` (e.g.
+- **Composer 2.5, Fast off** — mechanical (including a provider port's view
+  part), explore, listing research, default test-author. Pass the schema's
+  Composer id that is not `*-fast` (e.g. `composer-2.5`).
+- **Grok 4.6, Fast off** — independent, review, proof-audit, other mockup
+  work, top-tier tests. Pass the schema's Grok 4.6 id that is not `*-fast` (e.g.
   `cursor-grok-4.6-medium`).
 
 Never pass a `*-fast` slug for those lanes (`composer-2.5-fast`,
@@ -72,11 +72,13 @@ most the one or two things that earn a line in that file.
   `"cursor-grok-4.6-medium"`).
 - `[mechanical]` — `Task` `subagent_type: "generalPurpose"`, `model:`
   Composer 2.5 non-fast from the schema (e.g. `"composer-2.5"`). Not
-  `core-implementer`. Visual/UI design is never this lane. Tests are never
-  this lane.
+  `core-implementer`. Tests are never this lane. Visual/UI design is never
+  this lane except a provider port's view part (shared rule in
+  `planning-dispatch.md` **Implementation Mode**): `subagent_type:
+  "mockup-implementer"`, `model:` Composer 2.5 non-fast.
 - `[test-author]` — `Task` `subagent_type: "test-author"`, `model:` Composer
-  2.5 non-fast by default; Grok 4.6 non-fast only for a novel
-  harness/topology.
+  2.5 non-fast by default; Grok 4.6 non-fast for the tests the shared
+  `[test-author]` rule puts at the top tier.
 - `[review]` — `Task` `subagent_type: "core-reviewer"`, `model:` Grok 4.6
   non-fast (same family as `[independent]`, not Composer even when the
   author was mechanical). Never `code-reviewer`. Never `security-review`
