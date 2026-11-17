@@ -76,9 +76,14 @@ fn boot_key(src: &str) -> Option<String> {
 /// Checks [`PAGE_MAP`] and [`EXCLUDED`] against the mockup and each other: every listed
 /// page exists, no page is listed twice or in both lists, and every mockup page is listed.
 pub fn validate(mockup: &BTreeMap<String, String>) -> Result<()> {
+    validate_lists(mockup, PAGE_MAP, EXCLUDED)
+}
+
+/// [`validate`] over the given lists, which its problems name `PAGE_MAP` and `EXCLUDED`.
+fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page], excluded: &[(&str, &str)]) -> Result<()> {
     let mut problems = Vec::new();
     let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
-    let listed = PAGE_MAP.iter().map(|p| (p.page, "PAGE_MAP")).chain(EXCLUDED.iter().map(|(p, _)| (*p, "EXCLUDED")));
+    let listed = page_map.iter().map(|p| (p.page, "PAGE_MAP")).chain(excluded.iter().map(|(p, _)| (*p, "EXCLUDED")));
     for (page, list) in listed {
         if let Some(first) = seen.insert(page, list) {
             problems.push(format!("{page} is listed in {first} and again in {list}"));
@@ -92,7 +97,7 @@ pub fn validate(mockup: &BTreeMap<String, String>) -> Result<()> {
             problems.push(format!("mockup page {page} is in neither PAGE_MAP nor EXCLUDED"));
         }
     }
-    for (page, why) in EXCLUDED {
+    for (page, why) in excluded {
         if why.trim().is_empty() {
             problems.push(format!("EXCLUDED {page} has no reason"));
         }

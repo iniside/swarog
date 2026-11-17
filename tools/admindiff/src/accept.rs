@@ -18,10 +18,9 @@ pub fn parse(src: &str) -> Result<BTreeMap<String, String>> {
             problems.push(format!("line {}: no \" | <reason>\"", n + 1));
             continue;
         };
+        // The line is trimmed, so the reason after the last separator ends in a
+        // non-space character and is never empty.
         let (diff, reason) = (diff.trim(), reason.trim());
-        if reason.is_empty() {
-            problems.push(format!("line {}: empty reason", n + 1));
-        }
         if out.insert(diff.to_string(), reason.to_string()).is_some() {
             problems.push(format!("line {}: duplicate entry {diff}", n + 1));
         }

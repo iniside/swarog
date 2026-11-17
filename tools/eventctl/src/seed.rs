@@ -6,16 +6,17 @@
 //! nothing ever delivers, pauses or advances these rows. Running `resume`, `skip` or
 //! `retire` on them is harmless, and the next `seed-mockup` resets them again.
 //!
-//! Both rows read the topic with the most events in the log from its first event (the
-//! genesis cursor), so the paused row's poison panel shows a real event and the
-//! lagging row's lag is the topic's whole history. Like any live subscription they
-//! hold the topic's retention floor until retired or wiped.
+//! Both rows read the `(topic, contract_version)` stream with the most events in the
+//! log from its first event (the genesis cursor), so the paused row's poison panel
+//! shows a real event and the lagging row's lag counts every event of that stream
+//! still retained at seed time. Like any live subscription they hold the topic's
+//! retention floor until retired or wiped.
 //!
 //! The SQL lives here, not in `asyncevents::admin`: these are demo fixtures, not
 //! operator operations.
 
 use anyhow::{bail, Context, Result};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 /// The paused row: the mockup's `inventory.on_purchase.v1` row and Paused panel.
 pub const PAUSED_ID: &str = "seed.mockup-paused.v1";
@@ -69,13 +70,21 @@ pub struct Seeded {
 /// version too, so the version is chosen with the topic. Errors on an empty log.
 pub async fn seed_mockup(pool: &PgPool) -> Result<Seeded> {
     let mut tx = pool.begin().await.context("eventctl: begin seed-mockup tx")?;
+    let seeded = seed_mockup_on(&mut tx).await?;
+    tx.commit().await.context("eventctl: commit seed-mockup tx")?;
+    Ok(seeded)
+}
+
+/// [`seed_mockup`]'s work on a caller-owned connection, which commits nothing: inside a
+/// transaction both upserts land or neither does when the caller commits or rolls back.
+pub async fn seed_mockup_on(conn: &mut PgConnection) -> Result<Seeded> {
     let busiest: Option<(String, i32, i64)> = sqlx::query_as(
         "SELECT topic, contract_version, count(*) FROM asyncevents.events \
          GROUP BY topic, contract_version \
          ORDER BY count(*) DESC, topic, contract_version \
          LIMIT 1",
     )
-    .fetch_optional(&mut *tx)
+    .fetch_optional(&mut *conn)
     .await
     .context("eventctl: find the busiest topic")?;
     let Some((topic, version, events)) = busiest else {
@@ -95,10 +104,9 @@ pub async fn seed_mockup(pool: &PgPool) -> Result<Seeded> {
             .bind(failures)
             .bind(error)
             .bind(&spec_hash)
-            .execute(&mut *tx)
+            .execute(&mut *conn)
             .await
             .with_context(|| format!("eventctl: upsert {id}"))?;
     }
-    tx.commit().await.context("eventctl: commit seed-mockup tx")?;
     Ok(Seeded { topic, version, events })
 }
