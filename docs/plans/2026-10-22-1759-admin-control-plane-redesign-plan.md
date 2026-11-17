@@ -1900,9 +1900,52 @@ The ports:
     - Each column honours its `min_role`: a column whose role is denied makes no call and
       is not rendered. Each column call has its own `deadline_ms`, and the column calls for
       one page run concurrently after the table call.
-    - The returned `Primitive::ColumnCells` is merged as extra columns.
+    - The returned `Primitive::ColumnCells` is merged as extra columns. This replaces how
+      the point renders at HEAD: as a standalone `inline` slot (`core/admin/src/render.rs:594`)
+      whose `ColumnCells` draw as a PropertyList (`render.rs:780-784`).
     - A failing column renders an error icon in its cells, not a failed table
       (`catalog.js:15`).
+  - **Decisions (owner, 2026-11-17, from the checklist
+    `docs/plans/2026-11-17-step13-accounts-checklist.md`, gaps G1–G15)**: the checklist's
+    recommendations, except G9.
+    - Contract, in part `a`:
+      - G1: `DataTable.list_columns_at` (insert index) and `align` on
+        `Point::EntityListColumn`; header `th > span`. A failing column draws a muted alert
+        icon with a title in each cell, plus one warn banner with Retry.
+      - G2: an empty contribution title draws no `.panel-head`.
+      - G3: `CellKind::Muted`, `CellKind::Label` (plain badge), `Cell.more` (several
+        elements in one cell); a User cell in a list draws its link inside.
+      - G4: `Column.sorted`, set on Created (the real sort order).
+      - G6: `DataTable.item_noun`.
+      - G7: new `ActionPoint::TableRow`; an action with no icon draws no svg.
+      - G8: an `implemented: false` action is not a write affordance
+        (`has_write_affordance` ignores it).
+      - G10: `EntityHeader.badges`, the decl icon on facts, the crumb shows the handle
+        instead of the uuid.
+      - G11: `Point::EntityTab` gains `columns`, so the profile tab draws `div.grid.g-2`.
+      - G14: admindiff's `player` page gets a route that follows the list's first row.
+    - Data and module:
+      - G6: the total is an exact `count(*)` (no new index, R1), with `(created_at, id)`
+        keyset paging; a code comment names the missing-index cost.
+      - G8: accounts keeps `writes: false`.
+      - G9: no `Forbidden` → denied mapping. The mockup's denied "Personal data" panel is an
+        accept entry (the crawl runs as admin).
+      - G12: kind `"player"` and status `"active"` are truthful constants. Last seen is
+        derived from `refresh_tokens.issued_at`. Active sessions are one row per refresh
+        family, with Client/IP a FAKE hash of `family_id` (never the token). Subject is
+        masked.
+      - G13: exact handle, uuid and email are REAL; the substring search is derived with a
+        limit; the Kind and Status filters are inert.
+      - G15: no "Open detail" row-menu entry.
+      - Accept entries: G2's `players-table` class (template choice), G4's arrow on Created
+        instead of Last seen (declared deviation), G5's "Columns: 9 of 12" control
+        (contract gap), G12's mockup differences (data difference).
+      - Part `a` adds `docs/todo/admin-second-pass.md` items: G5 under Accepted contract
+        gaps, a `reltuples` estimate at scale (G6), the Personal data panel (G9), and one per
+        `// FAKE:` marker (G12).
+    - Tests: a dedicated `[opus]` test-author step right after part `a` writes the
+      `EntityListColumn` fan-out engine test (the gate test listed under Step 25), instead
+      of waiting for Step 25.
 - **Step 14 — characters.** Characters tab, summary fact, tab count.
 - **Step 15 — wallet.**
   - Economy page (`pages-platform.js:164-185`; the global ledger is FAKE per R1).

@@ -193,3 +193,14 @@ Topics shown in the mockup (`apikeys`, `scheduler`, `events`, `lore.*`) are not 
 
 Defect found: `eventctl resume` does not reset `consecutive_failures`/`last_error`, so a resumed
 subscription re-pauses on its next failure (pause threshold 20, `core/asyncevents/src/worker.rs:88`).
+
+## Errata (2026-11-17, Step 13 accounts checklist)
+
+The rows above are kept as written. Three are wrong at the time of the Step 13 checklist:
+- Users & players "Last seen": not FAKE. `max(refresh_tokens.issued_at)` per player is DERIV
+  (`modules/accounts/src/lib.rs`, index `refresh_player_idx`).
+- Player detail "Active sessions": the access session lives 60 minutes and rotates
+  (`ACCESS_TTL_MINUTES`, `modules/accounts/src/store.rs`); the session a player sees is the
+  30-day refresh family (`REFRESH_TTL_DAYS`), whose `expires_at` is the meaningful expiry.
+- Users & players "Total count": the list is not capped at 50. `Store::list_players` takes a
+  caller-supplied `limit` and has no caller.
