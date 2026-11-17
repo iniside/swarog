@@ -1876,6 +1876,17 @@ The ports:
   - On any failure: stop, diagnose, and report to the owner with options. No fix loop
     inside this step (live-acceptance rule).
   - `[inline]` orchestration.
+  - **Result (2026-11-17): passed.**
+    - Schema `admin` was wiped, then `devctl up split` started all services healthy.
+    - `admindiff crawl --base-url http://localhost:8085` was clean: 3 pages and 24
+      fragments, with mail's panels served through admin-svc from mail-svc. `diff` was
+      clean on all three pages: index 20/20, events 13/13, mail 16/16.
+    - The real invoke was a **test send** through admin-svc, not a cancel. It answered
+      `HX-Redirect` with a show-once reveal ("Test message queued for
+      pilot@example.com"), and the row appeared under Sent. A pending cancel could not be
+      exercised, because the dev `log` provider sends at once, so no row stays pending.
+    - `devctl down` printed the known "os error 32", but the fleet stopped (status
+      inactive, no `*-svc` left).
 - **Step 13 — accounts.**
   - Users & players list (`pages-core.js:72-112`); kind `player` with `Point::EntityHeader`.
   - Profile & identities tab; search provider `player`; tile active players (DERIV).
