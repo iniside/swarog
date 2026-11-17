@@ -17,12 +17,19 @@
 //! Drift guards:
 //! - every macro of every `templates/*.tmpl` is listed in [`MACRO_CASES`], checked against the
 //!   templates both ways. Each entry carries a signature, a literal of that macro's source and
-//!   of no other macro's but the ones the entry names, and every case it lists must render it;
+//!   of no other macro's, nor of any template's text outside its macros, but the ones the entry
+//!   names, and every case it lists must render it. Every listed case must also run the macro:
+//!   the cases render a second time through templates whose every macro opens with a marker
+//!   comment of its own ([`marked_templates`]), the listed case's render must hold the macro's
+//!   marker, and every marked render, markers removed, must equal the production render;
 //! - [`primitive_case`] and [`state_case`] match every `Primitive` and `PanelState` variant with
 //!   no wildcard arm, so a new variant does not compile until it names a case. The number of
 //!   distinct rendered cases they name must equal the number of variants parsed from the enums'
 //!   own source, so a new variant whose case is not rendered, or that reuses another variant's
-//!   case, fails.
+//!   case, fails;
+//! - every `CellKind` and cell `Tone` variant is on a cell of some panel case's body, and every
+//!   `Emphasis` variant on some panel case's action ([`panel_variants`]), checked against the
+//!   variants parsed from the enums' own source.
 //!
 //! Inputs are fixed: one csrf, one form id, fixed `age_s`, and no clock or id generator,
 //! because the render layer reads neither.
@@ -567,6 +574,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             result: case.render(env),
             primitive: case.body.as_ref().map(|b| primitive_case(&b.primitive)),
             state: (case.mode == "panel").then(|| state_case(case.state)),
+            variants: panel_variants(&case),
         })
     };
 
@@ -1412,7 +1420,14 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     out.into_iter()
         .map(|r| {
             let raw = r.result.unwrap_or_else(|e| panic!("golden case {} failed to render: {e:#}", r.name));
-            Case { name: r.name, golden: golden_form(r.name, &raw), raw, primitive: r.primitive, state: r.state }
+            Case {
+                name: r.name,
+                golden: golden_form(r.name, &raw),
+                raw,
+                primitive: r.primitive,
+                state: r.state,
+                variants: r.variants,
+            }
         })
         .collect()
 }
@@ -1427,6 +1442,8 @@ struct Case {
     primitive: Option<&'static str>,
     /// [`state_case`] of a `render::panel` case drawn in panel chrome.
     state: Option<&'static str>,
+    /// [`panel_variants`] of a `render::panel` case.
+    variants: Vec<(&'static str, String)>,
 }
 
 struct Rendered {
@@ -1434,10 +1451,11 @@ struct Rendered {
     result: Result<String, minijinja::Error>,
     primitive: Option<&'static str>,
     state: Option<&'static str>,
+    variants: Vec<(&'static str, String)>,
 }
 
 fn plain(name: &'static str, result: Result<String, minijinja::Error>) -> Rendered {
-    Rendered { name, result, primitive: None, state: None }
+    Rendered { name, result, primitive: None, state: None, variants: Vec::new() }
 }
 
 fn goldens(cases: &[Case]) -> Vec<(String, String)> {
@@ -1559,17 +1577,68 @@ fn check_variant_coverage(source: &str, name: &str, rendered: &BTreeSet<&str>) -
     Ok(())
 }
 
+/// The enums whose variants [`panel_variants`] collects, all in [`PRIMITIVE_SOURCE`].
+const SEEN_ENUMS: [&str; 3] = ["CellKind", "Tone", "Emphasis"];
+
+/// `(enum, variant)` for each `CellKind` and `Tone` on a cell of `case`'s body and each
+/// `Emphasis` of its actions, as the view model holds it. A cell is an object of the body's
+/// serialization with exactly the keys a `Cell` serializes to, so a `Cell` that gains a field
+/// matches nothing and the coverage check fails rather than passing on fewer cells.
+fn panel_variants(case: &PanelCase) -> Vec<(&'static str, String)> {
+    fn walk(v: &serde_json::Value, cell_keys: &BTreeSet<String>, out: &mut Vec<(&'static str, String)>) {
+        match v {
+            serde_json::Value::Object(map) => {
+                if map.keys().cloned().collect::<BTreeSet<String>>() == *cell_keys {
+                    if let Some(kind) = map.get("kind").and_then(|k| k.as_str()) {
+                        out.push(("CellKind", kind.to_string()));
+                    }
+                    if let Some(tone) = map.get("tone").and_then(|t| t.as_str()) {
+                        out.push(("Tone", tone.to_string()));
+                    }
+                }
+                map.values().for_each(|x| walk(x, cell_keys, out));
+            }
+            serde_json::Value::Array(xs) => xs.iter().for_each(|x| walk(x, cell_keys, out)),
+            _ => {}
+        }
+    }
+    let sample = serde_json::to_value(cell(CellKind::Text, "x")).expect("a cell serializes");
+    let cell_keys: BTreeSet<String> = sample.as_object().expect("a cell is an object").keys().cloned().collect();
+    let mut out = Vec::new();
+    walk(&serde_json::to_value(&case.body).expect("a panel body serializes"), &cell_keys, &mut out);
+    out.extend(case.actions.iter().map(|a| ("Emphasis", a.emphasis.to_string())));
+    out
+}
+
+/// Fails unless `seen` holds every variant of `enum <name>` in `source`, compared without
+/// case: the view model names an `Emphasis` in lower case.
+fn check_variants_seen(source: &str, name: &str, seen: &BTreeSet<String>) -> Result<(), String> {
+    let seen: BTreeSet<String> = seen.iter().map(|v| v.to_ascii_lowercase()).collect();
+    let missing: Vec<String> =
+        enum_variants(source, name)?.into_iter().filter(|v| !seen.contains(&v.to_ascii_lowercase())).collect();
+    if !missing.is_empty() {
+        return Err(format!("{name} variant(s) {missing:?} are in no case; the cases hold {seen:?}"));
+    }
+    Ok(())
+}
+
+/// The variants of `name` that `cases` hold.
+fn seen_variants(cases: &[Case], name: &str) -> BTreeSet<String> {
+    cases.iter().flat_map(|c| &c.variants).filter(|(e, _)| *e == name).map(|(_, v)| v.clone()).collect()
+}
+
 /// A template macro, a signature only it holds, and the cases whose render must hold it.
 struct MacroCase {
     template: &'static str,
     name: &'static str,
     /// A class, attribute or text the macro writes: a literal of the macro's own source and of
-    /// no other macro's but [`MacroCase::also`].
+    /// no other macro's, nor of any template's text outside its macros, but [`MacroCase::also`].
     signature: &'static str,
-    /// Other macros whose source holds the signature too. A macro whose own source does not
-    /// hold it (one that only dispatches) must call each of these.
+    /// Other macros whose source holds the signature too, and `<stem>.html` for a template
+    /// whose text outside its macros does. A macro whose own source does not hold it (one that
+    /// only dispatches) must call each of these.
     also: &'static [&'static str],
-    /// Cases whose render holds the signature.
+    /// Cases whose render holds the signature and runs the macro.
     cases: &'static [&'static str],
 }
 
@@ -1595,8 +1664,20 @@ const MACRO_CASES: &[MacroCase] = &[
     mc("primitives", "state_block", "state-icon", &[], &["state_empty", "state_error", "state_denied"]),
     mc("primitives", "loading_block", "class=\"sk grow\"", &[], &["slot_panel_loading"]),
     mc("primitives", "denied_detail", "Requires role <span class=\"tag\">", &[], &["state_denied", "slot_panel_denied"]),
-    mc("primitives", "fetch_attrs", "hx-trigger=\"load\"", &[], &["slot_panel_loading", "slot_tile_loading"]),
-    mc("primitives", "slot", "<div class=\"panel-tools\"></div>", &[], &["slot_panel_loading", "slot_panel_denied"]),
+    mc(
+        "primitives",
+        "fetch_attrs",
+        "hx-trigger=\"load\"",
+        &["shell.html"],
+        &["slot_panel_loading", "slot_tile_loading"],
+    ),
+    mc(
+        "primitives",
+        "slot",
+        "<div class=\"panel-tools\"></div>",
+        &["shell.html"],
+        &["slot_panel_loading", "slot_panel_denied"],
+    ),
     mc("primitives", "table_toolbar", "tbl-toolbar", &[], &["table_highlight_row_menu", "table_empty_search"]),
     mc("primitives", "table_foot", "class=\"pager\"", &[], &["table_highlight_row_menu"]),
     mc("primitives", "table", "aria-label=\"Row actions\"", &[], &["table_highlight_row_menu"]),
@@ -1632,7 +1713,7 @@ const MACRO_CASES: &[MacroCase] = &[
     mc("primitives", "chart", "<svg class=\"chart\"", &[], &["chart_two_axes"]),
     mc("primitives", "chart_legend", "<div class=\"legend\">", &[], &["chart_two_axes"]),
     mc("primitives", "attention_rows", "<a class=\"btn sm\" href=\"", &[], &["attention_ok"]),
-    mc("primitives", "body", "<div class=\"row\"><h1>", &["panel_fragment"], &["header_ok"]),
+    mc("primitives", "body", "<div class=\"row\"><h1>", &["panel_fragment", "shell.html"], &["header_ok"]),
     mc("primitives", "empty_body", "No results", &[], &["table_empty_search"]),
     mc("primitives", "panel_fragment", "data-panel-url", &[], &["state_ok", "tile_delta_ok_up", "nav_counter_err"]),
     mc("primitives", "search", "palette-group", &[], &["search_results_and_error"]),
@@ -1655,6 +1736,86 @@ fn template_macros(source: &str) -> Vec<(String, String)> {
     out
 }
 
+/// The text of `source` outside its macros and its `{# #}` comments, which render nothing.
+fn outside_macros(source: &str) -> String {
+    let mut out = String::new();
+    let mut rest = source;
+    while let Some(at) = ["{%- macro ", "{% macro "].iter().filter_map(|open| rest.find(open)).min() {
+        out.push_str(&rest[..at]);
+        let after = &rest[at..];
+        let end = after.find("endmacro").and_then(|e| after[e..].find("%}").map(|c| e + c + 2)).unwrap_or(after.len());
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    let mut text = String::new();
+    let mut rest = out.as_str();
+    while let Some(at) = rest.find("{#") {
+        text.push_str(&rest[..at]);
+        rest = rest[at..].find("#}").map_or("", |e| &rest[at + e + 2..]);
+    }
+    text.push_str(rest);
+    text
+}
+
+/// The marker [`marked_templates`] opens `template`'s `name` macro with.
+fn marker(template: &str, name: &str) -> String {
+    format!("<!--mc:{template}/{name}-->")
+}
+
+/// `templates` with every macro's body opening with its [`marker`], so a render holds the
+/// marker of every macro that ran.
+fn marked_templates(templates: &[(String, String)]) -> Vec<(String, String)> {
+    templates
+        .iter()
+        .map(|(t, src)| {
+            let mut at_tag_end: Vec<(usize, String)> = Vec::new();
+            for open in ["{%- macro ", "{% macro "] {
+                for (at, _) in src.match_indices(open) {
+                    let rest = &src[at + open.len()..];
+                    let Some((name, _)) = rest.split_once('(') else { continue };
+                    let Some(close) = src[at..].find("%}") else { continue };
+                    // Past a `-%}`'s trimmed whitespace, which a marker before it would keep.
+                    let mut end = at + close + 2;
+                    if src[..at + close].ends_with('-') {
+                        end += src[end..].len() - src[end..].trim_start().len();
+                    }
+                    at_tag_end.push((end, marker(t, name.trim())));
+                }
+            }
+            at_tag_end.sort();
+            let mut marked = src.clone();
+            for (at, m) in at_tag_end.into_iter().rev() {
+                marked.insert_str(at, &m);
+            }
+            (t.clone(), marked)
+        })
+        .collect()
+}
+
+/// `raw` without the markers of [`marked_templates`].
+fn unmark(raw: &str) -> String {
+    let mut out = String::new();
+    let mut rest = raw;
+    while let Some(at) = rest.find("<!--mc:") {
+        out.push_str(&rest[..at]);
+        rest = rest[at..].find("-->").map_or("", |e| &rest[at + e + 3..]);
+    }
+    out.push_str(rest);
+    out
+}
+
+/// An environment of `templates` under the names `render::env` gives them. The sources are
+/// leaked: a test builds a handful.
+fn env_of(templates: &[(String, String)]) -> Environment<'static> {
+    let mut env = Environment::new();
+    for (t, src) in templates {
+        let name: &'static str = Box::leak(format!("{t}.html").into_boxed_str());
+        let src: &'static str = Box::leak(src.clone().into_boxed_str());
+        env.add_template(name, src).unwrap_or_else(|e| panic!("template {name} compiles: {e}"));
+    }
+    env
+}
+
 /// Every template under `src/templates` as (file stem, source).
 fn templates() -> Vec<(String, String)> {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("templates");
@@ -1671,18 +1832,22 @@ fn templates() -> Vec<(String, String)> {
     out
 }
 
-/// Checks `entries` against the macros of `templates` both ways and against `renders` (case
-/// name → render): each signature is held by exactly the sources its entry names, and every
-/// listed case's render holds it. Returns every problem.
+/// Checks `entries` against the macros of `templates` both ways and against `renders` and
+/// `marked` (case name → render through `templates` and through [`marked_templates`] of them):
+/// each signature is held by exactly the sources its entry names, and every listed case's
+/// render holds it and its marked render the macro's [`marker`]. Returns every problem.
 fn check_macro_cases(
     entries: &[MacroCase],
     templates: &[(String, String)],
     renders: &BTreeMap<&str, &str>,
+    marked: &BTreeMap<&str, &str>,
 ) -> Result<(), Vec<String>> {
     let macros: Vec<(&str, String, String)> = templates
         .iter()
         .flat_map(|(t, src)| template_macros(src).into_iter().map(move |(m, body)| (t.as_str(), m, body)))
         .collect();
+    let outside: Vec<(String, String)> =
+        templates.iter().map(|(t, src)| (format!("{t}.html"), outside_macros(src))).collect();
     let declared: BTreeSet<(&str, &str)> = macros.iter().map(|(t, m, _)| (*t, m.as_str())).collect();
     let listed: BTreeSet<(&str, &str)> = entries.iter().map(|e| (e.template, e.name)).collect();
     let mut problems = Vec::new();
@@ -1696,8 +1861,12 @@ fn check_macro_cases(
         problems.push("MACRO_CASES lists a macro twice".to_string());
     }
     for e in entries {
-        let holders: BTreeSet<&str> =
-            macros.iter().filter(|(_, _, body)| body.contains(e.signature)).map(|(_, m, _)| m.as_str()).collect();
+        let holders: BTreeSet<&str> = macros
+            .iter()
+            .filter(|(_, _, body)| body.contains(e.signature))
+            .map(|(_, m, _)| m.as_str())
+            .chain(outside.iter().filter(|(_, text)| text.contains(e.signature)).map(|(t, _)| t.as_str()))
+            .collect();
         let others: BTreeSet<&str> = holders.iter().copied().filter(|m| *m != e.name).collect();
         let also: BTreeSet<&str> = e.also.iter().copied().collect();
         if others != also {
@@ -1728,6 +1897,9 @@ fn check_macro_cases(
                 )),
                 Some(_) => {}
             }
+            if !marked.get(case).is_some_and(|m| m.contains(&marker(e.template, e.name))) {
+                problems.push(format!("{}/{}: case {case} does not run the macro", e.template, e.name));
+            }
         }
     }
     if problems.is_empty() {
@@ -1743,9 +1915,18 @@ fn golden_cases_cover_every_macro_variant_and_state() {
     let cases = cases(&env);
     let by_name: BTreeMap<&str, &Case> = cases.iter().map(|c| (c.name, c)).collect();
     let renders: BTreeMap<&str, &str> = cases.iter().map(|c| (c.name, c.raw.as_str())).collect();
+    let marked_cases = self::cases(&env_of(&marked_templates(&templates())));
+    let marked: BTreeMap<&str, &str> = marked_cases.iter().map(|c| (c.name, c.raw.as_str())).collect();
+    assert_eq!(marked.len(), renders.len(), "the marked templates render every case");
+    for (name, raw) in &marked {
+        assert_eq!(&unmark(raw), renders[name], "case {name}: the marked render, unmarked, is the production render");
+    }
 
-    if let Err(problems) = check_macro_cases(MACRO_CASES, &templates(), &renders) {
+    if let Err(problems) = check_macro_cases(MACRO_CASES, &templates(), &renders, &marked) {
         panic!("MACRO_CASES drift:\n  {}", problems.join("\n  "));
+    }
+    for name in SEEN_ENUMS {
+        check_variants_seen(PRIMITIVE_SOURCE, name, &seen_variants(&cases, name)).unwrap_or_else(|e| panic!("{e}"));
     }
 
     let primitives: BTreeSet<&str> = cases.iter().filter_map(|c| c.primitive).collect();
@@ -1800,6 +1981,8 @@ fn macro_cases_fail_on_a_wrong_signature() {
     let cases = cases(&env);
     let renders: BTreeMap<&str, &str> = cases.iter().map(|c| (c.name, c.raw.as_str())).collect();
     let templates = templates();
+    let marked_cases = self::cases(&env_of(&marked_templates(&templates)));
+    let marked: BTreeMap<&str, &str> = marked_cases.iter().map(|c| (c.name, c.raw.as_str())).collect();
     let with = |name: &str, signature: &'static str, also: &'static [&'static str]| -> Vec<MacroCase> {
         MACRO_CASES
             .iter()
@@ -1809,7 +1992,8 @@ fn macro_cases_fail_on_a_wrong_signature() {
             })
             .collect()
     };
-    let problems = |entries: &[MacroCase]| check_macro_cases(entries, &templates, &renders).err().unwrap_or_default();
+    let problems =
+        |entries: &[MacroCase]| check_macro_cases(entries, &templates, &renders, &marked).err().unwrap_or_default();
     assert!(problems(&with("menu", "menu-group", &[])).is_empty(), "the unchanged entry passes");
 
     // `state-icon` is state_block's literal and menu calls no macro that holds it.
@@ -1837,10 +2021,126 @@ fn macro_cases_fail_on_template_drift() {
     let mut templates = templates();
     assert!(templates.iter().any(|(t, _)| t == "shell"), "every template is read, not only the macro ones");
     templates.push(("shell2".to_string(), "{%- macro extra(x) -%}<i class=\"extra\"></i>{%- endmacro %}".to_string()));
-    let problems = check_macro_cases(MACRO_CASES, &templates, &renders).expect_err("drift fails");
+    let problems = check_macro_cases(MACRO_CASES, &templates, &renders, &renders).expect_err("drift fails");
     assert!(problems.iter().any(|p| p == "template macro shell2/extra has no MACRO_CASES entry"), "{problems:?}");
     assert!(problems.iter().any(|p| p == "primitives/icon names case state_ok, which does not exist"), "{problems:?}");
     let dead = [mc("modal", "gone", "x", &[], &["state_ok"])];
-    let problems = check_macro_cases(&dead, &templates, &renders).expect_err("a dead entry fails");
+    let problems = check_macro_cases(&dead, &templates, &renders, &renders).expect_err("a dead entry fails");
     assert!(problems.iter().any(|p| p == "MACRO_CASES entry modal/gone names no template macro"), "{problems:?}");
+}
+
+/// The cases rendered through `templates` (a scratch copy of the real ones) as (name, render)
+/// pairs, plainly and through [`marked_templates`] of them.
+fn scratch_renders(templates: &[(String, String)]) -> (Vec<Case>, Vec<Case>) {
+    (cases(&env_of(templates)), cases(&env_of(&marked_templates(templates))))
+}
+
+/// `templates` with `from` replaced by `to` once in `template`'s source.
+fn edited(templates: &[(String, String)], template: &str, from: &str, to: &str) -> Vec<(String, String)> {
+    templates
+        .iter()
+        .map(|(t, src)| {
+            if t != template {
+                return (t.clone(), src.clone());
+            }
+            assert_eq!(src.matches(from).count(), 1, "{template} holds {from:?} once");
+            (t.clone(), src.replacen(from, to, 1))
+        })
+        .collect()
+}
+
+/// The problems `check_macro_cases` reports for [`MACRO_CASES`] over scratch `templates`.
+fn scratch_problems(templates: &[(String, String)]) -> Vec<String> {
+    let (plain, marked) = scratch_renders(templates);
+    let renders: BTreeMap<&str, &str> = plain.iter().map(|c| (c.name, c.raw.as_str())).collect();
+    let marked: BTreeMap<&str, &str> = marked.iter().map(|c| (c.name, c.raw.as_str())).collect();
+    check_macro_cases(MACRO_CASES, templates, &renders, &marked).err().unwrap_or_default()
+}
+
+/// A listed case that still renders the signature through another macro, but no longer runs
+/// the entry's own, fails; the two wave-throughs the signature rule alone let pass.
+#[test]
+fn macro_cases_fail_on_a_case_that_does_not_run_the_macro() {
+    let real = templates();
+    assert_eq!(scratch_problems(&real), Vec::<String>::new(), "the real templates pass");
+
+    // The modal draws its fields with panel_form, which writes `<div class="form">` too.
+    let modal = edited(&real, "modal", "{{ ui.form_fields(m.form) }}", "{{ ui.panel_form(m.form) }}");
+    let problems = scratch_problems(&modal);
+    assert_eq!(
+        problems,
+        [
+            "primitives/form_fields: case modal_form does not run the macro",
+            "primitives/form_fields: case modal_rerender_form_errors_locked does not run the macro",
+        ],
+        "only the marker rule catches it: the signature is still rendered"
+    );
+
+    // The header fragment writes the row itself, as panel_fragment's fallback does.
+    let header = edited(
+        &real,
+        "primitives",
+        "{%- if live and p.body and p.body.type == \"Header\" %}{{ body(p.body, p) }}</div>",
+        "{%- if live and p.body and p.body.type == \"Header\" %}<div class=\"row\"><h1>{{ p.body.title }}</h1></div></div>",
+    );
+    assert_eq!(scratch_problems(&header), ["primitives/body: case header_ok does not run the macro"]);
+}
+
+/// Template text outside any macro holds a signature like a macro does; a `{# #}` comment
+/// renders nothing and does not.
+#[test]
+fn macro_cases_fail_on_a_signature_written_outside_any_macro() {
+    let env = render::env().expect("templates compile");
+    let cases = cases(&env);
+    let renders: BTreeMap<&str, &str> = cases.iter().map(|c| (c.name, c.raw.as_str())).collect();
+    let marked_cases = self::cases(&env_of(&marked_templates(&templates())));
+    let marked: BTreeMap<&str, &str> = marked_cases.iter().map(|c| (c.name, c.raw.as_str())).collect();
+    let with_extra = |extra: &str| {
+        let mut t = templates();
+        t.push(("extra".to_string(), extra.to_string()));
+        check_macro_cases(MACRO_CASES, &t, &renders, &marked).err().unwrap_or_default()
+    };
+    assert_eq!(with_extra("{# <div class=\"menu-group\"> #}<p></p>"), Vec::<String>::new(), "a comment holds nothing");
+    let problems = with_extra("<div class=\"menu-group\"></div>");
+    assert_eq!(
+        problems,
+        ["primitives/menu: signature \"menu-group\" is held by {\"extra.html\", \"menu\"}; the entry names itself and {}"]
+    );
+
+    // `body`'s row is written by shell.html outside any macro, which the entry must name.
+    let unnamed: Vec<MacroCase> = MACRO_CASES
+        .iter()
+        .map(|e| {
+            let also: &'static [&'static str] = if e.name == "body" { &["panel_fragment"] } else { e.also };
+            mc(e.template, e.name, e.signature, also, e.cases)
+        })
+        .collect();
+    let problems = check_macro_cases(&unnamed, &templates(), &renders, &marked).err().unwrap_or_default();
+    assert_eq!(
+        problems,
+        [concat!(
+            "primitives/body: signature \"<div class=\\\"row\\\"><h1>\" is held by ",
+            "{\"body\", \"panel_fragment\", \"shell.html\"}; the entry names itself and {\"panel_fragment\"}"
+        )]
+    );
+}
+
+/// A scratch copy of `CellKind`, `Tone` and `Emphasis` with one variant more fails against the
+/// variants the cases hold today.
+#[test]
+fn seen_variants_fail_on_a_new_enum_variant() {
+    let env = render::env().expect("templates compile");
+    let cases = cases(&env);
+    for name in SEEN_ENUMS {
+        let seen = seen_variants(&cases, name);
+        check_variants_seen(PRIMITIVE_SOURCE, name, &seen).unwrap_or_else(|e| panic!("today's {name}: {e}"));
+        let open = format!("enum {name} {{");
+        let scratch = PRIMITIVE_SOURCE.replacen(&open, &format!("{open}\n    Duration,"), 1);
+        assert_ne!(scratch, PRIMITIVE_SOURCE, "the scratch copy of {name} gained a variant");
+        let err = check_variants_seen(&scratch, name, &seen).expect_err("one variant more must fail");
+        assert!(err.starts_with(&format!("{name} variant(s) [\"Duration\"] are in no case")), "{err}");
+    }
+    let kinds = seen_variants(&cases, "CellKind");
+    assert!(kinds.contains("User") && kinds.contains("Bytes"), "cells are read from the bodies: {kinds:?}");
+    assert!(seen_variants(&cases, "Emphasis").contains("ghost"), "emphasis is read from the actions");
 }
