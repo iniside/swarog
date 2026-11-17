@@ -1,0 +1,64 @@
+<div class="slot" data-panel-url="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?q=zed" data-state="empty">
+<section class="panel">
+<div class="panel-head">
+<span class="muted">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="3.5" y="4" width="17" height="7" rx="1.5"/>
+<rect x="3.5" y="13" width="17" height="7" rx="1.5"/>
+<path d="M7 7.5h.01M7 16.5h.01"/>
+</svg>
+</span>
+<span class="panel-title">Golden panel</span>
+<div class="panel-tools">
+</div>
+</div>
+<div class="panel-body flush">
+<div class="q-counts">
+<div class="q-count on" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?q=zed&amp;state=pending" hx-target="closest .slot" hx-swap="outerHTML">
+<div class="n">12</div>
+<div class="l">Pending</div>
+</div>
+<div class="q-count err" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?q=zed&amp;state=failed" hx-target="closest .slot" hx-swap="outerHTML">
+<div class="n">3</div>
+<div class="l">Failed</div>
+</div>
+<div class="q-count ok" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?q=zed&amp;state=sent" hx-target="closest .slot" hx-swap="outerHTML">
+<div class="n">1,204</div>
+<div class="l">Sent</div>
+</div>
+</div>
+<div class="tbl-toolbar">
+<form class="input-icon" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel" hx-target="closest .slot" hx-swap="outerHTML">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<circle cx="11" cy="11" r="6.5"/>
+<path d="m20 20-4.2-4.2"/>
+</svg>
+<input class="input" name="q" style="width:220px" placeholder="Recipient, template or message id" value="zed">
+</form>
+<span class="filter-chip">Template: <b>any</b>
+<span class="x">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M6 6l12 12M18 6 6 18"/>
+</svg>
+</span>
+</span>
+<span class="filter-chip add">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M12 5v14M5 12h14"/>
+</svg> Filter</span>
+<span class="grow">
+</span>
+</div>
+<div class="state ">
+<div class="state-icon">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M3.5 13 6 5h12l2.5 8v6h-17z"/>
+<path d="M3.5 13H9l1 2.5h4L15 13h5.5"/>
+</svg>
+</div>
+<div class="state-title">No matching items</div>
+<div class="state-detail">Nothing matches the search or filters.</div>
+</div>
+</div>
+</section>
+</div>

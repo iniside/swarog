@@ -367,6 +367,49 @@ fn queue_and_table_views_carry_the_work_queue_table_contract() {
     assert_eq!(page_label(table(Some(26), Some("c2"))), "1 / 2");
 }
 
+/// A queue a search or a filter value narrowed to nothing keeps its toolbar, so the search
+/// can be changed back; the same queue unfiltered, its filter at `any`, is plainly empty.
+#[test]
+fn a_queue_narrowed_to_nothing_keeps_its_toolbar() {
+    let env = render::env().expect("templates compile");
+    let render = |case: PanelCase| case.render(&env).expect("renders");
+    for (what, raw) in [
+        ("a search", render(queue_narrowed_case(&[("q", "zed")], Some("zed")))),
+        ("a filter value", render(queue_narrowed_case(&[("template", "welcome")], None))),
+    ] {
+        assert!(raw.contains("class=\"tbl-toolbar\""), "{what}: the toolbar is drawn: {raw}");
+        assert!(raw.contains("No matching items") && raw.contains("Nothing matches the search or filters."), "{what}");
+        assert!(!raw.contains("Queue is empty"), "{what}");
+    }
+    let searched = render(queue_narrowed_case(&[("q", "zed")], Some("zed")));
+    assert!(searched.contains("value=\"zed\""), "the search box keeps the search");
+    let unfiltered = render(queue_narrowed_case(&[("template", "any")], None));
+    assert!(!unfiltered.contains("tbl-toolbar"), "an unfiltered empty queue draws no toolbar: {unfiltered}");
+    assert!(unfiltered.contains("Queue is empty") && !unfiltered.contains("No matching items"));
+}
+
+/// "Load older" from a page already loaded with `before=` (and a stray `cursor=`) carries
+/// the timeline's new `before` and the other parameters, never the old paging.
+#[test]
+fn timeline_older_url_carries_only_the_new_before() {
+    let case = PanelCase {
+        query: posted(&[("q", "anna"), ("cursor", "c9"), ("before", "2026-10-22T00:00:00Z")]),
+        ..PanelCase::new(
+            PanelState::Ok,
+            Some(body(Primitive::Timeline(Timeline {
+                entries: Vec::new(),
+                cursor_before: Some("2026-10-20T23:59:00Z".to_string()),
+                live: false,
+            }))),
+        )
+    };
+    let older = case.view()["body"]["older_url"].clone();
+    let older = older.as_str().expect("an older url");
+    assert!(!older.contains("cursor"), "{older}");
+    assert_eq!(older.matches("before=").count(), 1, "{older}");
+    assert_eq!(older, "/admin/_panel/golden/panel?q=anna&before=2026-10-20T23%3A59%3A00Z");
+}
+
 // ---- view-model builders -----------------------------------------------------------
 
 fn cell(kind: CellKind, value: &str) -> Cell {
@@ -920,6 +963,27 @@ fn queue_later_page_case() -> PanelCase {
     }
 }
 
+/// A queue with a search box and a filter, and no item: under `query` and `search` it was
+/// narrowed to nothing, or, unfiltered, it is empty in the selected state.
+fn queue_narrowed_case(query: &[(&str, &str)], search: Option<&'static str>) -> PanelCase {
+    PanelCase {
+        query: posted(query),
+        search,
+        ..PanelCase::new(
+            PanelState::Empty,
+            Some(body(Primitive::WorkQueue(WorkQueue {
+                filters: vec![FilterDef {
+                    key: "template".to_string(),
+                    label: "Template".to_string(),
+                    kind: FilterKind::Text,
+                }],
+                search_placeholder: Some("Recipient, template or message id".to_string()),
+                ..work_queue("pending", Vec::new())
+            }))),
+        )
+    }
+}
+
 // ---- cases ---------------------------------------------------------------------
 
 /// Every case as `(name, golden form)`, in a fixed order.
@@ -1328,6 +1392,9 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel("queue_panel_tool", queue_panel_tool_case());
     panel("queue_table_contract", queue_table_contract_case());
     panel("queue_later_page", queue_later_page_case());
+    panel("queue_search_empty", queue_narrowed_case(&[("q", "zed")], Some("zed")));
+    panel("queue_filter_empty", queue_narrowed_case(&[("template", "welcome")], None));
+    panel("queue_unfiltered_empty", queue_narrowed_case(&[("template", "any")], None));
 
     // ---- TimeSeriesChart ----
     panel(
@@ -2040,7 +2107,13 @@ const MACRO_CASES: &[MacroCase] = &[
         &["shell.html"],
         &["slot_panel_loading", "slot_panel_denied"],
     ),
-    mc("primitives", "table_toolbar", "tbl-toolbar", &[], &["table_highlight_row_menu", "table_empty_search"]),
+    mc(
+        "primitives",
+        "table_toolbar",
+        "tbl-toolbar",
+        &[],
+        &["table_highlight_row_menu", "table_empty_search", "queue_search_empty", "queue_filter_empty"],
+    ),
     mc("primitives", "table_foot", "class=\"pager\"", &[], &["table_highlight_row_menu"]),
     mc("primitives", "table", "aria-label=\"Row actions\"", &[], &["table_highlight_row_menu"]),
     mc(
@@ -2067,7 +2140,7 @@ const MACRO_CASES: &[MacroCase] = &[
         &[],
         &["panel_form", "panel_form_readonly", "panel_form_rerender_409_locked"],
     ),
-    mc("primitives", "queue_counts", "q-counts", &[], &["queue_items_actions", "queue_empty"]),
+    mc("primitives", "queue_counts", "q-counts", &[], &["queue_items_actions", "queue_empty", "queue_search_empty"]),
     mc("primitives", "queue_action", " danger-ghost\"", &[], &["queue_items_actions"]),
     mc("primitives", "queue", "class=\"attempts\"", &[], &["queue_items_actions"]),
     mc("primitives", "services", "class=\"svc\"", &[], &["services_one_column", "services_two_columns"]),
