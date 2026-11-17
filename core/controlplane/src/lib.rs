@@ -438,11 +438,20 @@ pub struct ActionDecl {
     pub min_role: Role,
     pub then: Then,
     pub implemented: bool,
-    /// Renders as the page's primary button; at most one per `PageDecl::head_actions`.
-    pub primary: bool,
+    /// At most one `Emphasis::Primary` per `PageDecl::head_actions`.
+    pub emphasis: Emphasis,
+    /// Draws the icon after the label; valid only on a `Then::Link` action.
+    pub trailing_icon: bool,
     /// The modal's spec comes from `Provider::prepare` for the bound item; the declared
     /// `Then::Confirm` or `Then::Form` fixes only its variant.
     pub prepare: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Emphasis {
+    Primary,
+    Default,
+    Ghost,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -639,8 +648,10 @@ pub struct ConfirmSpec {
     pub title: String,
     pub body: String,
     pub tone: ConfirmTone,
-    pub impact: Vec<(String, String)>,
+    pub impact: Vec<(String, Cell)>,
     pub reason: ReasonReq,
+    /// The reason input's placeholder.
+    pub reason_hint: Option<String>,
     pub type_to_confirm: Option<String>,
     pub confirm_label: String,
 }
@@ -711,6 +722,9 @@ pub struct Cell {
     pub value: String,
     pub tone: Option<Tone>,
     pub link: Option<Link>,
+    /// A fill percentage drawn as a bar before the value; the portal clamps it to 100. With
+    /// a bar, `tone` colours the fill only.
+    pub bar: Option<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -788,8 +802,19 @@ pub struct KpiTile {
     pub unit: Option<String>,
     pub delta: Option<Delta>,
     pub series: Vec<f64>,
+    /// The sparkline's colour.
+    pub spark: Palette,
     pub capacity: Option<(f64, f64)>,
     pub link: Option<Link>,
+}
+
+/// The chart colours a module may pick: the design-system `--chart-1`, `--chart-2` and
+/// `--warn` tokens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Palette {
+    Chart1,
+    Chart2,
+    Warn,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

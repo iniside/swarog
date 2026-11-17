@@ -315,6 +315,31 @@ impl core::marker::Unpin for controlplane::ConfirmTone
 impl core::marker::UnsafeUnpin for controlplane::ConfirmTone
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::ConfirmTone
 impl core::panic::unwind_safe::UnwindSafe for controlplane::ConfirmTone
+pub enum controlplane::Emphasis
+pub controlplane::Emphasis::Default
+pub controlplane::Emphasis::Ghost
+pub controlplane::Emphasis::Primary
+impl core::clone::Clone for controlplane::Emphasis
+pub fn controlplane::Emphasis::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Emphasis
+impl core::cmp::PartialEq for controlplane::Emphasis
+pub fn controlplane::Emphasis::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Emphasis
+pub fn controlplane::Emphasis::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::Emphasis
+impl core::marker::StructuralPartialEq for controlplane::Emphasis
+impl serde_core::ser::Serialize for controlplane::Emphasis
+pub fn controlplane::Emphasis::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Emphasis
+pub fn controlplane::Emphasis::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Emphasis
+impl core::marker::Freeze for controlplane::Emphasis
+impl core::marker::Send for controlplane::Emphasis
+impl core::marker::Sync for controlplane::Emphasis
+impl core::marker::Unpin for controlplane::Emphasis
+impl core::marker::UnsafeUnpin for controlplane::Emphasis
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Emphasis
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Emphasis
 pub enum controlplane::FieldKind
 pub controlplane::FieldKind::Bool
 pub controlplane::FieldKind::Duration
@@ -477,6 +502,31 @@ impl core::marker::Unpin for controlplane::Link
 impl core::marker::UnsafeUnpin for controlplane::Link
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Link
 impl core::panic::unwind_safe::UnwindSafe for controlplane::Link
+pub enum controlplane::Palette
+pub controlplane::Palette::Chart1
+pub controlplane::Palette::Chart2
+pub controlplane::Palette::Warn
+impl core::clone::Clone for controlplane::Palette
+pub fn controlplane::Palette::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Palette
+impl core::cmp::PartialEq for controlplane::Palette
+pub fn controlplane::Palette::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Palette
+pub fn controlplane::Palette::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::Palette
+impl core::marker::StructuralPartialEq for controlplane::Palette
+impl serde_core::ser::Serialize for controlplane::Palette
+pub fn controlplane::Palette::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Palette
+pub fn controlplane::Palette::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Palette
+impl core::marker::Freeze for controlplane::Palette
+impl core::marker::Send for controlplane::Palette
+impl core::marker::Sync for controlplane::Palette
+impl core::marker::Unpin for controlplane::Palette
+impl core::marker::UnsafeUnpin for controlplane::Palette
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Palette
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Palette
 pub enum controlplane::Point
 pub controlplane::Point::DashboardAttention
 pub controlplane::Point::DashboardPanel
@@ -763,6 +813,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Trend
 impl core::panic::unwind_safe::UnwindSafe for controlplane::Trend
 pub struct controlplane::ActionDecl
 pub controlplane::ActionDecl::danger: bool
+pub controlplane::ActionDecl::emphasis: controlplane::Emphasis
 pub controlplane::ActionDecl::icon: alloc::string::String
 pub controlplane::ActionDecl::id: alloc::string::String
 pub controlplane::ActionDecl::implemented: bool
@@ -772,8 +823,8 @@ pub controlplane::ActionDecl::multi: bool
 pub controlplane::ActionDecl::order: i32
 pub controlplane::ActionDecl::point: controlplane::ActionPoint
 pub controlplane::ActionDecl::prepare: bool
-pub controlplane::ActionDecl::primary: bool
 pub controlplane::ActionDecl::then: controlplane::Then
+pub controlplane::ActionDecl::trailing_icon: bool
 impl core::clone::Clone for controlplane::ActionDecl
 pub fn controlplane::ActionDecl::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::ActionDecl
@@ -845,6 +896,7 @@ impl core::marker::UnsafeUnpin for controlplane::Banner
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Banner
 impl core::panic::unwind_safe::UnwindSafe for controlplane::Banner
 pub struct controlplane::Cell
+pub controlplane::Cell::bar: core::option::Option<u8>
 pub controlplane::Cell::kind: controlplane::CellKind
 pub controlplane::Cell::link: core::option::Option<controlplane::Link>
 pub controlplane::Cell::tone: core::option::Option<controlplane::Tone>
@@ -898,8 +950,9 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::Column
 pub struct controlplane::ConfirmSpec
 pub controlplane::ConfirmSpec::body: alloc::string::String
 pub controlplane::ConfirmSpec::confirm_label: alloc::string::String
-pub controlplane::ConfirmSpec::impact: alloc::vec::Vec<(alloc::string::String, alloc::string::String)>
+pub controlplane::ConfirmSpec::impact: alloc::vec::Vec<(alloc::string::String, controlplane::Cell)>
 pub controlplane::ConfirmSpec::reason: controlplane::ReasonReq
+pub controlplane::ConfirmSpec::reason_hint: core::option::Option<alloc::string::String>
 pub controlplane::ConfirmSpec::title: alloc::string::String
 pub controlplane::ConfirmSpec::tone: controlplane::ConfirmTone
 pub controlplane::ConfirmSpec::type_to_confirm: core::option::Option<alloc::string::String>
@@ -1208,6 +1261,7 @@ pub controlplane::KpiTile::delta: core::option::Option<controlplane::Delta>
 pub controlplane::KpiTile::label: alloc::string::String
 pub controlplane::KpiTile::link: core::option::Option<controlplane::Link>
 pub controlplane::KpiTile::series: alloc::vec::Vec<f64>
+pub controlplane::KpiTile::spark: controlplane::Palette
 pub controlplane::KpiTile::unit: core::option::Option<alloc::string::String>
 pub controlplane::KpiTile::value: alloc::string::String
 impl core::clone::Clone for controlplane::KpiTile

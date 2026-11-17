@@ -2,7 +2,7 @@
 //! constant from `UILayout/redesign/assets/data.js` / `registry.js`, or a pure function of
 //! an id; nothing reads a clock or a random source.
 
-use controlplane::{AttentionItem, Delta, KpiTile, Link, ServiceItem, ServiceState, Severity, Trend};
+use controlplane::{AttentionItem, Delta, KpiTile, Link, Palette, ServiceItem, ServiceState, Severity, Trend};
 
 /// FNV-1a, 64-bit.
 pub(crate) fn hash(id: &str) -> u64 {
@@ -118,6 +118,7 @@ pub(crate) fn lore_seats() -> KpiTile {
         unit: None,
         delta: delta("", "users with Lore access · 1 suspended", Trend::None),
         series: vec![5.0, 6.0, 6.0, 7.0, 8.0, 8.0],
+        spark: Palette::Chart1,
         capacity: None,
         link: None,
     }
@@ -131,6 +132,7 @@ pub(crate) fn lore_store() -> KpiTile {
         unit: Some("TB".to_string()),
         delta: delta("▲ 1.19 TB", "this month", Trend::Down),
         series: vec![6.2, 7.4, 8.9, 10.6, 12.1, 13.29],
+        spark: Palette::Chart2,
         capacity: None,
         link: None,
     }
@@ -144,6 +146,7 @@ pub(crate) fn matches_in_progress() -> KpiTile {
         unit: None,
         delta: delta("— steady", "", Trend::None),
         series: vec![900.0, 1010.0, 1100.0, 1180.0, 1220.0, 1190.0, 1204.0],
+        spark: Palette::Chart1,
         capacity: None,
         link: None,
     }

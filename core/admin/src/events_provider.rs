@@ -7,10 +7,10 @@ use async_trait::async_trait;
 use asyncevents::admin::{self as plane, SkipResult, StateSnapshot, SubInfo, SubState};
 use controlplane::{
     ActionDecl, ActionPoint, Align, AttentionItem, Banner, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
-    ContributionDecl, DataTable, Delta, EntityHeader, EntityKindDecl, EntityRef, FilterDef, FilterKind,
-    InvokeCall, InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, PageDecl, PageInfo, PanelBody, PanelQuery,
-    Point, PrepareCall, Primitive, PropertyList, Provider, ReasonReq, Role, Row, SearchHit, SearchQuery, Severity,
-    Then, Tone, Trend, DEFAULT_PANEL_DEADLINE_MS,
+    ContributionDecl, DataTable, Delta, Emphasis, EntityHeader, EntityKindDecl, EntityRef, FilterDef, FilterKind,
+    InvokeCall, InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, PageDecl, PageInfo, Palette, PanelBody,
+    PanelQuery, Point, PrepareCall, Primitive, PropertyList, Provider, ReasonReq, Role, Row, SearchHit, SearchQuery,
+    Severity, Then, Tone, Trend, DEFAULT_PANEL_DEADLINE_MS,
 };
 use sqlx::PgPool;
 
@@ -35,6 +35,7 @@ const LAG_WARN: i64 = 100;
 const SKIP_NEEDS_ITEM: &str = "Skip needs the previewed event";
 const SKIP_BODY: &str = "The checkpoint advances past this event and the subscription resumes. The consumer never \
                          applies this event unless it is done by hand.";
+const SKIP_REASON_HINT: &str = "e.g. malformed payload from a producer bug, compensated manually";
 const POISON_HINT: &str = "Fix the consumer first, then Resume. Skip advances the checkpoint past this event.";
 const NOTHING_TO_SKIP: &str = "Nothing to skip — the subscription is healthy";
 const ALREADY_RESOLVED: &str =
@@ -132,7 +133,13 @@ fn events_page() -> Link {
 }
 
 fn text(kind: CellKind, value: impl Into<String>, tone: Option<Tone>) -> Cell {
-    Cell { kind, value: value.into(), tone, link: None }
+    Cell { kind, value: value.into(), tone, link: None, bar: None }
+}
+
+/// The mockup's lag bar fill (`pages-platform.js:129`): a third of the lag, between 3 and
+/// 100 percent.
+fn lag_bar(lag: i64) -> u8 {
+    (lag / 3).clamp(3, 100) as u8
 }
 
 fn state_tone(state: &str, failures: i32) -> Option<Tone> {
@@ -203,7 +210,7 @@ fn act(id: &'static str, point: ActionPoint, label: &'static str, icon: &'static
 }
 
 impl Act {
-    fn decl(self, danger: bool, primary: bool, implemented: bool) -> ActionDecl {
+    fn decl(self, danger: bool, emphasis: Emphasis, implemented: bool) -> ActionDecl {
         ActionDecl {
             id: self.id.to_string(),
             point: self.point,
@@ -215,7 +222,8 @@ impl Act {
             min_role: Role::Operator,
             then: self.then,
             implemented,
-            primary,
+            emphasis,
+            trailing_icon: false,
             prepare: false,
         }
     }
@@ -232,6 +240,7 @@ fn manifest() -> Manifest {
         tone: ConfirmTone::Danger,
         impact: Vec::new(),
         reason: ReasonReq::Required,
+        reason_hint: None,
         type_to_confirm: None,
         confirm_label: "Skip and resume".to_string(),
     };
@@ -243,6 +252,7 @@ fn manifest() -> Manifest {
         tone: ConfirmTone::Warn,
         impact: Vec::new(),
         reason: ReasonReq::None,
+        reason_hint: None,
         type_to_confirm: None,
         confirm_label: "Pause".to_string(),
     };
@@ -295,18 +305,21 @@ fn manifest() -> Manifest {
             ),
         ],
         actions: vec![
-            act(POISON_RESUME, tool(), "Resume (retry event)", "play", 10, Then::Invoke).decl(false, true, true),
+            act(POISON_RESUME, tool(), "Resume (retry event)", "play", 10, Then::Invoke)
+                .decl(false, Emphasis::Primary, true),
             ActionDecl {
                 prepare: true,
-                ..act(POISON_SKIP, tool(), "Skip event…", "skip", 20, Then::Confirm(skip)).decl(false, false, true)
+                ..act(POISON_SKIP, tool(), "Skip event…", "skip", 20, Then::Confirm(skip))
+                    .decl(false, Emphasis::Default, true)
             },
             // NEW: copying to the clipboard is a client action no backend call performs.
-            act(POISON_COPY, tool(), "Copy payload", "download", 30, Then::Invoke).decl(false, false, false),
-            act(SUB_PAUSE, row(), "Pause…", "pause", 10, Then::Confirm(pause)).decl(false, false, true),
-            act(SUB_RESUME, row(), "Resume", "play", 20, Then::Invoke).decl(false, false, true),
-            act(SUB_RETRY, row(), "Retry now", "refresh", 30, Then::Invoke).decl(false, false, true),
+            act(POISON_COPY, tool(), "Copy payload", "download", 30, Then::Invoke).decl(false, Emphasis::Ghost, false),
+            act(SUB_PAUSE, row(), "Pause…", "pause", 10, Then::Confirm(pause)).decl(false, Emphasis::Default, true),
+            act(SUB_RESUME, row(), "Resume", "play", 20, Then::Invoke).decl(false, Emphasis::Default, true),
+            act(SUB_RETRY, row(), "Retry now", "refresh", 30, Then::Invoke).decl(false, Emphasis::Default, true),
             // NEW: no checkpoint rewind exists.
-            act(SUB_REWIND, row(), "Rewind checkpoint…", "left", 40, Then::Invoke).decl(true, false, false),
+            act(SUB_REWIND, row(), "Rewind checkpoint…", "left", 40, Then::Invoke)
+                .decl(true, Emphasis::Default, false),
         ],
         search: Vec::new(),
         writes: true,
@@ -349,6 +362,7 @@ impl EventsProvider {
             unit: Some(format!("/ {}", states.len())),
             delta: paused.first().map(|s| Delta { value: s.id.clone(), period: String::new(), good: Trend::None }),
             series: Vec::new(),
+            spark: Palette::Chart1,
             capacity: None,
             link: Some(events_page()),
         }))
@@ -388,6 +402,7 @@ impl EventsProvider {
             unit: None,
             delta: Some(Delta { value: String::new(), period: by_state, good: Trend::None }),
             series: Vec::new(),
+            spark: Palette::Chart1,
             capacity: None,
             link: None,
         }))
@@ -406,6 +421,7 @@ impl EventsProvider {
                 good: Trend::None,
             }),
             series: Vec::new(),
+            spark: Palette::Chart1,
             capacity: None,
             link: None,
         }))
@@ -433,7 +449,10 @@ impl EventsProvider {
                         text(CellKind::Text, fakes::consumer(&s.id), None),
                         text(CellKind::Number, thousands(checkpoint), None),
                         text(CellKind::Number, thousands(head), None),
-                        text(CellKind::Number, count(s.lag_events), lag_tone(&s)),
+                        Cell {
+                            bar: Some(lag_bar(s.lag_events)),
+                            ..text(CellKind::Number, count(s.lag_events), lag_tone(&s))
+                        },
                         state_cell(&s.state, s.consecutive_failures),
                     ],
                     highlight: s.state == "paused",
@@ -454,7 +473,7 @@ impl EventsProvider {
                 column("consumer", "Consumer", CellKind::Text, Align::Left),
                 column("checkpoint", "Checkpoint", CellKind::Number, Align::Right),
                 column("head", "Head", CellKind::Number, Align::Right),
-                column("lag", "Lag", CellKind::Number, Align::Right),
+                column("lag", "Lag", CellKind::Number, Align::Left),
                 column("state", "State", CellKind::Badge, Align::Left),
             ],
             page: PageInfo { next_cursor: None, size: rows.len() as u32, total: Some(rows.len() as u64) },
@@ -546,10 +565,11 @@ impl EventsProvider {
             body: SKIP_BODY.to_string(),
             tone: ConfirmTone::Danger,
             impact: vec![
-                ("Subscription".to_string(), id.to_string()),
-                ("Event".to_string(), event_name(&topic, short)),
+                prop("Subscription", text(CellKind::Mono, id, None)),
+                prop("Event", text(CellKind::Mono, event_name(&topic, short), None)),
             ],
             reason: ReasonReq::Required,
+            reason_hint: Some(SKIP_REASON_HINT.to_string()),
             type_to_confirm: Some(short.to_string()),
             confirm_label: "Skip and resume".to_string(),
         }))
@@ -662,6 +682,7 @@ impl EventsProvider {
                 unit: None,
                 delta: Some(Delta { value: String::new(), period: fakes::HEAD_RATE.to_string(), good: Trend::None }),
                 series: Vec::new(),
+                spark: Palette::Chart1,
                 capacity: None,
                 link: None,
             })),
@@ -678,6 +699,7 @@ impl EventsProvider {
                     good: Trend::None,
                 }),
                 series: Vec::new(),
+                spark: Palette::Chart1,
                 capacity: None,
                 link: None,
             })),

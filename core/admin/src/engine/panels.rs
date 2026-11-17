@@ -13,6 +13,8 @@ use super::Engine;
 
 /// Upper bound on cached last-good panels; the key space spans entities and params.
 const PANEL_CACHE_CAP: usize = 512;
+/// The oldest expired copy whose KPI value an error tile still shows.
+const LAST_VALUE_MAX_AGE: Duration = Duration::from_secs(3600);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -50,6 +52,23 @@ pub(crate) struct PanelView {
     pub(crate) error: Option<String>,
     /// Seconds since a stale panel's cached copy was fetched.
     pub(crate) age_s: Option<u64>,
+    /// An error KPI tile's value from its expired copy; never set in another state.
+    pub(crate) last_value: Option<LastValue>,
+}
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub(crate) struct LastValue {
+    /// The tile's value, followed by its unit when it has one.
+    pub(crate) value: String,
+    /// Seconds since the copy was fetched.
+    pub(crate) age_s: u64,
+}
+
+/// A cached copy: `Fresh` within its ttl, `Expired` past it but at most
+/// [`LAST_VALUE_MAX_AGE`] old.
+enum Cached {
+    Fresh(PanelBody, Duration),
+    Expired(PanelBody, Duration),
 }
 
 /// The module's banner, shown only in `ok` and `readonly`; every other state shows the
@@ -96,24 +115,33 @@ pub(crate) fn parse_range(raw: Option<&str>) -> Result<TimeRange, String> {
     }
 }
 
-/// Last-good panels for contributions that declare `cache_ttl_s`.
+/// Last-good panels for contributions that declare `cache_ttl_s`. An entry is kept past
+/// its ttl while it is at most [`LAST_VALUE_MAX_AGE`] old.
 #[derive(Default)]
 pub(crate) struct PanelCache {
     entries: HashMap<String, (PanelBody, Instant, Instant)>,
 }
 
 impl PanelCache {
-    /// The cached copy and its age.
-    fn get(&self, key: &str) -> Option<(PanelBody, Duration)> {
+    fn get(&self, key: &str) -> Option<Cached> {
         let (body, fetched, expires) = self.entries.get(key)?;
         let now = Instant::now();
-        (now < *expires).then(|| (body.clone(), now.saturating_duration_since(*fetched)))
+        let age = now.saturating_duration_since(*fetched);
+        if now < *expires {
+            Some(Cached::Fresh(body.clone(), age))
+        } else if age <= LAST_VALUE_MAX_AGE {
+            Some(Cached::Expired(body.clone(), age))
+        } else {
+            None
+        }
     }
 
     fn put(&mut self, key: String, body: PanelBody, ttl: Duration) {
         let now = Instant::now();
         if self.entries.len() >= PANEL_CACHE_CAP && !self.entries.contains_key(&key) {
-            self.entries.retain(|_, (_, _, expires)| *expires > now);
+            self.entries.retain(|_, (_, fetched, expires)| {
+                *expires > now || now.saturating_duration_since(*fetched) <= LAST_VALUE_MAX_AGE
+            });
             if self.entries.len() >= PANEL_CACHE_CAP {
                 if let Some(oldest) =
                     self.entries.iter().min_by_key(|(_, (_, _, expires))| *expires).map(|(k, _)| k.clone())
@@ -193,6 +221,7 @@ pub(crate) async fn resolve(
         body: None,
         error: None,
         age_s: None,
+        last_value: None,
     };
     if !roles::allows(operator, decl.min_role) {
         view.state = PanelState::Denied;
@@ -232,9 +261,29 @@ pub(crate) async fn resolve(
     let cached = decl
         .cache_ttl_s
         .and_then(|_| engine.panel_cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key));
-    view.state = if cached.is_some() { PanelState::Stale } else { PanelState::Error };
-    view.age_s = cached.as_ref().map(|(_, age)| age.as_secs());
-    view.body = cached.map(|(body, _)| body);
     view.error = Some(failure);
+    match cached {
+        Some(Cached::Fresh(body, age)) => {
+            view.state = PanelState::Stale;
+            view.age_s = Some(age.as_secs());
+            view.body = Some(body);
+        }
+        Some(Cached::Expired(body, age)) => view.last_value = last_value(&body, age),
+        None => {}
+    }
     view
+}
+
+/// The value an error tile shows from its expired copy: a `KpiTile`'s only.
+fn last_value(body: &PanelBody, age: Duration) -> Option<LastValue> {
+    match &body.primitive {
+        Primitive::KpiTile(k) => Some(LastValue {
+            value: match &k.unit {
+                Some(unit) => format!("{} {unit}", k.value),
+                None => k.value.clone(),
+            },
+            age_s: age.as_secs(),
+        }),
+        _ => None,
+    }
 }

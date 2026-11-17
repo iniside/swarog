@@ -11,7 +11,7 @@ use minijinja::{Environment, Value};
 use serde::Serialize;
 
 use crate::engine::actions::{self, money_currency_key, Chrome};
-use crate::engine::panels::{self, PanelState};
+use crate::engine::panels::{self, LastValue, PanelState};
 
 const SHELL: &str = include_str!("templates/shell.html.tmpl");
 const PRIMITIVES: &str = include_str!("templates/primitives.html.tmpl");
@@ -184,6 +184,20 @@ pub(crate) struct CellView {
     pub(crate) href: Option<String>,
     pub(crate) color: &'static str,
     pub(crate) initials: String,
+    /// The bar's fill percentage, at most 100.
+    pub(crate) bar: Option<u8>,
+    /// The bar fill's `lag-bar` class: `""`, `w` or `e`.
+    pub(crate) bar_tone: &'static str,
+}
+
+/// With a bar, the cell's tone colours the fill only: `Warn` is `w`, `Err` is `e`, every
+/// other tone the default fill.
+fn bar_tone(t: Option<Tone>) -> &'static str {
+    match t {
+        Some(Tone::Warn) => "w",
+        Some(Tone::Err) => "e",
+        Some(Tone::Ok | Tone::Info) | None => "",
+    }
 }
 
 pub(crate) fn cell(c: &controlplane::Cell) -> CellView {
@@ -197,10 +211,11 @@ pub(crate) fn cell(c: &controlplane::Cell) -> CellView {
         CellKind::Time => "time",
         CellKind::User => "user",
     };
-    let tone = match (c.tone, c.kind) {
-        (Some(t), _) => tone(t),
-        (None, CellKind::Badge) => status_tone(&c.value),
-        (None, _) => "",
+    let tone = match (c.bar, c.tone, c.kind) {
+        (Some(_), _, _) => "",
+        (None, Some(t), _) => tone(t),
+        (None, None, CellKind::Badge) => status_tone(&c.value),
+        (None, None, _) => "",
     };
     CellView {
         kind,
@@ -209,6 +224,8 @@ pub(crate) fn cell(c: &controlplane::Cell) -> CellView {
         href: c.link.as_ref().map(link_url),
         color: avatar_color(&c.value),
         initials: initials(&c.value),
+        bar: c.bar.map(|pct| pct.min(100)),
+        bar_tone: c.bar.map_or("", |_| bar_tone(c.tone)),
     }
 }
 
@@ -221,6 +238,8 @@ fn ref_cell(e: &EntityRef) -> CellView {
         href: Some(entity_url(e)),
         color: avatar_color(&e.id),
         initials: initials(&e.id),
+        bar: None,
+        bar_tone: "",
     }
 }
 
@@ -236,7 +255,10 @@ pub(crate) struct ActionItem {
     pub(crate) label: String,
     pub(crate) icon: String,
     pub(crate) danger: bool,
-    pub(crate) primary: bool,
+    /// `primary`, `default` or `ghost`.
+    pub(crate) emphasis: &'static str,
+    /// The icon follows the label.
+    pub(crate) trailing_icon: bool,
     /// `GET` opens the modal, `POST` invokes.
     pub(crate) url: String,
     pub(crate) enabled: bool,
@@ -259,6 +281,14 @@ pub(crate) fn then_name(then: &controlplane::Then) -> &'static str {
         controlplane::Then::Form(_) => "form",
         controlplane::Then::Confirm(_) => "confirm",
         controlplane::Then::Link(_) => "link",
+    }
+}
+
+pub(crate) fn emphasis_name(emphasis: controlplane::Emphasis) -> &'static str {
+    match emphasis {
+        controlplane::Emphasis::Primary => "primary",
+        controlplane::Emphasis::Default => "default",
+        controlplane::Emphasis::Ghost => "ghost",
     }
 }
 
@@ -577,6 +607,7 @@ pub(crate) struct PanelInput<'a> {
     pub(crate) search: Option<&'a str>,
     pub(crate) error: Option<&'a str>,
     pub(crate) age_s: Option<u64>,
+    pub(crate) last_value: Option<&'a LastValue>,
     pub(crate) min_role: &'static str,
     pub(crate) fallback_title: &'a str,
     pub(crate) body: Option<&'a PanelBody>,
@@ -618,12 +649,21 @@ pub(crate) struct PanelRender {
     pub(crate) age: Option<String>,
     /// The KPI tile's stale badge: `"3m"`.
     pub(crate) age_short: Option<String>,
+    /// An error KPI tile's last value, shown only as its muted detail text.
+    pub(crate) last_value: Option<LastValueView>,
     pub(crate) min_role: &'static str,
     pub(crate) fallback_title: String,
     pub(crate) flush: bool,
     pub(crate) body: Option<PrimView>,
     /// The `PanelTool` actions shown in the panel head, bound to the panel's element.
     pub(crate) tools: Vec<ActionItem>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct LastValueView {
+    pub(crate) value: String,
+    /// `"3 min"`.
+    pub(crate) age: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -682,6 +722,9 @@ pub(crate) fn panel(input: &PanelInput<'_>) -> PanelRender {
         error: input.error.map(str::to_string),
         age: input.age_s.map(age_text),
         age_short: input.age_s.map(|s| age_text(s).replace(" min", "m").replace(' ', "")),
+        last_value: input
+            .last_value
+            .map(|last| LastValueView { value: last.value.clone(), age: age_text(last.age_s) }),
         min_role: input.min_role,
         fallback_title: input.fallback_title.to_string(),
         flush,
@@ -920,8 +963,16 @@ fn delta_class(d: &controlplane::Delta) -> &'static str {
     }
 }
 
+fn palette(p: controlplane::Palette) -> &'static str {
+    match p {
+        controlplane::Palette::Chart1 => "var(--chart-1)",
+        controlplane::Palette::Chart2 => "var(--chart-2)",
+        controlplane::Palette::Warn => "var(--warn)",
+    }
+}
+
 /// The mockup's `spark` path (`bundle.js:170-175`).
-fn spark(values: &[f64]) -> Option<SparkView> {
+fn spark(values: &[f64], color: controlplane::Palette) -> Option<SparkView> {
     if values.len() < 2 {
         return None;
     }
@@ -937,7 +988,7 @@ fn spark(values: &[f64]) -> Option<SparkView> {
         line.push_str(&format!("{}{x:.1},{y:.1}", if i == 0 { 'M' } else { 'L' }));
     }
     let area = format!("{line}L{w},{h}L0,{h}Z");
-    Some(SparkView { line, area, color: "var(--chart-1)" })
+    Some(SparkView { line, area, color: palette(color) })
 }
 
 fn kpi(k: &controlplane::KpiTile) -> KpiView {
@@ -949,7 +1000,7 @@ fn kpi(k: &controlplane::KpiTile) -> KpiView {
         delta_class: k.delta.as_ref().map(delta_class).unwrap_or("flat"),
         delta_period: k.delta.as_ref().map(|d| d.period.clone()).unwrap_or_default(),
         bar: k.capacity.map(|(used, total)| if total > 0.0 { (used / total * 100.0).clamp(0.0, 100.0) } else { 0.0 }),
-        spark: spark(&k.series),
+        spark: spark(&k.series, k.spark),
         href: k.link.as_ref().map(link_url),
     }
 }
@@ -1013,6 +1064,8 @@ fn timeline(t: &controlplane::Timeline, ctx: &Ctx<'_>) -> TimelineView {
                 href: Some(entity_url(t)),
                 color: "",
                 initials: String::new(),
+                bar: None,
+                bar_tone: "",
             }),
             detail: e.detail.clone(),
         };
@@ -1194,6 +1247,7 @@ pub(crate) fn panel_form_result(
         search: None,
         error: None,
         age_s: None,
+        last_value: None,
         min_role: crate::role_name(frame.decl.min_role),
         fallback_title: "",
         body: Some(&body),
@@ -1271,6 +1325,8 @@ fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
                     href: None,
                     color: "",
                     initials: String::new(),
+                    bar: None,
+                    bar_tone: "",
                 },
                 attempts,
                 attempts_title: format!("{} attempts", it.attempts),
@@ -1511,9 +1567,11 @@ pub(crate) struct ModalView {
     pub(crate) go: &'static str,
     pub(crate) title: String,
     pub(crate) body: String,
-    pub(crate) impact: Vec<(String, String)>,
+    pub(crate) impact: Vec<(String, CellView)>,
     /// `required`, `optional` or `none`.
     pub(crate) reason: &'static str,
+    /// The reason input's placeholder.
+    pub(crate) reason_hint: Option<String>,
     pub(crate) reason_value: String,
     pub(crate) reason_error: Option<String>,
     pub(crate) type_to_confirm: Option<String>,
@@ -1548,6 +1606,7 @@ pub(crate) fn modal(
         body: String::new(),
         impact: Vec::new(),
         reason: "none",
+        reason_hint: None,
         reason_value: reason_value.to_string(),
         reason_error: errors.get(actions::FIELD_REASON).cloned(),
         type_to_confirm: None,
@@ -1574,7 +1633,8 @@ pub(crate) fn modal(
             }
             view.title = spec.title.clone();
             view.body = spec.body.clone();
-            view.impact = spec.impact.clone();
+            view.impact = spec.impact.iter().map(|(k, v)| (k.clone(), cell(v))).collect();
+            view.reason_hint = spec.reason_hint.clone();
             view.reason = match spec.reason {
                 ReasonReq::Required => "required",
                 ReasonReq::Optional => "optional",

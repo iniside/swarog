@@ -1900,3 +1900,8 @@ The report lists the declared deviations.
   - Review fix: a panel form's `admin.forms` row stores its panel's chrome. `StoredSpec::Form` is `{ form, chrome }` (meta, heading, note, banner; empty for a modal form), and the 422/409 re-render rebuilds the whole `PanelBody` from it with no re-fetch. Rows written before this change no longer decode; they expire within the 1 h TTL (wipe rule).
   - Review fix: the poison `meta` is "since <Mon D> <HH:MM>" (for example "since Nov 17 14:02"), from the paused row's timestamp in the database session's time zone. The provider reads no clock, so the date is always shown, unlike the mockup's "since 14:02".
   - Review fix: the input inventory resolves a request type through its own type index only for a one-segment path or a `crate::`, `self::` or `super::` path. A foreign multi-segment path such as `other::Kind` goes to the opaque-type check or the error, so it no longer resolves to a local type of the same name.
+- Step 9b:
+  - The error tile's last value is the expired copy's `KpiTile.value` followed by its `unit` when it has one ("13.29 TB"). The mockup's error tile (`bundle.js:180`) shows the value alone; its one example has no unit.
+  - A bar cell renders with an empty `CellView.tone`, so the existing `cell` macro already shows the value plain; the fill class is `CellView.bar_tone` (`""`, `w` or `e`) and the clamped width is `CellView.bar`.
+  - `SparkView.color` comes from `KpiTile.spark`, and `primitives.html.tmpl` already reads it, so the spark colour needs no Step 10 markup.
+  - The Lag bar is `(lag / 3).clamp(3, 100)` in whole percent, because `Cell.bar` is a `u8`; the mockup computes it in floating point.

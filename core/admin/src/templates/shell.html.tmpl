@@ -44,7 +44,7 @@
 {%- elif v.panels %}<div class="stack">{% for s in v.panels %}{{ ui.slot(s) }}{% endfor %}</div>{% endif -%}
 {%- if not v.tiles and not v.attention and not v.panels %}<section class="panel"><div class="panel-body">{{ ui.state_block("empty", "Nothing here yet", "No module contributes to the dashboard yet.") }}</div></section>{% endif -%}
 {%- elif screen == "page" -%}
-<div class="page-head"><div><h1>{{ v.title }}</h1>{% if v.subtitle %}<div class="sub">{{ v.subtitle }}</div>{% endif %}</div><div class="page-actions">{% for a in v.head_actions %}{{ ui.action_button(a, "primary" if a.primary and not a.danger else "") }}{% endfor %}</div></div>
+<div class="page-head"><div><h1>{{ v.title }}</h1>{% if v.subtitle %}<div class="sub">{{ v.subtitle }}</div>{% endif %}</div><div class="page-actions">{% for a in v.head_actions %}{{ ui.action_button(a, "primary" if a.emphasis == "primary" and not a.danger else "") }}{% endfor %}</div></div>
 {%- if v.layout == "stack" %}<div class="stack">{% for col in v.columns %}{% for s in col %}{{ ui.slot(s) }}{% endfor %}{% endfor %}</div>
 {%- else %}<div class="grid {{ v.layout }}">{% for col in v.columns %}<div class="stack">{% for s in col %}{{ ui.slot(s) }}{% endfor %}</div>{% endfor %}</div>
 {%- endif -%}

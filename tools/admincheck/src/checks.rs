@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use checkmodules::ProcessControlPlane;
-use controlplane::{ActionPoint, Layout, Manifest, Point, Then, SECTIONS};
+use controlplane::{ActionPoint, Emphasis, Layout, Manifest, Point, Then, SECTIONS};
 
 /// The longest action or contribution id: a form instance id `<id>:<43-byte token>` then
 /// stays within the 128-byte idempotency keys modules accept.
@@ -21,6 +21,7 @@ pub fn findings(manifests: &[Manifest]) -> Vec<String> {
         nav_entries(m, &mut out);
         panel_actions(m, &mut out);
         prepared_actions(m, &mut out);
+        trailing_icons(m, &mut out);
         id_lengths(m, &mut out);
         form_specs(m, &mut out);
     }
@@ -140,7 +141,7 @@ fn head_actions(m: &Manifest, out: &mut Vec<String>) {
         let primary: Vec<&str> = page
             .head_actions
             .iter()
-            .filter(|id| m.actions.iter().any(|a| &a.id == *id && a.primary))
+            .filter(|id| m.actions.iter().any(|a| &a.id == *id && a.emphasis == Emphasis::Primary))
             .map(String::as_str)
             .collect();
         if primary.len() > 1 {
@@ -192,6 +193,12 @@ fn prepared_actions(m: &Manifest, out: &mut Vec<String>) {
         if matches!(a.point, ActionPoint::PanelForm(_)) {
             out.push(format!("{}: PanelForm action {:?} sets prepare, but a panel form has no modal", m.module, a.id));
         }
+    }
+}
+
+fn trailing_icons(m: &Manifest, out: &mut Vec<String>) {
+    for a in m.actions.iter().filter(|a| a.trailing_icon && !matches!(a.then, Then::Link(_))) {
+        out.push(format!("{}: action {:?} sets trailing_icon but is not Then::Link", m.module, a.id));
     }
 }
 
