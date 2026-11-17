@@ -1522,6 +1522,23 @@ NotFound with no pre-read.
     `pageshow` event with `persisted` (mockup-implementer lane);
   - a claimed row whose stored `spec` fails to decode answers 503 and stays held 30 s;
     release it before answering.
+- Gate tests found by the Step 9a proof audit (2026-11-17); their firing branches have
+  never run:
+  - conformance input inventory:
+    - a unit-only enum field (and an `Option` of one) is exactly one key;
+    - the data-carrying rejection asserts the `data-carrying` message;
+    - shapes covered: data variant last, struct variant, `#[cfg]` tuple variant;
+    - a foreign `other::Kind` path that shares a local enum's name is not resolved
+      through the local index;
+  - admincheck (`tools/admincheck/src/checks.rs` has no tests): fixture manifests with
+    one finding each:
+    - `prepare` on `Then::Invoke`;
+    - `prepare` on `Then::Link`;
+    - `prepare` on a `PanelForm` action;
+    - a `tiles` id whose contribution is a `DashboardTile`;
+    - an id in both `tiles` and `layout`;
+
+    plus one valid manifest that gives zero findings.
 - `core/admin` tests for Step 8a:
   - method for every time window: never sleep and never race a real clock. A window
     test back-dates `claimed_at` or `consumed_at` with an `UPDATE` before the next POST.
