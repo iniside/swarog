@@ -115,8 +115,9 @@ pub(crate) fn parse_range(raw: Option<&str>) -> Result<TimeRange, String> {
     }
 }
 
-/// Last-good panels for contributions that declare `cache_ttl_s`. An entry is kept past
-/// its ttl while it is at most [`LAST_VALUE_MAX_AGE`] old.
+/// Last-good panels for contributions that declare `cache_ttl_s`. `get` returns an expired
+/// copy until it is [`LAST_VALUE_MAX_AGE`] old. At the cap, `put` drops copies past both
+/// limits, then the one that expires first, so expired copies go before live ones.
 #[derive(Default)]
 pub(crate) struct PanelCache {
     entries: HashMap<String, (PanelBody, Instant, Instant)>,

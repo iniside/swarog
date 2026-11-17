@@ -1905,3 +1905,4 @@ The report lists the declared deviations.
   - A bar cell renders with an empty `CellView.tone`, so the existing `cell` macro already shows the value plain; the fill class is `CellView.bar_tone` (`""`, `w` or `e`) and the clamped width is `CellView.bar`.
   - `SparkView.color` comes from `KpiTile.spark`, and `primitives.html.tmpl` already reads it, so the spark colour needs no Step 10 markup.
   - The Lag bar is `(lag / 3).clamp(3, 100)` in whole percent, because `Cell.bar` is a `u8`; the mockup computes it in floating point.
+  - Review fix: `admin.forms` rows written before Step 9b with `StoredSpec::Confirm` hold the string `impact` and no longer decode; they expire within `FORM_TTL` (1 h) under the wipe rule, as the Step 9a errata says for Form rows.
