@@ -1715,8 +1715,9 @@ model tokens. Step 10's cost came from:
      - archcheck bans `asyncevents.<table>` SQL outside the plane, splitproof and tests,
        so `tools/eventctl/src/seed.rs` (that one file) joins its skip list.
      - The rows sit on the `(topic, contract_version)` stream with the most events, since
-       lag and `poison_event` match on the version. The cursor is the genesis position
-       (`start_kind` `genesis`, `spec_hash` `<topic>|v<n>|genesis`).
+       lag and `poison_event` match on the version. The genesis position is the lagging
+       row's cursor. Both rows keep `start_kind` `genesis` and `spec_hash`
+       `<topic>|v<n>|genesis`; the paused row's cursor is described below.
      - The lagging row carries 3 failures and a `last_error`, because only an active row
        with failures gets the warn badge.
      - The paused row's cursor is not genesis. It sits on the event just before the

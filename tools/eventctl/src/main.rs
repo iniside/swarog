@@ -42,13 +42,15 @@ USAGE:
   eventctl bump-generation                   fence the current log generation
   eventctl seed-mockup                       dev only: reset the admin mockup's paused
                                              and lagging rows (seed.mockup-paused.v1,
-                                             seed.mockup-lagging.v1) on the busiest topic
+                                             seed.mockup-lagging.v1) on the busiest stream
+                                             (topic and contract version)
 
 Retry, pause, resume and skip refuse a retired subscription.
 
-seed-mockup needs at least two events on the busiest topic (run demoseed first) and
-resets both rows from any state, retired included. The lagging row reads the topic
-from its first event; the paused row's poison event is the topic's middle event, so
+seed-mockup needs at least two events on the busiest stream (topic and contract
+version; run demoseed first) and resets both rows from any state, retired included.
+The lagging row reads the stream from its first event; the paused row's poison event
+is the stream's middle event, so
 its lag is below the lagging row's. No process consumes them. They hold the topic's
 retention floor until retired or the database is wiped.
 
