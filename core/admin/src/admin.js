@@ -140,12 +140,14 @@
   }
 
   // Refetches every loaded panel on the page. A slot still loading has no
-  // `data-panel-url`; a slot inside another is replaced with its outer one.
+  // `data-panel-url`; a slot inside another is replaced with its outer one. Each request
+  // has its slot as `source`: without one htmx syncs every request on `document.body`,
+  // where only the first and the last of one refresh would run.
   function refreshPanels() {
     if (!window.htmx) return;
     document.querySelectorAll(".page .slot[data-panel-url]").forEach(function (slot) {
       if (slot.parentElement.closest(".slot[data-panel-url]")) return;
-      htmx.ajax("GET", slot.dataset.panelUrl, { target: slot, swap: "outerHTML" });
+      htmx.ajax("GET", slot.dataset.panelUrl, { source: slot, target: slot, swap: "outerHTML" });
     });
   }
 
