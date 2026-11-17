@@ -2582,6 +2582,8 @@ dependencies = [
  "metrics",
  "opsapi",
  "prometheus",
+ "rcgen",
+ "rustls",
  "schedulerevents",
  "serde",
  "serde_json",
@@ -2589,6 +2591,7 @@ dependencies = [
  "testdb",
  "thiserror 1.0.69",
  "tokio",
+ "tokio-rustls",
  "tracing",
 ]
 

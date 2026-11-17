@@ -46,3 +46,7 @@ tokio = { workspace = true, features = ["test-util"] }
 # The durable plane, driven by hand: `asyncevents::testing::TestTransport` gives the ingress
 # and prune tests a REAL append + delivery pass with no background workers and no clock.
 asyncevents = { workspace = true }
+# The SMTP TLS proofs: a minted CA and leaf, served by a ring-only rustls acceptor.
+rcgen = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }

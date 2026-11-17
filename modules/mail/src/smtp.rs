@@ -174,6 +174,44 @@ impl SmtpSender {
             from: Mailbox::new(None, from),
         })
     }
+
+    /// A TLS transport that trusts ONLY `root_pem`, so a test can complete the handshake
+    /// against a minted loopback certificate that `webpki-roots` would reject.
+    #[cfg(test)]
+    pub(crate) fn tls_trusting_for_tests(
+        host: &str,
+        port: u16,
+        from: &str,
+        connect_timeout: Duration,
+        mode: TlsMode,
+        root_pem: &[u8],
+        credentials: Option<(String, String)>,
+    ) -> anyhow::Result<SmtpSender> {
+        use lettre::transport::smtp::client::{Certificate, CertificateStore, Tls, TlsParameters};
+
+        let from = parse_address(from)
+            .map_err(|reason| anyhow::anyhow!("the envelope sender {reason}"))?;
+        let params = TlsParameters::builder(host.to_string())
+            .certificate_store(CertificateStore::None)
+            .add_root_certificate(Certificate::from_pem(root_pem)?)
+            .build_rustls()?;
+        let tls = match mode {
+            TlsMode::StartTls => Tls::Required(params),
+            TlsMode::Implicit => Tls::Wrapper(params),
+        };
+        let mut builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
+            .tls(tls)
+            .port(port)
+            .timeout(Some(connect_timeout))
+            .hello_name(ClientId::Domain(hello_domain(&from)));
+        if let Some((username, password)) = credentials {
+            builder = builder.credentials(Credentials::new(username, password));
+        }
+        Ok(SmtpSender {
+            transport: builder.build(),
+            from: Mailbox::new(None, from),
+        })
+    }
 }
 
 #[async_trait]

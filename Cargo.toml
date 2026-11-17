@@ -280,6 +280,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 rustls-pki-types = "1"
 rustls-platform-verifier = "0.7"
 rcgen = "0.13"
+# The mail tests' TLS relay acceptor. Default features OFF: they select `aws_lc_rs`.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 
 # proc-macro toolchain for the `#[rpc]` codegen crate.
 syn = { version = "2", features = ["full", "extra-traits"] }
