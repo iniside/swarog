@@ -167,6 +167,9 @@ pub struct Skel {
     pub children: Vec<Skel>,
     /// The head and children in one string: equal canons are equal skeletons.
     pub canon: String,
+    /// A repeat item's [`hint`]; never part of `canon`, so it names a shape without
+    /// splitting it.
+    pub hint: Option<String>,
 }
 
 impl Skel {
@@ -176,7 +179,7 @@ impl Skel {
         } else {
             format!("{head}{{{}}}", children.iter().map(|c| c.canon.as_str()).collect::<Vec<_>>().join(","))
         };
-        Skel { head, children, canon }
+        Skel { head, children, canon, hint: None }
     }
 
     fn group(item: Sel, shapes: Vec<Skel>) -> Skel {
@@ -306,7 +309,7 @@ fn build(e: &Element, text: bool, mut cut: Option<&mut Cutter>) -> Skel {
             Node::Element(c) => match repeat_of(e, c) {
                 Some(r) => {
                     let shape = match REPEAT[r].shape {
-                        Shape::Full => build(c, text, cut.as_deref_mut()),
+                        Shape::Full => Skel { hint: hint(c), ..build(c, text, cut.as_deref_mut()) },
                         Shape::Tag => Skel::new(c.tag.clone(), Vec::new()),
                     };
                     let slot = match groups.get(&r) {
@@ -335,15 +338,65 @@ fn build(e: &Element, text: bool, mut cut: Option<&mut Cutter>) -> Skel {
     Skel::new(head(e), children)
 }
 
+/// The longest [`hint`], in characters.
+const HINT_CHARS: usize = 40;
+
+/// What tells one repeat item from its siblings to a reader: the text of its first
+/// `.badge`, then of its first child element with text, as `badge · cell`. A `"` becomes
+/// `'`, so the printed ` ("…")` suffix never holds one.
+fn hint(e: &Element) -> Option<String> {
+    let badge = e.find(&|x| x.has_class("badge")).map(Element::text).filter(|t| !t.is_empty());
+    let cell = e.children.iter().find_map(|c| match c {
+        Node::Element(c) => Some(c.text()).filter(|t| !t.is_empty()),
+        Node::Text(_) => None,
+    });
+    let text = match (badge, cell) {
+        (Some(badge), Some(cell)) if badge != cell => format!("{badge} · {cell}"),
+        (Some(text), _) | (None, Some(text)) => text,
+        (None, None) => return None,
+    };
+    let mut hint: String = text.replace('"', "'").chars().take(HINT_CHARS).collect();
+    if text.chars().count() > HINT_CHARS {
+        hint.push('…');
+    }
+    Some(hint)
+}
+
+/// The differences found so far, and the hint of each line naming a repeat item.
+#[derive(Default)]
+struct Lines {
+    lines: BTreeSet<String>,
+    hints: BTreeMap<String, String>,
+}
+
+impl Lines {
+    fn insert(&mut self, line: String) {
+        self.lines.insert(line);
+    }
+}
+
 /// The differences of two pages, one line each, and how many units matched.
 pub struct Outcome {
+    /// The difference keys an accept file matches.
     pub lines: BTreeSet<String>,
+    /// Line → the [`hint`] of the repeat item it names as mock-only or portal-only.
+    pub hints: BTreeMap<String, String>,
     pub matched_panels: usize,
     pub matched_tiles: usize,
 }
 
+impl Outcome {
+    /// `line` as printed: its key, then ` ("<hint>")` when it has one.
+    pub fn shown(&self, line: &str) -> String {
+        match self.hints.get(line) {
+            Some(hint) => format!("{line} (\"{hint}\")"),
+            None => line.to_string(),
+        }
+    }
+}
+
 pub fn diff_pages(mock: &Page, portal: &Page) -> Outcome {
-    let mut lines = BTreeSet::new();
+    let mut lines = Lines::default();
     diff_root("frame", &mock.frame, &portal.frame, &mut lines);
     let (mut matched_panels, mut matched_tiles) = (0, 0);
     let mut portal_left: Vec<&Unit> = portal.units.iter().collect();
@@ -365,17 +418,17 @@ pub fn diff_pages(mock: &Page, portal: &Page) -> Outcome {
     for p in portal_left {
         lines.insert(format!("portal-only {}", p.label()));
     }
-    Outcome { lines, matched_panels, matched_tiles }
+    Outcome { lines: lines.lines, hints: lines.hints, matched_panels, matched_tiles }
 }
 
-fn diff_root(scope: &str, m: &Skel, p: &Skel, out: &mut BTreeSet<String>) {
+fn diff_root(scope: &str, m: &Skel, p: &Skel, out: &mut Lines) {
     if m.head != p.head {
         out.insert(format!("{scope}: root mock {} portal {}", m.head, p.head));
     }
     diff(&format!("{scope} {}", m.head), m, p, out);
 }
 
-fn diff(path: &str, m: &Skel, p: &Skel, out: &mut BTreeSet<String>) {
+fn diff(path: &str, m: &Skel, p: &Skel, out: &mut Lines) {
     if m.canon == p.canon {
         return;
     }
@@ -395,7 +448,7 @@ fn diff(path: &str, m: &Skel, p: &Skel, out: &mut BTreeSet<String>) {
 /// and in each gap between anchors kin children pair up. The same children in another
 /// order, or kin pairs that cross inside a gap, give an `order` line; a child left
 /// unpaired on both sides is `moved`.
-fn sequence(path: &str, m: &Skel, p: &Skel, out: &mut BTreeSet<String>) {
+fn sequence(path: &str, m: &Skel, p: &Skel, out: &mut Lines) {
     let (a, b) = (&m.children, &p.children);
     if a.iter().map(|c| &c.canon).eq(b.iter().map(|c| &c.canon)) {
         return;
@@ -454,7 +507,7 @@ fn gap<'a>(
     path: &str,
     m: &[&'a Skel],
     p: &[&'a Skel],
-    out: &mut BTreeSet<String>,
+    out: &mut Lines,
     m_un: &mut Vec<&'a Skel>,
     p_un: &mut Vec<&'a Skel>,
 ) {
@@ -475,7 +528,7 @@ type Paired<'a> = (Vec<(usize, usize)>, Vec<&'a Skel>, Vec<&'a Skel>);
 
 /// Pairs kin children of `m` and `p`, most similar first, regardless of position, and
 /// compares each pair; returns the pairs as (mock, portal) indices and the unpaired ones.
-fn pair_kin<'a>(path: &str, m: &[&'a Skel], p: &[&'a Skel], out: &mut BTreeSet<String>) -> Paired<'a> {
+fn pair_kin<'a>(path: &str, m: &[&'a Skel], p: &[&'a Skel], out: &mut Lines) -> Paired<'a> {
     let mut candidates = Vec::new();
     for (mi, a) in m.iter().enumerate() {
         for (pi, b) in p.iter().enumerate() {
@@ -505,12 +558,14 @@ fn pair_kin<'a>(path: &str, m: &[&'a Skel], p: &[&'a Skel], out: &mut BTreeSet<S
     (pairs, m_un, p_un)
 }
 
-fn report_unpaired(path: &str, m: &[&Skel], p: &[&Skel], out: &mut BTreeSet<String>) {
-    for a in m {
-        out.insert(format!("{path}: mock-only {}", a.label()));
-    }
-    for b in p {
-        out.insert(format!("{path}: portal-only {}", b.label()));
+fn report_unpaired(path: &str, m: &[&Skel], p: &[&Skel], out: &mut Lines) {
+    let sides = m.iter().map(|s| ("mock-only", s)).chain(p.iter().map(|s| ("portal-only", s)));
+    for (side, s) in sides {
+        let line = format!("{path}: {side} {}", s.label());
+        if let Some(hint) = &s.hint {
+            out.hints.insert(line.clone(), hint.clone());
+        }
+        out.insert(line);
     }
 }
 

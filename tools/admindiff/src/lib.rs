@@ -36,7 +36,11 @@ USAGE:
   mock      render the mockup page through node into target/admindiff/mock/<page>.html
   diff      compare the page's class skeleton with the crawl's assembled page; refuses a
             crawl without its CLEAN marker, and fails on a difference not in
-            tools/admindiff/accept/<page>.txt, a stale accept entry or zero matched panels
+            tools/admindiff/accept/<page>.txt, a stale accept entry or zero matched panels;
+            prints each difference as ok, NEW or STALE. A mock-only or portal-only repeat
+            item (a table row, list item, ...) ends in (\"<hint>\"): its first badge's text and
+            its first cell's, as \"badge · cell\". The hint is not part of the difference: an accept entry
+            may keep or drop it and matches either way
 
   --base-url <url>   portal origin (default http://localhost:8080; split: http://localhost:8085)
   --user <name>      admin login (default admin); the password is $ADMINDIFF_PASSWORD (default admin)
@@ -187,8 +191,11 @@ pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Resul
         outcome.lines.len(),
         verdict.accepted.len()
     );
+    for line in &verdict.accepted {
+        println!("  ok     {}", outcome.shown(line));
+    }
     for line in &verdict.unaccepted {
-        println!("  NEW    {line}");
+        println!("  NEW    {}", outcome.shown(line));
     }
     for line in &verdict.stale {
         println!("  STALE  {line}");
