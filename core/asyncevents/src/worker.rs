@@ -367,8 +367,8 @@ async fn deliver_one_on(ctx: &WorkerCtx, entry: &SubEntry, conn: &mut PgConnecti
 /// the error arm the row lock is still held, so the guard is trivially true. On
 /// the timeout arm the lock was released (terminated backend) BEFORE this runs,
 /// so a healthy replica that delivered (advancing the cursor) or an operator
-/// `retry` (resetting failures) in the terminate-to-record window makes this
-/// UPDATE match zero rows — the stale backoff/pause is dropped. The
+/// `retry` (resetting failures) or `retire` in the terminate-to-record window makes
+/// this UPDATE match zero rows — the stale backoff/pause is dropped. The
 /// `consecutive_failures` leg is not redundant with the cursor: the cursor does
 /// NOT move on failure/retry/resume, so a cursor-only CAS would have an ABA where
 /// a stale `failures + 1` could pause a subscription an operator just reset.
@@ -391,7 +391,7 @@ async fn record_failure(
              last_error = $4, \
              state = CASE WHEN $5 THEN 'paused' ELSE state END, \
              updated_at = now() \
-         WHERE subscription_id = $1 \
+         WHERE subscription_id = $1 AND state <> 'retired' \
            AND cursor_generation = $6 AND cursor_xid = $7::xid8 AND cursor_tie = $8 \
            AND consecutive_failures = $9",
     )

@@ -3,7 +3,8 @@
 //! `asyncevents` schema over `DATABASE_URL`. All mutating logic lives in
 //! `asyncevents::admin`; this main is a hand-rolled arg dispatcher (the `tools/` style —
 //! no clap) that prints the before/after transition every mutating verb returns, so
-//! a checkpoint is never advanced silently.
+//! a checkpoint is never advanced silently. Retirement is permanent: retry, pause,
+//! resume and skip refuse a retired subscription.
 //!
 //!   eventctl list
 //!   eventctl lag
@@ -18,7 +19,8 @@ use std::process::ExitCode;
 
 use anyhow::{anyhow, Result};
 use asyncevents::admin::{
-    bump_generation, info, pause, resume, retire, retry, skip, SkipResult, StateSnapshot,
+    bump_generation, info, pause, resume, retire, retry, skip, Retired, SkipResult,
+    StateSnapshot,
 };
 use eventctl::dsn;
 use sqlx::PgPool;
@@ -33,8 +35,10 @@ USAGE:
   eventctl pause   <id>                      stop delivery
   eventctl resume  <id>                      resume delivery
   eventctl skip    <id> --reason <text>      step past the CURRENT failing event only
-  eventctl retire  <id>                      mark retired (explicit; excluded from GC floor)
+  eventctl retire  <id>                      mark retired (permanent; excluded from GC floor)
   eventctl bump-generation                   fence the current log generation
+
+Retry, pause, resume and skip refuse a retired subscription.
 
 Connection: DATABASE_URL (default local dev DSN).";
 
@@ -64,9 +68,18 @@ async fn run() -> Result<()> {
     match cmd {
         "list" => cmd_list(&pool).await,
         "lag" => cmd_lag(&pool).await,
-        "retry" => print_transition("retry", retry(&pool, &arg_id(&args)?).await?),
-        "pause" => print_transition("pause", pause(&pool, &arg_id(&args)?).await?),
-        "resume" => print_transition("resume", resume(&pool, &arg_id(&args)?).await?),
+        "retry" => {
+            let moved = retry(&pool, &arg_id(&args)?).await.map_err(refused("retry"))?;
+            print_transition("retry", moved)
+        }
+        "pause" => {
+            let moved = pause(&pool, &arg_id(&args)?).await.map_err(refused("pause"))?;
+            print_transition("pause", moved)
+        }
+        "resume" => {
+            let moved = resume(&pool, &arg_id(&args)?).await.map_err(refused("resume"))?;
+            print_transition("resume", moved)
+        }
         "retire" => print_transition("retire", retire(&pool, &arg_id(&args)?).await?),
         "skip" => cmd_skip(&pool, &args).await,
         "bump-generation" => {
@@ -75,6 +88,14 @@ async fn run() -> Result<()> {
             Ok(())
         }
         other => Err(anyhow!("eventctl: unknown command {other:?}\n\n{USAGE}")),
+    }
+}
+
+/// Names a [`Retired`] refusal as the verb's refusal; other errors pass through.
+fn refused(verb: &'static str) -> impl FnOnce(anyhow::Error) -> anyhow::Error {
+    move |err| match err.downcast_ref::<Retired>() {
+        Some(_) => err.context(format!("eventctl: {verb} refused; retirement is permanent")),
+        None => err,
     }
 }
 
@@ -144,7 +165,8 @@ async fn cmd_skip(pool: &PgPool, args: &[String]) -> Result<()> {
     let id = arg_id(args)?;
     let reason = flag_value(args, "--reason")
         .ok_or_else(|| anyhow!("eventctl: skip requires --reason <text>"))?;
-    let SkipResult::Skipped(outcome) = skip(pool, &id, &reason, None).await? else {
+    let result = skip(pool, &id, &reason, None).await.map_err(refused("skip"))?;
+    let SkipResult::Skipped(outcome) = result else {
         // `expected: None` turns every nothing-to-skip case into an error instead.
         return Err(anyhow!("eventctl: skip of {id:?} moved nothing"));
     };

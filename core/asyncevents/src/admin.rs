@@ -175,61 +175,90 @@ pub async fn snapshot(pool: &PgPool, id: &str) -> Result<StateSnapshot> {
     })
 }
 
-/// `retry`: clear the backoff window and failure count so the next worker pass
-/// re-attempts the CURRENT event — the cursor is untouched (no skip).
-pub async fn retry(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot)> {
+/// The error a verb returns when it refuses to move a retired subscription; callers
+/// find it with `anyhow::Error::downcast_ref`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Retired {
+    pub id: String,
+}
+
+impl std::fmt::Display for Retired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "subscription {:?} is retired", self.id)
+    }
+}
+
+impl std::error::Error for Retired {}
+
+/// Applies `set` (a static SET list; `$1` binds the id) to a subscription that is not
+/// retired, returning the before/after pair. The refusal is the UPDATE's own
+/// `state <> 'retired'` predicate, so a `retire` landing after `before` is never undone.
+async fn update_unretired(
+    pool: &PgPool,
+    id: &str,
+    set: &'static str,
+    what: &'static str,
+) -> Result<(StateSnapshot, StateSnapshot)> {
     let before = snapshot(pool, id).await?;
-    sqlx::query(
-        "UPDATE asyncevents.subscriptions \
-         SET consecutive_failures = 0, next_attempt_at = NULL, last_error = NULL, updated_at = now() \
-         WHERE subscription_id = $1",
-    )
-    .bind(id)
-    .execute(pool)
-    .await
-    .context("eventctl: retry update")?;
+    let sql = format!(
+        "UPDATE asyncevents.subscriptions SET {set}, updated_at = now() \
+         WHERE subscription_id = $1 AND state <> 'retired'"
+    );
+    let moved = sqlx::query(&sql)
+        .bind(id)
+        .execute(pool)
+        .await
+        .with_context(|| format!("eventctl: {what} update"))?
+        .rows_affected();
+    if moved == 0 {
+        return Err(refusal(pool, id).await);
+    }
     Ok((before, snapshot(pool, id).await?))
 }
 
+/// Why a guarded UPDATE matched no row: [`Retired`], or the snapshot's unknown-id error.
+async fn refusal(pool: &PgPool, id: &str) -> anyhow::Error {
+    match snapshot(pool, id).await {
+        Ok(now) if now.state == "retired" => Retired { id: id.to_string() }.into(),
+        Ok(now) => anyhow!("eventctl: update of {id:?} matched no row in state {}", now.state),
+        Err(error) => error,
+    }
+}
+
+/// `retry`: clear the backoff window and failure count so the next worker pass
+/// re-attempts the CURRENT event — the cursor is untouched (no skip). [`Retired`] for
+/// a retired subscription.
+pub async fn retry(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot)> {
+    let set = "consecutive_failures = 0, next_attempt_at = NULL, last_error = NULL";
+    update_unretired(pool, id, set, "retry").await
+}
+
 /// `pause`: stop delivery (the worker's due-select ignores non-`active` rows).
+/// [`Retired`] for a retired subscription.
 pub async fn pause(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot)> {
-    set_state(pool, id, "paused").await
+    update_unretired(pool, id, "state = 'paused'", "pause").await
 }
 
 /// `resume`: return to `active` and clear the backoff window so delivery restarts
 /// promptly. The failure count is left for `retry` to reset — resume/pause are the
-/// state toggle, retry is the backoff reset.
+/// state toggle, retry is the backoff reset. [`Retired`] for a retired subscription.
 pub async fn resume(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot)> {
-    let before = snapshot(pool, id).await?;
-    sqlx::query(
-        "UPDATE asyncevents.subscriptions \
-         SET state = 'active', next_attempt_at = NULL, updated_at = now() \
-         WHERE subscription_id = $1",
-    )
-    .bind(id)
-    .execute(pool)
-    .await
-    .context("eventctl: resume update")?;
-    Ok((before, snapshot(pool, id).await?))
+    update_unretired(pool, id, "state = 'active', next_attempt_at = NULL", "resume").await
 }
 
 /// `retire`: mark the subscription retired (an explicit operator decision — deleting
 /// code is NOT retirement). The worker never delivers a retired row, and retention
-/// excludes it from the GC floor.
+/// excludes it from the GC floor. Permanent: retry, pause, resume, resume_retry and skip
+/// refuse a retired row with [`Retired`].
 pub async fn retire(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot)> {
-    set_state(pool, id, "retired").await
-}
-
-async fn set_state(pool: &PgPool, id: &str, state: &str) -> Result<(StateSnapshot, StateSnapshot)> {
     let before = snapshot(pool, id).await?;
     sqlx::query(
-        "UPDATE asyncevents.subscriptions SET state = $2, updated_at = now() WHERE subscription_id = $1",
+        "UPDATE asyncevents.subscriptions SET state = 'retired', updated_at = now() WHERE subscription_id = $1",
     )
     .bind(id)
-    .bind(state)
     .execute(pool)
     .await
-    .context("eventctl: state update")?;
+    .context("eventctl: retire update")?;
     Ok((before, snapshot(pool, id).await?))
 }
 
@@ -263,7 +292,8 @@ macro_rules! next_eligible_event {
 /// `SKIP LOCKED`): the operator WAITS for an in-flight delivery to finish rather than
 /// silently no-oping. If a worker advanced past the failure first, the guard re-checks
 /// on the locked row and finds `consecutive_failures = 0`, so skip REFUSES instead of
-/// rewinding the checkpoint — the correct outcome.
+/// rewinding the checkpoint — the correct outcome. A retired subscription, read on the
+/// locked row, is a [`Retired`] error whatever `expected` is.
 pub async fn skip(pool: &PgPool, id: &str, reason: &str, expected: Option<&str>) -> Result<SkipResult> {
     // Cosmetic before/after reads stay pool-side; the real work is the tx below.
     let before = snapshot(pool, id).await?;
@@ -291,6 +321,11 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str, expected: Option<&str>)
     let ct: i64 = sub.get("cursor_tie");
     let state: String = sub.get("state");
     let failures: i32 = sub.get("consecutive_failures");
+
+    if state == "retired" {
+        tx.rollback().await.context("eventctl: rollback skip of a retired subscription")?;
+        return Err(Retired { id: id.to_string() }.into());
+    }
 
     // Re-evaluate the refuse-healthy guard on the LOCKED row: a worker that advanced
     // past the failure (resetting failures to 0) between our `before` read and the lock
@@ -439,20 +474,10 @@ pub async fn poison_event(pool: &PgPool, id: &str) -> Result<Option<PoisonEvent>
 }
 
 /// [`resume`] plus the [`retry`] reset: also clears the failure count and last error,
-/// which `resume` deliberately leaves.
+/// which `resume` deliberately leaves. [`Retired`] for a retired subscription.
 pub async fn resume_retry(pool: &PgPool, id: &str) -> Result<(StateSnapshot, StateSnapshot)> {
-    let before = snapshot(pool, id).await?;
-    sqlx::query(
-        "UPDATE asyncevents.subscriptions \
-         SET state = 'active', consecutive_failures = 0, next_attempt_at = NULL, \
-             last_error = NULL, updated_at = now() \
-         WHERE subscription_id = $1",
-    )
-    .bind(id)
-    .execute(pool)
-    .await
-    .context("asyncevents: resume-retry update")?;
-    Ok((before, snapshot(pool, id).await?))
+    let set = "state = 'active', consecutive_failures = 0, next_attempt_at = NULL, last_error = NULL";
+    update_unretired(pool, id, set, "resume-retry").await
 }
 
 #[cfg(test)]

@@ -91,6 +91,14 @@ fn internal(error: anyhow::Error) -> opsapi::Error {
     opsapi::Error::internal(format!("{error:#}"))
 }
 
+/// A verb's [`plane::Retired`] refusal is `Invalid`; any other failure is internal.
+fn refused(error: anyhow::Error) -> opsapi::Error {
+    match error.downcast_ref::<plane::Retired>() {
+        Some(retired) => opsapi::Error::invalid(retired.to_string()),
+        None => internal(error),
+    }
+}
+
 fn events_page() -> Link {
     Link::Page { module: MODULE.to_string(), page: PAGE.to_string(), params: BTreeMap::new() }
 }
@@ -289,23 +297,14 @@ impl EventsProvider {
         plane::states(&self.pool).await.map_err(internal)
     }
 
-    /// The subscription's current state; `NotFound` for an unknown id.
+    /// The subscription's current state; `NotFound` for an unknown id, which the plane's
+    /// verbs report only as an untyped error.
     async fn state_of(&self, id: &str) -> Result<SubState, opsapi::Error> {
         self.states()
             .await?
             .into_iter()
             .find(|s| s.id == id)
             .ok_or_else(|| opsapi::Error::not_found(format!("no subscription {id:?}")))
-    }
-
-    /// Like [`Self::state_of`], refusing a retired subscription: pause, resume and skip
-    /// overwrite the state and would undo a retirement; retry is refused too, for one rule.
-    async fn writable(&self, id: &str) -> Result<SubState, opsapi::Error> {
-        let sub = self.state_of(id).await?;
-        if sub.state == "retired" {
-            return Err(opsapi::Error::invalid(format!("subscription {id:?} is retired")));
-        }
-        Ok(sub)
     }
 
     async fn nav_counter(&self) -> Result<Primitive, opsapi::Error> {
@@ -533,8 +532,8 @@ impl EventsProvider {
             Some(e) if e.kind == KIND => e.id.clone(),
             _ => return Err(opsapi::Error::invalid(format!("{} needs a {KIND} entity", req.action))),
         };
-        self.writable(&id).await?;
-        let (before, after) = verb(self.pool.clone(), id.clone()).await.map_err(internal)?;
+        self.state_of(&id).await?;
+        let (before, after) = verb(self.pool.clone(), id.clone()).await.map_err(refused)?;
         if before == after {
             return Ok(unchanged(&id, &after));
         }
@@ -547,8 +546,8 @@ impl EventsProvider {
             .as_deref()
             .and_then(parse_poison_item)
             .ok_or_else(|| opsapi::Error::invalid("Resume needs the previewed subscription"))?;
-        self.writable(id).await?;
-        let (before, after) = plane::resume_retry(&self.pool, id).await.map_err(internal)?;
+        self.state_of(id).await?;
+        let (before, after) = plane::resume_retry(&self.pool, id).await.map_err(refused)?;
         if before == after {
             return Ok(unchanged(id, &after));
         }
@@ -574,9 +573,9 @@ impl EventsProvider {
                 error,
             )])));
         }
-        self.writable(id).await?;
+        self.state_of(id).await?;
         let note = format!("operator {}: {reason}", req.operator);
-        match plane::skip(&self.pool, id, &note, Some(event_id)).await.map_err(internal)? {
+        match plane::skip(&self.pool, id, &note, Some(event_id)).await.map_err(refused)? {
             SkipResult::Skipped(outcome) => {
                 Ok(done(format!("Skipped event {} on {id}; the subscription resumed", outcome.skipped_event_id)))
             }
