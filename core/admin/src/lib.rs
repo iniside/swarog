@@ -1080,3 +1080,5 @@ fn cookie_secure_on() -> bool {
 // ============================================================================
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod golden_tests;

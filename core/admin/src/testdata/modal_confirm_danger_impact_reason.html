@@ -1,0 +1,54 @@
+<div class="scrim" data-scrim>↵
+<form class="modal" role="dialog" aria-modal="true" hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;ban" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]" data-gate>
+<input type="hidden" name="_csrf" value="csrf-golden">
+<input type="hidden" name="_form" value="form-golden-1">↵
+<div class="modal-head">
+<div class="modal-icon danger">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M12 3.5 2.5 20h19z"/>
+<path d="M12 10v4.5M12 17.5h.01"/>
+</svg>
+</div>
+<div>
+<h2>Ban p-1001?</h2>
+</div>
+</div>
+<div class="modal-body">The player is signed out and cannot sign in.<div class="impact">
+<div>
+<span>Sessions</span>
+<b>3</b>
+</div>
+<div>
+<span>Status</span>
+<b>
+<span class="badge err">banned</span>
+</b>
+</div>
+<div>
+<span>Owner</span>
+<b>
+<span class="user-cell">
+<span class="avatar" style="background:#7c3aed">AK</span>
+<span>anna.kowalska</span>
+</span>
+</b>
+</div>
+</div>
+<div style="margin-top:10px">
+<div style="font-size:12px;margin-bottom:4px">Reason <span class="muted">(recorded in audit log)</span>
+</div>
+<input class="input" style="width:100%" name="_reason" value="" placeholder="e.g. chargeback fraud, ticket #" autocomplete="off" data-reason-required>
+</div>
+<div style="margin-top:10px">
+<div style="font-size:12px;margin-bottom:4px">Type <b class="mono">p-1001</b> to confirm</div>
+<input class="input mono" style="width:100%" name="_confirm" data-confirm-type="p-1001" autocomplete="off">
+</div>
+</div>↵
+<div class="modal-foot">
+<span class="muted" style="margin-right:auto;font-size:12px;align-self:center">
+</span>
+<button type="button" class="btn" data-modal-close>Cancel</button>
+<button type="submit" class="btn danger go" disabled>Ban</button>
+</div>↵
+</form>↵
+</div>

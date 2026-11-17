@@ -1,0 +1,163 @@
+<div class="slot" data-panel-url="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel">
+<section class="panel">
+<div class="panel-head">
+<span class="muted">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="3.5" y="4" width="17" height="7" rx="1.5"/>
+<rect x="3.5" y="13" width="17" height="7" rx="1.5"/>
+<path d="M7 7.5h.01M7 16.5h.01"/>
+</svg>
+</span>
+<span class="panel-title">Golden panel</span>
+<div class="panel-tools">
+</div>
+</div>
+<div class="panel-body flush">
+<div class="q-counts">
+<div class="q-count" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?state=pending" hx-target="closest .slot" hx-swap="outerHTML">
+<div class="n">12</div>
+<div class="l">Pending</div>
+</div>
+<div class="q-count on err" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?state=failed" hx-target="closest .slot" hx-swap="outerHTML">
+<div class="n">3</div>
+<div class="l">Failed</div>
+</div>
+<div class="q-count ok" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?state=sent" hx-target="closest .slot" hx-swap="outerHTML">
+<div class="n">1,204</div>
+<div class="l">Sent</div>
+</div>
+</div>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead>
+<tr>
+<th>Item</th>
+<th>Ref</th>
+<th>State</th>
+<th>Attempts</th>
+<th>Next attempt</th>
+<th>Last error</th>
+<th>Payload</th>
+<th>
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<span class="mono">job-81</span>
+</td>
+<td>
+<a href="&#x2f;admin&#x2f;e&#x2f;player&#x2f;p-1001" style="color:inherit">
+<span class="user-cell">
+<span class="avatar" style="background:#d9488a">P</span>
+<span>p-1001</span>
+</span>
+</a>
+</td>
+<td>
+<span class="badge err">failed</span>
+</td>
+<td>
+<span class="attempts" title="3 attempts">
+<i class="f">
+</i>
+<i class="f">
+</i>
+<i class="f">
+</i>
+<i class="">
+</i>
+<i class="">
+</i>
+</span>
+</td>
+<td>
+<span class="dim">—</span>
+</td>
+<td class="wrap">
+<span class="mono" style="font-size:11.5px;color:var(--err)">timeout after 30s</span>
+</td>
+<td>
+<span class="mono muted ellip">{&quot;amount&quot;:5}</span>
+</td>
+<td>
+<span class="row" style="justify-content:flex-end;gap:4px">
+<button type="button" class="btn sm ghost danger-ghost" title="Drop" hx-get="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;drop?entity=player%3Ap-1001&amp;item=job-81" hx-target="#modal-root" hx-swap="innerHTML">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M4 7h16"/>
+<path d="M9 7V4.5h6V7"/>
+<path d="M6 7l1 13h10l1-13"/>
+</svg>
+</button>
+<button type="button" class="btn sm ghost" title="Retry" hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;retry?entity=player%3Ap-1001&amp;item=job-81" hx-vals="{&quot;_csrf&quot;:&quot;csrf-golden&quot;,&quot;_entity&quot;:&quot;player:p-1001&quot;,&quot;_item&quot;:&quot;job-81&quot;}" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="this">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/>
+<path d="M4 3.5V8h4.5"/>
+<path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/>
+<path d="M20 20.5V16h-4.5"/>
+</svg>
+</button>
+</span>
+</td>
+</tr>
+<tr>
+<td>
+<span class="mono">job-82</span>
+</td>
+<td>
+<span class="muted">—</span>
+</td>
+<td>
+<span class="badge ok">sent</span>
+</td>
+<td>
+<span class="attempts" title="2 attempts">
+<i class="f">
+</i>
+<i class="ok">
+</i>
+<i class="">
+</i>
+<i class="">
+</i>
+<i class="">
+</i>
+</span>
+</td>
+<td>
+<span class="dim">2026-10-21 10:00</span>
+</td>
+<td class="wrap">
+<span class="muted">—</span>
+</td>
+<td>
+<span class="mono muted ellip">—</span>
+</td>
+<td>
+<span class="row" style="justify-content:flex-end;gap:4px">
+<button type="button" class="btn sm" hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;park?item=job-82" hx-vals="{&quot;_csrf&quot;:&quot;csrf-golden&quot;,&quot;_item&quot;:&quot;job-82&quot;}" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="this">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="4" y="4" width="16" height="16" rx="3"/>
+<path d="M10 16.5v-9h3a2.5 2.5 0 0 1 0 5h-3"/>
+</svg> Park</button>
+<button type="button" class="btn sm ghost" title="Retry" hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;retry?item=job-82" hx-vals="{&quot;_csrf&quot;:&quot;csrf-golden&quot;,&quot;_item&quot;:&quot;job-82&quot;}" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="this">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/>
+<path d="M4 3.5V8h4.5"/>
+<path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/>
+<path d="M20 20.5V16h-4.5"/>
+</svg>
+</button>
+</span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="tbl-foot">
+<span>2 items</span>
+</div>
+</div>
+</section>
+</div>

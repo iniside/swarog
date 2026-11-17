@@ -1,0 +1,28 @@
+<div class="scrim" data-scrim>↵
+<form class="modal" role="dialog" aria-modal="true" hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;pause" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]" data-gate>
+<input type="hidden" name="_csrf" value="csrf-golden">
+<input type="hidden" name="_form" value="form-golden-1">↵
+<div class="modal-head">
+<div class="modal-icon warn">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M8 5v14M16 5v14"/>
+</svg>
+</div>
+<div>
+<h2>Pause webhooks?</h2>
+</div>
+</div>
+<div class="modal-body">Deliveries stop until resumed.<div style="margin-top:10px">
+<div style="font-size:12px;margin-bottom:4px">Reason <span class="muted">(recorded in audit log)</span>
+</div>
+<input class="input" style="width:100%" name="_reason" value="" autocomplete="off">
+</div>
+</div>↵
+<div class="modal-foot">
+<span class="muted" style="margin-right:auto;font-size:12px;align-self:center">
+</span>
+<button type="button" class="btn" data-modal-close>Cancel</button>
+<button type="submit" class="btn primary go">Pause</button>
+</div>↵
+</form>↵
+</div>

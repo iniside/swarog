@@ -1,0 +1,40 @@
+<div class="slot" data-panel-url="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel">
+<section class="panel">
+<div class="panel-head">
+<span class="muted">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="3.5" y="4" width="17" height="7" rx="1.5"/>
+<rect x="3.5" y="13" width="17" height="7" rx="1.5"/>
+<path d="M7 7.5h.01M7 16.5h.01"/>
+</svg>
+</span>
+<span class="panel-title">Golden panel</span>
+<div class="panel-tools">
+</div>
+</div>
+<div class="panel-body">
+<dl class="props">
+<dt>Scope</dt>
+<dd>
+<span class="mono">read</span>
+</dd>
+</dl>
+<div class="code" style="margin-top:10px">curl -H &#x27;X-Api-Key: gb_live_…&#x27; https:&#x2f;&#x2f;api.example&#x2f;v1&#x2f;ping</div>
+<div class="row" style="margin-top:12px;flex-wrap:wrap">
+<button type="button" class="btn danger-ghost" hx-get="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;rotate?entity=apikey%3Ak-7&amp;item=key-7" hx-target="#modal-root" hx-swap="innerHTML">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/>
+<path d="M4 3.5V8h4.5"/>
+<path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/>
+<path d="M20 20.5V16h-4.5"/>
+</svg> Rotate</button>
+<button type="button" class="btn" hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;copy?entity=apikey%3Ak-7&amp;item=key-7" hx-vals="{&quot;_csrf&quot;:&quot;csrf-golden&quot;,&quot;_entity&quot;:&quot;apikey:k-7&quot;,&quot;_item&quot;:&quot;key-7&quot;}" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="this">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="8.5" y="8.5" width="11" height="11" rx="1.5"/>
+<path d="M15.5 8.5V5.5A1.5 1.5 0 0 0 14 4H5.5A1.5 1.5 0 0 0 4 5.5V14a1.5 1.5 0 0 0 1.5 1.5h3"/>
+</svg> Copy</button>
+<span class="muted" style="font-size:12px">Rotated 3 days ago</span>
+</div>
+</div>
+</section>
+</div>
