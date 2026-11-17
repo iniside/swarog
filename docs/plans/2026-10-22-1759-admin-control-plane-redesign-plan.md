@@ -1701,8 +1701,13 @@ model tokens. Step 10's cost came from:
        - P5. The checklist did not predict two entries: the toolbar span/form pair and the
          frame `[panel "Outbox"]` placeholder. SKILL §6 allowed `b` no kind the checklist
          did not name, but `b` copied both from precedent, so rule and practice disagreed.
-       - Outside the view part: `with_param` keeps `cursor` on the tab and search URLs
-         (`core/admin/src/render.rs:935`, `:1404`, `:1415`). No per-element check sees it.
+       - Outside the view part: the review reported that `with_param` keeps `cursor` on
+         the tab and search URLs. Checked against the code (b5eb40d5) it does not:
+         `render::panel` builds `Ctx.query` without `cursor` and `before`, and every URL
+         builder starts from it (goldens `queue_later_page` and
+         `table_highlight_row_menu` pin this). b5eb40d5 adds the comment that states the
+         rule. Lesson: a review finding is a lead; check it against the code before
+         recording it as a cause.
      - Fixes:
        - Skill §1: the checklist is updated in place once the owner decides its gaps,
          before part `a` (P1); the states row gains "narrowed to zero" with its golden
@@ -1715,7 +1720,7 @@ model tokens. Step 10's cost came from:
        - The Step 11 checklist gets the decisions, the overruled §5 proposal, D4 on
          `tr#d4bd69` and the two unpredicted entries.
        - Code, dispatched separately: a readable label for a collapsed row in
-         `admindiff diff` (P2), and the `cursor` kept by `with_param`.
+         `admindiff diff` (P2).
 
 5. **Mockup-state seed** (owner, 2026-11-17). A fresh dev fleet has no paused and no
    lagging subscription, so about a third of the Event plane's and the dashboard's accept

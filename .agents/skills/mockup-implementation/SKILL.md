@@ -89,9 +89,9 @@ Per module: `writes` (true/false) and every tool, meaning each `ActionDecl` with
 point, `Emphasis`, `danger`, `implemented` and `then`.
 
 Per panel, every URL the renderer builds for it (state tabs, search, pager): which
-query keys it keeps and which it drops (`with_param`, `core/admin/src/render.rs`). A
-key that should not survive, such as a pager cursor on a tab or search URL, is a gap
-for part `a`.
+query keys it keeps and which it drops. Every non-pager URL must build from `Ctx.query`
+(`core/admin/src/render.rs`, `panel`), which is stripped of the paging keys `cursor`
+and `before`; a URL built from the raw `params` instead is a gap for part `a`.
 
 An accept-plan section predicts every accept entry the page needs, each with its kind
 and reason: the shell-frame copies above, every declared deviation, contract gap and

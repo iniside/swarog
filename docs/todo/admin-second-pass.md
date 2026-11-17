@@ -143,6 +143,13 @@ gaps go to the next iteration.
   `core/controlplane` (a `CellKind` or a `Cell` flag) that `core/admin/src/render.rs`
   maps to `span.mono.muted`; then delete both accept lines.
 
+## Mail nav counter with only parked rows
+
+With only parked rows the mail nav counter shows a warn badge reading "0". That matches
+the Step 11 checklist (the count is queued pending plus retrying; the warn tone comes
+from retrying plus parked), but it reads oddly. Option: show the parked count when
+nothing is queued. Owner design decision. Source: b5eb40d5.
+
 ## Data a dev fleet never produces
 
 `data difference` accept entries in `tools/admindiff/accept/*.txt` that are real data
