@@ -786,31 +786,6 @@ impl core::marker::Unpin for controlplane::Tone
 impl core::marker::UnsafeUnpin for controlplane::Tone
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Tone
 impl core::panic::unwind_safe::UnwindSafe for controlplane::Tone
-pub enum controlplane::Trend
-pub controlplane::Trend::Down
-pub controlplane::Trend::None
-pub controlplane::Trend::Up
-impl core::clone::Clone for controlplane::Trend
-pub fn controlplane::Trend::clone(&self) -> Self
-impl core::cmp::Eq for controlplane::Trend
-impl core::cmp::PartialEq for controlplane::Trend
-pub fn controlplane::Trend::eq(&self, &Self) -> bool
-impl core::fmt::Debug for controlplane::Trend
-pub fn controlplane::Trend::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for controlplane::Trend
-impl core::marker::StructuralPartialEq for controlplane::Trend
-impl serde_core::ser::Serialize for controlplane::Trend
-pub fn controlplane::Trend::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
-impl<'de> serde_core::de::Deserialize<'de> for controlplane::Trend
-pub fn controlplane::Trend::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
-impl core::marker::Forget for controlplane::Trend
-impl core::marker::Freeze for controlplane::Trend
-impl core::marker::Send for controlplane::Trend
-impl core::marker::Sync for controlplane::Trend
-impl core::marker::Unpin for controlplane::Trend
-impl core::marker::UnsafeUnpin for controlplane::Trend
-impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Trend
-impl core::panic::unwind_safe::UnwindSafe for controlplane::Trend
 pub struct controlplane::ActionDecl
 pub controlplane::ActionDecl::danger: bool
 pub controlplane::ActionDecl::emphasis: controlplane::Emphasis
@@ -825,6 +800,7 @@ pub controlplane::ActionDecl::point: controlplane::ActionPoint
 pub controlplane::ActionDecl::prepare: bool
 pub controlplane::ActionDecl::then: controlplane::Then
 pub controlplane::ActionDecl::trailing_icon: bool
+pub controlplane::ActionDecl::when_empty: bool
 impl core::clone::Clone for controlplane::ActionDecl
 pub fn controlplane::ActionDecl::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::ActionDecl
@@ -1034,8 +1010,8 @@ impl core::marker::UnsafeUnpin for controlplane::DataTable
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::DataTable
 impl core::panic::unwind_safe::UnwindSafe for controlplane::DataTable
 pub struct controlplane::Delta
-pub controlplane::Delta::good: controlplane::Trend
 pub controlplane::Delta::period: alloc::string::String
+pub controlplane::Delta::tone: core::option::Option<controlplane::Tone>
 pub controlplane::Delta::value: alloc::string::String
 impl core::clone::Clone for controlplane::Delta
 pub fn controlplane::Delta::clone(&self) -> Self
@@ -1808,9 +1784,9 @@ pub struct controlplane::ServiceItem
 pub controlplane::ServiceItem::history: alloc::vec::Vec<(alloc::string::String, controlplane::ServiceState)>
 pub controlplane::ServiceItem::name: alloc::string::String
 pub controlplane::ServiceItem::note: core::option::Option<alloc::string::String>
-pub controlplane::ServiceItem::p99_ms: core::option::Option<u32>
 pub controlplane::ServiceItem::state: controlplane::ServiceState
 pub controlplane::ServiceItem::uptime: core::option::Option<alloc::string::String>
+pub controlplane::ServiceItem::value: core::option::Option<alloc::string::String>
 pub controlplane::ServiceItem::version: core::option::Option<alloc::string::String>
 impl core::clone::Clone for controlplane::ServiceItem
 pub fn controlplane::ServiceItem::clone(&self) -> Self
@@ -1833,7 +1809,9 @@ impl core::marker::UnsafeUnpin for controlplane::ServiceItem
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::ServiceItem
 impl core::panic::unwind_safe::UnwindSafe for controlplane::ServiceItem
 pub struct controlplane::ServiceStatus
+pub controlplane::ServiceStatus::columns: u8
 pub controlplane::ServiceStatus::items: alloc::vec::Vec<controlplane::ServiceItem>
+pub controlplane::ServiceStatus::value_label: core::option::Option<alloc::string::String>
 impl core::clone::Clone for controlplane::ServiceStatus
 pub fn controlplane::ServiceStatus::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::ServiceStatus

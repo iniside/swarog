@@ -2,7 +2,7 @@
 //! constant from `UILayout/redesign/assets/data.js` / `registry.js`, or a pure function of
 //! an id; nothing reads a clock or a random source.
 
-use controlplane::{AttentionItem, Delta, KpiTile, Link, Palette, ServiceItem, ServiceState, Severity, Trend};
+use controlplane::{AttentionItem, Delta, KpiTile, Link, Palette, ServiceItem, ServiceState, Severity, Tone};
 
 /// FNV-1a, 64-bit.
 pub(crate) fn hash(id: &str) -> u64 {
@@ -37,33 +37,33 @@ pub(crate) fn services() -> Vec<ServiceItem> {
     use ServiceState::{Degraded, Down, Running};
     const RUNNING: &str = "6 d 4 h";
     let rows = [
-        ("admin-svc", Running, "0.42.1", Some(RUNNING), Some(29), None),
-        ("gateway-svc", Running, "0.42.1", Some(RUNNING), Some(38), None),
-        ("accounts-svc", Running, "0.42.1", Some(RUNNING), Some(21), None),
-        ("characters-svc", Running, "0.42.1", Some(RUNNING), Some(17), None),
-        ("inventory-svc", Running, "0.42.1", Some(RUNNING), Some(24), None),
-        ("wallet-svc", Down, "0.42.1", None, None, Some("connection refused · last ok 3 min ago")),
-        ("friends-svc", Running, "0.42.1", Some(RUNNING), Some(12), None),
-        ("groups-svc", Running, "0.42.1", Some(RUNNING), Some(15), None),
-        ("party-svc", Running, "0.42.1", Some(RUNNING), Some(9), None),
-        ("notifications-svc", Running, "0.42.1", Some(RUNNING), Some(14), None),
-        ("mail-svc", Degraded, "0.42.1", Some(RUNNING), Some(880), Some("SMTP relay throttling · 312 queued")),
-        ("storage-svc", Running, "0.42.1", Some("2 d 1 h"), Some(61), None),
-        ("match-svc", Running, "0.42.1", Some(RUNNING), Some(19), None),
-        ("rating-svc", Running, "0.42.1", Some(RUNNING), Some(8), None),
-        ("leaderboard-svc", Running, "0.42.1", Some(RUNNING), Some(11), None),
-        ("config-svc", Running, "0.42.1", Some(RUNNING), Some(4), None),
-        ("scheduler-svc", Running, "0.42.1", Some(RUNNING), Some(6), None),
-        ("audit-svc", Running, "0.42.1", Some(RUNNING), Some(10), None),
-        ("apikeys-svc", Running, "0.42.1", Some(RUNNING), Some(5), None),
-        ("lore-svc", Running, "0.1.0", Some("1 d 2 h"), Some(33), None),
+        ("admin-svc", Running, "0.42.1", Some(RUNNING), "29 ms", None),
+        ("gateway-svc", Running, "0.42.1", Some(RUNNING), "38 ms", None),
+        ("accounts-svc", Running, "0.42.1", Some(RUNNING), "21 ms", None),
+        ("characters-svc", Running, "0.42.1", Some(RUNNING), "17 ms", None),
+        ("inventory-svc", Running, "0.42.1", Some(RUNNING), "24 ms", None),
+        ("wallet-svc", Down, "0.42.1", None, "—", Some("connection refused · last ok 3 min ago")),
+        ("friends-svc", Running, "0.42.1", Some(RUNNING), "12 ms", None),
+        ("groups-svc", Running, "0.42.1", Some(RUNNING), "15 ms", None),
+        ("party-svc", Running, "0.42.1", Some(RUNNING), "9 ms", None),
+        ("notifications-svc", Running, "0.42.1", Some(RUNNING), "14 ms", None),
+        ("mail-svc", Degraded, "0.42.1", Some(RUNNING), "880 ms", Some("SMTP relay throttling · 312 queued")),
+        ("storage-svc", Running, "0.42.1", Some("2 d 1 h"), "61 ms", None),
+        ("match-svc", Running, "0.42.1", Some(RUNNING), "19 ms", None),
+        ("rating-svc", Running, "0.42.1", Some(RUNNING), "8 ms", None),
+        ("leaderboard-svc", Running, "0.42.1", Some(RUNNING), "11 ms", None),
+        ("config-svc", Running, "0.42.1", Some(RUNNING), "4 ms", None),
+        ("scheduler-svc", Running, "0.42.1", Some(RUNNING), "6 ms", None),
+        ("audit-svc", Running, "0.42.1", Some(RUNNING), "10 ms", None),
+        ("apikeys-svc", Running, "0.42.1", Some(RUNNING), "5 ms", None),
+        ("lore-svc", Running, "0.1.0", Some("1 d 2 h"), "33 ms", None),
     ];
     rows.into_iter()
-        .map(|(name, state, version, uptime, p99_ms, note)| ServiceItem {
+        .map(|(name, state, version, uptime, value, note)| ServiceItem {
             name: name.to_string(),
             state,
             version: Some(version.to_string()),
-            p99_ms,
+            value: Some(value.to_string()),
             uptime: uptime.map(str::to_string),
             note: note.map(str::to_string),
             history: history(name, state),
@@ -106,8 +106,8 @@ pub(crate) fn notifications() -> Vec<(&'static str, &'static str, &'static str, 
     ]
 }
 
-fn delta(value: &str, period: &str, good: Trend) -> Option<Delta> {
-    Some(Delta { value: value.to_string(), period: period.to_string(), good })
+fn delta(value: &str, period: &str, tone: Option<Tone>) -> Option<Delta> {
+    Some(Delta { value: value.to_string(), period: period.to_string(), tone })
 }
 
 // FAKE: there is no Lore module.
@@ -116,7 +116,7 @@ pub(crate) fn lore_seats() -> KpiTile {
         label: "Lore seats".to_string(),
         value: "8".to_string(),
         unit: None,
-        delta: delta("", "users with Lore access · 1 suspended", Trend::None),
+        delta: delta("", "users with Lore access · 1 suspended", None),
         series: vec![5.0, 6.0, 6.0, 7.0, 8.0, 8.0],
         spark: Palette::Chart1,
         capacity: None,
@@ -130,7 +130,7 @@ pub(crate) fn lore_store() -> KpiTile {
         label: "Lore store used".to_string(),
         value: "13.29".to_string(),
         unit: Some("TB".to_string()),
-        delta: delta("▲ 1.19 TB", "this month", Trend::Down),
+        delta: delta("▲ 1.19 TB", "this month", Some(Tone::Warn)),
         series: vec![6.2, 7.4, 8.9, 10.6, 12.1, 13.29],
         spark: Palette::Chart2,
         capacity: None,
@@ -144,7 +144,7 @@ pub(crate) fn matches_in_progress() -> KpiTile {
         label: "Matches in progress".to_string(),
         value: "1,204".to_string(),
         unit: None,
-        delta: delta("— steady", "", Trend::None),
+        delta: delta("— steady", "", None),
         series: vec![900.0, 1010.0, 1100.0, 1180.0, 1220.0, 1190.0, 1204.0],
         spark: Palette::Chart1,
         capacity: None,

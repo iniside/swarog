@@ -270,14 +270,16 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- endmacro %}
 
 {%- macro services(sv, bars=true) -%}
-{%- for s in sv.items %}<div class="svc"><span class="dot {{ s.tone }}"></span><span class="row"><span class="name">{{ s.name }}</span>{% if not s.running %}<span class="badge {{ s.tone }}">{{ s.state }}</span>{% endif %}</span><span class="row">{% if bars and s.bars %}<span class="hide-tablet"><span class="uptime" style="width:140px">{% for b in s.bars %}<i class="{{ b }}"></i>{% endfor %}</span></span>{% endif %}<span class="muted mono" style="width:64px;text-align:right">{{ s.p99 }}</span></span>{% if s.note %}<span class="detail">{{ s.note }}</span>{% endif %}</div>{% endfor -%}
+{%- for s in sv.items %}<div class="svc"><span class="dot {{ s.tone }}"></span><span class="row"><span class="name">{{ s.name }}</span>{% if not s.running %}<span class="badge {{ s.tone }}">{{ s.state }}</span>{% endif %}</span><span class="row">{% if bars and s.bars %}<span class="hide-tablet"><span class="uptime" style="width:140px">{% for b in s.bars %}<i class="{{ b }}"></i>{% endfor %}</span></span>{% endif %}<span class="muted mono" style="width:64px;text-align:right">{{ s.value or "" }}</span></span>{% if s.note %}<span class="detail">{{ s.note }}</span>{% endif %}</div>{% endfor -%}
 {%- endmacro %}
 
-{#- A ServiceStatus panel body: two columns, the first holding the larger half
-    (pages-core.js:62). The top-bar popover keeps the single list. -#}
-{%- macro services_columns(sv) -%}
+{#- A ServiceStatus panel body: with `columns` 2, two columns, the first holding the larger
+    half (pages-core.js:62); otherwise one list (pages-lore.js:229). -#}
+{%- macro services_body(sv) -%}
+{%- if sv.columns == 2 -%}
 {%- set half = (sv.items|length + 1) // 2 -%}
 <div class="grid g-2" style="gap:0">{% for part in [sv.items[:half], sv.items[half:]] %}<div style="border-right:1px solid var(--border)">{{ services({"items": part}) }}</div>{% endfor %}</div>
+{%- else %}{{ services(sv) }}{% endif -%}
 {%- endmacro %}
 
 {%- macro chart(c, label="") -%}
@@ -303,7 +305,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- elif b.type == "Timeline" %}{{ timeline(b) }}
 {%- elif b.type == "Form" %}{{ panel_form(b, p.state == "readonly") }}
 {%- elif b.type == "Queue" %}{{ queue(b) }}
-{%- elif b.type == "Services" %}{{ services_columns(b) }}
+{%- elif b.type == "Services" %}{{ services_body(b) }}
 {%- elif b.type == "Chart" %}{{ chart(b, p.title) }}
 {%- elif b.type == "Attention" %}{{ attention_rows(b) }}
 {%- elif b.type == "Cell" %}{{ cell(b) }}
@@ -366,7 +368,8 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- else -%}
 {%- set ro = p.state == "readonly" -%}
 {%- set flush = (live and p.flush) or (p.state == "empty" and p.body and p.body.type in ["Queue", "Table"]) -%}
-{#- Tools show in ok, stale, readonly and empty. A PropertyList with a code block puts its
+{#- Tools show in ok, stale, readonly and empty; `p.tools` of an empty panel holds only its
+    `when_empty` actions. A PropertyList with a code block puts its
     actions and note in a row below the code (pages-platform.js:147-154), else they sit in
     the head with the note first. -#}
 {%- set tooled = live or p.state == "empty" -%}
@@ -375,7 +378,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- if live and p.body and p.body.type == "Chart" %}{{ chart_legend(p.body) }}{% endif -%}
 {%- if tooled and not footer -%}
 {%- if p.note %}<span class="muted hide-tablet" style="font-size:11.5px">{{ p.note }}</span>{% endif -%}
-{%- if live and p.body and p.body.type == "Services" %}<span class="muted" style="font-size:11.5px;width:64px;text-align:right">p99</span>{% endif -%}
+{%- if live and p.body and p.body.type == "Services" and p.body.value_label %}<span class="muted" style="font-size:11.5px;width:64px;text-align:right">{{ p.body.value_label }}</span>{% endif -%}
 {%- for a in p.tools %}{{ action_button(a, "sm") }}{% endfor -%}
 {%- endif -%}
 </div></div>

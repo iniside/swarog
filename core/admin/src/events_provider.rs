@@ -10,7 +10,7 @@ use controlplane::{
     ContributionDecl, DataTable, Delta, Emphasis, EntityHeader, EntityKindDecl, EntityRef, FilterDef, FilterKind,
     InvokeCall, InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, PageDecl, PageInfo, Palette, PanelBody,
     PanelQuery, Point, PrepareCall, Primitive, PropertyList, Provider, ReasonReq, Role, Row, SearchHit, SearchQuery,
-    Severity, Then, Tone, Trend, DEFAULT_PANEL_DEADLINE_MS,
+    Severity, Then, Tone, DEFAULT_PANEL_DEADLINE_MS,
 };
 use sqlx::PgPool;
 
@@ -224,6 +224,7 @@ impl Act {
             implemented,
             emphasis,
             trailing_icon: false,
+            when_empty: false,
             prepare: false,
         }
     }
@@ -360,7 +361,7 @@ impl EventsProvider {
             label: "Paused subscriptions".to_string(),
             value: paused.len().to_string(),
             unit: Some(format!("/ {}", states.len())),
-            delta: paused.first().map(|s| Delta { value: s.id.clone(), period: String::new(), good: Trend::Down }),
+            delta: paused.first().map(|s| Delta { value: s.id.clone(), period: String::new(), tone: Some(Tone::Err) }),
             series: Vec::new(),
             spark: Palette::Chart1,
             capacity: None,
@@ -400,7 +401,7 @@ impl EventsProvider {
             label: "Subscriptions".to_string(),
             value: states.len().to_string(),
             unit: None,
-            delta: Some(Delta { value: String::new(), period: by_state, good: Trend::None }),
+            delta: Some(Delta { value: String::new(), period: by_state, tone: None }),
             series: Vec::new(),
             spark: Palette::Chart1,
             capacity: None,
@@ -418,7 +419,7 @@ impl EventsProvider {
             delta: top.filter(|s| s.lag_events > 0).map(|s| Delta {
                 value: format!("{} ({})", s.id, s.state),
                 period: String::new(),
-                good: Trend::Down,
+                tone: Some(Tone::Warn),
             }),
             series: Vec::new(),
             spark: Palette::Chart1,
@@ -680,7 +681,7 @@ impl EventsProvider {
                 label: "Head sequence".to_string(),
                 value: fakes::HEAD_SEQUENCE.to_string(),
                 unit: None,
-                delta: Some(Delta { value: String::new(), period: fakes::HEAD_RATE.to_string(), good: Trend::None }),
+                delta: Some(Delta { value: String::new(), period: fakes::HEAD_RATE.to_string(), tone: None }),
                 series: Vec::new(),
                 spark: Palette::Chart1,
                 capacity: None,
@@ -696,7 +697,7 @@ impl EventsProvider {
                     value: String::new(),
                     // FAKE: skipped events are not kept, so who skipped them is not either.
                     period: "all skipped by operator".to_string(),
-                    good: Trend::None,
+                    tone: None,
                 }),
                 series: Vec::new(),
                 spark: Palette::Chart1,

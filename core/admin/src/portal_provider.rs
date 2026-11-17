@@ -40,7 +40,11 @@ fn health() -> PanelBody {
     PanelBody {
         meta: Some(format!("{running}/{} healthy · {}", items.len(), fakes::health_probe())),
         note: Some(fakes::history_window()),
-        ..PanelBody::new(Primitive::ServiceStatus(ServiceStatus { items }))
+        ..PanelBody::new(Primitive::ServiceStatus(ServiceStatus {
+            items,
+            columns: 2,
+            value_label: Some("p99".to_string()),
+        }))
     }
 }
 

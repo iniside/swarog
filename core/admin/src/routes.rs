@@ -158,7 +158,7 @@ fn health() -> HealthView {
     HealthView {
         healthy: running.len(),
         total: services.len(),
-        unhealthy: render::services(&unhealthy).items,
+        unhealthy: render::service_items(&unhealthy),
         note: fakes::health_note(),
     }
 }
@@ -213,6 +213,7 @@ fn action_item(
         danger: decl.danger,
         emphasis: render::emphasis_name(decl.emphasis),
         trailing_icon: decl.trailing_icon,
+        when_empty: decl.when_empty,
         url,
         enabled,
         hint,

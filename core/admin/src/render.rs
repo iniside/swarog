@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use controlplane::{
     decode_field, Align, CellKind, ConfirmSpec, ConfirmTone, EntityRef, Field, FieldKind, FieldValue, FormSpec, Link,
-    PanelBody, Point, Primitive, ReasonReq, Severity, ServiceState, Tone, Trend,
+    PanelBody, Point, Primitive, ReasonReq, Severity, ServiceState, Tone,
 };
 use minijinja::{Environment, Value};
 use serde::Serialize;
@@ -259,6 +259,8 @@ pub(crate) struct ActionItem {
     pub(crate) emphasis: &'static str,
     /// The icon follows the label.
     pub(crate) trailing_icon: bool,
+    /// Shown on an empty panel.
+    pub(crate) when_empty: bool,
     /// `GET` opens the modal, `POST` invokes.
     pub(crate) url: String,
     pub(crate) enabled: bool,
@@ -689,12 +691,11 @@ pub(crate) fn panel(input: &PanelInput<'_>) -> PanelRender {
     let ctx = Ctx { path: input.path, query: &paging, params: input.query, input };
     let primitive = input.body.map(|b| &b.primitive);
     let body = primitive.map(|p| prim(p, &ctx));
+    let shown = input.actions.iter().filter(|a| input.state != PanelState::Empty || a.when_empty);
     let tools = match primitive {
         Some(Primitive::WorkQueue(_)) => Vec::new(),
-        Some(Primitive::PropertyList(list)) => {
-            input.actions.iter().map(|a| bind(a, input.entity, list.item.as_deref())).collect()
-        }
-        _ => input.actions.iter().map(|a| bind(a, input.entity, None)).collect(),
+        Some(Primitive::PropertyList(list)) => shown.map(|a| bind(a, input.entity, list.item.as_deref())).collect(),
+        _ => shown.map(|a| bind(a, input.entity, None)).collect(),
     };
     let flush = matches!(
         body,
@@ -780,7 +781,7 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
         Primitive::Timeline(t) => PrimView::Timeline(timeline(t, ctx)),
         Primitive::Form(f) => PrimView::Form(panel_form(f, ctx.input)),
         Primitive::WorkQueue(q) => PrimView::Queue(queue(q, ctx)),
-        Primitive::ServiceStatus(s) => PrimView::Services(services(&s.items)),
+        Primitive::ServiceStatus(s) => PrimView::Services(services(s)),
         Primitive::TimeSeriesChart(c) => PrimView::Chart(chart(c)),
         Primitive::AttentionItems(items) => PrimView::Attention(AttentionView {
             items: items
@@ -949,14 +950,14 @@ pub(crate) struct SparkView {
     pub(crate) color: &'static str,
 }
 
-/// The delta's colour class (`bundle.css:251-252`) from `good` alone, never from the
-/// value's text: `Up` is a good change (`up`), `Down` a bad one (`bad-up`), `None` neither
-/// (`flat`). No `Trend` gives the mockup's fourth class, `down`.
+/// The delta's colour class (`bundle.css:251-252`) from `tone` alone, never from the
+/// value's text.
 fn delta_class(d: &controlplane::Delta) -> &'static str {
-    match d.good {
-        Trend::Up => "up",
-        Trend::Down => "bad-up",
-        Trend::None => "flat",
+    match d.tone {
+        Some(Tone::Ok) => "up",
+        Some(Tone::Err) => "down",
+        Some(Tone::Warn) => "bad-up",
+        Some(Tone::Info) | None => "flat",
     }
 }
 
@@ -1362,13 +1363,15 @@ pub(crate) struct ServiceView {
     pub(crate) running: bool,
     pub(crate) tone: &'static str,
     pub(crate) bars: Vec<&'static str>,
-    pub(crate) p99: String,
+    pub(crate) value: Option<String>,
     pub(crate) note: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ServicesView {
     pub(crate) items: Vec<ServiceView>,
+    pub(crate) columns: u8,
+    pub(crate) value_label: Option<String>,
 }
 
 fn service_state(s: ServiceState) -> (&'static str, &'static str, &'static str) {
@@ -1381,24 +1384,26 @@ fn service_state(s: ServiceState) -> (&'static str, &'static str, &'static str) 
     }
 }
 
-pub(crate) fn services(items: &[controlplane::ServiceItem]) -> ServicesView {
-    ServicesView {
-        items: items
-            .iter()
-            .map(|s| {
-                let (state, tone, _) = service_state(s.state);
-                ServiceView {
-                    name: s.name.clone(),
-                    state: state.to_string(),
-                    running: s.state == ServiceState::Running,
-                    tone,
-                    bars: s.history.iter().map(|(_, st)| service_state(*st).2).collect(),
-                    p99: s.p99_ms.map(|ms| format!("{ms} ms")).unwrap_or_else(|| "—".to_string()),
-                    note: s.note.clone(),
-                }
-            })
-            .collect(),
-    }
+pub(crate) fn service_items(items: &[controlplane::ServiceItem]) -> Vec<ServiceView> {
+    items
+        .iter()
+        .map(|s| {
+            let (state, tone, _) = service_state(s.state);
+            ServiceView {
+                name: s.name.clone(),
+                state: state.to_string(),
+                running: s.state == ServiceState::Running,
+                tone,
+                bars: s.history.iter().map(|(_, st)| service_state(*st).2).collect(),
+                value: s.value.clone(),
+                note: s.note.clone(),
+            }
+        })
+        .collect()
+}
+
+fn services(s: &controlplane::ServiceStatus) -> ServicesView {
+    ServicesView { items: service_items(&s.items), columns: s.columns, value_label: s.value_label.clone() }
 }
 
 // ---- TimeSeriesChart ----

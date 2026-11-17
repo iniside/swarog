@@ -442,6 +442,8 @@ pub struct ActionDecl {
     pub emphasis: Emphasis,
     /// Draws the icon after the label; valid only on a `Then::Link` action.
     pub trailing_icon: bool,
+    /// Renders on an empty panel; valid only on a `PanelTool` action.
+    pub when_empty: bool,
     /// The modal's spec comes from `Provider::prepare` for the bound item; the declared
     /// `Then::Confirm` or `Then::Form` fixes only its variant.
     pub prepare: bool,
@@ -697,13 +699,6 @@ pub enum Align {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Trend {
-    Up,
-    Down,
-    None,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CellKind {
     Text,
     Mono,
@@ -792,7 +787,9 @@ pub struct PropertyList {
 pub struct Delta {
     pub value: String,
     pub period: String,
-    pub good: Trend,
+    /// The colour of `value`: `Ok` a good change, `Err` a bad one, `Warn` a worrying rise;
+    /// `Info` and `None` neutral.
+    pub tone: Option<Tone>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -881,7 +878,8 @@ pub struct ServiceItem {
     pub name: String,
     pub state: ServiceState,
     pub version: Option<String>,
-    pub p99_ms: Option<u32>,
+    /// The right-hand value, formatted by the provider ("33 ms", "lag 4 s").
+    pub value: Option<String>,
     pub uptime: Option<String>,
     pub note: Option<String>,
     pub history: Vec<(String, ServiceState)>,
@@ -890,6 +888,10 @@ pub struct ServiceItem {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceStatus {
     pub items: Vec<ServiceItem>,
+    /// 2 splits the list into two columns; any other value renders one.
+    pub columns: u8,
+    /// The header of the items' `value` column.
+    pub value_label: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1973,3 +1973,8 @@ The report lists the declared deviations.
   - `SparkView.color` comes from `KpiTile.spark`, and `primitives.html.tmpl` already reads it, so the spark colour needs no Step 10 markup.
   - The Lag bar is `(lag / 3).clamp(3, 100)` in whole percent, because `Cell.bar` is a `u8`; the mockup computes it in floating point.
   - Review fix: `admin.forms` rows written before Step 9b with `StoredSpec::Confirm` hold the string `impact` and no longer decode; they expire within `FORM_TTL` (1 h) under the wipe rule, as the Step 9a errata says for Form rows.
+- Step 10a:
+  - The `when_empty` filter is applied where the panel view model binds its tools (`render::panel`); the template shows whatever `p.tools` holds in state empty.
+  - The write-affordance rule is `has_write_affordance` in `core/admin/src/engine/panels.rs`, called by `resolve` on a fresh `ok` body only. A stale body keeps state `stale`, as before.
+  - A `ServiceItem` with no `value` renders an empty value cell. The dashboard's down `wallet-svc` sets `"—"` itself (`data.js:97`), which the renderer used to supply for a missing `p99_ms`.
+  - `fakes::delta` takes `tone: Option<Tone>`. The tiles whose delta has no coloured value (Lore seats, Matches in progress, Subscriptions, Head sequence, Dead-lettered) set `None`; "— steady" is `flat`, as in the mockup.

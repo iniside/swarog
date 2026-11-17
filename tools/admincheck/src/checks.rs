@@ -22,6 +22,7 @@ pub fn findings(manifests: &[Manifest]) -> Vec<String> {
         panel_actions(m, &mut out);
         prepared_actions(m, &mut out);
         trailing_icons(m, &mut out);
+        when_empty(m, &mut out);
         id_lengths(m, &mut out);
         form_specs(m, &mut out);
     }
@@ -199,6 +200,12 @@ fn prepared_actions(m: &Manifest, out: &mut Vec<String>) {
 fn trailing_icons(m: &Manifest, out: &mut Vec<String>) {
     for a in m.actions.iter().filter(|a| a.trailing_icon && !matches!(a.then, Then::Link(_))) {
         out.push(format!("{}: action {:?} sets trailing_icon but is not Then::Link", m.module, a.id));
+    }
+}
+
+fn when_empty(m: &Manifest, out: &mut Vec<String>) {
+    for a in m.actions.iter().filter(|a| a.when_empty && !matches!(a.point, ActionPoint::PanelTool(_))) {
+        out.push(format!("{}: action {:?} sets when_empty but is not a PanelTool", m.module, a.id));
     }
 }
 

@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use controlplane::{
-    Banner, ContributionDecl, PanelBody, PanelQuery, Point, Primitive, TimeRange, DEFAULT_PANEL_DEADLINE_MS,
+    ActionPoint, Banner, ContributionDecl, Manifest, PanelBody, PanelQuery, Point, Primitive, Then, TimeRange,
+    DEFAULT_PANEL_DEADLINE_MS,
 };
 
 use super::manifests::Snapshot;
@@ -75,6 +76,18 @@ enum Cached {
 /// portal's own banner.
 pub(crate) fn module_banner(state: PanelState, banner: Option<&Banner>) -> Option<&Banner> {
     banner.filter(|_| matches!(state, PanelState::Ok | PanelState::Readonly))
+}
+
+/// Whether `body` of contribution `decl` in `manifest` offers a write: a `Form` body, a
+/// `PanelForm` action, or a `PanelTool` action that is not a `Then::Link`. A module that
+/// does not write gets the read-only chrome only on such a panel.
+fn has_write_affordance(manifest: &Manifest, decl: &ContributionDecl, body: &Primitive) -> bool {
+    matches!(body, Primitive::Form(_))
+        || manifest.actions.iter().any(|a| match &a.point {
+            ActionPoint::PanelForm(c) => *c == decl.id,
+            ActionPoint::PanelTool(c) => *c == decl.id && !matches!(a.then, Then::Link(_)),
+            _ => false,
+        })
 }
 
 /// Whether `point` is on the dashboard, whose requests carry the time range.
@@ -232,7 +245,6 @@ pub(crate) async fn resolve(
         view.error = Some(format!("no source serves module {module:?}"));
         return view;
     };
-    let writes = manifest.writes;
     let key = cache_key(&req);
     let failure = match tokio::time::timeout(deadline(decl), face.panel(req)).await {
         Ok(Ok(body)) => {
@@ -248,7 +260,11 @@ pub(crate) async fn resolve(
                     .unwrap_or_else(|e| e.into_inner())
                     .put(key, body.clone(), Duration::from_secs(u64::from(ttl)));
             }
-            view.state = if writes { PanelState::Ok } else { PanelState::Readonly };
+            view.state = if manifest.writes || !has_write_affordance(manifest, decl, &body.primitive) {
+                PanelState::Ok
+            } else {
+                PanelState::Readonly
+            };
             view.body = Some(body);
             return view;
         }
