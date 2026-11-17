@@ -853,7 +853,7 @@ fn assert_authenticated_delivery_inside_tls(
     );
     assert_eq!(
         transcript[auth_at], AUTH_PLAIN_LINE,
-        "AUTH PLAIN carries base64 of \0user\0pass"
+        "AUTH PLAIN carries base64 of \\0user\\0pass"
     );
     let mail_at = transcript
         .iter()
@@ -908,6 +908,43 @@ async fn the_production_starttls_dial_refuses_an_untrusted_certificate_before_au
     assert!(
         !relay.wrote(TLS_UP),
         "the handshake must not complete on an untrusted certificate, got {transcript:?}"
+    );
+    assert_eq!(
+        rustls_failure(&result),
+        Some(rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer)),
+        "the certificate check is what stopped the dial, got {result:?}"
+    );
+    assert_infra(&result);
+    assert!(
+        matches!(row_write(result), Disposition::Retry { .. }),
+        "a relay whose certificate is refused is infrastructure, not an undeliverable message"
+    );
+}
+
+/// The deployed constructor's IMPLICIT arm verifies the certificate too. The fixture
+/// wraps the socket from the first byte with the same minted leaf, so the handshake is the
+/// only thing that can fail. The client must give up inside it: the fixture never records
+/// a completed handshake, and the client writes no SMTP line at all — not even an EHLO,
+/// let alone the credential it was configured with.
+#[tokio::test]
+async fn the_production_implicit_dial_refuses_an_untrusted_certificate_before_any_smtp() {
+    let minted = mint(RELAY_HOST);
+    let relay = Relay::start(Script::ImplicitTls(minted.acceptor.clone())).await;
+    let (sender, _) = smtp_sender_with(
+        relay.addr,
+        TlsMode::IMPLICIT,
+        SEND_TIMEOUT_MS,
+        Some((USERNAME, PASSWORD)),
+    );
+
+    let result = guarded_send(&sender).await;
+
+    let transcript = relay.transcript();
+    assert_eq!(relay.hits(), 1, "the client did dial the relay");
+    assert!(
+        transcript.is_empty(),
+        "no handshake may complete and no SMTP line may be written on an untrusted \
+         certificate, got {transcript:?}"
     );
     assert_eq!(
         rustls_failure(&result),
