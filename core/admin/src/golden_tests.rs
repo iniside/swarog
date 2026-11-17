@@ -28,8 +28,9 @@
 //!   own source, so a new variant whose case is not rendered, or that reuses another variant's
 //!   case, fails;
 //! - every `CellKind` and cell `Tone` variant is on a cell of some panel case's body, and every
-//!   `Emphasis` variant on some panel case's action ([`panel_variants`]), checked against the
-//!   variants parsed from the enums' own source.
+//!   `Emphasis` variant on some panel case's action, counting only cases in a state whose body
+//!   the template draws ([`panel_variants`]), checked against the variants parsed from the
+//!   enums' own source.
 //!
 //! Inputs are fixed: one csrf, one form id, fixed `age_s`, and no clock or id generator,
 //! because the render layer reads neither.
@@ -1580,15 +1581,55 @@ fn check_variant_coverage(source: &str, name: &str, rendered: &BTreeSet<&str>) -
 /// The enums whose variants [`panel_variants`] collects, all in [`PRIMITIVE_SOURCE`].
 const SEEN_ENUMS: [&str; 3] = ["CellKind", "Tone", "Emphasis"];
 
+/// Whether `panel_fragment` draws the body of a panel in `state`: its `live` set, which
+/// [`draws_body_matches_the_template`] reads back from the template. No wildcard arm: a new
+/// state does not compile until it says.
+fn draws_body(state: PanelState) -> bool {
+    match state {
+        PanelState::Ok | PanelState::Stale | PanelState::Readonly => true,
+        PanelState::Empty | PanelState::Error | PanelState::Denied => false,
+    }
+}
+
+/// The keys of a `Cell` with every optional field unset, and with every one set. A field
+/// skipped when unset is in the second set only; the struct literal names every field, so a
+/// new one does not compile until it is set here.
+fn cell_key_bounds() -> (BTreeSet<String>, BTreeSet<String>) {
+    let keys = |c: Cell| -> BTreeSet<String> {
+        let value = serde_json::to_value(c).expect("a cell serializes");
+        value.as_object().expect("a cell is an object").keys().cloned().collect()
+    };
+    let full = Cell {
+        kind: CellKind::Text,
+        value: "x".to_string(),
+        tone: Some(Tone::Ok),
+        link: Some(page_link(MODULE, "page")),
+        bar: Some(50),
+    };
+    (keys(cell(CellKind::Text, "x")), keys(full))
+}
+
 /// `(enum, variant)` for each `CellKind` and `Tone` on a cell of `case`'s body and each
-/// `Emphasis` of its actions, as the view model holds it. A cell is an object of the body's
-/// serialization with exactly the keys a `Cell` serializes to, so a `Cell` that gains a field
-/// matches nothing and the coverage check fails rather than passing on fewer cells.
+/// `Emphasis` of its actions, as the view model holds it, and nothing for a case in a state
+/// whose body [`draws_body`] says is never drawn. The actions of an empty panel are not
+/// counted either, though its `when_empty` tools are drawn. The mode is not consulted: in a
+/// drawn state a tile, header, count, nav or inline panel draws only a body of the type its
+/// mode expects, and only the panel mode draws tools.
+///
+/// A cell is an object of the body's serialization whose keys hold every key of an unset
+/// `Cell` and no key a fully set `Cell` lacks ([`cell_key_bounds`]). A cell with a field
+/// skipped when unset still matches, set or not; an object of another struct matches only if
+/// its keys fall within those bounds, which `Column`'s `label`, `sortable` and `align` do not.
 fn panel_variants(case: &PanelCase) -> Vec<(&'static str, String)> {
-    fn walk(v: &serde_json::Value, cell_keys: &BTreeSet<String>, out: &mut Vec<(&'static str, String)>) {
+    fn walk(
+        v: &serde_json::Value,
+        bounds: &(BTreeSet<String>, BTreeSet<String>),
+        out: &mut Vec<(&'static str, String)>,
+    ) {
         match v {
             serde_json::Value::Object(map) => {
-                if map.keys().cloned().collect::<BTreeSet<String>>() == *cell_keys {
+                let keys: BTreeSet<String> = map.keys().cloned().collect();
+                if bounds.0.is_subset(&keys) && keys.is_subset(&bounds.1) {
                     if let Some(kind) = map.get("kind").and_then(|k| k.as_str()) {
                         out.push(("CellKind", kind.to_string()));
                     }
@@ -1596,16 +1637,17 @@ fn panel_variants(case: &PanelCase) -> Vec<(&'static str, String)> {
                         out.push(("Tone", tone.to_string()));
                     }
                 }
-                map.values().for_each(|x| walk(x, cell_keys, out));
+                map.values().for_each(|x| walk(x, bounds, out));
             }
-            serde_json::Value::Array(xs) => xs.iter().for_each(|x| walk(x, cell_keys, out)),
+            serde_json::Value::Array(xs) => xs.iter().for_each(|x| walk(x, bounds, out)),
             _ => {}
         }
     }
-    let sample = serde_json::to_value(cell(CellKind::Text, "x")).expect("a cell serializes");
-    let cell_keys: BTreeSet<String> = sample.as_object().expect("a cell is an object").keys().cloned().collect();
+    if !draws_body(case.state) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
-    walk(&serde_json::to_value(&case.body).expect("a panel body serializes"), &cell_keys, &mut out);
+    walk(&serde_json::to_value(&case.body).expect("a panel body serializes"), &cell_key_bounds(), &mut out);
     out.extend(case.actions.iter().map(|a| ("Emphasis", a.emphasis.to_string())));
     out
 }
@@ -2143,4 +2185,87 @@ fn seen_variants_fail_on_a_new_enum_variant() {
     let kinds = seen_variants(&cases, "CellKind");
     assert!(kinds.contains("User") && kinds.contains("Bytes"), "cells are read from the bodies: {kinds:?}");
     assert!(seen_variants(&cases, "Emphasis").contains("ghost"), "emphasis is read from the actions");
+}
+
+/// A `CellKind`, `Tone` or `Emphasis` variant held only by a case in a state whose body is
+/// never drawn fails the check; the same case in a drawn state passes it.
+#[test]
+fn seen_variants_skip_a_body_that_is_never_drawn() {
+    let source = concat!(
+        "enum CellKind {\n    Text,\n    Mono,\n}\n",
+        "enum Tone {\n    Ok,\n    Warn,\n}\n",
+        "enum Emphasis {\n    Default,\n    Ghost,\n}\n"
+    );
+    let probe = |state: PanelState, kind: CellKind, tone: Tone, emphasis: Emphasis| {
+        let tool_decl = ActionDecl { emphasis, ..decl("probe", "Probe", "refresh", Then::Invoke) };
+        let case = PanelCase {
+            actions: vec![tool(&tool_decl)],
+            ..PanelCase::new(state, Some(body(Primitive::Cell(toned(kind, "x", tone)))))
+        };
+        Case {
+            name: "probe",
+            golden: String::new(),
+            raw: String::new(),
+            primitive: None,
+            state: None,
+            variants: panel_variants(&case),
+        }
+    };
+    let only_in = |state: PanelState| {
+        [
+            probe(PanelState::Ok, CellKind::Text, Tone::Ok, Emphasis::Default),
+            probe(state, CellKind::Mono, Tone::Warn, Emphasis::Ghost),
+        ]
+    };
+    for state in [PanelState::Ok, PanelState::Stale, PanelState::Readonly] {
+        let cases = only_in(state);
+        for name in SEEN_ENUMS {
+            check_variants_seen(source, name, &seen_variants(&cases, name))
+                .unwrap_or_else(|e| panic!("{name} in a drawn {state:?} body is seen: {e}"));
+        }
+    }
+    for state in [PanelState::Empty, PanelState::Error, PanelState::Denied] {
+        let cases = only_in(state);
+        for (name, missing) in [("CellKind", "Mono"), ("Tone", "Warn"), ("Emphasis", "Ghost")] {
+            let err = check_variants_seen(source, name, &seen_variants(&cases, name))
+                .expect_err("a variant only an undrawn body holds must fail");
+            assert!(
+                err.starts_with(&format!("{name} variant(s) [\"{missing}\"] are in no case")),
+                "{state:?}: {err}"
+            );
+        }
+    }
+}
+
+/// [`draws_body`] holds exactly the states the template's `live` set names, and a `Column`
+/// falls outside the cell key bounds.
+#[test]
+fn draws_body_matches_the_template() {
+    let templates = templates();
+    let primitives =
+        &templates.iter().find(|(stem, _)| stem == "primitives").expect("primitives.html.tmpl is read").1;
+    let open = "{%- set live = p.state in [";
+    let at = primitives.find(open).expect("panel_fragment sets `live`") + open.len();
+    let list = &primitives[at..at + primitives[at..].find(']').expect("the `live` list closes")];
+    let live: BTreeSet<&str> = list.split(',').map(|s| s.trim().trim_matches('"')).collect();
+    let states = [
+        PanelState::Ok,
+        PanelState::Empty,
+        PanelState::Stale,
+        PanelState::Error,
+        PanelState::Readonly,
+        PanelState::Denied,
+    ];
+    assert_eq!(
+        states.len(),
+        enum_variants(PANEL_STATE_SOURCE, "PanelState").expect("PanelState parses").len(),
+        "every PanelState is listed"
+    );
+    let drawn: BTreeSet<&str> = states.into_iter().filter(|s| draws_body(*s)).map(PanelState::as_str).collect();
+    assert_eq!(drawn, live, "draws_body against the template's `live` set");
+
+    let (unset, set) = cell_key_bounds();
+    let col = serde_json::to_value(column("k", "K", Align::Left)).expect("a column serializes");
+    let col: BTreeSet<String> = col.as_object().expect("a column is an object").keys().cloned().collect();
+    assert!(!(unset.is_subset(&col) && col.is_subset(&set)), "a column is no cell: {col:?}");
 }
