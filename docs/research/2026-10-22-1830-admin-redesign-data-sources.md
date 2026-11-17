@@ -196,7 +196,7 @@ subscription re-pauses on its next failure (pause threshold 20, `core/asyncevent
 
 ## Errata (2026-11-17, Step 13 accounts checklist)
 
-The rows above are kept as written. Three are wrong at the time of the Step 13 checklist:
+The rows above are kept as written. Five are wrong at the time of the Step 13 checklist:
 - Users & players "Last seen": not FAKE. `max(refresh_tokens.issued_at)` per player is DERIV
   (`modules/accounts/src/lib.rs`, index `refresh_player_idx`).
 - Player detail "Active sessions": the access session lives 60 minutes and rotates
@@ -204,3 +204,8 @@ The rows above are kept as written. Three are wrong at the time of the Step 13 c
   30-day refresh family (`REFRESH_TTL_DAYS`), whose `expires_at` is the meaningful expiry.
 - Users & players "Total count": the list is not capped at 50. `Store::list_players` takes a
   caller-supplied `limit` and has no caller.
+- Player detail "Profile": its "last seen FAKE" has the same error as the list row; Last seen
+  is DERIV from `refresh_tokens.issued_at`.
+- Users & players "Search": exact email is REAL, not NEW. A `dev` subject is the email, so the
+  lookup is the `(provider, subject)` primary key with provider `dev`
+  (`Store::password_identity`, `modules/accounts/src/store.rs`). Substring search stays NEW.

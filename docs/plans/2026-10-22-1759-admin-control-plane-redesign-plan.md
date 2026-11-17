@@ -1928,9 +1928,11 @@ The ports:
       - G6: the total is an exact `count(*)` (no new index, R1), with `(created_at, id)`
         keyset paging; a code comment names the missing-index cost.
       - G8: accounts keeps `writes: false`.
-      - G9: no `Forbidden` → denied mapping. The mockup's denied "Personal data" panel is an
-        accept entry (the crawl runs as admin).
-      - G12: kind `"player"` and status `"active"` are truthful constants. Last seen is
+      - G9: no `Forbidden` → denied mapping. Part `a` contributes no Personal data panel;
+        the mockup's panel is mock-only, a `contract gap` accept entry (no PII store
+        exists, so it is not a data difference).
+      - G12: kind `"player"` and status `"active"` are truthful constants; staff rows are
+        data differences. This supersedes D2's "the 'staff' kind is FAKE" clause. Last seen is
         derived from `refresh_tokens.issued_at`. Active sessions are one row per refresh
         family, with Client/IP a FAKE hash of `family_id` (never the token). Subject is
         masked.
@@ -1938,10 +1940,11 @@ The ports:
         limit; the Kind and Status filters are inert.
       - G15: no "Open detail" row-menu entry.
       - Accept entries: G2's `players-table` class (template choice), G4's arrow on Created
-        instead of Last seen (declared deviation), G5's "Columns: 9 of 12" control
+        instead of Last seen (declared deviation D9), G5's "Columns: 9 of 12" control
         (contract gap), G12's mockup differences (data difference).
       - Part `a` adds `docs/todo/admin-second-pass.md` items: G5 under Accepted contract
-        gaps, a `reltuples` estimate at scale (G6), the Personal data panel (G9), and one per
+        gaps, a `reltuples` estimate at scale (G6), the Personal data panel under Accepted
+        contract gaps (G9), and one per
         `// FAKE:` marker (G12).
     - Tests: a dedicated `[opus]` test-author step right after part `a` writes the
       `EntityListColumn` fan-out engine test (the gate test listed under Step 25), instead
@@ -2300,6 +2303,8 @@ report cites them.
   which are fakes.
 - **D8.** A nav entry whose source has never answered since admin-svc started is absent,
   not greyed. Greying with the red dot applies once a last-good manifest exists.
+- **D9.** The players list's sort indicator sits on the real sort column, Created, not on
+  the mockup's Last seen (Step 13, G4).
 
 ## Open items for implementers (do not change scope)
 

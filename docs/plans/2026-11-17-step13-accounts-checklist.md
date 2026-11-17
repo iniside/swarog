@@ -143,14 +143,14 @@ last-seen column. Reusable reads: `stats()` (`st:972-981`), `list_players(limit)
 
 | Element | Mockup line | Carrier | Status |
 |---|---|---|---|
-| `div.grid.g-2` holding the four panels | `pc:118` | the tab body is always `div.stack` (`shell:64`) | **contract gap G11** |
+| `div.grid.g-2` holding the four panels (three contributed, G9) | `pc:118` | the tab body is always `div.stack` (`shell:64`) | **contract gap G11** |
 | Panel "Profile", tool `btn sm` "Edit" (`edit`) | `pc:119` | PropertyList + `PanelTool`, `implemented: false` | ok, NEW (`ds:81`); needs **G8** |
 | User id: `span.mono` id + `span.tag` "user:id" | `pc:119`, `bjs:109` | one `Mono` cell | **G3** (two elements) |
 | Handle, Display name | `pc:119` | `Text` | ok, REAL |
 | Kind badge plain; Status badge | `pc:119` | as list | **G3**, **G12** |
 | Country | `pc:119` | `Text` | **data: FAKE** (`ds:81`) |
 | Created; Last seen | `pc:119` | `Text` | REAL; Last seen **G12** |
-| Panel "Personal data", denied: "Requires `span.tag` accounts.pii.read …" | `pc:120`, `bjs:125` | denied only by `min_role` (`pn:240-243`); the crawl operator is admin | **G9** |
+| Panel "Personal data", denied: "Requires `span.tag` accounts.pii.read …" | `pc:120`, `bjs:125` | none: not contributed (G9), mock-only panel | **G9** |
 | Panel "Linked identities", meta count, tool `btn sm` "Link" (`plus`) | `pc:121` | DataTable, `PanelBody.meta`, `PanelTool`, `implemented: false` | ok, NEW; **G8** |
 | Columns Provider (`span.tag`), Subject (`span.mono`), Linked, Last used, "" | `pc:122` | `Ref`, `Mono`, `Text`, `Text`, `Column{label:""}` | ok carrier. Subject masking **G12**; Linked needs `identities.created_at` (`al:168`, not selected by `st:954-970`); Last used **FAKE** |
 | Row `btn sm ghost danger-ghost` "Unlink", no icon, disabled on the last identity | `pc:122` | none: a DataTable has no per-row buttons | **contract gap G7**; NEW |
@@ -167,7 +167,7 @@ last-seen column. Reusable reads: `stats()` (`st:972-981`), `list_players(limit)
 |---|---|---|---|---|---|---|
 | Users table | 14 rows, Embers failing (`pc:83-106`) | fresh fleet before demoseed: toolbar + "Nothing here yet" + foot (`tmpl:329-331`) | unreachable under G8 | `cache_ttl_s` (recommend none: a list) | portal error block (`tmpl:403`) | narrowed: "No results" state (`tmpl:330`); golden `table_empty_search` exists per the skill. The fan-out makes no call for 0 rows |
 | Profile | 8 props, Edit tool | `NotFound` → empty (`pn:271-274`) for a deleted id | G8 | none | error block | — |
-| Personal data | mock is denied | — | — | — | — | unreachable for the admin crawl (G9): an accept entry + a todo item |
+| Personal data | not contributed (G9) | — | — | — | — | — |
 | Linked identities | rows | 0 identities: unreachable (a player is created with one, `st:289`) | G8 | none | error block | — |
 | Active sessions | rows | 0 live: "Nothing here yet"; the mock has no empty design | G8 | none | error block | — |
 | Header | title, badges | `NotFound` → fallback h1 (`tmpl:358`) | — | — | `dot err` (`tmpl:358`) | — |
@@ -194,9 +194,9 @@ and no `request_id` double-apply risk exists. All `min_role: Operator`, `multi: 
 | `suspend-header` | `HeaderAction("player")` | "Suspend" / `ban` | Default | true | false | 30 (lore 10, notifications 20, `reg:89-91`) |
 | `edit-profile` | `PanelTool("profile")` | "Edit" / `edit` | Default | false | false | 10 |
 | `link-identity` | `PanelTool("identities")` | "Link" / `plus` | Default | false | false | 10 |
-| `unlink-identity` | row button (G7) | "Unlink" / none | Ghost | true | false | 10 |
+| `unlink-identity` | `ActionPoint::TableRow("identities")` (G7) | "Unlink" / none | Ghost | true | false | 10 |
 | `revoke-all` | `PanelTool("sessions")` | "Revoke all" / none | Default | true | false | 10 |
-| `revoke-session` | row button (G7) | "Revoke" / none | Ghost | false | false | 10 |
+| `revoke-session` | `ActionPoint::TableRow("sessions")` (G7) | "Revoke" / none | Ghost | false | false | 10 |
 
 The mock's Suspend and Delete confirms (`pc:13-25`) are never opened: the actions render disabled.
 
@@ -213,7 +213,7 @@ The mock's Suspend and Delete confirms (`pc:13-25`) are never opened: the action
 | EntityKindDecl | — | — | `{kind:"player", label:"Player", icon:"user"}` |
 | `header` | `EntityHeader("player")` | 0 | G10 |
 | `fact.id`, `fact.joined` | `EntitySummary("player")` | 10, 20 | G10 |
-| `profile`, `pii`, `identities`, `sessions` | `EntityTab{player, "profile", "Profile & identities"}` | 10, 20, 30, 40 | §2 |
+| `profile`, ~~`pii`~~, `identities`, `sessions` | `EntityTab{player, "profile", "Profile & identities"}` | 10, ~~20~~, 30, 40 | §2 |
 | search | `SearchDecl{kind:"player"}` | — | G13 |
 
 ---
@@ -246,7 +246,7 @@ with the fan-out:
     wrap it in `span`, `tmpl:127`). Placed after the module banner (`tmpl:396`), in `ok` and
     `readonly` only.
 - Exercising it with no contributor: admindiff cannot (no column exists in any fleet). The
-  `plan:2117` engine test sits in Step 25. **Decided (owner, 2026-11-17):** a dedicated
+  `plan:2163-2164` engine test sits in Step 25. **Decided (owner, 2026-11-17):** a dedicated
   `[opus]` test-author step right after part `a` writes that gate test with a fake provider
   (one ok, one failing, one denied column; one call per page), plus golden cases for the
   `th > span`, the failure cell and the banner.
@@ -296,7 +296,7 @@ with the fan-out:
 descending, the real order (`st:993`); the arrow on Created instead of Last seen is a declared
 deviation. ~~Alternative: a contract-gap entry.~~
 **Decided (owner, 2026-11-17): the proposal.** The arrow on Created, not the mockup's Last
-seen, is a declared-deviation accept entry.
+seen, is an accept entry citing declared deviation D9 (`plan`, Declared deviations).
 
 **G5. Toolbar right ("Columns:" + "9 of 12").** No carrier and no column chooser exists.
 Proposal: contract-gap accept entries. ~~Alternative: `DataTable.toolbar_note` plus a disabled
@@ -337,10 +337,12 @@ proposal.** `has_write_affordance` ignores an `implemented: false` action; accou
 admin, so the designed state is unreachable; the detail names a role, not a permission
 (`tmpl:134-136`). No PII store exists (FAKE, `ds:82`). ~~Proposal: a provider's `Forbidden` panel
 answer maps to `denied` (as `NotFound` maps to `empty`, `pn:271-274`), with the message as the
-tag text; accounts answers `Forbidden("accounts.pii.read")` (`// FAKE:`).~~ Alternative: a data
-difference entry for good. **Decided (owner, 2026-11-17): no `Forbidden` → denied mapping.**
-The mock's denied "Personal data" panel stays an accept entry (the crawl runs as admin), and
-part `a` adds a `docs/todo/admin-second-pass.md` item for it.
+tag text; accounts answers `Forbidden("accounts.pii.read")` (`// FAKE:`). Alternative: a data
+difference entry for good.~~ **Decided (owner, 2026-11-17): no `Forbidden` → denied mapping.**
+Part `a` contributes no Personal data panel. The mock's panel is mock-only, with accept kind
+`contract gap`: the owner declined the contract change, and no PII store exists, so it is not a
+data difference. Part `a` adds its item under **Accepted contract gaps** in
+`docs/todo/admin-second-pass.md`.
 
 **G10. Entity header.** One `status` cell (`cp:980-985`); facts draw no icon (`tmpl:360-364`);
 the crumb is the uuid (`rt:589`). Proposal: `EntityHeader.badges: Vec<Cell>` after `status`;
@@ -352,7 +354,8 @@ header `title`) instead of the uuid.
 
 **G11. Tab layout.** Proposal: `Point::EntityTab` gains `columns: u8` (2 → `div.grid.g-2`),
 read from the tab's first-ordered contribution. ~~Alternative: a template-choice entry.~~
-**Decided (owner, 2026-11-17): the proposal.**
+**Decided (owner, 2026-11-17): the proposal.** The grid holds three panels (Profile, Linked
+identities, Active sessions); the mock's fourth, Personal data, is not contributed (G9).
 
 **G12. Data decisions.**
 - Kind: ~~FAKE~~ constant `"player"` (operators are `admin.users`, `ds:16-18`) ~~vs an R1 hash
@@ -412,10 +415,11 @@ the menu's entity.~~ **Decided (owner, 2026-11-17): the proposal.** No "Open det
   ported yet (the contributed `td`s), plus data differences for suspended/banned/staff and
   multi-provider rows (G12 constants); the Embers banner, not ported yet (Step 15), and a
   data difference once wallet answers; G2's `players-table` class, template choice; G4 the
-  sort arrow on Created instead of Last seen, declared deviation; G5 the "Columns:" +
+  sort arrow on Created instead of Last seen, declared deviation D9; G5 the "Columns:" +
   "9 of 12" toolbar control, contract gap.
 - player: mock-only tabs, facts and header actions of later ports or no lore module; the
-  Personal data panel's denied state (G9), an accept entry; data differences from the G12
+  mock-only Personal data panel (G9), kind `contract gap` (Forbidden→denied declined, no PII
+  store); data differences from the G12
   constants and FAKE values. The kind badge, grid layout and row buttons are built
   (G10, G11, G7), so they need no entry.
 
@@ -425,10 +429,11 @@ the menu's entity.~~ **Decided (owner, 2026-11-17): the proposal.** No "Open det
 
 FAKE: country, last used, session client/IP, tile delta and spark. ~~kind; the Personal data
 denial (G9); status if G12 picks a hash.~~ Kind and status are truthful constants (G12).
-Unreachable state: the Personal data denied panel (G9). Scale: a `reltuples` estimate for the
+Scale: a `reltuples` estimate for the
 players total (G6). Disabled: export-csv, create-account, suspend, suspend-header,
 delete-account, edit-profile, link-identity, unlink-identity, revoke-all, revoke-session.
-Under **Accepted contract gaps**: the "Columns: 9 of 12" control (G5).
+Under **Accepted contract gaps**: the "Columns: 9 of 12" control (G5) and the uncontributed
+Personal data panel (G9).
 
 ## 10. `pages.rs` change (part `a`)
 
