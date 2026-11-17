@@ -690,12 +690,21 @@ class RefReminder(unittest.TestCase):
                 self.assertEqual(run("ref_reminder", p), "silent")
 
     def test_paths(self):
-        for rel, want in (("modules/admin/templates/x.html", "context"),
-                          ("modules/gateway/src/lib.rs", "context"),
+        for rel, want in (("modules/gateway/src/lib.rs", "context"),
                           ("modules/wallet/src/lib.rs", "silent")):
             with self.subTest(rel=rel):
                 p = self.payload(str(uuid.uuid4()), "Write", file_path=R + "/" + rel)
                 self.assertTrue(run("ref_reminder", p).startswith(want))
+
+    def test_mockup_skill_paths(self):
+        skill = "mockup-implementation/SKILL.md"
+        for rel in ("tools/admindiff/accept/x.txt", "core/admin/src/portal.css",
+                    "core/admin/src/templates/x.html"):
+            with self.subTest(rel=rel):
+                p = self.payload(str(uuid.uuid4()), "Write", file_path=R + "/" + rel)
+                self.assertIn(skill, run("ref_reminder", p))
+        p = self.payload(str(uuid.uuid4()), "Write", file_path=R + "/modules/admin/templates/x.html")
+        self.assertNotIn(skill, run("ref_reminder", p))
 
 
 class FailOpen(unittest.TestCase):
