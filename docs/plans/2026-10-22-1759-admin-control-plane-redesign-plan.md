@@ -1443,6 +1443,72 @@ Tests for Step 25:
 
 (d) `[opus]` mockup-implementer.
 
+### Step 10a — Fixes found rendering Step 10's real states
+
+(a) `core/controlplane/src/lib.rs`, `core/admin/src/{engine/*,render.rs,routes.rs,events_provider.rs,portal_provider.rs,fakes.rs,templates/*}`,
+`tools/admincheck`, and the public-api baseline.
+
+(b) Why: the Step 10 render of real states and its review found four gaps. Owner decisions, 2026-11-17.
+This corrects the earlier assumption, which was wrong, that a provider can leave tools out
+per render: tools come from the static manifest.
+
+(c) Decisions and invariants:
+1. **Tools on an empty panel (L2, option a).** `ActionDecl` gains `when_empty: bool`.
+   - A `PanelTool` action renders on an empty panel only when `when_empty` is set. This
+     replaces Step 10's "tools also render in state empty" for every other action.
+   - admincheck flags `when_empty` on any action that is not a `PanelTool`.
+   - The `core.events` poison actions keep `false`.
+2. **Read-only chrome (L1).** A `writes: false` module's panel gets the read-only chip and
+   banner only when the contribution has a write affordance. That means one of:
+   - a `PanelTool` action whose `then` is not `Then::Link` (a link is not a write, and
+     `admit` lets it through);
+   - a `PanelForm` action;
+   - a `Form` body.
+
+   Any other panel of such a module renders `ok`.
+   - The rule lives in one place in the engine. Step 8a's separate route rule (a `Form`
+     with no usable `PanelForm` is readonly, in `routes.rs`) stays as it is.
+   - The portal's Service health then has no read-only chrome, as in the mockup.
+   - This supersedes the unconditional "`writes: false` → readonly" in Step 25's engine
+     tests.
+3. **Delta colour (L3).** `Delta.good: Trend` is replaced by `Delta.tone: Option<Tone>`,
+   which states the colour directly, as the mockup classes do (`bundle.css:251-252`):
+   - `Ok` gives `up`, `Err` gives `down`, `Warn` gives `bad-up`, and `Info`/`None` give
+     `flat`.
+   - `Delta.good` and `Trend` die in this step: `Delta.good` is `Trend`'s only user.
+     Their chain goes too: the imports, the `delta_class` arm and its doc, the
+     `fakes::delta` helper's `Trend` parameter, and the baseline lines.
+   - `Delta.tone` gets a doc comment.
+   - The providers set the mockup colour per tile:
+     - dashboard Paused is `Err`;
+     - Max lag and Lore store are `Warn`.
+4. **Service list layout.** `ServiceStatus` gains `columns: u8` (1 or 2) and
+   `value_label: Option<String>`, the right-hand column header.
+   - Today every Services body renders as the dashboard's two columns with "p99". The
+     mockup's other ServiceStatus panels are one column with a "lag N" value
+     (`pages-lore.js:228-229,261-262`).
+   - The view splits into columns only when `columns` is 2, and prints the label only
+     when it is set.
+   - Service health sets 2 and "p99".
+   - `ServiceItem.p99_ms: Option<u32>` is replaced by `value: Option<String>`, which the
+     provider formats: Service health gives "33 ms", a lag panel gives "lag 4 s".
+     `p99_ms` dies here with its chain (the fakes, the renderer, the baseline). The
+     hard-coded "p99" header in the panel chrome is deleted, and `value_label` replaces
+     it.
+
+Tests for Step 25:
+- a `when_empty` tool shows on an empty panel and an ordinary tool does not;
+- admincheck flags `when_empty` off a `PanelTool`;
+- a `writes: false` panel:
+  - without a write affordance is `ok`;
+  - whose only tool is a `Then::Link` is `ok`;
+  - with a non-link tool, a `PanelForm` or a `Form` is `readonly`;
+- a one-column `ServiceStatus` without a label renders a single list without "p99", and
+  shows each item's `value` exactly as the provider gave it;
+- each `Delta.tone` maps to its class.
+
+(d) `[opus]` core-implementer; it also makes the template reads follow.
+
 ### Steps 11–24 — Provider ports (each step has a backend part `a` and a view part `b`)
 
 **Port template.**
@@ -1706,7 +1772,8 @@ NotFound with no pre-read.
 - `core/admin/src/engine/*_tests.rs`:
   - deadline → error; deadline with last-good → stale;
   - role below `min_role` → denied with zero provider calls;
-  - `NotFound` → empty; `writes: false` → readonly;
+  - `NotFound` → empty; `writes: false` with a write affordance → readonly, and without
+    one → ok (Step 10a);
   - `implemented: false` POST → 403 with zero calls;
   - `Conflict` → 409;
   - manifest refresh keeps last-good when a source fails;
