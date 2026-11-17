@@ -97,8 +97,8 @@ An accept-plan section predicts every accept entry the page needs, each with its
 and reason: the shell-frame copies above, every declared deviation, contract gap and
 data difference, a template-choice pair that repeats another accept file's pair (the
 toolbar `span.input-icon` / `form.input-icon` pair of `events.txt`), and a frame
-placeholder a wrapper makes mock-only (`mock-only [panel "<title>"]` beside a
-`div.stack`). Where the exact `<difference>` text needs a crawl, it names the element
+placeholder that the wrapper element the page layout draws (e.g. `div.stack` for
+`Layout::Stack`) makes mock-only (`mock-only [panel "<title>"]`). Where the exact `<difference>` text needs a crawl, it names the element
 and the kind.
 
 Once the owner decides the checklist's gaps, the checklist file is updated in place
