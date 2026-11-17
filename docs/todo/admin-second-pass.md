@@ -150,6 +150,15 @@ the Step 11 checklist (the count is queued pending plus retrying; the warn tone 
 from retrying plus parked), but it reads oddly. Option: show the parked count when
 nothing is queued. Owner design decision. Source: b5eb40d5.
 
+## Blank filter value reads as a filter on an empty outbox
+
+`filter_views` (`core/admin/src/render.rs:881`) maps only a missing param to `"any"`, but
+the providers treat both `""` and `"any"` as unset (`modules/mail/src/admin.rs:402`,
+`core/admin/src/events_provider.rs:432`). A hand-typed `?template=` on an empty outbox
+shows "No matching items" with a blank chip instead of "Queue is empty". Fix: map an empty
+value to `"any"` at `render.rs:881` (a one-liner), with a golden case. Source: review of
+7bb53152, 2026-11-17.
+
 ## Data a dev fleet never produces
 
 `data difference` accept entries in `tools/admindiff/accept/*.txt` that are real data
