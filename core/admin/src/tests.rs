@@ -908,11 +908,12 @@ async fn argon_permit_survives_login_cancellation_until_hash_completes() {
 use std::collections::BTreeMap;
 
 use controlplane::{
-    ActionDecl, ActionPoint, Align, Cell, CellKind, ContributionDecl, DataTable, Emphasis, EntityRef, InvokeCall,
-    InvokeOutcome, Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, PropertyList, Role, Row, SearchHit,
-    SearchQuery, Source, Then,
+    ActionDecl, ActionPoint, Align, Cell, CellKind, ContributionDecl, DataTable, Emphasis, EntityKindDecl, EntityRef,
+    InvokeCall, InvokeOutcome, Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, PropertyList, Role, Row,
+    SearchHit, SearchQuery, Source, Then,
 };
 
+use crate::engine::columns::{self, ColumnOutcome};
 use crate::engine::manifests::{refresh_once, Snapshot};
 use crate::engine::panels::{self, PanelState};
 use crate::engine::roles::Operator;
@@ -1079,6 +1080,17 @@ struct Fleet {
 impl Fleet {
     async fn new(table: Primitive, guild: Answer, players_write: bool, players_actions: Vec<ActionDecl>) -> Fleet {
         let page = contribution("list", Point::Page("players".to_string()), Role::Viewer);
+        Fleet::serving(page, table, guild, players_write, players_actions).await
+    }
+
+    /// The fleet with `page` as the players page's declaration.
+    async fn serving(
+        page: ContributionDecl,
+        table: Primitive,
+        guild: Answer,
+        players_write: bool,
+        players_actions: Vec<ActionDecl>,
+    ) -> Fleet {
         let players = Recording::new(
             module("players", vec![page], players_actions, players_write),
             &[("list", answer(table))],
@@ -1100,30 +1112,39 @@ impl Fleet {
             module("members", vec![list_column("members", "guild", "Members", Role::Viewer, 3)], Vec::new(), false),
             &[("members", answer(Primitive::ColumnCells(BTreeMap::new())))],
         );
-        let sources = [&players, &levels, &guilds, &secrets, &members]
-            .iter()
-            .map(|r| {
-                let provider: Arc<dyn controlplane::Provider> = Arc::clone(r) as Arc<dyn controlplane::Provider>;
-                Source {
-                    peer: format!("{}-svc", r.manifest.module),
-                    face: Arc::new(controlplane::LocalFace::new(vec![provider])),
-                }
-            })
-            .collect();
-        let engine = Arc::new(Engine::new());
-        engine.install(Snapshot::seeded(sources, None));
-        refresh_once(&engine).await;
+        let providers: Vec<Arc<dyn controlplane::Provider>> =
+            vec![players.clone(), levels.clone(), guilds.clone(), secrets.clone(), members.clone()];
+        let engine = Arc::new(sourced(providers).await);
         assert_eq!(engine.snapshot().modules.len(), 5, "every source's manifest is routed");
         Fleet { engine, players, levels, guilds, secrets, members }
     }
 
     async fn get(&self, st: &Arc<AdminState>, cookie: &str, uri: &str) -> (StatusCode, String) {
-        let portal = crate::routes::Portal { st: st.clone(), engine: self.engine.clone() };
-        let req = Request::builder().uri(uri).header("cookie", cookie).body(Body::empty()).unwrap();
-        let resp = crate::routes::router(portal).oneshot(req).await.unwrap();
-        let status = resp.status();
-        (status, body_string(resp).await)
+        portal_get(&self.engine, st, cookie, uri).await
     }
+}
+
+/// An engine routing each provider through a source of its own, as split peers are.
+async fn sourced(providers: Vec<Arc<dyn controlplane::Provider>>) -> Engine {
+    let sources = providers
+        .into_iter()
+        .map(|provider| Source {
+            peer: format!("{}-svc", provider.manifest().module),
+            face: Arc::new(controlplane::LocalFace::new(vec![provider])),
+        })
+        .collect();
+    let engine = Engine::new();
+    engine.install(Snapshot::seeded(sources, None));
+    refresh_once(&engine).await;
+    engine
+}
+
+async fn portal_get(engine: &Arc<Engine>, st: &Arc<AdminState>, cookie: &str, uri: &str) -> (StatusCode, String) {
+    let portal = crate::routes::Portal { st: st.clone(), engine: engine.clone() };
+    let req = Request::builder().uri(uri).header("cookie", cookie).body(Body::empty()).unwrap();
+    let resp = crate::routes::router(portal).oneshot(req).await.unwrap();
+    let status = resp.status();
+    (status, body_string(resp).await)
 }
 
 /// An `operator` session cookie for a fresh user, who is below `secrets`' admin column.
@@ -1207,6 +1228,46 @@ async fn a_list_column_answering_another_primitive_fails_like_an_error() {
     assert_one_fan_out_with_guild_failing(cell, "a column answering a Cell").await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_list_column_answering_not_found_fails_like_an_error() {
+    let missing = Answer::Fail(opsapi::Error::not_found("no guild for these players"));
+    assert_one_fan_out_with_guild_failing(missing, "a column answering NotFound").await;
+}
+
+/// Only an ok or readonly table fans out: the same page gone stale on its cached copy draws
+/// its rows without a list column and calls none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stale_table_draws_no_list_columns_and_calls_none() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-cols-stale");
+    let cookie = operator_cookie(&pool, &user).await;
+    let page = ContributionDecl {
+        cache_ttl_s: Some(3600),
+        ..contribution("list", Point::Page("players".to_string()), Role::Viewer)
+    };
+    let guild_ok = answer(Primitive::ColumnCells(BTreeMap::new()));
+    let fleet = Fleet::serving(page, players_table(mixed_rows()), guild_ok, true, Vec::new()).await;
+
+    let (_, raw) = fleet.get(&st, &cookie, PLAYERS_PANEL).await;
+    assert!(raw.contains(r#"data-state="ok""#), "{raw}");
+    assert_eq!(table_grid(&raw).0, ["Name", "<span>Level</span>", "<span>Guild</span>", "Status"]);
+    assert_eq!((fleet.levels.calls().len(), fleet.guilds.calls().len()), (1, 1));
+
+    fleet.players.answer("list", Answer::Fail(opsapi::Error::unavailable("player store down")));
+    let (status, raw) = fleet.get(&st, &cookie, PLAYERS_PANEL).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains(r#"data-state="stale""#), "{raw}");
+    assert_eq!(fleet.players.calls().len(), 2);
+    let calls = (fleet.levels.calls().len(), fleet.guilds.calls().len());
+    assert_eq!(calls, (1, 1), "a stale table calls no list column");
+    let (heads, rows) = table_grid(&raw);
+    assert_eq!(heads, ["Name", "Status"], "a stale table draws no list column");
+    assert_eq!(rows.len(), 4, "the cached rows are drawn");
+
+    cleanup_user(&pool, &user).await;
+}
+
 /// A readonly table page fans out too; an empty table and a table with no row of the
 /// columns' kind make no column call.
 #[tokio::test(flavor = "multi_thread")]
@@ -1263,9 +1324,9 @@ async fn a_list_columns_own_panel_url_is_not_found_and_never_called() {
     cleanup_user(&pool, &user).await;
 }
 
-/// `refs` crosses the wire: a split column provider receives the ids it is asked for.
+/// `PanelQuery`'s JSON form keeps `refs`, in order.
 #[test]
-fn panel_query_refs_survive_the_wire() {
+fn panel_query_json_keeps_refs() {
     let query = PanelQuery {
         module: "levels".to_string(),
         contribution: "level".to_string(),
@@ -1281,6 +1342,94 @@ fn panel_query_refs_survive_the_wire() {
     let back: PanelQuery = serde_json::from_str(&serde_json::to_string(&query).unwrap()).unwrap();
     assert_eq!(back, query);
     assert_eq!(back.refs, ["p-2", "p-1"]);
+}
+
+/// A provider whose every panel call never answers.
+struct Hung {
+    manifest: Manifest,
+}
+
+#[async_trait::async_trait]
+impl controlplane::Provider for Hung {
+    fn manifest(&self) -> Manifest {
+        self.manifest.clone()
+    }
+
+    async fn panel(&self, _req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
+        std::future::pending().await
+    }
+
+    async fn search(&self, _req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
+        Ok(Vec::new())
+    }
+
+    async fn invoke(&self, _req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
+        Err(opsapi::Error::forbidden("a hung provider writes nothing"))
+    }
+}
+
+/// A `player` list column, the only contribution of module `name`, that never answers
+/// within its 50 ms deadline.
+fn hung_column(name: &str, order: i32) -> Arc<dyn controlplane::Provider> {
+    let decl = ContributionDecl { deadline_ms: 50, ..list_column(name, "player", name, Role::Viewer, order) };
+    Arc::new(Hung { manifest: module(name, vec![decl], Vec::new(), false) })
+}
+
+/// Far past every deadline below, so a fan-out that never returns fails instead of hanging.
+const HANG_GUARD: Duration = Duration::from_secs(3600);
+
+/// The `player` fan-out of `p-1` and `p-2` for an admin, and the virtual time it took.
+async fn fan_out_guarded(engine: &Engine) -> (Vec<columns::ListColumn>, Duration) {
+    let operator = Operator { login: "ops".to_string(), role: Role::Admin };
+    let refs = vec!["p-1".to_string(), "p-2".to_string()];
+    let snapshot = engine.snapshot();
+    let start = tokio::time::Instant::now();
+    let fanned = tokio::time::timeout(HANG_GUARD, columns::fan_out(&snapshot, &operator, "player", refs))
+        .await
+        .expect("the fan-out returns once its deadlines elapse");
+    (fanned, start.elapsed())
+}
+
+/// A column that never answers fails at its own deadline; the column beside it keeps its
+/// cells.
+#[tokio::test(start_paused = true)]
+async fn a_hung_list_column_fails_at_its_deadline_beside_one_that_answers() {
+    let cells = BTreeMap::from([("p-1".to_string(), text("Night Owls"))]);
+    let guilds = Recording::new(
+        module("guilds", vec![list_column("guild", "player", "Guild", Role::Viewer, 1)], Vec::new(), false),
+        &[("guild", answer(Primitive::ColumnCells(cells.clone())))],
+    );
+    let engine = sourced(vec![hung_column("levels", 0), guilds.clone()]).await;
+
+    let (fanned, elapsed) = fan_out_guarded(&engine).await;
+    assert_eq!(fanned.len(), 2);
+    assert_eq!(fanned[0].module, "levels");
+    match &fanned[0].outcome {
+        ColumnOutcome::Failed(why) => assert_eq!(why, "deadline of 50ms elapsed"),
+        other => panic!("the hung column must fail: {other:?}"),
+    }
+    assert_eq!(fanned[1].module, "guilds");
+    match &fanned[1].outcome {
+        ColumnOutcome::Cells(got) => assert_eq!(got, &cells),
+        other => panic!("the answering column keeps its cells: {other:?}"),
+    }
+    assert_eq!(guilds.calls().len(), 1);
+    assert!(elapsed >= Duration::from_millis(50), "{elapsed:?}");
+}
+
+/// Two hung columns wait out their deadlines together, not one after the other.
+#[tokio::test(start_paused = true)]
+async fn hung_list_columns_wait_out_their_deadlines_concurrently() {
+    let engine = sourced(vec![hung_column("levels", 0), hung_column("ranks", 1)]).await;
+
+    let (fanned, elapsed) = fan_out_guarded(&engine).await;
+    assert_eq!(fanned.len(), 2);
+    for column in &fanned {
+        let failed = matches!(&column.outcome, ColumnOutcome::Failed(why) if why == "deadline of 50ms elapsed");
+        assert!(failed, "{column:?}");
+    }
+    assert!(elapsed >= Duration::from_millis(50), "{elapsed:?}");
+    assert!(elapsed < Duration::from_millis(100), "two 50 ms deadlines in sequence take 100 ms: {elapsed:?}");
 }
 
 // ---- panels::resolve --------------------------------------------------------------
@@ -1303,6 +1452,10 @@ async fn single(
 }
 
 async fn resolve(engine: &Engine, decl: &ContributionDecl) -> panels::PanelView {
+    resolve_refs(engine, decl, &[]).await
+}
+
+async fn resolve_refs(engine: &Engine, decl: &ContributionDecl, refs: &[&str]) -> panels::PanelView {
     let query = PanelQuery {
         module: "m".to_string(),
         contribution: decl.id.clone(),
@@ -1313,7 +1466,7 @@ async fn resolve(engine: &Engine, decl: &ContributionDecl) -> panels::PanelView 
         queue_state: None,
         range: None,
         params: BTreeMap::new(),
-        refs: Vec::new(),
+        refs: refs.iter().map(|r| r.to_string()).collect(),
     };
     let operator = Operator { login: "ops".to_string(), role: Role::Admin };
     panels::resolve(engine, &engine.snapshot(), &operator, "m", decl, query).await
@@ -1364,4 +1517,59 @@ async fn a_page_panel_answering_column_cells_is_an_error_or_stale_on_its_cache()
     assert_eq!(view.state, PanelState::Stale);
     assert_eq!(view.body.map(|b| b.primitive), Some(props), "the cached copy, never the cells");
     assert!(view.error.as_deref().is_some_and(|e| e.contains("answered ColumnCells")), "{:?}", view.error);
+}
+
+/// Queries that differ only in `refs` never share a cached copy: with `["a", "b"]` cached, a
+/// failing call for `["ab"]` or for no refs is an error, and one for `["a", "b"]` is stale on it.
+#[tokio::test]
+async fn panel_queries_differing_only_in_refs_cache_apart() {
+    let decl = ContributionDecl {
+        cache_ttl_s: Some(3600),
+        ..contribution("summary", Point::Page("players".to_string()), Role::Viewer)
+    };
+    let props = Primitive::PropertyList(PropertyList {
+        items: vec![("Level".to_string(), text("12"))],
+        columns: 1,
+        item: None,
+        code: None,
+    });
+    let (engine, rec) = single(decl.clone(), Vec::new(), true, answer(props)).await;
+    assert_eq!(resolve_refs(&engine, &decl, &["a", "b"]).await.state, PanelState::Ok);
+
+    rec.answer("summary", Answer::Fail(opsapi::Error::unavailable("summary store down")));
+    for refs in [&["ab"][..], &[]] {
+        assert_eq!(resolve_refs(&engine, &decl, refs).await.state, PanelState::Error, "refs {refs:?}");
+    }
+    assert_eq!(resolve_refs(&engine, &decl, &["a", "b"]).await.state, PanelState::Stale);
+}
+
+/// An entity tab declared with `columns: 2` lays its panels out in a two-column grid; a
+/// one-column tab does not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_two_column_entity_tab_draws_a_grid() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-tab-grid");
+    let cookie = operator_cookie(&pool, &user).await;
+    let tab = |id: &str, columns: u8| {
+        let point =
+            Point::EntityTab { kind: "player".to_string(), tab: id.to_string(), tab_label: id.to_string(), columns };
+        contribution(id, point, Role::Viewer)
+    };
+    let kind = EntityKindDecl { kind: "player".to_string(), label: "Player".to_string(), icon: String::new() };
+    let manifest = Manifest {
+        entity_kinds: vec![kind],
+        ..module("players", vec![tab("stats", 2), tab("notes", 1)], Vec::new(), false)
+    };
+    let provider: Arc<dyn controlplane::Provider> = Recording::new(manifest, &[]);
+    let engine = Arc::new(sourced(vec![provider]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/e/player/p-1?tab=stats").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains(r#"<div class="grid g-2">"#), "{raw}");
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/e/player/p-1?tab=notes").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(!raw.contains(r#"<div class="grid g-2">"#), "{raw}");
+
+    cleanup_user(&pool, &user).await;
 }

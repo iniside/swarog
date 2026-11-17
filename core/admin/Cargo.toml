@@ -40,5 +40,6 @@ asyncevents = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }
-tokio = { workspace = true }
+# test-util: the list-column deadline tests run a paused clock.
+tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }

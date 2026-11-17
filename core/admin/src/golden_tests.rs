@@ -27,10 +27,10 @@
 //!   distinct rendered cases they name must equal the number of variants parsed from the enums'
 //!   own source, so a new variant whose case is not rendered, or that reuses another variant's
 //!   case, fails;
-//! - every `CellKind` and cell `Tone` variant is on a cell of some panel case's body, and every
-//!   `Emphasis` variant on some panel case's action, counting only cells and actions the
-//!   template draws in the case's state and mode ([`panel_variants`]), checked against the
-//!   variants parsed from the enums' own source.
+//! - every `CellKind` and cell `Tone` variant is on a cell of some panel case's body, every
+//!   `SortDir` variant on a column of one, and every `Emphasis` variant on some panel case's
+//!   action, counting only cells, columns and actions the template draws in the case's state and
+//!   mode ([`panel_variants`]), checked against the variants parsed from the enums' own source.
 //!
 //! Inputs are fixed: one csrf, one form id, fixed `age_s`, and no clock or id generator,
 //! because the render layer reads neither.
@@ -943,6 +943,27 @@ fn table_list_columns_case() -> PanelCase {
     }
 }
 
+/// Two players of a table counted in players, with a next page.
+fn noun_table(total: Option<u64>) -> Primitive {
+    let rows = vec![player_row("p-1001", "12", "active", false), player_row("p-1002", "40", "banned", false)];
+    match players_table(rows, total, Some("c3")) {
+        Primitive::DataTable(t) => Primitive::DataTable(DataTable { item_noun: "players".to_string(), ..t }),
+        _ => unreachable!("players_table is a DataTable"),
+    }
+}
+
+/// The players table ordered by level, lowest first.
+fn sorted_ascending_table() -> Primitive {
+    let rows = vec![player_row("p-1001", "12", "active", false), player_row("p-1002", "40", "banned", false)];
+    match players_table(rows, Some(2), None) {
+        Primitive::DataTable(mut t) => {
+            t.columns[1].sorted = Some(SortDir::Asc);
+            Primitive::DataTable(t)
+        }
+        _ => unreachable!("players_table is a DataTable"),
+    }
+}
+
 /// `d` drawn on each `Row` of [`CONTRIBUTION`] that lists it.
 fn table_row(d: ActionDecl) -> ActionDecl {
     ActionDecl { point: ActionPoint::TableRow(CONTRIBUTION.to_string()), ..d }
@@ -1598,6 +1619,16 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel("table_first_page_label", table_first_page_case());
     panel("table_list_columns", table_list_columns_case());
     panel("table_row_actions", table_row_actions_case());
+    panel(
+        "table_noun_later_page",
+        PanelCase {
+            query: posted(&[("cursor", "c2")]),
+            ..PanelCase::new(PanelState::Ok, Some(body(noun_table(Some(1234)))))
+        },
+    );
+    panel("table_noun_no_total", PanelCase::new(PanelState::Ok, Some(body(noun_table(None)))));
+    panel("table_sorted_ascending", PanelCase::new(PanelState::Ok, Some(body(sorted_ascending_table()))));
+    panel("panel_untitled", PanelCase { title: "", ..PanelCase::new(PanelState::Ok, Some(body(summary()))) });
 
     // ---- Timeline ----
     let entry = |at: &str, actor: Option<EntityRef>, verb: &str, summary: &str| TimelineEntry {
@@ -1861,6 +1892,8 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     ] {
         out.push(plain(name, render::fragment(env, "primitives.html", "slot", &slot(mode, denied))));
     }
+    let untitled = SlotView { title: String::new(), ..slot("panel", false) };
+    out.push(plain("slot_untitled", render::fragment(env, "primitives.html", "slot", &untitled)));
 
     // ---- modals ----
     let modal = |d: &ActionDecl, spec: ModalSpec<'_>| {
@@ -2192,7 +2225,7 @@ fn check_variant_coverage(source: &str, name: &str, rendered: &BTreeSet<&str>) -
 }
 
 /// The enums whose variants [`panel_variants`] collects, all in [`PRIMITIVE_SOURCE`].
-const SEEN_ENUMS: [&str; 3] = ["CellKind", "Tone", "Emphasis"];
+const SEEN_ENUMS: [&str; 4] = ["CellKind", "Tone", "SortDir", "Emphasis"];
 
 /// Whether `panel_fragment` draws the body of a panel in `state` through `body()`: its `live`
 /// set, which [`draws_body_matches_the_template`] reads back from the template. No wildcard
@@ -2228,6 +2261,21 @@ fn cell_key_bounds() -> (BTreeSet<String>, BTreeSet<String>) {
     (keys(cell(CellKind::Text, "x")), keys(full))
 }
 
+/// The keys of a serialized `Column`; the struct literal names every field, so a new one does
+/// not compile until it is set here.
+fn column_keys() -> BTreeSet<String> {
+    let full = Column {
+        key: "k".to_string(),
+        label: "K".to_string(),
+        kind: CellKind::Text,
+        sortable: true,
+        align: Align::Left,
+        sorted: Some(SortDir::Asc),
+    };
+    let value = serde_json::to_value(full).expect("a column serializes");
+    value.as_object().expect("a column is an object").keys().cloned().collect()
+}
+
 /// The modes `panel_fragment` branches on, `panel` being its last, unnamed branch.
 /// [`mode_draws_names_every_template_mode`] reads them back from the template.
 const MODES: [&str; 7] = ["tile", "attention", "header", "fact", "count", "nav", "panel"];
@@ -2256,21 +2304,23 @@ fn mode_draws(mode: &str, primitive: Option<&Primitive>) -> (bool, bool) {
     }
 }
 
-/// `(enum, variant)` for each `CellKind` and `Tone` on a cell of `case`'s body and each
-/// `Emphasis` of its actions, as the view model holds it, counting only what the template
-/// draws: nothing for a state outside the `live` set ([`draws_body`]), cells only in a mode
-/// that draws them through `body()` or `cell()`, and actions only in the panel mode
-/// ([`mode_draws`]). The actions of an empty panel are not counted either, though its
+/// `(enum, variant)` for each `CellKind` and `Tone` on a cell of `case`'s body, each `SortDir`
+/// on a column of it and each `Emphasis` of its actions, as the view model holds it, counting
+/// only what the template draws: nothing for a state outside the `live` set ([`draws_body`]),
+/// cells and columns only in a mode that draws them through `body()` or `cell()`, and actions
+/// only in the panel mode ([`mode_draws`]). The actions of an empty panel are not counted either, though its
 /// `when_empty` tools are drawn, so the gate is conservative for Empty.
 ///
 /// A cell is an object of the body's serialization whose keys hold every key of an unset
 /// `Cell` and no key a fully set `Cell` lacks ([`cell_key_bounds`]). A cell with a field
 /// skipped when unset still matches, set or not; an object of another struct matches only if
 /// its keys fall within those bounds, which `Column`'s `label`, `sortable` and `align` do not.
+/// A column is an object whose keys are exactly a `Column`'s ([`column_keys`]).
 fn panel_variants(case: &PanelCase) -> Vec<(&'static str, String)> {
     fn walk(
         v: &serde_json::Value,
         bounds: &(BTreeSet<String>, BTreeSet<String>),
+        columns: &BTreeSet<String>,
         out: &mut Vec<(&'static str, String)>,
     ) {
         match v {
@@ -2284,9 +2334,14 @@ fn panel_variants(case: &PanelCase) -> Vec<(&'static str, String)> {
                         out.push(("Tone", tone.to_string()));
                     }
                 }
-                map.values().for_each(|x| walk(x, bounds, out));
+                if &keys == columns {
+                    if let Some(dir) = map.get("sorted").and_then(|d| d.as_str()) {
+                        out.push(("SortDir", dir.to_string()));
+                    }
+                }
+                map.values().for_each(|x| walk(x, bounds, columns, out));
             }
-            serde_json::Value::Array(xs) => xs.iter().for_each(|x| walk(x, bounds, out)),
+            serde_json::Value::Array(xs) => xs.iter().for_each(|x| walk(x, bounds, columns, out)),
             _ => {}
         }
     }
@@ -2296,7 +2351,8 @@ fn panel_variants(case: &PanelCase) -> Vec<(&'static str, String)> {
     let (cells, tools) = mode_draws(case.mode, case.body.as_ref().map(|b| &b.primitive));
     let mut out = Vec::new();
     if cells {
-        walk(&serde_json::to_value(&case.body).expect("a panel body serializes"), &cell_key_bounds(), &mut out);
+        let body = serde_json::to_value(&case.body).expect("a panel body serializes");
+        walk(&body, &cell_key_bounds(), &column_keys(), &mut out);
     }
     if tools {
         out.extend(case.actions.iter().map(|a| ("Emphasis", a.emphasis.to_string())));
@@ -2840,7 +2896,7 @@ fn macro_cases_fail_on_a_signature_written_outside_any_macro() {
     );
 }
 
-/// A scratch copy of `CellKind`, `Tone` and `Emphasis` with one variant more fails against the
+/// A scratch copy of each enum of [`SEEN_ENUMS`] with one variant more fails against the
 /// variants the cases hold today.
 #[test]
 fn seen_variants_fail_on_a_new_enum_variant() {
@@ -2892,10 +2948,14 @@ fn only_in(mode: &'static str, state: PanelState) -> [Case; 2] {
     ]
 }
 
+/// The enums of [`PROBE_SOURCE`]; [`seen_variants_read_a_sorted_column_where_the_body_draws`]
+/// probes `SortDir`.
+const PROBE_ENUMS: [&str; 3] = ["CellKind", "Tone", "Emphasis"];
+
 /// Fails unless each `(enum, variant)` of `missing` is the one variant `cases` miss, and every
-/// other enum of [`SEEN_ENUMS`] is fully seen.
+/// other enum of [`PROBE_ENUMS`] is fully seen.
 fn assert_missing(cases: &[Case], missing: &[(&str, &str)], what: &str) {
-    for name in SEEN_ENUMS {
+    for name in PROBE_ENUMS {
         let result = check_variants_seen(PROBE_SOURCE, name, &seen_variants(cases, name));
         match missing.iter().find(|(e, _)| *e == name) {
             Some((_, variant)) => {
@@ -2943,6 +3003,20 @@ fn seen_variants_skip_what_a_mode_does_not_draw() {
         probe_case("panel", PanelState::Ok, Primitive::KpiTile(kpi(None)), Emphasis::Ghost),
     ];
     assert_missing(&kpi_in_panel, &[("Emphasis", "Ghost")], "panel with a kpi body");
+}
+
+/// A `SortDir` counts only where the body is drawn: on a sorted column of a panel-mode Ok
+/// table, not of a count-mode or an Error one; an unsorted column holds none.
+#[test]
+fn seen_variants_read_a_sorted_column_where_the_body_draws() {
+    let dirs = |mode: &'static str, state: PanelState, primitive: Primitive| -> Vec<String> {
+        let case = PanelCase { mode, ..PanelCase::new(state, Some(body(primitive))) };
+        panel_variants(&case).into_iter().filter(|(e, _)| *e == "SortDir").map(|(_, v)| v).collect()
+    };
+    assert_eq!(dirs("panel", PanelState::Ok, sorted_ascending_table()), ["Asc"]);
+    assert!(dirs("count", PanelState::Ok, sorted_ascending_table()).is_empty());
+    assert!(dirs("panel", PanelState::Error, sorted_ascending_table()).is_empty());
+    assert!(dirs("panel", PanelState::Ok, noun_table(None)).is_empty());
 }
 
 /// Every mode `panel_fragment` branches on is in [`MODES`] and the reverse, and [`mode_draws`]
@@ -3003,4 +3077,31 @@ fn a_column_is_outside_the_cell_key_bounds() {
     let col = serde_json::to_value(column("k", "K", Align::Left)).expect("a column serializes");
     let col: BTreeSet<String> = col.as_object().expect("a column is an object").keys().cloned().collect();
     assert!(!(unset.is_subset(&col) && col.is_subset(&set)), "a column is no cell: {col:?}");
+}
+
+/// An untitled panel and an untitled slot draw no head.
+#[test]
+fn an_untitled_panel_or_slot_draws_no_head() {
+    let env = render::env().expect("templates compile");
+    let panel = PanelCase { title: "", ..PanelCase::new(PanelState::Ok, Some(body(summary()))) };
+    let raw = panel.render(&env).expect("renders");
+    assert!(raw.contains(r#"<div class="panel-body"#) && !raw.contains("panel-head"), "{raw}");
+    let untitled = SlotView { title: String::new(), ..slot("panel", false) };
+    let raw = render::fragment(&env, "primitives.html", "slot", &untitled).expect("renders");
+    assert!(raw.contains(r#"<div class="panel-body"#) && !raw.contains("panel-head"), "{raw}");
+}
+
+/// A table counted in an item noun shows the total alone past the first page, and the rows
+/// shown without a total.
+#[test]
+fn a_noun_table_foot_counts_past_the_first_page_and_without_a_total() {
+    let env = render::env().expect("templates compile");
+    let later = PanelCase {
+        query: posted(&[("cursor", "c2")]),
+        ..PanelCase::new(PanelState::Ok, Some(body(noun_table(Some(1234)))))
+    };
+    let raw = later.render(&env).expect("renders");
+    assert!(raw.contains("<span>1,234 players</span>"), "{raw}");
+    let raw = PanelCase::new(PanelState::Ok, Some(body(noun_table(None)))).render(&env).expect("renders");
+    assert!(raw.contains("<span>2 players</span>"), "{raw}");
 }
