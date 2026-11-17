@@ -1,7 +1,9 @@
-//! Pure tests for `premise_finding`, the classifier of the sqlite ignore's
-//! premise check. Each case feeds the classifier one shape of `cargo tree -i
-//! libsqlite3-sys` output and asserts the class of its finding. The runner
-//! tests in `tests/runner.rs` drive the same shapes through the real stage.
+//! Tests for `premise_finding`, the classifier of the sqlite ignore's premise
+//! check. Each case is pure: it feeds the classifier one shape of `cargo tree
+//! -i libsqlite3-sys` output and asserts the class of its finding. The one
+//! exception is the real-cargo anchor test, which runs real `cargo tree` in a
+//! throwaway workspace. The runner tests in `tests/runner.rs` drive the same
+//! shapes through the real stage.
 
 use super::*;
 
@@ -62,26 +64,64 @@ fn a_crate_absent_from_the_lock_is_a_stale_ignore() {
 
 /// Anchors the stale wording on real cargo rather than on the string the fake
 /// cargo and `NO_MATCH` share: the stage's own premise argv, with the crate
-/// swapped for one no lock can hold, is run at the workspace root and its real
-/// exit and output go through `premise_finding`.
+/// swapped for a name no lock holds, is run in a throwaway workspace and its
+/// real exit and output go through `premise_finding`. The workspace is one
+/// package with no dependencies, so `--offline --target all` resolves nothing
+/// from the registry and the run does not depend on the package cache.
 #[test]
 fn real_cargo_tree_on_a_crate_absent_from_the_lock_reads_as_stale() {
-    use std::io::Read as _;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
-
     const ABSENT_CRATE: &str = "verifyctl-premise-probe-that-no-lock-holds";
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let workspace = super::super::temp_dir(&std::env::temp_dir(), "verifyctl-premise-probe")
+        .expect("create the throwaway workspace");
+    std::fs::create_dir_all(workspace.join("src")).expect("create src");
+    std::fs::write(
+        workspace.join("Cargo.toml"),
+        "[workspace]\n\n[package]\nname = \"premise-probe\"\nversion = \"0.0.0\"\n\
+         edition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+    std::fs::write(workspace.join("src/lib.rs"), "").expect("write src/lib.rs");
+
+    // `--locked` refuses to create a lock, so the lock is generated first, offline.
+    let (status, stdout, stderr) =
+        run_cargo_bounded(&workspace, &["generate-lockfile", "--offline"]);
+    if !status.success() {
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+    assert!(
+        status.success(),
+        "generate-lockfile: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
     let args: Vec<&str> = SQLITE_PREMISE_ARGS
         .iter()
         .map(|&arg| if arg == SQLITE_CRATE { ABSENT_CRATE } else { arg })
         .chain(["--offline"])
         .collect();
     assert!(args.contains(&ABSENT_CRATE), "the premise argv lost its crate: {args:?}");
+    let (status, stdout, stderr) = run_cargo_bounded(&workspace, &args);
+    let _ = std::fs::remove_dir_all(&workspace);
+    assert_eq!(
+        premise_finding(status.success(), &stdout, &stderr).as_deref(),
+        Some("RUSTSEC-2026-0459 ignore is stale; remove it"),
+        "{status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// Runs the cargo that runs this test in `dir` and returns its exit and output,
+/// draining both pipes on their own threads so a full pipe cannot stall it.
+fn run_cargo_bounded(
+    dir: &std::path::Path,
+    args: &[&str],
+) -> (std::process::ExitStatus, String, String) {
+    use std::io::Read as _;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let mut child = Command::new(&cargo)
-        .args(&args)
-        .current_dir(&root)
+        .args(args)
+        .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -90,33 +130,33 @@ fn real_cargo_tree_on_a_crate_absent_from_the_lock_reads_as_stale() {
     let drain = |mut pipe: Box<dyn std::io::Read + Send>| {
         std::thread::spawn(move || {
             let mut text = String::new();
-            pipe.read_to_string(&mut text).expect("read cargo tree output");
+            pipe.read_to_string(&mut text).expect("read cargo output");
             text
         })
     };
     let stdout = drain(Box::new(child.stdout.take().expect("piped stdout")));
     let stderr = drain(Box::new(child.stderr.take().expect("piped stderr")));
-    // Hang guard only, with wide headroom: `cargo tree` takes no build lock, so
+    // Hang guard only, with wide headroom: neither command builds anything, so
     // a run that is still going after this long is blocked, not slow.
     let deadline = Instant::now() + Duration::from_secs(300);
     let status = loop {
-        if let Some(status) = child.try_wait().expect("poll cargo tree") {
+        if let Some(status) = child.try_wait().expect("poll cargo") {
             break status;
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("cargo {args:?} did not finish; it is blocked on a cargo lock");
+            let _ = std::fs::remove_dir_all(dir);
+            panic!(
+                "cargo {args:?} did not finish within 300 s (likely blocked on the \
+                 package-cache lock)"
+            );
         }
         std::thread::sleep(Duration::from_millis(50));
     };
     let stdout = stdout.join().expect("stdout reader");
     let stderr = stderr.join().expect("stderr reader");
-    assert_eq!(
-        premise_finding(status.success(), &stdout, &stderr).as_deref(),
-        Some("RUSTSEC-2026-0459 ignore is stale; remove it"),
-        "{status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
+    (status, stdout, stderr)
 }
 
 #[test]
