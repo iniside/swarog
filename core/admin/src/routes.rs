@@ -188,7 +188,9 @@ fn slot(operator: &Operator, module: &str, decl: &ContributionDecl, entity: Opti
     }
 }
 
-fn action_item(
+/// The view item of `decl` for `operator` on `module`: admission by `actions::admit`, the
+/// csrf in `vals`, and the action URL, bound to `entity`.
+pub(crate) fn action_item(
     operator: &Operator,
     csrf: &str,
     module: &str,
@@ -232,7 +234,7 @@ fn action_url(module: &str, action: &str) -> String {
 }
 
 /// The `PanelTool` actions of `contribution` in `manifest`, unbound, by `(order, id)`.
-fn panel_tools(
+pub(crate) fn panel_tools(
     operator: &Operator,
     csrf: &str,
     module: &str,
