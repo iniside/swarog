@@ -898,3 +898,470 @@ async fn argon_permit_survives_login_cancellation_until_hash_completes() {
     }
     cleanup_ip(&pool, "203.0.113.97").await;
 }
+
+// ============================================================================
+// Control-plane panels: the list-column fan-out through `GET /admin/_panel/..`,
+// the write affordance and a ColumnCells answer in `panels::resolve`. Every
+// module is its own source, routed by the production manifest refresh.
+// ============================================================================
+
+use std::collections::BTreeMap;
+
+use controlplane::{
+    ActionDecl, ActionPoint, Align, Cell, CellKind, ContributionDecl, DataTable, Emphasis, EntityRef, InvokeCall,
+    InvokeOutcome, Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, PropertyList, Role, Row, SearchHit,
+    SearchQuery, Source, Then,
+};
+
+use crate::engine::manifests::{refresh_once, Snapshot};
+use crate::engine::panels::{self, PanelState};
+use crate::engine::roles::Operator;
+use crate::engine::Engine;
+use crate::golden_tests::table_grid;
+
+#[derive(Clone)]
+enum Answer {
+    Body(Box<Primitive>),
+    Fail(opsapi::Error),
+}
+
+fn answer(primitive: Primitive) -> Answer {
+    Answer::Body(Box::new(primitive))
+}
+
+/// A provider that records every `PanelQuery` it is asked and answers by contribution id.
+struct Recording {
+    manifest: Manifest,
+    answers: Mutex<BTreeMap<String, Answer>>,
+    calls: Mutex<Vec<PanelQuery>>,
+}
+
+impl Recording {
+    fn new(manifest: Manifest, answers: &[(&str, Answer)]) -> Arc<Recording> {
+        let answers = answers.iter().map(|(id, a)| (id.to_string(), a.clone())).collect();
+        Arc::new(Recording { manifest, answers: Mutex::new(answers), calls: Mutex::new(Vec::new()) })
+    }
+
+    fn answer(&self, contribution: &str, answer: Answer) {
+        self.answers.lock().unwrap().insert(contribution.to_string(), answer);
+    }
+
+    fn calls(&self) -> Vec<PanelQuery> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl controlplane::Provider for Recording {
+    fn manifest(&self) -> Manifest {
+        self.manifest.clone()
+    }
+
+    async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
+        self.calls.lock().unwrap().push(req.clone());
+        match self.answers.lock().unwrap().get(&req.contribution).cloned() {
+            Some(Answer::Body(primitive)) => Ok(PanelBody::new(*primitive)),
+            Some(Answer::Fail(error)) => Err(error),
+            None => Err(opsapi::Error::internal(format!("no answer for {}", req.contribution))),
+        }
+    }
+
+    async fn search(&self, _req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
+        Ok(Vec::new())
+    }
+
+    async fn invoke(&self, _req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
+        Err(opsapi::Error::forbidden("a recording provider writes nothing"))
+    }
+}
+
+fn contribution(id: &str, point: Point, min_role: Role) -> ContributionDecl {
+    ContributionDecl {
+        id: id.to_string(),
+        point,
+        order: 0,
+        title: id.to_string(),
+        icon: String::new(),
+        min_role,
+        cache_ttl_s: None,
+        deadline_ms: 0,
+    }
+}
+
+fn list_column(id: &str, kind: &str, label: &str, min_role: Role, order: i32) -> ContributionDecl {
+    let point = Point::EntityListColumn { kind: kind.to_string(), label: label.to_string(), align: Align::Left };
+    ContributionDecl { order, ..contribution(id, point, min_role) }
+}
+
+fn module(name: &str, contributions: Vec<ContributionDecl>, actions: Vec<ActionDecl>, writes: bool) -> Manifest {
+    Manifest { module: name.to_string(), contributions, actions, writes, ..Manifest::default() }
+}
+
+fn action_decl(id: &str, point: ActionPoint, implemented: bool) -> ActionDecl {
+    ActionDecl {
+        id: id.to_string(),
+        point,
+        label: id.to_string(),
+        icon: String::new(),
+        order: 0,
+        danger: false,
+        multi: false,
+        min_role: Role::Viewer,
+        then: Then::Invoke,
+        implemented,
+        emphasis: Emphasis::Default,
+        trailing_icon: false,
+        when_empty: false,
+        prepare: false,
+    }
+}
+
+fn text(value: &str) -> Cell {
+    Cell { kind: CellKind::Text, value: value.to_string(), tone: None, link: None, bar: None, more: Vec::new() }
+}
+
+fn table_row(entity: Option<(&str, &str)>, name: &str) -> Row {
+    Row {
+        entity: entity.map(|(kind, id)| EntityRef { kind: kind.to_string(), id: id.to_string() }),
+        cells: vec![text(name), text("active")],
+        highlight: false,
+        item: None,
+        actions: Vec::new(),
+    }
+}
+
+/// A two-column table whose `player` list columns go after its first column.
+fn players_table(rows: Vec<Row>) -> Primitive {
+    let column = |key: &str, label: &str| controlplane::Column {
+        key: key.to_string(),
+        label: label.to_string(),
+        kind: CellKind::Text,
+        sortable: false,
+        align: Align::Left,
+        sorted: None,
+    };
+    Primitive::DataTable(DataTable {
+        columns: vec![column("name", "Name"), column("status", "Status")],
+        rows,
+        page: PageInfo { next_cursor: None, size: 25, total: None },
+        filters: Vec::new(),
+        search_placeholder: None,
+        selectable: false,
+        list_columns_for: Some("player".to_string()),
+        list_columns_at: 1,
+        item_noun: String::new(),
+    })
+}
+
+/// Two players, a guild and a row with no entity, in that order around the guild.
+fn mixed_rows() -> Vec<Row> {
+    vec![
+        table_row(Some(("player", "p-1")), "Anna"),
+        table_row(Some(("guild", "g-7")), "Night Owls"),
+        table_row(None, "system"),
+        table_row(Some(("player", "p-2")), "Bjorn"),
+    ]
+}
+
+/// Each module behind its own source: `players` serves the table page, `levels` (Level),
+/// `guilds` (Guild) and `secrets` (Secret, admin only) are `player` list columns, and
+/// `members` (Members) is a `guild` list column. Level answers `p-1`, and `g-7` too, which
+/// no `player` row may draw.
+struct Fleet {
+    engine: Arc<Engine>,
+    players: Arc<Recording>,
+    levels: Arc<Recording>,
+    guilds: Arc<Recording>,
+    secrets: Arc<Recording>,
+    members: Arc<Recording>,
+}
+
+impl Fleet {
+    async fn new(table: Primitive, guild: Answer, players_write: bool, players_actions: Vec<ActionDecl>) -> Fleet {
+        let page = contribution("list", Point::Page("players".to_string()), Role::Viewer);
+        let players = Recording::new(
+            module("players", vec![page], players_actions, players_write),
+            &[("list", answer(table))],
+        );
+        let levels_cells = BTreeMap::from([("p-1".to_string(), text("12")), ("g-7".to_string(), text("99"))]);
+        let levels = Recording::new(
+            module("levels", vec![list_column("level", "player", "Level", Role::Viewer, 0)], Vec::new(), false),
+            &[("level", answer(Primitive::ColumnCells(levels_cells)))],
+        );
+        let guilds = Recording::new(
+            module("guilds", vec![list_column("guild", "player", "Guild", Role::Viewer, 1)], Vec::new(), false),
+            &[("guild", guild)],
+        );
+        let secrets = Recording::new(
+            module("secrets", vec![list_column("secret", "player", "Secret", Role::Admin, 2)], Vec::new(), false),
+            &[("secret", answer(Primitive::ColumnCells(BTreeMap::new())))],
+        );
+        let members = Recording::new(
+            module("members", vec![list_column("members", "guild", "Members", Role::Viewer, 3)], Vec::new(), false),
+            &[("members", answer(Primitive::ColumnCells(BTreeMap::new())))],
+        );
+        let sources = [&players, &levels, &guilds, &secrets, &members]
+            .iter()
+            .map(|r| {
+                let provider: Arc<dyn controlplane::Provider> = Arc::clone(r) as Arc<dyn controlplane::Provider>;
+                Source {
+                    peer: format!("{}-svc", r.manifest.module),
+                    face: Arc::new(controlplane::LocalFace::new(vec![provider])),
+                }
+            })
+            .collect();
+        let engine = Arc::new(Engine::new());
+        engine.install(Snapshot::seeded(sources, None));
+        refresh_once(&engine).await;
+        assert_eq!(engine.snapshot().modules.len(), 5, "every source's manifest is routed");
+        Fleet { engine, players, levels, guilds, secrets, members }
+    }
+
+    async fn get(&self, st: &Arc<AdminState>, cookie: &str, uri: &str) -> (StatusCode, String) {
+        let portal = crate::routes::Portal { st: st.clone(), engine: self.engine.clone() };
+        let req = Request::builder().uri(uri).header("cookie", cookie).body(Body::empty()).unwrap();
+        let resp = crate::routes::router(portal).oneshot(req).await.unwrap();
+        let status = resp.status();
+        (status, body_string(resp).await)
+    }
+}
+
+/// An `operator` session cookie for a fresh user, who is below `secrets`' admin column.
+async fn operator_cookie(pool: &PgPool, user: &str) -> String {
+    sqlx::query("INSERT INTO admin.users (username, pass_hash, role) VALUES ($1, 'unused', 'operator')")
+        .bind(user)
+        .execute(pool)
+        .await
+        .unwrap();
+    let token = uniq("tok");
+    sqlx::query(
+        "INSERT INTO admin.sessions (token, username, csrf_token, expires_at)
+         VALUES ($1, $2, 'csrf', now() + interval '1 hour')",
+    )
+    .bind(&token)
+    .bind(user)
+    .execute(pool)
+    .await
+    .unwrap();
+    format!("{SESSION_COOKIE}={token}")
+}
+
+const PLAYERS_PANEL: &str = "/admin/_panel/players/list";
+const GUILD_MARKER: &str = r#"<span class="muted" title="guilds module unavailable">"#;
+
+/// The page as an operator sees it with Guild failing as `guild`: one call per allowed
+/// `player` column with the page's player ids in row order, none for the admin-only or the
+/// `guild` column, Level's cell at `list_columns_at` for the row it answered and empty
+/// elsewhere, and Guild's marker in every row with exactly one warn banner.
+async fn assert_one_fan_out_with_guild_failing(guild: Answer, why: &str) {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-cols");
+    let cookie = operator_cookie(&pool, &user).await;
+    let fleet = Fleet::new(players_table(mixed_rows()), guild, true, Vec::new()).await;
+
+    let (status, raw) = fleet.get(&st, &cookie, PLAYERS_PANEL).await;
+    assert_eq!(status, StatusCode::OK, "{why}: {raw}");
+    assert!(raw.contains(r#"data-state="ok""#), "{why}: {raw}");
+    let refs = vec!["p-1".to_string(), "p-2".to_string()];
+    for (name, column) in [("levels", &fleet.levels), ("guilds", &fleet.guilds)] {
+        let calls = column.calls();
+        assert_eq!(calls.len(), 1, "{why}: {name} is called once per page: {calls:?}");
+        assert_eq!(calls[0].refs, refs, "{why}: {name} gets the player ids in row order");
+        assert_eq!(calls[0].entity, None, "{why}: {name}");
+    }
+    assert!(fleet.secrets.calls().is_empty(), "{why}: a column above the operator's role is never called");
+    assert!(fleet.members.calls().is_empty(), "{why}: a column of another kind is never called");
+    assert_eq!(fleet.players.calls().len(), 1, "{why}");
+    assert!(fleet.players.calls()[0].refs.is_empty(), "{why}: a page panel's own query carries no refs");
+
+    let (heads, rows) = table_grid(&raw);
+    assert_eq!(heads, ["Name", "<span>Level</span>", "<span>Guild</span>", "Status"], "{why}");
+    assert_eq!(rows.len(), 4, "{why}");
+    assert_eq!(rows[0][1], "12", "{why}: the answered row's cell");
+    for (i, row) in rows.iter().enumerate() {
+        if i > 0 {
+            assert_eq!(row[1], "", "{why}: row {i} has no Level cell: {row:?}");
+        }
+        assert!(row[2].starts_with(GUILD_MARKER), "{why}: row {i} draws Guild's marker: {row:?}");
+    }
+    assert_eq!(raw.matches(r#"<div class="banner warn">"#).count(), 1, "{why}: {raw}");
+    assert!(raw.contains("Guild column unavailable — guilds module did not answer."), "{why}: {raw}");
+    assert!(!raw.contains("Secret") && !raw.contains("Members"), "{why}: {raw}");
+
+    cleanup_user(&pool, &user).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_columns_fan_out_once_per_page_and_a_failing_column_marks_every_row() {
+    assert_one_fan_out_with_guild_failing(
+        Answer::Fail(opsapi::Error::unavailable("guild store down")),
+        "a column answering an error",
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_list_column_answering_another_primitive_fails_like_an_error() {
+    let cell = answer(Primitive::Cell(text("Night Owls")));
+    assert_one_fan_out_with_guild_failing(cell, "a column answering a Cell").await;
+}
+
+/// A readonly table page fans out too; an empty table and a table with no row of the
+/// columns' kind make no column call.
+#[tokio::test(flavor = "multi_thread")]
+async fn list_columns_fan_out_on_a_readonly_page_and_not_without_refs() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-cols-ro");
+    let cookie = operator_cookie(&pool, &user).await;
+    let guild_ok = || answer(Primitive::ColumnCells(BTreeMap::new()));
+
+    let ban = action_decl("ban", ActionPoint::TableRow("list".to_string()), true);
+    let readonly = Fleet::new(players_table(mixed_rows()), guild_ok(), false, vec![ban]).await;
+    let (_, raw) = readonly.get(&st, &cookie, PLAYERS_PANEL).await;
+    assert!(raw.contains(r#"data-state="readonly""#), "{raw}");
+    assert_eq!(readonly.levels.calls().len(), 1, "a readonly table still draws its list columns");
+    assert_eq!(readonly.guilds.calls().len(), 1);
+    assert_eq!(table_grid(&raw).0, ["Name", "<span>Level</span>", "<span>Guild</span>", "Status"]);
+
+    let empty = Fleet::new(players_table(Vec::new()), guild_ok(), true, Vec::new()).await;
+    let (_, raw) = empty.get(&st, &cookie, PLAYERS_PANEL).await;
+    assert!(raw.contains(r#"data-state="empty""#), "{raw}");
+    assert!(empty.levels.calls().is_empty() && empty.guilds.calls().is_empty(), "an empty table calls no column");
+
+    let no_players = vec![table_row(Some(("guild", "g-7")), "Night Owls"), table_row(None, "system")];
+    let unrelated = Fleet::new(players_table(no_players), guild_ok(), true, Vec::new()).await;
+    let (_, raw) = unrelated.get(&st, &cookie, PLAYERS_PANEL).await;
+    assert!(raw.contains(r#"data-state="ok""#), "{raw}");
+    assert!(unrelated.levels.calls().is_empty() && unrelated.guilds.calls().is_empty(), "no player row, no call");
+    assert!(unrelated.members.calls().is_empty(), "a guild row does not call the guild column of a player table");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A declared list column's own panel URL is refused for an operator its role admits,
+/// without calling it; an undeclared id is refused too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_list_columns_own_panel_url_is_not_found_and_never_called() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-cols-404");
+    let cookie = operator_cookie(&pool, &user).await;
+    let guild_ok = answer(Primitive::ColumnCells(BTreeMap::new()));
+    let fleet = Fleet::new(players_table(mixed_rows()), guild_ok, true, Vec::new()).await;
+
+    let (status, raw) = fleet.get(&st, &cookie, "/admin/_panel/levels/level").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{raw}");
+    assert!(raw.contains("is a list column; its table draws it"), "{raw}");
+    assert!(fleet.levels.calls().is_empty(), "the refused column is never called");
+
+    let (status, raw) = fleet.get(&st, &cookie, "/admin/_panel/levels/nope").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{raw}");
+    assert!(fleet.levels.calls().is_empty());
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// `refs` crosses the wire: a split column provider receives the ids it is asked for.
+#[test]
+fn panel_query_refs_survive_the_wire() {
+    let query = PanelQuery {
+        module: "levels".to_string(),
+        contribution: "level".to_string(),
+        entity: None,
+        search: None,
+        cursor: None,
+        before: None,
+        queue_state: None,
+        range: None,
+        params: BTreeMap::new(),
+        refs: vec!["p-2".to_string(), "p-1".to_string()],
+    };
+    let back: PanelQuery = serde_json::from_str(&serde_json::to_string(&query).unwrap()).unwrap();
+    assert_eq!(back, query);
+    assert_eq!(back.refs, ["p-2", "p-1"]);
+}
+
+// ---- panels::resolve --------------------------------------------------------------
+
+/// One module `m` behind one source serving `decl` with `actions`, answering `answer`.
+async fn single(
+    decl: ContributionDecl,
+    actions: Vec<ActionDecl>,
+    writes: bool,
+    answer: Answer,
+) -> (Engine, Arc<Recording>) {
+    let id = decl.id.clone();
+    let rec = Recording::new(module("m", vec![decl], actions, writes), &[(id.as_str(), answer)]);
+    let provider: Arc<dyn controlplane::Provider> = rec.clone();
+    let source = Source { peer: "m-svc".to_string(), face: Arc::new(controlplane::LocalFace::new(vec![provider])) };
+    let engine = Engine::new();
+    engine.install(Snapshot::seeded(vec![source], None));
+    refresh_once(&engine).await;
+    (engine, rec)
+}
+
+async fn resolve(engine: &Engine, decl: &ContributionDecl) -> panels::PanelView {
+    let query = PanelQuery {
+        module: "m".to_string(),
+        contribution: decl.id.clone(),
+        entity: None,
+        search: None,
+        cursor: None,
+        before: None,
+        queue_state: None,
+        range: None,
+        params: BTreeMap::new(),
+        refs: Vec::new(),
+    };
+    let operator = Operator { login: "ops".to_string(), role: Role::Admin };
+    panels::resolve(engine, &engine.snapshot(), &operator, "m", decl, query).await
+}
+
+/// On a module that does not write, an implemented `TableRow` or `PanelTool` action that is
+/// not a link makes its table panel readonly; the same action with `implemented: false`
+/// leaves it ok.
+#[tokio::test]
+async fn an_unimplemented_row_or_tool_action_is_no_write_affordance() {
+    let decl = contribution("list", Point::Page("players".to_string()), Role::Viewer);
+    let points = [ActionPoint::TableRow("list".to_string()), ActionPoint::PanelTool("list".to_string())];
+    for point in points {
+        for (implemented, want) in [(false, PanelState::Ok), (true, PanelState::Readonly)] {
+            let action = action_decl("ban", point.clone(), implemented);
+            let table = answer(players_table(mixed_rows()));
+            let (engine, _) = single(decl.clone(), vec![action], false, table).await;
+            let view = resolve(&engine, &decl).await;
+            assert_eq!(view.state, want, "{point:?} implemented: {implemented}");
+        }
+    }
+}
+
+/// A page panel answering `ColumnCells` is an error with nothing cached; with a cached
+/// copy it is stale on that copy, the error kept.
+#[tokio::test]
+async fn a_page_panel_answering_column_cells_is_an_error_or_stale_on_its_cache() {
+    let cells = || answer(Primitive::ColumnCells(BTreeMap::from([("p-1".to_string(), text("12"))])));
+    let cold = contribution("summary", Point::Page("players".to_string()), Role::Viewer);
+    let (engine, rec) = single(cold.clone(), Vec::new(), true, cells()).await;
+    let view = resolve(&engine, &cold).await;
+    assert_eq!(view.state, PanelState::Error);
+    assert!(view.body.is_none());
+    assert!(view.error.as_deref().is_some_and(|e| e.contains("answered ColumnCells")), "{:?}", view.error);
+    assert_eq!(rec.calls().len(), 1);
+
+    let warm = ContributionDecl { cache_ttl_s: Some(3600), ..cold };
+    let props = Primitive::PropertyList(PropertyList {
+        items: vec![("Level".to_string(), text("12"))],
+        columns: 1,
+        item: None,
+        code: None,
+    });
+    let (engine, rec) = single(warm.clone(), Vec::new(), true, answer(props.clone())).await;
+    assert_eq!(resolve(&engine, &warm).await.state, PanelState::Ok, "the first answer is cached");
+    rec.answer("summary", cells());
+    let view = resolve(&engine, &warm).await;
+    assert_eq!(view.state, PanelState::Stale);
+    assert_eq!(view.body.map(|b| b.primitive), Some(props), "the cached copy, never the cells");
+    assert!(view.error.as_deref().is_some_and(|e| e.contains("answered ColumnCells")), "{:?}", view.error);
+}

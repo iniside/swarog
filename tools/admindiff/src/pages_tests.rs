@@ -63,11 +63,12 @@ fn mockup_pages_reads_html_stems_and_fails_on_a_page_without_boot() {
 }
 
 #[test]
-fn lookup_returns_mapped_and_pending_pages_and_refuses_excluded_and_unknown() {
+fn lookup_returns_mapped_first_row_and_pending_pages_and_refuses_excluded_and_unknown() {
     assert_eq!(lookup("index").expect("mapped").route, Route::Mapped("/admin"));
-    let pending = lookup("player").expect("pending pages resolve");
-    assert_eq!(pending.route, Route::Pending);
-    assert_eq!(pending.search, "?u=aiko.tanaka", "an entity page carries its fixed entity");
+    assert_eq!(lookup("apikeys").expect("pending pages resolve").route, Route::Pending);
+    let entity = lookup("player").expect("first-row pages resolve");
+    assert_eq!(entity.route, Route::FirstRow("players"));
+    assert_eq!(entity.search, "?u=aiko.tanaka", "an entity page carries its fixed entity");
     let excluded = format!("{:#}", lookup("states").expect_err("excluded"));
     assert!(excluded.contains("page states is excluded: Declared deviation D3"), "{excluded}");
     let unknown = format!("{:#}", lookup("nope").expect_err("unknown"));
@@ -140,4 +141,16 @@ fn validate_lists_rejects_an_unknown_page_in_either_list() {
     let excluded = lists_drift(&[MAPPED, PENDING], &[("c", "why"), ("z", "why")]);
     assert_eq!(excluded, "page map drift:
   EXCLUDED lists z, which is not a mockup page");
+}
+
+#[test]
+fn validate_lists_rejects_a_first_row_page_following_a_page_that_is_not_mapped() {
+    let follows = |list: &'static str| Page { page: "c", route: Route::FirstRow(list), search: "" };
+    validate_lists(&abc(), &[MAPPED, PENDING, follows("a")], &[]).expect("following a Mapped page passes");
+    let pending = lists_drift(&[MAPPED, PENDING, follows("b")], &[]);
+    assert_eq!(pending, "page map drift:
+  PAGE_MAP c follows b, which is not a Mapped page");
+    let unlisted = lists_drift(&[MAPPED, PENDING, follows("z")], &[]);
+    assert_eq!(unlisted, "page map drift:
+  PAGE_MAP c follows z, which is not a Mapped page");
 }

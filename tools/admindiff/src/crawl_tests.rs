@@ -9,8 +9,9 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
 use super::{run, Config, CLEAN_MARKER, MAX_ROUNDS};
+use crate::mock::mock_tests::FakeRepo;
 use crate::pages::{Route, PAGE_MAP};
-use crate::tests::ScratchDir;
+use crate::tests::{body, mock_html, ScratchDir};
 
 #[derive(Clone, Debug)]
 struct Request {
@@ -67,9 +68,45 @@ fn mapped() -> Vec<Target> {
         .iter()
         .filter_map(|p| match p.route {
             Route::Mapped(route) => Some(Target { page: p.page, route, slot: panel_url(p.page) }),
-            Route::Pending => None,
+            Route::FirstRow(_) | Route::Pending => None,
         })
         .collect()
+}
+
+/// Every `FirstRow` page of [`PAGE_MAP`] with the list page it follows.
+fn followers() -> Vec<(&'static str, &'static str)> {
+    PAGE_MAP
+        .iter()
+        .filter_map(|p| match p.route {
+            Route::FirstRow(list) => Some((p.page, list)),
+            Route::Mapped(_) | Route::Pending => None,
+        })
+        .collect()
+}
+
+/// The entity route the healthy site's list page links first for follower `page`.
+fn follower_route(page: &str) -> String {
+    format!("/admin/e/{page}/x")
+}
+
+/// `route` as the portal's template writes it in an attribute, every `/` escaped.
+fn escaped(route: &str) -> String {
+    route.replace('/', "&#x2f;")
+}
+
+/// A table whose first `tr.clickable` opens `first`: a plain row with a `data-href` before
+/// it, and a second clickable row after it.
+fn rows(first: &str) -> String {
+    format!(
+        concat!(
+            r#"<table class="tbl"><tbody><tr data-href="{plain}"><td>header</td></tr>"#,
+            r#"<tr class="clickable" data-href="{first}"><td>first</td></tr>"#,
+            r#"<tr class="clickable" data-href="{second}"><td>second</td></tr></tbody></table>"#,
+        ),
+        plain = escaped("/admin/e/plain/row"),
+        first = escaped(first),
+        second = escaped("/admin/e/second/row"),
+    )
 }
 
 /// The dashboard's slot: the mapped page's at [`DASHBOARD`], else one of its own.
@@ -112,7 +149,8 @@ fn shell(nav_links: &str, h1: &str, content: &str) -> String {
 
 impl Site {
     /// Clean: the dashboard, every mapped page of [`PAGE_MAP`] and one page only the nav
-    /// links, each with one slot whose fragment is in the ok state.
+    /// links, each with one slot whose fragment is in the ok state; a list page's fragment
+    /// lists rows whose first opens its follower's entity page, which has one slot too.
     fn healthy() -> Site {
         Site::with_content(&slot)
     }
@@ -129,8 +167,15 @@ impl Site {
         let mut routes = BTreeMap::new();
         for (route, page, slot_url) in &pages {
             let title = if *route == DASHBOARD { "Dashboard" } else { page };
+            let listed: String =
+                followers().iter().filter(|(_, list)| list == page).map(|(f, _)| rows(&follower_route(f))).collect();
             routes.insert(route.to_string(), ok(shell(&links, title, &content(slot_url))));
-            routes.insert(slot_url.clone(), ok(fragment(Some("ok"), &format!("{page} panel"), "")));
+            routes.insert(slot_url.clone(), ok(fragment(Some("ok"), &format!("{page} panel"), &listed)));
+        }
+        for (page, _) in followers() {
+            let slot_url = panel_url(page);
+            routes.insert(follower_route(page), ok(shell(&links, page, &content(&slot_url))));
+            routes.insert(slot_url, ok(fragment(Some("ok"), &format!("{page} panel"), "")));
         }
         Site { login: Response { status: 303, location: Some(DASHBOARD), body: String::new() }, routes, chain_depth: 0 }
     }
@@ -248,6 +293,10 @@ impl Crawl {
 }
 
 async fn crawl(site: Site, allow_errors: bool) -> Crawl {
+    crawl_with(site, allow_errors, false).await
+}
+
+async fn crawl_with(site: Site, allow_errors: bool, allow_empty: bool) -> Crawl {
     let server = Server::start(site);
     let out = ScratchDir::new("crawl");
     let cfg = Config {
@@ -255,6 +304,7 @@ async fn crawl(site: Site, allow_errors: bool) -> Crawl {
         username: "admin".to_string(),
         password: "admin".to_string(),
         allow_errors,
+        allow_empty,
         out: out.path().join("run"),
     };
     let result = run(&cfg).await;
@@ -276,8 +326,13 @@ async fn a_healthy_portal_crawls_clean_and_writes_the_assembled_pages() {
         assert!(!page.contains("hx-trigger"), "no loading placeholder is left: {page}");
     }
     assert!(run.join("p-extra-things.html").is_file(), "the page only the nav links");
+    for (page, _) in followers() {
+        let html = std::fs::read_to_string(run.join(format!("{page}.html"))).expect("each followed page is written");
+        assert!(html.contains(&format!("{page} panel")), "the followed page's slot is replaced: {html}");
+    }
     let panels: Vec<Request> = c.server.requests().into_iter().filter(|r| r.path.starts_with("/admin/_panel/")).collect();
-    assert_eq!(panels.len(), pages.len() + 1, "one fragment per mapped page and the nav-only page: {panels:?}");
+    let want = pages.len() + followers().len() + 1;
+    assert_eq!(panels.len(), want, "one fragment per mapped page, followed page and the nav-only page: {panels:?}");
     assert!(panels.iter().all(|r| r.hx), "fragments are fetched with HX-Request: {panels:?}");
 }
 
@@ -382,4 +437,40 @@ async fn a_non_2xx_page_fails() {
     crawl(site, false).await.assert_failed("a mapped page answering 500 with an empty body");
     let site = Site::healthy().with(EXTRA_ROUTE, status(500));
     crawl(site, false).await.assert_failed("a page only the nav links answering 500");
+}
+
+/// The players page's first `tr.clickable` is followed: its escaped `data-href` is fetched as
+/// a page and written as `player.html`; the plain row before it and the row after it are not.
+#[tokio::test]
+async fn an_entity_page_follows_the_first_clickable_row_of_its_list_page() {
+    assert!(followers().contains(&("player", "players")), "PAGE_MAP: player follows players");
+    let c = crawl(Site::healthy(), false).await;
+    assert!(matches!(c.result, Ok(true)), "{:?}", c.result);
+    let pages: Vec<String> =
+        c.server.requests().into_iter().filter(|r| r.method == "GET" && !r.hx).map(|r| r.path).collect();
+    assert_eq!(pages.iter().filter(|p| *p == "/admin/e/player/x").count(), 1, "the first row is followed: {pages:?}");
+    assert!(!pages.iter().any(|p| p == "/admin/e/plain/row" || p == "/admin/e/second/row"), "{pages:?}");
+    let player = std::fs::read_to_string(c.out.path().join("run").join("player.html")).expect("player.html");
+    assert!(player.contains("player panel") && player.contains(r#"data-state="ok""#), "{player}");
+}
+
+/// A players page that lists no row fails the crawl; `--allow-empty` crawls it clean without
+/// a `player.html`, and the diff of player then refuses, naming the list page.
+#[tokio::test]
+async fn an_empty_list_page_fails_unless_empty_is_allowed_and_then_the_diff_refuses() {
+    let empty = Site::healthy().with(&panel_url("players"), ok(fragment(Some("ok"), "players panel", "")));
+    let failed = crawl(empty.clone(), false).await;
+    failed.assert_failed("players lists no row");
+    assert!(!failed.out.path().join("run").join("player.html").exists(), "nothing was followed");
+
+    let allowed = crawl_with(empty, false, true).await;
+    assert!(matches!(allowed.result, Ok(true)), "{:?}", allowed.result);
+    assert!(allowed.clean_marker(), "--allow-empty crawls clean");
+    let run = allowed.out.path().join("run");
+    assert!(run.join("players.html").is_file() && !run.join("player.html").exists());
+    assert!(!allowed.server.requests().iter().any(|r| r.path.starts_with("/admin/e/")), "nothing was followed");
+
+    let repo = FakeRepo::new("crawl-empty-diff", &mock_html(&body(true)));
+    let e = format!("{:#}", crate::run_diff(repo.path(), "player", &run, false).expect_err("no player page"));
+    assert_eq!(e, format!("{} has no player page: the crawl found no row of players to follow", run.display()));
 }

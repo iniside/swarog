@@ -36,7 +36,7 @@ pub(crate) fn write(path: &Path, body: &str) {
 }
 
 /// Holds every [`crate::skeleton::REPEAT`] container, a tile and, with `panel`, one panel.
-fn body(panel: bool) -> String {
+pub(crate) fn body(panel: bool) -> String {
     let mut out = concat!(
         r#"<table><tbody><tr><td></td></tr></tbody></table><ul><li></li></ul><div class="svc"></div>"#,
         r#"<div class="pop-row"></div><div class="uptime"><i></i></div>"#,
@@ -50,7 +50,7 @@ fn body(panel: bool) -> String {
 }
 
 /// The mockup side: every [`crate::skeleton::MOCK_STRIP`] entry around `body`.
-fn mock_html(body: &str) -> String {
+pub(crate) fn mock_html(body: &str) -> String {
     format!(
         r#"<div class="app"><div class="devbar"></div><div class="frag"><div class="frag-label">x</div>{body}</div><div class="annot-legend"></div></div>"#
     )
@@ -99,8 +99,8 @@ fn run_diff_refuses_a_crawl_without_its_clean_marker() {
 fn run_diff_refuses_a_pending_page() {
     let repo = FakeRepo::new("diff-pending", &mock_html(&body(true)));
     let dir = crawl_dir("diff-pending-crawl", &portal_html(&body(true)), true);
-    let e = format!("{:#}", run_diff(repo.path(), "players", dir.path(), false).expect_err("pending"));
-    assert!(e.contains("page players is pending"), "{e}");
+    let e = format!("{:#}", run_diff(repo.path(), "apikeys", dir.path(), false).expect_err("pending"));
+    assert!(e.contains("page apikeys is pending"), "{e}");
 }
 
 #[test]
@@ -139,11 +139,30 @@ fn parse_args_reads_each_command_with_its_defaults() {
     }
     assert_eq!(
         args("crawl").expect("crawl"),
-        Command::Crawl { base_url: DEFAULT_BASE_URL.to_string(), user: DEFAULT_USER.to_string(), allow_errors: false }
+        Command::Crawl {
+            base_url: DEFAULT_BASE_URL.to_string(),
+            user: DEFAULT_USER.to_string(),
+            allow_errors: false,
+            allow_empty: false,
+        }
     );
     assert_eq!(
         args("crawl --base-url http://localhost:8085/ --user ops --allow-errors").expect("crawl"),
-        Command::Crawl { base_url: "http://localhost:8085".to_string(), user: "ops".to_string(), allow_errors: true }
+        Command::Crawl {
+            base_url: "http://localhost:8085".to_string(),
+            user: "ops".to_string(),
+            allow_errors: true,
+            allow_empty: false,
+        }
+    );
+    assert_eq!(
+        args("crawl --allow-empty").expect("crawl"),
+        Command::Crawl {
+            base_url: DEFAULT_BASE_URL.to_string(),
+            user: DEFAULT_USER.to_string(),
+            allow_errors: false,
+            allow_empty: true,
+        }
     );
     assert_eq!(args("mock --page index").expect("mock"), Command::Mock { page: "index".to_string() });
     assert_eq!(

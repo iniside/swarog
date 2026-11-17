@@ -44,12 +44,13 @@ use controlplane::{
     ActionDecl, ActionPoint, Align, AttentionItem, Axis, Banner, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
     ContributionDecl, DataTable, Delta, Emphasis, EntityHeader, EntityRef, Field, FieldKind, FilterDef, FilterKind,
     FormSpec, KpiTile, Link, Manifest, PageInfo, Palette, PanelBody, Point, Primitive, PropertyList, QueueItem,
-    QueueState, ReasonReq, Role, Row, Series, ServiceItem, ServiceState, ServiceStatus, Severity, Then,
+    QueueState, ReasonReq, Role, Row, Series, ServiceItem, ServiceState, ServiceStatus, Severity, SortDir, Then,
     TimeSeriesChart, Timeline, TimelineEntry, Tone, WorkQueue,
 };
 use minijinja::Environment;
 
-use crate::engine::actions::Chrome;
+use crate::engine::actions::{self, Chrome};
+use crate::engine::columns::{ColumnOutcome, ListColumn};
 use crate::engine::panels::{LastValue, PanelState};
 use crate::engine::roles::Operator;
 use crate::render::{
@@ -291,10 +292,10 @@ fn queue_and_table_views_carry_the_work_queue_table_contract() {
     assert_eq!(
         q["columns"],
         serde_json::json!([
-            {"label": "To", "num": false},
-            {"label": "Account", "num": false},
-            {"label": "Template", "num": false},
-            {"label": "Size", "num": true},
+            {"label": "To", "num": false, "sorted": null, "contributed": false},
+            {"label": "Account", "num": false, "sorted": null, "contributed": false},
+            {"label": "Template", "num": false, "sorted": null, "contributed": false},
+            {"label": "Size", "num": true, "sorted": null, "contributed": false},
         ])
     );
     assert_eq!(q["selectable"], true);
@@ -410,10 +411,127 @@ fn timeline_older_url_carries_only_the_new_before() {
     assert_eq!(older, "/admin/_panel/golden/panel?q=anna&before=2026-10-20T23%3A59%3A00Z");
 }
 
+/// The `<th>` texts, then each row's `<td>` inner HTML, of the one table in `raw`.
+pub(crate) fn table_grid(raw: &str) -> (Vec<String>, Vec<Vec<String>>) {
+    let between = |s: &str, open: &str, close: &str| -> String {
+        let at = s.find(open).unwrap_or_else(|| panic!("{open} in {s}")) + open.len();
+        s[at..at + s[at..].find(close).unwrap_or_else(|| panic!("{close} in {s}"))].to_string()
+    };
+    let head = between(raw, "<thead><tr>", "</tr></thead>");
+    let heads = head.split("<th").skip(1).map(|th| between(th, ">", "</th>")).collect();
+    let rows = between(raw, "<tbody>", "</tbody>")
+        .split("</tr>")
+        .filter(|r| r.contains("<td"))
+        .map(|r| r.split("<td").skip(1).map(|td| between(td, ">", "</td>")).collect())
+        .collect();
+    (heads, rows)
+}
+
+/// The list columns land at `list_columns_at` in contribution order, the ok column holds its
+/// cell for the row it answered and an empty cell for every other row, the failed column the
+/// alert marker in every row and one warn banner; the foot counts in the item noun.
+#[test]
+fn table_list_columns_draw_cells_markers_and_one_banner_per_failed_column() {
+    let env = render::env().expect("templates compile");
+    let raw = table_list_columns_case().render(&env).expect("renders");
+    let (heads, rows) = table_grid(&raw);
+    assert_eq!(heads, ["Player", "<span>Rank</span>", "<span>Guild</span>", "Level <span>↓</span>", "Status"]);
+    assert_eq!(rows.len(), 4);
+    assert!(rows[0][1].contains("gold"), "the answered player's cell: {:?}", rows[0]);
+    for (i, row) in rows.iter().enumerate().skip(1) {
+        assert_eq!(row[1], "", "row {i} was not answered: {row:?}");
+    }
+    let marker = r#"<span class="muted" title="guilds module unavailable">"#;
+    for (i, row) in rows.iter().enumerate() {
+        assert!(row[2].starts_with(marker), "row {i} draws the marker: {row:?}");
+    }
+    assert_eq!(raw.matches(r#"<div class="banner warn">"#).count(), 1, "{raw}");
+    assert!(raw.contains("Guild column unavailable — guilds module did not answer. Other columns are live."));
+    assert!(raw.contains("1,234 players · showing 1–4"), "the foot counts in the noun: {raw}");
+    let user = &rows[0][0];
+    assert!(!user.starts_with("<a "), "a row that opens an entity links the name inside: {user}");
+    assert!(user.contains(r#"<a href="&#x2f;admin&#x2f;e&#x2f;player&#x2f;p-1001""#), "{user}");
+}
+
+/// An action's id and the `(entity, item)` it is bound to.
+type Binding = (String, Option<String>, Option<String>);
+
+/// The binding of each row's actions in `view`.
+fn row_bindings(view: &serde_json::Value) -> Vec<Vec<Binding>> {
+    view["body"]["rows"]
+        .as_array()
+        .expect("table rows")
+        .iter()
+        .map(|r| {
+            r["actions"]
+                .as_array()
+                .expect("row actions")
+                .iter()
+                .map(|a| {
+                    let vals: BTreeMap<String, String> =
+                        serde_json::from_str(a["vals"].as_str().expect("vals")).expect("vals is JSON");
+                    let id = a["id"].as_str().expect("an id").to_string();
+                    (id, vals.get(actions::FIELD_ENTITY).cloned(), vals.get(actions::FIELD_ITEM).cloned())
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// On an entity tab, a row with no entity binds its actions to the panel's entity and a row
+/// with its own entity keeps it; on a list page (no panel entity) the first row binds none.
+/// `TableRow` actions draw on their rows only, never as tools.
+#[test]
+fn table_row_actions_bind_the_row_entity_else_the_panel_entity() {
+    let some = |s: &str| Some(s.to_string());
+    let on_tab = table_row_actions_case().view();
+    let rows = row_bindings(&on_tab);
+    let first: Vec<_> = ["inspect", "revoke", "open", "wipe"]
+        .iter()
+        .map(|id| (id.to_string(), some("player:p-1001"), some("sess-1")))
+        .collect();
+    assert_eq!(rows[0], first, "an entity-less row binds the panel's entity");
+    assert_eq!(rows[1], [("inspect".to_string(), some("device:d-9"), some("sess-2"))], "a row's own entity wins");
+    assert!(rows[2].is_empty());
+    let url = on_tab["body"]["rows"][0]["actions"][0]["url"].as_str().expect("a url");
+    assert_eq!(url, "/admin/_action/golden/inspect?entity=player%3Ap-1001&item=sess-1");
+    assert_eq!(action_ids(&on_tab["tools"]), ["export"], "a TableRow action is never a panel tool");
+    assert_eq!(on_tab["body"]["row_actions"], true);
+
+    let on_list = PanelCase { entity: None, ..table_row_actions_case() }.view();
+    let rows = row_bindings(&on_list);
+    assert_eq!(rows[0][0], ("inspect".to_string(), None, some("sess-1")), "no panel entity to fall back to");
+    assert_eq!(rows[1][0], ("inspect".to_string(), some("device:d-9"), some("sess-2")));
+}
+
+/// The header fragment's out-of-band `#crumb-cur` shows the header's crumb, else its title.
+#[test]
+fn header_crumb_replaces_the_last_breadcrumb_else_the_title_does() {
+    let env = render::env().expect("templates compile");
+    let render = |crumb: Option<&str>| {
+        let header = EntityHeader {
+            title: "Anna Kowalska".to_string(),
+            crumb: crumb.map(str::to_string),
+            subtitle: String::new(),
+            status: None,
+            badges: Vec::new(),
+            avatar_seed: "p-1001".to_string(),
+        };
+        let case = PanelCase {
+            mode: "header",
+            ..PanelCase::new(PanelState::Ok, Some(body(Primitive::EntityHeader(header))))
+        };
+        case.render(&env).expect("renders")
+    };
+    let oob = |text: &str| format!(r#"<span class="cur" id="crumb-cur" hx-swap-oob="true">{text}</span>"#);
+    assert!(render(Some("anna.k")).contains(&oob("anna.k")), "{}", render(Some("anna.k")));
+    assert!(render(None).contains(&oob("Anna Kowalska")), "{}", render(None));
+}
+
 // ---- view-model builders -----------------------------------------------------------
 
 fn cell(kind: CellKind, value: &str) -> Cell {
-    Cell { kind, value: value.to_string(), tone: None, link: None, bar: None }
+    Cell { kind, value: value.to_string(), tone: None, link: None, bar: None, more: Vec::new() }
 }
 
 fn toned(kind: CellKind, value: &str, tone: Tone) -> Cell {
@@ -429,7 +547,14 @@ fn entity(kind: &str, id: &str) -> EntityRef {
 }
 
 fn column(key: &str, label: &str, align: Align) -> Column {
-    Column { key: key.to_string(), label: label.to_string(), kind: CellKind::Text, sortable: false, align }
+    Column {
+        key: key.to_string(),
+        label: label.to_string(),
+        kind: CellKind::Text,
+        sortable: false,
+        align,
+        sorted: None,
+    }
 }
 
 fn page_link(module: &str, page: &str) -> Link {
@@ -520,6 +645,7 @@ struct PanelCase {
     fallback_title: &'static str,
     body: Option<PanelBody>,
     actions: Vec<ActionItem>,
+    list_columns: Vec<ListColumn>,
     row_menu_kinds: Vec<String>,
     /// Renders the form with a fresh instance to post as.
     form: bool,
@@ -542,6 +668,7 @@ impl PanelCase {
             fallback_title: "",
             body,
             actions: Vec::new(),
+            list_columns: Vec::new(),
             row_menu_kinds: Vec::new(),
             form: false,
         }
@@ -582,6 +709,7 @@ impl PanelCase {
             fallback_title: self.fallback_title,
             body: self.body.as_ref(),
             actions: &self.actions,
+            list_columns: &self.list_columns,
             row_menu_kinds: &self.row_menu_kinds,
             csrf: CSRF,
             form: self.form.then(|| FormInstance {
@@ -733,6 +861,8 @@ fn players_table(rows: Vec<Row>, total: Option<u64>, next: Option<&str>) -> Prim
         search_placeholder: Some("Search players".to_string()),
         selectable: true,
         list_columns_for: None,
+        list_columns_at: 0,
+        item_noun: String::new(),
     })
 }
 
@@ -741,6 +871,129 @@ fn player_row(id: &str, level: &str, status: &str, highlight: bool) -> Row {
         entity: Some(entity("player", id)),
         cells: vec![player_cell(id), cell(CellKind::Number, level), cell(CellKind::Badge, status)],
         highlight,
+        item: None,
+        actions: Vec::new(),
+    }
+}
+
+fn list_column(module: &str, label: &str, align: Align, outcome: ColumnOutcome) -> ListColumn {
+    ListColumn { module: module.to_string(), label: label.to_string(), align, outcome }
+}
+
+/// The players list page: sorted by level, its list columns inserted after the player
+/// column, counted in players. Rows: two players, a guild and one with no entity. Two
+/// `EntityListColumn`s for `player`: Rank answers p-1001 only, Guild failed.
+fn table_list_columns_case() -> PanelCase {
+    let status = |value: &str, more: Vec<Cell>| Cell { more, ..cell(CellKind::Label, value) };
+    let row = |entity: Option<EntityRef>, cells: Vec<Cell>| Row {
+        entity,
+        cells,
+        highlight: false,
+        item: None,
+        actions: Vec::new(),
+    };
+    let table = DataTable {
+        columns: vec![
+            column("player", "Player", Align::Left),
+            Column { sorted: Some(SortDir::Desc), ..column("level", "Level", Align::Right) },
+            column("status", "Status", Align::Left),
+        ],
+        list_columns_for: Some("player".to_string()),
+        list_columns_at: 1,
+        item_noun: "players".to_string(),
+        selectable: false,
+        ..match players_table(Vec::new(), Some(1234), Some("c2")) {
+            Primitive::DataTable(t) => t,
+            _ => unreachable!("players_table is a DataTable"),
+        }
+    };
+    let rows = vec![
+        row(
+            Some(entity("player", "p-1001")),
+            vec![
+                player_cell("p-1001"),
+                cell(CellKind::Number, "12"),
+                status("active", vec![cell(CellKind::Muted, "since 2024")]),
+            ],
+        ),
+        row(
+            Some(entity("guild", "g-7")),
+            vec![cell(CellKind::Text, "Night Owls"), cell(CellKind::Number, "30"), status("guild", Vec::new())],
+        ),
+        row(None, vec![cell(CellKind::Text, "system"), cell(CellKind::Number, "0"), status("ok", Vec::new())]),
+        row(
+            Some(entity("player", "p-1002")),
+            vec![player_cell("p-1002"), cell(CellKind::Number, "40"), status("banned", Vec::new())],
+        ),
+    ];
+    PanelCase {
+        list_columns: vec![
+            list_column(
+                "ranks",
+                "Rank",
+                Align::Right,
+                ColumnOutcome::Cells(BTreeMap::from([(
+                    "p-1001".to_string(),
+                    toned(CellKind::Badge, "gold", Tone::Ok),
+                )])),
+            ),
+            list_column("guilds", "Guild", Align::Left, ColumnOutcome::Failed("connection refused".to_string())),
+        ],
+        ..PanelCase::new(PanelState::Ok, Some(body(Primitive::DataTable(DataTable { rows, ..table }))))
+    }
+}
+
+/// `d` drawn on each `Row` of [`CONTRIBUTION`] that lists it.
+fn table_row(d: ActionDecl) -> ActionDecl {
+    ActionDecl { point: ActionPoint::TableRow(CONTRIBUTION.to_string()), ..d }
+}
+
+/// A player's sessions tab: a detail table on the entity page of `player:p-1001` whose rows
+/// carry `TableRow` actions. The first row has no entity, so its actions bind the panel's;
+/// the second opens a device, so they bind the device. A `PanelTool` beside them draws in
+/// the head only.
+fn table_row_actions_case() -> PanelCase {
+    let revoke = table_row(ActionDecl {
+        danger: true,
+        icon: String::new(),
+        ..decl("revoke", "Revoke", "", Then::Confirm(confirm("Revoke session?", ConfirmTone::Danger)))
+    });
+    let inspect =
+        table_row(ActionDecl { emphasis: Emphasis::Ghost, ..decl("inspect", "Inspect", "eye", Then::Invoke) });
+    let open = table_row(decl("open", "Open", "external", Then::Link(page_link("platform", "logs"))));
+    let wipe = table_row(ActionDecl { min_role: Role::Admin, ..decl("wipe", "Wipe", "trash", Then::Invoke) });
+    let row = |entity: Option<EntityRef>, item: &str, actions: &[&str]| Row {
+        entity,
+        cells: vec![cell(CellKind::Mono, item), cell(CellKind::Time, "2026-10-21 09:12")],
+        highlight: false,
+        item: Some(item.to_string()),
+        actions: strings(actions),
+    };
+    let table = DataTable {
+        columns: vec![column("session", "Session", Align::Left), column("seen", "Last seen", Align::Left)],
+        rows: vec![
+            row(None, "sess-1", &["inspect", "revoke", "open", "wipe"]),
+            row(Some(entity("device", "d-9")), "sess-2", &["inspect"]),
+            row(None, "sess-3", &[]),
+        ],
+        page: PageInfo { next_cursor: None, size: 25, total: None },
+        filters: Vec::new(),
+        search_placeholder: None,
+        selectable: false,
+        list_columns_for: None,
+        list_columns_at: 0,
+        item_noun: String::new(),
+    };
+    PanelCase {
+        entity: Some(entity("player", "p-1001")),
+        actions: vec![
+            tool(&inspect),
+            tool(&revoke),
+            tool(&open),
+            action(MODULE, &wipe, Role::Operator, true),
+            tool(&decl("export", "Export", "download", Then::Invoke)),
+        ],
+        ..PanelCase::new(PanelState::Ok, Some(body(Primitive::DataTable(table))))
     }
 }
 
@@ -1324,6 +1577,8 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
                                 cell(CellKind::Badge, "ok"),
                             ],
                             highlight: false,
+                            item: None,
+                            actions: Vec::new(),
                         },
                     ],
                     Some(1234),
@@ -1341,6 +1596,8 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         },
     );
     panel("table_first_page_label", table_first_page_case());
+    panel("table_list_columns", table_list_columns_case());
+    panel("table_row_actions", table_row_actions_case());
 
     // ---- Timeline ----
     let entry = |at: &str, actor: Option<EntityRef>, verb: &str, summary: &str| TimelineEntry {
@@ -1421,7 +1678,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         ),
     );
 
-    // ---- the other draw modes: attention, header, fact, count, nav, inline ----
+    // ---- the other draw modes: attention, header, fact, count, nav ----
     let attention = Primitive::AttentionItems(vec![
         AttentionItem {
             severity: Severity::Err,
@@ -1449,11 +1706,19 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel("attention_error", in_mode("attention", PanelState::Error, None));
     let header = EntityHeader {
         title: "Anna Kowalska".to_string(),
+        crumb: None,
         subtitle: "player since 2024".to_string(),
         status: Some(cell(CellKind::Badge, "active")),
+        badges: Vec::new(),
         avatar_seed: "p-1001".to_string(),
     };
-    panel("header_ok", in_mode("header", PanelState::Ok, Some(Primitive::EntityHeader(header))));
+    panel("header_ok", in_mode("header", PanelState::Ok, Some(Primitive::EntityHeader(header.clone()))));
+    let crumbed = EntityHeader {
+        crumb: Some("anna.k".to_string()),
+        badges: vec![cell(CellKind::Label, "verified"), toned(CellKind::Label, "2FA off", Tone::Warn)],
+        ..header
+    };
+    panel("header_crumb_badges", in_mode("header", PanelState::Ok, Some(Primitive::EntityHeader(crumbed))));
     panel("header_error", PanelCase { fallback_title: "p-1001", ..in_mode("header", PanelState::Error, None) });
     let one_cell = |c: Cell| Some(Primitive::Cell(c));
     panel("fact_cell", in_mode("fact", PanelState::Ok, one_cell(toned(CellKind::Badge, "verified", Tone::Ok))));
@@ -1462,7 +1727,6 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel("count_error", in_mode("count", PanelState::Error, None));
     panel("nav_counter_err", in_mode("nav", PanelState::Ok, one_cell(toned(CellKind::Number, "3", Tone::Err))));
     panel("nav_counter_warn", in_mode("nav", PanelState::Ok, one_cell(toned(CellKind::Number, "7", Tone::Warn))));
-    panel("inline_cell", in_mode("inline", PanelState::Ok, one_cell(cell(CellKind::Badge, "banned"))));
 
     // ---- panel form: fresh, readonly, readonly beside an enabled tool ----
     panel(
@@ -1496,7 +1760,6 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
 
     // ---- the empty cells of the draw-mode x state matrix ----
     panel("fact_denied", PanelCase { min_role: "admin", ..in_mode("fact", PanelState::Denied, None) });
-    panel("inline_denied", PanelCase { min_role: "admin", ..in_mode("inline", PanelState::Denied, None) });
     panel(
         "state_stale_no_age",
         PanelCase {
@@ -1504,6 +1767,8 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             ..PanelCase::new(PanelState::Stale, Some(body(summary())))
         },
     );
+    // `panels::resolve` errors a ColumnCells answer, so a panel never draws one: its body
+    // draws nothing of the cells.
     panel(
         "column_cells",
         PanelCase::new(
@@ -1958,13 +2223,14 @@ fn cell_key_bounds() -> (BTreeSet<String>, BTreeSet<String>) {
         tone: Some(Tone::Ok),
         link: Some(page_link(MODULE, "page")),
         bar: Some(50),
+        more: vec![cell(CellKind::Text, "y")],
     };
     (keys(cell(CellKind::Text, "x")), keys(full))
 }
 
 /// The modes `panel_fragment` branches on, `panel` being its last, unnamed branch.
 /// [`mode_draws_names_every_template_mode`] reads them back from the template.
-const MODES: [&str; 8] = ["tile", "attention", "header", "fact", "count", "nav", "inline", "panel"];
+const MODES: [&str; 7] = ["tile", "attention", "header", "fact", "count", "nav", "panel"];
 
 /// What `panel_fragment` draws of a case in a `live` state, by mode: whether it draws the
 /// body's cells through `body()` or `cell()`, and whether it draws the actions as tools.
@@ -1972,8 +2238,8 @@ const MODES: [&str; 8] = ["tile", "attention", "header", "fact", "count", "nav",
 /// A live `KpiTile` body takes the tile branch in every mode, which draws `kpi()`: no cell and
 /// no tool. A tile with another body draws the error mini-panel. Count draws only the cell's
 /// value and nav only the value with an err or warn class, neither through `cell()`. Header
-/// draws `body()`, and so its status through `cell()`, only for an `EntityHeader`; inline
-/// draws `cell()` only for a `Cell`; attention and fact draw `body()` for any body. Only the
+/// draws `body()`, and so its status through `cell()`, only for an `EntityHeader`; attention
+/// and fact draw `body()` for any body. Only the
 /// panel mode draws tools. The mode is a string, not an enum, so no match on it is exhaustive:
 /// a mode outside [`MODES`] panics here, and a template mode outside [`MODES`] fails
 /// [`mode_draws_names_every_template_mode`].
@@ -1985,7 +2251,6 @@ fn mode_draws(mode: &str, primitive: Option<&Primitive>) -> (bool, bool) {
         "panel" => (true, true),
         "attention" | "fact" => (true, false),
         "header" => (matches!(primitive, Some(Primitive::EntityHeader(_))), false),
-        "inline" => (matches!(primitive, Some(Primitive::Cell(_))), false),
         "tile" | "count" | "nav" => (false, false),
         other => panic!("mode {other:?} is not in MODES: say in mode_draws what panel_fragment draws in it"),
     }
@@ -2084,9 +2349,24 @@ const fn mc(
 /// Every macro of every `templates/*.tmpl`, with its signature and the cases that reach it.
 const MACRO_CASES: &[MacroCase] = &[
     mc("primitives", "icon", "<svg class=\"i ", &[], &["state_ok", "modal_form"]),
-    mc("primitives", "cell", "user-cell", &[], &["cell_kinds", "modal_confirm_danger_impact_reason"]),
+    mc("primitives", "cell_one", "user-cell", &[], &["cell_kinds", "table_list_columns"]),
+    mc("primitives", "cell", "user-cell", &["cell_one"], &["cell_kinds", "modal_confirm_danger_impact_reason"]),
     mc("primitives", "hx_action", "hx-disabled-elt=\"this\"", &[], &["tools_emphasis", "menu_row_actions"]),
-    mc("primitives", "action_button", "danger-ghost", &["queue_action"], &["tools_emphasis", "props_code_footer_tools"]),
+    mc("primitives", "action_content", "<svg class=\"i ", &["icon"], &["tools_emphasis", "table_row_actions"]),
+    mc(
+        "primitives",
+        "action_button",
+        "danger-ghost",
+        &["queue_action", "row_button"],
+        &["tools_emphasis", "props_code_footer_tools"],
+    ),
+    mc(
+        "primitives",
+        "row_button",
+        "style=\"text-decoration:none\">",
+        &["action_button", "menu_item"],
+        &["table_row_actions"],
+    ),
     mc("primitives", "menu_item", "menu-item", &[], &["menu_row_actions"]),
     mc("primitives", "menu", "menu-group", &[], &["menu_row_actions"]),
     mc("primitives", "toast", "data-toast", &[], &["modal_result_toast"]),
@@ -2121,7 +2401,7 @@ const MACRO_CASES: &[MacroCase] = &[
         "props",
         "<dl class=\"props\"",
         &[],
-        &["state_ok", "props_code_footer_tools", "props_two_columns", "column_cells"],
+        &["state_ok", "props_code_footer_tools", "props_two_columns"],
     ),
     mc("primitives", "kpi", "<div class=\"kpi-value\">", &[], &["tile_delta_ok_up", "tile_stale"]),
     mc("primitives", "timeline", "<ul class=\"tl\">", &[], &["timeline_two_days_older"]),
@@ -2141,7 +2421,7 @@ const MACRO_CASES: &[MacroCase] = &[
         &["panel_form", "panel_form_readonly", "panel_form_rerender_409_locked"],
     ),
     mc("primitives", "queue_counts", "q-counts", &[], &["queue_items_actions", "queue_empty", "queue_search_empty"]),
-    mc("primitives", "queue_action", " danger-ghost\"", &[], &["queue_items_actions"]),
+    mc("primitives", "queue_action", " danger-ghost\"", &["row_button"], &["queue_items_actions"]),
     mc("primitives", "queue", "class=\"attempts\"", &[], &["queue_items_actions"]),
     mc("primitives", "services", "class=\"svc\"", &[], &["services_one_column", "services_two_columns"]),
     mc("primitives", "services_body", "class=\"grid g-2\"", &[], &["services_two_columns"]),
@@ -2642,8 +2922,8 @@ fn seen_variants_skip_a_state_outside_live() {
 
 /// A variant held only by an Ok cell in a mode that does not draw it fails the check, and the
 /// same probe in the panel mode passes: count and nav draw the cell's value only, so its kind
-/// and tone are unseen, and only the panel mode draws tools, so the emphasis of an inline,
-/// fact or count case is unseen. A `KpiTile` body takes the tile branch even in the panel
+/// and tone are unseen, and only the panel mode draws tools, so the emphasis of a fact,
+/// attention or count case is unseen. A `KpiTile` body takes the tile branch even in the panel
 /// mode, so its actions are unseen too.
 #[test]
 fn seen_variants_skip_what_a_mode_does_not_draw() {
@@ -2652,7 +2932,7 @@ fn seen_variants_skip_what_a_mode_does_not_draw() {
     for mode in ["count", "nav", "tile"] {
         assert_missing(&only_in(mode, PanelState::Ok), &all, mode);
     }
-    for mode in ["inline", "fact", "attention"] {
+    for mode in ["fact", "attention"] {
         assert_missing(&only_in(mode, PanelState::Ok), &[("Emphasis", "Ghost")], mode);
     }
     // A header draws `body()` only for an `EntityHeader`, so a `Cell` body is unseen there.
