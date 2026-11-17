@@ -71,41 +71,50 @@ fn a_crate_absent_from_the_lock_is_a_stale_ignore() {
 #[test]
 fn real_cargo_tree_on_a_crate_absent_from_the_lock_reads_as_stale() {
     const ABSENT_CRATE: &str = "verifyctl-premise-probe-that-no-lock-holds";
-    let workspace = super::super::temp_dir(&std::env::temp_dir(), "verifyctl-premise-probe")
-        .expect("create the throwaway workspace");
-    std::fs::create_dir_all(workspace.join("src")).expect("create src");
-    std::fs::write(
-        workspace.join("Cargo.toml"),
-        "[workspace]\n\n[package]\nname = \"premise-probe\"\nversion = \"0.0.0\"\n\
-         edition = \"2021\"\n",
-    )
-    .expect("write Cargo.toml");
-    std::fs::write(workspace.join("src/lib.rs"), "").expect("write src/lib.rs");
-
-    // `--locked` refuses to create a lock, so the lock is generated first, offline.
-    let (status, stdout, stderr) =
-        run_cargo_bounded(&workspace, &["generate-lockfile", "--offline"]);
-    if !status.success() {
-        let _ = std::fs::remove_dir_all(&workspace);
-    }
-    assert!(
-        status.success(),
-        "generate-lockfile: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-
     let args: Vec<&str> = SQLITE_PREMISE_ARGS
         .iter()
         .map(|&arg| if arg == SQLITE_CRATE { ABSENT_CRATE } else { arg })
         .chain(["--offline"])
         .collect();
     assert!(args.contains(&ABSENT_CRATE), "the premise argv lost its crate: {args:?}");
-    let (status, stdout, stderr) = run_cargo_bounded(&workspace, &args);
-    let _ = std::fs::remove_dir_all(&workspace);
+
+    let workspace = RemovedOnDrop(
+        super::super::temp_dir(&std::env::temp_dir(), "verifyctl-premise-probe")
+            .expect("create the throwaway workspace"),
+    );
+    std::fs::create_dir_all(workspace.0.join("src")).expect("create src");
+    std::fs::write(
+        workspace.0.join("Cargo.toml"),
+        "[workspace]\n\n[package]\nname = \"premise-probe\"\nversion = \"0.0.0\"\n\
+         edition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+    std::fs::write(workspace.0.join("src/lib.rs"), "").expect("write src/lib.rs");
+
+    // `--locked` refuses to create a lock, so the lock is generated first, offline.
+    let (status, stdout, stderr) =
+        run_cargo_bounded(&workspace.0, &["generate-lockfile", "--offline"]);
+    assert!(
+        status.success(),
+        "generate-lockfile: {status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let (status, stdout, stderr) = run_cargo_bounded(&workspace.0, &args);
     assert_eq!(
         premise_finding(status.success(), &stdout, &stderr).as_deref(),
         Some("RUSTSEC-2026-0459 ignore is stale; remove it"),
         "{status}\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+}
+
+/// Owns a temp directory and removes it when dropped, so the directory goes
+/// away on every exit path of the test, panics included.
+struct RemovedOnDrop(std::path::PathBuf);
+
+impl Drop for RemovedOnDrop {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 /// Runs the cargo that runs this test in `dir` and returns its exit and output,
@@ -146,7 +155,6 @@ fn run_cargo_bounded(
         if Instant::now() >= deadline {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = std::fs::remove_dir_all(dir);
             panic!(
                 "cargo {args:?} did not finish within 300 s (likely blocked on the \
                  package-cache lock)"
