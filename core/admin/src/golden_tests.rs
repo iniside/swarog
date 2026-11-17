@@ -14,10 +14,15 @@
 //! fails, so a leaked `ADMIN_BLESS` never turns the gate green; with `CI` set it refuses to
 //! bless at all.
 //!
-//! Drift guards: every `{%- macro` of `primitives.html.tmpl` and `modal.html.tmpl` is listed
-//! in [`MACRO_CASES`] with the cases that reach it, checked against the templates both ways;
-//! [`primitive_case`] and [`state_case`] match every `Primitive` and `PanelState` variant with
-//! no wildcard arm, so a new variant does not compile until it names its case.
+//! Drift guards:
+//! - every macro of every `templates/*.tmpl` is listed in [`MACRO_CASES`], checked against the
+//!   templates both ways. Each entry carries a signature, a literal of that macro's source and
+//!   of no other macro's but the ones the entry names, and every case it lists must render it;
+//! - [`primitive_case`] and [`state_case`] match every `Primitive` and `PanelState` variant with
+//!   no wildcard arm, so a new variant does not compile until it names a case. The number of
+//!   distinct rendered cases they name must equal the number of variants parsed from the enums'
+//!   own source, so a new variant whose case is not rendered, or that reuses another variant's
+//!   case, fails.
 //!
 //! Inputs are fixed: one csrf, one form id, fixed `age_s`, and no clock or id generator,
 //! because the render layer reads neither.
@@ -1284,27 +1289,23 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     };
     let grant = decl("grant", "Grant item", "gift", Then::Form(grant_spec.clone()));
     out.push(plain("modal_form", modal(&grant, ModalSpec::Form(&grant_spec))));
-    // A modal shown again after a POST, as `routes::render_instance` builds it.
+    // A modal shown again after a POST, through `render::modal_rerender` as
+    // `routes::render_instance` calls it.
     let reshow = |d: &ActionDecl,
                   spec: ModalSpec<'_>,
                   body: &[(String, String)],
                   errors: &BTreeMap<String, String>,
                   banner: Option<&str>,
                   locked: bool| {
-        let mut view = render::modal(
-            d,
-            spec,
-            format!("/admin/_action/{MODULE}/{}", d.id),
-            CSRF.to_string(),
-            FORM_ID.to_string(),
-            Some(body),
+        let instance = FormInstance {
+            post_url: format!("/admin/_action/{MODULE}/{}", d.id),
+            form_id: FORM_ID.to_string(),
+            posted: Some(body),
             errors,
-        );
-        if let Some(banner) = banner {
-            view.banner = Some(banner.to_string());
-        }
-        view.locked = locked;
-        render::fragment(env, "modal.html", "result", &ActionResultView { modal: Some(view), toast: None, tone: "err" })
+            banner: banner.map(str::to_string),
+            locked,
+        };
+        render::fragment(env, "modal.html", "result", &render::modal_rerender(d, spec, CSRF.to_string(), instance))
     };
     let grant_errors = BTreeMap::from([
         ("item_id".to_string(), "must not be empty".to_string()),
@@ -1411,7 +1412,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     out.into_iter()
         .map(|r| {
             let raw = r.result.unwrap_or_else(|e| panic!("golden case {} failed to render: {e:#}", r.name));
-            Case { name: r.name, golden: golden_form(r.name, &raw), primitive: r.primitive, state: r.state }
+            Case { name: r.name, golden: golden_form(r.name, &raw), raw, primitive: r.primitive, state: r.state }
         })
         .collect()
 }
@@ -1420,6 +1421,8 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
 struct Case {
     name: &'static str,
     golden: String,
+    /// The render itself, which [`MACRO_CASES`] signatures are searched in.
+    raw: String,
     /// [`primitive_case`] of a `render::panel` case's body.
     primitive: Option<&'static str>,
     /// [`state_case`] of a `render::panel` case drawn in panel chrome.
@@ -1463,9 +1466,6 @@ fn primitive_case(p: &Primitive) -> &'static str {
     }
 }
 
-/// The number of arms of [`primitive_case`]; a new arm without a rendered case fails the count.
-const PRIMITIVE_VARIANTS: usize = 13;
-
 /// The case that draws each `PanelState` in panel chrome. No wildcard arm.
 fn state_case(state: PanelState) -> &'static str {
     match state {
@@ -1478,68 +1478,263 @@ fn state_case(state: PanelState) -> &'static str {
     }
 }
 
-/// The number of arms of [`state_case`].
-const PANEL_STATES: usize = 6;
+/// The sources the variant counts come from: the enums themselves, so a variant added there
+/// raises the count the rendered cases must reach.
+const PRIMITIVE_SOURCE: &str = include_str!("../../controlplane/src/lib.rs");
+const PANEL_STATE_SOURCE: &str = include_str!("engine/panels.rs");
 
-/// Every `{%- macro` of the two macro templates with the cases that reach it.
-const MACRO_CASES: &[(&str, &str, &[&str])] = &[
-    ("primitives", "icon", &["state_ok"]),
-    ("primitives", "cell", &["cell_kinds", "cell_bar"]),
-    ("primitives", "hx_action", &["tools_emphasis", "menu_row_actions"]),
-    ("primitives", "action_button", &["tools_emphasis", "props_code_footer_tools"]),
-    ("primitives", "menu_item", &["menu_row_actions"]),
-    ("primitives", "menu", &["menu_row_actions"]),
-    ("primitives", "toast", &["modal_result_toast"]),
-    ("primitives", "state_block", &["state_empty", "state_error", "state_denied"]),
-    ("primitives", "loading_block", &["slot_panel_loading"]),
-    ("primitives", "denied_detail", &["state_denied", "slot_panel_denied"]),
-    ("primitives", "fetch_attrs", &["slot_panel_loading", "slot_panel_denied"]),
-    (
+/// The variant names of `enum <name>` in `source`, in order: the identifiers that open each
+/// top-level item of its body, past comments and attributes.
+fn enum_variants(source: &str, name: &str) -> Result<Vec<String>, String> {
+    let open = format!("enum {name} {{");
+    let at = source.find(&open).ok_or_else(|| format!("no `{open}` in the source"))?;
+    let chars: Vec<char> = source[at + open.len()..].chars().collect();
+    let (mut i, mut depth, mut expect) = (0, 0usize, true);
+    let mut out = Vec::new();
+    while i < chars.len() {
+        let c = chars[i];
+        if c == '/' && chars.get(i + 1) == Some(&'/') {
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+        } else if c == '/' && chars.get(i + 1) == Some(&'*') {
+            i += 2;
+            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                i += 1;
+            }
+            i += 2;
+        } else if c == '#' && depth == 0 {
+            // An attribute: skip to its closing bracket.
+            let mut brackets = 0usize;
+            i += 1;
+            while i < chars.len() {
+                match chars[i] {
+                    '[' => brackets += 1,
+                    ']' => {
+                        brackets -= 1;
+                        if brackets == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+            i += 1;
+        } else if depth == 0 && expect && (c.is_alphabetic() || c == '_') {
+            let start = i;
+            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+                i += 1;
+            }
+            out.push(chars[start..i].iter().collect());
+            expect = false;
+        } else {
+            match c {
+                '(' | '{' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                '}' if depth == 0 => return Ok(out),
+                '}' => depth -= 1,
+                ',' if depth == 0 => expect = true,
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+    Err(format!("`{open}` is never closed"))
+}
+
+/// Fails unless `rendered`, the distinct cases the variant-to-case match names for the
+/// variants that render, holds one case per variant of `enum <name>` in `source`. The match
+/// has no wildcard, so a new variant names either a new case, which must render, or an
+/// existing one, which leaves the count short.
+fn check_variant_coverage(source: &str, name: &str, rendered: &BTreeSet<&str>) -> Result<(), String> {
+    let variants = enum_variants(source, name)?;
+    if variants.len() != rendered.len() {
+        return Err(format!(
+            "{name} has {} variant(s) {variants:?} but {} distinct case(s) render them: {rendered:?}",
+            variants.len(),
+            rendered.len()
+        ));
+    }
+    Ok(())
+}
+
+/// A template macro, a signature only it holds, and the cases whose render must hold it.
+struct MacroCase {
+    template: &'static str,
+    name: &'static str,
+    /// A class, attribute or text the macro writes: a literal of the macro's own source and of
+    /// no other macro's but [`MacroCase::also`].
+    signature: &'static str,
+    /// Other macros whose source holds the signature too. A macro whose own source does not
+    /// hold it (one that only dispatches) must call each of these.
+    also: &'static [&'static str],
+    /// Cases whose render holds the signature.
+    cases: &'static [&'static str],
+}
+
+const fn mc(
+    template: &'static str,
+    name: &'static str,
+    signature: &'static str,
+    also: &'static [&'static str],
+    cases: &'static [&'static str],
+) -> MacroCase {
+    MacroCase { template, name, signature, also, cases }
+}
+
+/// Every macro of every `templates/*.tmpl`, with its signature and the cases that reach it.
+const MACRO_CASES: &[MacroCase] = &[
+    mc("primitives", "icon", "<svg class=\"i ", &[], &["state_ok", "modal_form"]),
+    mc("primitives", "cell", "user-cell", &[], &["cell_kinds", "modal_confirm_danger_impact_reason"]),
+    mc("primitives", "hx_action", "hx-disabled-elt=\"this\"", &[], &["tools_emphasis", "menu_row_actions"]),
+    mc("primitives", "action_button", "danger-ghost", &["queue_action"], &["tools_emphasis", "props_code_footer_tools"]),
+    mc("primitives", "menu_item", "menu-item", &[], &["menu_row_actions"]),
+    mc("primitives", "menu", "menu-group", &[], &["menu_row_actions"]),
+    mc("primitives", "toast", "data-toast", &[], &["modal_result_toast"]),
+    mc("primitives", "state_block", "state-icon", &[], &["state_empty", "state_error", "state_denied"]),
+    mc("primitives", "loading_block", "class=\"sk grow\"", &[], &["slot_panel_loading"]),
+    mc("primitives", "denied_detail", "Requires role <span class=\"tag\">", &[], &["state_denied", "slot_panel_denied"]),
+    mc("primitives", "fetch_attrs", "hx-trigger=\"load\"", &[], &["slot_panel_loading", "slot_tile_loading"]),
+    mc("primitives", "slot", "<div class=\"panel-tools\"></div>", &[], &["slot_panel_loading", "slot_panel_denied"]),
+    mc("primitives", "table_toolbar", "tbl-toolbar", &[], &["table_highlight_row_menu", "table_empty_search"]),
+    mc("primitives", "table_foot", "class=\"pager\"", &[], &["table_highlight_row_menu"]),
+    mc("primitives", "table", "aria-label=\"Row actions\"", &[], &["table_highlight_row_menu"]),
+    mc(
         "primitives",
-        "slot",
-        &[
-            "slot_panel_loading",
-            "slot_panel_denied",
-            "slot_tile_loading",
-            "slot_tile_denied",
-            "slot_attention_loading",
-            "slot_attention_denied",
-            "slot_inline_loading",
-        ],
+        "props",
+        "<dl class=\"props\"",
+        &[],
+        &["state_ok", "props_code_footer_tools", "props_two_columns", "column_cells"],
     ),
-    ("primitives", "table_toolbar", &["table_highlight_row_menu", "table_empty_search"]),
-    ("primitives", "table_foot", &["table_highlight_row_menu"]),
-    ("primitives", "table", &["table_highlight_row_menu"]),
-    ("primitives", "props", &["state_ok", "props_code_footer_tools", "props_two_columns", "column_cells"]),
-    ("primitives", "kpi", &["tile_delta_ok_up", "tile_stale"]),
-    ("primitives", "timeline", &["timeline_two_days_older"]),
-    ("primitives", "field", &["panel_form", "panel_form_rerender_422_chrome", "modal_form"]),
-    ("primitives", "form_fields", &["modal_form", "modal_rerender_form_errors_locked"]),
-    ("primitives", "panel_form", &["panel_form", "panel_form_readonly", "panel_form_rerender_409_locked"]),
-    ("primitives", "queue_counts", &["queue_items_actions", "queue_empty"]),
-    ("primitives", "queue_action", &["queue_items_actions"]),
-    ("primitives", "queue", &["queue_items_actions", "queue_empty"]),
-    ("primitives", "services", &["services_one_column"]),
-    ("primitives", "services_body", &["services_one_column", "services_two_columns"]),
-    ("primitives", "chart", &["chart_two_axes"]),
-    ("primitives", "chart_legend", &["chart_two_axes"]),
-    ("primitives", "attention_rows", &["attention_ok"]),
-    ("primitives", "body", &["state_ok"]),
-    ("primitives", "empty_body", &["state_empty", "timeline_empty", "queue_empty", "table_empty_search"]),
-    ("primitives", "panel_fragment", &["state_ok"]),
-    ("primitives", "search", &["search_results_and_error", "search_no_matches"]),
-    ("modal", "modal", &["modal_confirm_danger_impact_reason", "modal_form"]),
-    ("modal", "result", &["modal_result_toast", "modal_rerender_form_errors_locked"]),
-    ("modal", "reveal", &["reveal_secret"]),
+    mc("primitives", "kpi", "<div class=\"kpi-value\">", &[], &["tile_delta_ok_up", "tile_stale"]),
+    mc("primitives", "timeline", "<ul class=\"tl\">", &[], &["timeline_two_days_older"]),
+    mc("primitives", "field", "<label class=\"fl\">", &[], &["panel_form", "panel_form_rerender_422_chrome", "modal_form"]),
+    mc(
+        "primitives",
+        "form_fields",
+        "<div class=\"form\">",
+        &["panel_form"],
+        &["modal_form", "modal_rerender_form_errors_locked"],
+    ),
+    mc(
+        "primitives",
+        "panel_form",
+        "form-actions",
+        &[],
+        &["panel_form", "panel_form_readonly", "panel_form_rerender_409_locked"],
+    ),
+    mc("primitives", "queue_counts", "q-counts", &[], &["queue_items_actions", "queue_empty"]),
+    mc("primitives", "queue_action", " danger-ghost\"", &[], &["queue_items_actions"]),
+    mc("primitives", "queue", "class=\"attempts\"", &[], &["queue_items_actions"]),
+    mc("primitives", "services", "class=\"svc\"", &[], &["services_one_column", "services_two_columns"]),
+    mc("primitives", "services_body", "class=\"grid g-2\"", &[], &["services_two_columns"]),
+    mc("primitives", "chart", "<svg class=\"chart\"", &[], &["chart_two_axes"]),
+    mc("primitives", "chart_legend", "<div class=\"legend\">", &[], &["chart_two_axes"]),
+    mc("primitives", "attention_rows", "<a class=\"btn sm\" href=\"", &[], &["attention_ok"]),
+    mc("primitives", "body", "<div class=\"row\"><h1>", &["panel_fragment"], &["header_ok"]),
+    mc("primitives", "empty_body", "No results", &[], &["table_empty_search"]),
+    mc("primitives", "panel_fragment", "data-panel-url", &[], &["state_ok", "tile_delta_ok_up", "nav_counter_err"]),
+    mc("primitives", "search", "palette-group", &[], &["search_results_and_error"]),
+    mc("modal", "modal", "data-modal-close>Cancel", &[], &["modal_confirm_danger_impact_reason", "modal_form"]),
+    mc("modal", "result", "data-toast", &["toast"], &["modal_result_toast"]),
+    mc("modal", "reveal", "data-reveal", &[], &["reveal_secret"]),
 ];
 
-/// The macro names a template declares with `{%- macro` or `{% macro`.
-fn template_macros(source: &str) -> Vec<String> {
-    ["{%- macro ", "{% macro "]
+/// Every `{%- macro` / `{% macro` of `source` with its body, up to its `endmacro`.
+fn template_macros(source: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for open in ["{%- macro ", "{% macro "] {
+        for (at, _) in source.match_indices(open) {
+            let rest = &source[at + open.len()..];
+            let Some((name, _)) = rest.split_once('(') else { continue };
+            let body = rest.split_once("endmacro").map_or(rest, |(body, _)| body);
+            out.push((name.trim().to_string(), body.to_string()));
+        }
+    }
+    out
+}
+
+/// Every template under `src/templates` as (file stem, source).
+fn templates() -> Vec<(String, String)> {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("templates");
+    let mut out: Vec<(String, String)> = fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .map(|entry| entry.expect("templates entry").path())
+        .filter(|p| p.extension().is_some_and(|e| e == "tmpl"))
+        .map(|p| {
+            let stem = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.split('.').next()).unwrap_or_default();
+            (stem.to_string(), fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display())))
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// Checks `entries` against the macros of `templates` both ways and against `renders` (case
+/// name → render): each signature is held by exactly the sources its entry names, and every
+/// listed case's render holds it. Returns every problem.
+fn check_macro_cases(
+    entries: &[MacroCase],
+    templates: &[(String, String)],
+    renders: &BTreeMap<&str, &str>,
+) -> Result<(), Vec<String>> {
+    let macros: Vec<(&str, String, String)> = templates
         .iter()
-        .flat_map(|open| source.match_indices(open).map(move |(at, _)| &source[at + open.len()..]))
-        .filter_map(|rest| rest.split_once('(').map(|(name, _)| name.trim().to_string()))
-        .collect()
+        .flat_map(|(t, src)| template_macros(src).into_iter().map(move |(m, body)| (t.as_str(), m, body)))
+        .collect();
+    let declared: BTreeSet<(&str, &str)> = macros.iter().map(|(t, m, _)| (*t, m.as_str())).collect();
+    let listed: BTreeSet<(&str, &str)> = entries.iter().map(|e| (e.template, e.name)).collect();
+    let mut problems = Vec::new();
+    for (t, m) in declared.difference(&listed) {
+        problems.push(format!("template macro {t}/{m} has no MACRO_CASES entry"));
+    }
+    for (t, m) in listed.difference(&declared) {
+        problems.push(format!("MACRO_CASES entry {t}/{m} names no template macro"));
+    }
+    if listed.len() != entries.len() {
+        problems.push("MACRO_CASES lists a macro twice".to_string());
+    }
+    for e in entries {
+        let holders: BTreeSet<&str> =
+            macros.iter().filter(|(_, _, body)| body.contains(e.signature)).map(|(_, m, _)| m.as_str()).collect();
+        let others: BTreeSet<&str> = holders.iter().copied().filter(|m| *m != e.name).collect();
+        let also: BTreeSet<&str> = e.also.iter().copied().collect();
+        if others != also {
+            problems.push(format!(
+                "{}/{}: signature {:?} is held by {holders:?}; the entry names itself and {also:?}",
+                e.template, e.name, e.signature
+            ));
+        }
+        if !holders.contains(e.name) {
+            let own = macros.iter().find(|(t, m, _)| *t == e.template && m == e.name).map(|(_, _, b)| b.as_str());
+            let calls_all = !e.also.is_empty() && e.also.iter().all(|a| own.is_some_and(|b| b.contains(&format!("{a}("))));
+            if !calls_all {
+                problems.push(format!(
+                    "{}/{}: its source does not hold signature {:?} and it does not call every macro that does",
+                    e.template, e.name, e.signature
+                ));
+            }
+        }
+        if e.cases.is_empty() {
+            problems.push(format!("{}/{} lists no case", e.template, e.name));
+        }
+        for case in e.cases {
+            match renders.get(case) {
+                None => problems.push(format!("{}/{} names case {case}, which does not exist", e.template, e.name)),
+                Some(render) if !render.contains(e.signature) => problems.push(format!(
+                    "{}/{}: case {case} does not render signature {:?}",
+                    e.template, e.name, e.signature
+                )),
+                Some(_) => {}
+            }
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems)
+    }
 }
 
 #[test]
@@ -1547,31 +1742,16 @@ fn golden_cases_cover_every_macro_variant_and_state() {
     let env = render::env().expect("templates compile");
     let cases = cases(&env);
     let by_name: BTreeMap<&str, &Case> = cases.iter().map(|c| (c.name, c)).collect();
+    let renders: BTreeMap<&str, &str> = cases.iter().map(|c| (c.name, c.raw.as_str())).collect();
 
-    let declared: BTreeSet<(&str, String)> = [
-        ("primitives", include_str!("templates/primitives.html.tmpl")),
-        ("modal", include_str!("templates/modal.html.tmpl")),
-    ]
-    .into_iter()
-    .flat_map(|(template, source)| template_macros(source).into_iter().map(move |m| (template, m)))
-    .collect();
-    let listed: BTreeSet<(&str, String)> = MACRO_CASES.iter().map(|(t, m, _)| (*t, m.to_string())).collect();
-    let unlisted: Vec<_> = declared.difference(&listed).collect();
-    let dead: Vec<_> = listed.difference(&declared).collect();
-    assert!(unlisted.is_empty(), "template macros with no golden case in MACRO_CASES: {unlisted:?}");
-    assert!(dead.is_empty(), "MACRO_CASES entries naming no template macro: {dead:?}");
-    assert_eq!(listed.len(), MACRO_CASES.len(), "MACRO_CASES lists a macro twice");
-    for (template, name, reached_by) in MACRO_CASES {
-        assert!(!reached_by.is_empty(), "macro {template}/{name} lists no case");
-        for case in *reached_by {
-            assert!(by_name.contains_key(case), "macro {template}/{name} names case {case}, which does not exist");
-        }
+    if let Err(problems) = check_macro_cases(MACRO_CASES, &templates(), &renders) {
+        panic!("MACRO_CASES drift:\n  {}", problems.join("\n  "));
     }
 
     let primitives: BTreeSet<&str> = cases.iter().filter_map(|c| c.primitive).collect();
-    assert_eq!(primitives.len(), PRIMITIVE_VARIANTS, "primitive variants rendered: {primitives:?}");
+    check_variant_coverage(PRIMITIVE_SOURCE, "Primitive", &primitives).unwrap_or_else(|e| panic!("{e}"));
     let states: BTreeSet<&str> = cases.iter().filter_map(|c| c.state).collect();
-    assert_eq!(states.len(), PANEL_STATES, "panel states rendered in chrome: {states:?}");
+    check_variant_coverage(PANEL_STATE_SOURCE, "PanelState", &states).unwrap_or_else(|e| panic!("{e}"));
     for (named, own) in
         primitives.iter().map(|n| (*n, by_name.get(n).and_then(|c| c.primitive))).chain(
             states.iter().map(|n| (*n, by_name.get(n).and_then(|c| c.state))),
@@ -1579,4 +1759,88 @@ fn golden_cases_cover_every_macro_variant_and_state() {
     {
         assert_eq!(own, Some(named), "case {named} is named for a variant it does not render");
     }
+}
+
+#[test]
+fn enum_variants_reads_the_real_enums() {
+    let primitive = enum_variants(PRIMITIVE_SOURCE, "Primitive").expect("Primitive parses");
+    assert_eq!(primitive.first().map(String::as_str), Some("DataTable"));
+    assert_eq!(primitive.last().map(String::as_str), Some("Empty"));
+    assert!(primitive.iter().any(|v| v == "AttentionItems"), "a tuple variant over a generic: {primitive:?}");
+    let states = enum_variants(PANEL_STATE_SOURCE, "PanelState").expect("PanelState parses");
+    assert_eq!(states, ["Ok", "Empty", "Stale", "Error", "Readonly", "Denied"]);
+    let tricky = "enum T {\n    /// A, B\n    #[serde(rename = \"x,y\")]\n    A { x: u8, y: (u8, u8) },\n    /* C, */ B(Vec<u8>),\n    D = 3,\n}";
+    assert_eq!(enum_variants(tricky, "T").expect("T parses"), ["A", "B", "D"]);
+}
+
+/// A scratch copy of each enum source with one variant more fails the coverage check against
+/// the cases rendered today.
+#[test]
+fn variant_coverage_fails_on_a_new_enum_variant() {
+    let env = render::env().expect("templates compile");
+    let cases = cases(&env);
+    let primitives: BTreeSet<&str> = cases.iter().filter_map(|c| c.primitive).collect();
+    let states: BTreeSet<&str> = cases.iter().filter_map(|c| c.state).collect();
+    for (source, name, rendered) in
+        [(PRIMITIVE_SOURCE, "Primitive", &primitives), (PANEL_STATE_SOURCE, "PanelState", &states)]
+    {
+        check_variant_coverage(source, name, rendered).unwrap_or_else(|e| panic!("today's {name}: {e}"));
+        let open = format!("enum {name} {{");
+        let scratch = source.replacen(&open, &format!("{open}\n    Fake(Fake),"), 1);
+        assert_ne!(scratch, source, "the scratch copy of {name} gained a variant");
+        let err = check_variant_coverage(&scratch, name, rendered).expect_err("one variant more must fail");
+        assert!(err.contains("Fake"), "{err}");
+    }
+}
+
+/// A signature the listed case does not render, and a signature another macro holds, each fail.
+#[test]
+fn macro_cases_fail_on_a_wrong_signature() {
+    let env = render::env().expect("templates compile");
+    let cases = cases(&env);
+    let renders: BTreeMap<&str, &str> = cases.iter().map(|c| (c.name, c.raw.as_str())).collect();
+    let templates = templates();
+    let with = |name: &str, signature: &'static str, also: &'static [&'static str]| -> Vec<MacroCase> {
+        MACRO_CASES
+            .iter()
+            .map(|e| {
+                let (signature, also) = if e.name == name { (signature, also) } else { (e.signature, e.also) };
+                mc(e.template, e.name, signature, also, e.cases)
+            })
+            .collect()
+    };
+    let problems = |entries: &[MacroCase]| check_macro_cases(entries, &templates, &renders).err().unwrap_or_default();
+    assert!(problems(&with("menu", "menu-group", &[])).is_empty(), "the unchanged entry passes");
+
+    // `state-icon` is state_block's literal and menu calls no macro that holds it.
+    let not_rendered = problems(&with("menu", "state-icon", &["state_block"]));
+    assert!(
+        not_rendered.iter().any(|p| p == "primitives/menu: case menu_row_actions does not render signature \"state-icon\""),
+        "{not_rendered:?}"
+    );
+    assert!(
+        not_rendered.iter().any(|p| p.starts_with("primitives/menu: its source does not hold signature")),
+        "{not_rendered:?}"
+    );
+    // `palette-group` is search's literal, not menu's, and the entry does not say so.
+    let foreign = problems(&with("menu", "palette-group", &[]));
+    assert!(foreign.iter().any(|p| p.starts_with("primitives/menu: signature \"palette-group\" is held by")), "{foreign:?}");
+    // A signature shared with a macro the entry does not name.
+    let shared = problems(&with("action_button", "danger-ghost", &[]));
+    assert!(shared.iter().any(|p| p.starts_with("primitives/action_button: signature")), "{shared:?}");
+}
+
+/// A macro added to any template, a dead entry and a listed case that does not exist each fail.
+#[test]
+fn macro_cases_fail_on_template_drift() {
+    let renders: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut templates = templates();
+    assert!(templates.iter().any(|(t, _)| t == "shell"), "every template is read, not only the macro ones");
+    templates.push(("shell2".to_string(), "{%- macro extra(x) -%}<i class=\"extra\"></i>{%- endmacro %}".to_string()));
+    let problems = check_macro_cases(MACRO_CASES, &templates, &renders).expect_err("drift fails");
+    assert!(problems.iter().any(|p| p == "template macro shell2/extra has no MACRO_CASES entry"), "{problems:?}");
+    assert!(problems.iter().any(|p| p == "primitives/icon names case state_ok, which does not exist"), "{problems:?}");
+    let dead = [mc("modal", "gone", "x", &[], &["state_ok"])];
+    let problems = check_macro_cases(&dead, &templates, &renders).expect_err("a dead entry fails");
+    assert!(problems.iter().any(|p| p == "MACRO_CASES entry modal/gone names no template macro"), "{problems:?}");
 }
