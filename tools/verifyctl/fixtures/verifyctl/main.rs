@@ -125,6 +125,12 @@ fn tree(args: &[String]) -> ExitCode {
     // simulating a changed cargo rendering: the stage must FAIL rather than
     // pass on a check that can no longer see anything.
     let control_present = !control("island-no-control");
+    if args.iter().any(|arg| arg == "libsqlite3-sys") {
+        // The audit stage's premise check: real cargo's answer for a crate
+        // that is in the lock but not in the build graph.
+        eprintln!("warning: nothing to print.");
+        return ExitCode::SUCCESS;
+    }
     if args.iter().any(|arg| arg == "--workspace") {
         // `cargo tree -i tokio`: who enables tokio, and with what features.
         println!("tokio v1.52.3");
