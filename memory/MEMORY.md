@@ -63,3 +63,4 @@
 - [Cheap-tier ports: fix workflow, not model](cheap-tier-ports-fix-workflow-not-model.md) — admin ports' view part stays on sonnet; a bad port → post-mortem + fix skill/admindiff/golden, never fall back to opus (owner 2026-11-17)
 - [Admin refactor: red gates expected](admin-refactor-red-gates-expected.md) — during the admin control-plane redesign, /admin splitproof 404s + raze dead-code clippy are expected; no verifyctl until the admin panel lands (2026-11-13)
 - [demoseed is the one seeder](demoseed-is-the-one-seeder.md) — no per-module seed tools; demoseed via public API only (realistic); states no API produces stay data-difference entries; mockup gaps → next iteration, no endless polishing (owner 2026-11-17)
+- [Step 13 resume point](step13-resume-point.md) — admin redesign Step 13: part a landed unreviewed (1bea67f8, 6f2de49f); next review → opus gate tests → sonnet part b; only Step 13
