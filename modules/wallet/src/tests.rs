@@ -20,6 +20,9 @@ const DEFAULT_DSN: &str =
 use testdb::test_pool;
 
 /// Serializes the tests that plant or sweep `wallet.purged_players`: the whole-table `FOR UPDATE SKIP LOCKED` sweep skips rows a sibling's open sweep has locked.
+/// The delivery tests take it too, after `STARTER_SUB_LOCK`: their `deliver_all` runs the
+/// real tombstone and sweep subscriptions over the shared log, where a dev fleet's
+/// scheduler appends `player-purge` fires.
 static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn ensure_schema(pool: &PgPool) {
@@ -1314,6 +1317,7 @@ async fn absent_currency(pool: &PgPool) -> String {
 async fn starter_grant_credits_a_new_player() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     ensure_schema(&pool).await;
     reset_starter_subscription(&pool).await;
     let currency = unique_currency(&pool).await;
@@ -1370,6 +1374,7 @@ async fn starter_grant_credits_a_new_player() {
 async fn starter_grant_is_off_by_default() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     let (ctx, _svc, transport) = wired_for_delivery(&pool, Arc::new(UnsetConfig)).await;
     let pid = unique_player(&pool).await;
 
@@ -1447,6 +1452,7 @@ async fn catalog_rejects_an_oversized_currency_code() {
 async fn starter_grant_skips_an_absurd_configured_amount_without_poisoning() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     let currency = unique_currency(&pool).await;
     let cfg = FakeConfig::new(&currency, i64::MAX);
     let (ctx, _svc, transport) = wired_for_delivery(&pool, cfg.clone() as Arc<dyn Config>).await;
@@ -1485,6 +1491,7 @@ async fn starter_grant_skips_an_absurd_configured_amount_without_poisoning() {
 async fn starter_grant_skips_unknown_currency_without_poisoning() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     let absent = absent_currency(&pool).await;
     let cfg = FakeConfig::new(&absent, 75);
     let (ctx, _svc, transport) = wired_for_delivery(&pool, cfg.clone() as Arc<dyn Config>).await;
@@ -1525,6 +1532,7 @@ async fn starter_grant_skips_unknown_currency_without_poisoning() {
 async fn starter_grant_skips_a_malformed_player_id_without_poisoning() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     let currency = unique_currency(&pool).await;
     let (ctx, _svc, transport) =
         wired_for_delivery(&pool, FakeConfig::new(&currency, 90) as Arc<dyn Config>).await;
@@ -1570,6 +1578,7 @@ async fn starter_grant_skips_a_malformed_player_id_without_poisoning() {
 async fn starter_grant_is_idempotent_across_redelivery() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     let currency = unique_currency(&pool).await;
     let (ctx, _svc, transport) =
         wired_for_delivery(&pool, FakeConfig::new(&currency, 120) as Arc<dyn Config>).await;
@@ -1619,6 +1628,7 @@ async fn starter_grant_is_idempotent_across_redelivery() {
 async fn a_faulting_handler_does_not_advance_its_checkpoint_and_backs_off() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     ensure_schema(&pool).await;
     reset_starter_subscription(&pool).await;
     let _ = sqlx::query("DELETE FROM asyncevents.subscriptions WHERE subscription_id = $1")
@@ -1722,6 +1732,7 @@ async fn a_faulting_handler_does_not_advance_its_checkpoint_and_backs_off() {
 async fn starter_grant_reflects_a_live_config_change() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     let currency = unique_currency(&pool).await;
     let cfg = FakeConfig::new(&currency, 100);
     let (ctx, _svc, transport) = wired_for_delivery(&pool, cfg.clone() as Arc<dyn Config>).await;
@@ -1765,6 +1776,7 @@ async fn starter_grant_reflects_a_live_config_change() {
 async fn guest_registration_grants_nothing_even_after_delivery_settles() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     let currency = unique_currency(&pool).await;
     let (ctx, _svc, transport) =
         wired_for_dual_delivery(&pool, FakeConfig::new(&currency, 200) as Arc<dyn Config>).await;
@@ -1793,6 +1805,7 @@ async fn guest_registration_grants_nothing_even_after_delivery_settles() {
 async fn promotion_grants_the_starter_amount() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     let currency = unique_currency(&pool).await;
     let (ctx, _svc, transport) =
         wired_for_dual_delivery(&pool, FakeConfig::new(&currency, 300) as Arc<dyn Config>).await;
@@ -1827,6 +1840,7 @@ async fn promotion_grants_the_starter_amount() {
 async fn direct_registration_with_a_real_provider_is_still_granted() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     let currency = unique_currency(&pool).await;
     let (ctx, _svc, transport) =
         wired_for_dual_delivery(&pool, FakeConfig::new(&currency, 150) as Arc<dyn Config>).await;
@@ -1857,6 +1871,7 @@ async fn direct_registration_with_a_real_provider_is_still_granted() {
 async fn a_player_who_registers_as_guest_then_gets_promoted_is_granted_once() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     let currency = unique_currency(&pool).await;
     let (ctx, _svc, transport) =
         wired_for_dual_delivery(&pool, FakeConfig::new(&currency, 80) as Arc<dyn Config>).await;
@@ -1897,6 +1912,7 @@ async fn a_player_who_registers_as_guest_then_gets_promoted_is_granted_once() {
 async fn the_starter_key_is_shared_across_both_subscriptions() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = STARTER_SUB_LOCK.lock().await;
+    let _purge_tables = DB_LOCK.lock().await;
     let currency = unique_currency(&pool).await;
     let (ctx, _svc, transport) =
         wired_for_dual_delivery(&pool, FakeConfig::new(&currency, 55) as Arc<dyn Config>).await;
@@ -2295,22 +2311,25 @@ async fn finish<T>(what: &str, handle: tokio::task::JoinHandle<T>) -> T {
     }
 }
 
-/// Polls observed database state until a backend of `app` is parked on an ADVISORY lock
+/// Polls observed database state until a backend of `app` waits on the advisory lock `key`
 /// (`true`), or `racer` finished without ever parking (`false`). The second answer is how an
-/// unserialized racer shows itself; the deadline is a hang guard, not a timing bound.
+/// unserialized racer shows itself; a racer parked on any OTHER lock reaches the deadline,
+/// which is a hang guard, not a timing bound.
 async fn wait_advisory_parked<T>(
     pool: &PgPool,
     app: &str,
+    key: i64,
     racer: &tokio::task::JoinHandle<T>,
 ) -> bool {
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         let parked: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM pg_stat_activity \
-              WHERE application_name = $1 AND wait_event_type = 'Lock' \
-                AND wait_event = 'advisory'",
+            "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+              WHERE a.application_name = $1 AND NOT l.granted AND l.locktype = 'advisory' \
+                AND l.objsubid = 1 AND ((l.classid::bigint << 32) | l.objid::bigint) = $2",
         )
         .bind(app)
+        .bind(key)
         .fetch_one(pool)
         .await
         .unwrap();
@@ -2322,10 +2341,29 @@ async fn wait_advisory_parked<T>(
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "racer {app} neither parked on an advisory lock nor finished"
+            "racer {app} neither parked on the player's advisory lock {key} nor finished"
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+}
+
+/// Precondition of a sweep test: one fire claims only the `WALLET_PLAYERS_PER_FIRE` lowest
+/// unswept tombstones, so leftovers sorting below `player_id` would starve it and the test
+/// would fail as a purge that never happened.
+async fn assert_claimed_by_the_next_fire(pool: &PgPool, player_id: &str) {
+    let below: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM wallet.purged_players \
+          WHERE swept_at IS NULL AND player_id < $1::uuid",
+    )
+    .bind(player_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(
+        below < crate::projection::WALLET_PLAYERS_PER_FIRE,
+        "precondition: {below} unswept tombstones sort below {player_id}, so the next fire \
+         cannot claim it"
+    );
 }
 
 /// The tombstone insert is idempotent, and a redelivery after the sweep stamped
@@ -2381,6 +2419,7 @@ async fn sweep_clears_balances_reassigns_ledger_to_sentinel_key_stays_claimed() 
     let mut conn = pool.acquire().await.unwrap();
     svc.store.plant_purged_player_tx(&mut conn, &pid, "Sentinel#0001").await.unwrap();
     drop(conn);
+    assert_claimed_by_the_next_fire(&pool, &pid).await;
 
     let handler = crate::projection::PurgeSweepHandler { svc: svc.clone() };
 
@@ -2582,6 +2621,7 @@ async fn sweep_waits_for_an_in_flight_first_credit_and_purges_it() {
     clear_fixed_player(&pool, &pid).await;
     let currency = unique_currency(&pool).await;
     let key = unique_key("race1");
+    let lock_key = taken_player_key(&pool, &svc, &pid).await;
 
     let mut movement_tx = pool.begin().await.unwrap();
     let outcome = svc
@@ -2594,6 +2634,7 @@ async fn sweep_waits_for_an_in_flight_first_credit_and_purges_it() {
     svc.store.plant_purged_player_tx(&mut conn, &pid, "Race#0001").await.unwrap();
     drop(conn);
     assert_eq!(purge_swept_at(&pool, &pid).await, Some(None), "the tombstone must be committed, unswept");
+    assert_claimed_by_the_next_fire(&pool, &pid).await;
 
     let app = format!("wallet-{}", unique_key("race1-sweep"));
     let sweep = tokio::spawn({
@@ -2609,7 +2650,7 @@ async fn sweep_waits_for_an_in_flight_first_credit_and_purges_it() {
             tx.commit().await.unwrap();
         }
     });
-    let parked = wait_advisory_parked(&pool, &app, &sweep).await;
+    let parked = wait_advisory_parked(&pool, &app, lock_key, &sweep).await;
 
     movement_tx.commit().await.unwrap();
     finish("race-1 sweep", sweep).await;
@@ -2650,6 +2691,7 @@ async fn credit_parks_behind_an_open_sweep_then_answers_player_deleted() {
     clear_fixed_player(&pool, &pid).await;
     let currency = unique_currency(&pool).await;
     let key = unique_key("race2");
+    let lock_key = taken_player_key(&pool, &svc, &pid).await;
 
     let mut conn = pool.acquire().await.unwrap();
     svc.store.plant_purged_player_tx(&mut conn, &pid, "Race#0002").await.unwrap();
@@ -2672,7 +2714,7 @@ async fn credit_parks_behind_an_open_sweep_then_answers_player_deleted() {
         let m = movement(&key, &pid, &currency, 50, "test");
         async move { racer.credit(m).await }
     });
-    let parked = wait_advisory_parked(&pool, &app, &credit).await;
+    let parked = wait_advisory_parked(&pool, &app, lock_key, &credit).await;
     assert!(parked, "the credit must park on the player's lock while the sweep is open");
 
     sweep_tx.commit().await.unwrap();
@@ -2700,41 +2742,63 @@ async fn one_sweep_fire_stamps_at_most_64_players() {
     // left its tombstone unswept must not sort among these.
     let ids: Vec<String> = (0x01..0x01 + 65).map(fixed_player).collect();
     clear_tombstones(&pool, &ids).await;
-
-    let mut conn = pool.acquire().await.unwrap();
-    for (i, id) in ids.iter().enumerate() {
-        svc.store.plant_purged_player_tx(&mut conn, id, &format!("Cap#{i:04}")).await.unwrap();
-    }
-    drop(conn);
     let foreign_below: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM wallet.purged_players \
-          WHERE swept_at IS NULL AND player_id <= $1::uuid AND NOT player_id = ANY($2::uuid[])",
+          WHERE swept_at IS NULL AND player_id <= $1::uuid",
     )
     .bind(ids.last().unwrap())
-    .bind(&ids)
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(foreign_below, 0, "a foreign unswept tombstone sorts among this test's ids");
-
-    let mut tx = pool.begin().await.unwrap();
-    svc.sweep_purged_players(&mut tx).await.unwrap();
-    tx.commit().await.unwrap();
     assert_eq!(
-        unstamped_tombstones(&pool, &ids).await,
-        vec![ids[64].clone()],
-        "one fire must stamp exactly the 64 lowest of 65 tombstones"
+        foreign_below, 0,
+        "precondition: a foreign unswept tombstone sorts among this test's ids"
     );
 
-    let mut tx2 = pool.begin().await.unwrap();
-    svc.sweep_purged_players(&mut tx2).await.unwrap();
-    tx2.commit().await.unwrap();
-    assert!(
-        unstamped_tombstones(&pool, &ids).await.is_empty(),
-        "the next fire must resume and stamp the last one"
-    );
+    // The planted body runs as its own task so a panic in it comes back here as a
+    // `JoinError` and the 65 low tombstones are cleared before it resumes: a `Drop` guard
+    // cannot await the DELETE, and a leftover would starve every later sweep test.
+    let mut body = tokio::spawn({
+        let (pool, svc, ids) = (pool.clone(), svc.clone(), ids.clone());
+        async move {
+            let mut conn = pool.acquire().await.unwrap();
+            for (i, id) in ids.iter().enumerate() {
+                svc.store
+                    .plant_purged_player_tx(&mut conn, id, &format!("Cap#{i:04}"))
+                    .await
+                    .unwrap();
+            }
+            drop(conn);
 
+            let mut tx = pool.begin().await.unwrap();
+            svc.sweep_purged_players(&mut tx).await.unwrap();
+            tx.commit().await.unwrap();
+            assert_eq!(
+                unstamped_tombstones(&pool, &ids).await,
+                vec![ids[64].clone()],
+                "one fire must stamp exactly the 64 lowest of 65 tombstones"
+            );
+
+            let mut tx2 = pool.begin().await.unwrap();
+            svc.sweep_purged_players(&mut tx2).await.unwrap();
+            tx2.commit().await.unwrap();
+            assert!(
+                unstamped_tombstones(&pool, &ids).await.is_empty(),
+                "the next fire must resume and stamp the last one"
+            );
+        }
+    });
+    let outcome = tokio::time::timeout(Duration::from_secs(60), &mut body).await;
+    if outcome.is_err() {
+        body.abort();
+        let _ = (&mut body).await;
+    }
     clear_tombstones(&pool, &ids).await;
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => std::panic::resume_unwind(e.into_panic()),
+        Err(_) => panic!("the fire-bound body did not finish within 60s"),
+    }
 }
 
 async fn clear_tombstones(pool: &PgPool, ids: &[String]) {
