@@ -2063,11 +2063,10 @@ Owner decisions from the plan review (2026-11-17):
   this step, out of numeric order, so the new variants below land on the observed gate
   instead of growing the `SEEN_ENUMS` / `NOT_SEEN` / `UNREAD_ENUMS` hand lists Step 28
   removes.
-- **O2 (decided: yes).** The refs cap is enforced once, in the `LocalFace` impl
-  (`core/controlplane/src/lib.rs`, beside the `Manifest.writes` check), before any
-  provider is called; providers carry no cap check of their own. The portal never sends
-  more: it splits the distinct refs of one kind on a page into calls of at most
-  `MAX_PANEL_REFS` (the refs-bound design of the review's P1, raised under O2).
+- **O2 (decided: yes).** The refs cap and the label batch are enforced once, in the
+  `LocalFace` impl (`core/controlplane/src/lib.rs`, beside the `Manifest.writes`
+  check), before any provider is called; providers carry no check of their own. Labels
+  are covered because they ride `cp.panel` `refs`.
 
 (a) What is touched: `core/controlplane` (contract, the `LocalFace` cap check of O2),
 `core/admin` (`render.rs`, templates, `engine/columns.rs`, `fakes.rs`, `routes.rs`), the
@@ -2113,17 +2112,19 @@ What dies, in this step:
   mediates; no module imports another); K21 `controlplane::MAX_PANEL_REFS` (O2). The
   portal collects the distinct refs of each kind on a rendered page (a row may carry
   several, e.g. a timeline actor and target) and sends them in calls of at most
-  `MAX_PANEL_REFS`, so a page of any size gets every label and column cell; `LocalFace`
-  refuses a larger `refs` as a backstop. The `cp.panel req.refs` conformance rationale
+  `MAX_PANEL_REFS`, so a page of any size gets every label and column cell (the plan's
+  mechanism for K21's "the portal never exceeds it", from plan review P1, 2026-11-17);
+  `LocalFace` refuses a larger `refs` as a backstop. The `cp.panel req.refs` conformance rationale
   names the bound.
 - Text: K18 the noun has a singular and a plural; the portal picks the singular at 1.
 - Shared FAKE helper (X3): one deterministic helper in `controlplane` (explicit-width hash
   of an entity id, no clock, no rand); accounts and the portal's `fakes.rs` move to it.
 - Variant coverage of every new enum variant is Step 28's observed gate (O1): each new
-  variant (`MonoMuted`, `Toggle`, `Strong`, `Tone::Accent`, `Layout::Rows`,
-  `FilterKind::Select`, `Primitive::KpiTiles`, `Point::EntityTabTile`, `Point::EntityLabel`)
-  needs a golden that renders it, or that gate fails. Field coverage is the named test list
-  in (c).
+  variant (`MonoMuted`, `Toggle`, `Strong`, `Tone::Accent`, `FilterKind::Select`,
+  `Primitive::KpiTiles`) needs a golden that renders it, or that gate fails. `Point` and
+  `Layout` are placement enums Step 28 does not observe (`mode_of`, `layout_name`), so
+  `Point::EntityTabTile`, `Point::EntityLabel` and `Layout::Rows` are covered by named
+  tests in (c). Field coverage is the named test list in (c).
 - Standing data rules added to the skill (R-a … R-j of the research doc): identifiers in
   full; times computed in SQL, keeping the mock's per-column format; real stable order, a
   sort arrow only on the real sort column; singular at 1; a count is always a `Cell`, `0`
