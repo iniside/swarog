@@ -169,7 +169,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- endmacro %}
 
 {%- macro table_foot(t) -%}
-{%- if t.foot %}<div class="tbl-foot"><span>{{ t.total }}</span><div class="pager"><select class="select" style="height:24px;font-size:12px">{% for n in [25, 50, 100] %}<option{% if n == t.size %} selected{% endif %}>{{ n }} / page</option>{% endfor %}</select><button type="button" class="btn sm icon" disabled>{{ icon("left") }}</button><button type="button" class="btn sm icon"{% if t.next_url %} hx-get="{{ t.next_url }}" hx-target="closest .slot" hx-swap="outerHTML"{% else %} disabled{% endif %}>{{ icon("right") }}</button></div></div>{% endif -%}
+{%- if t.foot %}<div class="tbl-foot"><span>{{ t.total }}</span><div class="pager"><select class="select" style="height:24px;font-size:12px">{% for n in [25, 50, 100] %}<option{% if n == t.size %} selected{% endif %}>{{ n }} / page</option>{% endfor %}</select><button type="button" class="btn sm icon" disabled>{{ icon("left") }}</button>{% if t.page_label %}<span style="padding:0 6px">{{ t.page_label }}</span>{% endif %}<button type="button" class="btn sm icon"{% if t.next_url %} hx-get="{{ t.next_url }}" hx-target="closest .slot" hx-swap="outerHTML"{% else %} disabled{% endif %}>{{ icon("right") }}</button></div></div>{% endif -%}
 {%- endmacro %}
 
 {%- macro table(t) -%}
@@ -263,9 +263,10 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- macro queue(q) -%}
 {{ queue_counts(q) }}
 {%- if q.items -%}
-<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Item</th>{% if q.has_entity %}<th>Ref</th>{% endif %}<th>State</th><th>Attempts</th><th>Next attempt</th><th>Last error</th>{% if q.has_payload %}<th>Payload</th>{% endif %}<th></th></tr></thead><tbody>
-{%- for it in q.items %}<tr><td><span class="mono">{{ it.id }}</span></td>{% if q.has_entity %}<td>{% if it.entity %}{{ cell(it.entity) }}{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}<td>{{ cell(it.state) }}</td><td><span class="attempts" title="{{ it.attempts_title }}">{% for a in it.attempts %}<i class="{{ a }}"></i>{% endfor %}</span></td><td><span class="dim">{{ it.next_attempt or "—" }}</span></td><td class="wrap">{% if it.last_error %}<span class="mono" style="font-size:11.5px;color:{{ it.error_color }}">{{ it.last_error }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>{% if q.has_payload %}<td><span class="mono muted ellip">{{ it.payload or "—" }}</span></td>{% endif %}<td><span class="row" style="justify-content:flex-end;gap:4px">{% for a in it.actions %}{{ queue_action(a, loop.first and not a.danger) }}{% endfor %}</span></td></tr>{% endfor -%}
-</tbody></table></div><div class="tbl-foot"><span>{{ q.items|length }} items</span></div>
+{{ table_toolbar(q) -}}
+<div class="tbl-wrap"><table class="tbl"><thead><tr>{% if q.selectable %}<th class="cb"><input type="checkbox"></th>{% endif %}<th>{{ q.item_label }}</th>{% for c in q.columns %}<th class="{{ 'num' if c.num else '' }}">{{ c.label }}</th>{% endfor %}{% if q.has_entity %}<th>Ref</th>{% endif %}<th>State</th><th>Attempts</th><th>Next attempt</th><th>Last error</th>{% if q.has_payload %}<th>Payload</th>{% endif %}<th></th></tr></thead><tbody>
+{%- for it in q.items %}<tr>{% if q.selectable %}<td class="cb"><input type="checkbox"></td>{% endif %}<td><span class="mono">{{ it.id }}</span></td>{% for c in it.cells %}<td class="{{ 'num' if c.num else '' }}">{{ cell(c.cell) }}</td>{% endfor %}{% if q.has_entity %}<td>{% if it.entity %}{{ cell(it.entity) }}{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}<td>{{ cell(it.state) }}</td><td><span class="attempts" title="{{ it.attempts_title }}">{% for a in it.attempts %}<i class="{{ a }}"></i>{% endfor %}</span></td><td><span class="dim">{{ it.next_attempt or "—" }}</span></td><td class="wrap">{% if it.last_error %}<span class="mono" style="font-size:11.5px;color:{{ it.error_color }}">{{ it.last_error }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>{% if q.has_payload %}<td><span class="mono muted ellip">{{ it.payload or "—" }}</span></td>{% endif %}<td><span class="row" style="justify-content:flex-end;gap:4px">{% for a in it.actions %}{{ queue_action(a, loop.first and not a.danger) }}{% endfor %}</span></td></tr>{% endfor -%}
+</tbody></table></div>{{ table_foot(q) }}
 {%- else -%}
 {{ state_block("empty", "Queue is empty", "Nothing in this state.", "check") }}
 {%- endif -%}

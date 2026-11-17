@@ -27,11 +27,40 @@
 <div class="l">Sent</div>
 </div>
 </div>
+<div class="tbl-toolbar">
+<form class="input-icon" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?template=welcome" hx-target="closest .slot" hx-swap="outerHTML">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<circle cx="11" cy="11" r="6.5"/>
+<path d="m20 20-4.2-4.2"/>
+</svg>
+<input class="input" name="q" style="width:220px" placeholder="Recipient, template or message id" value="anna">
+</form>
+<span class="filter-chip">Template: <b>welcome</b>
+<span class="x">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M6 6l12 12M18 6 6 18"/>
+</svg>
+</span>
+</span>
+<span class="filter-chip add">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M12 5v14M5 12h14"/>
+</svg> Filter</span>
+<span class="grow">
+</span>
+</div>
 <div class="tbl-wrap">
 <table class="tbl">
 <thead>
 <tr>
-<th>Item</th>
+<th class="cb">
+<input type="checkbox">
+</th>
+<th>Message</th>
+<th class="">To</th>
+<th class="">Account</th>
+<th class="">Template</th>
+<th class="num">Size</th>
 <th>State</th>
 <th>Attempts</th>
 <th>Next attempt</th>
@@ -42,9 +71,27 @@
 </thead>
 <tbody>
 <tr>
+<td class="cb">
+<input type="checkbox">
+</td>
 <td>
 <span class="mono">msg-1001</span>
 </td>
+<td class="">
+<a href="&#x2f;admin&#x2f;p&#x2f;mail&#x2f;outbox?q=anna%40example.com&amp;state=pending" style="color:inherit">
+<span class="user-cell">
+<span class="avatar" style="background:#be123c">AC</span>
+<span>anna@example.com</span>
+</span>
+</a>
+</td>
+<td class="">
+<a href="&#x2f;admin&#x2f;e&#x2f;account&#x2f;a-17">
+<span class="tag">a-17</span>
+</a>
+</td>
+<td class="">welcome</td>
+<td class="num">2 KB</td>
 <td>
 <span class="badge info">pending</span>
 </td>
@@ -79,9 +126,27 @@
 </td>
 </tr>
 <tr>
+<td class="cb">
+<input type="checkbox">
+</td>
 <td>
 <span class="mono">msg-1002</span>
 </td>
+<td class="">
+<a href="&#x2f;admin&#x2f;p&#x2f;mail&#x2f;outbox?q=anna.k%40example.com&amp;state=failed" style="color:inherit">
+<span class="user-cell">
+<span class="avatar" style="background:#c2630f">AK</span>
+<span>anna.k@example.com</span>
+</span>
+</a>
+</td>
+<td class="">
+<a href="&#x2f;admin&#x2f;e&#x2f;account&#x2f;a-18">
+<span class="tag">a-18</span>
+</a>
+</td>
+<td class="">welcome</td>
+<td class="num">3 KB</td>
 <td>
 <span class="badge err">failed</span>
 </td>
@@ -123,9 +188,27 @@
 </td>
 </tr>
 <tr>
+<td class="cb">
+<input type="checkbox">
+</td>
 <td>
 <span class="mono">msg-1003</span>
 </td>
+<td class="">
+<a href="&#x2f;admin&#x2f;p&#x2f;mail&#x2f;outbox?q=annette%40example.com&amp;state=sent" style="color:inherit">
+<span class="user-cell">
+<span class="avatar" style="background:#4f5bd5">AC</span>
+<span>annette@example.com</span>
+</span>
+</a>
+</td>
+<td class="">
+<a href="&#x2f;admin&#x2f;e&#x2f;account&#x2f;a-19">
+<span class="tag">a-19</span>
+</a>
+</td>
+<td class="">welcome</td>
+<td class="num">1 KB</td>
 <td>
 <span class="badge ok">sent</span>
 </td>
@@ -158,7 +241,25 @@
 </table>
 </div>
 <div class="tbl-foot">
-<span>3 items</span>
+<span>3 of 309 messages</span>
+<div class="pager">
+<select class="select" style="height:24px;font-size:12px">
+<option selected>25 / page</option>
+<option>50 / page</option>
+<option>100 / page</option>
+</select>
+<button type="button" class="btn sm icon" disabled>
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="m15 5-7 7 7 7"/>
+</svg>
+</button>
+<span style="padding:0 6px">1 &#x2f; 13</span>
+<button type="button" class="btn sm icon" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?q=anna&amp;template=welcome&amp;cursor=c2" hx-target="closest .slot" hx-swap="outerHTML">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="m9 5 7 7-7 7"/>
+</svg>
+</button>
+</div>
 </div>
 </div>
 </section>
