@@ -1,0 +1,27 @@
+# Accepted differences of the Users & players list (portal /admin/p/accounts/players) against
+# UILayout/redesign/players.html. One per line: <difference> | <reason>. An entry that
+# matches no difference fails the diff. A reason names its kind: data difference, not
+# ported yet, template choice, contract gap, or a declared deviation (Dn in the plan).
+frame div.app > aside.sidebar > div.sidebar-foot > div.me: portal-only form#a96e26 | template choice: shell.html.tmpl puts the Sign out form in the sidebar foot; the mockup has no session
+frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item#ecbb9a | not ported yet: the API keys, Scheduler, Config and Audit nav entries arrive with their ports
+frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#1089c4 | not ported yet: the Lore section; no Lore module exists
+frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#5694ed | not ported yet: the Economy section arrives with the wallet port
+frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#ba7b3e | declared deviation D3: no Design-system nav section
+frame div.app > header.topbar: portal-only button.top-btn#255bc4 | template choice: shell.html.tmpl puts the theme toggle in the topbar; the mockup's sits in the devbar, which D3 drops
+frame div.app > main.main > div.page: mock-only [panel "#1"] | template choice: the portal wraps the panel in div.stack (see the div.stack entry), so at the frame level the panel placeholder is mock-only; the panel itself matches inside the wrapper
+frame div.app > main.main > div.page: portal-only div.stack#e693e4 | template choice: shell.html.tmpl wraps a Layout::Stack page in a .stack; the mockup puts the panel directly in .page
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-toolbar: mock-only span.input-icon#1fe724 | template choice: the table macro's search box is the form.input-icon of the next entry
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-toolbar: portal-only form.input-icon#958dce | template choice: the table macro's search box is an hx-get form; .input-icon is display:inline-flex, so it renders as the span does
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-toolbar: mock-only span.muted | contract gap: no carrier for the toolbar's right-hand "Columns:" label and its "9 of 12" column chooser (G5)
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-toolbar: mock-only button.btn.sm#f5ed26 | contract gap: no carrier for the toolbar's right-hand "Columns:" label and its "9 of 12" column chooser (G5)
+panel "#1" section.panel.players-table: mock-only div.banner.warn#a16c3c | not ported yet: the Embers column's failure banner arrives with the wallet port (Step 15); a data difference once wallet answers
+panel "#1": root mock section.panel.players-table portal section.panel | template choice: the mockup's players-table class is a hook for its own script; the portal's panel carries no such class (G2)
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-wrap > table.tbl > thead > tr: mock-only th | not ported yet: the Lore role column; no lore module exists
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-wrap > table.tbl > thead > tr: mock-only th.num | not ported yet: the Characters column arrives with the characters port (Step 14) and the Embers column with the wallet port (Step 15)
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr* > tr.clickable: mock-only td#19939a | not ported yet: the Lore role cell; no lore module exists
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr* > tr.clickable: mock-only td.num | not ported yet: the Characters cell arrives with the characters port (Step 14)
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr* > tr.clickable: mock-only td.num#a79477 | not ported yet: the Embers cell arrives with the wallet port (Step 15)
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr*: mock-only tr.clickable#39a560 ("staff · MK marta.k Marta Kowalczyk") | data difference: every account is kind "player" (operators are admin.users, not accounts), so a staff row shape is never drawn (G12)
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr*: mock-only tr.clickable#751ca6 ("player · AA ash_and_ember") | data difference: every account is status "active" while no suspension exists, so a banned row shape is never drawn (G12)
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr*: mock-only tr.clickable#c4af3c ("staff · AT aiko.tanaka Aiko Tanaka") | data difference: every account is kind "player" (operators are admin.users, not accounts), so a staff row shape is never drawn (G12)
+panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr*: mock-only tr.clickable#e94d46 ("staff · SO sam.o Sam Okafor") | data difference: every account is kind "player" and status "active", so a staff or suspended row shape is never drawn (G12)
