@@ -51,9 +51,11 @@ pub async fn run(cfg: &Config) -> Result<bool> {
     }
 
     let mut targets: Vec<(String, String)> = Vec::new();
+    let mut followers: Vec<(&str, &str)> = Vec::new();
     for p in PAGE_MAP {
         match p.route {
             Route::Mapped(route) => targets.push((p.page.to_string(), route.to_string())),
+            Route::FirstRow(list) => followers.push((p.page, list)),
             Route::Pending => println!("PENDING {}: not ported, nothing to crawl", p.page),
         }
     }
@@ -65,10 +67,30 @@ pub async fn run(cfg: &Config) -> Result<bool> {
 
     std::fs::create_dir_all(cfg.out.join("raw")).with_context(|| format!("create {}", cfg.out.display()))?;
     let mut fragments = 0;
+    let mut crawled: Vec<(String, Vec<Node>)> = Vec::new();
     for (page, route) in &targets {
         println!("page {page}  {route}");
         match crawl_page(&client, cfg, page, route, &mut failures).await {
-            Ok(n) => fragments += n,
+            Ok((n, doc)) => {
+                fragments += n;
+                crawled.push((page.clone(), doc));
+            }
+            Err(e) => failures.push(format!("{page} ({route}): {e:#}")),
+        }
+    }
+    for (page, list) in followers {
+        let Some((_, doc)) = crawled.iter().find(|(p, _)| p == list) else {
+            failures.push(format!("{page}: its list page {list} was not crawled"));
+            continue;
+        };
+        let Some(route) = first_row_href(doc) else {
+            // A fleet with no row yet: `diff --page` then fails on the missing page file.
+            println!("EMPTY {page}: {list} lists no row to follow, nothing to crawl");
+            continue;
+        };
+        println!("page {page}  {route}  (first row of {list})");
+        match crawl_page(&client, cfg, page, &route, &mut failures).await {
+            Ok((n, _)) => fragments += n,
             Err(e) => failures.push(format!("{page} ({route}): {e:#}")),
         }
     }
@@ -116,8 +138,22 @@ async fn login(client: &Client, cfg: &Config) -> Result<Vec<Node>> {
     Ok(doc)
 }
 
-/// Fetches one page, its slots round by round and its row menus; returns the fragment count.
-async fn crawl_page(client: &Client, cfg: &Config, page: &str, route: &str, failures: &mut Vec<String>) -> Result<usize> {
+/// The `data-href` of the first `tr.clickable` in `doc`.
+fn first_row_href(doc: &[Node]) -> Option<String> {
+    find_in(doc, &|e| e.tag == "tr" && e.has_class("clickable") && e.attr("data-href").is_some())
+        .and_then(|tr| tr.attr("data-href"))
+        .map(str::to_string)
+}
+
+/// Fetches one page, its slots round by round and its row menus; returns the fragment count
+/// and the assembled page.
+async fn crawl_page(
+    client: &Client,
+    cfg: &Config,
+    page: &str,
+    route: &str,
+    failures: &mut Vec<String>,
+) -> Result<(usize, Vec<Node>)> {
     let resp = client.get(format!("{}{route}", cfg.base_url)).send().await.context("GET")?;
     let status = resp.status();
     let body = resp.text().await.context("read body")?;
@@ -182,7 +218,7 @@ async fn crawl_page(client: &Client, cfg: &Config, page: &str, route: &str, fail
             Err(e) => failures.push(format!("{page}: menu {url}: {e}")),
         }
     }
-    Ok(count)
+    Ok((count, doc))
 }
 
 /// A fragment's `data-state` and its title: the panel title or the tile label, else `-`.

@@ -17,6 +17,7 @@ dependencies = [
  "axum-extra",
  "base64 0.22.1",
  "bus",
+ "controlplane",
  "edge",
  "futures",
  "jsonwebtoken",

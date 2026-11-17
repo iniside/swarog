@@ -265,16 +265,79 @@ pub(crate) fn classify_presentation(
     }
 }
 
-/// A player plus the read-only bits the admin portal shows (Go's `PlayerRow`).
-pub(crate) struct PlayerRow {
+/// One player as the admin portal lists it.
+pub(crate) struct PlayerListRow {
     pub id: String,
     pub display_name: String,
+    pub discriminator: String,
+    /// `YYYY-MM-DD`, UTC.
+    pub created: String,
+    pub created_at_micros: i64,
+    /// The linked providers, sorted and distinct.
     pub providers: Vec<String>,
-    /// Has a non-expired session.
-    pub online: bool,
-    /// Pre-rendered "Mon DD, HH24:MI" (Go formatted "Jan 2, 15:04" in code; here
-    /// Postgres `to_char` renders the same shape).
-    pub created_at: String,
+    /// Seconds since the player's newest refresh token was issued, on the database clock;
+    /// `None` once every token of the player is pruned.
+    pub last_seen_secs: Option<i64>,
+}
+
+/// [`PlayerListRow`]'s columns, in field order; the providers comma-joined.
+type PlayerListColumns = (String, String, String, String, i64, String, Option<i64>);
+
+/// [`PlayerListRow`]'s projection. The two correlated reads use `identities_player_idx` and
+/// `refresh_player_idx`.
+const PLAYER_LIST_SELECT: &str = "SELECT p.id::text, p.display_name, p.discriminator, \
+        to_char(p.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), \
+        (EXTRACT(EPOCH FROM p.created_at) * 1000000)::int8, \
+        coalesce((SELECT string_agg(DISTINCT i.provider, ',' ORDER BY i.provider) \
+                    FROM accounts.identities i WHERE i.player_id = p.id), ''), \
+        (SELECT floor(EXTRACT(EPOCH FROM (now() - max(r.issued_at))))::int8 \
+           FROM accounts.refresh_tokens r WHERE r.player_id = p.id) \
+   FROM accounts.players p ";
+
+fn player_list_row(row: PlayerListColumns) -> PlayerListRow {
+    let (id, display_name, discriminator, created, created_at_micros, providers, last_seen_secs) = row;
+    PlayerListRow {
+        id,
+        display_name,
+        discriminator,
+        created,
+        created_at_micros,
+        providers: providers
+            .split(',')
+            .filter(|p| !p.is_empty())
+            .map(str::to_string)
+            .collect(),
+        last_seen_secs,
+    }
+}
+
+/// One page of the admin players list, newest first.
+pub(crate) struct PlayerListing<'a> {
+    /// Matches an exact player id, an exact `Name#1234` handle, an exact `dev` email, or a
+    /// substring of the display name.
+    pub needle: Option<&'a str>,
+    /// Only players with an identity of this provider.
+    pub provider: Option<&'a str>,
+    /// The `(created_at µs, id)` keyset of the last row already shown.
+    pub after: Option<(i64, &'a str)>,
+    pub limit: i64,
+}
+
+/// One identity as the admin portal shows it.
+pub(crate) struct IdentityRow {
+    pub provider: String,
+    pub subject: String,
+    /// `YYYY-MM-DD`, UTC.
+    pub linked: String,
+}
+
+/// One live refresh family: a login on one device, whatever its token rotations.
+pub(crate) struct FamilyRow {
+    pub family_id: String,
+    /// The family's first issue, `YYYY-MM-DD HH24:MI` UTC.
+    pub started: String,
+    /// Seconds until the family's hard expiry, on the database clock.
+    pub expires_in_secs: i64,
 }
 
 pub(crate) struct Store {
@@ -968,47 +1031,137 @@ impl Store {
             .collect())
     }
 
-    /// The admin KPI triple: players, identities, non-expired sessions.
-    pub async fn stats(&self) -> Result<(i64, i64, i64), sqlx::Error> {
-        sqlx::query_as(
-            "SELECT (SELECT count(*) FROM accounts.players), \
-                    (SELECT count(*) FROM accounts.identities), \
-                    (SELECT count(*) FROM accounts.sessions WHERE expires_at > now())",
+    /// Every player, for the admin total and nav counter. An exact `count(*)` scans the
+    /// whole table on each call: no estimate is kept (plan R1 adds no table or index).
+    pub async fn player_count(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT count(*) FROM accounts.players")
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    /// Players with a refresh token issued in the last 24 hours. `expires_at` bounds the
+    /// scan through `refresh_expires_idx`: a token's family expiry never precedes its issue.
+    pub async fn active_players_24h(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT count(DISTINCT player_id) FROM accounts.refresh_tokens \
+              WHERE expires_at > now() - interval '24 hours' \
+                AND issued_at > now() - interval '24 hours'",
         )
         .fetch_one(&self.pool)
         .await
     }
 
-    /// The newest `limit` players with their linked providers + online flag, for the
-    /// admin table (Go's `listPlayers`).
-    pub async fn list_players(&self, limit: i64) -> Result<Vec<PlayerRow>, sqlx::Error> {
-        let rows: Vec<(String, String, String, String, bool)> = sqlx::query_as(
-            "SELECT p.id::text, p.display_name, to_char(p.created_at, 'Mon DD, HH24:MI'), \
-                    coalesce(string_agg(DISTINCT i.provider, ','), '') AS providers, \
-                    EXISTS(SELECT 1 FROM accounts.sessions s \
-                            WHERE s.player_id = p.id AND s.expires_at > now()) AS online \
-               FROM accounts.players p \
-               LEFT JOIN accounts.identities i ON i.player_id = p.id \
-              GROUP BY p.id, p.display_name, p.created_at \
-              ORDER BY p.created_at DESC \
-              LIMIT $1",
+    /// One page of players, `(created_at, id)` descending, resumed after `listing.after`.
+    /// No index covers `players.created_at` (plan R1), so each page sorts every matching
+    /// player, and a needle that is not an exact id, handle or email scans the table.
+    pub async fn players_page(
+        &self,
+        listing: &PlayerListing<'_>,
+    ) -> Result<Vec<PlayerListRow>, sqlx::Error> {
+        let needle = listing.needle;
+        let id = needle.filter(|n| is_canonical_uuid(n));
+        let handle = needle.and_then(split_handle);
+        let rows: Vec<PlayerListColumns> = sqlx::query_as(&format!(
+            "{PLAYER_LIST_SELECT} \
+              WHERE ($1::text IS NULL \
+                     OR p.id = $2::uuid \
+                     OR (lower(p.display_name) = lower($3) AND p.discriminator = $4) \
+                     OR EXISTS (SELECT 1 FROM accounts.identities d \
+                                 WHERE d.player_id = p.id AND d.provider = $5 AND d.subject = $1) \
+                     OR strpos(lower(p.display_name), lower($1)) > 0) \
+                AND ($6::text IS NULL \
+                     OR EXISTS (SELECT 1 FROM accounts.identities f \
+                                 WHERE f.player_id = p.id AND f.provider = $6)) \
+                AND ($7::int8 IS NULL \
+                     OR (p.created_at, p.id) < (to_timestamp(0) + $7 * interval '1 microsecond', $8::uuid)) \
+              ORDER BY p.created_at DESC, p.id DESC \
+              LIMIT $9"
+        ))
+        .bind(needle)
+        .bind(id)
+        .bind(handle.map(|(name, _)| name))
+        .bind(handle.map(|(_, discriminator)| discriminator))
+        .bind(crate::providers::DEV)
+        .bind(listing.provider)
+        .bind(listing.after.map(|(micros, _)| micros))
+        .bind(listing.after.map(|(_, id)| id))
+        .bind(listing.limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(player_list_row).collect())
+    }
+
+    /// One player as the list shows it; a malformed id is `Ok(None)`, like a miss.
+    pub async fn player_row(&self, id: &str) -> Result<Option<PlayerListRow>, sqlx::Error> {
+        if !is_canonical_uuid(id) {
+            return Ok(None);
+        }
+        let row: Option<PlayerListColumns> =
+            sqlx::query_as(&format!("{PLAYER_LIST_SELECT} WHERE p.id = $1::uuid"))
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(row.map(player_list_row))
+    }
+
+    /// A player's identities, oldest link first; a malformed id has none.
+    pub async fn identity_rows(&self, player_id: &str) -> Result<Vec<IdentityRow>, sqlx::Error> {
+        if !is_canonical_uuid(player_id) {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT provider, subject, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') \
+               FROM accounts.identities WHERE player_id = $1::uuid \
+              ORDER BY created_at, provider, subject",
         )
-        .bind(limit)
+        .bind(player_id)
         .fetch_all(&self.pool)
         .await?;
         Ok(rows
             .into_iter()
-            .map(|(id, display_name, created_at, providers, online)| PlayerRow {
-                id,
-                display_name,
-                providers: if providers.is_empty() {
-                    Vec::new()
-                } else {
-                    providers.split(',').map(str::to_string).collect()
-                },
-                online,
-                created_at,
+            .map(|(provider, subject, linked)| IdentityRow {
+                provider,
+                subject,
+                linked,
             })
             .collect())
+    }
+
+    /// The newest `limit` live refresh families of a player, plus how many are live. A
+    /// family is live while it holds an unused, unexpired token; a revoked family has no
+    /// rows left.
+    pub async fn live_families(
+        &self,
+        player_id: &str,
+        limit: i64,
+    ) -> Result<(Vec<FamilyRow>, i64), sqlx::Error> {
+        if !is_canonical_uuid(player_id) {
+            return Ok((Vec::new(), 0));
+        }
+        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+            "SELECT family_id::text, \
+                    to_char(min(issued_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), \
+                    floor(EXTRACT(EPOCH FROM (max(expires_at) - now())))::int8, \
+                    count(*) OVER () \
+               FROM accounts.refresh_tokens WHERE player_id = $1::uuid \
+              GROUP BY family_id \
+             HAVING bool_or(used_at IS NULL AND expires_at > now()) \
+              ORDER BY min(issued_at) DESC, family_id \
+              LIMIT $2",
+        )
+        .bind(player_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        let live = rows.first().map_or(0, |row| row.3);
+        let families = rows
+            .into_iter()
+            .map(|(family_id, started, expires_in_secs, _)| FamilyRow {
+                family_id,
+                started,
+                expires_in_secs,
+            })
+            .collect();
+        Ok((families, live))
     }
 }

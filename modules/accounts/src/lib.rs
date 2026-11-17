@@ -28,6 +28,7 @@
 //! `player.registered` is emitted via `bus::emit_tx` INSIDE the registration store
 //! transaction — the event is durable iff the player row is.
 
+mod admin;
 pub mod conformance;
 mod epic_oauth;
 mod guest;
@@ -1397,6 +1398,10 @@ impl Module for Accounts {
         let prune: Arc<dyn TxHandler> = Arc::new(PruneHandler { svc: svc.clone() });
         ctx.bus()
             .on_tx_raw(PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
+
+        let provider: Arc<dyn controlplane::Provider> =
+            Arc::new(admin::AccountsAdmin::new(svc.clone()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
 
         // Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`
         // applies this iff the entrypoint stood up an internal edge server (then a

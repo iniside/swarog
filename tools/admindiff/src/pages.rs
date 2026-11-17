@@ -11,6 +11,9 @@ use anyhow::{bail, Context, Result};
 pub enum Route {
     /// Ported: the portal route the crawl fetches and the diff compares.
     Mapped(&'static str),
+    /// Ported entity page: the crawl follows the first `tr.clickable` `data-href` of the
+    /// named `Mapped` list page, whose entity ids a fleet mints at random.
+    FirstRow(&'static str),
     /// Not ported yet. `crawl` prints it on every run and `diff` refuses it.
     Pending,
 }
@@ -26,8 +29,8 @@ pub struct Page {
 pub const PAGE_MAP: &[Page] = &[
     Page { page: "index", route: Route::Mapped("/admin"), search: "" },
     Page { page: "events", route: Route::Mapped("/admin/p/core.events/events"), search: "" },
-    Page { page: "players", route: Route::Pending, search: "" },
-    Page { page: "player", route: Route::Pending, search: "?u=aiko.tanaka" },
+    Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "" },
+    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka" },
     Page { page: "apikeys", route: Route::Pending, search: "" },
     Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "" },
     Page { page: "scheduler", route: Route::Pending, search: "" },
@@ -74,7 +77,8 @@ fn boot_key(src: &str) -> Option<String> {
 }
 
 /// Checks [`PAGE_MAP`] and [`EXCLUDED`] against the mockup and each other: every listed
-/// page exists, no page is listed twice or in both lists, and every mockup page is listed.
+/// page exists, no page is listed twice or in both lists, every mockup page is listed, and
+/// every `FirstRow` names a `Mapped` page.
 pub fn validate(mockup: &BTreeMap<String, String>) -> Result<()> {
     validate_lists(mockup, PAGE_MAP, EXCLUDED)
 }
@@ -95,6 +99,13 @@ fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page], excluded
     for page in mockup.keys() {
         if !seen.contains_key(page.as_str()) {
             problems.push(format!("mockup page {page} is in neither PAGE_MAP nor EXCLUDED"));
+        }
+    }
+    for p in page_map {
+        if let Route::FirstRow(list) = p.route {
+            if !page_map.iter().any(|q| q.page == list && matches!(q.route, Route::Mapped(_))) {
+                problems.push(format!("PAGE_MAP {} follows {list}, which is not a Mapped page", p.page));
+            }
         }
     }
     for (page, why) in excluded {

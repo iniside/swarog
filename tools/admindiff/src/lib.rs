@@ -176,6 +176,11 @@ pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Resul
     }
     validate_repeats(repo)?;
     let portal_file = portal_dir.join(format!("{page}.html"));
+    if let pages::Route::FirstRow(list) = entry.route {
+        if !portal_file.is_file() {
+            bail!("{} has no {page} page: the crawl found no row of {list} to follow", portal_dir.display());
+        }
+    }
     let portal_src =
         std::fs::read_to_string(&portal_file).with_context(|| format!("read {} (run crawl first)", portal_file.display()))?;
     let portal_doc = html::parse(&portal_src).with_context(|| format!("parse {}", portal_file.display()))?;

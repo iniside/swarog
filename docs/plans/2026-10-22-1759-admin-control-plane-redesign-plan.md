@@ -2389,3 +2389,16 @@ report cites them.
   - The tile's "▲ relay throttled" delta value is FAKE and, like the banner and the attention item (G8), shows only while a row is retrying; its period is the real "· N parked". The spark is a constant FAKE series.
   - `OutboxStats` drops `oldest_pending_overdue_secs` (no element shows it) and splits pending into `pending` and `retrying`; `recent_tx` became `list_tx`.
   - An unknown `state` is an `Invalid` panel error. A test-send recipient that does not parse is `FieldErrors` on `to`; a key reused for a different recipient is a `conflict` error.
+- Step 13 (part a):
+  - The fan-out is `core/admin/src/engine/columns.rs`. It runs for an `ok` or `readonly` DataTable only, so a `stale` cached table shows without its list columns. Every column error, `NotFound` included, is the failure marker; a row whose entity the column did not answer draws an empty cell.
+  - A list column has no fragment of its own: the panel route answers its URL with a 404 toast, and `mode_of` names it `column`. A panel of any other point that answers `ColumnCells` is an error panel (`panels::resolve`).
+  - The `(order, module, id)` contribution order is `Snapshot::contributions`, shared by the routes and the fan-out.
+  - `PanelQuery.refs` enters `cache_key` as its count followed by each id, ahead of `params`.
+  - G6: with a `DataTable.item_noun` the foot reads "M accounts · showing 1–N" on the first page, "M accounts" past it (a cursor does not say how far in it is) and "N accounts" without a total. A table with no noun keeps "N of M" / "N rows".
+  - G7: the portal draws the empty `th` and the trailing `td` of `TableRow` actions; a module declares no empty column. A row button is `btn sm`, plus `ghost` for a ghost emphasis and `danger-ghost` for a danger action, as in the mockup's Unlink. A queue-row action with no icon draws its label instead of an empty icon.
+  - G7: Linked identities rows bind the provider name as `Row.item`, Active sessions rows the refresh family id; both actions are `implemented: false`, so nothing posts them yet.
+  - G10: the header fragment swaps the last breadcrumb for `EntityHeader.title`. The player header's title is the display name and its subtitle `@Name#1234` (checklist §2), so the crumb shows the display name, not the `Name#1234` handle.
+  - G12: Last seen is "—" for a player with no refresh token left. Active sessions lists the newest 50 live families; the meta counts every live one. Started is `YYYY-MM-DD HH:MM` UTC and Expires is relative ("in 6 h").
+  - G13: the palette and the table share one reader, `Store::players_page`; the palette asks for at most 25 hits. The table refuses a search over 256 bytes, and an unknown `provider` filter value is `Invalid`.
+  - G14: `Route::FirstRow(<list page>)`. `validate` refuses a `FirstRow` that names no `Mapped` page. A fleet with no row prints `EMPTY <page>` and does not fail the crawl; `diff --page player` then refuses with that reason.
+  - `Store::stats`, `Store::list_players` and `PlayerRow`, unused since Step 1, are replaced by the provider's readers (`player_count`, `players_page`, `player_row`, `identity_rows`, `live_families`, `active_players_24h`).

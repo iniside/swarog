@@ -121,6 +121,65 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
   exists. Replaced by: a rewind operation in the event plane (a fenced, danger-level
   write).
 
+### Fake data and actions of the accounts port
+
+modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step 13 part a.
+
+- [ ] **Player country**
+  ADMIN2-21. Mockup: the Profile panel's Country. Fake: modules/accounts/src/admin.rs:188
+  (`fake_country`, a hash of the player id): no country is stored for an account.
+  Replaced by: a country recorded at registration or login.
+- [ ] **Identity last used**
+  ADMIN2-22. Mockup: the Linked identities Last used column. Fake:
+  modules/accounts/src/admin.rs:193 (`fake_last_used`): no identity records its last use.
+  Replaced by: a last-used time written on each login through the identity.
+- [ ] **Session client and IP**
+  ADMIN2-23. Mockup: the Active sessions Client and IP columns. Fakes:
+  modules/accounts/src/admin.rs:199 (`fake_client`) and :214 (`fake_ip`), hashes of the
+  refresh family id, never the token: a refresh family stores neither. Replaced by: the
+  client and address recorded when a family is born.
+- [ ] **Active players delta and sparkline**
+  ADMIN2-24. Mockup: the "Active players (24 h)" tile's "▲ 6.1% vs prev. day" and its
+  sparkline. Fakes: modules/accounts/src/admin.rs:478 and :484: no daily history of active
+  players is kept. Replaced by: a sampled daily active-player count.
+- [ ] **Export CSV**
+  ADMIN2-25. Mockup: the Users & players "Export CSV" head action. Action `EXPORT_CSV`,
+  `implemented: false`: modules/accounts/src/admin.rs:406; no export exists. Replaced by:
+  an export of the filtered list.
+- [ ] **Create account**
+  ADMIN2-26. Mockup: the "Create account" head action. Action `CREATE_ACCOUNT`,
+  `implemented: false`: modules/accounts/src/admin.rs:408; an account is created only by
+  the player's own registration. Replaced by: an operator create path.
+- [ ] **Suspend account**
+  ADMIN2-27. Mockup: the row menu's "Suspend account…" and the player header's "Suspend".
+  Actions `SUSPEND` and `SUSPEND_HEADER`, `implemented: false`:
+  modules/accounts/src/admin.rs:410 and :413-421; no suspension exists, so every account's
+  status is the constant `active`. Replaced by: a suspension state the session checks honour.
+- [ ] **Delete account by an operator**
+  ADMIN2-28. Mockup: the row menu's "Delete account…". Action `DELETE_ACCOUNT`,
+  `implemented: false`: modules/accounts/src/admin.rs:412; deletion is the player's own
+  two-step flow. Replaced by: an operator path into the same deletion.
+- [ ] **Edit profile**
+  ADMIN2-29. Mockup: the Profile panel's "Edit". Action `EDIT_PROFILE`,
+  `implemented: false`: modules/accounts/src/admin.rs:423; the display name is immutable
+  (ACCOUNTS-09). Replaced by: editable profile fields.
+- [ ] **Link and unlink identity**
+  ADMIN2-30. Mockup: the Linked identities "Link" tool and each row's "Unlink". Actions
+  `LINK_IDENTITY` and `UNLINK_IDENTITY`, `implemented: false`:
+  modules/accounts/src/admin.rs:425 and :427; linking is the player's own flow and no
+  unlink exists. Replaced by: operator link and unlink, refusing the last identity.
+- [ ] **Revoke sessions**
+  ADMIN2-31. Mockup: the Active sessions "Revoke all" tool and each row's "Revoke".
+  Actions `REVOKE_ALL` and `REVOKE_SESSION`, `implemented: false`:
+  modules/accounts/src/admin.rs:429-430; no operator revocation exists. Replaced by: an
+  operator call into the family revocation (`Store::kill_family_tx`).
+- [ ] **Players total at scale**
+  ADMIN2-32. The players page total and the nav counter run an exact `count(*)` over
+  `accounts.players` on every load (`Store::player_count`, modules/accounts/src/store.rs),
+  and each list page sorts every player, with no index on `created_at` (plan R1). Owner
+  decision 2026-11-17 (step 13 G6): exact for now. Replaced by: a `pg_class.reltuples`
+  estimate past a size threshold, and an index if the keyset paging needs one.
+
 ### Guard gaps
 
 - [ ] **Unlisted page-head action renders nowhere**
@@ -142,6 +201,20 @@ gaps go to the next iteration.
   Subscriptions Head value in dimmed mono. Closed by: a muted variant in
   `core/controlplane` (a `CellKind` or a `Cell` flag) that `core/admin/src/render.rs`
   maps to `span.mono.muted`; then delete both accept lines.
+
+- [ ] **Players list column chooser ("Columns: 9 of 12")**
+  ADMIN2-33. Accept entry: the `contract gap` line for the toolbar's "Columns:" label and
+  "9 of 12" button in tools/admindiff/accept/players.txt (written by step 13 part b).
+  Mockup: pages-core.js:100. No column chooser exists and `DataTable` has no toolbar-right
+  carrier (owner decision 2026-11-17, step 13 G5). Closed by: a column chooser in
+  `core/controlplane` and the portal; then delete the accept line.
+- [ ] **Personal data panel**
+  ADMIN2-34. Accept entry: the `contract gap` mock-only Personal data panel in
+  tools/admindiff/accept/player.txt (written by step 13 part b). Mockup: pages-core.js:120,
+  a panel denied by the permission `accounts.pii.read`. No PII store exists, and the owner
+  declined a `Forbidden` → denied panel mapping (2026-11-17, step 13 G9), so accounts
+  contributes no such panel. Closed by: a PII store and a permission-denied panel state;
+  then delete the accept line.
 
 ## Mail nav counter with only parked rows
 
