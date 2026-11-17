@@ -1223,6 +1223,125 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
 
 (d) `[opus]` core-implementer.
 
+### Step 9a — Contract gaps found in Step 9: backend
+
+(a) `core/controlplane/src/lib.rs`, `core/controlplane-rpc`, `core/admin/src/{engine/*,render.rs,routes.rs,events_provider.rs,portal_provider.rs}`,
+`tools/admincheck`, `tools/conformance/src/policy.rs`, `tools/conformance/input-fields.golden.tsv`,
+`docs/reference/contract-golden/contracts.txt`, `docs/reference/public-api-baseline/controlplane.txt`.
+
+(b) Why now: Step 9 found mockup elements the contract cannot carry (owner, 2026-11-17:
+"dodaj brakujące kontrakty"). Step 10 must be 1:1 with the mockup, and Steps 11–24 port
+pages that use the same elements: panel meta appears on about 50 mockup panels, tiles
+above panels on five pages.
+
+(c) Decisions (one per gap) and the invariants they must keep:
+1. **Panel envelope.** `Provider::panel` and `ControlPlane::panel` return
+   `PanelBody { primitive, meta, heading, note, banner }` instead of a bare `Primitive`.
+   - `meta: Option<String>`: the muted text right of the title ("since 14:02").
+   - `heading: Option<String>`: rendered mono after the declared title ("Paused:
+     `<id>`"). The declared `ContributionDecl.title` stays the static part, so a failed
+     or loading panel still has a title.
+   - `note: Option<String>`: the muted text in the tools row ("last 4 h").
+   - `banner: Option<Banner>`, with `Banner { tone: Tone, text: String }` using the
+     existing `Tone`.
+   - All four are plain text, never HTML.
+   - A module banner shows in `ok` and `readonly`. It never shows in empty, stale,
+     error, denied or loading; those states keep the portal's own banners.
+   - The wire shape changes in place; both sides are one build (wipe rule).
+2. **Code block.** `PropertyList` gains `code: Option<String>`, shown below the items
+   in a code block. The provider bounds it (the poison payload already caps at 4096). The
+   view (Step 10) puts the tools of a `PropertyList` panel with `code` in the body footer,
+   as the mockup's poison resolver does.
+3. **Tiles above a layout.** `PageDecl` gains `tiles: Vec<String>`, a tile row rendered
+   above `layout`. `Layout::Tiles` is deleted in this step, and with it the `"tiles"`
+   layout name and its engine, template (`shell.html.tmpl`) and admincheck branches, so
+   there is one way to write a tile row. The Design section's contract sketch is
+   superseded here. The tile render mode comes from membership in `tiles`. admincheck applies
+   the existing `layouts()` rule to `tiles` (every id is a `Point::Page(<this page>)`
+   contribution of the same module). An id in both `tiles` and `layout` is a finding.
+4. **Prepared confirms and forms.** A `Then::Confirm` or `Then::Form` action whose text
+   depends on the bound item sets `ActionDecl.prepare: true`.
+   - On the modal GET, after `admit` (role, `implemented`, `writes`), the portal calls a
+     new method `prepare(PrepareCall { module, action, entity, item, operator }) -> Result<Then, opsapi::Error>`.
+     It is `#[retry_safe]` and is the fifth `ControlPlane` method, in `LocalFace` and
+     controlplane-rpc. A refused action makes no `prepare` call.
+   - `Provider` gains `prepare` with a default that returns NotFound, so providers
+     without prepared actions do not change.
+   - The call is bounded by the invoke deadline. Every failure toasts and mints no row:
+     - a timeout is a 504 toast;
+     - a provider `Err` is a toast with its mapped status;
+     - a returned variant other than the declared one, or a prepared `Form` that fails
+       `form_spec_errors`, is a 503 toast.
+   - On success the portal stores the returned spec in the `admin.forms` row exactly as
+     Step 8a stores the declared one. There is no fallback to the declared text: the
+     declared spec only fixes the variant and is what admincheck validates.
+   - The provider builds the text from `PrepareCall.item`, never from a fresh read of
+     "the current" element. So the operator confirms the element they saw, and the
+     stored `type_to_confirm` is what Step 8a enforces.
+   - admincheck: `prepare: true` is valid only on a `Then::Confirm` or `Then::Form`
+     action whose point is not `PanelForm`.
+   - Conformance: `cp.prepare` gets policy rows for `req.module`, `req.action`,
+     `req.entity.*`, `req.item` and `req.operator`, matching the `cp.invoke` rows for
+     the same fields. `CONTROL_PLANE_READ_RATIONALE` names `cp.prepare` as read-only.
+     The input-fields golden and `contracts.txt` gain the new method and fields.
+5. **Dashboard full-width row.** New point `Point::DashboardWide`, rendered full width
+   below the attention and activity grid. The portal's Service health moves there and is
+   no longer a `DashboardPanel`.
+6. **Dashboard time range.** `PanelQuery` gains `range: Option<TimeRange>`, where
+   `TimeRange` is `H1 | H24 | D7`.
+   - The dashboard has a 1 h / 24 h / 7 d switch with query key `range`.
+   - Every dashboard-point request carries `Some(range)`. A missing key means `H24`, and
+     an unknown value is a 400. `range` is never left in `params`.
+   - Non-dashboard requests carry `None`.
+   - `range` is part of `cache_key`, and it has an Opaque policy row with
+     `CONTROL_PLANE_READ_RATIONALE`.
+   - A contribution that ignores it is correct.
+   - Refresh re-fetches every panel on the page; it is view-only (Step 10).
+7. **Dashboard nav entry.** No contract change. `/admin` is the portal's own route, so the
+   shell renders a fixed "Dashboard" entry at the top of the nav, as it renders the brand.
+   A `NavEntry` keeps linking only to module pages.
+8. **Row highlight.** `Row` gains `highlight: bool` (the mockup marks the paused
+   subscription's row).
+9. **Attention host meta** ("3 items from 3 modules") is an aggregate over separately
+   fetched slots, so it is view-only: `admin.js` counts the swapped attention rows and
+   their modules (Step 10). No contract change.
+10. **Step 9 providers use all of the above.**
+    - Event plane page:
+      - its KPI tiles go in `tiles`, the rest is `Layout::Stack`;
+      - paused subscription rows set `highlight`.
+    - The poison panel:
+      - `heading` is the subscription id, `meta` is "since …";
+      - the error `banner` names failures and the waiting count;
+      - `code` is the payload, and the hint is `note`;
+      - its `PropertyList` keeps only Event, Consumer and Error;
+      - the Subscription, Since, Payload, Failures, Waiting and hint rows are deleted.
+    - Skip is `prepare: true`. The mockup's event number (`12905`) is a sequence the plane
+      does not expose, so the event is named by the first 8 hex characters of its
+      `event_id`, taken from `item`. This is a declared deviation.
+      - Title: "Skip event `<short id>`?".
+      - Impact: subscription, event (topic + short id). The mockup's "Goes to:
+        dead-letter list" row is left out (declared deviation): the plane keeps no
+        dead-letter list, a skipped event is only stepped past.
+      - Type-to-confirm: the short id.
+    - Dashboard: Service health becomes `DashboardWide` with `meta` and the "last 4 h"
+      `note`.
+    - The Step 9 workarounds are deleted.
+
+Tests (Step 25 adds them; listed here so the design is checkable):
+- a `PanelBody` round-trips over the loopback edge;
+- a module banner shows in ok and readonly and not in stale or error;
+- `prepare` round-trips, and an action without `prepare` makes no call;
+- a denied, not-implemented or readonly action makes no `prepare` call;
+- a prepared Confirm is stored, and its `type_to_confirm` is the one enforced;
+- each prepare failure (timeout, `Err`, wrong variant, a Form failing
+  `form_spec_errors`) toasts and mints no row;
+- admincheck findings for: `prepare` on an invalid variant or point; a `tiles` id that is
+  not `Page(this page)`; an id that is in both `tiles` and `layout`;
+- `range` reaches dashboard providers, an absent `range` equals `H24` with the same cache
+  key, and an unknown value is a 400.
+
+(d) `[opus]` core-implementer. The view parts go to Step 10.
+
 ### Step 10 — Portal-owned screens: view
 
 (a) The templates and macros used by the dashboard and Event plane pages.
@@ -1237,6 +1356,16 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
   as "Add" can create the first row. A provider leaves out the actions that make no
   sense on an empty panel. Tools stay hidden in `error`, `loading`, `denied` and
   `unavailable`.
+- Step 9a view parts:
+  - panel `meta`, `heading`, `note` and module `banner`;
+  - `PropertyList` `code`, with footer tools;
+  - `Row.highlight`;
+  - the attention host's aggregate meta, counted in `admin.js`;
+  - the `PageDecl.tiles` row;
+  - the `DashboardWide` row;
+  - the dashboard range switch and Refresh;
+  - the fixed Dashboard nav entry;
+  - KPI delta colours from `Delta.good`, not from an arrow prefix.
 
 (d) `[opus]` mockup-implementer.
 
@@ -1256,7 +1385,13 @@ Both halves are in the core commit (`routes.rs`, `render.rs`) unless marked "tem
     under **Leftovers for owner** as a documented double-apply risk, which arises only
     after a timeout, a `Failed` transport error after the module already applied the
     action, or a failed settle;
-  - no test files (Step 25).
+  - no test files (Step 25);
+  - `order` values follow the mockup's order, around the ones Step 9 took:
+    - dashboard tiles: accounts 10, storage 40, mail 50, wallet 70 (portal holds 20,
+      30, 80; core.events holds 60);
+    - attention: mail 40 (core.events 20; portal 10, 30, 50);
+    - platform nav entries: 10–50 (Event plane is 60);
+    - audit's "Recent operator activity" is a `DashboardPanel`.
 - **b** (`[opus]` mockup-implementer): template or macro adjustments the module's page needs,
   checked 1:1 against its mockup page per R3. When the generic macros already render the
   page exactly, b is a fidelity check with no commit.
@@ -1331,6 +1466,28 @@ The ports:
   (2026-11-10).
 
 The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KPIs) are kept.
+
+### Step 24a — Typed `asyncevents::admin` errors
+
+(a) `core/asyncevents/src/admin.rs`, `core/admin/src/events_provider.rs`, `tools/eventctl/src/main.rs`.
+
+(b) Why: owner, 2026-11-17, deferred from Step 9 to the end of this plan. The verbs return
+untyped `anyhow`, so `core.events` pre-reads every subscription (`state_of`) only to
+answer NotFound. Only `Retired` is typed today.
+
+(c) Decisions and invariants:
+- The verbs return a typed error with `NotFound`, `Retired`, `Healthy`, `NothingToSkip`
+  and `Db`. `Retired` folds into it.
+- `core.events` maps it one to one: NotFound → NotFound; Retired, Healthy and
+  NothingToSkip → Invalid; Db → Internal.
+- The `state_of` pre-read is deleted.
+- `eventctl` prints the same messages as today.
+- `SkipResult::AlreadyResolved` (Step 9) stays a result, not an error.
+
+Tests for Step 25: each variant reaches the provider as its mapped status; an unknown id is
+NotFound with no pre-read.
+
+(d) `[opus]` core-implementer.
 
 ### Step 25 — Tests
 
