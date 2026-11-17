@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use super::{diff_pages, head, page, prepare, validate_repeats, Page, Strip, UnitKind, MOCK_STRIP, PORTAL_STRIP};
+use super::{
+    diff_pages, head, page, prepare, validate_repeats, Outcome, Page, Strip, UnitKind, HINT_CHARS, MOCK_STRIP, PORTAL_STRIP,
+};
 use crate::html::{parse, Element};
 
 /// The prepared `.app` of `src` with no strip list.
@@ -341,4 +343,96 @@ fn script_and_style_text_is_never_compared() {
         set(&[r#"frame div.app > p: mock #"var a = 1;" portal #"var b = 2;""#]),
         "the same text outside script and style is compared"
     );
+}
+
+// ---- hints -------------------------------------------------------------------------------
+
+fn outcome(mock: &str, portal: &str) -> Outcome {
+    diff_pages(&page_of(mock), &page_of(portal))
+}
+
+fn tbody(rows: &str) -> String {
+    format!("<table><tbody>{rows}</tbody></table>")
+}
+
+/// The only line of `o` and its hint.
+fn only(o: &Outcome) -> (String, Option<String>) {
+    assert_eq!(o.lines.len(), 1, "{:?}", o.lines);
+    let line = o.lines.iter().next().expect("one line").clone();
+    let hint = o.hints.get(&line).cloned();
+    (line, hint)
+}
+
+/// The hint of a mock-only `row` beside a portal of [`ROW`] only.
+fn row_hint(row: &str) -> Option<String> {
+    only(&outcome(&tbody(&format!("{ROW}{row}")), &tbody(ROW))).1
+}
+
+const RUN_ROW: &str = r#"<tr class="x"><td><span class="mono">m-1</span></td><td><span class="badge">failed</span></td></tr>"#;
+
+#[test]
+fn a_mock_only_row_is_hinted_by_its_badge_then_its_first_cell() {
+    let (line, hint) = only(&outcome(&tbody(&format!("{ROW}{RUN_ROW}")), &tbody(ROW)));
+    assert_eq!(line, format!("frame div.app > table > tbody > tr*: mock-only {}", label_of(RUN_ROW)));
+    assert_eq!(hint.as_deref(), Some("failed · m-1"));
+    // The badge in the first cell is that cell's text too: it is printed once.
+    let badge_first = r#"<tr class="x"><td><span class="badge">failed</span></td><td>m-1</td></tr>"#;
+    assert_eq!(row_hint(badge_first).as_deref(), Some("failed"));
+    // No badge: the first child with text, past an empty checkbox cell.
+    let no_badge = r#"<tr class="x"><td class="cb"></td><td>m-2</td><td>z</td></tr>"#;
+    assert_eq!(row_hint(no_badge).as_deref(), Some("m-2"));
+    let no_text = r#"<tr class="x"><td></td><td><span class="badge"></span></td></tr>"#;
+    assert_eq!(row_hint(no_text), None, "a row with no text has no hint");
+}
+
+#[test]
+fn a_long_hint_is_cut_and_a_quote_becomes_an_apostrophe() {
+    let cell = |text: &str| format!(r#"<tr class="x"><td>{text}</td></tr>"#);
+    let long = row_hint(&cell(&"a".repeat(HINT_CHARS + 1))).expect("a hint");
+    assert_eq!(long, format!("{}…", "a".repeat(HINT_CHARS)));
+    let exact = row_hint(&cell(&"a".repeat(HINT_CHARS))).expect("a hint");
+    assert_eq!(exact, "a".repeat(HINT_CHARS), "exactly the limit is not cut");
+    // Counted in characters, not bytes: 40 two-byte characters fit.
+    let wide = row_hint(&cell(&"é".repeat(HINT_CHARS))).expect("a hint");
+    assert_eq!(wide, "é".repeat(HINT_CHARS));
+
+    let o = outcome(&tbody(&format!("{ROW}{}", cell(r#"say "hi""#))), &tbody(ROW));
+    let (line, hint) = only(&o);
+    assert_eq!(hint.as_deref(), Some("say 'hi'"));
+    // So the printed line, kept in an accept file, parses back to its key.
+    let accepted = crate::accept::parse(&format!("{} | reason", o.shown(&line))).expect("parses");
+    assert_eq!(accepted.keys().collect::<Vec<_>>(), [&line]);
+}
+
+#[test]
+fn rows_of_one_shape_keep_the_first_rows_hint_and_never_split() {
+    let row = |text: &str| format!(r#"<tr class="x"><td>{text}</td></tr>"#);
+    let o = outcome(&tbody(&format!("{ROW}{}{}", row("first"), row("second"))), &tbody(ROW));
+    let (line, hint) = only(&o);
+    assert_eq!(line, format!("frame div.app > table > tbody > tr*: mock-only {}", label_of(&row("first"))));
+    assert_eq!(hint.as_deref(), Some("first"));
+    let swapped = outcome(&tbody(&format!("{ROW}{}{}", row("second"), row("first"))), &tbody(ROW));
+    assert_eq!(only(&swapped).1.as_deref(), Some("second"), "the first in document order");
+}
+
+#[test]
+fn a_portal_only_row_is_hinted_from_the_portal_side() {
+    let (line, hint) = only(&outcome(&tbody(ROW), &tbody(&format!("{ROW}{RUN_ROW}"))));
+    assert_eq!(line, format!("frame div.app > table > tbody > tr*: portal-only {}", label_of(RUN_ROW)));
+    assert_eq!(hint.as_deref(), Some("failed · m-1"));
+}
+
+#[test]
+fn a_positional_line_has_no_hint_and_shown_adds_one_only_when_present() {
+    let note = r#"<p class="note"><span class="badge">new</span><b>Text</b></p>"#;
+    let o = outcome(&format!(r#"<div class="x"><span></span>{note}</div>"#), r#"<div class="x"><span></span></div>"#);
+    let (line, hint) = only(&o);
+    assert_eq!(line, format!("frame div.app > div.x: mock-only {}", label_of(note)));
+    assert_eq!(hint, None, "only a repeat item is hinted");
+    assert!(o.hints.is_empty());
+    assert_eq!(o.shown(&line), line);
+
+    let hinted = outcome(&tbody(&format!("{ROW}{RUN_ROW}")), &tbody(ROW));
+    let (line, _) = only(&hinted);
+    assert_eq!(hinted.shown(&line), format!("{line} (\"failed · m-1\")"));
 }

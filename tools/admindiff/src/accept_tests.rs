@@ -56,3 +56,41 @@ fn the_committed_accept_files_parse() {
     }
     assert!(seen > 0, "no accept file under {}", dir.display());
 }
+
+// ---- printed hints ---------------------------------------------------------------------
+
+#[test]
+fn a_printed_hint_is_not_part_of_the_key() {
+    let entries = parse("x: mock-only tr#ab (\"failed · m-1\") | reason").expect("parses");
+    assert_eq!(entries, BTreeMap::from([("x: mock-only tr#ab".to_string(), "reason".to_string())]));
+}
+
+#[test]
+fn a_suffix_that_is_not_a_printed_hint_is_kept_verbatim() {
+    for diff in [
+        "x: mock-only tr#ab (\"fai\"led\")",
+        "x: mock-only tr#ab (failed)",
+        "frame div.app: mock-only [panel \"A (2)\"]",
+        "mock-only panel \"A (2)\"",
+    ] {
+        let entries = parse(&format!("{diff} | reason")).expect("parses");
+        assert_eq!(entries.keys().collect::<Vec<_>>(), [diff]);
+    }
+}
+
+#[test]
+fn an_entry_and_its_hinted_copy_are_a_duplicate() {
+    assert_eq!(
+        err("x: mock-only tr#ab | one\nx: mock-only tr#ab (\"failed · m-1\") | two\n"),
+        "line 2: duplicate entry x: mock-only tr#ab"
+    );
+}
+
+#[test]
+fn a_hinted_entry_matches_its_difference_whatever_the_hint_reads_now() {
+    let diffs: BTreeSet<String> = BTreeSet::from(["x: mock-only tr#ab".to_string()]);
+    let accept = parse("x: mock-only tr#ab (\"a hint the page no longer prints\") | why").expect("parses");
+    let v = judge(&diffs, &accept);
+    assert_eq!(v.accepted, ["x: mock-only tr#ab"]);
+    assert!(v.unaccepted.is_empty() && v.stale.is_empty());
+}

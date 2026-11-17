@@ -183,3 +183,23 @@ fn run_diff_fails_on_a_repeat_entry_dead_in_the_mockup() {
         "REPEAT entries matching nothing in the mockup: .uptime > i (uptime bars: a bar's class is its sample's tone, which is data)"
     );
 }
+
+/// An accept entry kept with the hint the diff printed still matches once the row's text,
+/// and so its hint, has changed: it is not stale and the difference is accepted.
+#[test]
+fn run_diff_matches_a_hinted_accept_entry_whose_hint_has_changed() {
+    let row = r#"<tr class="x"><td><span class="mono">m-1</span></td><td><span class="badge">failed</span></td></tr>"#;
+    let plain = "<tbody><tr><td></td></tr>";
+    assert!(body(true).contains(plain), "the fixture holds the tbody it extends");
+    let repo = FakeRepo::new("diff-hint", &mock_html(&body(true).replace(plain, &format!("{plain}{row}"))));
+    let dir = crawl_dir("diff-hint-crawl", &portal_html(&body(true)), true);
+    assert!(!run_diff(repo.path(), "index", dir.path(), false).expect("runs"), "the extra mock row is unaccepted");
+
+    let wrapped = crate::html::parse(&format!(r#"<div class="app">{row}</div>"#)).expect("parses");
+    let root = crate::skeleton::prepare(&wrapped, &[], "t").expect("has .app");
+    let label = crate::skeleton::page(&root, false).frame.children[0].label();
+    let key = format!("frame div.app > table > tbody > tr*: mock-only {label}");
+    let accept = repo.path().join("tools/admindiff/accept/index.txt");
+    write(&accept, &format!("{key} (\"done · m-0\") | data difference: test\n"));
+    assert!(run_diff(repo.path(), "index", dir.path(), false).expect("runs"), "the hinted entry accepts the row");
+}
