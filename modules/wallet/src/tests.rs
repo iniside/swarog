@@ -2256,6 +2256,78 @@ fn purge_payload(name: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({ "name": name })).unwrap()
 }
 
+/// A fixed player id that sorts below every random tombstone: one fire claims only the
+/// `WALLET_PLAYERS_PER_FIRE` lowest unswept ids, so a sweep test's own player must be among
+/// them. Each sweep test owns a distinct `n` range.
+fn fixed_player(n: u64) -> String {
+    format!("00000000-0000-0000-0000-{n:012x}")
+}
+
+/// Drops whatever a crashed earlier run left under a fixed id, so the test starts from a
+/// first-ever balance and an absent tombstone.
+async fn clear_fixed_player(pool: &PgPool, player_id: &str) {
+    cleanup(pool, &[player_id], &[]).await;
+    cleanup_purge_row(pool, player_id).await;
+}
+
+// Concurrency is staged, never slept: a racer runs on its OWN pool whose connections carry a
+// unique `application_name`, so a test waits on `pg_stat_activity` until the racer is parked
+// on the lock the test holds, then releases it (the `modules/party` pattern, copied).
+
+fn racer_pool(app: &str) -> PgPool {
+    let options = testdb::dsn()
+        .parse::<sqlx::postgres::PgConnectOptions>()
+        .expect("DATABASE_URL parses")
+        .application_name(app);
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(60))
+        .connect_lazy_with(options)
+}
+
+/// Awaits a spawned racer with a hang guard, so a deadlocked race fails with a name instead
+/// of stalling the run.
+async fn finish<T>(what: &str, handle: tokio::task::JoinHandle<T>) -> T {
+    match tokio::time::timeout(Duration::from_secs(30), handle).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(e)) => panic!("{what} task did not complete: {e}"),
+        Err(_) => panic!("{what} did not finish within 30s"),
+    }
+}
+
+/// Polls observed database state until a backend of `app` is parked on an ADVISORY lock
+/// (`true`), or `racer` finished without ever parking (`false`). The second answer is how an
+/// unserialized racer shows itself; the deadline is a hang guard, not a timing bound.
+async fn wait_advisory_parked<T>(
+    pool: &PgPool,
+    app: &str,
+    racer: &tokio::task::JoinHandle<T>,
+) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let parked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+              WHERE application_name = $1 AND wait_event_type = 'Lock' \
+                AND wait_event = 'advisory'",
+        )
+        .bind(app)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if parked > 0 {
+            return true;
+        }
+        if racer.is_finished() {
+            return false;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "racer {app} neither parked on an advisory lock nor finished"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 /// The tombstone insert is idempotent, and a redelivery after the sweep stamped
 /// `swept_at` must NOT reset it.
 #[tokio::test]
@@ -2297,7 +2369,8 @@ async fn sweep_clears_balances_reassigns_ledger_to_sentinel_key_stays_claimed() 
     let Some(pool) = test_pool().await else { return };
     let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool).await;
-    let pid = unique_player(&pool).await;
+    let pid = fixed_player(0x100);
+    clear_fixed_player(&pool, &pid).await;
     let currency = unique_currency(&pool).await;
     let key = unique_key("sentinel");
 
@@ -2417,4 +2490,268 @@ async fn grant_starter_skips_a_purged_player_on_first_and_redelivered_calls() {
 
     cleanup(&pool, &[&pid], &[&currency]).await;
     cleanup_purge_row(&pool, &pid).await;
+}
+
+// ============================================================================
+// WALLET-01: movements and the purge sweep serialize on one per-player advisory lock.
+// ============================================================================
+
+/// FNV-1a over `prefix` + `body`, the hash shape `wallet_player_lock_key` and storage's
+/// `owner_lock_key` share; recomputed here so the test pins the formula.
+fn fnv1a_key(prefix: &[u8], body: &[u8]) -> i64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in prefix.iter().chain(body.iter()) {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h as i64
+}
+
+/// The advisory key `Store::lock_player_tx` actually takes for `spelling`, read back from
+/// `pg_locks` on the locking connection (a bigint key is split into `classid` high and `objid`
+/// low halves, `objsubid = 1`).
+async fn taken_player_key(pool: &PgPool, svc: &Service, spelling: &str) -> i64 {
+    let mut tx = pool.begin().await.unwrap();
+    svc.store.lock_player_tx(&mut tx, spelling).await.unwrap();
+    let keys: Vec<i64> = sqlx::query_scalar(
+        "SELECT (classid::bigint << 32) | objid::bigint FROM pg_locks \
+          WHERE locktype = 'advisory' AND objsubid = 1 AND pid = pg_backend_pid()",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(keys.len(), 1, "lock_player_tx must hold exactly one advisory lock, got {keys:?}");
+    keys[0]
+}
+
+/// Invariant 2. The key is read back from the lock `lock_player_tx` really takes, not from the
+/// private key function. It is stable (the pinned `wallet.player/` FNV-1a of the 32 lowercase
+/// hex digits), namespaced (differs from storage's `storage.owner/` hash of the same id, so
+/// the two modules never contend), and spelling-invariant across the forms `$1::uuid` treats
+/// as one player (upper case, braces, no hyphens). A different uuid takes a different key.
+#[tokio::test]
+async fn player_lock_key_is_stable_namespaced_and_spelling_invariant() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let canon = "a2b7e8c1-0000-4000-8000-0000000000f1";
+    let hex = canon.replace('-', "");
+
+    let key = taken_player_key(&pool, &svc, canon).await;
+    assert_eq!(key, taken_player_key(&pool, &svc, canon).await, "the key must be stable");
+    assert_eq!(
+        key,
+        fnv1a_key(b"wallet.player/", hex.as_bytes()),
+        "the key must be the wallet.player/ FNV-1a of the normalized uuid"
+    );
+    assert_ne!(
+        key,
+        fnv1a_key(b"storage.owner/", hex.as_bytes()),
+        "wallet keys must not collide with storage's for the same id"
+    );
+    assert_eq!(
+        key,
+        taken_player_key(&pool, &svc, &canon.to_uppercase()).await,
+        "case must not change the key"
+    );
+    assert_eq!(
+        key,
+        taken_player_key(&pool, &svc, &format!("{{{canon}}}")).await,
+        "braces must not change the key"
+    );
+    assert_eq!(key, taken_player_key(&pool, &svc, &hex).await, "hyphenation must not change the key");
+    assert_ne!(
+        key,
+        taken_player_key(&pool, &svc, "a2b7e8c1-0000-4000-8000-0000000000f2").await,
+        "a genuinely different uuid must take a different key"
+    );
+}
+
+/// Race 1, movement first — the once-wrong branch. A FIRST-EVER credit has passed
+/// `apply_on`'s purged guard and written its balance INSERT and ledger row, uncommitted, when
+/// the tombstone commits and a sweep fires. The sweep's DELETE and ledger re-own cannot see
+/// those uncommitted rows, so before the per-player lock the sweep stamped `swept_at`
+/// around them and the movement then committed money under the erased id. Now the sweep
+/// parks on the player's advisory lock until the movement commits, and purges its rows.
+#[tokio::test]
+async fn sweep_waits_for_an_in_flight_first_credit_and_purges_it() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = fixed_player(0x200);
+    clear_fixed_player(&pool, &pid).await;
+    let currency = unique_currency(&pool).await;
+    let key = unique_key("race1");
+
+    let mut movement_tx = pool.begin().await.unwrap();
+    let outcome = svc
+        .apply_on(&mut movement_tx, &movement(&key, &pid, &currency, 100, "test"), 1)
+        .await
+        .unwrap();
+    assert_eq!(outcome, Outcome::Applied(100), "the credit must pass the guard before the tombstone");
+
+    let mut conn = pool.acquire().await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &pid, "Race#0001").await.unwrap();
+    drop(conn);
+    assert_eq!(purge_swept_at(&pool, &pid).await, Some(None), "the tombstone must be committed, unswept");
+
+    let app = format!("wallet-{}", unique_key("race1-sweep"));
+    let sweep = tokio::spawn({
+        let handler = crate::projection::PurgeSweepHandler { svc: svc.clone() };
+        let racer = racer_pool(&app);
+        async move {
+            let mut tx = racer.begin().await.unwrap();
+            let delivery = Delivery { event_id: "wallet:race1", tx: AnyTx::new(&mut *tx) };
+            handler
+                .call(delivery, purge_payload(crate::projection::PURGE_SCHEDULE_NAME))
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+        }
+    });
+    let parked = wait_advisory_parked(&pool, &app, &sweep).await;
+
+    movement_tx.commit().await.unwrap();
+    finish("race-1 sweep", sweep).await;
+
+    assert_eq!(
+        balance_count(&pool, &pid).await,
+        0,
+        "the in-flight credit's balance survived the erasure"
+    );
+    assert_eq!(
+        ledger_owner(&pool, &key).await.as_deref(),
+        Some(crate::store::Store::PURGE_SENTINEL),
+        "the in-flight credit's ledger row must be re-owned to the sentinel"
+    );
+    assert!(purge_swept_at(&pool, &pid).await.flatten().is_some(), "the fire must stamp swept_at");
+    assert!(parked, "the sweep must have parked on the player's advisory lock");
+
+    let _ = sqlx::query("DELETE FROM wallet.ledger WHERE idempotency_key = $1")
+        .bind(&key)
+        .execute(&pool)
+        .await;
+    cleanup(&pool, &[&pid], &[&currency]).await;
+    cleanup_purge_row(&pool, &pid).await;
+}
+
+/// Race 2, sweep first — a LOCK-ORDER check, not a once-wrong branch: the tombstone is
+/// already committed, so even an unlocked credit would answer `PLAYER_DELETED`; without the
+/// per-player lock only the "credit parks" assertion fails. A sweep transaction has locked
+/// and swept the player and not committed; a racer credit must park on that lock, then,
+/// once the sweep commits, return 409 `PLAYER_DELETED` having claimed no key and written no
+/// balance.
+#[tokio::test]
+async fn credit_parks_behind_an_open_sweep_then_answers_player_deleted() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = fixed_player(0x300);
+    clear_fixed_player(&pool, &pid).await;
+    let currency = unique_currency(&pool).await;
+    let key = unique_key("race2");
+
+    let mut conn = pool.acquire().await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &pid, "Race#0002").await.unwrap();
+    drop(conn);
+
+    let mut sweep_tx = pool.begin().await.unwrap();
+    svc.sweep_purged_players(&mut sweep_tx).await.unwrap();
+    let stamped: bool = sqlx::query_scalar(
+        "SELECT swept_at IS NOT NULL FROM wallet.purged_players WHERE player_id = $1::uuid",
+    )
+    .bind(&pid)
+    .fetch_one(&mut *sweep_tx)
+    .await
+    .unwrap();
+    assert!(stamped, "the open sweep must have locked and swept this player");
+
+    let app = format!("wallet-{}", unique_key("race2-credit"));
+    let racer = Arc::new(Service::new(racer_pool(&app), svc.bus.clone(), false));
+    let credit = tokio::spawn({
+        let m = movement(&key, &pid, &currency, 50, "test");
+        async move { racer.credit(m).await }
+    });
+    let parked = wait_advisory_parked(&pool, &app, &credit).await;
+    assert!(parked, "the credit must park on the player's lock while the sweep is open");
+
+    sweep_tx.commit().await.unwrap();
+    let e = finish("race-2 credit", credit).await.unwrap_err();
+    assert_eq!(e.status, Status::Conflict);
+    assert_eq!(e.msg, crate::service::PLAYER_DELETED);
+    assert_eq!(ledger_row_count(&pool, &key).await, 0, "the refused credit must claim no key");
+    assert_eq!(balance_count(&pool, &pid).await, 0, "the refused credit must write no balance");
+
+    cleanup(&pool, &[&pid], &[&currency]).await;
+    cleanup_purge_row(&pool, &pid).await;
+}
+
+/// Invariant 3: one fire claims and locks at most 64 players. With 65 of this test's own
+/// lowest-sorting tombstones, one fire stamps exactly the 64 lowest and leaves the 65th for
+/// the next fire. The counts are literal, not derived from `WALLET_PLAYERS_PER_FIRE`, so
+/// raising the claim limit or restoring a batch loop turns this red. The sweep's 5s budget
+/// is far above 64 players' few statements each, so it does not stop this fire early.
+#[tokio::test]
+async fn one_sweep_fire_stamps_at_most_64_players() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool).await;
+    // The LOWEST fixed range, below the race tests' ids: a sibling that failed mid-race and
+    // left its tombstone unswept must not sort among these.
+    let ids: Vec<String> = (0x01..0x01 + 65).map(fixed_player).collect();
+    clear_tombstones(&pool, &ids).await;
+
+    let mut conn = pool.acquire().await.unwrap();
+    for (i, id) in ids.iter().enumerate() {
+        svc.store.plant_purged_player_tx(&mut conn, id, &format!("Cap#{i:04}")).await.unwrap();
+    }
+    drop(conn);
+    let foreign_below: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM wallet.purged_players \
+          WHERE swept_at IS NULL AND player_id <= $1::uuid AND NOT player_id = ANY($2::uuid[])",
+    )
+    .bind(ids.last().unwrap())
+    .bind(&ids)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(foreign_below, 0, "a foreign unswept tombstone sorts among this test's ids");
+
+    let mut tx = pool.begin().await.unwrap();
+    svc.sweep_purged_players(&mut tx).await.unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        unstamped_tombstones(&pool, &ids).await,
+        vec![ids[64].clone()],
+        "one fire must stamp exactly the 64 lowest of 65 tombstones"
+    );
+
+    let mut tx2 = pool.begin().await.unwrap();
+    svc.sweep_purged_players(&mut tx2).await.unwrap();
+    tx2.commit().await.unwrap();
+    assert!(
+        unstamped_tombstones(&pool, &ids).await.is_empty(),
+        "the next fire must resume and stamp the last one"
+    );
+
+    clear_tombstones(&pool, &ids).await;
+}
+
+async fn clear_tombstones(pool: &PgPool, ids: &[String]) {
+    sqlx::query("DELETE FROM wallet.purged_players WHERE player_id = ANY($1::uuid[])")
+        .bind(ids)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn unstamped_tombstones(pool: &PgPool, ids: &[String]) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT player_id::text FROM wallet.purged_players \
+          WHERE player_id = ANY($1::uuid[]) AND swept_at IS NULL ORDER BY player_id",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await
+    .unwrap()
 }
