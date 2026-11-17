@@ -130,26 +130,38 @@
   }
 
   // ---------- panels ----------
+  // Marks the button and refetches its slot. A swap replaces the button; a failed
+  // request swaps nothing, and `resetRetries` restores the marked button then.
   function retry(btn) {
     var slot = btn.closest(".slot");
     if (!slot || !slot.dataset.panelUrl || !window.htmx) return;
-    btn.disabled = true;
     var label = btn.querySelector("span");
-    var idle = label ? label.textContent : "";
-    if (label) label.textContent = "Retrying…";
-    // A swap replaces the button. A transport failure (network error, timeout, abort)
-    // swaps nothing and rejects the promise, so the still-attached button is reset then
-    // only: htmx also resolves at once when it queues the retry behind a request already
-    // in flight on this slot, and that request will still swap.
-    function settle() {
-      if (!btn.isConnected) return;
-      btn.disabled = false;
-      if (label) label.textContent = idle;
+    btn.disabled = true;
+    btn.dataset.retrying = "";
+    if (label) {
+      btn.dataset.label = label.textContent;
+      label.textContent = "Retrying…";
     }
     // Synced on its own slot, as in refreshPanels, so retries of other panels never wait
     // in one queue.
-    htmx.ajax("GET", slot.dataset.panelUrl, { source: slot, target: slot, swap: "outerHTML" })
-      .catch(settle);
+    htmx.ajax("GET", slot.dataset.panelUrl, { source: slot, target: slot, swap: "outerHTML" });
+  }
+
+  // On `htmx:sendError`, `htmx:timeout` or `htmx:sendAbort` (a request that got no
+  // response, fired on the element that issued it, here the slot), every button inside
+  // that element still marked by `retry` is enabled again with its label restored. This
+  // covers whichever request on the slot fails, a retry or one it was queued behind.
+  function resetRetries(ev) {
+    var el = ev.target;
+    if (!el || !el.querySelectorAll) return;
+    el.querySelectorAll("[data-retrying]").forEach(function (btn) {
+      if (!btn.isConnected) return;
+      btn.disabled = false;
+      var label = btn.querySelector("span");
+      if (label && "label" in btn.dataset) label.textContent = btn.dataset.label;
+      delete btn.dataset.retrying;
+      delete btn.dataset.label;
+    });
   }
 
   // Refetches every loaded panel on the page. A slot still loading has no
@@ -424,6 +436,10 @@
       closePop();
       focusModal();
     }
+  });
+
+  ["htmx:sendError", "htmx:timeout", "htmx:sendAbort"].forEach(function (name) {
+    document.addEventListener(name, resetRetries);
   });
 
   document.addEventListener("htmx:afterSettle", countAttention);
