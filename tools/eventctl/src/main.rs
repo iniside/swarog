@@ -46,8 +46,10 @@ USAGE:
 
 Retry, pause, resume and skip refuse a retired subscription.
 
-seed-mockup needs events in the log (run demoseed first) and resets both rows from
-any state, retired included. No process consumes them. They hold the topic's
+seed-mockup needs at least two events on the busiest topic (run demoseed first) and
+resets both rows from any state, retired included. The lagging row reads the topic
+from its first event; the paused row's poison event is the topic's middle event, so
+its lag is below the lagging row's. No process consumes them. They hold the topic's
 retention floor until retired or the database is wiped.
 
 Connection: DATABASE_URL (default local dev DSN).";

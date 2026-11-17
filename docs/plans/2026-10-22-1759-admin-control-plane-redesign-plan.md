@@ -1719,6 +1719,13 @@ model tokens. Step 10's cost came from:
        (`start_kind` `genesis`, `spec_hash` `<topic>|v<n>|genesis`).
      - The lagging row carries 3 failures and a `last_error`, because only an active row
        with failures gets the warn badge.
+     - The paused row's cursor is not genesis. It sits on the event just before the
+       stream's middle event, so `poison_event` returns that middle event and the paused
+       row's lag is strictly below the lagging row's, as in the mockup (118 against 273).
+       With equal lag, the Max lag tile named the paused row and showed an Err delta
+       where the mockup shows the lagging row's warn delta. The seed therefore needs at
+       least two events on the stream and refuses a one-event stream as it refuses an
+       empty log.
 
 This revision also changes the port template (b → `[sonnet]` mockup-implementer under
 item 4; checklist first), Step 12 (use `admindiff crawl` against the split) and Step 27

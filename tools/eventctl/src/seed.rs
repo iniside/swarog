@@ -7,10 +7,14 @@
 //! `retire` on them is harmless, and the next `seed-mockup` resets them again.
 //!
 //! Both rows read the `(topic, contract_version)` stream with the most events in the
-//! log from its first event (the genesis cursor), so the paused row's poison panel
-//! shows a real event and the lagging row's lag counts every event of that stream
-//! still retained at seed time. Like any live subscription they hold the topic's
-//! retention floor until retired or wiped.
+//! log. The lagging row reads it from its first event (the genesis cursor), so its lag
+//! counts every event of that stream still retained at seed time. The paused row's
+//! cursor sits on the event just before the stream's middle event, so the poison panel
+//! shows that middle event and the paused row's lag is strictly below the lagging
+//! row's, as in the mockup (lag 118 against 273, `UILayout/redesign/assets/data.js`),
+//! which makes the Max lag tile name the lagging row. That needs at least two events
+//! on the stream; fewer is an error. Like any live subscription both rows hold the
+//! topic's retention floor until retired or wiped.
 //!
 //! The SQL lives here, not in `asyncevents::admin`: these are demo fixtures, not
 //! operator operations.
@@ -39,16 +43,17 @@ const LAGGING_FAILURES: i32 = 3;
 /// leaves a failing row without an error, so neither does the seed.
 const LAGGING_ERROR: &str = "wallet-svc is unavailable";
 
-/// Sets every column, so a run resets a row from any state, retired included. The
-/// cursor is the genesis position, which sorts before every real event, and
-/// `spec_hash` / `start_kind` are what `asyncevents` writes for a genesis
-/// subscription (`SubEntry::spec_hash` in `core/asyncevents/src/transport.rs`).
+/// Sets every column, so a run resets a row from any state, retired included. `$7..$9`
+/// bind the cursor `(generation, xid, tie)`. `spec_hash` / `start_kind` are what
+/// `asyncevents` writes for a genesis subscription (`SubEntry::spec_hash` in
+/// `core/asyncevents/src/transport.rs`); they describe where the subscription started,
+/// not where its cursor is, so the paused row keeps them too.
 const UPSERT: &str = "\
 INSERT INTO asyncevents.subscriptions \
     (subscription_id, topic, contract_version, state, \
      cursor_generation, cursor_xid, cursor_tie, next_attempt_at, consecutive_failures, \
      last_error, spec_hash, start_kind, updated_at) \
-VALUES ($1, $2, $3, $4, 0, '0'::xid8, 0, NULL, $5, $6, $7, 'genesis', now()) \
+VALUES ($1, $2, $3, $4, $7, $8::xid8, $9, NULL, $5, $6, $10, 'genesis', now()) \
 ON CONFLICT (subscription_id) DO UPDATE SET \
     topic = EXCLUDED.topic, contract_version = EXCLUDED.contract_version, \
     state = EXCLUDED.state, cursor_generation = EXCLUDED.cursor_generation, \
@@ -67,7 +72,9 @@ pub struct Seeded {
 
 /// Upserts both rows in one transaction onto the `(topic, contract_version)` stream
 /// with the most events (ties broken by name). Lag and the poison event match on the
-/// version too, so the version is chosen with the topic. Errors on an empty log.
+/// version too, so the version is chosen with the topic. Errors on an empty log and on
+/// a busiest stream of one event, where no cursor gives the paused row a lag strictly
+/// below the lagging row's.
 pub async fn seed_mockup(pool: &PgPool) -> Result<Seeded> {
     let mut tx = pool.begin().await.context("eventctl: begin seed-mockup tx")?;
     let seeded = seed_mockup_on(&mut tx).await?;
@@ -90,12 +97,40 @@ pub async fn seed_mockup_on(conn: &mut PgConnection) -> Result<Seeded> {
     let Some((topic, version, events)) = busiest else {
         bail!("eventctl: seed-mockup: the event log is empty; run demoseed first");
     };
+    if events < 2 {
+        bail!(
+            "eventctl: seed-mockup: the busiest stream {topic} v{version} has {events} event; \
+             the paused row needs one event before its poison event, so run demoseed first"
+        );
+    }
+
+    // The paused row's poison event is the stream's middle event (0-based index
+    // `events / 2`, at least 1). Its cursor is the position of the event just before
+    // it, in the plane's own `(generation, producer_xid, tie_breaker)` order, so
+    // `poison_event`'s `>` comparison returns the middle event and the lag counts it
+    // and every event after it. The alias must not equal the column name: a bare
+    // ORDER BY prefers the output alias (text sort) over the xid8 column.
+    let (pg, px, pt): (i64, String, i64) = sqlx::query_as(
+        "SELECT generation, producer_xid::text AS producer_xid_text, tie_breaker \
+         FROM asyncevents.events \
+         WHERE topic = $1 AND contract_version = $2 \
+         ORDER BY generation, producer_xid, tie_breaker \
+         OFFSET $3 LIMIT 1",
+    )
+    .bind(&topic)
+    .bind(version)
+    .bind(events / 2 - 1)
+    .fetch_one(&mut *conn)
+    .await
+    .context("eventctl: find the paused row's cursor")?;
+
     let spec_hash = format!("{topic}|v{version}|genesis");
     let rows = [
-        (PAUSED_ID, "paused", PAUSED_FAILURES, PAUSED_ERROR),
-        (LAGGING_ID, "active", LAGGING_FAILURES, LAGGING_ERROR),
+        (PAUSED_ID, "paused", PAUSED_FAILURES, PAUSED_ERROR, (pg, px, pt)),
+        // The genesis position, which sorts before every real event.
+        (LAGGING_ID, "active", LAGGING_FAILURES, LAGGING_ERROR, (0, "0".to_string(), 0)),
     ];
-    for (id, state, failures, error) in rows {
+    for (id, state, failures, error, (cg, cx, ct)) in rows {
         sqlx::query(UPSERT)
             .bind(id)
             .bind(&topic)
@@ -103,6 +138,9 @@ pub async fn seed_mockup_on(conn: &mut PgConnection) -> Result<Seeded> {
             .bind(state)
             .bind(failures)
             .bind(error)
+            .bind(cg)
+            .bind(&cx)
+            .bind(ct)
             .bind(&spec_hash)
             .execute(&mut *conn)
             .await

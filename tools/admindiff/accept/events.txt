@@ -3,7 +3,6 @@
 # matches no difference fails the diff. A reason names its kind: data difference, not
 # ported yet, template choice, contract gap, or a declared deviation (Dn in the plan).
 frame div.app > aside.sidebar > div.sidebar-foot > div.me: portal-only form#a96e26 | template choice: shell.html.tmpl puts the Sign out form in the sidebar foot; the mockup has no session
-frame div.app > aside.sidebar > nav.nav > div.nav-section > a.active.nav-item: mock-only span.alert.count | data difference: the paused counter shows only while a subscription is paused, and none is
 frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item#848c49 | not ported yet: the Mail outbox nav entry (with its warn count) arrives with the mail port
 frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item#ecbb9a | not ported yet: the API keys, Scheduler, Config and Audit nav entries arrive with their ports
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#1089c4 | not ported yet: the Lore section; no Lore module exists
@@ -11,18 +10,10 @@ frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#5694ed | not 
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#ba7b3e | declared deviation D3: no Design-system nav section
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#fd03b0 | not ported yet: the Players section arrives with the accounts port
 frame div.app > header.topbar: portal-only button.top-btn#255bc4 | template choice: shell.html.tmpl puts the theme toggle in the topbar; the mockup's sits in the devbar, which D3 drops
-panel "Paused" section.panel > div.panel-body: mock-only div.code | data difference: no subscription is paused, so the panel shows its empty state
-panel "Paused" section.panel > div.panel-body: mock-only div.row#818b9f | data difference: no subscription is paused, so the panel shows its empty state
-panel "Paused" section.panel > div.panel-body: mock-only dl.props#86f087 | data difference: no subscription is paused, so the panel shows its empty state
-panel "Paused" section.panel > div.panel-body: portal-only div.state#b2a633 | data difference: the panel's empty state, as no subscription is paused
-panel "Paused" section.panel > div.panel-head > span.panel-title: mock-only span.mono | data difference: the heading names the paused subscription, and none is paused
-panel "Paused" section.panel > div.panel-head: mock-only span.panel-meta | data difference: the meta is the pause time, and none is paused
-panel "Paused" section.panel: mock-only div.banner.err#1e8aec | data difference: the banner reports the paused consumer, and none is paused
 panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-toolbar: mock-only span.input-icon#1fe724 | template choice: the table macro's search box is the form.input-icon of the next entry
 panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-toolbar: portal-only form.input-icon#958dce | template choice: the table macro's search box is an hx-get form; .input-icon is display:inline-flex, so it renders as the span does
 panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr* > tr > td.num: mock span.mono.muted portal span.mono | contract gap: no CellKind gives a muted mono value, so the Head cell is not muted
+panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr* > tr.sel > td.num: mock span.mono.muted portal span.mono | contract gap: no CellKind gives a muted mono value, so the Head cell is not muted
 panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr*: mock tr portal tr.clickable | template choice: a row with an entity links to its entity page (primitives.html.tmpl table rows)
-panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr*: mock-only tr#843b36 | data difference: the mock's lagging row (warn badge and lag bar); no subscription is lagging
-panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr*: mock-only tr.sel#d21f3b | data difference: the mock highlights the paused row, and none is paused
+panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr*: mock tr.sel portal tr.clickable.sel | template choice: a row with an entity links to its entity page (primitives.html.tmpl table rows)
 tile "Max lag" a.panel > div.kpi > div.kpi-delta: mock-only span.bad-up | data difference: the delta is toned by the top subscription's own lag, which is below warn on this fleet
-tile "Max lag" a.panel > div.kpi > div.kpi-delta: portal-only span.flat | data difference: the delta is toned by the top subscription's own lag, which is below warn on this fleet
