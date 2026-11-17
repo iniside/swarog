@@ -138,7 +138,9 @@
     var idle = label ? label.textContent : "";
     if (label) label.textContent = "Retrying…";
     // A swap replaces the button. A transport failure (network error, timeout, abort)
-    // swaps nothing and rejects the promise, so the still-attached button is reset.
+    // swaps nothing and rejects the promise, so the still-attached button is reset then
+    // only: htmx also resolves at once when it queues the retry behind a request already
+    // in flight on this slot, and that request will still swap.
     function settle() {
       if (!btn.isConnected) return;
       btn.disabled = false;
@@ -147,7 +149,7 @@
     // Synced on its own slot, as in refreshPanels, so retries of other panels never wait
     // in one queue.
     htmx.ajax("GET", slot.dataset.panelUrl, { source: slot, target: slot, swap: "outerHTML" })
-      .then(settle, settle);
+      .catch(settle);
   }
 
   // Refetches every loaded panel on the page. A slot still loading has no
