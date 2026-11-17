@@ -240,6 +240,10 @@ impl Service {
         sign: i64,
     ) -> Result<Outcome, Error> {
         validate_movement(m)?;
+        self.store
+            .lock_player_tx(conn, &m.player_id)
+            .await
+            .map_err(movement_error)?;
         if self
             .store
             .is_player_purged_tx(conn, &m.player_id)
