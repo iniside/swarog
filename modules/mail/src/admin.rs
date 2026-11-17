@@ -588,3 +588,7 @@ impl Provider for MailAdmin {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "admin_tests.rs"]
+mod tests;

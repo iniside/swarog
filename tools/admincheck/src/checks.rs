@@ -359,3 +359,7 @@ fn dialled_peers(portal: &ProcessControlPlane, split: &[ProcessControlPlane], ou
         }
     }
 }
+
+#[cfg(test)]
+#[path = "checks_tests.rs"]
+mod tests;
