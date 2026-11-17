@@ -273,6 +273,100 @@ fn golden_diff_shows_only_the_first_differing_run() {
     assert_eq!(diff, "--- golden\n+++ render\n@@ -19,5 +19,5 @@\n <l18>\n <l19>\n-<l20>\n+<L20>\n <l21>\n <l22>\n");
 }
 
+/// The ids of a serialized `ActionItem` list.
+fn action_ids(actions: &serde_json::Value) -> Vec<&str> {
+    actions.as_array().expect("an action list").iter().map(|a| a["id"].as_str().expect("an action id")).collect()
+}
+
+/// What the WorkQueue table contract and `TableView.page_label` hand the templates. Until
+/// Step 11 part b draws these fields the goldens of the same cases cannot see them, so this
+/// pins the view model itself; the attempts bar and the row/tool split are drawn already,
+/// and are pinned here as well as in the goldens.
+#[test]
+fn queue_and_table_views_carry_the_work_queue_table_contract() {
+    let view = queue_table_contract_case().view();
+    let q = &view["body"];
+    assert_eq!(q["type"], "Queue");
+    assert_eq!(q["item_label"], "Message");
+    assert_eq!(
+        q["columns"],
+        serde_json::json!([
+            {"label": "To", "num": false},
+            {"label": "Account", "num": false},
+            {"label": "Template", "num": false},
+            {"label": "Size", "num": true},
+        ])
+    );
+    assert_eq!(q["selectable"], true);
+    assert_eq!(q["toolbar"], true);
+    assert_eq!(q["search_placeholder"], "Recipient, template or message id");
+    assert_eq!(q["q"], "anna");
+    assert_eq!(q["search_url"], "/admin/_panel/golden/panel?template=welcome");
+    assert_eq!(q["filters"], serde_json::json!([{"label": "Template", "value": "welcome"}]));
+    assert_eq!(q["foot"], true);
+    assert_eq!(q["total"], "3 of 309 messages");
+    assert_eq!(q["size"], 25);
+    assert_eq!(q["next_url"], "/admin/_panel/golden/panel?q=anna&template=welcome&cursor=c2");
+    assert_eq!(q["page_label"], "1 / 13");
+    let items = q["items"].as_array().expect("queue items");
+    let cells = &items[0]["cells"];
+    assert_eq!(cells[0]["cell"]["kind"], "user");
+    assert_eq!(cells[0]["cell"]["href"], "/admin/p/mail/outbox?q=anna%40example.com&state=pending");
+    assert_eq!(cells[1]["cell"]["kind"], "ref");
+    assert_eq!(cells[1]["cell"]["href"], "/admin/e/account/a-17");
+    assert_eq!(cells[2]["cell"]["value"], "welcome");
+    let nums: Vec<bool> =
+        cells.as_array().expect("cells").iter().map(|c| c["num"].as_bool().expect("a num flag")).collect();
+    assert_eq!(nums, [false, false, false, true]);
+    // Five squares whatever `max_attempts` says (2, 8 and 1 here); the title keeps the count.
+    assert_eq!(items[0]["attempts"], serde_json::json!(["f", "", "", "", ""]));
+    assert_eq!(items[1]["attempts"], serde_json::json!(["f", "f", "f", "f", "f"]));
+    assert_eq!(items[1]["attempts_title"], "7 attempts");
+    assert_eq!(items[2]["attempts"], serde_json::json!(["ok", "", "", "", ""]));
+    assert_eq!(action_ids(&items[0]["actions"]), ["cancel"]);
+    assert_eq!(action_ids(&items[1]["actions"]), ["retry", "cancel"]);
+    assert!(action_ids(&items[2]["actions"]).is_empty());
+    assert!(action_ids(&view["tools"]).is_empty(), "a QueueRow action is never a panel tool");
+
+    let view = queue_panel_tool_case().view();
+    assert_eq!(action_ids(&view["tools"]), ["pause"], "a PanelTool on a WorkQueue draws in the panel tools");
+    assert_eq!(view["tools"][0]["queue_row"], false);
+    assert_eq!(view["tools"][0]["enabled"], false);
+    let item = &view["body"]["items"][0];
+    assert_eq!(action_ids(&item["actions"]), ["cancel"], "an item never draws a PanelTool it lists");
+    assert_eq!(item["actions"][0]["queue_row"], true);
+
+    let view = queue_later_page_case().view();
+    let q = &view["body"];
+    assert_eq!(q["page_label"], serde_json::Value::Null, "a cursor does not say how far in it is");
+    assert_eq!(q["next_url"], serde_json::Value::Null);
+    assert_eq!(q["total"], "2 of 27 jobs");
+    assert_eq!(q["foot"], true);
+    assert_eq!(q["toolbar"], false);
+    assert_eq!(q["selectable"], false);
+    assert_eq!(q["item_label"], "Job");
+    let view = queue_items_actions_case().view();
+    assert_eq!(view["body"]["total"], "2 jobs");
+    assert_eq!(view["body"]["page_label"], "1 / 1");
+    let empty = PanelCase::new(PanelState::Empty, Some(body(Primitive::WorkQueue(work_queue("pending", Vec::new())))));
+    assert_eq!(empty.view()["body"]["foot"], false);
+
+    let page_label = |case: PanelCase| case.view()["body"]["page_label"].clone();
+    assert_eq!(page_label(table_first_page_case()), "1 / 50");
+    assert_eq!(
+        page_label(PanelCase { query: posted(&[("cursor", "c2")]), ..table_first_page_case() }),
+        serde_json::Value::Null
+    );
+    let rows = || vec![player_row("p-1001", "12", "active", false)];
+    let table = |total: Option<u64>, next: Option<&str>| {
+        PanelCase::new(PanelState::Ok, Some(body(players_table(rows(), total, next))))
+    };
+    assert_eq!(page_label(table(None, Some("c2"))), serde_json::Value::Null, "an unknown total with more pages");
+    assert_eq!(page_label(table(None, None)), "1 / 1");
+    assert_eq!(page_label(table(Some(0), None)), "1 / 1");
+    assert_eq!(page_label(table(Some(26), Some("c2"))), "1 / 2");
+}
+
 // ---- view-model builders -----------------------------------------------------------
 
 fn cell(kind: CellKind, value: &str) -> Cell {
@@ -415,6 +509,16 @@ impl PanelCase {
     }
 
     fn render(&self, env: &Environment<'_>) -> Result<String, minijinja::Error> {
+        self.with_view(|view| render::fragment(env, "primitives.html", "panel_fragment", view))
+    }
+
+    /// The case's `render::panel` view model as JSON: what the template is handed, including
+    /// the fields no template draws yet.
+    fn view(&self) -> serde_json::Value {
+        self.with_view(|view| serde_json::to_value(view).expect("a panel view serializes"))
+    }
+
+    fn with_view<T>(&self, f: impl FnOnce(&render::PanelRender) -> T) -> T {
         let path = format!("/admin/_panel/{MODULE}/{CONTRIBUTION}");
         let no_errors = BTreeMap::new();
         let input = PanelInput {
@@ -446,7 +550,7 @@ impl PanelCase {
                 locked: false,
             }),
         };
-        render::fragment(env, "primitives.html", "panel_fragment", &render::panel(&input))
+        f(&render::panel(&input))
     }
 }
 
@@ -562,6 +666,258 @@ fn profile_form() -> FormSpec {
 
 fn posted(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+}
+
+fn player_cell(id: &str) -> Cell {
+    Cell { link: Some(Link::Entity(entity("player", id))), ..cell(CellKind::User, id) }
+}
+
+/// The players `DataTable` of the `table_*` cases.
+fn players_table(rows: Vec<Row>, total: Option<u64>, next: Option<&str>) -> Primitive {
+    Primitive::DataTable(DataTable {
+        columns: vec![
+            column("player", "Player", Align::Left),
+            column("level", "Level", Align::Right),
+            column("status", "Status", Align::Left),
+        ],
+        rows,
+        page: PageInfo { next_cursor: next.map(str::to_string), size: 25, total },
+        filters: vec![FilterDef {
+            key: "status".to_string(),
+            label: "Status".to_string(),
+            kind: FilterKind::Enum(strings(&["active", "banned"])),
+        }],
+        search_placeholder: Some("Search players".to_string()),
+        selectable: true,
+        list_columns_for: None,
+    })
+}
+
+fn player_row(id: &str, level: &str, status: &str, highlight: bool) -> Row {
+    Row {
+        entity: Some(entity("player", id)),
+        cells: vec![player_cell(id), cell(CellKind::Number, level), cell(CellKind::Badge, status)],
+        highlight,
+    }
+}
+
+/// A first page of 1,234 players, 25 a page: the pager reads `"1 / 50"`.
+fn table_first_page_case() -> PanelCase {
+    PanelCase::new(
+        PanelState::Ok,
+        Some(body(players_table(
+            vec![player_row("p-1001", "12", "active", false), player_row("p-1002", "40", "banned", false)],
+            Some(1234),
+            Some("c2"),
+        ))),
+    )
+}
+
+/// `d` bound to each `QueueItem` of [`CONTRIBUTION`] that lists it.
+fn queue_row(d: ActionDecl) -> ActionDecl {
+    ActionDecl { point: ActionPoint::QueueRow(CONTRIBUTION.to_string()), ..d }
+}
+
+fn queue_states() -> Vec<QueueState> {
+    vec![
+        QueueState { key: "pending".to_string(), label: "Pending".to_string(), count: 12, tone: None },
+        QueueState { key: "failed".to_string(), label: "Failed".to_string(), count: 3, tone: Some(Tone::Err) },
+        QueueState { key: "sent".to_string(), label: "Sent".to_string(), count: 1204, tone: Some(Tone::Ok) },
+    ]
+}
+
+fn queue_item(id: &str, state: &str, attempts: u32, max_attempts: u32, actions: &[&str]) -> QueueItem {
+    QueueItem {
+        id: id.to_string(),
+        entity: None,
+        state: state.to_string(),
+        attempts,
+        max_attempts,
+        next_attempt_at: None,
+        last_error: None,
+        payload_preview: None,
+        actions: strings(actions),
+        cells: Vec::new(),
+    }
+}
+
+/// A queue with no extra column, toolbar, selection or page beyond the one shown.
+fn work_queue(selected: &str, items: Vec<QueueItem>) -> WorkQueue {
+    WorkQueue {
+        states: queue_states(),
+        selected: selected.to_string(),
+        items,
+        item_label: "Job".to_string(),
+        item_noun: "jobs".to_string(),
+        columns: Vec::new(),
+        page: PageInfo { next_cursor: None, size: 25, total: None },
+        filters: Vec::new(),
+        search_placeholder: None,
+        selectable: false,
+    }
+}
+
+fn retry_decl() -> ActionDecl {
+    decl("retry", "Retry", "refresh", Then::Invoke)
+}
+
+fn drop_decl() -> ActionDecl {
+    ActionDecl { danger: true, ..decl("drop", "Drop", "trash", Then::Confirm(confirm("Drop job?", ConfirmTone::Danger))) }
+}
+
+/// `QueueRow` actions on each item: the first non-danger one labelled, the rest ghost icons.
+fn queue_items_actions_case() -> PanelCase {
+    let park = decl("park", "Park", "park", Then::Invoke);
+    PanelCase {
+        actions: vec![tool(&queue_row(retry_decl())), tool(&queue_row(drop_decl())), tool(&queue_row(park))],
+        ..PanelCase::new(
+            PanelState::Ok,
+            Some(body(Primitive::WorkQueue(work_queue(
+                "failed",
+                vec![
+                    QueueItem {
+                        entity: Some(entity("player", "p-1001")),
+                        last_error: Some("timeout after 30s".to_string()),
+                        payload_preview: Some(r#"{"amount":5}"#.to_string()),
+                        ..queue_item("job-81", "failed", 3, 5, &["drop", "retry"])
+                    },
+                    QueueItem {
+                        next_attempt_at: Some("2026-10-21 10:00".to_string()),
+                        ..queue_item("job-82", "sent", 2, 5, &["park", "retry"])
+                    },
+                ],
+            )))),
+        )
+    }
+}
+
+/// A `PanelTool` and a `QueueRow` action on one WorkQueue panel, both listed by the item and
+/// both handed over by `routes::panel_tools`: the tool draws in the panel head only, the row
+/// action on the item only.
+fn queue_panel_tool_case() -> PanelCase {
+    let manifest = Manifest {
+        module: MODULE.to_string(),
+        actions: vec![
+            ActionDecl { implemented: false, ..decl("pause", "Pause sending", "pause", Then::Invoke) },
+            queue_row(ActionDecl {
+                danger: true,
+                ..decl("cancel", "Cancel", "x", Then::Confirm(confirm("Cancel message?", ConfirmTone::Danger)))
+            }),
+        ],
+        writes: true,
+        ..Manifest::default()
+    };
+    PanelCase {
+        actions: routes::panel_tools(&operator(Role::Admin), CSRF, MODULE, &manifest, CONTRIBUTION),
+        ..PanelCase::new(
+            PanelState::Ok,
+            Some(body(Primitive::WorkQueue(work_queue(
+                "pending",
+                vec![queue_item("job-90", "pending", 0, 5, &["pause", "cancel"])],
+            )))),
+        )
+    }
+}
+
+/// The mail outbox's table contract on a first page searched and filtered by URL: extra
+/// columns with per-item cells, a selectable column, the toolbar, the foot, and attempts
+/// counts below, at and above the fixed 5-square bar.
+fn queue_table_contract_case() -> PanelCase {
+    let to = |email: &str, state: &str| Cell {
+        link: Some(Link::Page {
+            module: "mail".to_string(),
+            page: "outbox".to_string(),
+            params: BTreeMap::from([
+                ("q".to_string(), email.to_string()),
+                ("state".to_string(), state.to_string()),
+            ]),
+        }),
+        ..cell(CellKind::User, email)
+    };
+    let account = |id: &str| Cell { link: Some(Link::Entity(entity("account", id))), ..cell(CellKind::Ref, id) };
+    let cancel = queue_row(ActionDecl {
+        danger: true,
+        ..decl("cancel", "Cancel", "x", Then::Confirm(confirm("Cancel message?", ConfirmTone::Danger)))
+    });
+    let with_cells = |item: QueueItem, cells: Vec<Cell>| QueueItem { cells, ..item };
+    PanelCase {
+        query: posted(&[("q", "anna"), ("template", "welcome")]),
+        search: Some("anna"),
+        actions: vec![tool(&queue_row(retry_decl())), tool(&cancel)],
+        ..PanelCase::new(
+            PanelState::Ok,
+            Some(body(Primitive::WorkQueue(WorkQueue {
+                item_label: "Message".to_string(),
+                item_noun: "messages".to_string(),
+                columns: vec![
+                    column("to", "To", Align::Left),
+                    column("account", "Account", Align::Left),
+                    column("template", "Template", Align::Left),
+                    column("size", "Size", Align::Right),
+                ],
+                page: PageInfo { next_cursor: Some("c2".to_string()), size: 25, total: Some(309) },
+                filters: vec![FilterDef {
+                    key: "template".to_string(),
+                    label: "Template".to_string(),
+                    kind: FilterKind::Text,
+                }],
+                search_placeholder: Some("Recipient, template or message id".to_string()),
+                selectable: true,
+                ..work_queue(
+                    "pending",
+                    vec![
+                        with_cells(
+                            queue_item("msg-1001", "pending", 1, 2, &["cancel"]),
+                            vec![
+                                to("anna@example.com", "pending"),
+                                account("a-17"),
+                                cell(CellKind::Text, "welcome"),
+                                cell(CellKind::Bytes, "2 KB"),
+                            ],
+                        ),
+                        with_cells(
+                            QueueItem {
+                                last_error: Some("421 throttled".to_string()),
+                                ..queue_item("msg-1002", "failed", 7, 8, &["retry", "cancel"])
+                            },
+                            vec![
+                                to("anna.k@example.com", "failed"),
+                                account("a-18"),
+                                cell(CellKind::Text, "welcome"),
+                                cell(CellKind::Bytes, "3 KB"),
+                            ],
+                        ),
+                        with_cells(
+                            queue_item("msg-1003", "sent", 1, 1, &[]),
+                            vec![
+                                to("annette@example.com", "sent"),
+                                account("a-19"),
+                                cell(CellKind::Text, "welcome"),
+                                cell(CellKind::Bytes, "1 KB"),
+                            ],
+                        ),
+                    ],
+                )
+            }))),
+        )
+    }
+}
+
+/// A page past the first: no `"1 / N"`, no next page, the count against the state's total.
+fn queue_later_page_case() -> PanelCase {
+    PanelCase {
+        query: posted(&[("cursor", "c2")]),
+        ..PanelCase::new(
+            PanelState::Ok,
+            Some(body(Primitive::WorkQueue(WorkQueue {
+                page: PageInfo { next_cursor: None, size: 25, total: Some(27) },
+                ..work_queue(
+                    "pending",
+                    vec![queue_item("job-26", "pending", 0, 5, &[]), queue_item("job-27", "pending", 0, 5, &[])],
+                )
+            }))),
+        )
+    }
 }
 
 // ---- cases ---------------------------------------------------------------------
@@ -885,31 +1241,6 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel("services_two_columns_value_label", PanelCase::new(PanelState::Ok, Some(body(services(5, 2, Some("lag"))))));
 
     // ---- DataTable ----
-    let player_cell = |id: &str| Cell { link: Some(Link::Entity(entity("player", id))), ..cell(CellKind::User, id) };
-    let table = |rows: Vec<Row>, total: Option<u64>, next: Option<&str>| {
-        Primitive::DataTable(DataTable {
-            columns: vec![
-                column("player", "Player", Align::Left),
-                column("level", "Level", Align::Right),
-                column("status", "Status", Align::Left),
-            ],
-            rows,
-            page: PageInfo { next_cursor: next.map(str::to_string), size: 25, total },
-            filters: vec![FilterDef {
-                key: "status".to_string(),
-                label: "Status".to_string(),
-                kind: FilterKind::Enum(strings(&["active", "banned"])),
-            }],
-            search_placeholder: Some("Search players".to_string()),
-            selectable: true,
-            list_columns_for: None,
-        })
-    };
-    let row = |id: &str, level: &str, status: &str, highlight: bool| Row {
-        entity: Some(entity("player", id)),
-        cells: vec![player_cell(id), cell(CellKind::Number, level), cell(CellKind::Badge, status)],
-        highlight,
-    };
     panel(
         "table_highlight_row_menu",
         PanelCase {
@@ -917,10 +1248,10 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             row_menu_kinds: strings(&["player"]),
             ..PanelCase::new(
                 PanelState::Ok,
-                Some(body(table(
+                Some(body(players_table(
                     vec![
-                        row("p-1001", "12", "active", false),
-                        row("p-1002", "40", "banned", true),
+                        player_row("p-1001", "12", "active", false),
+                        player_row("p-1002", "40", "banned", true),
                         Row {
                             entity: None,
                             cells: vec![
@@ -942,9 +1273,10 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         PanelCase {
             query: posted(&[("q", "zed")]),
             search: Some("zed"),
-            ..PanelCase::new(PanelState::Empty, Some(body(table(Vec::new(), Some(0), None))))
+            ..PanelCase::new(PanelState::Empty, Some(body(players_table(Vec::new(), Some(0), None))))
         },
     );
+    panel("table_first_page_label", table_first_page_case());
 
     // ---- Timeline ----
     let entry = |at: &str, actor: Option<EntityRef>, verb: &str, summary: &str| TimelineEntry {
@@ -987,66 +1319,15 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     let no_entries = Timeline { entries: Vec::new(), cursor_before: None, live: false };
     panel("timeline_empty", PanelCase::new(PanelState::Empty, Some(body(Primitive::Timeline(no_entries)))));
 
-    // ---- WorkQueue ----
-    let retry = decl("retry", "Retry", "refresh", Then::Invoke);
-    let drop_job = ActionDecl {
-        danger: true,
-        ..decl("drop", "Drop", "trash", Then::Confirm(confirm("Drop job?", ConfirmTone::Danger)))
-    };
-    let park = decl("park", "Park", "park", Then::Invoke);
-    let queue_states = vec![
-        QueueState { key: "pending".to_string(), label: "Pending".to_string(), count: 12, tone: None },
-        QueueState { key: "failed".to_string(), label: "Failed".to_string(), count: 3, tone: Some(Tone::Err) },
-        QueueState { key: "sent".to_string(), label: "Sent".to_string(), count: 1204, tone: Some(Tone::Ok) },
-    ];
-    panel(
-        "queue_items_actions",
-        PanelCase {
-            actions: vec![tool(&retry), tool(&drop_job), tool(&park)],
-            ..PanelCase::new(
-                PanelState::Ok,
-                Some(body(Primitive::WorkQueue(WorkQueue {
-                    states: queue_states.clone(),
-                    selected: "failed".to_string(),
-                    items: vec![
-                        QueueItem {
-                            id: "job-81".to_string(),
-                            entity: Some(entity("player", "p-1001")),
-                            state: "failed".to_string(),
-                            attempts: 3,
-                            max_attempts: 5,
-                            next_attempt_at: None,
-                            last_error: Some("timeout after 30s".to_string()),
-                            payload_preview: Some(r#"{"amount":5}"#.to_string()),
-                            actions: strings(&["drop", "retry"]),
-                        },
-                        QueueItem {
-                            id: "job-82".to_string(),
-                            entity: None,
-                            state: "sent".to_string(),
-                            attempts: 2,
-                            max_attempts: 5,
-                            next_attempt_at: Some("2026-10-21 10:00".to_string()),
-                            last_error: None,
-                            payload_preview: None,
-                            actions: strings(&["park", "retry"]),
-                        },
-                    ],
-                }))),
-            )
-        },
-    );
+    // ---- WorkQueue: row actions, a panel tool, the table contract and its foot ----
+    panel("queue_items_actions", queue_items_actions_case());
     panel(
         "queue_empty",
-        PanelCase::new(
-            PanelState::Empty,
-            Some(body(Primitive::WorkQueue(WorkQueue {
-                states: queue_states,
-                selected: "pending".to_string(),
-                items: Vec::new(),
-            }))),
-        ),
+        PanelCase::new(PanelState::Empty, Some(body(Primitive::WorkQueue(work_queue("pending", Vec::new()))))),
     );
+    panel("queue_panel_tool", queue_panel_tool_case());
+    panel("queue_table_contract", queue_table_contract_case());
+    panel("queue_later_page", queue_later_page_case());
 
     // ---- TimeSeriesChart ----
     panel(

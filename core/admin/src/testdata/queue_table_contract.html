@@ -1,0 +1,165 @@
+<div class="slot" data-panel-url="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?q=anna&amp;template=welcome" data-state="ok">
+<section class="panel">
+<div class="panel-head">
+<span class="muted">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="3.5" y="4" width="17" height="7" rx="1.5"/>
+<rect x="3.5" y="13" width="17" height="7" rx="1.5"/>
+<path d="M7 7.5h.01M7 16.5h.01"/>
+</svg>
+</span>
+<span class="panel-title">Golden panel</span>
+<div class="panel-tools">
+</div>
+</div>
+<div class="panel-body flush">
+<div class="q-counts">
+<div class="q-count on" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?q=anna&amp;template=welcome&amp;state=pending" hx-target="closest .slot" hx-swap="outerHTML">
+<div class="n">12</div>
+<div class="l">Pending</div>
+</div>
+<div class="q-count err" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?q=anna&amp;template=welcome&amp;state=failed" hx-target="closest .slot" hx-swap="outerHTML">
+<div class="n">3</div>
+<div class="l">Failed</div>
+</div>
+<div class="q-count ok" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?q=anna&amp;template=welcome&amp;state=sent" hx-target="closest .slot" hx-swap="outerHTML">
+<div class="n">1,204</div>
+<div class="l">Sent</div>
+</div>
+</div>
+<div class="tbl-wrap">
+<table class="tbl">
+<thead>
+<tr>
+<th>Item</th>
+<th>State</th>
+<th>Attempts</th>
+<th>Next attempt</th>
+<th>Last error</th>
+<th>
+</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>
+<span class="mono">msg-1001</span>
+</td>
+<td>
+<span class="badge info">pending</span>
+</td>
+<td>
+<span class="attempts" title="1 attempts">
+<i class="f">
+</i>
+<i class="">
+</i>
+<i class="">
+</i>
+<i class="">
+</i>
+<i class="">
+</i>
+</span>
+</td>
+<td>
+<span class="dim">—</span>
+</td>
+<td class="wrap">
+<span class="muted">—</span>
+</td>
+<td>
+<span class="row" style="justify-content:flex-end;gap:4px">
+<button type="button" class="btn sm ghost danger-ghost" title="Cancel" hx-get="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;cancel?item=msg-1001" hx-target="#modal-root" hx-swap="innerHTML">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M6 6l12 12M18 6 6 18"/>
+</svg>
+</button>
+</span>
+</td>
+</tr>
+<tr>
+<td>
+<span class="mono">msg-1002</span>
+</td>
+<td>
+<span class="badge err">failed</span>
+</td>
+<td>
+<span class="attempts" title="7 attempts">
+<i class="f">
+</i>
+<i class="f">
+</i>
+<i class="f">
+</i>
+<i class="f">
+</i>
+<i class="f">
+</i>
+</span>
+</td>
+<td>
+<span class="dim">—</span>
+</td>
+<td class="wrap">
+<span class="mono" style="font-size:11.5px;color:var(--err)">421 throttled</span>
+</td>
+<td>
+<span class="row" style="justify-content:flex-end;gap:4px">
+<button type="button" class="btn sm" hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;retry?item=msg-1002" hx-vals="{&quot;_csrf&quot;:&quot;csrf-golden&quot;,&quot;_item&quot;:&quot;msg-1002&quot;}" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="this">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/>
+<path d="M4 3.5V8h4.5"/>
+<path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/>
+<path d="M20 20.5V16h-4.5"/>
+</svg> Retry</button>
+<button type="button" class="btn sm ghost danger-ghost" title="Cancel" hx-get="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;cancel?item=msg-1002" hx-target="#modal-root" hx-swap="innerHTML">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M6 6l12 12M18 6 6 18"/>
+</svg>
+</button>
+</span>
+</td>
+</tr>
+<tr>
+<td>
+<span class="mono">msg-1003</span>
+</td>
+<td>
+<span class="badge ok">sent</span>
+</td>
+<td>
+<span class="attempts" title="1 attempts">
+<i class="ok">
+</i>
+<i class="">
+</i>
+<i class="">
+</i>
+<i class="">
+</i>
+<i class="">
+</i>
+</span>
+</td>
+<td>
+<span class="dim">—</span>
+</td>
+<td class="wrap">
+<span class="muted">—</span>
+</td>
+<td>
+<span class="row" style="justify-content:flex-end;gap:4px">
+</span>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="tbl-foot">
+<span>3 items</span>
+</div>
+</div>
+</section>
+</div>
