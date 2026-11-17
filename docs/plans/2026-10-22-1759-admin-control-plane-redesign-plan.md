@@ -1637,9 +1637,14 @@ model tokens. Step 10's cost came from:
      - `crawl` is clean;
      - the review's first round returns PASS or comment-only findings.
 
-     Otherwise (owner, 2026-11-17) a post-mortem finds what the skill, the checklist,
-     `admindiff` or the golden tests missed. Those get fixed before the next port, and
-     only then is the tier decided again. Falling back to opus is not automatic.
+     Otherwise a post-mortem finds what the skill, the checklist, `admindiff` or the
+     golden tests missed, and those are fixed before the next port.
+   - **Owner, 2026-11-17: no fallback to a stronger model.** The goal of the plan is a
+     workflow cheap enough that the view part always runs at the cheap tier. When a port
+     goes badly, the answer is to fix the skill, tools and tests.
+   - A post-mortem also runs after Step 13 (accounts, the first port with new engine
+     work), and after any port whose review needs more than one fix round. Its fixes
+     land before the next port.
 
 This revision also changes the port template (b → `[sonnet]` mockup-implementer under
 item 4; checklist first), Step 12 (use `admindiff crawl` against the split) and Step 27
@@ -1680,8 +1685,9 @@ the skeleton, collapse, strip lists, assembly, page map, matching and stale-acce
     - audit's "Recent operator activity" is a `DashboardPanel`.
 - **Before a:** `[opus]` checklist extraction per the `mockup-implementation` skill
   (Step 10b item 3). Every contract gap it finds becomes a decision in part `a`.
-- **b** (`[sonnet]` mockup-implementer under Step 10b item 4; `[opus]` when the checklist
-  has an open gap): the template or macro adjustments the module's page needs. Checked by
+- **b** (`[sonnet]` mockup-implementer under Step 10b item 4; an open gap in the checklist
+  is closed in part `a` before b starts, never by a stronger b): the template or macro
+  adjustments the module's page needs. Checked by
   the golden diff, `admindiff diff` against `tools/admindiff/accept/<page>.txt`, and a
   clean `crawl`, run by the orchestrator. When the generic macros already render the page
   exactly, b is a fidelity check with no commit.
