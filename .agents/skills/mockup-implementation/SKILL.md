@@ -88,6 +88,17 @@ and `error`, plus `narrowed to zero` for a panel with search or filters:
 Per module: `writes` (true/false) and every tool, meaning each `ActionDecl` with
 point, `Emphasis`, `danger`, `implemented` and `then`.
 
+Per page, a hand-check section: every element whose difference `admindiff` cannot see,
+because it compares tags and classes only. That covers attributes and inline styles (a
+`title`, a width), text (the sort arrow's column, a crumb, a foot count), and anything the
+crawl never opens (the row-menu popover, the palette). Each row names its check: a golden
+assertion, or a look at the live page in §7. A declared deviation in this section goes in
+the step report directly, because no accept entry can carry it.
+
+The mock harness draws a page's `P.<key>` builder only; a column a later port contributes
+through `meta.after` is never drawn, so its header and cell shape is not compared until
+that port lands. The port that adds such a column names it in its checklist.
+
 Per panel, every URL the renderer builds for it (state tabs, search, pager): which
 query keys it keeps and which it drops. Every non-pager URL must build from `Ctx.query`
 (`core/admin/src/render.rs`, `panel`), which is stripped of the paging keys `cursor`
@@ -241,8 +252,9 @@ iteration.
   entries; only `index.txt` carries the dashboard tiles and panels.
 - A `STALE` line that is a `not ported yet` entry this port resolves is deleted. Any
   other `STALE` line is returned to the orchestrator.
-- The file is the step report's declared-deviations source. The report cites it and
-  does not re-list deviations.
+- The file is the step report's declared-deviations source, together with the
+  checklist's hand-check section (§1) for the ones `admindiff` cannot see. The report
+  cites both and does not re-list deviations.
 
 ## 7. Live sequence — orchestrator only, after the `b` commit
 
@@ -258,7 +270,7 @@ use `target\debug\<tool>.exe`; honour `CARGO_TARGET_DIR`.
 ```
 cargo test -p admin golden
 cargo build -p demoseed -p eventctl -p admindiff
-cargo run -p devctl -- up monolith          # foreground; wait until healthy
+cargo run -p devctl -- up monolith          # foreground; wait for `running`
 target/debug/demoseed
 target/debug/eventctl seed-mockup
 target/debug/admindiff crawl                # prints "wrote <path>/target/admindiff/crawl-<secs>"
@@ -275,7 +287,14 @@ target/debug/devctl down
   - `diff` prints `clean` for every mapped and first-row page: no `NEW` line, no `STALE` line, at
     least one matched panel.
 - `NEW` and `STALE` lines go back to part `b` as a fix round.
-- `crawl --base-url http://localhost:8085` checks the split.
+- The split is the at-risk topology and is crawled too: `devctl up split`, then
+  `demoseed --base-url http://127.0.0.1:8082` (the split's gateway; its 8080 is
+  characters-svc, where `/accounts/register` is a 404), `eventctl seed-mockup`,
+  `crawl --base-url http://localhost:8085` and `diff` for every page.
+- `devctl status` reads `starting (N/N healthy)` while later services still boot. Wait
+  for `running`; a `devctl down` sent during `starting` aborts the boot.
+- A fleet the pre-flight finds up was not started by this sequence: report it and ask
+  whose it is. Never wait on it silently or stop it.
 
 ## 8. Post-mortem
 

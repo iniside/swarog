@@ -1721,6 +1721,36 @@ model tokens. Step 10's cost came from:
          `tr#d4bd69` and the two unpredicted entries.
        - Code, dispatched separately: a readable label for a collapsed row in
          `admindiff diff` (P2).
+    - **Post-mortem (Step 13, 2026-11-17).** Part `a`: 1bea67f8, 6f2de49f, review fix
+      183fedc6 (two rounds). Tests: 0dd57f9b, ed41431f, 9ce5eb84, 97df9b4c. Part `b` changed
+      no template; accept files 8b5f4775, 8cd11e8c. Monolith and split `crawl` clean and
+      `diff` clean for every page; the part `b` review had one prose finding.
+      - Findings:
+        - Q1. The golden enum guard restated the templates' drawing rules in test code, and
+          four audit rounds each found a new drift. Each round patched the copy instead of
+          naming the cause.
+        - Q2. `admindiff` compares tags and classes only, so a difference in an attribute or
+          text passes: the toolbar search width (ADMIN2-35), the sort arrow's column (D9),
+          the crumb and the foot count. D9 can have no accept entry.
+        - Q3. The mock harness never runs `P.players.meta.after`, so the header and cell
+          shape of a column a later port contributes (`th > span`) was never compared.
+        - Q4. The skill's §7 split line named only `crawl`. `demoseed` at its default
+          `:8080` hits characters-svc in the split and gets a 404 on `/accounts/register`;
+          the split crawl only had data because the monolith run had seeded the shared
+          database.
+        - Q5. The orchestrator read `starting (6/6 healthy)` as ready and sent `devctl down`
+          during the split's boot, which aborted it. In the session before, a fleet found up
+          was waited on for about 55 minutes and then stopped without asking whose it was.
+      - Fixes:
+        - Q1: plan Step 28 (coverage observed from the render) replaces the copy; review
+          findings now state their origin and a structural one goes to the owner as a fix
+          for the cause (`.agents/shared/planning-dispatch.md` **Adversarial Diff Review**,
+          `proof-auditor` attack 6; c68277e4, 0160f0ed).
+        - Q2, Q3: skill §1 gains a hand-check section per page, and the step report cites it
+          beside the accept file (§6). The port that contributes a list column names its
+          `meta.after` shape in its checklist.
+        - Q4, Q5: skill §7 crawls the split with `demoseed --base-url http://127.0.0.1:8082`,
+          waits for `running`, and asks before touching a fleet it did not start.
 
 5. **Mockup-state seed** (owner, 2026-11-17). A fresh dev fleet has no paused and no
    lagging subscription, so about a third of the Event plane's and the dashboard's accept
