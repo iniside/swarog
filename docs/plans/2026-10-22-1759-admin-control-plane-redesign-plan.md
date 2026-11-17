@@ -1665,6 +1665,14 @@ model tokens. Step 10's cost came from:
    - **Owner, 2026-11-17: no fallback to a stronger model.** The goal of the plan is a
      workflow cheap enough that the view part always runs at the cheap tier. When a port
      goes badly, the answer is to fix the skill, tools and tests.
+   - **Test tier** (owner, 2026-11-17). Tests that ARE a gate stay `[opus]` test-author:
+     golden coverage, `admindiff`, admincheck and conformance findings, splitproof, and
+     any test whose job is to prove that a guard fails closed. Per-module provider tests
+     (`modules/<m>` `admin_tests.rs`) and small fixture tests (item 5) are repeated
+     patterns and run `[sonnet]` test-author. The mail pilot's `admin_tests.rs` is
+     written at `[opus]` and becomes the reference file the later ports copy. proof-auditor
+     audits the first sonnet test file, then every port whose review finds a test that
+     does not reach its once-wrong branch. The no-fallback rule above applies here too.
    - A post-mortem also runs after Step 13 (accounts, the first port with new engine
      work), and after any port whose review needs more than one fix round. Its fixes
      land before the next port.
@@ -1710,7 +1718,7 @@ item 4; checklist first), Step 12 (use `admindiff crawl` against the split) and 
 
 Tests: item 1 is itself a test. `admindiff` ships its own unit tests in item 2, covering
 the skeleton, collapse, strip lists, assembly, page map, matching and stale-accept rules.
-Item 5 gets `[opus]` test-author tests against local Postgres: both rows created, a
+Item 5 gets `[sonnet]` test-author tests (item 4, **Test tier**) against local Postgres: both rows created, a
 re-run resets a resumed or skipped row, `poison_event` returns the topic's first event,
 and an empty log is refused.
 
@@ -2048,7 +2056,11 @@ Splitproof:
     config, `core.events` `resume_retry`).
 
 (b) Why now: after Steps 1–24. (c) Split is the at-risk topology for every engine assertion.
-(d) Unit tests: `[test-author]` (`model: "sonnet"`). Splitproof: `[test-author]` with `model: "opus"`.
+(d) Lanes per Step 10b item 4, **Test tier**:
+- `[opus]` test-author: splitproof, the `tools/admincheck` and `tools/conformance` finding
+  tests, and the mail `admin_tests.rs`, which is the reference file for the others.
+- `[sonnet]` test-author: the other per-module `admin_tests.rs`, written against the mail
+  reference, and the remaining unit tests.
 
 ### Step 26 — Docs
 
