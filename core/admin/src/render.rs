@@ -739,6 +739,8 @@ pub(crate) fn panel(input: &PanelInput<'_>) -> PanelRender {
 
 struct Ctx<'a> {
     path: &'a str,
+    /// The request's query without its paging keys, so a tab or search URL built from it
+    /// starts the result set over; the pager adds its own key back.
     query: &'a [(String, String)],
     params: &'a [(String, String)],
     input: &'a PanelInput<'a>,

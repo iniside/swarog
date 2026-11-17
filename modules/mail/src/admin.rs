@@ -335,6 +335,7 @@ impl MailAdmin {
         if queued + stats.parked == 0 {
             return Ok(Primitive::Empty { title: "Outbox is empty".to_string(), detail: String::new() });
         }
+        // Parked mail is not queued: it keeps the counter shown, warning, even at 0 queued.
         let tone = (stats.retrying + stats.parked > 0).then_some(Tone::Warn);
         Ok(Primitive::Cell(Cell { tone, ..text(CellKind::Badge, thousands(queued)) }))
     }
