@@ -28,9 +28,9 @@
 //!   own source, so a new variant whose case is not rendered, or that reuses another variant's
 //!   case, fails;
 //! - every `CellKind` and cell `Tone` variant is on a cell of some panel case's body, and every
-//!   `Emphasis` variant on some panel case's action, counting only cases in a state whose body
-//!   the template draws ([`panel_variants`]), checked against the variants parsed from the
-//!   enums' own source.
+//!   `Emphasis` variant on some panel case's action, counting only cells and actions the
+//!   template draws in the case's state and mode ([`panel_variants`]), checked against the
+//!   variants parsed from the enums' own source.
 //!
 //! Inputs are fixed: one csrf, one form id, fixed `age_s`, and no clock or id generator,
 //! because the render layer reads neither.
@@ -1581,9 +1581,14 @@ fn check_variant_coverage(source: &str, name: &str, rendered: &BTreeSet<&str>) -
 /// The enums whose variants [`panel_variants`] collects, all in [`PRIMITIVE_SOURCE`].
 const SEEN_ENUMS: [&str; 3] = ["CellKind", "Tone", "Emphasis"];
 
-/// Whether `panel_fragment` draws the body of a panel in `state`: its `live` set, which
-/// [`draws_body_matches_the_template`] reads back from the template. No wildcard arm: a new
-/// state does not compile until it says.
+/// Whether `panel_fragment` draws the body of a panel in `state` through `body()`: its `live`
+/// set, which [`draws_body_matches_the_template`] reads back from the template. No wildcard
+/// arm: a new state does not compile until it says.
+///
+/// Empty is outside the set, but its body is not always undrawn: `empty_body` draws a Queue
+/// body through `queue()` and a Table body's `table_toolbar` and `table_foot`. Counting nothing
+/// for Empty is conservative: a variant that only an empty panel draws fails the gate rather
+/// than passing it.
 fn draws_body(state: PanelState) -> bool {
     match state {
         PanelState::Ok | PanelState::Stale | PanelState::Readonly => true,
@@ -1609,12 +1614,41 @@ fn cell_key_bounds() -> (BTreeSet<String>, BTreeSet<String>) {
     (keys(cell(CellKind::Text, "x")), keys(full))
 }
 
+/// The modes `panel_fragment` branches on, `panel` being its last, unnamed branch.
+/// [`mode_draws_names_every_template_mode`] reads them back from the template.
+const MODES: [&str; 8] = ["tile", "attention", "header", "fact", "count", "nav", "inline", "panel"];
+
+/// What `panel_fragment` draws of a case in a `live` state, by mode: whether it draws the
+/// body's cells through `body()` or `cell()`, and whether it draws the actions as tools.
+///
+/// A live `KpiTile` body takes the tile branch in every mode, which draws `kpi()`: no cell and
+/// no tool. A tile with another body draws the error mini-panel. Count draws only the cell's
+/// value and nav only the value with an err or warn class, neither through `cell()`. Header
+/// draws `body()`, and so its status through `cell()`, only for an `EntityHeader`; inline
+/// draws `cell()` only for a `Cell`; attention and fact draw `body()` for any body. Only the
+/// panel mode draws tools. The mode is a string, not an enum, so no match on it is exhaustive:
+/// a mode outside [`MODES`] panics here, and a template mode outside [`MODES`] fails
+/// [`mode_draws_names_every_template_mode`].
+fn mode_draws(mode: &str, primitive: Option<&Primitive>) -> (bool, bool) {
+    if matches!(primitive, Some(Primitive::KpiTile(_))) {
+        return (false, false);
+    }
+    match mode {
+        "panel" => (true, true),
+        "attention" | "fact" => (true, false),
+        "header" => (matches!(primitive, Some(Primitive::EntityHeader(_))), false),
+        "inline" => (matches!(primitive, Some(Primitive::Cell(_))), false),
+        "tile" | "count" | "nav" => (false, false),
+        other => panic!("mode {other:?} is not in MODES: say in mode_draws what panel_fragment draws in it"),
+    }
+}
+
 /// `(enum, variant)` for each `CellKind` and `Tone` on a cell of `case`'s body and each
-/// `Emphasis` of its actions, as the view model holds it, and nothing for a case in a state
-/// whose body [`draws_body`] says is never drawn. The actions of an empty panel are not
-/// counted either, though its `when_empty` tools are drawn. The mode is not consulted: in a
-/// drawn state a tile, header, count, nav or inline panel draws only a body of the type its
-/// mode expects, and only the panel mode draws tools.
+/// `Emphasis` of its actions, as the view model holds it, counting only what the template
+/// draws: nothing for a state outside the `live` set ([`draws_body`]), cells only in a mode
+/// that draws them through `body()` or `cell()`, and actions only in the panel mode
+/// ([`mode_draws`]). The actions of an empty panel are not counted either, though its
+/// `when_empty` tools are drawn, so the gate is conservative for Empty.
 ///
 /// A cell is an object of the body's serialization whose keys hold every key of an unset
 /// `Cell` and no key a fully set `Cell` lacks ([`cell_key_bounds`]). A cell with a field
@@ -1646,9 +1680,14 @@ fn panel_variants(case: &PanelCase) -> Vec<(&'static str, String)> {
     if !draws_body(case.state) {
         return Vec::new();
     }
+    let (cells, tools) = mode_draws(case.mode, case.body.as_ref().map(|b| &b.primitive));
     let mut out = Vec::new();
-    walk(&serde_json::to_value(&case.body).expect("a panel body serializes"), &cell_key_bounds(), &mut out);
-    out.extend(case.actions.iter().map(|a| ("Emphasis", a.emphasis.to_string())));
+    if cells {
+        walk(&serde_json::to_value(&case.body).expect("a panel body serializes"), &cell_key_bounds(), &mut out);
+    }
+    if tools {
+        out.extend(case.actions.iter().map(|a| ("Emphasis", a.emphasis.to_string())));
+    }
     out
 }
 
@@ -2187,58 +2226,116 @@ fn seen_variants_fail_on_a_new_enum_variant() {
     assert!(seen_variants(&cases, "Emphasis").contains("ghost"), "emphasis is read from the actions");
 }
 
-/// A `CellKind`, `Tone` or `Emphasis` variant held only by a case in a state whose body is
-/// never drawn fails the check; the same case in a drawn state passes it.
-#[test]
-fn seen_variants_skip_a_body_that_is_never_drawn() {
-    let source = concat!(
-        "enum CellKind {\n    Text,\n    Mono,\n}\n",
-        "enum Tone {\n    Ok,\n    Warn,\n}\n",
-        "enum Emphasis {\n    Default,\n    Ghost,\n}\n"
-    );
-    let probe = |state: PanelState, kind: CellKind, tone: Tone, emphasis: Emphasis| {
-        let tool_decl = ActionDecl { emphasis, ..decl("probe", "Probe", "refresh", Then::Invoke) };
-        let case = PanelCase {
-            actions: vec![tool(&tool_decl)],
-            ..PanelCase::new(state, Some(body(Primitive::Cell(toned(kind, "x", tone)))))
-        };
-        Case {
-            name: "probe",
-            golden: String::new(),
-            raw: String::new(),
-            primitive: None,
-            state: None,
-            variants: panel_variants(&case),
-        }
-    };
-    let only_in = |state: PanelState| {
-        [
-            probe(PanelState::Ok, CellKind::Text, Tone::Ok, Emphasis::Default),
-            probe(state, CellKind::Mono, Tone::Warn, Emphasis::Ghost),
-        ]
-    };
-    for state in [PanelState::Ok, PanelState::Stale, PanelState::Readonly] {
-        let cases = only_in(state);
-        for name in SEEN_ENUMS {
-            check_variants_seen(source, name, &seen_variants(&cases, name))
-                .unwrap_or_else(|e| panic!("{name} in a drawn {state:?} body is seen: {e}"));
-        }
+/// The enum source the probe cases below are checked against: one variant every probe set
+/// holds through a baseline case, and one only the probe under test holds.
+const PROBE_SOURCE: &str = concat!(
+    "enum CellKind {\n    Text,\n    Mono,\n}\n",
+    "enum Tone {\n    Ok,\n    Warn,\n}\n",
+    "enum Emphasis {\n    Default,\n    Ghost,\n}\n"
+);
+
+/// A case in `mode` and `state` whose body is `primitive` and whose one action has `emphasis`,
+/// with only its [`panel_variants`] filled in.
+fn probe_case(mode: &'static str, state: PanelState, primitive: Primitive, emphasis: Emphasis) -> Case {
+    let tool_decl = ActionDecl { emphasis, ..decl("probe", "Probe", "refresh", Then::Invoke) };
+    let case = PanelCase { mode, actions: vec![tool(&tool_decl)], ..PanelCase::new(state, Some(body(primitive))) };
+    Case {
+        name: "probe",
+        golden: String::new(),
+        raw: String::new(),
+        primitive: None,
+        state: None,
+        variants: panel_variants(&case),
     }
-    for state in [PanelState::Empty, PanelState::Error, PanelState::Denied] {
-        let cases = only_in(state);
-        for (name, missing) in [("CellKind", "Mono"), ("Tone", "Warn"), ("Emphasis", "Ghost")] {
-            let err = check_variants_seen(source, name, &seen_variants(&cases, name))
-                .expect_err("a variant only an undrawn body holds must fail");
-            assert!(
-                err.starts_with(&format!("{name} variant(s) [\"{missing}\"] are in no case")),
-                "{state:?}: {err}"
-            );
+}
+
+/// A panel-mode Ok baseline holding `Text`, `Ok` and `Default`, beside `probe` holding `Mono`,
+/// `Warn` and `Ghost` in `mode` and `state`.
+fn only_in(mode: &'static str, state: PanelState) -> [Case; 2] {
+    [
+        probe_case("panel", PanelState::Ok, Primitive::Cell(toned(CellKind::Text, "x", Tone::Ok)), Emphasis::Default),
+        probe_case(mode, state, Primitive::Cell(toned(CellKind::Mono, "x", Tone::Warn)), Emphasis::Ghost),
+    ]
+}
+
+/// Fails unless each `(enum, variant)` of `missing` is the one variant `cases` miss, and every
+/// other enum of [`SEEN_ENUMS`] is fully seen.
+fn assert_missing(cases: &[Case], missing: &[(&str, &str)], what: &str) {
+    for name in SEEN_ENUMS {
+        let result = check_variants_seen(PROBE_SOURCE, name, &seen_variants(cases, name));
+        match missing.iter().find(|(e, _)| *e == name) {
+            Some((_, variant)) => {
+                let err = result.expect_err(&format!("{what}: {name} {variant} must be unseen"));
+                assert!(err.starts_with(&format!("{name} variant(s) [\"{variant}\"] are in no case")), "{what}: {err}");
+            }
+            None => result.unwrap_or_else(|e| panic!("{what}: {name} must be seen: {e}")),
         }
     }
 }
 
-/// [`draws_body`] holds exactly the states the template's `live` set names, and a `Column`
-/// falls outside the cell key bounds.
+/// A `CellKind`, `Tone` or `Emphasis` variant held only by a case in a state outside the
+/// template's `live` set fails the check; the same case in a `live` state passes it.
+#[test]
+fn seen_variants_skip_a_state_outside_live() {
+    for state in [PanelState::Ok, PanelState::Stale, PanelState::Readonly] {
+        assert_missing(&only_in("panel", state), &[], &format!("panel {state:?}"));
+    }
+    let all = [("CellKind", "Mono"), ("Tone", "Warn"), ("Emphasis", "Ghost")];
+    for state in [PanelState::Empty, PanelState::Error, PanelState::Denied] {
+        assert_missing(&only_in("panel", state), &all, &format!("panel {state:?}"));
+    }
+}
+
+/// A variant held only by an Ok cell in a mode that does not draw it fails the check, and the
+/// same probe in the panel mode passes: count and nav draw the cell's value only, so its kind
+/// and tone are unseen, and only the panel mode draws tools, so the emphasis of an inline,
+/// fact or count case is unseen. A `KpiTile` body takes the tile branch even in the panel
+/// mode, so its actions are unseen too.
+#[test]
+fn seen_variants_skip_what_a_mode_does_not_draw() {
+    assert_missing(&only_in("panel", PanelState::Ok), &[], "panel");
+    let all = [("CellKind", "Mono"), ("Tone", "Warn"), ("Emphasis", "Ghost")];
+    for mode in ["count", "nav", "tile"] {
+        assert_missing(&only_in(mode, PanelState::Ok), &all, mode);
+    }
+    for mode in ["inline", "fact", "attention"] {
+        assert_missing(&only_in(mode, PanelState::Ok), &[("Emphasis", "Ghost")], mode);
+    }
+    // A header draws `body()` only for an `EntityHeader`, so a `Cell` body is unseen there.
+    assert_missing(&only_in("header", PanelState::Ok), &all, "header with a cell body");
+    let kpi_in_panel = [
+        probe_case("panel", PanelState::Ok, Primitive::Cell(toned(CellKind::Text, "x", Tone::Ok)), Emphasis::Default),
+        probe_case("panel", PanelState::Ok, Primitive::Cell(toned(CellKind::Mono, "x", Tone::Warn)), Emphasis::Default),
+        probe_case("panel", PanelState::Ok, Primitive::KpiTile(kpi(None)), Emphasis::Ghost),
+    ];
+    assert_missing(&kpi_in_panel, &[("Emphasis", "Ghost")], "panel with a kpi body");
+}
+
+/// Every mode `panel_fragment` branches on is in [`MODES`] and the reverse, and [`mode_draws`]
+/// answers for each without panicking.
+#[test]
+fn mode_draws_names_every_template_mode() {
+    let templates = templates();
+    let primitives =
+        &templates.iter().find(|(stem, _)| stem == "primitives").expect("primitives.html.tmpl is read").1;
+    let start = primitives.find("{%- macro panel_fragment(p) -%}").expect("panel_fragment is defined");
+    let fragment = &primitives[start..start + primitives[start..].find("{%- endmacro %}").expect("it closes")];
+    let open = "p.mode == \"";
+    let mut named: BTreeSet<&str> = fragment
+        .match_indices(open)
+        .map(|(at, _)| {
+            let rest = &fragment[at + open.len()..];
+            &rest[..rest.find('"').expect("the mode literal closes")]
+        })
+        .collect();
+    named.insert("panel");
+    assert_eq!(named, MODES.into_iter().collect::<BTreeSet<&str>>(), "MODES against panel_fragment's branches");
+    for mode in MODES {
+        mode_draws(mode, None);
+    }
+}
+
+/// [`draws_body`] holds exactly the states the template's `live` set names.
 #[test]
 fn draws_body_matches_the_template() {
     let templates = templates();
@@ -2263,7 +2360,11 @@ fn draws_body_matches_the_template() {
     );
     let drawn: BTreeSet<&str> = states.into_iter().filter(|s| draws_body(*s)).map(PanelState::as_str).collect();
     assert_eq!(drawn, live, "draws_body against the template's `live` set");
+}
 
+/// A `Column` falls outside the cell key bounds, so its fields are never read as a cell's.
+#[test]
+fn a_column_is_outside_the_cell_key_bounds() {
     let (unset, set) = cell_key_bounds();
     let col = serde_json::to_value(column("k", "K", Align::Left)).expect("a column serializes");
     let col: BTreeSet<String> = col.as_object().expect("a column is an object").keys().cloned().collect();
