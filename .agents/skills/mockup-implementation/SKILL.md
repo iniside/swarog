@@ -44,6 +44,19 @@ returns it; it is never closed by a stronger `b`.
 Read the page's `P.<key>` builder line by line. One row per visible element (example
 rows):
 
+- A new page's accept file always needs the shell-frame entries every mapped page
+  carries (`tools/admindiff/accept/index.txt`, the `frame div.app > aside.sidebar` and
+  `frame div.app > header.topbar` lines):
+  - the Sign out form in the sidebar foot (template choice);
+  - the theme toggle in the topbar (template choice; the mockup's sits in the devbar,
+    which D3 drops);
+  - the Design-system nav section (declared deviation D3);
+  - the Lore nav section (no Lore module exists);
+  - the nav entries and nav sections of ports not landed yet (not ported yet).
+
+  The checklist carries these shell-frame rows and names the `index.txt` entries to
+  copy into the new page's file, with their reasons adjusted to that page.
+
 | Element | Mockup line | Carrier | Status |
 |---|---|---|---|
 | "Subscriptions" panel title | `pages-platform.js:NN` | `ContributionDecl.title` | ok |
@@ -193,8 +206,8 @@ A `data difference` accept entry is allowed only when neither can produce the da
   of other kinds only when the checklist names them. Any other `NEW` line is fixed
   in the template or returned.
 - Part `b` removes, from every accept file, the `not ported yet` entries the port
-  resolves. Both `index.txt` and `events.txt` carry the sidebar nav entries; `index.txt` also
-  carries the dashboard tiles and the "Recent operator activity" panel.
+  resolves. Every mapped page's accept file carries the sidebar and shell-frame
+  entries; only `index.txt` carries the dashboard tiles and panels.
 - A `STALE` line that is a `not ported yet` entry this port resolves is deleted. Any
   other `STALE` line is returned to the orchestrator.
 - The file is the step report's declared-deviations source. The report cites it and
