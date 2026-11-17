@@ -7,13 +7,13 @@ use sqlx::PgPool;
 use crate::address::parse_address;
 use crate::providers::{Provider, ProviderKind, KNOWN_PROVIDERS};
 use crate::service::{
-    is_test_key, validate_new, NewMail, TEST_KEY_HEX, TEST_KEY_PREFIX,
+    is_test_key, validate_new, NewMail, TEST_KEY_PREFIX,
 };
 use crate::store::{
     cap_from_db_error, classify_existing, truncate_error, Enqueued, ExistingMail,
     COLUMN_CAPS, LAST_ERROR_MAX_BYTES, STATE_CANCELLED, STATE_PARKED, STATE_PENDING, STATE_SENT,
 };
-use mailevents::MAX_ADDRESS_BYTES;
+use mailevents::{MAX_ADDRESS_BYTES, MAX_IDEMPOTENCY_KEY_BYTES};
 
 /// Fallback DSN for the live tests (which otherwise read `DATABASE_URL`).
 pub(crate) const DEFAULT_DSN: &str =
@@ -62,8 +62,8 @@ pub(crate) async fn unique_key(pool: &PgPool, tag: &str) -> String {
     format!("mailtest-{tag}-{hex}")
 }
 
-/// An operator test-send key in the exact shape `service::is_test_key` admits, built by
-/// hand rather than by the private minter — so the test pins the SHAPE, not the minter.
+/// An operator test-send key in a shape `service::is_test_key` admits, built by hand
+/// rather than by the provider's minter — so the test pins the SHAPE, not the minter.
 pub(crate) async fn minted_test_key(pool: &PgPool) -> String {
     let (hex,): (String,) = sqlx::query_as("SELECT replace(gen_random_uuid()::text, '-', '')")
         .fetch_one(pool)
@@ -522,19 +522,32 @@ fn every_address_branch_is_refused_with_its_own_reason() {
 // 5. The operator test-send key shape and its AUTHORITY-level re-check.
 // ============================================================================
 
+/// G6(a): the key is the prefix plus the portal's `request_id`, a non-empty run of
+/// printable ASCII, the whole key within the column's 128-byte cap. Each edge of the rule
+/// has its refusal beside its admission.
 #[test]
-fn only_the_exact_minted_shape_is_a_test_send_key() {
-    let hex = "0123456789abcdef0123456789abcdef";
-    assert_eq!(hex.len(), TEST_KEY_HEX);
-    assert!(is_test_key(&format!("{TEST_KEY_PREFIX}{hex}")));
-    assert!(!is_test_key(hex), "the prefix is required");
-    assert!(!is_test_key(&format!("{TEST_KEY_PREFIX}{}", &hex[..31])), "short hex");
-    assert!(!is_test_key(&format!("{TEST_KEY_PREFIX}{hex}0")), "long hex");
-    assert!(
-        !is_test_key(&format!("{TEST_KEY_PREFIX}{}g", &hex[..31])),
-        "a non-hex digit"
+fn a_test_send_key_is_the_prefix_and_a_printable_request_id_within_the_key_cap() {
+    let at_cap = format!(
+        "{TEST_KEY_PREFIX}{}",
+        "r".repeat(MAX_IDEMPOTENCY_KEY_BYTES - TEST_KEY_PREFIX.len())
     );
-    assert!(!is_test_key(&format!("x{TEST_KEY_PREFIX}{hex}")), "a leading byte");
+    assert_eq!(at_cap.len(), 128);
+    assert!(is_test_key(&at_cap), "a key of exactly the cap");
+    assert!(is_test_key(&format!("{TEST_KEY_PREFIX}7")), "a one-byte request_id");
+    assert!(
+        is_test_key(&format!("{TEST_KEY_PREFIX}0f3c-REQ_9.x~")),
+        "any printable ASCII, not only hex"
+    );
+
+    let over_cap = format!("{at_cap}r");
+    assert_eq!(over_cap.len(), 129);
+    assert!(!is_test_key(&over_cap), "129 bytes is past the key cap");
+    assert!(!is_test_key(TEST_KEY_PREFIX), "an empty request_id");
+    assert!(!is_test_key("req-1"), "the prefix is required");
+    assert!(!is_test_key("admin-send-tst-req-1"), "a wrong prefix");
+    assert!(!is_test_key(&format!("x{TEST_KEY_PREFIX}req-1")), "a leading byte");
+    assert!(!is_test_key(&format!("{TEST_KEY_PREFIX}req 1")), "a space is not printable");
+    assert!(!is_test_key(&format!("{TEST_KEY_PREFIX}req-\u{e9}")), "a non-ASCII byte");
 }
 
 /// The re-check lives in the ENQUEUE AUTHORITY, not at the form: a hand-posted body or a
@@ -553,7 +566,7 @@ async fn an_operator_send_carrying_a_key_this_page_never_minted_is_refused() {
         .await
         .expect_err("a producer-shaped key must not reach the outbox through the admin path");
     assert_eq!(e.status, opsapi::Status::Invalid, "{}", e.msg);
-    assert!(e.msg.contains("minted by the Mail page"), "got {:?}", e.msg);
+    assert!(e.msg.contains("admin-send-test- key within the key cap"), "got {:?}", e.msg);
     let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM mail.outbox WHERE idempotency_key = $1")
         .bind(&forged)
         .fetch_one(&pool)
