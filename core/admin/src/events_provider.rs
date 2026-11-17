@@ -283,14 +283,14 @@ fn manifest() -> Manifest {
         }],
         contributions: vec![
             contribution(NAV_PAUSED, Point::NavCounter, 0, "Paused subscriptions", "zap"),
-            contribution(TILE_PAUSED, Point::DashboardTile, 60, "Paused subscriptions", "zap"),
+            contribution(TILE_PAUSED, Point::DashboardTile, 60, "Paused subscriptions", ""),
             contribution(ATTENTION_PAUSED, Point::DashboardAttention, 20, "Paused subscriptions", "zap"),
-            contribution(KPI_HEAD, page(), 10, "Head sequence", "activity"),
-            contribution(KPI_SUBSCRIPTIONS, page(), 20, "Subscriptions", "zap"),
-            contribution(KPI_MAX_LAG, page(), 30, "Max lag", "chart"),
-            contribution(KPI_DEAD_LETTERED, page(), 40, "Dead-lettered (7 d)", "inbox"),
-            contribution(POISON, page(), 50, "Paused:", "alert"),
-            contribution(SUBSCRIPTIONS, page(), 60, "Subscriptions", "zap"),
+            contribution(KPI_HEAD, page(), 10, "Head sequence", ""),
+            contribution(KPI_SUBSCRIPTIONS, page(), 20, "Subscriptions", ""),
+            contribution(KPI_MAX_LAG, page(), 30, "Max lag", ""),
+            contribution(KPI_DEAD_LETTERED, page(), 40, "Dead-lettered (7 d)", ""),
+            contribution(POISON, page(), 50, "Paused:", ""),
+            contribution(SUBSCRIPTIONS, page(), 60, "Subscriptions", ""),
             contribution(HEADER, Point::EntityHeader(KIND.to_string()), 0, "Subscription", "zap"),
             contribution(
                 DETAILS,
@@ -360,7 +360,7 @@ impl EventsProvider {
             label: "Paused subscriptions".to_string(),
             value: paused.len().to_string(),
             unit: Some(format!("/ {}", states.len())),
-            delta: paused.first().map(|s| Delta { value: s.id.clone(), period: String::new(), good: Trend::None }),
+            delta: paused.first().map(|s| Delta { value: s.id.clone(), period: String::new(), good: Trend::Down }),
             series: Vec::new(),
             spark: Palette::Chart1,
             capacity: None,
@@ -418,7 +418,7 @@ impl EventsProvider {
             delta: top.filter(|s| s.lag_events > 0).map(|s| Delta {
                 value: format!("{} ({})", s.id, s.state),
                 period: String::new(),
-                good: Trend::None,
+                good: Trend::Down,
             }),
             series: Vec::new(),
             spark: Palette::Chart1,
@@ -445,10 +445,10 @@ impl EventsProvider {
                     entity: Some(EntityRef { kind: KIND.to_string(), id: s.id.clone() }),
                     cells: vec![
                         text(CellKind::Mono, s.id.clone(), None),
-                        text(CellKind::Mono, format!("{} v{}", s.topic, s.version), None),
+                        text(CellKind::Ref, format!("{} v{}", s.topic, s.version), None),
                         text(CellKind::Text, fakes::consumer(&s.id), None),
-                        text(CellKind::Number, thousands(checkpoint), None),
-                        text(CellKind::Number, thousands(head), None),
+                        text(CellKind::Mono, thousands(checkpoint), None),
+                        text(CellKind::Mono, thousands(head), None),
                         Cell {
                             bar: Some(lag_bar(s.lag_events)),
                             ..text(CellKind::Number, count(s.lag_events), lag_tone(&s))
@@ -469,14 +469,14 @@ impl EventsProvider {
         Ok(Primitive::DataTable(DataTable {
             columns: vec![
                 column("subscription", "Subscription", CellKind::Mono, Align::Left),
-                column("topic", "Topic", CellKind::Mono, Align::Left),
+                column("topic", "Topic", CellKind::Ref, Align::Left),
                 column("consumer", "Consumer", CellKind::Text, Align::Left),
-                column("checkpoint", "Checkpoint", CellKind::Number, Align::Right),
-                column("head", "Head", CellKind::Number, Align::Right),
+                column("checkpoint", "Checkpoint", CellKind::Mono, Align::Right),
+                column("head", "Head", CellKind::Mono, Align::Right),
                 column("lag", "Lag", CellKind::Number, Align::Left),
                 column("state", "State", CellKind::Badge, Align::Left),
             ],
-            page: PageInfo { next_cursor: None, size: rows.len() as u32, total: Some(rows.len() as u64) },
+            page: PageInfo { next_cursor: None, size: rows.len() as u32, total: None },
             rows,
             filters: vec![FilterDef {
                 key: FILTER_STATE.to_string(),

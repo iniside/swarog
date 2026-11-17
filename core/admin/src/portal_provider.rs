@@ -50,13 +50,13 @@ impl Provider for PortalProvider {
         Manifest {
             module: MODULE.to_string(),
             contributions: vec![
-                contribution(TILE_LORE_SEATS, Point::DashboardTile, 20, "Lore seats", "users"),
-                contribution(TILE_LORE_STORE, Point::DashboardTile, 30, "Lore store used", "repo"),
-                contribution(TILE_MATCHES, Point::DashboardTile, 80, "Matches in progress", "swords"),
+                contribution(TILE_LORE_SEATS, Point::DashboardTile, 20, "Lore seats", ""),
+                contribution(TILE_LORE_STORE, Point::DashboardTile, 30, "Lore store used", ""),
+                contribution(TILE_MATCHES, Point::DashboardTile, 80, "Matches in progress", ""),
                 contribution(ATTENTION_SERVICES, Point::DashboardAttention, 10, "Service health", "alert"),
                 contribution(ATTENTION_LORE, Point::DashboardAttention, 30, "Lore locks", "lock"),
                 contribution(ATTENTION_SCHEDULER, Point::DashboardAttention, 50, "Scheduler runs", "clock"),
-                contribution(HEALTH, Point::DashboardWide, 100, "Service health", "server"),
+                contribution(HEALTH, Point::DashboardWide, 100, "Service health", ""),
             ],
             writes: false,
             ..Manifest::default()
