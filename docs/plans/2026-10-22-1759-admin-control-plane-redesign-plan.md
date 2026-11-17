@@ -1342,11 +1342,78 @@ Tests (Step 25 adds them; listed here so the design is checkable):
 
 (d) `[opus]` core-implementer. The view parts go to Step 10.
 
+### Step 9b — Remaining view carriers: backend
+
+(a) `core/controlplane/src/lib.rs`, `core/admin/src/{engine/*,render.rs,routes.rs,events_provider.rs,portal_provider.rs,fakes.rs}`,
+`core/admin/src/templates/*` (carrier reads only, see below), `tools/admincheck`, and the
+public-api baseline.
+
+(b) Why: the Step 10 spec extraction (2026-11-17) found six mockup elements the contract
+still cannot carry. The owner chose to add carriers for all six rather than declare
+deviations.
+
+(c) Decisions and invariants. Where an old field is replaced, it dies in the same step
+(one rail).
+1. **Bar cell.** `Cell` gains `bar: Option<u8>`, a fill percentage. The renderer clamps
+   it to 100. It renders as the mockup's lag bar (`pages-platform.js:129`) before the
+   value.
+   - When `bar` is set, `tone` colours the fill only and the value stays plain mono:
+     - `None` gives the default fill (`--ok`);
+     - `Warn` gives `.w`;
+     - `Err` gives `.e`;
+     - `Ok` and `Info` give the default fill.
+   - The `core.events` Lag column sets `bar` with the mockup's scale
+     (`min(100, max(3, lag / 3))`) and the tone it already has.
+   - The column is no longer right-aligned.
+2. **Reason hint.** `ConfirmSpec` gains `reason_hint: Option<String>`, the placeholder of
+   the reason input. Skip sets one in the mockup's style.
+3. **Typed impact values.** `ConfirmSpec.impact` becomes `Vec<(String, Cell)>`, so a
+   value can be mono or toned, as in the mockup. Every existing impact row is converted.
+4. **Spark colour.** `KpiTile` gains `spark: Palette`, where `Palette` is `Chart1 | Chart2 |
+   Warn`. Those are the colours the mockup uses (`registry.js:48-50`): the design-system
+   `--chart-1`/`--chart-2` tokens and `--warn`. Every provider sets it explicitly:
+   `Chart1` unless the mockup gives another colour. A port that needs another colour adds
+   a variant.
+5. **Last value on a failed tile** (engine rule, no contract change):
+   - A failed fetch with a cached copy younger than `cache_ttl_s` stays `stale`, as today.
+     The value is shown in the value slot with the stale badge, as in the mockup.
+   - A failed fetch whose only copy has expired, but is at most 1 h old, is `error`. For a
+     `KpiTile` only, the error tile then shows "last value <age> ago: <value>"
+     (`bundle.js:180`) from that copy.
+   - The panel cache keeps an expired copy (bounded by its existing cap) and exposes it
+     for this purpose only. In `error`, a copy older than 1 h is never shown. A tile
+     whose contribution declares no `cache_ttl_s` has no copy and so no last value.
+   - In `error` the last value appears only in that muted text, never in the value slot.
+6. **Action emphasis.** `ActionDecl.primary: bool` is replaced by
+   `emphasis: Emphasis { Primary, Default, Ghost }`. The Step 8a rule "at most one primary
+   per `head_actions`" moves to `Emphasis::Primary`, and admincheck keeps enforcing it.
+   Copy payload is `Ghost`.
+   - `ActionDecl` also gains `trailing_icon: bool`, which draws the icon after the label
+     (the mockup's "Audit log →", `pages-core.js:55`). admincheck flags it on any action
+     that is not `Then::Link`. Its first user is the audit port (Step 24), with `Ghost`.
+   - `ActionItem` (the view model) exposes the emphasis instead of `primary`.
+7. **Carrier reads in the templates.** Every template read of a field this step removes is
+   moved to its replacement in this step, so the build renders correctly on its own:
+   - `a.primary` becomes the emphasis;
+   - an impact value renders through the existing `cell` macro.
+
+   New markup (bar, hint, spark colour, last value, ghost, trailing icon) is Step 10.
+
+Tests for Step 25:
+- a bar cell and a typed impact cell round-trip, and `bar` is clamped to 100;
+- admincheck still flags a second Primary, and flags `trailing_icon` on a non-Link action;
+- a failed KPI tile:
+  - with a copy younger than its ttl is stale;
+  - with an expired copy at most 1 h old is error with the last value;
+  - with an older copy shows none.
+
+(d) `[opus]` core-implementer. The markup goes to Step 10.
+
 ### Step 10 — Portal-owned screens: view
 
 (a) The templates and macros used by the dashboard and Event plane pages.
 
-(b) After Step 9.
+(b) After Step 9b.
 
 (c) 1:1 with `index.html` and `events.html` per R1–R3. Also two generic macro changes
 (owner, 2026-11-17):
@@ -1366,6 +1433,13 @@ Tests (Step 25 adds them; listed here so the design is checkable):
   - the dashboard range switch and Refresh;
   - the fixed Dashboard nav entry;
   - KPI delta colours from `Delta.good`, not from an arrow prefix.
+- Step 9b view parts:
+  - the bar cell (fill colour from tone, value plain);
+  - the reason placeholder;
+  - typed impact values;
+  - the spark colour;
+  - the error tile's last value;
+  - the ghost emphasis and the trailing icon.
 
 (d) `[opus]` mockup-implementer.
 
