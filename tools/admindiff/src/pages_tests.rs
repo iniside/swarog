@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use super::{boot_key, lookup, mockup_pages, validate, Route, EXCLUDED, PAGE_MAP};
+use super::{boot_key, lookup, mockup_pages, validate, validate_lists, Page, Route, EXCLUDED, PAGE_MAP};
 use crate::tests::ScratchDir;
 
 /// Every page the two lists name, as a mockup map would hold it.
@@ -82,4 +82,62 @@ fn the_const_lists_are_disjoint_unique_and_reasoned() {
         assert!(seen.insert(page), "{page} is listed twice");
     }
     assert!(EXCLUDED.iter().all(|(_, why)| !why.trim().is_empty()));
+}
+
+// ---- validate_lists: each defect beside its clean twin --------------------------------
+
+const MAPPED: Page = Page { page: "a", route: Route::Mapped("/admin/a"), search: "" };
+const PENDING: Page = Page { page: "b", route: Route::Pending, search: "" };
+
+/// Mockup pages `a`, `b` and `c`.
+fn abc() -> BTreeMap<String, String> {
+    ["a", "b", "c"].iter().map(|p| (p.to_string(), format!("k-{p}"))).collect()
+}
+
+/// The one drift `validate_lists` reports for the given lists.
+fn lists_drift(page_map: &[Page], excluded: &[(&str, &str)]) -> String {
+    format!("{:#}", validate_lists(&abc(), page_map, excluded).expect_err("must drift"))
+}
+
+#[test]
+fn validate_lists_passes_the_clean_twin() {
+    validate_lists(&abc(), &[MAPPED, PENDING], &[("c", "why")]).expect("every page listed once, with a reason");
+}
+
+#[test]
+fn validate_lists_rejects_a_page_listed_twice_in_one_list() {
+    let twice = lists_drift(&[MAPPED, PENDING, MAPPED], &[("c", "why")]);
+    assert_eq!(twice, "page map drift:
+  a is listed in PAGE_MAP and again in PAGE_MAP");
+    let excluded_twice = lists_drift(&[MAPPED, PENDING], &[("c", "why"), ("c", "why")]);
+    assert_eq!(excluded_twice, "page map drift:
+  c is listed in EXCLUDED and again in EXCLUDED");
+}
+
+#[test]
+fn validate_lists_rejects_a_page_in_both_lists() {
+    let both = lists_drift(&[MAPPED, PENDING], &[("c", "why"), ("a", "why")]);
+    assert_eq!(both, "page map drift:
+  a is listed in PAGE_MAP and again in EXCLUDED");
+}
+
+#[test]
+fn validate_lists_rejects_an_excluded_page_without_a_reason() {
+    let blank = lists_drift(&[MAPPED, PENDING], &[("c", " 	 ")]);
+    assert_eq!(blank, "page map drift:
+  EXCLUDED c has no reason");
+    let empty = lists_drift(&[MAPPED, PENDING], &[("c", "")]);
+    assert_eq!(empty, "page map drift:
+  EXCLUDED c has no reason");
+}
+
+#[test]
+fn validate_lists_rejects_an_unknown_page_in_either_list() {
+    let z = Page { page: "z", route: Route::Pending, search: "" };
+    let mapped = lists_drift(&[MAPPED, PENDING, z], &[("c", "why")]);
+    assert_eq!(mapped, "page map drift:
+  PAGE_MAP lists z, which is not a mockup page");
+    let excluded = lists_drift(&[MAPPED, PENDING], &[("c", "why"), ("z", "why")]);
+    assert_eq!(excluded, "page map drift:
+  EXCLUDED lists z, which is not a mockup page");
 }

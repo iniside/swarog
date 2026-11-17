@@ -165,3 +165,21 @@ fn parse_args_rejects_unknown_missing_and_misplaced_arguments() {
     assert!(args_err("diff --portal x").starts_with("admindiff diff: --page is required"));
     assert_eq!(args_err("diff --page"), "admindiff: --page requires a value");
 }
+
+/// The production `validate_repeats` call in `run_diff`: the same page and crawl as the clean
+/// twin, minus the mockup's only `.uptime > i`, is an error before anything is compared.
+#[test]
+fn run_diff_fails_on_a_repeat_entry_dead_in_the_mockup() {
+    let portal = crawl_dir("diff-repeat-crawl", &portal_html(&body(true)), true);
+    let live = FakeRepo::new("diff-repeat-live", &mock_html(&body(true)));
+    assert!(run_diff(live.path(), "index", portal.path(), false).expect("runs"), "the clean twin");
+
+    let bars = r#"<div class="uptime"><i></i></div>"#;
+    assert!(body(true).contains(bars), "the fixture holds the bars it removes");
+    let dead = FakeRepo::new("diff-repeat-dead", &mock_html(&body(true).replace(bars, "")));
+    let e = format!("{:#}", run_diff(dead.path(), "index", portal.path(), false).expect_err("a dead REPEAT entry"));
+    assert_eq!(
+        e,
+        "REPEAT entries matching nothing in the mockup: .uptime > i (uptime bars: a bar's class is its sample's tone, which is data)"
+    );
+}

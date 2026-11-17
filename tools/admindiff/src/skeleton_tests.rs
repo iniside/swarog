@@ -304,3 +304,41 @@ fn units_match_by_kind_and_key_and_the_rest_is_reported() {
     let disjoint = diff_pages(&page_of(&panel("A")), &page_of(&panel("B")));
     assert_eq!(disjoint.matched_panels, 0, "the count run_diff fails on");
 }
+
+// ---- --text and svg ------------------------------------------------------------------
+
+fn diff_text(mock: &str, portal: &str, text: bool) -> BTreeSet<String> {
+    let page_with = |body: &str| page(&root(&format!(r#"<div class="app">{body}</div>"#)), text);
+    diff_pages(&page_with(mock), &page_with(portal)).lines
+}
+
+#[test]
+fn an_svg_drawing_compares_only_with_text() {
+    let (mock, portal) = (r#"<svg class="i"><path></path></svg>"#, r#"<svg class="i"><circle></circle></svg>"#);
+    assert_eq!(diff_text(mock, portal, false), set(&[]), "without --text an svg is its tag and classes");
+    assert_eq!(
+        diff_text(mock, portal, true),
+        set(&["frame div.app > svg.i: mock-only path", "frame div.app > svg.i: portal-only circle"]),
+        "with --text the drawing is compared"
+    );
+}
+
+#[test]
+fn text_compares_only_with_text() {
+    let (mock, portal) = ("<p>Alpha</p>", "<p>Beta</p>");
+    assert_eq!(diff_text(mock, portal, false), set(&[]), "without --text a text leaf is not in the skeleton");
+    assert_eq!(diff_text(mock, portal, true), set(&[r#"frame div.app > p: mock #"Alpha" portal #"Beta""#]));
+}
+
+#[test]
+fn script_and_style_text_is_never_compared() {
+    let mock = "<script>var a = 1;</script><style>.a { color: red }</style>";
+    let portal = "<script>var b = 2;</script><style>.b { color: blue }</style>";
+    assert_eq!(diff_text(mock, portal, true), set(&[]), "script and style text is excluded even with --text");
+    assert_eq!(page_of(mock).frame.canon, "div.app{script,style}", "the elements themselves stay");
+    assert_eq!(
+        diff_text("<p>var a = 1;</p>", "<p>var b = 2;</p>", true),
+        set(&[r#"frame div.app > p: mock #"var a = 1;" portal #"var b = 2;""#]),
+        "the same text outside script and style is compared"
+    );
+}

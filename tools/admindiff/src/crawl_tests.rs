@@ -1,5 +1,7 @@
 //! `crawl` against a loopback fake portal: no Postgres, no fleet. Each failing site differs
-//! from [`Site::healthy`], which crawls clean, by the one defect it names.
+//! from [`Site::healthy`], which crawls clean, by the one defect it names. The healthy site
+//! is built from [`PAGE_MAP`], so a page added there is served too and every failing site
+//! still has only its own defect.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -7,6 +9,7 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
 use super::{run, Config, CLEAN_MARKER, MAX_ROUNDS};
+use crate::pages::{Route, PAGE_MAP};
 use crate::tests::ScratchDir;
 
 #[derive(Clone, Debug)]
@@ -41,11 +44,43 @@ struct Site {
     chain_depth: usize,
 }
 
-const DASH_SLOT: &str = "/admin/_panel/dash";
-const EVENTS_SLOT: &str = "/admin/_panel/events";
-const EXTRA_SLOT: &str = "/admin/_panel/extra";
-const EVENTS_ROUTE: &str = "/admin/p/core.events/events";
+/// The dashboard: where login lands, so the healthy site serves it whatever the page map says.
+const DASHBOARD: &str = "/admin";
+/// A page only the nav links.
 const EXTRA_ROUTE: &str = "/admin/p/extra/things";
+const EXTRA_SLOT: &str = "/admin/_panel/extra";
+
+/// A page the crawl fetches, with the one slot the healthy site gives it.
+struct Target {
+    page: &'static str,
+    route: &'static str,
+    slot: String,
+}
+
+fn panel_url(page: &str) -> String {
+    format!("/admin/_panel/page-{page}")
+}
+
+/// Every mapped page of [`PAGE_MAP`].
+fn mapped() -> Vec<Target> {
+    PAGE_MAP
+        .iter()
+        .filter_map(|p| match p.route {
+            Route::Mapped(route) => Some(Target { page: p.page, route, slot: panel_url(p.page) }),
+            Route::Pending => None,
+        })
+        .collect()
+}
+
+/// The dashboard's slot: the mapped page's at [`DASHBOARD`], else one of its own.
+fn dashboard_slot() -> String {
+    mapped().into_iter().find(|t| t.route == DASHBOARD).map_or_else(|| panel_url("dashboard"), |t| t.slot)
+}
+
+/// A mapped page other than the dashboard, which the page and fragment defects are put on.
+fn other_mapped() -> Target {
+    mapped().into_iter().find(|t| t.route != DASHBOARD).expect("PAGE_MAP maps a page besides the dashboard")
+}
 
 fn slot(url: &str) -> String {
     format!(r#"<div class="slot" hx-get="{url}" hx-trigger="load" hx-swap="outerHTML"><div class="sk"></div></div>"#)
@@ -76,18 +111,28 @@ fn shell(nav_links: &str, h1: &str, content: &str) -> String {
 }
 
 impl Site {
-    /// Clean: the dashboard and the events page from the page map plus one page only the nav
+    /// Clean: the dashboard, every mapped page of [`PAGE_MAP`] and one page only the nav
     /// links, each with one slot whose fragment is in the ok state.
     fn healthy() -> Site {
-        let links = nav(&["/admin", EVENTS_ROUTE, EXTRA_ROUTE]);
+        Site::with_content(&slot)
+    }
+
+    /// The healthy site's pages and nav with each page's content `content(<its slot url>)`;
+    /// every slot url answers its ok fragment.
+    fn with_content(content: &dyn Fn(&str) -> String) -> Site {
+        let mut pages: Vec<(&str, &str, String)> = mapped().into_iter().map(|t| (t.route, t.page, t.slot)).collect();
+        if !pages.iter().any(|(route, _, _)| *route == DASHBOARD) {
+            pages.push((DASHBOARD, "dashboard", dashboard_slot()));
+        }
+        pages.push((EXTRA_ROUTE, "things", EXTRA_SLOT.to_string()));
+        let links = nav(&pages.iter().map(|(route, _, _)| *route).collect::<Vec<_>>());
         let mut routes = BTreeMap::new();
-        routes.insert("/admin".to_string(), ok(shell(&links, "Dashboard", &slot(DASH_SLOT))));
-        routes.insert(EVENTS_ROUTE.to_string(), ok(shell(&links, "Event plane", &slot(EVENTS_SLOT))));
-        routes.insert(EXTRA_ROUTE.to_string(), ok(shell(&links, "Things", &slot(EXTRA_SLOT))));
-        routes.insert(DASH_SLOT.to_string(), ok(fragment(Some("ok"), "Services", "")));
-        routes.insert(EVENTS_SLOT.to_string(), ok(fragment(Some("ok"), "Subscriptions", "")));
-        routes.insert(EXTRA_SLOT.to_string(), ok(fragment(Some("ok"), "Things", "")));
-        Site { login: Response { status: 303, location: Some("/admin"), body: String::new() }, routes, chain_depth: 0 }
+        for (route, page, slot_url) in &pages {
+            let title = if *route == DASHBOARD { "Dashboard" } else { page };
+            routes.insert(route.to_string(), ok(shell(&links, title, &content(slot_url))));
+            routes.insert(slot_url.clone(), ok(fragment(Some("ok"), &format!("{page} panel"), "")));
+        }
+        Site { login: Response { status: 303, location: Some(DASHBOARD), body: String::new() }, routes, chain_depth: 0 }
     }
 
     fn with(mut self, path: &str, response: Response) -> Site {
@@ -222,13 +267,17 @@ async fn a_healthy_portal_crawls_clean_and_writes_the_assembled_pages() {
     assert!(matches!(c.result, Ok(true)), "{:?}", c.result);
     assert!(c.clean_marker(), "a clean crawl writes {CLEAN_MARKER}");
     let run = c.out.path().join("run");
-    let index = std::fs::read_to_string(run.join("index.html")).expect("index.html");
-    assert!(index.contains(r#"data-state="ok""#) && index.contains("Services"), "the slot is replaced: {index}");
-    assert!(!index.contains("hx-trigger"), "no loading placeholder is left: {index}");
-    assert!(run.join("events.html").is_file(), "the mapped page");
+    let pages = mapped();
+    assert!(pages.iter().any(|t| t.route == DASHBOARD), "the page map maps the dashboard");
+    for t in &pages {
+        let page = std::fs::read_to_string(run.join(format!("{}.html", t.page))).expect("each mapped page is written");
+        let title = format!("{} panel", t.page);
+        assert!(page.contains(r#"data-state="ok""#) && page.contains(&title), "the slot is replaced: {page}");
+        assert!(!page.contains("hx-trigger"), "no loading placeholder is left: {page}");
+    }
     assert!(run.join("p-extra-things.html").is_file(), "the page only the nav links");
     let panels: Vec<Request> = c.server.requests().into_iter().filter(|r| r.path.starts_with("/admin/_panel/")).collect();
-    assert_eq!(panels.len(), 3, "{panels:?}");
+    assert_eq!(panels.len(), pages.len() + 1, "one fragment per mapped page and the nav-only page: {panels:?}");
     assert!(panels.iter().all(|r| r.hx), "fragments are fetched with HX-Request: {panels:?}");
 }
 
@@ -253,45 +302,42 @@ async fn a_303_anywhere_but_the_dashboard_fails() {
 
 #[tokio::test]
 async fn a_dashboard_without_the_shell_fails() {
-    let no_sidebar = Site::healthy().with("/admin", ok(r#"<div class="page-head"><h1>Dashboard</h1></div>"#));
+    let no_sidebar = Site::healthy().with(DASHBOARD, ok(r#"<div class="page-head"><h1>Dashboard</h1></div>"#));
     crawl(no_sidebar, false).await.assert_error("did not land on the dashboard shell (sidebar: false");
-    let login_title = Site::healthy().with("/admin", ok(shell("", "Sign in", "")));
+    let login_title = Site::healthy().with(DASHBOARD, ok(shell("", "Sign in", "")));
     crawl(login_title, false).await.assert_error("page title: Some(\"Sign in\")");
-    let not_ok = Site::healthy().with("/admin", status(500));
+    let not_ok = Site::healthy().with(DASHBOARD, status(500));
     crawl(not_ok, false).await.assert_error("GET /admin answered 500");
 }
 
 #[tokio::test]
 async fn zero_nav_pages_fails() {
-    let site = Site::healthy().with("/admin", ok(shell(&nav(&["/admin"]), "Dashboard", &slot(DASH_SLOT))));
+    let site = Site::healthy().with(DASHBOARD, ok(shell(&nav(&[DASHBOARD]), "Dashboard", &slot(&dashboard_slot()))));
     crawl(site, false).await.assert_failed("only the dashboard link");
 }
 
 #[tokio::test]
 async fn zero_fragments_fails() {
-    let links = nav(&["/admin", EVENTS_ROUTE]);
-    let site = Site::healthy()
-        .with("/admin", ok(shell(&links, "Dashboard", "")))
-        .with(EVENTS_ROUTE, ok(shell(&links, "Event plane", "<p>no slot</p>")));
+    let site = Site::with_content(&|_| "<p>no slot</p>".to_string());
     crawl(site, false).await.assert_failed("no slot anywhere");
 }
 
 #[tokio::test]
 async fn a_non_2xx_fragment_fails() {
     let failed = Response { status: 500, ..ok(fragment(Some("ok"), "Subscriptions", "")) };
-    let site = Site::healthy().with(EVENTS_SLOT, failed);
+    let site = Site::healthy().with(&other_mapped().slot, failed);
     crawl(site, false).await.assert_failed("a 500 fragment");
 }
 
 #[tokio::test]
 async fn a_fragment_without_data_state_fails() {
-    let site = Site::healthy().with(EVENTS_SLOT, ok(fragment(None, "Subscriptions", "")));
+    let site = Site::healthy().with(&other_mapped().slot, ok(fragment(None, "Subscriptions", "")));
     crawl(site, false).await.assert_failed("no data-state");
 }
 
 #[tokio::test]
 async fn an_error_state_fragment_fails_unless_errors_are_allowed() {
-    let site = Site::healthy().with(EVENTS_SLOT, ok(fragment(Some("error"), "Subscriptions", "")));
+    let site = Site::healthy().with(&other_mapped().slot, ok(fragment(Some("error"), "Subscriptions", "")));
     crawl(site.clone(), false).await.assert_failed("an error-state fragment");
     let allowed = crawl(site, true).await;
     assert!(matches!(allowed.result, Ok(true)), "{:?}", allowed.result);
@@ -303,7 +349,7 @@ async fn slots_load_for_at_most_max_rounds() {
     let first = slot("/admin/_panel/chain/1");
     let chained = |depth: usize| {
         let site = Site { chain_depth: depth, ..Site::healthy() };
-        site.with(EVENTS_SLOT, ok(fragment(Some("ok"), "Subscriptions", &first)))
+        site.with(&other_mapped().slot, ok(fragment(Some("ok"), "Subscriptions", &first)))
     };
     // Round 1 loads the page's slot, whose fragment holds the chain's first link; each link
     // holds the next until `depth`, so a chain of `depth` links takes `depth + 1` rounds.
@@ -315,11 +361,25 @@ async fn slots_load_for_at_most_max_rounds() {
 #[tokio::test]
 async fn a_non_2xx_row_menu_fails() {
     let menu = r#"<button class="btn sm icon ghost" data-menu-url="/admin/_menu/player/p-1"></button>"#;
-    let site = Site::healthy().with(EVENTS_SLOT, ok(fragment(Some("ok"), "Subscriptions", menu)));
+    let site = Site::healthy().with(&other_mapped().slot, ok(fragment(Some("ok"), "Subscriptions", menu)));
     let fine = crawl(site.clone().with("/admin/_menu/player/p-1", ok("<div class=\"menu-group\"></div>")), false).await;
     assert!(matches!(fine.result, Ok(true)), "{:?}", fine.result);
     let menus: Vec<Request> =
         fine.server.requests().into_iter().filter(|r| r.path.starts_with("/admin/_menu/")).collect();
     assert_eq!(menus.len(), 1, "a menu is fetched once: {menus:?}");
     crawl(site.with("/admin/_menu/player/p-1", status(500)), false).await.assert_failed("a 500 row menu");
+}
+
+/// `crawl_page`'s status check: a page answering 500 fails even when its body, a whole page
+/// with a loadable slot or nothing at all, gives the crawl nothing else to fail on.
+#[tokio::test]
+async fn a_non_2xx_page_fails() {
+    let mapped = other_mapped();
+    let whole = Site::healthy().routes.get(mapped.route).expect("the healthy site serves it").body.clone();
+    let site = Site::healthy().with(mapped.route, Response { status: 500, ..ok(whole) });
+    crawl(site, false).await.assert_failed("a mapped page answering 500 with a whole page");
+    let site = Site::healthy().with(mapped.route, status(500));
+    crawl(site, false).await.assert_failed("a mapped page answering 500 with an empty body");
+    let site = Site::healthy().with(EXTRA_ROUTE, status(500));
+    crawl(site, false).await.assert_failed("a page only the nav links answering 500");
 }
