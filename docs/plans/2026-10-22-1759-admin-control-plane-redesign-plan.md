@@ -1669,16 +1669,56 @@ model tokens. Step 10's cost came from:
      work), and after any port whose review needs more than one fix round. Its fixes
      land before the next port.
 
+5. **Mockup-state seed** (owner, 2026-11-17). A fresh dev fleet has no paused and no
+   lagging subscription, so about a third of the Event plane's and the dashboard's accept
+   entries were data differences, and the designed Paused panel was never compared.
+   - **Where.** A new verb `eventctl seed-mockup` in `tools/eventctl`, with its SQL in
+     that tool (`src/seed.rs`). `admindiff` and `demoseed` stay without database access;
+     demo fixtures do not go into `asyncevents::admin`. It is a dev tool under the Dev
+     tooling scope rule.
+   - **What.** Two subscription rows with no registered consumer, so no worker ever
+     claims them. The implementer cites the worker code that guarantees this, for both
+     topologies.
+     - `seed.mockup-paused.v1`: paused, with failures and `last_error` as the mockup's
+       paused row and Paused panel show (`pages-platform.js:128-161`). Its cursor sits
+       before the first event of the topic, so `poison_event` returns a real event.
+     - `seed.mockup-lagging.v1`: active, with the mockup's lagging row (warn badge, lag
+       bar), cursor at the same place.
+     - The topic is the one with the most events in the log. No events at all is an
+       error that says to run `demoseed` first. Whether the lag reaches warn is not
+       checked by the seed; `admindiff diff` checks it, because the re-cut accept files
+       no longer accept the lagging row's absence.
+   - **Idempotent.** Each run resets both rows to the designed state, whatever state they
+     are in, including retired. Running the verbs on them (resume, skip, retire) is
+     harmless. The rows hold the retention floor until retired or wiped; the usage text
+     says so.
+   - **Run order** before every comparison: `devctl up`, `demoseed`,
+     `eventctl seed-mockup`, `admindiff crawl`, `admindiff diff`. The item 3 skill
+     states it.
+   - **Accept files.** After the seed lands, the orchestrator runs that sequence. The
+     data-difference entries the seed resolves are removed from
+     `tools/admindiff/accept/{index,events}.txt`, which `diff` enforces, as such an
+     entry is now stale.
+   - **Ports.** A port's part `a` adds the data its page's designed state needs: through
+     `demoseed` when the module's public API can produce it, otherwise through the
+     module's own operator tool. A data-difference accept entry is allowed only when
+     neither can.
+
 This revision also changes the port template (b → `[sonnet]` mockup-implementer under
 item 4; checklist first), Step 12 (use `admindiff crawl` against the split) and Step 27
 (use `admindiff diff` per page).
 
 Tests: item 1 is itself a test. `admindiff` ships its own unit tests in item 2, covering
 the skeleton, collapse, strip lists, assembly, page map, matching and stale-accept rules.
+Item 5 gets `[opus]` test-author tests against local Postgres: both rows created, a
+re-run resets a resumed or skipped row, `poison_event` returns the topic's first event,
+and an empty log is refused.
 
 (d) Order and lanes:
 - 1 `[opus]` test-author, then 2 `[opus]` core-implementer; one at a time.
-- 3 and 4 `[opus]` docs-writer, after 1 and 2 have landed, so the skill cites real
+- 5 `[opus]` core-implementer after item 2's tests land, then its tests, then the
+  accept-file re-cut (core-implementer, from the orchestrator's crawl output).
+- 3 and 4 `[opus]` docs-writer, after 1, 2 and 5 have landed, so the skill cites real
   commands.
 - core-reviewer reviews each item. proof-auditor also audits items 1 and 2, because they
   are gates.
@@ -1700,6 +1740,7 @@ the skeleton, collapse, strip lists, assembly, page map, matching and stale-acce
     after a timeout, a `Failed` transport error after the module already applied the
     action, or a failed settle;
   - no test files (Step 25);
+  - the seed data the page's designed state needs (Step 10b item 5, **Ports**);
   - `order` values follow the mockup's order, around the ones Step 9 took:
     - dashboard tiles: accounts 10, storage 40, mail 50, wallet 70 (portal holds 20,
       30, 80; core.events holds 60);
