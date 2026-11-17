@@ -848,6 +848,7 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
         Primitive::Cell(c) => PrimView::Cell(cell(c)),
         Primitive::EntityHeader(h) => PrimView::Header(HeaderView {
             title: h.title.clone(),
+            crumb: h.crumb.clone().unwrap_or_else(|| h.title.clone()),
             subtitle: h.subtitle.clone(),
             status: h.status.as_ref().map(cell),
             badges: h.badges.iter().map(cell).collect(),
@@ -1048,7 +1049,7 @@ fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
                     .actions
                     .iter()
                     .filter_map(|id| ctx.input.actions.iter().find(|a| a.table_row && &a.id == id))
-                    .map(|a| bind(a, r.entity.as_ref(), r.item.as_deref()))
+                    .map(|a| bind(a, r.entity.as_ref().or(ctx.input.entity), r.item.as_deref()))
                     .collect(),
             }
         })
@@ -1753,6 +1754,7 @@ pub(crate) struct AttentionView {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct HeaderView {
     pub(crate) title: String,
+    pub(crate) crumb: String,
     pub(crate) subtitle: String,
     pub(crate) status: Option<CellView>,
     pub(crate) badges: Vec<CellView>,

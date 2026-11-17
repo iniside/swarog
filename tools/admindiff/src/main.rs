@@ -20,7 +20,7 @@ async fn main() -> ExitCode {
     let repo = repo_root();
     let result = match command {
         Command::Help => unreachable!("handled above"),
-        Command::Crawl { base_url, user, allow_errors } => {
+        Command::Crawl { base_url, user, allow_errors, allow_empty } => {
             if let Err(err) = admindiff::validated_mockup(&repo) {
                 eprintln!("admindiff: {err:#}");
                 return ExitCode::FAILURE;
@@ -31,6 +31,7 @@ async fn main() -> ExitCode {
                 username: user,
                 password: std::env::var(admindiff::PASSWORD_ENV).unwrap_or_else(|_| admindiff::DEFAULT_PASSWORD.to_string()),
                 allow_errors,
+                allow_empty,
                 out: target_dir(&repo).join(format!("crawl-{run}")),
             };
             crawl::run(&cfg).await

@@ -586,6 +586,7 @@ impl EventsProvider {
         let snap = plane::snapshot(&self.pool, &sub.id).await.map_err(internal)?;
         Ok(Primitive::EntityHeader(EntityHeader {
             title: sub.id.clone(),
+            crumb: None,
             subtitle: format!("checkpoint {}", snap.cursor),
             status: Some(state_cell(&snap.state, snap.consecutive_failures)),
             badges: Vec::new(),

@@ -559,6 +559,7 @@ impl AccountsAdmin {
         let handle = handle(&row);
         Ok(Primitive::EntityHeader(EntityHeader {
             title: row.display_name.clone(),
+            crumb: Some(handle.clone()),
             subtitle: format!("@{handle}"),
             status: Some(text(CellKind::Badge, ACCOUNT_STATUS)),
             badges: vec![text(CellKind::Label, ACCOUNT_KIND)],

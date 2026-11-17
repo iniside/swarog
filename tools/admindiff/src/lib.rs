@@ -1,6 +1,6 @@
 //! `admindiff` — compares the running admin portal with the UILayout mockup.
 //!
-//!   admindiff crawl [--base-url <url>] [--user <name>] [--allow-errors]
+//!   admindiff crawl [--base-url <url>] [--user <name>] [--allow-errors] [--allow-empty]
 //!   admindiff mock --page <page>
 //!   admindiff diff --page <page> --portal <crawl dir> [--text]
 
@@ -25,14 +25,15 @@ pub const USAGE: &str = "\
 admindiff — crawl the admin portal and diff its pages against the UILayout mockup
 
 USAGE:
-  admindiff crawl [--base-url <url>] [--user <name>] [--allow-errors]
+  admindiff crawl [--base-url <url>] [--user <name>] [--allow-errors] [--allow-empty]
   admindiff mock --page <page>
   admindiff diff --page <page> --portal <crawl dir> [--text]
 
   crawl     log in, fetch every nav page and mapped page, load their slots with HX-Request,
             fetch row menus for status; writes target/admindiff/<run>/ (and its CLEAN marker
             when clean) and fails on any non-2xx, an error-state fragment (unless
-            --allow-errors), a fragment without data-state, no nav page or no fragment
+            --allow-errors), a fragment without data-state, no nav page or no fragment, and an
+            entity page whose list page has no row to follow (unless --allow-empty)
   mock      render the mockup page through node into target/admindiff/mock/<page>.html
   diff      compare the page's class skeleton with the crawl's assembled page; refuses a
             crawl without its CLEAN marker, and fails on a difference not in
@@ -53,7 +54,7 @@ Requires node on PATH for mock and diff.";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Help,
-    Crawl { base_url: String, user: String, allow_errors: bool },
+    Crawl { base_url: String, user: String, allow_errors: bool, allow_empty: bool },
     Mock { page: String },
     Diff { page: String, portal: PathBuf, text: bool },
 }
@@ -62,12 +63,12 @@ pub fn parse_args(args: &[String]) -> Result<Command> {
     let Some((verb, rest)) = args.split_first() else { return Ok(Command::Help) };
     let mut base_url = DEFAULT_BASE_URL.to_string();
     let mut user = DEFAULT_USER.to_string();
-    let (mut allow_errors, mut text) = (false, false);
+    let (mut allow_errors, mut allow_empty, mut text) = (false, false, false);
     let (mut page, mut portal) = (None, None);
     let mut iter = rest.iter();
     while let Some(flag) = iter.next() {
         let allowed: &[&str] = match verb.as_str() {
-            "crawl" => &["--base-url", "--user", "--allow-errors"],
+            "crawl" => &["--base-url", "--user", "--allow-errors", "--allow-empty"],
             "mock" => &["--page"],
             "diff" => &["--page", "--portal", "--text"],
             "-h" | "--help" | "help" => return Ok(Command::Help),
@@ -78,6 +79,7 @@ pub fn parse_args(args: &[String]) -> Result<Command> {
         }
         match flag.as_str() {
             "--allow-errors" => allow_errors = true,
+            "--allow-empty" => allow_empty = true,
             "--text" => text = true,
             _ => {
                 let value = iter.next().ok_or_else(|| anyhow!("admindiff: {flag} requires a value"))?.clone();
@@ -92,7 +94,7 @@ pub fn parse_args(args: &[String]) -> Result<Command> {
     }
     let need = |v: Option<String>, flag: &str| v.ok_or_else(|| anyhow!("admindiff {verb}: {flag} is required\n\n{USAGE}"));
     match verb.as_str() {
-        "crawl" => Ok(Command::Crawl { base_url, user, allow_errors }),
+        "crawl" => Ok(Command::Crawl { base_url, user, allow_errors, allow_empty }),
         "mock" => Ok(Command::Mock { page: need(page, "--page")? }),
         "diff" => Ok(Command::Diff {
             page: need(page, "--page")?,

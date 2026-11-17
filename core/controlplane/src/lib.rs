@@ -488,7 +488,8 @@ pub enum ActionPoint {
     /// contribution's `Primitive::Form` and renders nowhere else. It is `Then::Invoke`.
     PanelForm(String),
     /// A contribution id of the same module whose body is a `Primitive::DataTable`: the
-    /// action renders on each `Row` listing it, bound to that row's `item`.
+    /// action renders on each `Row` listing it, bound to the row's entity, else the
+    /// panel's entity, and the row's `item`.
     TableRow(String),
 }
 
@@ -1011,8 +1012,9 @@ impl std::fmt::Debug for SecretReveal {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EntityHeader {
-    /// Also replaces the entity id in the page's last breadcrumb.
     pub title: String,
+    /// Replaces the entity id in the page's last breadcrumb; `title` when absent.
+    pub crumb: Option<String>,
     pub subtitle: String,
     pub status: Option<Cell>,
     /// Drawn after `status`.

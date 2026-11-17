@@ -22,6 +22,7 @@ pub struct Config {
     pub username: String,
     pub password: String,
     pub allow_errors: bool,
+    pub allow_empty: bool,
     pub out: PathBuf,
 }
 
@@ -67,6 +68,7 @@ pub async fn run(cfg: &Config) -> Result<bool> {
 
     std::fs::create_dir_all(cfg.out.join("raw")).with_context(|| format!("create {}", cfg.out.display()))?;
     let mut fragments = 0;
+    let mut pages = targets.len();
     let mut crawled: Vec<(String, Vec<Node>)> = Vec::new();
     for (page, route) in &targets {
         println!("page {page}  {route}");
@@ -84,11 +86,14 @@ pub async fn run(cfg: &Config) -> Result<bool> {
             continue;
         };
         let Some(route) = first_row_href(doc) else {
-            // A fleet with no row yet: `diff --page` then fails on the missing page file.
             println!("EMPTY {page}: {list} lists no row to follow, nothing to crawl");
+            if !cfg.allow_empty {
+                failures.push(format!("{page}: {list} lists no row to follow (--allow-empty skips it)"));
+            }
             continue;
         };
         println!("page {page}  {route}  (first row of {list})");
+        pages += 1;
         match crawl_page(&client, cfg, page, &route, &mut failures).await {
             Ok((n, _)) => fragments += n,
             Err(e) => failures.push(format!("{page} ({route}): {e:#}")),
@@ -100,7 +105,7 @@ pub async fn run(cfg: &Config) -> Result<bool> {
     println!("wrote {}", cfg.out.display());
     if failures.is_empty() {
         write(&cfg.out.join(CLEAN_MARKER), "")?;
-        println!("crawl: {} page(s), {fragments} fragment(s), clean", targets.len());
+        println!("crawl: {pages} page(s), {fragments} fragment(s), clean");
         return Ok(true);
     }
     eprintln!("crawl FAILED, {} problem(s):", failures.len());

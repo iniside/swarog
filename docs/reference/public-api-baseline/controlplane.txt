@@ -1070,6 +1070,7 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::Delta
 pub struct controlplane::EntityHeader
 pub controlplane::EntityHeader::avatar_seed: alloc::string::String
 pub controlplane::EntityHeader::badges: alloc::vec::Vec<controlplane::Cell>
+pub controlplane::EntityHeader::crumb: core::option::Option<alloc::string::String>
 pub controlplane::EntityHeader::status: core::option::Option<controlplane::Cell>
 pub controlplane::EntityHeader::subtitle: alloc::string::String
 pub controlplane::EntityHeader::title: alloc::string::String

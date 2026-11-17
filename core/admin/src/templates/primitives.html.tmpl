@@ -381,7 +381,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- endif %}</div>
 {%- elif p.mode == "header" -%}
 <div class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}">
-{%- if live and p.body and p.body.type == "Header" %}{{ body(p.body, p) }}</div><span class="avatar lg" id="entity-avatar" hx-swap-oob="true" style="background:{{ p.body.color }}">{{ p.body.initials }}</span><span class="cur" id="crumb-cur" hx-swap-oob="true">{{ p.body.title }}</span>
+{%- if live and p.body and p.body.type == "Header" %}{{ body(p.body, p) }}</div><span class="avatar lg" id="entity-avatar" hx-swap-oob="true" style="background:{{ p.body.color }}">{{ p.body.initials }}</span><span class="cur" id="crumb-cur" hx-swap-oob="true">{{ p.body.crumb }}</span>
 {%- else %}<div class="row"><h1>{{ p.fallback_title }}</h1>{% if p.state == "error" %}<span class="dot err" title="{{ p.module }} module unavailable"></span>{% endif %}</div></div>
 {%- endif -%}
 {%- elif p.mode == "fact" -%}

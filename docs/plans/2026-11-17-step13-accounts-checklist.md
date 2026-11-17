@@ -350,7 +350,9 @@ the fact branch draws `ContributionDecl.icon` before the cell (`PanelRender.icon
 `rr:644`); the header fragment OOB-swaps the last crumb with `title`, as it does the avatar
 (`tmpl:357`). ~~Alternative: accept the three.~~ **Decided (owner, 2026-11-17): the
 proposal.** `EntityHeader.badges`, the decl icon on facts, the crumb shows the handle (the
-header `title`) instead of the uuid.
+header `title`) instead of the uuid. **Decided (owner, 2026-11-17, Step 13 part `a` review):**
+the title is the display name, so the handle needs its own contract field:
+`EntityHeader.crumb: Option<String>` (the `title` when `None`); accounts sets it to the handle.
 
 **G11. Tab layout.** Proposal: `Point::EntityTab` gains `columns: u8` (2 → `div.grid.g-2`),
 read from the tab's first-ordered contribution. ~~Alternative: a template-choice entry.~~
