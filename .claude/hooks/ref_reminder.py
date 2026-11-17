@@ -26,7 +26,10 @@ PATH_TRIGGERS = (
     ("modules/gateway/", (PUSH_HUB,)),
     ("core/", (TAXONOMY,)),
     ("uilayout/", (MOCKUP_SKILL,)),
-    ("modules/admin/templates/", (MOCKUP_SKILL,)),
+    ("core/admin/src/templates/", (MOCKUP_SKILL,)),
+    ("core/admin/src/portal.css", (MOCKUP_SKILL,)),
+    ("core/admin/src/admin.js", (MOCKUP_SKILL,)),
+    ("tools/admindiff/accept/", (MOCKUP_SKILL,)),
 )
 
 ROLLOUT_COMMAND = re.compile(
