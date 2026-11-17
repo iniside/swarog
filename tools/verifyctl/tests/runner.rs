@@ -241,7 +241,9 @@ fn fake_path_covers_outcomes_audit_install_lease_and_summary_exits() {
         .contains("POISON LEAKED"));
     assert!(std::fs::read_to_string(&pass.record)
         .unwrap()
-        .contains("cargo-audit audit --ignore RUSTSEC-2023-0071"));
+        .contains(
+            "cargo-audit audit --ignore RUSTSEC-2023-0071 --ignore RUSTSEC-2026-0459"
+        ));
     let record = std::fs::read_to_string(&pass.record).unwrap();
     assert!(record.contains("cargo build --workspace --exclude verifyctl"));
     assert!(record.contains("cargo test --workspace --exclude verifyctl --no-fail-fast"));

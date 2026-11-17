@@ -33,6 +33,15 @@ pub fn run(ctx: &mut Context<'_>) -> Result<Outcome> {
             OsString::from("audit"),
             OsString::from("--ignore"),
             OsString::from("RUSTSEC-2023-0071"),
+            // libsqlite3-sys 0.30.1 is in Cargo.lock only because sqlx's weak
+            // `sqlx-sqlite?/…` feature entries pull optional backends into the
+            // lockfile. The workspace enables only the postgres backend, so
+            // sqlite is never compiled: `cargo tree -i libsqlite3-sys
+            // --workspace --target all -e all` prints nothing. Remove this
+            // ignore once a released sqlx allows libsqlite3-sys >=0.39; the
+            // sqlx-sqlite of sqlx 0.9.0 still caps it at <0.38.
+            OsString::from("--ignore"),
+            OsString::from("RUSTSEC-2026-0459"),
         ],
     ) {
         Ok(outcome) => Ok(outcome),

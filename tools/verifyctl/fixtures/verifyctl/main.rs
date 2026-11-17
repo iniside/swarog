@@ -164,7 +164,15 @@ fn copy_tree(source: &std::path::Path, target: &std::path::Path) {
 fn audit() -> ExitCode {
     let args: Vec<_> = std::env::args().skip(1).collect();
     record(&format!("cargo-audit {}", args.join(" ")));
-    if args != ["audit", "--ignore", "RUSTSEC-2023-0071"] {
+    if args
+        != [
+            "audit",
+            "--ignore",
+            "RUSTSEC-2023-0071",
+            "--ignore",
+            "RUSTSEC-2026-0459",
+        ]
+    {
         record("cargo-audit argv mismatch");
         return ExitCode::FAILURE;
     }
