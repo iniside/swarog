@@ -119,6 +119,9 @@ pub fn merge_sections<'a>(manifests: impl IntoIterator<Item = &'a Manifest>) -> 
 pub const DEFAULT_PANEL_DEADLINE_MS: u32 = 2000;
 /// The default [`SearchDecl::deadline_ms`].
 pub const DEFAULT_SEARCH_DEADLINE_MS: u32 = 800;
+/// The byte cap every writing provider applies to each `InvokeCall::input` value before
+/// it reads one.
+pub const MAX_INPUT_VALUE_BYTES: usize = 4096;
 
 /// Serves one process's local providers, dispatching each request by `req.module`.
 pub struct LocalFace {
@@ -251,6 +254,13 @@ pub enum Link {
     Page { module: String, page: String, params: BTreeMap<String, String> },
     Entity(EntityRef),
 }
+
+/// The `Link::Page` param the portal passes to each of the page's panels as
+/// `PanelQuery::search`.
+pub const PAGE_PARAM_SEARCH: &str = "q";
+/// The `Link::Page` param the portal passes to each of the page's panels as
+/// `PanelQuery::queue_state`.
+pub const PAGE_PARAM_QUEUE_STATE: &str = "state";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PanelQuery {
@@ -462,8 +472,11 @@ pub enum ActionPoint {
     HeaderAction(String),
     PageHead(String),
     /// A contribution id of the same module: the action renders in that panel's tools,
-    /// bound to its `PropertyList::item` or to each `QueueItem` listing it.
+    /// bound to its `PropertyList::item` when it has one.
     PanelTool(String),
+    /// A contribution id of the same module whose body is a `Primitive::WorkQueue`: the
+    /// action renders on each `QueueItem` listing it, bound to that item's id.
+    QueueRow(String),
     /// A contribution id of the same module: the action is the Save of that
     /// contribution's `Primitive::Form` and renders nowhere else. It is `Then::Invoke`.
     PanelForm(String),
@@ -853,8 +866,10 @@ pub struct QueueItem {
     pub next_attempt_at: Option<String>,
     pub last_error: Option<String>,
     pub payload_preview: Option<String>,
-    /// `ActionDecl` ids.
+    /// `ActionDecl` ids of `ActionPoint::QueueRow` actions.
     pub actions: Vec<String>,
+    /// One per `WorkQueue::columns`, in order.
+    pub cells: Vec<Cell>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -862,6 +877,17 @@ pub struct WorkQueue {
     pub states: Vec<QueueState>,
     pub selected: String,
     pub items: Vec<QueueItem>,
+    /// The header of the `QueueItem::id` column.
+    pub item_label: String,
+    /// The plural noun the foot counts items in ("messages").
+    pub item_noun: String,
+    /// Drawn between the id and the state columns.
+    pub columns: Vec<Column>,
+    /// `total` is the selected state's count, `None` when search or a filter narrows it.
+    pub page: PageInfo,
+    pub filters: Vec<FilterDef>,
+    pub search_placeholder: Option<String>,
+    pub selectable: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

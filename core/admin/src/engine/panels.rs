@@ -79,13 +79,13 @@ pub(crate) fn module_banner(state: PanelState, banner: Option<&Banner>) -> Optio
 }
 
 /// Whether `body` of contribution `decl` in `manifest` offers a write: a `Form` body, a
-/// `PanelForm` action, or a `PanelTool` action that is not a `Then::Link`. A module that
-/// does not write gets the read-only chrome only on such a panel.
+/// `PanelForm` action, or a `PanelTool` or `QueueRow` action that is not a `Then::Link`. A
+/// module that does not write gets the read-only chrome only on such a panel.
 fn has_write_affordance(manifest: &Manifest, decl: &ContributionDecl, body: &Primitive) -> bool {
     matches!(body, Primitive::Form(_))
         || manifest.actions.iter().any(|a| match &a.point {
             ActionPoint::PanelForm(c) => *c == decl.id,
-            ActionPoint::PanelTool(c) => *c == decl.id && !matches!(a.then, Then::Link(_)),
+            ActionPoint::PanelTool(c) | ActionPoint::QueueRow(c) => *c == decl.id && !matches!(a.then, Then::Link(_)),
             _ => false,
         })
 }

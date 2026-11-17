@@ -92,10 +92,10 @@ pub(crate) fn entity_param(entity: &EntityRef) -> String {
 }
 
 /// Panel URL query keys of the typed `PanelQuery` fields.
-pub(crate) const QUERY_SEARCH: &str = "q";
+pub(crate) const QUERY_SEARCH: &str = controlplane::PAGE_PARAM_SEARCH;
 pub(crate) const QUERY_CURSOR: &str = "cursor";
 pub(crate) const QUERY_BEFORE: &str = "before";
-pub(crate) const QUERY_STATE: &str = "state";
+pub(crate) const QUERY_STATE: &str = controlplane::PAGE_PARAM_QUEUE_STATE;
 /// A modal URL's bound element.
 pub(crate) const QUERY_ITEM: &str = "item";
 
@@ -261,6 +261,9 @@ pub(crate) struct ActionItem {
     pub(crate) trailing_icon: bool,
     /// Shown on an empty panel.
     pub(crate) when_empty: bool,
+    /// An `ActionPoint::QueueRow` action: drawn on the queue items listing it, never in the
+    /// panel tools.
+    pub(crate) queue_row: bool,
     /// `GET` opens the modal, `POST` invokes.
     pub(crate) url: String,
     pub(crate) enabled: bool,
@@ -613,7 +616,7 @@ pub(crate) struct PanelInput<'a> {
     pub(crate) min_role: &'static str,
     pub(crate) fallback_title: &'a str,
     pub(crate) body: Option<&'a PanelBody>,
-    /// This contribution's `PanelTool` actions, unbound.
+    /// This contribution's `PanelTool` and `QueueRow` actions, unbound.
     pub(crate) actions: &'a [ActionItem],
     pub(crate) row_menu_kinds: &'a [String],
     pub(crate) csrf: &'a str,
@@ -692,9 +695,8 @@ pub(crate) fn panel(input: &PanelInput<'_>) -> PanelRender {
     let ctx = Ctx { path: input.path, query: &paging, params: input.query, input };
     let primitive = input.body.map(|b| &b.primitive);
     let body = primitive.map(|p| prim(p, &ctx));
-    let shown = input.actions.iter().filter(|a| input.state != PanelState::Empty || a.when_empty);
+    let shown = input.actions.iter().filter(|a| !a.queue_row && (input.state != PanelState::Empty || a.when_empty));
     let tools = match primitive {
-        Some(Primitive::WorkQueue(_)) => Vec::new(),
         Some(Primitive::PropertyList(list)) => shown.map(|a| bind(a, input.entity, list.item.as_deref())).collect(),
         _ => shown.map(|a| bind(a, input.entity, None)).collect(),
     };
@@ -855,6 +857,39 @@ pub(crate) struct TableView {
     pub(crate) total: String,
     pub(crate) size: u32,
     pub(crate) next_url: Option<String>,
+    /// The pager's `"1 / N"` between its buttons; `None` past the first page.
+    pub(crate) page_label: Option<String>,
+}
+
+/// `"1 / N"` on the first page only: a cursor does not say how far into the list it is.
+fn page_label(page: &controlplane::PageInfo, ctx: &Ctx<'_>) -> Option<String> {
+    if ctx.param(QUERY_CURSOR).is_some() {
+        return None;
+    }
+    match page.total {
+        Some(total) if page.size > 0 => Some(format!("1 / {}", total.div_ceil(u64::from(page.size)).max(1))),
+        _ if page.next_cursor.is_none() => Some("1 / 1".to_string()),
+        _ => None,
+    }
+}
+
+fn filter_views(filters: &[controlplane::FilterDef], ctx: &Ctx<'_>) -> Vec<FilterView> {
+    filters
+        .iter()
+        .map(|f| FilterView { label: f.label.clone(), value: ctx.param(&f.key).unwrap_or("any").to_string() })
+        .collect()
+}
+
+fn column_views(columns: &[controlplane::Column]) -> Vec<ColumnView> {
+    columns.iter().map(|c| ColumnView { label: c.label.clone(), num: c.align == Align::Right }).collect()
+}
+
+fn table_cells(cells: &[controlplane::Cell], columns: &[controlplane::Column]) -> Vec<TableCell> {
+    cells
+        .iter()
+        .enumerate()
+        .map(|(i, c)| TableCell { cell: cell(c), num: columns.get(i).is_some_and(|col| col.align == Align::Right) })
+        .collect()
 }
 
 pub(crate) fn thousands(n: u64) -> String {
@@ -874,12 +909,7 @@ fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
         .rows
         .iter()
         .map(|r| RowView {
-            cells: r
-                .cells
-                .iter()
-                .enumerate()
-                .map(|(i, c)| TableCell { cell: cell(c), num: t.columns.get(i).is_some_and(|col| col.align == Align::Right) })
-                .collect(),
+            cells: table_cells(&r.cells, &t.columns),
             href: r.entity.as_ref().map(entity_url),
             menu_url: r
                 .entity
@@ -894,16 +924,8 @@ fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
         Some(total) => format!("{} of {}", thousands(shown), thousands(total)),
         None => format!("{} rows", thousands(shown)),
     };
-    let filters = t
-        .filters
-        .iter()
-        .map(|f| FilterView {
-            label: f.label.clone(),
-            value: ctx.param(&f.key).unwrap_or("any").to_string(),
-        })
-        .collect::<Vec<_>>();
     TableView {
-        columns: t.columns.iter().map(|c| ColumnView { label: c.label.clone(), num: c.align == Align::Right }).collect(),
+        columns: column_views(&t.columns),
         row_menu: rows.iter().any(|r| r.menu_url.is_some()),
         rows,
         selectable: t.selectable,
@@ -911,11 +933,12 @@ fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
         search_placeholder: t.search_placeholder.clone(),
         q: ctx.input.search.unwrap_or_default().to_string(),
         search_url: with_param(ctx.path, ctx.query, QUERY_SEARCH, None),
-        filters,
+        filters: filter_views(&t.filters, ctx),
         foot: t.page.next_cursor.is_some() || t.page.total.is_some_and(|n| n > 0 || !t.rows.is_empty()),
         total,
         size: t.page.size,
         next_url: t.page.next_cursor.as_deref().map(|c| with_param(ctx.path, ctx.query, QUERY_CURSOR, Some(c))),
+        page_label: page_label(&t.page, ctx),
     }
 }
 
@@ -1280,6 +1303,8 @@ pub(crate) struct QueueStateView {
 pub(crate) struct QueueItemView {
     pub(crate) id: String,
     pub(crate) entity: Option<CellView>,
+    /// `WorkQueue::columns`' cells, drawn between the id and the state.
+    pub(crate) cells: Vec<TableCell>,
     pub(crate) state: CellView,
     pub(crate) attempts: Vec<&'static str>,
     pub(crate) attempts_title: String,
@@ -1290,16 +1315,34 @@ pub(crate) struct QueueItemView {
     pub(crate) actions: Vec<ActionItem>,
 }
 
+/// The toolbar and foot fields carry `TableView`'s names, so `table_toolbar` and
+/// `table_foot` draw a queue as they draw a table.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct QueueView {
     pub(crate) states: Vec<QueueStateView>,
     pub(crate) items: Vec<QueueItemView>,
     pub(crate) has_entity: bool,
     pub(crate) has_payload: bool,
+    /// The id column's header.
+    pub(crate) item_label: String,
+    pub(crate) columns: Vec<ColumnView>,
+    pub(crate) selectable: bool,
+    pub(crate) toolbar: bool,
+    pub(crate) search_placeholder: Option<String>,
+    pub(crate) q: String,
+    pub(crate) search_url: String,
+    pub(crate) filters: Vec<FilterView>,
+    pub(crate) foot: bool,
+    /// `"7 messages"`, or `"25 of 309 messages"` when more exist.
+    pub(crate) total: String,
+    pub(crate) size: u32,
+    pub(crate) next_url: Option<String>,
+    pub(crate) page_label: Option<String>,
 }
 
-/// Squares drawn for the attempts bar when `max_attempts` is larger.
-const ATTEMPT_SQUARES_CAP: u32 = 20;
+/// The attempts bar always draws this many squares (`pages-platform.js:47`); its title
+/// carries the real count.
+const ATTEMPT_SQUARES: u32 = 5;
 
 fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
     let items: Vec<QueueItemView> = q
@@ -1307,8 +1350,7 @@ fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
         .iter()
         .map(|it| {
             let state_tone = status_tone(&it.state);
-            let squares = it.max_attempts.max(it.attempts).min(ATTEMPT_SQUARES_CAP);
-            let attempts = (0..squares)
+            let attempts = (0..ATTEMPT_SQUARES)
                 .map(|i| match (i < it.attempts, state_tone == "ok" && i + 1 == it.attempts) {
                     (true, true) => "ok",
                     (true, false) => "f",
@@ -1318,12 +1360,13 @@ fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
             let actions = it
                 .actions
                 .iter()
-                .filter_map(|id| ctx.input.actions.iter().find(|a| &a.id == id))
+                .filter_map(|id| ctx.input.actions.iter().find(|a| a.queue_row && &a.id == id))
                 .map(|a| bind(a, it.entity.as_ref(), Some(&it.id)))
                 .collect();
             QueueItemView {
                 id: it.id.clone(),
                 entity: it.entity.as_ref().map(ref_cell),
+                cells: table_cells(&it.cells, &q.columns),
                 state: CellView {
                     kind: "badge",
                     value: it.state.clone(),
@@ -1344,6 +1387,11 @@ fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
             }
         })
         .collect();
+    let shown = items.len() as u64;
+    let total = match q.page.total {
+        Some(total) if total != shown => format!("{} of {} {}", thousands(shown), thousands(total), q.item_noun),
+        _ => format!("{} {}", thousands(shown), q.item_noun),
+    };
     QueueView {
         states: q
             .states
@@ -1358,6 +1406,19 @@ fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
             .collect(),
         has_entity: items.iter().any(|i| i.entity.is_some()),
         has_payload: items.iter().any(|i| i.payload.is_some()),
+        item_label: q.item_label.clone(),
+        columns: column_views(&q.columns),
+        selectable: q.selectable,
+        toolbar: !q.filters.is_empty() || q.search_placeholder.is_some(),
+        search_placeholder: q.search_placeholder.clone(),
+        q: ctx.input.search.unwrap_or_default().to_string(),
+        search_url: with_param(ctx.path, ctx.query, QUERY_SEARCH, None),
+        filters: filter_views(&q.filters, ctx),
+        foot: !items.is_empty() || q.page.next_cursor.is_some(),
+        total: total.trim_end().to_string(),
+        size: q.page.size,
+        next_url: q.page.next_cursor.as_deref().map(|c| with_param(ctx.path, ctx.query, QUERY_CURSOR, Some(c))),
+        page_label: page_label(&q.page, ctx),
         items,
     }
 }

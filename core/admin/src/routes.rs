@@ -216,6 +216,7 @@ pub(crate) fn action_item(
         emphasis: render::emphasis_name(decl.emphasis),
         trailing_icon: decl.trailing_icon,
         when_empty: decl.when_empty,
+        queue_row: matches!(decl.point, ActionPoint::QueueRow(_)),
         url,
         enabled,
         hint,
@@ -233,7 +234,8 @@ fn action_url(module: &str, action: &str) -> String {
     format!("/admin/_action/{}/{}", render::encode(module), render::encode(action))
 }
 
-/// The `PanelTool` actions of `contribution` in `manifest`, unbound, by `(order, id)`.
+/// The `PanelTool` and `QueueRow` actions of `contribution` in `manifest`, unbound, by
+/// `(order, id)`.
 pub(crate) fn panel_tools(
     operator: &Operator,
     csrf: &str,
@@ -244,7 +246,7 @@ pub(crate) fn panel_tools(
     let mut tools: Vec<&ActionDecl> = manifest
         .actions
         .iter()
-        .filter(|a| matches!(&a.point, ActionPoint::PanelTool(c) if c == contribution))
+        .filter(|a| matches!(&a.point, ActionPoint::PanelTool(c) | ActionPoint::QueueRow(c) if c == contribution))
         .collect();
     tools.sort_by(|a, b| (a.order, &a.id).cmp(&(b.order, &b.id)));
     tools.into_iter().map(|a| action_item(operator, csrf, module, manifest.writes, a, None)).collect()
@@ -467,7 +469,21 @@ async fn page(
             .collect()
     };
     let tiles = slots(&decl.tiles);
-    let columns: Vec<Vec<SlotView>> = ids.into_iter().map(|column| slots(column)).collect();
+    // A `Link::Page` reaches the page's panels through the typed search and queue-state keys.
+    let forwarded: Vec<(String, String)> = [render::QUERY_SEARCH, render::QUERY_STATE]
+        .into_iter()
+        .filter_map(|key| query.get(key).map(|value| (key.to_string(), value.clone())))
+        .collect();
+    let columns: Vec<Vec<SlotView>> = ids
+        .into_iter()
+        .map(|column| {
+            let mut column = slots(column);
+            for s in &mut column {
+                s.url = render::with_param(&s.url, &forwarded, "", None);
+            }
+            column
+        })
+        .collect();
     let head_actions = decl
         .head_actions
         .iter()

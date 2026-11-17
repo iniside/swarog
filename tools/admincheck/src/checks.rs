@@ -76,7 +76,10 @@ fn point_kind(point: &Point) -> Option<&str> {
 fn action_kind(point: &ActionPoint) -> Option<&str> {
     match point {
         ActionPoint::RowAction(kind) | ActionPoint::HeaderAction(kind) => Some(kind),
-        ActionPoint::PageHead(_) | ActionPoint::PanelTool(_) | ActionPoint::PanelForm(_) => None,
+        ActionPoint::PageHead(_)
+        | ActionPoint::PanelTool(_)
+        | ActionPoint::QueueRow(_)
+        | ActionPoint::PanelForm(_) => None,
     }
 }
 
@@ -161,6 +164,7 @@ fn panel_actions(m: &Manifest, out: &mut Vec<String>) {
     for a in &m.actions {
         let (point, contribution) = match &a.point {
             ActionPoint::PanelTool(c) => ("PanelTool", c),
+            ActionPoint::QueueRow(c) => ("QueueRow", c),
             ActionPoint::PanelForm(c) => ("PanelForm", c),
             ActionPoint::RowAction(_) | ActionPoint::HeaderAction(_) | ActionPoint::PageHead(_) => continue,
         };

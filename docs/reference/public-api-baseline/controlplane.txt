@@ -191,6 +191,7 @@ pub controlplane::ActionPoint::HeaderAction(alloc::string::String)
 pub controlplane::ActionPoint::PageHead(alloc::string::String)
 pub controlplane::ActionPoint::PanelForm(alloc::string::String)
 pub controlplane::ActionPoint::PanelTool(alloc::string::String)
+pub controlplane::ActionPoint::QueueRow(alloc::string::String)
 pub controlplane::ActionPoint::RowAction(alloc::string::String)
 impl core::clone::Clone for controlplane::ActionPoint
 pub fn controlplane::ActionPoint::clone(&self) -> Self
@@ -1561,6 +1562,7 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::PropertyList
 pub struct controlplane::QueueItem
 pub controlplane::QueueItem::actions: alloc::vec::Vec<alloc::string::String>
 pub controlplane::QueueItem::attempts: u32
+pub controlplane::QueueItem::cells: alloc::vec::Vec<controlplane::Cell>
 pub controlplane::QueueItem::entity: core::option::Option<controlplane::EntityRef>
 pub controlplane::QueueItem::id: alloc::string::String
 pub controlplane::QueueItem::last_error: core::option::Option<alloc::string::String>
@@ -1921,7 +1923,14 @@ impl core::marker::UnsafeUnpin for controlplane::TimelineEntry
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::TimelineEntry
 impl core::panic::unwind_safe::UnwindSafe for controlplane::TimelineEntry
 pub struct controlplane::WorkQueue
+pub controlplane::WorkQueue::columns: alloc::vec::Vec<controlplane::Column>
+pub controlplane::WorkQueue::filters: alloc::vec::Vec<controlplane::FilterDef>
+pub controlplane::WorkQueue::item_label: alloc::string::String
+pub controlplane::WorkQueue::item_noun: alloc::string::String
 pub controlplane::WorkQueue::items: alloc::vec::Vec<controlplane::QueueItem>
+pub controlplane::WorkQueue::page: controlplane::PageInfo
+pub controlplane::WorkQueue::search_placeholder: core::option::Option<alloc::string::String>
+pub controlplane::WorkQueue::selectable: bool
 pub controlplane::WorkQueue::selected: alloc::string::String
 pub controlplane::WorkQueue::states: alloc::vec::Vec<controlplane::QueueState>
 impl core::clone::Clone for controlplane::WorkQueue
@@ -1946,6 +1955,9 @@ impl core::panic::unwind_safe::RefUnwindSafe for controlplane::WorkQueue
 impl core::panic::unwind_safe::UnwindSafe for controlplane::WorkQueue
 pub const controlplane::DEFAULT_PANEL_DEADLINE_MS: u32
 pub const controlplane::DEFAULT_SEARCH_DEADLINE_MS: u32
+pub const controlplane::MAX_INPUT_VALUE_BYTES: usize
+pub const controlplane::PAGE_PARAM_QUEUE_STATE: &str
+pub const controlplane::PAGE_PARAM_SEARCH: &str
 pub const controlplane::PROVIDER_SLOT: contrib::Slot<alloc::rcs::arc::Arc<dyn controlplane::Provider>>
 pub const controlplane::SECTIONS: &[(&str, &str, i32)]
 pub const controlplane::SOURCE_SLOT: contrib::Slot<controlplane::Source>

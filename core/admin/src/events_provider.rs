@@ -21,8 +21,7 @@ pub(crate) const MODULE: &str = "core.events";
 const PAGE: &str = "events";
 const KIND: &str = "subscription";
 
-/// The byte cap on every `InvokeCall.input` value this provider accepts.
-pub(crate) const MAX_INPUT_VALUE_BYTES: usize = 4096;
+pub(crate) const MAX_INPUT_VALUE_BYTES: usize = controlplane::MAX_INPUT_VALUE_BYTES;
 /// The byte cap on a skip reason, which is stored in the subscription's `last_error`.
 pub(crate) const MAX_REASON_BYTES: usize = 1024;
 /// The payload bytes the poison preview shows.
