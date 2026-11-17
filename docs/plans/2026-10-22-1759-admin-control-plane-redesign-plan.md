@@ -1729,11 +1729,11 @@ model tokens. Step 10's cost came from:
         - Q1. The golden enum guard restated the templates' drawing rules in test code, and
           four audit rounds each found a new drift. Each round patched the copy instead of
           naming the cause.
-        - Q2. `admindiff` compares tags and classes only, so a difference in an attribute or
-          text passes: the toolbar search width (ADMIN2-35), the sort arrow's column (D9),
-          the crumb and the foot count. D9 can have no accept entry.
-        - Q3. The mock harness never runs `P.players.meta.after`, so the header and cell
-          shape of a column a later port contributes (`th > span`) was never compared.
+        - Q2. The §7 `diff` runs without `--text` and `admindiff` never compares attributes,
+          so a difference in an attribute or text passes: the toolbar search width
+          (ADMIN2-35), the sort arrow's column (D9), the crumb and the foot count. D9 can have no accept entry.
+        - Q3. The mock harness never runs `P.players.meta.after`, so the header shape of
+          a column a later port contributes (`th > span`) is never compared.
         - Q4. The skill's §7 split line named only `crawl`. `demoseed` at its default
           `:8080` hits characters-svc in the split and gets a 404 on `/accounts/register`;
           the split crawl only had data because the monolith run had seeded the shared
@@ -1749,8 +1749,11 @@ model tokens. Step 10's cost came from:
         - Q2, Q3: skill §1 gains a hand-check section per page, and the step report cites it
           beside the accept file (§6). The port that contributes a list column names its
           `meta.after` shape in its checklist.
-        - Q4, Q5: skill §7 crawls the split with `demoseed --base-url http://127.0.0.1:8082`,
-          waits for `running`, and asks before touching a fleet it did not start.
+        - Q4: skill §7 crawls the split with `demoseed --base-url http://127.0.0.1:8082`.
+        - Q5: owner question. The devctl `starting` / `running` fact and asking whose a
+          fleet is belong in `.agents/shared/gamebackend.md` **One test rollout at a time**,
+          which today says to wait for or stop the owning rollout; the skill does not
+          restate them.
 
 5. **Mockup-state seed** (owner, 2026-11-17). A fresh dev fleet has no paused and no
    lagging subscription, so about a third of the Event plane's and the dashboard's accept

@@ -88,16 +88,18 @@ and `error`, plus `narrowed to zero` for a panel with search or filters:
 Per module: `writes` (true/false) and every tool, meaning each `ActionDecl` with
 point, `Emphasis`, `danger`, `implemented` and `then`.
 
-Per page, a hand-check section: every element whose difference `admindiff` cannot see,
-because it compares tags and classes only. That covers attributes and inline styles (a
-`title`, a width), text (the sort arrow's column, a crumb, a foot count), and anything the
-crawl never opens (the row-menu popover, the palette). Each row names its check: a golden
-assertion, or a look at the live page in §7. A declared deviation in this section goes in
-the step report directly, because no accept entry can carry it.
+Per page, a hand-check section: every element whose difference the §7 `diff` cannot see.
+It runs without `--text`, so it compares tags and classes, and `admindiff` never compares
+attributes. That covers attributes and inline styles (a `title`, a width), text (a crumb, a
+foot count), which header carries the sort arrow, and anything the crawl never opens (the
+row-menu popover, the palette). Each row names its check: a golden assertion, or a look at
+the live page in §7. A declared deviation no accept entry can carry is declared in this
+section, and the step report cites it (§6).
 
-The mock harness draws a page's `P.<key>` builder only; a column a later port contributes
-through `meta.after` is never drawn, so its header and cell shape is not compared until
-that port lands. The port that adds such a column names it in its checklist.
+The mock harness never runs a page's `meta.after` hook. On players that hook wraps each
+contributed column's header text in a `span` (`pages-core.js:109-112`), so that `th > span`
+is never compared. The port that contributes such a column puts its header shape in the
+hand-check section.
 
 Per panel, every URL the renderer builds for it (state tabs, search, pager): which
 query keys it keeps and which it drops. Every non-pager URL must build from `Ctx.query`
@@ -291,10 +293,6 @@ target/debug/devctl down
   `demoseed --base-url http://127.0.0.1:8082` (the split's gateway; its 8080 is
   characters-svc, where `/accounts/register` is a 404), `eventctl seed-mockup`,
   `crawl --base-url http://localhost:8085` and `diff` for every page.
-- `devctl status` reads `starting (N/N healthy)` while later services still boot. Wait
-  for `running`; a `devctl down` sent during `starting` aborts the boot.
-- A fleet the pre-flight finds up was not started by this sequence: report it and ask
-  whose it is. Never wait on it silently or stop it.
 
 ## 8. Post-mortem
 
