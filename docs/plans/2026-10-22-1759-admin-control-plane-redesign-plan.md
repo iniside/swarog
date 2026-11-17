@@ -2050,7 +2050,7 @@ The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending") a
 
 ### Step 13c — The contract the remaining ports need (owner, 2026-11-17)
 
-Order: after Step 13, before Step 14. Source:
+Order: after Step 28 (O1), before Step 13d and Step 14. Source:
 `docs/research/2026-11-17-ports-contract-gaps.md` (items K, R, X3; anchors there). Owner:
 "dopisz to wszystko do planu" — the research doc's proposals are adopted; where it lists an
 alternative, the first proposal stands. Why: every remaining port hit the same contract
@@ -2058,18 +2058,19 @@ gaps one at a time (Step 14 checklist G1–G11, then the sweep of Steps 15–24)
 per port repeated the same question eleven times. The cross-cutting rules (X1, X2, X4–X9)
 live in the port template and the port bullets, not here.
 
-Open for the owner before this step starts:
-- **O1 (structural, plan review 2026-11-17).** Step 28 (variant coverage observed from the
-  render) runs before this step, out of numeric order, so the new variants below land on
-  the observed gate instead of growing the `SEEN_ENUMS` / `NOT_SEEN` / `UNREAD_ENUMS` hand
-  lists Step 28 removes. Recommended.
-- **O2 (structural).** The refs cap (K21) and the label batch (K19) are enforced once, in
-  `LocalFace` (`core/admin/src/engine/sources.rs` monolith, `core/controlplane-rpc`
-  split) before any provider is called, as `Manifest.writes` already is, not in each
-  provider. Recommended.
+Owner decisions from the plan review (2026-11-17):
+- **O1 (decided: yes).** Step 28 (variant coverage observed from the render) runs before
+  this step, out of numeric order, so the new variants below land on the observed gate
+  instead of growing the `SEEN_ENUMS` / `NOT_SEEN` / `UNREAD_ENUMS` hand lists Step 28
+  removes.
+- **O2 (decided: yes).** The refs cap is enforced once, in the `LocalFace` impl
+  (`core/controlplane/src/lib.rs`, beside the `Manifest.writes` check), before any
+  provider is called; providers carry no cap check of their own. The portal never sends
+  more: it splits the distinct refs of one kind on a page into calls of at most
+  `MAX_PANEL_REFS` (the refs-bound design of the review's P1, raised under O2).
 
-(a) What is touched: `core/controlplane`, `core/controlplane-rpc` (O2), `core/admin`
-(`render.rs`, templates, `engine/columns.rs`, `engine/sources.rs`, `routes.rs`), the
+(a) What is touched: `core/controlplane` (contract, the `LocalFace` cap check of O2),
+`core/admin` (`render.rs`, templates, `engine/columns.rs`, `fakes.rs`, `routes.rs`), the
 public-api baseline, `tools/conformance` policy rows for new request fields,
 `modules/accounts/src/admin.rs` (moves to the shared FAKE helper), the mockup skill
 (standing data rules), `docs/reference/event-plane-ops.md:117-122`.
@@ -2078,10 +2079,11 @@ What dies, in this step:
 - `DataTable.item_noun: String` as a single plural (K18);
 - the fixed readonly banner text in `primitives.html.tmpl` (K12);
 - `SearchHit.target: EntityRef` (K17: one destination field replaces it);
-- accounts' local FAKE hash (X3);
+- accounts' local FAKE hash and the portal's FAKE hash `core/admin/src/fakes.rs` `hash`
+  (X3; its callers move to the helper; `render.rs`'s avatar-colour hash is not FAKE data
+  and is kept);
 - the `events.txt` contract-gap lines and ADMIN2-18 (K1); `events.txt` entries a K4 row
   change makes stale (a kind with no `EntityHeader` no longer draws `tr.clickable`);
-- `FilterKind`'s `UNREAD_ENUMS` entry, since K20 makes the view read it (moot under O1);
 - the stale Purges-pending paragraph of `event-plane-ops.md`.
 
 (b) Decisions and invariants:
@@ -2108,15 +2110,20 @@ What dies, in this step:
   `PanelQuery.params` (covered by the existing `cp.panel req.params` policy rows unless
   conformance proves otherwise), and `FilterKind::Select`.
 - Cross-module: K19 `Point::EntityLabel{kind}`, answered by the kind's owner (the portal
-  mediates; no module imports another); K21 `controlplane::MAX_PANEL_REFS`. Invariant
-  joining them: `MAX_PANEL_REFS` is at least the largest page size any `DataTable` or
-  `Timeline` declares, and the distinct refs of one kind on a page never exceed its rows,
-  so one batched call per kind per page always fits; a test pins the inequality.
+  mediates; no module imports another); K21 `controlplane::MAX_PANEL_REFS` (O2). The
+  portal collects the distinct refs of each kind on a rendered page (a row may carry
+  several, e.g. a timeline actor and target) and sends them in calls of at most
+  `MAX_PANEL_REFS`, so a page of any size gets every label and column cell; `LocalFace`
+  refuses a larger `refs` as a backstop. The `cp.panel req.refs` conformance rationale
+  names the bound.
 - Text: K18 the noun has a singular and a plural; the portal picks the singular at 1.
 - Shared FAKE helper (X3): one deterministic helper in `controlplane` (explicit-width hash
-  of an entity id, no clock, no rand); accounts moves to it here.
-- Variant coverage of every new enum variant is Step 28's observed gate (O1); field
-  coverage is the named test list in (c).
+  of an entity id, no clock, no rand); accounts and the portal's `fakes.rs` move to it.
+- Variant coverage of every new enum variant is Step 28's observed gate (O1): each new
+  variant (`MonoMuted`, `Toggle`, `Strong`, `Tone::Accent`, `Layout::Rows`,
+  `FilterKind::Select`, `Primitive::KpiTiles`, `Point::EntityTabTile`, `Point::EntityLabel`)
+  needs a golden that renders it, or that gate fails. Field coverage is the named test list
+  in (c).
 - Standing data rules added to the skill (R-a … R-j of the research doc): identifiers in
   full; times computed in SQL, keeping the mock's per-column format; real stable order, a
   sort arrow only on the real sort column; singular at 1; a count is always a `Cell`, `0`
@@ -2131,17 +2138,20 @@ What dies, in this step:
   `TimelineEntry.title/badges/actor`, `Timeline.days` and the date format, `Field.mono` and
   `placeholder`, `FormSpec.title`, `SecretReveal.extra`, the singular noun, `a.mono`;
 - row clickability by kind; the down-module row-menu group and tab dot;
-- `EntityLabel` batching: one call per kind per page, ok/failing/denied;
-- the refs cap refused in `LocalFace` (O2) and the page-size inequality;
-- split, the at-risk topology: a committed splitproof assertion that a portal page in the
-  split draws an `EntityLabel` answered by another `*-svc`, and that an over-cap
-  `cp.panel` is refused over the wire (authoring `[opus]` test-author, audit
-  proof-auditor).
+- `EntityLabel` and list-column batching: distinct refs per kind, split into cap-sized calls
+  (a page with more distinct refs than `MAX_PANEL_REFS` still gets every cell and label),
+  ok/failing/denied, a row carrying two refs of one kind;
+- the cap refused in `LocalFace` before the provider runs (O2), on the monolith face;
+- split, the at-risk topology: a committed splitproof assertion that an over-cap
+  `cp.panel` is refused over the wire by the remote `LocalFace` (authoring `[opus]`
+  test-author, audit proof-auditor). The split assertion that a page draws an
+  `EntityLabel` answered by another `*-svc` lands with the first port that contributes
+  one (Step 16 inventory or Step 17 friends), named in that port's part `a`.
 
 (d) Lanes and review units: `[opus]` core-implementer in two review units, each with its
 own review rounds: (i) portal-only cells, chrome, forms and text (K1–K18 minus K17, the
-helper move); (ii) the cross-process seams (K17, K19, K20, K21, O2), which carry the split
-risk. Then `[opus]` test-author; `[docs]` docs-writer for the skill rules and the
+helper move); (ii) the cross-process seams (K17, K19, K20, K21 with O2), which carry the
+split risk. Then `[opus]` test-author; `[docs]` docs-writer for the skill rules and the
 event-plane-ops text; `[review]` core-reviewer, plus proof-auditor on the goldens and the
 splitproof assertion.
 
@@ -2472,6 +2482,9 @@ report cites them.
 (d) `[inline]` orchestration; report per the `mockup-implementation` skill's closing step.
 
 ### Step 28 — Enum-variant coverage observed from the render, not mirrored (owner, 2026-11-17)
+
+Order (owner, 2026-11-17, O1 of Step 13c): runs after Step 13 and before Step 13c, out of
+numeric order.
 
 Why: the golden gate's `SEEN_ENUMS` / `NOT_SEEN` partition and the `panel_variants`
 walker in `core/admin/src/golden_tests.rs` (Step 13 commits 9ce5eb84, 97df9b4c) restate
