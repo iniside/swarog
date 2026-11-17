@@ -1602,6 +1602,20 @@ model tokens. Step 10's cost came from:
        - This file is the page's declared-deviations source. A step report cites it
          instead of re-listing deviations in prose.
      - Exit non-zero on any difference not accepted.
+   - **Errata (as built, 2026-11-17).**
+     - A third template hook: every `panel_fragment` root carries `data-state`, because
+       every panel state answers 200 and a nav counter's error state renders no markup;
+       `crawl` reads the state there and fails a fragment without it.
+     - A page is named by its mockup file stem (`index`, `events`), which is also the
+       accept file name; its `P.<key>` is read from the file's `PAGES.boot` call. The
+       page map lists every mockup file, as mapped, `Pending` (printed by every `crawl`,
+       refused by `diff`) or excluded. `catalog` is excluded under D3 too.
+     - Both sides compare from `.app`. The mockup also strips `.annot-legend`. The
+       drawing inside an `svg` is compared only with `--text`.
+     - A panel or tile key is the title's or label's own text: a nested element's text
+       (a heading, a badge) is left out and a trailing colon trimmed.
+     - Accept entries are `<difference> | <reason>`. The password comes from
+       `ADMINDIFF_PASSWORD` (default `admin`), so it never sits in argv.
 3. **Skill `mockup-implementation`, rewritten for the control-plane portal.** It drops the
    stale `modules/admin` / `adminapi` / `theme.css` cheat-sheet. Per port:
    1. Extract the checklist (element → mockup line → carrier → status) BEFORE the port's

@@ -1,0 +1,19 @@
+[package]
+name = "admindiff"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Crawls the running admin portal and diffs each page's class skeleton against the
+# UILayout mockup rendered through `node`. A client of the fleet, not a rollout: no
+# database access, no workspace-crate dependencies.
+[[bin]]
+name = "admindiff"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+reqwest = { workspace = true, features = ["cookies"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

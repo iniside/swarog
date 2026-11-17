@@ -1,0 +1,16 @@
+# Accepted differences of the dashboard (portal /admin) against UILayout/redesign/index.html.
+# One per line: <difference> | <reason>. An entry that matches no difference fails the diff.
+frame div.app > aside.sidebar > div.sidebar-foot > div.me: portal-only form | the portal's Sign out form; the mockup has no session
+frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section | real data wins: only ported modules contribute nav sections
+frame div.app > header.topbar: portal-only button.top-btn | the theme toggle; the mockup's sits inside the devbar, which is stripped
+frame div.app > main.main > div.page > div.g-21.grid: portal-only div.stack | declared deviation: the g-21 right column is a .stack of dashboard panels
+frame div.app > main.main > div.page: mock div portal div.stack | the #health row is a .stack holding every DashboardWide contribution; the mockup has one
+mock-only panel "Recent operator activity" | audit's dashboard panel arrives with the audit port
+mock-only tile "Active players (24 h)" | accounts' tile arrives with the accounts port
+mock-only tile "Cloud saves used" | storage's tile arrives with the storage port
+mock-only tile "Embers spent (24 h)" | wallet's tile arrives with the wallet port
+mock-only tile "Mail queue" | mail's tile arrives with the mail port
+panel "Service health" section.panel > div.flush.panel-body > div.g-2.grid > div > div.svc > span.row > span.hide-tablet: mock-only div.uptime | a div inside a span is invalid HTML; .uptime is display:flex, so the portal's span renders the same
+panel "Service health" section.panel > div.flush.panel-body > div.g-2.grid > div > div.svc > span.row > span.hide-tablet: portal-only span.uptime | the portal's .uptime is a span (see the div.uptime entry)
+panel "Service health" section.panel > div.flush.panel-body > div.g-2.grid > div: portal-only div.svc | real data wins: real uptime bars give more distinct row shapes than the seeded mock bars
+tile "Paused subscriptions" a.panel > div.kpi: mock-only div.kpi-delta | real data wins: the delta names the first paused subscription and none is paused

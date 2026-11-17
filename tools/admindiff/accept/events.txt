@@ -1,0 +1,23 @@
+# Accepted differences of the Event plane (portal /admin/p/core.events/events) against
+# UILayout/redesign/events.html. One per line: <difference> | <reason>. An entry that
+# matches no difference fails the diff.
+frame div.app > aside.sidebar > div.sidebar-foot > div.me: portal-only form | the portal's Sign out form; the mockup has no session
+frame div.app > aside.sidebar > nav.nav > div.nav-section > a.active.nav-item: mock-only span.alert.count | real data wins: the paused counter shows only while a subscription is paused
+frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item | real data wins: only ported modules contribute nav entries
+frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section | real data wins: only ported modules contribute nav sections
+frame div.app > header.topbar: portal-only button.top-btn | the theme toggle; the mockup's sits inside the devbar, which is stripped
+panel "Paused" section.panel > div.panel-body: mock-only div.code | real data wins: no subscription is paused, so the panel shows its empty state
+panel "Paused" section.panel > div.panel-body: mock-only div.row | real data wins: no subscription is paused, so the panel shows its empty state
+panel "Paused" section.panel > div.panel-body: mock-only dl.props | real data wins: no subscription is paused, so the panel shows its empty state
+panel "Paused" section.panel > div.panel-body: portal-only div.state | real data wins: the empty state of the panel, as no subscription is paused
+panel "Paused" section.panel > div.panel-head > span.panel-title: mock-only span.mono | real data wins: the heading names the paused subscription and none is paused
+panel "Paused" section.panel > div.panel-head: mock-only span.panel-meta | real data wins: the meta is the pause time and none is paused
+panel "Paused" section.panel: mock-only div.banner.err | real data wins: the banner reports the paused consumer and none is paused
+panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-toolbar: mock-only span.input-icon | the search box is a form that htmx submits (see the form.input-icon entry)
+panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-toolbar: portal-only form.input-icon | the search box is an hx-get form; .input-icon is display:inline-flex, so it renders as the span does
+panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr: mock-only td.num | declared deviation: the Head cell is not muted
+panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody: mock tr portal tr.clickable | declared deviation: rows open the subscription entity page
+panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody: mock-only tr | real data wins: no subscription is lagging, so no row has the warn lag and badge
+panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody: mock-only tr.sel | real data wins: the paused row is highlighted and none is paused
+tile "Max lag" a.panel > div.kpi > div.kpi-delta: mock-only span.bad-up | real data wins: the delta is toned by its own lag, and the max lag is 0
+tile "Max lag" a.panel > div.kpi > div.kpi-delta: portal-only span.flat | real data wins: the delta is toned by its own lag, and the max lag is 0

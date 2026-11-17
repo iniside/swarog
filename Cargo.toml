@@ -88,6 +88,7 @@ members = [
     # Demo-data seeder: drives a running fleet's public gateway API so the admin panel
     # shows deterministic data. No DB access, no workspace-crate dependencies.
     "tools/demoseed",
+    "tools/admindiff",
     # External C# client generator (Step 2): scrapes the player-reachable API (runtime
     # route_bindings() ∪ syn source parse) into a typed manifest; the C# emitter is Step 3.
     "tools/csharp-client-gen",

@@ -328,11 +328,12 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- endif -%}
 {%- endmacro %}
 
-{#- GET /admin/_panel/...: the fragment that replaces a contribution's slot. -#}
+{#- GET /admin/_panel/...: the fragment that replaces a contribution's slot. Every state
+    answers 200, so `data-state` on the root is where `tools/admindiff` reads the state. -#}
 {%- macro panel_fragment(p) -%}
 {%- set live = p.state in ["ok", "stale", "readonly"] -%}
 {%- if p.mode == "tile" or (p.body and p.body.type == "Kpi" and live) -%}
-<div class="slot" data-panel-url="{{ p.url }}">
+<div class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}">
 {%- if live and p.body and p.body.type == "Kpi" %}{{ kpi(p.body, p) }}
 {%- else %}<a class="panel" style="color:inherit;text-decoration:none">
 {%- if p.state == "denied" %}<div class="kpi state-mini"><div class="kpi-label">{{ p.title }}</div><div class="row" style="color:var(--warn);margin-top:6px">{{ icon("lock") }} Requires role {{ p.min_role }}</div></div>
@@ -342,31 +343,31 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- endif %}</div>
 {%- elif p.mode == "attention" -%}
 {#- `data-module` and `data-attention-error` feed the host's item count in admin.js. -#}
-<div class="slot" data-panel-url="{{ p.url }}" data-module="{{ p.module }}">
+<div class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}" data-module="{{ p.module }}">
 {%- if live and p.body %}{{ body(p.body, p) }}
 {%- elif p.state == "error" %}<div class="pop-row" style="align-items:center" data-attention-error><span class="modal-icon danger" style="width:28px;height:28px">{{ icon("alert") }}</span><div class="grow"><div class="t">{{ p.module }} module unavailable</div><div class="d">{{ p.error or "" }}</div></div><button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} <span>Retry</span></button></div>
 {%- endif %}</div>
 {%- elif p.mode == "header" -%}
-<div class="slot" data-panel-url="{{ p.url }}">
+<div class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}">
 {%- if live and p.body and p.body.type == "Header" %}{{ body(p.body, p) }}</div><span class="avatar lg" id="entity-avatar" hx-swap-oob="true" style="background:{{ p.body.color }}">{{ p.body.initials }}</span>
 {%- else %}<div class="row"><h1>{{ p.fallback_title }}</h1>{% if p.state == "error" %}<span class="dot err" title="{{ p.module }} module unavailable"></span>{% endif %}</div></div>
 {%- endif -%}
 {%- elif p.mode == "fact" -%}
-<span class="slot" data-panel-url="{{ p.url }}">
+<span class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}">
 {%- if live and p.body %}<span>{{ body(p.body, p) }}</span>
 {%- elif p.state == "error" %}<span style="color:var(--err)" title="{{ p.error or '' }}">{{ icon("alert") }} {{ p.module }} unavailable</span>
 {%- endif %}</span>
 {%- elif p.mode == "count" -%}
-<span class="slot" data-panel-url="{{ p.url }}">
+<span class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}">
 {%- if live and p.body and p.body.type == "Cell" %} <span class="count">{{ p.body.value }}</span>
 {%- elif p.state == "error" %}<span class="dot err" title="module unavailable"></span>
 {%- endif %}</span>
 {%- elif p.mode == "nav" -%}
-<span class="slot" data-panel-url="{{ p.url }}">
+<span class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}">
 {%- if live and p.body and p.body.type == "Cell" %}<span class="count {{ {'err': 'alert', 'warn': 'warn'}[p.body.tone] or '' }}">{{ p.body.value }}</span>{% endif -%}
 </span>
 {%- elif p.mode == "inline" -%}
-<span class="slot" data-panel-url="{{ p.url }}">{% if live and p.body and p.body.type == "Cell" %}{{ cell(p.body) }}{% endif %}</span>
+<span class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}">{% if live and p.body and p.body.type == "Cell" %}{{ cell(p.body) }}{% endif %}</span>
 {%- else -%}
 {%- set ro = p.state == "readonly" -%}
 {%- set flush = (live and p.flush) or (p.state == "empty" and p.body and p.body.type in ["Queue", "Table"]) -%}
@@ -376,7 +377,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
     the head with the note first. -#}
 {%- set tooled = live or p.state == "empty" -%}
 {%- set footer = live and p.body and p.body.type == "Props" and p.body.code -%}
-<div class="slot" data-panel-url="{{ p.url }}"><section class="panel"><div class="panel-head">{% if p.icon %}<span class="muted">{{ icon(p.icon) }}</span>{% endif %}<span class="panel-title">{{ p.title }}{% if p.heading %}: <span class="mono">{{ p.heading }}</span>{% endif %}</span>{% if p.meta %}<span class="panel-meta">{{ p.meta }}</span>{% endif %}{% if ro %}<span class="ro-chip">{{ icon("lock") }} read-only</span>{% endif %}<div class="panel-tools">
+<div class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}"><section class="panel"><div class="panel-head">{% if p.icon %}<span class="muted">{{ icon(p.icon) }}</span>{% endif %}<span class="panel-title">{{ p.title }}{% if p.heading %}: <span class="mono">{{ p.heading }}</span>{% endif %}</span>{% if p.meta %}<span class="panel-meta">{{ p.meta }}</span>{% endif %}{% if ro %}<span class="ro-chip">{{ icon("lock") }} read-only</span>{% endif %}<div class="panel-tools">
 {%- if live and p.body and p.body.type == "Chart" %}{{ chart_legend(p.body) }}{% endif -%}
 {%- if tooled and not footer -%}
 {%- if p.note %}<span class="muted hide-tablet" style="font-size:11.5px">{{ p.note }}</span>{% endif -%}

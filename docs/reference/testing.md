@@ -10,6 +10,11 @@ database. Everything else has an owner:
   time** and the `safe-verification` skill
   (`.agents/skills/safe-verification/SKILL.md`).
 
+## Dev prerequisites
+
+- `node` on `PATH` for `cargo run -p admindiff -- mock|diff`, which render the UILayout
+  mockup through it; a missing `node` is an error, not a skip.
+
 ## Placement
 
 - Unit and live-Postgres tests live in sibling files, never inline in impl files
