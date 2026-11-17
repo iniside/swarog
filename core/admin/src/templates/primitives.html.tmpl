@@ -376,7 +376,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
     the head with the note first. -#}
 {%- set tooled = live or p.state == "empty" -%}
 {%- set footer = live and p.body and p.body.type == "Props" and p.body.code -%}
-<div class="slot" data-panel-url="{{ p.url }}"><section class="panel"><div class="panel-head">{% if p.icon %}<span class="muted">{{ icon(p.icon) }}</span>{% endif %}<span class="panel-title">{{ p.title }}{% if p.heading %} <span class="mono">{{ p.heading }}</span>{% endif %}</span>{% if p.meta %}<span class="panel-meta">{{ p.meta }}</span>{% endif %}{% if ro %}<span class="ro-chip">{{ icon("lock") }} read-only</span>{% endif %}<div class="panel-tools">
+<div class="slot" data-panel-url="{{ p.url }}"><section class="panel"><div class="panel-head">{% if p.icon %}<span class="muted">{{ icon(p.icon) }}</span>{% endif %}<span class="panel-title">{{ p.title }}{% if p.heading %}: <span class="mono">{{ p.heading }}</span>{% endif %}</span>{% if p.meta %}<span class="panel-meta">{{ p.meta }}</span>{% endif %}{% if ro %}<span class="ro-chip">{{ icon("lock") }} read-only</span>{% endif %}<div class="panel-tools">
 {%- if live and p.body and p.body.type == "Chart" %}{{ chart_legend(p.body) }}{% endif -%}
 {%- if tooled and not footer -%}
 {%- if p.note %}<span class="muted hide-tablet" style="font-size:11.5px">{{ p.note }}</span>{% endif -%}

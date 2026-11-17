@@ -290,7 +290,7 @@ fn manifest() -> Manifest {
             contribution(KPI_SUBSCRIPTIONS, page(), 20, "Subscriptions", ""),
             contribution(KPI_MAX_LAG, page(), 30, "Max lag", ""),
             contribution(KPI_DEAD_LETTERED, page(), 40, "Dead-lettered (7 d)", ""),
-            contribution(POISON, page(), 50, "Paused:", ""),
+            contribution(POISON, page(), 50, "Paused", ""),
             contribution(SUBSCRIPTIONS, page(), 60, "Subscriptions", ""),
             contribution(HEADER, Point::EntityHeader(KIND.to_string()), 0, "Subscription", "zap"),
             contribution(
@@ -419,7 +419,7 @@ impl EventsProvider {
             delta: top.filter(|s| s.lag_events > 0).map(|s| Delta {
                 value: format!("{} ({})", s.id, s.state),
                 period: String::new(),
-                tone: Some(Tone::Warn),
+                tone: lag_tone(s),
             }),
             series: Vec::new(),
             spark: Palette::Chart1,

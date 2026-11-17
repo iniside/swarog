@@ -964,7 +964,7 @@ pub struct PanelBody {
     pub primitive: Primitive,
     /// Muted text right of the title.
     pub meta: Option<String>,
-    /// Shown after the declared `ContributionDecl::title`.
+    /// Joined to the declared `ContributionDecl::title` with ": " by the portal; omitted with its separator when absent.
     pub heading: Option<String>,
     /// Muted text in the tools row.
     pub note: Option<String>,
