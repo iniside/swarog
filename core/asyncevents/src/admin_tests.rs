@@ -17,6 +17,13 @@ async fn test_pool() -> Option<PgPool> {
     Some(pool)
 }
 
+fn skipped(result: SkipResult) -> SkipOutcome {
+    match result {
+        SkipResult::Skipped(outcome) => *outcome,
+        other => panic!("expected a skip, got {other:?}"),
+    }
+}
+
 fn unique(prefix: &str) -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -156,7 +163,7 @@ async fn skip_steps_past_one_failing_event_and_records_reason() {
     // Paused with failures ⇒ eligible for skip; cursor at Genesis (nothing consumed).
     insert_sub(&pool, &id, &topic, "paused", 20, (0, "0".to_string(), 0)).await;
 
-    let out = skip(&pool, &id, "unrecoverable payload").await.unwrap();
+    let out = skipped(skip(&pool, &id, "unrecoverable payload", None).await.unwrap());
 
     // Skipped exactly event 0.
     let (g0, x0, t0) = &pos[0];
@@ -179,7 +186,7 @@ async fn skip_steps_past_one_failing_event_and_records_reason() {
 
     // A second skip (still faulted? no — now active/0-failures) is refused, proving
     // skip never runs away past more than the one failing event on a healthy sub.
-    let err = skip(&pool, &id, "again").await.unwrap_err();
+    let err = skip(&pool, &id, "again", None).await.unwrap_err();
     assert!(err.to_string().contains("refusing to skip"), "unexpected: {err}");
 
     cleanup(&pool, &topic, &id).await;
@@ -203,7 +210,7 @@ async fn skip_selects_failing_event_by_numeric_xid_order() {
     // Paused with failures ⇒ eligible for skip; Genesis cursor (nothing consumed).
     insert_sub(&pool, &id, &topic, "paused", 20, (0, "0".to_string(), 0)).await;
 
-    let out = skip(&pool, &id, "unrecoverable").await.unwrap();
+    let out = skipped(skip(&pool, &id, "unrecoverable", None).await.unwrap());
 
     assert_eq!(
         out.after.cursor,
@@ -229,7 +236,7 @@ async fn skip_refuses_a_healthy_subscription() {
     append_positions(&pool, &topic, 1).await;
     insert_sub(&pool, &id, &topic, "active", 0, (0, "0".to_string(), 0)).await;
 
-    let err = skip(&pool, &id, "no").await.unwrap_err();
+    let err = skip(&pool, &id, "no", None).await.unwrap_err();
     assert!(err.to_string().contains("refusing to skip"), "unexpected: {err}");
 
     cleanup(&pool, &topic, &id).await;
@@ -287,7 +294,7 @@ async fn skip_waits_for_the_row_lock_then_refuses_a_worker_healed_sub() {
     // Wait until the worker holds the lock, then skip must BLOCK on FOR UPDATE.
     locked_rx.await.unwrap();
     let started = std::time::Instant::now();
-    let err = skip(&pool, &id, "operator race").await.unwrap_err();
+    let err = skip(&pool, &id, "operator race", None).await.unwrap_err();
     let waited = started.elapsed();
     worker.await.unwrap();
 

@@ -62,6 +62,15 @@ pub struct SkipOutcome {
     pub skipped_payload: String,
 }
 
+/// What [`skip`] did. `AlreadyResolved` arises only when the caller named the event it
+/// expects to skip and that event is no longer the one blocking the subscription.
+#[derive(Debug)]
+pub enum SkipResult {
+    Skipped(Box<SkipOutcome>),
+    /// Nothing moved. `healthy` is true when the subscription is active with no failures.
+    AlreadyResolved { healthy: bool },
+}
+
 /// Every subscription with its lag (events + oldest age past the cursor). Powers both
 /// `list` and `lag`. `paused_since` is derived from `updated_at` — see the field doc
 /// on [`SubInfo::paused_since`] for the exact semantics.
@@ -214,6 +223,10 @@ macro_rules! next_eligible_event {
 /// `consecutive_failures = 0`): skip is a poison-recovery verb, not a fast-forward.
 /// Never advances more than one event.
 ///
+/// With `expected = Some(event_id)`, a healthy subscription, no eligible event, or a
+/// next eligible event other than `event_id` returns [`SkipResult::AlreadyResolved`]
+/// and moves nothing; with `None` the first two are errors.
+///
 /// The read-pick-update runs in ONE transaction that claims the subscription row
 /// `FOR UPDATE` — the same row workers serialize their delivery/checkpoint on — so
 /// skip never races a live worker's cursor advance. Plain `FOR UPDATE` (not
@@ -221,7 +234,7 @@ macro_rules! next_eligible_event {
 /// silently no-oping. If a worker advanced past the failure first, the guard re-checks
 /// on the locked row and finds `consecutive_failures = 0`, so skip REFUSES instead of
 /// rewinding the checkpoint — the correct outcome.
-pub async fn skip(pool: &PgPool, id: &str, reason: &str) -> Result<SkipOutcome> {
+pub async fn skip(pool: &PgPool, id: &str, reason: &str, expected: Option<&str>) -> Result<SkipResult> {
     // Cosmetic before/after reads stay pool-side; the real work is the tx below.
     let before = snapshot(pool, id).await?;
 
@@ -254,6 +267,9 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str) -> Result<SkipOutcome> 
     // makes this fire — skip refuses rather than rewinding a healthy checkpoint.
     if state == "active" && failures == 0 {
         tx.rollback().await.context("eventctl: rollback skip guard")?;
+        if expected.is_some() {
+            return Ok(SkipResult::AlreadyResolved { healthy: true });
+        }
         bail!(
             "eventctl: refusing to skip {id:?} — it is active with no failures; skip only steps \
              past the CURRENT failing event of a paused/faulted subscription (pause it first, or \
@@ -280,10 +296,18 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str) -> Result<SkipOutcome> 
     .bind(ct)
     .fetch_optional(&mut *tx)
     .await
-    .context("eventctl: select failing event")?
-    .ok_or_else(|| {
-        anyhow!("eventctl: no eligible event past {id:?}'s cursor to skip — nothing to do")
-    })?;
+    .context("eventctl: select failing event")?;
+    let ev = match (ev, expected) {
+        (Some(ev), Some(want)) if ev.get::<String, _>("event_id") != want => None,
+        (ev, _) => ev,
+    };
+    let Some(ev) = ev else {
+        tx.rollback().await.context("eventctl: rollback skip with no event")?;
+        if expected.is_some() {
+            return Ok(SkipResult::AlreadyResolved { healthy: false });
+        }
+        bail!("eventctl: no eligible event past {id:?}'s cursor to skip — nothing to do");
+    };
     let event_id: String = ev.get("event_id");
     let eg: i64 = ev.get("generation");
     let ex: String = ev.get("producer_xid_text");
@@ -309,12 +333,12 @@ pub async fn skip(pool: &PgPool, id: &str, reason: &str) -> Result<SkipOutcome> 
 
     tx.commit().await.context("eventctl: commit skip tx")?;
 
-    Ok(SkipOutcome {
+    Ok(SkipResult::Skipped(Box::new(SkipOutcome {
         after: snapshot(pool, id).await?,
         before,
         skipped_event_id: event_id,
         skipped_payload: payload,
-    })
+    })))
 }
 
 /// `bump-generation`: fence the current log generation (offline operator action; see

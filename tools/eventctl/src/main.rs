@@ -18,7 +18,7 @@ use std::process::ExitCode;
 
 use anyhow::{anyhow, Result};
 use asyncevents::admin::{
-    bump_generation, info, pause, resume, retire, retry, skip, StateSnapshot,
+    bump_generation, info, pause, resume, retire, retry, skip, SkipResult, StateSnapshot,
 };
 use eventctl::dsn;
 use sqlx::PgPool;
@@ -144,7 +144,10 @@ async fn cmd_skip(pool: &PgPool, args: &[String]) -> Result<()> {
     let id = arg_id(args)?;
     let reason = flag_value(args, "--reason")
         .ok_or_else(|| anyhow!("eventctl: skip requires --reason <text>"))?;
-    let outcome = skip(pool, &id, &reason).await?;
+    let SkipResult::Skipped(outcome) = skip(pool, &id, &reason, None).await? else {
+        // `expected: None` turns every nothing-to-skip case into an error instead.
+        return Err(anyhow!("eventctl: skip of {id:?} moved nothing"));
+    };
     // The skipped event's id + payload go to stderr (an audit trail), the transition
     // to stdout — the checkpoint move is always visible.
     eprintln!(
