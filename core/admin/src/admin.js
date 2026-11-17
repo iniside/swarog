@@ -136,7 +136,9 @@
     btn.disabled = true;
     var label = btn.querySelector("span");
     if (label) label.textContent = "Retrying…";
-    htmx.ajax("GET", slot.dataset.panelUrl, { target: slot, swap: "outerHTML" });
+    // Synced on its own slot, as in refreshPanels, so retries of other panels never wait
+    // in one queue.
+    htmx.ajax("GET", slot.dataset.panelUrl, { source: slot, target: slot, swap: "outerHTML" });
   }
 
   // Refetches every loaded panel on the page. A slot still loading has no
