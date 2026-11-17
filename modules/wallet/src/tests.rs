@@ -19,10 +19,11 @@ const DEFAULT_DSN: &str =
 
 use testdb::test_pool;
 
-/// Serializes the tests that plant or sweep `wallet.purged_players`: the whole-table `FOR UPDATE SKIP LOCKED` sweep skips rows a sibling's open sweep has locked.
-/// The delivery tests take it too, after `STARTER_SUB_LOCK`: their `deliver_all` runs the
-/// real tombstone and sweep subscriptions over the shared log, where a dev fleet's
-/// scheduler appends `player-purge` fires.
+/// Serializes the tests that plant or sweep `wallet.purged_players`: the whole-table
+/// `FOR UPDATE SKIP LOCKED` sweep skips rows a sibling's open sweep has locked.
+/// The delivery tests take it too, after `STARTER_SUB_LOCK`: their delivery (hand-driven or
+/// plane) runs the real tombstone and sweep subscriptions over the shared log, where any
+/// running scheduler appends `player-purge` fires.
 static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn ensure_schema(pool: &PgPool) {
@@ -2757,9 +2758,12 @@ async fn one_sweep_fire_stamps_at_most_64_players() {
 
     // The planted body runs as its own task so a panic in it comes back here as a
     // `JoinError` and the 65 low tombstones are cleared before it resumes: a `Drop` guard
-    // cannot await the DELETE, and a leftover would starve every later sweep test.
+    // cannot await the DELETE, and a leftover would starve every later sweep test. Its
+    // backend is terminated first, since an aborted future leaves a blocked sweep holding
+    // its row locks server-side and the DELETE would wait on them.
+    let app = format!("wallet-{}", unique_key("fire-bound"));
     let mut body = tokio::spawn({
-        let (pool, svc, ids) = (pool.clone(), svc.clone(), ids.clone());
+        let (pool, svc, ids) = (racer_pool(&app), svc.clone(), ids.clone());
         async move {
             let mut conn = pool.acquire().await.unwrap();
             for (i, id) in ids.iter().enumerate() {
@@ -2792,6 +2796,15 @@ async fn one_sweep_fire_stamps_at_most_64_players() {
     if outcome.is_err() {
         body.abort();
         let _ = (&mut body).await;
+    }
+    if !matches!(outcome, Ok(Ok(()))) {
+        sqlx::query(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1",
+        )
+        .bind(&app)
+        .execute(&pool)
+        .await
+        .unwrap();
     }
     clear_tombstones(&pool, &ids).await;
     match outcome {
