@@ -1402,6 +1402,7 @@ dependencies = [
  "anyhow",
  "asyncevents",
  "sqlx",
+ "testdb",
  "tokio",
 ]
 

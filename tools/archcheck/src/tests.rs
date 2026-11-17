@@ -660,6 +660,31 @@ fn grep_asyncevents_sql_excludes_plane_crate_and_tests() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn grep_asyncevents_sql_skips_exactly_the_eventctl_seed_file() {
+    let root = unique_temp_dir();
+    std::fs::create_dir_all(root.join("tools/eventctl/src")).unwrap();
+    let sql = "sqlx::query(\"SELECT * FROM asyncevents.subscriptions\");\n";
+    // The seed fixture is the one exempt file; its sibling and a same-named file in
+    // another crate are not.
+    std::fs::write(root.join("tools/eventctl/src/seed.rs"), sql).unwrap();
+    assert!(super::grep_asyncevents_sql(&root).is_empty(), "seed.rs is exempt");
+
+    std::fs::write(root.join("tools/eventctl/src/main.rs"), sql).unwrap();
+    std::fs::create_dir_all(root.join("tools/other/src")).unwrap();
+    std::fs::write(root.join("tools/other/src/seed.rs"), sql).unwrap();
+    // Hits carry the OS path separator; compare on `/`.
+    let hits: Vec<String> = super::grep_asyncevents_sql(&root)
+        .into_iter()
+        .map(|h| h.replace('\\', "/"))
+        .collect();
+    assert_eq!(hits.len(), 2, "{hits:?}");
+    assert!(hits.iter().any(|h| h.contains("tools/eventctl/src/main.rs")), "{hits:?}");
+    assert!(hits.iter().any(|h| h.contains("tools/other/src/seed.rs")), "{hits:?}");
+    assert!(!hits.iter().any(|h| h.contains("tools/eventctl/src/seed.rs")), "{hits:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 // --- Rule 15: a module may not query a FOREIGN module's schema in SQL --------
 
 /// The 10 persisting-module schema names, as `grep_foreign_schema_sql` derives them from

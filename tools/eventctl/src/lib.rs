@@ -4,6 +4,9 @@
 
 pub mod seed;
 
+#[cfg(test)]
+mod seed_tests;
+
 /// Dev-default DSN (mirrors CLAUDE.md); overridden by `DATABASE_URL`.
 pub const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";

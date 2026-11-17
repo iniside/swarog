@@ -20,3 +20,7 @@ asyncevents = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 anyhow = { workspace = true }
+
+[dev-dependencies]
+testdb = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
