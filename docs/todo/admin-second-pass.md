@@ -189,6 +189,17 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
   but does not refuse an unlisted `PageHead` action. Closed by: an admincheck finding for
   it. Source: the 593010bf hand-off.
 
+### Contract gaps admindiff cannot see
+
+- [ ] **Per-page toolbar search width** (low priority, owner 2026-11-17)
+  ADMIN2-35. Mockup: `searchWidth: 280` for players (UILayout/redesign/assets/pages-core.js:98),
+  260 for the mail outbox (pages-platform.js:120), 220 elsewhere. The portal's `table_toolbar`
+  hard-codes `style="width:220px"` (core/admin/src/templates/primitives.html.tmpl:189), so the
+  players box is 60 px and the outbox box 40 px narrower than the mockup. admindiff compares
+  no attributes, so no accept entry covers it. Found in step 13 part b. Closed by: a
+  `DataTable` search-width field in `core/controlplane` that the template reads, set by
+  accounts and mail.
+
 ## Accepted contract gaps
 
 One item per `contract gap` entry in `tools/admindiff/accept/*.txt`; remaining mockup
