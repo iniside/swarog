@@ -22,6 +22,7 @@ _None._
   ACCOUNT-DELETION-03. `mail.outbox` has no `player_id`, and mail does not
   subscribe to `player.deleted`. Source: docs/roadmap/feature-tracker.md:145 @ fd797b3a
   (2026-09-10); README.md:140-141 @ fd797b3a.
+
 ## Notes
 
 ### Not doing
@@ -60,5 +61,5 @@ _None._
       `player_groups_tx` finds, from committed memberships
       (`modules/groups/src/store.rs:152-160`, `projection.rs:382-389,436-445`). A `join`
       in flight holds the group lock with its membership uncommitted
-      (`service.rs:496-508`), so the sweep never locks that group and the membership
+      (lock and guard `service.rs:496-508`, insert `:548-552`), so the sweep never locks that group and the membership
       survives. `create` guards with no lock (`service.rs:364-378`).
