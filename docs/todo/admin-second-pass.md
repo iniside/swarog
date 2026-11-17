@@ -96,6 +96,18 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
   and :313; no operator park exists (resume parked is real) and `cancel` refuses a row
   that is not pending. Replaced by: an operator park transition and a cancel for parked rows.
 
+- [ ] **Define mail "retrying" so a healthy first send is not one**
+  ADMIN2-19. "Retrying" is `state = 'pending' AND attempts > 0`
+  (modules/mail/src/store.rs:436 and :484, modules/mail/src/admin.rs:138), and the claim
+  bumps `attempts = attempts + 1` (store.rs:300), so a healthy first send counts as
+  retrying while its lease is held. In that window the FAKE throttling banner, the Mail
+  queue tile delta and the dashboard attention item flash (modules/mail/src/admin.rs:336,
+  :366, :441; the tile's `stats.retrying > 0` test at :334). Owner (2026-11-17): define it
+  differently or make the threshold configurable. Options: `attempts >= 2`; a typed
+  config threshold on mail; require a recorded `last_error` (a failed attempt writes it,
+  store.rs:369). Whichever is chosen must change the count, the Retrying tab and the
+  admin.rs:138 tab key together. Source: review of commits b03a62fa..5d5e6973 (2026-11-17).
+
 ### Not-implemented actions
 
 - [ ] **Copy payload**
