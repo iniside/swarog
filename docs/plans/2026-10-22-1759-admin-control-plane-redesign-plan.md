@@ -1855,6 +1855,28 @@ and an empty log is refused.
     - attention: mail 40 (core.events 20; portal 10, 30, 50);
     - platform nav entries: 10–50 (Event plane is 60);
     - audit's "Recent operator activity" is a `DashboardPanel`.
+    - (owner, 2026-11-17, research doc X2) entity tabs: characters 20, wallet 30,
+      inventory 40, friends 50, groups 60, storage 70, notifications 80 (accounts' Profile
+      tab 10); facts: characters 30, Lore 40 reserved, wallet 50 (accounts 10, 20); list
+      columns on players: characters 10, Lore 20 reserved, wallet 30; header actions:
+      notifications Notify 20 (accounts Suspend 30); row-menu groups: wallet 40,
+      inventory 50, notifications 60, storage 80 (accounts 20, 30); Purges-pending attention
+      items: characters 61, wallet 62, inventory 63, friends 64, groups 65, storage 66,
+      notifications 67.
+  - Cross-cutting rules (owner, 2026-11-17, research doc X):
+    - X1: each purging module (characters, wallet, inventory, friends, groups, storage,
+      notifications) contributes "Purges pending" as a `DashboardAttention` item shown
+      only while its sweep is behind (at the order above); it replaces the Q1 KPI wording.
+    - X4: each port reuses or deletes its own dead admin readers.
+    - X5: an operator is a user cell linked to the audit page filtered by actor;
+      `system`, `scheduler` and `apikey:<name>` are plain tags.
+    - X7: Steps 14–20 touch the seven purging modules that the untracked
+      `docs/plans/2026-11-17-1900-purge-race-locks-plan.md` also edits; the owner orders the
+      two rollouts before the first of them starts.
+    - X8: writer action ids read like the mockup (`key.create`, `flag.update`); a writer
+      maps `request_id` to its existing idempotency key (wallet `idempotency_key`).
+    - X9: the "nav entries … arrive with their ports" accept line shared by five accept
+      files keeps one wording and is swept once, at Step 24.
 - **Before a:** `[opus]` checklist extraction per the `mockup-implementation` skill
   (Step 10b item 3). Every contract gap it finds becomes a decision in part `a`.
 - **b** (`[sonnet]` mockup-implementer under Step 10b item 4; an open gap in the checklist
@@ -1984,7 +2006,8 @@ The ports:
       of waiting for Step 25.
 - **Step 14 — characters.** Characters tab, summary fact, tab count. Starts after Steps 13c
   and 13d; its checklist (`docs/plans/2026-11-17-step14-characters-checklist.md`) is re-cut
-  against them, leaving only its own data decisions (G2, G3, G7, G8, G10, G11).
+  against them, leaving only its own data decisions (G2, G3, G7, G8, G10, G11); G6 moved
+  to Step 13d.
 - **Step 15 — wallet.**
   - Economy page (`pages-platform.js:164-185`; the global ledger is FAKE per R1).
   - Wallet tab; grant/revoke (REAL).
@@ -2004,6 +2027,8 @@ The ports:
     mockup's `Authorization: Bearer` text.
   - Writer.
 - **Step 22 — scheduler.** Scheduler page (`pages-platform.js:74-85`); all writes disabled.
+  The portal's `storage.gc` attention fake moves into the scheduler provider at the
+  portal's order 50, with its todo item (X6, owner 2026-11-17).
 - **Step 23 — config.**
   - Config & flags page (`pages-platform.js:88-109`).
   - Edit via `cp.invoke` with `expected_revision` = the global revision. The edit form is
@@ -2020,22 +2045,44 @@ The ports:
   until then the blocking clippy stage is red on that dead code by owner decision
   (2026-11-10).
 
-The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending" KPIs) are kept.
+The Q1 extras (groups promote-admin, wallet create-currency, "Purges pending") are kept;
+"Purges pending" is the X1 attention item of the port template (owner, 2026-11-17).
 
 ### Step 13c — The contract the remaining ports need (owner, 2026-11-17)
 
 Order: after Step 13, before Step 14. Source:
-`docs/research/2026-11-17-ports-contract-gaps.md` (items K, R, X; anchors there). Owner:
+`docs/research/2026-11-17-ports-contract-gaps.md` (items K, R, X3; anchors there). Owner:
 "dopisz to wszystko do planu" — the research doc's proposals are adopted; where it lists an
 alternative, the first proposal stands. Why: every remaining port hit the same contract
 gaps one at a time (Step 14 checklist G1–G11, then the sweep of Steps 15–24); deciding them
-per port repeated the same question eleven times.
+per port repeated the same question eleven times. The cross-cutting rules (X1, X2, X4–X9)
+live in the port template and the port bullets, not here.
 
-(a) What is touched: `core/controlplane` (contract), `core/admin` (`render.rs`, templates,
-`engine/columns.rs`, `routes.rs`), the public-api baseline, `tools/conformance` policy
-rows for new request fields, `.agents/skills/mockup-implementation/SKILL.md` (standing data
-rules), `docs/reference/event-plane-ops.md:117-122` (stale Purges-pending text). What dies:
-the `events.txt` contract-gap lines and ADMIN2-18 that K1 closes; nothing else is replaced.
+Open for the owner before this step starts:
+- **O1 (structural, plan review 2026-11-17).** Step 28 (variant coverage observed from the
+  render) runs before this step, out of numeric order, so the new variants below land on
+  the observed gate instead of growing the `SEEN_ENUMS` / `NOT_SEEN` / `UNREAD_ENUMS` hand
+  lists Step 28 removes. Recommended.
+- **O2 (structural).** The refs cap (K21) and the label batch (K19) are enforced once, in
+  `LocalFace` (`core/admin/src/engine/sources.rs` monolith, `core/controlplane-rpc`
+  split) before any provider is called, as `Manifest.writes` already is, not in each
+  provider. Recommended.
+
+(a) What is touched: `core/controlplane`, `core/controlplane-rpc` (O2), `core/admin`
+(`render.rs`, templates, `engine/columns.rs`, `engine/sources.rs`, `routes.rs`), the
+public-api baseline, `tools/conformance` policy rows for new request fields,
+`modules/accounts/src/admin.rs` (moves to the shared FAKE helper), the mockup skill
+(standing data rules), `docs/reference/event-plane-ops.md:117-122`.
+What dies, in this step:
+- `TimelineEntry.actor: Option<EntityRef>` and its always-a-link render path (K10);
+- `DataTable.item_noun: String` as a single plural (K18);
+- the fixed readonly banner text in `primitives.html.tmpl` (K12);
+- `SearchHit.target: EntityRef` (K17: one destination field replaces it);
+- accounts' local FAKE hash (X3);
+- the `events.txt` contract-gap lines and ADMIN2-18 (K1); `events.txt` entries a K4 row
+  change makes stale (a kind with no `EntityHeader` no longer draws `tr.clickable`);
+- `FilterKind`'s `UNREAD_ENUMS` entry, since K20 makes the view read it (moot under O1);
+- the stale Purges-pending paragraph of `event-plane-ops.md`.
 
 (b) Decisions and invariants:
 - Cells and columns: K1 `CellKind::MonoMuted`; K2 `Tone::Accent`; K3 `Column.wrap`; K5
@@ -2043,7 +2090,8 @@ the `events.txt` contract-gap lines and ADMIN2-18 that K1 closes; nothing else i
   draws `a.mono` (template rule).
 - Rows and menus: K4 a row is `clickable` only when its kind has an `EntityHeader`
   contribution, so a row menu no longer forces a link; K14 a row-menu group of a module
-  whose source is down draws the "unavailable" note and disabled items (portal only).
+  whose source is down draws the "unavailable" note and disabled items (portal only); a
+  per-row disabled reason stays a D7 deviation.
 - Chrome and tabs: K9 `PanelBody.foot` and `PanelBody.tag`; K12
   `ContributionDecl.readonly: Option<String>` forces the readonly state with that text and
   the tab lock icon; K13 a tab whose module is down draws the error dot (portal only); K11
@@ -2055,46 +2103,56 @@ the `events.txt` contract-gap lines and ADMIN2-18 that K1 closes; nothing else i
 - Forms and reveals: K16 `Field.mono`, `Field.placeholder`, `FormSpec.title`,
   `SecretReveal.extra`; the Grant/Revoke seg is an Enum field plus a contract-gap accept
   entry.
-- Search and page state: K17 `SearchHit.link: Option<Link>`; K20 `PageDecl.params` names
-  the page URL keys forwarded to `PanelQuery.params` (one Opaque policy row), and
-  `FilterKind::Select`.
-- Cross-module: K19 `Point::EntityLabel{kind}`, answered by the kind's owner and fetched
-  in one batched call per page like the list-column `refs`; K21
-  `controlplane::MAX_PANEL_REFS`: the portal never sends more refs, a provider refuses more
-  before any SQL.
-- Text: K18 `item_noun` gains a singular form; the portal picks it at 1.
+- Search and page state: K17 a search hit has exactly one destination, an entity or a page
+  (`Link`); K20 `PageDecl.params` names the page URL keys forwarded to
+  `PanelQuery.params` (covered by the existing `cp.panel req.params` policy rows unless
+  conformance proves otherwise), and `FilterKind::Select`.
+- Cross-module: K19 `Point::EntityLabel{kind}`, answered by the kind's owner (the portal
+  mediates; no module imports another); K21 `controlplane::MAX_PANEL_REFS`. Invariant
+  joining them: `MAX_PANEL_REFS` is at least the largest page size any `DataTable` or
+  `Timeline` declares, and the distinct refs of one kind on a page never exceed its rows,
+  so one batched call per kind per page always fits; a test pins the inequality.
+- Text: K18 the noun has a singular and a plural; the portal picks the singular at 1.
 - Shared FAKE helper (X3): one deterministic helper in `controlplane` (explicit-width hash
-  of an entity id, no clock, no rand); accounts moves to it in this step.
-- Every new variant and field has a golden case (Step 28 drift guard); no new variant is
-  reachable without one.
-- Standing data rules in the skill (R-a … R-j of the research doc): identifiers in full;
-  times computed in SQL; real stable order, a sort arrow only on the real sort column;
-  singular at 1; a count is always a `Cell`, `0` included; a demo-only mockup element
-  takes its nearest designed sibling's ok shape, declared in the hand-check; portal empty
-  states; truthful constants beat FAKE; "—" for a never-happened value; D4 vocabulary.
-- Cross-cutting rules recorded in the port template (X): Purges pending is a conditional
-  `DashboardAttention` item per purging module, shown only while its sweep is behind (X1);
-  the order bands of the research doc (X2); each port reuses or deletes its own dead admin
-  readers (X4); operators are a user cell linked to the audit page filtered by actor,
-  `system`/`apikey:<name>` plain tags (X5); the `storage.gc` attention fake moves to the
-  scheduler provider in Step 22 (X6); writer action ids read like the mockup (X8).
+  of an entity id, no clock, no rand); accounts moves to it here.
+- Variant coverage of every new enum variant is Step 28's observed gate (O1); field
+  coverage is the named test list in (c).
+- Standing data rules added to the skill (R-a … R-j of the research doc): identifiers in
+  full; times computed in SQL, keeping the mock's per-column format; real stable order, a
+  sort arrow only on the real sort column; singular at 1; a count is always a `Cell`, `0`
+  included; a demo-only mockup element takes its nearest designed sibling's ok shape,
+  declared in the hand-check; portal empty states, and a filter narrowed to zero keeps the
+  toolbar; truthful constants beat FAKE, and an exact `count(*)` carries a comment naming a
+  missing index; "—" for a never-happened value; D4 vocabulary.
 
-(c) Tests: `[opus]` test-author after the code lands: one golden case per new variant and
-field, the refs cap (portal side and provider refusal), `EntityLabel` batching (one call per
-page, ok/failing/denied), `readonly` forcing, row clickability by kind, and the down-module
-row-menu group. Split is the at-risk topology for `EntityLabel` and the refs cap.
+(c) Tests, `[opus]` test-author after the code lands:
+- a golden case for each new field: `Column.wrap`, `Cell.row`, `PanelBody.foot`,
+  `PanelBody.tag`, `ContributionDecl.readonly`, the tab tiles row, `Layout::Rows`,
+  `TimelineEntry.title/badges/actor`, `Timeline.days` and the date format, `Field.mono` and
+  `placeholder`, `FormSpec.title`, `SecretReveal.extra`, the singular noun, `a.mono`;
+- row clickability by kind; the down-module row-menu group and tab dot;
+- `EntityLabel` batching: one call per kind per page, ok/failing/denied;
+- the refs cap refused in `LocalFace` (O2) and the page-size inequality;
+- split, the at-risk topology: a committed splitproof assertion that a portal page in the
+  split draws an `EntityLabel` answered by another `*-svc`, and that an over-cap
+  `cp.panel` is refused over the wire (authoring `[opus]` test-author, audit
+  proof-auditor).
 
-(d) Lanes: `[opus]` core-implementer (contract and renderer, may land as two commits:
-contract + portal, then the helper move); `[opus]` test-author; `[docs]` docs-writer for the
-skill rules and the event-plane-ops text; `[review]` core-reviewer, plus proof-auditor on the
-golden cases.
+(d) Lanes and review units: `[opus]` core-implementer in two review units, each with its
+own review rounds: (i) portal-only cells, chrome, forms and text (K1–K18 minus K17, the
+helper move); (ii) the cross-process seams (K17, K19, K20, K21, O2), which carry the split
+risk. Then `[opus]` test-author; `[docs]` docs-writer for the skill rules and the
+event-plane-ops text; `[review]` core-reviewer, plus proof-auditor on the goldens and the
+splitproof assertion.
 
 ### Step 13d — admindiff sees tabs, modals, menus and ok states (owner, 2026-11-17)
 
-Order: after Step 13c, before Step 14. Source: the research doc's items T1–T8.
+Order: after Step 13c, before Step 14. Source: the research doc's items T1–T8 and the
+Step 14 checklist's G6.
 
 (a) What is touched: `tools/admindiff/src` (`pages.rs`, `crawl.rs`, `mock.rs`,
-`skeleton.rs`, `lib.rs`), `tools/admindiff/accept/`, the skill §1, §6 and §7.
+`skeleton.rs`, `lib.rs`), `tools/admindiff/accept/`, the skill §1, §6 and §7. What dies:
+the crawl's status-only row-menu check (T3 replaces it with a diffed menu body).
 
 (b) Invariants:
 - T1: a page map entry can name a tab of a `FirstRow` page; the crawl follows the first row
@@ -2104,13 +2162,17 @@ Order: after Step 13c, before Step 14. Source: the research doc's items T1–T8.
   captures the modal; the crawl GETs the action's modal URL; the pair has its own accept
   section.
 - T3: the crawl writes row-menu fragments, and the harness renders the matching mockup menu;
-  menus are diffed, not only status-checked.
+  menus are diffed.
 - T4: a page map entry can force the mockup's ok state (`UI.state.force`), so a module the
   mockup draws only down or stale (wallet) is compared in its ok shape; hard-coded demo
-  markup the force cannot reach is a declared deviation.
+  markup the force cannot reach is a declared deviation, and golden cases pin each ok shape.
 - T5: `select > option` collapses like `tbody > tr`.
 - T6: a page map entry can run a JS prelude before mount, paired with a portal route
   parameter, for a client-side default selection (config).
+- G6 of the Step 14 checklist: the harness never runs `meta.after`, so a contributed
+  list-column header diffs as `th.num` against the portal's `th.num > span`. That line is a
+  `template choice` accept entry naming the harness, shared by every list-column port, and
+  the skill §1 sentence says the diff reports it.
 - A clean crawl still requires every declared target to be reached: an unreachable tab,
   modal or menu target fails the crawl, as an empty `FirstRow` does.
 - T7 is Step 13c's golden work; T8 stays the hand-check section of each checklist.
@@ -2451,7 +2513,8 @@ no fix-on-fix: a finding that needs the mirror back is an owner question.
 - **Q1 (answered: keep).** Groups "promote member to admin" (Step 18), wallet "create
   currency" (Step 15) and the "Purges pending" KPI (`docs/reference/event-plane-ops.md:125-130`,
   in each of the 7 modules' port steps) are kept as extra elements built from existing
-  primitives in the mockup's style (D6).
+  primitives in the mockup's style (D6). **Amended (owner, 2026-11-17, X1):** "Purges
+  pending" is a conditional `DashboardAttention` item per purging module, not a KPI tile.
 - **Revision 2 (2026-11-10).**
   - Admin is core, with no admin module.
   - admin-svc is a composition root.
