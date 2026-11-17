@@ -94,13 +94,19 @@ fn event_name(topic: &str, short: &str) -> String {
     format!("{topic} #{short}")
 }
 
-/// `"since Nov 17 14:02"` from Postgres timestamptz text. The date is always shown: the
-/// provider reads no clock, so it cannot tell a pause from today from an older one.
-fn since(at: &str) -> String {
+/// `"Nov 17 14:02"` from Postgres timestamptz text, or the text unchanged if it does not
+/// parse. The date is always shown: the provider reads no clock, so it cannot tell a
+/// timestamp from today from an older one.
+fn day_time(at: &str) -> String {
     match day_and_time(at) {
-        (_, day, time) if !day.is_empty() => format!("since {day} {time}"),
-        _ => format!("since {at}"),
+        (_, day, time) if !day.is_empty() => format!("{day} {time}"),
+        _ => at.to_string(),
     }
+}
+
+/// `"since Nov 17 14:02"`, as [`day_time`].
+fn since(at: &str) -> String {
+    format!("since {}", day_time(at))
 }
 
 /// Every input value is at most [`MAX_INPUT_VALUE_BYTES`]. This provider declares no form
@@ -365,7 +371,7 @@ impl EventsProvider {
                 text: format!("{} stopped · {} behind.", s.id, count(s.lag_events)),
                 link: events_page(),
                 action_label: "Resolve".to_string(),
-                since: s.paused_since.unwrap_or_default(),
+                since: s.paused_since.as_deref().map(day_time).unwrap_or_default(),
             })
             .collect();
         Ok(Primitive::AttentionItems(items))
@@ -568,7 +574,7 @@ impl EventsProvider {
             prop("State", state_cell(&snap.state, snap.consecutive_failures)),
             prop("Checkpoint", text(CellKind::Mono, snap.cursor.clone(), None)),
             prop("Failures", text(CellKind::Number, snap.consecutive_failures.to_string(), None)),
-            prop("Next attempt", text(CellKind::Text, snap.next_attempt_at.clone().unwrap_or_else(none), None)),
+            prop("Next attempt", text(CellKind::Text, snap.next_attempt_at.as_deref().map_or_else(none, day_time), None)),
             prop("Last error", text(CellKind::Mono, snap.last_error.clone().unwrap_or_else(none), None)),
             prop("Consumer", text(CellKind::Text, fakes::consumer(&sub.id), None)),
         ];
