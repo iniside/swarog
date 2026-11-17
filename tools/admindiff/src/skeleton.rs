@@ -384,7 +384,7 @@ fn diff(path: &str, m: &Skel, p: &Skel, out: &mut BTreeSet<String>) {
         let m_canons: HashSet<&str> = m.children.iter().map(|c| c.canon.as_str()).collect();
         let m_left: Vec<&Skel> = m.children.iter().filter(|c| !p_canons.contains(c.canon.as_str())).collect();
         let p_left: Vec<&Skel> = p.children.iter().filter(|c| !m_canons.contains(c.canon.as_str())).collect();
-        let (m_un, p_un) = pair_kin(path, &m_left, &p_left, out);
+        let (_, m_un, p_un) = pair_kin(path, &m_left, &p_left, out);
         report_unpaired(path, &m_un, &p_un, out);
     } else {
         sequence(path, m, p, out);
@@ -393,7 +393,8 @@ fn diff(path: &str, m: &Skel, p: &Skel, out: &mut BTreeSet<String>) {
 
 /// Positional comparison: the longest common subsequence of canons anchors the two lists,
 /// and in each gap between anchors kin children pair up. The same children in another
-/// order is one `order` line; a child left unpaired on both sides is `moved`.
+/// order, or kin pairs that cross inside a gap, give an `order` line; a child left
+/// unpaired on both sides is `moved`.
 fn sequence(path: &str, m: &Skel, p: &Skel, out: &mut BTreeSet<String>) {
     let (a, b) = (&m.children, &p.children);
     if a.iter().map(|c| &c.canon).eq(b.iter().map(|c| &c.canon)) {
@@ -419,9 +420,7 @@ fn sequence(path: &str, m: &Skel, p: &Skel, out: &mut BTreeSet<String>) {
     let (mut i, mut j) = (0, 0);
     while i < a.len() || j < b.len() {
         if i < a.len() && j < b.len() && a[i].canon == b[j].canon {
-            let (ma, pb) = pair_kin(path, &gap_a, &gap_b, out);
-            m_un.extend(ma);
-            p_un.extend(pb);
+            gap(path, &gap_a, &gap_b, out, &mut m_un, &mut p_un);
             gap_a.clear();
             gap_b.clear();
             i += 1;
@@ -434,9 +433,7 @@ fn sequence(path: &str, m: &Skel, p: &Skel, out: &mut BTreeSet<String>) {
             j += 1;
         }
     }
-    let (ma, pb) = pair_kin(path, &gap_a, &gap_b, out);
-    m_un.extend(ma);
-    p_un.extend(pb);
+    gap(path, &gap_a, &gap_b, out, &mut m_un, &mut p_un);
     let mut p_rest: Vec<&Skel> = p_un;
     let mut m_rest = Vec::new();
     for x in m_un {
@@ -451,9 +448,34 @@ fn sequence(path: &str, m: &Skel, p: &Skel, out: &mut BTreeSet<String>) {
     report_unpaired(path, &m_rest, &p_rest, out);
 }
 
-/// Pairs kin children of `m` and `p`, most similar first, and compares each pair; returns
-/// the unpaired ones.
-fn pair_kin<'a>(path: &str, m: &[&'a Skel], p: &[&'a Skel], out: &mut BTreeSet<String>) -> (Vec<&'a Skel>, Vec<&'a Skel>) {
+/// Pairs the kin children of one gap and adds its unpaired ones to `m_un` / `p_un`; pairs
+/// whose portal positions do not rise with their mock positions give an `order` line.
+fn gap<'a>(
+    path: &str,
+    m: &[&'a Skel],
+    p: &[&'a Skel],
+    out: &mut BTreeSet<String>,
+    m_un: &mut Vec<&'a Skel>,
+    p_un: &mut Vec<&'a Skel>,
+) {
+    let (mut pairs, ma, pb) = pair_kin(path, m, p, out);
+    m_un.extend(ma);
+    p_un.extend(pb);
+    pairs.sort_unstable();
+    if pairs.windows(2).any(|w| w[1].1 < w[0].1) {
+        let mock: Vec<String> = pairs.iter().map(|&(mi, _)| m[mi].label()).collect();
+        let mut by_portal = pairs.clone();
+        by_portal.sort_unstable_by_key(|&(_, pi)| pi);
+        let portal: Vec<String> = by_portal.iter().map(|&(_, pi)| p[pi].label()).collect();
+        out.insert(format!("{path}: order mock [{}] portal [{}]", mock.join(", "), portal.join(", ")));
+    }
+}
+
+type Paired<'a> = (Vec<(usize, usize)>, Vec<&'a Skel>, Vec<&'a Skel>);
+
+/// Pairs kin children of `m` and `p`, most similar first, regardless of position, and
+/// compares each pair; returns the pairs as (mock, portal) indices and the unpaired ones.
+fn pair_kin<'a>(path: &str, m: &[&'a Skel], p: &[&'a Skel], out: &mut BTreeSet<String>) -> Paired<'a> {
     let mut candidates = Vec::new();
     for (mi, a) in m.iter().enumerate() {
         for (pi, b) in p.iter().enumerate() {
@@ -464,12 +486,14 @@ fn pair_kin<'a>(path: &str, m: &[&'a Skel], p: &[&'a Skel], out: &mut BTreeSet<S
     }
     candidates.sort_by(|x, y| y.0.cmp(&x.0).then(x.1.cmp(&y.1)).then(x.2.cmp(&y.2)));
     let (mut m_used, mut p_used) = (vec![false; m.len()], vec![false; p.len()]);
+    let mut pairs = Vec::new();
     for (_, mi, pi) in candidates {
         if m_used[mi] || p_used[pi] {
             continue;
         }
         m_used[mi] = true;
         p_used[pi] = true;
+        pairs.push((mi, pi));
         let (a, b) = (m[mi], p[pi]);
         if a.head != b.head {
             out.insert(format!("{path}: mock {} portal {}", a.head, b.head));
@@ -478,7 +502,7 @@ fn pair_kin<'a>(path: &str, m: &[&'a Skel], p: &[&'a Skel], out: &mut BTreeSet<S
     }
     let m_un = m.iter().zip(&m_used).filter(|(_, used)| !**used).map(|(s, _)| *s).collect();
     let p_un = p.iter().zip(&p_used).filter(|(_, used)| !**used).map(|(s, _)| *s).collect();
-    (m_un, p_un)
+    (pairs, m_un, p_un)
 }
 
 fn report_unpaired(path: &str, m: &[&Skel], p: &[&Skel], out: &mut BTreeSet<String>) {
