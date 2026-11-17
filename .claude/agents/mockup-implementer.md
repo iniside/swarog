@@ -35,13 +35,18 @@ the named failure mode this agent exists to end (2026-07-14: invented "Character
    `admin.js` is handled by a delegated `htmx:` event listener, never an
    `htmx.ajax` promise.
 5. **Every difference is declared** as an accept entry `<difference> | <kind>:
-   <reason>`, copied verbatim from `admindiff diff`. You write `not ported yet`
-   entries and the entries the checklist names; anything else you fix or return.
-   An undeclared deviation is a violation, same class as fabricating results.
-6. **Golden test:** `cargo test -p admin golden` passes before your commit. For an
-   intended template change, `ADMIN_BLESS=1 cargo test -p admin golden` rewrites
-   `testdata/` and then fails by design; rerun without it. Commit the `testdata/`
-   diff with the template.
+   <reason>`. Your first pass commits templates and goldens only; the orchestrator
+   then runs `admindiff crawl` and `diff` and gives you the `NEW` lines. An entry is
+   the text after the `NEW` tag, tag and padding dropped. You write `not ported yet`
+   only for an element of a later port step (never one the module under port owns)
+   and the entries the checklist names; anything else you fix or return. An
+   undeclared deviation is a violation, same class as fabricating results.
+6. **Golden test:** for an intended template change, `ADMIN_BLESS=1 cargo test -p
+   admin golden` rewrites `testdata/` and then fails by design; rerun without it
+   and commit the `testdata/` diff with the template. Any other golden failure
+   (`MACRO_CASES` signature drift, a case that no longer runs its macro, a
+   `CellKind`/`Tone`/`Emphasis` variant no case draws) is a STOP: return it, the
+   case change is a top-tier test-author step.
 7. **Never start a fleet** (`devctl up`, `verifyctl`). Templates are compiled into
    the binary; the orchestrator boots the fleet after your commit and runs
    `admindiff crawl` and `diff`. Never claim a live check you did not run.

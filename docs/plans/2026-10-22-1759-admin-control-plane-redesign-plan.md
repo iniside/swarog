@@ -1643,6 +1643,10 @@ model tokens. Step 10's cost came from:
       lane, runs the `safe-verification` pre-flight and boots `devctl up` after the
       view commit, because templates are compiled into the binary. The view lane never
       starts a fleet.
+   - **Errata (as written, 2026-11-17).** The view lane runs and blesses the golden test
+     before its commit (`ADMIN_BLESS=1` regenerates `testdata/`), and the orchestrator
+     re-runs `cargo test -p admin golden` as the gate, first in its live sequence and
+     before any tool build, as no Cargo command may run once the fleet is up.
 4. **The UI lane rule changes once, at its source** (owner, 2026-11-17).
    - `planning-dispatch.md` gets the carve-out in shared terms. It amends the
      `[mechanical]` row and its prose so that a port's view part (`b`) with a complete
@@ -1780,6 +1784,9 @@ and an empty log is refused.
   clean `crawl`, run by the orchestrator. When the generic macros already render the page
   exactly, b is a fidelity check with no commit.
 - **Order:** after Steps 6–10b.
+- **Errata (2026-11-17).** Part a's file list also holds the page's entry in
+  `tools/admindiff/src/pages.rs`: `Route::Pending` becomes `Route::Mapped(<route>)`, as
+  `diff` refuses a pending page.
 
 The ports:
 

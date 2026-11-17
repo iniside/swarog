@@ -13,7 +13,8 @@ the compile/test-fix loop re-process the whole implementation and burns tokens.
 You start from a fixed signature, not a moving one. **Sonnet is the preferred
 (default) model for this lane** — you work from a landed, compiling diff, so
 following an existing test pattern is Sonnet work; a higher tier is dispatched
-only for a novel harness/topology. Your dispatched `model:` and effort are NOT
+only for the tests `.agents/shared/planning-dispatch.md` `[test-author]` puts at
+the top tier. Your dispatched `model:` and effort are NOT
 inherited — work at the level you were given.
 
 **Your input names:** the landed commit/diff (read it — it is the spec), the

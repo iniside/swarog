@@ -107,9 +107,11 @@ Do not ban `[fable]`.
   after the implementation it covers. Top tier for a test that is a gate
   (golden render coverage, `admindiff`, admincheck and conformance
   findings, splitproof, any test proving a guard fails closed) and for a
-  novel harness/topology (a new event-plane fixture). Cheap tier for repeated patterns (per-module admin
-  provider tests, small fixture tests), copying a reference file written at
-  the top tier.
+  novel harness/topology (a new event-plane fixture). Cheap tier for
+  repeated patterns (per-module admin provider tests, small fixture tests),
+  copying a reference file written at the top tier. A cheap-tier test that
+  goes badly is fixed in the reference file, skill and tooling, never by
+  moving it to a higher tier.
 - `[docs]` — the `docs-writer` agent (`.claude/agents/docs-writer.md`). The
   lane for documentation prose written as a planned docs step — root guidance,
   `docs/reference`, `docs/roadmap`, `docs/todo`, plan errata, and Rust doc-comments. A

@@ -42,8 +42,8 @@ to close the gaps generic agents missed:
   as a SEPARATE plan step after the impl it covers (never bundled). Proves each
   test runs the previously-wrong branch on the at-risk topology (split via a
   `tools/splitproof` assertion, not a monolith-only test); reports pass/fail
-  counts, no fix-everything-red loop. Default `model:"sonnet"`; escalate for a
-  novel harness. See [[split-impl-and-tests]].
+  counts, no fix-everything-red loop. Default `model:"sonnet"`; escalate for the
+  tests `.agents/shared/planning-dispatch.md` `[test-author]` puts at the top tier. See [[split-impl-and-tests]].
 - **docs-writer** (2026-08-31) — the ONLY lane that writes documentation or
   comment prose: root guidance, `docs/reference`, `docs/roadmap`, plan errata,
   Rust doc-comments. Runs LAST, against landed code; deletes false prose as much

@@ -144,13 +144,17 @@ Mockup: `UILayout/design-system/components/bundle.js:130-149`. Portal:
   `htmx.ajax` promise.
 - A new macro, `Primitive` or `PanelState` is not a view change. Stop and return it:
   it lands in part `a`, and its golden case is a gate test written at the top tier.
-- Golden test:
-  - `cargo test -p admin golden` must pass before the commit (run the
-    `safe-verification` pre-flight first);
+- Golden test (run the `safe-verification` pre-flight first):
   - for an intended template change, run `ADMIN_BLESS=1 cargo test -p admin golden`.
     It rewrites `core/admin/src/testdata/`, deletes orphans, and then fails by
     design; rerun it without `ADMIN_BLESS`. It refuses to bless when `CI` is set;
-  - commit the `testdata/` diff with the template.
+  - `cargo test -p admin golden` passes before the commit; commit the `testdata/`
+    diff with the template;
+  - any other golden failure is a stop: a `MACRO_CASES` signature that no longer
+    matches, a case that no longer runs its macro, or a `CellKind` / `Tone` /
+    `Emphasis` variant no case draws (`core/admin/src/golden_tests.rs`, drift
+    guards in its header). Return it; the case change lands as a top-tier
+    test-author step.
 - `cargo run -p admindiff -- mock --page <page>` renders the mockup page through
   `node` with no fleet and lists its panels and tiles.
 - Never start a fleet: no `devctl up`, no `verifyctl`.
@@ -167,31 +171,41 @@ A `data difference` accept entry is allowed only when neither can produce the da
 
 ## 6. Accept file — `tools/admindiff/accept/<page>.txt`
 
-- One entry per difference: `<difference> | <kind>: <reason>`. `<difference>` is the
-  `NEW` line `diff` printed, copied verbatim.
+- Order: `diff` needs a clean crawl (`tools/admindiff/src/lib.rs:170`) and part `b`
+  never starts a fleet, so `b`'s first pass commits templates and goldens only. The
+  orchestrator then runs crawl and diff (§7) and passes the `NEW` lines in `b`'s
+  next prompt.
+- One entry per difference: `<difference> | <kind>: <reason>`. `<difference>` is
+  the text after the `NEW` tag of a `diff` line, copied verbatim with the tag and its
+  padding dropped (`lib.rs:191` prints `  NEW    <difference>`).
 - Kinds, as the existing files use them:
   - `data difference`
-  - `not ported yet` (name the port)
+  - `not ported yet`: names a port step other than the current one. An element the
+    module under port owns never takes it (R3, and the pilot needs `diff` clean)
   - `template choice`
   - `contract gap`
   - `declared deviation Dn`
 - `#` lines and blank lines are skipped. A line without ` | ` or a duplicate entry is
   an error. An entry that matches no current difference is `STALE` and fails the diff.
-- Part `b` writes `not ported yet` entries, and entries of other kinds only when the
-  checklist names them. Any other `NEW` line is fixed in the template or returned.
-- A port removes the `not ported yet` entries it resolves from every accept file:
-  `index.txt` and `events.txt` both carry nav entries and dashboard tiles.
+- Part `b` writes `not ported yet` entries for elements of later ports, and entries
+  of other kinds only when the checklist names them. Any other `NEW` line is fixed
+  in the template or returned.
+- A port removes the `not ported yet` entries it resolves from every accept file.
+  Both `index.txt` and `events.txt` carry the sidebar nav entries; `index.txt` also
+  carries the dashboard tiles and the "Recent operator activity" panel.
 - The file is the step report's declared-deviations source. The report cites it and
   does not re-list deviations.
 
 ## 7. Live sequence — orchestrator only, after the `b` commit
 
 Templates are compiled into the binary (`include_str!`, `render.rs:16-19`), so the
-fleet is booted after the commit. Run the `safe-verification` pre-flight first. While
-the fleet runs, no Cargo command may start, so the tools are built before it boots.
-On Windows use `target\debug\<tool>.exe`; honour `CARGO_TARGET_DIR`.
+fleet is booted after the commit. Run the `safe-verification` pre-flight first. The
+golden test is re-run here as the gate, whatever `b` reported. While the fleet runs,
+no Cargo command may start, so every Cargo command comes before it boots. On Windows
+use `target\debug\<tool>.exe`; honour `CARGO_TARGET_DIR`.
 
 ```
+cargo test -p admin golden
 cargo build -p demoseed -p eventctl -p admindiff
 cargo run -p devctl -- up monolith          # foreground; wait until healthy
 target/debug/demoseed

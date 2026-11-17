@@ -29,5 +29,6 @@ test must exercise, and the at-risk topology (split via `tools/splitproof`, not
 just monolith). Test lane is never `[sonnet]` — it goes through `[test-author]`.
 **Sonnet is the preferred/default model for the test-author lane** (it works from
 a landed, compiling diff, so pattern-following test work is Sonnet work); escalate
-to opus/fable only for a novel harness/topology. Absolute rule, no carve-out for
+to opus/fable for the tests `.agents/shared/planning-dispatch.md` `[test-author]` puts
+at the top tier. Absolute rule, no carve-out for
 trivial single-branch proofs.
