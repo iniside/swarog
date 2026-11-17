@@ -22,7 +22,10 @@ fake rows in `assets/data.js`. The portal that renders it is `core/admin`.
     `data difference` accept entry until plan Step 24b (Seed rule);
   - data the backend has no source for is FAKE per the plan's R1, written in part
     `a`: a pure function of the entity id, explicit-width hash, no clock, no rand,
-    marked `// FAKE: <why>`.
+    marked `// FAKE: <why>`;
+  - every `// FAKE:` marker and every `implemented: false` action a port adds gets an
+    item in `docs/todo/admin-second-pass.md` in the same part `a` commit; part `a`
+    owns it.
 - Lanes: `.agents/shared/planning-dispatch.md` **Implementation Mode**. The view part
   runs at the cheap tier on `mockup-implementer`; checklist, contract decisions and
   review stay at the top tier. No fallback to a stronger model: a port that goes

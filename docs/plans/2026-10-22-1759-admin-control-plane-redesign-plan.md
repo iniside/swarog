@@ -1770,6 +1770,8 @@ and an empty log is refused.
     under **Leftovers for owner** as a documented double-apply risk, which arises only
     after a timeout, a `Failed` transport error after the module already applied the
     action, or a failed settle;
+  - every `// FAKE:` marker and `implemented: false` action it adds gets an item in
+    `docs/todo/admin-second-pass.md`, in the same commit;
   - no test files (Step 25);
   - no seed data (Step 10b item 5, **Ports**, as superseded): missing data is a
     `data difference` accept entry until Step 24b;
