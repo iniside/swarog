@@ -298,8 +298,8 @@ impl EventsProvider {
             .ok_or_else(|| opsapi::Error::not_found(format!("no subscription {id:?}")))
     }
 
-    /// Like [`Self::state_of`], refusing a retired subscription: every write here sets the
-    /// state, so it would reactivate a retirement.
+    /// Like [`Self::state_of`], refusing a retired subscription: pause, resume and skip
+    /// overwrite the state and would undo a retirement; retry is refused too, for one rule.
     async fn writable(&self, id: &str) -> Result<SubState, opsapi::Error> {
         let sub = self.state_of(id).await?;
         if sub.state == "retired" {
@@ -560,10 +560,15 @@ impl EventsProvider {
             .item
             .as_deref()
             .and_then(parse_poison_item)
+            .filter(|(_, event_id)| !event_id.is_empty())
             .ok_or_else(|| opsapi::Error::invalid(SKIP_NEEDS_ITEM))?;
         let reason = req.reason.as_deref().unwrap_or("").trim();
-        if reason.len() > MAX_REASON_BYTES {
-            let error = format!("at most {MAX_REASON_BYTES} bytes");
+        let reason_error = match reason.len() {
+            0 => Some("a reason is required".to_string()),
+            n if n > MAX_REASON_BYTES => Some(format!("at most {MAX_REASON_BYTES} bytes")),
+            _ => None,
+        };
+        if let Some(error) = reason_error {
             return Ok(InvokeOutcome::FieldErrors(BTreeMap::from([(
                 crate::engine::actions::FIELD_REASON.to_string(),
                 error,
