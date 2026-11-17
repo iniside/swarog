@@ -18,7 +18,8 @@ fake rows in `assets/data.js`. The portal that renders it is `core/admin`.
   violation.
 - Data is decided at checklist extraction from the plan's data-sources table, never
   by the view lane:
-  - data a fresh fleet lacks but the module can hold is **seeded** (Seed rule);
+  - data a fresh fleet lacks but the module can hold is not seeded by a port: it is a
+    `data difference` accept entry until plan Step 24b (Seed rule);
   - data the backend has no source for is FAKE per the plan's R1, written in part
     `a`: a pure function of the entity id, explicit-width hash, no clock, no rand,
     marked `// FAKE: <why>`.
@@ -32,7 +33,7 @@ fake rows in `assets/data.js`. The portal that renders it is `core/admin`.
 | # | Who | Does |
 |---|---|---|
 | 1 | orchestrator, top tier | Checklist (below). Every gap becomes a decision in part `a`. |
-| 2 | `core-implementer`, top tier | Part `a`: provider, seed data, the page's `Route::Mapped` entry in `tools/admindiff/src/pages.rs`. |
+| 2 | `core-implementer`, top tier | Part `a`: provider, the page's `Route::Mapped` entry in `tools/admindiff/src/pages.rs`. |
 | 3 | `mockup-implementer`, cheap tier | Part `b`: templates, `admin.js`, `portal.css`, goldens, accept file. |
 | 4 | orchestrator | Live sequence (below), then one `core-reviewer` pass at the top tier. |
 
@@ -65,7 +66,7 @@ rows):
 
 - **Carrier** is the `core/controlplane` field that draws it (table below), or the
   template literal.
-- **Status** is `ok`, `contract gap`, `data: seed`, `data: FAKE`, or an accept
+- **Status** is `ok`, `contract gap`, `data: FAKE`, or an accept
   kind with its reason.
 
 Per panel, a states row: what the mockup draws in `ok`, `empty`, `readonly`, `stale`
@@ -174,13 +175,11 @@ Mockup: `UILayout/design-system/components/bundle.js:130-149`. Portal:
 
 ## 5. Seed rule
 
-Part `a` adds the data its page's designed state needs:
-
-- through `demoseed` when the module's public API can produce it;
-- otherwise through the module's own operator tool, as `eventctl seed-mockup` does
-  for the Event plane.
-
-A `data difference` accept entry is allowed only when neither can produce the data.
+There are no per-module seed tools. `demoseed` becomes the one seeder and seeds every
+kind of data each module can create (plan Step 24b). Until then a port adds no seed:
+a designed state a fresh fleet lacks is a `data difference` accept entry, and Step 24b
+removes those entries. `eventctl seed-mockup` stays until Step 24b folds it into
+`demoseed`.
 
 ## 6. Accept file — `tools/admindiff/accept/<page>.txt`
 
@@ -230,7 +229,6 @@ cargo build -p demoseed -p eventctl -p admindiff
 cargo run -p devctl -- up monolith          # foreground; wait until healthy
 target/debug/demoseed
 target/debug/eventctl seed-mockup
-<the module's operator-tool seed, if part a added one>
 target/debug/admindiff crawl                # prints "wrote <path>/target/admindiff/crawl-<secs>"
 target/debug/admindiff diff --page <page> --portal <that path>
 target/debug/devctl down
