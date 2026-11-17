@@ -1,0 +1,52 @@
+<div class="scrim" data-scrim>↵
+<form class="modal" role="dialog" aria-modal="true" hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;grant" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]" data-gate>
+<input type="hidden" name="_csrf" value="csrf-golden">
+<input type="hidden" name="_form" value="form-golden-1">↵
+<div class="modal-head">
+<div class="modal-icon ok">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="3.5" y="8" width="17" height="4" rx="1"/>
+<path d="M5 12v8.5h14V12M12 8v12.5"/>
+<path d="M12 8c-1.5-3.5-5.5-4-5.5-1.5S10 8 12 8zM12 8c1.5-3.5 5.5-4 5.5-1.5S14 8 12 8z"/>
+</svg>
+</div>
+<div>
+<h2>Grant item</h2>
+<div class="muted" style="font-size:12px">Granted items appear in the next sync.</div>
+</div>
+</div>
+<div class="banner err">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M12 3.5 2.5 20h19z"/>
+<path d="M12 10v4.5M12 17.5h.01"/>
+</svg> stray: not a field</div>
+<div class="modal-body">
+<div class="form">
+<label class="fl">Item <span style="color:var(--err)">*</span>
+<span class="type">ref item</span>
+</label>
+<div>
+<span class="input-icon">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M5 9h15M4 15h15M10 4 8 20M16 4l-2 16"/>
+</svg>
+<input class="input invalid" style="width:260px" name="item_id" value="sword-7" placeholder="item id" required>
+</span>
+<div class="err-msg">must not be empty</div>
+</div>
+<label class="fl">Quantity<span class="type">int</span>
+</label>
+<div>
+<input class="input num invalid" style="width:100%;max-width:520px" name="qty" value="2" inputmode="numeric">
+<div class="err-msg">must be an integer</div>
+</div>
+</div>
+</div>↵
+<div class="modal-foot">
+<span class="muted" style="margin-right:auto;font-size:12px;align-self:center">
+</span>
+<button type="button" class="btn" data-modal-close>Cancel</button>
+<button type="submit" class="btn primary go">Grant</button>
+</div>↵
+</form>↵
+</div>

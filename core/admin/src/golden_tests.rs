@@ -1,11 +1,23 @@
 //! Golden renders of the portal templates: every primitive macro, the panel chrome in each
-//! `PanelState`, the slot placeholders, the modals, the row menu and the search palette, each
-//! from a view model built in code and rendered through the production `render::panel` /
-//! `render::modal` / `render::fragment` path.
+//! `PanelState`, the slot placeholders, the modals and their re-renders, the row menu and the
+//! search palette. Each case is a view model built in code and rendered through the production
+//! `render::panel` / `render::panel_form_result` / `render::modal` / `render::fragment` path;
+//! action items come from `routes::action_item` / `routes::panel_tools`.
+//!
+//! These goldens prove the render layer only: what a given view model draws. They do not
+//! prove route behaviour (which state a panel resolves to, which instance is minted, which
+//! status a POST answers); that belongs in route tests.
 //!
 //! Each case is compared with `src/testdata/<name>.html`. Without `ADMIN_BLESS=1` a diff, a
 //! missing file, or a `.html` file no case produces fails the run.
-//! `ADMIN_BLESS=1 cargo test -p admin golden` rewrites the set and deletes the orphans.
+//! `ADMIN_BLESS=1 cargo test -p admin golden` rewrites the set, deletes the orphans and then
+//! fails, so a leaked `ADMIN_BLESS` never turns the gate green; with `CI` set it refuses to
+//! bless at all.
+//!
+//! Drift guards: every `{%- macro` of `primitives.html.tmpl` and `modal.html.tmpl` is listed
+//! in [`MACRO_CASES`] with the cases that reach it, checked against the templates both ways;
+//! [`primitive_case`] and [`state_case`] match every `Primitive` and `PanelState` variant with
+//! no wildcard arm, so a new variant does not compile until it names its case.
 //!
 //! Inputs are fixed: one csrf, one form id, fixed `age_s`, and no clock or id generator,
 //! because the render layer reads neither.
@@ -17,20 +29,21 @@ use std::path::{Path, PathBuf};
 
 use controlplane::{
     ActionDecl, ActionPoint, Align, AttentionItem, Axis, Banner, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
-    DataTable, Delta, Emphasis, EntityHeader, EntityRef, Field, FieldKind, FilterDef, FilterKind, FormSpec, KpiTile,
-    Link, PageInfo, Palette, PanelBody, Primitive, PropertyList, QueueItem, QueueState, ReasonReq, Role, Row, Series,
-    ServiceItem, ServiceState, ServiceStatus, Severity, Then, TimeSeriesChart, Timeline, TimelineEntry, Tone,
-    WorkQueue,
+    ContributionDecl, DataTable, Delta, Emphasis, EntityHeader, EntityRef, Field, FieldKind, FilterDef, FilterKind,
+    FormSpec, KpiTile, Link, Manifest, PageInfo, Palette, PanelBody, Point, Primitive, PropertyList, QueueItem,
+    QueueState, ReasonReq, Role, Row, Series, ServiceItem, ServiceState, ServiceStatus, Severity, Then,
+    TimeSeriesChart, Timeline, TimelineEntry, Tone, WorkQueue,
 };
 use minijinja::Environment;
 
-use crate::engine::actions;
+use crate::engine::actions::Chrome;
 use crate::engine::panels::{LastValue, PanelState};
 use crate::engine::roles::Operator;
 use crate::render::{
-    self, ActionItem, ActionResultView, FlashView, FormInstance, MenuView, ModalSpec, PanelInput, RevealView,
-    SearchGroupView, SearchHitView, SearchView, SlotView,
+    self, ActionItem, ActionResultView, FlashView, FormFrame, FormInstance, MenuView, ModalSpec, PanelInput,
+    RevealView, SearchGroupView, SearchHitView, SearchView, SlotView,
 };
+use crate::routes;
 
 const CSRF: &str = "csrf-golden";
 const MODULE: &str = "golden";
@@ -95,22 +108,32 @@ fn compact_diff(want: &str, got: &str) -> String {
     out
 }
 
-/// Compares every case with `<dir>/<name>.html`, or with `bless` writes the differing and
-/// missing ones and deletes every `.html` no case produces. Returns one message per failure.
-fn check(dir: &Path, cases: &[(String, String)], bless: bool) -> Vec<String> {
-    let mut failures = Vec::new();
-    if bless {
-        fs::create_dir_all(dir).unwrap_or_else(|e| panic!("create {}: {e}", dir.display()));
+fn ci_set() -> bool {
+    std::env::var_os("CI").is_some()
+}
+
+/// The gate over `cases` in `dir`: `Ok` only when every case matches `<dir>/<name>.html` and
+/// no `.html` there is an orphan. With `bless` it writes the differing and missing files,
+/// deletes the orphans and still returns `Err`, so a bless never passes; with `bless` and
+/// `ci` it refuses before touching a file.
+fn gate(dir: &Path, cases: &[(String, String)], bless: bool, ci: bool) -> Result<(), String> {
+    if bless && ci {
+        return Err("refusing ADMIN_BLESS=1 while CI is set: bless locally and commit the goldens".to_string());
     }
-    let write = |path: &Path, golden: &str| {
-        fs::write(path, golden).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
-        eprintln!("golden: blessed {}", path.display());
-    };
+    let mut failures = Vec::new();
+    let (mut blessed, mut deleted) = (0, 0);
+    if bless {
+        fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    }
     for (name, golden) in cases {
         let path = dir.join(format!("{name}.html"));
         match fs::read_to_string(&path) {
             Ok(want) if want == *golden => {}
-            Ok(_) | Err(_) if bless => write(&path, golden),
+            Ok(_) | Err(_) if bless => {
+                fs::write(&path, golden).map_err(|e| format!("write {}: {e}", path.display()))?;
+                eprintln!("golden: blessed {}", path.display());
+                blessed += 1;
+            }
             Ok(want) => failures.push(format!(
                 "{name}: render differs from {}\n{}",
                 path.display(),
@@ -123,36 +146,45 @@ fn check(dir: &Path, cases: &[(String, String)], bless: bool) -> Vec<String> {
         }
     }
     let produced: BTreeSet<String> = cases.iter().map(|(name, _)| format!("{name}.html")).collect();
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == ErrorKind::NotFound => return failures,
-        Err(e) => {
-            failures.push(format!("read {}: {e}", dir.display()));
-            return failures;
-        }
+    let mut orphans: Vec<PathBuf> = match fs::read_dir(dir) {
+        Ok(entries) => entries
+            .map(|entry| entry.map(|e| e.path()).map_err(|e| format!("read {}: {e}", dir.display())))
+            .collect::<Result<Vec<_>, _>>()?,
+        Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(format!("read {}: {e}", dir.display())),
     };
-    let mut orphans: Vec<PathBuf> = entries
-        .map(|entry| entry.unwrap_or_else(|e| panic!("read {}: {e}", dir.display())).path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "html"))
-        .filter(|path| !path.file_name().is_some_and(|n| produced.contains(&*n.to_string_lossy())))
-        .collect();
+    orphans.retain(|path| {
+        path.extension().is_some_and(|ext| ext == "html")
+            && !path.file_name().is_some_and(|n| produced.contains(&*n.to_string_lossy()))
+    });
     orphans.sort();
     for path in orphans {
         if bless {
-            fs::remove_file(&path).unwrap_or_else(|e| panic!("delete {}: {e}", path.display()));
+            fs::remove_file(&path).map_err(|e| format!("delete {}: {e}", path.display()))?;
             eprintln!("golden: deleted orphan {}", path.display());
+            deleted += 1;
         } else {
             failures.push(format!("orphan golden file {}: no case produces it", path.display()));
         }
     }
-    failures
+    if bless {
+        return Err(format!("blessed {blessed} file(s), deleted {deleted} orphan(s); rerun without ADMIN_BLESS"));
+    }
+    if failures.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} golden failure(s); run `ADMIN_BLESS=1 cargo test -p admin golden` to accept an intended change:\n\n{}",
+        failures.len(),
+        failures.join("\n")
+    ))
 }
 
 #[test]
 fn golden_renders_match_testdata() {
     let env = render::env().expect("templates compile");
-    let first = cases(&env);
-    assert_eq!(first, cases(&env), "two renders of the same view models differ");
+    let first = goldens(&cases(&env));
+    assert_eq!(first, goldens(&cases(&env)), "two renders of the same view models differ");
     let mut seen = BTreeSet::new();
     for (name, _) in &first {
         assert!(
@@ -161,49 +193,53 @@ fn golden_renders_match_testdata() {
         );
         assert!(seen.insert(name.clone()), "golden case {name} is defined twice");
     }
-    let dir = testdata_dir();
-    if blessing() {
-        let failures = check(&dir, &first, true);
-        assert!(failures.is_empty(), "blessing failed:\n{}", failures.join("\n"));
+    if let Err(msg) = gate(&testdata_dir(), &first, blessing(), ci_set()) {
+        panic!("{msg}");
     }
-    let failures = check(&dir, &first, false);
-    assert!(
-        failures.is_empty(),
-        "{} golden failure(s); run `ADMIN_BLESS=1 cargo test -p admin golden` to accept an intended change:\n\n{}",
-        failures.len(),
-        failures.join("\n")
-    );
 }
 
-/// The gate itself, on a scratch directory: a diff, a missing file and an orphan each fail,
-/// a file that is not `.html` is ignored, and a bless restores the set.
+/// The gate itself, on a scratch directory: a diff, a missing file and an orphan each fail, a
+/// file that is not `.html` is ignored, a bless writes and deletes but still fails, and under
+/// `CI` a bless refuses without touching a file.
 #[test]
-fn golden_gate_fails_on_diff_missing_and_orphan() {
+fn golden_gate_fails_on_diff_missing_orphan_and_bless() {
     let dir = std::env::temp_dir().join(format!("admin-golden-gate-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     let cases = vec![("alpha".to_string(), "<a>\n<b>\n".to_string()), ("beta".to_string(), "<x>\n".to_string())];
-    assert!(check(&dir, &cases, false).iter().all(|f| f.contains("missing golden file")));
-    assert_eq!(check(&dir, &cases, false).len(), 2);
-    assert!(check(&dir, &cases, true).is_empty());
-    assert!(check(&dir, &cases, false).is_empty());
+    let err = gate(&dir, &cases, false, false).unwrap_err();
+    assert!(err.starts_with("2 golden failure(s)") && err.matches("missing golden file").count() == 2, "{err}");
+
+    let err = gate(&dir, &cases, true, true).unwrap_err();
+    assert!(err.starts_with("refusing ADMIN_BLESS=1 while CI is set"), "{err}");
+    assert!(!dir.exists(), "a refused bless wrote {}", dir.display());
+
+    let err = gate(&dir, &cases, true, false).unwrap_err();
+    assert_eq!(err, "blessed 2 file(s), deleted 0 orphan(s); rerun without ADMIN_BLESS");
+    assert_eq!(gate(&dir, &cases, false, false), Ok(()));
+    let err = gate(&dir, &cases, true, false).unwrap_err();
+    assert_eq!(err, "blessed 0 file(s), deleted 0 orphan(s); rerun without ADMIN_BLESS");
 
     fs::write(dir.join("alpha.html"), "<a>\n<B>\n").unwrap();
-    let failures = check(&dir, &cases, false);
-    assert_eq!(failures.len(), 1, "{failures:?}");
-    assert!(failures[0].starts_with("alpha: render differs"), "{failures:?}");
-    assert!(failures[0].contains("\n-<B>\n+<b>\n"), "{failures:?}");
+    let err = gate(&dir, &cases, false, false).unwrap_err();
+    assert!(err.starts_with("1 golden failure(s)"), "{err}");
+    assert!(err.contains("alpha: render differs") && err.contains("\n-<B>\n+<b>\n"), "{err}");
 
     fs::remove_file(dir.join("beta.html")).unwrap();
     fs::write(dir.join("gamma.html"), "<g>\n").unwrap();
     fs::write(dir.join("notes.txt"), "not a golden\n").unwrap();
-    let failures = check(&dir, &cases, false);
-    assert_eq!(failures.len(), 3, "{failures:?}");
-    assert!(failures[0].starts_with("alpha: render differs"), "{failures:?}");
-    assert!(failures[1].starts_with("beta: missing golden file"), "{failures:?}");
-    assert!(failures[2].starts_with("orphan golden file") && failures[2].contains("gamma.html"), "{failures:?}");
+    let err = gate(&dir, &cases, false, false).unwrap_err();
+    assert!(err.starts_with("3 golden failure(s)"), "{err}");
+    assert!(err.contains("alpha: render differs"), "{err}");
+    assert!(err.contains("beta: missing golden file"), "{err}");
+    assert!(err.contains("orphan golden file") && err.contains("gamma.html"), "{err}");
 
-    assert!(check(&dir, &cases, true).is_empty());
-    assert!(check(&dir, &cases, false).is_empty());
+    let err = gate(&dir, &cases, true, true).unwrap_err();
+    assert!(err.starts_with("refusing"), "{err}");
+    assert!(dir.join("gamma.html").exists() && !dir.join("beta.html").exists());
+
+    let err = gate(&dir, &cases, true, false).unwrap_err();
+    assert_eq!(err, "blessed 2 file(s), deleted 1 orphan(s); rerun without ADMIN_BLESS");
+    assert_eq!(gate(&dir, &cases, false, false), Ok(()));
     assert!(!dir.join("gamma.html").exists());
     assert!(dir.join("notes.txt").exists());
     assert_eq!(fs::read_to_string(dir.join("alpha.html")).unwrap(), "<a>\n<b>\n");
@@ -303,52 +339,18 @@ fn confirm(title: &str, tone: ConfirmTone) -> ConfirmSpec {
     }
 }
 
-/// The view item of `d` for an operator of `role` on a module that `writes`. It mirrors
-/// `routes::action_item`, which is private to `routes`: admission by `actions::admit`, the
-/// csrf in `vals`, and the action URL.
+fn operator(role: Role) -> Operator {
+    Operator { login: "golden".to_string(), role }
+}
+
+/// `d` as `routes::action_item` builds it for an operator of `role` on a module that `writes`,
+/// unbound, as `routes::panel_tools` hands it to a panel.
 fn action(module: &str, d: &ActionDecl, role: Role, writes: bool) -> ActionItem {
-    let operator = Operator { login: "golden".to_string(), role };
-    let (enabled, hint) = match actions::admit(&operator, d, writes) {
-        Ok(()) => (true, None),
-        Err(refusal) => (false, Some(refusal.hint())),
-    };
-    ActionItem {
-        module: module.to_string(),
-        id: d.id.clone(),
-        label: d.label.clone(),
-        icon: d.icon.clone(),
-        danger: d.danger,
-        emphasis: render::emphasis_name(d.emphasis),
-        trailing_icon: d.trailing_icon,
-        when_empty: d.when_empty,
-        url: format!("/admin/_action/{}/{}", render::encode(module), render::encode(&d.id)),
-        enabled,
-        hint,
-        then: render::then_name(&d.then),
-        href: match &d.then {
-            Then::Link(link) => Some(render::link_url(link)),
-            _ => None,
-        },
-        vals: BTreeMap::from([(actions::FIELD_CSRF.to_string(), CSRF.to_string())]),
-    }
+    routes::action_item(&operator(role), CSRF, module, writes, d, None)
 }
 
 fn tool(d: &ActionDecl) -> ActionItem {
     action(MODULE, d, Role::Admin, true)
-}
-
-/// A panel form instance's inputs; the post URL and form id are fixed.
-struct FormCase {
-    posted: Option<Vec<(String, String)>>,
-    errors: BTreeMap<String, String>,
-    banner: Option<String>,
-    locked: bool,
-}
-
-impl FormCase {
-    fn fresh() -> FormCase {
-        FormCase { posted: None, errors: BTreeMap::new(), banner: None, locked: false }
-    }
 }
 
 /// One `render::panel` input: the fields `routes::panel_fragment` fills from a resolved
@@ -369,7 +371,8 @@ struct PanelCase {
     body: Option<PanelBody>,
     actions: Vec<ActionItem>,
     row_menu_kinds: Vec<String>,
-    form: Option<FormCase>,
+    /// Renders the form with a fresh instance to post as.
+    form: bool,
 }
 
 impl PanelCase {
@@ -390,7 +393,7 @@ impl PanelCase {
             body,
             actions: Vec::new(),
             row_menu_kinds: Vec::new(),
-            form: None,
+            form: false,
         }
     }
 
@@ -400,6 +403,7 @@ impl PanelCase {
 
     fn render(&self, env: &Environment<'_>) -> Result<String, minijinja::Error> {
         let path = format!("/admin/_panel/{MODULE}/{CONTRIBUTION}");
+        let no_errors = BTreeMap::new();
         let input = PanelInput {
             module: MODULE,
             contribution: CONTRIBUTION,
@@ -420,13 +424,13 @@ impl PanelCase {
             actions: &self.actions,
             row_menu_kinds: &self.row_menu_kinds,
             csrf: CSRF,
-            form: self.form.as_ref().map(|f| FormInstance {
+            form: self.form.then(|| FormInstance {
                 post_url: format!("/admin/_action/{MODULE}/save"),
                 form_id: FORM_ID.to_string(),
-                posted: f.posted.as_deref(),
-                errors: &f.errors,
-                banner: f.banner.clone(),
-                locked: f.locked,
+                posted: None,
+                errors: &no_errors,
+                banner: None,
+                locked: false,
             }),
         };
         render::fragment(env, "primitives.html", "panel_fragment", &render::panel(&input))
@@ -550,9 +554,16 @@ fn posted(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
 // ---- cases ---------------------------------------------------------------------
 
 /// Every case as `(name, golden form)`, in a fixed order.
-fn cases(env: &Environment<'_>) -> Vec<(String, String)> {
-    let mut out: Vec<(&'static str, Result<String, minijinja::Error>)> = Vec::new();
-    let mut panel = |name: &'static str, case: PanelCase| out.push((name, case.render(env)));
+fn cases(env: &Environment<'_>) -> Vec<Case> {
+    let mut out: Vec<Rendered> = Vec::new();
+    let mut panel = |name: &'static str, case: PanelCase| {
+        out.push(Rendered {
+            name,
+            result: case.render(env),
+            primitive: case.body.as_ref().map(|b| primitive_case(&b.primitive)),
+            state: (case.mode == "panel").then(|| state_case(case.state)),
+        })
+    };
 
     // ---- each PanelState, in panel chrome ----
     panel("state_ok", PanelCase::new(PanelState::Ok, Some(body(summary()))));
@@ -1091,43 +1102,125 @@ fn cases(env: &Environment<'_>) -> Vec<(String, String)> {
     panel("nav_counter_warn", in_mode("nav", PanelState::Ok, one_cell(toned(CellKind::Number, "7", Tone::Warn))));
     panel("inline_cell", in_mode("inline", PanelState::Ok, one_cell(cell(CellKind::Badge, "banned"))));
 
-    // ---- panel form: fresh, errors with a locked instance, readonly ----
+    // ---- panel form: fresh, readonly, readonly beside an enabled tool ----
     panel(
         "panel_form",
+        PanelCase { form: true, ..PanelCase::new(PanelState::Ok, Some(body(Primitive::Form(profile_form())))) },
+    );
+    panel("panel_form_readonly", PanelCase::new(PanelState::Readonly, Some(body(Primitive::Form(profile_form())))));
+    // The module writes, but the viewer may not use the PanelForm action (so the panel is
+    // readonly) while a PanelTool of the same panel stays enabled for them.
+    let form_manifest = Manifest {
+        module: MODULE.to_string(),
+        actions: vec![
+            ActionDecl {
+                point: ActionPoint::PanelForm(CONTRIBUTION.to_string()),
+                min_role: Role::Admin,
+                ..decl("save", "Save", "check", Then::Invoke)
+            },
+            decl("refresh", "Refresh", "refresh", Then::Invoke),
+            ActionDecl { min_role: Role::Admin, order: 1, ..decl("purge", "Purge", "trash", Then::Invoke) },
+        ],
+        writes: true,
+        ..Manifest::default()
+    };
+    panel(
+        "panel_form_readonly_enabled_tool",
         PanelCase {
-            form: Some(FormCase::fresh()),
-            ..PanelCase::new(PanelState::Ok, Some(body(Primitive::Form(profile_form()))))
+            actions: routes::panel_tools(&operator(Role::Viewer), CSRF, MODULE, &form_manifest, CONTRIBUTION),
+            ..PanelCase::new(PanelState::Readonly, Some(body(Primitive::Form(profile_form()))))
+        },
+    );
+
+    // ---- the empty cells of the draw-mode x state matrix ----
+    panel("fact_denied", PanelCase { min_role: "admin", ..in_mode("fact", PanelState::Denied, None) });
+    panel("inline_denied", PanelCase { min_role: "admin", ..in_mode("inline", PanelState::Denied, None) });
+    panel(
+        "state_stale_no_age",
+        PanelCase {
+            error: Some("deadline of 2000ms elapsed"),
+            ..PanelCase::new(PanelState::Stale, Some(body(summary())))
         },
     );
     panel(
-        "panel_form_errors_locked",
-        PanelCase {
-            form: Some(FormCase {
-                posted: Some(posted(&[
-                    ("display_name", ""),
-                    ("bio", "hi"),
-                    ("level", "abc"),
-                    ("ratio", "0.5"),
-                    ("muted", "false"),
-                    ("tier", "pro"),
-                    ("regions", "us"),
-                    ("meta", r#"{"v":2}"#),
-                    ("owner", "p-2"),
-                    ("credit", "5"),
-                    ("credit__currency", "USD"),
-                    ("cooldown", "1h"),
-                ])),
-                errors: BTreeMap::from([
-                    ("display_name".to_string(), "must not be empty".to_string()),
-                    ("level".to_string(), "must be an integer".to_string()),
-                ]),
-                banner: Some("Someone else saved this form first.".to_string()),
-                locked: true,
-            }),
-            ..PanelCase::new(PanelState::Ok, Some(body(Primitive::Form(profile_form()))))
-        },
+        "column_cells",
+        PanelCase::new(
+            PanelState::Ok,
+            Some(body(Primitive::ColumnCells(BTreeMap::from([
+                ("Guild".to_string(), cell(CellKind::Text, "Night Owls")),
+                ("Rank".to_string(), toned(CellKind::Badge, "officer", Tone::Info)),
+            ])))),
+        ),
     );
-    panel("panel_form_readonly", PanelCase::new(PanelState::Readonly, Some(body(Primitive::Form(profile_form())))));
+
+    // ---- a panel form shown again after a 422 and a 409: `routes::render_instance` ----
+    let form_decl = ContributionDecl {
+        id: CONTRIBUTION.to_string(),
+        point: Point::Page("profile".to_string()),
+        order: 0,
+        title: "Golden panel".to_string(),
+        icon: "server".to_string(),
+        min_role: Role::Viewer,
+        cache_ttl_s: None,
+        deadline_ms: 0,
+    };
+    let chrome = Chrome {
+        meta: Some("rev 3".to_string()),
+        heading: Some("anna".to_string()),
+        note: Some("Saved by ops".to_string()),
+        banner: Some(Banner { tone: Tone::Info, text: "Edits sync within a minute.".to_string() }),
+    };
+    let player = entity("player", "p-1001");
+    let frame_path = format!("/admin/_panel/{MODULE}/{CONTRIBUTION}");
+    let frame_query = vec![("entity".to_string(), render::entity_param(&player))];
+    let frame_tools = vec![tool(&decl("copy", "Copy", "copy", Then::Invoke))];
+    let frame = FormFrame {
+        module: MODULE,
+        decl: &form_decl,
+        mode: "panel",
+        path: &frame_path,
+        query: &frame_query,
+        entity: Some(&player),
+        actions: &frame_tools,
+        csrf: CSRF,
+    };
+    let profile_spec = profile_form();
+    let profile_body = posted(&[
+        ("display_name", ""),
+        ("bio", "hi"),
+        ("level", "abc"),
+        ("ratio", "0.5"),
+        ("muted", "false"),
+        ("tier", "pro"),
+        ("regions", "us"),
+        ("meta", r#"{"v":2}"#),
+        ("owner", "p-2"),
+        ("credit", "5"),
+        ("credit__currency", "USD"),
+        ("cooldown", "1h"),
+    ]);
+    let field_errors = BTreeMap::from([
+        ("display_name".to_string(), "must not be empty".to_string()),
+        ("level".to_string(), "must be an integer".to_string()),
+    ]);
+    let no_errors = BTreeMap::new();
+    let rerender = |errors: &BTreeMap<String, String>, banner: Option<&str>, locked: bool| {
+        let instance = FormInstance {
+            post_url: format!("/admin/_action/{MODULE}/save"),
+            form_id: FORM_ID.to_string(),
+            posted: Some(&profile_body),
+            errors,
+            banner: banner.map(str::to_string),
+            locked,
+        };
+        let rendered = render::panel_form_result(&frame, &profile_spec, &chrome, instance);
+        render::fragment(env, "primitives.html", "panel_fragment", &rendered)
+    };
+    out.push(plain("panel_form_rerender_422_chrome", rerender(&field_errors, None, false)));
+    out.push(plain(
+        "panel_form_rerender_409_locked",
+        rerender(&no_errors, Some("Someone else saved this form first."), true),
+    ));
 
     // ---- slot placeholders: loading_block and the denied states, by draw mode ----
     for (name, mode, denied) in [
@@ -1139,11 +1232,10 @@ fn cases(env: &Environment<'_>) -> Vec<(String, String)> {
         ("slot_attention_denied", "attention", true),
         ("slot_inline_loading", "fact", false),
     ] {
-        out.push((name, render::fragment(env, "primitives.html", "slot", &slot(mode, denied))));
+        out.push(plain(name, render::fragment(env, "primitives.html", "slot", &slot(mode, denied))));
     }
 
     // ---- modals ----
-    let no_errors = BTreeMap::new();
     let modal = |d: &ActionDecl, spec: ModalSpec<'_>| {
         let view = render::modal(
             d,
@@ -1171,7 +1263,7 @@ fn cases(env: &Environment<'_>) -> Vec<(String, String)> {
         confirm_label: "Ban".to_string(),
     };
     let ban = ActionDecl { danger: true, ..decl("ban", "Ban player", "", Then::Confirm(ban_spec.clone())) };
-    out.push(("modal_confirm_danger_impact_reason", modal(&ban, ModalSpec::Confirm(&ban_spec))));
+    out.push(plain("modal_confirm_danger_impact_reason", modal(&ban, ModalSpec::Confirm(&ban_spec))));
     let pause_spec = ConfirmSpec {
         body: "Deliveries stop until resumed.".to_string(),
         reason: ReasonReq::Optional,
@@ -1179,7 +1271,7 @@ fn cases(env: &Environment<'_>) -> Vec<(String, String)> {
         ..confirm("Pause webhooks?", ConfirmTone::Warn)
     };
     let pause = decl("pause", "Pause queue", "pause", Then::Confirm(pause_spec.clone()));
-    out.push(("modal_confirm_warn_optional_reason", modal(&pause, ModalSpec::Confirm(&pause_spec))));
+    out.push(plain("modal_confirm_warn_optional_reason", modal(&pause, ModalSpec::Confirm(&pause_spec))));
     let grant_spec = FormSpec {
         fields: vec![
             Field { required: true, ..field("item_id", "Item", FieldKind::Ref("item".to_string()), None) },
@@ -1191,9 +1283,63 @@ fn cases(env: &Environment<'_>) -> Vec<(String, String)> {
         revision: None,
     };
     let grant = decl("grant", "Grant item", "gift", Then::Form(grant_spec.clone()));
-    out.push(("modal_form", modal(&grant, ModalSpec::Form(&grant_spec))));
+    out.push(plain("modal_form", modal(&grant, ModalSpec::Form(&grant_spec))));
+    // A modal shown again after a POST, as `routes::render_instance` builds it.
+    let reshow = |d: &ActionDecl,
+                  spec: ModalSpec<'_>,
+                  body: &[(String, String)],
+                  errors: &BTreeMap<String, String>,
+                  banner: Option<&str>,
+                  locked: bool| {
+        let mut view = render::modal(
+            d,
+            spec,
+            format!("/admin/_action/{MODULE}/{}", d.id),
+            CSRF.to_string(),
+            FORM_ID.to_string(),
+            Some(body),
+            errors,
+        );
+        if let Some(banner) = banner {
+            view.banner = Some(banner.to_string());
+        }
+        view.locked = locked;
+        render::fragment(env, "modal.html", "result", &ActionResultView { modal: Some(view), toast: None, tone: "err" })
+    };
+    let grant_errors = BTreeMap::from([
+        ("item_id".to_string(), "must not be empty".to_string()),
+        ("qty".to_string(), "must be an integer".to_string()),
+        ("stray".to_string(), "not a field".to_string()),
+    ]);
+    out.push(plain(
+        "modal_rerender_form_errors_locked",
+        reshow(
+            &grant,
+            ModalSpec::Form(&grant_spec),
+            &posted(&[("item_id", ""), ("qty", "x")]),
+            &grant_errors,
+            Some("Someone else saved this form first."),
+            true,
+        ),
+    ));
+    out.push(plain(
+        "modal_rerender_form_stray_error",
+        reshow(
+            &grant,
+            ModalSpec::Form(&grant_spec),
+            &posted(&[("item_id", "sword-7"), ("qty", "2")]),
+            &grant_errors,
+            None,
+            false,
+        ),
+    ));
+    let reason_errors = BTreeMap::from([("_reason".to_string(), "a reason is required".to_string())]);
+    out.push(plain(
+        "modal_rerender_confirm_reason_error",
+        reshow(&ban, ModalSpec::Confirm(&ban_spec), &posted(&[("_reason", "")]), &reason_errors, None, false),
+    ));
     let result = ActionResultView { modal: None, toast: Some("Queue paused".to_string()), tone: "info" };
-    out.push(("modal_result_toast", render::fragment(env, "modal.html", "result", &result)));
+    out.push(plain("modal_result_toast", render::fragment(env, "modal.html", "result", &result)));
     let flash = FlashView {
         message: "API key created".to_string(),
         reveal: Some(RevealView {
@@ -1204,23 +1350,23 @@ fn cases(env: &Environment<'_>) -> Vec<(String, String)> {
         }),
         tone: "ok",
     };
-    out.push(("reveal_secret", render::fragment(env, "modal.html", "reveal", &flash)));
+    out.push(plain("reveal_secret", render::fragment(env, "modal.html", "reveal", &flash)));
 
     // ---- row menu and search palette ----
     let row_entity = entity("player", "p-1001");
     let profile = decl("profile", "Open profile", "", Then::Link(Link::Entity(row_entity.clone())));
-    let menu_items = [
-        action("players", &decl("kick", "Kick", "x", Then::Invoke), Role::Admin, true),
-        action("players", &ban, Role::Admin, true),
-        action("players", &profile, Role::Admin, true),
-        action("economy", &grant, Role::Admin, true),
-        action("economy", &ActionDecl { min_role: Role::Admin, ..grant.clone() }, Role::Viewer, true),
-    ];
-    let menu = MenuView {
-        entity: row_entity.clone(),
-        groups: render::menu_groups(menu_items.iter().map(|a| render::bind(a, Some(&row_entity), None)).collect()),
+    let row_item = |module: &str, d: &ActionDecl, role: Role| {
+        routes::action_item(&operator(role), CSRF, module, true, d, Some(&row_entity))
     };
-    out.push(("menu_row_actions", render::fragment(env, "primitives.html", "menu", &menu)));
+    let menu_items = vec![
+        row_item("players", &decl("kick", "Kick", "x", Then::Invoke), Role::Admin),
+        row_item("players", &ban, Role::Admin),
+        row_item("players", &profile, Role::Admin),
+        row_item("economy", &grant, Role::Admin),
+        row_item("economy", &ActionDecl { min_role: Role::Admin, ..grant.clone() }, Role::Viewer),
+    ];
+    let menu = MenuView { entity: row_entity.clone(), groups: render::menu_groups(menu_items) };
+    out.push(plain("menu_row_actions", render::fragment(env, "primitives.html", "menu", &menu)));
     let hit = |title: &str, subtitle: &str, badge: Option<&str>| SearchHitView {
         hl: false,
         title: title.to_string(),
@@ -1248,7 +1394,7 @@ fn cases(env: &Environment<'_>) -> Vec<(String, String)> {
             },
         ],
     );
-    out.push(("search_results_and_error", render::fragment(env, "primitives.html", "search", &search)));
+    out.push(plain("search_results_and_error", render::fragment(env, "primitives.html", "search", &search)));
     let nothing = SearchView::new(
         "zzz".to_string(),
         String::new(),
@@ -1260,12 +1406,177 @@ fn cases(env: &Environment<'_>) -> Vec<(String, String)> {
             error: None,
         }],
     );
-    out.push(("search_no_matches", render::fragment(env, "primitives.html", "search", &nothing)));
+    out.push(plain("search_no_matches", render::fragment(env, "primitives.html", "search", &nothing)));
 
     out.into_iter()
-        .map(|(name, rendered)| {
-            let raw = rendered.unwrap_or_else(|e| panic!("golden case {name} failed to render: {e:#}"));
-            (name.to_string(), golden_form(name, &raw))
+        .map(|r| {
+            let raw = r.result.unwrap_or_else(|e| panic!("golden case {} failed to render: {e:#}", r.name));
+            Case { name: r.name, golden: golden_form(r.name, &raw), primitive: r.primitive, state: r.state }
         })
         .collect()
+}
+
+/// One rendered case with what [`golden_cases_cover_every_macro_variant_and_state`] checks.
+struct Case {
+    name: &'static str,
+    golden: String,
+    /// [`primitive_case`] of a `render::panel` case's body.
+    primitive: Option<&'static str>,
+    /// [`state_case`] of a `render::panel` case drawn in panel chrome.
+    state: Option<&'static str>,
+}
+
+struct Rendered {
+    name: &'static str,
+    result: Result<String, minijinja::Error>,
+    primitive: Option<&'static str>,
+    state: Option<&'static str>,
+}
+
+fn plain(name: &'static str, result: Result<String, minijinja::Error>) -> Rendered {
+    Rendered { name, result, primitive: None, state: None }
+}
+
+fn goldens(cases: &[Case]) -> Vec<(String, String)> {
+    cases.iter().map(|c| (c.name.to_string(), c.golden.clone())).collect()
+}
+
+// ---- drift guards ----------------------------------------------------------------
+
+/// The case that renders each `Primitive` variant as a panel body. No wildcard arm: a new
+/// variant does not compile until it names its case.
+fn primitive_case(p: &Primitive) -> &'static str {
+    match p {
+        Primitive::DataTable(_) => "table_highlight_row_menu",
+        Primitive::PropertyList(_) => "state_ok",
+        Primitive::KpiTile(_) => "tile_delta_ok_up",
+        Primitive::Timeline(_) => "timeline_two_days_older",
+        Primitive::Form(_) => "panel_form",
+        Primitive::WorkQueue(_) => "queue_items_actions",
+        Primitive::ServiceStatus(_) => "services_one_column",
+        Primitive::TimeSeriesChart(_) => "chart_two_axes",
+        Primitive::AttentionItems(_) => "attention_ok",
+        Primitive::ColumnCells(_) => "column_cells",
+        Primitive::Cell(_) => "fact_cell",
+        Primitive::EntityHeader(_) => "header_ok",
+        Primitive::Empty { .. } => "state_empty_payload",
+    }
+}
+
+/// The number of arms of [`primitive_case`]; a new arm without a rendered case fails the count.
+const PRIMITIVE_VARIANTS: usize = 13;
+
+/// The case that draws each `PanelState` in panel chrome. No wildcard arm.
+fn state_case(state: PanelState) -> &'static str {
+    match state {
+        PanelState::Ok => "state_ok",
+        PanelState::Empty => "state_empty",
+        PanelState::Stale => "state_stale_hides_module_banner",
+        PanelState::Error => "state_error",
+        PanelState::Readonly => "state_readonly",
+        PanelState::Denied => "state_denied",
+    }
+}
+
+/// The number of arms of [`state_case`].
+const PANEL_STATES: usize = 6;
+
+/// Every `{%- macro` of the two macro templates with the cases that reach it.
+const MACRO_CASES: &[(&str, &str, &[&str])] = &[
+    ("primitives", "icon", &["state_ok"]),
+    ("primitives", "cell", &["cell_kinds", "cell_bar"]),
+    ("primitives", "hx_action", &["tools_emphasis", "menu_row_actions"]),
+    ("primitives", "action_button", &["tools_emphasis", "props_code_footer_tools"]),
+    ("primitives", "menu_item", &["menu_row_actions"]),
+    ("primitives", "menu", &["menu_row_actions"]),
+    ("primitives", "toast", &["modal_result_toast"]),
+    ("primitives", "state_block", &["state_empty", "state_error", "state_denied"]),
+    ("primitives", "loading_block", &["slot_panel_loading"]),
+    ("primitives", "denied_detail", &["state_denied", "slot_panel_denied"]),
+    ("primitives", "fetch_attrs", &["slot_panel_loading", "slot_panel_denied"]),
+    (
+        "primitives",
+        "slot",
+        &[
+            "slot_panel_loading",
+            "slot_panel_denied",
+            "slot_tile_loading",
+            "slot_tile_denied",
+            "slot_attention_loading",
+            "slot_attention_denied",
+            "slot_inline_loading",
+        ],
+    ),
+    ("primitives", "table_toolbar", &["table_highlight_row_menu", "table_empty_search"]),
+    ("primitives", "table_foot", &["table_highlight_row_menu"]),
+    ("primitives", "table", &["table_highlight_row_menu"]),
+    ("primitives", "props", &["state_ok", "props_code_footer_tools", "props_two_columns", "column_cells"]),
+    ("primitives", "kpi", &["tile_delta_ok_up", "tile_stale"]),
+    ("primitives", "timeline", &["timeline_two_days_older"]),
+    ("primitives", "field", &["panel_form", "panel_form_rerender_422_chrome", "modal_form"]),
+    ("primitives", "form_fields", &["modal_form", "modal_rerender_form_errors_locked"]),
+    ("primitives", "panel_form", &["panel_form", "panel_form_readonly", "panel_form_rerender_409_locked"]),
+    ("primitives", "queue_counts", &["queue_items_actions", "queue_empty"]),
+    ("primitives", "queue_action", &["queue_items_actions"]),
+    ("primitives", "queue", &["queue_items_actions", "queue_empty"]),
+    ("primitives", "services", &["services_one_column"]),
+    ("primitives", "services_body", &["services_one_column", "services_two_columns"]),
+    ("primitives", "chart", &["chart_two_axes"]),
+    ("primitives", "chart_legend", &["chart_two_axes"]),
+    ("primitives", "attention_rows", &["attention_ok"]),
+    ("primitives", "body", &["state_ok"]),
+    ("primitives", "empty_body", &["state_empty", "timeline_empty", "queue_empty", "table_empty_search"]),
+    ("primitives", "panel_fragment", &["state_ok"]),
+    ("primitives", "search", &["search_results_and_error", "search_no_matches"]),
+    ("modal", "modal", &["modal_confirm_danger_impact_reason", "modal_form"]),
+    ("modal", "result", &["modal_result_toast", "modal_rerender_form_errors_locked"]),
+    ("modal", "reveal", &["reveal_secret"]),
+];
+
+/// The macro names a template declares with `{%- macro` or `{% macro`.
+fn template_macros(source: &str) -> Vec<String> {
+    ["{%- macro ", "{% macro "]
+        .iter()
+        .flat_map(|open| source.match_indices(open).map(move |(at, _)| &source[at + open.len()..]))
+        .filter_map(|rest| rest.split_once('(').map(|(name, _)| name.trim().to_string()))
+        .collect()
+}
+
+#[test]
+fn golden_cases_cover_every_macro_variant_and_state() {
+    let env = render::env().expect("templates compile");
+    let cases = cases(&env);
+    let by_name: BTreeMap<&str, &Case> = cases.iter().map(|c| (c.name, c)).collect();
+
+    let declared: BTreeSet<(&str, String)> = [
+        ("primitives", include_str!("templates/primitives.html.tmpl")),
+        ("modal", include_str!("templates/modal.html.tmpl")),
+    ]
+    .into_iter()
+    .flat_map(|(template, source)| template_macros(source).into_iter().map(move |m| (template, m)))
+    .collect();
+    let listed: BTreeSet<(&str, String)> = MACRO_CASES.iter().map(|(t, m, _)| (*t, m.to_string())).collect();
+    let unlisted: Vec<_> = declared.difference(&listed).collect();
+    let dead: Vec<_> = listed.difference(&declared).collect();
+    assert!(unlisted.is_empty(), "template macros with no golden case in MACRO_CASES: {unlisted:?}");
+    assert!(dead.is_empty(), "MACRO_CASES entries naming no template macro: {dead:?}");
+    assert_eq!(listed.len(), MACRO_CASES.len(), "MACRO_CASES lists a macro twice");
+    for (template, name, reached_by) in MACRO_CASES {
+        assert!(!reached_by.is_empty(), "macro {template}/{name} lists no case");
+        for case in *reached_by {
+            assert!(by_name.contains_key(case), "macro {template}/{name} names case {case}, which does not exist");
+        }
+    }
+
+    let primitives: BTreeSet<&str> = cases.iter().filter_map(|c| c.primitive).collect();
+    assert_eq!(primitives.len(), PRIMITIVE_VARIANTS, "primitive variants rendered: {primitives:?}");
+    let states: BTreeSet<&str> = cases.iter().filter_map(|c| c.state).collect();
+    assert_eq!(states.len(), PANEL_STATES, "panel states rendered in chrome: {states:?}");
+    for (named, own) in
+        primitives.iter().map(|n| (*n, by_name.get(n).and_then(|c| c.primitive))).chain(
+            states.iter().map(|n| (*n, by_name.get(n).and_then(|c| c.state))),
+        )
+    {
+        assert_eq!(own, Some(named), "case {named} is named for a variant it does not render");
+    }
 }

@@ -1,0 +1,129 @@
+<div class="slot" data-panel-url="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?entity=player%3Ap-1001">
+<section class="panel">
+<div class="panel-head">
+<span class="muted">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="3.5" y="4" width="17" height="7" rx="1.5"/>
+<rect x="3.5" y="13" width="17" height="7" rx="1.5"/>
+<path d="M7 7.5h.01M7 16.5h.01"/>
+</svg>
+</span>
+<span class="panel-title">Golden panel: <span class="mono">anna</span>
+</span>
+<span class="panel-meta">rev 3</span>
+<div class="panel-tools">
+<span class="muted hide-tablet" style="font-size:11.5px">Saved by ops</span>
+<button type="button" class="btn sm" hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;copy?entity=player%3Ap-1001" hx-vals="{&quot;_csrf&quot;:&quot;csrf-golden&quot;,&quot;_entity&quot;:&quot;player:p-1001&quot;}" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="this">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="8.5" y="8.5" width="11" height="11" rx="1.5"/>
+<path d="M15.5 8.5V5.5A1.5 1.5 0 0 0 14 4H5.5A1.5 1.5 0 0 0 4 5.5V14a1.5 1.5 0 0 0 1.5 1.5h3"/>
+</svg> Copy</button>
+</div>
+</div>
+<div class="banner info">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<circle cx="12" cy="12" r="8.5"/>
+<path d="M12 11v5.5M12 7.5h.01"/>
+</svg> Edits sync within a minute.</div>
+<div class="panel-body">
+<form hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;save" hx-target="closest .slot" hx-swap="outerHTML" hx-disabled-elt="find button[type=submit]">
+<input type="hidden" name="_csrf" value="csrf-golden">
+<input type="hidden" name="_form" value="form-golden-1">
+<div class="form">
+<label class="fl">Display name <span style="color:var(--err)">*</span>
+<span class="type">string</span>
+</label>
+<div>
+<input class="input invalid" style="width:100%;max-width:520px" name="display_name" value="" required>
+<div class="err-msg">must not be empty</div>
+<div class="help">Shown to other players.</div>
+</div>
+<label class="fl">Bio<span class="type">text</span>
+</label>
+<div>
+<textarea class="input" rows="4" style="width:100%" name="bio">hi</textarea>
+</div>
+<label class="fl">Level<span class="type">int</span>
+</label>
+<div>
+<input class="input num invalid" style="width:100%;max-width:520px" name="level" value="abc" inputmode="numeric">
+<div class="err-msg">must be an integer</div>
+</div>
+<label class="fl">Drop ratio<span class="type">float</span>
+</label>
+<div>
+<input class="input" style="width:100%;max-width:520px" name="ratio" value="0.5">
+</div>
+<label class="fl">Muted<span class="type">bool</span>
+</label>
+<div>
+<span class="toggle" role="switch" aria-checked="false" tabindex="0" data-toggle data-default="false">
+</span>
+<input type="hidden" name="muted" value="false">
+</div>
+<label class="fl">Tier<span class="type">enum</span>
+</label>
+<div>
+<select class="select" style="width:260px" name="tier">
+<option>free</option>
+<option>plus</option>
+<option selected>pro</option>
+</select>
+</div>
+<label class="fl">Regions<span class="type">multi</span>
+</label>
+<div>
+<div class="checks">
+<label>
+<input type="checkbox" name="regions" value="eu"> <span class="mono">eu</span>
+</label>
+<label>
+<input type="checkbox" name="regions" value="us" checked> <span class="mono">us</span>
+</label>
+<label>
+<input type="checkbox" name="regions" value="asia"> <span class="mono">asia</span>
+</label>
+</div>
+</div>
+<label class="fl">Meta<span class="type">json</span>
+</label>
+<div>
+<textarea class="input mono" rows="4" style="width:100%" name="meta" readonly>{&quot;v&quot;:1}</textarea>
+</div>
+<label class="fl">Owner<span class="type">ref player</span>
+</label>
+<div>
+<span class="input-icon">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<circle cx="12" cy="8" r="4"/>
+<path d="M4 21c1-4.2 4.2-6.5 8-6.5s7 2.3 8 6.5"/>
+</svg>
+<input class="input" style="width:260px" name="owner" value="p-2" placeholder="player id">
+</span>
+</div>
+<label class="fl">Credit<span class="type">money</span>
+</label>
+<div>
+<div class="row">
+<input class="input num" style="width:140px" name="credit" value="5" inputmode="decimal">
+<select class="select" style="width:110px" name="credit__currency">
+<option>EUR</option>
+<option selected>USD</option>
+</select>
+</div>
+</div>
+<label class="fl">Cooldown<span class="type">duration</span>
+</label>
+<div>
+<input class="input" style="width:100%;max-width:520px" name="cooldown" value="1h">
+</div>
+<div class="form-actions">
+<span class="muted" style="margin-right:auto;font-size:12px;align-self:center">Changes apply on next login.</span>
+<button type="reset" class="btn">Cancel</button>
+<button type="submit" class="btn primary">Save profile</button>
+</div>
+</div>
+</form>
+</div>
+</section>
+</div>

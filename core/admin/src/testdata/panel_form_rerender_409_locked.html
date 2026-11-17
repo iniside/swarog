@@ -1,4 +1,4 @@
-<div class="slot" data-panel-url="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel">
+<div class="slot" data-panel-url="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;panel?entity=player%3Ap-1001">
 <section class="panel">
 <div class="panel-head">
 <span class="muted">
@@ -8,10 +8,23 @@
 <path d="M7 7.5h.01M7 16.5h.01"/>
 </svg>
 </span>
-<span class="panel-title">Golden panel</span>
+<span class="panel-title">Golden panel: <span class="mono">anna</span>
+</span>
+<span class="panel-meta">rev 3</span>
 <div class="panel-tools">
+<span class="muted hide-tablet" style="font-size:11.5px">Saved by ops</span>
+<button type="button" class="btn sm" hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;copy?entity=player%3Ap-1001" hx-vals="{&quot;_csrf&quot;:&quot;csrf-golden&quot;,&quot;_entity&quot;:&quot;player:p-1001&quot;}" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="this">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="8.5" y="8.5" width="11" height="11" rx="1.5"/>
+<path d="M15.5 8.5V5.5A1.5 1.5 0 0 0 14 4H5.5A1.5 1.5 0 0 0 4 5.5V14a1.5 1.5 0 0 0 1.5 1.5h3"/>
+</svg> Copy</button>
 </div>
 </div>
+<div class="banner info">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<circle cx="12" cy="12" r="8.5"/>
+<path d="M12 11v5.5M12 7.5h.01"/>
+</svg> Edits sync within a minute.</div>
 <div class="banner err">
 <svg class="i " viewBox="0 0 24 24" aria-hidden="true">
 <path d="M12 3.5 2.5 20h19z"/>
@@ -26,8 +39,7 @@
 <span class="type">string</span>
 </label>
 <div>
-<input class="input invalid" style="width:100%;max-width:520px" name="display_name" value="" required>
-<div class="err-msg">must not be empty</div>
+<input class="input" style="width:100%;max-width:520px" name="display_name" value="" required>
 <div class="help">Shown to other players.</div>
 </div>
 <label class="fl">Bio<span class="type">text</span>
@@ -38,8 +50,7 @@
 <label class="fl">Level<span class="type">int</span>
 </label>
 <div>
-<input class="input num invalid" style="width:100%;max-width:520px" name="level" value="abc" inputmode="numeric">
-<div class="err-msg">must be an integer</div>
+<input class="input num" style="width:100%;max-width:520px" name="level" value="abc" inputmode="numeric">
 </div>
 <label class="fl">Drop ratio<span class="type">float</span>
 </label>
