@@ -1509,6 +1509,152 @@ Tests for Step 25:
 
 (d) `[opus]` core-implementer; it also makes the template reads follow.
 
+### Step 10b — Mockup translation tooling, skill and agent
+
+(a) Files:
+- `core/admin/src/testdata/`, the golden test;
+- new crate `tools/admindiff` and its accept files `tools/admindiff/accept/<page>.txt`;
+- `.agents/skills/mockup-implementation/SKILL.md` and its pointer
+  `.claude/skills/mockup-implementation/SKILL.md` (frontmatter included);
+- `.claude/agents/mockup-implementer.md` and `.grok/agents/mockup-implementer.md`;
+- the UI-lane rule in:
+  - `.agents/shared/planning-dispatch.md` (~:67, ~:96);
+  - `docs/reference/implementation-mode.md` (~:14);
+  - `.agents/adapters/{claude,codex,cursor,grok}.md`;
+- the node prerequisite in `docs/reference/testing.md`;
+- this plan's port template, Step 12 and Step 27 (edited in this revision, below);
+- memories `follow-uilayout-mockup-faithfully` and `specialized-core-agents`, and the
+  `MEMORY.md` index line (the repo copy `memory/MEMORY.md` and the live copy).
+
+(b) Why: owner, 2026-11-17, after the Step 10 post-mortem. Ports in Steps 11–24 should be
+cheap and mostly mechanical, and repeated checks should be automated so they do not spend
+model tokens. Step 10's cost came from:
+- contract gaps found only during translation;
+- states found only by rendering;
+- a throwaway render harness;
+- hand-run live checks with curl.
+
+(c) Decisions and invariants.
+
+1. **Golden render test** (`[opus]` test-author).
+   - It renders every primitive macro and the panel chrome, from view models built in
+     code, to `core/admin/src/testdata/<name>.html`.
+   - It covers each `PanelState`: ok, empty, readonly, stale, error, denied. It also
+     covers the slot placeholder (`loading_block`) and the emphasis, bar, code,
+     heading/meta/note/banner, `when_empty` and two-column variants.
+   - Deterministic: fixed csrf, fixed `age_s`, no clock, no random ids.
+   - Without `ADMIN_BLESS=1`, these all fail:
+     - any diff;
+     - a missing golden file;
+     - a golden file the test no longer produces.
+   - `ADMIN_BLESS=1 cargo test -p admin golden` rewrites the set, deleting orphans.
+2. **`tools/admindiff`** (`[opus]` core-implementer). It is a dev tool under the Dev
+   tooling scope rule: simple, not hardened, trusted local operator. Typed CLI flags, no
+   config file. `--base-url` defaults to the monolith `http://localhost:8080`; the split
+   uses `:8085`. Login `admin/admin` is the default.
+   - **`crawl`**
+     - Login must land on the dashboard shell. Anything else, such as the login page
+       served with 200, fails.
+     - It follows two discovery hooks, which are its contract with the templates:
+       - nav links → pages;
+       - `.slot[hx-get]` → fragments, fetched with `HX-Request`.
+     - `data-menu-url` row menus are fetched for status only. The mockup builds menus in
+       the DOM, so they are never compared.
+     - It writes each response to `target/admindiff/<run>/`. It prints one line per
+       fragment: status, panel state, title.
+     - It fails on any non-2xx, any error-state fragment (unless `--allow-errors`), zero
+       nav pages, or zero fragments.
+   - **`mock`**
+     - It renders `P.<page>.render()` from `UILayout/redesign/assets/pages-*.js` (with
+       `data.js`, `registry.js` and the design-system `bundle.js`) through `node`. Node
+       is a dev prerequisite, documented in `testing.md`; a missing node is an error,
+       not a skip.
+     - An embedded harness stubs the globals the builders read: `window`; `document`
+       (listeners, empty queries, `createElement`, `body`, `documentElement.dataset`);
+       `localStorage`; `matchMedia`; `location.search`. `after` hooks are not run.
+   - **Page map.** One named list in the tool maps each mockup page key
+     (`P.<key>` in `pages-*.js`) to a portal route. Entity pages get a fixed entity id
+     for the crawl and a `location.search` for the harness. A second named list holds
+     the excluded keys, with a reason each: `states`, which Declared deviation D3
+     covers, and Lore pages until a Lore module exists. Both lists are validated
+     against the mockup (every key exists) and against each other (no key in both).
+     `crawl` fetches every mapped route, entity pages included, besides what the nav
+     hooks discover.
+   - **Assembly.** Before a skeleton is built, each fetched fragment replaces its
+     `.slot[hx-get]` element (outerHTML) in document order. So the portal side is the
+     loaded page, never loading placeholders. Unit-tested.
+   - **`diff --page <mockup page key> --portal <crawl dir>`**
+     - Both sides reduce to a class skeleton: element names, `class` lists, nesting.
+       Text is dropped unless `--text`.
+     - Repeated siblings (`tbody tr`, list items, `.svc`, `.pop-row`) collapse to their
+       distinct skeletons, so N fake rows against M real rows is not a difference.
+     - Two named lists, each validated against its own side so a dead entry is an error,
+       say which wrappers are unwrapped and which are removed:
+       - mockup: `frag` is unwrapped; `.frag-label` and the devbar are removed;
+       - portal: `.slot` and its `hx-*` attributes are unwrapped.
+     - Panels match by `panel-title` text with markup stripped. Tiles match by
+       `kpi-label`. When a title holds data or is absent, the key is the panel's
+       position on the page.
+     - Every panel and tile on either side is either matched or reported. A page with
+       zero matched panels fails.
+     - `tools/admindiff/accept/<page>.txt` holds one entry per accepted difference.
+       - An entry that matches no current difference is an error (a stale accept).
+       - This file is the page's declared-deviations source. A step report cites it
+         instead of re-listing deviations in prose.
+     - Exit non-zero on any difference not accepted.
+3. **Skill `mockup-implementation`, rewritten for the control-plane portal.** It drops the
+   stale `modules/admin` / `adminapi` / `theme.css` cheat-sheet. Per port:
+   1. Extract the checklist (element → mockup line → carrier → status) BEFORE the port's
+      backend step, so a contract gap becomes a decision in part `a`. The checklist
+      has a states column (ok, empty, readonly, stale, error) per panel, plus the
+      module's `writes` and tools.
+   2. Every mockup class maps to `CellKind`, `Tone`, `Emphasis` or `Palette`. Anything
+      that does not map is an accept entry with a reason.
+   3. The panel chrome slot order is documented once, beside `bundle.js:130-149`: icon,
+      title + heading, meta, ro-chip, tools (legend, note, value label, actions),
+      banners (stale | readonly, module, form), body, footer tools.
+   4. Failure handling in `admin.js` uses delegated htmx events, never `htmx.ajax`
+      promises.
+   5. Closing the loop takes three checks: the golden diff; `admindiff diff` clean
+      against the page's accept file; a clean `crawl`. The orchestrator, not the view
+      lane, runs the `safe-verification` pre-flight and boots `devctl up` after the
+      view commit, because templates are compiled into the binary. The view lane never
+      starts a fleet.
+4. **The UI lane rule changes once, at its source** (owner, 2026-11-17).
+   - `planning-dispatch.md` gets the carve-out in shared terms. It amends the
+     `[mechanical]` row and its prose so that a port's view part (`b`) with a complete
+     checklist and no open contract gap may run at the cheap tier on the
+     `mockup-implementer` persona. Each adapter maps that tier for its runtime: Claude
+     `subagent_type: "mockup-implementer", model: "sonnet"`, and the others their own
+     cheap tier.
+   - Opus stays on checklist extraction, contract decisions and review.
+   - Every other place that states "never sonnet / never a mechanical lane" for UI points
+     to that rule instead of repeating it: implementation-mode, the four adapters, the
+     agent frontmatter, the two memories.
+   - The agent prompt carries the item 3 rules.
+   - **Pilot:** Step 11 (mail) runs its `b` on sonnet. It passes when all of these hold:
+     - `admindiff diff` is clean against its accept file;
+     - `crawl` is clean;
+     - the review's first round returns PASS or comment-only findings.
+
+     Otherwise (owner, 2026-11-17) a post-mortem finds what the skill, the checklist,
+     `admindiff` or the golden tests missed. Those get fixed before the next port, and
+     only then is the tier decided again. Falling back to opus is not automatic.
+
+This revision also changes the port template (b → `[sonnet]` mockup-implementer under
+item 4; checklist first), Step 12 (use `admindiff crawl` against the split) and Step 27
+(use `admindiff diff` per page).
+
+Tests: item 1 is itself a test. `admindiff` ships its own unit tests in item 2, covering
+the skeleton, collapse, strip lists, assembly, page map, matching and stale-accept rules.
+
+(d) Order and lanes:
+- 1 `[opus]` test-author, then 2 `[opus]` core-implementer; one at a time.
+- 3 and 4 `[opus]` docs-writer, after 1 and 2 have landed, so the skill cites real
+  commands.
+- core-reviewer reviews each item. proof-auditor also audits items 1 and 2, because they
+  are gates.
+
 ### Steps 11–24 — Provider ports (each step has a backend part `a` and a view part `b`)
 
 **Port template.**
@@ -1532,10 +1678,14 @@ Tests for Step 25:
     - attention: mail 40 (core.events 20; portal 10, 30, 50);
     - platform nav entries: 10–50 (Event plane is 60);
     - audit's "Recent operator activity" is a `DashboardPanel`.
-- **b** (`[opus]` mockup-implementer): template or macro adjustments the module's page needs,
-  checked 1:1 against its mockup page per R3. When the generic macros already render the
-  page exactly, b is a fidelity check with no commit.
-- **Order:** after Steps 6–10.
+- **Before a:** `[opus]` checklist extraction per the `mockup-implementation` skill
+  (Step 10b item 3). Every contract gap it finds becomes a decision in part `a`.
+- **b** (`[sonnet]` mockup-implementer under Step 10b item 4; `[opus]` when the checklist
+  has an open gap): the template or macro adjustments the module's page needs. Checked by
+  the golden diff, `admindiff diff` against `tools/admindiff/accept/<page>.txt`, and a
+  clean `crawl`, run by the orchestrator. When the generic macros already render the page
+  exactly, b is a fidelity check with no commit.
+- **Order:** after Steps 6–10b.
 
 The ports:
 
@@ -1548,7 +1698,8 @@ The ports:
     because `CREATE TABLE IF NOT EXISTS` does not add the Step 5 `role` column to an
     existing table. `devctl up` then migrates it fresh and seeds `admin/admin`.
   - Run the `safe-verification` pre-flight, then `devctl up split`, then log in.
-  - Fetch the mail page, each of its panel fragments and the row menu.
+  - Run `admindiff crawl --base-url http://localhost:8085`, which fetches the mail page,
+    its fragments and the row menu statuses.
   - Make one real invoke (cancel a pending test message), then stop the fleet.
   - On any failure: stop, diagnose, and report to the owner with options. No fix loop
     inside this step (live-acceptance rule).
@@ -1868,13 +2019,14 @@ Splitproof:
 
 (c) Per `safe-verification`:
 1. Run one `verifyctl` manifest (`--all --strict`).
-2. Run `devctl up monolith`, log in, fetch every screen and fragment, and compare element by
-   element against the mockup page.
-3. Do the same through the split fleet.
+2. Run `devctl up monolith`, then `admindiff crawl`, then `admindiff diff` for every
+   mockup page against its accept file.
+3. Do the same through the split fleet (`--base-url http://localhost:8085`).
 
-The report lists the declared deviations.
+The declared deviations are the accept files `tools/admindiff/accept/<page>.txt`; the
+report cites them.
 
-(d) `[inline]` orchestration; report per `mockup-implementation` step 6.
+(d) `[inline]` orchestration; report per the `mockup-implementation` skill's closing step.
 
 ## Owner answers
 
