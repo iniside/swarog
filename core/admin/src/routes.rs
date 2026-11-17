@@ -1241,13 +1241,8 @@ fn render_instance(
     let Some(shown) = modal_spec(&row.spec) else {
         return toast(s.p, status, "This action has no form to show again".to_string());
     };
-    let mut modal =
-        render::modal(s.found.decl, shown, post_url, s.csrf.to_string(), row.id.clone(), Some(s.body), errors);
-    if banner.is_some() {
-        modal.banner = banner;
-    }
-    modal.locked = locked;
-    render_result(s.p, status, &ActionResultView { modal: Some(modal), toast: None, tone: "err" })
+    let instance = FormInstance { post_url, form_id: row.id.clone(), posted: Some(s.body), errors, banner, locked };
+    render_result(s.p, status, &render::modal_rerender(s.found.decl, shown, s.csrf.to_string(), instance))
 }
 
 fn render_result(p: &Portal, status: StatusCode, view: &ActionResultView) -> Response {

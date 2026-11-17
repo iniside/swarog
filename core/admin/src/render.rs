@@ -621,14 +621,15 @@ pub(crate) struct PanelInput<'a> {
     pub(crate) form: Option<FormInstance<'a>>,
 }
 
-/// A panel form's claimed instance and, when it is shown again, what was posted.
+/// A form's claimed instance (a panel form or a modal) and, when it is shown again, what
+/// was posted.
 pub(crate) struct FormInstance<'a> {
     pub(crate) post_url: String,
     pub(crate) form_id: String,
     pub(crate) posted: Option<&'a [(String, String)]>,
     pub(crate) errors: &'a BTreeMap<String, String>,
     pub(crate) banner: Option<String>,
-    /// Save stays disabled: the instance is consumed.
+    /// Submit stays disabled: the instance is consumed.
     pub(crate) locked: bool,
 }
 
@@ -1674,4 +1675,20 @@ pub(crate) struct ActionResultView {
     pub(crate) toast: Option<String>,
     /// The toast's tone: `err` or `info`.
     pub(crate) tone: &'static str,
+}
+
+/// The modal of `decl` shown again after a POST for `instance`: its banner, when set,
+/// replaces the stray-error banner.
+pub(crate) fn modal_rerender(
+    decl: &controlplane::ActionDecl,
+    spec: ModalSpec<'_>,
+    csrf: String,
+    instance: FormInstance<'_>,
+) -> ActionResultView {
+    let mut view = modal(decl, spec, instance.post_url, csrf, instance.form_id, instance.posted, instance.errors);
+    if instance.banner.is_some() {
+        view.banner = instance.banner;
+    }
+    view.locked = instance.locked;
+    ActionResultView { modal: Some(view), toast: None, tone: "err" }
 }
