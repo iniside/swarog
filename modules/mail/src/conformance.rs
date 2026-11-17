@@ -1,10 +1,28 @@
 //! Minimal factual probes consumed by `tools/conformance`.
 //!
 //! Policy and expected outcomes live in the tool. These probes only exercise the same
-//! production validators a durable delivery traverses — a fixture that restated a rule
-//! instead of driving it would stay green after the rule was deleted.
+//! production validators a durable delivery and an operator invoke traverse — a fixture
+//! that restated a rule instead of driving it would stay green after the rule was deleted.
 
-use crate::service::{validate_new, NewMail};
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use controlplane::{InvokeCall, InvokeOutcome, Provider};
+use sqlx::PgPool;
+
+use crate::admin::{self, MailAdmin, OUTBOX_ID_BYTES};
+use crate::config::{MailConfig, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETENTION_DAYS, DEFAULT_SEND_TIMEOUT_MS};
+use crate::service::{validate_new, NewMail, Service, TEST_KEY_PREFIX};
+use crate::store::IDEMPOTENCY_KEY;
+
+/// The longest key `service::is_test_key` admits: the outbox key column's own cap.
+pub const TEST_KEY_BYTES: usize = IDEMPOTENCY_KEY.max_bytes;
+
+/// The one length `admin::is_outbox_id` admits, by reference to that rule's own const.
+pub const OUTBOX_ID_SHAPE_BYTES: usize = OUTBOX_ID_BYTES;
+
+/// The byte cap the provider applies to every `cp.invoke` input value.
+pub const CP_INVOKE_INPUT_VALUE_BYTES: usize = controlplane::MAX_INPUT_VALUE_BYTES;
 
 const PROBE_KEY: &str = "conformance-probe-key";
 const PROBE_RECIPIENT: &str = "probe@example.com";
@@ -100,3 +118,85 @@ pub fn conformance_kind_rejected(len: usize) -> bool {
         ..base()
     })
 }
+
+/// The provider's own first check on every `cp.invoke`, before it reads any input.
+#[doc(hidden)]
+pub fn conformance_cp_invoke_input_rejected(len: usize) -> bool {
+    let input = BTreeMap::from([("value".to_string(), "a".repeat(len))]);
+    !admin::input_within_cap(&input)
+}
+
+/// The test-send key ceiling, executed through `MailAdmin::invoke` itself against a store
+/// that cannot connect. The discriminant is the VERDICT: a key within the cap passes
+/// `is_test_key`, reaches the checkout and answers `Internal`; a longer one is refused as
+/// `Invalid` before it. Deleting the length leg sends the long key to the checkout too, so
+/// the case goes red rather than passing on the column CHECK below it.
+#[doc(hidden)]
+pub fn conformance_test_key_rejected(len: usize) -> bool {
+    let request_id = "a".repeat(len.saturating_sub(TEST_KEY_PREFIX.len()));
+    let input = BTreeMap::from([("to".to_string(), PROBE_RECIPIENT.to_string())]);
+    refused(call("test-send", input, None, Some(request_id)))
+}
+
+/// The bound message id's shape, on the same authority and the same reasoning: at the
+/// admitted length the value reaches `Service::requeue_parked` and answers `Internal` off
+/// the dead pool, and any other length is `admin::is_outbox_id`'s own `Invalid`.
+#[doc(hidden)]
+pub fn conformance_outbox_id_rejected(len: usize) -> bool {
+    refused(call("resume", BTreeMap::new(), Some(uuid_shaped(len)), None))
+}
+
+fn call(action: &str, input: BTreeMap<String, String>, item: Option<String>, request_id: Option<String>) -> InvokeCall {
+    InvokeCall {
+        module: "mail".to_string(),
+        action: action.to_string(),
+        entity: None,
+        input,
+        expected_revision: None,
+        reason: None,
+        operator: "conformance".to_string(),
+        item,
+        request_id,
+    }
+}
+
+/// A `len`-byte value in the uuid spelling, so the only thing that varies between the two
+/// probe calls is the length.
+fn uuid_shaped(len: usize) -> String {
+    (0..len)
+        .map(|i| match i {
+            8 | 13 | 18 | 23 => '-',
+            _ => 'a',
+        })
+        .collect()
+}
+
+fn refused(call: InvokeCall) -> bool {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("current-thread runtime");
+    let provider = {
+        let _guard = rt.enter();
+        let cfg = MailConfig {
+            provider: None,
+            send_timeout: std::time::Duration::from_millis(DEFAULT_SEND_TIMEOUT_MS),
+            max_attempts: DEFAULT_MAX_ATTEMPTS,
+            retention_days: DEFAULT_RETENTION_DAYS,
+        };
+        MailAdmin::new(Arc::new(Service::new(dead_pool())), &cfg)
+    };
+    let outcome: Result<InvokeOutcome, opsapi::Error> = rt.block_on(provider.invoke(call));
+    matches!(outcome, Err(e) if e.status == opsapi::Status::Invalid)
+}
+
+/// A pool pointed at a port nothing listens on, with the acquire wait bounded so a probe
+/// that reaches the store fails fast instead of sitting out sqlx's 30-second default.
+fn dead_pool() -> PgPool {
+    sqlx::postgres::PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_millis(250))
+        .connect_lazy(DEAD_DSN)
+        .expect("lazy pool from a well-formed DSN")
+}
+
+const DEAD_DSN: &str = "postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable";

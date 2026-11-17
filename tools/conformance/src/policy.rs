@@ -73,6 +73,10 @@ macro_rules! control_plane_item_bound {
 const CONTROL_PLANE_INVOKE_RATIONALE: &str = control_plane_invoke_rationale!();
 const CONTROL_PLANE_INVOKE_ITEM_RATIONALE: &str =
     concat!(control_plane_invoke_rationale!(), control_plane_item_bound!());
+const CONTROL_PLANE_INVOKE_REQUEST_ID_RATIONALE: &str = concat!(
+    control_plane_invoke_rationale!(),
+    "; mail persists it as the suffix of a test-send idempotency key, which service::is_test_key bounds at the key column's cap before any statement (the \"mail admin send-test key\" CapCase)"
+);
 const CONTROL_PLANE_READ_RATIONALE: &str = control_plane_read_rationale!();
 const CONTROL_PLANE_PREPARE_ITEM_RATIONALE: &str =
     concat!(control_plane_read_rationale!(), control_plane_item_bound!());
@@ -169,12 +173,12 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("cp.invoke", "req.entity.id", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
         (key("cp.invoke", "req.entity.kind", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
         (key("cp.invoke", "req.input.<key>", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
-        (key("cp.invoke", "req.input.<value>", Wire), Validated { cap: admin::conformance::CORE_EVENTS_INPUT_VALUE_BYTES, basis: "core.events refuses an InvokeCall whose input carries a value over this many bytes as the first statement of EventsProvider::invoke, before any statement runs; it declares no form fields, so a value within the cap is never read, persisted or echoed. The \"cp.invoke core.events input value\" CapCase executes that check (events_provider::input_within_cap). A writer added later carries its own CapCase at this same cap, which control_plane_cap_findings enforces" }),
+        (key("cp.invoke", "req.input.<value>", Wire), Validated { cap: admin::conformance::CORE_EVENTS_INPUT_VALUE_BYTES, basis: "core.events refuses an InvokeCall whose input carries a value over this many bytes as the first statement of EventsProvider::invoke, before any statement runs; it declares no form fields, so a value within the cap is never read, persisted or echoed. The \"cp.invoke core.events input value\" CapCase executes that check (events_provider::input_within_cap). mail applies the same controlplane::MAX_INPUT_VALUE_BYTES as the first statement of admin::MailAdmin::invoke; its one declared form value, the test-send recipient, then runs address::parse_address and service::validate_new before any statement carries it, and its \"cp.invoke mail input value\" CapCase executes admin::input_within_cap. A writer added later carries its own CapCase at this same cap, which control_plane_cap_findings enforces" }),
         (key("cp.invoke", "req.item", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_ITEM_RATIONALE }),
         (key("cp.invoke", "req.module", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
         (key("cp.invoke", "req.operator", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
         (key("cp.invoke", "req.reason", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
-        (key("cp.invoke", "req.request_id", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_RATIONALE }),
+        (key("cp.invoke", "req.request_id", Wire), Opaque { rationale: CONTROL_PLANE_INVOKE_REQUEST_ID_RATIONALE }),
         (key("cp.panel", "req.before", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.panel", "req.contribution", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.panel", "req.cursor", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
@@ -872,8 +876,12 @@ fn mail() -> Entry {
             ),
             (
                 Convention::InputByteCaps,
-                // All five drive service::validate_new, the one input policy the enqueue
-                // authority runs for every caller before any statement carries the value.
+                // The first five drive service::validate_new, the one input policy the
+                // enqueue authority runs for every caller before any statement carries the
+                // value. The last three are the operator page's own: the cp.invoke input cap
+                // and two shape checks driven through admin::MailAdmin::invoke against a
+                // store that cannot connect, so an admitted length answers Internal and only
+                // the guard's own Invalid counts as a rejection.
                 //
                 // The recipient case is the one that needed a non-ASCII fixture: lettre
                 // applies its length limits to the PUNYCODE form while the cap counts raw
@@ -904,6 +912,21 @@ fn mail() -> Entry {
                         name: "mail request kind",
                         cap: mailevents::MAX_KIND_BYTES,
                         probe: Arc::new(mail::conformance::conformance_kind_rejected),
+                    },
+                    CapCase {
+                        name: "cp.invoke mail input value",
+                        cap: mail::conformance::CP_INVOKE_INPUT_VALUE_BYTES,
+                        probe: Arc::new(mail::conformance::conformance_cp_invoke_input_rejected),
+                    },
+                    CapCase {
+                        name: "mail admin send-test key",
+                        cap: mail::conformance::TEST_KEY_BYTES,
+                        probe: Arc::new(mail::conformance::conformance_test_key_rejected),
+                    },
+                    CapCase {
+                        name: "mail admin bound message id",
+                        cap: mail::conformance::OUTBOX_ID_SHAPE_BYTES,
+                        probe: Arc::new(mail::conformance::conformance_outbox_id_rejected),
                     },
                 ])),
             ),
