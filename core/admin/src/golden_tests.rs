@@ -2269,15 +2269,57 @@ const SEEN_ENUMS: [&str; 14] = [
 /// The `pub enum`s of [`PRIMITIVE_SOURCE`] outside [`SEEN_ENUMS`], each with why.
 const NOT_SEEN: [(&str, &str); 9] = [
     ("Primitive", "one case per variant, checked by check_variant_coverage over primitive_case"),
-    ("Role", "gates panels and actions; a denied panel draws its min_role as a string, not the enum"),
+    (
+        "Role",
+        "drawn as text through role_name: a denied panel's \"Requires role <role>\" and the operator chip; not variant-guarded",
+    ),
     ("TimeRange", "drawn by the dashboard range switch over panels::RANGES, not by a panel; not variant-guarded"),
     ("InvokeOutcome", "an invoke's result, mapped to a status and a flash, reveal or redirect; no view model holds it"),
     ("Layout", "drawn by the page shell through layout_name, not by a panel; not variant-guarded"),
-    ("Point", "routes places a contribution by it; no view model holds it; not variant-guarded"),
+    (
+        "Point",
+        "render::mode_of maps each to the mode string a panel view holds; MODES guards the modes, not Point's variants",
+    ),
     ("ActionPoint", "routes places an action by it; ActionItem keeps queue_row and table_row; not variant-guarded"),
     ("FieldValue", "render::field draws Multi and Money decoded and every other variant as the raw string"),
     ("FilterKind", "no view model reads it: render::filter_views draws a filter's label and param value only"),
 ];
+
+/// The [`NOT_SEEN`] entries whose reason is that no view model holds or reads them: no
+/// [`VIEW_SOURCES`] file may name one.
+const UNREAD_ENUMS: [&str; 3] = ["InvokeOutcome", "ActionPoint", "FilterKind"];
+
+/// `render.rs`, which builds every view model, and every template, by file name.
+const VIEW_SOURCES: [(&str, &str); 5] = [
+    ("render.rs", include_str!("render.rs")),
+    ("templates/login.html.tmpl", include_str!("templates/login.html.tmpl")),
+    ("templates/modal.html.tmpl", include_str!("templates/modal.html.tmpl")),
+    ("templates/primitives.html.tmpl", include_str!("templates/primitives.html.tmpl")),
+    ("templates/shell.html.tmpl", include_str!("templates/shell.html.tmpl")),
+];
+
+/// One line `<name> is named at <file>:<line>` per whole-word occurrence of each of `names` in
+/// `sources`, skipping what follows `//` on a line of a `.rs` file: its comments.
+fn names_in(sources: &[(&str, &str)], names: &[&str]) -> Vec<String> {
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    let mut out = Vec::new();
+    for (file, source) in sources {
+        for (n, line) in source.lines().enumerate() {
+            let line = match line.find("//") {
+                Some(at) if file.ends_with(".rs") => &line[..at],
+                _ => line,
+            };
+            for name in names {
+                for (at, _) in line.match_indices(name) {
+                    if !word(line[..at].chars().next_back()) && !word(line[at + name.len()..].chars().next()) {
+                        out.push(format!("{name} is named at {file}:{}", n + 1));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
 
 /// Fails unless [`SEEN_ENUMS`]-like `seen` and [`NOT_SEEN`]-like `not_seen` hold every
 /// `pub enum` opening a line of `source` once between them, and nothing else; the error lists
@@ -2437,7 +2479,8 @@ const MODES: [&str; 7] = ["tile", "attention", "header", "fact", "count", "nav",
 /// no tool. A tile with another body draws the error mini-panel. Count draws only the cell's
 /// value and nav only the value with an err or warn class, neither through `cell()`. Header
 /// draws `body()`, and so its status through `cell()`, only for an `EntityHeader`; attention
-/// and fact draw `body()` for any body. Only the
+/// and fact draw `body()` for any body. `render::prim` turns a `ColumnCells` body into an
+/// `Empty` view, so no mode draws its cells. Only the
 /// panel mode draws tools. The mode is a string, not an enum, so no match on it is exhaustive:
 /// a mode outside [`MODES`] panics here, and a template mode outside [`MODES`] fails
 /// [`mode_draws_names_every_template_mode`].
@@ -2445,25 +2488,31 @@ fn mode_draws(mode: &str, primitive: Option<&Primitive>) -> (bool, bool) {
     if matches!(primitive, Some(Primitive::KpiTile(_))) {
         return (false, false);
     }
-    match mode {
+    let (cells, tools) = match mode {
         "panel" => (true, true),
         "attention" | "fact" => (true, false),
         "header" => (matches!(primitive, Some(Primitive::EntityHeader(_))), false),
         "tile" | "count" | "nav" => (false, false),
         other => panic!("mode {other:?} is not in MODES: say in mode_draws what panel_fragment draws in it"),
-    }
+    };
+    (cells && !matches!(primitive, Some(Primitive::ColumnCells(_))), tools)
 }
 
 /// `(enum, variant)` for each `CellKind`, `Tone` and `Link` on a cell of `case`'s body, each
 /// `SortDir` and `Align` on a column of it, each `Severity` and `Link` of an attention item,
 /// each `ServiceState` of a service item and its history, each `Axis` of a series, each
-/// `FieldKind` of a field, the `Palette` of a `KpiTile`'s spark and each `Emphasis` and `Then`
-/// of its actions, as the view model holds it, counting only what the template draws: nothing
+/// `FieldKind` of a field, the `Palette` of a `KpiTile`'s spark and the `Emphasis` and `Then`
+/// of each tool, as the view model holds it, counting only what the template draws: nothing
 /// for a state outside the `live` set ([`draws_body`]), the body only in a mode that draws it
-/// through `body()` or `cell()`, and actions only in the panel mode ([`mode_draws`]). The
-/// actions of an empty panel are not counted either, though its `when_empty` tools are drawn,
+/// through `body()` or `cell()`, and tools only in the panel mode ([`mode_draws`]). The
+/// tools of an empty panel are not counted either, though its `when_empty` tools are drawn,
 /// so the gate is conservative for Empty. A live `KpiTile` draws `kpi()` in every mode, and its
 /// spark, so its `Palette`, only from two points of its series on (`render::spark`).
+///
+/// The tools are the view's `tools`, which hold no queue-row or table-row action, and are
+/// drawn by `action_button` in the head of a titled panel or in the footer of a PropertyList
+/// with code; an untitled panel without that footer draws none. `action_button` draws a
+/// tool's `Then` only while it is enabled, and its `Emphasis` only while it is not a danger.
 ///
 /// A cell is an object of the body's serialization whose keys hold every key of an unset
 /// `Cell` and no key a fully set `Cell` lacks ([`cell_key_bounds`]). A cell with a field
@@ -2540,9 +2589,22 @@ fn panel_variants(case: &PanelCase) -> Vec<(&'static str, String)> {
         walk(&body, &cell_key_bounds(), &column_keys(), &shapes(), &mut out);
     }
     if tools {
-        for a in &case.actions {
-            out.push(("Emphasis", a.emphasis.to_string()));
-            out.push(("Then", a.then.to_string()));
+        let view = case.view();
+        let footer = view["body"]["type"] == "Props" && view["body"]["code"].as_str().is_some_and(|c| !c.is_empty());
+        let head = view["title"].as_str().is_some_and(|t| !t.is_empty());
+        if head || footer {
+            for a in view["tools"].as_array().into_iter().flatten() {
+                if a["danger"] != true {
+                    if let Some(emphasis) = a["emphasis"].as_str() {
+                        out.push(("Emphasis", emphasis.to_string()));
+                    }
+                }
+                if a["enabled"] == true {
+                    if let Some(then) = a["then"].as_str() {
+                        out.push(("Then", then.to_string()));
+                    }
+                }
+            }
         }
     }
     out
@@ -3264,6 +3326,106 @@ fn seen_variants_read_a_sorted_column_where_the_body_draws() {
     assert!(dirs("count", PanelState::Ok, sorted_ascending_table()).is_empty());
     assert!(dirs("panel", PanelState::Error, sorted_ascending_table()).is_empty());
     assert!(dirs("panel", PanelState::Ok, noun_table(None)).is_empty());
+}
+
+/// A `ColumnCells` body renders as an `Empty` view, so its cells hold no variant; the same
+/// cells in a `Cell` body do.
+#[test]
+fn seen_variants_skip_a_column_cells_body() {
+    let column_cells = PanelCase::new(
+        PanelState::Ok,
+        Some(body(Primitive::ColumnCells(BTreeMap::from([
+            ("Guild".to_string(), cell(CellKind::Text, "Night Owls")),
+            ("Rank".to_string(), toned(CellKind::Badge, "officer", Tone::Info)),
+        ])))),
+    );
+    assert_eq!(column_cells.view()["body"]["type"], "Empty", "render::prim draws a ColumnCells body as Empty");
+    assert_eq!(panel_variants(&column_cells), Vec::<(&str, String)>::new());
+    let badge = toned(CellKind::Badge, "officer", Tone::Info);
+    let one_cell = PanelCase::new(PanelState::Ok, Some(body(Primitive::Cell(badge))));
+    assert_eq!(panel_variants(&one_cell), [("CellKind", "Badge".to_string()), ("Tone", "Info".to_string())]);
+}
+
+/// A `Then` counts only from a tool `action_button` draws enabled: not from a disabled tool,
+/// a table-row or queue-row action, which the tools never hold, nor from any tool of an
+/// untitled panel unless its PropertyList code puts the tools in the footer.
+#[test]
+fn seen_variants_read_then_only_from_drawn_enabled_tools() {
+    let thens = |case: &PanelCase| -> Vec<String> {
+        panel_variants(case).into_iter().filter(|(e, _)| *e == "Then").map(|(_, v)| v).collect()
+    };
+    let link = decl("logs", "Open logs", "external", Then::Link(page_link("platform", "logs")));
+    let with = |title: &'static str, primitive: Primitive, d: &ActionDecl| -> PanelCase {
+        PanelCase { title, actions: vec![tool(d)], ..PanelCase::new(PanelState::Ok, Some(body(primitive))) }
+    };
+    let coded = || Primitive::PropertyList(PropertyList { code: Some("abc".to_string()), ..props(Vec::new()) });
+
+    assert_eq!(thens(&with("Golden panel", summary(), &link)), ["link"]);
+    let disabled = ActionDecl { implemented: false, ..link.clone() };
+    assert!(!tool(&disabled).enabled, "the probe tool is disabled");
+    assert!(thens(&with("Golden panel", summary(), &disabled)).is_empty());
+    let row = with("Golden panel", summary(), &table_row(link.clone()));
+    assert!(row.view()["tools"].as_array().is_some_and(Vec::is_empty), "a table-row action is no tool");
+    assert!(thens(&row).is_empty());
+    let queued = ActionDecl { point: ActionPoint::QueueRow(CONTRIBUTION.to_string()), ..link.clone() };
+    assert!(thens(&with("Golden panel", summary(), &queued)).is_empty());
+    assert!(thens(&with("", summary(), &link)).is_empty());
+    assert_eq!(thens(&with("", coded(), &link)), ["link"]);
+}
+
+/// An `Emphasis` counts from a drawn tool that is no danger, enabled or not: `action_button`
+/// draws a danger tool `danger-ghost` whatever its emphasis.
+#[test]
+fn seen_variants_read_emphasis_only_where_action_button_draws_it() {
+    let emphases = |d: &ActionDecl| -> Vec<String> {
+        let case = PanelCase { actions: vec![tool(d)], ..PanelCase::new(PanelState::Ok, Some(body(summary()))) };
+        panel_variants(&case).into_iter().filter(|(e, _)| *e == "Emphasis").map(|(_, v)| v).collect()
+    };
+    let ghost = ActionDecl { emphasis: Emphasis::Ghost, ..decl("pause", "Pause", "pause", Then::Invoke) };
+    assert_eq!(emphases(&ghost), ["ghost"]);
+    assert_eq!(emphases(&ActionDecl { implemented: false, ..ghost.clone() }), ["ghost"]);
+    assert!(emphases(&ActionDecl { danger: true, ..ghost.clone() }).is_empty());
+    assert!(emphases(&table_row(ghost)).is_empty());
+}
+
+/// No view source names an [`UNREAD_ENUMS`] entry, each of which is in [`NOT_SEEN`], and
+/// [`VIEW_SOURCES`] holds every template on disk.
+#[test]
+fn no_view_source_names_an_unread_enum() {
+    let included: BTreeSet<String> = VIEW_SOURCES
+        .iter()
+        .filter_map(|(file, _)| file.strip_prefix("templates/"))
+        .filter_map(|file| file.split('.').next())
+        .map(str::to_string)
+        .collect();
+    let on_disk: BTreeSet<String> = templates().into_iter().map(|(stem, _)| stem).collect();
+    assert_eq!(included, on_disk, "VIEW_SOURCES against templates/");
+    for name in UNREAD_ENUMS {
+        assert!(NOT_SEEN.iter().any(|(n, _)| *n == name), "{name} is in NOT_SEEN");
+    }
+    let named = names_in(&VIEW_SOURCES, &UNREAD_ENUMS);
+    assert!(
+        named.is_empty(),
+        "a view source names an enum NOT_SEEN says no view model reads:\n  {}",
+        named.join("\n  ")
+    );
+}
+
+/// A scratch copy of `render.rs` reading a `FilterKind` and an `ActionPoint` fails with a line
+/// per name; a longer identifier holding a name is not a match, nor is a `.rs` comment.
+#[test]
+fn names_in_finds_whole_words_only() {
+    let render = VIEW_SOURCES[0].1;
+    let scratch = format!("{render}\nfn kind(f: &controlplane::FilterKind, p: ActionPoint) {{}}\n");
+    let last = scratch.lines().count();
+    assert_eq!(
+        names_in(&[("render.rs", &scratch)], &UNREAD_ENUMS),
+        [format!("ActionPoint is named at render.rs:{last}"), format!("FilterKind is named at render.rs:{last}")]
+    );
+    assert!(names_in(&[("x", "ActionPoints XActionPoint _FilterKind FilterKinds")], &UNREAD_ENUMS).is_empty());
+    assert_eq!(names_in(&[("x", "{{ InvokeOutcome }}")], &UNREAD_ENUMS), ["InvokeOutcome is named at x:1"]);
+    assert!(names_in(&[("x.rs", "let a = 1; // ActionPoint::TableRow")], &UNREAD_ENUMS).is_empty());
+    assert_eq!(names_in(&[("x.tmpl", "// ActionPoint")], &UNREAD_ENUMS), ["ActionPoint is named at x.tmpl:1"]);
 }
 
 /// Every mode `panel_fragment` branches on is in [`MODES`] and the reverse, and [`mode_draws`]
