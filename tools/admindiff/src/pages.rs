@@ -29,7 +29,7 @@ pub const PAGE_MAP: &[Page] = &[
     Page { page: "players", route: Route::Pending, search: "" },
     Page { page: "player", route: Route::Pending, search: "?u=aiko.tanaka" },
     Page { page: "apikeys", route: Route::Pending, search: "" },
-    Page { page: "mail", route: Route::Pending, search: "" },
+    Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "" },
     Page { page: "scheduler", route: Route::Pending, search: "" },
     Page { page: "config", route: Route::Pending, search: "" },
     Page { page: "audit", route: Route::Pending, search: "" },

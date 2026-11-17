@@ -7,8 +7,8 @@ use crate::worker::bounded_tx;
 
 use crate::address::parse_address;
 use crate::store::{
-    cap_from_db_error, Enqueued, OutboxListRow, OutboxStats, Store, BODY, IDEMPOTENCY_KEY, KIND,
-    SUBJECT,
+    cap_from_db_error, Enqueued, OutboxListRow, OutboxListing, OutboxStats, Store, BODY,
+    IDEMPOTENCY_KEY, KIND, SUBJECT,
 };
 
 /// One request to enqueue, borrowed from whichever caller raised it — a durable payload or
@@ -100,36 +100,33 @@ impl Service {
 }
 
 /// What one operator-page statement may take. Deliberately short: the page's reads are one
-/// statement of index-served aggregates and one 51-row listing, so anything longer is a
-/// wedged statement — and the LOCAL render cannot be cancelled out from under it, because
-/// `block_in_place` runs the closure synchronously on the worker thread, so the request's
-/// own timeout cannot take effect until the statement returns.
+/// statement of counts and one 26-row listing, so anything longer is a wedged statement.
 const ADMIN_BUDGET: Duration = Duration::from_secs(5);
 
-/// The operator page's test-send key space. The prefix names the sender; the 128-bit
-/// random suffix is what keeps the key from colliding with anything else. There is NO
-/// structural disjointness to lean on here — `mail.send_requested.idempotency_key` is a
-/// free-form producer-chosen string, so a producer COULD emit this prefix — and that is
-/// exactly why [`Service::enqueue_from_admin`] refuses a key it did not mint the shape of
-/// rather than trusting the space to be reserved.
+/// The operator test-send key space: this prefix followed by the portal's `request_id`.
+/// `mail.send_requested.idempotency_key` is a free-form producer-chosen string, so a
+/// producer COULD emit this prefix; [`Service::enqueue_from_admin`] therefore refuses any
+/// key outside the shape rather than trusting the space to be reserved.
 pub(crate) const TEST_KEY_PREFIX: &str = "admin-send-test-";
-pub(crate) const TEST_KEY_HEX: usize = 32;
 
-/// Whether `key` has the operator test-send shape. The rule lives beside the enqueue
-/// authority that enforces it, not beside the form that mints it: a form is one caller.
+/// Whether `key` has the operator test-send shape: [`TEST_KEY_PREFIX`], then a non-empty
+/// run of printable ASCII, within the column's byte cap. The rule lives beside the enqueue
+/// authority that enforces it, not beside the provider that builds the key.
 pub(crate) fn is_test_key(key: &str) -> bool {
     match key.strip_prefix(TEST_KEY_PREFIX) {
-        Some(hex) => hex.len() == TEST_KEY_HEX && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+        Some(request_id) => {
+            !request_id.is_empty()
+                && key.len() <= IDEMPOTENCY_KEY.max_bytes
+                && request_id.bytes().all(|b| b.is_ascii_graphic())
+        }
         None => false,
     }
 }
 
 /// The operator surface's data access: each call is one bounded transaction on the pool.
 ///
-/// [`bounded_tx`] is the module's ONE checkout-and-statement bound — the same helper the
-/// drain uses — because the LOCAL render runs inside `block_in_place`, which cannot be
-/// preempted: an unbounded statement there outlives the request's own 408 and keeps a
-/// runtime worker thread pinned for as long as Postgres takes.
+/// [`bounded_tx`] is the module's ONE checkout-and-statement bound, the same helper the
+/// drain uses.
 impl Service {
     pub(crate) async fn outbox_stats(&self) -> Result<OutboxStats, Error> {
         let mut tx = bounded_tx(&self.pool, ADMIN_BUDGET)
@@ -144,25 +141,43 @@ impl Service {
         Ok(stats)
     }
 
-    pub(crate) async fn recent_outbox(
+    /// The counts and one listing page, in one bounded transaction.
+    pub(crate) async fn outbox_page(
         &self,
-        state: Option<&str>,
-        limit: i64,
-    ) -> Result<Vec<OutboxListRow>, Error> {
+        listing: &OutboxListing<'_>,
+    ) -> Result<(OutboxStats, Vec<OutboxListRow>), Error> {
         let mut tx = bounded_tx(&self.pool, ADMIN_BUDGET)
+            .await
+            .map_err(crate::internal)?;
+        let stats = self
+            .store
+            .stats_tx(&mut tx)
             .await
             .map_err(crate::internal)?;
         let rows = self
             .store
-            .recent_tx(&mut tx, state, limit)
+            .list_tx(&mut tx, listing)
             .await
             .map_err(crate::internal)?;
         tx.commit().await.map_err(crate::internal)?;
-        Ok(rows)
+        Ok((stats, rows))
+    }
+
+    pub(crate) async fn outbox_summary(&self, id: &str) -> Result<Option<(String, String)>, Error> {
+        let mut tx = bounded_tx(&self.pool, ADMIN_BUDGET)
+            .await
+            .map_err(crate::internal)?;
+        let summary = self
+            .store
+            .summary_tx(&mut tx, id)
+            .await
+            .map_err(crate::internal)?;
+        tx.commit().await.map_err(crate::internal)?;
+        Ok(summary)
     }
 
     /// Rows moved — `0` means the row was not parked when the statement ran, which the
-    /// caller reports as a stale form rather than as success.
+    /// caller reports as nothing done rather than as success.
     pub(crate) async fn requeue_parked(&self, id: &str) -> Result<u64, Error> {
         let mut tx = bounded_tx(&self.pool, ADMIN_BUDGET)
             .await
@@ -208,14 +223,13 @@ impl Service {
     /// on a pool transaction: the admin form cannot acquire an input rule — or an
     /// idempotency semantic — the durable ingress does not have.
     ///
-    /// The key SHAPE is checked HERE, not at the form: this is the only entry point that
-    /// writes an operator-minted key, so a caller that invented one (a hand-posted body,
-    /// a future second form) is refused by the authority rather than by whichever caller
-    /// remembered to look.
+    /// The key SHAPE is checked HERE, before the checkout: this is the only entry point
+    /// that writes an operator key, so a caller that invented one is refused by the
+    /// authority rather than by whichever caller remembered to look.
     pub(crate) async fn enqueue_from_admin(&self, m: &NewMail<'_>) -> Result<Enqueued, Error> {
         if !is_test_key(m.idempotency_key) {
             return Err(Error::invalid(
-                "mail: an operator send must carry a key minted by the Mail page",
+                "mail: an operator send must carry an admin-send-test- key within the key cap",
             ));
         }
         let mut tx = bounded_tx(&self.pool, ADMIN_BUDGET)

@@ -403,19 +403,52 @@ impl Store {
     }
 }
 
-/// The four counts the operator page shows, in ONE round-trip. Each is its own scalar
-/// subquery over a PARTIAL index (`mail_outbox_due_idx`, `mail_outbox_parked_idx`,
-/// `mail_outbox_sent_idx`), never one `count(*) FILTER` pass: the filtered form reads
-/// every row, and this page exists precisely for the backlog nothing prunes — parked rows
-/// are outside the retention sweep's `state IN ('sent','cancelled')` predicate.
+/// The four counts the operator page shows, in ONE round-trip. Parked and sent ride their
+/// partial indexes; the pending split by `attempts` is one `count(*) FILTER` pass over the
+/// pending rows `mail_outbox_due_idx` selects, a heap read per pending row because no index
+/// covers `attempts`.
 pub(crate) struct OutboxStats {
+    /// Pending and never attempted.
     pub(crate) pending: i64,
+    /// Pending with at least one attempt behind it.
+    pub(crate) retrying: i64,
     pub(crate) parked: i64,
     pub(crate) sent_24h: i64,
-    /// How overdue the head of the pending queue is, in seconds, clamped at zero — the
-    /// same figure [`Store::gauges_tx`] exports, read off the same index. `min(created_at)`
-    /// would be the more literal "oldest", and would cost a heap fetch per pending row.
-    pub(crate) oldest_pending_overdue_secs: f64,
+}
+
+/// One operator-page tab: a fixed predicate over the outbox.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutboxTab {
+    /// Retrying and parked.
+    Attention,
+    Pending,
+    Retrying,
+    Parked,
+    /// Sent within 24 hours.
+    Sent,
+}
+
+impl OutboxTab {
+    fn predicate(self) -> &'static str {
+        match self {
+            OutboxTab::Attention => "((state = 'pending' AND attempts > 0) OR state = 'parked')",
+            OutboxTab::Pending => "(state = 'pending' AND attempts = 0)",
+            OutboxTab::Retrying => "(state = 'pending' AND attempts > 0)",
+            OutboxTab::Parked => "state = 'parked'",
+            OutboxTab::Sent => "(state = 'sent' AND sent_at >= now() - interval '24 hours')",
+        }
+    }
+}
+
+/// What one listing asks for. `needle` matches a substring of the id, recipient or kind,
+/// case-insensitively; `after` is the `(created_at in µs since the epoch, id)` of the last
+/// row of the previous page.
+pub(crate) struct OutboxListing<'a> {
+    pub(crate) tab: OutboxTab,
+    pub(crate) needle: Option<&'a str>,
+    pub(crate) kind: Option<&'a str>,
+    pub(crate) after: Option<(i64, &'a str)>,
+    pub(crate) limit: i64,
 }
 
 /// One listed outbox row. `body` is DELIBERATELY absent: a rendered body is a
@@ -424,84 +457,107 @@ pub(crate) struct OutboxStats {
 /// every other state.
 pub(crate) struct OutboxListRow {
     pub(crate) id: String,
-    pub(crate) created_at: String,
     pub(crate) recipient: String,
     pub(crate) kind: String,
     pub(crate) state: String,
     pub(crate) attempts: i32,
     pub(crate) last_error: String,
+    /// Seconds until a pending row is due, read off the database clock; `None` otherwise.
+    pub(crate) next_attempt_in_secs: Option<i64>,
+    pub(crate) created_at_micros: i64,
 }
+
+/// [`Store::list_tx`]'s columns, in [`OutboxListRow`] field order.
+type ListRow = (String, String, String, String, i32, String, Option<i64>, i64);
 
 impl Store {
     pub(crate) async fn stats_tx(
         &self,
         conn: &mut PgConnection,
     ) -> Result<OutboxStats, sqlx::Error> {
-        let (pending, parked, sent_24h, overdue): (i64, i64, i64, f64) = sqlx::query_as(
-            "SELECT \
-               (SELECT count(*) FROM mail.outbox WHERE state = 'pending'), \
+        let (pending, retrying, parked, sent_24h): (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT p.fresh, p.retrying, \
                (SELECT count(*) FROM mail.outbox WHERE state = 'parked'), \
                (SELECT count(*) FROM mail.outbox \
-                 WHERE state = 'sent' AND sent_at >= now() - interval '24 hours'), \
-               (SELECT COALESCE(GREATEST(0, EXTRACT(EPOCH FROM (now() - min(next_attempt_at)))), 0)::float8 \
-                  FROM mail.outbox WHERE state = 'pending')",
+                 WHERE state = 'sent' AND sent_at >= now() - interval '24 hours') \
+             FROM (SELECT count(*) FILTER (WHERE attempts = 0) AS fresh, \
+                          count(*) FILTER (WHERE attempts > 0) AS retrying \
+                     FROM mail.outbox WHERE state = 'pending') p",
         )
         .fetch_one(&mut *conn)
         .await?;
         Ok(OutboxStats {
             pending,
+            retrying,
             parked,
             sent_24h,
-            oldest_pending_overdue_secs: overdue,
         })
     }
 
-    /// The newest rows, optionally narrowed to one `state`. Both orderings are
-    /// `mail_outbox_recent_idx`'s key; the caller asks for one row past its page to learn
-    /// whether older rows exist.
-    pub(crate) async fn recent_tx(
+    /// The newest rows of one tab, `(created_at, id)` descending — `mail_outbox_recent_idx`'s
+    /// key, which the keyset `after` resumes from. The caller asks for one row past its
+    /// page to learn whether older rows exist.
+    pub(crate) async fn list_tx(
         &self,
         conn: &mut PgConnection,
-        state: Option<&str>,
-        limit: i64,
+        listing: &OutboxListing<'_>,
     ) -> Result<Vec<OutboxListRow>, sqlx::Error> {
-        const COLUMNS: &str = "SELECT id::text, \
-             to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"'), \
-             recipient, kind, state, attempts, COALESCE(last_error, '') \
-             FROM mail.outbox ";
-        let rows: Vec<(String, String, String, String, String, i32, String)> = match state {
-            Some(state) => {
-                sqlx::query_as(&format!(
-                    "{COLUMNS} WHERE state = $1 ORDER BY created_at DESC, id DESC LIMIT $2"
-                ))
-                .bind(state)
-                .bind(limit)
-                .fetch_all(&mut *conn)
-                .await?
-            }
-            None => {
-                sqlx::query_as(&format!(
-                    "{COLUMNS} ORDER BY created_at DESC, id DESC LIMIT $1"
-                ))
-                .bind(limit)
-                .fetch_all(&mut *conn)
-                .await?
-            }
-        };
+        let sql = format!(
+            "SELECT id::text, recipient, kind, state, attempts, COALESCE(last_error, ''), \
+                    CASE WHEN state = 'pending' \
+                         THEN GREATEST(0, ceil(EXTRACT(EPOCH FROM (next_attempt_at - now()))))::int8 \
+                    END, \
+                    (EXTRACT(EPOCH FROM created_at) * 1000000)::int8 \
+               FROM mail.outbox \
+              WHERE {} \
+                AND ($1::text IS NULL \
+                     OR strpos(id::text, lower($1)) > 0 \
+                     OR strpos(lower(recipient), lower($1)) > 0 \
+                     OR strpos(lower(kind), lower($1)) > 0) \
+                AND ($2::text IS NULL OR kind = $2) \
+                AND ($3::int8 IS NULL \
+                     OR (created_at, id) < (to_timestamp(0) + $3 * interval '1 microsecond', $4::uuid)) \
+              ORDER BY created_at DESC, id DESC \
+              LIMIT $5",
+            listing.tab.predicate()
+        );
+        let rows: Vec<ListRow> = sqlx::query_as(&sql)
+            .bind(listing.needle)
+            .bind(listing.kind)
+            .bind(listing.after.map(|(micros, _)| micros))
+            .bind(listing.after.map(|(_, id)| id))
+            .bind(listing.limit)
+            .fetch_all(&mut *conn)
+            .await?;
         Ok(rows
             .into_iter()
             .map(
-                |(id, created_at, recipient, kind, state, attempts, last_error)| OutboxListRow {
-                    id,
-                    created_at,
-                    recipient,
-                    kind,
-                    state,
-                    attempts,
-                    last_error,
+                |(id, recipient, kind, state, attempts, last_error, next_attempt_in_secs, created_at_micros)| {
+                    OutboxListRow {
+                        id,
+                        recipient,
+                        kind,
+                        state,
+                        attempts,
+                        last_error,
+                        next_attempt_in_secs,
+                        created_at_micros,
+                    }
                 },
             )
             .collect())
+    }
+
+    /// `(recipient, kind)` of one row, whatever its state.
+    pub(crate) async fn summary_tx(
+        &self,
+        conn: &mut PgConnection,
+        id: &str,
+    ) -> Result<Option<(String, String)>, sqlx::Error> {
+        sqlx::query_as("SELECT recipient, kind FROM mail.outbox WHERE id = $1::uuid")
+            .bind(id)
+            .fetch_optional(&mut *conn)
+            .await
     }
 
     /// Returns ONE parked row to the drain. `attempts = 0` restarts the ladder — the

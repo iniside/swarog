@@ -31,6 +31,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 # The no-provider `/readyz` check: a process accepting mail it cannot deliver is not ready.
 httpmw = { workspace = true }
+# The operator page: a `controlplane::Provider` contributed to `PROVIDER_SLOT`.
+controlplane = { workspace = true }
 # The enqueue counters ride core/metrics' private registry, so they appear on the same
 # GET /metrics as every plane counter.
 metrics = { workspace = true }

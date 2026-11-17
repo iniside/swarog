@@ -2276,3 +2276,14 @@ report cites them.
   - The write-affordance rule is `has_write_affordance` in `core/admin/src/engine/panels.rs`, called by `resolve` on a fresh `ok` body only. A stale body keeps state `stale`, as before.
   - A `ServiceItem` with no `value` renders an empty value cell. The dashboard's down `wallet-svc` sets `"—"` itself (`data.js:97`), which the renderer used to supply for a missing `p99_ms`.
   - `fakes::delta` takes `tone: Option<Tone>`. The tiles whose delta has no coloured value (Lore seats, Matches in progress, Subscriptions, Head sequence, Dead-lettered) set `None`; "— steady" is `flat`, as in the mockup.
+- Step 11 (part a):
+  - The shared `cp.invoke` input cap is the contract const `controlplane::MAX_INPUT_VALUE_BYTES` (4096); `core.events` and `mail` both apply it, so the cap is not written twice.
+  - G5's To link is `Link::Page { mail, outbox, {q: <recipient>, state: <row state>} }`. The page route passes the page URL's `q` and `state` to its layout panels, the keys named by the contract consts `controlplane::PAGE_PARAM_SEARCH` and `PAGE_PARAM_QUEUE_STATE`; before this nothing read a `Link::Page` param.
+  - `WorkQueue` also gets `item_noun`, the foot's plural ("7 messages"). The view models gain `page_label` ("1 / N", first page only; a cursor does not say how far in it is) on both `TableView` and `QueueView`.
+  - A `PanelTool` on a WorkQueue draws in the panel tools; only `QueueRow` actions draw on items (`ActionItem.queue_row`). `has_write_affordance` counts `QueueRow` too.
+  - The outbox pages by 25 rows (the mockup's selected "25 / page") with a keyset cursor `<created_at µs>.<id>`, not the checklist's 50. The Template filter is `FilterKind::Text`, honoured from `params.template`; the chip itself stays inert.
+  - Retrying is pending with `attempts > 0` (the data-sources DERIV), so a row on its first in-flight attempt shows as retrying for the length of that attempt.
+  - G6(a): `is_test_key` admits `admin-send-test-` + a non-empty printable-ASCII suffix within the key column's 128-byte cap; `TEST_KEY_HEX` is gone. The restored probe's cap is that 128 (`mail::conformance::TEST_KEY_BYTES`), not the old exact 48.
+  - The tile's "▲ relay throttled" delta value is FAKE and, like the banner and the attention item (G8), shows only while a row is retrying; its period is the real "· N parked". The spark is a constant FAKE series.
+  - `OutboxStats` drops `oldest_pending_overdue_secs` (no element shows it) and splits pending into `pending` and `retrying`; `recent_tx` became `list_tx`.
+  - An unknown `state` is an `Invalid` panel error. A test-send recipient that does not parse is `FieldErrors` on `to`; a key reused for a different recipient is a `conflict` error.

@@ -13,6 +13,7 @@
 //! be safe to follow twice.
 
 mod address;
+mod admin;
 pub mod config;
 pub mod conformance;
 mod projection;
@@ -71,7 +72,7 @@ pub use service::Service;
 /// makes an older attempt's value reachable again.
 ///
 /// Each index has a named consumer: `mail_outbox_due_idx` serves the drain's claim and the
-/// operator page's pending count and queue-head age, `mail_outbox_parked_idx` the
+/// operator page's pending and retrying counts, `mail_outbox_parked_idx` the
 /// parked-count gauge, the bulk requeue and the page's parked count, `mail_outbox_sent_idx`
 /// the page's 24h-delivered count, and `mail_outbox_recent_idx` both the page's capped
 /// listing and the retention sweep's `created_at` range predicate — btrees scan in either
@@ -242,6 +243,10 @@ impl Module for MailModule {
 
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let svc = self.svc();
+
+        let provider: Arc<dyn controlplane::Provider> =
+            Arc::new(admin::MailAdmin::new(svc.clone(), &self.cfg()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
 
         // Contributed UNCONDITIONALLY, provider or not: the ingress is the same code in
         // both topologies, and an env-gated subscription would report the topic as
