@@ -31,13 +31,15 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use sqlx::PgPool;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
+use tokio_rustls::TlsAcceptor;
 
 use crate::config::{
-    MailConfig, FROM_ENV, PROVIDER_ENV, SEND_TIMEOUT_ENV, SMTP_HOST_ENV, SMTP_PORT_ENV,
-    SMTP_TLS_ENV,
+    MailConfig, FROM_ENV, PROVIDER_ENV, SEND_TIMEOUT_ENV, SMTP_HOST_ENV, SMTP_PASSWORD_ENV,
+    SMTP_PORT_ENV, SMTP_TLS_ENV, SMTP_USERNAME_ENV,
 };
 use crate::providers::{Outgoing, SendError, Sender, SMTP};
 use crate::smtp::{SmtpSender, TlsMode};
@@ -89,7 +91,7 @@ const RECIPIENT_REFUSED: Replies = Replies {
 };
 
 /// What the fixture does with a connection it accepted.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Script {
     /// Close the moment the peer connects — the relay that vanishes mid-dialogue.
     DropOnConnect,
@@ -106,6 +108,12 @@ enum Script {
     RecordFirstBytesThenClose,
     /// Speak the whole plaintext dialogue through `DATA`.
     Dialogue(Replies),
+    /// Greet in the clear advertising STARTTLS — and AUTH, as bait for a client that would
+    /// authenticate before upgrading — answer `STARTTLS` with `220`, hand the raw socket to
+    /// this acceptor, and speak the accepted dialogue inside the TLS session.
+    StartTls(TlsAcceptor),
+    /// The same dialogue with this acceptor wrapping the socket from the first byte.
+    ImplicitTls(TlsAcceptor),
 }
 
 /// A `250` EHLO reply that advertises no STARTTLS: a positive multi-line response the
@@ -116,6 +124,30 @@ const CAPABILITIES_WITHOUT_STARTTLS: &str = "250-fixture.invalid\r\n250 8BITMIME
 const PERMANENT_REFUSAL: &str = "550 5.7.1 relay access denied\r\n";
 
 const BANNER: &[u8] = b"220 fixture.invalid ESMTP\r\n";
+
+/// The cleartext EHLO reply of [`Script::StartTls`]. AUTH is on offer BEFORE the upgrade,
+/// so a client that would authenticate in the clear is given every chance to.
+const CAPABILITIES_WITH_STARTTLS: &str =
+    "250-fixture.invalid\r\n250-STARTTLS\r\n250-AUTH PLAIN\r\n250 8BITMIME\r\n";
+
+/// The EHLO reply inside a TLS session: no STARTTLS (the session is already encrypted),
+/// AUTH PLAIN on offer.
+const CAPABILITIES_INSIDE_TLS: &str = "250-fixture.invalid\r\n250-AUTH PLAIN\r\n250 8BITMIME\r\n";
+
+/// Not a client line: the fixture's own entry, pushed the moment its acceptor completes a
+/// handshake. Everything after it in a transcript crossed the wire encrypted; everything
+/// before it crossed in the clear.
+const TLS_UP: &str = "<fixture: TLS handshake complete>";
+
+/// The relay credential the TLS tests configure, and its `AUTH PLAIN` initial response:
+/// base64 of `\0user\0pass`.
+const USERNAME: &str = "user";
+const PASSWORD: &str = "pass";
+const AUTH_PLAIN_LINE: &str = "AUTH PLAIN AHVzZXIAcGFzcw==";
+
+/// The certificate's subject alternative name, and the host every TLS test dials — an IP
+/// literal, which lettre turns into an IP `ServerName` that the leaf's IP SAN must match.
+const RELAY_HOST: &str = "127.0.0.1";
 
 struct Relay {
     addr: SocketAddr,
@@ -149,19 +181,39 @@ impl Relay {
             let mut held = Vec::new();
             while let Ok((stream, _)) = listener.accept().await {
                 counter.fetch_add(1, Ordering::SeqCst);
-                match script {
+                match &script {
                     Script::DropOnConnect => drop(stream),
                     Script::NeverGreet => held.push(stream),
-                    Script::AnswerEhlo(reply) => converse(stream, reply, None, &recorded).await,
+                    Script::AnswerEhlo(reply) => {
+                        converse(stream, true, reply, None, &recorded).await;
+                    }
                     Script::RecordFirstBytesThenClose => record_bytes(stream, &recorded).await,
                     Script::Dialogue(replies) => {
                         converse(
                             stream,
+                            true,
                             CAPABILITIES_WITHOUT_STARTTLS,
-                            Some(replies),
+                            Some(*replies),
                             &recorded,
                         )
-                        .await
+                        .await;
+                    }
+                    Script::StartTls(acceptor) => {
+                        let upgrade = converse(
+                            stream,
+                            true,
+                            CAPABILITIES_WITH_STARTTLS,
+                            Some(ACCEPTED),
+                            &recorded,
+                        )
+                        .await;
+                        if let Some(stream) = upgrade {
+                            // No banner: the client re-issues EHLO on the fresh session.
+                            serve_tls(acceptor, stream, false, &recorded).await;
+                        }
+                    }
+                    Script::ImplicitTls(acceptor) => {
+                        serve_tls(acceptor, stream, true, &recorded).await;
                     }
                 }
             }
@@ -196,23 +248,31 @@ impl Relay {
     }
 }
 
-/// Greets, records every line the client writes, and answers it. Each line is recorded
-/// BEFORE its reply is written, so a client that observed a reply necessarily left its
-/// command in the transcript first — a happens-before, not a race.
+/// Greets (when `greet`), records every line the client writes, and answers it. Each line
+/// is recorded BEFORE its reply is written, so a client that observed a reply necessarily
+/// left its command in the transcript first — a happens-before, not a race.
+///
+/// Generic over the stream so the same dialogue runs over a bare socket and inside a TLS
+/// session. A `STARTTLS` is answered `220` and ends the conversation by handing the stream
+/// BACK, reunited, for the caller to upgrade; every other ending returns `None`.
 ///
 /// With `replies` absent the fixture answers the first line with `ehlo_reply` and every
 /// later one with `221`: lettre answers a rejected EHLO by sending `QUIT` and BLOCKING on
 /// its response, so a fixture that went silent there would be held open until the send
 /// budget expired.
-async fn converse(
-    stream: TcpStream,
+async fn converse<S>(
+    stream: S,
+    greet: bool,
     ehlo_reply: &str,
     replies: Option<Replies>,
     transcript: &Arc<Mutex<Vec<String>>>,
-) {
-    let (rx, mut tx) = stream.into_split();
-    if tx.write_all(BANNER).await.is_err() {
-        return;
+) -> Option<S>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let (rx, mut tx) = tokio::io::split(stream);
+    if greet && !answer(&mut tx, BANNER).await {
+        return None;
     }
     let mut lines = BufReader::new(rx).lines();
     let mut greeted = false;
@@ -226,8 +286,8 @@ async fn converse(
                 greeted = true;
                 ehlo_reply.as_bytes()
             };
-            if tx.write_all(reply).await.is_err() {
-                return;
+            if !answer(&mut tx, reply).await {
+                return None;
             }
             continue;
         };
@@ -238,14 +298,27 @@ async fn converse(
                 continue;
             }
             in_body = false;
-            if tx.write_all(replies.data.as_bytes()).await.is_err() {
-                return;
+            if !answer(&mut tx, replies.data.as_bytes()).await {
+                return None;
             }
             continue;
         }
         let upper = line.to_ascii_uppercase();
+        if upper.starts_with("STARTTLS") {
+            if !answer(&mut tx, b"220 2.0.0 ready to start TLS\r\n").await {
+                return None;
+            }
+            let rx = lines.into_inner();
+            // The client waits for the `220` before it writes its ClientHello, so nothing
+            // past the command can have been read ahead; a non-empty buffer would mean
+            // handshake bytes were swallowed by the line reader.
+            assert!(rx.buffer().is_empty(), "bytes after STARTTLS were read as SMTP lines");
+            return Some(rx.into_inner().unsplit(tx));
+        }
         let reply: &[u8] = if upper.starts_with("EHLO") {
             ehlo_reply.as_bytes()
+        } else if upper.starts_with("AUTH") {
+            b"235 2.7.0 authentication successful\r\n"
         } else if upper.starts_with("RCPT") {
             replies.rcpt.as_bytes()
         } else if upper.starts_with("DATA") {
@@ -256,9 +329,75 @@ async fn converse(
         } else {
             b"250 2.1.0 ok\r\n"
         };
-        if tx.write_all(reply).await.is_err() {
-            return;
+        if !answer(&mut tx, reply).await {
+            return None;
         }
+    }
+    None
+}
+
+/// Writes and FLUSHES a reply: a TLS stream may hold written records until flushed, and a
+/// reply the client never receives would stall the dialogue until the hang guard.
+async fn answer<W: AsyncWrite + Unpin>(tx: &mut W, reply: &[u8]) -> bool {
+    tx.write_all(reply).await.is_ok() && tx.flush().await.is_ok()
+}
+
+/// Runs the server side of a handshake on `stream` and, if it completes, marks the
+/// transcript with [`TLS_UP`] and speaks the accepted dialogue inside the session. A
+/// handshake the client abandons — a certificate it refused — ends the connection with no
+/// marker, which is what lets a test tell "never encrypted" from "encrypted, then failed".
+async fn serve_tls(
+    acceptor: &TlsAcceptor,
+    stream: TcpStream,
+    greet: bool,
+    transcript: &Arc<Mutex<Vec<String>>>,
+) {
+    let Ok(session) = acceptor.accept(stream).await else {
+        return;
+    };
+    transcript.lock().expect("the transcript lock").push(TLS_UP.to_string());
+    converse(session, greet, CAPABILITIES_INSIDE_TLS, Some(ACCEPTED), transcript).await;
+}
+
+/// A minted trust chain: the CA a test client may trust, and an acceptor serving a leaf
+/// that CA signed.
+struct Minted {
+    ca_pem: String,
+    acceptor: TlsAcceptor,
+}
+
+/// Mints a CA and a leaf for `san`, signed by it. The two get DISTINCT common names: a
+/// leaf whose subject equals its issuer's reads as self-issued, which is what produced a
+/// Windows `TRUST_E_CERT_SIGNATURE` elsewhere in this repo. The server config names the
+/// ring provider explicitly instead of installing a process default that would leak into
+/// every other test in the binary.
+fn mint(san: &str) -> Minted {
+    use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
+
+    let ca_key = KeyPair::generate().expect("a CA key");
+    let mut ca_params = CertificateParams::new(Vec::<String>::new()).expect("CA parameters");
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    ca_params.distinguished_name.push(DnType::CommonName, "mail smtp_tests CA");
+    let ca = ca_params.self_signed(&ca_key).expect("the self-signed CA");
+
+    let leaf_key = KeyPair::generate().expect("a leaf key");
+    let mut leaf_params = CertificateParams::new(vec![san.to_string()]).expect("leaf parameters");
+    leaf_params.distinguished_name.push(DnType::CommonName, "mail smtp_tests relay");
+    let leaf = leaf_params.signed_by(&leaf_key, &ca, &ca_key).expect("the CA-signed leaf");
+
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(leaf_key.serialize_der()));
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("the ring provider supports the default versions")
+    .with_no_client_auth()
+    .with_single_cert(vec![leaf.der().clone()], key)
+    .expect("the leaf and its key form a server identity");
+    Minted {
+        ca_pem: ca.pem(),
+        acceptor: TlsAcceptor::from(Arc::new(config)),
     }
 }
 
@@ -287,19 +426,35 @@ async fn record_bytes(stream: TcpStream, transcript: &Arc<Mutex<Vec<String>>>) {
 /// same two calls `lib.rs` makes — so the configuration authority decides the TLS mode and
 /// the connect bound is the send budget, exactly as deployed.
 fn smtp_sender(addr: SocketAddr, tls: &str, send_timeout_ms: u64) -> (Arc<dyn Sender>, Duration) {
+    smtp_sender_with(addr, tls, send_timeout_ms, None)
+}
+
+/// [`smtp_sender`] with the relay credential set through its two configuration variables,
+/// as an operator would.
+fn smtp_sender_with(
+    addr: SocketAddr,
+    tls: &str,
+    send_timeout_ms: u64,
+    credentials: Option<(&str, &str)>,
+) -> (Arc<dyn Sender>, Duration) {
     let port = addr.port().to_string();
     let ms = send_timeout_ms.to_string();
-    let vars: BTreeMap<String, String> = [
+    let mut pairs = vec![
         (PROVIDER_ENV, SMTP),
         (FROM_ENV, FROM),
-        (SMTP_HOST_ENV, "127.0.0.1"),
+        (SMTP_HOST_ENV, RELAY_HOST),
         (SMTP_PORT_ENV, port.as_str()),
         (SMTP_TLS_ENV, tls),
         (SEND_TIMEOUT_ENV, ms.as_str()),
-    ]
-    .iter()
-    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-    .collect();
+    ];
+    if let Some((username, password)) = credentials {
+        pairs.push((SMTP_USERNAME_ENV, username));
+        pairs.push((SMTP_PASSWORD_ENV, password));
+    }
+    let vars: BTreeMap<String, String> = pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
     let cfg = MailConfig::from_vars(&vars).expect("the fixture's relay configuration");
     let settings = cfg
         .provider
@@ -323,6 +478,23 @@ fn plaintext_sender(addr: SocketAddr) -> Arc<dyn Sender> {
             Duration::from_millis(SEND_TIMEOUT_MS),
         )
         .expect("the plaintext transport builds"),
+    )
+}
+
+/// The same `SmtpSender` over TLS that trusts ONLY the minted CA, carrying the test
+/// credential — the dial on which the handshake, and so `AUTH`, can complete.
+fn trusting_sender(addr: SocketAddr, mode: TlsMode, minted: &Minted) -> Arc<dyn Sender> {
+    Arc::new(
+        SmtpSender::tls_trusting_for_tests(
+            RELAY_HOST,
+            addr.port(),
+            FROM,
+            Duration::from_millis(SEND_TIMEOUT_MS),
+            mode,
+            minted.ca_pem.as_bytes(),
+            Some((USERNAME.to_string(), PASSWORD.to_string())),
+        )
+        .expect("the trusting transport builds"),
     )
 }
 
@@ -627,4 +799,175 @@ async fn a_relay_that_never_greets_is_stopped_by_the_configured_send_timeout() {
         matches!(row_write(result), Disposition::Retry { .. }),
         "an elapsed budget is infrastructure: the message may well be deliverable"
     );
+}
+
+// ============================================================================
+// 5. TLS negotiated: the certificate check, the upgrade, and AUTH inside it.
+// ============================================================================
+
+/// The rustls verdict that ended a handshake, dug out of the send error: tokio-rustls
+/// carries it as the payload of an `io::Error`, which lettre wraps as the error's source.
+/// `io::Error::source` skips its own payload, so the payload is read with `get_ref`.
+fn rustls_failure(result: &Result<(), SendError>) -> Option<rustls::Error> {
+    let Err(SendError::Infra(e) | SendError::Rejected(e)) = result else {
+        return None;
+    };
+    e.chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .and_then(|io| io.get_ref())
+        .and_then(|payload| payload.downcast_ref::<rustls::Error>())
+        .cloned()
+}
+
+/// Every transcript line the client wrote as an `AUTH` command, by position.
+fn auth_lines(transcript: &[String]) -> Vec<usize> {
+    transcript
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.to_ascii_uppercase().starts_with("AUTH"))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The part of a dialogue that has to happen INSIDE the session that opened at
+/// `tls_up`: a fresh EHLO first, then exactly one `AUTH PLAIN` carrying the configured
+/// credential, then the envelope — and the relay's `250` for the message, which the
+/// sender reported as a delivery.
+fn assert_authenticated_delivery_inside_tls(
+    result: Result<(), SendError>,
+    transcript: &[String],
+    tls_up: usize,
+) {
+    assert!(result.is_ok(), "the relay accepted the message, got {result:?} over {transcript:?}");
+    assert_eq!(
+        transcript.get(tls_up + 1).map(String::as_str),
+        Some(HELLO),
+        "the client greets the encrypted session afresh: {transcript:?}"
+    );
+    let auths = auth_lines(transcript);
+    assert_eq!(auths.len(), 1, "exactly one AUTH command, got {transcript:?}");
+    let auth_at = auths[0];
+    assert!(
+        auth_at > tls_up,
+        "AUTH must only ever cross the encrypted session, got {transcript:?}"
+    );
+    assert_eq!(
+        transcript[auth_at], AUTH_PLAIN_LINE,
+        "AUTH PLAIN carries base64 of \0user\0pass"
+    );
+    let mail_at = transcript
+        .iter()
+        .position(|l| l.starts_with(&format!("MAIL FROM:<{FROM}>")))
+        .unwrap_or_else(|| panic!("the envelope reached the relay: {transcript:?}"));
+    assert!(mail_at > auth_at, "the envelope follows authentication: {transcript:?}");
+    assert!(
+        transcript.iter().any(|l| l == &format!("Subject: {SUBJECT}")),
+        "the message itself crossed the session: {transcript:?}"
+    );
+    assert_eq!(row_write(result), Disposition::Sent);
+}
+
+/// The deployed constructor VERIFIES the relay's certificate. The fixture advertises
+/// STARTTLS and AUTH and would complete either; the certificate it serves is signed by a CA
+/// minted here, which no `webpki-roots` anchor issued. So the dialogue must stop at the
+/// handshake — after `STARTTLS`, before any `AUTH` or envelope — and the reason must be
+/// rustls refusing the issuer, not some other failure along the way.
+///
+/// What this pins: `SmtpSender::new` under `starttls` performs the upgrade (the `STARTTLS`
+/// line), checks the certificate against a trust store that does not hold our CA (the
+/// `UnknownIssuer` verdict), and sends the credential nowhere when that fails (no `AUTH`).
+/// A sender that skipped TLS would put `AUTH` and `MAIL FROM` on the wire in the clear —
+/// the fixture offers AUTH before the upgrade precisely to catch that.
+#[tokio::test]
+async fn the_production_starttls_dial_refuses_an_untrusted_certificate_before_auth() {
+    let minted = mint(RELAY_HOST);
+    let relay = Relay::start(Script::StartTls(minted.acceptor.clone())).await;
+    let (sender, _) = smtp_sender_with(
+        relay.addr,
+        TlsMode::STARTTLS,
+        SEND_TIMEOUT_MS,
+        Some((USERNAME, PASSWORD)),
+    );
+
+    let result = guarded_send(&sender).await;
+
+    let transcript = relay.transcript();
+    assert_eq!(relay.hits(), 1, "the client did dial the relay");
+    assert!(
+        transcript.iter().any(|l| l == "STARTTLS"),
+        "the production dial must ask to upgrade, got {transcript:?}"
+    );
+    assert!(
+        auth_lines(&transcript).is_empty(),
+        "no credential may leave the client when the certificate is refused, got {transcript:?}"
+    );
+    assert!(
+        !transcript.iter().any(|l| l.starts_with("MAIL FROM")),
+        "no envelope may leave the client when the certificate is refused, got {transcript:?}"
+    );
+    assert!(
+        !relay.wrote(TLS_UP),
+        "the handshake must not complete on an untrusted certificate, got {transcript:?}"
+    );
+    assert_eq!(
+        rustls_failure(&result),
+        Some(rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer)),
+        "the certificate check is what stopped the dial, got {result:?}"
+    );
+    assert_infra(&result);
+    assert!(
+        matches!(row_write(result), Disposition::Retry { .. }),
+        "a relay whose certificate is refused is infrastructure, not an undeliverable message"
+    );
+}
+
+/// STARTTLS completed end to end against a relay whose CA the client trusts: the only
+/// things in the clear are the first EHLO and the `STARTTLS` itself, and `AUTH PLAIN` — the
+/// credential lettre sends only after a successful upgrade — crosses inside the session,
+/// followed by a delivered message.
+#[tokio::test]
+async fn starttls_upgrades_before_auth_and_delivers_inside_the_session() {
+    let minted = mint(RELAY_HOST);
+    let relay = Relay::start(Script::StartTls(minted.acceptor.clone())).await;
+    let sender = trusting_sender(relay.addr, TlsMode::StartTls, &minted);
+
+    let result = guarded_send(&sender).await;
+
+    let transcript = relay.transcript();
+    assert_eq!(relay.hits(), 1, "exactly one connection carried the message");
+    let tls_up = transcript
+        .iter()
+        .position(|l| l == TLS_UP)
+        .unwrap_or_else(|| panic!("the handshake completed: {result:?} over {transcript:?}"));
+    assert_eq!(
+        &transcript[..tls_up],
+        &[HELLO.to_string(), "STARTTLS".to_string()],
+        "only the greeting and the upgrade request may cross in the clear"
+    );
+    assert_authenticated_delivery_inside_tls(result, &transcript, tls_up);
+}
+
+/// Implicit TLS completed end to end: the acceptor owns the socket from the first byte,
+/// so the session marker is the transcript's FIRST entry — no SMTP line, not even the
+/// greeting, preceded the handshake — and no `STARTTLS` is ever issued.
+#[tokio::test]
+async fn implicit_tls_encrypts_from_the_first_byte_and_authenticates_inside_the_session() {
+    let minted = mint(RELAY_HOST);
+    let relay = Relay::start(Script::ImplicitTls(minted.acceptor.clone())).await;
+    let sender = trusting_sender(relay.addr, TlsMode::Implicit, &minted);
+
+    let result = guarded_send(&sender).await;
+
+    let transcript = relay.transcript();
+    assert_eq!(relay.hits(), 1, "exactly one connection carried the message");
+    assert_eq!(
+        transcript.first().map(String::as_str),
+        Some(TLS_UP),
+        "the handshake precedes every SMTP line: {result:?} over {transcript:?}"
+    );
+    assert!(
+        !transcript.iter().any(|l| l == "STARTTLS"),
+        "an implicit session never asks to upgrade: {transcript:?}"
+    );
+    assert_authenticated_delivery_inside_tls(result, &transcript, 0);
 }
