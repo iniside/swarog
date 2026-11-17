@@ -268,7 +268,11 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- for it in q.items %}<tr>{% if q.selectable %}<td class="cb"><input type="checkbox"></td>{% endif %}<td><span class="mono">{{ it.id }}</span></td>{% for c in it.cells %}<td class="{{ 'num' if c.num else '' }}">{{ cell(c.cell) }}</td>{% endfor %}{% if q.has_entity %}<td>{% if it.entity %}{{ cell(it.entity) }}{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}<td>{{ cell(it.state) }}</td><td><span class="attempts" title="{{ it.attempts_title }}">{% for a in it.attempts %}<i class="{{ a }}"></i>{% endfor %}</span></td><td><span class="dim">{{ it.next_attempt or "—" }}</span></td><td class="wrap">{% if it.last_error %}<span class="mono" style="font-size:11.5px;color:{{ it.error_color }}">{{ it.last_error }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>{% if q.has_payload %}<td><span class="mono muted ellip">{{ it.payload or "—" }}</span></td>{% endif %}<td><span class="row" style="justify-content:flex-end;gap:4px">{% for a in it.actions %}{{ queue_action(a, loop.first and not a.danger) }}{% endfor %}</span></td></tr>{% endfor -%}
 </tbody></table></div>{{ table_foot(q) }}
 {%- else -%}
+{%- if q.q or (q.filters|selectattr("value", "ne", "any")|list) -%}
+{{ table_toolbar(q) }}{{ state_block("empty", "No matching items", "Nothing matches the search or filters.") }}{{ table_foot(q) }}
+{%- else -%}
 {{ state_block("empty", "Queue is empty", "Nothing in this state.", "check") }}
+{%- endif -%}
 {%- endif -%}
 {%- endmacro %}
 
