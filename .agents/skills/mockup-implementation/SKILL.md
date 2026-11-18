@@ -14,8 +14,9 @@ fake rows in `assets/data.js`. The portal that renders it is `core/admin`.
 ## Standing decisions (owner-settled; do not re-ask)
 
 - Copy the mockup. No element is dropped, substituted or invented. Every difference
-  is fixed or is an accept entry with a reason (below); an undeclared difference is a
-  violation.
+  is fixed, is an accept entry with a reason (below), or, for a difference `admindiff`
+  cannot see (text, attributes), is a hand-check row (§1); an undeclared difference is
+  a violation.
 - Data is decided at checklist extraction from the plan's data-sources table, never
   by the view lane:
   - data a fresh fleet lacks but the module can hold is not seeded by a port: it is a
