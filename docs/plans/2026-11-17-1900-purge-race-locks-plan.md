@@ -1,6 +1,6 @@
 # Purge race locks (plan B) — plan
 
-Status: approved by the owner 2026-11-18 (revised plan); steps 1–3 landed (`dd789cc2`, `8622b65d`); the owner ruled on proof-audit batch 1 on 2026-11-18, and the review-fix landed; steps 4–5 landed (`a228ccbd`, `424f00b1`), with proof-audit batch 2 addressed. Step 6 landed (`769261be`, proof review-fix `e4454955`); step 7 waits for the owner to rule on the structural proof-audit finding from batch 3 (no test pins "P before the guard").
+Status: approved by the owner 2026-11-18 (revised plan); steps 1–3 landed (`dd789cc2`, `8622b65d`); the owner ruled on proof-audit batch 1 on 2026-11-18, and the review-fix landed; steps 4–5 landed (`a228ccbd`, `424f00b1`), with proof-audit batch 2 addressed. Step 6 landed (`769261be`, proof review-fix `e4454955`); the owner ruled on 2026-11-18 to close the batch-3 proof gap (step 6a) and the groups head-of-line limit (step 6b) before step 7.
 
 Revision 2026-11-18: the owner approved the original twelve-step plan on 2026-11-18. No step was
 dispatched, and `git log --grep=purge-race-locks` shows no step commit. The plan was then
@@ -175,8 +175,9 @@ scheduler seed value, and the wipe-as-migration rule applies.
    2026-11-18).
 6. **Drain cadence.** The `player-purge` seed is **300 s**, so 64 per fire drains about 18k
    deleted accounts per day per module.
-   - **Accepted limit (groups only), for the owner to confirm.** A player that is persistently
-     Skipped is reclaimed first on every fire, so k such players cut that fire to 64−k.
+   - **Groups head-of-line (owner ruling 2026-11-18: fix, do not accept).** A player Skipped on
+     a group error is rotated to the back of the claim order rather than reclaimed first, so
+     persistently Skipped players cannot shrink every fire (step 6b).
 7. **No topology branch.** No schema change beyond the seed value. Advisory keys are
    database-global, so the same locks serve the monolith and the split.
 
@@ -447,6 +448,79 @@ closes the race in the last module, so it also closes ACCOUNT-DELETION-05.
 **(d) Lane:** `core-implementer`, opus.
 
 Commit: `fix(groups): serialize create, join and invite with the purge sweep per player (purge-race-locks step 6)`.
+
+### Step 6a — guard-order proof in all five modules `[opus]`
+**(a) What:** the purge test files only:
+- `modules/characters/src/tests/purge.rs`;
+- `modules/friends/src/tests.rs`;
+- `modules/notifications/src/tests.rs`;
+- `modules/inventory/src/tests.rs`;
+- `modules/groups/src/purge_tests.rs`.
+
+**(b) Why now:** proof-audit batch 3 found that no test pins "P before the tombstone guard"
+(Invariant 1). Moving the guard ahead of the lock leaves every Race 1 and Race 2 test green while
+the race returns. The owner ruled on 2026-11-18 that this gap is fixed, not accepted. It comes
+before 6b because 6b changes the groups sweep the groups test runs against.
+
+**(c) How:** one **guard-order test** per guarded writer:
+- `create` (characters);
+- `request`, once for the requester and once for the target (friends);
+- `deliver_on` on the durable path and on the operator path (notifications);
+- `grant` (inventory);
+- `create`, `join` and `invite` (groups).
+
+Each test runs in this order:
+1. The tombstone is absent. A gate transaction takes the player's lock through the module's
+   real `lock_player_tx`, with the key read back as in the race tests.
+2. The writer starts and must park on that key (`wait_advisory_parked`).
+3. The test plants the tombstone on another connection and commits it. The plant takes no
+   player lock, so it does not wait on the gate.
+4. The gate releases.
+5. The writer must give the deleted answer (409 `PLAYER_DELETED`, or the directory-miss
+   answer for a counterparty, or no row on the durable path) and must write nothing.
+
+If the guard ran before the lock, the writer would read "no tombstone", park, and then insert
+after the release, so the test fails. The test needs no production hook.
+
+**Mutation, shown red per writer:** move the guard before the lock.
+
+No production code changes and no comments. If a writer cannot be parked this way, report it
+and stop on that writer.
+
+**(d) Lane:** `core-implementer`, opus. These are in-module tests, not a gate or a harness.
+
+Commit: `test(characters,friends,notifications,inventory,groups): pin the lock before the tombstone guard (purge-race-locks step 6a)`.
+
+### Step 6b — groups Skipped rotation `[opus]`
+**(a) What:** `modules/groups/src/{lib.rs,projection.rs}`, `modules/groups/src/purge_tests.rs`.
+
+**(b) Why now:** this closes the Invariant 6 head-of-line limit. It comes after 6a, which is
+in the same test file.
+
+**(c) How:**
+- **Schema:** add `skipped_at timestamptz` to `groups.purged_players` in the create-only DDL.
+  Replace `purged_players_pending_idx` with one partial index on
+  `(skipped_at NULLS FIRST, player_id) WHERE swept_at IS NULL`; this is one rail, so the old
+  index goes.
+  - Wipe is the migration. An existing database needs `DROP SCHEMA groups CASCADE` and a fresh
+    boot. Report that as an owner action; do not run it.
+- **Claim:** `ORDER BY skipped_at NULLS FIRST, player_id LIMIT GROUPS_PLAYERS_PER_FIRE`. Fresh
+  tombstones come first, then the oldest-Skipped. Then take P for the claimed set in **ascending
+  normalised-uuid order**, which keeps Invariant 2, before any G as today.
+- **Skipped:** when a player ends Skipped, set `skipped_at = now()` on its tombstone in the same
+  delivery transaction, outside the rolled-back `purge_group` savepoint. When a player is
+  purged, it is stamped as today.
+- **Tests:**
+  - A player Skipped in fire 1 (use the existing group-error injection the Skipped tests
+    already use, or report if there is none) is claimed after every fresh tombstone in fire 2.
+  - With 64 fresh tombstones plus 1 Skipped player, fire 2 claims the 64 fresh ones.
+  - **Mutations, each shown red:** the `skipped_at` stamp removed; the claim order reverted to
+    `player_id` only.
+- No other module changes. Comments: none new.
+
+**(d) Lane:** `core-implementer`, opus.
+
+Commit: `fix(groups): rotate skipped purge players behind fresh tombstones (purge-race-locks step 6b)`.
 
 ### Step 7 — cadence prose `[docs]`
 **(a) What:** every `player-purge` cadence statement that step 1 made false, plus the historical
