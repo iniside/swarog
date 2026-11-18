@@ -8,7 +8,8 @@ revised to the current agent workflow (`.agents/shared/planning-dispatch.md`, th
 `implementation-dispatch` and `research-plan-present` skills):
 - Each separate `[test-author]` step is folded into its code step. These are in-module tests, not
   verify gates, splitproof assertions or a new harness, so the implementer writes them.
-- The routine `proof-auditor` passes are dropped. No step touches a verify stage.
+- `proof-auditor` runs in batches, after steps 3, 5 and 6, instead of after every test step.
+  The owner ruled that the concurrency tests are the risk surface.
 - Step 1 is now `[inline]` because it changes one literal in one file.
 - False comments are fixed in the step that falsifies them. Only cadence prose outside the
   steps' files stays in the docs step.
@@ -474,8 +475,23 @@ Commit: `docs(account-deletion,scheduler,splitproof): describe the five-minute p
   - Step 1 is under the threshold and gets no review.
   - In step 7, only the `api/scheduler/events` contract doc comment counts as code. It gets one
     `core-reviewer` pass; the rest of step 7 is prose and is not reviewed.
-  - No `proof-auditor`: no step touches a verify stage, and the race tests are in-module tests
-    that `core-reviewer` checks for branch coverage.
+  - **`proof-auditor` (opus, ≥ the author's tier), in batches.** The owner ruled on 2026-11-18
+    that the concurrency tests are the risk surface. Each batch audits the tests in its steps'
+    commits, including any review-fix commits:
+    - after step 3: steps 2 and 3 (characters, friends);
+    - after step 5: steps 4 and 5 (notifications, inventory);
+    - after step 6: step 6 (groups).
+
+    It checks that:
+    - every race test parks on the key it claims (the key-matched `wait_advisory_parked`);
+    - every listed mutation was actually shown red;
+    - no test passes by timing;
+    - the order and deadlock tests would see 40P01.
+
+    A batch does not hold back the next implementation, because the files are disjoint. A local
+    finding gets a fix commit carrying `Kind: review-fix` in the audited module, made after any
+    in-flight step has landed. A structural finding pauses the plan until the owner rules. An
+    auditor is never resumed.
   - A structural finding pauses the plan until the owner rules.
 - **Cargo discipline:** follow the `safe-verification` skill. Run one cargo command at a time,
   each preceded by its own `tasklist` check.
