@@ -1,6 +1,6 @@
 # Admin second pass
 
-Last updated: 2026-11-17
+Last updated: 2026-11-18
 
 The admin redesign ships mockup elements the backend cannot back as deterministic fakes
 (`// FAKE: <why>`, plan R1) and not-yet-possible actions as `implemented: false`, rendered
@@ -199,6 +199,31 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
   no attributes, so no accept entry covers it. Found in step 13 part b. Closed by: a
   `DataTable` search-width field in `core/controlplane` that the template reads, set by
   accounts and mail.
+
+### Known limits (admin-control-plane-redesign step 28)
+
+- [ ] **Confirm `InvokeOutcome` stays declared undrawn** (owner, 2026-11-18)
+  ADMIN2-36. `InvokeOutcome` is `variants! { undrawn; .. }` (core/controlplane/src/lib.rs),
+  as the plan names "outcome" never converted. `routes.rs:1196-1211` turns each outcome into
+  a toast, reveal, redirect or conflict response, so the enum gate does not see a new
+  outcome variant. Closed by: an owner ruling; if drawn, a `seen::record` at that site and
+  golden cases for every outcome. Source: Step 28 round-2 proof audit.
+- [ ] **Declaration-form scan misses some enum spellings**
+  ADMIN2-37. `every_controlplane_enum_is_declared_drawn_or_undrawn`
+  (core/admin/src/golden_tests.rs) matches only lines that start with `pub enum`, so an
+  attribute on the same line escapes it, and its naive brace count lets an unbalanced `{` in
+  a string or doc comment inside a `variants!` block hide a bare enum after it. Nothing in
+  controlplane uses either form today. Closed by: reading the declared set from
+  `docs/reference/public-api-baseline/controlplane.txt` (`pub enum` lines against `impl
+  controlplane::Variants for` lines) instead of the source. Source: Step 28 round-2 review.
+- [ ] **Screen goldens assemble their views by hand**
+  ADMIN2-38. The dashboard, page and entity goldens build `DashboardView`, `PageView` and
+  `EntityView` in the test from production helpers (`routes::slot`, `action_item`,
+  `render::screen_page`, `layout_columns`), because the route builders are async handlers
+  needing a `Portal`, auth and a snapshot. Enum coverage is exact, but a route that puts a
+  slot in the wrong field is not caught. Closed by: pure view builders lifted out of the
+  `page`/`dashboard`/`entity` handlers and called from the goldens. Source: Step 28
+  round-1 and round-2 proof audits.
 
 ## Accepted contract gaps
 
