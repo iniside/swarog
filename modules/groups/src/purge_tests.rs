@@ -1471,6 +1471,122 @@ async fn a_skipped_player_rotates_behind_fresh_tombstones_and_is_purged_later() 
     .await;
 }
 
+#[tokio::test]
+async fn the_oldest_skipped_player_is_reclaimed_first() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    let older = fixed_uuid(0x16);
+    let newer = fixed_uuid(0x16);
+    let filler: Vec<String> = (0..GROUPS_PLAYERS_PER_FIRE - 1).map(|_| fixed_uuid(0x17)).collect();
+    let fresh: Vec<String> = (0..GROUPS_PLAYERS_PER_FIRE - 1).map(|_| fixed_uuid(0x18)).collect();
+    let mut ours = filler.clone();
+    ours.extend(fresh.iter().cloned());
+    ours.extend([older.clone(), newer.clone()]);
+    let foreign_unswept: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM groups.purged_players \
+          WHERE swept_at IS NULL AND player_id <> ALL($1::uuid[])",
+    )
+    .bind(&ours)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        foreign_unswept,
+        0,
+        "precondition: a foreign unswept tombstone competes for this test's claims"
+    );
+    let gate_app = racer_app("oldest-skipped-gate", &older);
+
+    with_purge_cleanup(&pool, vec![gate_app.clone()], ours, {
+        let (pool, svc) = (pool.clone(), svc.clone());
+        async move {
+            let older_group = svc
+                .create(Identity::player(&older), "OldestSkipped".into(), JOIN_OPEN.into())
+                .await
+                .unwrap()
+                .id;
+            let newer_group = svc
+                .create(Identity::player(&newer), "NewerSkipped".into(), JOIN_OPEN.into())
+                .await
+                .unwrap()
+                .id;
+            let older_key = taken_group_key(&pool, &svc, &older_group).await;
+            let newer_key = taken_group_key(&pool, &svc, &newer_group).await;
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            for key in [older_key, newer_key] {
+                sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                    .bind(key)
+                    .execute(&mut *gate)
+                    .await
+                    .unwrap();
+            }
+
+            plant(&svc, &pool, &older, "Oldest#0000").await;
+            sweep_under_lock_timeout(&pool, &svc).await;
+            let older_skip = skipped_at(&pool, &older).await;
+            assert!(
+                older_skip.is_some(),
+                "the gated older player must be skipped by the first fire"
+            );
+
+            plant(&svc, &pool, &newer, "Oldest#0001").await;
+            for (i, id) in filler.iter().enumerate() {
+                plant(&svc, &pool, id, &format!("Oldest#{:04}", i + 2)).await;
+            }
+            sweep_under_lock_timeout(&pool, &svc).await;
+            assert!(unstamped_tombstones(&pool, &filler).await.is_empty());
+            let newer_skip = skipped_at(&pool, &newer).await;
+            assert!(
+                newer_skip.is_some(),
+                "the gated newer player must be skipped by the second fire"
+            );
+            assert_eq!(
+                skipped_at(&pool, &older).await,
+                older_skip,
+                "the second fire is full of fresh tombstones and must not reclaim the older player"
+            );
+            let strictly_older: bool = sqlx::query_scalar(
+                "SELECT o.skipped_at < n.skipped_at \
+                   FROM groups.purged_players o, groups.purged_players n \
+                  WHERE o.player_id = $1::uuid AND n.player_id = $2::uuid",
+            )
+            .bind(&older)
+            .bind(&newer)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert!(
+                strictly_older,
+                "precondition: the older player's skipped_at must sort strictly first"
+            );
+
+            for (i, id) in fresh.iter().enumerate() {
+                plant(&svc, &pool, id, &format!("Oldest#{:04}", i + 65)).await;
+            }
+            sweep_under_lock_timeout(&pool, &svc).await;
+            assert!(
+                unstamped_tombstones(&pool, &fresh).await.is_empty(),
+                "the fire must claim every fresh tombstone first"
+            );
+            let reskip = skipped_at(&pool, &older).await;
+            assert!(
+                reskip.is_some() && reskip != older_skip,
+                "the last slot must reclaim the oldest skipped player"
+            );
+            assert_eq!(
+                skipped_at(&pool, &newer).await,
+                newer_skip,
+                "the newer skipped player must not take the last slot"
+            );
+            assert!(!swept(&pool, &newer).await && !swept(&pool, &older).await);
+            gate.rollback().await.unwrap();
+        }
+    })
+    .await;
+}
+
 async fn holds_advisory(pool: &PgPool, app: &str, key: i64) -> bool {
     let held: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
