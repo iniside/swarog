@@ -18,11 +18,7 @@ CONFIRM_OPS = {"goToDefinition", "hover", "findReferences", "incomingCalls", "go
 COVER_OPS = CONFIRM_OPS | {"workspaceSymbol"}
 RUST_EXT = (".rs",)
 WIDE_DIRS = {"", ".", "core", "modules", "api", "cmd", "tools", "demos"}
-NO_RUST_DIRS = {
-    "docs", "uilayout", "memory", ".agents", ".claude", ".github", ".grok", "clients", "experiments", "scripts",
-    "bin", "deploy", "run", "target", "nocommit", "mutants.out",
-}
-MIN_SCOPED_DEPTH = 2
+RUST_TYPES = {"rust", "rs"}
 LINE_SLACK = 2
 DENY_CAP = 2
 REPO_PREFIX = "g:/projects/swarog/"
@@ -48,13 +44,14 @@ VALUE_LONG = {
     "--pre", "--pre-glob", "--path-separator", "--context-separator", "--field-match-separator",
     "--ignore-file", "--include", "--exclude", "--exclude-dir", "--label", "--devices", "--directories",
 }
-FILTER_SHORT = {"g", "t"}
-FILTER_LONG = {"--glob", "--iglob", "--type", "--include"}
+FILTER_SHORT = {"g": "glob", "t": "type"}
+FILTER_LONG = {"--glob": "glob", "--iglob": "glob", "--type": "type", "--include": "glob"}
 
 
 def setup():
-    global json, os, posixpath, re, shlex, tempfile
+    global fnmatch, json, os, posixpath, re, shlex, tempfile
     global PATH_LINE, HEADER, LINE_ENTRY, CALLS_AT, CONFIRMED, GREP_ONLY, ANCHORS_HEAD, SECTION_HEAD, TAIL_HEAD
+    import fnmatch
     import json
     import os
     import posixpath
@@ -217,13 +214,13 @@ def grep_invocations(command, cwd):
 
 
 def parse_args(tool, args):
-    """Return (paths, filters) of a grep invocation."""
+    """Return (paths, [(kind, value)]) of a grep invocation."""
     positionals, filters, explicit_pattern = [], [], False
     after_dashdash, take = False, None
     for arg in args:
         if take is not None:
             if take:
-                filters.append(arg.strip("\"'"))
+                filters.append((take, arg.strip("\"'")))
             take = None
             continue
         if after_dashdash or not arg.startswith("-") or arg == "-":
@@ -237,20 +234,20 @@ def parse_args(tool, args):
             if name in ("--regexp", "--file"):
                 explicit_pattern = True
             if name in FILTER_LONG and value:
-                filters.append(value.strip("\"'"))
+                filters.append((FILTER_LONG[name], value.strip("\"'")))
             if name in VALUE_LONG and not value:
-                take = name in FILTER_LONG
+                take = FILTER_LONG.get(name, "")
             continue
         flags = arg[1:]
         for index, flag in enumerate(flags):
             if flag in ("e", "f"):
                 explicit_pattern = True
             if flag in VALUE_SHORT[tool]:
-                is_filter = tool == "rg" and flag in FILTER_SHORT
+                kind = FILTER_SHORT.get(flag, "") if tool == "rg" else ""
                 if index == len(flags) - 1:
-                    take = is_filter
-                elif is_filter:
-                    filters.append(flags[index + 1:].strip("\"'"))
+                    take = kind
+                elif kind:
+                    filters.append((kind, flags[index + 1:].strip("\"'")))
                 break
     paths = positionals if explicit_pattern else positionals[1:]
     return [p.strip("\"'") for p in paths], filters
@@ -261,35 +258,84 @@ def ext_of(text):
     return match.group(1).lower() if match else None
 
 
-def rust_filter(value):
-    value = value.strip("\"'").lower()
-    if re.search(r"(?<![a-z0-9])rs(?![a-z0-9])|rust", value):
-        return True
-    last = value.replace("\\", "/").rstrip("/").split("/")[-1]
-    return "*" in last and not re.search(r"\.[a-z0-9{\[]", last)
+def brace_expand(text):
+    match = re.search(r"\{([^{}]*)\}", text)
+    if not match:
+        return [text]
+    expanded = []
+    for option in match.group(1).split(","):
+        expanded.extend(brace_expand(text[:match.start()] + option + text[match.end():]))
+    return expanded
+
+
+def rust_glob(value):
+    for option in brace_expand(value.lower()):
+        last = option.replace("\\", "/").rstrip("/").split("/")[-1]
+        literal = re.match(r"[^*?\[]*", last).group(0)
+        if literal == last:
+            if last.endswith(".rs"):
+                return True
+            continue
+        probes = ("x.rs", literal + "x.rs", literal + ".rs", literal + "rs", literal + "s")
+        if any(fnmatch.fnmatchcase(probe, last) for probe in probes):
+            return True
+    return False
+
+
+def rust_filter(kind, value):
+    value = value.strip("\"'")
+    if kind == "type":
+        return value.lower() in RUST_TYPES
+    return rust_glob(value)
 
 
 def rust_search(filters):
-    positive = [f for f in filters if not f.strip("\"'").startswith("!")]
-    return not positive or any(rust_filter(f) for f in positive)
+    positive = [(k, v) for k, v in filters if not (k == "glob" and v.strip("\"'").startswith("!"))]
+    return not positive or any(rust_filter(k, v) for k, v in positive)
 
 
-def is_wide(paths, cwd):
-    for path in paths or ["."]:
+def git_pathspec(spec):
+    """Return (exclude, top, path) of a git pathspec."""
+    if not spec.startswith(":"):
+        return False, False, spec
+    if spec.startswith(":("):
+        magic, _, rest = spec[2:].partition(")")
+        words = {word.strip().split(":")[0].lower() for word in magic.split(",")}
+        return "exclude" in words, "top" in words, rest
+    signature = re.match(r":([/!^]*):?", spec)
+    return bool(set(signature.group(1)) & set("!^")), "/" in signature.group(1), spec[signature.end():]
+
+
+def literal_prefix(path):
+    parts = []
+    for part in path.split("/"):
+        if re.search(r"[*?\[]", part):
+            break
+        parts.append(part)
+    return "/".join(parts) or "/"
+
+
+def holds_repo(scoped):
+    return scoped in ("/", "") or re.match(r"^[a-z]:/?$", scoped) is not None or REPO_ROOT.startswith(scoped.rstrip("/") + "/")
+
+
+def is_wide(paths, cwd, git=False):
+    judged = []
+    for path in paths:
+        if git and path.startswith(":"):
+            exclude, top, rest = git_pathspec(path)
+            if not exclude:
+                judged.append((resolve(rest or ".", DEFAULT_CWD if top else cwd), False))
+        else:
+            judged.append((path, True))
+    for path, shortcut in judged or [(".", True)]:
         full = resolve(path, cwd)
         if os.path.isfile(full):
             continue
-        if ext_of(path) not in (None, "rs") and not os.path.isdir(full):
+        if shortcut and ext_of(path) not in (None, "rs") and not os.path.isdir(full):
             continue
-        scoped = norm(full)
-        if scoped.rstrip("/").split("/")[-1] in NO_RUST_DIRS:
-            continue
-        if scoped in WIDE_DIRS:
-            return True
-        depth = len([part for part in re.sub(r"^[a-z]:", "", scoped).split("/") if part])
-        if depth == 1 and os.path.isfile(os.path.join(full, "Cargo.toml")):
-            continue
-        if depth < MIN_SCOPED_DEPTH:
+        scoped = norm(literal_prefix(full))
+        if scoped in WIDE_DIRS or holds_repo(scoped):
             return True
     return False
 
@@ -324,7 +370,7 @@ def do_gate(payload, path):
     if tool == "Grep":
         target = tool_input.get("path")
         paths = [str(target)] if target else []
-        filters = [str(tool_input[k]) for k in ("glob", "type") if tool_input.get(k)]
+        filters = [(k, str(tool_input[k])) for k in ("glob", "type") if tool_input.get(k)]
         wide = rust_search(filters) and is_wide(paths, cwd)
     elif tool == "Bash":
         for kind, args, run_cwd, piped in grep_invocations(str(tool_input.get("command") or ""), cwd):
@@ -333,7 +379,7 @@ def do_gate(payload, path):
             paths, filters = parse_args(kind, args)
             if piped and not paths:
                 continue
-            if rust_search(filters) and is_wide(paths, run_cwd):
+            if rust_search(filters) and is_wide(paths, run_cwd, kind == "git"):
                 wide = True
     if not wide:
         return

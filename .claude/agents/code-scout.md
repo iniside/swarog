@@ -23,7 +23,11 @@ line you return, so return places, not code.
   `documentSymbol` reports the start of the item's range (doc comments,
   `#[derive]`), not the name; querying that line returns empty, and that is NOT
   absence. An empty result while rust-analyzer is still indexing is not absence
-  either. Label anything LSP could not give you as a grep lower bound.
+  either: a fresh session needs about 40-50 s to index, so when
+  `workspaceSymbol` is empty for a symbol you can see exists, run Bash
+  `sleep 20` and retry, up to 4 times, before any grep fallback, and say in
+  Method how many retries it took. Label anything LSP could not give you as a
+  grep lower bound.
 - Everything else (Markdown, `.tmpl`/`.html`, `.css`, `.js`, `.toml`, SQL
   strings, event topic names): the Grep tool scoped to a folder, list first
   (`files_with_matches` or `count`), then `content` with `head_limit` and at
@@ -31,7 +35,8 @@ line you return, so return places, not code.
   `run/` or `deploy/` (the `grep_sweep_guard` hook blocks recursive shell
   sweeps).
 - Bash only for read-only git (`git log`, `git show`, `git grep` on a narrow
-  path). Never cargo, never anything that writes files or changes git state.
+  path) and `sleep` while rust-analyzer indexes. Never cargo, never anything
+  that writes files or changes git state.
 - File views: at most about 100 lines around an anchor; never the same range
   twice; no sequential `sed -n` slicing.
 - Where things live: `.agents/shared/gamebackend.md` **Layout** and **Domain
@@ -44,7 +49,9 @@ line you return, so return places, not code.
   match `.rs` files over the repo root or a bare `core`, `modules`, `api`,
   `cmd`, `tools` or `demos` before any position-based LSP call is denied, and a
   report is sent back when a `confirmed` anchor has no LSP call covering it
-  (within 2 lines) or a `.rs` anchor carries no label. After 2 denials the
+  (within 2 lines) or a `.rs` anchor carries no label. Any position-based call
+  opens the grep gate, but only the calls listed in item 2 below count as
+  covering an anchor. After 2 denials the
   report passes with a `**Hook:** unverified anchors` note appended.
 
 ## What you return
