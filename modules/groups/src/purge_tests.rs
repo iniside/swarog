@@ -82,6 +82,7 @@ async fn member_left_count(pool: &PgPool, player_id: &str, reason: &str) -> i64 
 #[tokio::test]
 async fn plant_purged_player_is_idempotent_and_never_resets_swept_at() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let dir = Arc::new(FakeDirectory::new());
     let (_ctx, svc) = wired(&pool, dir).await;
     let pid = fixed_uuid(0x01);
@@ -361,6 +362,7 @@ async fn sweep_hits_the_per_fire_group_cap_leaving_swept_at_null_until_the_next_
 #[tokio::test]
 async fn create_is_blocked_by_tombstone_predicate_not_presence() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let dir = Arc::new(FakeDirectory::new());
     let (_ctx, svc) = wired(&pool, dir.clone()).await;
     let purged = fixed_uuid(0x08);
@@ -1114,7 +1116,11 @@ async fn invite_to_a_full_group_answers_no_such_player_for_a_purged_target() {
                 .invite(Identity::player(&admin), group_id.clone(), "FullLive#0003".into())
                 .await
                 .unwrap_err();
-            assert_eq!(full.status, Status::Conflict, "control: the group must be full");
+            assert_eq!(
+                (full.status, full.msg.as_str()),
+                (Status::Conflict, format!("group is full at {MAX_MEMBERS} members").as_str()),
+                "control: the group must be full"
+            );
 
             let e = svc
                 .invite(Identity::player(&admin), group_id.clone(), "FullTarget#0002".into())
@@ -1136,7 +1142,7 @@ async fn one_sweep_fire_stamps_at_most_64_players() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
-    let mut ids: Vec<String> = (0..GROUPS_PLAYERS_PER_FIRE + 1).map(|_| fixed_uuid(0x00)).collect();
+    let mut ids: Vec<String> = (0..65).map(|_| fixed_uuid(0x00)).collect();
     ids.sort();
     let foreign_below: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM groups.purged_players \
@@ -1161,7 +1167,7 @@ async fn one_sweep_fire_stamps_at_most_64_players() {
             tx.commit().await.unwrap();
             assert_eq!(
                 unstamped_tombstones(&pool, &ids).await,
-                vec![ids[GROUPS_PLAYERS_PER_FIRE as usize].clone()],
+                vec![ids[64].clone()],
                 "one fire must stamp exactly the 64 lowest of 65 tombstones"
             );
 
