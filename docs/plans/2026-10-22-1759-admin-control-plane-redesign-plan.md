@@ -35,14 +35,16 @@ An audit point the plan had not decided is an **Owner decision before dispatch**
 step.
 
 Execution order once the owner says go: 28 → 13c.1a → 13c.1r → 13c.1b → 13c.1g → 13c.1h →
-13c.2a1 → 13c.2a2 → 13c.2a3 → 13c.2b1 → 13c.2b2 → 13c.3a → 13c.3b → 13c.4 → 13d1 … 13d6 →
-14 … 24 (per port: Na0 when needed, Na1, Na2, Na3, Nt, Nb; port 24 as 24.a1 … 24.a4, 24.t,
-24.b) → 24a → 24b0 … 24b4 → 25a … 25h4 → 26a … 26d → 27. Open for the owner: X7, the order
-against `docs/plans/2026-11-17-1900-purge-race-locks-plan.md` (Steps 6–7 of it remain);
-Steps 28, 13c and 13d touch none of the purging modules, so only Step 14 waits on that
-answer. Its Step 7 also edits `tools/splitproof/src/main.rs`,
-`docs/reference/event-plane-ops.md` and `.claude/rules/domain-modules.md`, which Steps
-13c.3b, 13c.4, 26a and 26b edit: those never run at the same time as it.
+13c.2a1 → 13c.2a2a → 13c.2a2b → 13c.2a3 → 13c.2b1 → 13c.2b2 → 13c.3a → 13c.3b → 13c.4 →
+13d1 … 13d6 → 14 … 24 (per port: Na0 when needed, Na1, Na2, Na3, Nt, Nb; port 24 as
+24.a1 … 24.a3, 24.t, 24.a4, 24.b) → 24a → 24b0 … 24b4 → 25a … 25h4 → 26a … 26d → 27.
+Open for the owner: X7, the order against
+`docs/plans/2026-11-17-1900-purge-race-locks-plan.md` (Steps 6–7 of it remain); Steps 28,
+13c and 13d touch none of the purging modules, so only Step 14 waits on that answer. Its
+Step 7 also edits `tools/splitproof/src/main.rs`, `docs/reference/event-plane-ops.md` and
+`.claude/rules/domain-modules.md`, which Steps 13c.3b, 15t, 25h1–25h4 (`main.rs`), 13c.4
+and 26b (`event-plane-ops.md`) and 26a (`domain-modules.md`) edit: those never run at the
+same time as it.
 
 ## Context
 
@@ -458,7 +460,7 @@ Primitive = DataTable(DataTable) | PropertyList(PropertyList) | KpiTile(KpiTile)
 - **Red by design from Step 1 until Step 25h4 (splitproof):**
   - splitproof's admin groups;
   - every non-admin group driven through the admin wallet grant: PH3, PH6, PH11, NT4, NT4m
-    (`tools/splitproof/src/main.rs`) and PY7 (`tools/splitproof/src/party_checks.rs:291-293`);
+    (`tools/splitproof/src/main.rs`) and PY7 (`tools/splitproof/src/party_checks.rs:282-336`);
   - the M3/M3b monolith-parity admin rows;
   - from Step 13c.1a until Step 13c.1h: Step 28's variant-coverage test, on the new
     variants only; from Step 13c.1b until Step 13c.1h also the two `Primitive` case-count
@@ -2134,13 +2136,12 @@ The ports:
   - Groups tab (DERIV via `page_mine`); promote member to admin (REAL, Q1).
   - Writer: restores the groups probe deleted in Step 1.
   - **18a1** (Na1 with Na3): the Groups tab (order 60), Purges pending at 65.
-  - **18a2** (Na2): promote member to admin and the restored probe with its `cp.invoke`
+  - **18a2** (Na2): promote member to admin and the probe, restored from
+    `b8435c9a^:modules/groups/src/conformance.rs` (as mail's G12), with its `cp.invoke`
     CapCase.
-  - **Owner decision before dispatch (18a2):** the commit the probe is restored from.
-    Recommended: `b8435c9a^`, as mail's G12; the Step 1 raze commit `b8435c9a` changed
-    `modules/groups/src/conformance.rs`.
 - **Step 19 — storage.** Cloud saves tab (`writes: false`); tile cloud saves used (DERIV).
-  One a (Na1 with Na3): the tab (order 70), the tile (40), Purges pending at 66.
+  One a (Na1 with Na3): the tab (order 70), the row-menu group (80), the tile (40), Purges
+  pending at 66.
 - **Step 20 — notifications.** Inbox tab, Notify header action, Send notification row action. Writer.
   - **20a1** (Na1 with Na3): the Inbox tab (order 80), Purges pending at 67.
   - **20a2** (Na2): the Notify header action (20), the Send notification row action (row-menu
@@ -2170,17 +2171,17 @@ The ports:
   - The Revisions timeline is FAKE except for the current value and revision. Writes the
     restore-link `contract gap` accept entry of ADMIN2-39 (`docs/todo/admin-second-pass.md`).
   - Writer.
-  - **23a1** (Na1): the page reads, the FAKE Revisions timeline and the ADMIN2-39 accept
-    entry, the key selection through `PageDecl.params` (K20), and T6, moved from Step 13d:
-    an admindiff page map entry can run a JS prelude before mount, paired with a portal
-    route parameter, for a client-side default selection. Files add
-    `tools/admindiff/src/{pages.rs,mock.rs}` and `core/admin/src/routes.rs`.
-  - **23t** (`[opus]` test-author, after 23a1): the prelude option reaches the harness
+  - **23a0**: T6, moved from Step 13d: an admindiff page map entry can run a JS prelude
+    before mount, paired with a portal route parameter, for a client-side default
+    selection. Files: `tools/admindiff/src/{pages.rs,mock.rs}`, `core/admin/src/routes.rs`.
+  - **23t** (`[opus]` test-author, after 23a0): the prelude option reaches the harness
     (`tools/admindiff/src/mock_tests.rs`, `pages_tests.rs`); proof-auditor audits.
+  - **23a1** (Na1), after 23a0: the page reads, the FAKE Revisions timeline and the
+    ADMIN2-39 accept entry, and the key selection through `PageDecl.params` (K20).
   - **23a2** (Na2): the PanelForm edit with `expected_revision`, the probe.
-  - **Owner decision before dispatch (23a1):** research P says "per-key revisions NEW"; the
+  - **Owner decision before dispatch (23a0):** research P says "per-key revisions NEW"; the
     plan's decision stays `expected_revision` = the global revision. Whether research P
-    means new storage is open; if it does, that storage is its own step before 23a1.
+    means new storage is open; if it does, that storage is its own step before 23a0.
 - **Step 24 — audit.** Audit log page (`pages-platform.js:112-126`), and the dashboard
   "Recent operator activity" panel. Once every port has landed, admincheck also reports
   any peer admin-svc dials whose `<peer>-svc` hosts no provider (owner, 2026-11-10; held
@@ -2195,8 +2196,8 @@ The ports:
   - **24.a3**: the admincheck peer finding (`tools/admincheck/src/checks.rs`), after every
     port (14–23, 24.a1, 24.a2) has landed. **24.t** (`[opus]` test-author): its fixture in
     `tools/admincheck/src/checks_tests.rs`; proof-auditor audits.
-  - **24.a4**: the dead-code sweep to clippy-clean, and the X9 accept-line sweep. Last of
-    the port.
+  - **24.a4**: the dead-code sweep to clippy-clean, and the X9 accept-line sweep; after
+    24.t, before 24.b.
   - **24.b**: the view part.
   - **Owner decision before dispatch (24.a4):** the lane. The template's is `[opus]`
     core-implementer; the audit recommends `[mechanical]` core-implementer `sonnet` after a
@@ -2431,33 +2432,36 @@ variant-coverage test naming the new variants from 13c.1a until 13c.1h (with the
     a sequential run cannot; one chunk at 1.1× fails it); one failing chunk fails the whole
     column; the cap refused in `LocalFace` with `invalid` before the provider runs (O2), on
     the monolith face.
-  - **Owner decision before dispatch:** the `req.refs` rationale. The Refs seam says it
-    names the bound; today the row shares `CONTROL_PLANE_READ_RATIONALE` (`policy.rs:80`),
-    which cannot. Recommended (audit): its own rationale constant naming `MAX_PANEL_REFS`.
-- **Step 13c.2a2 — the label pass** (K19; Refs seam rules **Unit** for labels, **Labels**).
+  - Rationale: a new rationale constant naming `MAX_PANEL_REFS` replaces
+    `CONTROL_PLANE_READ_RATIONALE` on the `req.refs` row (`policy.rs:192`).
+- **Step 13c.2a2a — the label pass** (K19; Refs seam rules **Unit** for labels, **Labels**).
   `[opus]` core-implementer, after 13c.2a1 (reuses its chunking).
   - Scope: `Point::EntityLabel{kind}`; one label pass per slot response after its body and
     columns, reading refs from the body only; only the kind's owning manifest's contribution
     is called, under its decl's deadline, chunked as columns; a failed, timed-out, denied or
-    missing label draws the plain id with no banner.
+    missing label leaves the plain id with no banner.
   - Files: `core/controlplane/src/lib.rs` (`Point`), new `core/admin/src/engine/labels.rs`,
-    `engine/mod.rs`, `engine/panels.rs` (the non-slot `Point` arm at :106), `routes.rs`,
-    `render/cell.rs` (`ref_cell`, :88, takes the label), `render/panel.rs` (`Ctx`),
+    `engine/mod.rs`, `engine/panels.rs` (the non-slot `Point` arm at :106),
     `tools/admincheck/src/checks.rs` (the `point_kind` arm, :62-75),
     `core/admin/src/tests.rs`, the public-api baseline.
   - Tests: only the kind's owner answers a label (a second module's `EntityLabel` for the
     kind gets zero calls); more distinct refs than `MAX_PANEL_REFS` still fill every label;
     a row carrying two refs of one kind; a label that fails, times out, is denied or is
-    missing draws the id with no banner; labels read from the body only; the named
+    missing yields the id with no banner; labels read from the body only; the named
     placement test for `Point::EntityLabel` (Step 28 does not observe `Point`).
   - **Owner decision before dispatch:**
     - what a label answers. Recommended (audit): `Primitive::ColumnCells` with one text
       cell per ref, which adds no `Primitive` variant and so needs no Step 28 golden;
     - which `EntityRef` carriers get labels. Recommended (audit): `Row.entity`
-      (`lib.rs:987`), the timeline `target` (`lib.rs:1113`) and the K10 actor `Cell`
-      (`TimelineEntry.actor`, `lib.rs:1109`).
+      (`lib.rs:1005`), the timeline `target` (`lib.rs:1131`) and the K10 actor `Cell`
+      (`TimelineEntry.actor`, `lib.rs:1127`).
+- **Step 13c.2a2b — the labelled ref draw.** `[opus]` core-implementer, after 13c.2a2a.
+  - Scope: `ref_cell` draws the label the pass returned; without one it draws the plain id.
+  - Files: `core/admin/src/routes.rs`, `render/cell.rs` (`ref_cell`, :88, takes the label),
+    `render/panel.rs` (`Ctx`), `core/admin/src/tests.rs`.
+  - Tests: a labelled ref draws its label; a failed label draws the id.
 - **Step 13c.2a3 — kind ownership and the first producer** (the admincheck cross-manifest
-  kind rule; Refs seam **Producers**). `[opus]` core-implementer, after 13c.2a2.
+  kind rule; Refs seam **Producers**). `[opus]` core-implementer, after 13c.2a2b.
   - Scope: admincheck reports a kind declared by two manifests, beside `unique_ids`
     (`checks.rs:45`; the per-manifest entity-kind line is :59); accounts contributes
     `EntityLabel{player}`.
@@ -2480,7 +2484,7 @@ variant-coverage test naming the new variants from 13c.1a until 13c.1h (with the
 - **Step 13c.2b2 — page params and `FilterKind::Select`** (K20). `[opus]` core-implementer,
   after 13c.2b1.
   - Scope: `PageDecl.params` (`lib.rs:541`) names the page URL keys forwarded to
-    `PanelQuery.params`; the page route (`routes.rs:688`, today `params: query` forwards
+    `PanelQuery.params`; the page route (`routes.rs:685`, today `params: query` forwards
     every key) forwards only those, covered by the existing `cp.panel req.params` policy
     rows unless conformance proves otherwise. `FilterKind::Select` draws in the table
     toolbar (`render/table.rs` `filter_views`, :76; `templates/primitives.html.tmpl:198`).
@@ -2489,17 +2493,19 @@ variant-coverage test naming the new variants from 13c.1a until 13c.1h (with the
     public-api baseline.
   - Tests: only the `PageDecl.params` keys reach `PanelQuery.params`; an undeclared key is
     dropped.
-  - **Owner decision before dispatch:** the Select red window. `FilterKind::Select` is a
-    drawn variant, so Step 28's gate is red from this step until 13c.3a (added to the
-    intermediate gate's list). `FilterKind` is declared `undrawn` today (`lib.rs:1003-1006`)
-    and the gate fails on a converted undrawn enum, so drawing it by kind makes it a drawn
-    enum whose every variant needs a golden. Recommended (audit): accept the window, as for
-    13c.1a–13c.1h.
-- **Step 13c.3a — gate tests for 13c.2a3 and 13c.2b2.** `[opus]` test-author, after 13c.2b2:
+  - Declared red window (audit recommendation; owner confirms at plan approval):
+    `FilterKind::Select` is a drawn variant, so Step 28's gate is red from this step until
+    13c.3a (in the intermediate gate's list). `FilterKind` is declared `undrawn` today
+    (`lib.rs:1022-1024`) and the gate fails on a converted undrawn enum, so drawing it by
+    kind makes it a drawn enum whose every variant needs a golden.
+- **Step 13c.3a — gate tests for 13c.2a2b, 13c.2a3 and 13c.2b2.** `[opus]` test-author,
+  after 13c.2b2:
   - the `FilterKind::Select` golden (`golden_tests/cases.rs`, `build.rs`, testdata); ends
     the Select red window;
   - admincheck rejects two manifests declaring the same `EntityKindDecl` kind
-    (`tools/admincheck/src/checks_tests.rs`).
+    (`tools/admincheck/src/checks_tests.rs`);
+  - a golden for a labelled `ref_cell` draw (13c.2a2b): a label answered as `ColumnCells`
+    adds no variant, so Step 28's gate would not catch a lost draw.
 - **Step 13c.3b — the over-cap refusal in the split.** `[opus]` test-author, after 13c.2a1;
   file-disjoint from 13c.3a (`tools/splitproof/src/main.rs` only), but its fleet run never
   overlaps another test rollout.
@@ -2517,8 +2523,8 @@ variant-coverage test naming the new variants from 13c.1a until 13c.1h (with the
 (d) Review: `[review]` core-reviewer after each code and test step, one round each; a
 second round is allowed (`core/`, split wiring, goldens). proof-auditor on every step that
 changes the public-api baseline, goldens, conformance rows, admincheck or splitproof:
-13c.1a, 13c.1b, 13c.1g, 13c.1h, 13c.2a1, 13c.2a2, 13c.2a3, 13c.2b1, 13c.2b2, 13c.3a and
-13c.3b. 13c.4 is prose and gets none.
+13c.1a, 13c.1b, 13c.1g, 13c.1h, 13c.2a1, 13c.2a2a, 13c.2a2b, 13c.2a3, 13c.2b1, 13c.2b2,
+13c.3a and 13c.3b. 13c.4 is prose and gets none.
 
 ### Step 13d — admindiff sees tabs, modals, menus and ok states (owner, 2026-11-17)
 
@@ -2542,7 +2548,8 @@ the crawl's status-only row-menu check (T3 replaces it with a diffed menu body).
   mockup draws only down or stale (wallet) is compared in its ok shape; hard-coded demo
   markup the force cannot reach is a declared deviation, and golden cases pin each ok shape.
 - T5: `select > option` collapses like `tbody > tr`.
-- T6 (moved to Step 23a1, revision 2026-11-18 step size: config is its only user and it
+- T6 (moved to Step 23a0, revision 2026-11-18 step size, audit recommendation, owner to
+  confirm: config is its only user and it
   touches `core/admin`): a page map entry can run a JS prelude before mount, paired with a
   portal route parameter, for a client-side default selection (config).
 - G6 of the Step 14 checklist: the harness never runs `meta.after`, so a contributed
@@ -2567,8 +2574,7 @@ gate.
   `crawl.rs`, `mock.rs`, `accept.rs` (the modal accept sections).
   - **Owner decision before dispatch:** how the harness runs a mockup JS opener: the
     `innerHTML` setter throws a sentinel right after render, so `after` hooks and openers
-    never run (`mock.rs:22-23`); and the format of a modal's accept section. The audit gives
-    no recommendation.
+    never run (`mock.rs:22-23`). The audit gives no recommendation.
 - **Step 13d4 — forced ok state** (T4). `[opus]` core-implementer, after 13d3. Files:
   `pages.rs`, `mock.rs`.
 - **Step 13d5 — admindiff tests.** `[opus]` test-author, after 13d4, on the fake-server crawl
@@ -2618,16 +2624,16 @@ plan. `eventctl seed-mockup` stays as the Event plane's dev fixture.
 Steps (revision 2026-11-18, step size). 24b1–24b3 share `tools/demoseed/src/lib.rs`, so they
 run in order; each writes its tests in `tools/demoseed/src/tests.rs` and gets one review
 round.
-- **Owner decision before dispatch of 24b1:** the lane of 24b1–24b3; the old text and the
-  audit name none.
 - **Step 24b0 — seed inventory.** `[opus]` code-scout, read-only: a table, per module, of the
   data its public API can create and the `data difference` accept entries each would
   resolve.
   - **Owner decision before dispatch of 24b1:** the owner approves the 24b0 table; it
     decides what each module seeds.
-- **Step 24b1 — seed accounts, characters, inventory, wallet.**
-- **Step 24b2 — seed friends, groups, party, notifications.** After 24b1.
-- **Step 24b3 — seed storage, apikeys, config, mail.** After 24b2.
+- **Step 24b1 — seed accounts, characters, inventory, wallet.** `[opus]` core-implementer.
+- **Step 24b2 — seed friends, groups, party, notifications.** `[opus]` core-implementer,
+  after 24b1.
+- **Step 24b3 — seed storage, apikeys, config, mail.** `[opus]` core-implementer, after
+  24b2.
 - **Step 24b4 — resolve the accept entries.** `[inline]`, after 24b3: under
   `safe-verification`, a fleet `admindiff crawl` and `diff`, then delete the `data
   difference` entries in `tools/admindiff/accept/` the seed resolved.
@@ -2661,15 +2667,17 @@ for owner**. Each step runs its own crates' tests, one rollout at a time.
     release, the token-less click claim (`generation`, `request_id`), a `Retry` that fails
     again, a computed `click:` id posted as `_form`, the classify 400s, and
     `InvokeCall.item` / `expected_revision` / `request_id` taken from the row.
-  - **25d3:** settle, the 422/409 re-renders, the toasts and `HX-Retarget`, the pre-invoke
-    releases, and the modal and panel forms rendered by the portal posting their own inputs
-    back.
+  - **25d3:** settle, the 422/409 re-renders (including: a 422 re-render keeps every
+    ticked Multi box; a Multi default `["a,b"]` renders one box), the toasts and
+    `HX-Retarget`, the pre-invoke releases, and the modal and panel forms rendered by the
+    portal posting their own inputs back.
   - **25d4:** POST decoding (Money, Multi, blanks, the blank-rule order, the unknown or
     repeated key), `validate_item`, the token-less 400s, the `__` key and mint failures, every
     "renders an error panel / renders readonly and mints no row" item, the `Then::Link` /
     `Then::Invoke` modal GET, the search cache key, and the `NoOp` flash.
-- **25e — portal engine, auth and tools backfill.** `[opus]` core-implementer (the audit
-  finds `[sonnet]` enough for 25e2; owner question).
+- **25e — portal engine, auth and tools backfill.** `[opus]` core-implementer.
+  - **Owner decision before dispatch of 25e2:** lane `[sonnet]` (audit recommendation) or
+    `[opus]`.
   - **25e1:** the `core/admin/src/engine/*_tests.rs` list; the engine items of the "Tests"
     lists of Steps 9a, 9b and 10a (prepare, `range`, KPI tile stale/error, `when_empty`,
     `writes: false`, `ServiceStatus`, `Delta.tone`).
@@ -2690,15 +2698,16 @@ for owner**. Each step runs its own crates' tests, one rollout at a time.
   per step, in order (`tools/splitproof/src/main.rs`; PY7 in `party_checks.rs`).
   proof-auditor audits; split is the at-risk topology for every engine assertion. 25h4 ends
   the red of the intermediate gate.
-  - **Owner decision before dispatch of each 25h step:** one line per group it rewrites,
-    naming what the group asserts after the redesign (for example, ML4b drives
-    `requeue-all-parked`, which Step 11's G11 dropped). The audit gives no recommendation.
+  - Before dispatch of 25h1, the plan names, per rewritten group, what it asserts after the
+    redesign (research gap from the step-size audit; for example, ML4b drives
+    `requeue-all-parked`, which Step 11's G11 dropped); the owner approves those lines.
   - **25h1 — portal core:** AD0–AD6g, ADX1–ADX3b, AU3, `admin_csrf`, the kept login,
     lockout, rate limit, CSRF, reveal and audit-trail assertions, and the killed-provider and
     viewer-denied additions.
-  - **25h2 — monolith parity:** M3/M3b, WL6m, NT4m, ML3–ML4b, `mail_form`.
+  - **25h2 — monolith parity:** M3/M3b, WL6m, NT4m, ML3–ML4b, `mail_form`, `wallet_form`
+    (its first users, `main.rs:427`, :442, :514; 25h3's groups reuse it).
   - **25h3 — cross-process money and inbox:** WL3–WL6, NT2/NT2b/NT2c, NT4, PH3, PH6, PH11,
-    PY7 (`party_checks.rs`), `wallet_form`, `inbox_form`.
+    PY7 (`party_checks.rs`), `inbox_form`.
   - **25h4 — remaining groups and writers:** FR8, GR5, the config CAS edit, one real invoke
     per writing provider.
 
@@ -2741,8 +2750,8 @@ for owner**. Each step runs its own crates' tests, one rollout at a time.
     - shapes covered: data variant last, struct variant, `#[cfg]` tuple variant;
     - a foreign `other::Kind` path that shares a local enum's name is not resolved
       through the local index;
-  - admincheck (`tools/admincheck/src/checks.rs` has no tests): fixture manifests with
-    one finding each:
+  - admincheck (`tools/admincheck/src/checks_tests.rs` has no fixture for these branches):
+    fixture manifests with one finding each:
     - `prepare` on `Then::Invoke`;
     - `prepare` on `Then::Link`;
     - `prepare` on a `PanelForm` action;
