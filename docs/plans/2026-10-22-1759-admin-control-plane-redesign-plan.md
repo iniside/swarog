@@ -466,8 +466,8 @@ Primitive = DataTable(DataTable) | PropertyList(PropertyList) | KpiTile(KpiTile)
     variants only; from Step 13c.1b until Step 13c.1h also the two `Primitive` case-count
     checks `golden_cases_cover_every_macro_variant_and_state` and
     `variant_coverage_fails_on_a_new_enum_variant` (Step 13c.1b errata);
-  - from Step 13c.2a2a until Step 13c.3a: Step 28's variant-coverage test, on
-    `Point::EntityLabel` (Step 13c.2a2a errata);
+  - from Step 13c.2a2a until Step 13c.2a2b: Step 28's variant-coverage test, on
+    `Point::EntityLabel` (Step 13c.2a2a errata; owner, 2026-11-19);
   - from Step 13c.2b2 until Step 13c.3a: Step 28's variant-coverage test, on
     `FilterKind::Select` (and on any other `FilterKind` variant 13c.2b2's owner decision
     brings into the gate).
@@ -2452,28 +2452,55 @@ variant-coverage test naming the new variants from 13c.1a until 13c.1h (with the
     missing yields the id with no banner; labels read from the body only; the named
     placement test for `Point::EntityLabel` (Step 28 does observe `Point`, through
     `mode_of`; Step 13c.2a2a errata).
-  - **Owner decision (2026-11-19):**
+  - **Owner decision (2026-11-19; its carriers are superseded by the next one):**
     - a label answers `Primitive::ColumnCells` with one text cell per requested ref, which
       adds no `Primitive` variant; a ref missing from the answer draws its plain id;
     - the carriers that get labels are `Row.entity` (`lib.rs:1005`), the timeline
       `target` (`lib.rs:1131`) and the K10 actor `Cell` (`TimelineEntry.actor`,
       `lib.rs:1127`) where it names an entity.
-- **Step 13c.2a2b — the labelled ref draw.** `[opus]` core-implementer, after 13c.2a2a.
-  - Scope: `ref_cell` draws the label the pass returned; without one it draws the plain id.
-  - Files: `core/admin/src/routes.rs`, `render/cell.rs` (`ref_cell`, :88, takes the label),
-    `render/panel.rs` (`Ctx`), `core/admin/src/tests.rs`.
-  - Tests: a labelled ref draws its label; a failed label draws the id.
+  - **Owner decision (2026-11-19, after the 13c.2a2a reviews; supersedes the carriers
+    above):** a label is fetched for every place that draws an entity: every `Cell` whose
+    link is `Link::Entity` and whose displayed text is the raw id (tables, facts, the
+    timeline actor), the timeline `target`, and the WorkQueue `QueueItem.entity` (drawn by
+    `render/cell.rs` `ref_cell` via `render/queue.rs:81`). `Row.entity` is not a carrier: it
+    is only the row link and the list-column key. Why: the first consumer, the Step 15
+    wallet ledger, draws the player as a table cell with an entity link.
+- **Step 13c.2a2b — the labelled draw** (Refs seam **Unit** and **Labels** at the draw
+  sites; owner, 2026-11-19). `[opus]` core-implementer, after 13c.2a2a.
+  - Scope:
+    - `labels::refs` collects the carrier set of the 2026-11-19 decision above (this step
+      owns that change to 13c.2a2a's `labels::refs`);
+    - the slot route runs `labels::pass` once per slot response, after its body and
+      columns, and passes the `Labels` into rendering;
+    - the draw sites draw the label, or the plain id without one: `render/cell.rs`
+      (`one_cell`, :50, for an entity-linked cell; `ref_cell`, :88, for the queue),
+      `render/tiles.rs` (the timeline actor :147 and target :152) and `render/queue.rs`
+      (`QueueItem.entity`, :81);
+    - Step 28 placement: `Point::EntityLabel` and `Point::EntityListColumn` are recorded
+      with `render::seen::record` where production draws them (the labelled draw and the
+      list-column cell draw), not through `render::mode_of`; both leave the
+      `slot_every_point` golden case (`golden_tests/cases.rs:1001`). Ends the
+      `Point::EntityLabel` red window.
+  - Files: `core/admin/src/routes.rs`, `engine/labels.rs`,
+    `render/{cell.rs,tiles.rs,queue.rs,panel.rs}`, `core/admin/src/tests.rs`,
+    `core/admin/src/golden_tests/` (`cases.rs` and the new draw's golden).
+  - Tests: a labelled entity cell draws its label; a failed or missing label draws the id;
+    a cell whose text is not the raw id gets no label call; route level: on a page with two
+    slots where only one draws ref X, X's label is requested from that slot's body only; a
+    failed label leaves no banner or alert in the slot HTML; the golden of the labelled
+    draw.
 - **Step 13c.2a3 — kind ownership and the first producer** (the admincheck cross-manifest
   kind rule; Refs seam **Producers**). `[opus]` core-implementer, after 13c.2a2b.
   - Scope: admincheck reports a kind declared by two manifests, beside `unique_ids`
-    (`checks.rs:45`; the per-manifest entity-kind line is :59); accounts contributes
-    `EntityLabel{player}`.
+    (`checks.rs:45`; the per-manifest entity-kind line is :59), an `EntityLabel{kind}`
+    declared by a module that does not own the kind, and more than one `EntityLabel{kind}`
+    in the owner's manifest (owner, 2026-11-19); accounts contributes `EntityLabel{player}`.
   - Files: `tools/admincheck/src/checks.rs`,
     `modules/accounts/src/{admin.rs,store.rs,lib.rs}`, new
     `modules/accounts/src/admin_tests.rs` (this step creates it; Step 25f2 extends it).
   - Tests: accounts' `EntityLabel{player}` answers the handle for each requested id and
-    leaves out a missing player, so the portal draws its plain id. The admincheck fixture is
-    13c.3a's.
+    leaves out a missing player, so the portal draws its plain id. The admincheck fixtures
+    are 13c.3a's.
 - **Step 13c.2b1 — one search destination** (K17). `[opus]` core-implementer, after
   13c.2a3 (shares `lib.rs`, the baseline and accounts' `admin.rs`).
   - Scope: a `SearchHit` (`lib.rs:417`) has exactly one destination, an entity or a page
@@ -2501,14 +2528,14 @@ variant-coverage test naming the new variants from 13c.1a until 13c.1h (with the
     13c.3a (in the intermediate gate's list). `FilterKind` is declared `undrawn` today
     (`lib.rs:1022-1024`) and the gate fails on a converted undrawn enum, so drawing it by
     kind makes it a drawn enum whose every variant needs a golden.
-- **Step 13c.3a — gate tests for 13c.2a2b, 13c.2a3 and 13c.2b2.** `[opus]` test-author,
-  after 13c.2b2:
+- **Step 13c.3a — gate tests for 13c.2a3 and 13c.2b2.** `[opus]` test-author, after
+  13c.2b2:
   - the `FilterKind::Select` golden (`golden_tests/cases.rs`, `build.rs`, testdata); ends
     the Select red window;
-  - admincheck rejects two manifests declaring the same `EntityKindDecl` kind
-    (`tools/admincheck/src/checks_tests.rs`);
-  - a golden for a labelled `ref_cell` draw (13c.2a2b): a label answered as `ColumnCells`
-    adds no variant, so Step 28's gate would not catch a lost draw.
+  - admincheck fixtures (`tools/admincheck/src/checks_tests.rs`): two manifests declaring
+    the same `EntityKindDecl` kind; an `EntityLabel{kind}` from a module that does not own
+    the kind; two `EntityLabel{kind}` in the owner's manifest.
+  - The labelled-draw golden is 13c.2a2b's (owner, 2026-11-19).
 - **Step 13c.3b — the over-cap refusal in the split.** `[opus]` test-author, after 13c.2a1;
   file-disjoint from 13c.3a (`tools/splitproof/src/main.rs` only), but its fleet run never
   overlaps another test rollout.
@@ -3231,11 +3258,13 @@ no fix-on-fix: a finding that needs the mirror back is an owner question.
 - **Step 13c.2a2a (2026-11-19).**
   - Step 28 observes `Point`: `render::mode_of` records every point it converts, so
     `golden_renders_convert_every_drawn_enum_variant` fails on `Point::EntityLabel` until
-    13c.3a's labelled golden converts it (red by design, listed under the intermediate gate).
+    13c.2a2b records it at the labelled draw (owner, 2026-11-19; red by design, listed under
+    the intermediate gate).
     The Cross-module line's "`Point` and `Layout` are placement enums Step 28 does not
     observe" is wrong for both.
-  - No golden is added here: the one site that converts a `Point` for a golden today is the
-    `slot_every_point` case through `routes::slot`, and a label is never a slot.
+  - No golden is added here. 13c.2a2b adds the labelled-draw golden and records
+    `Point::EntityLabel` and `Point::EntityListColumn` where production draws them, not
+    through `mode_of`; both leave the `slot_every_point` case (owner, 2026-11-19).
   - The panel route refuses an `EntityLabel`'s own URL as not found, as it refuses a list
     column's, so a label draws only through the refs it names; `mode_of` names it `label`.
   - The chunked call of one contribution under its decl's one deadline is
