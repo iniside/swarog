@@ -1621,6 +1621,24 @@ async fn holds_advisory(pool: &PgPool, app: &str, key: i64) -> bool {
     held > 0
 }
 
+fn probe_holds_advisory(app: &str, key: i64) -> bool {
+    std::thread::spawn({
+        let app = app.to_owned();
+        move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let probe = PgPool::connect(&testdb::dsn()).await.unwrap();
+                    holds_advisory(&probe, &app, key).await
+                })
+        }
+    })
+    .join()
+    .unwrap()
+}
+
 #[tokio::test]
 async fn grant_releases_the_lock_before_it_answers_a_refusal() {
     let Some(pool) = test_pool().await else { return };
@@ -1636,24 +1654,16 @@ async fn grant_releases_the_lock_before_it_answers_a_refusal() {
     inner.plant_purged_player(&mut conn, &target, "Release#0001").await.unwrap();
     drop(conn);
 
-    let racer = inner_with(racer_pool(&app), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+    let racer_db = racer_pool(&app);
+    let racer = inner_with(racer_db.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+    let mut control = racer_db.begin().await.unwrap();
+    racer.store.lock_player_tx(&mut control, &target).await.unwrap();
+    assert!(probe_holds_advisory(&app, lock_key), "the probe must see the racer's held player lock");
+    control.rollback().await.unwrap();
+
     let granted = racer.grant(Identity::player(&target), "starter_sword".into(), 1).await;
 
-    let held = std::thread::spawn({
-        let app = app.clone();
-        move || {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap()
-                .block_on(async move {
-                    let probe = PgPool::connect(&testdb::dsn()).await.unwrap();
-                    holds_advisory(&probe, &app, lock_key).await
-                })
-        }
-    })
-    .join()
-    .unwrap();
+    let held = probe_holds_advisory(&app, lock_key);
     drop(racer);
     cleanup_purge_row(&pool, &target).await;
 
