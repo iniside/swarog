@@ -7,7 +7,6 @@ Start with the repository-level documents:
   authorities to load before each action.
 - [CLAUDE](../CLAUDE.md) — short preamble that imports `AGENTS.md`;
   Claude runtime mechanics live in `.agents/adapters/claude.md`.
-  Cursor ignores this file via `.cursorignore`.
 
 ## Current reference
 

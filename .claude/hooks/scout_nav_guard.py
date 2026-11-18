@@ -47,7 +47,7 @@ SLICE_LIMIT = 2
 NAV_REASON = (
     "{agent}: this Rust search spans the repo root or a bare core, modules, api, cmd, tools or demos. Ask LSP "
     "first: workspaceSymbol for the NAME position, then findReferences, goToImplementation or incomingCalls at it; "
-    "or dispatch code-scout with the one question (subagent_type \"code-scout\", model \"haiku\", effort \"medium\"; "
+    "or dispatch code-scout with the one question (subagent_type \"code-scout\", model \"haiku\", effort \"low\"; "
     "model \"sonnet\" for a multi-hop question), it returns only anchors. A grep in the file or crate folder you "
     "work in is allowed. A deleted symbol or a plain-text search: run it as a Bash rg or grep with the comment "
     "'# nav-ok'. .claude/agents/{agent}.md; .agents/shared/research-navigation.md Navigation."

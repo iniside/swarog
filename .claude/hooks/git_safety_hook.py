@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """PreToolUse(Bash|PowerShell) guard for `.agents/shared/core-rules.md`:
-Git Safety - MANDATORY and Commit Message Format - RULE.
+Git Safety and Commit Message Format.
 
 Denies destructive git verbs and a visible commit message without a
 `Co-Authored-By: Claude <Family> <Version> <noreply@anthropic.com>` trailer.
@@ -23,10 +23,10 @@ except Exception:
 
 SHELL_TOOLS = {"Bash", "PowerShell"}
 
-GIT_PREFIX = "core-rules.md Git Safety (MANDATORY): "
+GIT_PREFIX = "core-rules.md Git Safety: "
 
 WORKTREE_REASON = (
-    "core-rules.md Git Safety (MANDATORY): never use a git worktree — a second "
+    "core-rules.md Git Safety: never use a git worktree — a second "
     "tree means a second `target/` and a second build/test rollout against the "
     "one shared local Postgres (migrate advisory lock, concurrent DDL). Work "
     "directly in the primary tree on master."

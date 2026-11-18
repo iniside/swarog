@@ -1,5 +1,0 @@
-# CLAUDE.md is an anchor index into AGENTS.md + .agents/ with no rules of its
-# own, and Cursor already loads those. Claude Code does not read this ignore
-# file.
-CLAUDE.md
-**/CLAUDE.md

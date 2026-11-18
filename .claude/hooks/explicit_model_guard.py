@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """PreToolUse(Agent) guard: denies an Agent call with no explicit `model`
-(planning-dispatch.md Implementation Mode - MANDATORY). Any internal error
+(planning-dispatch.md Implementation Mode). Any internal error
 exits 0 with no output, so a hook bug never blocks every dispatch.
 """
 import json
@@ -8,13 +8,13 @@ import os
 import sys
 
 REASON = (
-    "planning-dispatch.md Implementation Mode (MANDATORY): every Agent call passes "
+    "planning-dispatch.md Implementation Mode: every Agent call passes "
     "an explicit `model` — there is no inherit path. Lanes per "
     ".agents/adapters/claude.md → Dispatch Mapping: [opus]/[independent] → "
     "core-implementer model:\"opus\"; [fable] → model:\"fable\"; [sonnet]/[mechanical] "
     "→ model:\"sonnet\"; [test-author] → test-author per the [test-author] rule in "
     ".agents/shared/planning-dispatch.md (top tier for gate tests and a novel "
-    "harness; model:\"sonnet\" for per-module provider tests and fixture tests); [docs] → docs-writer model:\"sonnet\"; review → "
+    "harness, sonnet for ordinary tests); [docs] → docs-writer model:\"sonnet\"; review → "
     "core-reviewer at model ≥ the author's tier; read-only research → "
     "model:\"sonnet\"; listing-only research → model:\"haiku\". Add the model field "
     "and retry."

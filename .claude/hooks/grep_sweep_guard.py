@@ -40,7 +40,7 @@ REDIRECT = (
     "Use LSP / rust-analyzer first, then the Grep tool (ripgrep — it honours "
     ".gitignore, so target/ and run/ are excluded); narrow with its `glob`/`type` "
     "params. A grep sweep is a labelled lower bound, never the answer "
-    "(docs/reference/research-mode.md). Genuinely need the raw shell sweep? "
+    "(.agents/shared/research-navigation.md Search budget). Genuinely need the raw shell sweep? "
     "Re-send with `force-grep` in the command."
 )
 

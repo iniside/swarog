@@ -7,7 +7,7 @@ import json
 import sys
 
 REASON = (
-    "core-rules.md Git Safety (MANDATORY): never use a git worktree — a second "
+    "core-rules.md Git Safety: never use a git worktree — a second "
     "tree means a second `target/` and a second build/test rollout against the "
     "one shared local Postgres (migrate advisory lock, concurrent DDL). Run the "
     "agent in the primary tree (omit worktree isolation) or work without "

@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 """PostToolUse(Bash|PowerShell): after a `git commit` lands, reminds to dispatch
-one `core-reviewer` pass (planning-dispatch.md Adversarial Diff Review -
-MANDATORY), naming `proof-auditor` only when the commit touches a verify stage
+one `core-reviewer` pass (planning-dispatch.md Adversarial Diff Review), naming `proof-auditor` only when the commit touches a verify stage
 or a golden file. Silent on prose-only commits, --amend, --dry-run and
 output without a `[branch sha]` line (failed or no-op commit), and on step-part
 commits (", part <k> (<plan> step <id>)"). The commit that completes a step
@@ -42,7 +41,7 @@ PROOF_PREFIXES = (
 )
 
 BASE_TEMPLATE = (
-    "ADVERSARIAL DIFF REVIEW (planning-dispatch.md - MANDATORY): {landed} just "
+    "ADVERSARIAL DIFF REVIEW (planning-dispatch.md Adversarial Diff Review): {landed} just "
     "landed. Dispatch ONE `core-reviewer` subagent (subagent_type: \"core-reviewer\") "
     "on {target} in a separate context, explicit model: >= the author's "
     "tier. It routes by files touched through docs/reference/core-failure-taxonomy.md "

@@ -552,7 +552,7 @@ class PostCommitFixture(unittest.TestCase):
     """Real git repo in a temp dir; the hook classifies the real `git show` output."""
 
     BASE = (
-        "ADVERSARIAL DIFF REVIEW (planning-dispatch.md - MANDATORY): a commit just "
+        "ADVERSARIAL DIFF REVIEW (planning-dispatch.md Adversarial Diff Review): a commit just "
         "landed. Dispatch ONE `core-reviewer` subagent (subagent_type: \"core-reviewer\") "
         "on it (`git show <sha>`) in a separate context, explicit model: >= the author's "
         "tier. It routes by files touched through docs/reference/core-failure-taxonomy.md "
@@ -625,7 +625,7 @@ class PostCommitStepParts(unittest.TestCase):
     BASE = PostCommitFixture.BASE
     PROOF = PostCommitFixture.PROOF
     CUMULATIVE = (
-        "ADVERSARIAL DIFF REVIEW (planning-dispatch.md - MANDATORY): a commit just "
+        "ADVERSARIAL DIFF REVIEW (planning-dispatch.md Adversarial Diff Review): a commit just "
         "landed. Dispatch ONE `core-reviewer` subagent (subagent_type: \"core-reviewer\") "
         "on the step's cumulative diff (`git diff %s^..%s`; not only the last commit) in a "
         "separate context, explicit model: >= the author's "
