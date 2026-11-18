@@ -306,8 +306,8 @@ impl Service {
 
     /// The single insert authority: it runs on a CALLER-OWNED connection and never begins,
     /// commits or rolls back, so the durable fan-in's handed delivery transaction commits
-    /// the row and its checkpoint together while operator mail runs the identical policy on
-    /// a pool connection.
+    /// the row and its checkpoint together while operator mail runs the identical policy in
+    /// its own transaction.
     ///
     /// A row that is APPENDED also nudges the player's live sockets ([`Service::nudge`]),
     /// placed inside the authority so no writer can add a row without one and no dedup
@@ -332,6 +332,10 @@ impl Service {
         n: &NewNotification<'_>,
     ) -> Result<bool, Error> {
         validate_new(n)?;
+        self.store
+            .lock_player_tx(conn, n.player_id)
+            .await
+            .map_err(internal)?;
         if self
             .store
             .is_player_purged_tx(conn, n.player_id)
@@ -363,7 +367,7 @@ impl Service {
         Ok(appended.is_some())
     }
 
-    /// Operator mail: the SAME [`Service::deliver_on`] policy, run on a pool connection, so
+    /// Operator mail: the SAME [`Service::deliver_on`] policy, run in its own transaction, so
     /// operator mail cannot acquire an input rule the durable fan-in does not have.
     ///
     /// The key's shape is enforced HERE, not at the form: this is the only operator entry to
@@ -380,27 +384,41 @@ impl Service {
         if !is_operator_dedup_key(n.source_event_id) {
             return Err(Error::invalid(MALFORMED_DEDUP_KEY));
         }
-        let mut conn = self.store.pool.acquire().await.map_err(internal)?;
-        if self.deliver_on(&mut conn, n).await? {
-            return Ok(Sent::Appended);
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        let sent: Result<Sent, Error> = async {
+            if self.deliver_on(&mut tx, n).await? {
+                return Ok(Sent::Appended);
+            }
+            // Two cases reach here: the row under this key carries a DIFFERENT message (an
+            // edited form resubmitted under its old key), or it vanished between the
+            // conflicting insert and this read. Neither may read as sent. Once a delete or a
+            // prune has COMMITTED the key holds nothing, so a resubmit re-inserts and never
+            // gets here.
+            let same = self
+                .store
+                .matches_tx(
+                    &mut tx,
+                    n.player_id,
+                    n.kind,
+                    n.title,
+                    n.body,
+                    n.source_event_id,
+                )
+                .await
+                .map_err(internal)?;
+            Ok(if same { Sent::Duplicate } else { Sent::KeyReused })
         }
-        // Two cases reach here: the row under this key carries a DIFFERENT message (an
-        // edited form resubmitted under its old key), or it vanished between the conflicting
-        // insert and this read. Neither may read as sent. Once a delete or a prune has
-        // COMMITTED the key holds nothing, so a resubmit re-inserts and never gets here.
-        let same = self
-            .store
-            .matches_tx(
-                &mut conn,
-                n.player_id,
-                n.kind,
-                n.title,
-                n.body,
-                n.source_event_id,
-            )
-            .await
-            .map_err(internal)?;
-        Ok(if same { Sent::Duplicate } else { Sent::KeyReused })
+        .await;
+        match sent {
+            Ok(sent) => {
+                tx.commit().await.map_err(internal)?;
+                Ok(sent)
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                Err(e)
+            }
+        }
     }
 }
 

@@ -217,7 +217,8 @@ impl Module for NotificationsModule {
         ctx.bus()
             .on_tx_raw(projection::PRUNE_SUB, schedulerevents::FIRED.topic(), prune);
 
-        let purge_sweep: Arc<dyn bus::TxHandler> = Arc::new(projection::PurgeSweepHandler);
+        let purge_sweep: Arc<dyn bus::TxHandler> =
+            Arc::new(projection::PurgeSweepHandler { svc: svc.clone() });
         ctx.bus().on_tx_raw(
             projection::PURGE_SWEEP_SUB,
             schedulerevents::FIRED.topic(),

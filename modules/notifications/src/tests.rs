@@ -1631,6 +1631,240 @@ fn purge_payload(name: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({ "name": name })).unwrap()
 }
 
+/// A red run must not leave unswept tombstones, and a `Drop` guard cannot `await`. On a failure
+/// or a hang the backends of `apps` are terminated first: a racer parked server-side keeps its
+/// locks after its future is gone, and the cleanup DELETEs would wait on them.
+async fn with_purge_cleanup<Fut>(
+    pool: &PgPool,
+    apps: Vec<String>,
+    players: Vec<String>,
+    tombstones: Vec<String>,
+    body: Fut,
+)
+where
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let mut task = tokio::spawn(body);
+    let outcome = tokio::time::timeout(std::time::Duration::from_secs(60), &mut task).await;
+    if outcome.is_err() {
+        task.abort();
+        let _ = (&mut task).await;
+    }
+    if !matches!(outcome, Ok(Ok(()))) {
+        for app in &apps {
+            sqlx::query(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1",
+            )
+            .bind(app)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+    let refs: Vec<&str> = players.iter().map(String::as_str).collect();
+    cleanup(pool, &refs).await;
+    for pid in &tombstones {
+        cleanup_purge_row(pool, pid).await;
+    }
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        Ok(Err(e)) => panic!("notifications purge test task ended without completing: {e}"),
+        Err(_) => panic!("notifications purge test body did not finish within 60s"),
+    }
+}
+
+/// A fixed player id that sorts below every random tombstone: one fire claims only the
+/// `NOTIFICATIONS_PLAYERS_PER_FIRE` lowest unswept ids, so a sweep test's own player must be
+/// among them. Each sweep test owns a distinct `n` range.
+fn fixed_player(n: u64) -> String {
+    format!("00000000-0000-0000-0000-{n:012x}")
+}
+
+/// Drops whatever a crashed earlier run left under a fixed id, so the test starts with an
+/// empty inbox and an absent tombstone.
+async fn clear_fixed_player(pool: &PgPool, player_id: &str) {
+    cleanup(pool, &[player_id]).await;
+    cleanup_purge_row(pool, player_id).await;
+}
+
+/// Precondition of a sweep test: one fire claims only the `NOTIFICATIONS_PLAYERS_PER_FIRE`
+/// lowest unswept tombstones, so leftovers sorting below `player_id` would starve it and the
+/// test would fail as a purge that never happened.
+async fn assert_claimed_by_the_next_fire(pool: &PgPool, player_id: &str) {
+    let below: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM notifications.purged_players \
+          WHERE swept_at IS NULL AND player_id < $1::uuid",
+    )
+    .bind(player_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(
+        below < crate::projection::NOTIFICATIONS_PLAYERS_PER_FIRE,
+        "precondition: {below} unswept tombstones sort below {player_id}, so the next fire \
+         cannot claim it"
+    );
+}
+
+async fn unstamped_tombstones(pool: &PgPool, ids: &[String]) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT player_id::text FROM notifications.purged_players \
+          WHERE player_id = ANY($1::uuid[]) AND swept_at IS NULL ORDER BY player_id",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+// Concurrency is staged, never slept: a racer runs on its OWN pool whose connections carry a
+// unique `application_name`, so a test waits on `pg_locks` until the racer is parked on the
+// lock the test holds, then releases it.
+
+fn racer_pool(app: &str) -> PgPool {
+    let options = testdb::dsn()
+        .parse::<sqlx::postgres::PgConnectOptions>()
+        .expect("DATABASE_URL parses")
+        .application_name(app);
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(60))
+        .connect_lazy_with(options)
+}
+
+/// A unique `application_name` for one racer of one test run.
+async fn racer_app(pool: &PgPool, what: &str) -> String {
+    format!("notifications-{what}-{}", unique_player(pool).await)
+}
+
+/// Awaits a spawned racer with a hang guard, so a deadlocked race fails with a name instead
+/// of stalling the run.
+async fn finish<T>(what: &str, handle: tokio::task::JoinHandle<T>) -> T {
+    match tokio::time::timeout(std::time::Duration::from_secs(30), handle).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(e)) => panic!("{what} task did not complete: {e}"),
+        Err(_) => panic!("{what} did not finish within 30s"),
+    }
+}
+
+/// Polls observed database state until a backend of `app` waits on the advisory lock `key`
+/// (`true`), or `racer` finished without ever parking (`false`). The second answer is how an
+/// unserialized racer shows itself; a racer parked on any OTHER lock reaches the deadline,
+/// which is a hang guard, not a timing bound.
+async fn wait_advisory_parked<T>(
+    pool: &PgPool,
+    app: &str,
+    key: i64,
+    racer: &tokio::task::JoinHandle<T>,
+) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let parked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+              WHERE a.application_name = $1 AND NOT l.granted AND l.locktype = 'advisory' \
+                AND l.objsubid = 1 AND ((l.classid::bigint << 32) | l.objid::bigint) = $2",
+        )
+        .bind(app)
+        .bind(key)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if parked > 0 {
+            return true;
+        }
+        if racer.is_finished() {
+            return false;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "racer {app} neither parked on the advisory lock {key} nor finished"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// As [`wait_advisory_parked`], for a racer waiting on the transaction `xid` itself.
+async fn wait_xact_parked<T>(
+    pool: &PgPool,
+    app: &str,
+    xid: &str,
+    racer: &tokio::task::JoinHandle<T>,
+) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let parked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+              WHERE a.application_name = $1 AND NOT l.granted AND l.locktype = 'transactionid' \
+                AND l.transactionid::text = $2",
+        )
+        .bind(app)
+        .bind(xid)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if parked > 0 {
+            return true;
+        }
+        if racer.is_finished() {
+            return false;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "racer {app} neither parked on the transaction {xid} nor finished"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// Holds an uncommitted inbox row under `key` on `gate` and returns the gate's transaction id:
+/// a writer inserting under the same key waits on that transaction at its `ON CONFLICT`, past
+/// its lock and its tombstone guard.
+async fn gate_dedup_key(gate: &mut sqlx::PgConnection, player_id: &str, key: &str) -> String {
+    sqlx::query(
+        "INSERT INTO notifications.messages (id, player_id, kind, title, body, source_event_id) \
+         VALUES (gen_random_uuid(), $1::uuid, 'test.gate', 'gate', 'gate', $2)",
+    )
+    .bind(player_id)
+    .bind(key)
+    .execute(&mut *gate)
+    .await
+    .unwrap();
+    sqlx::query_scalar("SELECT (pg_current_xact_id()::text::bigint % 4294967296)::text")
+        .fetch_one(&mut *gate)
+        .await
+        .unwrap()
+}
+
+/// The advisory key `Store::lock_player_tx` actually takes for `spelling`, read back from
+/// `pg_locks` on the locking connection (a bigint key is split into `classid` high and `objid`
+/// low halves, `objsubid = 1`).
+async fn taken_player_key(pool: &PgPool, svc: &Service, spelling: &str) -> i64 {
+    let mut tx = pool.begin().await.unwrap();
+    svc.store.lock_player_tx(&mut tx, spelling).await.unwrap();
+    let keys: Vec<i64> = sqlx::query_scalar(
+        "SELECT (classid::bigint << 32) | objid::bigint FROM pg_locks \
+          WHERE locktype = 'advisory' AND objsubid = 1 AND pid = pg_backend_pid()",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(keys.len(), 1, "lock_player_tx must hold exactly one advisory lock, got {keys:?}");
+    keys[0]
+}
+
+fn credit_of(player_id: &str) -> walletevents::Changed {
+    walletevents::Changed {
+        player_id: player_id.to_string(),
+        currency: "gold".into(),
+        delta: 10,
+        balance_after: 10,
+        reason: "test".into(),
+        ledger_id: "ledger-race".into(),
+    }
+}
+
 /// The tombstone insert is idempotent, and a redelivery after the sweep stamped
 /// `swept_at` must NOT reset it.
 #[tokio::test]
@@ -1670,50 +1904,57 @@ async fn sweep_deletes_target_survivor_untouched_and_ignores_foreign_schedule_na
     let Some(pool) = test_pool().await else { return };
     let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool).await;
-    let target = unique_player(&pool).await;
+    let target = fixed_player(0x100);
+    clear_fixed_player(&pool, &target).await;
     let survivor = unique_player(&pool).await;
 
-    seed_row(&svc, &pool, &target, "Target row").await;
-    seed_row(&svc, &pool, &survivor, "Survivor row").await;
+    let both = vec![target.clone(), survivor.clone()];
+    with_purge_cleanup(&pool, vec![], both, vec![target.clone()], {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        async move {
+            seed_row(&svc, &pool, &target, "Target row").await;
+            seed_row(&svc, &pool, &survivor, "Survivor row").await;
 
-    let mut conn = pool.acquire().await.unwrap();
-    svc.store.plant_purged_player_tx(&mut conn, &target, "Target#0001").await.unwrap();
-    drop(conn);
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &target, "Target#0001").await.unwrap();
+            drop(conn);
+            assert_claimed_by_the_next_fire(&pool, &target).await;
 
-    let handler = crate::projection::PurgeSweepHandler;
+            let handler = crate::projection::PurgeSweepHandler { svc: svc.clone() };
 
-    // Negative: a foreign schedule name sweeps nothing.
-    let mut tx = pool.begin().await.unwrap();
-    let delivery = bus::Delivery { event_id: "notifications:test", tx: AnyTx::new(&mut *tx) };
-    handler.call(delivery, purge_payload("some-other-job")).await.unwrap();
-    tx.commit().await.unwrap();
-    assert_eq!(message_count(&pool, &target).await, 1, "a foreign schedule name must not sweep");
-    assert_eq!(message_count(&pool, &survivor).await, 1);
+            // Negative: a foreign schedule name sweeps nothing.
+            let mut tx = pool.begin().await.unwrap();
+            let delivery = bus::Delivery { event_id: "notifications:test", tx: AnyTx::new(&mut *tx) };
+            handler.call(delivery, purge_payload("some-other-job")).await.unwrap();
+            tx.commit().await.unwrap();
+            assert_eq!(message_count(&pool, &target).await, 1, "a foreign schedule name must not sweep");
+            assert_eq!(message_count(&pool, &survivor).await, 1);
 
-    // Positive control, same row: the real name drains it, survivor untouched.
-    let mut tx2 = pool.begin().await.unwrap();
-    let delivery2 = bus::Delivery { event_id: "notifications:test", tx: AnyTx::new(&mut *tx2) };
-    handler
-        .call(delivery2, purge_payload(crate::projection::PURGE_SCHEDULE_NAME))
-        .await
-        .unwrap();
-    tx2.commit().await.unwrap();
-    assert_eq!(message_count(&pool, &target).await, 0, "the target's inbox must be cleared");
-    assert_eq!(message_count(&pool, &survivor).await, 1, "the survivor's inbox must be untouched");
-    assert!(purge_swept_at(&pool, &target).await.flatten().is_some());
+            // Positive control, same row: the real name drains it, survivor untouched.
+            let mut tx2 = pool.begin().await.unwrap();
+            let delivery2 = bus::Delivery { event_id: "notifications:test", tx: AnyTx::new(&mut *tx2) };
+            handler
+                .call(delivery2, purge_payload(crate::projection::PURGE_SCHEDULE_NAME))
+                .await
+                .unwrap();
+            tx2.commit().await.unwrap();
+            assert_eq!(message_count(&pool, &target).await, 0, "the target's inbox must be cleared");
+            assert_eq!(message_count(&pool, &survivor).await, 1, "the survivor's inbox must be untouched");
+            assert!(purge_swept_at(&pool, &target).await.flatten().is_some());
 
-    // Redelivery: swept_at excludes the target now — a no-op.
-    let mut tx3 = pool.begin().await.unwrap();
-    let delivery3 = bus::Delivery { event_id: "notifications:test", tx: AnyTx::new(&mut *tx3) };
-    handler
-        .call(delivery3, purge_payload(crate::projection::PURGE_SCHEDULE_NAME))
-        .await
-        .unwrap();
-    tx3.commit().await.unwrap();
-    assert_eq!(message_count(&pool, &target).await, 0);
-
-    cleanup(&pool, &[&target, &survivor]).await;
-    cleanup_purge_row(&pool, &target).await;
+            // Redelivery: swept_at excludes the target now — a no-op.
+            let mut tx3 = pool.begin().await.unwrap();
+            let delivery3 = bus::Delivery { event_id: "notifications:test", tx: AnyTx::new(&mut *tx3) };
+            handler
+                .call(delivery3, purge_payload(crate::projection::PURGE_SCHEDULE_NAME))
+                .await
+                .unwrap();
+            tx3.commit().await.unwrap();
+            assert_eq!(message_count(&pool, &target).await, 0);
+        }
+    })
+    .await;
 }
 
 /// THE PREVIOUSLY-RISKY SHAPE: `deliver_or_skip` must answer `Ok(())` for a
@@ -1770,4 +2011,417 @@ async fn deliver_or_skip_answers_ok_for_a_purged_recipient_without_pausing_the_s
 
     cleanup(&pool, &[&purged, &other]).await;
     cleanup_purge_row(&pool, &purged).await;
+}
+
+// ============================================================================
+// Inbox writes and the purge sweep serialize on one per-recipient advisory lock: `deliver_on`
+// takes it before its tombstone guard, the sweep takes it before each player's DELETE.
+// ============================================================================
+
+/// Runs one inbox write for `player_id` under the dedup `key` on a connection of `app`: the
+/// durable fan-in's handler on a delivery transaction it commits, or operator mail. `Ok(())` is
+/// what the writer answered; operator mail's answer other than `Sent::Appended` is an `Err`.
+async fn race_write(
+    svc: Arc<Service>,
+    push: Arc<push::Push>,
+    operator: bool,
+    app: String,
+    player_id: String,
+    key: String,
+) -> Result<(), String> {
+    if operator {
+        let racer = Service::new(racer_pool(&app), push);
+        let sent = racer
+            .send_operator_mail(&NewNotification {
+                player_id: &player_id,
+                kind: "operator.mail",
+                title: "Race",
+                body: "race",
+                source_event_id: &key,
+            })
+            .await;
+        return match sent {
+            Ok(Sent::Appended) => Ok(()),
+            Ok(_) => Err("operator mail did not append".to_string()),
+            Err(e) => Err(format!("{:?}: {}", e.status, e.msg)),
+        };
+    }
+    let racer = racer_pool(&app);
+    let mut tx = racer.begin().await.map_err(|e| e.to_string())?;
+    let delivery = bus::Delivery { event_id: &key, tx: AnyTx::new(&mut *tx) };
+    let out = crate::projection::on_wallet_changed(svc, delivery, credit_of(&player_id)).await;
+    tx.commit().await.map_err(|e| e.to_string())?;
+    out.map_err(|e| e.to_string())
+}
+
+async fn race_key(pool: &PgPool, operator: bool) -> String {
+    if operator {
+        operator_key(pool).await
+    } else {
+        format!("notifications:race-{}", unique_player(pool).await)
+    }
+}
+
+/// The key is read back from the lock `lock_player_tx` really takes: the same for every
+/// spelling `$1::uuid` treats as one player, different for a different uuid, and taken without
+/// error for a spelling that is no uuid at all.
+#[tokio::test(flavor = "multi_thread")]
+async fn player_lock_key_is_one_per_uuid_across_spellings() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool).await;
+    let canon = "a2b7e8c1-0000-4000-8000-0000000000f1";
+    let hex = canon.replace('-', "");
+
+    let key = taken_player_key(&pool, &svc, canon).await;
+    assert_eq!(key, taken_player_key(&pool, &svc, &canon.to_uppercase()).await, "case must not change the key");
+    assert_eq!(
+        key,
+        taken_player_key(&pool, &svc, &format!("{{{canon}}}")).await,
+        "braces must not change the key"
+    );
+    assert_eq!(key, taken_player_key(&pool, &svc, &hex).await, "hyphens must not change the key");
+    assert_ne!(
+        key,
+        taken_player_key(&pool, &svc, "a2b7e8c1-0000-4000-8000-0000000000f2").await,
+        "a genuinely different uuid must take a different key"
+    );
+    taken_player_key(&pool, &svc, "not-a-uuid").await;
+}
+
+/// The lock runs before the tombstone guard, so it must not turn a malformed id into a
+/// database error: operator mail still answers the data-quality verdict, and writes nothing.
+#[tokio::test]
+async fn operator_mail_to_a_malformed_player_id_is_invalid() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool).await;
+    let key = operator_key(&pool).await;
+    let e = svc
+        .send_operator_mail(&NewNotification {
+            player_id: "not-a-uuid",
+            kind: "operator.mail",
+            title: "t",
+            body: "b",
+            source_event_id: &key,
+        })
+        .await
+        .err()
+        .expect("a malformed player id must be refused");
+    assert_eq!((e.status, e.msg.as_str()), (Status::Invalid, crate::service::MALFORMED_PLAYER_ID));
+    let (n,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM notifications.messages WHERE source_event_id = $1")
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(n, 0);
+}
+
+/// Race 1, writer first — the once-wrong branch. A write has passed its lock and its tombstone
+/// guard and is held at its INSERT, behind a gate transaction's uncommitted row under the same
+/// dedup key, when the recipient's tombstone commits and a sweep fires. The sweep's DELETE
+/// cannot see the uncommitted row, so without the lock it stamped `swept_at` around it and the
+/// row outlived the erasure. Now the sweep parks on the recipient's key until the write
+/// commits, then deletes the row. Operator mail held the lock only for one autocommit
+/// statement before it ran in a transaction, so its case fails the same way without that move.
+async fn sweep_waits_for_an_in_flight_write_case(operator: bool, base: u64) {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (ctx, svc) = wired(&pool).await;
+    let target = fixed_player(base);
+    clear_fixed_player(&pool, &target).await;
+    let lock_key = taken_player_key(&pool, &svc, &target).await;
+    let key = race_key(&pool, operator).await;
+    let gate_app = racer_app(&pool, "race1-gate").await;
+    let writer_app = racer_app(&pool, "race1-writer").await;
+    let sweep_app = racer_app(&pool, "race1-sweep").await;
+    let push = ctx.push().clone();
+
+    let apps = vec![gate_app.clone(), writer_app.clone(), sweep_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![target.clone()], vec![target.clone()], {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        async move {
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            let gate_xid = gate_dedup_key(&mut gate, &target, &key).await;
+
+            let writer = tokio::spawn(race_write(
+                svc.clone(),
+                push,
+                operator,
+                writer_app.clone(),
+                target.clone(),
+                key.clone(),
+            ));
+            assert!(
+                wait_xact_parked(&pool, &writer_app, &gate_xid, &writer).await,
+                "the write must be held at its INSERT, past its lock and its tombstone guard"
+            );
+
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &target, "Race#0001").await.unwrap();
+            drop(conn);
+            assert_claimed_by_the_next_fire(&pool, &target).await;
+
+            let sweep = tokio::spawn({
+                let handler = crate::projection::PurgeSweepHandler { svc: svc.clone() };
+                let racer = racer_pool(&sweep_app);
+                async move {
+                    let mut tx = racer.begin().await.unwrap();
+                    let delivery =
+                        bus::Delivery { event_id: "notifications:race1", tx: AnyTx::new(&mut *tx) };
+                    handler
+                        .call(delivery, purge_payload(crate::projection::PURGE_SCHEDULE_NAME))
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                }
+            });
+            let parked = wait_advisory_parked(&pool, &sweep_app, lock_key, &sweep).await;
+
+            gate.rollback().await.unwrap();
+            finish("race-1 write", writer)
+                .await
+                .expect("the write passed its guard before the tombstone");
+            finish("race-1 sweep", sweep).await;
+
+            assert_eq!(message_count(&pool, &target).await, 0, "the in-flight write's row survived the erasure");
+            assert!(purge_swept_at(&pool, &target).await.flatten().is_some(), "the fire must stamp swept_at");
+            assert!(parked, "the sweep must have parked on the recipient's advisory lock");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sweep_waits_for_an_in_flight_durable_delivery() {
+    sweep_waits_for_an_in_flight_write_case(false, 0x200).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sweep_waits_for_an_in_flight_operator_mail() {
+    sweep_waits_for_an_in_flight_write_case(true, 0x210).await;
+}
+
+/// Race 2, sweep first. An open sweep transaction has locked and swept the recipient; a write
+/// parks on that player's key, then, once the sweep commits, sees the tombstone and writes no
+/// row: the durable handler answers `Ok(())`, operator mail `PLAYER_DELETED`. The tombstone is
+/// already committed, so only the "write parks" assertion needs the lock.
+async fn write_parks_behind_an_open_sweep_case(operator: bool, base: u64) {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (ctx, svc) = wired(&pool).await;
+    let target = fixed_player(base);
+    clear_fixed_player(&pool, &target).await;
+    let lock_key = taken_player_key(&pool, &svc, &target).await;
+    let key = race_key(&pool, operator).await;
+    let sweep_app = racer_app(&pool, "race2-sweep").await;
+    let writer_app = racer_app(&pool, "race2-writer").await;
+    let push = ctx.push().clone();
+
+    let apps = vec![sweep_app.clone(), writer_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![target.clone()], vec![target.clone()], {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        async move {
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &target, "Race#0002").await.unwrap();
+            drop(conn);
+            assert_claimed_by_the_next_fire(&pool, &target).await;
+
+            let sweep_pool = racer_pool(&sweep_app);
+            let mut sweep_tx = sweep_pool.begin().await.unwrap();
+            let handler = crate::projection::PurgeSweepHandler { svc: svc.clone() };
+            let delivery =
+                bus::Delivery { event_id: "notifications:race2", tx: AnyTx::new(&mut *sweep_tx) };
+            handler
+                .call(delivery, purge_payload(crate::projection::PURGE_SCHEDULE_NAME))
+                .await
+                .unwrap();
+            let stamped: bool = sqlx::query_scalar(
+                "SELECT swept_at IS NOT NULL FROM notifications.purged_players \
+                  WHERE player_id = $1::uuid",
+            )
+            .bind(&target)
+            .fetch_one(&mut *sweep_tx)
+            .await
+            .unwrap();
+            assert!(stamped, "the open sweep must have locked and swept this player");
+
+            let writer = tokio::spawn(race_write(
+                svc.clone(),
+                push,
+                operator,
+                writer_app.clone(),
+                target.clone(),
+                key.clone(),
+            ));
+            let parked = wait_advisory_parked(&pool, &writer_app, lock_key, &writer).await;
+            assert!(parked, "the write must park on the recipient's lock while the sweep is open");
+
+            sweep_tx.commit().await.unwrap();
+            let out = finish("race-2 write", writer).await;
+            if operator {
+                assert_eq!(
+                    out,
+                    Err(format!("{:?}: {}", Status::Invalid, crate::service::PLAYER_DELETED)),
+                    "operator mail to a purged recipient must answer PLAYER_DELETED"
+                );
+            } else {
+                assert_eq!(out, Ok(()), "a purged recipient must not pause the subscription");
+            }
+            assert_eq!(message_count(&pool, &target).await, 0, "the refused write must add no row");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn durable_delivery_parks_behind_an_open_sweep_then_writes_nothing() {
+    write_parks_behind_an_open_sweep_case(false, 0x300).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn operator_mail_parks_behind_an_open_sweep_then_answers_player_deleted() {
+    write_parks_behind_an_open_sweep_case(true, 0x310).await;
+}
+
+/// One fire claims and locks at most 64 players. With 65 of this test's own lowest-sorting
+/// tombstones, one fire stamps exactly the 64 lowest and leaves the 65th for the next fire.
+/// The counts are literal, not derived from `NOTIFICATIONS_PLAYERS_PER_FIRE`, so raising the
+/// claim limit or restoring a batch loop turns this red. The sweep's 5s budget is far above 64
+/// players' two statements each, so it does not stop this fire early.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_sweep_fire_stamps_at_most_64_players() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool).await;
+    // The LOWEST fixed range, below the race tests' ids: a sibling that failed mid-race and
+    // left its tombstone unswept must not sort among these.
+    let ids: Vec<String> = (0x01..0x01 + 65).map(fixed_player).collect();
+    for id in &ids {
+        cleanup_purge_row(&pool, id).await;
+    }
+    let foreign_below: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM notifications.purged_players \
+          WHERE swept_at IS NULL AND player_id <= $1::uuid",
+    )
+    .bind(ids.last().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(foreign_below, 0, "precondition: a foreign unswept tombstone sorts among this test's ids");
+
+    let app = racer_app(&pool, "fire-bound").await;
+    with_purge_cleanup(&pool, vec![app.clone()], vec![], ids.clone(), {
+        let (pool, svc, ids) = (racer_pool(&app), svc.clone(), ids.clone());
+        async move {
+            let mut conn = pool.acquire().await.unwrap();
+            for (i, id) in ids.iter().enumerate() {
+                svc.store
+                    .plant_purged_player_tx(&mut conn, id, &format!("Cap#{i:04}"))
+                    .await
+                    .unwrap();
+            }
+            drop(conn);
+
+            let handler = crate::projection::PurgeSweepHandler { svc: svc.clone() };
+            let mut tx = pool.begin().await.unwrap();
+            let delivery = bus::Delivery { event_id: "notifications:cap", tx: AnyTx::new(&mut *tx) };
+            handler
+                .call(delivery, purge_payload(crate::projection::PURGE_SCHEDULE_NAME))
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            assert_eq!(
+                unstamped_tombstones(&pool, &ids).await,
+                vec![ids[64].clone()],
+                "one fire must stamp exactly the 64 lowest of 65 tombstones"
+            );
+
+            let mut tx2 = pool.begin().await.unwrap();
+            let delivery2 = bus::Delivery { event_id: "notifications:cap", tx: AnyTx::new(&mut *tx2) };
+            handler
+                .call(delivery2, purge_payload(crate::projection::PURGE_SCHEDULE_NAME))
+                .await
+                .unwrap();
+            tx2.commit().await.unwrap();
+            assert!(
+                unstamped_tombstones(&pool, &ids).await.is_empty(),
+                "the next fire must resume and stamp the last one"
+            );
+        }
+    })
+    .await;
+}
+
+/// Whether a backend of `app` holds the advisory lock `key`.
+async fn holds_advisory(pool: &PgPool, app: &str, key: i64) -> bool {
+    let held: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+          WHERE a.application_name = $1 AND l.granted AND l.locktype = 'advisory' \
+            AND l.objsubid = 1 AND ((l.classid::bigint << 32) | l.objid::bigint) = $2",
+    )
+    .bind(app)
+    .bind(key)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    held > 0
+}
+
+/// Operator mail releases the recipient's lock before it answers a refusal that leaves its
+/// transaction open, here `PLAYER_DELETED`. sqlx only queues a dropped transaction's ROLLBACK
+/// and sends it from a task spawned on this single-threaded runtime, so the probe runs on
+/// another thread while this one is blocked, where that task cannot have run.
+#[tokio::test]
+async fn operator_mail_releases_the_lock_before_it_answers_a_refusal() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (ctx, svc) = wired(&pool).await;
+    let target = fixed_player(0x400);
+    clear_fixed_player(&pool, &target).await;
+    let lock_key = taken_player_key(&pool, &svc, &target).await;
+    let app = racer_app(&pool, "release").await;
+    let key = operator_key(&pool).await;
+    let push = ctx.push().clone();
+
+    let mut conn = pool.acquire().await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, &target, "Release#0001").await.unwrap();
+    drop(conn);
+
+    let racer = Service::new(racer_pool(&app), push);
+    let sent = racer
+        .send_operator_mail(&NewNotification {
+            player_id: &target,
+            kind: "operator.mail",
+            title: "t",
+            body: "b",
+            source_event_id: &key,
+        })
+        .await;
+
+    let held = std::thread::spawn({
+        let app = app.clone();
+        move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let probe = PgPool::connect(&testdb::dsn()).await.unwrap();
+                    holds_advisory(&probe, &app, lock_key).await
+                })
+        }
+    })
+    .join()
+    .unwrap();
+    drop(racer);
+    cleanup_purge_row(&pool, &target).await;
+
+    let e = sent.err().expect("operator mail to a purged recipient must be refused");
+    assert_eq!((e.status, e.msg.as_str()), (Status::Invalid, crate::service::PLAYER_DELETED));
+    assert!(!held, "a refused operator mail must not leave its transaction's lock held");
 }

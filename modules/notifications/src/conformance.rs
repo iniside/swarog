@@ -36,7 +36,7 @@ fn base() -> NewNotification<'static> {
 /// policy both writers run, called as the first statement of `Service::deliver_on`.
 ///
 /// It is the deepest level reachable WITHOUT a database: `validate_new` runs below
-/// `Service::send_operator_mail`'s `pool.acquire()` and `Service::deliver_on` takes an
+/// `Service::send_operator_mail`'s `pool.begin()` and `Service::deliver_on` takes an
 /// already-acquired connection, so driving either entry point would decide every case on
 /// the connection rather than on the cap.
 fn write_rejected(n: &NewNotification<'_>) -> bool {
