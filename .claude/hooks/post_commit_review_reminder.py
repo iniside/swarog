@@ -3,7 +3,8 @@
 one `core-reviewer` pass (planning-dispatch.md Adversarial Diff Review -
 MANDATORY), naming `proof-auditor` only when the commit touches a verify stage
 or a golden file. Silent on prose-only commits, --amend, --dry-run and
-output without a `[branch sha]` line (failed or no-op commit). Uncertainty
+output without a `[branch sha]` line (failed or no-op commit), and on step-part
+commits (", part <k> (<plan> step <id>)"; review runs on the step's cumulative diff). Uncertainty
 about which files a landed commit touched resolves toward reminding. Any internal error exits 0 with no output.
 """
 import json
@@ -24,6 +25,8 @@ SHELL_TOOLS = {"Bash", "PowerShell"}
 PROSE_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".rst"})
 
 COMMIT_LINE = re.compile(r"^\[[^\]]*?\b([0-9a-f]{7,40})\]", re.MULTILINE)
+
+PART_SUBJECT = re.compile(r", part \d+ \([^()]*\)$")
 
 PROOF_PREFIXES = (
     "tools/verifyctl/", "tools/archcheck/", "tools/conformance/", "tools/topiccheck/",
@@ -109,6 +112,9 @@ def reminder(data):
     cwd = data.get("cwd") or None
     all_paths = []
     for sha in shas:
+        ok, subject = run_git(cwd, ["log", "-1", "--format=%s", sha])
+        if ok and PART_SUBJECT.search(subject.strip()):
+            continue
         paths = commit_paths(cwd, sha)
         if paths is None:
             return BASE + PROOF_UNKNOWN
