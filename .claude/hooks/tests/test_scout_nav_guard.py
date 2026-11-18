@@ -826,6 +826,32 @@ class SliceGate(unittest.TestCase):
             with self.subTest(command=command):
                 self.assert_never_counted(command)
 
+    def test_tee_target_in_same_command_is_not_counted(self):
+        for command in (
+            "cargo build 2>&1 | tee build.log && sed -n '1,5p' build.log",
+            "cargo build 2>&1 | tee -a notes/b.log && tail -n 40 notes/b.log",
+            "cd notes && cargo build | tee b.log && head -n 5 b.log",
+        ):
+            with self.subTest(command=command):
+                self.assert_never_counted(command)
+
+    def test_tee_alone_and_output_dir_paths_are_not_counted(self):
+        for command in (
+            "cargo build 2>&1 | tee -a notes.txt",
+            "cargo build | tee notes/b.log",
+            "sed -n '1,5p' mutants.out/x.txt",
+            "tail -n 5 mutants.out/outcomes.json",
+        ):
+            with self.subTest(command=command):
+                self.assert_never_counted(command)
+
+    def test_tee_target_does_not_exempt_a_different_file(self):
+        aid = new_agent()
+        command = "cargo build 2>&1 | tee build.log && sed -n '1,5p' " + SRC
+        self.assertIsNone(self.run_slice(aid, command))
+        self.assertIsNone(self.run_slice(aid, command))
+        self.assert_slice_deny(self.run_slice(aid, command))
+
     def test_same_file_without_redirect_is_counted(self):
         aid = new_agent()
         self.assertIsNone(self.run_slice(aid, "tail -n 40 notes/t.log"))

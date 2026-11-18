@@ -613,6 +613,131 @@ class PostCommitFixture(unittest.TestCase):
         self.assertEqual(ctx, self.BASE + self.UNKNOWN)
 
 
+class PostCommitStepParts(unittest.TestCase):
+    """Step-part commits and the finishing commit, on a real git repo."""
+
+    BASE = PostCommitFixture.BASE
+    PROOF = PostCommitFixture.PROOF
+    CUMULATIVE = (
+        "ADVERSARIAL DIFF REVIEW (planning-dispatch.md - MANDATORY): a commit just "
+        "landed. Dispatch ONE `core-reviewer` subagent (subagent_type: \"core-reviewer\") "
+        "on the step's cumulative diff (`git diff %s^..%s`; not only the last commit) in a "
+        "separate context, explicit model: >= the author's "
+        "tier. It routes by files touched through docs/reference/core-failure-taxonomy.md "
+        "and returns a binary verdict or a punch list."
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.repo = os.path.join(_TEMP.name, "parts-repo")
+        os.makedirs(cls.repo)
+        _git(cls.repo, "init", "-q", "-b", "master")
+        _commit(cls.repo, "README.md", "seed\n", "seed")
+        c, r = cls.repo, {}
+
+        def full(key):
+            r[key] = _git(c, "rev-parse", "HEAD")
+            r[key + "_s"] = r[key][:10]
+
+        _commit(c, "tools/verifyctl/old.rs", "1\n", "fix(x): review fix (walk step 3)")
+        full("walk_old")
+        _commit(c, "core/w1.rs", "1\n", "feat(x): a, part 1 (walk step 3)")
+        full("walk_p1")
+        _commit(c, "core/w2.rs", "1\n", "feat(x): a, part 2 (walk step 3)")
+        _commit(c, "core/w3.rs", "1\n", "feat(x): a (walk step 3)")
+        full("walk_fin")
+
+        _commit(c, "tools/verifyctl/p1.rs", "1\n", "feat(x): b, part 1 (pf step 4)")
+        full("pf_p1")
+        _commit(c, "core/p2.rs", "1\n", "feat(x): b, part 2 (pf step 4)")
+        _commit(c, "core/p3.rs", "1\n", "feat(x): b (pf step 4)")
+        full("pf_fin")
+
+        _commit(c, "docs/a1.md", "1\n", "docs(x): c, part 1 (pro step 5)")
+        full("pro_p1")
+        _commit(c, "docs/a2.md", "1\n", "docs(x): c, part 2 (pro step 5)")
+        _commit(c, "docs/a3.md", "1\n", "docs(x): c (pro step 5)")
+        full("pro_fin")
+
+        _commit(c, "docs/b1.md", "1\n", "docs(x): d, part 1 (mix step 6)")
+        full("mix_p1")
+        _commit(c, "core/m2.rs", "1\n", "feat(x): d, part 2 (mix step 6)")
+        _commit(c, "docs/b3.md", "1\n", "docs(x): d (mix step 6)")
+        full("mix_fin")
+
+        _commit(c, "core/s1.rs", "1\n", "feat(x): e, part 1 (rng steps 3-4)")
+        full("rng_part")
+        _commit(c, "core/o1.rs", "1\n", "fix: f, part 2 (prep)")
+        full("offplan")
+        _commit(c, "core/solo.rs", "1\n", "feat(x): g (solo step 7)")
+        full("solo")
+
+        _git(c, "checkout", "-q", "-b", "side")
+        _commit(c, "side.rs", "1\n", "side work")
+        _git(c, "checkout", "-q", "master")
+        _commit(c, "main2.rs", "1\n", "main work")
+        _git(c, "merge", "-q", "--no-ff", "-m", "feat(x): m, part 1 (mrg step 8)", "side")
+        _commit(c, "core/mf.rs", "1\n", "feat(x): m (mrg step 8)")
+        full("mrg_fin")
+        cls.shas = r
+
+    def reminder(self, sha):
+        out = "[master %s] x\n 1 file changed, 1 insertion(+)\n" % sha
+        payload = {"tool_name": "Bash", "cwd": self.repo.replace("\\", "/"),
+                   "tool_input": {"command": "git commit -m x"},
+                   "tool_response": {"stdout": out}}
+        r = subprocess.run(
+            [sys.executable, "-B", os.path.join(HOOKS, "post_commit_review_reminder.py")],
+            input=json.dumps(payload), capture_output=True, text=True, cwd=ROOT, env=ENV,
+            timeout=60, encoding="utf-8")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr, "")
+        if not r.stdout.strip():
+            return None
+        return json.loads(r.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    def cumulative(self, first, final):
+        return self.CUMULATIVE % (first[:12], final)
+
+    def test_step_part_commit_is_silent(self):
+        self.assertIsNone(self.reminder(self.shas["walk_p1_s"]))
+
+    def test_steps_range_part_commit_is_silent(self):
+        self.assertIsNone(self.reminder(self.shas["rng_part_s"]))
+
+    def test_off_plan_part_subject_gets_plain_reminder(self):
+        self.assertEqual(self.reminder(self.shas["offplan_s"]), self.BASE)
+
+    def test_finishing_commit_points_at_cumulative_diff(self):
+        got = self.reminder(self.shas["walk_fin_s"])
+        self.assertEqual(
+            got, self.cumulative(self.shas["walk_p1"], self.shas["walk_fin_s"]))
+
+    def test_walk_stops_at_earlier_non_part_commit(self):
+        got = self.reminder(self.shas["walk_fin_s"])
+        self.assertNotIn(self.shas["walk_old"][:12], got)
+        self.assertNotIn(self.PROOF, got)
+
+    def test_proof_path_in_a_part_names_proof_auditor(self):
+        got = self.reminder(self.shas["pf_fin_s"])
+        self.assertEqual(
+            got, self.cumulative(self.shas["pf_p1"], self.shas["pf_fin_s"]) + self.PROOF)
+
+    def test_prose_final_and_prose_parts_are_silent(self):
+        self.assertIsNone(self.reminder(self.shas["pro_fin_s"]))
+
+    def test_prose_final_with_code_part_reminds(self):
+        got = self.reminder(self.shas["mix_fin_s"])
+        self.assertEqual(
+            got, self.cumulative(self.shas["mix_p1"], self.shas["mix_fin_s"]))
+
+    def test_final_without_earlier_parts_is_byte_identical_base(self):
+        self.assertEqual(self.reminder(self.shas["solo_s"]), self.BASE)
+
+    def test_unreadable_part_paths_fall_back_to_single_commit(self):
+        self.assertEqual(self.reminder(self.shas["mrg_fin_s"]), self.BASE)
+
+
 class Wiring(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
