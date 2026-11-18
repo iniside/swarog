@@ -445,6 +445,21 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         avatar_seed: "sword-7".to_string(),
     };
     panel!("labelled_header", labelled_case("header", Primitive::EntityHeader(owned)));
+    let owner = Column {
+        key: "owner".to_string(),
+        label: "Owner".to_string(),
+        kind: CellKind::User,
+        sortable: false,
+        align: Align::Left,
+        sorted: None,
+        wrap: false,
+    };
+    let owned_by = |id: &str, owner: &str| QueueItem { cells: vec![player_cell(owner)], ..queue_item(id, "failed", 1, 5, &[]) };
+    let queue = WorkQueue {
+        columns: vec![owner],
+        ..work_queue("failed", vec![owned_by("job-1", "p-1001"), owned_by("job-2", "p-1002")])
+    };
+    panel!("labelled_queue_cells", labelled_case("panel", Primitive::WorkQueue(queue)));
     panel!("table_row_actions", table_row_actions_case());
     panel!(
         "table_noun_later_page",
