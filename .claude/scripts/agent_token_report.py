@@ -52,6 +52,14 @@ def blocktoks(c):
     return toks(json.dumps(c))
 
 
+def textlen(c):
+    if isinstance(c, str):
+        return len(c)
+    if isinstance(c, list):
+        return sum(len(x.get("text", "")) if isinstance(x, dict) and x.get("type") == "text" else len(json.dumps(x)) for x in c)
+    return len(json.dumps(c))
+
+
 def pct(vals, p):
     if not vals:
         return 0
@@ -131,6 +139,10 @@ def main():
     sess = glob.escape(a.session) + "*" if a.session else "*"
     files = set(glob.glob(os.path.join(root, sess + ".jsonl")))
     files |= set(glob.glob(os.path.join(root, sess, "subagents", "*.jsonl")))
+    if a.session:
+        mains = glob.glob(os.path.join(root, sess + ".jsonl"))
+        if len(mains) != 1:
+            sys.exit(f"error: --session {a.session} matches {len(mains)} sessions in {root}; give a longer id")
     files = sorted((f for f in files if os.stat(f).st_mtime >= lo_ts), key=os.path.getmtime)
     if not os.path.isdir(root):
         sys.exit(f"error: transcript directory not found: {root}")
@@ -305,7 +317,7 @@ def main():
                                     continue
                                 live["result:" + id2.get(c.get("tool_use_id"), "?")] += blocktoks(c.get("content"))
                                 if inwin:
-                                    n_ = len(json.dumps(c.get("content")))
+                                    n_ = textlen(c.get("content"))
                                     max_res = max(max_res, n_)
                                     big_res += n_ > BIG
                             elif c.get("type") == "text":

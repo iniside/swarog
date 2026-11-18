@@ -66,4 +66,4 @@ Co-Authored-By: Claude <Family> <Version> <noreply@anthropic.com>
 
 ## Measuring agent cost
 
-`python .claude/scripts/agent_token_report.py [--days N] [--json]` — read-only token report over this repo's Claude transcripts (totals, per-agentType cost, context share, navigation discipline, baseline).
+`python .claude/scripts/agent_token_report.py [--days N | --session ID] [--json]` — read-only token report over this repo's Claude transcripts (totals, per-agentType cost, calls per turn, context share, navigation discipline, baseline; `--session` adds a per-dispatch table for one session).
