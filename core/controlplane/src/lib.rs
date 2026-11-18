@@ -400,8 +400,8 @@ pub struct PanelQuery {
     pub range: Option<TimeRange>,
     /// Module-specific keys only.
     pub params: BTreeMap<String, String>,
-    /// The entity ids of one table page an `EntityListColumn` answers for, in row order, at
-    /// most [`MAX_PANEL_REFS`]; empty on every other request.
+    /// The distinct entity ids of one table page an `EntityListColumn` answers for, in
+    /// first-row order, at most [`MAX_PANEL_REFS`]; empty on every other request.
     pub refs: Vec<String>,
 }
 

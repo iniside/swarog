@@ -32,7 +32,7 @@ pub(crate) fn refs(table: &DataTable, kind: &str) -> Vec<String> {
     ids.filter(|e| seen.insert(e.id.as_str())).map(|e| e.id.clone()).collect()
 }
 
-/// Calls every `EntityListColumn` of `kind` concurrently, each under its own deadline, with
+/// Calls every `EntityListColumn` of `kind` concurrently, each column under its own deadline, with
 /// `refs` split into `PanelQuery::refs` chunks of at most `MAX_PANEL_REFS`. Every chunk of
 /// every column runs concurrently; a chunk that fails fails its whole column. A column below
 /// the operator's role makes no call and is absent from the result; no refs make no call at
