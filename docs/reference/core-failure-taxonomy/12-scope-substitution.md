@@ -14,8 +14,9 @@ durable topic nobody asked for, a temporary dual authority, or review fixes
 whose only reason to exist is one of those additions. Feasibility, reuse,
 robustness, and a detailed plan do not authorize the scope.
 
-**Authority.** `.agents/shared/planning-dispatch.md` → **Plan Writing
-Workflow** step 0 and **Adversarial Diff Review**; the owner's original request.
+**Authority.** `.agents/skills/research-plan-present/SKILL.md` step 0 and
+`.agents/shared/planning-dispatch.md` → **Adversarial Diff Review**; the owner's
+original request.
 
 **Verdict.** If the fix exists only because the task introduced an unrequested
 mechanism, return `REJECT — scope loop`: remove it or return to the last

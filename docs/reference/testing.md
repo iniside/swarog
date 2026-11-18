@@ -5,7 +5,8 @@ database. Everything else has an owner:
 
 - Test database (strict `testdb` gate, local Postgres, no Docker/testcontainers):
   `.agents/shared/gamebackend.md` **Database**.
-- Stage map and how to run the gates: `.agents/shared/gamebackend.md` **Commands**.
+- Stage map and how to run the gates: `.agents/shared/gamebackend.md` **Commands**
+  (entry commands) and the `tools/verifyctl/src/stages` sources (stage list).
 - One rollout at a time: `.agents/shared/gamebackend.md` **One test rollout at a
   time** and the `safe-verification` skill
   (`.agents/skills/safe-verification/SKILL.md`).

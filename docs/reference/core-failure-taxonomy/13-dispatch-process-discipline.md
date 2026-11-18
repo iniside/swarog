@@ -16,5 +16,5 @@ one grep pass and reported as the API.
 
 **Authority.** `.agents/shared/planning-dispatch.md` → **Implementation Mode**;
 `.agents/shared/core-rules.md` → **Commit After Every Task**, **Commit Message
-Format**; `.agents/shared/research-navigation.md` → **Research / Search Mode**;
+Format**; `.agents/skills/code-navigation/SKILL.md` → **Research method**;
 `docs/reference/commit-format.md`.

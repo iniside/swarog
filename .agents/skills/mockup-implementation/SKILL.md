@@ -29,7 +29,7 @@ fake rows in `assets/data.js`. The portal that renders it is `core/admin`.
     owns it;
   - a port that writes a new `contract gap` accept entry adds its item under
     **Accepted contract gaps** in the same file.
-- Lanes: `.agents/shared/planning-dispatch.md` **Implementation Mode**. The view part
+- Lanes: `.agents/skills/implementation-dispatch/SKILL.md`. The view part
   runs at the cheap tier on `mockup-implementer`; checklist, contract decisions and
   review stay at the top tier. No fallback to a stronger model: a port that goes
   badly is fixed in this skill, `admindiff` or the golden tests.
