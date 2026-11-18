@@ -292,14 +292,16 @@ fn make_finite(primitive: &mut Primitive) {
             *value = 0.0;
         }
     }
-    match primitive {
-        Primitive::KpiTile(tile) => {
-            tile.series.iter_mut().for_each(fix);
-            if let Some((used, total)) = &mut tile.capacity {
-                fix(used);
-                fix(total);
-            }
+    fn fix_tile(tile: &mut KpiTile) {
+        tile.series.iter_mut().for_each(fix);
+        if let Some((used, total)) = &mut tile.capacity {
+            fix(used);
+            fix(total);
         }
+    }
+    match primitive {
+        Primitive::KpiTile(tile) => fix_tile(tile),
+        Primitive::KpiTiles(tiles) => tiles.iter_mut().for_each(fix_tile),
         Primitive::TimeSeriesChart(chart) => {
             for series in &mut chart.series {
                 series.values.iter_mut().for_each(fix);
@@ -509,6 +511,8 @@ variants! {
         Stack(Vec<String>),
         Grid21(Vec<String>, Vec<String>),
         Grid2(Vec<String>, Vec<String>),
+        /// Each layout below the one before it.
+        Rows(Vec<Layout>),
     }
 }
 
@@ -529,6 +533,9 @@ pub struct ContributionDecl {
     pub min_role: Role,
     pub cache_ttl_s: Option<u32>,
     pub deadline_ms: u32,
+    /// Forces the panel's read-only state with this banner text, and an entity tab holding
+    /// the contribution shows a lock.
+    pub readonly: Option<String>,
 }
 
 variants! {
@@ -546,6 +553,8 @@ variants! {
         /// tab's first contribution by `order`.
         EntityTab { kind: String, tab: String, tab_label: String, columns: u8 },
         EntityTabCount { kind: String, tab: String },
+        /// A KPI tile in one row above the tab's panels.
+        EntityTabTile { kind: String, tab: String },
         EntitySummary(String),
         /// A column the portal adds to every `DataTable` whose `list_columns_for` is `kind`,
         /// fetched once per table page with `PanelQuery::refs`; answers `Primitive::ColumnCells`.
@@ -628,6 +637,8 @@ pub struct FormSpec {
     pub submit_label: String,
     pub note: Option<String>,
     pub revision: Option<u64>,
+    /// The modal's title; the action's label when absent. A panel form has none.
+    pub title: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -639,6 +650,8 @@ pub struct Field {
     pub help: Option<String>,
     pub default: Option<String>,
     pub readonly: bool,
+    pub mono: bool,
+    pub placeholder: Option<String>,
 }
 
 variants! {
@@ -1048,11 +1061,15 @@ variants! {
 pub struct TimelineEntry {
     /// RFC 3339, UTC.
     pub at: String,
-    pub actor: Option<EntityRef>,
+    pub actor: Option<Cell>,
+    /// Bold, before `verb`.
+    pub title: Option<String>,
     pub verb: String,
     pub target: Option<EntityRef>,
     /// Plain text.
     pub summary: String,
+    /// Drawn after `summary`.
+    pub badges: Vec<Cell>,
     pub detail: Option<String>,
     pub icon: String,
     pub tone: Option<Tone>,
@@ -1063,6 +1080,10 @@ pub struct Timeline {
     pub entries: Vec<TimelineEntry>,
     pub cursor_before: Option<String>,
     pub live: bool,
+    /// Draws a label above each day's entries.
+    pub days: bool,
+    /// Each entry's time shows its date ("Oct 14") instead of its time of day.
+    pub date_only: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1189,6 +1210,8 @@ pub struct SecretReveal {
     pub value: String,
     pub hint: Option<String>,
     pub expires_at: Option<String>,
+    /// A plain-text line below the secret.
+    pub extra: Option<String>,
 }
 
 impl std::fmt::Debug for SecretReveal {
@@ -1198,6 +1221,7 @@ impl std::fmt::Debug for SecretReveal {
             .field("value", &"<redacted>")
             .field("hint", &self.hint)
             .field("expires_at", &self.expires_at)
+            .field("extra", &self.extra)
             .finish()
     }
 }
@@ -1226,11 +1250,15 @@ pub struct PanelBody {
     pub note: Option<String>,
     /// Shown only while the panel is `ok` or `readonly`.
     pub banner: Option<Banner>,
+    /// Text in the panel's foot.
+    pub foot: Option<String>,
+    /// A plain badge in the tools row.
+    pub tag: Option<String>,
 }
 
 impl PanelBody {
     pub fn new(primitive: Primitive) -> PanelBody {
-        PanelBody { primitive, meta: None, heading: None, note: None, banner: None }
+        PanelBody { primitive, meta: None, heading: None, note: None, banner: None, foot: None, tag: None }
     }
 }
 
@@ -1248,6 +1276,8 @@ variants! {
         DataTable(DataTable),
         PropertyList(PropertyList),
         KpiTile(KpiTile),
+        /// One KPI tile per entry, for a number of tiles the data decides.
+        KpiTiles(Vec<KpiTile>),
         Timeline(Timeline),
         Form(FormSpec),
         WorkQueue(WorkQueue),
@@ -1276,6 +1306,7 @@ mod tests {
             Point::EntityHeader(_) => "EntityHeader",
             Point::EntityTab { .. } => "EntityTab",
             Point::EntityTabCount { .. } => "EntityTabCount",
+            Point::EntityTabTile { .. } => "EntityTabTile",
             Point::EntitySummary(_) => "EntitySummary",
             Point::EntityListColumn { .. } => "EntityListColumn",
             Point::NavCounter => "NavCounter",
@@ -1294,6 +1325,7 @@ mod tests {
             Point::EntityHeader(s()),
             Point::EntityTab { kind: s(), tab: s(), tab_label: s(), columns: 2 },
             Point::EntityTabCount { kind: s(), tab: s() },
+            Point::EntityTabTile { kind: s(), tab: s() },
             Point::EntitySummary(s()),
             Point::EntityListColumn { kind: s(), label: s(), align: Align::Left },
             Point::NavCounter,
@@ -1301,7 +1333,7 @@ mod tests {
         assert_eq!(every.iter().map(written).collect::<Vec<_>>(), Point::VARIANTS);
         assert_eq!(every.iter().map(Variants::variant).collect::<Vec<_>>(), Point::VARIANTS);
         assert_eq!(Point::NAME, "Point");
-        assert_eq!(Layout::VARIANTS, ["Stack", "Grid21", "Grid2"]);
+        assert_eq!(Layout::VARIANTS, ["Stack", "Grid21", "Grid2", "Rows"]);
         assert_eq!(Layout::Grid21(Vec::new(), Vec::new()).variant(), "Grid21");
     }
 

@@ -202,6 +202,7 @@ fn contribution(id: &str, point: Point, order: i32, title: &str, icon: &str) -> 
         min_role: Role::Viewer,
         cache_ttl_s: Some(60),
         deadline_ms: DEFAULT_PANEL_DEADLINE_MS,
+        readonly: None,
     }
 }
 
@@ -250,11 +251,14 @@ fn manifest() -> Manifest {
             help: None,
             default: None,
             readonly: false,
+            mono: false,
+            placeholder: None,
         }],
         hidden: BTreeMap::new(),
         submit_label: "Send test".to_string(),
         note: None,
         revision: None,
+        title: None,
     };
     // Fixes only the variant: the shown spec comes from `prepare` for the bound message.
     let cancel = ConfirmSpec {
@@ -461,6 +465,8 @@ impl MailAdmin {
             heading: None,
             note: None,
             banner,
+            foot: None,
+            tag: None,
         })
     }
 

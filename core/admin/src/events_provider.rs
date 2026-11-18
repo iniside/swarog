@@ -192,6 +192,7 @@ fn contribution(id: &str, point: Point, order: i32, title: &str, icon: &str) -> 
         min_role: Role::Viewer,
         cache_ttl_s: Some(60),
         deadline_ms: DEFAULT_PANEL_DEADLINE_MS,
+        readonly: None,
     }
 }
 
@@ -548,6 +549,8 @@ impl EventsProvider {
             heading: Some(sub.id.clone()),
             note: Some(POISON_HINT.to_string()),
             banner: Some(banner),
+            foot: None,
+            tag: None,
         })
     }
 

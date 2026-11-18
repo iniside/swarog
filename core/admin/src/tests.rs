@@ -986,6 +986,7 @@ fn contribution(id: &str, point: Point, min_role: Role) -> ContributionDecl {
         min_role,
         cache_ttl_s: None,
         deadline_ms: 0,
+        readonly: None,
     }
 }
 
@@ -1678,6 +1679,97 @@ async fn a_row_menu_group_of_a_down_module_is_unavailable_and_disabled() {
         "{raw}"
     );
     assert!(!wallet_group.contains("<button"), "a down module's item is not actionable: {raw}");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A face over `modules`, one provider each, that the test can take down.
+fn flaky(modules: Vec<Arc<Recording>>) -> Arc<Flaky> {
+    let providers = modules.into_iter().map(|m| m as Arc<dyn controlplane::Provider>).collect();
+    Arc::new(Flaky { inner: controlplane::LocalFace::new(providers), down: std::sync::atomic::AtomicBool::new(false) })
+}
+
+fn player_tab(id: &str, tab: &str) -> ContributionDecl {
+    let (kind, tab, tab_label) = ("player".to_string(), tab.to_string(), tab.to_string());
+    contribution(id, Point::EntityTab { kind, tab, tab_label, columns: 1 }, Role::Viewer)
+}
+
+/// `module` declaring the `player` entity kind.
+fn player_owner(module: Manifest) -> Manifest {
+    let player =
+        controlplane::EntityKindDecl { kind: "player".to_string(), label: "Player".to_string(), icon: String::new() };
+    Manifest { entity_kinds: vec![player], ..module }
+}
+
+/// The `<button class="tab ..">` of tab `id` in an entity page.
+fn tab_button<'a>(raw: &'a str, id: &str) -> &'a str {
+    let href = format!(r#"data-href="&#x2f;admin&#x2f;e&#x2f;player&#x2f;p-1?tab={id}""#);
+    let at = raw.find(&href).unwrap_or_else(|| panic!("tab {id} in {raw}"));
+    &raw[at..at + raw[at..].find("</button>").expect("the tab closes")]
+}
+
+/// A tab whose module's source missed the latest refresh draws the error dot; a healthy
+/// module's tab does not.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tab_of_a_down_module_draws_the_error_dot() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-tab-down");
+    let cookie = operator_cookie(&pool, &user).await;
+    let accounts = player_owner(module("accounts", vec![player_tab("profile", "profile")], Vec::new(), true));
+    let accounts = flaky(vec![Recording::new(accounts, &[])]);
+    let wallet = module("wallet", vec![player_tab("balances", "wallet")], Vec::new(), true);
+    let wallet = flaky(vec![Recording::new(wallet, &[])]);
+    let engine = Arc::new(Engine::new());
+    let sources = [("accounts-svc", accounts.clone()), ("wallet-svc", wallet.clone())]
+        .into_iter()
+        .map(|(peer, face)| Source { peer: peer.to_string(), face: face as Arc<dyn controlplane::ControlPlane> })
+        .collect();
+    engine.install(Snapshot::seeded(sources, None));
+    refresh_once(&engine).await;
+    wallet.down.store(true, Ordering::SeqCst);
+    refresh_once(&engine).await;
+    assert!(!engine.snapshot().module_ok("wallet"));
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/e/player/p-1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let dot = r#"<span class="dot err" title="module unavailable"></span>"#;
+    assert!(tab_button(&raw, "wallet").contains(dot), "{raw}");
+    assert!(!tab_button(&raw, "profile").contains(dot), "{raw}");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A contribution declaring `readonly` draws the read-only state with its own text in a
+/// module that writes, and its tab shows the lock; a tab without one shows none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_readonly_decl_forces_the_readonly_state_with_its_text() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-readonly-decl");
+    let cookie = operator_cookie(&pool, &user).await;
+    let reason = "Read-only: storage exposes saves for inspection and download.";
+    let saves = ContributionDecl { readonly: Some(reason.to_string()), ..player_tab("saves", "saves") };
+    let storage = player_owner(module("storage", vec![saves, player_tab("quota", "quota")], Vec::new(), true));
+    let props = || {
+        let items = vec![("Slots".to_string(), text("3"))];
+        Primitive::PropertyList(PropertyList { items, columns: 1, item: None, code: None })
+    };
+    let storage = Recording::new(storage, &[("saves", answer(props())), ("quota", answer(props()))]);
+    let engine = Arc::new(sourced(vec![storage as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/e/player/p-1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let lock = r#"<span class="muted" title="read-only">"#;
+    assert!(tab_button(&raw, "saves").contains(lock), "{raw}");
+    assert!(!tab_button(&raw, "quota").contains(lock), "{raw}");
+
+    let (_, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/storage/saves?entity=player:p-1").await;
+    assert!(raw.contains(r#"data-state="readonly""#), "{raw}");
+    assert!(raw.contains(&format!("{reason}</div>")), "the declared text is the banner: {raw}");
+    assert!(!raw.contains("does not accept remote edits"), "{raw}");
+    let (_, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/storage/quota?entity=player:p-1").await;
+    assert!(raw.contains(r#"data-state="ok""#), "{raw}");
 
     cleanup_user(&pool, &user).await;
 }

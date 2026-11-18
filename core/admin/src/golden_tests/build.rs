@@ -182,6 +182,7 @@ impl PanelCase {
             last_value: self.last_value.as_ref(),
             min_role: self.min_role,
             fallback_title: self.fallback_title,
+            readonly: None,
             body: self.body.as_ref(),
             actions: &self.actions,
             list_columns: &self.list_columns,
@@ -239,6 +240,7 @@ pub(super) fn contribution(id: &str, point: Point, min_role: Role) -> Contributi
         min_role,
         cache_ttl_s: None,
         deadline_ms: 800,
+        readonly: None,
     }
 }
 
@@ -333,6 +335,8 @@ pub(super) fn field(key: &str, label: &str, kind: FieldKind, default: Option<&st
         help: None,
         default: default.map(str::to_string),
         readonly: false,
+        mono: false,
+        placeholder: None,
     }
 }
 
@@ -369,6 +373,7 @@ pub(super) fn profile_form() -> FormSpec {
         submit_label: "Save profile".to_string(),
         note: Some("Changes apply on next login.".to_string()),
         revision: Some(3),
+        title: None,
     }
 }
 

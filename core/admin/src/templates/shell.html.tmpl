@@ -50,17 +50,20 @@
 {%- elif screen == "page" -%}
 <div class="page-head"><div><h1>{{ v.title }}</h1>{% if v.subtitle %}<div class="sub">{{ v.subtitle }}</div>{% endif %}</div><div class="page-actions">{% for a in v.head_actions %}{{ ui.action_button(a) }}{% endfor %}</div></div>
 {%- if v.tiles %}<div class="grid g-tiles" style="margin-bottom:12px">{% for s in v.tiles %}{{ ui.slot(s) }}{% endfor %}</div>{% endif -%}
-{%- if v.layout == "stack" %}<div class="stack">{% for col in v.columns %}{% for s in col %}{{ ui.slot(s) }}{% endfor %}{% endfor %}</div>
-{%- else %}<div class="grid {{ v.layout }}">{% for col in v.columns %}<div class="stack">{% for s in col %}{{ ui.slot(s) }}{% endfor %}</div>{% endfor %}</div>
+{%- for row in v.rows %}
+{%- if row.layout == "stack" %}<div class="stack"{% if not loop.last %} style="margin-bottom:12px"{% endif %}>{% for col in row.columns %}{% for s in col %}{{ ui.slot(s) }}{% endfor %}{% endfor %}</div>
+{%- else %}<div class="grid {{ row.layout }}"{% if not loop.last %} style="margin-bottom:12px"{% endif %}>{% for col in row.columns %}<div class="stack">{% for s in col %}{{ ui.slot(s) }}{% endfor %}</div>{% endfor %}</div>
 {%- endif -%}
+{%- endfor -%}
 {%- for id in v.missing %}<section class="panel" style="margin-top:12px"><div class="panel-body">{{ ui.state_block("error", "No contribution " ~ id, v.module ~ " lays out a contribution it does not declare.", compact=true) }}</div></section>{% endfor -%}
 {%- elif screen == "entity" -%}
 <section class="panel" style="margin-bottom:12px"><div class="entity-head"><span class="avatar lg" id="entity-avatar" style="background:{{ v.avatar_color }}">{{ v.avatar_initials }}</span><div class="grow">
 {%- if v.headers %}<div class="slot"{{ ui.fetch_attrs(v.headers[0]) }}><div class="row"><h1>{{ v.entity_id }}</h1></div></div>{% else %}<div class="row"><h1>{{ v.entity_id }}</h1><span class="muted">{{ v.kind_label }}</span></div>{% endif -%}
 <div class="entity-facts">{% for s in v.summaries %}{{ ui.slot(s) }}{% endfor %}</div></div>
 <div class="page-actions">{% for a in v.header_actions %}{{ ui.action_button(a) }}{% endfor %}{% if v.menu_url %}<button type="button" class="btn icon" aria-label="More actions" data-menu-url="{{ v.menu_url }}">{{ ui.icon("more") }}</button>{% endif %}</div></div>
-{%- if v.tabs %}<div class="tabs">{% for t in v.tabs %}<button type="button" class="tab{% if t.id == v.selected_tab %} on{% endif %}" data-href="{{ t.url }}">{{ t.label }}{% for c in t.counts %}{{ ui.slot(c) }}{% endfor %}</button>{% endfor %}</div>{% endif -%}
+{%- if v.tabs %}<div class="tabs">{% for t in v.tabs %}<button type="button" class="tab{% if t.id == v.selected_tab %} on{% endif %}" data-href="{{ t.url }}">{{ t.label }}{% for c in t.counts %}{{ ui.slot(c) }}{% endfor %}{% if t.down %}<span class="dot err" title="module unavailable"></span>{% endif %}{% if t.readonly %}<span class="muted" title="read-only">{{ ui.icon("lock") }}</span>{% endif %}</button>{% endfor %}</div>{% endif -%}
 </section>
+{%- if v.tab_tiles %}<div class="grid g-tiles" style="margin-bottom:12px">{% for s in v.tab_tiles %}{{ ui.slot(s) }}{% endfor %}</div>{% endif %}
 <div class="{{ 'grid g-2' if v.tab_grid else 'stack' }}">{% for s in v.tab_panels %}{{ ui.slot(s) }}{% endfor %}</div>
 {%- elif screen == "missing" -%}
 <section class="panel"><div class="panel-body">{{ ui.state_block("error", v.title, v.detail, back=true) }}</div></section>

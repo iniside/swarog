@@ -502,6 +502,7 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::InvokeOutcome
 pub enum controlplane::Layout
 pub controlplane::Layout::Grid2(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<alloc::string::String>)
 pub controlplane::Layout::Grid21(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<alloc::string::String>)
+pub controlplane::Layout::Rows(alloc::vec::Vec<controlplane::Layout>)
 pub controlplane::Layout::Stack(alloc::vec::Vec<alloc::string::String>)
 impl controlplane::Variants for controlplane::Layout
 pub const controlplane::Layout::NAME: &'static str
@@ -605,6 +606,9 @@ pub controlplane::Point::EntityTab::tab_label: alloc::string::String
 pub controlplane::Point::EntityTabCount
 pub controlplane::Point::EntityTabCount::kind: alloc::string::String
 pub controlplane::Point::EntityTabCount::tab: alloc::string::String
+pub controlplane::Point::EntityTabTile
+pub controlplane::Point::EntityTabTile::kind: alloc::string::String
+pub controlplane::Point::EntityTabTile::tab: alloc::string::String
 pub controlplane::Point::NavCounter
 pub controlplane::Point::Page(alloc::string::String)
 impl controlplane::Variants for controlplane::Point
@@ -642,6 +646,7 @@ pub controlplane::Primitive::Empty::title: alloc::string::String
 pub controlplane::Primitive::EntityHeader(controlplane::EntityHeader)
 pub controlplane::Primitive::Form(controlplane::FormSpec)
 pub controlplane::Primitive::KpiTile(controlplane::KpiTile)
+pub controlplane::Primitive::KpiTiles(alloc::vec::Vec<controlplane::KpiTile>)
 pub controlplane::Primitive::PropertyList(controlplane::PropertyList)
 pub controlplane::Primitive::ServiceStatus(controlplane::ServiceStatus)
 pub controlplane::Primitive::TimeSeriesChart(controlplane::TimeSeriesChart)
@@ -1090,6 +1095,7 @@ pub controlplane::ContributionDecl::id: alloc::string::String
 pub controlplane::ContributionDecl::min_role: controlplane::Role
 pub controlplane::ContributionDecl::order: i32
 pub controlplane::ContributionDecl::point: controlplane::Point
+pub controlplane::ContributionDecl::readonly: core::option::Option<alloc::string::String>
 pub controlplane::ContributionDecl::title: alloc::string::String
 impl core::clone::Clone for controlplane::ContributionDecl
 pub fn controlplane::ContributionDecl::clone(&self) -> Self
@@ -1266,6 +1272,8 @@ pub controlplane::Field::help: core::option::Option<alloc::string::String>
 pub controlplane::Field::key: alloc::string::String
 pub controlplane::Field::kind: controlplane::FieldKind
 pub controlplane::Field::label: alloc::string::String
+pub controlplane::Field::mono: bool
+pub controlplane::Field::placeholder: core::option::Option<alloc::string::String>
 pub controlplane::Field::readonly: bool
 pub controlplane::Field::required: bool
 impl core::clone::Clone for controlplane::Field
@@ -1336,6 +1344,7 @@ pub controlplane::FormSpec::hidden: alloc::collections::btree::map::BTreeMap<all
 pub controlplane::FormSpec::note: core::option::Option<alloc::string::String>
 pub controlplane::FormSpec::revision: core::option::Option<u64>
 pub controlplane::FormSpec::submit_label: alloc::string::String
+pub controlplane::FormSpec::title: core::option::Option<alloc::string::String>
 impl core::clone::Clone for controlplane::FormSpec
 pub fn controlplane::FormSpec::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::FormSpec
@@ -1633,10 +1642,12 @@ impl core::panic::unwind_safe::RefUnwindSafe for controlplane::PageInfo
 impl core::panic::unwind_safe::UnwindSafe for controlplane::PageInfo
 pub struct controlplane::PanelBody
 pub controlplane::PanelBody::banner: core::option::Option<controlplane::Banner>
+pub controlplane::PanelBody::foot: core::option::Option<alloc::string::String>
 pub controlplane::PanelBody::heading: core::option::Option<alloc::string::String>
 pub controlplane::PanelBody::meta: core::option::Option<alloc::string::String>
 pub controlplane::PanelBody::note: core::option::Option<alloc::string::String>
 pub controlplane::PanelBody::primitive: controlplane::Primitive
+pub controlplane::PanelBody::tag: core::option::Option<alloc::string::String>
 impl controlplane::PanelBody
 pub fn controlplane::PanelBody::new(controlplane::Primitive) -> controlplane::PanelBody
 impl core::clone::Clone for controlplane::PanelBody
@@ -1899,6 +1910,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for controlplane::SearchQuery
 impl core::panic::unwind_safe::UnwindSafe for controlplane::SearchQuery
 pub struct controlplane::SecretReveal
 pub controlplane::SecretReveal::expires_at: core::option::Option<alloc::string::String>
+pub controlplane::SecretReveal::extra: core::option::Option<alloc::string::String>
 pub controlplane::SecretReveal::hint: core::option::Option<alloc::string::String>
 pub controlplane::SecretReveal::label: alloc::string::String
 pub controlplane::SecretReveal::value: alloc::string::String
@@ -2054,6 +2066,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for controlplane::TimeSeriesChart
 impl core::panic::unwind_safe::UnwindSafe for controlplane::TimeSeriesChart
 pub struct controlplane::Timeline
 pub controlplane::Timeline::cursor_before: core::option::Option<alloc::string::String>
+pub controlplane::Timeline::date_only: bool
+pub controlplane::Timeline::days: bool
 pub controlplane::Timeline::entries: alloc::vec::Vec<controlplane::TimelineEntry>
 pub controlplane::Timeline::live: bool
 impl core::clone::Clone for controlplane::Timeline
@@ -2077,12 +2091,14 @@ impl core::marker::UnsafeUnpin for controlplane::Timeline
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Timeline
 impl core::panic::unwind_safe::UnwindSafe for controlplane::Timeline
 pub struct controlplane::TimelineEntry
-pub controlplane::TimelineEntry::actor: core::option::Option<controlplane::EntityRef>
+pub controlplane::TimelineEntry::actor: core::option::Option<controlplane::Cell>
 pub controlplane::TimelineEntry::at: alloc::string::String
+pub controlplane::TimelineEntry::badges: alloc::vec::Vec<controlplane::Cell>
 pub controlplane::TimelineEntry::detail: core::option::Option<alloc::string::String>
 pub controlplane::TimelineEntry::icon: alloc::string::String
 pub controlplane::TimelineEntry::summary: alloc::string::String
 pub controlplane::TimelineEntry::target: core::option::Option<controlplane::EntityRef>
+pub controlplane::TimelineEntry::title: core::option::Option<alloc::string::String>
 pub controlplane::TimelineEntry::tone: core::option::Option<controlplane::Tone>
 pub controlplane::TimelineEntry::verb: alloc::string::String
 impl core::clone::Clone for controlplane::TimelineEntry

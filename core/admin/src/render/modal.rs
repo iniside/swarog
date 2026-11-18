@@ -82,6 +82,9 @@ pub(crate) fn modal(
             view.tone = "ok";
             view.go = "primary";
             view.form = Some(form(spec, posted, errors));
+            if let Some(title) = &spec.title {
+                view.title = title.clone();
+            }
         }
         ModalSpec::Confirm(spec) => {
             seen::record(&spec.tone);

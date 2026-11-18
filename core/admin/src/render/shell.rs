@@ -58,6 +58,7 @@ pub(crate) struct RevealView {
     pub(crate) value: String,
     pub(crate) hint: Option<String>,
     pub(crate) expires_at: Option<String>,
+    pub(crate) extra: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -69,7 +70,13 @@ pub(crate) struct FlashView {
 }
 
 pub(crate) fn reveal(r: &controlplane::SecretReveal) -> RevealView {
-    RevealView { label: r.label.clone(), value: r.value.clone(), hint: r.hint.clone(), expires_at: r.expires_at.clone() }
+    RevealView {
+        label: r.label.clone(),
+        value: r.value.clone(),
+        hint: r.hint.clone(),
+        expires_at: r.expires_at.clone(),
+        extra: r.extra.clone(),
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -157,29 +164,29 @@ pub(crate) struct PageView {
     pub(crate) head_actions: Vec<ActionItem>,
     /// `PageDecl::tiles`, one KPI tile row above the layout.
     pub(crate) tiles: Vec<SlotView>,
-    /// `stack`, `g-21` or `g-2`.
-    pub(crate) layout: &'static str,
-    /// Layout columns in declaration order, each a list of panels.
-    pub(crate) columns: Vec<Vec<SlotView>>,
+    pub(crate) rows: Vec<LayoutRow>,
     /// Tile and layout ids naming no contribution of this module.
     pub(crate) missing: Vec<String>,
 }
 
-/// The layout's columns of contribution ids, in declaration order.
-pub(crate) fn layout_columns(layout: &controlplane::Layout) -> Vec<&[String]> {
-    seen::record(layout);
-    match layout {
-        controlplane::Layout::Stack(a) => vec![a],
-        controlplane::Layout::Grid21(a, b) | controlplane::Layout::Grid2(a, b) => vec![a, b],
-    }
+/// One row of a page layout.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct LayoutRow {
+    /// `stack`, `g-21` or `g-2`.
+    pub(crate) layout: &'static str,
+    /// Columns in declaration order, each a list of panels.
+    pub(crate) columns: Vec<Vec<SlotView>>,
 }
 
-pub(crate) fn layout_name(layout: &controlplane::Layout) -> &'static str {
+/// The layout's rows top to bottom, each its name and its columns of contribution ids in
+/// declaration order.
+pub(crate) fn layout_rows(layout: &controlplane::Layout) -> Vec<(&'static str, Vec<&[String]>)> {
     seen::record(layout);
     match layout {
-        controlplane::Layout::Stack(_) => "stack",
-        controlplane::Layout::Grid21(..) => "g-21",
-        controlplane::Layout::Grid2(..) => "g-2",
+        controlplane::Layout::Stack(a) => vec![("stack", vec![a])],
+        controlplane::Layout::Grid21(a, b) => vec![("g-21", vec![a, b])],
+        controlplane::Layout::Grid2(a, b) => vec![("g-2", vec![a, b])],
+        controlplane::Layout::Rows(rows) => rows.iter().flat_map(layout_rows).collect(),
     }
 }
 
@@ -189,6 +196,10 @@ pub(crate) struct TabView {
     pub(crate) label: String,
     pub(crate) url: String,
     pub(crate) counts: Vec<SlotView>,
+    /// A module contributing the tab missed the latest manifest refresh.
+    pub(crate) down: bool,
+    /// A contribution of the tab declares `readonly`.
+    pub(crate) readonly: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -206,6 +217,8 @@ pub(crate) struct EntityView {
     pub(crate) selected_tab: Option<String>,
     /// The selected tab's panels sit in two columns (`Point::EntityTab::columns`).
     pub(crate) tab_grid: bool,
+    /// The selected tab's `Point::EntityTabTile` contributions, one row above its panels.
+    pub(crate) tab_tiles: Vec<SlotView>,
     pub(crate) tab_panels: Vec<SlotView>,
 }
 

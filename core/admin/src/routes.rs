@@ -27,7 +27,7 @@ use crate::engine::search;
 use crate::engine::Engine;
 use crate::render::{
     self, ActionItem, ActionResultView, Crumb, DashboardView, EntityView, FlashView, FormFrame, FormInstance,
-    HealthView, MenuView, MissingView, ModalSpec, NavSectionView, NavView, NotificationView, OperatorView,
+    HealthView, LayoutRow, MenuView, MissingView, ModalSpec, NavSectionView, NavView, NotificationView, OperatorView,
     PageView, PanelInput, ScopeView, SearchGroupView, SearchHitView, SearchView, ShellView, SlotView, TabView,
 };
 use crate::{fakes, see_other, AdminState};
@@ -255,7 +255,7 @@ pub(crate) fn panel_tools(
         })
         .collect();
     tools.sort_by(|a, b| (a.order, &a.id).cmp(&(b.order, &b.id)));
-    tools.into_iter().map(|a| action_item(operator, csrf, module, manifest.writes, a, None)).collect()
+    tools.into_iter().map(|a| action_item(operator, csrf, module, actions::writes(manifest, a), a, None)).collect()
 }
 
 /// The `PanelForm` action of `contribution` in `manifest`.
@@ -272,7 +272,7 @@ pub(crate) fn panel_form_save<'a>(
     contribution: &str,
 ) -> Option<(&'a ActionDecl, String)> {
     let action = panel_form_action(manifest, contribution)?;
-    actions::admit(operator, action, manifest.writes).ok()?;
+    actions::admit(operator, action, actions::writes(manifest, action)).ok()?;
     render::seen::record(&action.point);
     Some((action, action_url(module, &action.id)))
 }
@@ -286,7 +286,7 @@ fn action_items(
     let mut found: Vec<(&str, bool, &ActionDecl)> = snapshot
         .modules
         .iter()
-        .flat_map(|(m, r)| r.manifest.actions.iter().map(move |a| (m.as_str(), r.manifest.writes, a)))
+        .flat_map(|(m, r)| r.manifest.actions.iter().map(move |a| (m.as_str(), actions::writes(&r.manifest, a), a)))
         .filter(|(_, _, a)| want(&a.point))
         .collect();
     found.sort_by(|a, b| (a.2.order, a.0, &a.2.id).cmp(&(b.2.order, b.0, &b.2.id)));
@@ -457,7 +457,7 @@ async fn page(
         };
         return missing_page(&p, &ctx, &snapshot, &headers, &query, miss).await;
     };
-    let ids = render::layout_columns(&decl.layout);
+    let layout = render::layout_rows(&decl.layout);
     let mut missing = Vec::new();
     let mut slots = |ids: &[String]| -> Vec<SlotView> {
         ids.iter()
@@ -476,14 +476,20 @@ async fn page(
         .into_iter()
         .filter_map(|key| query.get(key).map(|value| (key.to_string(), value.clone())))
         .collect();
-    let columns: Vec<Vec<SlotView>> = ids
+    let rows: Vec<LayoutRow> = layout
         .into_iter()
-        .map(|column| {
-            let mut column = slots(column);
-            for s in &mut column {
-                s.url = render::with_param(&s.url, &forwarded, "", None);
-            }
-            column
+        .map(|(layout, ids)| LayoutRow {
+            layout,
+            columns: ids
+                .into_iter()
+                .map(|column| {
+                    let mut column = slots(column);
+                    for s in &mut column {
+                        s.url = render::with_param(&s.url, &forwarded, "", None);
+                    }
+                    column
+                })
+                .collect(),
         })
         .collect();
     let head_actions = decl
@@ -491,7 +497,7 @@ async fn page(
         .iter()
         .filter_map(|id| manifest.actions.iter().find(|a| &a.id == id))
         .filter(|a| !matches!(a.point, ActionPoint::PanelForm(_)))
-        .map(|a| action_item(&ctx.operator, &ctx.csrf, &module, manifest.writes, a, None))
+        .map(|a| action_item(&ctx.operator, &ctx.csrf, &module, actions::writes(manifest, a), a, None))
         .collect();
     let entry = snapshot.nav.iter().find(|n| n.module == module && n.page == page_id);
     let sections = nav_sections(&snapshot);
@@ -505,8 +511,7 @@ async fn page(
         subtitle: decl.subtitle.clone(),
         head_actions,
         tiles,
-        layout: render::layout_name(&decl.layout),
-        columns,
+        rows,
         missing,
     };
     screen(&p, "page", &view)
@@ -552,17 +557,25 @@ async fn entity(
         .collect();
     let tab_decls = snapshot.contributions(|pt| matches!(pt, Point::EntityTab { kind: k, .. } if *k == kind));
     let mut tabs: Vec<TabView> = Vec::new();
-    for (_, c) in &tab_decls {
+    for (m, c) in &tab_decls {
         if let Point::EntityTab { tab, tab_label, .. } = &c.point {
-            if tabs.iter().all(|t| &t.id != tab) {
-                let url = format!("{}?tab={}", render::entity_url(&entity), render::encode(tab));
-                tabs.push(TabView { id: tab.clone(), label: tab_label.clone(), url, counts: Vec::new() });
+            let (down, readonly) = (!snapshot.module_ok(m), c.readonly.is_some());
+            match tabs.iter_mut().find(|t| &t.id == tab) {
+                Some(t) => {
+                    t.down |= down;
+                    t.readonly |= readonly;
+                }
+                None => {
+                    let url = format!("{}?tab={}", render::entity_url(&entity), render::encode(tab));
+                    let counts = Vec::new();
+                    tabs.push(TabView { id: tab.clone(), label: tab_label.clone(), url, counts, down, readonly });
+                }
             }
         }
     }
     for (m, c) in snapshot.contributions(|pt| matches!(pt, Point::EntityTabCount { kind: k, .. } if *k == kind)) {
         if let Point::EntityTabCount { tab, .. } = &c.point {
-            if let Some(t) = tabs.iter_mut().find(|t| &t.id == tab) {
+            if let Some(t) = tabs.iter_mut().find(|t| &t.id == tab && !(t.down && !snapshot.module_ok(m))) {
                 t.counts.push(slot(op, m, c, Some(&entity), false));
             }
         }
@@ -580,6 +593,12 @@ async fn entity(
         .first()
         .is_some_and(|(_, c)| matches!(c.point, Point::EntityTab { columns: 2, .. }));
     let tab_panels = selected.iter().map(|(m, c)| slot(op, m, c, Some(&entity), false)).collect();
+    let on_tab = |k: &String, tab: &String| *k == kind && Some(tab) == selected_tab.as_ref();
+    let tab_tiles = snapshot
+        .contributions(|pt| matches!(pt, Point::EntityTabTile { kind: k, tab } if on_tab(k, tab)))
+        .into_iter()
+        .map(|(m, c)| slot(op, m, c, Some(&entity), false))
+        .collect();
     let header_actions =
         action_items(&snapshot, &ctx, Some(&entity), |pt| matches!(pt, ActionPoint::HeaderAction(k) if *k == kind));
     let has_menu = snapshot
@@ -608,6 +627,7 @@ async fn entity(
         tabs,
         selected_tab,
         tab_grid,
+        tab_tiles,
         tab_panels,
     };
     screen(&p, "entity", &view)
@@ -729,6 +749,7 @@ async fn panel(
         last_value: view.last_value.as_ref(),
         min_role: crate::role_name(decl.min_role),
         fallback_title: &fallback,
+        readonly: decl.readonly.as_deref(),
         body: view.body.as_ref(),
         actions: &tools,
         list_columns: &list_columns,

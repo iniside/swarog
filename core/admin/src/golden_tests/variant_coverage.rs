@@ -9,6 +9,7 @@ pub(super) fn primitive_case(p: &Primitive) -> &'static str {
         Primitive::DataTable(_) => "table_highlight_row_menu",
         Primitive::PropertyList(_) => "state_ok",
         Primitive::KpiTile(_) => "tile_delta_ok_up",
+        Primitive::KpiTiles(_) => "kpi_tiles",
         Primitive::Timeline(_) => "timeline_two_days_older",
         Primitive::Form(_) => "panel_form",
         Primitive::WorkQueue(_) => "queue_items_actions",

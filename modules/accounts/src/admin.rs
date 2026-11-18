@@ -307,6 +307,7 @@ fn contribution(
         min_role: Role::Viewer,
         cache_ttl_s,
         deadline_ms: DEFAULT_PANEL_DEADLINE_MS,
+        readonly: None,
     }
 }
 

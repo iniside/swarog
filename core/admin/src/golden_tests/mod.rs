@@ -56,8 +56,8 @@ use crate::engine::panels::{LastValue, PanelState};
 use crate::engine::roles::Operator;
 use crate::render::{
     self, ActionItem, ActionResultView, Crumb, DashboardView, EntityView, FlashView, FormFrame, FormInstance,
-    MenuView, ModalSpec, OperatorView, PageView, PanelInput, RevealView, SearchGroupView, SearchHitView, SearchView,
-    ShellView, SlotView, TabView,
+    LayoutRow, MenuView, ModalSpec, OperatorView, PageView, PanelInput, RevealView, SearchGroupView, SearchHitView,
+    SearchView, ShellView, SlotView, TabView,
 };
 use crate::routes;
 

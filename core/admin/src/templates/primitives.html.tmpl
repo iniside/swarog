@@ -235,16 +235,13 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 </div></a>
 {%- endmacro %}
 
-{#- Day labels show only when the parsed entries span more than one day. bundle.js:192-201 writes
-    a label at each change of `day`, even when every item shares one, and the dashboard's
-    activity panel passes no `day` (pages-core.js:56). This rule is stricter: a timeline
-    within one day draws no label, as that panel does. An entry whose `at` does not parse
-    joins the day run it sits in (render.rs `timeline`), so it never adds a label; a
-    timeline of only such entries has none. -#}
+{#- Day labels are opt-in (`Timeline.days`), one at each change of day as bundle.js:192-201
+    draws them. An entry whose `at` does not parse joins the day run it sits in (render/tiles.rs
+    `timeline`), so it never adds a label. -#}
 {%- macro timeline(tl) -%}
 {%- for d in tl.days -%}
-{%- if d.label and tl.days|length > 1 %}<div class="tl-day">{{ d.label }}</div>{% endif %}<ul class="tl">
-{%- for it in d.items %}<li><span class="when">{{ it.time }}</span><span class="ico {{ it.tone }}">{{ icon(it.icon) }}</span><div class="body"><div>{% if it.actor %}{{ cell(it.actor) }} {% endif %}{% if it.verb %}<span class="mono">{{ it.verb }}</span> {% endif %}{{ it.summary }}</div>{% if it.target or it.detail %}<div class="meta">{% if it.target %}{{ cell(it.target) }}{% endif %}{% if it.target and it.detail %} · {% endif %}{{ it.detail or "" }}</div>{% endif %}</div></li>{% endfor -%}
+{%- if d.label and tl.labels %}<div class="tl-day">{{ d.label }}</div>{% endif %}<ul class="tl">
+{%- for it in d.items %}<li><span class="when">{{ it.time }}</span><span class="ico {{ it.tone }}">{{ icon(it.icon) }}</span><div class="body"><div>{% if it.actor %}{{ cell(it.actor) }} {% endif %}{% if it.title %}<b>{{ it.title }}</b> {% endif %}{% if it.verb %}<span class="mono">{{ it.verb }}</span> {% endif %}{{ it.summary }}{% for b in it.badges %} {{ cell(b) }}{% endfor %}</div>{% if it.target or it.detail %}<div class="meta">{% if it.target %}{{ cell(it.target) }}{% endif %}{% if it.target and it.detail %} · {% endif %}{{ it.detail or "" }}</div>{% endif %}</div></li>{% endfor -%}
 </ul>
 {%- endfor -%}
 {%- endmacro %}
@@ -253,13 +250,13 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- set off = disabled or f.readonly -%}
 {%- set dis = " disabled" if off else "" -%}
 <label class="fl">{{ f.label }}{% if f.required %} <span style="color:var(--err)">*</span>{% endif %}<span class="type">{{ f.type_name }}</span></label><div>
-{%- if f.control == "textarea" %}<textarea class="input{% if f.mono %} mono{% endif %}{% if f.error %} invalid{% endif %}" rows="4" style="width:100%" name="{{ f.key }}"{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}>{{ f.value }}</textarea>
+{%- if f.control == "textarea" %}<textarea class="input{% if f.mono %} mono{% endif %}{% if f.error %} invalid{% endif %}" rows="4" style="width:100%" name="{{ f.key }}"{% if f.placeholder %} placeholder="{{ f.placeholder }}"{% endif %}{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}>{{ f.value }}</textarea>
 {%- elif f.control == "toggle" %}{% set on = f.value in ["true", "1", "on"] %}<span class="toggle{% if on %} on{% endif %}" role="switch" aria-checked="{{ 'true' if on else 'false' }}"{% if not off %} tabindex="0" data-toggle data-default="{{ 'true' if on else 'false' }}"{% endif %}></span><input type="hidden" name="{{ f.key }}" value="{{ 'true' if on else 'false' }}"{{ " disabled" if disabled else "" }}>
 {%- elif f.control == "select" %}<select class="select" style="width:260px"{% if not off %} name="{{ f.key }}"{% endif %}{{ dis }}>{% for o in f.options %}<option{% if o == f.value %} selected{% endif %}>{{ o }}</option>{% endfor %}</select>{% if f.readonly and not disabled %}<input type="hidden" name="{{ f.key }}" value="{{ f.value }}">{% endif %}
 {%- elif f.control == "checks" %}<div class="checks">{% for o in f.options %}<label><input type="checkbox" name="{{ f.key }}" value="{{ o }}"{% if o in f.selected %} checked{% endif %}{{ dis }}> <span class="mono">{{ o }}</span></label>{% endfor %}</div>
-{%- elif f.control == "ref" %}<span class="input-icon">{{ icon(f.ref_icon) }}<input class="input{% if f.error %} invalid{% endif %}" style="width:260px" name="{{ f.key }}" value="{{ f.value }}" placeholder="{{ f.ref_kind }} id"{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}></span>
+{%- elif f.control == "ref" %}<span class="input-icon">{{ icon(f.ref_icon) }}<input class="input{% if f.error %} invalid{% endif %}" style="width:260px" name="{{ f.key }}" value="{{ f.value }}" placeholder="{{ f.placeholder or (f.ref_kind ~ ' id') }}"{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}></span>
 {%- elif f.control == "money" %}<div class="row"><input class="input num{% if f.error %} invalid{% endif %}" style="width:140px" name="{{ f.key }}" value="{{ f.value }}" inputmode="decimal"{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}><select class="select" style="width:110px"{% if not off %} name="{{ f.currency_name }}"{% endif %}{{ dis }}>{% for o in f.options %}<option{% if o == f.currency %} selected{% endif %}>{{ o }}</option>{% endfor %}</select>{% if f.readonly and not disabled %}<input type="hidden" name="{{ f.currency_name }}" value="{{ f.currency }}">{% endif %}</div>
-{%- else %}<input class="input{% if f.mono %} mono{% endif %}{% if f.control == 'int' %} num{% endif %}{% if f.error %} invalid{% endif %}" style="width:100%;max-width:520px" name="{{ f.key }}" value="{{ f.value }}"{% if f.control == "int" %} inputmode="numeric"{% endif %}{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}>
+{%- else %}<input class="input{% if f.mono %} mono{% endif %}{% if f.control == 'int' %} num{% endif %}{% if f.error %} invalid{% endif %}" style="width:100%;max-width:520px" name="{{ f.key }}" value="{{ f.value }}"{% if f.placeholder %} placeholder="{{ f.placeholder }}"{% endif %}{% if f.control == "int" %} inputmode="numeric"{% endif %}{% if f.required %} required{% endif %}{% if disabled %} disabled{% elif f.readonly %} readonly{% endif %}>
 {%- endif -%}
 {%- if f.error %}<div class="err-msg">{{ f.error }}</div>{% endif %}{% if f.help %}<div class="help">{{ f.help }}</div>{% endif %}</div>
 {%- endmacro %}
@@ -372,9 +369,10 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
     answers 200, so `data-state` on the root is where `tools/admindiff` reads the state. -#}
 {%- macro panel_fragment(p) -%}
 {%- set live = p.state in ["ok", "stale", "readonly"] -%}
-{%- if p.mode == "tile" or (p.body and p.body.type == "Kpi" and live) -%}
+{%- if p.mode == "tile" or (p.body and p.body.type in ["Kpi", "Kpis"] and live) -%}
 <div class="slot" data-panel-url="{{ p.url }}" data-state="{{ p.state }}">
 {%- if live and p.body and p.body.type == "Kpi" %}{{ kpi(p.body, p) }}
+{%- elif live and p.body and p.body.type == "Kpis" %}{% for k in p.body.tiles %}{{ kpi(k, p) }}{% endfor %}
 {%- else %}<a class="panel" style="color:inherit;text-decoration:none">
 {%- if p.state == "denied" %}<div class="kpi state-mini"><div class="kpi-label">{{ p.title }}</div><div class="row" style="color:var(--warn);margin-top:6px">{{ icon("lock") }} Requires role {{ p.min_role }}</div></div>
 {%- elif p.state == "empty" %}<div class="kpi"><div class="kpi-label">{{ p.title }}</div><div class="kpi-value muted">—</div><div class="kpi-delta">No data reported yet</div></div>
@@ -421,11 +419,14 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- if tooled and not footer -%}
 {%- if p.note %}<span class="muted hide-tablet" style="font-size:11.5px">{{ p.note }}</span>{% endif -%}
 {%- if live and p.body and p.body.type == "Services" and p.body.value_label %}<span class="muted" style="font-size:11.5px;width:64px;text-align:right">{{ p.body.value_label }}</span>{% endif -%}
+{%- endif -%}
+{%- if tooled and p.tag %}<span class="badge plain">{{ p.tag }}</span>{% endif -%}
+{%- if tooled and not footer -%}
 {%- for a in p.tools %}{{ action_button(a, "sm") }}{% endfor -%}
 {%- endif -%}
 </div></div>{% endif -%}
 {%- if p.state == "stale" %}<div class="banner warn" title="{{ p.error or '' }}">{{ icon("clock") }} Showing cached data from {{ p.age or "a while" }} ago — {{ p.module }}-svc is lagging.<button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} <span>Refresh</span></button></div>
-{%- elif ro %}<div class="banner info">{{ icon("info") }} Read-only: the <b>{{ p.module }}</b> module does not accept remote edits from the portal.</div>
+{%- elif ro %}<div class="banner info">{{ icon("info") }} {% if p.readonly_text %}{{ p.readonly_text }}{% else %}Read-only: the <b>{{ p.module }}</b> module does not accept remote edits from the portal.{% endif %}</div>
 {%- endif -%}
 {%- if p.banner %}<div class="banner {{ p.banner.tone }}">{{ icon({"err": "alert", "warn": "alert", "ok": "check"}[p.banner.tone] or "info") }} {{ p.banner.text }}</div>{% endif -%}
 {%- for text in p.column_banners %}<div class="banner warn">{{ icon("alert") }} {{ text }}<button type="button" class="btn sm" data-panel-retry>{{ icon("refresh") }} Retry</button></div>{% endfor -%}
@@ -438,7 +439,8 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- else %}{{ state_block("error", p.module ~ " module unavailable", (p.error or "No answer") ~ ". The rest of this page is unaffected.", retry=true) }}
 {%- endif -%}
 </div>
-{%- if live and p.body and p.body.type == "Timeline" and p.body.older_url %}<div class="panel-foot"><button type="button" class="btn sm ghost" hx-get="{{ p.body.older_url }}" hx-target="closest .slot" hx-swap="outerHTML">Load older</button></div>{% endif -%}
+{%- set older = live and p.body and p.body.type == "Timeline" and p.body.older_url -%}
+{%- if live and (p.foot or older) %}<div class="panel-foot">{{ p.foot or "" }}{% if older %}<button type="button" class="btn sm ghost" hx-get="{{ p.body.older_url }}" hx-target="closest .slot" hx-swap="outerHTML">Load older</button>{% endif %}</div>{% endif -%}
 </section></div>
 {%- endif -%}
 {%- endmacro %}

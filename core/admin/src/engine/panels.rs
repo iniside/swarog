@@ -101,6 +101,7 @@ pub(crate) fn is_dashboard(point: &Point) -> bool {
         | Point::EntityHeader(_)
         | Point::EntityTab { .. }
         | Point::EntityTabCount { .. }
+        | Point::EntityTabTile { .. }
         | Point::EntitySummary(_)
         | Point::EntityListColumn { .. }
         | Point::NavCounter => false,
@@ -218,6 +219,7 @@ pub(crate) fn is_empty(primitive: &Primitive) -> bool {
         Primitive::AttentionItems(items) => items.is_empty(),
         Primitive::ColumnCells(cells) => cells.is_empty(),
         Primitive::Empty { .. } => true,
+        Primitive::KpiTiles(tiles) => tiles.is_empty(),
         Primitive::KpiTile(_) | Primitive::Form(_) | Primitive::Cell(_) | Primitive::EntityHeader(_) => false,
     }
 }
@@ -269,7 +271,8 @@ pub(crate) async fn resolve(
                     .unwrap_or_else(|e| e.into_inner())
                     .put(key, body.clone(), Duration::from_secs(u64::from(ttl)));
             }
-            view.state = if manifest.writes || !has_write_affordance(manifest, decl, &body.primitive) {
+            let writable = manifest.writes || !has_write_affordance(manifest, decl, &body.primitive);
+            view.state = if decl.readonly.is_none() && writable {
                 PanelState::Ok
             } else {
                 PanelState::Readonly

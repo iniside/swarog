@@ -99,8 +99,10 @@ pub(crate) struct TimelineItem {
     pub(crate) icon: String,
     pub(crate) tone: &'static str,
     pub(crate) actor: Option<CellView>,
+    pub(crate) title: Option<String>,
     pub(crate) verb: String,
     pub(crate) summary: String,
+    pub(crate) badges: Vec<CellView>,
     pub(crate) target: Option<CellView>,
     pub(crate) detail: Option<String>,
 }
@@ -114,6 +116,8 @@ pub(crate) struct TimelineDay {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct TimelineView {
     pub(crate) days: Vec<TimelineDay>,
+    /// `Timeline::days`: each day's label is drawn.
+    pub(crate) labels: bool,
     pub(crate) older_url: Option<String>,
 }
 
@@ -137,12 +141,14 @@ pub(super) fn timeline(t: &controlplane::Timeline, ctx: &Ctx<'_>) -> TimelineVie
     for e in &t.entries {
         let (key, label, time) = day_and_time(&e.at);
         let item = TimelineItem {
-            time,
+            time: if t.date_only && !label.is_empty() { label.clone() } else { time },
             icon: if e.icon.is_empty() { "activity".to_string() } else { e.icon.clone() },
             tone: e.tone.map(tone).unwrap_or(""),
-            actor: e.actor.as_ref().map(ref_cell),
+            actor: e.actor.as_ref().map(cell),
+            title: e.title.clone(),
             verb: e.verb.clone(),
             summary: e.summary.clone(),
+            badges: e.badges.iter().map(cell).collect(),
             target: e.target.as_ref().map(|t| CellView {
                 kind: "text",
                 value: entity_param(t),
@@ -158,8 +164,10 @@ pub(super) fn timeline(t: &controlplane::Timeline, ctx: &Ctx<'_>) -> TimelineVie
             }),
             detail: e.detail.clone(),
         };
-        // An entry whose `at` does not parse (empty key) joins the current run, and a run of
-        // only such entries takes the day of the first parsed entry after them.
+        // Without day labels every entry is one run. An entry whose `at` does not parse (empty
+        // key) joins the current run, and a run of only such entries takes the day of the first
+        // parsed entry after them.
+        let key = if t.days { key } else { String::new() };
         match days.last_mut() {
             Some((k, day)) if *k == key || key.is_empty() => day.items.push(item),
             Some((k, day)) if k.is_empty() => {
@@ -172,6 +180,7 @@ pub(super) fn timeline(t: &controlplane::Timeline, ctx: &Ctx<'_>) -> TimelineVie
     }
     TimelineView {
         days: days.into_iter().map(|(_, d)| d).collect(),
+        labels: t.days,
         older_url: t.cursor_before.as_deref().map(|c| with_param(ctx.path, ctx.query, QUERY_BEFORE, Some(c))),
     }
 }

@@ -219,7 +219,7 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
 - [ ] **Screen goldens assemble their views by hand**
   ADMIN2-38. The dashboard, page and entity goldens build `DashboardView`, `PageView` and
   `EntityView` in the test from production helpers (`routes::slot`, `action_item`,
-  `render::screen_page`, `layout_columns`), because the route builders are async handlers
+  `render::screen_page`, `layout_rows`), because the route builders are async handlers
   needing a `Portal`, auth and a snapshot. Enum coverage is exact, but a route that puts a
   slot in the wrong field is not caught. Closed by: pure view builders lifted out of the
   `page`/`dashboard`/`entity` handlers and called from the goldens. Source: Step 28
@@ -243,6 +243,20 @@ gaps go to the next iteration.
   declined a `Forbidden` → denied panel mapping (2026-11-17, step 13 G9), so accounts
   contributes no such panel. Closed by: a PII store and a permission-denied panel state;
   then delete the accept line.
+- [ ] **Config revision restore link**
+  ADMIN2-39. Accept entry: the `contract gap` line for the Revisions timeline's per-entry
+  "restore" link, written by the config port (Step 23) in its page's accept file, since no
+  accept file maps the config page yet. Mockup: pages-platform.js:104-105. A `TimelineEntry`
+  carries no action (core/controlplane/src/lib.rs, `TimelineEntry`), so the portal draws no
+  link (admin-control-plane-redesign step 13c.1b, K10). Closed by: a per-entry action on
+  `TimelineEntry` drawn by the timeline macro; then delete the accept line.
+- [ ] **Wallet Grant/Revoke segmented switch**
+  ADMIN2-40. Accept entry: the `contract gap` line for the Grant or revoke form's
+  `div.seg`, written by the wallet port (Step 15) in its currencies page's accept file,
+  since no accept file maps that page yet. Mockup: pages-platform.js:172. `FormSpec` has no
+  form modes, so the port draws the choice as a `FieldKind::Enum` field
+  (admin-control-plane-redesign step 13c.1b, K16). Closed by: a segmented control in
+  `FormSpec` and the form macro; then delete the accept line.
 
 ## Mail nav counter with only parked rows
 

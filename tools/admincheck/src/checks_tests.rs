@@ -64,6 +64,7 @@ fn manifest(point: ActionPoint) -> Manifest {
             min_role: Role::Viewer,
             cache_ttl_s: None,
             deadline_ms: 1000,
+            readonly: None,
         }],
         actions: vec![action("act", point)],
         ..Manifest::default()

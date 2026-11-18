@@ -63,6 +63,7 @@ fn point_kind(point: &Point) -> Option<&str> {
         | Point::EntitySummary(kind)
         | Point::EntityTab { kind, .. }
         | Point::EntityTabCount { kind, .. }
+        | Point::EntityTabTile { kind, .. }
         | Point::EntityListColumn { kind, .. } => Some(kind),
         Point::Page(_)
         | Point::DashboardTile
@@ -109,12 +110,17 @@ fn entity_kinds(manifests: &[Manifest], out: &mut Vec<String>) {
     }
 }
 
+fn laid_out(layout: &Layout) -> Vec<&String> {
+    match layout {
+        Layout::Stack(ids) => ids.iter().collect(),
+        Layout::Grid21(a, b) | Layout::Grid2(a, b) => a.iter().chain(b).collect(),
+        Layout::Rows(rows) => rows.iter().flat_map(laid_out).collect(),
+    }
+}
+
 fn layouts(m: &Manifest, out: &mut Vec<String>) {
     for page in &m.pages {
-        let laid_out: Vec<&String> = match &page.layout {
-            Layout::Stack(ids) => ids.iter().collect(),
-            Layout::Grid21(a, b) | Layout::Grid2(a, b) => a.iter().chain(b).collect(),
-        };
+        let laid_out = laid_out(&page.layout);
         for id in page.tiles.iter().filter(|id| laid_out.contains(id)) {
             out.push(format!("{}: page {:?} places {id:?} in both its tiles and its layout", m.module, page.id));
         }

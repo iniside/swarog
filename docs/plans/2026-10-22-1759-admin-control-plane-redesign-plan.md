@@ -2878,3 +2878,39 @@ no fix-on-fix: a finding that needs the mirror back is an owner question.
     clickable and the two `tr.clickable` template-choice lines in `events.txt` stay; only the
     two muted-mono contract-gap lines are deleted.
   - No request field is added, so `tools/conformance` gets no policy row.
+- **Step 13c.1b (2026-11-18).**
+  - K12: the read-only banner draws `ContributionDecl.readonly` when set. A `writes: false`
+    module keeps the template's default text, whose `<b>module</b>` markup a plain-text field
+    cannot carry, so that text stays in `primitives.html.tmpl` as the default instead of
+    dying. A declared `readonly` also disables the contribution's write actions:
+    `engine::actions::writes` (the module writes and the contribution an action sits on has
+    no `readonly`) is what `admit` gets, for the drawn controls and for a submit.
+  - K13: a tab is down when a module contributing an `EntityTab` to it is down
+    (`Snapshot::module_ok`); a down tab skips the count slots of down modules, which would
+    draw a second dot.
+  - K10: `Timeline.days: false` draws every entry in one list with no label; `true`
+    labels every day, one day included (`bundle.js:192-201`). The date-only format is
+    `Timeline.date_only` ("Oct 14"). The two-day golden case sets `days: true`, so no
+    golden changed.
+  - K11: an `EntityTabTile` draws in tile mode; a `KpiTiles` body draws one tile per entry
+    inside its one slot (`.slot` is `display: contents`); an empty `KpiTiles` is the empty
+    state. `make_finite` covers `KpiTiles`.
+  - K15: `Layout::Rows` flattens nested rows; every row but the last carries
+    `margin-bottom:12px`. `PageView.layout` and `columns` became `rows`
+    (`render::layout_rows` replaces `layout_columns` and `layout_name`); admincheck reads
+    the ids of every row.
+  - K9: `PanelBody.tag` draws as `span.badge.plain` in the tools of every tooled state;
+    `foot` shares the one `div.panel-foot` with Load older. The stored panel-form
+    `Chrome` carries both.
+  - K16: `FormSpec.title` titles the modal only. `Field.placeholder` draws on text,
+    textarea and ref inputs (a ref falls back to "<kind> id"). `admin.forms` rows written
+    before this step lack `Field.mono` and no longer decode; they expire within `FORM_TTL`
+    under the wipe rule.
+  - The accept entries for the restore link (K10) and the Grant/Revoke seg (K16) are written
+    by their ports (Steps 23 and 15), since no accept file maps those pages yet; their todo
+    items (ADMIN2-39, ADMIN2-40) land now.
+  - Red by design until 13c.1g, besides the declared-variant gate: the two `Primitive`
+    case-count checks (`golden_cases_cover_every_macro_variant_and_state`,
+    `variant_coverage_fails_on_a_new_enum_variant`), since `KpiTiles` names the
+    `kpi_tiles` case 13c.1g adds.
+  - No request field is added, so `tools/conformance` gets no policy row.

@@ -20,6 +20,7 @@ pub(crate) fn mode_of(point: &Point, in_tiles: bool) -> &'static str {
         Point::EntityHeader(_) => "header",
         Point::EntitySummary(_) => "fact",
         Point::EntityTabCount { .. } => "count",
+        Point::EntityTabTile { .. } => "tile",
         Point::NavCounter => "nav",
         Point::EntityListColumn { .. } => "column",
         Point::Page(_) if in_tiles => "tile",
@@ -45,6 +46,8 @@ pub(crate) struct PanelInput<'a> {
     pub(crate) last_value: Option<&'a LastValue>,
     pub(crate) min_role: &'static str,
     pub(crate) fallback_title: &'a str,
+    /// `ContributionDecl::readonly`.
+    pub(crate) readonly: Option<&'a str>,
     pub(crate) body: Option<&'a PanelBody>,
     /// This contribution's `PanelTool`, `QueueRow` and `TableRow` actions, unbound.
     pub(crate) actions: &'a [ActionItem],
@@ -85,7 +88,11 @@ pub(crate) struct PanelRender {
     pub(crate) meta: Option<String>,
     pub(crate) heading: Option<String>,
     pub(crate) note: Option<String>,
+    pub(crate) foot: Option<String>,
+    pub(crate) tag: Option<String>,
     pub(crate) banner: Option<BannerView>,
+    /// The read-only banner's text; the template's module default when absent.
+    pub(crate) readonly_text: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) age: Option<String>,
     /// The KPI tile's stale badge: `"3m"`.
@@ -161,6 +168,9 @@ pub(crate) fn panel(input: &PanelInput<'_>) -> PanelRender {
         meta: input.body.and_then(|b| b.meta.clone()),
         heading: input.body.and_then(|b| b.heading.clone()),
         note: input.body.and_then(|b| b.note.clone()),
+        foot: input.body.and_then(|b| b.foot.clone()),
+        tag: input.body.and_then(|b| b.tag.clone()),
+        readonly_text: input.readonly.map(str::to_string),
         banner: panels::module_banner(input.state, input.body.and_then(|b| b.banner.as_ref()))
             .map(|b| BannerView { tone: tone(b.tone), text: b.text.clone() }),
         error: input.error.map(str::to_string),
@@ -206,6 +216,7 @@ pub(crate) enum PrimView {
     Table(TableView),
     Props(PropsView),
     Kpi(KpiView),
+    Kpis { tiles: Vec<KpiView> },
     Timeline(TimelineView),
     Form(PanelFormView),
     Queue(QueueView),
@@ -237,6 +248,7 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
         // `panels::resolve` turns a ColumnCells body into the error state, so no panel draws one.
         Primitive::ColumnCells(_) => PrimView::Empty { title: String::new(), detail: String::new() },
         Primitive::KpiTile(k) => PrimView::Kpi(kpi(k)),
+        Primitive::KpiTiles(tiles) => PrimView::Kpis { tiles: tiles.iter().map(kpi).collect() },
         Primitive::Timeline(t) => PrimView::Timeline(timeline(t, ctx)),
         Primitive::Form(f) => PrimView::Form(panel_form(f, ctx.input)),
         Primitive::WorkQueue(q) => PrimView::Queue(queue(q, ctx)),

@@ -385,16 +385,23 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel!("panel_untitled", PanelCase { title: "", ..PanelCase::new(PanelState::Ok, Some(body(summary()))) });
 
     // ---- Timeline ----
-    let entry = |at: &str, actor: Option<EntityRef>, verb: &str, summary: &str| TimelineEntry {
+    let actor = |kind: CellKind, entity_kind: &str, id: &str| {
+        let value = if kind == CellKind::Ref { format!("{entity_kind}:{id}") } else { id.to_string() };
+        Cell { link: Some(Link::Entity(entity(entity_kind, id))), ..cell(kind, &value) }
+    };
+    let entry = |at: &str, actor: Option<Cell>, verb: &str, summary: &str| TimelineEntry {
         at: at.to_string(),
         actor,
+        title: None,
         verb: verb.to_string(),
         target: None,
         summary: summary.to_string(),
+        badges: Vec::new(),
         detail: None,
         icon: String::new(),
         tone: None,
     };
+    let (user, svc) = (Some(actor(CellKind::User, "player", "p-1001")), Some(actor(CellKind::Ref, "svc", "billing")));
     panel!(
         "timeline_two_days_older",
         PanelCase::new(
@@ -406,23 +413,25 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
                         detail: Some("batch 42".to_string()),
                         icon: "gift".to_string(),
                         tone: Some(Tone::Ok),
-                        ..entry("2026-10-21T09:12:00Z", Some(entity("player", "p-1001")), "grant", "granted 1 item")
+                        ..entry("2026-10-21T09:12:00Z", user, "grant", "granted 1 item")
                     },
-                    entry("not-a-time", Some(entity("user", "ops.anna")), "", "imported legacy entry"),
+                    entry("not-a-time", Some(actor(CellKind::User, "user", "ops.anna")), "", "imported legacy entry"),
                     entry("2026-10-21T08:03:00Z", None, "", "nightly compaction finished"),
                     TimelineEntry {
                         detail: Some("attempt 2 of 5".to_string()),
                         icon: "refresh".to_string(),
                         tone: Some(Tone::Warn),
-                        ..entry("2026-10-20T23:59:00Z", Some(entity("svc", "billing")), "retry", "webhook retried")
+                        ..entry("2026-10-20T23:59:00Z", svc, "retry", "webhook retried")
                     },
                 ],
                 cursor_before: Some("2026-10-20T23:59:00Z".to_string()),
                 live: false,
+                days: true,
+                date_only: false,
             }))),
         ),
     );
-    let no_entries = Timeline { entries: Vec::new(), cursor_before: None, live: false };
+    let no_entries = Timeline { entries: Vec::new(), cursor_before: None, live: false, days: false, date_only: false };
     panel!("timeline_empty", PanelCase::new(PanelState::Empty, Some(body(Primitive::Timeline(no_entries)))));
 
     // ---- WorkQueue: row actions, a panel tool, the table contract and its foot ----
@@ -575,12 +584,15 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         min_role: Role::Viewer,
         cache_ttl_s: None,
         deadline_ms: 0,
+        readonly: None,
     };
     let chrome = Chrome {
         meta: Some("rev 3".to_string()),
         heading: Some("anna".to_string()),
         note: Some("Saved by ops".to_string()),
         banner: Some(Banner { tone: Tone::Info, text: "Edits sync within a minute.".to_string() }),
+        foot: None,
+        tag: None,
     };
     let player = entity("player", "p-1001");
     let frame_path = format!("/admin/_panel/{MODULE}/{CONTRIBUTION}");
@@ -702,6 +714,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         submit_label: "Grant".to_string(),
         note: Some("Granted items appear in the next sync.".to_string()),
         revision: None,
+        title: None,
     };
     let grant = decl("grant", "Grant item", "gift", Then::Form(grant_spec.clone()));
     push!(plain("modal_form", modal(&grant, ModalSpec::Form(&grant_spec))));
@@ -764,6 +777,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
             value: "gb_live_0123456789abcdef".to_string(),
             hint: None,
             expires_at: Some("2026-12-01".to_string()),
+            extra: None,
         }),
         tone: "ok",
     };
@@ -891,10 +905,15 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
                 subtitle: String::new(),
                 head_actions: vec![routes::action_item(&operator(Role::Viewer), CSRF, MODULE, true, &export, None)],
                 tiles: vec![point_slot("tile", page_point(), Role::Viewer, true)],
-                layout: render::layout_name(&layout),
-                columns: render::layout_columns(&layout)
+                rows: render::layout_rows(&layout)
                     .into_iter()
-                    .map(|column| column.iter().map(|id| point_slot(id, page_point(), Role::Viewer, false)).collect())
+                    .map(|(layout, ids)| LayoutRow {
+                        layout,
+                        columns: ids
+                            .into_iter()
+                            .map(|ids| ids.iter().map(|id| point_slot(id, page_point(), Role::Viewer, false)).collect())
+                            .collect(),
+                    })
                     .collect(),
                 missing: Vec::new(),
             };
@@ -925,9 +944,12 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
                 label: "Items".to_string(),
                 url: "/admin/e/player/p-1001?tab=items".to_string(),
                 counts: vec![at("count", Point::EntityTabCount { kind: "player".to_string(), tab: "items".to_string() })],
+                down: false,
+                readonly: false,
             }],
             selected_tab: Some("items".to_string()),
             tab_grid: false,
+            tab_tiles: Vec::new(),
             tab_panels: vec![at("items", tab())],
         };
         screen(env, "entity", &view)

@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use controlplane::{
-    decode_field, encode_field, ActionDecl, Banner, ConfirmSpec, ControlPlane, EntityRef, Field, FieldKind, FormSpec,
-    InvokeOutcome, Link, PanelBody, PrepareCall, Primitive, ReasonReq, SecretReveal, Then,
+    decode_field, encode_field, ActionDecl, ActionPoint, Banner, ConfirmSpec, ControlPlane, EntityRef, Field, FieldKind,
+    FormSpec, InvokeOutcome, Link, Manifest, PanelBody, PrepareCall, Primitive, ReasonReq, SecretReveal, Then,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -47,14 +47,26 @@ pub(crate) const ITEM_MAX: usize = 256;
 pub(crate) struct Found<'a> {
     pub(crate) decl: &'a ActionDecl,
     pub(crate) face: Arc<dyn ControlPlane>,
-    /// The owning module's `Manifest.writes`.
+    /// [`writes`] of `decl`.
     pub(crate) writes: bool,
 }
 
 pub(crate) fn find<'a>(snapshot: &'a Snapshot, module: &str, action: &str) -> Option<Found<'a>> {
     let (manifest, face) = snapshot.route(module)?;
     let decl = manifest.actions.iter().find(|a| a.id == action)?;
-    Some(Found { decl, face, writes: manifest.writes })
+    Some(Found { decl, face, writes: writes(manifest, decl) })
+}
+
+/// Whether `decl` may write: its module writes and the contribution it sits on declares no
+/// `readonly`.
+pub(crate) fn writes(manifest: &Manifest, decl: &ActionDecl) -> bool {
+    let on = match &decl.point {
+        ActionPoint::PanelTool(c) | ActionPoint::QueueRow(c) | ActionPoint::PanelForm(c) | ActionPoint::TableRow(c) => {
+            Some(c)
+        }
+        ActionPoint::RowAction(_) | ActionPoint::HeaderAction(_) | ActionPoint::PageHead(_) => None,
+    };
+    manifest.writes && !on.is_some_and(|c| manifest.contributions.iter().any(|x| &x.id == c && x.readonly.is_some()))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,6 +190,8 @@ pub(crate) struct Chrome {
     pub(crate) heading: Option<String>,
     pub(crate) note: Option<String>,
     pub(crate) banner: Option<Banner>,
+    pub(crate) foot: Option<String>,
+    pub(crate) tag: Option<String>,
 }
 
 impl Chrome {
@@ -187,6 +201,8 @@ impl Chrome {
             heading: body.heading.clone(),
             note: body.note.clone(),
             banner: body.banner.clone(),
+            foot: body.foot.clone(),
+            tag: body.tag.clone(),
         }
     }
 
@@ -197,6 +213,8 @@ impl Chrome {
             heading: self.heading.clone(),
             note: self.note.clone(),
             banner: self.banner.clone(),
+            foot: self.foot.clone(),
+            tag: self.tag.clone(),
         }
     }
 }

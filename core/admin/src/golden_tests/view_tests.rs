@@ -127,6 +127,8 @@ fn timeline_older_url_carries_only_the_new_before() {
                 entries: Vec::new(),
                 cursor_before: Some("2026-10-20T23:59:00Z".to_string()),
                 live: false,
+                days: false,
+                date_only: false,
             }))),
         )
     };

@@ -31,6 +31,7 @@ fn contribution(id: &str, point: Point, order: i32, title: &str, icon: &str) -> 
         min_role: Role::Viewer,
         cache_ttl_s: None,
         deadline_ms: DEFAULT_PANEL_DEADLINE_MS,
+        readonly: None,
     }
 }
 
