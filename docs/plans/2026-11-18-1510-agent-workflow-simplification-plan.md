@@ -84,6 +84,29 @@ Cut MANDATORY/IMPORTANT emphasis: rules with zero exceptions are enforced by
 hooks already (git safety, commit format, explicit model, worktrees); the rest
 is stated once in plain words.
 
+### Step 5 — procedures to skills, path knowledge to rules, delete code-readable prose [docs]
+Owner 2026-11-18. Binding rules that must be known before an action stay
+always/action-loaded as short statements (git safety, commit after task,
+wipe/no dual-write, comments, hard constraints, one rollout at a time, review
+always a subagent, no inline, no worktrees); only how-to detail moves.
+- 5a: `planning-dispatch.md` Implementation Mode → skill
+  `implementation-dispatch`; Adversarial Diff Review method → skill
+  `diff-review` (core-reviewer reads it); Plan Writing → the
+  `research-plan-present` skill; `research-navigation.md` method and search
+  budget → skill `code-navigation` (agents get a pointer); AGENTS.md table and
+  adapter repointed; Agent Effort folded into implementation-dispatch.
+- 5b: `core-rules.md` Plans And Status Docs format →
+  `.claude/rules/status-docs.md` (paths docs/todo, docs/plans, docs/roadmap),
+  keeping file locations and the leftover rule; Commit Message Format trimmed
+  (hook enforces); Agent Memory Backup → skill `memory-backup`;
+  `gamebackend.md` one-rollout detail → `safe-verification` skill (short rule
+  stays), Adding-a-module recipe deduped into `add-game-module`, Layout and
+  the Commands tail deleted (read from the tree and --help).
+- 5c: prune `.claude/rules/domain-modules.md` of text restating each
+  module's own lib.rs header / api traits; split
+  `docs/reference/core-failure-taxonomy.md` into per-class files with the
+  same path kept as the index.
+
 ### Review
 One core-reviewer pass over the cumulative diff after step 4, checking for
 contradictions and dangling references (prose steps get no per-commit review
