@@ -37,7 +37,8 @@ pub(super) fn bar_tone(t: Option<Tone>) -> &'static str {
     }
 }
 
-pub(crate) fn cell(c: &controlplane::Cell, labels: &Labels) -> CellView {
+/// `labels`: the slot's labels where `c` is drawn from the slot's body; `None` where it is not.
+pub(crate) fn cell(c: &controlplane::Cell, labels: Option<&Labels>) -> CellView {
     let mut more = Vec::new();
     let mut pending: Vec<&controlplane::Cell> = c.more.iter().rev().collect();
     while let Some(next) = pending.pop() {
@@ -49,15 +50,17 @@ pub(crate) fn cell(c: &controlplane::Cell, labels: &Labels) -> CellView {
 
 /// The label `labels` holds for `e`.
 pub(super) fn label_of<'a>(labels: &'a Labels, e: &EntityRef) -> Option<&'a str> {
+    asked::record(e);
     let text = labels.get(&(e.kind.clone(), e.id.clone()))?;
     seen::record(&Point::EntityLabel { kind: e.kind.clone() });
     Some(text)
 }
 
 /// `c` without its `more`; a cell drawing an entity as its raw id draws the entity's label.
-fn one_cell(c: &controlplane::Cell, labels: &Labels) -> CellView {
+fn one_cell(c: &controlplane::Cell, labels: Option<&Labels>) -> CellView {
     seen::record(&c.kind);
-    let value = labels::drawn_ref(c).and_then(|e| label_of(labels, e)).unwrap_or(&c.value);
+    let label = labels.zip(labels::drawn_ref(c)).and_then(|(labels, e)| label_of(labels, e));
+    let value = label.unwrap_or(&c.value);
     let kind = match c.kind {
         CellKind::Text => "text",
         CellKind::Mono => "mono",

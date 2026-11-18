@@ -52,7 +52,7 @@ use minijinja::Environment;
 
 use crate::engine::actions::{self, Chrome};
 use crate::engine::columns::{ColumnOutcome, ListColumn};
-use crate::engine::labels::Labels;
+use crate::engine::labels::{self, Labels};
 use crate::engine::panels::{LastValue, PanelState};
 use crate::engine::roles::Operator;
 use crate::render::{
@@ -101,6 +101,10 @@ struct Case {
     state: Option<&'static str>,
     /// What the render path converted while this case alone was built and rendered.
     seen: render::seen::Record,
+    /// `labels::refs` of a `render::panel` case's body; empty for any other case.
+    refs: render::asked::Asked,
+    /// The refs the draw looked a label up for while this case alone was built and rendered.
+    asked: render::asked::Asked,
 }
 
 struct Rendered {
@@ -109,16 +113,26 @@ struct Rendered {
     primitive: Option<&'static str>,
     state: Option<&'static str>,
     seen: render::seen::Record,
+    refs: render::asked::Asked,
+    asked: render::asked::Asked,
 }
 
 fn plain(name: &'static str, result: Result<String, minijinja::Error>) -> Rendered {
-    Rendered { name, result, primitive: None, state: None, seen: render::seen::Record::new() }
+    let none = render::asked::Asked::new;
+    let seen = render::seen::Record::new();
+    Rendered { name, result, primitive: None, state: None, seen, refs: none(), asked: none() }
 }
 
-/// `f`'s case with what the render path converted while `f` ran.
+/// `f`'s case with what the render path converted, and the refs it looked a label up for,
+/// while `f` ran.
 fn scoped(f: impl FnOnce() -> Rendered) -> Rendered {
-    let (rendered, seen) = render::seen::collect(f);
-    Rendered { seen, ..rendered }
+    let ((rendered, asked), seen) = render::seen::collect(|| render::asked::collect(f));
+    Rendered { seen, asked, ..rendered }
+}
+
+/// Each ref `labels::refs` collects from `body`, as `(kind, id)`.
+fn collected(body: &Primitive) -> render::asked::Asked {
+    labels::refs(body).into_iter().flat_map(|(kind, ids)| ids.into_iter().map(move |id| (kind.clone(), id))).collect()
 }
 
 fn goldens(cases: &[Case]) -> Vec<(String, String)> {

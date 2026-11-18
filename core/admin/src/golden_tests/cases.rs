@@ -22,6 +22,8 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
                     primitive: case.body.as_ref().map(|b| primitive_case(&b.primitive)),
                     state: (case.mode == "panel").then(|| state_case(case.state)),
                     seen: render::seen::Record::new(),
+                    refs: case.body.as_ref().map(|b| collected(&b.primitive)).unwrap_or_default(),
+                    asked: render::asked::Asked::new(),
                 }
             })
         };
@@ -418,6 +420,31 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel!("table_first_page_label", table_first_page_case());
     panel!("table_list_columns", table_list_columns_case());
     panel!("table_labelled", table_labelled_case());
+    let owners = props(vec![("Owner", player_cell("p-1001")), ("Buyer", player_cell("p-1002"))]);
+    panel!("labelled_props", labelled_case("panel", Primitive::PropertyList(owners)));
+    let gifted = TimelineEntry {
+        at: "2026-10-21T09:12:00Z".to_string(),
+        actor: None,
+        title: None,
+        verb: "gifted".to_string(),
+        target: None,
+        summary: "a sword".to_string(),
+        badges: vec![player_cell("p-1001"), player_cell("p-1002")],
+        detail: None,
+        icon: String::new(),
+        tone: None,
+    };
+    let badges = Timeline { entries: vec![gifted], cursor_before: None, live: false, days: false, date_only: false };
+    panel!("labelled_timeline_badges", labelled_case("panel", Primitive::Timeline(badges)));
+    let owned = EntityHeader {
+        title: "Sword".to_string(),
+        crumb: None,
+        subtitle: "item".to_string(),
+        status: Some(player_cell("p-1001")),
+        badges: vec![player_cell("p-1002")],
+        avatar_seed: "sword-7".to_string(),
+    };
+    panel!("labelled_header", labelled_case("header", Primitive::EntityHeader(owned)));
     panel!("table_row_actions", table_row_actions_case());
     panel!(
         "table_noun_later_page",
@@ -1157,6 +1184,8 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
                 primitive: r.primitive,
                 state: r.state,
                 seen: r.seen,
+                refs: r.refs,
+                asked: r.asked,
             }
         })
         .collect()

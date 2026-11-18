@@ -244,6 +244,101 @@ fn a_timeline_actor_and_target_and_a_queue_entity_draw_the_label_or_the_plain_id
     assert_eq!([value(0), value(1)], ["Anna#1", "p-2"]);
 }
 
+/// A list column's cell is no part of the slot's body: one drawing `p-1` as its raw id draws
+/// the id, though the body's own `p-1` cell draws the label.
+#[test]
+fn a_list_column_cell_draws_no_label() {
+    let table = match players_table(vec![player_row("p-1", "12", "active", false)], None, None) {
+        Primitive::DataTable(t) => DataTable { list_columns_for: Some("player".to_string()), list_columns_at: 1, ..t },
+        _ => unreachable!("players_table is a DataTable"),
+    };
+    let answered = ColumnOutcome::Cells(BTreeMap::from([("p-1".to_string(), player_link("p-1", "p-1"))]));
+    let column =
+        ListColumn { module: "friends".to_string(), label: "Friend".to_string(), align: Align::Left, outcome: answered };
+    let case = PanelCase {
+        labels: player_labels(),
+        list_columns: vec![column],
+        ..PanelCase::new(PanelState::Ok, Some(body(Primitive::DataTable(table))))
+    };
+    let view = case.view();
+    let value = |cell: usize| view["body"]["rows"][0]["cells"][cell]["cell"]["value"].clone();
+    assert_eq!([value(0), value(1)], ["Anna#1", "p-1"]);
+}
+
+/// Each carrier arm of `labels::refs` collects the raw-id cells its body draws: a property
+/// list, timeline badges, queue item cells and an entity header's status and badges.
+#[test]
+fn labels_refs_collects_every_carrier_arm() {
+    let only = |id: &str| BTreeMap::from([("player".to_string(), vec![id.to_string()])]);
+    let refs = crate::engine::labels::refs;
+
+    let items = vec![("Owner", player_link("p-1", "p-1")), ("Name", player_link("p-9", "Anna"))];
+    let list = Primitive::PropertyList(props(items));
+    assert_eq!(refs(&list), only("p-1"), "a property list");
+
+    let entry = TimelineEntry {
+        at: "2026-11-19T10:00:00Z".to_string(),
+        actor: None,
+        title: None,
+        verb: "gifted".to_string(),
+        target: None,
+        summary: String::new(),
+        badges: vec![player_link("p-2", "p-2")],
+        detail: None,
+        icon: String::new(),
+        tone: None,
+    };
+    let timeline = Timeline { entries: vec![entry], cursor_before: None, live: false, days: false, date_only: false };
+    assert_eq!(refs(&Primitive::Timeline(timeline)), only("p-2"), "timeline badges");
+
+    let item = QueueItem { cells: vec![player_link("p-3", "p-3")], ..queue_item("job-1", "failed", 1, 5, &[]) };
+    assert_eq!(refs(&Primitive::WorkQueue(work_queue("failed", vec![item]))), only("p-3"), "queue item cells");
+
+    let header = |status: Option<Cell>, badges: Vec<Cell>| {
+        Primitive::EntityHeader(EntityHeader {
+            title: "Anna".to_string(),
+            crumb: None,
+            subtitle: String::new(),
+            status,
+            badges,
+            avatar_seed: String::new(),
+        })
+    };
+    assert_eq!(refs(&header(Some(player_link("p-4", "p-4")), Vec::new())), only("p-4"), "a header status");
+    assert_eq!(refs(&header(None, vec![player_link("p-5", "p-5")])), only("p-5"), "a header badge");
+}
+
+/// The carrier set has one source: in every golden case, the refs the draw looked a label up
+/// for are exactly the refs `labels::refs` collects from the case's body.
+#[test]
+fn every_golden_draw_asks_a_label_for_exactly_the_refs_its_body_collects() {
+    let env = render::env().expect("templates compile");
+    let cases = cases(&env);
+    let mut problems = Vec::new();
+    for case in &cases {
+        for (kind, id) in case.refs.difference(&case.asked) {
+            problems.push(format!("{}: {kind}:{id} is collected but its draw asks no label", case.name));
+        }
+        for (kind, id) in case.asked.difference(&case.refs) {
+            problems.push(format!("{}: {kind}:{id} asks a label but is not collected", case.name));
+        }
+    }
+    assert!(problems.is_empty(), "collected refs against drawn refs:\n  {}", problems.join("\n  "));
+    assert!(cases.iter().any(|c| !c.asked.is_empty()), "no golden case draws a labelled ref");
+}
+
+/// `mode_of` records no list column or label: only their draws do.
+#[test]
+fn mode_of_records_neither_a_list_column_nor_a_label() {
+    let column = Point::EntityListColumn { kind: "player".to_string(), label: "Guild".to_string(), align: Align::Left };
+    let label = Point::EntityLabel { kind: "player".to_string() };
+    let ((), record) = render::seen::collect(|| {
+        render::mode_of(&column, false);
+        render::mode_of(&label, false);
+    });
+    assert!(!record.contains_key("Point"), "{record:?}");
+}
+
 /// An action's id and the `(entity, item)` it is bound to.
 type Binding = (String, Option<String>, Option<String>);
 

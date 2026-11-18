@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use controlplane::{ConfirmSpec, ConfirmTone, FormSpec, ReasonReq};
 use serde::Serialize;
 use crate::engine::actions;
-use crate::engine::labels::Labels;
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -100,7 +99,7 @@ pub(crate) fn modal(
             }
             view.title = spec.title.clone();
             view.body = spec.body.clone();
-            view.impact = spec.impact.iter().map(|(k, v)| (k.clone(), cell(v, &Labels::new()))).collect();
+            view.impact = spec.impact.iter().map(|(k, v)| (k.clone(), cell(v, None))).collect();
             view.reason_hint = spec.reason_hint.clone();
             seen::record(&spec.reason);
             view.reason = match spec.reason {

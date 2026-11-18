@@ -84,6 +84,53 @@ pub(crate) mod seen {
     pub(crate) fn record<E: controlplane::Variants>(_: &E) {}
 }
 
+/// The refs the draw looks a label up for; recorded only in test builds.
+#[cfg(test)]
+pub(crate) mod asked {
+    use std::cell::RefCell;
+    use std::collections::BTreeSet;
+
+    use controlplane::EntityRef;
+
+    /// Each looked-up ref as `(kind, id)`.
+    pub(crate) type Asked = BTreeSet<(String, String)>;
+
+    thread_local! {
+        static ASKED: RefCell<Option<Asked>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn record(e: &EntityRef) {
+        ASKED.with_borrow_mut(|asked| {
+            if let Some(asked) = asked {
+                asked.insert((e.kind.clone(), e.id.clone()));
+            }
+        });
+    }
+
+    struct Collecting;
+
+    impl Drop for Collecting {
+        fn drop(&mut self) {
+            ASKED.set(None);
+        }
+    }
+
+    /// Runs `f` and returns the refs the draw looked up on this thread while it ran.
+    pub(crate) fn collect<R>(f: impl FnOnce() -> R) -> (R, Asked) {
+        assert!(ASKED.with_borrow(Option::is_none), "asked::collect does not nest");
+        ASKED.set(Some(Asked::new()));
+        let _collecting = Collecting;
+        let out = f();
+        (out, ASKED.take().unwrap_or_default())
+    }
+}
+
+#[cfg(not(test))]
+pub(crate) mod asked {
+    #[inline(always)]
+    pub(crate) fn record(_: &controlplane::EntityRef) {}
+}
+
 mod url;
 mod style;
 mod cell;

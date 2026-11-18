@@ -144,11 +144,11 @@ pub(super) fn timeline(t: &controlplane::Timeline, ctx: &Ctx<'_>) -> TimelineVie
             time: if t.date_only && !label.is_empty() { label.clone() } else { time },
             icon: if e.icon.is_empty() { "activity".to_string() } else { e.icon.clone() },
             tone: e.tone.map(tone).unwrap_or(""),
-            actor: e.actor.as_ref().map(|a| cell(a, ctx.input.labels)),
+            actor: e.actor.as_ref().map(|a| cell(a, Some(ctx.input.labels))),
             title: e.title.clone(),
             verb: e.verb.clone(),
             summary: e.summary.clone(),
-            badges: e.badges.iter().map(|b| cell(b, ctx.input.labels)).collect(),
+            badges: e.badges.iter().map(|b| cell(b, Some(ctx.input.labels))).collect(),
             target: e.target.as_ref().map(|t| CellView {
                 kind: "text",
                 value: label_of(ctx.input.labels, t).map_or_else(|| entity_param(t), str::to_string),

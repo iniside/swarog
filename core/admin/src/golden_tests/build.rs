@@ -391,7 +391,7 @@ pub(super) fn posted(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
     pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
 
-fn player_cell(id: &str) -> Cell {
+pub(super) fn player_cell(id: &str) -> Cell {
     Cell { link: Some(Link::Entity(entity("player", id))), ..cell(CellKind::User, id) }
 }
 
@@ -492,6 +492,15 @@ pub(super) fn table_list_columns_case() -> PanelCase {
             list_column("guilds", "Guild", Align::Left, ColumnOutcome::Failed("connection refused".to_string())),
         ],
         ..PanelCase::new(PanelState::Ok, Some(body(Primitive::DataTable(DataTable { rows, ..table }))))
+    }
+}
+
+/// `primitive` drawn with a label for `p-1001` and none for `p-1002`.
+pub(super) fn labelled_case(mode: &'static str, primitive: Primitive) -> PanelCase {
+    PanelCase {
+        mode,
+        labels: Labels::from([(("player".to_string(), "p-1001".to_string()), "Anna#1001".to_string())]),
+        ..PanelCase::new(PanelState::Ok, Some(body(primitive)))
     }
 }
 

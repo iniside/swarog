@@ -116,7 +116,7 @@ pub(super) fn table_cells(
         .iter()
         .enumerate()
         .map(|(i, c)| TableCell {
-            cell: list_cell(c, in_list, labels),
+            cell: list_cell(c, in_list, Some(labels)),
             num: columns.get(i).is_some_and(|col| right_aligned(col.align)),
             wrap: columns.get(i).is_some_and(|col| col.wrap),
             failed: None,
@@ -124,15 +124,16 @@ pub(super) fn table_cells(
         .collect()
 }
 
-fn list_cell(c: &controlplane::Cell, in_list: bool, labels: &Labels) -> CellView {
+fn list_cell(c: &controlplane::Cell, in_list: bool, labels: Option<&Labels>) -> CellView {
     let mut view = cell(c, labels);
     view.inner_link = in_list && view.kind == "user" && view.href.is_some();
     view
 }
 
 /// The cell of `kind`'s list column `column` in a row whose entity id is `id`: the column's
-/// cell for it, an empty cell when it has none, or the failure marker.
-fn list_column_cell(kind: &str, column: &ListColumn, id: Option<&str>, in_list: bool, labels: &Labels) -> TableCell {
+/// cell for it, an empty cell when it has none, or the failure marker. A column cell is no
+/// part of the slot's body, so it draws no label.
+fn list_column_cell(kind: &str, column: &ListColumn, id: Option<&str>, in_list: bool) -> TableCell {
     let point = Point::EntityListColumn { kind: kind.to_string(), label: column.label.clone(), align: column.align };
     seen::record(&point);
     let num = right_aligned(column.align);
@@ -148,10 +149,10 @@ fn list_column_cell(kind: &str, column: &ListColumn, id: Option<&str>, in_list: 
     match &column.outcome {
         ColumnOutcome::Cells(cells) => {
             let found = id.and_then(|id| cells.get(id)).unwrap_or(&blank);
-            TableCell { cell: list_cell(found, in_list, labels), num, wrap: false, failed: None }
+            TableCell { cell: list_cell(found, in_list, None), num, wrap: false, failed: None }
         }
         ColumnOutcome::Failed(_) => TableCell {
-            cell: cell(&blank, labels),
+            cell: cell(&blank, None),
             num,
             wrap: false,
             failed: Some(format!("{} module unavailable", column.module)),
@@ -188,7 +189,7 @@ pub(super) fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
             let mut cells = table_cells(&r.cells, &t.columns, in_list, ctx.input.labels);
             let id = r.entity.as_ref().filter(|e| Some(e.kind.as_str()) == kind).map(|e| e.id.as_str());
             let at = at.min(cells.len());
-            let drawn = list_columns.iter().map(|c| list_column_cell(kind.unwrap_or_default(), c, id, in_list, ctx.input.labels));
+            let drawn = list_columns.iter().map(|c| list_column_cell(kind.unwrap_or_default(), c, id, in_list));
             cells.splice(at..at, drawn);
             RowView {
                 cells,

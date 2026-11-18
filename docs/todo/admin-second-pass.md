@@ -1,6 +1,6 @@
 # Admin second pass
 
-Last updated: 2026-11-18
+Last updated: 2026-11-19
 
 The admin redesign ships mockup elements the backend cannot back as deterministic fakes
 (`// FAKE: <why>`, plan R1) and not-yet-possible actions as `implemented: false`, rendered
@@ -207,6 +207,15 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
   no attributes, so no accept entry covers it. Found in step 13 part b. Closed by: a
   `DataTable` search-width field in `core/controlplane` that the template reads, set by
   accounts and mail.
+
+### Known limits (admin-control-plane-redesign step 13c.2a2b)
+
+- [ ] **Modal impact and panel form cells draw no entity label** (owner, 2026-11-19)
+  ADMIN2-43. A modal's impact cells (core/admin/src/render/modal.rs:102) draw with no labels,
+  and `panel_form_result` (core/admin/src/render/form.rs:191) renders with an empty labels
+  map: neither is a slot response, so no label pass runs for them. A modal impact naming an
+  entity draws its raw id. Closed by: a label pass over the modal's impact cells (and the
+  form result's body) before they are drawn. Source: 13c.2a2b proof audit.
 
 ### Known limits (admin-control-plane-redesign step 28)
 

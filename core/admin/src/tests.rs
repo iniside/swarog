@@ -1871,10 +1871,10 @@ async fn each_slot_labels_only_the_refs_its_own_body_draws() {
 
     let (status, left) = portal_get(&engine, &st, &cookie, "/admin/_panel/players/left").await;
     assert_eq!(status, StatusCode::OK, "{left}");
-    assert!(left.contains("Anna#1") && !left.contains("Bjorn#2"), "{left}");
+    assert!(left.contains(">Anna#1</a>") && !left.contains("Bjorn#2"), "{left}");
     let (status, right) = portal_get(&engine, &st, &cookie, "/admin/_panel/players/right").await;
     assert_eq!(status, StatusCode::OK, "{right}");
-    assert!(right.contains("Bjorn#2") && !right.contains("Anna#1"), "{right}");
+    assert!(right.contains(">Bjorn#2</a>") && !right.contains("Anna#1"), "{right}");
     let asked: Vec<Vec<String>> = owner.calls().into_iter().map(|q| q.refs).collect();
     assert_eq!(asked, [["p-1"], ["p-2"]]);
 
@@ -1882,8 +1882,41 @@ async fn each_slot_labels_only_the_refs_its_own_body_draws() {
     let (status, failed) = portal_get(&engine, &st, &cookie, "/admin/_panel/players/left").await;
     assert_eq!(status, StatusCode::OK, "{failed}");
     assert_eq!(owner.calls().len(), 3, "the failed label was asked");
-    assert!(failed.contains("p-1") && !failed.contains("Anna#1"), "{failed}");
+    assert!(failed.contains(">p-1</a>") && !failed.contains("Anna#1"), "the id is drawn: {failed}");
     assert!(!failed.contains("banner") && !failed.contains("alert"), "a failed label adds no banner: {failed}");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A slot gone stale on its cached copy still draws the labels of the refs that copy draws.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stale_slot_still_draws_its_labels() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-label-stale");
+    let cookie = operator_cookie(&pool, &user).await;
+    let page = ContributionDecl {
+        cache_ttl_s: Some(3600),
+        ..contribution("list", Point::Page("players".to_string()), Role::Viewer)
+    };
+    let table = players_table(vec![Row { cells: vec![player_link("p-1", "p-1")], ..table_row(None, "p-1") }]);
+    let players = Recording::new(module("players", vec![page], Vec::new(), false), &[("list", answer(table))]);
+    let handles = BTreeMap::from([("p-1".to_string(), text("Anna#1"))]);
+    let owner = Recording::new(
+        label_owner(player_label(Role::Viewer)),
+        &[("handle", answer(Primitive::ColumnCells(handles)))],
+    );
+    let engine = Arc::new(sourced(vec![players.clone(), owner.clone()]).await);
+
+    let (_, raw) = portal_get(&engine, &st, &cookie, PLAYERS_PANEL).await;
+    assert!(raw.contains(r#"data-state="ok""#) && raw.contains(">Anna#1</a>"), "{raw}");
+
+    players.answer("list", Answer::Fail(opsapi::Error::unavailable("player store down")));
+    let (status, raw) = portal_get(&engine, &st, &cookie, PLAYERS_PANEL).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains(r#"data-state="stale""#), "{raw}");
+    assert!(raw.contains(">Anna#1</a>"), "the stale copy draws its label: {raw}");
+    assert_eq!(owner.calls().len(), 2, "each response runs its own label pass");
 
     cleanup_user(&pool, &user).await;
 }

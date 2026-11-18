@@ -11,11 +11,12 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// How a contribution's fragment is drawn: inside panel chrome, as a KPI tile, as rows of
-/// the attention host, or inline in the entity header, a tab or the sidebar. A `column` or
-/// a `label` has no fragment of its own: the panel route refuses it, and its table, or the
-/// refs it names, draw its cells.
+/// the attention host, or inline in the entity header, a tab or the sidebar. A list column
+/// and a label have no fragment of their own; they are recorded where their cells are drawn.
 pub(crate) fn mode_of(point: &Point, in_tiles: bool) -> &'static str {
-    seen::record(point);
+    if !matches!(point, Point::EntityListColumn { .. } | Point::EntityLabel { .. }) {
+        seen::record(point);
+    }
     match point {
         Point::DashboardTile => "tile",
         Point::DashboardAttention => "attention",
@@ -247,7 +248,7 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
         Primitive::DataTable(t) => PrimView::Table(table(t, ctx)),
         Primitive::PropertyList(p) => PrimView::Props(PropsView {
             columns: p.columns.max(1),
-            items: p.items.iter().map(|(k, v)| (k.clone(), cell(v, ctx.input.labels))).collect(),
+            items: p.items.iter().map(|(k, v)| (k.clone(), cell(v, Some(ctx.input.labels)))).collect(),
             code: p.code.clone(),
         }),
         // `panels::resolve` turns a ColumnCells body into the error state, so no panel draws one.
@@ -272,13 +273,13 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
                 })
                 .collect(),
         }),
-        Primitive::Cell(c) => PrimView::Cell(cell(c, ctx.input.labels)),
+        Primitive::Cell(c) => PrimView::Cell(cell(c, Some(ctx.input.labels))),
         Primitive::EntityHeader(h) => PrimView::Header(HeaderView {
             title: h.title.clone(),
             crumb: h.crumb.clone().unwrap_or_else(|| h.title.clone()),
             subtitle: h.subtitle.clone(),
-            status: h.status.as_ref().map(|c| cell(c, ctx.input.labels)),
-            badges: h.badges.iter().map(|c| cell(c, ctx.input.labels)).collect(),
+            status: h.status.as_ref().map(|c| cell(c, Some(ctx.input.labels))),
+            badges: h.badges.iter().map(|c| cell(c, Some(ctx.input.labels))).collect(),
             color: avatar_color(&h.avatar_seed),
             initials: initials(&h.title),
         }),
