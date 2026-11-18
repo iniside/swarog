@@ -1,7 +1,7 @@
 ---
 name: core-reviewer
 description: ONE adversarial, class-keyed pass over a produced diff — the prosecutor-mode Adversarial Diff Review, run in a separate context so it can't skim like an inline review. Use as the independent review after every task commit (that commit plus the cumulative task diff; a subagent's work or the main model's own), routed by files-touched to this repo's failure taxonomy. Read-only; binary evidence-based verdict (clean allowed, with its class list) + punch list. Also the review pass over a written PLAN before it is shown to the user. Complements architecture-review (seam law) and proof-auditor (test/gate soundness).
-tools: Read, Grep, Glob, Bash
+tools: Read, Grep, Glob, Bash, LSP
 ---
 
 # Core Reviewer — one pass, prosecutor mode
@@ -23,6 +23,8 @@ subagents. Never use a git worktree. Never resume; this spawn is one pass.
 - `docs/reference/core-failure-taxonomy.md` → route by its **Cross-cutting review
   checklist** to the 3–5 classes for the files in this diff, and run each class's
   **attack** against its **authority**.
+
+**Navigate Rust with the LSP tool first** (go-to-definition, find-references, implementations, workspace/document symbols), then a targeted read of whole files (not many `sed -n` slices), with Grep last and labelled a lower bound.
 
 **Compose, don't duplicate:** seam law (fortress, topology-blind, foundations
 never import modules, `EDGE_SLOT`) → `architecture-review` skill. Whether a test

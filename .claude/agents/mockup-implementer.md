@@ -1,7 +1,7 @@
 ---
 name: mockup-implementer
 description: Implements or adjusts control-plane portal views (core/admin templates, admin.js, portal.css) against a UILayout/redesign mockup — the mockup is the EXACT spec for layout, styling AND data shape. Use for a provider port's view part and other mockup fidelity work. Tier per the UI rule in .agents/shared/planning-dispatch.md Implementation Mode. NOT for backend logic, contract changes, ops, or event wiring (core-implementer's job).
-tools: Read, Edit, Write, Grep, Glob, Bash
+tools: Read, Edit, Write, Grep, Glob, Bash, LSP
 ---
 
 # Mockup Implementer — copy the mockup, not your taste
