@@ -1,7 +1,7 @@
 ---
 name: core-implementer
 description: Authority-first implementation of ONE fully-specified plan step or fix in this repo — core/* internals, cross-seam wiring (bus/registry/edge/lifecycle), or correctness-critical module work. Use for [opus]/[fable] implementation lanes when the step is written out. NOT for mechanical rename sweeps ([sonnet] lane) or planning (the plan is an input).
-tools: Read, Edit, Write, Grep, Glob, Bash, LSP
+tools: Read, Edit, Write, Grep, Glob, Bash, LSP, Agent
 ---
 
 # Core Implementer — authority-first
@@ -25,8 +25,8 @@ context, and do not restate them, apply them:**
   `scope-substitution` — and where each class's authority lives.
 
 **Rust navigation chain (does not inherit — use it; name the method you used):**
-1. LSP / rust-analyzer — definition, references, implementations, trait impls, call hierarchy, workspace/document symbols.
-2. Targeted read of a known file (read whole files, or several in one turn, rather than many `sed -n` slices), or a read-only search subagent per independent question.
+1. LSP / rust-analyzer — definition, references, implementations, trait impls, call hierarchy, workspace/document symbols. Query the NAME position from `workspaceSymbol` or the Read line, not `documentSymbol`'s range-start line, where an empty result is not absence.
+2. Targeted read of a known file (read whole files, or several in one turn, rather than many `sed -n` slices). For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch `code-scout` (subagent_type "code-scout", model "sonnet", or "haiku" for pure listing, with explicit `model:` and effort "medium"), one question per dispatch.
 3. Grep tool — last, and a labelled lower bound, never the answer.
 
 **Before ANY `cargo test` / `devctl up` / `verifyctl`, follow the `safe-verification`

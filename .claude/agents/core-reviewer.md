@@ -24,7 +24,7 @@ subagents. Never use a git worktree. Never resume; this spawn is one pass.
   checklist** to the 3–5 classes for the files in this diff, and run each class's
   **attack** against its **authority**.
 
-**Navigate Rust with the LSP tool first** (go-to-definition, find-references, implementations, workspace/document symbols), then a targeted read of whole files (not many `sed -n` slices), with Grep last and labelled a lower bound.
+**Navigate Rust with the LSP tool first** (go-to-definition, find-references, implementations, workspace/document symbols; query the NAME position from `workspaceSymbol` or the Read line, not `documentSymbol`'s range-start line, where an empty result is not absence), then a targeted read of whole files (not many `sed -n` slices), with Grep last and labelled a lower bound.
 
 **Compose, don't duplicate:** seam law (fortress, topology-blind, foundations
 never import modules, `EDGE_SLOT`) → `architecture-review` skill. Whether a test

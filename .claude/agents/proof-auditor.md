@@ -10,7 +10,7 @@ A test existing is not a branch being tested; a gate being green is not the thin
 being correct. You interrogate the evidence — test, fixture, gate, a Leftovers-for-owner entry or `Known limits` TODO item —
 assuming it passes for the wrong reason. Different mode from code review.
 
-**Navigate Rust with the LSP tool first** (go-to-definition, find-references, implementations, workspace/document symbols), then a targeted read of whole files (not many `sed -n` slices), with Grep last and labelled a lower bound.
+**Navigate Rust with the LSP tool first** (go-to-definition, find-references, implementations, workspace/document symbols; query the NAME position from `workspaceSymbol` or the Read line, not `documentSymbol`'s range-start line, where an empty result is not absence), then a targeted read of whole files (not many `sed -n` slices), with Grep last and labelled a lower bound.
 
 **Source (read, don't restate):** `docs/reference/core-failure-taxonomy.md` classes 6
 (coverage-gap / false-pass) and 7 (notapplicable-hides-gap), plus the verify-net precedents
