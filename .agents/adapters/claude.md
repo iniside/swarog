@@ -24,9 +24,9 @@ pointer stubs.
   is `subagent_type: "mockup-implementer"`, `model:"sonnet"`.
 - `[docs]` — `subagent_type: "docs-writer"`, `model:"sonnet"` default;
   `"opus"` / `"fable"` only when the doc must judge what a seam means.
-- `[test-author]` — `subagent_type: "test-author"`, `model:"sonnet"` default;
-  `"opus"` / `"fable"` for the tests the shared `[test-author]` rule puts at
-  the top tier.
+- `[test-author]` — `subagent_type: "test-author"`, top tier by default
+  (`"opus"` / `"fable"`); `model:"sonnet"` only when it copies a top-tier
+  reference, per the shared `[test-author]` rule.
 - `[review]` — `subagent_type: "core-reviewer"`, `model:` ≥ the author's tier.
 - Proof audit — `subagent_type: "proof-auditor"`, `model:` ≥ the author's
   tier.

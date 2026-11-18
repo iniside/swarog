@@ -8,7 +8,7 @@
 use anyhow::{anyhow, Context, Result};
 use sqlx::{PgPool, Row};
 
-/// Dev-default DSN (mirrors CLAUDE.md); overridden by `DATABASE_URL`.
+/// Dev-default DSN (mirrors .agents/shared/gamebackend.md **Database**); overridden by `DATABASE_URL`.
 pub const DEFAULT_DSN: &str =
     "postgres://gamebackend:gamebackend@localhost:5432/gamebackend?sslmode=disable";
 

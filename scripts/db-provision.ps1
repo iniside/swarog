@@ -1,5 +1,5 @@
 # db-provision.ps1 -- seed script that provisions the dev Postgres role + database
-# this repo assumes but never creates (CLAUDE.md: "the answer is a seed script
+# this repo assumes but never creates (.agents/shared/gamebackend.md **Database**: "the answer is a seed script
 # minting fake data ... not a migration"). Idempotent: safe to run repeatedly.
 # Paired with db-provision.sh (bash/macOS/Linux). PowerShell 5.1 compatible.
 #
@@ -142,8 +142,8 @@ Write-Host "db-provision: target role/database '$DbUser'/'$DbName'"
 # ---- role: create only if absent --------------------------------------------
 # The password is embedded as a SQL string literal (doubled single quotes
 # escape a literal quote per SQL syntax -- not a general injection defense,
-# but this is a dev tool for a trusted local operator per CLAUDE.md's
-# dev-tooling scope, and the value is this script's own DSN-derived password,
+# but this is a dev tool for a trusted local operator per the dev-tooling
+# scope (.claude/rules/dev-tooling.md), and the value is this script's own DSN-derived password,
 # never external input). `-v name=value` variable interpolation with `-c` is
 # unreliable across psql builds, so the literal is built directly instead of
 # via `:varname`.

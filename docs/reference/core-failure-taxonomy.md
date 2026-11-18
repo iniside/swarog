@@ -370,8 +370,7 @@ The evidence says the two agents must encode, not just "be hostile":
 2. **`core-reviewer` — class-keyed, attack the fix's own new seam.** Not generic. It routes by
    the files in the diff to the 3-5 classes above and runs those specific attacks, opening the
    files (never trusting a summary), confirming the negative-path test exercises the failing
-   branch, and stating the fix's failure mode out loud. A zero-finding review of a non-trivial
-   core diff is a signal to re-review.
+   branch, and stating the fix's failure mode out loud.
 
 Both are vehicles for THIS catalog. Keep the catalog current; the agents are only as good as
 the classes they carry.

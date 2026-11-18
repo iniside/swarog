@@ -53,7 +53,7 @@
 //! is not required to equal `<root>/run/rollout.lock`. Validation still proves a
 //! live owner holds that lock. A parent rooted in a different checkout would
 //! thus lend a lock protecting a different tree — out of scope under the
-//! trusted-local-operator model (CLAUDE.md, "Dev tooling scope"), and a strict
+//! trusted-local-operator model (.claude/rules/dev-tooling.md, **Dev tooling scope**), and a strict
 //! path equality would falsely refuse over path spelling (case/UNC/symlink).
 
 use std::collections::BTreeSet;
@@ -872,7 +872,7 @@ mod imp {
     /// itself (`open_lock_file`, `:669-676`: create, `set_permissions`,
     /// `validate_private_regular_linux`). That is a self-check on what we just
     /// wrote, not the `O_NOFOLLOW`-class same-user hardening deliberately not
-    /// copied (CLAUDE.md, "Dev tooling scope": trusted local operator).
+    /// copied (.claude/rules/dev-tooling.md, **Dev tooling scope**: trusted local operator).
     pub(super) fn create_consumption_marker(path: &Path) -> std::io::Result<()> {
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -1125,8 +1125,8 @@ mod imp {
     /// its Windows arm) because the OWNER deletes this
     /// file on its own drop and only after re-reading exactly these bytes from a
     /// file it still validates as owner-only. processctl's post-create
-    /// re-validation is same-user hardening, deliberately not copied (CLAUDE.md,
-    /// "Dev tooling scope": trusted local operator).
+    /// re-validation is same-user hardening, deliberately not copied
+    /// (.claude/rules/dev-tooling.md, **Dev tooling scope**: trusted local operator).
     pub(super) fn create_consumption_marker(path: &Path) -> std::io::Result<()> {
         use std::io::Write;
         use windows_sys::Win32::Storage::FileSystem::{CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT};

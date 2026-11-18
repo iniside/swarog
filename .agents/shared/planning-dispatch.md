@@ -173,7 +173,10 @@ The review runs in a subagent, never inline. Dispatch `core-reviewer` after
 every task commit, on that commit plus the cumulative diff from the
 task-start commit to `HEAD`; tests written in the step are reviewed with it.
 Prose-only commits (`docs/`, `.agents/`, `.claude/agents/`, `docs/plans/`,
-memory) get no review, except the one plan review before approval; `.rs` doc
+memory) get no review, except the one plan review before approval; gate
+baselines and goldens (`docs/reference/contract-golden/`,
+`docs/reference/public-api-baseline/`) and `tools/admindiff/accept/*.txt`
+accept lists are not prose and are reviewed with `proof-auditor`; `.rs` doc
 comments on `api/` and `core/` contracts are code. Inline self-review is the banned failure mode —
 the context that wrote the code cannot judge it. Route by files-touched
 through `docs/reference/core-failure-taxonomy.md`, with a different method
@@ -183,7 +186,8 @@ topiccheck / golden) or the test/gate is itself the risk surface — not for
 an ordinary fix that merely adds a unit test (`core-reviewer` already checks
 the negative test hits the failing branch).
 
-Every review is a fresh `core-reviewer` — a new spawn, every time. Resuming
+Every review is a fresh `core-reviewer` — a new spawn, every time. Never
+resume a `core-reviewer` or `proof-auditor`; resuming
 or conversation-reuse of a reviewer is banned, including round 2 of the same
 task, a re-review after fix-up commits, and "just re-check this one
 finding". A reviewer that already issued a verdict has an anchored position.

@@ -127,6 +127,8 @@ def is_proof_path(path):
 
 def is_prose_path(path):
     p = path.replace("\\", "/")
+    if is_proof_path(p) or (p.startswith("tools/admindiff/accept/") and p.endswith(".txt")):
+        return False
     suffix = os.path.splitext(p)[1].lower()
     if suffix == ".rs":
         return False
@@ -200,12 +202,12 @@ def reminder(data):
             % (len(targets), ", ".join(targets), note if ranges else ""))
     if unknown:
         return base + PROOF_UNKNOWN
-    if all(is_prose_path(p) for p in all_paths):
-        return None
     if any(is_proof_path(p) for p in all_paths):
         if len(targets) > 1:
             return base + PROOF.replace(" This commit touches", " One of these commits touches", 1)
         return base + PROOF
+    if all(is_prose_path(p) for p in all_paths):
+        return None
     return base
 
 

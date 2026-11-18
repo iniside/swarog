@@ -17,8 +17,8 @@
 //! Deliberately NOT a general HTTP server: it reads a bounded request, hands the
 //! path + body to a closure, and writes the closure's answer with
 //! `Connection: close`. Anything it cannot parse is a 400. It faces one client —
-//! a `cmd/*-svc` on loopback, under the trusted-local-operator model (CLAUDE.md,
-//! "Dev tooling scope") — so it is bounded and correct, not hardened.
+//! a `cmd/*-svc` on loopback, under the trusted-local-operator model (.claude/rules/dev-tooling.md,
+//! **Dev tooling scope**) — so it is bounded and correct, not hardened.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};

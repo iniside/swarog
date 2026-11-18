@@ -68,6 +68,11 @@ def _build_fixture():
     _git(repo, "commit", "-q", "-m", "dirprose")
     shas["dirprose"] = _git(repo, "rev-parse", "--short=10", "HEAD")
     shas["docsrs"] = _commit(repo, "docs/z.rs", "fn z() {}\n", "docsrs")
+    shas["golden"] = _commit(
+        repo, "docs/reference/contract-golden/x.txt", "g\n", "golden")
+    shas["baseline"] = _commit(
+        repo, "docs/reference/public-api-baseline/y.md", "b\n", "baseline")
+    shas["accept"] = _commit(repo, "tools/admindiff/accept/a.txt", "a\n", "accept")
     shas["corereadme"] = _commit(repo, "core/README.md", "hi\n", "corereadme")
     return repo, shas
 
@@ -604,6 +609,15 @@ class PostCommitFixture(unittest.TestCase):
     def test_verifyctl_commit_adds_proof_auditor(self):
         for tool in SHELL_TOOLS:
             self.assertEqual(self.reminder("proof", tool), self.BASE + self.PROOF)
+
+    def test_golden_only_commit_names_proof_auditor(self):
+        for tool in SHELL_TOOLS:
+            self.assertEqual(self.reminder("golden", tool), self.BASE + self.PROOF)
+            self.assertEqual(self.reminder("baseline", tool), self.BASE + self.PROOF)
+
+    def test_admindiff_accept_list_only_commit_is_reviewed(self):
+        for tool in SHELL_TOOLS:
+            self.assertEqual(self.reminder("accept", tool), self.BASE)
 
     def test_merge_commit_is_unknown(self):
         for tool in SHELL_TOOLS:
