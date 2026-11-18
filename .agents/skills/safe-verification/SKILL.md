@@ -15,10 +15,14 @@ change is broken when it isn't.
 
 ## Step 1 — Pre-flight: is anything already running?
 
-```powershell
-Get-Process | Where-Object { $_.ProcessName -match '^cargo$|^rustc$' }
-```
-(bash: `pgrep -x cargo; pgrep -x rustc`)
+Run the one line for the shell you are in; no output means nothing is running:
+
+- Bash on Windows (Git Bash, also `$` inside REPL): `tasklist //FO CSV //NH | grep -iE '"(cargo|rustc)\.exe"'`
+- PowerShell tool: `Get-Process cargo,rustc -ErrorAction SilentlyContinue`
+- Bash on Linux/macOS: `pgrep -x cargo; pgrep -x rustc`
+
+Never wrap the PowerShell form in `powershell -Command "..."` from Bash: Bash expands `$_` and the error
+output floods your context.
 
 If Cargo/rustc is active, **never invoke another Cargo command**. To inspect or
 stop an already-running foreground `devctl` fleet, use the already-built direct
