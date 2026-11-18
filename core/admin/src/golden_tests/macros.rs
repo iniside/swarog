@@ -82,7 +82,13 @@ pub(super) const MACRO_CASES: &[MacroCase] = &[
         &[],
         &["state_ok", "props_code_footer_tools", "props_two_columns"],
     ),
-    mc("primitives", "kpi", "<div class=\"kpi-value\">", &[], &["tile_delta_ok_up", "tile_stale"]),
+    mc(
+        "primitives",
+        "kpi",
+        "<div class=\"kpi-value\">",
+        &[],
+        &["tile_delta_ok_up", "tile_stale", "kpi_tiles", "kpi_tiles_panel_point", "kpi_panel_point"],
+    ),
     mc("primitives", "timeline", "<ul class=\"tl\">", &[], &["timeline_two_days_older"]),
     mc("primitives", "field", "<label class=\"fl\">", &[], &["panel_form", "panel_form_rerender_422_chrome", "modal_form"]),
     mc(

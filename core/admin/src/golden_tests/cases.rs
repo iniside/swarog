@@ -68,7 +68,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel!(
         "state_readonly_declared",
         PanelCase {
-            readonly: Some(declared_text),
+            readonly: declared_manifest.contributions[0].readonly.clone(),
             actions: routes::panel_tools(&operator(Role::Admin), CSRF, MODULE, &declared_manifest, CONTRIBUTION),
             ..PanelCase::new(PanelState::Readonly, Some(body(summary())))
         },
@@ -134,6 +134,20 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
                 KpiTile { label: "Matches running".to_string(), value: "318".to_string(), ..kpi(None) },
             ]))),
         ),
+    );
+    panel!(
+        "kpi_tiles_panel_point",
+        PanelCase::new(
+            PanelState::Ok,
+            Some(body(Primitive::KpiTiles(vec![
+                kpi(delta("+4.2%", Some(Tone::Ok))),
+                KpiTile { label: "Matches running".to_string(), value: "318".to_string(), ..kpi(None) },
+            ]))),
+        ),
+    );
+    panel!(
+        "kpi_panel_point",
+        PanelCase::new(PanelState::Ok, Some(body(Primitive::KpiTile(kpi(delta("+4.2%", Some(Tone::Ok))))))),
     );
     panel!("tile_delta_info_flat", tile(delta("±0", Some(Tone::Info))));
     panel!("tile_delta_accent_flat", tile(delta("±0", Some(Tone::Accent))));

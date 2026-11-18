@@ -909,8 +909,8 @@ use std::collections::BTreeMap;
 
 use controlplane::{
     ActionDecl, ActionPoint, Align, Cell, CellKind, ContributionDecl, DataTable, Emphasis, EntityKindDecl, EntityRef,
-    InvokeCall, InvokeOutcome, Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, PropertyList, Role, Row,
-    SearchHit, SearchQuery, Source, Then,
+    InvokeCall, InvokeOutcome, KpiTile, Manifest, PageInfo, Palette, PanelBody, PanelQuery, Point, Primitive,
+    PropertyList, Role, Row, SearchHit, SearchQuery, Source, Then,
 };
 
 use crate::engine::columns::{self, ColumnOutcome};
@@ -1551,6 +1551,45 @@ async fn panel_queries_differing_only_in_refs_cache_apart() {
 
 /// An entity tab declared with `columns: 2` lays its panels out in a two-column grid; a
 /// one-column tab does not.
+fn kpi_tile(series: Vec<f64>, capacity: Option<(f64, f64)>) -> KpiTile {
+    KpiTile {
+        label: "Online".to_string(),
+        value: "12".to_string(),
+        unit: None,
+        delta: None,
+        series,
+        spark: Palette::Chart1,
+        capacity,
+        link: None,
+    }
+}
+
+/// A `KpiTiles` answer with no tiles resolves to the empty state; one with a tile is ok.
+#[tokio::test]
+async fn an_empty_kpi_tiles_answer_resolves_empty() {
+    let decl = contribution("tiles", Point::Page("overview".to_string()), Role::Viewer);
+    for (tiles, want) in [(Vec::new(), PanelState::Empty), (vec![kpi_tile(vec![1.0], None)], PanelState::Ok)] {
+        let count = tiles.len();
+        let (engine, _) = single(decl.clone(), Vec::new(), false, answer(Primitive::KpiTiles(tiles))).await;
+        assert_eq!(resolve(&engine, &decl).await.state, want, "{count} tile(s)");
+    }
+}
+
+/// A non-finite series value or capacity in any tile of a `KpiTiles` answer reaches the portal
+/// as 0.
+#[tokio::test]
+async fn every_kpi_tiles_tile_is_made_finite() {
+    let decl = contribution("tiles", Point::Page("overview".to_string()), Role::Viewer);
+    let tiles = vec![kpi_tile(vec![1.0], None), kpi_tile(vec![f64::NAN, 2.0], Some((f64::INFINITY, 10.0)))];
+    let (engine, _) = single(decl.clone(), Vec::new(), false, answer(Primitive::KpiTiles(tiles))).await;
+    let view = resolve(&engine, &decl).await;
+    let Some(Primitive::KpiTiles(tiles)) = view.body.map(|b| b.primitive) else {
+        panic!("a KpiTiles body in state {:?}", view.state)
+    };
+    assert_eq!(tiles[1].series, [0.0, 2.0]);
+    assert_eq!(tiles[1].capacity, Some((0.0, 10.0)));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_two_column_entity_tab_draws_a_grid() {
     let Some(pool) = test_pool().await else { return };
@@ -1778,6 +1817,40 @@ async fn a_readonly_decl_forces_the_readonly_state_with_its_text() {
     assert!(!raw.contains("does not accept remote edits"), "{raw}");
     let (_, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/storage/quota?entity=player:p-1").await;
     assert!(raw.contains(r#"data-state="ok""#), "{raw}");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// The selected tab's `EntityTabTile` contributions of the page's kind draw in the tiles row
+/// above its panels; another tab's and another kind's draw nowhere.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_the_selected_tabs_tiles_draw_above_its_panels() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-tab-tiles");
+    let cookie = operator_cookie(&pool, &user).await;
+    let tile = |id: &str, kind: &str, tab: &str| {
+        contribution(id, Point::EntityTabTile { kind: kind.to_string(), tab: tab.to_string() }, Role::Viewer)
+    };
+    let contributions = vec![
+        player_tab("items", "items"),
+        player_tab("history", "history"),
+        tile("items-tile", "player", "items"),
+        tile("history-tile", "player", "history"),
+        tile("guild-tile", "guild", "items"),
+    ];
+    let inventory = player_owner(module("inventory", contributions, Vec::new(), false));
+    let engine = Arc::new(sourced(vec![Recording::new(inventory, &[]) as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/e/player/p-1?tab=items").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let at = raw.find(r#"<div class="grid g-tiles""#).unwrap_or_else(|| panic!("a tiles row in {raw}"));
+    let row = &raw[at..at + raw[at..].find(r#"<div class="stack">"#).expect("the tab's panels follow its tiles")];
+    let url = |id: &str| format!("&#x2f;admin&#x2f;_panel&#x2f;inventory&#x2f;{id}?");
+    assert!(row.contains(&url("items-tile")), "{row}");
+    for other in ["history-tile", "guild-tile"] {
+        assert!(!raw.contains(&url(other)), "{other} draws on the items tab: {raw}");
+    }
 
     cleanup_user(&pool, &user).await;
 }
