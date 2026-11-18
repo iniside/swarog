@@ -40,13 +40,13 @@ PROOF_PREFIXES = (
 )
 
 BASE_TEMPLATE = (
-    "ADVERSARIAL DIFF REVIEW (planning-dispatch.md - MANDATORY): a commit just "
+    "ADVERSARIAL DIFF REVIEW (planning-dispatch.md - MANDATORY): {landed} just "
     "landed. Dispatch ONE `core-reviewer` subagent (subagent_type: \"core-reviewer\") "
     "on {target} in a separate context, explicit model: >= the author's "
     "tier. It routes by files touched through docs/reference/core-failure-taxonomy.md "
     "and returns a binary verdict or a punch list."
 )
-BASE = BASE_TEMPLATE.format(target="it (`git show <sha>`)")
+BASE = BASE_TEMPLATE.format(landed="a commit", target="it (`git show <sha>`)")
 PROOF = (
     " This commit touches a verify stage or golden file — also dispatch "
     "`proof-auditor`."
@@ -154,7 +154,7 @@ def reminder(data):
         return None
 
     cwd = data.get("cwd") or None
-    all_paths, ranges = [], []
+    all_paths, targets, ranges = [], [], 0
     for sha in shas:
         ok, subject = run_git(cwd, ["log", "-1", "--format=%s", sha])
         subject = subject.strip() if ok else ""
@@ -168,13 +168,23 @@ def reminder(data):
         if paths is None:
             return BASE + PROOF_UNKNOWN
         if len(commits) > 1:
-            ranges.append("`git diff %s^..%s`" % (commits[-1][:12], sha))
+            ranges += 1
+            targets.append("`git diff %s^..%s`" % (commits[-1][:12], sha))
+        else:
+            targets.append("`git show %s`" % sha)
         all_paths.extend(paths)
 
     base = BASE
-    if ranges:
+    if len(targets) == 1 and ranges:
         base = BASE_TEMPLATE.format(
-            target="the step's cumulative diff (%s; not only the last commit)" % ", ".join(ranges))
+            landed="a commit",
+            target="the step's cumulative diff (%s; not only the last commit)" % targets[0])
+    elif len(targets) > 1:
+        note = "; each `git diff` range is a step's cumulative diff, not only its last commit"
+        base = BASE_TEMPLATE.format(
+            landed="%d commits" % len(shas),
+            target="these %d changes together (%s%s)"
+            % (len(targets), ", ".join(targets), note if ranges else ""))
     if all(os.path.splitext(p)[1].lower() in PROSE_SUFFIXES for p in all_paths):
         return None
     if any(is_proof_path(p) for p in all_paths):
