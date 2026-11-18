@@ -154,7 +154,7 @@ def reminder(data):
         return None
 
     cwd = data.get("cwd") or None
-    all_paths, targets, ranges = [], [], 0
+    all_paths, targets, ranges, unknown = [], [], 0, False
     for sha in shas:
         ok, subject = run_git(cwd, ["log", "-1", "--format=%s", sha])
         subject = subject.strip() if ok else ""
@@ -166,7 +166,9 @@ def reminder(data):
             commits = [sha]
             paths = commit_paths(cwd, sha)
         if paths is None:
-            return BASE + PROOF_UNKNOWN
+            unknown = True
+            targets.append("`git show %s`" % sha)
+            continue
         if len(commits) > 1:
             ranges += 1
             targets.append("`git diff %s^..%s`" % (commits[-1][:12], sha))
@@ -179,15 +181,21 @@ def reminder(data):
         base = BASE_TEMPLATE.format(
             landed="a commit",
             target="the step's cumulative diff (%s; not only the last commit)" % targets[0])
+    elif len(targets) == 1 and len(shas) > 1:
+        base = BASE_TEMPLATE.format(landed="a commit", target="it (%s)" % targets[0])
     elif len(targets) > 1:
         note = "; each `git diff` range is a step's cumulative diff, not only its last commit"
         base = BASE_TEMPLATE.format(
             landed="%d commits" % len(shas),
             target="these %d changes together (%s%s)"
             % (len(targets), ", ".join(targets), note if ranges else ""))
+    if unknown:
+        return base + PROOF_UNKNOWN
     if all(os.path.splitext(p)[1].lower() in PROSE_SUFFIXES for p in all_paths):
         return None
     if any(is_proof_path(p) for p in all_paths):
+        if len(targets) > 1:
+            return base + PROOF.replace(" This commit touches", " One of these commits touches", 1)
         return base + PROOF
     return base
 
