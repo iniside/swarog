@@ -2179,6 +2179,7 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::WriteRefusal
 pub const controlplane::DEFAULT_PANEL_DEADLINE_MS: u32
 pub const controlplane::DEFAULT_SEARCH_DEADLINE_MS: u32
 pub const controlplane::MAX_INPUT_VALUE_BYTES: usize
+pub const controlplane::MAX_PANEL_REFS: usize
 pub const controlplane::PAGE_PARAM_QUEUE_STATE: &str
 pub const controlplane::PAGE_PARAM_SEARCH: &str
 pub const controlplane::PROVIDER_SLOT: contrib::Slot<alloc::rcs::arc::Arc<dyn controlplane::Provider>>

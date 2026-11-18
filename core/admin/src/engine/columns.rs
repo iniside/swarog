@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use controlplane::{Align, Cell, DataTable, PanelQuery, Point, Primitive};
+use controlplane::{Align, Cell, DataTable, PanelQuery, Point, Primitive, MAX_PANEL_REFS};
 
 use super::manifests::Snapshot;
 use super::panels;
@@ -25,14 +25,18 @@ pub(crate) enum ColumnOutcome {
     Failed(String),
 }
 
-/// The ids of `table`'s rows whose entity is of `kind`, in row order.
+/// The distinct ids of `table`'s rows whose entity is of `kind`, in first-row order.
 pub(crate) fn refs(table: &DataTable, kind: &str) -> Vec<String> {
-    table.rows.iter().filter_map(|r| r.entity.as_ref()).filter(|e| e.kind == kind).map(|e| e.id.clone()).collect()
+    let mut seen = std::collections::BTreeSet::new();
+    let ids = table.rows.iter().filter_map(|r| r.entity.as_ref()).filter(|e| e.kind == kind);
+    ids.filter(|e| seen.insert(e.id.as_str())).map(|e| e.id.clone()).collect()
 }
 
 /// Calls every `EntityListColumn` of `kind` concurrently, each under its own deadline, with
-/// `refs` as `PanelQuery::refs`. A column below the operator's role makes no call and is
-/// absent from the result; no refs make no call at all.
+/// `refs` split into `PanelQuery::refs` chunks of at most `MAX_PANEL_REFS`. Every chunk of
+/// every column runs concurrently; a chunk that fails fails its whole column. A column below
+/// the operator's role makes no call and is absent from the result; no refs make no call at
+/// all.
 pub(crate) async fn fan_out(
     snapshot: &Snapshot,
     operator: &Operator,
@@ -49,30 +53,42 @@ pub(crate) async fn fan_out(
             return None;
         };
         let column = |outcome| ListColumn { module: module.to_string(), label: label.clone(), align: *align, outcome };
-        let req = PanelQuery {
-            module: module.to_string(),
-            contribution: decl.id.clone(),
-            entity: None,
-            search: None,
-            cursor: None,
-            before: None,
-            queue_state: None,
-            range: None,
-            params: BTreeMap::new(),
-            refs: refs.clone(),
-        };
         let route = snapshot.route(module);
         let bound = panels::deadline(decl);
+        let refs = &refs;
         Some(async move {
             let Some((_, face)) = route else {
                 return column(ColumnOutcome::Failed(format!("no source serves module {module:?}")));
             };
-            let outcome = match tokio::time::timeout(bound, face.panel(req)).await {
-                Ok(Ok(body)) => match body.primitive {
-                    Primitive::ColumnCells(cells) => ColumnOutcome::Cells(cells),
-                    _ => ColumnOutcome::Failed("answered a primitive other than ColumnCells".to_string()),
-                },
-                Ok(Err(error)) => ColumnOutcome::Failed(error.to_string()),
+            let chunks = refs.chunks(MAX_PANEL_REFS).map(|chunk| {
+                let req = PanelQuery {
+                    module: module.to_string(),
+                    contribution: decl.id.clone(),
+                    entity: None,
+                    search: None,
+                    cursor: None,
+                    before: None,
+                    queue_state: None,
+                    range: None,
+                    params: BTreeMap::new(),
+                    refs: chunk.to_vec(),
+                };
+                let face = face.clone();
+                async move {
+                    match face.panel(req).await {
+                        Ok(body) => match body.primitive {
+                            Primitive::ColumnCells(cells) => Ok(cells),
+                            _ => Err("answered a primitive other than ColumnCells".to_string()),
+                        },
+                        Err(error) => Err(error.to_string()),
+                    }
+                }
+            });
+            // One deadline over all chunks: the column is drawn only whole, so it is late
+            // once any chunk is, and splitting must not stretch the decl's budget.
+            let outcome = match tokio::time::timeout(bound, futures::future::try_join_all(chunks)).await {
+                Ok(Ok(answers)) => ColumnOutcome::Cells(answers.into_iter().flatten().collect()),
+                Ok(Err(why)) => ColumnOutcome::Failed(why),
                 Err(_) => ColumnOutcome::Failed(format!("deadline of {}ms elapsed", bound.as_millis())),
             };
             if let ColumnOutcome::Failed(why) = &outcome {

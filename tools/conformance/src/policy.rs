@@ -78,6 +78,10 @@ const CONTROL_PLANE_INVOKE_REQUEST_ID_RATIONALE: &str = concat!(
     "; mail persists it as the suffix of a test-send idempotency key, which service::is_test_key bounds at the key column's cap before any statement (the \"mail admin send-test key\" CapCase)"
 );
 const CONTROL_PLANE_READ_RATIONALE: &str = control_plane_read_rationale!();
+const CONTROL_PLANE_PANEL_REFS_RATIONALE: &str = concat!(
+    control_plane_read_rationale!(),
+    "; the portal sends at most controlplane::MAX_PANEL_REFS refs per call (admin columns::fan_out chunks a longer list) and LocalFace::panel refuses a longer req.refs with invalid before the provider runs"
+);
 const CONTROL_PLANE_PREPARE_ITEM_RATIONALE: &str =
     concat!(control_plane_read_rationale!(), control_plane_item_bound!());
 
@@ -189,7 +193,7 @@ pub fn input_policies() -> Vec<(InputKey, InputPolicy)> {
         (key("cp.panel", "req.params.<value>", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.panel", "req.queue_state", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.panel", "req.range", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
-        (key("cp.panel", "req.refs", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
+        (key("cp.panel", "req.refs", Wire), Opaque { rationale: CONTROL_PLANE_PANEL_REFS_RATIONALE }),
         (key("cp.panel", "req.search", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.prepare", "req.action", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),
         (key("cp.prepare", "req.entity.id", Wire), Opaque { rationale: CONTROL_PLANE_READ_RATIONALE }),

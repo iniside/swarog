@@ -1386,8 +1386,12 @@ const HANG_GUARD: Duration = Duration::from_secs(3600);
 
 /// The `player` fan-out of `p-1` and `p-2` for an admin, and the virtual time it took.
 async fn fan_out_guarded(engine: &Engine) -> (Vec<columns::ListColumn>, Duration) {
+    fan_out_refs(engine, vec!["p-1".to_string(), "p-2".to_string()]).await
+}
+
+/// The `player` fan-out of `refs` for an admin, and the virtual time it took.
+async fn fan_out_refs(engine: &Engine, refs: Vec<String>) -> (Vec<columns::ListColumn>, Duration) {
     let operator = Operator { login: "ops".to_string(), role: Role::Admin };
-    let refs = vec!["p-1".to_string(), "p-2".to_string()];
     let snapshot = engine.snapshot();
     let start = tokio::time::Instant::now();
     let fanned = tokio::time::timeout(HANG_GUARD, columns::fan_out(&snapshot, &operator, "player", refs))
@@ -1436,6 +1440,205 @@ async fn hung_list_columns_wait_out_their_deadlines_concurrently() {
     }
     assert!(elapsed >= Duration::from_millis(50), "{elapsed:?}");
     assert!(elapsed < Duration::from_millis(100), "two 50 ms deadlines in sequence take 100 ms: {elapsed:?}");
+}
+
+#[derive(Clone, Copy)]
+enum ChunkAnswer {
+    Cells,
+    Fail,
+    Wrong,
+}
+
+/// A provider whose one `player` list column, under a 100 ms deadline, answers each call
+/// after the delay and with the answer planned for the call's first ref (none and a cell per
+/// ref by default); it records each call's refs.
+struct Chunked {
+    manifest: Manifest,
+    plan: BTreeMap<String, (Duration, ChunkAnswer)>,
+    calls: Mutex<Vec<Vec<String>>>,
+}
+
+const CHUNKED_DEADLINE: Duration = Duration::from_millis(100);
+
+impl Chunked {
+    fn new(plan: &[(&str, Duration, ChunkAnswer)]) -> Arc<Chunked> {
+        let decl = ContributionDecl { deadline_ms: 100, ..list_column("level", "player", "Level", Role::Viewer, 0) };
+        let plan = plan.iter().map(|(id, delay, answer)| (id.to_string(), (*delay, *answer))).collect();
+        Arc::new(Chunked { manifest: module("levels", vec![decl], Vec::new(), false), plan, calls: Mutex::new(Vec::new()) })
+    }
+
+    fn calls(&self) -> Vec<Vec<String>> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl controlplane::Provider for Chunked {
+    fn manifest(&self) -> Manifest {
+        self.manifest.clone()
+    }
+
+    async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
+        self.calls.lock().unwrap().push(req.refs.clone());
+        let first = req.refs.first().cloned().unwrap_or_default();
+        let (delay, answer) = self.plan.get(&first).copied().unwrap_or((Duration::ZERO, ChunkAnswer::Cells));
+        tokio::time::sleep(delay).await;
+        match answer {
+            ChunkAnswer::Cells => {
+                let cells = req.refs.iter().map(|id| (id.clone(), text(id))).collect();
+                Ok(PanelBody::new(Primitive::ColumnCells(cells)))
+            }
+            ChunkAnswer::Fail => Err(opsapi::Error::unavailable(format!("chunk at {first} failed"))),
+            ChunkAnswer::Wrong => Ok(PanelBody::new(Primitive::KpiTiles(Vec::new()))),
+        }
+    }
+
+    async fn search(&self, _req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
+        Ok(Vec::new())
+    }
+
+    async fn invoke(&self, _req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
+        Err(opsapi::Error::forbidden("a chunked provider writes nothing"))
+    }
+}
+
+/// `count` distinct player ids, `p-0000` upwards.
+fn player_ids(count: usize) -> Vec<String> {
+    (0..count).map(|i| format!("p-{i:04}")).collect()
+}
+
+/// A table's refs of one kind are distinct, in first-row order, and of that kind only.
+#[test]
+fn list_column_refs_are_distinct_per_kind() {
+    let rows = vec![
+        table_row(Some(("player", "p-2")), "Ann"),
+        table_row(Some(("character", "c-1")), "Mage"),
+        table_row(Some(("player", "p-1")), "Bo"),
+        table_row(None, "nobody"),
+        table_row(Some(("player", "p-2")), "Ann again"),
+        table_row(Some(("character", "c-1")), "Mage again"),
+    ];
+    let Primitive::DataTable(table) = players_table(rows) else { unreachable!() };
+    assert_eq!(columns::refs(&table, "player"), ["p-2", "p-1"]);
+    assert_eq!(columns::refs(&table, "character"), ["c-1"]);
+    assert!(columns::refs(&table, "guild").is_empty());
+}
+
+/// More distinct refs than `MAX_PANEL_REFS` go out as chunks of at most the cap, every one
+/// of which runs, and together they fill every cell of the column.
+#[tokio::test(start_paused = true)]
+async fn refs_over_the_cap_split_into_chunks_that_all_fill_the_column() {
+    let chunked = Chunked::new(&[]);
+    let engine = sourced(vec![chunked.clone()]).await;
+    let ids = player_ids(2 * controlplane::MAX_PANEL_REFS + 1);
+
+    let (fanned, _) = fan_out_refs(&engine, ids.clone()).await;
+    let calls = chunked.calls();
+    let sizes: Vec<usize> = calls.iter().map(Vec::len).collect();
+    assert_eq!(sizes, [controlplane::MAX_PANEL_REFS, controlplane::MAX_PANEL_REFS, 1]);
+    assert_eq!(calls.concat(), ids);
+    assert_eq!(fanned.len(), 1);
+    match &fanned[0].outcome {
+        ColumnOutcome::Cells(cells) => {
+            assert_eq!(cells.len(), ids.len());
+            assert!(ids.iter().all(|id| cells.get(id) == Some(&text(id))));
+        }
+        other => panic!("every chunk answered, so every cell is filled: {other:?}"),
+    }
+}
+
+/// The chunks of one column run concurrently under the column's one deadline: two chunks
+/// each answering at 0.6x of it fill the column before 1.0x has elapsed, which a sequential
+/// run (1.2x) cannot.
+#[tokio::test(start_paused = true)]
+async fn the_chunks_of_one_column_run_concurrently_under_its_one_deadline() {
+    let ids = player_ids(2 * controlplane::MAX_PANEL_REFS);
+    let late = CHUNKED_DEADLINE * 6 / 10;
+    let second = ids[controlplane::MAX_PANEL_REFS].as_str();
+    let chunked = Chunked::new(&[(&ids[0], late, ChunkAnswer::Cells), (second, late, ChunkAnswer::Cells)]);
+    let engine = sourced(vec![chunked.clone()]).await;
+
+    let (fanned, elapsed) = fan_out_refs(&engine, ids.clone()).await;
+    assert_eq!(chunked.calls().len(), 2);
+    match &fanned[0].outcome {
+        ColumnOutcome::Cells(cells) => assert_eq!(cells.len(), ids.len()),
+        other => panic!("both chunks answered within the deadline: {other:?}"),
+    }
+    assert!(elapsed >= late, "{elapsed:?}");
+    assert!(elapsed < CHUNKED_DEADLINE, "two chunks in sequence take 1.2x the deadline: {elapsed:?}");
+}
+
+/// One chunk answering at 1.1x of the column's deadline fails the whole column at the
+/// deadline.
+#[tokio::test(start_paused = true)]
+async fn a_chunk_past_the_column_deadline_fails_the_column() {
+    let ids = player_ids(2 * controlplane::MAX_PANEL_REFS);
+    let second = ids[controlplane::MAX_PANEL_REFS].as_str();
+    let plan = [(second, CHUNKED_DEADLINE * 11 / 10, ChunkAnswer::Cells)];
+    let engine = sourced(vec![Chunked::new(&plan)]).await;
+
+    let (fanned, elapsed) = fan_out_refs(&engine, ids).await;
+    match &fanned[0].outcome {
+        ColumnOutcome::Failed(why) => assert_eq!(why, "deadline of 100ms elapsed"),
+        other => panic!("a late chunk fails the column: {other:?}"),
+    }
+    assert!(elapsed >= CHUNKED_DEADLINE, "{elapsed:?}");
+    assert!(elapsed < CHUNKED_DEADLINE * 11 / 10, "the column fails at its deadline: {elapsed:?}");
+}
+
+/// A chunk that errors, or answers a primitive other than `ColumnCells`, fails the whole
+/// column, though the other chunk filled its cells.
+#[tokio::test(start_paused = true)]
+async fn one_failing_chunk_fails_the_whole_column() {
+    let ids = player_ids(controlplane::MAX_PANEL_REFS + 1);
+    let last = ids[controlplane::MAX_PANEL_REFS].as_str();
+    let cases = [
+        (ChunkAnswer::Fail, format!("chunk at {last} failed")),
+        (ChunkAnswer::Wrong, "answered a primitive other than ColumnCells".to_string()),
+    ];
+    for (answer, expected) in cases {
+        let chunked = Chunked::new(&[(last, Duration::ZERO, answer)]);
+        let engine = sourced(vec![chunked.clone()]).await;
+
+        let (fanned, _) = fan_out_refs(&engine, ids.clone()).await;
+        match &fanned[0].outcome {
+            ColumnOutcome::Failed(why) => assert_eq!(why, &expected),
+            other => panic!("no partial column: {other:?}"),
+        }
+        assert_eq!(chunked.calls().len(), 2);
+    }
+}
+
+/// The monolith face refuses `refs` over `MAX_PANEL_REFS` as invalid before the provider
+/// runs, and passes a request at the cap through.
+#[tokio::test]
+async fn the_local_face_refuses_refs_over_the_cap_before_the_provider_runs() {
+    use controlplane::ControlPlane as _;
+    let rec = Recording::new(
+        module("levels", vec![list_column("level", "player", "Level", Role::Viewer, 0)], Vec::new(), false),
+        &[("level", answer(Primitive::ColumnCells(BTreeMap::new())))],
+    );
+    let provider: Arc<dyn controlplane::Provider> = rec.clone();
+    let face = controlplane::LocalFace::new(vec![provider]);
+    let query = |count| PanelQuery {
+        module: "levels".to_string(),
+        contribution: "level".to_string(),
+        entity: None,
+        search: None,
+        cursor: None,
+        before: None,
+        queue_state: None,
+        range: None,
+        params: BTreeMap::new(),
+        refs: player_ids(count),
+    };
+
+    let refused = face.panel(query(controlplane::MAX_PANEL_REFS + 1)).await.expect_err("over the cap");
+    assert_eq!(refused.status, opsapi::Status::Invalid);
+    assert!(rec.calls().is_empty(), "the provider never ran");
+
+    face.panel(query(controlplane::MAX_PANEL_REFS)).await.expect("at the cap");
+    assert_eq!(rec.calls().len(), 1);
 }
 
 // ---- panels::resolve --------------------------------------------------------------

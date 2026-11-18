@@ -202,6 +202,10 @@ pub const DEFAULT_SEARCH_DEADLINE_MS: u32 = 800;
 /// The byte cap every writing provider applies to each `InvokeCall::input` value before
 /// it reads one.
 pub const MAX_INPUT_VALUE_BYTES: usize = 4096;
+/// The most entity ids one [`PanelQuery::refs`] carries. The portal splits a longer list
+/// into calls of at most this many; [`LocalFace`] refuses a longer one before the provider
+/// runs.
+pub const MAX_PANEL_REFS: usize = 100;
 
 /// The hash every FAKE stand-in for data the backend does not store is drawn from: a pure
 /// function of `salt` and an entity id, reading no clock and no random source.
@@ -259,6 +263,12 @@ impl ControlPlane for LocalFace {
     }
 
     async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
+        if req.refs.len() > MAX_PANEL_REFS {
+            return Err(opsapi::Error::invalid(format!(
+                "control-plane panel request carries {} refs, over the cap of {MAX_PANEL_REFS}",
+                req.refs.len()
+            )));
+        }
         let mut body = self.local(&req.module)?.provider.panel(req).await?;
         make_finite(&mut body.primitive);
         Ok(body)
@@ -390,8 +400,8 @@ pub struct PanelQuery {
     pub range: Option<TimeRange>,
     /// Module-specific keys only.
     pub params: BTreeMap<String, String>,
-    /// The entity ids of one table page an `EntityListColumn` answers for, in row order;
-    /// empty on every other request.
+    /// The entity ids of one table page an `EntityListColumn` answers for, in row order, at
+    /// most [`MAX_PANEL_REFS`]; empty on every other request.
     pub refs: Vec<String>,
 }
 
