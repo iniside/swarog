@@ -40,13 +40,22 @@ line you return, so return places, not code.
   implementation, `core/*` the foundations, `cmd/<name>-svc` the split binaries
   and `cmd/server` the monolith.
 - Stop when the anchors answer the question. Do not widen it.
+- A hook (`.claude/hooks/scout_nav_guard.py`) checks this: a Rust grep over
+  the repo root or a bare `core`, `modules`, `api`, `cmd`, `tools`, `weles`,
+  `demos` or `opscatalog` before any position-based LSP call is denied, and a
+  report is sent back when a `confirmed` anchor has no LSP call covering it
+  (within 2 lines) or a `.rs` anchor carries no label. After 2 denials the
+  report passes with a `**Hook:** unverified anchors` note appended.
 
 ## What you return
 
 1. **Answer:** one to three sentences.
-2. **Anchors:** one line each, `path:line` · symbol · what is there; at most
+2. **Anchors:** one line each, `path:line` · symbol · what is there ·
+   `confirmed` (an LSP call you made returned or targeted that line) or
+   `grep-only`; every anchor line carries one of the two labels. At most
    about 30, grouped when there are more (`12 more calls in modules/wallet/`).
-3. **Method:** LSP or grep lower bound, per anchor group. Any completeness or
+3. **Method:** summarises the labels: which LSP calls gave the confirmed
+   anchors, which groups are a grep lower bound and why. Any completeness or
    absence claim ("all callers", "no other uses") states which it is.
 4. **Open:** what you could not settle.
 

@@ -621,7 +621,7 @@ class Wiring(unittest.TestCase):
 
     @staticmethod
     def script(h):
-        return h["command"].split("/.claude/hooks/")[1].rstrip('"')
+        return h["command"].split("/.claude/hooks/")[1].split('"')[0]
 
     def scripts(self, event, matcher):
         found = [g for g in self.hooks[event] if g["matcher"] == matcher]
@@ -636,12 +636,16 @@ class Wiring(unittest.TestCase):
             ("PreToolUse", "Agent|EnterWorktree"): ["no_worktree_hook.py"],
             ("PreToolUse", "Agent"): ["explicit_model_guard.py", "haiku_listing_reminder.py"],
             ("PreToolUse", "ExitPlanMode"): ["exit_plan_checklist.py"],
+            ("PreToolUse", "Grep|Bash"): ["scout_nav_guard.py"],
+            ("PreToolUse", "SubagentHandback"): ["scout_nav_guard.py"],
             ("PostToolUse", "Bash|PowerShell"): ["post_commit_review_reminder.py"],
+            ("PostToolUse", "LSP|Grep|Bash"): ["scout_nav_guard.py"],
+            ("PostToolUseFailure", "LSP|Bash"): ["scout_nav_guard.py"],
         }
         for (event, matcher), scripts in want.items():
             with self.subTest(event=event, matcher=matcher):
                 self.assertEqual(self.scripts(event, matcher), scripts)
-        self.assertEqual(set(self.hooks), {"PreToolUse", "PostToolUse"})
+        self.assertEqual(set(self.hooks), {"PreToolUse", "PostToolUse", "PostToolUseFailure"})
         self.assertEqual(sum(len(v) for v in self.hooks.values()), len(want))
 
     def test_agent_prompt_guardrail_present(self):

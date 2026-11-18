@@ -75,6 +75,26 @@
             "statusMessage": "Plan finalization checklist"
           }
         ]
+      },
+      {
+        "matcher": "Grep|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/scout_nav_guard.py\" gate",
+            "statusMessage": "code-scout: LSP before a wide grep"
+          }
+        ]
+      },
+      {
+        "matcher": "SubagentHandback",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/scout_nav_guard.py\" report",
+            "statusMessage": "code-scout: checking anchor labels against LSP calls"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -85,6 +105,28 @@
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_commit_review_reminder.py\"",
             "statusMessage": "Reminding to dispatch core-reviewer after commit"
+          }
+        ]
+      },
+      {
+        "matcher": "LSP|Grep|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/scout_nav_guard.py\" record",
+            "statusMessage": "code-scout: recording navigation"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "LSP|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/scout_nav_guard.py\" record",
+            "statusMessage": "code-scout: recording a failed navigation call"
           }
         ]
       }
