@@ -10,6 +10,27 @@ use crate::Owner;
 /// from list views. Acceptable because the item catalogue is small; revisit if item variety grows.
 pub(crate) const HOLDINGS_HARD_LIMIT: i64 = 1000;
 
+/// Per-player advisory lock key: FNV-1a over an `inventory.player/` namespace plus the uuid
+/// normalized to Postgres's uuid-equality form, so every spelling the `$1::uuid` row SQL
+/// treats as one player takes the SAME lock. A spelling that is not 32 hex digits hashes its
+/// raw bytes, so taking the lock never raises 22P02.
+fn player_lock_key(player_id: &str) -> i64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let hex: Vec<u8> = player_id
+        .bytes()
+        .filter(u8::is_ascii_hexdigit)
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    let normalized: &[u8] = if hex.len() == 32 { &hex } else { player_id.as_bytes() };
+    let mut h = OFFSET_BASIS;
+    for b in b"inventory.player/".iter().copied().chain(normalized.iter().copied()) {
+        h ^= b as u64;
+        h = h.wrapping_mul(PRIME);
+    }
+    h as i64
+}
+
 /// True iff a store error is the holdings-quantity DB CHECK firing (SQLSTATE 23514
 /// on `holdings_quantity_check`): a LEGAL single grant pushed the accumulated
 /// `ON CONFLICT` sum past the 2_000_000 state ceiling. Matched narrowly on the
@@ -91,7 +112,7 @@ impl Store {
     ) -> Result<(), sqlx::Error> {
         // Posture C (belt): the ONE shared writer refuses an out-of-policy quantity
         // even if a future ingress path forgets to validate first. Both current
-        // callers (grant_starter via posture A, grant_pool via posture B) already
+        // callers (grant_starter via posture A, Holdings::grant via posture B) already
         // validate, so on today's paths this never fires — it surfaces a programming
         // error as an internal error, never a raw 22003/23514 from the DB.
         // WARNING to future durable callers: on a delivery tx a belt failure maps to
@@ -113,14 +134,32 @@ impl Store {
         Ok(())
     }
 
-    /// `true` once this player's deletion tombstone is committed. A plain read, no
-    /// advisory lock: the row is permanent, so every statement taken after the plant
-    /// commits sees it.
-    pub(crate) async fn is_player_purged(&self, player_id: &str) -> Result<bool, sqlx::Error> {
+    /// Taken ON THE TX CONNECTION — a separate pool connection would lose the
+    /// serialization — and released at commit/rollback.
+    pub(crate) async fn lock_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(player_lock_key(player_id))
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
+    /// `true` once this player's deletion tombstone is committed. A plain read: its caller
+    /// holds [`Store::lock_player_tx`] first, so the sweep either committed before the read
+    /// or waits for the caller's transaction.
+    pub(crate) async fn is_player_purged_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<bool, sqlx::Error> {
         let found: Option<i32> =
             sqlx::query_scalar("SELECT 1 FROM inventory.purged_players WHERE player_id = $1::uuid")
                 .bind(player_id)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *conn)
                 .await?;
         Ok(found.is_some())
     }
@@ -137,13 +176,6 @@ impl Store {
         .fetch_one(&self.pool)
         .await?;
         Ok((count, oldest.unwrap_or_default()))
-    }
-
-    /// The pool-backed grant (the player IAP path): acquires a connection and runs
-    /// `grant_exec` against it. Not the durable-event path — that hands its own tx.
-    pub(crate) async fn grant_pool(&self, owner: &Owner, item_id: &str, qty: i64) -> Result<(), sqlx::Error> {
-        let mut conn = self.pool.acquire().await?;
-        self.grant_exec(&mut conn, owner, item_id, qty).await
     }
 
     pub(crate) async fn list(&self, owner: &Owner) -> Result<Vec<Holding>, sqlx::Error> {
@@ -208,8 +240,8 @@ impl Store {
         Ok(res.rows_affected())
     }
 
-    /// `item_exists` on a HANDED connection — the durable-delivery variant (same
-    /// shape as `grant_exec`): `grant_starter` validates the configured starter
+    /// The item check on a HANDED connection (same shape as `grant_exec`):
+    /// `grant_starter` validates the configured starter
     /// item on the SAME delivery tx it inserts on, so the check and the insert
     /// are one atomic unit (a pool-backed check would be a different connection —
     /// TOCTOU against the tx's snapshot).
@@ -220,14 +252,6 @@ impl Store {
             .await?;
         Ok(row.is_some())
     }
-
-    /// The pool-backed item check (the player IAP path): acquires a connection and
-    /// runs `item_exists_exec` against it. Not the durable-event path.
-    pub(crate) async fn item_exists(&self, item_id: &str) -> Result<bool, sqlx::Error> {
-        let mut conn = self.pool.acquire().await?;
-        self.item_exists_exec(&mut conn, item_id).await
-    }
-
     pub(crate) async fn stats(&self) -> Result<(i64, i64), sqlx::Error> {
         let row: (i64, i64) = sqlx::query_as(
             "SELECT (SELECT count(*) FROM inventory.holdings), \

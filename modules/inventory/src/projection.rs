@@ -214,10 +214,11 @@ pub(crate) const PURGE_SWEEP_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec 
 
 pub(crate) const PURGE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::PLAYER_PURGE;
 
-/// Tombstones claimed per selection statement. It bounds PLAYERS, not holdings — the
-/// per-player delete is one statement whose size nothing here caps — and the sweep LOOPS
-/// batches until a short one, so a backlog above one batch per day still drains.
-pub(crate) const PURGE_BATCH: i64 = 256;
+/// Players one fire may sweep, and therefore the transaction-scoped advisory locks the
+/// delivery transaction accumulates: each player swept keeps that player's grants blocked
+/// until the fire commits. It is equally the claim statement's `LIMIT`, so one constant
+/// decides both; a backlog above 64 players per fire drains over several fires.
+pub(crate) const INVENTORY_PLAYERS_PER_FIRE: i64 = 64;
 
 /// The sweep's whole wall-clock budget. Exhausting it ends the fire with the players swept
 /// so far KEPT — they commit with the subscription checkpoint and the next fire resumes from
@@ -228,20 +229,6 @@ pub(crate) const PURGE_BATCH: i64 = 256;
 /// budgeted: the plane `pg_terminate_backend`s the delivery backend, so the whole fire's
 /// transaction dies with it and 20 such fires pause the subscription.
 pub(crate) const SWEEP_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// The scan floor carried across batches, load-bearing rather than an optimisation: every
-/// batch runs inside the ONE still-open delivery transaction, where the tombstones this
-/// transaction has already stamped are dead-but-unprunable row versions that a
-/// `swept_at IS NULL` re-scan still walks — so a floorless scan re-walks `256 x (k-1)` of
-/// them and the loop goes quadratic. It buys that only while the batch query's `ORDER BY`
-/// names the TABLE's `player_id`: unqualified it resolves to the `player_id::text` output
-/// column, which the primary key can supply as neither the ordering nor an index condition,
-/// leaving a seq scan plus a sort that spills to disk inside that transaction. Ordering and
-/// filtering on the same `uuid` column also drops an unstated dependency on canonical uuid
-/// text collating in uuid order. The comparison is `>=` rather than the `>` the unique key
-/// would allow: it costs one already-stamped row per batch (`swept_at IS NULL` filters it
-/// out) and in exchange keeps the floor value itself reachable.
-const PURGE_FLOOR: &str = "00000000-0000-0000-0000-000000000000";
 
 /// Just the `name` of a `scheduler.fired` payload: the sweep subscribes by the contract's
 /// topic const without importing the producer's payload type (audit's zero-coupling shape).
@@ -258,55 +245,54 @@ impl Inner {
     /// anyway.
     ///
     /// Every delete, every `swept_at` stamp and the subscription checkpoint commit together
-    /// on the handed delivery tx. Takes no per-character advisory lock: `Owner::player` rows
-    /// are disjoint from every key `lock_character` guards.
+    /// on the handed delivery tx. Each player's delete runs under `Store::lock_player_tx`,
+    /// the lock `Holdings::grant` takes before its tombstone read.
     pub(crate) async fn sweep_purged_players(&self, conn: &mut PgConnection) -> Result<(), BusError> {
         let started = std::time::Instant::now();
-        let mut watermark = PURGE_FLOOR.to_string();
-        loop {
-            let due: Vec<(String,)> = sqlx::query_as(
-                "SELECT player_id::text FROM inventory.purged_players \
-                  WHERE swept_at IS NULL AND player_id >= $1::uuid \
-                  ORDER BY inventory.purged_players.player_id \
-                  LIMIT $2 FOR UPDATE SKIP LOCKED",
-            )
-            .bind(&watermark)
-            .bind(PURGE_BATCH)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(BusError::transport)?;
-            for (player_id,) in &due {
-                self.store
-                    .clear_owner_exec(&mut *conn, &Owner::player(player_id.as_str()))
-                    .await
-                    .map_err(BusError::transport)?;
-                sqlx::query(
-                    "UPDATE inventory.purged_players SET swept_at = now() \
-                      WHERE player_id = $1::uuid",
-                )
-                .bind(player_id)
-                .execute(&mut *conn)
+        // `ORDER BY` names the TABLE's `player_id`: unqualified it binds to the
+        // `player_id::text` output column, which the primary key can serve as neither the
+        // ordering nor an index condition, leaving a seq scan plus a sort inside the
+        // delivery tx.
+        let due: Vec<(String,)> = sqlx::query_as(
+            "SELECT player_id::text FROM inventory.purged_players \
+              WHERE swept_at IS NULL \
+              ORDER BY inventory.purged_players.player_id \
+              LIMIT $1 FOR UPDATE SKIP LOCKED",
+        )
+        .bind(INVENTORY_PLAYERS_PER_FIRE)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(BusError::transport)?;
+        for (player_id,) in &due {
+            self.store
+                .lock_player_tx(&mut *conn, player_id)
                 .await
                 .map_err(BusError::transport)?;
-                // The budget is spent only at a player boundary — after the stamp, never
-                // between a player's delete and its stamp. The sweeps that emit a terminal
-                // event per deleted row depend on that placement; this one keeps it for the
-                // same shape.
-                if started.elapsed() >= SWEEP_BUDGET {
-                    tracing::warn!(
-                        elapsed_ms = started.elapsed().as_millis() as u64,
-                        "inventory: purge sweep hit its budget — resuming next fire"
-                    );
-                    return Ok(());
-                }
-            }
-            if (due.len() as i64) < PURGE_BATCH {
+            self.store
+                .clear_owner_exec(&mut *conn, &Owner::player(player_id.as_str()))
+                .await
+                .map_err(BusError::transport)?;
+            sqlx::query(
+                "UPDATE inventory.purged_players SET swept_at = now() \
+                  WHERE player_id = $1::uuid",
+            )
+            .bind(player_id)
+            .execute(&mut *conn)
+            .await
+            .map_err(BusError::transport)?;
+            // The budget is spent only at a player boundary — after the stamp, never
+            // between a player's delete and its stamp. The sweeps that emit a terminal
+            // event per deleted row depend on that placement; this one keeps it for the
+            // same shape.
+            if started.elapsed() >= SWEEP_BUDGET {
+                tracing::warn!(
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "inventory: purge sweep hit its budget — resuming next fire"
+                );
                 return Ok(());
             }
-            if let Some((last,)) = due.last() {
-                watermark.clone_from(last);
-            }
         }
+        Ok(())
     }
 }
 

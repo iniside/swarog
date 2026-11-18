@@ -92,15 +92,13 @@ impl Holdings for Inner {
     /// behaviour.
     ///
     /// NOT a reference-grade mutation pattern — DEV-ONLY (gated by
-    /// `INVENTORY_DEV_GRANT`, simulated IAP) and deliberately unhardened. It runs
-    /// three SEPARATE pool-connection autocommits (`item_exists` → `grant_pool` →
-    /// `list`; see `store.rs:107-110,162-165`), carries NO idempotency key, and
-    /// `grant_pool` accumulates (`ON CONFLICT ... quantity = quantity +
-    /// EXCLUDED.quantity`, `store.rs:93-94`) — so if the final `list` read fails
-    /// AFTER `grant_pool` already committed, the caller sees an error despite the
-    /// mutation having applied, and a manual retry double-grants. The starter-grant
-    /// path (`Inner::grant_starter` in `projection.rs`) is the reference pattern:
-    /// one handed delivery tx, exactly-once via the durable subscription.
+    /// `INVENTORY_DEV_GRANT`, simulated IAP) and deliberately unhardened. The grant
+    /// commits in its own transaction BEFORE the final `list` read, carries NO
+    /// idempotency key, and accumulates (`ON CONFLICT ... quantity = quantity +
+    /// EXCLUDED.quantity`) — so if that `list` read fails, the caller sees an error
+    /// despite the mutation having applied, and a manual retry double-grants. The
+    /// starter-grant path (`Inner::grant_starter` in `projection.rs`) is the reference
+    /// pattern: one handed delivery tx, exactly-once via the durable subscription.
     async fn grant(&self, identity: Identity, item_id: String, qty: i64) -> Result<Vec<Holding>, Error> {
         // The dev-grant gate, checked FIRST (before any input handling or DB touch):
         // the op is contributed/served unconditionally in both topologies, so this
@@ -119,29 +117,57 @@ impl Holdings for Inner {
         // the durable subscription.
         let qty = validate_quantity(qty)
             .map_err(|_| Error::invalid(format!("qty must be between 1 and {MAX_HOLDING_QTY}")))?;
-        if !self.store.item_exists(&item_id).await.map_err(internal)? {
-            return Err(Error::invalid("unknown item"));
-        }
-        if self.store.is_player_purged(&pid).await.map_err(internal)? {
-            return Err(Error::conflict(PLAYER_DELETED));
-        }
         let owner = Owner::player(pid);
-        // The accumulated-state ceiling: a per-grant-LEGAL qty can still push the
-        // stored `ON CONFLICT` sum past the DB CHECK's 2_000_000 (repeated IAP
-        // grants) — SQLSTATE 23514 here is a definitive answer about durable state,
-        // not an infrastructure fault, so it maps to Conflict (409: "the request
-        // conflicts with existing durable state" — opsapi::Status docs; Invalid/400
-        // would mislabel a well-formed request as malformed). HTTP-path only: the
-        // durable grant_starter path CANNOT reach this CHECK — each character gets
-        // exactly one starter grant (exactly-once + the tombstone guard), so its
-        // stored quantity never accumulates toward the ceiling.
-        self.store.grant_pool(&owner, &item_id, qty).await.map_err(|e| {
-            if is_holdings_cap_violation(&e) {
-                Error::conflict("holding cap reached for this item")
-            } else {
-                internal(e)
+        let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        let granted: Result<(), Error> = async {
+            if !self
+                .store
+                .item_exists_exec(&mut tx, &item_id)
+                .await
+                .map_err(internal)?
+            {
+                return Err(Error::invalid("unknown item"));
             }
-        })?;
+            self.store
+                .lock_player_tx(&mut tx, &owner.id)
+                .await
+                .map_err(internal)?;
+            if self
+                .store
+                .is_player_purged_tx(&mut tx, &owner.id)
+                .await
+                .map_err(internal)?
+            {
+                return Err(Error::conflict(PLAYER_DELETED));
+            }
+            // The accumulated-state ceiling: a per-grant-LEGAL qty can still push the
+            // stored `ON CONFLICT` sum past the DB CHECK's 2_000_000 (repeated IAP
+            // grants) — SQLSTATE 23514 here is a definitive answer about durable state,
+            // not an infrastructure fault, so it maps to Conflict (409: "the request
+            // conflicts with existing durable state" — opsapi::Status docs; Invalid/400
+            // would mislabel a well-formed request as malformed). HTTP-path only: the
+            // durable grant_starter path CANNOT reach this CHECK — each character gets
+            // exactly one starter grant (exactly-once + the tombstone guard), so its
+            // stored quantity never accumulates toward the ceiling.
+            self.store
+                .grant_exec(&mut tx, &owner, &item_id, qty)
+                .await
+                .map_err(|e| {
+                    if is_holdings_cap_violation(&e) {
+                        Error::conflict("holding cap reached for this item")
+                    } else {
+                        internal(e)
+                    }
+                })
+        }
+        .await;
+        match granted {
+            Ok(()) => tx.commit().await.map_err(internal)?,
+            Err(e) => {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        }
         self.store.list(&owner).await.map_err(internal)
     }
 }
