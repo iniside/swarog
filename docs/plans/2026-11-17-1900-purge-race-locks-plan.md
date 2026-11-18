@@ -1,6 +1,6 @@
 # Purge race locks (plan B) — plan
 
-Status: approved by the owner 2026-11-18 (revised plan); steps 1–3 landed (`dd789cc2`, `8622b65d`); the owner ruled on proof-audit batch 1 on 2026-11-18, and the review-fix landed; steps 4–5 landed (`a228ccbd`, `424f00b1`), with proof-audit batch 2 addressed. Step 6 landed (`769261be`, proof review-fix `e4454955`); step 6a landed (`81596465`, review PASS). Step 6b landed (`a57d255e`, review PASS; proof review-fix `b602c023`). Step 7 waits for the owner to rule on the structural proof-audit finding F2 (the claim order is copied into three test preconditions).
+Status: approved by the owner 2026-11-18 (revised plan); steps 1–3 landed (`dd789cc2`, `8622b65d`); the owner ruled on proof-audit batch 1 on 2026-11-18, and the review-fix landed; steps 4–5 landed (`a228ccbd`, `424f00b1`), with proof-audit batch 2 addressed. Step 6 landed (`769261be`, proof review-fix `e4454955`); step 6a landed (`81596465`, review PASS). Step 6b landed (`a57d255e`, review PASS; proof review-fix `b602c023`). Owner ruled on 2026-11-18 to fix finding F2 (step 6c), then step 7.
 
 Revision 2026-11-18: the owner approved the original twelve-step plan on 2026-11-18. No step was
 dispatched, and `git log --grep=purge-race-locks` shows no step commit. The plan was then
@@ -564,6 +564,37 @@ migration (`.agents/shared/core-rules.md`).
 **(d) Lane:** `core-implementer`, opus.
 
 Commit: `fix(groups): rotate skipped purge players behind fresh tombstones (purge-race-locks step 6b)`.
+
+### Step 6c — one source for the groups claim order `[opus]`
+**(a) What:** `modules/groups/src/{store.rs,projection.rs}`, `modules/groups/src/purge_tests.rs`.
+
+**(b) Why now:** proof audit of 6b, finding F2. The owner ruled on 2026-11-18 to fix it. The
+claim order `skipped_at NULLS FIRST, player_id` was written in four places: the sweep, plus
+`assert_claimed_by_the_next_fire`, the `foreign_below` precondition and the rotation and
+oldest-Skipped preconditions. Step 6b had to hand-edit two of those copies.
+
+**(c) How:**
+- Move the claim `SELECT` (`WHERE swept_at IS NULL ORDER BY … LIMIT $1 FOR UPDATE SKIP LOCKED`)
+  into one `Store::claim_due_tx(conn, limit) -> Vec<String>`. The sweep calls it with
+  `GROUPS_PLAYERS_PER_FIRE`. No behaviour change.
+- The test preconditions stop re-deriving the order. Each one opens a transaction, calls
+  `claim_due_tx` with `GROUPS_PLAYERS_PER_FIRE`, checks that its own ids are (or are not)
+  members of the result, then rolls back.
+  - `assert_claimed_by_the_next_fire`: the player is in the claimed set.
+  - `foreign_below`, the rotation precondition and the oldest-Skipped precondition: the claimed
+    set holds only the test's own ids, or exactly the expected ones. Keep each test's current
+    strength or make it stronger.
+- No order clause may remain in test code. Grep `skipped_at NULLS FIRST` and `row_number()`
+  under `modules/groups`; only the store function may match.
+- Tests: the existing 51 stay green.
+- **Mutations, each shown red:**
+  - `DESC` on `skipped_at` in `claim_due_tx` (the oldest-Skipped test);
+  - the order reverted to `player_id` only (the rotation test).
+- Comments: none new.
+
+**(d) Lane:** `core-implementer`, opus.
+
+Commit: `refactor(groups): claim purge players through one store function (purge-race-locks step 6c)`.
 
 ### Step 7 — cadence prose `[docs]`
 **(a) What:** every `player-purge` cadence statement that step 1 made false, plus the historical
