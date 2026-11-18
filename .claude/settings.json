@@ -82,7 +82,7 @@
           {
             "type": "command",
             "command": "python -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/scout_nav_guard.py\" gate",
-            "statusMessage": "code-scout: LSP before a wide grep"
+            "statusMessage": "Navigation: LSP before a wide Rust search, no repeated file slices"
           }
         ]
       },
@@ -109,12 +109,12 @@
         ]
       },
       {
-        "matcher": "LSP",
+        "matcher": "LSP|Agent",
         "hooks": [
           {
             "type": "command",
             "command": "python -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/scout_nav_guard.py\" record",
-            "statusMessage": "code-scout: recording navigation"
+            "statusMessage": "Recording navigation (LSP calls, code-scout dispatches)"
           }
         ]
       }

@@ -136,7 +136,7 @@ class NoOp(unittest.TestCase):
     def test_other_agent_with_code_scout_in_pattern(self):
         aid = new_agent()
         p = scout(aid, "Grep", {"pattern": "foo", "note": "code-scout"})
-        p["agent_type"] = "core-implementer"
+        p["agent_type"] = "core-reviewer"
         self.assertIn('"code-scout"', json.dumps(p))
         self.assert_silent("gate", p)
         self.assertFalse(os.path.exists(state_file(aid)))
@@ -144,7 +144,7 @@ class NoOp(unittest.TestCase):
     def test_other_agent_record_writes_nothing(self):
         aid = new_agent()
         p = lsp(aid, "findReferences", "core/app/src/lib.rs", 1, FIND_REFS)
-        p["agent_type"] = "core-implementer"
+        p["agent_type"] = "core-reviewer"
         p["tool_input"]["note"] = "code-scout"
         self.assert_silent("record", p)
         self.assertFalse(os.path.exists(state_file(aid)))

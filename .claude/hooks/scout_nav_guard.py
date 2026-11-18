@@ -1,11 +1,18 @@
-"""code-scout navigation guard: LSP before a wide grep, LSP evidence behind every confirmed anchor.
+"""Navigation guard: LSP before a wide Rust search; for code-scout also LSP evidence behind its anchors.
 
-Modes (argv[1]), all no-ops unless agent_type == "code-scout":
-  record  PostToolUse LSP, PostToolUseFailure LSP   append the LSP call and its file:line hits to state
-  gate    PreToolUse Grep|Bash          deny a wide Rust search before a position-based LSP call (capped)
-  report  PreToolUse SubagentHandback   deny a report whose anchors lack the LSP evidence their label claims
+Modes (argv[1]):
+  record  PostToolUse LSP|Agent, PostToolUseFailure LSP   append the LSP call and its file:line hits, or a
+                                        code-scout dispatch, to state
+  gate    PreToolUse Grep|Bash          code-scout: deny a wide Rust search before a position-based LSP call;
+                                        core-implementer, test-author, docs-writer: deny it before such an
+                                        LSP call or a code-scout dispatch (a Bash search carrying '# nav-ok'
+                                        passes), and deny a third sed/head/tail slice of one file (all capped)
+  report  PreToolUse SubagentHandback   code-scout: deny a report whose anchors lack the LSP evidence their
+                                        label claims; the other agents: drop their state
+Every other agent and the main session are no-ops.
 
-Rules: .claude/agents/code-scout.md; .agents/shared/research-navigation.md Navigation.
+Rules: .claude/agents/code-scout.md and the implementation lanes' .claude/agents/<name>.md;
+.agents/shared/research-navigation.md Navigation.
 """
 
 import sys
@@ -33,6 +40,24 @@ GATE_REASON = (
     ".agents/shared/research-navigation.md Navigation."
 )
 
+NAV_AGENTS = {"core-implementer", "test-author", "docs-writer"}
+RAW_MARKERS = ('"code-scout"',) + tuple('"{0}"'.format(name) for name in sorted(NAV_AGENTS))
+SLICE_LIMIT = 2
+
+NAV_REASON = (
+    "{agent}: this Rust search spans the repo root or a bare core, modules, api, cmd, tools or demos. Ask LSP "
+    "first: workspaceSymbol for the NAME position, then findReferences, goToImplementation or incomingCalls at it; "
+    "or dispatch code-scout with the one question (subagent_type \"code-scout\", model \"haiku\", effort \"medium\"; "
+    "model \"sonnet\" for a multi-hop question), it returns only anchors. A grep in the file or crate folder you "
+    "work in is allowed. A deleted symbol or a plain-text search: run it as a Bash rg or grep with the comment "
+    "'# nav-ok'. .claude/agents/{agent}.md; .agents/shared/research-navigation.md Navigation."
+)
+
+SLICE_REASON = (
+    "{agent}: {file} was already sliced {count} times with sed -n/head/tail; read the file once with the Read tool "
+    "(whole file, or offset/limit around the anchor) instead of slicing it again. .claude/agents/{agent}.md."
+)
+
 SEPARATORS = ("&&", ";", "||", "|", "&")
 REDIRECTS = {">", ">>", "<", "<<", ">&", "&>", "&>>", ">|", "<&"}
 # Short flags that take a value, per tool; rg's -E/-r take one, grep's do not.
@@ -51,6 +76,7 @@ FILTER_LONG = {"--glob": "glob", "--iglob": "glob", "--type": "type", "--include
 def setup():
     global fnmatch, json, os, posixpath, re, shlex, tempfile
     global PATH_LINE, HEADER, LINE_ENTRY, CALLS_AT, CONFIRMED, GREP_ONLY, ANCHORS_HEAD, SECTION_HEAD, TAIL_HEAD
+    global NAV_ESCAPE, SED_RANGE, LINE_COUNT
     import fnmatch
     import json
     import os
@@ -68,6 +94,9 @@ def setup():
     ANCHORS_HEAD = re.compile(r"^\W*(?:\d+\.\s*)?\W*anchors\b", re.I)
     SECTION_HEAD = re.compile(r"^\W*(?:\d+\.\s*)?\W*(?:method|open|answer)\b", re.I)
     TAIL_HEAD = re.compile(r"^\W*(?:\d+\.\s*)?\W*(?:method|open)\b", re.I)
+    NAV_ESCAPE = re.compile(r"#\s*nav-ok\b")
+    SED_RANGE = re.compile(r"^(?:\d+|\$)(?:\s*,\s*(?:[+~]?\d+|\$))?\s*p$")
+    LINE_COUNT = re.compile(r"^(?:-n\s*[+-]?\d+|-\d+|--lines=[+-]?\d+)$")
 
 
 def drive_path(path):
@@ -211,6 +240,58 @@ def grep_invocations(command, cwd):
             if index < len(words) and words[index] == "grep":
                 found.append(("git", words[index + 1:], run_cwd, piped))
     return found
+
+
+def slice_targets(command, cwd):
+    """Return the normalized file of every `sed -n '<range>p' <file>` and `head|tail -n N <file>` segment."""
+    found = []
+    for words, _ in segments(command):
+        head = head_name(words[0])
+        if head == "cd":
+            if len(words) > 1:
+                cwd = resolve(words[1].strip("\"'"), cwd)
+            continue
+        args = [word.strip("\"'") for word in words[1:]]
+        target = sed_file(args) if head == "sed" else head_file(args) if head in ("head", "tail") else None
+        if target:
+            found.append(norm(resolve(target, cwd)))
+    return found
+
+
+def sed_file(args):
+    quiet, script, files, index = False, None, [], 0
+    while index < len(args):
+        arg = args[index]
+        if arg in ("-n", "--quiet", "--silent"):
+            quiet = True
+        elif arg in ("-e", "--expression") and index + 1 < len(args) and script is None:
+            script = args[index + 1]
+            index += 1
+        elif arg.startswith("-"):
+            return None
+        elif script is None:
+            script = arg
+        else:
+            files.append(arg)
+        index += 1
+    return files[0] if quiet and script and SED_RANGE.match(script.strip()) and len(files) == 1 else None
+
+
+def head_file(args):
+    counted, files, index = False, [], 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "-n" and index + 1 < len(args):
+            counted = True
+            index += 1
+        elif LINE_COUNT.match(arg):
+            counted = True
+        elif arg.startswith("-"):
+            return None
+        else:
+            files.append(arg)
+        index += 1
+    return files[0] if counted and len(files) == 1 else None
 
 
 def parse_args(tool, args):
@@ -360,19 +441,20 @@ def do_record(payload, path):
             "kind": "lsp", "op": tool_input.get("operation"), "file": norm(str(tool_input.get("filePath") or "")),
             "line": tool_input.get("line"), "ok": bool(ok and not failed), "hits": lsp_hits(text),
         })
+    elif tool == "Agent" and str(tool_input.get("subagent_type") or "") == "code-scout" and not failed:
+        append_state(path, {"kind": "scout"})
 
 
-def do_gate(payload, path):
+def wide_search(payload):
     tool = payload.get("tool_name")
     tool_input = payload.get("tool_input") or {}
     cwd = payload.get("cwd") or DEFAULT_CWD
-    wide = False
     if tool == "Grep":
         target = tool_input.get("path")
         paths = [str(target)] if target else []
         filters = [(k, str(tool_input[k])) for k in ("glob", "type") if tool_input.get(k)]
-        wide = rust_search(filters) and is_wide(paths, cwd)
-    elif tool == "Bash":
+        return rust_search(filters) and is_wide(paths, cwd)
+    if tool == "Bash":
         for kind, args, run_cwd, piped in grep_invocations(str(tool_input.get("command") or ""), cwd):
             if kind == "rg" and "--files" in args:
                 continue
@@ -380,16 +462,55 @@ def do_gate(payload, path):
             if piped and not paths:
                 continue
             if rust_search(filters) and is_wide(paths, run_cwd, kind == "git"):
-                wide = True
-    if not wide:
+                return True
+    return False
+
+
+def gate_denials(records):
+    return sum(1 for r in records if r.get("kind") == "gate-deny")
+
+
+def do_gate(payload, path):
+    if not wide_search(payload):
         return
     records = load_state(path)
     if has_position_lsp(records):
         return
-    if sum(1 for r in records if r.get("kind") == "gate-deny") >= DENY_CAP:
+    if gate_denials(records) >= DENY_CAP:
         return
     append_state(path, {"kind": "gate-deny"})
     emit({"permissionDecision": "deny", "permissionDecisionReason": GATE_REASON})
+
+
+def do_nav_gate(payload, path, agent):
+    command = str((payload.get("tool_input") or {}).get("command") or "") if payload.get("tool_name") == "Bash" else ""
+    records = load_state(path)
+    if not (command and NAV_ESCAPE.search(command)) and wide_search(payload):
+        opened = has_position_lsp(records) or any(r.get("kind") == "scout" for r in records)
+        if not opened and gate_denials(records) < DENY_CAP:
+            append_state(path, {"kind": "gate-deny"})
+            emit({"permissionDecision": "deny", "permissionDecisionReason": NAV_REASON.format(agent=agent)})
+            return
+    if not command:
+        return
+    targets = slice_targets(command, payload.get("cwd") or DEFAULT_CWD)
+    if not targets:
+        return
+    counts = {}
+    for record in records:
+        if record.get("kind") == "slice":
+            counts[record.get("file")] = counts.get(record.get("file"), 0) + 1
+    for target in targets:
+        if counts.get(target, 0) >= SLICE_LIMIT:
+            if sum(1 for r in records if r.get("kind") == "slice-deny") < DENY_CAP:
+                append_state(path, {"kind": "slice-deny", "file": target})
+                reason = SLICE_REASON.format(agent=agent, file=target, count=counts[target])
+                emit({"permissionDecision": "deny", "permissionDecisionReason": reason})
+                return
+            break
+        counts[target] = counts.get(target, 0) + 1
+    for target in targets:
+        append_state(path, {"kind": "slice", "file": target})
 
 
 def anchor_lines(message):
@@ -471,14 +592,25 @@ def do_report(payload, path):
 def main():
     try:
         raw = sys.stdin.buffer.read().decode("utf-8", "replace")
-        if '"code-scout"' not in raw:
+        if not any(marker in raw for marker in RAW_MARKERS):
             return
         setup()
         payload = json.loads(raw)
-        if not isinstance(payload, dict) or payload.get("agent_type") != "code-scout" or not payload.get("agent_id"):
+        if not isinstance(payload, dict) or not payload.get("agent_id"):
+            return
+        agent = payload.get("agent_type")
+        if agent != "code-scout" and agent not in NAV_AGENTS:
             return
         mode = sys.argv[1] if len(sys.argv) > 1 else ""
         path = state_path(payload.get("agent_id"))
+        if agent in NAV_AGENTS:
+            if mode == "record":
+                do_record(payload, path)
+            elif mode == "gate":
+                do_nav_gate(payload, path, agent)
+            elif mode == "report" and os.path.isfile(path):
+                os.remove(path)
+            return
         if mode == "record":
             do_record(payload, path)
         elif mode == "gate":
