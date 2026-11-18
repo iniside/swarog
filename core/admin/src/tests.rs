@@ -1451,11 +1451,12 @@ enum ChunkAnswer {
 
 /// A provider whose one `player` list column, under a 100 ms deadline, answers each call
 /// after the delay and with the answer planned for the call's first ref (none and a cell per
-/// ref by default); it records each call's refs.
+/// ref by default); it records each call's refs and the instant it started.
 struct Chunked {
     manifest: Manifest,
     plan: BTreeMap<String, (Duration, ChunkAnswer)>,
     calls: Mutex<Vec<Vec<String>>>,
+    starts: Mutex<Vec<tokio::time::Instant>>,
 }
 
 const CHUNKED_DEADLINE: Duration = Duration::from_millis(100);
@@ -1464,7 +1465,12 @@ impl Chunked {
     fn new(plan: &[(&str, Duration, ChunkAnswer)]) -> Arc<Chunked> {
         let decl = ContributionDecl { deadline_ms: 100, ..list_column("level", "player", "Level", Role::Viewer, 0) };
         let plan = plan.iter().map(|(id, delay, answer)| (id.to_string(), (*delay, *answer))).collect();
-        Arc::new(Chunked { manifest: module("levels", vec![decl], Vec::new(), false), plan, calls: Mutex::new(Vec::new()) })
+        let manifest = module("levels", vec![decl], Vec::new(), false);
+        Arc::new(Chunked { manifest, plan, calls: Mutex::new(Vec::new()), starts: Mutex::new(Vec::new()) })
+    }
+
+    fn starts(&self) -> Vec<tokio::time::Instant> {
+        self.starts.lock().unwrap().clone()
     }
 
     fn calls(&self) -> Vec<Vec<String>> {
@@ -1480,6 +1486,7 @@ impl controlplane::Provider for Chunked {
 
     async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
         self.calls.lock().unwrap().push(req.refs.clone());
+        self.starts.lock().unwrap().push(tokio::time::Instant::now());
         let first = req.refs.first().cloned().unwrap_or_default();
         let (delay, answer) = self.plan.get(&first).copied().unwrap_or((Duration::ZERO, ChunkAnswer::Cells));
         tokio::time::sleep(delay).await;
@@ -1547,25 +1554,30 @@ async fn refs_over_the_cap_split_into_chunks_that_all_fill_the_column() {
     }
 }
 
-/// The chunks of one column run concurrently under the column's one deadline: two chunks
-/// each answering at 0.6x of it fill the column before 1.0x has elapsed, which a sequential
-/// run (1.2x) cannot.
+/// The chunks of one column all start at the fan-out start and run under the column's one
+/// deadline: three chunks each answering at 0.6x of it fill the column before 1.0x has
+/// elapsed, which a sequential run (1.8x) or two at a time (1.2x) cannot.
 #[tokio::test(start_paused = true)]
 async fn the_chunks_of_one_column_run_concurrently_under_its_one_deadline() {
-    let ids = player_ids(2 * controlplane::MAX_PANEL_REFS);
+    let ids = player_ids(2 * controlplane::MAX_PANEL_REFS + 1);
     let late = CHUNKED_DEADLINE * 6 / 10;
-    let second = ids[controlplane::MAX_PANEL_REFS].as_str();
-    let chunked = Chunked::new(&[(&ids[0], late, ChunkAnswer::Cells), (second, late, ChunkAnswer::Cells)]);
+    let plan: Vec<_> =
+        ids.iter().step_by(controlplane::MAX_PANEL_REFS).map(|id| (id.as_str(), late, ChunkAnswer::Cells)).collect();
+    assert_eq!(plan.len(), 3);
+    let chunked = Chunked::new(&plan);
     let engine = sourced(vec![chunked.clone()]).await;
 
+    let start = tokio::time::Instant::now();
     let (fanned, elapsed) = fan_out_refs(&engine, ids.clone()).await;
-    assert_eq!(chunked.calls().len(), 2);
+    let starts = chunked.starts();
+    assert_eq!(starts.len(), 3);
+    assert!(starts.iter().all(|s| *s == start), "every chunk starts at the fan-out start: {starts:?} vs {start:?}");
     match &fanned[0].outcome {
         ColumnOutcome::Cells(cells) => assert_eq!(cells.len(), ids.len()),
-        other => panic!("both chunks answered within the deadline: {other:?}"),
+        other => panic!("every chunk answered within the deadline: {other:?}"),
     }
     assert!(elapsed >= late, "{elapsed:?}");
-    assert!(elapsed < CHUNKED_DEADLINE, "two chunks in sequence take 1.2x the deadline: {elapsed:?}");
+    assert!(elapsed < CHUNKED_DEADLINE, "chunks not all at once take 1.2x the deadline or more: {elapsed:?}");
 }
 
 /// One chunk answering at 1.1x of the column's deadline fails the whole column at the
