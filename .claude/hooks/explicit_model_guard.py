@@ -13,7 +13,7 @@ REASON = (
     ".agents/adapters/claude.md → Dispatch Mapping: [opus]/[independent] → "
     "core-implementer model:\"opus\"; [fable] → model:\"fable\"; [sonnet]/[mechanical] "
     "→ model:\"sonnet\"; [test-author] → test-author per the [test-author] rule in "
-    ".agents/shared/planning-dispatch.md (top tier by default, sonnet "
+    ".agents/skills/implementation-dispatch/SKILL.md Lanes (top tier by default, sonnet "
     "only when copying a top-tier reference); [docs] → docs-writer model:\"sonnet\"; review → "
     "core-reviewer at model ≥ the author's tier; read-only research → "
     "model:\"sonnet\"; listing-only research → model:\"haiku\". Add the model field "
