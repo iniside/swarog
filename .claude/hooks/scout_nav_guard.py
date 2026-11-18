@@ -12,7 +12,7 @@ Modes (argv[1]):
 Every other agent and the main session are no-ops.
 
 Rules: .claude/agents/code-scout.md and the implementation lanes' .claude/agents/<name>.md;
-.agents/shared/research-navigation.md Navigation.
+.agents/skills/code-navigation/SKILL.md Navigation.
 """
 
 import sys
@@ -37,7 +37,7 @@ GATE_REASON = (
     "at the symbol, position from workspaceSymbol) before a wider search; a grep in the file or crate folder "
     "you expect it in (modules/<name>, api/<name>, core/<crate>, weles, opscatalog) is allowed, not one over the "
     "repo root or a bare core, modules, api, cmd, tools or demos. .claude/agents/code-scout.md; "
-    ".agents/shared/research-navigation.md Navigation."
+    ".agents/skills/code-navigation/SKILL.md Navigation."
 )
 
 NAV_AGENTS = {"core-implementer", "test-author", "docs-writer"}
@@ -50,7 +50,7 @@ NAV_REASON = (
     "or dispatch code-scout with the one question (subagent_type \"code-scout\", model \"haiku\", effort \"low\"; "
     "model \"sonnet\" for a multi-hop question), it returns only anchors. A grep in the file or crate folder you "
     "work in is allowed. A deleted symbol or a plain-text search: run it as a Bash rg or grep with the comment "
-    "'# nav-ok'. .claude/agents/{agent}.md; .agents/shared/research-navigation.md Navigation."
+    "'# nav-ok'. .claude/agents/{agent}.md; .agents/skills/code-navigation/SKILL.md Navigation."
 )
 
 SLICE_REASON = (
