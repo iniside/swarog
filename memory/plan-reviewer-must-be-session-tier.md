@@ -5,10 +5,11 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
+  modified: 2026-11-18T15:21:22.329Z
 ---
 
 The step-5 plan reviewer (and any adversarial reviewer) must be at least as strong as the
-author, or it rubber-stamps. CLAUDE.md Plan Writing step 5 already says "at session tier" —
+author, or it rubber-stamps. the research-plan-present skill (plan review step) says "at session tier" —
 the delta this memory keeps is the incident + the model-assignment decision:
 
 Caught 2026-07-13: dispatched the reviewer on sonnet while the plan was written by fable.

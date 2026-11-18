@@ -1,10 +1,11 @@
 ---
 name: follow-uilayout-mockup-faithfully
-description: "When building UI that has a UILayout/ mockup, translate it verbatim — never improvise visuals; lane per the UI rule in .agents/shared/planning-dispatch.md"
+description: "When building UI that has a UILayout/ mockup, translate it verbatim — never improvise visuals; lane per the UI rule in the implementation-dispatch skill"
 metadata: 
   node_type: memory
   type: feedback
   originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
+  modified: 2026-11-18T15:21:22.284Z
 ---
 
 When reproducing any admin/UI screen, the visual source of truth is the repo's mockup
@@ -22,7 +23,7 @@ mockup is the only source (it gets replaced wholesale, e.g. a new darker scheme 
 2026-07-10). It's a spec, not runnable — port it, keeping dynamic data via the template
 engine.
 
-**Dispatch:** per the UI rule in `.agents/shared/planning-dispatch.md`
+**Dispatch:** per the UI rule in `.agents/skills/implementation-dispatch/SKILL.md`
 **Implementation Mode** (owner, 2026-11-17: a provider port's view part with a complete
 checklist runs at the cheap tier; checklist, contract decisions and review stay at the
 top tier; no fallback to a stronger model). Current workflow: the

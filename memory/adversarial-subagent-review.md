@@ -4,13 +4,13 @@ description: "review = core-reviewer subagent, adversarial against the diff AND 
 metadata:
   node_type: memory
   type: feedback
-  modified: 2026-11-18T14:20:35.756Z
+  modified: 2026-11-18T15:21:22.305Z
   originSessionId: d6807c6e-9fc4-4ea8-96cd-ed9826d0a2bf
 ---
 
 Review is always a `core-reviewer` SUBAGENT, never inline (repeat violations
 2026-07-14: inline "trivial" reviews missed real defects). Method lives in
-`.agents/shared/planning-dispatch.md` **Adversarial Diff Review**.
+`.agents/skills/diff-review/SKILL.md` (dispatch rules: `.agents/shared/planning-dispatch.md` **Adversarial Diff Review**).
 
 **Owner 2026-11-18:** keep review adversarial — hunt implementation gaps and
 structural problems, attack the fix's own new seams, and challenge the PLAN

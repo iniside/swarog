@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
-  modified: 2026-11-18T14:20:36.122Z
+  modified: 2026-11-18T15:21:21.990Z
 ---
 
 `.claude/agents/` holds five specialized personas — three built 2026-07-13 from
@@ -31,7 +31,7 @@ to close the gaps generic agents missed:
 - **mockup-implementer** — UI work against `UILayout/redesign/` (built on `UILayout/design-system/`): mockup = exact spec
   for layout AND data shape; data gaps are decided in the checklist, never by the
   implementer; deviations declared as `admindiff` accept entries. Tier per the UI rule
-  in `.agents/shared/planning-dispatch.md` **Implementation Mode** (a port's view part
+  in the `implementation-dispatch` skill (`.agents/skills/implementation-dispatch/SKILL.md`) (a port's view part
   runs at the cheap tier). Orchestration lives in the `mockup-implementation` skill
   (`.claude/skills/mockup-implementation/SKILL.md`) — invoke it for any "make it
   look like the mockup" task.
