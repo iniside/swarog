@@ -53,8 +53,9 @@ position-based LSP call (`hover`, `goToDefinition`, `findReferences`,
 `goToImplementation`, `incomingCalls`, `outgoingCalls`, `prepareCallHierarchy`)
 or dispatched `code-scout`; two denials at most, then it passes. A Bash `rg` or
 `grep` for plain text or a deleted symbol carries the comment `# nav-ok` to pass.
-A third `sed -n`, `head` or `tail` slice of one file is denied (two denials at
-most); read the file once with `Read` instead.
+A third `sed -n`, `head` or `tail` slice of one repository source file is denied
+(logs and build output are not counted; two denials at most); read the file once
+with `Read` instead.
 
 ## How research dispatch differs from implementation
 
