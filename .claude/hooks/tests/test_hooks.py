@@ -59,6 +59,16 @@ def _build_fixture():
     _commit(repo, "main.rs", "fn m() {}\n", "main")
     _git(repo, "merge", "-q", "--no-ff", "-m", "merge", "side")
     shas["merge"] = _git(repo, "rev-parse", "--short=10", "HEAD")
+    for rel, text in (("docs/x.json", "{}\n"), (".agents/y.yaml", "a: 1\n")):
+        path = os.path.join(repo, *rel.split("/"))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "dirprose")
+    shas["dirprose"] = _git(repo, "rev-parse", "--short=10", "HEAD")
+    shas["docsrs"] = _commit(repo, "docs/z.rs", "fn z() {}\n", "docsrs")
+    shas["corereadme"] = _commit(repo, "core/README.md", "hi\n", "corereadme")
     return repo, shas
 
 
@@ -578,6 +588,18 @@ class PostCommitFixture(unittest.TestCase):
     def test_prose_commit_silent(self):
         for tool in SHELL_TOOLS:
             self.assertIsNone(self.reminder("prose", tool))
+
+    def test_non_prose_suffix_under_prose_directory_is_silent(self):
+        for tool in SHELL_TOOLS:
+            self.assertIsNone(self.reminder("dirprose", tool))
+
+    def test_rust_file_under_docs_gets_reminder(self):
+        for tool in SHELL_TOOLS:
+            self.assertEqual(self.reminder("docsrs", tool), self.BASE)
+
+    def test_readme_under_code_directory_is_silent(self):
+        for tool in SHELL_TOOLS:
+            self.assertIsNone(self.reminder("corereadme", tool))
 
     def test_verifyctl_commit_adds_proof_auditor(self):
         for tool in SHELL_TOOLS:
