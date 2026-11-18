@@ -1,66 +1,66 @@
 # Memory Index
 
 ## Process / discipline / behavior
-- [pgrep check must GATE, not decorate](pgrep-check-must-gate-not-decorate.md) — `pgrep …; cargo …` in ONE bash call is not a check: the cargo is already dispatched; run the check as its own call and read it first (violated 2026-09-05, second cargo started beside another agent's test). Also: after any `--bless-*`, diff the baseline dir and restore files the current change did not cause
-- [Always fix at the source](always-fix-at-the-source.md) — owner rule 2026-11-11: propose only the source fix, never a test-side workaround as an option; leftovers get fixed, not filed to todo, unless the owner defers them
-- [Adversarial subagent review](adversarial-subagent-review.md) — try to break a diff at its OWN new seams (method in `.agents/shared/planning-dispatch.md` / `core-reviewer` prosecutor persona); ONE pass, default REJECT, class list required for PASS; NEVER inline even for "trivial" diffs — review = core-reviewer subagent; proof-auditor when the proof/gate is the risk surface
-- [Live acceptance: report, don't fix](live-acceptance-report-dont-fix.md) — awaria w fazie akceptacji na żywo = stop + diagnoza + raport z opcjami, NIGDY pętla fixów; przedwczesny fix utrwala złą warstwę (dowód: linker weles → design "orchestrator never builds")
-- [No inline ad-hoc fixes](no-inline-adhoc-fixes.md) — ad-hoc/untagged work ⇒ ASK for the dispatch lane BEFORE editing; complex fixes default to a subagent lane, inline needs explicit consent; post-review tweaks go through the lane too (repeat offense 2026-07-14)
-- [Never `git add -A` with agents live](never-git-add-all-while-subagents-run.md) — a subagent saving mid-commit gets swept into my commit with the wrong trailer; stage by explicit path whenever any agent is running (2026-08-31)
-- [Never stash to compare trees](never-stash-to-compare-trees.md) — `git stash` to check "was this already red?" = Git Safety violation (2026-07-17); the answer is the known-red list, `git worktree add <tmp> HEAD`, `git show HEAD:<path>`, or commit first — never the user's live tree
-- [Amplification proof → unit tests](amplification-proof-belongs-in-unit-tests.md) — prove no-I/O/anti-amplification fixes in SEQUENTIAL unit tests + a pure decision fn (zero-I/O by construction); split-proof can't distinguish fixed/unfixed (killed peer's port fast-fails), scope it to accuracy+recovery
-- [Fix authority via taxonomy](core-failure-taxonomy.md) — docs/reference evidence base: why double hostile review didn't fix core (fix-on-fix dominated); ~10 ranked failure classes + review attacks; source for the specialized agents
-- [Specialized core agents](specialized-core-agents.md) — .claude/agents/: core-implementer (authority-first), core-reviewer (class-keyed), proof-auditor (audits proof/gates), mockup-implementer (UI vs UILayout spec; orchestrated by the mockup-implementation skill), test-author (only test-writing lane), docs-writer (only doc/comment-prose lane, added 2026-08-31); thin, single-source-of-rules, one review pass, when to use each; ALL code-writing lanes = core-implementer (also new standalone crates — general-purpose is research-only; recydywa 2026-07-15)
-- [Split impl and tests](split-impl-and-tests.md) — tests = their own SEPARATE plan step after the impl lands+compiles, on the [test-author] lane (never bundled "implement X and write its tests"); saves tokens vs re-processing impl through the compile/test-fix loop; absolute rule, no trivial carve-out (ported from ArcGame 2026-07-22)
-- [Plan reviewer at session tier](plan-reviewer-must-be-session-tier.md) — reviewer >= author tier, never silently demoted; don't extend a scoped model ban to another role (2026-07-13: fable banned ⇒ review=opus, impl=sonnet)
-- [Verify the at-risk path](verify-the-at-risk-path-not-the-safe-one.md) — exercise the topology a change actually risks (split, not just monolith) with a committed splitproof assertion; missing value ≠ service not deployed
-- [Scope claims to what was verified](scope-claims-to-what-was-verified.md) — don't generalize a plane-specific result into a global claim; scope every "done" to what changed + find the counterexample first
-- [Verify repo state before resuming](verify-repo-state-before-resuming.md) — after a gap, `git log --oneline` BEFORE acting; I once reported progress on a rollout that had finished 68 commits earlier (2026-09-06)
-- [Prose about code is not evidence](prose-about-code-is-not-evidence.md) — a comment/status-doc/memory describing code is a LEAD, not a citation; 3 false claims in one session from repeating prose (incl. a lying doc comment in weles); fix false comments in the same rollout
-- [Transient-state prose expires](transient-state-prose-expires.md) — a docs fix describing a stub/deferred/unwired stage dies when the step that ends the stage lands (cost a REJECT 11 min later); sequence it after, or rewrite to the invariant; conformance `basis` strings are never executed
-- [Cite a precedent only after reading it](cite-a-precedent-only-after-reading-it.md) — "copy pattern X" is an instruction an implementer follows literally; read ALL of X first (its supporting index, what DRIVES it, its carve-out sentence) or cite the requirement instead — twice in one rollout a "copy X" of mine moved a defect instead of closing it
-- [Ask for observed gate state](ask-for-observed-gate-state.md) — "expect these red gates" turns unknown red into expected background (2 blocking gates red for 7 commits); ask what the agent OBSERVED, run the workspace suite BETWEEN steps (it found an authority 4 read-throughs missed), and verify "red by design" claims — splitproof was green and blind, which is worse
-- [A green signal that never ran the thing](a-green-signal-that-never-ran-the-thing.md) — `cargo check --tests` compiles without running; a `| tail` pipeline reports the pipe's exit code, not the tool's; N green specialized gates are weaker evidence than one full `cargo test --workspace` (3 of 4 gate failures were outside the module being built)
-- [Grep counts are lower bounds](grep-counts-are-lower-bounds.md) — `grep -c` is a single sweep too; the marker (`#[http]`, `emit_tx`) is also written in prose, so anchor the pattern and READ the hits; any number going into a comment/doc needs a second authority (opscatalog, routecheck, a golden) — recydywa 2026-08-31, "six ops" → false "nine", real 7
-- ["Not covered" lists are unexecuted prose](not-pinned-lists-are-unexecuted-prose.md) — a gate's deliberately-NOT-checked list is the one part nothing executes and where readers stop looking; attack it BEFORE the checks; 3 false reasons landed in one carefully-written list (incl. deferring to a stage that didn't exist)
-- [Separate public surface from impl](separate-public-surface-from-impl.md) — a module's consumed surface lives where it READS as public (api/<name>/), not nested in impl; when multiplying a convention, STOP and question it
-- ["Didn't-forget" tooling must self-check](didnt-forget-scripts-must-self-check.md) — any tool resting on a hand-maintained list must diff it against the real source of truth and die pre-work with a per-entry drift log (ref: processctl fleet validation)
-- [Historical docs are archives](historical-docs-are-archives.md) — plans, dated reviews, statuses preserve history; never call their superseded statements current drift or rewrite them to match HEAD
-- [Config-as-code, anti-magic](config-as-code-anti-magic.md) — Lukasz dislikes config-file magic; prefer typed Rust config; any data config must be strict (deny_unknown_fields, no layering/templating, dry-run)
-- [Follow UILayout mockup faithfully](follow-uilayout-mockup-faithfully.md) — UI has an exact spec in UILayout/redesign/; translate 1:1 INCLUDING data shape: data gaps decided at checklist extraction (no source ⇒ deterministic FAKE in the backend part; data a fresh fleet lacks ⇒ data-difference accept entry until demoseed, plan Step 24b), never silent drop or my own filler; every deviation declared as an admindiff accept entry; loop closes only with golden + admindiff crawl/diff clean; UI lane per the rule in .agents/shared/planning-dispatch.md (a port's view part runs at the cheap tier)
-- [Timing-sensitive tests doctrine](timing-sensitive-tests-doctrine.md) — tests verify correctness, not performance; never race a real clock: explicit persisted state, concurrency-not-speed, paused tokio clock, Notify happens-before, hang-guards with headroom; full-workspace cargo test is the fragility detector
-- [Verify the active session model before claims](verify-session-model-before-claims.md) — never infer the current Codex model from the API catalog or context size; separate identity, nominal window, usable/remaining context
-- [Work on master, no branches](work-on-master-no-branches.md) — commit directly on master (solo + agents workflow, history is enough); still commit/push only when asked, keep destructive-command guards
-- [LinkedIn posts: edit facts, not style](linkedin-posts-edit-facts-not-style.md) — his draft is the template; fact-check vs repo + minimal swaps; dual audience (techies + buyers), LinkedIn style is deliberate (2026-11-03)
-- [Team = solo + agents, never humans](team-is-solo-plus-agents-forever.md) — scaling means more AI agents (Codex/Claude), don't hedge advice on "if a human joins"; speak as we/our
+- [pgrep check must GATE](pgrep-check-must-gate-not-decorate.md) — check live cargo in its own call first; diff baselines after --bless
+- [Always fix at the source](always-fix-at-the-source.md) — no test-side workarounds; leftovers fixed unless owner defers
+- [Adversarial subagent review](adversarial-subagent-review.md) — review = core-reviewer subagent, never inline; attack the diff's own seams
+- [Live acceptance: report, don't fix](live-acceptance-report-dont-fix.md) — live-acceptance failure: stop, diagnose, report options; no fix loop
+- [No inline ad-hoc fixes](no-inline-adhoc-fixes.md) — untagged work: ask for the lane before editing
+- [Never git add -A with agents live](never-git-add-all-while-subagents-run.md) — stage by explicit path
+- [Never stash to compare trees](never-stash-to-compare-trees.md) — use git show HEAD:path or a commit, never stash
+- [Amplification proof → unit tests](amplification-proof-belongs-in-unit-tests.md) — prove anti-amplification in sequential unit tests, not split-proof
+- [Fix authority via taxonomy](core-failure-taxonomy.md) — failure classes + review attacks behind the specialized agents
+- [Specialized core agents](specialized-core-agents.md) — which .claude/agents lane does what; all code writing = core-implementer
+- [Split impl and tests](split-impl-and-tests.md) — tests are a separate later test-author step, no exceptions
+- [Plan reviewer at session tier](plan-reviewer-must-be-session-tier.md) — reviewer tier >= author tier
+- [Verify the at-risk path](verify-the-at-risk-path-not-the-safe-one.md) — prove the topology the change risks (split)
+- [Scope claims to what was verified](scope-claims-to-what-was-verified.md) — no global claims from a narrow result
+- [Verify repo state before resuming](verify-repo-state-before-resuming.md) — git log before acting after a gap
+- [Prose about code is not evidence](prose-about-code-is-not-evidence.md) — comments/docs/memory are leads, not citations
+- [Transient-state prose expires](transient-state-prose-expires.md) — docs about a temporary stage die with it; write invariants
+- [Cite a precedent only after reading it](cite-a-precedent-only-after-reading-it.md) — read all of pattern X before saying "copy X"
+- [Ask for observed gate state](ask-for-observed-gate-state.md) — ask what gates were observed red; run the workspace suite between steps
+- [A green signal that never ran the thing](a-green-signal-that-never-ran-the-thing.md) — check --tests and piped exit codes are not test runs
+- [Grep counts are lower bounds](grep-counts-are-lower-bounds.md) — read the hits; numbers in docs need a second authority
+- ["Not covered" lists are unexecuted prose](not-pinned-lists-are-unexecuted-prose.md) — attack a gate's not-checked list first
+- [Separate public surface from impl](separate-public-surface-from-impl.md) — consumed surface lives in api/<name>/
+- ["Didn't-forget" tooling must self-check](didnt-forget-scripts-must-self-check.md) — hand lists diff against the real source and fail early
+- [Historical docs are archives](historical-docs-are-archives.md) — never rewrite dated plans/reviews to match HEAD
+- [Config-as-code, anti-magic](config-as-code-anti-magic.md) — typed Rust config; strict data config only
+- [Follow UILayout mockup faithfully](follow-uilayout-mockup-faithfully.md) — 1:1 incl. data shape; deviations only as admindiff accept entries
+- [Timing-sensitive tests doctrine](timing-sensitive-tests-doctrine.md) — never race a real clock in tests
+- [Verify the session model before claims](verify-session-model-before-claims.md) — don't infer the model from catalogs or context size
+- [Work on master, no branches](work-on-master-no-branches.md) — commit on master; push only when asked
+- [LinkedIn posts: edit facts, not style](linkedin-posts-edit-facts-not-style.md) — fact-check his draft, minimal swaps
+- [Team = solo + agents](team-is-solo-plus-agents-forever.md) — scaling means more agents; speak as we/our
 
 ## Project / architecture / decisions
-- [B1 zamknięty: stub redial NIE był zbugowany](edge-stub-no-reconnect-after-peer-restart.md) — hipoteza transportowa OBALONA (2026-07-15): oba kształty teardownu → ConnectionFatal → recovery, testy regresyjne w cde5282; żywy split: kill → ~30s wiszący call/408 → 200, zero 404; jeśli trwałe 404 wróci — podejrzewaj dane/środowisko (gałąź D), nie core/remote
-- [DECIDED + DONE: everything is Rust](decision-migrate-everything-to-rust.md) — migration decided AND completed 2026-07-08; Rust workspace at repo root is the only project; go/jvm sketches archived. Don't re-litigate Go/Quarkus/JVM
-- [Never monolith-only features](never-monolith-only-features.md) — split is a supported compilation path; feature MUST work in both topologies (repeat-offense correction; mechanics are in CLAUDE.md)
-- [Don't descope transport for simplicity](dont-descope-transport-for-simplicity.md) — never cut gateway/durable-messaging/RPC-codegen to "minimum viable"; port the full seam, it produces per-module hacks otherwise
-- [Durable event plane is app-owned](durable-event-plane-bus-owned.md) — PULL model; keeps only what's NOT in CLAUDE.md: xid8/generation ordering + PITR fencing, the superseded-designs lineage (don't re-propose relay/POST /events), replica caches = core/invalidation
-- [asyncevents single-invocation deadlocks](asyncevents-single-invocation-parallelism-deadlocks.md) — a single `cargo test -p asyncevents -p app` self-deadlocks via a leaked idle-in-tx session; run plane tests separated/--test-threads=1
-- [Refactor churn was agent remediation](refactor-churn-was-agent-remediation.md) — big stranglers were cleanup after agent mistakes, not an iteration style; ask which language catches agent mistakes earliest, don't cite churn speed
-- [Dev tooling tests the backend, not a product](dev-tooling-tests-backend-not-hostile-users.md) — devctl/verifyctl/splitproof/processctl aren't security products (threat model in CLAUDE.md); keeps only the cargo-audit versioning delta
-- [North star: pluggable + extractable](gamebackend-north-star-and-jvm-exploration.md) — two goals (extend by plugins + mechanically extract to **processes**); why in-process plugin systems fight goal 2 (network-shaped seams from day one). Extraction is `cmd/<name>-svc`, not DB-per-service.
-- [Shared Postgres is the model](shared-postgres-is-the-model.md) — DECIDED 2026-08-12: one Postgres on a powerful bare-metal machine is the ops value; schema-per-module is logical isolation inside it. Do not re-propose DB-per-service / broker-as-maturity.
-- [Weles: mini-orchestrator](mini-orchestrator-native-no-containers.md) — POINTER: design now lives in `docs/reference/weles-design.md` (read it before proposing any Weles shape); M0 + pre-M1 shipped, M1 = rollback/hello+resolve/SQLite/port-minting; NEVER builds, deploy/ not target/debug
-- [Docker = distribution + multi-host bench](docker-is-distribution-and-multihost-bench.md) — DECIDED 2026-11-11: compose for monolith AND split (split is part of the deliverable, users expect it) + containers as simulated machines; Weles stays native; update old "no containers" docs instead of citing them; blockers: literal-IP peer parse, CA key on every node
-- [Module-selection configurator (future)](module-selection-configurator-future.md) — LATER, after compose: user ticks modules (menuconfig-style or web UI), deps auto-resolved, compiles or downloads prebuilt, runs; dep graph must be readable pre-build; split ≈ pick prebuilt *-svc
-- [Server management = domain module](server-management-is-a-domain-module.md) — future game-server management is a fortress module, not Consul/etcd generic discovery (topology is static); commands the orchestrator over a wire API
-- [Store-launch auth deferred to SDK](store-launch-auth-deferred-to-sdk.md) — backend stays a verifier; web=EAS(account id), native/store=Connect(PUID) needs a 2nd verifier later
-- [Go parity (historical, superseded)](go-parity-additive-dual-deploy.md) — retired Go backend reached dual-deploy parity additively (core/ untouched) before the Rust migration; archived, no forward action
-- [Local Postgres](reference_local_postgres.md) — role/db/DSN; macOS primary box, local trust-auth, per-OS psql path in platform-notes; tests target this local PG directly, never Docker/Testcontainers
-- [cargo fmt is NOT safe here](cargo-fmt-is-not-safe-here.md) — no rustfmt.toml, tree isn't rustfmt-default-clean; `cargo fmt -p x` churned 19 untouched files (2026-07-17). Hand-format to house style; paste this into every code-writing subagent prompt
-- [weles must stay C-free (cross-compile)](weles-must-stay-c-free-cross-compile.md) — no `*-sys`/bundled-C deps in weles/processctl; supported-targets cross-checks linux+windows from macOS with no cross-cc → hard FAIL (rusqlite bundled broke it 2026-07-21, swapped to pure-Rust redb); prefer pure-Rust, check the dep's transitive C graph first
-- [Module reference pair](module-reference-pair.md) — characters (basic provider/emitter) + inventory (advanced consumer) are the blessed reference; docs/reference/module-reference.md guides new-module work, copy-first + "do NOT copy"
-- [Generic remote-admin-write seam](generic-remote-admin-write-seam.md) — a remotely-editable (split) admin page = enrich generic adminapi (typed Field, SubmitOutcome show-once, opt-in AdminSubmit, per-provider Item.remote_submit), NEVER a bespoke module-coupled page; admin stays domain-agnostic (apikeys configurator 2026-07-14)
-- [Admin extension points SHIPPED](admin-extension-points-shipped.md) — cross-module admin seam (2026-07-14): owner declares ExtensionPoint consts in its api crate, contributor ships ExtensionEntry data on Item/ItemData (one shared fn), portal merges/interpolates/renders htmx modals; admin_data(params) crosses the wire with foreign-params tolerance; admincheck + split-proof ADX guard it; run: devctl up monolith → :8080/admin (admin/admin)
-- [Splitproof is proof surface](splitproof-is-proof-surface.md) — AUTHORING splitproof assertions = test-author at model opus (Lukasz 2026-10-21); harness library code = core-implementer; AUDITING = proof-auditor (read-only); test-honesty reviews → proof-auditor, not core-reviewer
-- [Plans: invariants, not prose code](plans-specify-invariants-not-prose-code.md) — step 8a: 6 plan-review rounds never converged on ~400 lines of prose code; specify decisions+invariants+tests, review the diff; keep the 2-round cap
-- [Purge race is a bug, never accepted](purge-race-is-a-bug-not-accepted.md) — owner 2026-11-17 reversed the 2026-09-10 "known gap": tombstone-guard vs sweep races must be fixed per module (wallet/storage lock pattern), never filed as accepted
-- [Cheap-tier ports: fix workflow, not model](cheap-tier-ports-fix-workflow-not-model.md) — admin ports' view part stays on sonnet; a bad port → post-mortem + fix skill/admindiff/golden, never fall back to opus (owner 2026-11-17)
-- [Admin refactor: red gates expected](admin-refactor-red-gates-expected.md) — during the admin control-plane redesign, /admin splitproof 404s + raze dead-code clippy are expected; no verifyctl until the admin panel lands (2026-11-13)
-- [demoseed is the one seeder](demoseed-is-the-one-seeder.md) — no per-module seed tools; demoseed via public API only (realistic); states no API produces stay data-difference entries; mockup gaps → next iteration, no endless polishing (owner 2026-11-17)
-- [Step 13 resume point](step13-resume-point.md) — admin redesign Step 13: part a landed unreviewed (1bea67f8, 6f2de49f); next review → opus gate tests → sonnet part b; only Step 13
+- [B1 closed: stub redial not buggy](edge-stub-no-reconnect-after-peer-restart.md) — transport hypothesis disproved; persistent 404 → suspect data/env
+- [Everything is Rust (done)](decision-migrate-everything-to-rust.md) — don't re-litigate Go/JVM
+- [Never monolith-only features](never-monolith-only-features.md) — every feature works in both topologies
+- [Don't descope transport](dont-descope-transport-for-simplicity.md) — port the full seam, no minimum-viable cuts
+- [Durable event plane is app-owned](durable-event-plane-bus-owned.md) — PULL model, ordering/fencing, rejected designs
+- [asyncevents single-invocation deadlocks](asyncevents-single-invocation-parallelism-deadlocks.md) — run plane tests separately / --test-threads=1
+- [Refactor churn was agent remediation](refactor-churn-was-agent-remediation.md) — stranglers were agent-mistake cleanup
+- [Dev tooling tests the backend](dev-tooling-tests-backend-not-hostile-users.md) — dev tools aren't security products
+- [North star: pluggable + extractable](gamebackend-north-star-and-jvm-exploration.md) — extend by modules, extract to processes
+- [Shared Postgres is the model](shared-postgres-is-the-model.md) — one PG, schema per module; no DB-per-service
+- [Weles: mini-orchestrator](mini-orchestrator-native-no-containers.md) — design in docs/reference/weles-design.md; never builds
+- [Docker = distribution + multi-host bench](docker-is-distribution-and-multihost-bench.md) — compose for monolith and split
+- [Module-selection configurator (future)](module-selection-configurator-future.md) — pick modules, deps resolved, build or prebuilt
+- [Server management = domain module](server-management-is-a-domain-module.md) — a fortress module, not generic discovery
+- [Store-launch auth deferred to SDK](store-launch-auth-deferred-to-sdk.md) — backend stays a verifier
+- [Go parity (historical)](go-parity-additive-dual-deploy.md) — archived, no action
+- [Local Postgres](reference_local_postgres.md) — role/db/DSN; tests use local PG, never Docker
+- [cargo fmt is NOT safe here](cargo-fmt-is-not-safe-here.md) — hand-format; tell every code-writing subagent
+- [weles must stay C-free](weles-must-stay-c-free-cross-compile.md) — no *-sys / bundled-C deps in weles/processctl
+- [Module reference pair](module-reference-pair.md) — characters + inventory are the reference modules
+- [Generic remote-admin-write seam](generic-remote-admin-write-seam.md) — enrich generic adminapi, never a module-coupled page
+- [Admin extension points shipped](admin-extension-points-shipped.md) — ExtensionPoint/ExtensionEntry cross-module admin seam
+- [Splitproof is proof surface](splitproof-is-proof-surface.md) — authoring = test-author opus; auditing = proof-auditor
+- [Plans: invariants, not prose code](plans-specify-invariants-not-prose-code.md) — specify decisions + invariants; 2-round cap
+- [Purge race is a bug](purge-race-is-a-bug-not-accepted.md) — fix tombstone/sweep races per module, never accept
+- [Cheap-tier ports: fix workflow, not model](cheap-tier-ports-fix-workflow-not-model.md) — view parts stay sonnet
+- [Admin refactor: red gates expected](admin-refactor-red-gates-expected.md) — /admin splitproof 404s expected until the panel lands
+- [demoseed is the one seeder](demoseed-is-the-one-seeder.md) — public-API seeding only, no per-module seeders
+- [Step 13 resume point](step13-resume-point.md) — admin redesign Step 13 state and next action
