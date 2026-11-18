@@ -30,12 +30,14 @@ EFFORT_REASON = (
 
 
 IMPLEMENT_LANES = {"core-implementer", "test-author", "docs-writer", "mockup-implementer"}
+READ_VERB = r"(?<![\w-])(?:read|study|load|go\s+through)\s+"
 WHOLE_PLAN = re.compile(
-    r"\bread\s+(?:through\s+)?(?:the\s+)?(?:whole|entire|full|complete)\s+(?:[\w`./-]+\s+){0,2}?plan\b"
-    r"|\bread\s+(?:the\s+)?plan\s+(?:in\s+full|end\s+to\s+end)\b",
+    READ_VERB + r"(?:through\s+)?(?:the\s+)?(?:whole|entire|full|complete)\s+(?:of\s+)?(?:[\w`./-]+\s+){0,2}?"
+    r"[\w`./-]*plan(?:\.md)?`?(?![\w-])"
+    r"|" + READ_VERB + r"(?:the\s+)?[\w`./-]*plan(?:\.md)?`?(?:\s+(?:file|document))?\s+(?:in\s+full|end\s+to\s+end)\b",
     re.I,
 )
-NEGATED = re.compile(r"\b(?:not|never|don't|do\s+not|no\s+need\s+to)\s+(?:\w+\s+)?$", re.I)
+NEGATED = re.compile(r"\b(?:not|never|don['\u2019]t|no\s+need\s+to)\b[^.;:\n]{0,40}$", re.I)
 SHA = re.compile(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b")
 
 PROMPT_REASON = (
@@ -54,13 +56,13 @@ PRECEDENT_WHAT = (
 
 
 def prompt_problem(subagent_type, prompt):
-    if str(subagent_type or "") not in IMPLEMENT_LANES:
+    if str(subagent_type or "").strip() not in IMPLEMENT_LANES:
         return None
     text = str(prompt or "")
     for found in WHOLE_PLAN.finditer(text):
-        if not NEGATED.search(text[max(0, found.start() - 30):found.start()]):
+        if not NEGATED.search(text[max(0, found.start() - 60):found.start()]):
             return WHOLE_PLAN_WHAT
-    if re.search(r"precedent", text, re.I) and SHA.search(text) and "--stat" not in text:
+    if re.search(r"\bprecedent", text, re.I) and SHA.search(text) and "--stat" not in text:
         return PRECEDENT_WHAT
     return None
 
