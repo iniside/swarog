@@ -647,7 +647,7 @@ variants! {
 }
 
 variants! {
-    undrawn;
+    drawn;
     /// A decoded field value; [`decode_field`] and [`encode_field`] are the one codec between
     /// a field's raw string (as carried in `InvokeCall::input` and `Field::default`) and it.
     #[derive(Clone, Debug, PartialEq)]
@@ -1274,7 +1274,7 @@ mod tests {
             (ActionPoint::NAME, ActionPoint::VARIANTS, true),
             (Primitive::NAME, Primitive::VARIANTS, true),
             (InvokeOutcome::NAME, InvokeOutcome::VARIANTS, false),
-            (FieldValue::NAME, FieldValue::VARIANTS, false),
+            (FieldValue::NAME, FieldValue::VARIANTS, true),
             (FilterKind::NAME, FilterKind::VARIANTS, false),
         ] {
             assert_eq!(registered.get(name), Some(&(variants, drawn)), "{name}");

@@ -1430,6 +1430,9 @@ fn field(f: &Field, posted: Option<&[(String, String)]>, errors: &BTreeMap<Strin
         _ => f.default.clone(),
     };
     let decoded = raw.as_deref().and_then(|r| decode_field(&f.kind, r).ok());
+    if let Some(v) = &decoded {
+        seen::record(v);
+    }
     let currency_name = money_currency_key(&f.key);
     let reposted = posted.filter(|_| !f.readonly);
     let (value, selected, currency) = match (&f.kind, decoded) {
