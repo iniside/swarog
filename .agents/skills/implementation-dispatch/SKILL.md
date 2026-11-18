@@ -73,6 +73,11 @@ A subagent starts from a fresh context: give it the task facts and source
 anchors, not the conversation. A prompt states the goal, authority, owned
 files, verification and commit boundary, plus, for code-touching work, the
 path `.agents/skills/code-navigation/SKILL.md` (subagents do not inherit it).
+An implementation prompt carries the step text and the plan sections it
+depends on (invariants, step preamble) pasted, or named by heading; never
+"read the whole plan". A precedent commit is named with what to copy from it
+(file and function), so the subagent reads `git show --stat` and those hunks,
+not the whole commit.
 A hand-off states the outcome, verified anchors, what was and was not
 validated, open questions, and **Leftovers for owner**. A subagent's commit
 trailer names the executing model (adapter **Commit Trailers**); after a
