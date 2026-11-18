@@ -19,6 +19,7 @@ robustness, and a detailed plan do not authorize the scope.
 original request.
 
 **Verdict.** If the fix exists only because the task introduced an unrequested
-mechanism, return `REJECT — scope loop`: remove it or return to the last
-approved boundary, without prescribing further hardening. If removal would
+mechanism, return `REJECT — scope loop` (authority:
+`.agents/skills/diff-review/SKILL.md` → **Origin**): remove it or return to the
+last approved boundary, without prescribing further hardening. If removal would
 change the owner-selected shape, ask one blocking question.

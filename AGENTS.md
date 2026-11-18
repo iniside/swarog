@@ -8,7 +8,7 @@ a proven split** — one `cmd/server` binary for the monolith, and every domain
 module also compiles and boots as its own `cmd/<name>-svc` process. The system
 grows by addition (Open/Closed at the architecture level): new modules, contract
 traits, and subscriptions, with no module importing another's implementation.
-Architecture facts (seams, fortresses, commands, layout)
+Architecture facts (seams, fortresses, commands)
 live in `.agents/shared/gamebackend.md` — do not treat this index as the
 architecture doc.
 

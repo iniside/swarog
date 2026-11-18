@@ -14,8 +14,8 @@ concrete action.
   Fix the Authority, refactor safety.
 - `shared/gamebackend.md`: architecture (seams, hard constraints, commands,
   one test rollout at a time, database).
-- `../.claude/rules/`: area rules loaded by path (domain modules, dev tooling
-  scope).
+- `../.claude/rules/`: area rules loaded by path (domain-modules, dev-tooling,
+  status-docs, event-plane, push-hub, admin-ui).
 - `adapters/claude.md`: Claude Code agents, models, how effort is set,
   trailers, and artifacts.
 - `skills/`: shared skills, cited by skill name; the how-to for planning

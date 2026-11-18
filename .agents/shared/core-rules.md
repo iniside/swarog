@@ -35,8 +35,8 @@ explicitly requests one. Do not use git worktrees.
 
 ## Agent Effort
 
-Subagents run at effort `medium`, `low` for the search lane; how it is set:
-the `implementation-dispatch` skill.
+Effort values and how they are set: `.agents/skills/implementation-dispatch/SKILL.md`
+→ **Model and effort**.
 
 ## Git Safety
 

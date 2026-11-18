@@ -14,7 +14,10 @@ plan-step commit without its `(<plan-slug> step <id>)` suffix; a review-fix
 commit without `Kind: review-fix`; research done as
 one grep pass and reported as the API.
 
-**Authority.** `.agents/shared/planning-dispatch.md` → **Implementation Mode**;
+**Authority.** `.agents/shared/planning-dispatch.md` → **Implementation Mode**
+(never flip a lane, explicit model);
+`.agents/skills/implementation-dispatch/SKILL.md` → **Lanes** (what each lane
+covers);
 `.agents/shared/core-rules.md` → **Commit After Every Task**, **Commit Message
 Format**; `.agents/skills/code-navigation/SKILL.md` → **Research method**;
 `docs/reference/commit-format.md`.
