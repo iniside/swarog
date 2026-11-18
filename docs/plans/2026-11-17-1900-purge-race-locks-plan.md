@@ -206,7 +206,7 @@ Every dispatch prompt carries:
   Detect the park with a check matched to the gate's transaction id. Hold the event plane's
   `WRITER_LOCK_KEY` exclusively only when the module has no such point. That use follows the
   documented exception in `docs/reference/testing.md` (held only under the crate's `DB_LOCK`,
-  released as soon as the racer is parked), and the step's report must say why no module-scoped
+  released as soon as the competing transaction is parked behind the racer), and the step's report must say why no module-scoped
   park point exists.
 - **Key tests.** A lock-key test pins behaviour, not the formula:
   - the key is the same for every spelling of one uuid;
