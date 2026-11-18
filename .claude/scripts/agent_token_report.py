@@ -4,7 +4,7 @@ Usage:
   python .claude/scripts/agent_token_report.py [--days N | --since YYYY-MM-DD [--until YYYY-MM-DD]]
                                                [--projects-dir DIR] [--json]
 
-Defaults to the last 7 days of ~/.claude/projects/<mangled repo path>. Main
+Defaults to the last 7 days of $CLAUDE_CONFIG_DIR (default ~/.claude)/projects/<mangled repo path>. Main
 transcripts are <dir>/*.jsonl, subagents <dir>/<session>/subagents/*.jsonl with a
 sibling .meta.json. Context tokens = input + cache write + cache read per
 assistant message (deduped by message.id). Section 2 is an estimate (chars/3.6,
@@ -66,12 +66,17 @@ def parse_args():
     return ap.parse_args()
 
 
+def short_path(p):
+    return "/".join(p.replace("\\", "/").rstrip("/").split("/")[-2:])
+
+
 def resolve_dir(a):
     if a.projects_dir:
         return a.projects_dir
     repo = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-    mangled = re.sub(r"[:\\/.]", "-", repo)
-    return os.path.join(os.path.expanduser("~"), ".claude", "projects", mangled)
+    mangled = re.sub(r"[^A-Za-z0-9]", "-", repo)
+    cfg = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    return os.path.join(cfg, "projects", mangled)
 
 
 def resolve_window(a):
@@ -83,7 +88,7 @@ def resolve_window(a):
     if a.until:
         hi = datetime.datetime.strptime(a.until, "%Y-%m-%d").astimezone() + datetime.timedelta(days=1)
     else:
-        hi = now + datetime.timedelta(days=1)
+        hi = now
     return lo, hi
 
 
@@ -116,6 +121,10 @@ def main():
     files = set(glob.glob(os.path.join(root, "*.jsonl")))
     files |= set(glob.glob(os.path.join(root, "*", "subagents", "*.jsonl")))
     files = sorted((f for f in files if os.stat(f).st_mtime >= lo_ts), key=os.path.getmtime)
+    if not os.path.isdir(root):
+        sys.exit(f"error: transcript directory not found: {root}")
+    if not files:
+        sys.exit(f"error: no transcript files in {root} modified since {lo_s} UTC")
 
     totals = {"main": collections.Counter(), "sub": collections.Counter()}
     per_agent = collections.defaultdict(lambda: {"n": 0, "ctx": 0, "turns": []})
@@ -138,6 +147,7 @@ def main():
                 pass
         live = collections.Counter()
         seen = set()
+        outs = {}
         id2 = {}
         sliced = collections.Counter()
         ts = ""
@@ -168,7 +178,7 @@ def main():
                     att = d.get("attachment") or {}
                     t = att.get("type")
                     if t == "instructions":
-                        atts[(kind, t)] = [(x.get("path", "")[-60:], len(x.get("content", ""))) for x in att.get("files", [])]
+                        atts[(kind, t)] = [(short_path(x.get("path", "")), len(x.get("content", ""))) for x in att.get("files", [])]
                     elif t in ("skill_listing", "agent_listing_delta", "mcp_instructions_delta", "deferred_tools_delta"):
                         atts[(kind, t)] = len(json.dumps(att))
                     continue
@@ -178,6 +188,8 @@ def main():
                 if typ == "assistant":
                     us = m.get("usage")
                     mid = m.get("id")
+                    if us and mid in outs:
+                        outs[mid] = max(outs[mid], us.get("output_tokens") or 0)
                     if us and mid not in seen:
                         seen.add(mid)
                         inp = us.get("input_tokens") or 0
@@ -193,7 +205,7 @@ def main():
                             tc["input"] += inp
                             tc["cache_write"] += cw
                             tc["cache_read"] += cr
-                            tc["output"] += out
+                            outs[mid] = out
                             turns += 1
                             actual_ctx += ctx
                             est = sum(live.values())
@@ -252,6 +264,7 @@ def main():
                                 live["result:" + id2.get(c.get("tool_use_id"), "?")] += blocktoks(c.get("content"))
                             elif c.get("type") == "text":
                                 live["user/task prompt"] += toks(c.get("text", ""))
+        totals[kind]["output"] += sum(outs.values())
         if turns:
             pa = per_agent[at]
             pa["n"] += 1
@@ -280,7 +293,7 @@ def main():
                 k: {"median": int(statistics.median(v)) if v else 0, "mean": int(sum(v) / len(v)) if v else 0, "files": len(v)}
                 for k, v in first_ctx.items()
             },
-            "attachments_latest": {f"{k[0]}:{k[1]}": v for k, v in atts.items()},
+            "attachments_last_written": {f"{k[0]}:{k[1]}": v for k, v in atts.items()},
         },
     }
     for at, pa in per_agent.items():
@@ -335,11 +348,11 @@ def render(r):
     print("\n4. Baseline")
     for k, v in b["first_turn_context"].items():
         print(f"  first-turn context {k}: median {v['median']} mean {v['mean']} over {v['files']} transcripts")
-    for k, v in sorted(b["attachments_latest"].items()):
+    for k, v in sorted(b["attachments_last_written"].items()):
         if isinstance(v, list):
-            print(f"  {k}: " + ", ".join(f"{p}={n}ch" for p, n in v))
+            print(f"  {k} (last written): " + ", ".join(f"{p}={n}ch" for p, n in v))
         else:
-            print(f"  {k}: {v} chars")
+            print(f"  {k} (last written): {v} chars")
 
 
 if __name__ == "__main__":
