@@ -109,7 +109,7 @@
         ]
       },
       {
-        "matcher": "LSP|Grep|Bash",
+        "matcher": "LSP",
         "hooks": [
           {
             "type": "command",
@@ -121,7 +121,7 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "LSP|Bash",
+        "matcher": "LSP",
         "hooks": [
           {
             "type": "command",

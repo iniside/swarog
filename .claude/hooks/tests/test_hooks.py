@@ -639,8 +639,8 @@ class Wiring(unittest.TestCase):
             ("PreToolUse", "Grep|Bash"): ["scout_nav_guard.py"],
             ("PreToolUse", "SubagentHandback"): ["scout_nav_guard.py"],
             ("PostToolUse", "Bash|PowerShell"): ["post_commit_review_reminder.py"],
-            ("PostToolUse", "LSP|Grep|Bash"): ["scout_nav_guard.py"],
-            ("PostToolUseFailure", "LSP|Bash"): ["scout_nav_guard.py"],
+            ("PostToolUse", "LSP"): ["scout_nav_guard.py"],
+            ("PostToolUseFailure", "LSP"): ["scout_nav_guard.py"],
         }
         for (event, matcher), scripts in want.items():
             with self.subTest(event=event, matcher=matcher):

@@ -1,8 +1,8 @@
 """code-scout navigation guard: LSP before a wide grep, LSP evidence behind every confirmed anchor.
 
 Modes (argv[1]), all no-ops unless agent_type == "code-scout":
-  record  PostToolUse LSP|Grep|Bash, PostToolUseFailure LSP|Bash   append the call and its file:line hits to state
-  gate    PreToolUse Grep|Bash          deny a wide Rust grep before a position-based LSP call (capped)
+  record  PostToolUse LSP, PostToolUseFailure LSP   append the LSP call and its file:line hits to state
+  gate    PreToolUse Grep|Bash          deny a wide Rust search before a position-based LSP call (capped)
   report  PreToolUse SubagentHandback   deny a report whose anchors lack the LSP evidence their label claims
 
 Rules: .claude/agents/code-scout.md; .agents/shared/research-navigation.md Navigation.
@@ -14,16 +14,13 @@ POSITION_OPS = {
     "findReferences", "incomingCalls", "outgoingCalls", "goToImplementation",
     "hover", "goToDefinition", "prepareCallHierarchy",
 }
-CONFIRM_OPS = {"goToDefinition", "hover", "findReferences", "incomingCalls"}
-NO_COVERAGE_OPS = {"workspaceSymbol", "documentSymbol"}
+CONFIRM_OPS = {"goToDefinition", "hover", "findReferences", "incomingCalls", "goToImplementation"}
+COVER_OPS = CONFIRM_OPS | {"workspaceSymbol"}
 RUST_EXT = (".rs",)
-NON_CODE = {
-    "md", "markdown", "tmpl", "html", "css", "js", "toml", "json", "sql", "txt", "py", "yaml", "yml", "lock",
-}
-WIDE_DIRS = {"", ".", "core", "modules", "api", "cmd", "tools", "weles", "demos", "opscatalog"}
+WIDE_DIRS = {"", ".", "core", "modules", "api", "cmd", "tools", "demos"}
 NO_RUST_DIRS = {
-    "docs", "uilayout", "memory", ".agents", ".claude", "clients", "experiments", "scripts", "bin",
-    "deploy", "run", "target", "nocommit", "mutants.out",
+    "docs", "uilayout", "memory", ".agents", ".claude", ".github", ".grok", "clients", "experiments", "scripts",
+    "bin", "deploy", "run", "target", "nocommit", "mutants.out",
 }
 MIN_SCOPED_DEPTH = 2
 LINE_SLACK = 2
@@ -35,8 +32,8 @@ DEFAULT_CWD = "G:/Projects/swarog"
 GATE_REASON = (
     "code-scout: make a position-based LSP call (findReferences, goToImplementation, incomingCalls or hover "
     "at the symbol, position from workspaceSymbol) before a wider search; a grep in the file or crate folder "
-    "you expect it in (modules/<name>, api/<name>, core/<crate>) is allowed, not one over the repo root or a "
-    "bare core, modules, api, cmd, tools, weles, demos or opscatalog. .claude/agents/code-scout.md; "
+    "you expect it in (modules/<name>, api/<name>, core/<crate>, weles, opscatalog) is allowed, not one over the "
+    "repo root or a bare core, modules, api, cmd, tools or demos. .claude/agents/code-scout.md; "
     ".agents/shared/research-navigation.md Navigation."
 )
 
@@ -57,7 +54,7 @@ FILTER_LONG = {"--glob", "--iglob", "--type", "--include"}
 
 def setup():
     global json, os, posixpath, re, shlex, tempfile
-    global PATH_LINE, GREP_LINE, FILE_ONLY, HEADER, LINE_ENTRY, CALLS_AT, CONFIRMED, GREP_ONLY, ANCHORS_HEAD, SECTION_HEAD, TAIL_HEAD
+    global PATH_LINE, HEADER, LINE_ENTRY, CALLS_AT, CONFIRMED, GREP_ONLY, ANCHORS_HEAD, SECTION_HEAD, TAIL_HEAD
     import json
     import os
     import posixpath
@@ -66,8 +63,6 @@ def setup():
     import tempfile
 
     PATH_LINE = re.compile(r"((?:[A-Za-z]:)?[^\s:\"'<>|`*(),;\[\]]+\.[A-Za-z0-9_]+):(\d+)")
-    GREP_LINE = re.compile(r"^((?:[A-Za-z]:)?[^:\r\n]+?\.[A-Za-z0-9_]+):(\d+):")
-    FILE_ONLY = re.compile(r"^((?:[A-Za-z]:)?[^:\r\n]+\.[A-Za-z0-9_]+)\s*$")
     HEADER = re.compile(r"^\s*((?:[A-Za-z]:)?[^\r\n]*?\.[A-Za-z0-9_]+):\s*$")
     LINE_ENTRY = re.compile(r"\bLine\s+(\d+)")
     CALLS_AT = re.compile(r"\[calls at:([^\]]*)\]", re.I)
@@ -160,21 +155,6 @@ def lsp_hits(text):
     return hits
 
 
-def grep_hits(text, filenames=()):
-    hits = []
-    for line in text.splitlines():
-        match = GREP_LINE.match(line.strip())
-        if match:
-            hits.append([norm(match.group(1)), int(match.group(2))])
-            continue
-        only = FILE_ONLY.match(line.strip())
-        if only:
-            hits.append([norm(only.group(1)), None])
-    for name in filenames or ():
-        hits.append([norm(str(name)), None])
-    return hits
-
-
 def tokens(command):
     lexer = shlex.shlex(command, posix=False, punctuation_chars=True)
     lexer.whitespace_split = True
@@ -254,7 +234,7 @@ def parse_args(tool, args):
             continue
         if arg.startswith("--"):
             name, _, value = arg.partition("=")
-            if name in ("--regexp", "--file", "--files"):
+            if name in ("--regexp", "--file"):
                 explicit_pattern = True
             if name in FILTER_LONG and value:
                 filters.append(value.strip("\"'"))
@@ -281,19 +261,17 @@ def ext_of(text):
     return match.group(1).lower() if match else None
 
 
-def non_code(paths, filters):
-    if filters:
-        kinds = set()
-        for value in filters:
-            exts = re.findall(r"\.([A-Za-z0-9]+)", value)
-            for group in re.findall(r"\.\{([^}]*)\}", value):
-                exts += [e.strip() for e in group.split(",") if e.strip()]
-            exts = exts or [value.lower()]
-            kinds.update(e.lower() for e in exts)
-        if kinds and kinds <= NON_CODE:
-            return True
-    exts = [ext_of(p) for p in paths]
-    return bool(paths) and all(e in NON_CODE for e in exts)
+def rust_filter(value):
+    value = value.strip("\"'").lower()
+    if re.search(r"(?<![a-z0-9])rs(?![a-z0-9])|rust", value):
+        return True
+    last = value.replace("\\", "/").rstrip("/").split("/")[-1]
+    return "*" in last and not re.search(r"\.[a-z0-9{\[]", last)
+
+
+def rust_search(filters):
+    positive = [f for f in filters if not f.strip("\"'").startswith("!")]
+    return not positive or any(rust_filter(f) for f in positive)
 
 
 def is_wide(paths, cwd):
@@ -301,12 +279,16 @@ def is_wide(paths, cwd):
         full = resolve(path, cwd)
         if os.path.isfile(full):
             continue
+        if ext_of(path) not in (None, "rs") and not os.path.isdir(full):
+            continue
         scoped = norm(full)
         if scoped.rstrip("/").split("/")[-1] in NO_RUST_DIRS:
             continue
         if scoped in WIDE_DIRS:
             return True
         depth = len([part for part in re.sub(r"^[a-z]:", "", scoped).split("/") if part])
+        if depth == 1 and os.path.isfile(os.path.join(full, "Cargo.toml")):
+            continue
         if depth < MIN_SCOPED_DEPTH:
             return True
     return False
@@ -332,14 +314,6 @@ def do_record(payload, path):
             "kind": "lsp", "op": tool_input.get("operation"), "file": norm(str(tool_input.get("filePath") or "")),
             "line": tool_input.get("line"), "ok": bool(ok and not failed), "hits": lsp_hits(text),
         })
-    elif tool == "Grep":
-        response = response if isinstance(response, dict) else {"content": str(response or "")}
-        append_state(path, {"kind": "grep", "hits": grep_hits(str(response.get("content") or ""), response.get("filenames"))})
-    elif tool == "Bash":
-        command = str(tool_input.get("command") or "")
-        stdout = str((response.get("stdout") if isinstance(response, dict) else response) or "")
-        if grep_invocations(command, payload.get("cwd") or DEFAULT_CWD):
-            append_state(path, {"kind": "grep", "hits": grep_hits(stdout)})
 
 
 def do_gate(payload, path):
@@ -351,13 +325,15 @@ def do_gate(payload, path):
         target = tool_input.get("path")
         paths = [str(target)] if target else []
         filters = [str(tool_input[k]) for k in ("glob", "type") if tool_input.get(k)]
-        wide = not non_code(paths, filters) and is_wide(paths, cwd)
+        wide = rust_search(filters) and is_wide(paths, cwd)
     elif tool == "Bash":
         for kind, args, run_cwd, piped in grep_invocations(str(tool_input.get("command") or ""), cwd):
+            if kind == "rg" and "--files" in args:
+                continue
             paths, filters = parse_args(kind, args)
             if piped and not paths:
                 continue
-            if not non_code(paths, filters) and is_wide(paths, run_cwd):
+            if rust_search(filters) and is_wide(paths, run_cwd):
                 wide = True
     if not wide:
         return
@@ -397,7 +373,7 @@ def parse_anchors(message):
 
 def lsp_covers(anchor, lsp_calls):
     for call in lsp_calls:
-        if not call.get("ok") or call.get("op") in NO_COVERAGE_OPS:
+        if not call.get("ok") or call.get("op") not in COVER_OPS:
             continue
         if call.get("op") in CONFIRM_OPS and same_file(call.get("file") or "", anchor["file"]) and near(call.get("line"), anchor["line"]):
             return True
@@ -413,7 +389,7 @@ def violations(message, records):
     for anchor in parse_anchors(message):
         if lsp_covers(anchor, lsp_calls):
             continue
-        where = "{0}:{1}".format(anchor["raw"].replace("\\", "/").split("/")[-1], anchor["line"])
+        where = "{0}:{1}".format(anchor["raw"].replace("\\", "/"), anchor["line"])
         if anchor["label"] == "confirmed":
             found.append(where + " labelled confirmed but no LSP call covers it: run goToDefinition at the hit or relabel grep-only")
         elif anchor["label"] is None and anchor["file"].endswith(RUST_EXT):
