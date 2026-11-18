@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use controlplane::{ContributionDecl, EntityRef, Link, Point, Primitive};
+use controlplane::{Cell, ContributionDecl, EntityRef, Link, Point, Primitive};
 
 use super::columns;
 use super::manifests::Snapshot;
@@ -11,41 +11,60 @@ use super::roles::{self, Operator};
 /// Each labelled ref's text by `(kind, id)`; a drawn ref without one draws its plain id.
 pub(crate) type Labels = BTreeMap<(String, String), String>;
 
-/// The distinct refs `body` draws, by kind, in first-drawn order: each table row's entity,
-/// and each timeline entry's actor where its link names an entity, then its target.
+/// The ref `c` draws as its raw id: its link names an entity whose id is its text.
+pub(crate) fn drawn_ref(c: &Cell) -> Option<&EntityRef> {
+    match &c.link {
+        Some(Link::Entity(e)) if c.value == e.id => Some(e),
+        _ => None,
+    }
+}
+
+/// The distinct refs `body` draws, by kind, in first-drawn order: each cell, at any depth
+/// of its `more`, that draws an entity as its raw id, each timeline target and each queue
+/// item's entity.
 pub(crate) fn refs(body: &Primitive) -> BTreeMap<String, Vec<String>> {
-    let drawn: Vec<&EntityRef> = match body {
-        Primitive::DataTable(table) => table.rows.iter().filter_map(|r| r.entity.as_ref()).collect(),
-        Primitive::Timeline(timeline) => timeline
-            .entries
-            .iter()
-            .flat_map(|entry| {
-                let actor = match entry.actor.as_ref().and_then(|a| a.link.as_ref()) {
-                    Some(Link::Entity(e)) => Some(e),
-                    _ => None,
-                };
-                actor.into_iter().chain(entry.target.as_ref())
-            })
-            .collect(),
-        Primitive::PropertyList(_)
-        | Primitive::KpiTile(_)
+    let mut drawn: Vec<&EntityRef> = Vec::new();
+    match body {
+        Primitive::DataTable(table) => {
+            table.rows.iter().flat_map(|r| &r.cells).for_each(|c| cell_refs(c, &mut drawn));
+        }
+        Primitive::PropertyList(list) => list.items.iter().for_each(|(_, c)| cell_refs(c, &mut drawn)),
+        Primitive::Timeline(timeline) => {
+            for entry in &timeline.entries {
+                entry.actor.iter().chain(&entry.badges).for_each(|c| cell_refs(c, &mut drawn));
+                drawn.extend(entry.target.as_ref());
+            }
+        }
+        Primitive::WorkQueue(queue) => {
+            for item in &queue.items {
+                item.cells.iter().for_each(|c| cell_refs(c, &mut drawn));
+                drawn.extend(item.entity.as_ref());
+            }
+        }
+        Primitive::Cell(c) => cell_refs(c, &mut drawn),
+        Primitive::EntityHeader(header) => {
+            header.status.iter().chain(&header.badges).for_each(|c| cell_refs(c, &mut drawn));
+        }
+        Primitive::KpiTile(_)
         | Primitive::KpiTiles(_)
         | Primitive::Form(_)
-        | Primitive::WorkQueue(_)
         | Primitive::ServiceStatus(_)
         | Primitive::TimeSeriesChart(_)
         | Primitive::AttentionItems(_)
         | Primitive::ColumnCells(_)
-        | Primitive::Cell(_)
-        | Primitive::EntityHeader(_)
-        | Primitive::Empty { .. } => Vec::new(),
-    };
+        | Primitive::Empty { .. } => {}
+    }
     let mut seen = BTreeSet::new();
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for e in drawn.into_iter().filter(|e| seen.insert((e.kind.as_str(), e.id.as_str()))) {
         out.entry(e.kind.clone()).or_default().push(e.id.clone());
     }
     out
+}
+
+fn cell_refs<'a>(c: &'a Cell, out: &mut Vec<&'a EntityRef>) {
+    out.extend(drawn_ref(c));
+    c.more.iter().for_each(|m| cell_refs(m, out));
 }
 
 /// The labels of the refs `body` draws: per kind, every chunk of one call to the kind's

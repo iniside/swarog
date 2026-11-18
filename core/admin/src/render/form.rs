@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use controlplane::{decode_field, EntityRef, Field, FieldKind, FieldValue, FormSpec, Primitive};
 use serde::Serialize;
 use crate::engine::actions::{self, money_currency_key, Chrome};
+use crate::engine::labels::Labels;
 use crate::engine::panels::PanelState;
 use super::*;
 
@@ -187,6 +188,7 @@ pub(crate) fn panel_form_result(
         row_menu_kinds: &[],
         header_kinds: &[],
         list_columns: &[],
+        labels: &Labels::new(),
         csrf: frame.csrf,
         form: Some(instance),
     };

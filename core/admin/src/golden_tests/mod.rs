@@ -52,6 +52,7 @@ use minijinja::Environment;
 
 use crate::engine::actions::{self, Chrome};
 use crate::engine::columns::{ColumnOutcome, ListColumn};
+use crate::engine::labels::Labels;
 use crate::engine::panels::{LastValue, PanelState};
 use crate::engine::roles::Operator;
 use crate::render::{

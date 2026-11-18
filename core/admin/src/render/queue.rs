@@ -78,8 +78,8 @@ pub(super) fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
                 .collect();
             QueueItemView {
                 id: it.id.clone(),
-                entity: it.entity.as_ref().map(ref_cell),
-                cells: table_cells(&it.cells, &q.columns, false),
+                entity: it.entity.as_ref().map(|e| ref_cell(e, ctx.input.labels)),
+                cells: table_cells(&it.cells, &q.columns, false, ctx.input.labels),
                 state: CellView {
                     kind: "badge",
                     value: it.state.clone(),

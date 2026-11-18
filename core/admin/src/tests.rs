@@ -1684,6 +1684,24 @@ async fn label_pass(engine: &Engine, role: Role, body: &Primitive) -> labels::La
         .expect("the label pass returns once its deadlines elapse")
 }
 
+/// A cell linking player `id` that draws `value`.
+fn player_link(id: &str, value: &str) -> Cell {
+    Cell { link: Some(controlplane::Link::Entity(player_ref(id))), ..text(value) }
+}
+
+/// `mixed_rows` with each entity row's name cell drawing its entity as its raw id.
+fn drawn_rows() -> Vec<Row> {
+    mixed_rows()
+        .into_iter()
+        .map(|mut r| {
+            if let Some(e) = &r.entity {
+                r.cells[0] = Cell { link: Some(controlplane::Link::Entity(e.clone())), ..text(&e.id) };
+            }
+            r
+        })
+        .collect()
+}
+
 fn labelled(pairs: &[(&str, &str)]) -> labels::Labels {
     pairs.iter().map(|(id, text)| (("player".to_string(), id.to_string()), text.to_string())).collect()
 }
@@ -1703,7 +1721,7 @@ async fn only_the_kinds_owner_answers_its_labels() {
     );
     let engine = sourced(vec![rival.clone(), owner.clone()]).await;
 
-    let got = label_pass(&engine, Role::Viewer, &players_table(mixed_rows())).await;
+    let got = label_pass(&engine, Role::Viewer, &players_table(drawn_rows())).await;
     assert_eq!(got, labelled(&[("p-1", "Anna#1"), ("p-2", "Bjorn#2")]));
     assert!(rival.calls().is_empty(), "a non-owner's label is never called");
     let calls = owner.calls();
@@ -1719,7 +1737,7 @@ async fn labels_over_the_cap_fill_every_ref() {
     let owner = Chunked::serving(label_owner(player_label(Role::Viewer)), &[]);
     let engine = sourced(vec![owner.clone()]).await;
     let ids = player_ids(2 * controlplane::MAX_PANEL_REFS + 1);
-    let rows = ids.iter().map(|id| table_row(Some(("player", id)), id)).collect();
+    let rows = ids.iter().map(|id| Row { cells: vec![player_link(id, id)], ..table_row(None, id) }).collect();
 
     let got = label_pass(&engine, Role::Viewer, &players_table(rows)).await;
     let sizes: Vec<usize> = owner.calls().iter().map(Vec::len).collect();
@@ -1765,7 +1783,7 @@ async fn an_entry_carrying_an_actor_and_a_target_of_one_kind_labels_both() {
 /// draws its plain id with no banner. A denied label makes no call.
 #[tokio::test(start_paused = true)]
 async fn a_failed_timed_out_denied_or_missing_label_leaves_the_plain_id() {
-    let table = || players_table(mixed_rows());
+    let table = || players_table(drawn_rows());
     for (planned, why) in [(ChunkAnswer::Fail, "an error"), (ChunkAnswer::Wrong, "another primitive")] {
         let plan = [("p-1", Duration::ZERO, planned)];
         let owner = Chunked::serving(label_owner(player_label(Role::Viewer)), &plan);
@@ -1797,21 +1815,77 @@ async fn a_failed_timed_out_denied_or_missing_label_leaves_the_plain_id() {
     assert_eq!(label_pass(&engine, Role::Viewer, &table()).await, labelled(&[("p-2", "Bjorn#2")]));
 }
 
-/// The pass reads only the carriers of the body it is given: row entities, not a cell's own
-/// entity link; timeline actors and targets; nothing of any other primitive.
+/// The pass reads the refs the body draws as their raw id: each cell, at any depth of its
+/// `more`, whose entity link's id is its text. A row's entity and a linked cell drawing other
+/// text add nothing, and a column answer is no body.
 #[test]
 fn labels_read_refs_from_the_body_only() {
-    let linked = Cell { link: Some(controlplane::Link::Entity(player_ref("p-9"))), ..text("p-9") };
-    let mut rows = mixed_rows();
-    rows[0].cells.push(linked.clone());
+    let mut rows = drawn_rows();
+    rows[0].cells.push(player_link("p-9", "Anna"));
+    rows[2].cells[1].more.push(player_link("p-3", "p-3"));
+    rows.push(table_row(Some(("player", "p-8")), "Bob"));
     let got = labels::refs(&players_table(rows));
     let expected = BTreeMap::from([
         ("guild".to_string(), vec!["g-7".to_string()]),
-        ("player".to_string(), vec!["p-1".to_string(), "p-2".to_string()]),
+        ("player".to_string(), vec!["p-1".to_string(), "p-3".to_string(), "p-2".to_string()]),
     ]);
     assert_eq!(got, expected);
-    assert!(labels::refs(&Primitive::Cell(linked)).is_empty());
-    assert!(labels::refs(&Primitive::ColumnCells(BTreeMap::from([("p-1".to_string(), text("x"))]))).is_empty());
+    let one = labels::refs(&Primitive::Cell(player_link("p-9", "p-9")));
+    assert_eq!(one, BTreeMap::from([("player".to_string(), vec!["p-9".to_string()])]));
+    assert!(labels::refs(&Primitive::Cell(player_link("p-9", "Anna"))).is_empty());
+    assert!(labels::refs(&Primitive::ColumnCells(BTreeMap::from([("p-1".to_string(), player_link("p-1", "p-1"))]))).is_empty());
+}
+
+/// A body whose only linked cell draws a name, not the raw id, asks for no label.
+#[tokio::test(start_paused = true)]
+async fn a_cell_whose_text_is_not_the_raw_id_gets_no_label_call() {
+    let owner = Chunked::serving(label_owner(player_label(Role::Viewer)), &[]);
+    let engine = sourced(vec![owner.clone()]).await;
+    let rows = vec![Row { cells: vec![player_link("p-1", "Anna")], ..table_row(Some(("player", "p-1")), "Anna") }];
+
+    assert!(label_pass(&engine, Role::Viewer, &players_table(rows)).await.is_empty());
+    assert!(owner.calls().is_empty(), "{:?}", owner.calls());
+}
+
+/// Two slots of one page each draw one player: a slot's label pass asks for the refs of its
+/// own body only and draws the answered label. A failed label draws the plain id and adds no
+/// banner or alert to the slot.
+#[tokio::test(flavor = "multi_thread")]
+async fn each_slot_labels_only_the_refs_its_own_body_draws() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-label-slot");
+    let cookie = operator_cookie(&pool, &user).await;
+    let slot = |id: &str| contribution(id, Point::Page("players".to_string()), Role::Viewer);
+    let drawing = |id: &str| players_table(vec![Row { cells: vec![player_link(id, id)], ..table_row(None, id) }]);
+    let players = Recording::new(
+        module("players", vec![slot("left"), slot("right")], Vec::new(), false),
+        &[("left", answer(drawing("p-1"))), ("right", answer(drawing("p-2")))],
+    );
+    let handles = BTreeMap::from([("p-1".to_string(), text("Anna#1")), ("p-2".to_string(), text("Bjorn#2"))]);
+    let owner = Recording::new(
+        label_owner(player_label(Role::Viewer)),
+        &[("handle", answer(Primitive::ColumnCells(handles)))],
+    );
+    let engine = Arc::new(sourced(vec![players.clone(), owner.clone()]).await);
+
+    let (status, left) = portal_get(&engine, &st, &cookie, "/admin/_panel/players/left").await;
+    assert_eq!(status, StatusCode::OK, "{left}");
+    assert!(left.contains("Anna#1") && !left.contains("Bjorn#2"), "{left}");
+    let (status, right) = portal_get(&engine, &st, &cookie, "/admin/_panel/players/right").await;
+    assert_eq!(status, StatusCode::OK, "{right}");
+    assert!(right.contains("Bjorn#2") && !right.contains("Anna#1"), "{right}");
+    let asked: Vec<Vec<String>> = owner.calls().into_iter().map(|q| q.refs).collect();
+    assert_eq!(asked, [["p-1"], ["p-2"]]);
+
+    owner.answer("handle", Answer::Fail(opsapi::Error::unavailable("handles down")));
+    let (status, failed) = portal_get(&engine, &st, &cookie, "/admin/_panel/players/left").await;
+    assert_eq!(status, StatusCode::OK, "{failed}");
+    assert_eq!(owner.calls().len(), 3, "the failed label was asked");
+    assert!(failed.contains("p-1") && !failed.contains("Anna#1"), "{failed}");
+    assert!(!failed.contains("banner") && !failed.contains("alert"), "a failed label adds no banner: {failed}");
+
+    cleanup_user(&pool, &user).await;
 }
 
 /// `Point::EntityLabel` places nowhere: its own panel URL is refused as not found without

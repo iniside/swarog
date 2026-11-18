@@ -1,6 +1,7 @@
-use controlplane::{Align, CellKind, SortDir};
+use controlplane::{Align, CellKind, Point, SortDir};
 use serde::Serialize;
 use crate::engine::columns::{ColumnOutcome, ListColumn};
+use crate::engine::labels::Labels;
 use super::*;
 
 // ---- DataTable ----
@@ -105,12 +106,17 @@ pub(super) fn column_views(columns: &[controlplane::Column]) -> Vec<ColumnView> 
 
 /// `in_list`: the cells belong to a table row that opens an entity, so a linked user cell
 /// carries its link inside.
-pub(super) fn table_cells(cells: &[controlplane::Cell], columns: &[controlplane::Column], in_list: bool) -> Vec<TableCell> {
+pub(super) fn table_cells(
+    cells: &[controlplane::Cell],
+    columns: &[controlplane::Column],
+    in_list: bool,
+    labels: &Labels,
+) -> Vec<TableCell> {
     cells
         .iter()
         .enumerate()
         .map(|(i, c)| TableCell {
-            cell: list_cell(c, in_list),
+            cell: list_cell(c, in_list, labels),
             num: columns.get(i).is_some_and(|col| right_aligned(col.align)),
             wrap: columns.get(i).is_some_and(|col| col.wrap),
             failed: None,
@@ -118,15 +124,17 @@ pub(super) fn table_cells(cells: &[controlplane::Cell], columns: &[controlplane:
         .collect()
 }
 
-fn list_cell(c: &controlplane::Cell, in_list: bool) -> CellView {
-    let mut view = cell(c);
+fn list_cell(c: &controlplane::Cell, in_list: bool, labels: &Labels) -> CellView {
+    let mut view = cell(c, labels);
     view.inner_link = in_list && view.kind == "user" && view.href.is_some();
     view
 }
 
-/// The cell of list column `column` in a row whose entity id is `id`: the column's cell for
-/// it, an empty cell when it has none, or the failure marker.
-fn list_column_cell(column: &ListColumn, id: Option<&str>, in_list: bool) -> TableCell {
+/// The cell of `kind`'s list column `column` in a row whose entity id is `id`: the column's
+/// cell for it, an empty cell when it has none, or the failure marker.
+fn list_column_cell(kind: &str, column: &ListColumn, id: Option<&str>, in_list: bool, labels: &Labels) -> TableCell {
+    let point = Point::EntityListColumn { kind: kind.to_string(), label: column.label.clone(), align: column.align };
+    seen::record(&point);
     let num = right_aligned(column.align);
     let blank = controlplane::Cell {
         kind: CellKind::Text,
@@ -140,10 +148,10 @@ fn list_column_cell(column: &ListColumn, id: Option<&str>, in_list: bool) -> Tab
     match &column.outcome {
         ColumnOutcome::Cells(cells) => {
             let found = id.and_then(|id| cells.get(id)).unwrap_or(&blank);
-            TableCell { cell: list_cell(found, in_list), num, wrap: false, failed: None }
+            TableCell { cell: list_cell(found, in_list, labels), num, wrap: false, failed: None }
         }
         ColumnOutcome::Failed(_) => TableCell {
-            cell: cell(&blank),
+            cell: cell(&blank, labels),
             num,
             wrap: false,
             failed: Some(format!("{} module unavailable", column.module)),
@@ -177,10 +185,11 @@ pub(super) fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
         .map(|r| {
             let href = r.entity.as_ref().filter(|e| ctx.input.header_kinds.contains(&e.kind)).map(entity_url);
             let in_list = href.is_some();
-            let mut cells = table_cells(&r.cells, &t.columns, in_list);
+            let mut cells = table_cells(&r.cells, &t.columns, in_list, ctx.input.labels);
             let id = r.entity.as_ref().filter(|e| Some(e.kind.as_str()) == kind).map(|e| e.id.as_str());
             let at = at.min(cells.len());
-            cells.splice(at..at, list_columns.iter().map(|c| list_column_cell(c, id, in_list)));
+            let drawn = list_columns.iter().map(|c| list_column_cell(kind.unwrap_or_default(), c, id, in_list, ctx.input.labels));
+            cells.splice(at..at, drawn);
             RowView {
                 cells,
                 href,

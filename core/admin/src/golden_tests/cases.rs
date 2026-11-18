@@ -417,6 +417,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     );
     panel!("table_first_page_label", table_first_page_case());
     panel!("table_list_columns", table_list_columns_case());
+    panel!("table_labelled", table_labelled_case());
     panel!("table_row_actions", table_row_actions_case());
     panel!(
         "table_noun_later_page",
@@ -1009,7 +1010,6 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
             tab(),
             Point::EntityTabCount { kind: "player".to_string(), tab: "items".to_string() },
             Point::EntitySummary("player".to_string()),
-            Point::EntityListColumn { kind: "player".to_string(), label: "Guild".to_string(), align: Align::Left },
             Point::NavCounter,
         ];
         let roles = [Role::Viewer, Role::Operator, Role::Admin];

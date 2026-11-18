@@ -19,6 +19,7 @@ use serde::Serialize;
 
 use crate::engine::actions::{self, Chrome, Claim, Claimant, Flash, FlashTone, FormRow, Invoked, StoredSpec};
 use crate::engine::columns;
+use crate::engine::labels;
 use crate::engine::forms;
 use crate::engine::manifests::Snapshot;
 use crate::engine::panels::{self, PanelState, PanelView};
@@ -709,6 +710,10 @@ async fn panel(
         },
         _ => Vec::new(),
     };
+    let labels = match &view.body {
+        Some(body) => labels::pass(&snapshot, &ctx.operator, &body.primitive).await,
+        None => labels::Labels::new(),
+    };
     let tools = panel_tools(&ctx.operator, &ctx.csrf, &module, manifest, &contribution);
     let row_menu_kinds: Vec<String> = snapshot
         .modules
@@ -750,6 +755,7 @@ async fn panel(
         body: view.body.as_ref(),
         actions: &tools,
         list_columns: &list_columns,
+        labels: &labels,
         row_menu_kinds: &row_menu_kinds,
         header_kinds: &header_kinds,
         csrf: &ctx.csrf,

@@ -125,6 +125,7 @@ pub(super) struct PanelCase {
     pub(super) body: Option<PanelBody>,
     pub(super) actions: Vec<ActionItem>,
     pub(super) list_columns: Vec<ListColumn>,
+    pub(super) labels: Labels,
     pub(super) row_menu_kinds: Vec<String>,
     pub(super) header_kinds: Vec<String>,
     /// Renders the form with a fresh instance to post as.
@@ -150,6 +151,7 @@ impl PanelCase {
             body,
             actions: Vec::new(),
             list_columns: Vec::new(),
+            labels: Labels::new(),
             row_menu_kinds: Vec::new(),
             header_kinds: strings(&["player"]),
             form: false,
@@ -193,6 +195,7 @@ impl PanelCase {
             body: self.body.as_ref(),
             actions: &self.actions,
             list_columns: &self.list_columns,
+            labels: &self.labels,
             row_menu_kinds: &self.row_menu_kinds,
             header_kinds: &self.header_kinds,
             csrf: CSRF,
@@ -489,6 +492,16 @@ pub(super) fn table_list_columns_case() -> PanelCase {
             list_column("guilds", "Guild", Align::Left, ColumnOutcome::Failed("connection refused".to_string())),
         ],
         ..PanelCase::new(PanelState::Ok, Some(body(Primitive::DataTable(DataTable { rows, ..table }))))
+    }
+}
+
+/// A players table whose `p-1001` cell draws its label and whose `p-1002` cell, with no
+/// label, draws its id.
+pub(super) fn table_labelled_case() -> PanelCase {
+    let rows = vec![player_row("p-1001", "12", "active", false), player_row("p-1002", "40", "banned", false)];
+    PanelCase {
+        labels: Labels::from([(("player".to_string(), "p-1001".to_string()), "Anna#1001".to_string())]),
+        ..PanelCase::new(PanelState::Ok, Some(body(players_table(rows, Some(2), None))))
     }
 }
 

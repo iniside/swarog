@@ -181,6 +181,69 @@ fn table_list_columns_draw_cells_markers_and_one_banner_per_failed_column() {
     assert!(user.contains(r#"<a href="&#x2f;admin&#x2f;e&#x2f;player&#x2f;p-1001""#), "{user}");
 }
 
+/// The labelled draw: `p-1` has a label, `p-2` none.
+fn player_labels() -> Labels {
+    Labels::from([(("player".to_string(), "p-1".to_string()), "Anna#1".to_string())])
+}
+
+fn player_link(id: &str, text: &str) -> Cell {
+    Cell { link: Some(Link::Entity(entity("player", id))), ..cell(CellKind::User, text) }
+}
+
+/// A table cell drawing its entity as its raw id draws the label where one is held and the
+/// id where none is; a linked cell whose text is not the raw id keeps its text.
+#[test]
+fn a_table_cell_draws_its_entitys_label_or_its_plain_id() {
+    let view = table_labelled_case().view();
+    let value = |row: usize| view["body"]["rows"][row]["cells"][0]["cell"]["value"].clone();
+    assert_eq!(value(0), "Anna#1001");
+    assert_eq!(value(1), "p-1002");
+
+    let row = |c: Cell| Row { entity: None, cells: vec![c], highlight: false, item: None, actions: Vec::new() };
+    let rows = vec![row(player_link("p-1", "p-1")), row(player_link("p-2", "p-2")), row(player_link("p-1", "Anna K"))];
+    let case = PanelCase {
+        labels: player_labels(),
+        ..PanelCase::new(PanelState::Ok, Some(body(players_table(rows, None, None))))
+    };
+    let view = case.view();
+    let drawn: Vec<&serde_json::Value> =
+        (0..3).map(|r| &view["body"]["rows"][r]["cells"][0]["cell"]["value"]).collect();
+    assert_eq!(drawn, ["Anna#1", "p-2", "Anna K"]);
+}
+
+/// A timeline actor and target and a queue item's entity draw the label where one is held
+/// and the plain id where none is.
+#[test]
+fn a_timeline_actor_and_target_and_a_queue_entity_draw_the_label_or_the_plain_id() {
+    let entry = |id: &str| TimelineEntry {
+        at: "2026-11-19T10:00:00Z".to_string(),
+        actor: Some(player_link(id, id)),
+        title: None,
+        verb: "gifted".to_string(),
+        target: Some(entity("player", id)),
+        summary: String::new(),
+        badges: Vec::new(),
+        detail: None,
+        icon: String::new(),
+        tone: None,
+    };
+    let timeline =
+        Timeline { entries: vec![entry("p-1"), entry("p-2")], cursor_before: None, live: false, days: false, date_only: false };
+    let labelled = |p: Primitive| PanelCase { labels: player_labels(), ..PanelCase::new(PanelState::Ok, Some(body(p))) };
+    let view = labelled(Primitive::Timeline(timeline)).view();
+    let item = |i: usize, part: &str| view["body"]["days"][0]["items"][i][part]["value"].clone();
+    assert_eq!([item(0, "actor"), item(0, "target")], ["Anna#1", "Anna#1"]);
+    assert_eq!([item(1, "actor"), item(1, "target")], ["p-2", "player:p-2"]);
+
+    let queued = |id: &str| QueueItem { entity: Some(entity("player", id)), ..queue_item(id, "failed", 1, 5, &[]) };
+    let queue = Primitive::WorkQueue(work_queue("failed", vec![queued("p-1"), queued("p-2")]));
+    let both = BTreeMap::from([("player".to_string(), vec!["p-1".to_string(), "p-2".to_string()])]);
+    assert_eq!(crate::engine::labels::refs(&queue), both, "each queue item's entity is drawn");
+    let view = labelled(queue).view();
+    let value = |i: usize| view["body"]["items"][i]["entity"]["value"].clone();
+    assert_eq!([value(0), value(1)], ["Anna#1", "p-2"]);
+}
+
 /// An action's id and the `(entity, item)` it is bound to.
 type Binding = (String, Option<String>, Option<String>);
 

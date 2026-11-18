@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use controlplane::{EntityRef, PanelBody, Point, Primitive, Severity};
 use serde::Serialize;
 use crate::engine::columns::{ColumnOutcome, ListColumn};
+use crate::engine::labels::Labels;
 use crate::engine::panels::{self, LastValue, PanelState};
 use super::*;
 
@@ -55,6 +56,8 @@ pub(crate) struct PanelInput<'a> {
     pub(crate) actions: &'a [ActionItem],
     /// A table's `EntityListColumn` columns for this page, in contribution order.
     pub(crate) list_columns: &'a [ListColumn],
+    /// The labels of the refs the body draws.
+    pub(crate) labels: &'a Labels,
     pub(crate) row_menu_kinds: &'a [String],
     /// The entity kinds with an `EntityHeader` contribution: a table row of one opens its
     /// entity page.
@@ -244,7 +247,7 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
         Primitive::DataTable(t) => PrimView::Table(table(t, ctx)),
         Primitive::PropertyList(p) => PrimView::Props(PropsView {
             columns: p.columns.max(1),
-            items: p.items.iter().map(|(k, v)| (k.clone(), cell(v))).collect(),
+            items: p.items.iter().map(|(k, v)| (k.clone(), cell(v, ctx.input.labels))).collect(),
             code: p.code.clone(),
         }),
         // `panels::resolve` turns a ColumnCells body into the error state, so no panel draws one.
@@ -269,13 +272,13 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
                 })
                 .collect(),
         }),
-        Primitive::Cell(c) => PrimView::Cell(cell(c)),
+        Primitive::Cell(c) => PrimView::Cell(cell(c, ctx.input.labels)),
         Primitive::EntityHeader(h) => PrimView::Header(HeaderView {
             title: h.title.clone(),
             crumb: h.crumb.clone().unwrap_or_else(|| h.title.clone()),
             subtitle: h.subtitle.clone(),
-            status: h.status.as_ref().map(cell),
-            badges: h.badges.iter().map(cell).collect(),
+            status: h.status.as_ref().map(|c| cell(c, ctx.input.labels)),
+            badges: h.badges.iter().map(|c| cell(c, ctx.input.labels)).collect(),
             color: avatar_color(&h.avatar_seed),
             initials: initials(&h.title),
         }),

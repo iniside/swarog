@@ -1,6 +1,7 @@
-use controlplane::{CellKind, EntityRef, Tone};
+use controlplane::{CellKind, EntityRef, Point, Tone};
 use serde::Serialize;
 use super::*;
+use crate::engine::labels::{self, Labels};
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct CellView {
@@ -36,19 +37,27 @@ pub(super) fn bar_tone(t: Option<Tone>) -> &'static str {
     }
 }
 
-pub(crate) fn cell(c: &controlplane::Cell) -> CellView {
+pub(crate) fn cell(c: &controlplane::Cell, labels: &Labels) -> CellView {
     let mut more = Vec::new();
     let mut pending: Vec<&controlplane::Cell> = c.more.iter().rev().collect();
     while let Some(next) = pending.pop() {
-        more.push(one_cell(next));
+        more.push(one_cell(next, labels));
         pending.extend(next.more.iter().rev());
     }
-    CellView { more, ..one_cell(c) }
+    CellView { more, ..one_cell(c, labels) }
 }
 
-/// `c` without its `more`.
-fn one_cell(c: &controlplane::Cell) -> CellView {
+/// The label `labels` holds for `e`.
+pub(super) fn label_of<'a>(labels: &'a Labels, e: &EntityRef) -> Option<&'a str> {
+    let text = labels.get(&(e.kind.clone(), e.id.clone()))?;
+    seen::record(&Point::EntityLabel { kind: e.kind.clone() });
+    Some(text)
+}
+
+/// `c` without its `more`; a cell drawing an entity as its raw id draws the entity's label.
+fn one_cell(c: &controlplane::Cell, labels: &Labels) -> CellView {
     seen::record(&c.kind);
+    let value = labels::drawn_ref(c).and_then(|e| label_of(labels, e)).unwrap_or(&c.value);
     let kind = match c.kind {
         CellKind::Text => "text",
         CellKind::Mono => "mono",
@@ -72,11 +81,11 @@ fn one_cell(c: &controlplane::Cell) -> CellView {
     };
     CellView {
         kind,
-        value: c.value.clone(),
+        value: value.to_string(),
         tone,
         href: c.link.as_ref().map(link_url),
         color: avatar_color(&c.value),
-        initials: initials(&c.value),
+        initials: initials(value),
         bar: c.bar.map(|pct| pct.min(100)),
         bar_tone: c.bar.map_or("", |_| bar_tone(c.tone)),
         more: Vec::new(),
@@ -85,15 +94,20 @@ fn one_cell(c: &controlplane::Cell) -> CellView {
     }
 }
 
-pub(super) fn ref_cell(e: &EntityRef) -> CellView {
+pub(super) fn ref_cell(e: &EntityRef, labels: &Labels) -> CellView {
     let user = matches!(e.kind.as_str(), "player" | "user");
+    let value = match label_of(labels, e) {
+        Some(label) => label.to_string(),
+        None if user => e.id.clone(),
+        None => entity_param(e),
+    };
     CellView {
         kind: if user { "user" } else { "ref" },
-        value: if user { e.id.clone() } else { entity_param(e) },
         tone: "",
         href: Some(entity_url(e)),
         color: avatar_color(&e.id),
-        initials: initials(&e.id),
+        initials: initials(&value),
+        value,
         bar: None,
         bar_tone: "",
         more: Vec::new(),
