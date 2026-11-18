@@ -2241,9 +2241,9 @@ red by design is Step 28's variant-coverage test naming the new variants, from 1
     - `harness.rs` 75-278; `view_tests.rs` 280-531 (`table_grid` re-exported as
       `pub(crate)` for `tests.rs:921`); `build.rs` 533-1326; `cases.rs`: `cases()`
       1328-2275 moved whole, with `push!`/`panel!` inside it unchanged (its locals `in_mode`,
-      `no_errors`, `ban`, `grant` cross sections, so it is not cut); `coverage.rs`
-      2312-2424; `macros.rs` 2426-2760; `declared.rs` 2762-2961; `selftests.rs`
-      2962-3194.
+      `no_errors`, `ban`, `grant` cross sections, so it is not cut);
+      `variant_coverage.rs` 2312-2424 (not `coverage.rs`: `.gitignore` ignores `coverage.*`);
+      `macros.rs` 2426-2760; `declared.rs` 2762-2961; `selftests.rs` 2962-3194.
   - (b) Invariants:
     - Every external path stays valid: `crate::render::X` for every item that routes.rs,
       lib.rs, engine/actions.rs, events_provider.rs, tests.rs and the goldens use
