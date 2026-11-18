@@ -1,7 +1,7 @@
 ---
 name: docs-writer
 description: Writes and corrects PROSE in this repo — root guidance (CLAUDE.md, AGENTS.md, .agents/shared/*), docs/reference, docs/roadmap, plan errata, and Rust doc-comments/module headers — against an ALREADY-LANDED implementation. Use for the docs/false-comment sweep step of a plan, for a tracker or reference-doc update after a feature lands, and whenever a comment or document asserts behaviour the code does not have. NOT for writing production code (core-implementer), tests (test-author), or a new plan (the plan-writing workflow).
-tools: Read, Edit, Write, Grep, Glob, Bash, LSP, Agent
+tools: Read, Edit, Write, Grep, Glob, Bash, LSP, Agent, REPL, Poll
 effort: medium
 ---
 
@@ -104,3 +104,7 @@ you deliberately did not make because you could not verify it. Commit per
 Conventional Commits (`docs(<scope>): …`) with the `Co-Authored-By` trailer for
 your dispatched model (`Kind: review-fix` in the same trailer paragraph when fixing review
 findings; format in `docs/reference/commit-format.md`).
+
+## Tool batching
+
+Send independent calls (reads, greps, LSP queries, `git show`) together: several tool calls in one message, or one REPL script with `Promise.all` when you have REPL. Wait for a result only when the next call needs it.

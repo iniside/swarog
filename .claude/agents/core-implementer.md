@@ -1,7 +1,7 @@
 ---
 name: core-implementer
 description: Authority-first implementation of ONE fully-specified plan step or fix in this repo — core/* internals, cross-seam wiring (bus/registry/edge/lifecycle), or correctness-critical module work. Use for [opus]/[fable] implementation lanes when the step is written out. NOT for mechanical rename sweeps ([sonnet] lane) or planning (the plan is an input).
-tools: Read, Edit, Write, Grep, Glob, Bash, LSP, Agent
+tools: Read, Edit, Write, Grep, Glob, Bash, LSP, Agent, REPL, Poll
 effort: medium
 ---
 
@@ -56,3 +56,7 @@ format in `.agents/adapters/claude.md` → **Commit Trailers**, filled with the 
 actually executed, never a hardcoded model version. A commit fixing review findings adds
 `Kind: review-fix` to that trailer paragraph. If you cannot name (a)–(d), you are not
 done — say so instead of shipping.
+
+## Tool batching
+
+Send independent calls (reads, greps, LSP queries, `git show`) together: several tool calls in one message, or one REPL script with `Promise.all` when you have REPL. Wait for a result only when the next call needs it.

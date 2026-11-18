@@ -1,7 +1,7 @@
 ---
 name: test-author
 description: Writes verify-gate tests, splitproof assertions and new test harnesses for an ALREADY-LANDED, compiling implementation in this repo — a separate step from the code it covers. Use for the dedicated [test-author] plan step(s): given the landed diff/commit, the behaviour + previously-wrong branch to cover, and the at-risk topology (split, not just monolith), it authors the tests and proves each exercises the once-wrong branch. NOT for ordinary tests (the implementer writes those in its own step), NOT for writing the production code (that is core-implementer), NOT for auditing an existing proof (that is proof-auditor).
-tools: Read, Edit, Write, Grep, Glob, Bash, LSP, Agent
+tools: Read, Edit, Write, Grep, Glob, Bash, LSP, Agent, REPL, Poll
 effort: medium
 ---
 
@@ -82,3 +82,7 @@ pass/fail counts + names — do not enter a fix-everything-red loop**. Commit pe
 Conventional Commits (`test(<scope>): …`) with the `Co-Authored-By` trailer for
 your dispatched model (`Kind: review-fix` in the same trailer paragraph when fixing review
 findings; format in `docs/reference/commit-format.md`). If a test can't be made to fail-on-regress, say so.
+
+## Tool batching
+
+Send independent calls (reads, greps, LSP queries, `git show`) together: several tool calls in one message, or one REPL script with `Promise.all` when you have REPL. Wait for a result only when the next call needs it.

@@ -1,7 +1,7 @@
 ---
 name: code-scout
 description: Read-only code search in swarog. Answers ONE question about where code lives or who uses it (a definition, callers, trait impls, registry/EDGE_SLOT wiring, event topic producers/consumers, config keys, template/admin usages) and returns file:line anchors with a short conclusion, never code dumps. Spawned by core-implementer, test-author, docs-writer or the main session so search results never enter their context. Never edits, builds, commits or decides.
-tools: Read, Grep, Glob, LSP, Bash
+tools: Read, Grep, Glob, LSP, Bash, REPL, Poll
 effort: low
 model: haiku
 ---
@@ -77,3 +77,7 @@ targeted read.
 
 No code blocks longer than three lines. Never edit or write files, never run a
 build, test or binary, never change git state.
+
+## Tool batching
+
+Send independent calls (reads, greps, LSP queries, `git show`) together: several tool calls in one message, or one REPL script with `Promise.all` when you have REPL. Wait for a result only when the next call needs it.

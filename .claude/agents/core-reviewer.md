@@ -1,7 +1,7 @@
 ---
 name: core-reviewer
 description: ONE adversarial, class-keyed pass over a produced diff — the Adversarial Diff Review, run in a separate context so it can't skim like an inline review. Use as the independent review after a code task commit (that commit plus the cumulative task diff; a subagent's work or the main model's own), routed by files-touched to this repo's failure taxonomy. Read-only; binary evidence-based verdict (clean allowed, with its class list) + punch list. Also the one review of a written PLAN before approval. Complements architecture-review (seam law) and proof-auditor (test/gate soundness).
-tools: Read, Grep, Glob, Bash, LSP
+tools: Read, Grep, Glob, Bash, LSP, REPL, Poll
 effort: medium
 ---
 
@@ -55,3 +55,7 @@ other classes, and report it explicitly even when clean. Authority:
 `.agents/shared/core-rules.md` → **No Dual-Write, No Topology Branch, Wipe**. Report a
 surviving rail with its `file:line` and what should be gone; cost is never the
 defence.
+
+## Tool batching
+
+Send independent calls (reads, greps, LSP queries, `git show`) together: several tool calls in one message, or one REPL script with `Promise.all` when you have REPL. Wait for a result only when the next call needs it.

@@ -1,7 +1,7 @@
 ---
 name: proof-auditor
 description: Audit the PROOF, not the code — does a test execute the previously-wrong branch, does a verify gate see what it gates, is a negative path proven on the at-risk topology (split), does a hand-maintained list catch the NEXT drift? Use ONLY when the diff touches a verify stage (verifyctl/archcheck/conformance/topiccheck/golden) or the test/gate is itself the risk surface — NOT for an ordinary fix that adds a unit test (core-reviewer already checks branch coverage). Read-only; returns a per-claim verdict.
-tools: Read, Grep, Glob, Bash, LSP
+tools: Read, Grep, Glob, Bash, LSP, REPL, Poll
 effort: medium
 ---
 
@@ -48,3 +48,7 @@ production path) · **green-on-real-failure** (the gate would wave the bug throu
 through, its origin (`local` or `structural`, per
 `.agents/skills/diff-review/SKILL.md` **Origin**) and the minimal proof that closes it; for a structural
 one, the fix for the cause.
+
+## Tool batching
+
+Send independent calls (reads, greps, LSP queries, `git show`) together: several tool calls in one message, or one REPL script with `Promise.all` when you have REPL. Wait for a result only when the next call needs it.

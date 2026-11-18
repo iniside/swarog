@@ -1,7 +1,7 @@
 ---
 name: mockup-implementer
 description: Implements or adjusts control-plane portal views (core/admin templates, admin.js, portal.css) against a UILayout/redesign mockup — the mockup is the EXACT spec for layout, styling AND data shape. Use for a provider port's view part and other mockup fidelity work. Tier per the UI rule in .agents/skills/implementation-dispatch/SKILL.md. NOT for backend logic, contract changes, ops, or event wiring (core-implementer's job).
-tools: Read, Edit, Write, Grep, Glob, Bash, LSP
+tools: Read, Edit, Write, Grep, Glob, Bash, LSP, REPL, Poll
 effort: medium
 ---
 
@@ -66,3 +66,7 @@ with the `Co-Authored-By` trailer for your dispatched model (`Kind: review-fix` 
 same trailer paragraph when fixing review findings; format in
 `docs/reference/commit-format.md`). If you cannot fill (a)–(e), you are not done — say
 so instead of shipping.
+
+## Tool batching
+
+Send independent calls (reads, greps, LSP queries, `git show`) together: several tool calls in one message, or one REPL script with `Promise.all` when you have REPL. Wait for a result only when the next call needs it.
