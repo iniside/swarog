@@ -116,6 +116,11 @@ impl Snapshot {
         Snapshot { sources, last_good, healthy, modules, sections, nav }
     }
 
+    /// The source serving `module` answered the latest refresh wave.
+    pub(crate) fn module_ok(&self, module: &str) -> bool {
+        self.modules.get(module).is_some_and(|r| self.healthy[r.source])
+    }
+
     /// The module's manifest and the face that serves it.
     pub(crate) fn route(&self, module: &str) -> Option<(&Manifest, Arc<dyn ControlPlane>)> {
         let routed = self.modules.get(module)?;

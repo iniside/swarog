@@ -702,6 +702,14 @@ async fn panel(
             _ => None,
         })
         .collect();
+    let header_kinds: Vec<String> = snapshot
+        .contributions(|pt| matches!(pt, Point::EntityHeader(_)))
+        .into_iter()
+        .filter_map(|(_, c)| match &c.point {
+            Point::EntityHeader(kind) => Some(kind.clone()),
+            _ => None,
+        })
+        .collect();
     let path = panel_url(&module, &contribution);
     let fallback = entity.as_ref().map(|e| e.id.clone()).unwrap_or_default();
     let no_errors = BTreeMap::new();
@@ -725,6 +733,7 @@ async fn panel(
         actions: &tools,
         list_columns: &list_columns,
         row_menu_kinds: &row_menu_kinds,
+        header_kinds: &header_kinds,
         csrf: &ctx.csrf,
         form: form.map(|(post_url, form_id)| FormInstance {
             post_url,
@@ -791,7 +800,7 @@ async fn menu(State(p): State<Portal>, jar: CookieJar, Path((kind, id)): Path<(S
     let entity = EntityRef { kind: kind.clone(), id };
     let items =
         action_items(&snapshot, &ctx, Some(&entity), |pt| matches!(pt, ActionPoint::RowAction(k) if *k == kind));
-    let view = MenuView { entity, groups: render::menu_groups(items) };
+    let view = MenuView { entity, groups: render::menu_groups(items, |m| !snapshot.module_ok(m)) };
     html(StatusCode::OK, render::fragment(&p.st.env, "primitives.html", "menu", &view))
 }
 

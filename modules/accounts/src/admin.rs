@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use controlplane::{
-    ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable, Delta,
+    fake_hash, ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable, Delta,
     Emphasis, EntityHeader, EntityKindDecl, EntityRef, FilterDef, FilterKind, InvokeCall,
-    InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, PageDecl, PageInfo, Palette,
+    InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, Noun, PageDecl, PageInfo, Palette,
     PanelBody, PanelQuery, Point, Primitive, PropertyList, Provider, Role, Row, SearchDecl,
     SearchHit, SearchQuery, SortDir, Then, Tone, DEFAULT_PANEL_DEADLINE_MS,
     DEFAULT_SEARCH_DEADLINE_MS,
@@ -171,16 +171,6 @@ fn thousands(n: i64) -> String {
     out
 }
 
-/// FNV-1a 64 over `salt` and `id`, the explicit-width hash every fake below is drawn from.
-fn fake_hash(salt: &str, id: &str) -> u64 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in salt.bytes().chain([0]).chain(id.bytes()) {
-        hash ^= u64::from(b);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
-}
-
 fn fake_pick(salt: &str, id: &str, options: &[&'static str]) -> &'static str {
     options[(fake_hash(salt, id) % options.len() as u64) as usize]
 }
@@ -226,6 +216,7 @@ fn text(kind: CellKind, value: impl Into<String>) -> Cell {
         link: None,
         bar: None,
         more: Vec::new(),
+        row: false,
     }
 }
 
@@ -268,6 +259,7 @@ fn column(key: &str, label: &str, kind: CellKind) -> Column {
         sortable: false,
         align: Align::Left,
         sorted: None,
+        wrap: false,
     }
 }
 
@@ -294,7 +286,7 @@ fn detail_table(columns: Vec<Column>, rows: Vec<Row>) -> DataTable {
         selectable: false,
         list_columns_for: None,
         list_columns_at: 0,
-        item_noun: String::new(),
+        item_noun: None,
     }
 }
 
@@ -549,7 +541,7 @@ impl AccountsAdmin {
             list_columns_for: Some(KIND.to_string()),
             // Between Identities and Last seen.
             list_columns_at: 4,
-            item_noun: "accounts".to_string(),
+            item_noun: Some(Noun::new("account", "accounts")),
         };
         Ok(PanelBody::new(Primitive::DataTable(table)))
     }
@@ -741,5 +733,16 @@ impl Provider for AccountsAdmin {
             }
             other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fakes_draw_pinned_values_from_the_shared_helper() {
+        assert_eq!(fake_country("p-1"), "ES");
+        assert_eq!(fake_ip("fam-1"), "198.51.100.64");
     }
 }

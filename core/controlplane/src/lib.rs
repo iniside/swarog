@@ -203,6 +203,19 @@ pub const DEFAULT_SEARCH_DEADLINE_MS: u32 = 800;
 /// it reads one.
 pub const MAX_INPUT_VALUE_BYTES: usize = 4096;
 
+/// The hash every FAKE stand-in for data the backend does not store is drawn from: a pure
+/// function of `salt` and an entity id, reading no clock and no random source.
+pub fn fake_hash(salt: &str, id: &str) -> u64 {
+    // FNV-1a over u64 with wrapping arithmetic, not std's seeded hashers, so an id draws the
+    // same fake on every platform, build and process.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in salt.bytes().chain([0]).chain(id.bytes()) {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 /// Serves one process's local providers, dispatching each request by `req.module`.
 pub struct LocalFace {
     manifests: Vec<Manifest>,
@@ -835,6 +848,7 @@ variants! {
         Warn,
         Err,
         Info,
+        Accent,
     }
 }
 
@@ -863,6 +877,12 @@ variants! {
         Muted,
         /// A plain badge: no status colour unless `tone` sets one.
         Label,
+        /// Dimmed monospace text.
+        MonoMuted,
+        /// A display-only switch, on when `value` is `"true"`; the value is not drawn.
+        Toggle,
+        /// Bold plain text.
+        Strong,
     }
 }
 
@@ -878,6 +898,8 @@ pub struct Cell {
     pub bar: Option<u8>,
     /// Further values drawn after this one in the same place, space-separated.
     pub more: Vec<Cell>,
+    /// This value and its `more` sit on one aligned line.
+    pub row: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -889,6 +911,8 @@ pub struct Column {
     pub align: Align,
     /// Set on the column the rows are ordered by.
     pub sorted: Option<SortDir>,
+    /// Long values wrap instead of staying on one line.
+    pub wrap: bool,
 }
 
 variants! {
@@ -950,8 +974,30 @@ pub struct DataTable {
     /// The index in `columns` the `EntityListColumn` columns are inserted at; past the
     /// end appends them.
     pub list_columns_at: usize,
-    /// The plural noun the foot counts rows in ("accounts"); empty counts "rows".
-    pub item_noun: String,
+    /// The noun the foot counts rows in; `None` counts "rows".
+    pub item_noun: Option<Noun>,
+}
+
+/// A counted noun: `one` names a count of exactly 1, `many` every other count.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Noun {
+    pub one: String,
+    pub many: String,
+}
+
+impl Noun {
+    pub fn new(one: &str, many: &str) -> Noun {
+        Noun { one: one.to_string(), many: many.to_string() }
+    }
+
+    /// The form that agrees with `count`.
+    pub fn of(&self, count: u64) -> &str {
+        if count == 1 {
+            &self.one
+        } else {
+            &self.many
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1050,8 +1096,8 @@ pub struct WorkQueue {
     pub items: Vec<QueueItem>,
     /// The header of the `QueueItem::id` column.
     pub item_label: String,
-    /// The plural noun the foot counts items in ("messages").
-    pub item_noun: String,
+    /// The noun the foot counts items in.
+    pub item_noun: Noun,
     /// Drawn between the id and the state columns.
     pub columns: Vec<Column>,
     /// `total` is the selected state's count, `None` when search or a filter narrows it.
@@ -1280,5 +1326,17 @@ mod tests {
             assert_eq!(registered.get(name), Some(&(variants, drawn)), "{name}");
         }
         assert_eq!(registered.len(), 23);
+    }
+
+    #[test]
+    fn fake_hash_is_pinned_and_separates_salt_from_id() {
+        assert_eq!(fake_hash("country", "p-1"), 7_496_518_075_959_870_503);
+        assert_ne!(fake_hash("ab", "c"), fake_hash("a", "bc"));
+    }
+
+    #[test]
+    fn a_noun_takes_its_singular_at_one_only() {
+        let noun = Noun::new("player", "players");
+        assert_eq!([0, 1, 2].map(|n| noun.of(n)), ["players", "player", "players"]);
     }
 }

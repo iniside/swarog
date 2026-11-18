@@ -230,14 +230,6 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
 One item per `contract gap` entry in `tools/admindiff/accept/*.txt`; remaining mockup
 gaps go to the next iteration.
 
-- [ ] **Muted mono value (Event plane Head cell)**
-  ADMIN2-18. Accept lines: tools/admindiff/accept/events.txt:15 and :16 (the plain and
-  the `tr.sel` row), `td.num: mock span.mono.muted portal span.mono | contract gap: no
-  CellKind gives a muted mono value, so the Head cell is not muted`. Mockup: the
-  Subscriptions Head value in dimmed mono. Closed by: a muted variant in
-  `core/controlplane` (a `CellKind` or a `Cell` flag) that `core/admin/src/render.rs`
-  maps to `span.mono.muted`; then delete both accept lines.
-
 - [ ] **Players list column chooser ("Columns: 9 of 12")**
   ADMIN2-33. Accept entry: the `contract gap` line for the toolbar's "Columns:" label and
   "9 of 12" button in tools/admindiff/accept/players.txt (written by step 13 part b).

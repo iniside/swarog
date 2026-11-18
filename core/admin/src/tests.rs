@@ -1018,7 +1018,7 @@ fn action_decl(id: &str, point: ActionPoint, implemented: bool) -> ActionDecl {
 }
 
 fn text(value: &str) -> Cell {
-    Cell { kind: CellKind::Text, value: value.to_string(), tone: None, link: None, bar: None, more: Vec::new() }
+    Cell { kind: CellKind::Text, value: value.to_string(), tone: None, link: None, bar: None, more: Vec::new(), row: false }
 }
 
 fn table_row(entity: Option<(&str, &str)>, name: &str) -> Row {
@@ -1040,6 +1040,7 @@ fn players_table(rows: Vec<Row>) -> Primitive {
         sortable: false,
         align: Align::Left,
         sorted: None,
+        wrap: false,
     };
     Primitive::DataTable(DataTable {
         columns: vec![column("name", "Name"), column("status", "Status")],
@@ -1050,7 +1051,7 @@ fn players_table(rows: Vec<Row>) -> Primitive {
         selectable: false,
         list_columns_for: Some("player".to_string()),
         list_columns_at: 1,
-        item_noun: String::new(),
+        item_noun: None,
     })
 }
 
@@ -1570,6 +1571,113 @@ async fn a_two_column_entity_tab_draws_a_grid() {
     let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/e/player/p-1?tab=notes").await;
     assert_eq!(status, StatusCode::OK, "{raw}");
     assert!(!raw.contains(r#"<div class="grid g-2">"#), "{raw}");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A table row opens its entity page only when its kind has an `EntityHeader`: a `guild`
+/// row, whose kind has none, keeps its row-action menu without becoming a link.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_is_clickable_only_when_its_kind_has_an_entity_header() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-row-link");
+    let cookie = operator_cookie(&pool, &user).await;
+    let page = contribution("list", Point::Page("players".to_string()), Role::Viewer);
+    let header = contribution("header", Point::EntityHeader("player".to_string()), Role::Viewer);
+    let inspect = action_decl("guild.inspect", ActionPoint::RowAction("guild".to_string()), true);
+    let provider: Arc<dyn controlplane::Provider> = Recording::new(
+        module("players", vec![page, header], vec![inspect], true),
+        &[("list", answer(players_table(mixed_rows())))],
+    );
+    let engine = Arc::new(sourced(vec![provider]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, PLAYERS_PANEL).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains(r#"<tr class="clickable" data-href="&#x2f;admin&#x2f;e&#x2f;player&#x2f;p-1">"#), "{raw}");
+    assert!(raw.contains(r#"<tr class="clickable" data-href="&#x2f;admin&#x2f;e&#x2f;player&#x2f;p-2">"#), "{raw}");
+    assert_eq!(raw.matches(r#"<tr class="clickable""#).count(), 2, "only the player rows open a page: {raw}");
+    assert!(!raw.contains("&#x2f;e&#x2f;guild"), "a kind with no EntityHeader has no entity page: {raw}");
+    let menu = r#"data-menu-url="&#x2f;admin&#x2f;_menu&#x2f;guild&#x2f;g-7""#;
+    assert!(raw.contains(menu), "the guild row keeps its menu: {raw}");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A face whose `cp.manifests` fails once `down` is set, as a peer that stopped answering.
+struct Flaky {
+    inner: controlplane::LocalFace,
+    down: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl controlplane::ControlPlane for Flaky {
+    async fn manifests(&self) -> Result<Vec<Manifest>, opsapi::Error> {
+        if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(opsapi::Error::unavailable("peer down"));
+        }
+        self.inner.manifests().await
+    }
+
+    async fn panel(&self, req: PanelQuery) -> Result<PanelBody, opsapi::Error> {
+        self.inner.panel(req).await
+    }
+
+    async fn search(&self, req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
+        self.inner.search(req).await
+    }
+
+    async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
+        self.inner.invoke(req).await
+    }
+
+    async fn prepare(&self, req: controlplane::PrepareCall) -> Result<Then, opsapi::Error> {
+        self.inner.prepare(req).await
+    }
+}
+
+/// The row menu of a module whose source missed the latest refresh marks its group
+/// unavailable and draws its items disabled; a healthy module's group is unchanged.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_row_menu_group_of_a_down_module_is_unavailable_and_disabled() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-menu-down");
+    let cookie = operator_cookie(&pool, &user).await;
+    let row_action = |id: &str| action_decl(id, ActionPoint::RowAction("player".to_string()), true);
+    let face = |name: &str, action: &str| {
+        let provider: Arc<dyn controlplane::Provider> =
+            Recording::new(module(name, Vec::new(), vec![row_action(action)], true), &[]);
+        Arc::new(Flaky {
+            inner: controlplane::LocalFace::new(vec![provider]),
+            down: std::sync::atomic::AtomicBool::new(false),
+        })
+    };
+    let (accounts, wallet) = (face("accounts", "suspend"), face("wallet", "grant"));
+    let engine = Arc::new(Engine::new());
+    let sources = [("accounts-svc", accounts.clone()), ("wallet-svc", wallet.clone())]
+        .into_iter()
+        .map(|(peer, face)| Source { peer: peer.to_string(), face })
+        .collect();
+    engine.install(Snapshot::seeded(sources, None));
+    refresh_once(&engine).await;
+    wallet.down.store(true, std::sync::atomic::Ordering::SeqCst);
+    refresh_once(&engine).await;
+    assert!(engine.snapshot().module_ok("accounts"));
+    assert!(!engine.snapshot().module_ok("wallet"), "wallet keeps its last-good manifest, unhealthy");
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_menu/player/p-1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let unavailable = r#"<span style="color:var(--err)">unavailable</span>"#;
+    let (accounts_group, wallet_group) = raw.split_once(r#"<div class="menu-sep">"#).expect("two groups");
+    assert!(accounts_group.contains("<span>accounts</span>") && !accounts_group.contains(unavailable), "{raw}");
+    assert!(accounts_group.contains(r#"<button type="button" class="menu-item""#), "{raw}");
+    assert!(wallet_group.contains("<span>wallet</span>") && wallet_group.contains(unavailable), "{raw}");
+    assert!(
+        wallet_group.contains(r#"<div class="menu-item disabled" title="wallet module unavailable">"#),
+        "{raw}"
+    );
+    assert!(!wallet_group.contains("<button"), "a down module's item is not actionable: {raw}");
 
     cleanup_user(&pool, &user).await;
 }

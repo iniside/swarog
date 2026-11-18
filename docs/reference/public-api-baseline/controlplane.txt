@@ -279,11 +279,14 @@ pub controlplane::CellKind::Badge
 pub controlplane::CellKind::Bytes
 pub controlplane::CellKind::Label
 pub controlplane::CellKind::Mono
+pub controlplane::CellKind::MonoMuted
 pub controlplane::CellKind::Muted
 pub controlplane::CellKind::Number
 pub controlplane::CellKind::Ref
+pub controlplane::CellKind::Strong
 pub controlplane::CellKind::Text
 pub controlplane::CellKind::Time
+pub controlplane::CellKind::Toggle
 pub controlplane::CellKind::User
 impl controlplane::Variants for controlplane::CellKind
 pub const controlplane::CellKind::NAME: &'static str
@@ -879,6 +882,7 @@ impl core::marker::UnsafeUnpin for controlplane::TimeRange
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::TimeRange
 impl core::panic::unwind_safe::UnwindSafe for controlplane::TimeRange
 pub enum controlplane::Tone
+pub controlplane::Tone::Accent
 pub controlplane::Tone::Err
 pub controlplane::Tone::Info
 pub controlplane::Tone::Ok
@@ -998,6 +1002,7 @@ pub controlplane::Cell::bar: core::option::Option<u8>
 pub controlplane::Cell::kind: controlplane::CellKind
 pub controlplane::Cell::link: core::option::Option<controlplane::Link>
 pub controlplane::Cell::more: alloc::vec::Vec<controlplane::Cell>
+pub controlplane::Cell::row: bool
 pub controlplane::Cell::tone: core::option::Option<controlplane::Tone>
 pub controlplane::Cell::value: alloc::string::String
 impl core::clone::Clone for controlplane::Cell
@@ -1027,6 +1032,7 @@ pub controlplane::Column::kind: controlplane::CellKind
 pub controlplane::Column::label: alloc::string::String
 pub controlplane::Column::sortable: bool
 pub controlplane::Column::sorted: core::option::Option<controlplane::SortDir>
+pub controlplane::Column::wrap: bool
 impl core::clone::Clone for controlplane::Column
 pub fn controlplane::Column::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Column
@@ -1108,7 +1114,7 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::ContributionDecl
 pub struct controlplane::DataTable
 pub controlplane::DataTable::columns: alloc::vec::Vec<controlplane::Column>
 pub controlplane::DataTable::filters: alloc::vec::Vec<controlplane::FilterDef>
-pub controlplane::DataTable::item_noun: alloc::string::String
+pub controlplane::DataTable::item_noun: core::option::Option<controlplane::Noun>
 pub controlplane::DataTable::list_columns_at: usize
 pub controlplane::DataTable::list_columns_for: core::option::Option<alloc::string::String>
 pub controlplane::DataTable::page: controlplane::PageInfo
@@ -1548,6 +1554,32 @@ impl core::marker::Unpin for controlplane::NavSection
 impl core::marker::UnsafeUnpin for controlplane::NavSection
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::NavSection
 impl core::panic::unwind_safe::UnwindSafe for controlplane::NavSection
+pub struct controlplane::Noun
+pub controlplane::Noun::many: alloc::string::String
+pub controlplane::Noun::one: alloc::string::String
+impl controlplane::Noun
+pub fn controlplane::Noun::new(&str, &str) -> controlplane::Noun
+pub fn controlplane::Noun::of(&self, u64) -> &str
+impl core::clone::Clone for controlplane::Noun
+pub fn controlplane::Noun::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::Noun
+impl core::cmp::PartialEq for controlplane::Noun
+pub fn controlplane::Noun::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::Noun
+pub fn controlplane::Noun::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::Noun
+impl serde_core::ser::Serialize for controlplane::Noun
+pub fn controlplane::Noun::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::Noun
+pub fn controlplane::Noun::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::Noun
+impl core::marker::Freeze for controlplane::Noun
+impl core::marker::Send for controlplane::Noun
+impl core::marker::Sync for controlplane::Noun
+impl core::marker::Unpin for controlplane::Noun
+impl core::marker::UnsafeUnpin for controlplane::Noun
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Noun
+impl core::panic::unwind_safe::UnwindSafe for controlplane::Noun
 pub struct controlplane::PageDecl
 pub controlplane::PageDecl::head_actions: alloc::vec::Vec<alloc::string::String>
 pub controlplane::PageDecl::id: alloc::string::String
@@ -2077,7 +2109,7 @@ pub struct controlplane::WorkQueue
 pub controlplane::WorkQueue::columns: alloc::vec::Vec<controlplane::Column>
 pub controlplane::WorkQueue::filters: alloc::vec::Vec<controlplane::FilterDef>
 pub controlplane::WorkQueue::item_label: alloc::string::String
-pub controlplane::WorkQueue::item_noun: alloc::string::String
+pub controlplane::WorkQueue::item_noun: controlplane::Noun
 pub controlplane::WorkQueue::items: alloc::vec::Vec<controlplane::QueueItem>
 pub controlplane::WorkQueue::page: controlplane::PageInfo
 pub controlplane::WorkQueue::search_placeholder: core::option::Option<alloc::string::String>
@@ -2229,5 +2261,6 @@ pub fn controlplane::Tone::variant(&self) -> &'static str
 pub fn controlplane::declared_enums() -> &'static [controlplane::DeclaredEnum]
 pub fn controlplane::decode_field(&controlplane::FieldKind, &str) -> core::result::Result<controlplane::FieldValue, controlplane::FieldError>
 pub fn controlplane::encode_field(&controlplane::FieldKind, &controlplane::FieldValue) -> alloc::string::String
+pub fn controlplane::fake_hash(&str, &str) -> u64
 pub fn controlplane::form_spec_errors(&controlplane::FormSpec) -> alloc::vec::Vec<alloc::string::String>
 pub fn controlplane::merge_sections<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a controlplane::Manifest>) -> controlplane::SectionMerge<'a>

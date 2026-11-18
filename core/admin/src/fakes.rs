@@ -2,12 +2,7 @@
 //! constant from `UILayout/redesign/assets/data.js` / `registry.js`, or a pure function of
 //! an id; nothing reads a clock or a random source.
 
-use controlplane::{AttentionItem, Delta, KpiTile, Link, Palette, ServiceItem, ServiceState, Severity, Tone};
-
-/// FNV-1a, 64-bit.
-pub(crate) fn hash(id: &str) -> u64 {
-    id.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
-}
+use controlplane::{fake_hash, AttentionItem, Delta, KpiTile, Link, Palette, ServiceItem, ServiceState, Severity, Tone};
 
 // FAKE: the portal has no deployment name.
 pub(crate) const DEPLOYMENT: &str = "emberline-prod";
@@ -80,7 +75,7 @@ pub(crate) fn history_window() -> String {
 /// mockup's `uptimeBar` draws them.
 // FAKE: no health history is stored.
 fn history(name: &str, now: ServiceState) -> Vec<(String, ServiceState)> {
-    let seed = hash(name);
+    let seed = fake_hash("history", name);
     (0..HISTORY_BUCKETS)
         .map(|i| {
             let state = match now {
@@ -204,7 +199,7 @@ pub(crate) const DEAD_LETTERED: &str = "3";
 /// A subscription checkpoint as one integer; a head is this plus the real lag.
 // FAKE: the real position is (generation, xid, tie).
 pub(crate) fn checkpoint(subscription: &str) -> u64 {
-    hash(subscription) % 250_000
+    fake_hash("checkpoint", subscription) % 250_000
 }
 
 /// The subscription id's first dotted segment.
@@ -216,5 +211,16 @@ pub(crate) fn consumer(subscription: &str) -> String {
 // FAKE: the handler name is not stored.
 pub(crate) fn handler(subscription: &str) -> String {
     const HANDLERS: [&str; 4] = ["on_event", "apply", "project", "handle"];
-    HANDLERS[(hash(subscription) % HANDLERS.len() as u64) as usize].to_string()
+    HANDLERS[(fake_hash("handler", subscription) % HANDLERS.len() as u64) as usize].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fakes_draw_pinned_values_from_the_shared_helper() {
+        assert_eq!(checkpoint("audit.player-deleted.v1"), 68_566);
+        assert_eq!(handler("audit.player-deleted.v1"), "project");
+    }
 }

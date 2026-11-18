@@ -132,7 +132,7 @@ fn events_page() -> Link {
 }
 
 fn text(kind: CellKind, value: impl Into<String>, tone: Option<Tone>) -> Cell {
-    Cell { kind, value: value.into(), tone, link: None, bar: None, more: Vec::new() }
+    Cell { kind, value: value.into(), tone, link: None, bar: None, more: Vec::new(), row: false }
 }
 
 /// The mockup's lag bar fill (`pages-platform.js:129`): a third of the lag, between 3 and
@@ -449,7 +449,7 @@ impl EventsProvider {
                         text(CellKind::Ref, format!("{} v{}", s.topic, s.version), None),
                         text(CellKind::Text, fakes::consumer(&s.id), None),
                         text(CellKind::Mono, thousands(checkpoint), None),
-                        text(CellKind::Mono, thousands(head), None),
+                        text(CellKind::MonoMuted, thousands(head), None),
                         Cell {
                             bar: Some(lag_bar(s.lag_events)),
                             ..text(CellKind::Number, count(s.lag_events), lag_tone(&s))
@@ -469,6 +469,7 @@ impl EventsProvider {
             sortable: false,
             align,
             sorted: None,
+            wrap: false,
         };
         Ok(Primitive::DataTable(DataTable {
             columns: vec![
@@ -491,7 +492,7 @@ impl EventsProvider {
             selectable: false,
             list_columns_for: None,
             list_columns_at: 0,
-            item_noun: String::new(),
+            item_noun: None,
         }))
     }
 

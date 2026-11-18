@@ -261,6 +261,7 @@ fn tone(t: Tone) -> &'static str {
         Tone::Warn => "warn",
         Tone::Err => "err",
         Tone::Info => "info",
+        Tone::Accent => "accent",
     }
 }
 
@@ -281,6 +282,8 @@ pub(crate) struct CellView {
     /// A user cell in a table row that opens an entity: its link sits on the name inside
     /// the cell, not around it.
     pub(crate) inner_link: bool,
+    /// `Cell::row`: this value and its `more` sit in one `span.row`.
+    pub(crate) row: bool,
 }
 
 /// With a bar, the cell's tone colours the fill only: `Warn` is `w`, `Err` is `e`, every
@@ -292,7 +295,7 @@ fn bar_tone(t: Option<Tone>) -> &'static str {
     match t {
         Some(Tone::Warn) => "w",
         Some(Tone::Err) => "e",
-        Some(Tone::Ok | Tone::Info) | None => "",
+        Some(Tone::Ok | Tone::Info | Tone::Accent) | None => "",
     }
 }
 
@@ -320,6 +323,9 @@ fn one_cell(c: &controlplane::Cell) -> CellView {
         CellKind::User => "user",
         CellKind::Muted => "muted",
         CellKind::Label => "label",
+        CellKind::MonoMuted => "mono_muted",
+        CellKind::Toggle => "toggle",
+        CellKind::Strong => "strong",
     };
     let tone = match (c.bar, c.tone, c.kind) {
         (Some(_), _, _) => "",
@@ -338,6 +344,7 @@ fn one_cell(c: &controlplane::Cell) -> CellView {
         bar_tone: c.bar.map_or("", |_| bar_tone(c.tone)),
         more: Vec::new(),
         inner_link: false,
+        row: c.row,
     }
 }
 
@@ -354,6 +361,7 @@ fn ref_cell(e: &EntityRef) -> CellView {
         bar_tone: "",
         more: Vec::new(),
         inner_link: false,
+        row: false,
     }
 }
 
@@ -437,14 +445,17 @@ pub(crate) fn bind(action: &ActionItem, entity: Option<&EntityRef>, element: Opt
 pub(crate) struct MenuGroup {
     pub(crate) module: String,
     pub(crate) items: Vec<ActionItem>,
+    /// The module's source missed the latest manifest refresh: the group is marked
+    /// unavailable and its items are drawn disabled.
+    pub(crate) down: bool,
 }
 
-pub(crate) fn menu_groups(items: Vec<ActionItem>) -> Vec<MenuGroup> {
+pub(crate) fn menu_groups(items: Vec<ActionItem>, down: impl Fn(&str) -> bool) -> Vec<MenuGroup> {
     let mut groups: Vec<MenuGroup> = Vec::new();
     for item in items {
         match groups.iter_mut().find(|g| g.module == item.module) {
             Some(group) => group.items.push(item),
-            None => groups.push(MenuGroup { module: item.module.clone(), items: vec![item] }),
+            None => groups.push(MenuGroup { module: item.module.clone(), down: down(&item.module), items: vec![item] }),
         }
     }
     groups
@@ -753,6 +764,9 @@ pub(crate) struct PanelInput<'a> {
     /// A table's `EntityListColumn` columns for this page, in contribution order.
     pub(crate) list_columns: &'a [ListColumn],
     pub(crate) row_menu_kinds: &'a [String],
+    /// The entity kinds with an `EntityHeader` contribution: a table row of one opens its
+    /// entity page.
+    pub(crate) header_kinds: &'a [String],
     pub(crate) csrf: &'a str,
     /// The form instance a `Primitive::Form` posts as; `None` renders it without a submit.
     pub(crate) form: Option<FormInstance<'a>>,
@@ -984,6 +998,8 @@ pub(crate) struct ColumnView {
 pub(crate) struct TableCell {
     pub(crate) cell: CellView,
     pub(crate) num: bool,
+    /// `Column::wrap`.
+    pub(crate) wrap: bool,
     /// A failed list column's marker title; the cell draws the marker instead of `cell`.
     pub(crate) failed: Option<String>,
 }
@@ -1075,6 +1091,7 @@ fn table_cells(cells: &[controlplane::Cell], columns: &[controlplane::Column], i
         .map(|(i, c)| TableCell {
             cell: list_cell(c, in_list),
             num: columns.get(i).is_some_and(|col| right_aligned(col.align)),
+            wrap: columns.get(i).is_some_and(|col| col.wrap),
             failed: None,
         })
         .collect()
@@ -1097,15 +1114,17 @@ fn list_column_cell(column: &ListColumn, id: Option<&str>, in_list: bool) -> Tab
         link: None,
         bar: None,
         more: Vec::new(),
+        row: false,
     };
     match &column.outcome {
         ColumnOutcome::Cells(cells) => {
             let found = id.and_then(|id| cells.get(id)).unwrap_or(&blank);
-            TableCell { cell: list_cell(found, in_list), num, failed: None }
+            TableCell { cell: list_cell(found, in_list), num, wrap: false, failed: None }
         }
         ColumnOutcome::Failed(_) => TableCell {
             cell: cell(&blank),
             num,
+            wrap: false,
             failed: Some(format!("{} module unavailable", column.module)),
         },
     }
@@ -1125,17 +1144,17 @@ pub(crate) fn thousands(n: u64) -> String {
 
 /// The foot's count: with an `item_noun`, `"M accounts · showing 1–N"` on the first page
 /// and `"M accounts"` past it (a cursor does not say how far in it is), `"N accounts"`
-/// without a total; without one, `"N of M"` or `"N rows"`.
+/// without a total; without one, `"N of M"` or `"N rows"`. The noun agrees with the count
+/// before it.
 fn table_total(t: &controlplane::DataTable, shown: u64, ctx: &Ctx<'_>) -> String {
-    let noun = &t.item_noun;
-    match t.page.total {
-        Some(total) if noun.is_empty() => format!("{} of {}", thousands(shown), thousands(total)),
-        None if noun.is_empty() => format!("{} rows", thousands(shown)),
-        Some(total) if ctx.param(QUERY_CURSOR).is_none() => {
-            format!("{} {noun} · showing 1–{}", thousands(total), thousands(shown))
+    match (&t.item_noun, t.page.total) {
+        (None, Some(total)) => format!("{} of {}", thousands(shown), thousands(total)),
+        (None, None) => format!("{} {}", thousands(shown), if shown == 1 { "row" } else { "rows" }),
+        (Some(noun), Some(total)) if ctx.param(QUERY_CURSOR).is_none() => {
+            format!("{} {} · showing 1–{}", thousands(total), noun.of(total), thousands(shown))
         }
-        Some(total) => format!("{} {noun}", thousands(total)),
-        None => format!("{} {noun}", thousands(shown)),
+        (Some(noun), Some(total)) => format!("{} {}", thousands(total), noun.of(total)),
+        (Some(noun), None) => format!("{} {}", thousands(shown), noun.of(shown)),
     }
 }
 
@@ -1147,14 +1166,15 @@ fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
         .rows
         .iter()
         .map(|r| {
-            let in_list = r.entity.is_some();
+            let href = r.entity.as_ref().filter(|e| ctx.input.header_kinds.contains(&e.kind)).map(entity_url);
+            let in_list = href.is_some();
             let mut cells = table_cells(&r.cells, &t.columns, in_list);
             let id = r.entity.as_ref().filter(|e| Some(e.kind.as_str()) == kind).map(|e| e.id.as_str());
             let at = at.min(cells.len());
             cells.splice(at..at, list_columns.iter().map(|c| list_column_cell(c, id, in_list)));
             RowView {
                 cells,
-                href: r.entity.as_ref().map(entity_url),
+                href,
                 menu_url: r
                     .entity
                     .as_ref()
@@ -1242,7 +1262,7 @@ fn delta_class(d: &controlplane::Delta) -> &'static str {
         Some(Tone::Ok) => "up",
         Some(Tone::Err) => "down",
         Some(Tone::Warn) => "bad-up",
-        Some(Tone::Info) | None => "flat",
+        Some(Tone::Info | Tone::Accent) | None => "flat",
     }
 }
 
@@ -1352,6 +1372,7 @@ fn timeline(t: &controlplane::Timeline, ctx: &Ctx<'_>) -> TimelineView {
                 bar_tone: "",
                 more: Vec::new(),
                 inner_link: false,
+                row: false,
             }),
             detail: e.detail.clone(),
         };
@@ -1550,6 +1571,7 @@ pub(crate) fn panel_form_result(
         body: Some(&body),
         actions: frame.actions,
         row_menu_kinds: &[],
+        header_kinds: &[],
         list_columns: &[],
         csrf: frame.csrf,
         form: Some(instance),
@@ -1647,6 +1669,7 @@ fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
                     bar_tone: "",
                     more: Vec::new(),
                     inner_link: false,
+                    row: false,
                 },
                 attempts,
                 attempts_title: format!("{} attempts", it.attempts),
@@ -1660,8 +1683,10 @@ fn queue(q: &controlplane::WorkQueue, ctx: &Ctx<'_>) -> QueueView {
         .collect();
     let shown = items.len() as u64;
     let total = match q.page.total {
-        Some(total) if total != shown => format!("{} of {} {}", thousands(shown), thousands(total), q.item_noun),
-        _ => format!("{} {}", thousands(shown), q.item_noun),
+        Some(total) if total != shown => {
+            format!("{} of {} {}", thousands(shown), thousands(total), q.item_noun.of(total))
+        }
+        _ => format!("{} {}", thousands(shown), q.item_noun.of(shown)),
     };
     QueueView {
         states: q

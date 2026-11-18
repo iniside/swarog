@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use controlplane::{
     ActionDecl, ActionPoint, Align, AttentionItem, Banner, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
     ContributionDecl, Delta, Emphasis, Field, FieldKind, FilterDef, FilterKind, FormSpec, InvokeCall,
-    InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, PageDecl, PageInfo, Palette, PanelBody, PanelQuery,
+    InvokeOutcome, KpiTile, Layout, Link, Manifest, NavEntry, Noun, PageDecl, PageInfo, Palette, PanelBody, PanelQuery,
     Point, PrepareCall, Primitive, Provider, QueueItem, QueueState, ReasonReq, Role, SearchHit, SearchQuery,
     Severity, Then, Tone, WorkQueue, DEFAULT_PANEL_DEADLINE_MS, PAGE_PARAM_QUEUE_STATE, PAGE_PARAM_SEARCH,
 };
@@ -165,7 +165,7 @@ fn row_actions(shown: &str) -> Vec<String> {
 }
 
 fn text(kind: CellKind, value: impl Into<String>) -> Cell {
-    Cell { kind, value: value.into(), tone: None, link: None, bar: None, more: Vec::new() }
+    Cell { kind, value: value.into(), tone: None, link: None, bar: None, more: Vec::new(), row: false }
 }
 
 fn outbox_page(params: BTreeMap<String, String>) -> Link {
@@ -419,6 +419,7 @@ impl MailAdmin {
             sortable: false,
             align: Align::Left,
             sorted: None,
+            wrap: false,
         };
         let queue = WorkQueue {
             states: TABS
@@ -434,7 +435,7 @@ impl MailAdmin {
             selected: selected_key.to_string(),
             items,
             item_label: "Message".to_string(),
-            item_noun: "messages".to_string(),
+            item_noun: Noun::new("message", "messages"),
             columns: vec![column("to", "To", CellKind::User), column("template", "Template", CellKind::Ref)],
             page: PageInfo {
                 next_cursor,

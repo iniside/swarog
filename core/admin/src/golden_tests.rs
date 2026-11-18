@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 use controlplane::{
     ActionDecl, ActionPoint, Align, AttentionItem, Axis, Banner, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
     ContributionDecl, DataTable, DeclaredEnum, Delta, Emphasis, EntityHeader, EntityRef, Field, FieldKind, FilterDef,
-    FilterKind, FormSpec, KpiTile, Layout, Link, Manifest, PageInfo, Palette, PanelBody, Point, Primitive,
+    FilterKind, FormSpec, KpiTile, Layout, Link, Manifest, Noun, PageInfo, Palette, PanelBody, Point, Primitive,
     PropertyList, QueueItem, QueueState, ReasonReq, Role, Row, Series, ServiceItem, ServiceState, ServiceStatus,
     Severity, SortDir, Then, TimeRange, TimeSeriesChart, Timeline, TimelineEntry, Tone, Variants, WorkQueue,
 };
@@ -533,7 +533,7 @@ fn header_crumb_replaces_the_last_breadcrumb_else_the_title_does() {
 // ---- view-model builders -----------------------------------------------------------
 
 fn cell(kind: CellKind, value: &str) -> Cell {
-    Cell { kind, value: value.to_string(), tone: None, link: None, bar: None, more: Vec::new() }
+    Cell { kind, value: value.to_string(), tone: None, link: None, bar: None, more: Vec::new(), row: false }
 }
 
 fn toned(kind: CellKind, value: &str, tone: Tone) -> Cell {
@@ -556,6 +556,7 @@ fn column(key: &str, label: &str, align: Align) -> Column {
         sortable: false,
         align,
         sorted: None,
+        wrap: false,
     }
 }
 
@@ -649,6 +650,7 @@ struct PanelCase {
     actions: Vec<ActionItem>,
     list_columns: Vec<ListColumn>,
     row_menu_kinds: Vec<String>,
+    header_kinds: Vec<String>,
     /// Renders the form with a fresh instance to post as.
     form: bool,
 }
@@ -672,6 +674,7 @@ impl PanelCase {
             actions: Vec::new(),
             list_columns: Vec::new(),
             row_menu_kinds: Vec::new(),
+            header_kinds: strings(&["player"]),
             form: false,
         }
     }
@@ -713,6 +716,7 @@ impl PanelCase {
             actions: &self.actions,
             list_columns: &self.list_columns,
             row_menu_kinds: &self.row_menu_kinds,
+            header_kinds: &self.header_kinds,
             csrf: CSRF,
             form: self.form.then(|| FormInstance {
                 post_url: routes::panel_form_save(&operator(Role::Admin), MODULE, &save_manifest(), CONTRIBUTION)
@@ -925,7 +929,7 @@ fn players_table(rows: Vec<Row>, total: Option<u64>, next: Option<&str>) -> Prim
         selectable: true,
         list_columns_for: None,
         list_columns_at: 0,
-        item_noun: String::new(),
+        item_noun: None,
     })
 }
 
@@ -963,7 +967,7 @@ fn table_list_columns_case() -> PanelCase {
         ],
         list_columns_for: Some("player".to_string()),
         list_columns_at: 1,
-        item_noun: "players".to_string(),
+        item_noun: Some(Noun::new("player", "players")),
         selectable: false,
         ..match players_table(Vec::new(), Some(1234), Some("c2")) {
             Primitive::DataTable(t) => t,
@@ -1010,7 +1014,7 @@ fn table_list_columns_case() -> PanelCase {
 fn noun_table(total: Option<u64>) -> Primitive {
     let rows = vec![player_row("p-1001", "12", "active", false), player_row("p-1002", "40", "banned", false)];
     match players_table(rows, total, Some("c3")) {
-        Primitive::DataTable(t) => Primitive::DataTable(DataTable { item_noun: "players".to_string(), ..t }),
+        Primitive::DataTable(t) => Primitive::DataTable(DataTable { item_noun: Some(Noun::new("player", "players")), ..t }),
         _ => unreachable!("players_table is a DataTable"),
     }
 }
@@ -1066,7 +1070,7 @@ fn table_row_actions_case() -> PanelCase {
         selectable: false,
         list_columns_for: None,
         list_columns_at: 0,
-        item_noun: String::new(),
+        item_noun: None,
     };
     PanelCase {
         entity: Some(entity("player", "p-1001")),
@@ -1128,7 +1132,7 @@ fn work_queue(selected: &str, items: Vec<QueueItem>) -> WorkQueue {
         selected: selected.to_string(),
         items,
         item_label: "Job".to_string(),
-        item_noun: "jobs".to_string(),
+        item_noun: Noun::new("job", "jobs"),
         columns: Vec::new(),
         page: PageInfo { next_cursor: None, size: 25, total: None },
         filters: Vec::new(),
@@ -1228,7 +1232,7 @@ fn queue_table_contract_case() -> PanelCase {
             PanelState::Ok,
             Some(body(Primitive::WorkQueue(WorkQueue {
                 item_label: "Message".to_string(),
-                item_noun: "messages".to_string(),
+                item_noun: Noun::new("message", "messages"),
                 columns: vec![
                     column("to", "To", Align::Left),
                     column("account", "Account", Align::Left),
@@ -2105,7 +2109,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             row_item("economy", &grant, Role::Admin),
             row_item("economy", &ActionDecl { min_role: Role::Admin, ..grant.clone() }, Role::Viewer),
         ];
-        let menu = MenuView { entity: row_entity.clone(), groups: render::menu_groups(menu_items) };
+        let menu = MenuView { entity: row_entity.clone(), groups: render::menu_groups(menu_items, |_| false) };
         render::fragment(env, "primitives.html", "menu", &menu)
     }));
     let hit = |title: &str, subtitle: &str, badge: Option<&str>| SearchHitView {
@@ -3158,4 +3162,33 @@ fn a_noun_table_foot_counts_past_the_first_page_and_without_a_total() {
     assert!(raw.contains("<span>1,234 players</span>"), "{raw}");
     let raw = PanelCase::new(PanelState::Ok, Some(body(noun_table(None)))).render(&env).expect("renders");
     assert!(raw.contains("<span>2 players</span>"), "{raw}");
+}
+
+/// A foot count of exactly one takes the noun's singular, every other count its plural, and
+/// a table with no noun counts "row" or "rows" the same way.
+#[test]
+fn a_foot_count_of_one_takes_the_singular() {
+    let one = vec![player_row("p-1001", "12", "active", false)];
+    let two = vec![player_row("p-1001", "12", "active", false), player_row("p-1002", "40", "banned", false)];
+    let counted = |rows: Vec<Row>, total: Option<u64>, noun: Option<Noun>| match players_table(rows, total, None) {
+        Primitive::DataTable(t) => Primitive::DataTable(DataTable { item_noun: noun, ..t }),
+        _ => unreachable!("players_table is a DataTable"),
+    };
+    let noun = || Some(Noun::new("player", "players"));
+    let total = |p: Primitive| {
+        let view = PanelCase::new(PanelState::Ok, Some(body(p))).view().to_string();
+        let at = view.find(r#""total":""#).expect("a foot total") + 9;
+        view[at..].split('"').next().unwrap_or_default().to_string()
+    };
+    assert_eq!(total(counted(one.clone(), Some(1), noun())), "1 player · showing 1–1");
+    assert_eq!(total(counted(two.clone(), Some(2), noun())), "2 players · showing 1–2");
+    assert_eq!(total(counted(one.clone(), None, noun())), "1 player");
+    assert_eq!(total(counted(one.clone(), None, None)), "1 row");
+    assert_eq!(total(counted(two, None, None)), "2 rows");
+    let queue = |total: Option<u64>| {
+        let q = work_queue("pending", vec![queue_item("j-1", "pending", 0, 5, &[])]);
+        Primitive::WorkQueue(WorkQueue { page: PageInfo { total, ..q.page.clone() }, ..q })
+    };
+    assert_eq!(total(queue(Some(1))), "1 job");
+    assert_eq!(total(queue(Some(3))), "1 of 3 jobs");
 }

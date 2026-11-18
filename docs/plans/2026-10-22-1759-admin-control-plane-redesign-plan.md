@@ -2807,3 +2807,17 @@ no fix-on-fix: a finding that needs the mirror back is an owner question.
   - G14: `Route::FirstRow(<list page>)`. `validate` refuses a `FirstRow` that names no `Mapped` page. A fleet with no row prints `EMPTY <page>` and fails the crawl (no CLEAN marker) unless `crawl --allow-empty`; the crawl summary counts the followed pages too, and `diff --page player` on an `--allow-empty` run refuses with that reason (round-1 review fix).
   - `Store::stats`, `Store::list_players` and `PlayerRow`, unused since Step 1, are replaced by the provider's readers (`player_count`, `players_page`, `player_row`, `identity_rows`, `live_families`, `active_players_24h`).
 - **Step 28 (owner, 2026-11-18).** The covered-enum set is every enum `variants!` registers as drawn (`controlplane::declared_enums()`, a `linkme` distributed slice), not the enums seen in the golden run: an enum whose only golden is deleted, or that no golden converts (today `Point`, `Layout`, `TimeRange`), fails the gate. `Role` is drawn (`role_name`) and is covered. Every `pub enum` in `controlplane` is declared through `variants!` as `drawn` or `undrawn`; the gate fails on a converted undrawn enum, and a declaration-form test (the test-author's) fails on a `pub enum` outside `variants!`.
+- **Step 13c.1a (2026-11-18).**
+  - K18: `controlplane::Noun { one, many }` with `Noun::of(count)`; `DataTable.item_noun` is
+    `Option<Noun>` (`None` counts "row"/"rows"), and `WorkQueue.item_noun` is a `Noun` too,
+    since mail's queue is the other foot count.
+  - K6: a `Toggle` cell is on when its value is `"true"`.
+  - K14: a module is down when its source missed the latest manifest refresh
+    (`Snapshot::module_ok`, the signal the nav's `down` uses).
+  - X3: `controlplane::fake_hash(salt, id)` hashes the salt, a zero byte and the id; the
+    portal's fakes now pass a salt, so their drawn values (service history, event-plane
+    checkpoint and handler) changed. Accounts' values are unchanged.
+  - K4: the event plane's `subscription` kind declares an `EntityHeader`, so its rows stay
+    clickable and the two `tr.clickable` template-choice lines in `events.txt` stay; only the
+    two muted-mono contract-gap lines are deleted.
+  - No request field is added, so `tools/conformance` gets no policy row.

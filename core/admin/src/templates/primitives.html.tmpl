@@ -67,13 +67,17 @@
 <svg class="i {{ cls }}" viewBox="0 0 24 24" aria-hidden="true">{{ (paths[name] or "")|safe }}</svg>
 {%- endmacro %}
 
-{#- One value without its `more`; a user cell with `inner_link` links its name, not itself. -#}
+{#- One value without its `more`; a user cell with `inner_link` links its name, not itself, and
+    a linked mono cell is the link itself (`a.mono`). -#}
 {%- macro cell_one(c) -%}
 {%- set inner -%}
 {%- if c.bar is not none %}<span class="row"><span class="lag-bar"><i class="{{ c.bar_tone }}" style="width:{{ c.bar }}%"></i></span><span class="mono" style="font-size:11.5px">{{ c.value }}</span></span>
 {%- elif c.kind == "badge" %}<span class="badge {{ c.tone }}">{{ c.value }}</span>
 {%- elif c.kind == "label" %}<span class="badge plain{{ ' ' ~ c.tone if c.tone }}">{{ c.value }}</span>
 {%- elif c.kind == "muted" %}<span class="muted">{{ c.value }}</span>
+{%- elif c.kind == "mono_muted" %}<span class="mono muted">{{ c.value }}</span>
+{%- elif c.kind == "strong" %}<span style="font-weight:500">{{ c.value }}</span>
+{%- elif c.kind == "toggle" %}<span class="toggle{% if c.value == "true" %} on{% endif %}"></span>
 {%- elif c.kind == "ref" %}<span class="tag">{{ c.value }}</span>
 {%- elif c.kind == "user" %}<span class="user-cell"><span class="avatar" style="background:{{ c.color }}">{{ c.initials }}</span><span>{% if c.inner_link %}<a href="{{ c.href }}" style="color:var(--text);font-weight:500">{{ c.value }}</a>{% else %}{{ c.value }}{% endif %}</span></span>
 {%- elif c.kind == "mono" %}<span class="mono"{% if c.tone %} style="color:var(--{{ c.tone }})"{% endif %}>{{ c.value }}</span>
@@ -82,11 +86,12 @@
 {%- else %}{{ c.value }}
 {%- endif -%}
 {%- endset -%}
-{%- if c.href and not c.inner_link %}<a href="{{ c.href }}"{% if c.kind == "user" %} style="color:inherit"{% endif %}>{{ inner }}</a>{% else %}{{ inner }}{% endif -%}
+{%- if c.href and c.kind == "mono" and c.bar is none %}<a class="mono" href="{{ c.href }}"{% if c.tone %} style="color:var(--{{ c.tone }})"{% endif %}>{{ c.value }}</a>
+{%- elif c.href and not c.inner_link %}<a href="{{ c.href }}"{% if c.kind == "user" %} style="color:inherit"{% endif %}>{{ inner }}</a>{% else %}{{ inner }}{% endif -%}
 {%- endmacro %}
 
 {%- macro cell(c) -%}
-{{ cell_one(c) }}{% for m in c.more %} {{ cell_one(m) }}{% endfor %}
+{%- if c.row %}<span class="row">{% endif %}{{ cell_one(c) }}{% for m in c.more %} {{ cell_one(m) }}{% endfor %}{% if c.row %}</span>{% endif -%}
 {%- endmacro %}
 
 {%- macro hx_action(a) -%}
@@ -124,19 +129,22 @@
 {%- endif -%}
 {%- endmacro %}
 
-{%- macro menu_item(a) -%}
-{%- if not a.enabled %}<div class="menu-item disabled{% if a.danger %} danger{% endif %}" title="{{ a.hint }}">{{ icon(a.icon or "right") }}<span>{{ a.label }}</span><span class="hint">{{ a.hint }}</span></div>
+{#- `down`: the item's module is down; the item is drawn disabled with that reason. -#}
+{%- macro menu_item(a, down="") -%}
+{%- if down %}<div class="menu-item disabled{% if a.danger %} danger{% endif %}" title="{{ down }}">{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></div>
+{%- elif not a.enabled %}<div class="menu-item disabled{% if a.danger %} danger{% endif %}" title="{{ a.hint }}">{{ icon(a.icon or "right") }}<span>{{ a.label }}</span><span class="hint">{{ a.hint }}</span></div>
 {%- elif a.then == "link" %}<a class="menu-item{% if a.danger %} danger{% endif %}" href="{{ a.href }}" style="text-decoration:none">{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></a>
 {%- else %}<button type="button" class="menu-item{% if a.danger %} danger{% endif %}"{{ hx_action(a) }}>{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></button>
 {%- endif -%}
 {%- endmacro %}
 
-{#- GET /admin/_menu/{kind}/{id}: the row-action popover body, grouped by module. -#}
+{#- GET /admin/_menu/{kind}/{id}: the row-action popover body, grouped by module; a group whose
+    module is down is marked unavailable and its items are disabled (registry.js:101-104). -#}
 {%- macro menu(m) -%}
 {%- for g in m.groups -%}
 {%- if not loop.first %}<div class="menu-sep"></div>{% endif -%}
-<div class="menu-group"><span>{{ g.module }}</span></div>
-{%- for it in g.items %}{{ menu_item(it) }}{% endfor -%}
+<div class="menu-group"><span>{{ g.module }}</span>{% if g.down %}<span style="text-transform:none;letter-spacing:0;font-weight:500"><span style="color:var(--err)">unavailable</span></span>{% endif %}</div>
+{%- for it in g.items %}{{ menu_item(it, g.module ~ " module unavailable" if g.down else "") }}{% endfor -%}
 {%- endfor -%}
 {%- endmacro %}
 
@@ -206,7 +214,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 </tr></thead><tbody>
 {%- for r in t.rows %}<tr class="{{ 'clickable' if r.href else '' }}{{ ' sel' if r.highlight else '' }}"{% if r.href %} data-href="{{ r.href }}"{% endif %}>
 {%- if t.selectable %}<td class="cb"><input type="checkbox"{% if r.highlight %} checked{% endif %}></td>{% endif -%}
-{%- for c in r.cells %}<td class="{{ 'num' if c.num else '' }}">{% if c.failed %}<span class="muted" title="{{ c.failed }}">{{ icon("alert") }}</span>{% else %}{{ cell(c.cell) }}{% endif %}</td>{% endfor -%}
+{%- for c in r.cells %}<td class="{{ 'num' if c.num else '' }}{% if c.wrap %}{{ ' ' if c.num }}wrap{% endif %}">{% if c.failed %}<span class="muted" title="{{ c.failed }}">{{ icon("alert") }}</span>{% else %}{{ cell(c.cell) }}{% endif %}</td>{% endfor -%}
 {%- if t.row_actions %}<td>{% for a in r.actions %}{{ row_button(a) }}{% endfor %}</td>{% endif -%}
 {%- if t.row_menu %}<td class="act">{% if r.menu_url %}<button type="button" class="btn sm icon ghost" aria-label="Row actions" data-menu-url="{{ r.menu_url }}">{{ icon("more") }}</button>{% endif %}</td>{% endif -%}
 </tr>{% endfor -%}
@@ -292,7 +300,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- if q.items -%}
 {{ table_toolbar(q) -}}
 <div class="tbl-wrap"><table class="tbl"><thead><tr>{% if q.selectable %}<th class="cb"><input type="checkbox"></th>{% endif %}<th>{{ q.item_label }}</th>{% for c in q.columns %}<th class="{{ 'num' if c.num else '' }}">{{ c.label }}</th>{% endfor %}{% if q.has_entity %}<th>Ref</th>{% endif %}<th>State</th><th>Attempts</th><th>Next attempt</th><th>Last error</th>{% if q.has_payload %}<th>Payload</th>{% endif %}<th></th></tr></thead><tbody>
-{%- for it in q.items %}<tr>{% if q.selectable %}<td class="cb"><input type="checkbox"></td>{% endif %}<td><span class="mono">{{ it.id }}</span></td>{% for c in it.cells %}<td class="{{ 'num' if c.num else '' }}">{{ cell(c.cell) }}</td>{% endfor %}{% if q.has_entity %}<td>{% if it.entity %}{{ cell(it.entity) }}{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}<td>{{ cell(it.state) }}</td><td><span class="attempts" title="{{ it.attempts_title }}">{% for a in it.attempts %}<i class="{{ a }}"></i>{% endfor %}</span></td><td><span class="dim">{{ it.next_attempt or "—" }}</span></td><td class="wrap">{% if it.last_error %}<span class="mono" style="font-size:11.5px;color:{{ it.error_color }}">{{ it.last_error }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>{% if q.has_payload %}<td><span class="mono muted ellip">{{ it.payload or "—" }}</span></td>{% endif %}<td><span class="row" style="justify-content:flex-end;gap:4px">{% for a in it.actions %}{{ queue_action(a, loop.first and not a.danger) }}{% endfor %}</span></td></tr>{% endfor -%}
+{%- for it in q.items %}<tr>{% if q.selectable %}<td class="cb"><input type="checkbox"></td>{% endif %}<td><span class="mono">{{ it.id }}</span></td>{% for c in it.cells %}<td class="{{ 'num' if c.num else '' }}{% if c.wrap %}{{ ' ' if c.num }}wrap{% endif %}">{{ cell(c.cell) }}</td>{% endfor %}{% if q.has_entity %}<td>{% if it.entity %}{{ cell(it.entity) }}{% else %}<span class="muted">—</span>{% endif %}</td>{% endif %}<td>{{ cell(it.state) }}</td><td><span class="attempts" title="{{ it.attempts_title }}">{% for a in it.attempts %}<i class="{{ a }}"></i>{% endfor %}</span></td><td><span class="dim">{{ it.next_attempt or "—" }}</span></td><td class="wrap">{% if it.last_error %}<span class="mono" style="font-size:11.5px;color:{{ it.error_color }}">{{ it.last_error }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>{% if q.has_payload %}<td><span class="mono muted ellip">{{ it.payload or "—" }}</span></td>{% endif %}<td><span class="row" style="justify-content:flex-end;gap:4px">{% for a in it.actions %}{{ queue_action(a, loop.first and not a.danger) }}{% endfor %}</span></td></tr>{% endfor -%}
 </tbody></table></div>{{ table_foot(q) }}
 {%- else -%}
 {%- if q.q or (q.filters|selectattr("value", "ne", "any")|list) -%}
