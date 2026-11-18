@@ -195,12 +195,12 @@ pub(crate) fn action_item(
     operator: &Operator,
     csrf: &str,
     module: &str,
-    writes: bool,
+    manifest: &Manifest,
     decl: &ActionDecl,
     entity: Option<&EntityRef>,
 ) -> ActionItem {
     let url = action_url(module, &decl.id);
-    let (enabled, hint) = match actions::admit(operator, decl, writes) {
+    let (enabled, hint) = match actions::admit(operator, manifest, decl) {
         Ok(()) => (true, None),
         Err(refusal) => (false, Some(refusal.hint())),
     };
@@ -255,7 +255,7 @@ pub(crate) fn panel_tools(
         })
         .collect();
     tools.sort_by(|a, b| (a.order, &a.id).cmp(&(b.order, &b.id)));
-    tools.into_iter().map(|a| action_item(operator, csrf, module, actions::writes(manifest, a), a, None)).collect()
+    tools.into_iter().map(|a| action_item(operator, csrf, module, manifest, a, None)).collect()
 }
 
 /// The `PanelForm` action of `contribution` in `manifest`.
@@ -272,7 +272,7 @@ pub(crate) fn panel_form_save<'a>(
     contribution: &str,
 ) -> Option<(&'a ActionDecl, String)> {
     let action = panel_form_action(manifest, contribution)?;
-    actions::admit(operator, action, actions::writes(manifest, action)).ok()?;
+    actions::admit(operator, manifest, action).ok()?;
     render::seen::record(&action.point);
     Some((action, action_url(module, &action.id)))
 }
@@ -283,10 +283,10 @@ fn action_items(
     entity: Option<&EntityRef>,
     want: impl Fn(&ActionPoint) -> bool,
 ) -> Vec<ActionItem> {
-    let mut found: Vec<(&str, bool, &ActionDecl)> = snapshot
+    let mut found: Vec<(&str, &Manifest, &ActionDecl)> = snapshot
         .modules
         .iter()
-        .flat_map(|(m, r)| r.manifest.actions.iter().map(move |a| (m.as_str(), actions::writes(&r.manifest, a), a)))
+        .flat_map(|(m, r)| r.manifest.actions.iter().map(move |a| (m.as_str(), &r.manifest, a)))
         .filter(|(_, _, a)| want(&a.point))
         .collect();
     found.sort_by(|a, b| (a.2.order, a.0, &a.2.id).cmp(&(b.2.order, b.0, &b.2.id)));
@@ -497,7 +497,7 @@ async fn page(
         .iter()
         .filter_map(|id| manifest.actions.iter().find(|a| &a.id == id))
         .filter(|a| !matches!(a.point, ActionPoint::PanelForm(_)))
-        .map(|a| action_item(&ctx.operator, &ctx.csrf, &module, actions::writes(manifest, a), a, None))
+        .map(|a| action_item(&ctx.operator, &ctx.csrf, &module, manifest, a, None))
         .collect();
     let entry = snapshot.nav.iter().find(|n| n.module == module && n.page == page_id);
     let sections = nav_sections(&snapshot);
@@ -891,8 +891,8 @@ async fn action_modal(
     let Some(found) = actions::find(&snapshot, &module, &action) else {
         return not_found(&p, &format!("{module}/{action}"));
     };
-    if let Err(refusal) = actions::admit(&ctx.operator, found.decl, found.writes) {
-        return toast(&p, StatusCode::FORBIDDEN, refusal.hint().to_string());
+    if let Err(refusal) = actions::admit(&ctx.operator, found.manifest, found.decl) {
+        return toast(&p, StatusCode::FORBIDDEN, refusal.hint());
     }
     if let Then::Link(link) = &found.decl.then {
         return redirect(&headers, &render::link_url(link));
@@ -1101,9 +1101,9 @@ async fn submit_form(s: &Submit<'_>, form_id: &str) -> Response {
         forms::settle(pool, &row, false).await;
         return toast(s.p, StatusCode::BAD_REQUEST, msg);
     }
-    if let Err(refusal) = actions::admit(s.operator, s.found.decl, s.found.writes) {
+    if let Err(refusal) = actions::admit(s.operator, s.found.manifest, s.found.decl) {
         forms::settle(pool, &row, false).await;
-        return toast(s.p, StatusCode::FORBIDDEN, refusal.hint().to_string());
+        return toast(s.p, StatusCode::FORBIDDEN, refusal.hint());
     }
     let submission = match actions::build_submission(&row.spec, s.body) {
         Ok(submission) => submission,
@@ -1159,9 +1159,9 @@ async fn submit_click(s: &Submit<'_>) -> Response {
         Err(resp) => return *resp,
     };
     let pool = &s.p.st.pool;
-    if let Err(refusal) = actions::admit(s.operator, decl, s.found.writes) {
+    if let Err(refusal) = actions::admit(s.operator, s.found.manifest, decl) {
         forms::settle(pool, &row, false).await;
-        return toast(s.p, StatusCode::FORBIDDEN, refusal.hint().to_string());
+        return toast(s.p, StatusCode::FORBIDDEN, refusal.hint());
     }
     let req = InvokeCall {
         module: s.who.module.clone(),

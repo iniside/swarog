@@ -12,8 +12,8 @@ pub(crate) const LOCAL_PEER: &str = "local";
 /// Local first, then every contributed peer face, in contribution order; plus the local
 /// face's manifests, read without I/O.
 pub(crate) async fn collect(ctx: &Context) -> (Vec<Source>, Option<Vec<Manifest>>) {
-    // Local providers go through a LocalFace too, so `Manifest.writes` is enforced by
-    // the one authority on the local path exactly as on a peer's.
+    // Local providers go through a LocalFace too, so `Manifest::write_refusal` is enforced
+    // by the one authority on the local path exactly as on a peer's.
     let face = LocalFace::new(ctx.contributions(PROVIDER_SLOT));
     let manifests = match face.manifests().await {
         Ok(manifests) => Some(manifests),

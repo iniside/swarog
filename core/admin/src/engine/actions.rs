@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use controlplane::{
-    decode_field, encode_field, ActionDecl, ActionPoint, Banner, ConfirmSpec, ControlPlane, EntityRef, Field, FieldKind,
-    FormSpec, InvokeOutcome, Link, Manifest, PanelBody, PrepareCall, Primitive, ReasonReq, SecretReveal, Then,
+    decode_field, encode_field, ActionDecl, Banner, ConfirmSpec, ControlPlane, EntityRef, Field, FieldKind, FormSpec,
+    InvokeOutcome, Link, Manifest, PanelBody, PrepareCall, Primitive, ReasonReq, SecretReveal, Then,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -47,59 +47,49 @@ pub(crate) const ITEM_MAX: usize = 256;
 pub(crate) struct Found<'a> {
     pub(crate) decl: &'a ActionDecl,
     pub(crate) face: Arc<dyn ControlPlane>,
-    /// [`writes`] of `decl`.
-    pub(crate) writes: bool,
+    /// The owning module's manifest.
+    pub(crate) manifest: &'a Manifest,
 }
 
 pub(crate) fn find<'a>(snapshot: &'a Snapshot, module: &str, action: &str) -> Option<Found<'a>> {
     let (manifest, face) = snapshot.route(module)?;
     let decl = manifest.actions.iter().find(|a| a.id == action)?;
-    Some(Found { decl, face, writes: writes(manifest, decl) })
+    Some(Found { decl, face, manifest })
 }
 
-/// Whether `decl` may write: its module writes and the contribution it sits on declares no
-/// `readonly`.
-pub(crate) fn writes(manifest: &Manifest, decl: &ActionDecl) -> bool {
-    let on = match &decl.point {
-        ActionPoint::PanelTool(c) | ActionPoint::QueueRow(c) | ActionPoint::PanelForm(c) | ActionPoint::TableRow(c) => {
-            Some(c)
-        }
-        ActionPoint::RowAction(_) | ActionPoint::HeaderAction(_) | ActionPoint::PageHead(_) => None,
-    };
-    manifest.writes && !on.is_some_and(|c| manifest.contributions.iter().any(|x| &x.id == c && x.readonly.is_some()))
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Refusal {
     Denied,
     NotImplemented,
-    ReadOnly,
+    /// The read-only contribution's declared text; `None` when the module declares no writes.
+    ReadOnly(Option<String>),
 }
 
 impl Refusal {
     /// The disabled control's hint and the refused request's message.
-    pub(crate) fn hint(self) -> &'static str {
+    pub(crate) fn hint(&self) -> String {
         match self {
-            Refusal::Denied => "Not permitted for your role",
-            Refusal::NotImplemented => "Not implemented yet",
-            Refusal::ReadOnly => "Read-only: this module does not accept edits from the portal",
+            Refusal::Denied => "Not permitted for your role".to_string(),
+            Refusal::NotImplemented => "Not implemented yet".to_string(),
+            Refusal::ReadOnly(Some(text)) => text.clone(),
+            Refusal::ReadOnly(None) => "Read-only: this module does not accept edits from the portal".to_string(),
         }
     }
 }
 
-/// Role first, then `implemented`, then the module's `writes`, which refuses every action
-/// but a link; a refusal means no provider call.
-pub(crate) fn admit(operator: &Operator, decl: &ActionDecl, writes: bool) -> Result<(), Refusal> {
+/// Role first, then `implemented`, then `Manifest::write_refusal` of the module `decl`
+/// belongs to; a refusal means no provider call.
+pub(crate) fn admit(operator: &Operator, manifest: &Manifest, decl: &ActionDecl) -> Result<(), Refusal> {
     if !roles::allows(operator, decl.min_role) {
         return Err(Refusal::Denied);
     }
     if !decl.implemented {
         return Err(Refusal::NotImplemented);
     }
-    if !writes && !matches!(decl.then, Then::Link(_)) {
-        return Err(Refusal::ReadOnly);
+    match manifest.write_refusal(&decl.id) {
+        Some(refusal) => Err(Refusal::ReadOnly(refusal.readonly.map(|(_, text)| text))),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 pub(crate) fn parse_entity(raw: &str) -> Option<EntityRef> {

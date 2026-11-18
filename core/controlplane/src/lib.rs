@@ -224,7 +224,7 @@ pub struct LocalFace {
 
 struct LocalProvider {
     provider: Arc<dyn Provider>,
-    writes: bool,
+    manifest: Manifest,
 }
 
 impl LocalFace {
@@ -235,7 +235,7 @@ impl LocalFace {
         let mut by_module = BTreeMap::new();
         for provider in providers {
             let manifest = provider.manifest();
-            let local = LocalProvider { provider, writes: manifest.writes };
+            let local = LocalProvider { provider, manifest: manifest.clone() };
             // Startup-only: a duplicate makes routing ambiguous, so the process refuses to boot.
             if by_module.insert(manifest.module.clone(), local).is_some() {
                 panic!("controlplane: two providers declare module {:?}", manifest.module);
@@ -270,12 +270,21 @@ impl ControlPlane for LocalFace {
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
         let local = self.local(&req.module)?;
-        // `Manifest.writes` is the one write authority: an undeclared writer never sees an invoke.
-        if !local.writes {
-            return Err(opsapi::Error::forbidden(format!(
-                "control-plane module {:?} does not declare writes",
-                req.module
+        if local.manifest.actions.iter().any(|a| a.id == req.action && matches!(a.then, Then::Link(_))) {
+            return Err(opsapi::Error::invalid(format!(
+                "control-plane action {:?} of module {:?} is a link and has no invoke",
+                req.action, req.module
             )));
+        }
+        // `Manifest::write_refusal` is the one write authority: an invoke it refuses never
+        // reaches the provider.
+        if let Some(refusal) = local.manifest.write_refusal(&req.action) {
+            return Err(opsapi::Error::forbidden(match refusal.readonly {
+                None => format!("control-plane module {:?} does not declare writes", req.module),
+                Some((contribution, _)) => {
+                    format!("control-plane contribution {contribution:?} of module {:?} is read-only", req.module)
+                }
+            }));
         }
         local.provider.invoke(req).await
     }
@@ -472,6 +481,42 @@ pub struct Manifest {
     pub actions: Vec<ActionDecl>,
     pub search: Vec<SearchDecl>,
     pub writes: bool,
+}
+
+impl Manifest {
+    /// The one write rule, applied by `LocalFace::invoke`, the portal's admission and
+    /// admincheck: `None` when `action` may write. A `Then::Link` action writes nothing and
+    /// is never refused. Any other action is refused when the module declares no `writes`, or
+    /// when the contribution its point names declares `readonly`. An action this manifest
+    /// does not declare is judged by `writes` alone.
+    pub fn write_refusal(&self, action: &str) -> Option<WriteRefusal> {
+        let Some(decl) = self.actions.iter().find(|a| a.id == action) else {
+            return (!self.writes).then_some(WriteRefusal { readonly: None });
+        };
+        if matches!(decl.then, Then::Link(_)) {
+            return None;
+        }
+        if !self.writes {
+            return Some(WriteRefusal { readonly: None });
+        }
+        let on = match &decl.point {
+            ActionPoint::PanelTool(c)
+            | ActionPoint::QueueRow(c)
+            | ActionPoint::PanelForm(c)
+            | ActionPoint::TableRow(c) => c,
+            ActionPoint::RowAction(_) | ActionPoint::HeaderAction(_) | ActionPoint::PageHead(_) => return None,
+        };
+        let text = self.contributions.iter().find(|c| &c.id == on)?.readonly.as_ref()?;
+        Some(WriteRefusal { readonly: Some((on.clone(), text.clone())) })
+    }
+}
+
+/// Why [`Manifest::write_refusal`] refuses an action.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WriteRefusal {
+    /// The read-only contribution the action sits on and its [`ContributionDecl::readonly`]
+    /// text; `None` when the module declares no writes.
+    pub readonly: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1370,5 +1415,65 @@ mod tests {
     fn a_noun_takes_its_singular_at_one_only() {
         let noun = Noun::new("player", "players");
         assert_eq!([0, 1, 2].map(|n| noun.of(n)), ["players", "player", "players"]);
+    }
+
+    #[test]
+    fn a_reveal_stored_without_extra_still_decodes() {
+        let stored = r#"{"label":"Key","value":"secret","hint":null,"expires_at":null}"#;
+        let reveal: SecretReveal = serde_json::from_str(stored).expect("an older reveal row decodes");
+        assert_eq!(reveal.extra, None);
+    }
+
+    #[test]
+    fn write_refusal_is_the_module_writes_and_the_contributions_readonly() {
+        let action = |id: &str, point: ActionPoint, then: Then| ActionDecl {
+            id: id.to_string(),
+            point,
+            label: id.to_string(),
+            icon: String::new(),
+            order: 0,
+            danger: false,
+            multi: false,
+            min_role: Role::Operator,
+            then,
+            implemented: true,
+            emphasis: Emphasis::Default,
+            trailing_icon: false,
+            when_empty: false,
+            prepare: false,
+        };
+        let link = Then::Link(Link::Page { module: "m".into(), page: "p".into(), params: BTreeMap::new() });
+        let saves = ContributionDecl {
+            id: "saves".into(),
+            point: Point::Page("p".into()),
+            order: 0,
+            title: String::new(),
+            icon: String::new(),
+            min_role: Role::Viewer,
+            cache_ttl_s: None,
+            deadline_ms: 0,
+            readonly: Some("inspection only".into()),
+        };
+        let mut m = Manifest {
+            module: "m".into(),
+            contributions: vec![saves],
+            actions: vec![
+                action("wipe", ActionPoint::PanelTool("saves".into()), Then::Invoke),
+                action("open", ActionPoint::PanelTool("saves".into()), link),
+                action("kick", ActionPoint::PageHead("p".into()), Then::Invoke),
+            ],
+            writes: true,
+            ..Manifest::default()
+        };
+        let on_saves = Some(WriteRefusal { readonly: Some(("saves".into(), "inspection only".into())) });
+        assert_eq!(m.write_refusal("wipe"), on_saves);
+        assert_eq!(m.write_refusal("open"), None, "a link never writes");
+        assert_eq!(m.write_refusal("kick"), None);
+        assert_eq!(m.write_refusal("ghost"), None, "an undeclared action is judged by writes alone");
+        m.writes = false;
+        for id in ["wipe", "kick", "ghost"] {
+            assert_eq!(m.write_refusal(id), Some(WriteRefusal { readonly: None }), "{id}");
+        }
+        assert_eq!(m.write_refusal("open"), None);
     }
 }

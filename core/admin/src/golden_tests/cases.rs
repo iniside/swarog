@@ -789,7 +789,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     push!(plain("menu_row_actions", {
         let row_item = |module: &str, d: &ActionDecl, role: Role| {
             let d = ActionDecl { point: ActionPoint::RowAction("player".to_string()), ..d.clone() };
-            routes::action_item(&operator(role), CSRF, module, true, &d, Some(&row_entity))
+            routes::action_item(&operator(role), CSRF, module, &declaring(&d, true), &d, Some(&row_entity))
         };
         let menu_items = vec![
             row_item("players", &decl("kick", "Kick", "x", Then::Invoke), Role::Admin),
@@ -903,7 +903,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
                 module: MODULE.to_string(),
                 title: "Golden page".to_string(),
                 subtitle: String::new(),
-                head_actions: vec![routes::action_item(&operator(Role::Viewer), CSRF, MODULE, true, &export, None)],
+                head_actions: vec![action(MODULE, &export, Role::Viewer, true)],
                 tiles: vec![point_slot("tile", page_point(), Role::Viewer, true)],
                 rows: render::layout_rows(&layout)
                     .into_iter()
@@ -938,7 +938,14 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
             menu_url: Some("/admin/_menu/player/p-1001".to_string()),
             headers: vec![at("header", Point::EntityHeader("player".to_string()))],
             summaries: vec![at("summary", Point::EntitySummary("player".to_string()))],
-            header_actions: vec![routes::action_item(&operator(Role::Viewer), CSRF, MODULE, true, &kick, Some(&player))],
+            header_actions: vec![routes::action_item(
+                &operator(Role::Viewer),
+                CSRF,
+                MODULE,
+                &declaring(&kick, true),
+                &kick,
+                Some(&player),
+            )],
             tabs: vec![TabView {
                 id: "items".to_string(),
                 label: "Items".to_string(),

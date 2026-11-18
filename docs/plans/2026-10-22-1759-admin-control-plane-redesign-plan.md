@@ -2050,7 +2050,8 @@ The ports:
   Contributes `EntityLabel{character}` (Step 13c Refs seam).
 - **Step 15 — wallet.**
   - Economy page (`pages-platform.js:164-185`; the global ledger is FAKE per R1).
-  - Wallet tab; grant/revoke (REAL).
+  - Wallet tab; grant/revoke (REAL). Writes the Grant/Revoke seg `contract gap` accept
+    entry of ADMIN2-40 (`docs/todo/admin-second-pass.md`).
   - Embers list column (DERIV); tile embers spent (DERIV).
   - Writer.
   - Ledger player column draws accounts' `EntityLabel{player}`; a `[opus]` test-author
@@ -2077,7 +2078,8 @@ The ports:
   - Edit via `cp.invoke` with `expected_revision` = the global revision. The edit form is
     a `Primitive::Form` panel whose edit action has point
     `ActionPoint::PanelForm(<that contribution>)` (Step 8a).
-  - The Revisions timeline is FAKE except for the current value and revision.
+  - The Revisions timeline is FAKE except for the current value and revision. Writes the
+    restore-link `contract gap` accept entry of ADMIN2-39 (`docs/todo/admin-second-pass.md`).
   - Writer.
 - **Step 24 — audit.** Audit log page (`pages-platform.js:112-126`), and the dashboard
   "Recent operator activity" panel. Once every port has landed, admincheck also reports
@@ -2882,9 +2884,16 @@ no fix-on-fix: a finding that needs the mirror back is an owner question.
   - K12: the read-only banner draws `ContributionDecl.readonly` when set. A `writes: false`
     module keeps the template's default text, whose `<b>module</b>` markup a plain-text field
     cannot carry, so that text stays in `primitives.html.tmpl` as the default instead of
-    dying. A declared `readonly` also disables the contribution's write actions:
-    `engine::actions::writes` (the module writes and the contribution an action sits on has
-    no `readonly`) is what `admit` gets, for the drawn controls and for a submit.
+    dying.
+  - Write admission (owner, 2026-11-18, review of 63a10deb): a declared `readonly` gates
+    writes through one controlplane function, `Manifest::write_refusal`, used by
+    `LocalFace::invoke` (refused `forbidden` before the provider runs), the portal's `admit`
+    (drawn controls and submits; the hint is the contribution's declared text) and
+    admincheck (an implemented action it refuses for a `readonly` contribution is a
+    finding). A `Then::Link` action is never a write; `LocalFace::invoke` refuses invoking
+    one as `invalid`, as the portal's submit already did, so a non-writer still never sees an
+    invoke. admincheck also requires an `EntityTabCount` or `EntityTabTile` to name a tab an
+    `EntityTab` of its kind declares.
   - K13: a tab is down when a module contributing an `EntityTab` to it is down
     (`Snapshot::module_ok`); a down tab skips the count slots of down modules, which would
     draw a second dot.
@@ -2905,7 +2914,9 @@ no fix-on-fix: a finding that needs the mirror back is an owner question.
   - K16: `FormSpec.title` titles the modal only. `Field.placeholder` draws on text,
     textarea and ref inputs (a ref falls back to "<kind> id"). `admin.forms` rows written
     before this step lack `Field.mono` and no longer decode; they expire within `FORM_TTL`
-    under the wipe rule.
+    under the wipe rule. `admin.reveals` rows written before it still decode: a missing
+    `SecretReveal.extra` reads as `None` (pinned by a controlplane test), so no stored
+    show-once secret is lost.
   - The accept entries for the restore link (K10) and the Grant/Revoke seg (K16) are written
     by their ports (Steps 23 and 15), since no accept file maps those pages yet; their todo
     items (ADMIN2-39, ADMIN2-40) land now.

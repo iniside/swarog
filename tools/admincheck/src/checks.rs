@@ -15,8 +15,10 @@ pub fn findings(manifests: &[Manifest]) -> Vec<String> {
         unique_ids(m, &mut out);
     }
     entity_kinds(manifests, &mut out);
+    entity_tabs(manifests, &mut out);
     for m in manifests {
         layouts(m, &mut out);
+        readonly_writes(m, &mut out);
         head_actions(m, &mut out);
         nav_entries(m, &mut out);
         panel_actions(m, &mut out);
@@ -106,6 +108,46 @@ fn entity_kinds(manifests: &[Manifest], out: &mut Vec<String>) {
                     m.module, a.id
                 ));
             }
+        }
+    }
+}
+
+/// An `EntityTabCount` or `EntityTabTile` draws only on a tab an `EntityTab` of its kind
+/// declares, in any manifest.
+fn entity_tabs(manifests: &[Manifest], out: &mut Vec<String>) {
+    let declared: BTreeSet<(&str, &str)> = manifests
+        .iter()
+        .flat_map(|m| m.contributions.iter())
+        .filter_map(|c| match &c.point {
+            Point::EntityTab { kind, tab, .. } => Some((kind.as_str(), tab.as_str())),
+            _ => None,
+        })
+        .collect();
+    for m in manifests {
+        for c in &m.contributions {
+            let (kind, tab) = match &c.point {
+                Point::EntityTabCount { kind, tab } | Point::EntityTabTile { kind, tab } => (kind, tab),
+                _ => continue,
+            };
+            if !declared.contains(&(kind.as_str(), tab.as_str())) {
+                out.push(format!(
+                    "{}: contribution {:?} targets tab {tab:?} of entity kind {kind:?}, which no EntityTab declares",
+                    m.module, c.id
+                ));
+            }
+        }
+    }
+}
+
+/// An implemented action that [`Manifest::write_refusal`] refuses for its contribution's
+/// `readonly` could never run.
+fn readonly_writes(m: &Manifest, out: &mut Vec<String>) {
+    for a in m.actions.iter().filter(|a| a.implemented) {
+        if let Some((contribution, _)) = m.write_refusal(&a.id).and_then(|r| r.readonly) {
+            out.push(format!(
+                "{}: implemented action {:?} writes from contribution {contribution:?}, which declares readonly",
+                m.module, a.id
+            ));
         }
     }
 }

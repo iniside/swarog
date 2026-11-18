@@ -1470,6 +1470,8 @@ pub controlplane::Manifest::pages: alloc::vec::Vec<controlplane::PageDecl>
 pub controlplane::Manifest::search: alloc::vec::Vec<controlplane::SearchDecl>
 pub controlplane::Manifest::sections: alloc::vec::Vec<controlplane::NavSection>
 pub controlplane::Manifest::writes: bool
+impl controlplane::Manifest
+pub fn controlplane::Manifest::write_refusal(&self, &str) -> core::option::Option<controlplane::WriteRefusal>
 impl core::clone::Clone for controlplane::Manifest
 pub fn controlplane::Manifest::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Manifest
@@ -2152,6 +2154,24 @@ impl core::marker::Unpin for controlplane::WorkQueue
 impl core::marker::UnsafeUnpin for controlplane::WorkQueue
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::WorkQueue
 impl core::panic::unwind_safe::UnwindSafe for controlplane::WorkQueue
+pub struct controlplane::WriteRefusal
+pub controlplane::WriteRefusal::readonly: core::option::Option<(alloc::string::String, alloc::string::String)>
+impl core::clone::Clone for controlplane::WriteRefusal
+pub fn controlplane::WriteRefusal::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::WriteRefusal
+impl core::cmp::PartialEq for controlplane::WriteRefusal
+pub fn controlplane::WriteRefusal::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::WriteRefusal
+pub fn controlplane::WriteRefusal::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::WriteRefusal
+impl core::marker::Forget for controlplane::WriteRefusal
+impl core::marker::Freeze for controlplane::WriteRefusal
+impl core::marker::Send for controlplane::WriteRefusal
+impl core::marker::Sync for controlplane::WriteRefusal
+impl core::marker::Unpin for controlplane::WriteRefusal
+impl core::marker::UnsafeUnpin for controlplane::WriteRefusal
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::WriteRefusal
+impl core::panic::unwind_safe::UnwindSafe for controlplane::WriteRefusal
 pub const controlplane::DEFAULT_PANEL_DEADLINE_MS: u32
 pub const controlplane::DEFAULT_SEARCH_DEADLINE_MS: u32
 pub const controlplane::MAX_INPUT_VALUE_BYTES: usize

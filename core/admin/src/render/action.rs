@@ -31,7 +31,7 @@ pub(crate) struct ActionItem {
     /// `GET` opens the modal, `POST` invokes.
     pub(crate) url: String,
     pub(crate) enabled: bool,
-    pub(crate) hint: Option<&'static str>,
+    pub(crate) hint: Option<String>,
     /// `invoke`, `form`, `confirm` or `link`.
     pub(crate) then: &'static str,
     pub(crate) href: Option<String>,

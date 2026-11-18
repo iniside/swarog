@@ -930,17 +930,20 @@ fn answer(primitive: Primitive) -> Answer {
     Answer::Body(Box::new(primitive))
 }
 
-/// A provider that records every `PanelQuery` it is asked and answers by contribution id.
+/// A provider that records every `PanelQuery` it is asked and answers by contribution id; it
+/// counts invokes and refuses each.
 struct Recording {
     manifest: Manifest,
     answers: Mutex<BTreeMap<String, Answer>>,
     calls: Mutex<Vec<PanelQuery>>,
+    invokes: AtomicU32,
 }
 
 impl Recording {
     fn new(manifest: Manifest, answers: &[(&str, Answer)]) -> Arc<Recording> {
         let answers = answers.iter().map(|(id, a)| (id.to_string(), a.clone())).collect();
-        Arc::new(Recording { manifest, answers: Mutex::new(answers), calls: Mutex::new(Vec::new()) })
+        let (answers, calls, invokes) = (Mutex::new(answers), Mutex::new(Vec::new()), AtomicU32::new(0));
+        Arc::new(Recording { manifest, answers, calls, invokes })
     }
 
     fn answer(&self, contribution: &str, answer: Answer) {
@@ -972,6 +975,7 @@ impl controlplane::Provider for Recording {
     }
 
     async fn invoke(&self, _req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
+        self.invokes.fetch_add(1, Ordering::SeqCst);
         Err(opsapi::Error::forbidden("a recording provider writes nothing"))
     }
 }
@@ -1718,7 +1722,9 @@ async fn a_tab_of_a_down_module_draws_the_error_dot() {
     let cookie = operator_cookie(&pool, &user).await;
     let accounts = player_owner(module("accounts", vec![player_tab("profile", "profile")], Vec::new(), true));
     let accounts = flaky(vec![Recording::new(accounts, &[])]);
-    let wallet = module("wallet", vec![player_tab("balances", "wallet")], Vec::new(), true);
+    let count = Point::EntityTabCount { kind: "player".to_string(), tab: "wallet".to_string() };
+    let wallet_tab = vec![player_tab("balances", "wallet"), contribution("balance-count", count, Role::Viewer)];
+    let wallet = module("wallet", wallet_tab, Vec::new(), true);
     let wallet = flaky(vec![Recording::new(wallet, &[])]);
     let engine = Arc::new(Engine::new());
     let sources = [("accounts-svc", accounts.clone()), ("wallet-svc", wallet.clone())]
@@ -1734,6 +1740,9 @@ async fn a_tab_of_a_down_module_draws_the_error_dot() {
     let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/e/player/p-1").await;
     assert_eq!(status, StatusCode::OK, "{raw}");
     let dot = r#"<span class="dot err" title="module unavailable"></span>"#;
+    assert_eq!(tab_button(&raw, "wallet").matches(r#"class="dot err""#).count(), 1, "{raw}");
+    let again = "a down tab loads no count that would dot it again";
+    assert!(!tab_button(&raw, "wallet").contains("balance-count"), "{again}: {raw}");
     assert!(tab_button(&raw, "wallet").contains(dot), "{raw}");
     assert!(!tab_button(&raw, "profile").contains(dot), "{raw}");
 
@@ -1772,4 +1781,84 @@ async fn a_readonly_decl_forces_the_readonly_state_with_its_text() {
     assert!(raw.contains(r#"data-state="ok""#), "{raw}");
 
     cleanup_user(&pool, &user).await;
+}
+
+async fn portal_post(
+    engine: &Arc<Engine>,
+    st: &Arc<AdminState>,
+    cookie: &str,
+    uri: &str,
+    body: &str,
+) -> (StatusCode, String) {
+    let portal = crate::routes::Portal { st: st.clone(), engine: engine.clone() };
+    let req = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("cookie", cookie)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body.to_string()))
+        .unwrap();
+    let resp = crate::routes::router(portal).oneshot(req).await.unwrap();
+    let status = resp.status();
+    (status, body_string(resp).await)
+}
+
+/// A tool on a contribution declaring `readonly` draws disabled with the declared text, and
+/// its POST is refused with that text before the provider is called, in a module that writes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_tool_on_a_readonly_contribution_is_disabled_and_its_post_refused() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-readonly-tool");
+    let cookie = operator_cookie(&pool, &user).await;
+    let reason = "Read-only: storage exposes saves for inspection only.";
+    let saves = ContributionDecl { readonly: Some(reason.to_string()), ..player_tab("saves", "saves") };
+    let wipe = action_decl("wipe", ActionPoint::PanelTool("saves".to_string()), true);
+    let storage = player_owner(module("storage", vec![saves], vec![wipe], true));
+    let items = vec![("Slots".to_string(), text("3"))];
+    let props = Primitive::PropertyList(PropertyList { items, columns: 1, item: None, code: None });
+    let storage = Recording::new(storage, &[("saves", answer(props))]);
+    let engine = Arc::new(sourced(vec![storage.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let (_, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/storage/saves?entity=player:p-1").await;
+    assert!(raw.contains(&format!(r#"disabled title="{reason}""#)), "{raw}");
+    let (status, raw) = portal_post(&engine, &st, &cookie, "/admin/_action/storage/wipe", "_csrf=csrf").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{raw}");
+    assert!(raw.contains(reason), "{raw}");
+    assert_eq!(storage.invokes.load(Ordering::SeqCst), 0, "a refused write never reaches the provider");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// `LocalFace::invoke` refuses an action on a contribution declaring `readonly` before its
+/// provider runs, as it refuses one of a module that does not write; another action of the
+/// same module reaches the provider.
+#[tokio::test]
+async fn the_local_face_refuses_a_write_on_a_readonly_contribution() {
+    use controlplane::ControlPlane as _;
+    let saves = ContributionDecl { readonly: Some("inspection only".to_string()), ..player_tab("saves", "saves") };
+    let actions = vec![
+        action_decl("wipe", ActionPoint::PanelTool("saves".to_string()), true),
+        action_decl("kick", ActionPoint::RowAction("player".to_string()), true),
+    ];
+    let storage = Recording::new(module("storage", vec![saves], actions, true), &[]);
+    let face = controlplane::LocalFace::new(vec![storage.clone() as Arc<dyn controlplane::Provider>]);
+    let call = |action: &str| InvokeCall {
+        module: "storage".to_string(),
+        action: action.to_string(),
+        entity: None,
+        input: BTreeMap::new(),
+        expected_revision: None,
+        reason: None,
+        operator: "ops".to_string(),
+        item: None,
+        request_id: None,
+    };
+    let refused = face.invoke(call("wipe")).await.expect_err("a read-only contribution's action is refused");
+    assert_eq!(refused.status, opsapi::Status::Forbidden, "{refused}");
+    assert!(refused.to_string().contains(r#"contribution "saves""#), "{refused}");
+    assert_eq!(storage.invokes.load(Ordering::SeqCst), 0);
+    let _ = face.invoke(call("kick")).await;
+    let off = "an action off the read-only contribution reaches the provider";
+    assert_eq!(storage.invokes.load(Ordering::SeqCst), 1, "{off}");
 }

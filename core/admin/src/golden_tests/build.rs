@@ -94,7 +94,12 @@ pub(super) fn operator(role: Role) -> Operator {
 /// `d` as `routes::action_item` builds it for an operator of `role` on a module that `writes`,
 /// unbound, as `routes::panel_tools` hands it to a panel.
 pub(super) fn action(module: &str, d: &ActionDecl, role: Role, writes: bool) -> ActionItem {
-    routes::action_item(&operator(role), CSRF, module, writes, d, None)
+    routes::action_item(&operator(role), CSRF, module, &declaring(d, writes), d, None)
+}
+
+/// A manifest declaring only `d`, writing when `writes`.
+pub(super) fn declaring(d: &ActionDecl, writes: bool) -> Manifest {
+    Manifest { writes, actions: vec![d.clone()], ..Manifest::default() }
 }
 
 pub(super) fn tool(d: &ActionDecl) -> ActionItem {
