@@ -26,7 +26,7 @@ context, and do not restate them, apply them:**
 
 **Rust navigation chain (does not inherit — use it; name the method you used):**
 1. LSP / rust-analyzer — definition, references, implementations, trait impls, call hierarchy, workspace/document symbols. Query the NAME position from `workspaceSymbol` or the Read line, not `documentSymbol`'s range-start line, where an empty result is not absence.
-2. Targeted read of a known file (read whole files, or several in one turn, rather than many `sed -n` slices). For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch `code-scout` (subagent_type "code-scout", model "sonnet", or "haiku" for pure listing, with explicit `model:` and effort "medium"), one question per dispatch.
+2. Targeted read of a known file (read whole files, or several in one turn, rather than many `sed -n` slices). For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch `code-scout` (subagent_type "code-scout", model "haiku" by default, "sonnet" for multi-hop questions that need interpretation (split-topology wiring, event flows across modules, macro-generated code paths), with explicit `model:` and effort "medium"), one question per dispatch.
 3. Grep tool — last, and a labelled lower bound, never the answer.
 
 **Before ANY `cargo test` / `devctl up` / `verifyctl`, follow the `safe-verification`

@@ -31,8 +31,9 @@ about its own function. If a document and the code disagree, the code wins and
 the document changes.
 
 For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch
-`code-scout` (subagent_type "code-scout", model "sonnet", or "haiku" for pure
-listing, with explicit `model:` and effort "medium"); read a known file directly.
+`code-scout` (subagent_type "code-scout", model "haiku" by default, "sonnet" for
+multi-hop questions that need interpretation (split-topology wiring, event flows across modules,
+macro-generated code paths), with explicit `model:` and effort "medium"); read a known file directly.
 
 ## Read before writing — do NOT expect these inherited
 

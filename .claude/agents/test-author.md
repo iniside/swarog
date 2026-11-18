@@ -22,7 +22,7 @@ behaviour and the **previously-wrong branch** each test must exercise, and the
 **at-risk topology** (monolith vs split). If any of those is missing, ask before
 writing — a test that doesn't run the once-wrong branch is worthless.
 
-**Navigate Rust with the LSP tool first** (go-to-definition, find-references, implementations, workspace/document symbols; query the NAME position from `workspaceSymbol` or the Read line, not `documentSymbol`'s range-start line, where an empty result is not absence), then a targeted read of whole files (not many `sed -n` slices), with Grep last and labelled a lower bound. For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch `code-scout` (subagent_type "code-scout", model "sonnet", or "haiku" for pure listing, with explicit `model:` and effort "medium"); read a known file directly.
+**Navigate Rust with the LSP tool first** (go-to-definition, find-references, implementations, workspace/document symbols; query the NAME position from `workspaceSymbol` or the Read line, not `documentSymbol`'s range-start line, where an empty result is not absence), then a targeted read of whole files (not many `sed -n` slices), with Grep last and labelled a lower bound. For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch `code-scout` (subagent_type "code-scout", model "haiku" by default, "sonnet" for multi-hop questions that need interpretation (split-topology wiring, event flows across modules, macro-generated code paths), with explicit `model:` and effort "medium"); read a known file directly.
 
 **Read before writing — these are your rules; do NOT expect them inherited:**
 - `.agents/shared/gamebackend.md` → **Hard constraints (do not violate without
