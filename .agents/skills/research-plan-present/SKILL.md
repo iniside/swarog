@@ -13,8 +13,7 @@ description: >-
 Use the repository's canonical policy rather than restating it in the prompt.
 
 1. Read `AGENTS.md` and the active adapter. For research, load
-   `.agents/shared/research-navigation.md` and `docs/reference/research-mode.md`.
-   Load `docs/reference/subagent-dispatch.md` only when dispatching.
+   `.agents/shared/research-navigation.md`.
 2. Preserve the owner's outcome and exclusions. State each unresolved question,
    give it one owner, and reuse sufficient completed research. A research
    handoff includes verified source anchors, conclusions, and open questions.
@@ -24,16 +23,13 @@ Use the repository's canonical policy rather than restating it in the prompt.
    uncertainty. Map overlapping seams (module registry, service registry, event
    bus, contribution slots) before proposing a new or replacement system, with
    an explicit "why not extend / depend on X".
-3. Before writing the plan, load `.agents/shared/planning-dispatch.md` and
-   `docs/reference/plan-writing-workflow.md`. Close before approval only unknowns
-   that can affect scope, architecture, compatibility, topology (monolith vs
+3. Before writing the plan, load `.agents/shared/planning-dispatch.md`. Close
+   before approval only unknowns that can affect scope, architecture, compatibility, topology (monolith vs
    split), lifecycle, or feasibility. Write ordered steps covering files, public
    contracts, behavior, ownership, dependencies, and validation; leave private
-   implementation details to the implementer. Tests are their own later
-   `[test-author]` step, never bundled into an implementation step.
-4. Load `docs/reference/implementation-mode.md` only when choosing and adding
-   implementation lanes. Present the plan and wait for explicit approval before
-   editing. After approval, use the chosen lane for each whole step, pass subagent
+   implementation details to the implementer. Tests go in the implementation
+   step, except the `[test-author]` cases in `planning-dispatch.md`.
+4. Present the plan and wait for explicit approval before editing. After approval, use the chosen lane for each whole step, pass subagent
    effort via the Agent `effort:` parameter, and follow the canonical
    commit/review contract. Do not reopen an approved lane unless scope or
    constraints changed; ask the owner first if it must.

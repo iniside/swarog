@@ -407,8 +407,7 @@ ported to Rust in July 2026. The earlier implementations remain under
 ## Development with AI agents
 
 Swarog is developed by one human maintainer directing AI coding agents. Most of
-the code, tests, and documentation are written by agents running in Claude Code;
-runtime adapters under `.agents/adapters/` also cover Codex, Cursor, and Grok. The
+the code, tests, and documentation are written by agents running in Claude Code. The
 maintainer owns the architecture, approves plans, and decides what lands. AI is
 used only to build the project: the backend itself contains no language-model
 integration and makes no calls to AI services at runtime.
@@ -425,11 +424,11 @@ The agents follow written instructions kept in the repository:
    [.claude/agents/](.claude/agents/): `core-implementer` for correctness-critical
    and cross-seam work, `mockup-implementer` for admin UI built against design
    mockups, and lower-cost models for mechanical changes.
-3. **Test.** Tests are a separate step after the implementation lands, written by
-   `test-author` and required to exercise the branch that was previously wrong,
-   on the topology at risk.
-4. **Review.** One adversarial review by `core-reviewer`, in a separate context,
-   that defaults to rejection and attacks the diff by failure class.
+3. **Test.** The implementer writes the tests with the code, required to exercise
+   the branch that was previously wrong, on the topology at risk; verify gates
+   and splitproof assertions are a separate step for `test-author`.
+4. **Review.** An adversarial review of each code change by `core-reviewer`, in a
+   separate context, that attacks the diff by failure class.
    `proof-auditor` is added when the change touches a verification gate.
 5. **Document.** `docs-writer` corrects prose against the landed code, deleting
    claims the code does not support.

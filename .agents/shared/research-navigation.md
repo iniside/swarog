@@ -21,9 +21,10 @@ wide API-surface map, an all-callers sweep, a data-flow trace across modules,
 locating wiring, surveying overlap. Not for a lookup that can just be run:
 pick the method, run it, and say which one produced the answer.
 
-State the unresolved question and give it one owner. Reuse finished research
-unless it is missing, stale, contradicted, or insufficient. A handoff provides
-verified source anchors, conclusions, and open questions.
+State the unresolved question and give it one owner; the main agent does not
+repeat a delegated search. Reuse finished research unless it is missing,
+stale, contradicted, or insufficient. A handoff provides verified source
+anchors, conclusions, and open questions.
 
 Stop when the evidence supports the decision or change. Expand only for a
 concrete dependency, contradiction, or failing case; if the available methods
@@ -33,8 +34,10 @@ Never default to grep. One pass misses trait implementations, macro-generated
 RPC glue, typed event wiring, and shared registry keys / contribution slots.
 Every grep sweep is a labelled lower bound, never the API.
 
-Method menu: `docs/reference/research-mode.md`. Agent-call invariants:
-`docs/reference/subagent-dispatch.md`. Paste the navigation chain into every
+Research subagents are read-only, do not commit, and are synthesized in the
+main agent. Listing-only research runs on the cheapest model; escalating a
+wide fan-out to the top tier multiplies its cost by its width, so name the
+reason or do not escalate. Paste the navigation chain into every
 code-touching subagent's prompt and require it to report the method it used —
 it does not inherit.
 
@@ -45,8 +48,10 @@ Fallback chain, in order — never skip to grep because it feels faster:
 1. **LSP / rust-analyzer** — definition, references, trait implementations,
    call hierarchy, inferred type. Preferred for "where is X defined / who
    calls Y / what implements this trait". Start with one targeted search
-   result to establish a file+line+column anchor, then query rust-analyzer.
-   Empty results while rust-analyzer is still indexing are not absence.
+   result to establish a file+line+column anchor (the NAME position from
+   `workspaceSymbol` or the read line, not `documentSymbol`'s range start),
+   then query rust-analyzer. Empty results while rust-analyzer is still
+   indexing, or at a range-start line, are not absence.
 2. **Targeted read** — small surface, one file end-to-end.
 3. **Research subagent** — for broad research, fan out on distinct
    non-overlapping angles (API surface / callers+consumers / event
@@ -61,13 +66,29 @@ Fallback chain, in order — never skip to grep because it feels faster:
 4. **Grep/Glob** — only when nothing else fits, and a labelled lower bound.
    Once grep locates a symbol, re-escalate with the now-known file+symbol.
 
-Searches and file views follow the **Search budget** in
-`docs/reference/research-mode.md`: scoped, list first, narrow views, no
-repeated views.
-
 Never hand symbol navigation to a grep-sweeping agent, and never pre-authorize
 grep in a handoff. Dispatch one subagent per independent question; there is no
 fixed count.
+
+## Search budget - RULE
+
+Every search result and file view stays in the agent's context and is re-read
+on every later turn, so its cost grows with the length of the task.
+
+- Non-Rust text and strings: grep scoped to a folder. List first (`rg -l` /
+  `rg -c`), then read matches with a head limit and at most `-C 2`. A
+  repo-wide check for a deleted symbol or plain text (LSP cannot find a
+  deleted symbol) is a Bash `rg` carrying `# nav-ok`. Use `rg`, not a
+  recursive `grep -r`.
+- File views: about 100 lines around the anchor; a whole file only when the
+  step changes most of it. Never view a range already in context unless the
+  file was edited since; no repeated `sed -n` / `head` / `tail` slices of one
+  file.
+- A search that takes more than one or two lookups goes to the search lane.
+
+On Claude, `.claude/hooks/scout_nav_guard.py` enforces this for
+`core-implementer`, `test-author` and `docs-writer`, and
+`.claude/hooks/grep_sweep_guard.py` blocks recursive shell greps.
 
 ## Research Never Overrules a Decision - MANDATORY
 

@@ -11,15 +11,17 @@ You write the verify-gate tests, splitproof assertions or new test harness for
 ONE already-implemented, already-compiling unit; ordinary tests are written by
 the implementer in its own step. The production code exists and builds before
 you start. Your tier follows `.agents/shared/planning-dispatch.md`
-`[test-author]`. Your dispatched `model:` and effort are NOT
-inherited — work at the level you were given.
+`[test-author]`.
 
 **Your input names:** the landed commit/diff (read it — it is the spec), the
 behaviour and the **previously-wrong branch** each test must exercise, and the
 **at-risk topology** (monolith vs split). If any of those is missing, ask before
 writing — a test that doesn't run the once-wrong branch is worthless.
 
-**Navigate Rust with the LSP tool first** (go-to-definition, find-references, implementations, workspace/document symbols; query the NAME position from `workspaceSymbol` or the Read line, not `documentSymbol`'s range-start line, where an empty result is not absence), then a targeted read of a known file (once, offset/limit around the anchor; not repeated `sed -n` slices), with Grep last and labelled a lower bound (budget and hook: `docs/reference/research-mode.md` **Search budget**; a plain-text or deleted-symbol Bash `rg`/`grep` carries `# nav-ok`). For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch `code-scout` (subagent_type "code-scout", model "haiku" by default, "sonnet" for multi-hop questions that need interpretation (split-topology wiring, event flows across modules, macro-generated code paths), with explicit `model:` and effort "medium"); read a known file directly.
+**Navigate** per `.agents/shared/research-navigation.md` **Navigation** and **Search
+budget**. For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch
+`code-scout` (model per `.agents/adapters/claude.md` **Dispatch Mapping**); read a known
+file directly.
 
 **Read before writing — these are your rules; do NOT expect them inherited:**
 - `.agents/shared/gamebackend.md` → **Hard constraints (do not violate without
@@ -74,8 +76,8 @@ The test diff, plus a note naming: **(a)** each test → the exact branch/line i
 exercises and the assertion that fails if that line regresses; **(b)** the
 topology each test runs on (monolith unit vs splitproof) and why it's sufficient;
 **(c)** any behaviour you could NOT cover and why (listed under **Leftovers for owner**,
-not silently skipped; never add TODO items yourself, and before committing move every
-`docs/todo/` item your tests closed to the topic's done file in the same commit). Run the tests you wrote via `safe-verification` and **report
+not silently skipped; format and TODO closing per `.agents/shared/core-rules.md`
+**Plans And Status Docs**). Run the tests you wrote via `safe-verification` and **report
 pass/fail counts + names — do not enter a fix-everything-red loop**. Commit per
 Conventional Commits (`test(<scope>): …`) with the `Co-Authored-By` trailer for
 your dispatched model (`Kind: review-fix` in the same trailer paragraph when fixing review

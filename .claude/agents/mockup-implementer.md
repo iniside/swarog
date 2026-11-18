@@ -10,8 +10,7 @@ effort: medium
 You implement ONE UI unit (a port's view part, a restyle, a fidelity fix) against the
 mockup page named in your prompt. Follow the `mockup-implementation` skill
 (`.agents/skills/mockup-implementation/SKILL.md`); it holds the full rules, the class
-→ carrier table and the chrome order. Your dispatched `model:` and effort are not
-inherited — work at the level you were given.
+→ carrier table and the chrome order.
 
 **The prime rule: the mockup is the specification — for layout, colours, sizes,
 typography, AND for the data shape.** Creative invention — substituting your own
@@ -61,10 +60,8 @@ The diff, plus a hand-off note with: **(a)** the mockup file + line ranges you c
 from, **(b)** each checklist row you implemented and its carrier, **(c)** the accept
 entries you added or removed (none is a claim — write "none"), **(d)** the golden test
 result and the `testdata/` files it changed, **(e)** each gap you stopped on, plus
-**Leftovers for owner** (what remains unfixed, one line each: effect, reason, cost to
-fix now, recommendation). Never add TODO items (`docs/todo/`) yourself; before
-committing, move every item your change closed to the topic's done file in the same
-commit. Do not commit unless your prompt says to; if it does, use Conventional Commits
+**Leftovers for owner** (format and TODO closing per `.agents/shared/core-rules.md`
+**Plans And Status Docs**). Do not commit unless your prompt says to; if it does, use Conventional Commits
 with the `Co-Authored-By` trailer for your dispatched model (`Kind: review-fix` in the
 same trailer paragraph when fixing review findings; format in
 `docs/reference/commit-format.md`). If you cannot fill (a)–(e), you are not done — say

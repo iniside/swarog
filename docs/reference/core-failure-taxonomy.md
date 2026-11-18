@@ -287,8 +287,7 @@ whose only reason to exist is one of those additions. Feasibility, reuse,
 robustness, and a detailed plan do not authorize the scope.
 
 **Authority.** `.agents/shared/planning-dispatch.md` → **Plan Writing
-Workflow** step 0 and **Adversarial Diff Review**;
-`docs/reference/plan-writing-workflow.md`; the owner's original request.
+Workflow** step 0 and **Adversarial Diff Review**; the owner's original request.
 
 **Verdict.** If the fix exists only because the task introduced an unrequested
 mechanism, return `REJECT — scope loop`: remove it or return to the last
@@ -303,7 +302,7 @@ Ported from the ArcGame workflow (2026-10-21), not mined from a swarog commit.
 commit corrupts the audit trail, not just etiquette.
 
 **Attack.** An Agent call without an explicit `model:`; a plan step whose lane
-tag does not match the work (tests outside `[test-author]`, documentation
+tag does not match the work (gate tests or splitproof assertions outside `[test-author]`, documentation
 prose outside `[docs]` in a planned docs step, an `[inline]` change off the threshold list); a lane
 silently flipped mid-rollout; a `Co-Authored-By` trailer naming the harness
 default instead of the executing model; many tasks batched into one commit; a
@@ -314,7 +313,6 @@ one grep pass and reported as the API.
 **Authority.** `.agents/shared/planning-dispatch.md` → **Implementation Mode**;
 `.agents/shared/core-rules.md` → **Commit After Every Task**, **Commit Message
 Format**; `.agents/shared/research-navigation.md` → **Research / Search Mode**;
-`docs/reference/subagent-dispatch.md`, `docs/reference/implementation-mode.md`,
 `docs/reference/commit-format.md`.
 
 ---

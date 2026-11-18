@@ -5,7 +5,7 @@ Start with the repository-level documents:
 - [README](../README.md) — architecture overview and current run/verify commands.
 - [AGENTS](../AGENTS.md) — universal entry and action router: which `.agents/`
   authorities to load before each action.
-- [CLAUDE](../CLAUDE.md) — anchor index over `.agents/` that imports `AGENTS.md`;
+- [CLAUDE](../CLAUDE.md) — short preamble that imports `AGENTS.md`;
   Claude runtime mechanics live in `.agents/adapters/claude.md`.
   Cursor ignores this file via `.cursorignore`.
 
@@ -18,9 +18,6 @@ Start with the repository-level documents:
 - [Platform notes](reference/platform-notes.md) — per-OS command spellings and
   where rollouts can actually run
 - [Commit format](reference/commit-format.md)
-- [Research mode](reference/research-mode.md),
-  [implementation mode](reference/implementation-mode.md), and
-  [plan-writing workflow](reference/plan-writing-workflow.md)
 
 Committed public-API snapshots and contract golden files under `reference/` are
 machine-checked baselines, not narrative guidance.

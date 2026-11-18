@@ -17,11 +17,14 @@ small":
    an explicit "why not extend / depend on X". Without that the plan is
    incomplete. Before approval, close only questions that change scope,
    architecture, or feasibility; record the rest for the implementer. Fan-out
-   follows `docs/reference/research-mode.md` (one owner per question, no
-   fixed count). Pass an explicit model/tool choice from the active adapter.
-2. Research three non-overlapping angles: API surface, API usages, and
-   patterns. Synthesize in the main agent — never write off one subagent;
-   a search-lane answer is a lead (`research-navigation.md` **Navigation**).
+   follows `research-navigation.md` **Research / Search Mode**.
+2. Research three non-overlapping angles: API surface (public signatures,
+   `lifecycle::Module` methods, contract traits, `bus::define` descriptors),
+   API usages (who constructs and consumes, `registry::require` callers,
+   `on_tx` subscribers, slot contributors), and patterns (how existing
+   modules register, migrate, emit/subscribe, contribute admin). Synthesize
+   in the main agent — never write off one subagent; a search-lane answer is
+   a lead (`research-navigation.md` **Navigation**).
 3. Write concrete specifics: exact files, exact signatures, exact API calls,
    sequencing. Banned phrases ("figure out as we go", "TBD", "investigate
    during implementation", "may need to", "something like") mean a research
@@ -29,9 +32,19 @@ small":
 4. Structure as an ordered `Step 1 → Step 2 → …` sequence, not a catalog. Each
    step states **(a)** what is touched (exact files/symbols), **(b)** why now /
    order — the dependency forcing it before the next, **(c)** how —
-   non-mechanical moves spelled out, **(d)** dispatch tag. A catalog that
+   non-mechanical moves spelled out (`requires()`, `registry::provide` /
+   `registry::require` wiring, edge glue, registration in `cmd/server` and
+   the service composition root), **(d)** dispatch tag. A catalog that
    leaves order/topology/per-step actions to "figure as you go" is banned;
    steps need not each compile, but every step must be written out.
+
+   **Step size.** One step is one mechanism in one module or one consumer
+   group, sized so one implementer finishes it in about 60 tool calls:
+   roughly eight files, or one subsystem port. About 100 calls is where the
+   implementer stops and hands off. A larger unit is split into ordered
+   steps when the plan is written, each still a whole slice of the feature
+   (never split to get under the inline threshold or to keep an old path
+   alive).
 
    **Tests.** The implementer writes the tests in the same step as the code,
    to the bar "revert the fix and the test must fail". A separate, later
@@ -43,43 +56,24 @@ small":
 5. Dispatch `subagent_type: "core-reviewer"` — that field is written first,
    before `description` and before the prompt. Never a generic implementer
    or explore/plan type. Do not hand-author a "grumpy senior engineer"
-   persona. Effort is the Agent `effort:` parameter; its value follows
-   `.agents/shared/core-rules.md` **Agent Effort**. A plan gets one review,
-   before approval. It checks scope substitution first, rejects only with
-   evidence, and lists unverified concerns separately. It returns a punch
-   list, never a rewrite. Address it before showing the user, or note
-   deferrals with rationale.
-
-Full detail: `docs/reference/plan-writing-workflow.md`.
+   persona. A plan gets one review, before approval. It checks scope
+   substitution first, then hunts logical holes, missing pieces (a module's
+   `migrate`, a `requires()` that does not match the real synchronous
+   dependency, an event mutated instead of evolved additively, an import of
+   another module's implementation crate, a cross-module foreign key),
+   ambiguity and unstated assumptions. It rejects only with evidence, lists
+   unverified concerns separately, and returns a punch list, never a
+   rewrite. Address it before showing the user, or note deferrals with
+   rationale.
 
 ## Implementation Mode - MANDATORY
 
-Dispatch is decided per plan step, not per session (set at Plan Writing 4d).
-Tags describe capability and cost; runtime adapters map them to concrete
-tools/models.
+Dispatch is decided per plan step (Plan Writing 4d), not per session. Tags
+describe capability and cost; `.agents/adapters/claude.md` maps them to
+agents and models. Claude plans may write `[opus]` / `[fable]` for
+`[independent]` and `[sonnet]` for `[mechanical]`; do not ban `[fable]`.
 
-Shared tags:
-
-| Tag | Meaning |
-|---|---|
-| `[inline]` | Main agent. Closed dispatch-threshold list only, or a typo/compile fix in a file this turn already has open. |
-| `[independent]` | Top-tier separate context (`core-implementer`; visual/UI uses `mockup-implementer`). |
-| `[mechanical]` | Cheap implementation. Visual/UI never this, except a port's view part (below). |
-| `[test-author]` | Verify gates, splitproof assertions, new test harnesses; always a later step. |
-| `[docs]` | `docs-writer`. Documentation prose in a planned docs step; a standalone comment edit stays `[inline]`. Runs last, against landed code. |
-| `[review]` | `core-reviewer` (read-only). |
-
-Synonym table (adapters translate; new non-Claude plans write the shared
-tags; Claude plans may write the left-hand tags):
-
-| Written tag | Shared lane |
-|---|---|
-| `[opus]` / `[fable]` | `[independent]` |
-| `[sonnet]` | `[mechanical]` |
-
-Do not ban `[fable]`.
-
-- `[inline]` is the exception, not the default. Two cases only: the closed
+- `[inline]` — the main agent; the exception, not the default. Two cases only: the closed
   below-threshold list, and a compile/typo fix inside a file this turn's
   approved step already has the main agent editing. Never `[inline]`, at any
   line count: a new function / type / signature change, a control-flow or
@@ -132,14 +126,27 @@ already decided each item, so there is no review round). That list is closed —
 it is not a size rule. A change that is not on it goes to a subagent lane however
 small it looks.
 
-Every code-writing subagent call carries an explicit model/tool decision from
-the active adapter. Do not rely on inheritance. After a multi-subagent
-rollout, audit commit trailers against each step's lane.
+Every Agent call passes an explicit model from the adapter; nothing
+inherits. Tags are approved with the plan. Ask only for untagged/ad-hoc
+work; an authorized lane is not reopened. Mid-rollout, never flip a step's
+lane tag silently — ask the owner first. Effort is the Agent `effort:`
+parameter, its value per `core-rules.md` **Agent Effort**; prompt wording
+does not set it. Commit after each task (subagents may commit their own).
 
-Tags are approved with the plan. Ask only for untagged/ad-hoc work; an
-authorized lane is not reopened. Effort is the Agent `effort:` parameter,
-its value per `core-rules.md` **Agent Effort**; prompt wording does not set it. Commit after each task
-(subagents may commit their own). Mid-rollout, never flip a step's lane tag silently — ask the owner first.
+**Prompts and hand-offs.** A subagent starts from a fresh context: give it
+the task facts and source anchors, not the conversation. A prompt states the
+goal, authority, owned files, verification and commit boundary, plus the
+navigation chain for code-touching work (`research-navigation.md`
+**Navigation**). A hand-off states the outcome, verified anchors, what was
+and was not validated, open questions, and **Leftovers for owner** (format in
+`core-rules.md` **Plans And Status Docs**). A subagent's commit trailer names
+the executing model (adapter **Commit Trailers**); after a multi-subagent
+rollout, audit the trailers against each step's lane.
+
+**Step parts.** An implementer that returns a part hand-off
+(`.claude/agents/core-implementer.md` **Long steps**) is followed by a fresh
+one given the step text and that hand-off. A part gets no review of its own;
+the review runs on the step's cumulative diff once the step is done.
 
 **Review does not gate the next task — run them in parallel when the tasks
 are independent.** Every reviewed task still gets its `core-reviewer` pass, but that
@@ -153,9 +160,6 @@ the sole hazard is two writers in one file.
 When a parallel review returns a punch list: fix it in its own commit carrying `Kind: review-fix`. If a
 finding touches a file the in-flight task is editing, wait for that task to
 land, then fix — never edit a file a live subagent holds.
-
-Details: `docs/reference/implementation-mode.md` and
-`docs/reference/subagent-dispatch.md`.
 
 ## Adversarial Diff Review - MANDATORY
 

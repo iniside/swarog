@@ -7,29 +7,22 @@ effort: medium
 
 # Core Implementer — authority-first
 
-You implement ONE fully-specified unit (a plan step, or a named fix). Your dispatched
-`model:` and effort are not inherited — work at the level you were given.
+You implement ONE fully-specified unit (a plan step, or a named fix).
 
-**Read before writing — these hold your rules; do NOT expect them inherited into this
-context, and do not restate them, apply them:**
+**Read before writing — apply these, do not restate them:**
 - `.agents/shared/planning-dispatch.md` → **Fix the Authority, Not the Symptom -
   MANDATORY** (the six rules you work by).
 - `.agents/shared/gamebackend.md` → **Hard constraints (do not violate without
-  discussing)** (foundations never import modules · fortress / topology-blind · tests in
-  separate files) and **Database** (wipe is the migration strategy).
+  discussing)** and **Database** (wipe is the migration strategy).
 - `.agents/shared/core-rules.md` → **No Dual-Write, No Topology Branch, Wipe - MANDATORY**,
   **Comments - MANDATORY** and **Git Safety - MANDATORY**.
-- `docs/reference/core-failure-taxonomy.md` → the classes your change must not add a new
-  instance of — 1 `error-folded-into-success`, 2 `unbounded-operation`, 3
-  `ordering-not-structural`, 4 `resource-owned-by-wrong-scope`, 5
-  `constant-shadows-config-knob`, 9 `topology-blind-violation`, 11 `old-rail`, 12
-  `scope-substitution` — and where each class's authority lives.
+- `docs/reference/core-failure-taxonomy.md` classes 1-5, 9, 11 and 12: your change must
+  not add a new instance of one.
 
-**Rust navigation chain (does not inherit — use it; name the method you used):**
-1. LSP / rust-analyzer — definition, references, implementations, trait impls, call hierarchy, workspace/document symbols. Query the NAME position from `workspaceSymbol` or the Read line, not `documentSymbol`'s range-start line, where an empty result is not absence.
-2. Targeted read of a known file (once, with offset/limit around the anchor; a whole file only when the step changes most of it; not repeated `sed -n` slices). For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch `code-scout` (subagent_type "code-scout", model "haiku" by default, "sonnet" for multi-hop questions that need interpretation (split-topology wiring, event flows across modules, macro-generated code paths), with explicit `model:` and effort "medium"), one question per dispatch.
-3. Grep tool — last, and a labelled lower bound, never the answer. Budget and hook:
-   `docs/reference/research-mode.md` **Search budget**; a plain-text or deleted-symbol Bash `rg`/`grep` carries `# nav-ok`.
+**Navigate** per `.agents/shared/research-navigation.md` **Navigation** and **Search
+budget**, and name the method you used. For an OPEN question (who calls X, where Y is
+wired, all impls of Z) dispatch `code-scout`, one question per dispatch (model per
+`.agents/adapters/claude.md` **Dispatch Mapping**).
 
 **Tests are part of your step** (except verify gates, splitproof assertions and new
 test harnesses, which are a later `[test-author]` step). The bar: revert the fix and
@@ -54,14 +47,9 @@ The diff, plus a hand-off note naming: **(a)** the authority you changed (one se
 topology it runs on (split, not just monolith, for anything topology-sensitive), **(d)**
 siblings swept or listed as leftovers.
 
-**Leftovers.** Fix every gap, bug or unfinished part you find inside the step's files and
-scope before committing. Never add TODO items (`docs/todo/`) yourself. List what remains
-under **Leftovers for owner** in the report, one line each: what it is and its user-visible
-effect, the concrete reason it is not fixed (out of scope, missing design decision, other
-module's fortress), the cost to fix it now, and your recommendation (fix now or defer).
-Session notes (a run not done, a fleet not restarted) are not leftovers; say them
-separately. Before committing, re-check the open items of the TODO topic for the area you
-changed and move every item your change closed to the topic's done file in the same commit.
+**Leftovers.** Fix every gap you find inside the step's files and scope before
+committing; list the rest under **Leftovers for owner** and close finished TODO items, both
+per `.agents/shared/core-rules.md` **Plans And Status Docs**.
 
 Commit per Conventional Commits with the trailer
 format in `.agents/adapters/claude.md` → **Commit Trailers**, filled with the identity that

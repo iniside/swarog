@@ -1,20 +1,8 @@
 # Claude Adapter
 
-Use this adapter for Claude Code / Claude harness sessions after reading
-`AGENTS.md`.
-
-This runtime is Claude. Keep `[fable]`. Do not invent a model slug this
-harness does not expose. Every `Task` / `Agent` call passes explicit
-`model:` — there is no inheritance path except the closed `[inline]`
-threshold list.
-
-Synonym table (Claude plans may write the left-hand tags; shared plans write
-the right-hand tags; this adapter accepts both):
-
-| Written tag | Shared lane |
-|---|---|
-| `[opus]` / `[fable]` | `[independent]` |
-| `[sonnet]` | `[mechanical]` |
+Runtime mapping for Claude Code sessions, read after `AGENTS.md`. Every
+`Agent` call passes an explicit `model:`; do not invent a model slug this
+harness does not expose.
 
 ## Runtime Artifacts
 
@@ -23,71 +11,35 @@ user approval, copy the plan into
 `docs/plans/YYYY-MM-DD-HHMM-<topic>-plan.md`.
 
 Shared skills live in `.agents/skills/`; `.claude/skills/` holds Claude
-pointer stubs. Use them; do not reimplement. Never use a git worktree.
+pointer stubs.
 
 ## Dispatch Mapping
 
-- `[inline]` — current Claude main model writes in the active context. Only
-  the shared dispatch-threshold list, or a compile/typo fix in a file this
-  turn's approved step already has this agent editing.
+- `[inline]` — the current main model, in the active context.
 - `[independent]` / `[opus]` / `[fable]` — `subagent_type: "core-implementer"`
   (visual/UI: `"mockup-implementer"`). `[opus]` → `model:"opus"`, `[fable]` →
   `model:"fable"`, `[independent]` → the session's top tier (`fable` when the
-  session runs Fable, else `opus`). New API, bus/registry/edge/lifecycle, cross-module behaviour, security
-  boundaries.
-- `[mechanical]` / `[sonnet]` — `model:"sonnet"`. Renames, scaffolding,
-  N-similar edits, applying a fully specified step, compile fixes,
-  JSON/config. Tests are never this lane. Visual/UI is never this lane
-  except a provider port's view part (shared rule in `planning-dispatch.md`
-  **Implementation Mode**): `subagent_type: "mockup-implementer"`,
-  `model:"sonnet"`.
+  session runs Fable, else `opus`).
+- `[mechanical]` / `[sonnet]` — `model:"sonnet"`; a provider port's view part
+  is `subagent_type: "mockup-implementer"`, `model:"sonnet"`.
 - `[docs]` — `subagent_type: "docs-writer"`, `model:"sonnet"` default;
   `"opus"` / `"fable"` only when the doc must judge what a seam means.
 - `[test-author]` — `subagent_type: "test-author"`, `model:"sonnet"` default;
   `"opus"` / `"fable"` for the tests the shared `[test-author]` rule puts at
-  the top tier. The only lane that writes tests.
-- `[review]` — `subagent_type: "core-reviewer"` written first, before
-  `description` and before the prompt; `model:` ≥ the author's tier.
-  Never resume a `core-reviewer` or `proof-auditor`. Round 2 is a fresh
-  spawn with its own diff range.
-- listing-only research — `model:"haiku"` unless intentionally overridden.
-- read-only research — Explore / general-purpose for broad multi-question
-  research, `model:"sonnet"` unless listing-only.
+  the top tier.
+- `[review]` — `subagent_type: "core-reviewer"`, `model:` ≥ the author's tier.
+- Proof audit — `subagent_type: "proof-auditor"`, `model:` ≥ the author's
+  tier.
+- read-only research — Explore / general-purpose, `model:"sonnet"`;
+  listing-only research may run on `model:"haiku"`.
 - search lane (shared **Navigation** step 3) — `subagent_type: "code-scout"`,
   `model:"haiku"` by default, `"sonnet"` for multi-hop questions that need
   interpretation (split-topology wiring, event flows across modules,
-  macro-generated code paths). Implementation lanes:
-  `core-implementer` / `test-author` / `docs-writer`; review and proof
-  lanes: `core-reviewer` / `proof-auditor`.
-- Proof audit — `subagent_type: "proof-auditor"`, `model:` ≥ the author's
-  tier. Only when the diff touches a verify stage or the test/gate is the
-  risk surface.
+  macro-generated code paths).
 
-Effort does not inherit: set it with the Agent call's `effort:` parameter
-(`low`|`medium`|`high`|`xhigh`|`max`), never prompt wording. The value
-follows `.agents/shared/core-rules.md` **Agent Effort**. The rust
-navigation chain does not inherit; paste it into every code-touching
-subagent prompt: rust-analyzer → targeted read → research subagent
-(`code-scout` for one question, implementation lanes only) → grep as a
-labelled lower bound. Comments: default NONE; name at most the one or two
-things that earn a line in that file.
-
-## Haiku Lanes
-
-Read-only checklist work runs on `subagent_type:"Explore"`, `model:"haiku"`.
-Haiku reports; it never edits, builds, commits, or decides. On a gap it
-stops and reports. Verify every finding before acting on it.
-
-- log triage — after a failed `verifyctl` / cargo run, pass the log path;
-  return errors grouped by file and root cause, first error first, with
-  `file:line`.
-- diff lint — before `[review]`, pass the commit range; check
-  `.agents/shared/core-rules.md` **Comments** and **No Dual-Write, No
-  Topology Branch, Wipe** (no dual-write / old rail left alive, no topology
-  branch in domain code). Advisory only: it never replaces or shrinks the `[review]`
-  round.
-- trailer audit — after multi-subagent rollouts, pass the commit range and
-  intended lanes; return each commit whose `Co-Authored-By` mismatches.
+Effort is the Agent call's `effort:` parameter
+(`low`|`medium`|`high`|`xhigh`|`max`), valued per
+`.agents/shared/core-rules.md` **Agent Effort**.
 
 ## Commit Trailers
 
@@ -112,20 +64,6 @@ Kind: review-fix
 Co-Authored-By: Claude <Family> <Version> <noreply@anthropic.com>
 ```
 
-After multi-subagent rollouts, audit recent commit trailers against the
-intended lanes before reporting done.
-
 ## Measuring agent cost
 
 `python .claude/scripts/agent_token_report.py [--days N] [--json]` — read-only token report over this repo's Claude transcripts (totals, per-agentType cost, context share, navigation discipline, baseline).
-
-## Skills
-
-Use the shared skills in `.agents/skills/` (`.claude/skills/` holds Claude
-pointer stubs):
-
-- `safe-verification` — before any `cargo test` / `devctl up` / `verifyctl`
-- `architecture-review` — fortress / topology-blind / seam law
-- `split-topology-debugger` — split-only wiring
-- `add-game-module` — new fortress recipe
-- `mockup-implementation` — admin/UI against `UILayout/redesign/` (built on `UILayout/design-system/`)

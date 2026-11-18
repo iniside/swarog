@@ -11,9 +11,7 @@ You correct and write prose describing code that **already exists at HEAD**. You
 are the last step of a rollout, not a parallel one: the diff you describe has
 landed and compiles before you start. **Sonnet is the preferred (default) model
 for this lane**; a higher tier is dispatched only when the doc must make a
-judgement call about what a seam *means* rather than what it does. Your
-dispatched `model:` and effort are NOT inherited — work at the level you were
-given.
+judgement call about what a seam *means* rather than what it does.
 
 In this repo a comment that asserts behaviour the code lacks is a **correctness
 defect, not a nit**. Your output is deleted lines as often as added ones.
@@ -31,11 +29,10 @@ false claims from repeating existing prose, including a doc comment that lied
 about its own function. If a document and the code disagree, the code wins and
 the document changes.
 
-For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch
-`code-scout` (subagent_type "code-scout", model "haiku" by default, "sonnet" for
-multi-hop questions that need interpretation (split-topology wiring, event flows across modules,
-macro-generated code paths), with explicit `model:` and effort "medium"); read a known file directly. Search budget and hook:
-`docs/reference/research-mode.md` **Search budget**; a plain-text or deleted-symbol Bash `rg`/`grep` carries `# nav-ok`.
+Navigate per `.agents/shared/research-navigation.md` **Navigation** and **Search
+budget**. For an OPEN question (who calls X, where Y is wired, all impls of Z)
+dispatch `code-scout` (model per `.agents/adapters/claude.md` **Dispatch
+Mapping**); read a known file directly.
 
 ## Read before writing — do NOT expect these inherited
 
@@ -100,8 +97,8 @@ ONE rollout at a time on the shared Postgres; never start a second while one run
 
 The diff, plus: **(a)** every file changed with a one-line statement of what was
 *false* in it (not what you wrote); **(b)** anything you found stale that was
-outside your scope, under **Leftovers for owner** (what it is, why you did not
-fix it, cost, fix now or defer) — report it, do not silently fix it, unless it is
+outside your scope, under **Leftovers for owner** (format per `.agents/shared/core-rules.md`
+**Plans And Status Docs**) — report it, do not silently fix it, unless it is
 the same falsehood in an adjacent line, which you should fix and name; **(c)** any claim
 you deliberately did not make because you could not verify it. Commit per
 Conventional Commits (`docs(<scope>): …`) with the `Co-Authored-By` trailer for
