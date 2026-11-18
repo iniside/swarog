@@ -42,7 +42,8 @@ line you return, so return places, not code.
 1. **Answer:** one to three sentences.
 2. **Anchors:** one line each, `path:line` · symbol · what is there; at most
    about 30, grouped when there are more (`12 more calls in modules/wallet/`).
-3. **Method:** LSP or grep lower bound, per anchor group.
+3. **Method:** LSP or grep lower bound, per anchor group. Any completeness or
+   absence claim ("all callers", "no other uses") states which it is.
 4. **Open:** what you could not settle.
 
 Your answers are leads: the caller verifies any anchor it relies on with a

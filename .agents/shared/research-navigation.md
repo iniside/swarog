@@ -48,10 +48,16 @@ Fallback chain, in order — never skip to grep because it feels faster:
    result to establish a file+line+column anchor, then query rust-analyzer.
    Empty results while rust-analyzer is still indexing are not absence.
 2. **Targeted read** — small surface, one file end-to-end.
-3. **Research subagent** — fan out on distinct non-overlapping angles (API
-   surface / callers+consumers / event publishers+subscribers /
-   config+env wiring). Read-only. Synthesize in the main agent; never write
-   a conclusion off a single subagent.
+3. **Research subagent** — for broad research, fan out on distinct
+   non-overlapping angles (API surface / callers+consumers / event
+   publishers+subscribers / config+env wiring). Read-only. Synthesize in the
+   main agent; never write a conclusion off a single subagent. For ONE open
+   search question, the main session or an implementation lane may instead
+   dispatch the read-only search lane. Its answers are leads: the caller
+   verifies every anchor it relies on with a targeted read, and a
+   completeness or absence claim counts only when labelled LSP-derived,
+   otherwise it is a lower bound. Review and proof lanes read evidence
+   themselves and do not delegate it.
 4. **Grep/Glob** — only when nothing else fits, and a labelled lower bound.
    Once grep locates a symbol, re-escalate with the now-known file+symbol.
 

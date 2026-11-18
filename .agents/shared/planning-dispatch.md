@@ -20,7 +20,8 @@ small":
    follows `docs/reference/research-mode.md` (one owner per question, no
    fixed count). Pass an explicit model/tool choice from the active adapter.
 2. Research three non-overlapping angles: API surface, API usages, and
-   patterns. Synthesize in the main agent — never write off one subagent.
+   patterns. Synthesize in the main agent — never write off one subagent;
+   a search-lane answer is a lead (`research-navigation.md` **Navigation**).
 3. Write concrete specifics: exact files, exact signatures, exact API calls,
    sequencing. Banned phrases ("figure out as we go", "TBD", "investigate
    during implementation", "may need to", "something like") mean a research

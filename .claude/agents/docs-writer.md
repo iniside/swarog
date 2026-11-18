@@ -30,6 +30,10 @@ false claims from repeating existing prose, including a doc comment that lied
 about its own function. If a document and the code disagree, the code wins and
 the document changes.
 
+For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch
+`code-scout` (subagent_type "code-scout", model "sonnet", or "haiku" for pure
+listing, with explicit `model:` and effort "medium"); read a known file directly.
+
 ## Read before writing — do NOT expect these inherited
 
 - `.agents/shared/core-rules.md` → **Comments - MANDATORY**. Default is NO
