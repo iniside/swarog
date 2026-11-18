@@ -1,6 +1,6 @@
 # Purge race locks (plan B) — plan
 
-Status: waiting for approval
+Status: approved by the owner 2026-11-18 (revised plan); steps 1–3 in progress.
 
 Revision 2026-11-18: the owner approved the original twelve-step plan on 2026-11-18. No step was
 dispatched, and `git log --grep=purge-race-locks` shows no step commit. The plan was then
