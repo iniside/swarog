@@ -1,6 +1,6 @@
 # Planning And Dispatch
 
-## Plan Writing Workflow - MANDATORY
+## Plan Writing Workflow
 
 Front-load the thinking. For any plan (plan mode / "write me a plan" / a
 `docs/plans/…-plan.md`), run these steps in order — no skipping for "it's
@@ -66,7 +66,7 @@ small":
    rewrite. Address it before showing the user, or note deferrals with
    rationale.
 
-## Implementation Mode - MANDATORY
+## Implementation Mode
 
 Dispatch is decided per plan step (Plan Writing 4d), not per session. Tags
 describe capability and cost; `.agents/adapters/claude.md` maps them to
@@ -161,7 +161,7 @@ When a parallel review returns a punch list: fix it in its own commit carrying `
 finding touches a file the in-flight task is editing, wait for that task to
 land, then fix — never edit a file a live subagent holds.
 
-## Adversarial Diff Review - MANDATORY
+## Adversarial Diff Review
 
 Every produced code diff — a subagent's or the main agent's — is reviewed
 adversarially: hunt implementation gaps and structural problems, and
@@ -212,7 +212,7 @@ Mechanics:
    anchor and a failing scenario or affected requirement; style, comment and
    wording findings are not REJECT grounds. Unverified
    concerns go in a separate list and do not change the verdict. No demand
-   for unrelated hardening (`gamebackend.md` **Dev tooling scope**), no
+   for unrelated hardening (`.claude/rules/dev-tooling.md`), no
    reopening the approved design.
 5. Binary verdict: PASS with the taxonomy class list attacked for the files
    touched, or a punch list. No "pass with reservations". Bounce findings;
@@ -256,7 +256,7 @@ to `docs/todo` by the lead.
 
 Diffs under the dispatch threshold get no review round at all.
 
-## Fix the Authority, Not the Symptom - MANDATORY
+## Fix the Authority, Not the Symptom
 
 The implementation twin of adversarial review. A patch that corrects the
 outcome while the flawed authority survives is banned.

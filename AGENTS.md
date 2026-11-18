@@ -14,11 +14,9 @@ architecture doc.
 
 ## Rules
 
-Every section in `.agents/shared/` is binding. A section marked MANDATORY
-guards work nothing downstream catches: breaking it costs days or cannot be
-undone. A RULE is caught by the compiler, a reviewer or a hook. Hooks enforce
-git safety (no stash, restore or checkout over uncommitted work), the commit
-subject format and trailer, an explicit `model` on every Agent call (plus
+Every section in `.agents/shared/` and `.claude/rules/` is binding. Hooks
+enforce git safety (no stash, restore or checkout over uncommitted work), the
+commit subject format and trailer, an explicit `model` on every Agent call (plus
 `effort` for built-in agent types), and no worktrees.
 
 ## Read Before The Action
@@ -35,7 +33,7 @@ their files have not changed. `.agents/README.md` maps the files.
 | Research APIs/usages/data flow/overlap; navigate Rust | `.agents/shared/research-navigation.md` |
 | Write/review a plan | `.agents/shared/research-navigation.md`; `.agents/shared/planning-dispatch.md` |
 | Implement/delegate a step or review a diff/commit | `.agents/shared/core-rules.md`; `.agents/shared/planning-dispatch.md` |
-| Touch `core/`, `modules/`, `api/`, `cmd/`, `demos/`, `tools/`, or `weles/` | `.agents/shared/gamebackend.md` (for `tools/`/`weles/`, **Dev tooling scope**); for a new module, the `add-game-module` skill |
+| Touch `core/`, `modules/`, `api/`, `cmd/`, `demos/`, `tools/`, or `weles/` | `.agents/shared/gamebackend.md`; the `.claude/rules/` file matching the path; for a new module, the `add-game-module` skill |
 | Run, or delegate a step that runs, `cargo test`, `verifyctl`, or `devctl` | `safe-verification` skill; `.agents/shared/gamebackend.md` **One test rollout at a time**; `docs/reference/testing.md` |
 | Build or change admin UI | `mockup-implementation` skill |
 

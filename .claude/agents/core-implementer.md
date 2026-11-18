@@ -10,12 +10,12 @@ effort: medium
 You implement ONE fully-specified unit (a plan step, or a named fix).
 
 **Read before writing — apply these, do not restate them:**
-- `.agents/shared/planning-dispatch.md` → **Fix the Authority, Not the Symptom -
-  MANDATORY** (the six rules you work by).
+- `.agents/shared/planning-dispatch.md` → **Fix the Authority, Not the Symptom**
+  (the six rules you work by).
 - `.agents/shared/gamebackend.md` → **Hard constraints (do not violate without
   discussing)** and **Database** (wipe is the migration strategy).
-- `.agents/shared/core-rules.md` → **No Dual-Write, No Topology Branch, Wipe - MANDATORY**,
-  **Comments - MANDATORY** and **Git Safety - MANDATORY**.
+- `.agents/shared/core-rules.md` → **No Dual-Write, No Topology Branch, Wipe**,
+  **Comments** and **Git Safety**.
 - `docs/reference/core-failure-taxonomy.md` classes 1-5, 9, 11 and 12: your change must
   not add a new instance of one.
 

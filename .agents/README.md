@@ -11,8 +11,10 @@ concrete action.
   navigation, search budget, decisions are final.
 - `shared/planning-dispatch.md`: plan writing, implementation lanes and
   dispatch, adversarial diff review, Fix the Authority, refactor safety.
-- `shared/gamebackend.md`: architecture (seams, hard constraints, modules,
-  commands, dev tooling scope, one test rollout at a time, database, layout).
+- `shared/gamebackend.md`: architecture (seams, hard constraints, commands,
+  one test rollout at a time, database, layout).
+- `../.claude/rules/`: area rules loaded by path (domain modules, dev tooling
+  scope).
 - `adapters/claude.md`: Claude Code agents, models, how effort is set,
   trailers, and artifacts.
 - `skills/`: shared skills, cited by skill name.

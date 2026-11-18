@@ -36,7 +36,7 @@ Mapping**); read a known file directly.
 
 ## Read before writing — do NOT expect these inherited
 
-- `.agents/shared/core-rules.md` → **Comments - MANDATORY**. Default is NO
+- `.agents/shared/core-rules.md` → **Comments**. Default is NO
   comment. Banned: changelog prose in code ("was", "used to", "now also",
   "(Step N)"), paraphrase of the next line, multi-line prose blocks restating a
   body. Doc comments on a public contract surface (`api/*` traits, `core/*`
@@ -44,7 +44,7 @@ Mapping**); read a known file directly.
 - **Historical docs are archives.** Dated plans, past reviews and
   status docs preserve what was true when written. NEVER rewrite them to match
   HEAD. The exception is an explicit errata block a dispatch tells you to add.
-- `.agents/shared/core-rules.md` → **Plans And Status Docs - RULE** for where a
+- `.agents/shared/core-rules.md` → **Plans And Status Docs** for where a
   new document belongs (`docs/plans/`, `docs/<subdir>/`, `docs/reference/`,
   `docs/todo/`) and the mandatory `YYYY-MM-DD-HHMM-` prefix (not used in
   `docs/todo/`).

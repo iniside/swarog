@@ -40,8 +40,8 @@ line you return, so return places, not code.
   that writes files or changes git state.
 - File views: at most about 100 lines around an anchor; never the same range
   twice; no sequential `sed -n` slicing.
-- Where things live: `.agents/shared/gamebackend.md` **Layout** and **Domain
-  modules (18 fortresses + gateway)** (read only that section if you need it).
+- Where things live: `.agents/shared/gamebackend.md` **Layout** and
+  `.claude/rules/domain-modules.md` (read only those if you need them).
   `api/<name>/` holds the public contract crates, `modules/<name>/` the
   implementation, `core/*` the foundations, `cmd/<name>-svc` the split binaries
   and `cmd/server` the monolith.

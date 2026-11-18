@@ -1,6 +1,6 @@
 # Research And Navigation
 
-## Research Before Planning - MANDATORY
+## Research Before Planning
 
 This is a modular monolith built on Open/Closed — it grows by addition (new
 modules, contract traits, and subscriptions), with no module importing another's
@@ -14,7 +14,7 @@ and an explicit **"why not extend / depend on X"**. A plan that adds a module
 without that rationale is incomplete — lead with evidence, not enthusiasm for
 new code.
 
-## Research / Search Mode - RULE
+## Research / Search Mode
 
 Ask "how should I research this?" only when the method changes the answer — a
 wide API-surface map, an all-callers sweep, a data-flow trace across modules,
@@ -41,7 +41,7 @@ reason or do not escalate. Paste the navigation chain into every
 code-touching subagent's prompt and require it to report the method it used —
 it does not inherit.
 
-## Navigation - RULE
+## Navigation
 
 Fallback chain, in order — never skip to grep because it feels faster:
 
@@ -70,7 +70,7 @@ Never hand symbol navigation to a grep-sweeping agent, and never pre-authorize
 grep in a handoff. Dispatch one subagent per independent question; there is no
 fixed count.
 
-## Search budget - RULE
+## Search budget
 
 Every search result and file view stays in the agent's context and is re-read
 on every later turn, so its cost grows with the length of the task.
@@ -90,7 +90,7 @@ On Claude, `.claude/hooks/scout_nav_guard.py` enforces this for
 `core-implementer`, `test-author` and `docs-writer`, and
 `.claude/hooks/grep_sweep_guard.py` blocks recursive shell greps.
 
-## Research Never Overrules a Decision - MANDATORY
+## Research Never Overrules a Decision
 
 A decision the owner made is not re-openable by a research finding.
 Feasibility is not permission — that a rejected system could be reused says

@@ -1,13 +1,13 @@
 # Core Rules
 
-## Owning Mistakes - RULE
+## Owning Mistakes
 
 If you ignore a rule or fabricate an API, path, behaviour, or claimed work,
 name the mistake, state the correction, and fix it without excuses or praise.
-Use two sentences; for a MANDATORY violation name the section and the mismatch.
+Use two sentences; name the violated section and the mismatch.
 Do not create memory copies of rules; propose a hook when enforcement is needed.
 
-## Plans And Status Docs - RULE
+## Plans And Status Docs
 
 Store all planning/design/status/progress/summary docs inside the repo — never
 on a scratch drive or temp path. The repo is the single source of truth.
@@ -88,14 +88,14 @@ put plan/status files at repo root or in a temp dir.
 Work lands directly on `master`; do not create a branch unless the user
 explicitly requests one. Do not use git worktrees.
 
-## Agent Effort - RULE
+## Agent Effort
 
 Subagents run at effort `medium`, `low` for the search lane, pinned in each
 `.claude/agents/*.md` definition; a built-in agent type passes `effort`
 explicitly (`.claude/hooks/explicit_model_guard.py` blocks the call
 otherwise). The owner may set another effort for a specific step or request.
 
-## Git Safety - MANDATORY
+## Git Safety
 
 Never `git stash`, `git checkout -- <file>`, `git restore`, or anything that
 discards/overwrites uncommitted working-tree changes without the user's
@@ -106,7 +106,7 @@ turn*, and only when nothing else has committed since. Never `git reset` past
 commits you did not make this turn. Never `git push --force` or rewrite
 published history without explicit instruction. Push only when the user asks.
 
-## Commit After Every Task - MANDATORY
+## Commit After Every Task
 
 After completing every task — or each independently reviewable, verified part
 of a larger task — create a git commit containing only the changes made for
@@ -115,7 +115,7 @@ include unrelated pre-existing working-tree changes. If a task produces no
 repository changes, no commit is required. A request to commit is implicit in
 every task; pushing still requires an explicit user request.
 
-## Commit Message Format - RULE
+## Commit Message Format
 
 Use Conventional Commits:
 
@@ -141,7 +141,7 @@ The active adapter defines the format; the executing model fills in its own
 identity from its runtime identity, never copied from an example. More detail:
 `docs/reference/commit-format.md`.
 
-## Comments - MANDATORY
+## Comments
 
 Default is no comment. Write one only when it carries what the code cannot
 show: a non-obvious invariant, a Postgres/tokio/sqlx gotcha, the reason for a
@@ -166,7 +166,7 @@ the orchestrator fixes them inline; no prose-fixing agent is dispatched.
 Every implementation dispatch says `comments: default NONE` and names the one
 or two things that earn a line in that file.
 
-## No Dual-Write, No Topology Branch, Wipe - MANDATORY
+## No Dual-Write, No Topology Branch, Wipe
 
 Wipe is the migration strategy (current phase). When a schema or event-contract
 change would need a data migration, DROP the affected schemas (or the whole
@@ -186,7 +186,7 @@ Never keep two rails for the same behaviour. When a step introduces the new
 thing, that same step deletes the old one. Two sources of truth are worse than
 a broken intermediate build.
 
-## Agent Memory Backup - RULE
+## Agent Memory Backup
 
 Project memory lives outside the repo under the Claude Code scheme
 (`$HOME/.claude/projects/<mangled-repo-path>/memory/`) and is mirrored into

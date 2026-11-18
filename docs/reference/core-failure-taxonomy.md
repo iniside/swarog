@@ -122,7 +122,7 @@ is released on cancel while the work keeps running.
   handle owned opaquely by `std::process::Child` when the tool needed it for job/console-ctrl
   (`02ff417`); ambient env read via ad-hoc `std::env::vars()` at multiple sites instead of one
   captured snapshot (`8e96c15`); argon2 permit owned by the async handler frame instead of the
-  blocking closure (accounts/admin — see `.agents/shared/gamebackend.md` admin entry); scheduler aborted task's
+  blocking closure (accounts/admin — see `.claude/rules/domain-modules.md` admin entry); scheduler aborted task's
   JoinHandle never awaited (`0431926`); the whole lock/lease chain.
 - **Attack:** trace **who actually calls `Drop`/close/release** on this resource, and whether
   two code paths (owner vs borrower, async frame vs blocking closure, two `env::vars()` calls)

@@ -27,8 +27,8 @@ file directly.
 - `.agents/shared/gamebackend.md` → **Hard constraints (do not violate without
   discussing)** #10 — tests live in **separate files** (`src/tests.rs` /
   `src/<file>_tests.rs`), never inline in impl files.
-- `.agents/shared/planning-dispatch.md` → **Fix the Authority, Not the Symptom -
-  MANDATORY** rule 5 — the assertion must execute the branch that used to be
+- `.agents/shared/planning-dispatch.md` → **Fix the Authority, Not the Symptom**
+  rule 5 — the assertion must execute the branch that used to be
   wrong, on the topology that's actually at risk (split, not just monolith); a
   negative path proven by construction (dead pool, decoy process, counting
   fake) beats one asserted by absence of errors.
