@@ -679,6 +679,15 @@ class PostCommitStepParts(unittest.TestCase):
         _git(c, "merge", "-q", "--no-ff", "-m", "feat(x): m, part 1 (mrg step 8)", "side")
         _commit(c, "core/mf.rs", "1\n", "feat(x): m (mrg step 8)")
         full("mrg_fin")
+
+        _commit(c, "core/u1.rs", "1\n", "feat(x): u1")
+        full("u_code")
+        _git(c, "commit", "-q", "--allow-empty", "-m", "chore: empty")
+        full("u_empty")
+        _commit(c, "tools/verifyctl/x.rs", "1\n", "feat(x): proof")
+        full("u_proof")
+        _commit(c, "core/u2.rs", "1\n", "feat(x): u2")
+        full("u_plain")
         cls.shas = r
 
     def reminder(self, *shas):
@@ -750,6 +759,26 @@ class PostCommitStepParts(unittest.TestCase):
 
     def test_unreadable_part_paths_fall_back_to_single_commit(self):
         self.assertEqual(self.reminder(self.shas["mrg_fin_s"]), self.BASE)
+
+    def test_unreadable_paths_keep_every_target_and_unknown_proof_text(self):
+        got = self.reminder(self.shas["u_code_s"], self.shas["u_empty_s"])
+        self.assertIn("2 commits just landed", got)
+        self.assertIn("`git show %s`" % self.shas["u_code_s"], got)
+        self.assertIn("`git show %s`" % self.shas["u_empty_s"], got)
+        self.assertTrue(got.endswith(PostCommitFixture.UNKNOWN))
+
+    def test_proof_commit_among_several_says_one_of_these(self):
+        got = self.reminder(self.shas["u_proof_s"], self.shas["u_plain_s"])
+        self.assertIn("One of these commits touches", got)
+        self.assertNotIn("This commit touches", got)
+
+    def test_single_proof_commit_keeps_this_commit_wording(self):
+        self.assertEqual(self.reminder(self.shas["u_proof_s"]), self.BASE + self.PROOF)
+
+    def test_step_part_with_plain_commit_names_the_plain_show_target(self):
+        got = self.reminder(self.shas["walk_p1_s"], self.shas["u_plain_s"])
+        self.assertIn("`git show %s`" % self.shas["u_plain_s"], got)
+        self.assertNotIn("<sha>", got)
 
 
 class Wiring(unittest.TestCase):
