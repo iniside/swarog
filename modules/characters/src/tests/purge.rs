@@ -629,6 +629,54 @@ async fn create_parks_behind_an_open_sweep_then_answers_player_deleted() {
     .await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn create_takes_the_player_lock_before_it_reads_the_tombstone() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = fixed_player(0x400);
+    clear_fixed_player(&pool, &pid).await;
+    let lock_key = taken_player_key(&pool, &svc, &pid).await;
+    let gate_app = racer_app(&pool, "guard-gate").await;
+    let create_app = racer_app(&pool, "guard-create").await;
+
+    let apps = vec![gate_app.clone(), create_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![pid.clone()], vec![pid.clone()], {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        let pid = pid.clone();
+        async move {
+            assert!(purge_row(&pool, &pid).await.is_none(), "precondition: no tombstone yet");
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            svc.store.lock_player_tx(&mut gate, &pid).await.unwrap();
+
+            let create = tokio::spawn({
+                let racer = racer_service(&svc, &create_app);
+                let pid = pid.clone();
+                async move { racer.create(Identity::player(&pid), "Guard".into(), String::new()).await }
+            });
+            let parked = wait_advisory_parked(&pool, &create_app, lock_key, &create).await;
+            assert!(parked, "the create must park on the player's lock before its tombstone read");
+
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &pid, "Guard#0001").await.unwrap();
+            drop(conn);
+            gate.rollback().await.unwrap();
+
+            let e = finish("guard-order create", create).await.unwrap_err();
+            assert_eq!(e.status, Status::Conflict);
+            assert_eq!(e.msg, crate::service::PLAYER_DELETED);
+            assert_eq!(
+                char_count_by_player(&pool, &pid).await,
+                0,
+                "a create that read the tombstone before the lock would insert after the release"
+            );
+        }
+    })
+    .await;
+}
+
 /// One fire claims and locks at most 64 players. With 65 of this test's own lowest-sorting
 /// tombstones, one fire stamps exactly the 64 lowest and leaves the 65th for the next fire.
 /// The counts are literal, not derived from `CHARACTERS_PLAYERS_PER_FIRE`, so raising the

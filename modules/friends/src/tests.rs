@@ -1853,6 +1853,80 @@ async fn request_parks_behind_an_open_sweep_then_answers_no_such_player() {
     request_parks_behind_an_open_sweep_case(false, 0x310).await;
 }
 
+async fn request_takes_the_pair_lock_before_it_reads_the_tombstone_case(tombstone_requester: bool, base: u64) {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let directory = Arc::new(FakeDirectory::new());
+    let (me, target) = (fixed_player(base), fixed_player(base + 1));
+    directory.insert(&me, &format!("Me#{base:04x}"));
+    directory.insert(&target, &format!("Target#{base:04x}"));
+    let (_ctx, svc) = wired(&pool, directory).await;
+    let pair = vec![me.clone(), target.clone()];
+    clear_fixed_players(&pool, &pair).await;
+    let purged = if tombstone_requester { me.clone() } else { target.clone() };
+    let lock_key = taken_player_key(&pool, &svc, &purged).await;
+    let gate_app = racer_app("guard-gate");
+    let request_app = racer_app("guard-request");
+
+    let apps = vec![gate_app.clone(), request_app.clone()];
+    with_purge_cleanup(&pool, apps, pair.clone(), pair, {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        async move {
+            let miss = svc
+                .request(Identity::player(&me), "Nobody#0000".into())
+                .await
+                .unwrap_err();
+            assert_eq!(purge_swept_at(&pool, &purged).await, None, "precondition: no tombstone yet");
+
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            svc.store.lock_player_tx(&mut gate, &purged).await.unwrap();
+
+            let request = tokio::spawn({
+                let racer = racer_service(&svc, &request_app);
+                let (me, handle) = (me.clone(), format!("Target#{base:04x}"));
+                async move { racer.request(Identity::player(&me), handle).await }
+            });
+            let parked = wait_advisory_parked(&pool, &request_app, &[lock_key], &request).await;
+            assert!(parked, "the request must park on the player's lock before its tombstone read");
+
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &purged, "Guard#0001").await.unwrap();
+            drop(conn);
+            gate.rollback().await.unwrap();
+
+            let e = finish("guard-order request", request).await.unwrap_err();
+            if tombstone_requester {
+                assert_eq!(e.status, Status::Conflict);
+                assert_eq!(e.msg, crate::service::PLAYER_DELETED);
+            } else {
+                assert_eq!(
+                    (e.status, e.msg.as_str()),
+                    (miss.status, miss.msg.as_str()),
+                    "a purged target must get exactly the directory-miss answer"
+                );
+            }
+            assert_eq!(
+                row_count_for_pair(&pool, &me, &target).await,
+                0,
+                "a request that read the tombstone before the lock would insert after the release"
+            );
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn request_takes_the_requester_lock_before_it_reads_the_requester_tombstone() {
+    request_takes_the_pair_lock_before_it_reads_the_tombstone_case(true, 0x700).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn request_takes_the_target_lock_before_it_reads_the_target_tombstone() {
+    request_takes_the_pair_lock_before_it_reads_the_tombstone_case(false, 0x710).await;
+}
+
 /// The pair order is the sweep's claim order, so a request between two purged players and a
 /// sweep claiming both never deadlock. The test holds B's key; the request A→B takes A and
 /// parks on B; the sweep claims A and B and parks on A. Once B is released the request takes

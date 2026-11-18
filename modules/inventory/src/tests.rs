@@ -1546,6 +1546,52 @@ async fn grant_parks_behind_an_open_sweep_then_answers_player_deleted() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn grant_takes_the_player_lock_before_it_reads_the_tombstone() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    ensure_schema(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+    let target = fixed_player(0x500);
+    clear_fixed_player(&pool, &target).await;
+    let lock_key = taken_player_key(&pool, &inner, &target).await;
+    let gate_app = racer_app(&pool, "guard-gate").await;
+    let grant_app = racer_app(&pool, "guard-grant").await;
+
+    let apps = vec![gate_app.clone(), grant_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![target.clone()], vec![target.clone()], {
+        let pool = pool.clone();
+        let inner = inner.clone();
+        async move {
+            assert_eq!(purge_swept_at(&pool, &target).await, None, "precondition: no tombstone yet");
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            inner.store.lock_player_tx(&mut gate, &target).await.unwrap();
+
+            let grant = tokio::spawn(race_grant(grant_app.clone(), target.clone()));
+            let parked = wait_advisory_parked(&pool, &grant_app, lock_key, &grant).await;
+            assert!(parked, "the grant must park on the player's lock before its tombstone read");
+
+            let mut conn = pool.acquire().await.unwrap();
+            inner.plant_purged_player(&mut conn, &target, "Guard#0001").await.unwrap();
+            drop(conn);
+            gate.rollback().await.unwrap();
+
+            assert_eq!(
+                finish("guard-order grant", grant).await,
+                Err((Status::Conflict, crate::service::PLAYER_DELETED.to_string())),
+                "a grant to a purged player must answer PLAYER_DELETED"
+            );
+            assert_eq!(
+                holding_count(&pool, &target).await,
+                0,
+                "a grant that read the tombstone before the lock would insert after the release"
+            );
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn one_sweep_fire_stamps_at_most_64_players() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = DB_LOCK.lock().await;

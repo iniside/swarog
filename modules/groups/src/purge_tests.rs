@@ -1001,6 +1001,176 @@ async fn invite_parks_behind_an_open_sweep_then_answers_no_such_player() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn create_takes_the_player_lock_before_it_reads_the_tombstone() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let pid = fixed_uuid(0x12);
+    let lock_key = taken_player_key(&pool, &svc, &pid).await;
+    let gate_app = racer_app("guard-gate", &pid);
+    let create_app = racer_app("guard-create", &pid);
+
+    let apps = vec![gate_app.clone(), create_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![pid.clone()], {
+        let (pool, svc) = (pool.clone(), svc.clone());
+        async move {
+            assert_eq!(purge_swept_at(&pool, &pid).await, None, "precondition: no tombstone yet");
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            svc.store.lock_player_tx(&mut gate, &pid).await.unwrap();
+
+            let create = tokio::spawn({
+                let racer = racer_service(&svc, &dir, &create_app);
+                let pid = pid.clone();
+                async move {
+                    racer
+                        .create(Identity::player(&pid), "GuardCreate".into(), JOIN_OPEN.into())
+                        .await
+                        .map(|g| g.id)
+                        .map_err(|e| (e.status, e.msg))
+                }
+            });
+            let parked = wait_advisory_parked(&pool, &create_app, lock_key, &create).await;
+            assert!(parked, "the create must park on the player's lock before its tombstone read");
+
+            plant(&svc, &pool, &pid, "Guard#0001").await;
+            gate.rollback().await.unwrap();
+
+            assert_eq!(
+                finish("guard-order create", create).await,
+                Err((Status::Conflict, PLAYER_DELETED.to_string()))
+            );
+            let created: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM groups.groups WHERE creator_id = $1::uuid",
+            )
+            .bind(&pid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(created, 0, "a create that read the tombstone before the lock would insert after the release");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn join_takes_the_player_lock_before_it_reads_the_tombstone() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let owner = fixed_uuid(0x13);
+    let joiner = fixed_uuid(0x13);
+    dir.insert(&owner, "GuardOwner#0001");
+    dir.insert(&joiner, "GuardJoiner#0002");
+    let lock_key = taken_player_key(&pool, &svc, &joiner).await;
+    let gate_app = racer_app("guard-gate", &joiner);
+    let join_app = racer_app("guard-join", &joiner);
+
+    let apps = vec![gate_app.clone(), join_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![owner.clone(), joiner.clone()], {
+        let (pool, svc) = (pool.clone(), svc.clone());
+        async move {
+            let group_id = svc
+                .create(Identity::player(&owner), "GuardJoin".into(), JOIN_OPEN.into())
+                .await
+                .unwrap()
+                .id;
+            assert_eq!(purge_swept_at(&pool, &joiner).await, None, "precondition: no tombstone yet");
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            svc.store.lock_player_tx(&mut gate, &joiner).await.unwrap();
+
+            let join = tokio::spawn({
+                let racer = racer_service(&svc, &dir, &join_app);
+                let (joiner, group_id) = (joiner.clone(), group_id.clone());
+                async move {
+                    racer
+                        .join(Identity::player(&joiner), group_id)
+                        .await
+                        .map(|m| m.state)
+                        .map_err(|e| (e.status, e.msg))
+                }
+            });
+            let parked = wait_advisory_parked(&pool, &join_app, lock_key, &join).await;
+            assert!(parked, "the join must park on the joiner's lock before its tombstone read");
+
+            plant(&svc, &pool, &joiner, "GuardJoiner#0002").await;
+            gate.rollback().await.unwrap();
+
+            assert_eq!(
+                finish("guard-order join", join).await,
+                Err((Status::Conflict, PLAYER_DELETED.to_string()))
+            );
+            assert!(
+                !membership_exists(&pool, &group_id, &joiner).await,
+                "a join that read the tombstone before the lock would insert after the release"
+            );
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invite_takes_the_target_lock_before_it_reads_the_target_tombstone() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let admin = fixed_uuid(0x14);
+    let target = fixed_uuid(0x14);
+    dir.insert(&admin, "GuardAdmin#0001");
+    dir.insert(&target, "GuardTarget#0002");
+    let lock_key = taken_player_key(&pool, &svc, &target).await;
+    let gate_app = racer_app("guard-gate", &target);
+    let invite_app = racer_app("guard-invite", &target);
+
+    let apps = vec![gate_app.clone(), invite_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![admin.clone(), target.clone()], {
+        let (pool, svc) = (pool.clone(), svc.clone());
+        async move {
+            let group_id = svc
+                .create(Identity::player(&admin), "GuardInvite".into(), JOIN_OPEN.into())
+                .await
+                .unwrap()
+                .id;
+            assert_eq!(purge_swept_at(&pool, &target).await, None, "precondition: no tombstone yet");
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            svc.store.lock_player_tx(&mut gate, &target).await.unwrap();
+
+            let invite = tokio::spawn({
+                let racer = racer_service(&svc, &dir, &invite_app);
+                let (admin, group_id) = (admin.clone(), group_id.clone());
+                async move {
+                    racer
+                        .invite(Identity::player(&admin), group_id, "GuardTarget#0002".into())
+                        .await
+                        .map_err(|e| (e.status, e.msg))
+                }
+            });
+            let parked = wait_advisory_parked(&pool, &invite_app, lock_key, &invite).await;
+            assert!(parked, "the invite must park on the target's lock before its tombstone read");
+
+            plant(&svc, &pool, &target, "GuardTarget#0002").await;
+            gate.rollback().await.unwrap();
+
+            assert_eq!(
+                finish("guard-order invite", invite).await,
+                Err((Status::NotFound, NO_SUCH_PLAYER.to_string())),
+                "a purged target must get exactly the directory-miss answer"
+            );
+            assert!(
+                !membership_exists(&pool, &group_id, &target).await,
+                "an invite that read the tombstone before the lock would insert after the release"
+            );
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn sweep_takes_every_player_lock_before_a_group_lock() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = DB_LOCK.lock().await;

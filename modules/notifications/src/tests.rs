@@ -2237,6 +2237,74 @@ async fn operator_mail_parks_behind_an_open_sweep_then_answers_player_deleted() 
     write_parks_behind_an_open_sweep_case(true, 0x310).await;
 }
 
+async fn write_takes_the_player_lock_before_it_reads_the_tombstone_case(operator: bool, base: u64) {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (ctx, svc) = wired(&pool).await;
+    let target = fixed_player(base);
+    clear_fixed_player(&pool, &target).await;
+    let lock_key = taken_player_key(&pool, &svc, &target).await;
+    let key = race_key(&pool, operator).await;
+    let gate_app = racer_app(&pool, "guard-gate").await;
+    let writer_app = racer_app(&pool, "guard-writer").await;
+    let push = ctx.push().clone();
+
+    let apps = vec![gate_app.clone(), writer_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![target.clone()], vec![target.clone()], {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        async move {
+            assert_eq!(purge_swept_at(&pool, &target).await, None, "precondition: no tombstone yet");
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            svc.store.lock_player_tx(&mut gate, &target).await.unwrap();
+
+            let writer = tokio::spawn(race_write(
+                svc.clone(),
+                push,
+                operator,
+                writer_app.clone(),
+                target.clone(),
+                key.clone(),
+            ));
+            let parked = wait_advisory_parked(&pool, &writer_app, lock_key, &writer).await;
+            assert!(parked, "the write must park on the recipient's lock before its tombstone read");
+
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &target, "Guard#0001").await.unwrap();
+            drop(conn);
+            gate.rollback().await.unwrap();
+
+            let out = finish("guard-order write", writer).await;
+            if operator {
+                assert_eq!(
+                    out,
+                    Err(format!("{:?}: {}", Status::Invalid, crate::service::PLAYER_DELETED)),
+                    "operator mail to a purged recipient must answer PLAYER_DELETED"
+                );
+            } else {
+                assert_eq!(out, Ok(()), "a purged recipient must not pause the subscription");
+            }
+            assert_eq!(
+                message_count(&pool, &target).await,
+                0,
+                "a write that read the tombstone before the lock would insert after the release"
+            );
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn durable_delivery_takes_the_player_lock_before_it_reads_the_tombstone() {
+    write_takes_the_player_lock_before_it_reads_the_tombstone_case(false, 0x500).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn operator_mail_takes_the_player_lock_before_it_reads_the_tombstone() {
+    write_takes_the_player_lock_before_it_reads_the_tombstone_case(true, 0x510).await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn one_sweep_fire_stamps_at_most_64_players() {
     let Some(pool) = test_pool().await else { return };
