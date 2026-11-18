@@ -57,8 +57,8 @@ database. Everything else has an owner:
   a gate transaction, detected by the gate's transaction id. Only when the module has
   no such point may the test hold `asyncevents::store::WRITER_LOCK_KEY` exclusively,
   to park the writer at its event append. That hold stalls every event append in the
-  database, so it is taken only under the crate's `DB_LOCK` and released as soon as
-  the racer is parked (precedent: Race 1 in `modules/characters/src/tests/purge.rs`).
+  database, so it is taken only under the crate's `DB_LOCK` and held only until the
+  competing transaction is parked behind the racer, then released (precedent: Race 1 in `modules/characters/src/tests/purge.rs`).
 - Tests prove correctness, not speed. Wait on an explicit signal (for example
   `Notify`) wrapped in a `tokio::time::timeout` with generous headroom, a hang-guard
   and not a latency bound (`core/asyncevents/src/tests.rs`,
