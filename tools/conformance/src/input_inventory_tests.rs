@@ -14,7 +14,7 @@ fn contract(arg_ty: &str, extra_items: &str) -> String {
 }
 
 fn keys(source: &str) -> Vec<String> {
-    discover_sources(&[source.to_owned()])
+    discover_sources(&[source.to_owned()], ContractRoot::Domain)
         .unwrap()
         .into_iter()
         .map(|key| render_key(&key))
@@ -24,7 +24,7 @@ fn keys(source: &str) -> Vec<String> {
 fn rejection(source: &str) -> String {
     format!(
         "{:#}",
-        discover_sources(&[source.to_owned()]).expect_err("must fail closed")
+        discover_sources(&[source.to_owned()], ContractRoot::Domain).expect_err("must fail closed")
     )
 }
 
@@ -298,14 +298,30 @@ fn a_macro_invocation_inside_an_rpc_trait_body_is_rejected() {
     assert!(message.contains("\"Demo\""), "{message}");
 }
 
+fn control_plane_keys(source: &str) -> Vec<String> {
+    discover_sources(&[source.to_owned()], ContractRoot::ControlPlane)
+        .unwrap()
+        .into_iter()
+        .map(|key| render_key(&key))
+        .collect()
+}
+
+fn control_plane_rejection(source: &str) -> String {
+    format!(
+        "{:#}",
+        discover_sources(&[source.to_owned()], ContractRoot::ControlPlane)
+            .expect_err("must fail closed")
+    )
+}
+
 #[test]
 fn a_variants_wrapped_enum_is_read_like_a_bare_one() {
-    let bare = keys(&contract(
+    let bare = control_plane_keys(&contract(
         "Request",
         "pub struct Request { pub kind: Kind } pub enum Kind { A, B }",
     ));
     for form in ["drawn", "undrawn"] {
-        let wrapped = keys(&contract(
+        let wrapped = control_plane_keys(&contract(
             "Request",
             &format!(
                 "pub struct Request {{ pub kind: Kind }} variants! {{ {form}; #[derive(Debug)] pub enum Kind {{ A, B }} }}"
@@ -317,12 +333,26 @@ fn a_variants_wrapped_enum_is_read_like_a_bare_one() {
 }
 
 #[test]
+fn a_variants_wrapped_enum_in_an_inline_mod_is_read() {
+    let bare = control_plane_keys(&contract(
+        "Request",
+        "pub mod inner { pub struct Request { pub kind: Kind } pub enum Kind { A, B } }",
+    ));
+    let wrapped = control_plane_keys(&contract(
+        "Request",
+        "pub mod inner { pub struct Request { pub kind: Kind } variants! { drawn; pub enum Kind { A, B } } }",
+    ));
+    assert_eq!(wrapped, bare);
+    assert!(!bare.is_empty());
+}
+
+#[test]
 fn a_variants_wrapped_data_enum_is_rejected_like_a_bare_one() {
-    let message = rejection(&contract(
+    let message = control_plane_rejection(&contract(
         "Kind",
         "variants! { drawn; pub enum Kind { A(String), B } }",
     ));
-    let bare = rejection(&contract("Kind", "pub enum Kind { A(String), B }"));
+    let bare = control_plane_rejection(&contract("Kind", "pub enum Kind { A(String), B }"));
     assert_eq!(message, bare);
 }
 
@@ -334,7 +364,7 @@ fn a_malformed_variants_invocation_is_rejected() {
         "variants! { drawn; pub struct Kind { pub a: String } }",
         "variants! { drawn; pub enum Kind { A } pub enum Extra { B } }",
     ] {
-        let message = rejection(body);
+        let message = control_plane_rejection(body);
         assert!(message.contains("followed by exactly one enum"), "{body}: {message}");
     }
 }
@@ -345,9 +375,18 @@ fn a_path_qualified_or_unknown_item_macro_is_still_rejected() {
         "other_variants! { drawn; pub enum Kind { A } }",
         "crate::variants! { drawn; pub enum Kind { A } }",
     ] {
-        let message = rejection(body);
+        let message = control_plane_rejection(body);
         assert!(message.contains("item-position macro invocation"), "{body}: {message}");
     }
+}
+
+#[test]
+fn a_variants_invocation_in_a_domain_api_source_is_rejected() {
+    let message = rejection(&contract(
+        "Request",
+        "pub struct Request { pub kind: Kind } variants! { drawn; pub enum Kind { A, B } }",
+    ));
+    assert!(message.contains("item-position macro invocation variants!"), "{message}");
 }
 
 /// A `macro_rules!` DEFINITION declares no contract by itself, and every use of it is an

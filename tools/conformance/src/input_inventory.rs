@@ -109,12 +109,12 @@ pub fn discover(workspace_root: &Path) -> Result<BTreeSet<InputKey>> {
             .and_then(|name| name.to_str())
             .is_some_and(|name| served.contains(name));
         if is_served {
-            src_dirs.push(domain.join("api/src"));
+            src_dirs.push((domain.join("api/src"), ContractRoot::Domain));
         }
     }
-    src_dirs.push(workspace_root.join("core/controlplane/src"));
+    src_dirs.push((workspace_root.join("core/controlplane/src"), ContractRoot::ControlPlane));
     let mut out = BTreeSet::new();
-    for src in src_dirs {
+    for (src, root) in src_dirs {
         if !src.is_dir() {
             continue;
         }
@@ -127,7 +127,7 @@ pub fn discover(workspace_root: &Path) -> Result<BTreeSet<InputKey>> {
                     .with_context(|| format!("read RPC contract {}", path.display()))
             })
             .collect::<Result<Vec<_>>>()?;
-        let discovered = discover_sources(&sources)
+        let discovered = discover_sources(&sources, root)
             .with_context(|| format!("discover request fields under {}", src.display()))?;
         for key in discovered {
             if !out.insert(key.clone()) {
@@ -138,7 +138,16 @@ pub fn discover(workspace_root: &Path) -> Result<BTreeSet<InputKey>> {
     Ok(out)
 }
 
-fn discover_sources(sources: &[String]) -> Result<BTreeSet<InputKey>> {
+/// Which contract crate a source set comes from. Only core/controlplane defines the
+/// `variants!` macro the walker reads through; in a domain API crate the same name
+/// could be any macro, so it is refused like every other item-position invocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ContractRoot {
+    Domain,
+    ControlPlane,
+}
+
+fn discover_sources(sources: &[String], root: ContractRoot) -> Result<BTreeSet<InputKey>> {
     let syntax = sources
         .iter()
         .map(|source| syn::parse_file(source).context("parse API source"))
@@ -146,7 +155,7 @@ fn discover_sources(sources: &[String]) -> Result<BTreeSet<InputKey>> {
     let mut types = Types::new();
     let mut traits = Vec::new();
     for file in &syntax {
-        walk_items(&file.items, &mut types, &mut traits)?;
+        walk_items(&file.items, root, &mut types, &mut traits)?;
     }
 
     let mut out = BTreeSet::new();
@@ -199,6 +208,7 @@ fn discover_sources(sources: &[String]) -> Result<BTreeSet<InputKey>> {
 /// key, no golden row, and every input gate green over an unexamined caller string.
 fn walk_items<'a>(
     items: &'a [Item],
+    root: ContractRoot,
     types: &mut Types,
     traits: &mut Vec<&'a ItemTrait>,
 ) -> Result<()> {
@@ -216,12 +226,16 @@ fn walk_items<'a>(
                 // tests.rs: a fixture contract inside a test module is not a real contract.
                 if !is_cfg_test(&module.attrs) {
                     if let Some((_, inner)) = &module.content {
-                        walk_items(inner, types, traits)?;
+                        walk_items(inner, root, types, traits)?;
                     }
                 }
                 continue;
             }
-            Item::Macro(mac) if mac.ident.is_none() && mac.mac.path.is_ident("variants") => {
+            Item::Macro(mac)
+                if root == ContractRoot::ControlPlane
+                    && mac.ident.is_none()
+                    && mac.mac.path.is_ident("variants") =>
+            {
                 let item = variants_enum(&mac.mac)?;
                 (item.ident.to_string(), parse_enum(&item))
             }
