@@ -2008,11 +2008,14 @@ The ports:
   and 13d; its checklist (`docs/plans/2026-11-17-step14-characters-checklist.md`) is re-cut
   against them, leaving only its own data decisions (G2, G3, G7, G8, G10, G11); G6 moved
   to Step 13d.
+  Contributes `EntityLabel{character}` (Step 13c Refs seam).
 - **Step 15 — wallet.**
   - Economy page (`pages-platform.js:164-185`; the global ledger is FAKE per R1).
   - Wallet tab; grant/revoke (REAL).
   - Embers list column (DERIV); tile embers spent (DERIV).
   - Writer.
+  - Ledger player column draws accounts' `EntityLabel{player}`; part `a` adds the
+    splitproof assertion of the Step 13c Refs seam (label answered by accounts-svc).
 - **Step 16 — inventory.** Inventory tab; grant item disabled.
 - **Step 17 — friends.** Friends tab.
 - **Step 18 — groups.**
@@ -2108,14 +2111,8 @@ What dies, in this step:
   (`Link`); K20 `PageDecl.params` names the page URL keys forwarded to
   `PanelQuery.params` (covered by the existing `cp.panel req.params` policy rows unless
   conformance proves otherwise), and `FilterKind::Select`.
-- Cross-module: K19 `Point::EntityLabel{kind}`, answered by the kind's owner (the portal
-  mediates; no module imports another); K21 `controlplane::MAX_PANEL_REFS` (O2). The
-  portal collects the distinct refs of each kind on a rendered page (a row may carry
-  several, e.g. a timeline actor and target) and sends them in calls of at most
-  `MAX_PANEL_REFS`, so a page of any size gets every label and column cell (the plan's
-  mechanism for K21's "the portal never exceeds it", from plan review P1, 2026-11-17);
-  `LocalFace` refuses a larger `refs` as a backstop. The `cp.panel req.refs` conformance rationale
-  names the bound.
+- Cross-module: K19 `Point::EntityLabel{kind}` and K21 `controlplane::MAX_PANEL_REFS`
+  (O2), specified once in the **Refs seam** block below.
 - Text: K18 the noun has a singular and a plural; the portal picks the singular at 1.
 - Shared FAKE helper (X3): one deterministic helper in `controlplane` (explicit-width hash
   of an entity id, no clock, no rand); accounts and the portal's `fakes.rs` move to it.
@@ -2133,26 +2130,58 @@ What dies, in this step:
   toolbar; truthful constants beat FAKE, and an exact `count(*)` carries a comment naming a
   missing index; "—" for a never-happened value; D4 vocabulary.
 
+**Refs seam** (K19, K21, O2; review unit (ii)). The one specification of how ids cross
+modules on a rendered page; plan review 2026-11-18 found three gaps in the earlier
+scattered sentences (F1, F3, F4), so every rule of this seam lives here and nowhere else.
+- Unit: one slot response (one table, one panel body), not the page. Each list column and
+  each label pass collects the distinct refs of its kind from that response; a row may
+  carry several (a timeline actor and target).
+- Batching: the distinct refs are split into calls of at most `MAX_PANEL_REFS` (the plan's
+  mechanism for K21's "the portal never exceeds it", from plan review P1, 2026-11-17). All
+  column × chunk calls run concurrently; the chunks of one column share that column's one
+  deadline (the decl's, as `fan_out` uses today), not one deadline each.
+- Failure: any chunk that fails, times out or answers a primitive other than the expected
+  one makes the whole column `ColumnOutcome::Failed`: the marker in every cell and one
+  warn banner, as today. No partial column.
+- Cap backstop (O2): `LocalFace` refuses `refs` longer than `MAX_PANEL_REFS` before the
+  provider runs, with `opsapi::Error::invalid` (never `not_found`, which the engine
+  draws as an empty slot and would hide the refusal). The `cp.panel req.refs` conformance
+  rationale names the bound.
+- Labels: one label pass per slot response, after its body (and its columns) are
+  built; it reads refs from the body only, never from another slot. A pass per kind calls
+  that kind's `EntityLabel` contribution under its own decl's deadline, batched and
+  chunked as above. A label that fails, times out, is denied (role below `min_role`, zero
+  calls) or is missing from the answer draws the plain id, as `ref_cell` does today; a
+  failed label pass adds no banner (the id is still a correct, linked value).
+- Producers: accounts contributes `EntityLabel{player}` (the handle) in this step,
+  unit (ii); characters contributes `EntityLabel{character}` in Step 14. Any later kind's
+  owner adds its own with its port.
+- Consumers and the split assertion: the first consumer of a cross-module label is the
+  Step 15 wallet ledger (player). Its part `a` adds the committed splitproof assertion
+  that the ledger draws a player label answered by accounts-svc.
+
 (c) Tests, `[opus]` test-author after the code lands:
 - a golden case for each new field: `Column.wrap`, `Cell.row`, `PanelBody.foot`,
   `PanelBody.tag`, `ContributionDecl.readonly`, the tab tiles row, `Layout::Rows`,
   `TimelineEntry.title/badges/actor`, `Timeline.days` and the date format, `Field.mono` and
   `placeholder`, `FormSpec.title`, `SecretReveal.extra`, the singular noun, `a.mono`;
 - row clickability by kind; the down-module row-menu group and tab dot;
-- `EntityLabel` and list-column batching: distinct refs per kind, split into cap-sized calls
-  (a page with more distinct refs than `MAX_PANEL_REFS` still gets every cell and label),
-  ok/failing/denied, a row carrying two refs of one kind;
-- the cap refused in `LocalFace` before the provider runs (O2), on the monolith face;
+- the Refs seam block, one named test per rule: distinct refs per kind; more distinct
+  refs than `MAX_PANEL_REFS` split into chunks that all run and still fill every cell and
+  label; the chunks of one column share one deadline; one failing chunk fails the whole
+  column; a row carrying two refs of one kind; a label that fails, times out, is denied or
+  is missing draws the id with no banner; labels read from the body only;
+- the cap refused in `LocalFace` with `invalid` before the provider runs (O2), on the
+  monolith face;
 - split, the at-risk topology: a committed splitproof assertion that an over-cap
   `cp.panel` is refused over the wire by the remote `LocalFace` (authoring `[opus]`
-  test-author, audit proof-auditor). The split assertion that a page draws an
-  `EntityLabel` answered by another `*-svc` lands with the first port that contributes
-  one (Step 16 inventory or Step 17 friends), named in that port's part `a`.
+  test-author, audit proof-auditor). The cross-svc label assertion is Step 15's (Refs seam
+  block).
 
 (d) Lanes and review units: `[opus]` core-implementer in two review units, each with its
 own review rounds: (i) portal-only cells, chrome, forms and text (K1–K18 minus K17, the
-helper move); (ii) the cross-process seams (K17, K19, K20, K21 with O2), which carry the
-split risk. Then `[opus]` test-author; `[docs]` docs-writer for the skill rules and the
+helper move); (ii) the cross-process seams (K17, K20, and the Refs seam with accounts'
+`EntityLabel{player}`), which carry the split risk. Then `[opus]` test-author; `[docs]` docs-writer for the skill rules and the
 event-plane-ops text; `[review]` core-reviewer, plus proof-auditor on the goldens and the
 splitproof assertion.
 
@@ -2368,8 +2397,8 @@ plan. `eventctl seed-mockup` stays as the Event plane's dev fixture.
   - a `__` field key, a `_`-prefixed field key, a field key equal to a `hidden` key;
   - a 65-byte action id and a 65-byte contribution id;
   - an undecodable `Then::Form` default.
-- `core/admin` engine test for the Step 13 `EntityListColumn` fan-out: one call per page,
-  and a failing column does not fail the table.
+- `core/admin` engine test for the Step 13 `EntityListColumn` fan-out: one call per column
+  per chunk (Step 13c Refs seam), and a failing column does not fail the table.
 - `core/admin/src/engine/*_tests.rs`:
   - deadline → error; deadline with last-good → stale;
   - role below `min_role` → denied with zero provider calls;
