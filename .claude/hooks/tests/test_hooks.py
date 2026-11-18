@@ -177,11 +177,6 @@ BASE_CASES = [
     ("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"prompt": "x", "model": "  "}}, "deny"),
     ("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"prompt": "x", "model": "sonnet", "effort": "medium"}}, "silent"),
     ("explicit_model_guard", None, "silent"),
-    ("haiku_listing_reminder", {"tool_name": "Agent", "tool_input": {"model": "opus", "prompt": "List all callers of foo"}}, "deny"),
-    ("haiku_listing_reminder", {"tool_name": "Agent", "tool_input": {"model": "opus", "prompt": "List all callers of foo force-model"}}, "silent"),
-    ("haiku_listing_reminder", {"tool_name": "Agent", "tool_input": {"model": "opus", "prompt": "List all callers and analyze the flow"}}, "silent"),
-    ("haiku_listing_reminder", {"tool_name": "Agent", "tool_input": {"model": "haiku", "prompt": "List all callers"}}, "silent"),
-    ("haiku_listing_reminder", None, "silent"),
     ("grep_sweep_guard", sh("grep -r foo target/"), "deny"),
     ("grep_sweep_guard", sh("grep -rn foo core/"), "deny"),
     ("grep_sweep_guard", sh("git log | grep foo"), "silent"),
@@ -211,8 +206,6 @@ BASE_CASES = [
     ("grep_sweep_guard", sh("find . -maxdepth 1 -exec cat {} \\;"), "silent"),
     ("grep_sweep_guard", sh("$s = @'\ngrep -r foo .\n'@\nWrite-Output $s", "PowerShell"), "silent"),
     ("grep_sweep_guard", None, "silent"),
-    ("exit_plan_checklist", {"tool_name": "ExitPlanMode", "tool_input": {}}, "context"),
-    ("exit_plan_checklist", None, "context"),
     ("post_commit_review_reminder", {"tool_name": "PowerShell", "cwd": FX, "tool_input": {"command": "git commit -m x"}, "tool_response": {"stdout": "[master " + PROSE_SHA + "] docs\n"}}, "silent"),
     ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": FX, "tool_input": {"command": "git commit -m x"}, "tool_response": {"stdout": "[master " + CODE_SHA + "] refactor\n"}}, "context"),
     ("post_commit_review_reminder", {"tool_name": "Bash", "cwd": FX, "tool_input": {"command": "git commit --amend"}, "tool_response": {"stdout": "[master " + CODE_SHA + "] x\n"}}, "silent"),
@@ -348,9 +341,6 @@ class HookCases(unittest.TestCase):
     def test_grep_sweep(self):
         self.check("grep_sweep_guard")
 
-    def test_haiku_listing(self):
-        self.check("haiku_listing_reminder")
-
     def test_no_worktree(self):
         self.check("no_worktree_hook")
 
@@ -358,12 +348,6 @@ class HookCases(unittest.TestCase):
         self.check("explicit_model_guard")
         ok = run("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"model": "opus", "effort": "medium", "prompt": "x"}})
         self.assertEqual(ok, "silent")
-
-    def test_exit_plan_context_never_deny(self):
-        got = run("exit_plan_checklist", {"tool_name": "ExitPlanMode", "tool_input": {}})
-        self.assertTrue(got.startswith("context:"))
-        for needle in ("core-reviewer", "test-author", "model"):
-            self.assertIn(needle, got)
 
 
 sys.path.insert(0, HOOKS)
@@ -802,8 +786,7 @@ class Wiring(unittest.TestCase):
             ("PreToolUse", "Bash|PowerShell"): ["ref_reminder.py", "git_safety_hook.py",
                                                 "grep_sweep_guard.py"],
             ("PreToolUse", "Agent|EnterWorktree"): ["no_worktree_hook.py"],
-            ("PreToolUse", "Agent"): ["explicit_model_guard.py", "haiku_listing_reminder.py"],
-            ("PreToolUse", "ExitPlanMode"): ["exit_plan_checklist.py"],
+            ("PreToolUse", "Agent"): ["explicit_model_guard.py"],
             ("PreToolUse", "Grep|Bash"): ["scout_nav_guard.py"],
             ("PreToolUse", "SubagentHandback"): ["scout_nav_guard.py"],
             ("PostToolUse", "Bash|PowerShell"): ["post_commit_review_reminder.py"],
@@ -816,11 +799,9 @@ class Wiring(unittest.TestCase):
         self.assertEqual(set(self.hooks), {"PreToolUse", "PostToolUse", "PostToolUseFailure"})
         self.assertEqual(sum(len(v) for v in self.hooks.values()), len(want))
 
-    def test_agent_prompt_guardrail_present(self):
-        grp = [g for g in self.hooks["PreToolUse"] if g["matcher"] == "Agent"][0]
-        prompts = [h for h in grp["hooks"] if h["type"] == "prompt"]
-        self.assertEqual(len(prompts), 1)
-        self.assertIn("$ARGUMENTS", prompts[0]["prompt"])
+    def test_no_prompt_hooks(self):
+        kinds = {h["type"] for groups in self.hooks.values() for g in groups for h in g["hooks"]}
+        self.assertEqual(kinds, {"command"})
 
     def test_scripts_exist_and_all_wired(self):
         wired = {self.script(h) for groups in self.hooks.values() for g in groups
@@ -881,8 +862,7 @@ class RefReminder(unittest.TestCase):
 
 class FailOpen(unittest.TestCase):
     HOOKS = ("git_safety_hook", "no_worktree_hook", "explicit_model_guard",
-             "haiku_listing_reminder", "grep_sweep_guard", "ref_reminder",
-             "post_commit_review_reminder", "exit_plan_checklist")
+             "grep_sweep_guard", "ref_reminder", "post_commit_review_reminder")
 
     def test_malformed_json(self):
         for hook in self.HOOKS:
@@ -891,8 +871,7 @@ class FailOpen(unittest.TestCase):
                     got = run(hook, None, raw=raw)
                     self.assertFalse(got.startswith("ERR"), got)
                     self.assertNotIn(got, ("deny", "ask"))
-                    if hook != "exit_plan_checklist":
-                        self.assertEqual(got, "silent")
+                    self.assertEqual(got, "silent")
 
 
 if __name__ == "__main__":

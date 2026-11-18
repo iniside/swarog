@@ -13,7 +13,6 @@ import sys
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 SHELL_TOOLS = {"Bash", "PowerShell"}
 
-TAXONOMY = "docs/reference/core-failure-taxonomy.md"
 EVENT_PLANE = "docs/reference/event-plane-ops.md"
 PUSH_HUB = "docs/reference/push-hub.md"
 MOCKUP_SKILL = ".agents/skills/mockup-implementation/SKILL.md"
@@ -24,7 +23,6 @@ PATH_TRIGGERS = (
     ("core/asyncevents/", (EVENT_PLANE,)),
     ("core/edge/", (PUSH_HUB,)),
     ("modules/gateway/", (PUSH_HUB,)),
-    ("core/", (TAXONOMY,)),
     ("uilayout/", (MOCKUP_SKILL,)),
     ("core/admin/src/templates/", (MOCKUP_SKILL,)),
     ("core/admin/src/portal.css", (MOCKUP_SKILL,)),
