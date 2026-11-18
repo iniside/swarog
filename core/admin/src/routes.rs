@@ -172,7 +172,7 @@ fn in_tiles(manifest: &Manifest, decl: &ContributionDecl) -> bool {
     manifest.pages.iter().filter(|pg| &pg.id == page).any(|pg| pg.tiles.contains(&decl.id))
 }
 
-fn slot(operator: &Operator, module: &str, decl: &ContributionDecl, entity: Option<&EntityRef>, tiles: bool) -> SlotView {
+pub(crate) fn slot(operator: &Operator, module: &str, decl: &ContributionDecl, entity: Option<&EntityRef>, tiles: bool) -> SlotView {
     let mut url = panel_url(module, &decl.id);
     if let Some(e) = entity {
         url.push_str(&format!("?entity={}", render::encode(&render::entity_param(e))));

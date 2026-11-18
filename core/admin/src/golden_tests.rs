@@ -27,11 +27,9 @@
 //!   distinct rendered cases they name must equal the number of variants parsed from the enums'
 //!   own source, so a new variant whose case is not rendered, or that reuses another variant's
 //!   case, fails;
-//! - every variant of each enum of [`SEEN_ENUMS`] is held by some case: on a panel case's body
-//!   or action, counting only what the template draws in the case's state and mode
-//!   ([`panel_variants`]), or on a confirm modal's spec ([`confirm_variants`]), checked against
-//!   the variants parsed from the enums' own source. Every `pub enum` of that source is in
-//!   [`SEEN_ENUMS`] or, with the reason it is not, in [`NOT_SEEN`] ([`check_enum_partition`]).
+//! - every variant of every enum `controlplane::drawn_enums` registers is converted into a view
+//!   model by the render path while the cases render, as `render::seen` records it
+//!   ([`golden_renders_convert_every_drawn_enum_variant`]).
 //!
 //! Inputs are fixed: one csrf, one form id, fixed `age_s`, and no clock or id generator,
 //! because the render layer reads neither.
@@ -43,10 +41,10 @@ use std::path::{Path, PathBuf};
 
 use controlplane::{
     ActionDecl, ActionPoint, Align, AttentionItem, Axis, Banner, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
-    ContributionDecl, DataTable, Delta, Emphasis, EntityHeader, EntityRef, Field, FieldKind, FilterDef, FilterKind,
-    FormSpec, KpiTile, Link, Manifest, PageInfo, Palette, PanelBody, Point, Primitive, PropertyList, QueueItem,
-    QueueState, ReasonReq, Role, Row, Series, ServiceItem, ServiceState, ServiceStatus, Severity, SortDir, Then,
-    TimeSeriesChart, Timeline, TimelineEntry, Tone, WorkQueue,
+    ContributionDecl, DataTable, Delta, DrawnEnum, Emphasis, EntityHeader, EntityRef, Field, FieldKind, FilterDef,
+    FilterKind, FormSpec, KpiTile, Layout, Link, Manifest, PageInfo, Palette, PanelBody, Point, Primitive,
+    PropertyList, QueueItem, QueueState, ReasonReq, Role, Row, Series, ServiceItem, ServiceState, ServiceStatus,
+    Severity, SortDir, Then, TimeRange, TimeSeriesChart, Timeline, TimelineEntry, Tone, WorkQueue,
 };
 use minijinja::Environment;
 
@@ -55,8 +53,8 @@ use crate::engine::columns::{ColumnOutcome, ListColumn};
 use crate::engine::panels::{LastValue, PanelState};
 use crate::engine::roles::Operator;
 use crate::render::{
-    self, ActionItem, ActionResultView, FlashView, FormFrame, FormInstance, MenuView, ModalSpec, PanelInput,
-    RevealView, SearchGroupView, SearchHitView, SearchView, SlotView,
+    self, ActionItem, ActionResultView, Crumb, DashboardView, FlashView, FormFrame, FormInstance, MenuView, ModalSpec,
+    OperatorView, PageView, PanelInput, RevealView, SearchGroupView, SearchHitView, SearchView, ShellView, SlotView,
 };
 use crate::routes;
 
@@ -739,6 +737,52 @@ fn slot(mode: &'static str, denied: bool) -> SlotView {
     }
 }
 
+fn contribution(id: &str, point: Point, min_role: Role) -> ContributionDecl {
+    ContributionDecl {
+        id: id.to_string(),
+        point,
+        order: 0,
+        title: "Golden panel".to_string(),
+        icon: "server".to_string(),
+        min_role,
+        cache_ttl_s: None,
+        deadline_ms: 800,
+    }
+}
+
+/// The slot `routes::slot` builds for contribution `id` at `point` for a Viewer, so a higher
+/// `min_role` draws as denied.
+fn point_slot(id: &str, point: Point, min_role: Role, tiles: bool) -> SlotView {
+    routes::slot(&operator(Role::Viewer), MODULE, &contribution(id, point, min_role), None, tiles)
+}
+
+/// The shell of a screen for a Viewer, with nothing in its nav, popovers or flash.
+fn shell_view(crumb: &str) -> ShellView {
+    ShellView {
+        operator: OperatorView::new("golden", crate::role_name(Role::Viewer)),
+        csrf: CSRF.to_string(),
+        sections: Vec::new(),
+        active: None,
+        crumbs: vec![Crumb { label: crumb.to_string(), href: None }],
+        scopes: Vec::new(),
+        flash: None,
+        deployment: None,
+        health: None,
+        notifications: None,
+    }
+}
+
+/// `view` drawn as screen `name` of `shell.html`, as `routes::screen` draws it, cut to its
+/// `<main>`: the shell around it is the same on every screen.
+fn screen(env: &Environment<'_>, name: &str, view: &impl serde::Serialize) -> Result<String, minijinja::Error> {
+    let ctx = minijinja::context! { screen => name, v => minijinja::Value::from_serialize(view) };
+    let raw = render::page(env, "shell.html", &ctx)?;
+    let (open, close) = ("<main class=\"main\">", "</main>");
+    let start = raw.find(open).expect("the shell draws <main>");
+    let end = start + raw[start..].find(close).expect("<main> closes") + close.len();
+    Ok(raw[start..end].to_string())
+}
+
 fn kpi(delta: Option<Delta>) -> KpiTile {
     KpiTile {
         label: "Players online".to_string(),
@@ -1270,7 +1314,6 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             result: case.render(env),
             primitive: case.body.as_ref().map(|b| primitive_case(&b.primitive)),
             state: (case.mode == "panel").then(|| state_case(case.state)),
-            variants: panel_variants(&case),
         })
     };
 
@@ -1924,10 +1967,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         confirm_label: "Ban".to_string(),
     };
     let ban = ActionDecl { danger: true, ..decl("ban", "Ban player", "", Then::Confirm(ban_spec.clone())) };
-    out.push(Rendered {
-        variants: confirm_variants(&ban_spec),
-        ..plain("modal_confirm_danger_impact_reason", modal(&ban, ModalSpec::Confirm(&ban_spec)))
-    });
+    out.push(plain("modal_confirm_danger_impact_reason", modal(&ban, ModalSpec::Confirm(&ban_spec))));
     let pause_spec = ConfirmSpec {
         body: "Deliveries stop until resumed.".to_string(),
         reason: ReasonReq::Optional,
@@ -1935,20 +1975,14 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         ..confirm("Pause webhooks?", ConfirmTone::Warn)
     };
     let pause = decl("pause", "Pause queue", "pause", Then::Confirm(pause_spec.clone()));
-    out.push(Rendered {
-        variants: confirm_variants(&pause_spec),
-        ..plain("modal_confirm_warn_optional_reason", modal(&pause, ModalSpec::Confirm(&pause_spec)))
-    });
+    out.push(plain("modal_confirm_warn_optional_reason", modal(&pause, ModalSpec::Confirm(&pause_spec))));
     let notice_spec = ConfirmSpec {
         body: "Players see the notice on their next sign-in.".to_string(),
         confirm_label: "Send".to_string(),
         ..confirm("Send the notice?", ConfirmTone::Info)
     };
     let notice = decl("notice", "Send notice", "", Then::Confirm(notice_spec.clone()));
-    out.push(Rendered {
-        variants: confirm_variants(&notice_spec),
-        ..plain("modal_confirm_info_no_reason", modal(&notice, ModalSpec::Confirm(&notice_spec)))
-    });
+    out.push(plain("modal_confirm_info_no_reason", modal(&notice, ModalSpec::Confirm(&notice_spec))));
     let grant_spec = FormSpec {
         fields: vec![
             Field { required: true, ..field("item_id", "Item", FieldKind::Ref("item".to_string()), None) },
@@ -2081,6 +2115,74 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     );
     out.push(plain("search_no_matches", render::fragment(env, "primitives.html", "search", &nothing)));
 
+    // ---- each Point's slot through routes::slot, each Layout's page, the dashboard's ranges ----
+    let tab = || Point::EntityTab {
+        kind: "player".to_string(),
+        tab: "items".to_string(),
+        tab_label: "Items".to_string(),
+        columns: 1,
+    };
+    let points = [
+        Point::Page("overview".to_string()),
+        Point::DashboardTile,
+        Point::DashboardAttention,
+        Point::DashboardPanel,
+        Point::DashboardWide,
+        Point::EntityHeader("player".to_string()),
+        tab(),
+        Point::EntityTabCount { kind: "player".to_string(), tab: "items".to_string() },
+        Point::EntitySummary("player".to_string()),
+        Point::EntityListColumn { kind: "player".to_string(), label: "Guild".to_string(), align: Align::Left },
+        Point::NavCounter,
+    ];
+    let roles = [Role::Viewer, Role::Operator, Role::Admin];
+    let every_point: Result<Vec<String>, minijinja::Error> = points
+        .into_iter()
+        .zip(roles.into_iter().cycle())
+        .enumerate()
+        .map(|(i, (point, role))| {
+            let s = point_slot(&format!("c{i}"), point, role, false);
+            render::fragment(env, "primitives.html", "slot", &s)
+        })
+        .collect();
+    out.push(plain("slot_every_point", every_point.map(|slots| slots.join("\n"))));
+    let dashboard = DashboardView {
+        shell: shell_view("Dashboard"),
+        subtitle: "Golden deployment".to_string(),
+        tiles: vec![point_slot("tile", Point::DashboardTile, Role::Viewer, false)],
+        attention: vec![point_slot("attention", Point::DashboardAttention, Role::Viewer, false)],
+        panels: vec![point_slot("panel", Point::DashboardPanel, Role::Operator, false)],
+        wide: vec![point_slot("wide", Point::DashboardWide, Role::Admin, false)],
+        ranges: render::ranges(TimeRange::H24),
+    };
+    out.push(plain("screen_dashboard_ranges", screen(env, "dashboard", &dashboard)));
+    let page_point = || Point::Page("overview".to_string());
+    for (name, layout) in [
+        ("screen_page_stack", Layout::Stack(strings(&["a", "b"]))),
+        ("screen_page_grid21", Layout::Grid21(strings(&["a"]), strings(&["b"]))),
+        ("screen_page_grid2", Layout::Grid2(strings(&["a"]), strings(&["b"]))),
+    ] {
+        let ids = match &layout {
+            Layout::Stack(a) => vec![a],
+            Layout::Grid21(a, b) | Layout::Grid2(a, b) => vec![a, b],
+        };
+        let page = PageView {
+            shell: shell_view("Golden page"),
+            module: MODULE.to_string(),
+            title: "Golden page".to_string(),
+            subtitle: String::new(),
+            head_actions: Vec::new(),
+            tiles: vec![point_slot("tile", page_point(), Role::Viewer, true)],
+            layout: render::layout_name(&layout),
+            columns: ids
+                .into_iter()
+                .map(|column| column.iter().map(|id| point_slot(id, page_point(), Role::Viewer, false)).collect())
+                .collect(),
+            missing: Vec::new(),
+        };
+        out.push(plain(name, screen(env, "page", &page)));
+    }
+
     out.into_iter()
         .map(|r| {
             let raw = r.result.unwrap_or_else(|e| panic!("golden case {} failed to render: {e:#}", r.name));
@@ -2090,7 +2192,6 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
                 raw,
                 primitive: r.primitive,
                 state: r.state,
-                variants: r.variants,
             }
         })
         .collect()
@@ -2106,8 +2207,6 @@ struct Case {
     primitive: Option<&'static str>,
     /// [`state_case`] of a `render::panel` case drawn in panel chrome.
     state: Option<&'static str>,
-    /// [`panel_variants`] of a `render::panel` case, [`confirm_variants`] of a confirm modal's.
-    variants: Vec<(&'static str, String)>,
 }
 
 struct Rendered {
@@ -2115,17 +2214,10 @@ struct Rendered {
     result: Result<String, minijinja::Error>,
     primitive: Option<&'static str>,
     state: Option<&'static str>,
-    variants: Vec<(&'static str, String)>,
 }
 
 fn plain(name: &'static str, result: Result<String, minijinja::Error>) -> Rendered {
-    Rendered { name, result, primitive: None, state: None, variants: Vec::new() }
-}
-
-/// `(enum, variant)` for the `ConfirmTone` and `ReasonReq` of a confirm modal's spec, each of
-/// which `render::modal` maps to what the modal draws.
-fn confirm_variants(spec: &ConfirmSpec) -> Vec<(&'static str, String)> {
-    vec![("ConfirmTone", format!("{:?}", spec.tone)), ("ReasonReq", format!("{:?}", spec.reason))]
+    Rendered { name, result, primitive: None, state: None }
 }
 
 fn goldens(cases: &[Case]) -> Vec<(String, String)> {
@@ -2245,386 +2337,6 @@ fn check_variant_coverage(source: &str, name: &str, rendered: &BTreeSet<&str>) -
         ));
     }
     Ok(())
-}
-
-/// The enums whose variants [`panel_variants`] and [`confirm_variants`] collect, all in
-/// [`PRIMITIVE_SOURCE`].
-const SEEN_ENUMS: [&str; 14] = [
-    "CellKind",
-    "Tone",
-    "SortDir",
-    "Emphasis",
-    "Align",
-    "Link",
-    "Severity",
-    "Palette",
-    "ServiceState",
-    "Axis",
-    "FieldKind",
-    "Then",
-    "ConfirmTone",
-    "ReasonReq",
-];
-
-/// The `pub enum`s of [`PRIMITIVE_SOURCE`] outside [`SEEN_ENUMS`], each with why.
-const NOT_SEEN: [(&str, &str); 9] = [
-    ("Primitive", "one case per variant, checked by check_variant_coverage over primitive_case"),
-    (
-        "Role",
-        "drawn as text through role_name: a denied panel's \"Requires role <role>\" and the operator chip; not variant-guarded",
-    ),
-    ("TimeRange", "drawn by the dashboard range switch over panels::RANGES, not by a panel; not variant-guarded"),
-    ("InvokeOutcome", "an invoke's result, mapped to a status and a flash, reveal or redirect; no view model holds it"),
-    ("Layout", "drawn by the page shell through layout_name, not by a panel; not variant-guarded"),
-    (
-        "Point",
-        "render::mode_of maps each to the mode string a panel view holds; MODES guards the modes, not Point's variants",
-    ),
-    ("ActionPoint", "routes places an action by it; ActionItem keeps queue_row and table_row; not variant-guarded"),
-    ("FieldValue", "render::field draws Multi and Money decoded and every other variant as the raw string"),
-    ("FilterKind", "no view model reads it: render::filter_views draws a filter's label and param value only"),
-];
-
-/// The [`NOT_SEEN`] entries whose reason is that no view model holds or reads them: no
-/// [`VIEW_SOURCES`] file may name one.
-const UNREAD_ENUMS: [&str; 3] = ["InvokeOutcome", "ActionPoint", "FilterKind"];
-
-/// `render.rs`, which builds every view model, and every template, by file name.
-const VIEW_SOURCES: [(&str, &str); 5] = [
-    ("render.rs", include_str!("render.rs")),
-    ("templates/login.html.tmpl", include_str!("templates/login.html.tmpl")),
-    ("templates/modal.html.tmpl", include_str!("templates/modal.html.tmpl")),
-    ("templates/primitives.html.tmpl", include_str!("templates/primitives.html.tmpl")),
-    ("templates/shell.html.tmpl", include_str!("templates/shell.html.tmpl")),
-];
-
-/// One line `<name> is named at <file>:<line>` per whole-word occurrence of each of `names` in
-/// `sources`, skipping what follows `//` on a line of a `.rs` file: its comments.
-fn names_in(sources: &[(&str, &str)], names: &[&str]) -> Vec<String> {
-    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
-    let mut out = Vec::new();
-    for (file, source) in sources {
-        for (n, line) in source.lines().enumerate() {
-            let line = match line.find("//") {
-                Some(at) if file.ends_with(".rs") => &line[..at],
-                _ => line,
-            };
-            for name in names {
-                for (at, _) in line.match_indices(name) {
-                    if !word(line[..at].chars().next_back()) && !word(line[at + name.len()..].chars().next()) {
-                        out.push(format!("{name} is named at {file}:{}", n + 1));
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Fails unless [`SEEN_ENUMS`]-like `seen` and [`NOT_SEEN`]-like `not_seen` hold every
-/// `pub enum` opening a line of `source` once between them, and nothing else; the error lists
-/// each unclassified, stale, doubled or unexplained name.
-fn check_enum_partition(source: &str, seen: &[&str], not_seen: &[(&str, &str)]) -> Result<(), Vec<String>> {
-    let open = "pub enum ";
-    let declared: BTreeSet<&str> = source
-        .lines()
-        .filter_map(|line| line.trim_start().strip_prefix(open))
-        .map(|rest| &rest[..rest.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(rest.len())])
-        .collect();
-    let mut problems = Vec::new();
-    let mut listed: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for name in seen {
-        listed.entry(name).or_default().push("SEEN_ENUMS");
-    }
-    for (name, reason) in not_seen {
-        listed.entry(name).or_default().push("NOT_SEEN");
-        if reason.trim().is_empty() {
-            problems.push(format!("NOT_SEEN entry {name} gives no reason"));
-        }
-    }
-    for name in &declared {
-        if !listed.contains_key(name) {
-            problems.push(format!("pub enum {name} is in neither SEEN_ENUMS nor NOT_SEEN"));
-        }
-    }
-    for (name, lists) in &listed {
-        if !declared.contains(name) {
-            problems.push(format!("{} names {name}, which is no pub enum of the source", lists.join(" and ")));
-        }
-        if lists.len() > 1 {
-            problems.push(format!("{name} is listed {} times: {}", lists.len(), lists.join(", ")));
-        }
-    }
-    if problems.is_empty() {
-        Ok(())
-    } else {
-        Err(problems)
-    }
-}
-
-/// Whether `panel_fragment` draws the body of a panel in `state` through `body()`: its `live`
-/// set, which [`draws_body_matches_the_template`] reads back from the template. No wildcard
-/// arm: a new state does not compile until it says.
-///
-/// Empty is outside the set, but its body is not always undrawn: `empty_body` draws a Queue
-/// body through `queue()` and a Table body's `table_toolbar` and `table_foot`. Counting nothing
-/// for Empty is conservative: a variant that only an empty panel draws fails the gate rather
-/// than passing it.
-fn draws_body(state: PanelState) -> bool {
-    match state {
-        PanelState::Ok | PanelState::Stale | PanelState::Readonly => true,
-        PanelState::Empty | PanelState::Error | PanelState::Denied => false,
-    }
-}
-
-/// The keys of a `Cell` with every optional field unset, and with every one set. A field
-/// skipped when unset is in the second set only; the struct literal names every field, so a
-/// new one does not compile until it is set here.
-fn cell_key_bounds() -> (BTreeSet<String>, BTreeSet<String>) {
-    let keys = |c: Cell| -> BTreeSet<String> {
-        let value = serde_json::to_value(c).expect("a cell serializes");
-        value.as_object().expect("a cell is an object").keys().cloned().collect()
-    };
-    let full = Cell {
-        kind: CellKind::Text,
-        value: "x".to_string(),
-        tone: Some(Tone::Ok),
-        link: Some(page_link(MODULE, "page")),
-        bar: Some(50),
-        more: vec![cell(CellKind::Text, "y")],
-    };
-    (keys(cell(CellKind::Text, "x")), keys(full))
-}
-
-/// The keys of a serialized `Column`; the struct literal names every field, so a new one does
-/// not compile until it is set here.
-fn column_keys() -> BTreeSet<String> {
-    let full = Column {
-        key: "k".to_string(),
-        label: "K".to_string(),
-        kind: CellKind::Text,
-        sortable: true,
-        align: Align::Left,
-        sorted: Some(SortDir::Asc),
-    };
-    keys_of(full)
-}
-
-/// The keys of `value` serialized, an object.
-fn keys_of(value: impl serde::Serialize) -> BTreeSet<String> {
-    let value = serde_json::to_value(value).expect("the value serializes");
-    value.as_object().expect("the value is an object").keys().cloned().collect()
-}
-
-/// The keys of a serialized `AttentionItem`, `ServiceItem`, `Series` and `Field`, which
-/// [`panel_variants`] knows each by; the struct literals name every field, so a new one does
-/// not compile until it is set here.
-struct Shapes {
-    attention: BTreeSet<String>,
-    service: BTreeSet<String>,
-    series: BTreeSet<String>,
-    field: BTreeSet<String>,
-}
-
-fn shapes() -> Shapes {
-    Shapes {
-        attention: keys_of(AttentionItem {
-            severity: Severity::Err,
-            title: String::new(),
-            text: String::new(),
-            link: page_link(MODULE, "page"),
-            action_label: String::new(),
-            since: String::new(),
-        }),
-        service: keys_of(ServiceItem {
-            name: String::new(),
-            state: ServiceState::Running,
-            version: None,
-            value: None,
-            uptime: None,
-            note: None,
-            history: Vec::new(),
-        }),
-        series: keys_of(Series { label: String::new(), unit: String::new(), values: Vec::new(), axis: Axis::Left }),
-        field: keys_of(Field {
-            key: String::new(),
-            label: String::new(),
-            kind: FieldKind::Int,
-            required: false,
-            help: None,
-            default: None,
-            readonly: false,
-        }),
-    }
-}
-
-/// The variant a serialized enum value names: a unit variant's string, or the one key of a
-/// variant with data.
-fn variant_name(value: &serde_json::Value) -> Option<String> {
-    match value {
-        serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Object(map) if map.len() == 1 => map.keys().next().cloned(),
-        _ => None,
-    }
-}
-
-/// The modes `panel_fragment` branches on, `panel` being its last, unnamed branch.
-/// [`mode_draws_names_every_template_mode`] reads them back from the template.
-const MODES: [&str; 7] = ["tile", "attention", "header", "fact", "count", "nav", "panel"];
-
-/// What `panel_fragment` draws of a case in a `live` state, by mode: whether it draws the
-/// body's cells through `body()` or `cell()`, and whether it draws the actions as tools.
-///
-/// A live `KpiTile` body takes the tile branch in every mode, which draws `kpi()`: no cell and
-/// no tool. A tile with another body draws the error mini-panel. Count draws only the cell's
-/// value and nav only the value with an err or warn class, neither through `cell()`. Header
-/// draws `body()`, and so its status through `cell()`, only for an `EntityHeader`; attention
-/// and fact draw `body()` for any body. `render::prim` turns a `ColumnCells` body into an
-/// `Empty` view, so no mode draws its cells. Only the
-/// panel mode draws tools. The mode is a string, not an enum, so no match on it is exhaustive:
-/// a mode outside [`MODES`] panics here, and a template mode outside [`MODES`] fails
-/// [`mode_draws_names_every_template_mode`].
-fn mode_draws(mode: &str, primitive: Option<&Primitive>) -> (bool, bool) {
-    if matches!(primitive, Some(Primitive::KpiTile(_))) {
-        return (false, false);
-    }
-    let (cells, tools) = match mode {
-        "panel" => (true, true),
-        "attention" | "fact" => (true, false),
-        "header" => (matches!(primitive, Some(Primitive::EntityHeader(_))), false),
-        "tile" | "count" | "nav" => (false, false),
-        other => panic!("mode {other:?} is not in MODES: say in mode_draws what panel_fragment draws in it"),
-    };
-    (cells && !matches!(primitive, Some(Primitive::ColumnCells(_))), tools)
-}
-
-/// `(enum, variant)` for each `CellKind`, `Tone` and `Link` on a cell of `case`'s body, each
-/// `SortDir` and `Align` on a column of it, each `Severity` and `Link` of an attention item,
-/// each `ServiceState` of a service item and its history, each `Axis` of a series, each
-/// `FieldKind` of a field, the `Palette` of a `KpiTile`'s spark and the `Emphasis` and `Then`
-/// of each tool, as the view model holds it, counting only what the template draws: nothing
-/// for a state outside the `live` set ([`draws_body`]), the body only in a mode that draws it
-/// through `body()` or `cell()`, and tools only in the panel mode ([`mode_draws`]). The
-/// tools of an empty panel are not counted either, though its `when_empty` tools are drawn,
-/// so the gate is conservative for Empty. A live `KpiTile` draws `kpi()` in every mode, and its
-/// spark, so its `Palette`, only from two points of its series on (`render::spark`).
-///
-/// The tools are the view's `tools`, which hold no queue-row or table-row action, and are
-/// drawn by `action_button` in the head of a titled panel or in the footer of a PropertyList
-/// with code; an untitled panel without that footer draws none. `action_button` draws a
-/// tool's `Then` only while it is enabled, and its `Emphasis` only while it is not a danger.
-///
-/// A cell is an object of the body's serialization whose keys hold every key of an unset
-/// `Cell` and no key a fully set `Cell` lacks ([`cell_key_bounds`]). A cell with a field
-/// skipped when unset still matches, set or not; an object of another struct matches only if
-/// its keys fall within those bounds, which `Column`'s `label`, `sortable` and `align` do not.
-/// A column is an object whose keys are exactly a `Column`'s ([`column_keys`]), and so is each
-/// struct of [`Shapes`].
-fn panel_variants(case: &PanelCase) -> Vec<(&'static str, String)> {
-    fn push(
-        map: &serde_json::Map<String, serde_json::Value>,
-        key: &str,
-        name: &'static str,
-        out: &mut Vec<(&'static str, String)>,
-    ) {
-        if let Some(variant) = map.get(key).and_then(variant_name) {
-            out.push((name, variant));
-        }
-    }
-    fn walk(
-        v: &serde_json::Value,
-        bounds: &(BTreeSet<String>, BTreeSet<String>),
-        columns: &BTreeSet<String>,
-        shapes: &Shapes,
-        out: &mut Vec<(&'static str, String)>,
-    ) {
-        match v {
-            serde_json::Value::Object(map) => {
-                let keys: BTreeSet<String> = map.keys().cloned().collect();
-                if bounds.0.is_subset(&keys) && keys.is_subset(&bounds.1) {
-                    push(map, "kind", "CellKind", out);
-                    push(map, "tone", "Tone", out);
-                    push(map, "link", "Link", out);
-                }
-                if &keys == columns {
-                    push(map, "sorted", "SortDir", out);
-                    push(map, "align", "Align", out);
-                }
-                if keys == shapes.attention {
-                    push(map, "severity", "Severity", out);
-                    push(map, "link", "Link", out);
-                }
-                if keys == shapes.service {
-                    push(map, "state", "ServiceState", out);
-                    for entry in map.get("history").and_then(|h| h.as_array()).into_iter().flatten() {
-                        if let Some(state) = entry.get(1).and_then(variant_name) {
-                            out.push(("ServiceState", state));
-                        }
-                    }
-                }
-                if keys == shapes.series {
-                    push(map, "axis", "Axis", out);
-                }
-                if keys == shapes.field {
-                    push(map, "kind", "FieldKind", out);
-                }
-                map.values().for_each(|x| walk(x, bounds, columns, shapes, out));
-            }
-            serde_json::Value::Array(xs) => xs.iter().for_each(|x| walk(x, bounds, columns, shapes, out)),
-            _ => {}
-        }
-    }
-    if !draws_body(case.state) {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    if let Some(PanelBody { primitive: Primitive::KpiTile(k), .. }) = &case.body {
-        if k.series.len() >= 2 {
-            out.push(("Palette", format!("{:?}", k.spark)));
-        }
-    }
-    let (cells, tools) = mode_draws(case.mode, case.body.as_ref().map(|b| &b.primitive));
-    if cells {
-        let body = serde_json::to_value(&case.body).expect("a panel body serializes");
-        walk(&body, &cell_key_bounds(), &column_keys(), &shapes(), &mut out);
-    }
-    if tools {
-        let view = case.view();
-        let footer = view["body"]["type"] == "Props" && view["body"]["code"].as_str().is_some_and(|c| !c.is_empty());
-        let head = view["title"].as_str().is_some_and(|t| !t.is_empty());
-        if head || footer {
-            for a in view["tools"].as_array().into_iter().flatten() {
-                if a["danger"] != true {
-                    if let Some(emphasis) = a["emphasis"].as_str() {
-                        out.push(("Emphasis", emphasis.to_string()));
-                    }
-                }
-                if a["enabled"] == true {
-                    if let Some(then) = a["then"].as_str() {
-                        out.push(("Then", then.to_string()));
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Fails unless `seen` holds every variant of `enum <name>` in `source`, compared without
-/// case: the view model names an `Emphasis` in lower case.
-fn check_variants_seen(source: &str, name: &str, seen: &BTreeSet<String>) -> Result<(), String> {
-    let seen: BTreeSet<String> = seen.iter().map(|v| v.to_ascii_lowercase()).collect();
-    let missing: Vec<String> =
-        enum_variants(source, name)?.into_iter().filter(|v| !seen.contains(&v.to_ascii_lowercase())).collect();
-    if !missing.is_empty() {
-        return Err(format!("{name} variant(s) {missing:?} are in no case; the cases hold {seen:?}"));
-    }
-    Ok(())
-}
-
-/// The variants of `name` that `cases` hold.
-fn seen_variants(cases: &[Case], name: &str) -> BTreeSet<String> {
-    cases.iter().flat_map(|c| &c.variants).filter(|(e, _)| *e == name).map(|(_, v)| v.clone()).collect()
 }
 
 /// A template macro, a signature only it holds, and the cases whose render must hold it.
@@ -2946,12 +2658,6 @@ fn golden_cases_cover_every_macro_variant_and_state() {
     if let Err(problems) = check_macro_cases(MACRO_CASES, &templates(), &renders, &marked) {
         panic!("MACRO_CASES drift:\n  {}", problems.join("\n  "));
     }
-    if let Err(problems) = check_enum_partition(PRIMITIVE_SOURCE, &SEEN_ENUMS, &NOT_SEEN) {
-        panic!("SEEN_ENUMS / NOT_SEEN drift:\n  {}", problems.join("\n  "));
-    }
-    for name in SEEN_ENUMS {
-        check_variants_seen(PRIMITIVE_SOURCE, name, &seen_variants(&cases, name)).unwrap_or_else(|e| panic!("{e}"));
-    }
 
     let primitives: BTreeSet<&str> = cases.iter().filter_map(|c| c.primitive).collect();
     check_variant_coverage(PRIMITIVE_SOURCE, "Primitive", &primitives).unwrap_or_else(|e| panic!("{e}"));
@@ -2964,6 +2670,83 @@ fn golden_cases_cover_every_macro_variant_and_state() {
     {
         assert_eq!(own, Some(named), "case {named} is named for a variant it does not render");
     }
+}
+
+/// Every variant of every enum `controlplane::drawn_enums` registers is converted into a view
+/// model while the golden cases render.
+#[test]
+fn golden_renders_convert_every_drawn_enum_variant() {
+    let env = render::env().expect("templates compile");
+    // Collected over the golden run alone: a variant converted elsewhere (a route test, another case builder) is no golden that draws it.
+    let ((), record) = render::seen::collect(|| drop(cases(&env)));
+    if let Err(problems) = check_drawn(controlplane::drawn_enums(), &record) {
+        panic!("drawn enum variants no golden case converts:\n  {}", problems.join("\n  "));
+    }
+}
+
+/// Every problem of `record` against `drawn`: an empty registry, each declared variant no case
+/// converted, each enum no case converted at all, and each converted enum not registered.
+fn check_drawn(drawn: &[DrawnEnum], record: &render::seen::Record) -> Result<(), Vec<String>> {
+    if drawn.is_empty() {
+        return Err(vec!["controlplane::drawn_enums() is empty: no variants! entry is linked".to_string()]);
+    }
+    let mut drawn: Vec<&DrawnEnum> = drawn.iter().collect();
+    drawn.sort_by_key(|e| e.name);
+    let mut problems = Vec::new();
+    for e in &drawn {
+        let Some(seen) = record.get(e.name) else {
+            let all: Vec<String> = e.variants.iter().map(|v| format!("{}::{v}", e.name)).collect();
+            problems.push(format!("{} is converted by no golden case: {}", e.name, all.join(", ")));
+            continue;
+        };
+        for v in e.variants.iter().filter(|v| !seen.converted.contains(*v)) {
+            problems.push(format!("{}::{v} is converted by no golden case", e.name));
+        }
+    }
+    for name in record.keys().filter(|n| !drawn.iter().any(|e| e.name == **n)) {
+        problems.push(format!("{name} is converted but not registered through variants!"));
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems)
+    }
+}
+
+/// A record short one variant, one missing an enum, one holding an unregistered enum and an
+/// empty registry each fail, naming what is missing.
+#[test]
+fn check_drawn_names_each_unconverted_variant_and_enum() {
+    let drawn = [
+        DrawnEnum { name: "Tone", variants: &["Ok", "Warn"] },
+        DrawnEnum { name: "Axis", variants: &["Left", "Right"] },
+    ];
+    let entry = |e: &DrawnEnum, converted: &[&'static str]| {
+        (e.name, render::seen::Converted { declared: e.variants, converted: converted.iter().copied().collect() })
+    };
+    let full = render::seen::Record::from([entry(&drawn[0], &["Ok", "Warn"]), entry(&drawn[1], &["Left", "Right"])]);
+    assert_eq!(check_drawn(&drawn, &full), Ok(()));
+
+    let short = render::seen::Record::from([entry(&drawn[0], &["Ok"]), entry(&drawn[1], &["Left", "Right"])]);
+    assert_eq!(check_drawn(&drawn, &short), Err(vec!["Tone::Warn is converted by no golden case".to_string()]));
+
+    let no_axis = render::seen::Record::from([entry(&drawn[0], &["Ok", "Warn"])]);
+    assert_eq!(
+        check_drawn(&drawn, &no_axis),
+        Err(vec!["Axis is converted by no golden case: Axis::Left, Axis::Right".to_string()])
+    );
+
+    let mut extra = full.clone();
+    extra.extend([entry(&DrawnEnum { name: "Fresh", variants: &["A"] }, &["A"])]);
+    assert_eq!(
+        check_drawn(&drawn, &extra),
+        Err(vec!["Fresh is converted but not registered through variants!".to_string()])
+    );
+
+    assert_eq!(
+        check_drawn(&[], &full),
+        Err(vec!["controlplane::drawn_enums() is empty: no variants! entry is linked".to_string()])
+    );
 }
 
 #[test]
@@ -3147,345 +2930,6 @@ fn macro_cases_fail_on_a_signature_written_outside_any_macro() {
             "{\"body\", \"panel_fragment\", \"shell.html\"}; the entry names itself and {\"panel_fragment\"}"
         )]
     );
-}
-
-/// A scratch copy of each enum of [`SEEN_ENUMS`] with one variant more fails against the
-/// variants the cases hold today.
-#[test]
-fn seen_variants_fail_on_a_new_enum_variant() {
-    let env = render::env().expect("templates compile");
-    let cases = cases(&env);
-    for name in SEEN_ENUMS {
-        let seen = seen_variants(&cases, name);
-        check_variants_seen(PRIMITIVE_SOURCE, name, &seen).unwrap_or_else(|e| panic!("today's {name}: {e}"));
-        let open = format!("enum {name} {{");
-        let scratch = PRIMITIVE_SOURCE.replacen(&open, &format!("{open}\n    Fresh,"), 1);
-        assert_ne!(scratch, PRIMITIVE_SOURCE, "the scratch copy of {name} gained a variant");
-        let err = check_variants_seen(&scratch, name, &seen).expect_err("one variant more must fail");
-        assert!(err.starts_with(&format!("{name} variant(s) [\"Fresh\"] are in no case")), "{err}");
-    }
-    let kinds = seen_variants(&cases, "CellKind");
-    assert!(kinds.contains("User") && kinds.contains("Bytes"), "cells are read from the bodies: {kinds:?}");
-    assert!(seen_variants(&cases, "Emphasis").contains("ghost"), "emphasis is read from the actions");
-    assert!(seen_variants(&cases, "ConfirmTone").contains("Info"), "confirm tones are read from the modal specs");
-}
-
-/// The real lists partition the `pub enum`s of [`PRIMITIVE_SOURCE`]; a scratch copy gaining
-/// an enum, one losing a listed enum, and lists naming an enum twice each fail, naming it.
-#[test]
-fn enum_partition_fails_on_drift() {
-    check_enum_partition(PRIMITIVE_SOURCE, &SEEN_ENUMS, &NOT_SEEN).unwrap_or_else(|p| panic!("today: {p:?}"));
-
-    let gained = format!("{PRIMITIVE_SOURCE}\n#[derive(Clone, Copy)]\npub enum Fresh {{\n    A,\n}}\n");
-    assert_eq!(
-        check_enum_partition(&gained, &SEEN_ENUMS, &NOT_SEEN).expect_err("a new enum must fail"),
-        ["pub enum Fresh is in neither SEEN_ENUMS nor NOT_SEEN"]
-    );
-
-    for (gone, list) in [("Severity", "SEEN_ENUMS"), ("FilterKind", "NOT_SEEN")] {
-        let open = format!("pub enum {gone} {{");
-        let renamed = PRIMITIVE_SOURCE.replacen(&open, "pub enum Renamed {", 1);
-        assert_ne!(renamed, PRIMITIVE_SOURCE, "the scratch copy lost {gone}");
-        assert_eq!(
-            check_enum_partition(&renamed, &SEEN_ENUMS, &NOT_SEEN).expect_err("a stale entry must fail"),
-            [
-                "pub enum Renamed is in neither SEEN_ENUMS nor NOT_SEEN".to_string(),
-                format!("{list} names {gone}, which is no pub enum of the source"),
-            ]
-        );
-    }
-
-    let mut both = NOT_SEEN.to_vec();
-    both.push(("Tone", "drawn"));
-    assert_eq!(
-        check_enum_partition(PRIMITIVE_SOURCE, &SEEN_ENUMS, &both).expect_err("an overlap must fail"),
-        ["Tone is listed 2 times: SEEN_ENUMS, NOT_SEEN"]
-    );
-    let unexplained = [("Role", " ")];
-    let seen: Vec<&str> =
-        SEEN_ENUMS.into_iter().chain(NOT_SEEN.iter().map(|(n, _)| *n).filter(|n| *n != "Role")).collect();
-    assert_eq!(
-        check_enum_partition(PRIMITIVE_SOURCE, &seen, &unexplained).expect_err("an empty reason must fail"),
-        ["NOT_SEEN entry Role gives no reason"]
-    );
-}
-
-/// A `KpiTile`'s `Palette` counts in every mode while the panel is live and its series draws a
-/// spark, and not in an Error state or from a single point.
-#[test]
-fn seen_variants_read_a_kpi_palette_where_the_spark_draws() {
-    let palettes = |mode: &'static str, state: PanelState, tile: KpiTile| -> Vec<String> {
-        let case = PanelCase { mode, ..PanelCase::new(state, Some(body(Primitive::KpiTile(tile)))) };
-        panel_variants(&case).into_iter().filter(|(e, _)| *e == "Palette").map(|(_, v)| v).collect()
-    };
-    for mode in MODES {
-        assert_eq!(palettes(mode, PanelState::Ok, kpi(None)), ["Chart1"], "{mode}");
-    }
-    assert!(palettes("tile", PanelState::Error, kpi(None)).is_empty());
-    assert!(palettes("tile", PanelState::Ok, KpiTile { series: vec![4.0], ..kpi(None) }).is_empty());
-}
-
-/// The enum source the probe cases below are checked against: one variant every probe set
-/// holds through a baseline case, and one only the probe under test holds.
-const PROBE_SOURCE: &str = concat!(
-    "enum CellKind {\n    Text,\n    Mono,\n}\n",
-    "enum Tone {\n    Ok,\n    Warn,\n}\n",
-    "enum Emphasis {\n    Default,\n    Ghost,\n}\n"
-);
-
-/// A case in `mode` and `state` whose body is `primitive` and whose one action has `emphasis`,
-/// with only its [`panel_variants`] filled in.
-fn probe_case(mode: &'static str, state: PanelState, primitive: Primitive, emphasis: Emphasis) -> Case {
-    let tool_decl = ActionDecl { emphasis, ..decl("probe", "Probe", "refresh", Then::Invoke) };
-    let case = PanelCase { mode, actions: vec![tool(&tool_decl)], ..PanelCase::new(state, Some(body(primitive))) };
-    Case {
-        name: "probe",
-        golden: String::new(),
-        raw: String::new(),
-        primitive: None,
-        state: None,
-        variants: panel_variants(&case),
-    }
-}
-
-/// A panel-mode Ok baseline holding `Text`, `Ok` and `Default`, beside `probe` holding `Mono`,
-/// `Warn` and `Ghost` in `mode` and `state`.
-fn only_in(mode: &'static str, state: PanelState) -> [Case; 2] {
-    [
-        probe_case("panel", PanelState::Ok, Primitive::Cell(toned(CellKind::Text, "x", Tone::Ok)), Emphasis::Default),
-        probe_case(mode, state, Primitive::Cell(toned(CellKind::Mono, "x", Tone::Warn)), Emphasis::Ghost),
-    ]
-}
-
-/// The enums of [`PROBE_SOURCE`]; [`seen_variants_read_a_sorted_column_where_the_body_draws`]
-/// probes `SortDir`.
-const PROBE_ENUMS: [&str; 3] = ["CellKind", "Tone", "Emphasis"];
-
-/// Fails unless each `(enum, variant)` of `missing` is the one variant `cases` miss, and every
-/// other enum of [`PROBE_ENUMS`] is fully seen.
-fn assert_missing(cases: &[Case], missing: &[(&str, &str)], what: &str) {
-    for name in PROBE_ENUMS {
-        let result = check_variants_seen(PROBE_SOURCE, name, &seen_variants(cases, name));
-        match missing.iter().find(|(e, _)| *e == name) {
-            Some((_, variant)) => {
-                let err = result.expect_err(&format!("{what}: {name} {variant} must be unseen"));
-                assert!(err.starts_with(&format!("{name} variant(s) [\"{variant}\"] are in no case")), "{what}: {err}");
-            }
-            None => result.unwrap_or_else(|e| panic!("{what}: {name} must be seen: {e}")),
-        }
-    }
-}
-
-/// A `CellKind`, `Tone` or `Emphasis` variant held only by a case in a state outside the
-/// template's `live` set fails the check; the same case in a `live` state passes it.
-#[test]
-fn seen_variants_skip_a_state_outside_live() {
-    for state in [PanelState::Ok, PanelState::Stale, PanelState::Readonly] {
-        assert_missing(&only_in("panel", state), &[], &format!("panel {state:?}"));
-    }
-    let all = [("CellKind", "Mono"), ("Tone", "Warn"), ("Emphasis", "Ghost")];
-    for state in [PanelState::Empty, PanelState::Error, PanelState::Denied] {
-        assert_missing(&only_in("panel", state), &all, &format!("panel {state:?}"));
-    }
-}
-
-/// A variant held only by an Ok cell in a mode that does not draw it fails the check, and the
-/// same probe in the panel mode passes: count and nav draw the cell's value only, so its kind
-/// and tone are unseen, and only the panel mode draws tools, so the emphasis of a fact,
-/// attention or count case is unseen. A `KpiTile` body takes the tile branch even in the panel
-/// mode, so its actions are unseen too.
-#[test]
-fn seen_variants_skip_what_a_mode_does_not_draw() {
-    assert_missing(&only_in("panel", PanelState::Ok), &[], "panel");
-    let all = [("CellKind", "Mono"), ("Tone", "Warn"), ("Emphasis", "Ghost")];
-    for mode in ["count", "nav", "tile"] {
-        assert_missing(&only_in(mode, PanelState::Ok), &all, mode);
-    }
-    for mode in ["fact", "attention"] {
-        assert_missing(&only_in(mode, PanelState::Ok), &[("Emphasis", "Ghost")], mode);
-    }
-    // A header draws `body()` only for an `EntityHeader`, so a `Cell` body is unseen there.
-    assert_missing(&only_in("header", PanelState::Ok), &all, "header with a cell body");
-    let kpi_in_panel = [
-        probe_case("panel", PanelState::Ok, Primitive::Cell(toned(CellKind::Text, "x", Tone::Ok)), Emphasis::Default),
-        probe_case("panel", PanelState::Ok, Primitive::Cell(toned(CellKind::Mono, "x", Tone::Warn)), Emphasis::Default),
-        probe_case("panel", PanelState::Ok, Primitive::KpiTile(kpi(None)), Emphasis::Ghost),
-    ];
-    assert_missing(&kpi_in_panel, &[("Emphasis", "Ghost")], "panel with a kpi body");
-}
-
-/// A `SortDir` counts only where the body is drawn: on a sorted column of a panel-mode Ok
-/// table, not of a count-mode or an Error one; an unsorted column holds none.
-#[test]
-fn seen_variants_read_a_sorted_column_where_the_body_draws() {
-    let dirs = |mode: &'static str, state: PanelState, primitive: Primitive| -> Vec<String> {
-        let case = PanelCase { mode, ..PanelCase::new(state, Some(body(primitive))) };
-        panel_variants(&case).into_iter().filter(|(e, _)| *e == "SortDir").map(|(_, v)| v).collect()
-    };
-    assert_eq!(dirs("panel", PanelState::Ok, sorted_ascending_table()), ["Asc"]);
-    assert!(dirs("count", PanelState::Ok, sorted_ascending_table()).is_empty());
-    assert!(dirs("panel", PanelState::Error, sorted_ascending_table()).is_empty());
-    assert!(dirs("panel", PanelState::Ok, noun_table(None)).is_empty());
-}
-
-/// A `ColumnCells` body renders as an `Empty` view, so its cells hold no variant; the same
-/// cells in a `Cell` body do.
-#[test]
-fn seen_variants_skip_a_column_cells_body() {
-    let column_cells = PanelCase::new(
-        PanelState::Ok,
-        Some(body(Primitive::ColumnCells(BTreeMap::from([
-            ("Guild".to_string(), cell(CellKind::Text, "Night Owls")),
-            ("Rank".to_string(), toned(CellKind::Badge, "officer", Tone::Info)),
-        ])))),
-    );
-    assert_eq!(column_cells.view()["body"]["type"], "Empty", "render::prim draws a ColumnCells body as Empty");
-    assert_eq!(panel_variants(&column_cells), Vec::<(&str, String)>::new());
-    let badge = toned(CellKind::Badge, "officer", Tone::Info);
-    let one_cell = PanelCase::new(PanelState::Ok, Some(body(Primitive::Cell(badge))));
-    assert_eq!(panel_variants(&one_cell), [("CellKind", "Badge".to_string()), ("Tone", "Info".to_string())]);
-}
-
-/// A `Then` counts only from a tool `action_button` draws enabled: not from a disabled tool,
-/// a table-row or queue-row action, which the tools never hold, nor from any tool of an
-/// untitled panel unless its PropertyList code puts the tools in the footer.
-#[test]
-fn seen_variants_read_then_only_from_drawn_enabled_tools() {
-    let thens = |case: &PanelCase| -> Vec<String> {
-        panel_variants(case).into_iter().filter(|(e, _)| *e == "Then").map(|(_, v)| v).collect()
-    };
-    let link = decl("logs", "Open logs", "external", Then::Link(page_link("platform", "logs")));
-    let with = |title: &'static str, primitive: Primitive, d: &ActionDecl| -> PanelCase {
-        PanelCase { title, actions: vec![tool(d)], ..PanelCase::new(PanelState::Ok, Some(body(primitive))) }
-    };
-    let coded = || Primitive::PropertyList(PropertyList { code: Some("abc".to_string()), ..props(Vec::new()) });
-
-    assert_eq!(thens(&with("Golden panel", summary(), &link)), ["link"]);
-    let disabled = ActionDecl { implemented: false, ..link.clone() };
-    assert!(!tool(&disabled).enabled, "the probe tool is disabled");
-    assert!(thens(&with("Golden panel", summary(), &disabled)).is_empty());
-    let row = with("Golden panel", summary(), &table_row(link.clone()));
-    assert!(row.view()["tools"].as_array().is_some_and(Vec::is_empty), "a table-row action is no tool");
-    assert!(thens(&row).is_empty());
-    let queued = ActionDecl { point: ActionPoint::QueueRow(CONTRIBUTION.to_string()), ..link.clone() };
-    assert!(thens(&with("Golden panel", summary(), &queued)).is_empty());
-    assert!(thens(&with("", summary(), &link)).is_empty());
-    assert_eq!(thens(&with("", coded(), &link)), ["link"]);
-}
-
-/// An `Emphasis` counts from a drawn tool that is no danger, enabled or not: `action_button`
-/// draws a danger tool `danger-ghost` whatever its emphasis.
-#[test]
-fn seen_variants_read_emphasis_only_where_action_button_draws_it() {
-    let emphases = |d: &ActionDecl| -> Vec<String> {
-        let case = PanelCase { actions: vec![tool(d)], ..PanelCase::new(PanelState::Ok, Some(body(summary()))) };
-        panel_variants(&case).into_iter().filter(|(e, _)| *e == "Emphasis").map(|(_, v)| v).collect()
-    };
-    let ghost = ActionDecl { emphasis: Emphasis::Ghost, ..decl("pause", "Pause", "pause", Then::Invoke) };
-    assert_eq!(emphases(&ghost), ["ghost"]);
-    assert_eq!(emphases(&ActionDecl { implemented: false, ..ghost.clone() }), ["ghost"]);
-    assert!(emphases(&ActionDecl { danger: true, ..ghost.clone() }).is_empty());
-    assert!(emphases(&table_row(ghost)).is_empty());
-}
-
-/// No view source names an [`UNREAD_ENUMS`] entry, each of which is in [`NOT_SEEN`], and
-/// [`VIEW_SOURCES`] holds every template on disk.
-#[test]
-fn no_view_source_names_an_unread_enum() {
-    let included: BTreeSet<String> = VIEW_SOURCES
-        .iter()
-        .filter_map(|(file, _)| file.strip_prefix("templates/"))
-        .filter_map(|file| file.split('.').next())
-        .map(str::to_string)
-        .collect();
-    let on_disk: BTreeSet<String> = templates().into_iter().map(|(stem, _)| stem).collect();
-    assert_eq!(included, on_disk, "VIEW_SOURCES against templates/");
-    for name in UNREAD_ENUMS {
-        assert!(NOT_SEEN.iter().any(|(n, _)| *n == name), "{name} is in NOT_SEEN");
-    }
-    let named = names_in(&VIEW_SOURCES, &UNREAD_ENUMS);
-    assert!(
-        named.is_empty(),
-        "a view source names an enum NOT_SEEN says no view model reads:\n  {}",
-        named.join("\n  ")
-    );
-}
-
-/// A scratch copy of `render.rs` reading a `FilterKind` and an `ActionPoint` fails with a line
-/// per name; a longer identifier holding a name is not a match, nor is a `.rs` comment.
-#[test]
-fn names_in_finds_whole_words_only() {
-    let render = VIEW_SOURCES[0].1;
-    let scratch = format!("{render}\nfn kind(f: &controlplane::FilterKind, p: ActionPoint) {{}}\n");
-    let last = scratch.lines().count();
-    assert_eq!(
-        names_in(&[("render.rs", &scratch)], &UNREAD_ENUMS),
-        [format!("ActionPoint is named at render.rs:{last}"), format!("FilterKind is named at render.rs:{last}")]
-    );
-    assert!(names_in(&[("x", "ActionPoints XActionPoint _FilterKind FilterKinds")], &UNREAD_ENUMS).is_empty());
-    assert_eq!(names_in(&[("x", "{{ InvokeOutcome }}")], &UNREAD_ENUMS), ["InvokeOutcome is named at x:1"]);
-    assert!(names_in(&[("x.rs", "let a = 1; // ActionPoint::TableRow")], &UNREAD_ENUMS).is_empty());
-    assert_eq!(names_in(&[("x.tmpl", "// ActionPoint")], &UNREAD_ENUMS), ["ActionPoint is named at x.tmpl:1"]);
-}
-
-/// Every mode `panel_fragment` branches on is in [`MODES`] and the reverse, and [`mode_draws`]
-/// answers for each without panicking.
-#[test]
-fn mode_draws_names_every_template_mode() {
-    let templates = templates();
-    let primitives =
-        &templates.iter().find(|(stem, _)| stem == "primitives").expect("primitives.html.tmpl is read").1;
-    let start = primitives.find("{%- macro panel_fragment(p) -%}").expect("panel_fragment is defined");
-    let fragment = &primitives[start..start + primitives[start..].find("{%- endmacro %}").expect("it closes")];
-    let open = "p.mode == \"";
-    let mut named: BTreeSet<&str> = fragment
-        .match_indices(open)
-        .map(|(at, _)| {
-            let rest = &fragment[at + open.len()..];
-            &rest[..rest.find('"').expect("the mode literal closes")]
-        })
-        .collect();
-    named.insert("panel");
-    assert_eq!(named, MODES.into_iter().collect::<BTreeSet<&str>>(), "MODES against panel_fragment's branches");
-    for mode in MODES {
-        mode_draws(mode, None);
-    }
-}
-
-/// [`draws_body`] holds exactly the states the template's `live` set names.
-#[test]
-fn draws_body_matches_the_template() {
-    let templates = templates();
-    let primitives =
-        &templates.iter().find(|(stem, _)| stem == "primitives").expect("primitives.html.tmpl is read").1;
-    let open = "{%- set live = p.state in [";
-    let at = primitives.find(open).expect("panel_fragment sets `live`") + open.len();
-    let list = &primitives[at..at + primitives[at..].find(']').expect("the `live` list closes")];
-    let live: BTreeSet<&str> = list.split(',').map(|s| s.trim().trim_matches('"')).collect();
-    let states = [
-        PanelState::Ok,
-        PanelState::Empty,
-        PanelState::Stale,
-        PanelState::Error,
-        PanelState::Readonly,
-        PanelState::Denied,
-    ];
-    assert_eq!(
-        states.len(),
-        enum_variants(PANEL_STATE_SOURCE, "PanelState").expect("PanelState parses").len(),
-        "every PanelState is listed"
-    );
-    let drawn: BTreeSet<&str> = states.into_iter().filter(|s| draws_body(*s)).map(PanelState::as_str).collect();
-    assert_eq!(drawn, live, "draws_body against the template's `live` set");
-}
-
-/// A `Column` falls outside the cell key bounds, so its fields are never read as a cell's.
-#[test]
-fn a_column_is_outside_the_cell_key_bounds() {
-    let (unset, set) = cell_key_bounds();
-    let col = serde_json::to_value(column("k", "K", Align::Left)).expect("a column serializes");
-    let col: BTreeSet<String> = col.as_object().expect("a column is an object").keys().cloned().collect();
-    assert!(!(unset.is_subset(&col) && col.is_subset(&set)), "a column is no cell: {col:?}");
 }
 
 /// An untitled panel and an untitled slot draw no head.

@@ -1,0 +1,120 @@
+<main class="main">
+<div class="page">
+<div class="page-head">
+<div>
+<h1>Dashboard</h1>
+<div class="sub">Golden deployment</div>
+</div>
+<div class="page-actions">
+<div class="seg">
+<button type="button" data-href="&#x2f;admin?range=1h">1 h</button>
+<button type="button" class="on" data-href="&#x2f;admin?range=24h">24 h</button>
+<button type="button" data-href="&#x2f;admin?range=7d">7 d</button>
+</div>
+<button type="button" class="btn" data-action="refresh">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/>
+<path d="M4 3.5V8h4.5"/>
+<path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/>
+<path d="M20 20.5V16h-4.5"/>
+</svg> Refresh</button>
+</div>
+</div>
+<div class="grid g-tiles" style="margin-bottom:12px">
+<div class="slot" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;tile" hx-trigger="load" hx-swap="outerHTML">
+<a class="panel" style="color:inherit;text-decoration:none">
+<div class="kpi">
+<div class="kpi-label">Golden panel</div>
+<div class="sk" style="width:50%;height:20px;margin:6px 0">
+</div>
+<div class="sk" style="width:70%">
+</div>
+</div>
+</a>
+</div>
+</div>
+<div class="grid g-21" style="margin-bottom:12px">
+<section class="panel">
+<div class="panel-head">
+<span class="panel-title">Needs attention</span>
+<span class="panel-meta" data-attention-meta>
+</span>
+<div class="panel-tools">
+</div>
+</div>
+<div class="panel-body flush">
+<div class="slot" hx-get="&#x2f;admin&#x2f;_panel&#x2f;golden&#x2f;attention" hx-trigger="load" hx-swap="outerHTML">
+<div class="pop-row" style="align-items:center" aria-busy="true">
+<div class="sk" style="width:28px;height:28px">
+</div>
+<div class="grow">
+<div class="sk" style="width:55%">
+</div>
+</div>
+</div>
+</div>
+</div>
+</section>
+<div class="stack">
+<div class="slot">
+<section class="panel">
+<div class="panel-head">
+<span class="muted">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="3.5" y="4" width="17" height="7" rx="1.5"/>
+<rect x="3.5" y="13" width="17" height="7" rx="1.5"/>
+<path d="M7 7.5h.01M7 16.5h.01"/>
+</svg>
+</span>
+<span class="panel-title">Golden panel</span>
+<div class="panel-tools">
+</div>
+</div>
+<div class="panel-body">
+<div class="state denied">
+<div class="state-icon">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="4.5" y="10.5" width="15" height="10" rx="2"/>
+<path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
+</svg>
+</div>
+<div class="state-title">Permission denied</div>
+<div class="state-detail">Requires role <span class="tag">operator</span>. Ask a deployment owner to grant it.</div>
+</div>
+</div>
+</section>
+</div>
+</div>
+</div>
+<div id="health" class="stack">
+<div class="slot">
+<section class="panel">
+<div class="panel-head">
+<span class="muted">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="3.5" y="4" width="17" height="7" rx="1.5"/>
+<rect x="3.5" y="13" width="17" height="7" rx="1.5"/>
+<path d="M7 7.5h.01M7 16.5h.01"/>
+</svg>
+</span>
+<span class="panel-title">Golden panel</span>
+<div class="panel-tools">
+</div>
+</div>
+<div class="panel-body">
+<div class="state denied">
+<div class="state-icon">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<rect x="4.5" y="10.5" width="15" height="10" rx="2"/>
+<path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
+</svg>
+</div>
+<div class="state-title">Permission denied</div>
+<div class="state-detail">Requires role <span class="tag">admin</span>. Ask a deployment owner to grant it.</div>
+</div>
+</div>
+</section>
+</div>
+</div>
+</div>
+</main>
