@@ -21,40 +21,6 @@ pub(crate) const MAX_PER_PLAYER: i64 = 10;
 /// the identity it carries.
 pub(crate) const PLAYER_DELETED: &str = "this account has been deleted";
 
-/// Per-PLAYER transaction-scoped advisory-lock key for `create`'s cap gate: two
-/// concurrent creates for one player must serialize their count-then-insert, or both
-/// SELECT `count` below the cap (neither committed yet, READ COMMITTED) and both
-/// insert past it. FNV-1a over a DISTINCT namespace prefix (`characters.player/`) so
-/// the key can NEVER collide with inventory's `inventory.character/` keys or
-/// scheduler's plain-name keys — a collision would only serialize unrelated players,
-/// never break correctness.
-///
-/// The player_id is normalized to Postgres's uuid-EQUALITY form BEFORE hashing (the
-/// same discipline as inventory's `lock_key`, DELIBERATELY DUPLICATED across the two
-/// fortresses — characters cannot import inventory's impl crate, so a shared helper
-/// is impossible and this small copy is correct): the row SQL is `$1::uuid`, so a
-/// differently-spelled but DB-equal id (uppercase / braced / unhyphenated) must yield
-/// the SAME lock. Two inputs Postgres's `::uuid` treats as equal share the same 32
-/// ascii-hex digits ignoring case/hyphens/braces; a non-uuid input (never on the
-/// identity-validated path) falls back to its raw bytes — still stable, only ever
-/// over-serializes, never breaks.
-pub(crate) fn player_lock_key(player_id: &str) -> i64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let hex: Vec<u8> = player_id
-        .bytes()
-        .filter(u8::is_ascii_hexdigit)
-        .map(|b| b.to_ascii_lowercase())
-        .collect();
-    let normalized: &[u8] = if hex.len() == 32 { &hex } else { player_id.as_bytes() };
-    let mut h = OFFSET_BASIS;
-    for b in b"characters.player/".iter().copied().chain(normalized.iter().copied()) {
-        h ^= b as u64;
-        h = h.wrapping_mul(PRIME);
-    }
-    h as i64
-}
-
 pub(crate) fn name_within_cap(name: &str) -> bool {
     name.len() <= MAX_NAME_BYTES
 }
@@ -131,11 +97,9 @@ impl Player for Service {
         // concurrent creates for the same player serialize their count-then-insert:
         // whichever acquires the lock second sees the committed count and is rejected.
         // Without the lock both would SELECT `count` below the cap under READ COMMITTED
-        // (neither committed yet) and both insert past it. The lock is taken ON THE TX
-        // CONNECTION (`&mut *tx`) — a separate pool connection would lose serialization.
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(player_lock_key(&player_id))
-            .execute(&mut *tx)
+        // (neither committed yet) and both insert past it.
+        self.store
+            .lock_player_tx(&mut tx, &player_id)
             .await
             .map_err(internal)?;
         if self

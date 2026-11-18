@@ -29,6 +29,26 @@ fn is_invalid_uuid(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
 }
 
+/// Per-player advisory lock key: FNV-1a over a `characters.player/` namespace plus the uuid
+/// normalized to Postgres's uuid-equality form, so every spelling the `$1::uuid` row SQL
+/// treats as one player takes the SAME lock.
+fn player_lock_key(player_id: &str) -> i64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let hex: Vec<u8> = player_id
+        .bytes()
+        .filter(u8::is_ascii_hexdigit)
+        .map(|b| b.to_ascii_lowercase())
+        .collect();
+    let normalized: &[u8] = if hex.len() == 32 { &hex } else { player_id.as_bytes() };
+    let mut h = OFFSET_BASIS;
+    for b in b"characters.player/".iter().copied().chain(normalized.iter().copied()) {
+        h ^= b as u64;
+        h = h.wrapping_mul(PRIME);
+    }
+    h as i64
+}
+
 // ============================================================================
 // Store — the SQL layer. Write paths take `&mut PgConnection` so the domain row
 // and its durable event append commit in ONE tx (create/delete); reads use the pool.
@@ -140,9 +160,23 @@ impl Store {
         Ok(n)
     }
 
-    /// `true` once this player's deletion tombstone is committed. A plain read, no
-    /// advisory lock: the row is permanent, so every statement taken after the plant
-    /// commits sees it.
+    /// Taken ON THE TX CONNECTION — a separate pool connection would lose the
+    /// serialization — and released at commit/rollback.
+    pub(crate) async fn lock_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(player_lock_key(player_id))
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
+    }
+
+    /// `true` once this player's deletion tombstone is committed. A plain read: its caller
+    /// holds [`Store::lock_player_tx`] first, so the sweep either committed before the read
+    /// or waits for the caller's transaction.
     pub(crate) async fn is_player_purged_tx(
         &self,
         conn: &mut PgConnection,
