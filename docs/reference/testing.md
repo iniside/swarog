@@ -52,6 +52,13 @@ database. Everything else has an owner:
   `DB_LOCK`: the sweep is a whole-table `FOR UPDATE SKIP LOCKED` batch, so it skips rows
   a sibling's open sweep holds (`modules/friends/src/tests.rs`,
   `modules/characters/src/tests/purge.rs`).
+- A module race test parks a writer after its guard at a point inside the module
+  wherever one exists, for example a uniqueness conflict on an uncommitted row held by
+  a gate transaction, detected by the gate's transaction id. Only when the module has
+  no such point may the test hold `asyncevents::store::WRITER_LOCK_KEY` exclusively,
+  to park the writer at its event append. That hold stalls every event append in the
+  database, so it is taken only under the crate's `DB_LOCK` and released as soon as
+  the racer is parked (precedent: Race 1 in `modules/characters/src/tests/purge.rs`).
 - Tests prove correctness, not speed. Wait on an explicit signal (for example
   `Notify`) wrapped in a `tokio::time::timeout` with generous headroom, a hang-guard
   and not a latency bound (`core/asyncevents/src/tests.rs`,
