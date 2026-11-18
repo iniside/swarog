@@ -14,6 +14,84 @@ use crate::engine::actions::{self, money_currency_key, Chrome};
 use crate::engine::columns::{ColumnOutcome, ListColumn};
 use crate::engine::panels::{self, LastValue, PanelState};
 
+/// The enum variants the render path converts into view models; recorded only in test builds.
+#[cfg(test)]
+pub(crate) mod seen {
+    use std::cell::RefCell;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use controlplane::Variants;
+
+    /// One converted enum: every variant its type declares and the ones converted.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub(crate) struct Converted {
+        pub(crate) declared: &'static [&'static str],
+        pub(crate) converted: BTreeSet<&'static str>,
+    }
+
+    /// Each converted enum by name.
+    pub(crate) type Record = BTreeMap<&'static str, Converted>;
+
+    thread_local! {
+        // Per thread, since cargo runs tests on parallel threads: a collect sees only its own thread's renders.
+        static RECORD: RefCell<Option<Record>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn record<E: Variants>(value: &E) {
+        RECORD.with_borrow_mut(|record| {
+            if let Some(record) = record {
+                record
+                    .entry(E::NAME)
+                    .or_insert_with(|| Converted { declared: E::VARIANTS, converted: BTreeSet::new() })
+                    .converted
+                    .insert(value.variant());
+            }
+        });
+    }
+
+    struct Collecting;
+
+    impl Drop for Collecting {
+        fn drop(&mut self) {
+            RECORD.set(None);
+        }
+    }
+
+    /// Runs `f` and returns what the render path converted on this thread while it ran;
+    /// nothing converted before or after, or on another thread, counts.
+    pub(crate) fn collect<R>(f: impl FnOnce() -> R) -> (R, Record) {
+        assert!(RECORD.with_borrow(Option::is_none), "seen::collect does not nest");
+        RECORD.set(Some(Record::new()));
+        let _collecting = Collecting;
+        let out = f();
+        (out, RECORD.take().unwrap_or_default())
+    }
+
+    #[test]
+    fn collect_holds_only_its_own_threads_conversions_while_it_runs() {
+        use controlplane::{Emphasis, Point, Tone};
+
+        super::mode_of(&Point::NavCounter, false);
+        let ((), record) = collect(|| {
+            std::thread::spawn(|| super::emphasis_name(Emphasis::Ghost)).join().expect("thread");
+            super::mode_of(&Point::DashboardTile, false);
+            super::tone(Tone::Warn);
+        });
+        super::tone(Tone::Err);
+        assert_eq!(record.keys().copied().collect::<Vec<_>>(), ["Point", "Tone"]);
+        assert_eq!(record["Point"].declared, Point::VARIANTS);
+        assert_eq!(record["Point"].converted, BTreeSet::from(["DashboardTile"]));
+        assert_eq!(record["Tone"].converted, BTreeSet::from(["Warn"]));
+        assert!(collect(|| ()).1.is_empty());
+    }
+}
+
+#[cfg(not(test))]
+mod seen {
+    #[inline(always)]
+    pub(crate) fn record<E: controlplane::Variants>(_: &E) {}
+}
+
 const SHELL: &str = include_str!("templates/shell.html.tmpl");
 const PRIMITIVES: &str = include_str!("templates/primitives.html.tmpl");
 const MODAL: &str = include_str!("templates/modal.html.tmpl");
@@ -70,6 +148,7 @@ pub(crate) fn entity_url(entity: &EntityRef) -> String {
 }
 
 pub(crate) fn link_url(link: &Link) -> String {
+    seen::record(link);
     match link {
         Link::Entity(entity) => entity_url(entity),
         Link::Page { module, page, params } => {
@@ -169,6 +248,7 @@ fn status_tone(value: &str) -> &'static str {
 }
 
 fn tone(t: Tone) -> &'static str {
+    seen::record(&t);
     match t {
         Tone::Ok => "ok",
         Tone::Warn => "warn",
@@ -199,6 +279,9 @@ pub(crate) struct CellView {
 /// With a bar, the cell's tone colours the fill only: `Warn` is `w`, `Err` is `e`, every
 /// other tone the default fill.
 fn bar_tone(t: Option<Tone>) -> &'static str {
+    if let Some(t) = &t {
+        seen::record(t);
+    }
     match t {
         Some(Tone::Warn) => "w",
         Some(Tone::Err) => "e",
@@ -218,6 +301,7 @@ pub(crate) fn cell(c: &controlplane::Cell) -> CellView {
 
 /// `c` without its `more`.
 fn one_cell(c: &controlplane::Cell) -> CellView {
+    seen::record(&c.kind);
     let kind = match c.kind {
         CellKind::Text => "text",
         CellKind::Mono => "mono",
@@ -307,6 +391,7 @@ fn as_json<S: serde::Serializer>(vals: &BTreeMap<String, String>, s: S) -> Resul
 }
 
 pub(crate) fn then_name(then: &controlplane::Then) -> &'static str {
+    seen::record(then);
     match then {
         controlplane::Then::Invoke => "invoke",
         controlplane::Then::Form(_) => "form",
@@ -316,6 +401,7 @@ pub(crate) fn then_name(then: &controlplane::Then) -> &'static str {
 }
 
 pub(crate) fn emphasis_name(emphasis: controlplane::Emphasis) -> &'static str {
+    seen::record(&emphasis);
     match emphasis {
         controlplane::Emphasis::Primary => "primary",
         controlplane::Emphasis::Default => "default",
@@ -495,10 +581,9 @@ pub(crate) struct DashboardView {
 pub(crate) fn ranges(selected: controlplane::TimeRange) -> Vec<RangeView> {
     panels::RANGES
         .iter()
-        .map(|(range, key, label)| RangeView {
-            label,
-            href: format!("/admin?{}={key}", panels::QUERY_RANGE),
-            on: *range == selected,
+        .map(|(range, key, label)| {
+            seen::record(range);
+            RangeView { label, href: format!("/admin?{}={key}", panels::QUERY_RANGE), on: *range == selected }
         })
         .collect()
 }
@@ -521,6 +606,7 @@ pub(crate) struct PageView {
 }
 
 pub(crate) fn layout_name(layout: &controlplane::Layout) -> &'static str {
+    seen::record(layout);
     match layout {
         controlplane::Layout::Stack(_) => "stack",
         controlplane::Layout::Grid21(..) => "g-21",
@@ -613,6 +699,7 @@ impl SearchView {
 /// the attention host, or inline in the entity header, a tab or the sidebar. A `column`
 /// has no fragment of its own: the panel route refuses it, and its table draws its cells.
 pub(crate) fn mode_of(point: &Point, in_tiles: bool) -> &'static str {
+    seen::record(point);
     match point {
         Point::DashboardTile => "tile",
         Point::DashboardAttention => "attention",
@@ -813,7 +900,16 @@ pub(crate) enum PrimView {
     Empty { title: String, detail: String },
 }
 
+fn severity(s: Severity) -> &'static str {
+    seen::record(&s);
+    match s {
+        Severity::Err => "danger",
+        Severity::Warn => "warn",
+    }
+}
+
 fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
+    seen::record(p);
     match p {
         Primitive::DataTable(t) => PrimView::Table(table(t, ctx)),
         Primitive::PropertyList(p) => PrimView::Props(PropsView {
@@ -833,10 +929,7 @@ fn prim(p: &Primitive, ctx: &Ctx<'_>) -> PrimView {
             items: items
                 .iter()
                 .map(|a| AttentionRow {
-                    tone: match a.severity {
-                        Severity::Err => "danger",
-                        Severity::Warn => "warn",
-                    },
+                    tone: severity(a.severity),
                     icon: if ctx.input.icon.is_empty() { "alert".to_string() } else { ctx.input.icon.to_string() },
                     title: a.title.clone(),
                     text: a.text.clone(),
@@ -934,15 +1027,23 @@ fn filter_views(filters: &[controlplane::FilterDef], ctx: &Ctx<'_>) -> Vec<Filte
         .collect()
 }
 
+fn right_aligned(align: Align) -> bool {
+    seen::record(&align);
+    align == Align::Right
+}
+
 fn column_views(columns: &[controlplane::Column]) -> Vec<ColumnView> {
     columns
         .iter()
         .map(|c| ColumnView {
             label: c.label.clone(),
-            num: c.align == Align::Right,
-            sorted: c.sorted.map(|dir| match dir {
-                SortDir::Asc => "↑",
-                SortDir::Desc => "↓",
+            num: right_aligned(c.align),
+            sorted: c.sorted.map(|dir| {
+                seen::record(&dir);
+                match dir {
+                    SortDir::Asc => "↑",
+                    SortDir::Desc => "↓",
+                }
             }),
             contributed: false,
         })
@@ -957,7 +1058,7 @@ fn table_cells(cells: &[controlplane::Cell], columns: &[controlplane::Column], i
         .enumerate()
         .map(|(i, c)| TableCell {
             cell: list_cell(c, in_list),
-            num: columns.get(i).is_some_and(|col| col.align == Align::Right),
+            num: columns.get(i).is_some_and(|col| right_aligned(col.align)),
             failed: None,
         })
         .collect()
@@ -972,7 +1073,7 @@ fn list_cell(c: &controlplane::Cell, in_list: bool) -> CellView {
 /// The cell of list column `column` in a row whose entity id is `id`: the column's cell for
 /// it, an empty cell when it has none, or the failure marker.
 fn list_column_cell(column: &ListColumn, id: Option<&str>, in_list: bool) -> TableCell {
-    let num = column.align == Align::Right;
+    let num = right_aligned(column.align);
     let blank = controlplane::Cell {
         kind: CellKind::Text,
         value: String::new(),
@@ -1058,7 +1159,7 @@ fn table(t: &controlplane::DataTable, ctx: &Ctx<'_>) -> TableView {
         at..at,
         list_columns.iter().map(|c| ColumnView {
             label: c.label.clone(),
-            num: c.align == Align::Right,
+            num: right_aligned(c.align),
             sorted: None,
             contributed: true,
         }),
@@ -1118,6 +1219,9 @@ pub(crate) struct SparkView {
 /// The delta's colour class (`bundle.css:251-252`) from `tone` alone, never from the
 /// value's text.
 fn delta_class(d: &controlplane::Delta) -> &'static str {
+    if let Some(t) = &d.tone {
+        seen::record(t);
+    }
     match d.tone {
         Some(Tone::Ok) => "up",
         Some(Tone::Err) => "down",
@@ -1127,6 +1231,7 @@ fn delta_class(d: &controlplane::Delta) -> &'static str {
 }
 
 fn palette(p: controlplane::Palette) -> &'static str {
+    seen::record(&p);
     match p {
         controlplane::Palette::Chart1 => "var(--chart-1)",
         controlplane::Palette::Chart2 => "var(--chart-2)",
@@ -1322,6 +1427,7 @@ fn field(f: &Field, posted: Option<&[(String, String)]>, errors: &BTreeMap<Strin
         }
         _ => (raw.unwrap_or_default(), Vec::new(), String::new()),
     };
+    seen::record(&f.kind);
     let (control, type_name, options, mono) = match &f.kind {
         FieldKind::String => ("input", "string".to_string(), Vec::new(), false),
         FieldKind::Text => ("textarea", "text".to_string(), Vec::new(), false),
@@ -1590,6 +1696,7 @@ pub(crate) struct ServicesView {
 }
 
 fn service_state(s: ServiceState) -> (&'static str, &'static str, &'static str) {
+    seen::record(&s);
     match s {
         ServiceState::Running => ("running", "ok", ""),
         ServiceState::Degraded => ("degraded", "warn", "w"),
@@ -1699,6 +1806,7 @@ fn chart(c: &controlplane::TimeSeriesChart) -> ChartView {
         .iter()
         .enumerate()
         .map(|(i, s)| {
+            seen::record(&s.axis);
             let max = if s.axis == controlplane::Axis::Right { right_max } else { left_max };
             let mut path = String::new();
             let mut dots = Vec::new();
@@ -1841,6 +1949,7 @@ pub(crate) fn modal(
             view.form = Some(form(spec, posted, errors));
         }
         ModalSpec::Confirm(spec) => {
+            seen::record(&spec.tone);
             view.tone = match spec.tone {
                 ConfirmTone::Danger => "danger",
                 ConfirmTone::Warn => "warn",
@@ -1854,6 +1963,7 @@ pub(crate) fn modal(
             view.body = spec.body.clone();
             view.impact = spec.impact.iter().map(|(k, v)| (k.clone(), cell(v))).collect();
             view.reason_hint = spec.reason_hint.clone();
+            seen::record(&spec.reason);
             view.reason = match spec.reason {
                 ReasonReq::Required => "required",
                 ReasonReq::Optional => "optional",

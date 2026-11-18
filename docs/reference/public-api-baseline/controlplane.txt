@@ -217,6 +217,10 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::ActionPoint
 pub enum controlplane::Align
 pub controlplane::Align::Left
 pub controlplane::Align::Right
+impl controlplane::Variants for controlplane::Align
+pub const controlplane::Align::NAME: &'static str
+pub const controlplane::Align::VARIANTS: &'static [&'static str]
+pub fn controlplane::Align::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::Align
 pub fn controlplane::Align::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Align
@@ -241,6 +245,10 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::Align
 pub enum controlplane::Axis
 pub controlplane::Axis::Left
 pub controlplane::Axis::Right
+impl controlplane::Variants for controlplane::Axis
+pub const controlplane::Axis::NAME: &'static str
+pub const controlplane::Axis::VARIANTS: &'static [&'static str]
+pub fn controlplane::Axis::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::Axis
 pub fn controlplane::Axis::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Axis
@@ -273,6 +281,10 @@ pub controlplane::CellKind::Ref
 pub controlplane::CellKind::Text
 pub controlplane::CellKind::Time
 pub controlplane::CellKind::User
+impl controlplane::Variants for controlplane::CellKind
+pub const controlplane::CellKind::NAME: &'static str
+pub const controlplane::CellKind::VARIANTS: &'static [&'static str]
+pub fn controlplane::CellKind::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::CellKind
 pub fn controlplane::CellKind::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::CellKind
@@ -298,6 +310,10 @@ pub enum controlplane::ConfirmTone
 pub controlplane::ConfirmTone::Danger
 pub controlplane::ConfirmTone::Info
 pub controlplane::ConfirmTone::Warn
+impl controlplane::Variants for controlplane::ConfirmTone
+pub const controlplane::ConfirmTone::NAME: &'static str
+pub const controlplane::ConfirmTone::VARIANTS: &'static [&'static str]
+pub fn controlplane::ConfirmTone::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::ConfirmTone
 pub fn controlplane::ConfirmTone::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::ConfirmTone
@@ -323,6 +339,10 @@ pub enum controlplane::Emphasis
 pub controlplane::Emphasis::Default
 pub controlplane::Emphasis::Ghost
 pub controlplane::Emphasis::Primary
+impl controlplane::Variants for controlplane::Emphasis
+pub const controlplane::Emphasis::NAME: &'static str
+pub const controlplane::Emphasis::VARIANTS: &'static [&'static str]
+pub fn controlplane::Emphasis::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::Emphasis
 pub fn controlplane::Emphasis::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Emphasis
@@ -356,6 +376,10 @@ pub controlplane::FieldKind::Multi(alloc::vec::Vec<alloc::string::String>)
 pub controlplane::FieldKind::Ref(alloc::string::String)
 pub controlplane::FieldKind::String
 pub controlplane::FieldKind::Text
+impl controlplane::Variants for controlplane::FieldKind
+pub const controlplane::FieldKind::NAME: &'static str
+pub const controlplane::FieldKind::VARIANTS: &'static [&'static str]
+pub fn controlplane::FieldKind::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::FieldKind
 pub fn controlplane::FieldKind::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::FieldKind
@@ -460,6 +484,10 @@ pub enum controlplane::Layout
 pub controlplane::Layout::Grid2(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<alloc::string::String>)
 pub controlplane::Layout::Grid21(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<alloc::string::String>)
 pub controlplane::Layout::Stack(alloc::vec::Vec<alloc::string::String>)
+impl controlplane::Variants for controlplane::Layout
+pub const controlplane::Layout::NAME: &'static str
+pub const controlplane::Layout::VARIANTS: &'static [&'static str]
+pub fn controlplane::Layout::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::Layout
 pub fn controlplane::Layout::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Layout
@@ -486,6 +514,10 @@ pub controlplane::Link::Page
 pub controlplane::Link::Page::module: alloc::string::String
 pub controlplane::Link::Page::page: alloc::string::String
 pub controlplane::Link::Page::params: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+impl controlplane::Variants for controlplane::Link
+pub const controlplane::Link::NAME: &'static str
+pub const controlplane::Link::VARIANTS: &'static [&'static str]
+pub fn controlplane::Link::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::Link
 pub fn controlplane::Link::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Link
@@ -510,6 +542,10 @@ pub enum controlplane::Palette
 pub controlplane::Palette::Chart1
 pub controlplane::Palette::Chart2
 pub controlplane::Palette::Warn
+impl controlplane::Variants for controlplane::Palette
+pub const controlplane::Palette::NAME: &'static str
+pub const controlplane::Palette::VARIANTS: &'static [&'static str]
+pub fn controlplane::Palette::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::Palette
 pub fn controlplane::Palette::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Palette
@@ -552,6 +588,10 @@ pub controlplane::Point::EntityTabCount::kind: alloc::string::String
 pub controlplane::Point::EntityTabCount::tab: alloc::string::String
 pub controlplane::Point::NavCounter
 pub controlplane::Point::Page(alloc::string::String)
+impl controlplane::Variants for controlplane::Point
+pub const controlplane::Point::NAME: &'static str
+pub const controlplane::Point::VARIANTS: &'static [&'static str]
+pub fn controlplane::Point::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::Point
 pub fn controlplane::Point::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Point
@@ -588,6 +628,10 @@ pub controlplane::Primitive::ServiceStatus(controlplane::ServiceStatus)
 pub controlplane::Primitive::TimeSeriesChart(controlplane::TimeSeriesChart)
 pub controlplane::Primitive::Timeline(controlplane::Timeline)
 pub controlplane::Primitive::WorkQueue(controlplane::WorkQueue)
+impl controlplane::Variants for controlplane::Primitive
+pub const controlplane::Primitive::NAME: &'static str
+pub const controlplane::Primitive::VARIANTS: &'static [&'static str]
+pub fn controlplane::Primitive::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::Primitive
 pub fn controlplane::Primitive::clone(&self) -> Self
 impl core::cmp::PartialEq for controlplane::Primitive
@@ -611,6 +655,10 @@ pub enum controlplane::ReasonReq
 pub controlplane::ReasonReq::None
 pub controlplane::ReasonReq::Optional
 pub controlplane::ReasonReq::Required
+impl controlplane::Variants for controlplane::ReasonReq
+pub const controlplane::ReasonReq::NAME: &'static str
+pub const controlplane::ReasonReq::VARIANTS: &'static [&'static str]
+pub fn controlplane::ReasonReq::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::ReasonReq
 pub fn controlplane::ReasonReq::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::ReasonReq
@@ -669,6 +717,10 @@ pub controlplane::ServiceState::Degraded
 pub controlplane::ServiceState::Down
 pub controlplane::ServiceState::Restarting
 pub controlplane::ServiceState::Running
+impl controlplane::Variants for controlplane::ServiceState
+pub const controlplane::ServiceState::NAME: &'static str
+pub const controlplane::ServiceState::VARIANTS: &'static [&'static str]
+pub fn controlplane::ServiceState::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::ServiceState
 pub fn controlplane::ServiceState::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::ServiceState
@@ -693,6 +745,10 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::ServiceState
 pub enum controlplane::Severity
 pub controlplane::Severity::Err
 pub controlplane::Severity::Warn
+impl controlplane::Variants for controlplane::Severity
+pub const controlplane::Severity::NAME: &'static str
+pub const controlplane::Severity::VARIANTS: &'static [&'static str]
+pub fn controlplane::Severity::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::Severity
 pub fn controlplane::Severity::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Severity
@@ -717,6 +773,10 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::Severity
 pub enum controlplane::SortDir
 pub controlplane::SortDir::Asc
 pub controlplane::SortDir::Desc
+impl controlplane::Variants for controlplane::SortDir
+pub const controlplane::SortDir::NAME: &'static str
+pub const controlplane::SortDir::VARIANTS: &'static [&'static str]
+pub fn controlplane::SortDir::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::SortDir
 pub fn controlplane::SortDir::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::SortDir
@@ -743,6 +803,10 @@ pub controlplane::Then::Confirm(controlplane::ConfirmSpec)
 pub controlplane::Then::Form(controlplane::FormSpec)
 pub controlplane::Then::Invoke
 pub controlplane::Then::Link(controlplane::Link)
+impl controlplane::Variants for controlplane::Then
+pub const controlplane::Then::NAME: &'static str
+pub const controlplane::Then::VARIANTS: &'static [&'static str]
+pub fn controlplane::Then::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::Then
 pub fn controlplane::Then::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Then
@@ -767,6 +831,10 @@ pub enum controlplane::TimeRange
 pub controlplane::TimeRange::D7
 pub controlplane::TimeRange::H1
 pub controlplane::TimeRange::H24
+impl controlplane::Variants for controlplane::TimeRange
+pub const controlplane::TimeRange::NAME: &'static str
+pub const controlplane::TimeRange::VARIANTS: &'static [&'static str]
+pub fn controlplane::TimeRange::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::TimeRange
 pub fn controlplane::TimeRange::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::TimeRange
@@ -795,6 +863,10 @@ pub controlplane::Tone::Err
 pub controlplane::Tone::Info
 pub controlplane::Tone::Ok
 pub controlplane::Tone::Warn
+impl controlplane::Variants for controlplane::Tone
+pub const controlplane::Tone::NAME: &'static str
+pub const controlplane::Tone::VARIANTS: &'static [&'static str]
+pub fn controlplane::Tone::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::Tone
 pub fn controlplane::Tone::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Tone
@@ -1017,8 +1089,8 @@ pub struct controlplane::DataTable
 pub controlplane::DataTable::columns: alloc::vec::Vec<controlplane::Column>
 pub controlplane::DataTable::filters: alloc::vec::Vec<controlplane::FilterDef>
 pub controlplane::DataTable::item_noun: alloc::string::String
-pub controlplane::DataTable::list_columns_for: core::option::Option<alloc::string::String>
 pub controlplane::DataTable::list_columns_at: usize
+pub controlplane::DataTable::list_columns_for: core::option::Option<alloc::string::String>
 pub controlplane::DataTable::page: controlplane::PageInfo
 pub controlplane::DataTable::rows: alloc::vec::Vec<controlplane::Row>
 pub controlplane::DataTable::search_placeholder: core::option::Option<alloc::string::String>
@@ -2017,6 +2089,82 @@ pub fn controlplane::Provider::manifest(&self) -> controlplane::Manifest
 pub fn controlplane::Provider::panel<'life0, 'async_trait>(&'life0 self, controlplane::PanelQuery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::PanelBody, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn controlplane::Provider::prepare<'life0, 'async_trait>(&'life0 self, controlplane::PrepareCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<controlplane::Then, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn controlplane::Provider::search<'life0, 'async_trait>(&'life0 self, controlplane::SearchQuery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<controlplane::SearchHit>, opsapi::Error>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait controlplane::Variants
+pub const controlplane::Variants::NAME: &'static str
+pub const controlplane::Variants::VARIANTS: &'static [&'static str]
+pub fn controlplane::Variants::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::Align
+pub const controlplane::Align::NAME: &'static str
+pub const controlplane::Align::VARIANTS: &'static [&'static str]
+pub fn controlplane::Align::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::Axis
+pub const controlplane::Axis::NAME: &'static str
+pub const controlplane::Axis::VARIANTS: &'static [&'static str]
+pub fn controlplane::Axis::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::CellKind
+pub const controlplane::CellKind::NAME: &'static str
+pub const controlplane::CellKind::VARIANTS: &'static [&'static str]
+pub fn controlplane::CellKind::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::ConfirmTone
+pub const controlplane::ConfirmTone::NAME: &'static str
+pub const controlplane::ConfirmTone::VARIANTS: &'static [&'static str]
+pub fn controlplane::ConfirmTone::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::Emphasis
+pub const controlplane::Emphasis::NAME: &'static str
+pub const controlplane::Emphasis::VARIANTS: &'static [&'static str]
+pub fn controlplane::Emphasis::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::FieldKind
+pub const controlplane::FieldKind::NAME: &'static str
+pub const controlplane::FieldKind::VARIANTS: &'static [&'static str]
+pub fn controlplane::FieldKind::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::Layout
+pub const controlplane::Layout::NAME: &'static str
+pub const controlplane::Layout::VARIANTS: &'static [&'static str]
+pub fn controlplane::Layout::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::Link
+pub const controlplane::Link::NAME: &'static str
+pub const controlplane::Link::VARIANTS: &'static [&'static str]
+pub fn controlplane::Link::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::Palette
+pub const controlplane::Palette::NAME: &'static str
+pub const controlplane::Palette::VARIANTS: &'static [&'static str]
+pub fn controlplane::Palette::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::Point
+pub const controlplane::Point::NAME: &'static str
+pub const controlplane::Point::VARIANTS: &'static [&'static str]
+pub fn controlplane::Point::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::Primitive
+pub const controlplane::Primitive::NAME: &'static str
+pub const controlplane::Primitive::VARIANTS: &'static [&'static str]
+pub fn controlplane::Primitive::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::ReasonReq
+pub const controlplane::ReasonReq::NAME: &'static str
+pub const controlplane::ReasonReq::VARIANTS: &'static [&'static str]
+pub fn controlplane::ReasonReq::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::ServiceState
+pub const controlplane::ServiceState::NAME: &'static str
+pub const controlplane::ServiceState::VARIANTS: &'static [&'static str]
+pub fn controlplane::ServiceState::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::Severity
+pub const controlplane::Severity::NAME: &'static str
+pub const controlplane::Severity::VARIANTS: &'static [&'static str]
+pub fn controlplane::Severity::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::SortDir
+pub const controlplane::SortDir::NAME: &'static str
+pub const controlplane::SortDir::VARIANTS: &'static [&'static str]
+pub fn controlplane::SortDir::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::Then
+pub const controlplane::Then::NAME: &'static str
+pub const controlplane::Then::VARIANTS: &'static [&'static str]
+pub fn controlplane::Then::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::TimeRange
+pub const controlplane::TimeRange::NAME: &'static str
+pub const controlplane::TimeRange::VARIANTS: &'static [&'static str]
+pub fn controlplane::TimeRange::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::Tone
+pub const controlplane::Tone::NAME: &'static str
+pub const controlplane::Tone::VARIANTS: &'static [&'static str]
+pub fn controlplane::Tone::variant(&self) -> &'static str
 pub fn controlplane::decode_field(&controlplane::FieldKind, &str) -> core::result::Result<controlplane::FieldValue, controlplane::FieldError>
 pub fn controlplane::encode_field(&controlplane::FieldKind, &controlplane::FieldValue) -> alloc::string::String
 pub fn controlplane::form_spec_errors(&controlplane::FormSpec) -> alloc::vec::Vec<alloc::string::String>

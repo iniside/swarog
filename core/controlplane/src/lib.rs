@@ -11,6 +11,52 @@ use serde::{Deserialize, Serialize};
 
 pub mod events;
 
+/// An enum's variant names, generated from the enum's own definition.
+pub trait Variants {
+    /// The enum's name.
+    const NAME: &'static str;
+    /// Every variant, in declaration order.
+    const VARIANTS: &'static [&'static str];
+    /// This value's variant.
+    fn variant(&self) -> &'static str;
+}
+
+/// Emits the enum as written plus its [`Variants`] impl.
+macro_rules! variants {
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $(
+                $(#[$vmeta:meta])*
+                $variant:ident
+                $( ( $($tuple:ty),* $(,)? ) )?
+                $( { $( $(#[$fmeta:meta])* $field:ident : $fty:ty ),* $(,)? } )?
+            ),* $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        $vis enum $name {
+            $(
+                $(#[$vmeta])*
+                $variant
+                $( ( $($tuple),* ) )?
+                $( { $( $(#[$fmeta])* $field : $fty ),* } )?
+            ),*
+        }
+
+        impl Variants for $name {
+            const NAME: &'static str = stringify!($name);
+            const VARIANTS: &'static [&'static str] = &[$(stringify!($variant)),*];
+
+            fn variant(&self) -> &'static str {
+                match self {
+                    $(Self::$variant { .. } => stringify!($variant),)*
+                }
+            }
+        }
+    };
+}
+
 /// What a module writes: one static manifest plus the panel, search, invoke and prepare
 /// handlers.
 #[async_trait]
@@ -249,10 +295,12 @@ pub struct EntityRef {
     pub id: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Link {
-    Page { module: String, page: String, params: BTreeMap<String, String> },
-    Entity(EntityRef),
+variants! {
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Link {
+        Page { module: String, page: String, params: BTreeMap<String, String> },
+        Entity(EntityRef),
+    }
 }
 
 /// The `Link::Page` param the portal passes to each of the page's panels as
@@ -285,11 +333,13 @@ pub struct PanelQuery {
     pub refs: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum TimeRange {
-    H1,
-    H24,
-    D7,
+variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    pub enum TimeRange {
+        H1,
+        H24,
+        D7,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -396,12 +446,14 @@ pub struct PageDecl {
     pub layout: Layout,
 }
 
-/// Page layout; every string is a contribution id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Layout {
-    Stack(Vec<String>),
-    Grid21(Vec<String>, Vec<String>),
-    Grid2(Vec<String>, Vec<String>),
+variants! {
+    /// Page layout; every string is a contribution id.
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Layout {
+        Stack(Vec<String>),
+        Grid21(Vec<String>, Vec<String>),
+        Grid2(Vec<String>, Vec<String>),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -423,24 +475,26 @@ pub struct ContributionDecl {
     pub deadline_ms: u32,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Point {
-    Page(String),
-    DashboardTile,
-    DashboardAttention,
-    DashboardPanel,
-    /// Full width, below the attention and activity grid.
-    DashboardWide,
-    EntityHeader(String),
-    /// `columns` 2 lays the tab's panels out in two columns; the portal reads it from the
-    /// tab's first contribution by `order`.
-    EntityTab { kind: String, tab: String, tab_label: String, columns: u8 },
-    EntityTabCount { kind: String, tab: String },
-    EntitySummary(String),
-    /// A column the portal adds to every `DataTable` whose `list_columns_for` is `kind`,
-    /// fetched once per table page with `PanelQuery::refs`; answers `Primitive::ColumnCells`.
-    EntityListColumn { kind: String, label: String, align: Align },
-    NavCounter,
+variants! {
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Point {
+        Page(String),
+        DashboardTile,
+        DashboardAttention,
+        DashboardPanel,
+        /// Full width, below the attention and activity grid.
+        DashboardWide,
+        EntityHeader(String),
+        /// `columns` 2 lays the tab's panels out in two columns; the portal reads it from the
+        /// tab's first contribution by `order`.
+        EntityTab { kind: String, tab: String, tab_label: String, columns: u8 },
+        EntityTabCount { kind: String, tab: String },
+        EntitySummary(String),
+        /// A column the portal adds to every `DataTable` whose `list_columns_for` is `kind`,
+        /// fetched once per table page with `PanelQuery::refs`; answers `Primitive::ColumnCells`.
+        EntityListColumn { kind: String, label: String, align: Align },
+        NavCounter,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -466,11 +520,13 @@ pub struct ActionDecl {
     pub prepare: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Emphasis {
-    Primary,
-    Default,
-    Ghost,
+variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Emphasis {
+        Primary,
+        Default,
+        Ghost,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -493,12 +549,14 @@ pub enum ActionPoint {
     TableRow(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Then {
-    Invoke,
-    Form(FormSpec),
-    Confirm(ConfirmSpec),
-    Link(Link),
+variants! {
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Then {
+        Invoke,
+        Form(FormSpec),
+        Confirm(ConfirmSpec),
+        Link(Link),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -521,19 +579,21 @@ pub struct Field {
     pub readonly: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FieldKind {
-    String,
-    Text,
-    Int,
-    Float,
-    Bool,
-    Enum(Vec<String>),
-    Multi(Vec<String>),
-    Json,
-    Ref(String),
-    Money(Vec<String>),
-    Duration,
+variants! {
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum FieldKind {
+        String,
+        Text,
+        Int,
+        Float,
+        Bool,
+        Enum(Vec<String>),
+        Multi(Vec<String>),
+        Json,
+        Ref(String),
+        Money(Vec<String>),
+        Duration,
+    }
 }
 
 /// A decoded field value; [`decode_field`] and [`encode_field`] are the one codec between
@@ -682,18 +742,22 @@ pub struct ConfirmSpec {
     pub confirm_label: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ConfirmTone {
-    Danger,
-    Warn,
-    Info,
+variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum ConfirmTone {
+        Danger,
+        Warn,
+        Info,
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ReasonReq {
-    Required,
-    Optional,
-    None,
+variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum ReasonReq {
+        Required,
+        Optional,
+        None,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -708,34 +772,40 @@ pub struct SearchDecl {
 // Primitive
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Tone {
-    Ok,
-    Warn,
-    Err,
-    Info,
+variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Tone {
+        Ok,
+        Warn,
+        Err,
+        Info,
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Align {
-    Left,
-    Right,
+variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Align {
+        Left,
+        Right,
+    }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum CellKind {
-    Text,
-    Mono,
-    Badge,
-    Ref,
-    Number,
-    Bytes,
-    Time,
-    User,
-    /// Dimmed plain text.
-    Muted,
-    /// A plain badge: no status colour unless `tone` sets one.
-    Label,
+variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum CellKind {
+        Text,
+        Mono,
+        Badge,
+        Ref,
+        Number,
+        Bytes,
+        Time,
+        User,
+        /// Dimmed plain text.
+        Muted,
+        /// A plain badge: no status colour unless `tone` sets one.
+        Label,
+    }
 }
 
 /// One value; numbers arrive preformatted by the module.
@@ -763,10 +833,12 @@ pub struct Column {
     pub sorted: Option<SortDir>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SortDir {
-    Asc,
-    Desc,
+variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum SortDir {
+        Asc,
+        Desc,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -852,13 +924,15 @@ pub struct KpiTile {
     pub link: Option<Link>,
 }
 
-/// The chart colours a module may pick: the design-system `--chart-1`, `--chart-2` and
-/// `--warn` tokens.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Palette {
-    Chart1,
-    Chart2,
-    Warn,
+variants! {
+    /// The chart colours a module may pick: the design-system `--chart-1`, `--chart-2` and
+    /// `--warn` tokens.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Palette {
+        Chart1,
+        Chart2,
+        Warn,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -924,13 +998,15 @@ pub struct WorkQueue {
     pub selectable: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ServiceState {
-    Running,
-    Degraded,
-    Restarting,
-    Crashed,
-    Down,
+variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum ServiceState {
+        Running,
+        Degraded,
+        Restarting,
+        Crashed,
+        Down,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -954,10 +1030,12 @@ pub struct ServiceStatus {
     pub value_label: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Axis {
-    Left,
-    Right,
+variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Axis {
+        Left,
+        Right,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -974,10 +1052,12 @@ pub struct TimeSeriesChart {
     pub series: Vec<Series>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Severity {
-    Err,
-    Warn,
+variants! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum Severity {
+        Err,
+        Warn,
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1048,20 +1128,67 @@ pub struct Banner {
     pub text: String,
 }
 
-/// The closed set of things a panel can return.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Primitive {
-    DataTable(DataTable),
-    PropertyList(PropertyList),
-    KpiTile(KpiTile),
-    Timeline(Timeline),
-    Form(FormSpec),
-    WorkQueue(WorkQueue),
-    ServiceStatus(ServiceStatus),
-    TimeSeriesChart(TimeSeriesChart),
-    AttentionItems(Vec<AttentionItem>),
-    ColumnCells(BTreeMap<String, Cell>),
-    Cell(Cell),
-    EntityHeader(EntityHeader),
-    Empty { title: String, detail: String },
+variants! {
+    /// The closed set of things a panel can return.
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    pub enum Primitive {
+        DataTable(DataTable),
+        PropertyList(PropertyList),
+        KpiTile(KpiTile),
+        Timeline(Timeline),
+        Form(FormSpec),
+        WorkQueue(WorkQueue),
+        ServiceStatus(ServiceStatus),
+        TimeSeriesChart(TimeSeriesChart),
+        AttentionItems(Vec<AttentionItem>),
+        ColumnCells(BTreeMap<String, Cell>),
+        Cell(Cell),
+        EntityHeader(EntityHeader),
+        Empty { title: String, detail: String },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// No wildcard arm: a new `Point` variant does not compile until it is named here.
+    fn written(point: &Point) -> &'static str {
+        match point {
+            Point::Page(_) => "Page",
+            Point::DashboardTile => "DashboardTile",
+            Point::DashboardAttention => "DashboardAttention",
+            Point::DashboardPanel => "DashboardPanel",
+            Point::DashboardWide => "DashboardWide",
+            Point::EntityHeader(_) => "EntityHeader",
+            Point::EntityTab { .. } => "EntityTab",
+            Point::EntityTabCount { .. } => "EntityTabCount",
+            Point::EntitySummary(_) => "EntitySummary",
+            Point::EntityListColumn { .. } => "EntityListColumn",
+            Point::NavCounter => "NavCounter",
+        }
+    }
+
+    #[test]
+    fn variants_lists_every_variant_of_each_shape_in_order() {
+        let s = String::new;
+        let every = [
+            Point::Page(s()),
+            Point::DashboardTile,
+            Point::DashboardAttention,
+            Point::DashboardPanel,
+            Point::DashboardWide,
+            Point::EntityHeader(s()),
+            Point::EntityTab { kind: s(), tab: s(), tab_label: s(), columns: 2 },
+            Point::EntityTabCount { kind: s(), tab: s() },
+            Point::EntitySummary(s()),
+            Point::EntityListColumn { kind: s(), label: s(), align: Align::Left },
+            Point::NavCounter,
+        ];
+        assert_eq!(every.iter().map(written).collect::<Vec<_>>(), Point::VARIANTS);
+        assert_eq!(every.iter().map(Variants::variant).collect::<Vec<_>>(), Point::VARIANTS);
+        assert_eq!(Point::NAME, "Point");
+        assert_eq!(Layout::VARIANTS, ["Stack", "Grid21", "Grid2"]);
+        assert_eq!(Layout::Grid21(Vec::new(), Vec::new()).variant(), "Grid21");
+    }
 }
