@@ -28,6 +28,17 @@ push-hub, mockup, safe-verification triggers); update the wiring pins in
 
 ### Step 2 — review and test policy [docs]
 Single owner: `.agents/shared/planning-dispatch.md`.
+- Review stays a subagent and stays adversarial: it hunts implementation gaps
+  and structural problems, and it must challenge the plan itself — a defect
+  that follows from the plan is reported as a plan defect, never passed as
+  "matches the plan" (owner 2026-11-18). Every finding names its origin:
+  local (this diff) or structural (wrong layer, flawed plan, half-ported
+  subsystem, second source of truth).
+- What goes: default-REJECT / "must find something" pressure; style, comment
+  and wording findings as REJECT grounds; patching structural findings one by
+  one. A structural finding stops the loop and goes to the owner with a
+  root-cause proposal (fix the plan, finish the subsystem) instead of a
+  review-fix round.
 - No review for prose-only commits (`docs/`, `.agents/`, `.claude/agents/`,
   `docs/plans/`, memory). A plan gets one review before approval.
   Exception: `.rs` doc comments on `api/` and `core/` contracts are code.
@@ -61,10 +72,17 @@ AGENTS.md's action table points at the merged files and no longer loads
 out (delete; git history keeps them). Sweep every reference to moved or
 deleted files and sections (docs, skills, hooks' reason strings, agent files).
 
-### Step 4 — split the module catalogue [docs]
-Move `.agents/shared/gamebackend.md` **Domain modules** into
-`docs/reference/domain-modules.md`; leave a pointer; AGENTS.md loads it only
-when a module is touched.
+### Step 4 — path-scoped rules instead of per-action loading [docs]
+Replace AGENTS.md's "read before the action" loading of area knowledge with
+`.claude/rules/*.md` files carrying `paths:` frontmatter (loaded by the
+harness only when matching files are touched; code.claude.com/docs memory
+"Organize rules"), or skills for multi-step procedures. First candidates:
+`.agents/shared/gamebackend.md` **Domain modules** (paths `modules/**`,
+`api/**`), event-plane, push-hub, admin/mockup, dev tooling scope (`tools/**`,
+`weles/**`). Keep `gamebackend.md` for the always-true architecture core.
+Cut MANDATORY/IMPORTANT emphasis: rules with zero exceptions are enforced by
+hooks already (git safety, commit format, explicit model, worktrees); the rest
+is stated once in plain words.
 
 ### Review
 One core-reviewer pass over the cumulative diff after step 4, checking for
