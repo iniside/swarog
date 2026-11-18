@@ -157,9 +157,11 @@ already names that dependency). Otherwise dispatch the reviewer and the next
 implementation concurrently, in one message — the reviewer is read-only, so
 the sole hazard is two writers in one file.
 
-When a parallel review returns a punch list: fix it in its own commit carrying `Kind: review-fix`. If a
-finding touches a file the in-flight task is editing, wait for that task to
-land, then fix — never edit a file a live subagent holds.
+When a parallel review returns a punch list, triage it by origin
+(**Adversarial Diff Review**): local findings get one fix commit carrying
+`Kind: review-fix`; structural findings go to the owner. If a fix touches a
+file the in-flight task is editing, wait for that task to land, then fix —
+never edit a file a live subagent holds.
 
 ## Adversarial Diff Review
 
@@ -216,8 +218,9 @@ Mechanics:
    anchor and a failing scenario or affected requirement; style, comment and
    wording findings are not REJECT grounds. Unverified
    concerns go in a separate list and do not change the verdict. No demand
-   for unrelated hardening (`.claude/rules/dev-tooling.md`), no
-   reopening the approved design.
+   for unrelated hardening (`.claude/rules/dev-tooling.md`). A defect in the
+   approved design is reported as a structural plan finding for the owner;
+   it is neither suppressed nor patched.
 5. Binary verdict: PASS with the taxonomy class list attacked for the files
    touched, or a punch list. No "pass with reservations". Bounce findings;
    never silently absorb them. A punch list of only comment findings ends
@@ -234,7 +237,8 @@ by default. Before dispatching any fix, the main session groups the findings
 by origin. A structural finding stops the loop: it gets no review-fix round
 and is never patched one by one; the main session proposes a fix for the
 cause (fix the plan, finish the subsystem, replace the mechanism, delete the
-copy, derive from the real source) and brings it to the owner.
+copy, derive from the real source) and brings it to the owner. No further
+step of the same plan is dispatched until the owner rules.
 
 If a fix exists only because the task introduced an unrequested mechanism,
 the verdict is `REJECT — scope loop`: remove it or return to the approved
