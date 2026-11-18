@@ -2074,7 +2074,8 @@ Owner decisions from the plan review (2026-11-17):
 (a) What is touched: `core/controlplane` (contract, the `LocalFace` cap check of O2),
 `core/admin` (`render.rs`, templates, `engine/columns.rs`, `fakes.rs`, `routes.rs`), the
 public-api baseline, `tools/conformance` policy rows for new request fields,
-`modules/accounts/src/admin.rs` (moves to the shared FAKE helper), the mockup skill
+`modules/accounts/src/admin.rs` (moves to the shared FAKE helper; contributes
+`EntityLabel{player}`, Refs seam), the mockup skill
 (standing data rules), `docs/reference/event-plane-ops.md:117-122`.
 What dies, in this step:
 - `TimelineEntry.actor: Option<EntityRef>` and its always-a-link render path (K10);
@@ -2133,9 +2134,10 @@ What dies, in this step:
 **Refs seam** (K19, K21, O2; review unit (ii)). The one specification of how ids cross
 modules on a rendered page; plan review 2026-11-18 found three gaps in the earlier
 scattered sentences (F1, F3, F4), so every rule of this seam lives here and nowhere else.
-- Unit: one slot response (one table, one panel body), not the page. Each list column and
-  each label pass collects the distinct refs of its kind from that response; a row may
-  carry several (a timeline actor and target).
+- Unit: one slot response (one table, one panel body), not the page. Each list column
+  collects the distinct `row.entity` refs of its kind from that table (one per row, as
+  `columns::refs` does today); each label pass collects every ref of its kind the body
+  draws, where one row may carry several (a timeline actor and target).
 - Batching: the distinct refs are split into calls of at most `MAX_PANEL_REFS` (the plan's
   mechanism for K21's "the portal never exceeds it", from plan review P1, 2026-11-17). All
   column × chunk calls run concurrently; the chunks of one column share that column's one
@@ -2144,12 +2146,14 @@ scattered sentences (F1, F3, F4), so every rule of this seam lives here and nowh
   one makes the whole column `ColumnOutcome::Failed`: the marker in every cell and one
   warn banner, as today. No partial column.
 - Cap backstop (O2): `LocalFace` refuses `refs` longer than `MAX_PANEL_REFS` before the
-  provider runs, with `opsapi::Error::invalid` (never `not_found`, which the engine
-  draws as an empty slot and would hide the refusal). The `cp.panel req.refs` conformance
+  provider runs, with `opsapi::Error::invalid`: an over-cap request is malformed, not a missing entity,
+  so `not_found` would name the wrong cause. The `cp.panel req.refs` conformance
   rationale names the bound.
 - Labels: one label pass per slot response, after its body (and its columns) are
   built; it reads refs from the body only, never from another slot. A pass per kind calls
-  that kind's `EntityLabel` contribution under its own decl's deadline, batched and
+  the `EntityLabel{kind}` contribution of the one module whose manifest declares that
+  `EntityKindDecl` (the kind's owner); an `EntityLabel{kind}` declared by any other
+  module is never called. That contribution is called under its own decl's deadline, batched and
   chunked as above. A label that fails, times out, is denied (role below `min_role`, zero
   calls) or is missing from the answer draws the plain id, as `ref_cell` does today; a
   failed label pass adds no banner (the id is still a correct, linked value).
@@ -2168,7 +2172,10 @@ scattered sentences (F1, F3, F4), so every rule of this seam lives here and nowh
 - row clickability by kind; the down-module row-menu group and tab dot;
 - the Refs seam block, one named test per rule: distinct refs per kind; more distinct
   refs than `MAX_PANEL_REFS` split into chunks that all run and still fill every cell and
-  label; the chunks of one column share one deadline; one failing chunk fails the whole
+  label; the chunks of one column share one deadline and run concurrently (paused clock: N
+  chunks each answering at 0.6× the deadline fill the column, one chunk at 1.1× fails it);
+  only the kind's owner answers a label (a second module's `EntityLabel` for the kind gets
+  zero calls); one failing chunk fails the whole
   column; a row carrying two refs of one kind; a label that fails, times out, is denied or
   is missing draws the id with no banner; labels read from the body only;
 - the cap refused in `LocalFace` with `invalid` before the provider runs (O2), on the
