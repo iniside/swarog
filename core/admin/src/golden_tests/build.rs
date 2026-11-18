@@ -767,6 +767,21 @@ pub(super) fn queue_table_contract_case() -> PanelCase {
     }
 }
 
+/// One queue column whose long values wrap.
+pub(super) fn queue_wrap_column_case() -> PanelCase {
+    let item = QueueItem {
+        cells: vec![cell(CellKind::Text, "a long reason that wraps onto the next line")],
+        ..queue_item("job-91", "pending", 0, 5, &[])
+    };
+    PanelCase::new(
+        PanelState::Ok,
+        Some(body(Primitive::WorkQueue(WorkQueue {
+            columns: vec![Column { wrap: true, ..column("reason", "Reason", Align::Left) }],
+            ..work_queue("pending", vec![item])
+        }))),
+    )
+}
+
 /// A page past the first: no `"1 / N"`, no next page, the count against the state's total.
 pub(super) fn queue_later_page_case() -> PanelCase {
     PanelCase {

@@ -107,6 +107,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         ),
     );
     panel!("tile_delta_info_flat", tile(delta("±0", Some(Tone::Info))));
+    panel!("tile_delta_accent_flat", tile(delta("±0", Some(Tone::Accent))));
     panel!(
         "tile_delta_none_period_only",
         PanelCase::tile(
@@ -382,6 +383,32 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     );
     panel!("table_noun_no_total", PanelCase::new(PanelState::Ok, Some(body(noun_table(None)))));
     panel!("table_sorted_ascending", PanelCase::new(PanelState::Ok, Some(body(sorted_ascending_table()))));
+    panel!(
+        "table_noun_one",
+        PanelCase::new(
+            PanelState::Ok,
+            Some(body(match players_table(vec![player_row("p-1001", "12", "active", false)], Some(1), None) {
+                Primitive::DataTable(t) => {
+                    Primitive::DataTable(DataTable { item_noun: Some(Noun::new("player", "players")), ..t })
+                }
+                _ => unreachable!("players_table is a DataTable"),
+            })),
+        ),
+    );
+    panel!(
+        "table_wrap_columns",
+        PanelCase::new(
+            PanelState::Ok,
+            Some(body(match players_table(vec![player_row("p-1001", "12", "active", false)], Some(1), None) {
+                Primitive::DataTable(mut t) => {
+                    t.columns[1].wrap = true;
+                    t.columns[2].wrap = true;
+                    Primitive::DataTable(t)
+                }
+                _ => unreachable!("players_table is a DataTable"),
+            })),
+        ),
+    );
     panel!("panel_untitled", PanelCase { title: "", ..PanelCase::new(PanelState::Ok, Some(body(summary()))) });
 
     // ---- Timeline ----
@@ -442,6 +469,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     );
     panel!("queue_panel_tool", queue_panel_tool_case());
     panel!("queue_table_contract", queue_table_contract_case());
+    panel!("queue_wrap_column", queue_wrap_column_case());
     panel!("queue_later_page", queue_later_page_case());
     panel!("queue_search_empty", queue_narrowed_case(&[("q", "zed")], Some("zed")));
     panel!("queue_filter_empty", queue_narrowed_case(&[("template", "welcome")], None));
@@ -521,6 +549,19 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel!("count_error", in_mode("count", PanelState::Error, None));
     panel!("nav_counter_err", in_mode("nav", PanelState::Ok, one_cell(toned(CellKind::Number, "3", Tone::Err))));
     panel!("nav_counter_warn", in_mode("nav", PanelState::Ok, one_cell(toned(CellKind::Number, "7", Tone::Warn))));
+    panel!("fact_mono_muted", in_mode("fact", PanelState::Ok, one_cell(cell(CellKind::MonoMuted, "sha-9f3c"))));
+    panel!("fact_toggle_on", in_mode("fact", PanelState::Ok, one_cell(cell(CellKind::Toggle, "true"))));
+    panel!("fact_toggle_off", in_mode("fact", PanelState::Ok, one_cell(cell(CellKind::Toggle, "false"))));
+    panel!("fact_strong", in_mode("fact", PanelState::Ok, one_cell(cell(CellKind::Strong, "Anna Kowalska"))));
+    panel!("fact_tone_accent", in_mode("fact", PanelState::Ok, one_cell(toned(CellKind::Label, "beta", Tone::Accent))));
+    let linked_mono = Cell { link: Some(Link::Entity(entity("build", "1.4.2"))), ..cell(CellKind::Mono, "1.4.2") };
+    panel!("fact_linked_mono", in_mode("fact", PanelState::Ok, one_cell(linked_mono)));
+    let row_cell = Cell {
+        row: true,
+        more: vec![cell(CellKind::Muted, "since 2024")],
+        ..toned(CellKind::Badge, "active", Tone::Ok)
+    };
+    panel!("fact_row_cell", in_mode("fact", PanelState::Ok, one_cell(row_cell)));
 
     // ---- panel form: fresh, readonly, readonly beside an enabled tool ----
     panel!(
