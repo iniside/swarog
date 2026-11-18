@@ -478,7 +478,7 @@ def main():
         if not isinstance(payload, dict) or payload.get("agent_type") != "code-scout" or not payload.get("agent_id"):
             return
         mode = sys.argv[1] if len(sys.argv) > 1 else ""
-        path = state_path(payload["agent_id"])
+        path = state_path(payload.get("agent_id"))
         if mode == "record":
             do_record(payload, path)
         elif mode == "gate":
@@ -486,7 +486,10 @@ def main():
         elif mode == "report":
             do_report(payload, path)
     except Exception:
-        pass
+        from os import environ
+
+        if environ.get("SCOUT_NAV_DEBUG") == "1":
+            raise
 
 
 if __name__ == "__main__":
