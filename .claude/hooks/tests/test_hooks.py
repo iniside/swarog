@@ -681,8 +681,9 @@ class PostCommitStepParts(unittest.TestCase):
         full("mrg_fin")
         cls.shas = r
 
-    def reminder(self, sha):
-        out = "[master %s] x\n 1 file changed, 1 insertion(+)\n" % sha
+    def reminder(self, *shas):
+        out = "".join(
+            "[master %s] x\n 1 file changed, 1 insertion(+)\n" % sha for sha in shas)
         payload = {"tool_name": "Bash", "cwd": self.repo.replace("\\", "/"),
                    "tool_input": {"command": "git commit -m x"},
                    "tool_response": {"stdout": out}}
@@ -733,6 +734,19 @@ class PostCommitStepParts(unittest.TestCase):
 
     def test_final_without_earlier_parts_is_byte_identical_base(self):
         self.assertEqual(self.reminder(self.shas["solo_s"]), self.BASE)
+
+    def test_part_prose_finisher_and_plain_commit_name_both_targets(self):
+        got = self.reminder(
+            self.shas["mix_p1_s"], self.shas["mix_fin_s"], self.shas["solo_s"])
+        self.assertIn(
+            "`git diff %s^..%s`" % (self.shas["mix_p1"][:12], self.shas["mix_fin_s"]), got)
+        self.assertIn("`git show %s`" % self.shas["solo_s"], got)
+
+    def test_two_plain_commits_name_both_show_targets(self):
+        got = self.reminder(self.shas["offplan_s"], self.shas["solo_s"])
+        self.assertIn("`git show %s`" % self.shas["offplan_s"], got)
+        self.assertIn("`git show %s`" % self.shas["solo_s"], got)
+        self.assertNotIn("git diff", got)
 
     def test_unreadable_part_paths_fall_back_to_single_commit(self):
         self.assertEqual(self.reminder(self.shas["mrg_fin_s"]), self.BASE)
