@@ -115,6 +115,10 @@ Co-Authored-By: Claude <Family> <Version> <noreply@anthropic.com>
 After multi-subagent rollouts, audit recent commit trailers against the
 intended lanes before reporting done.
 
+## Measuring agent cost
+
+`python .claude/scripts/agent_token_report.py [--days N] [--json]` — read-only token report over this repo's Claude transcripts (totals, per-agentType cost, context share, navigation discipline, baseline).
+
 ## Skills
 
 Use the shared skills in `.agents/skills/` (`.claude/skills/` holds Claude
