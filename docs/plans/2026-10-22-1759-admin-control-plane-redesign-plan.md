@@ -2218,45 +2218,62 @@ red by design is Step 28's variant-coverage test naming the new variants, from 1
   down-module row-menu group (K14); the singular noun at 1 (K18); the FAKE helper gives a
   pinned output for a fixed id, checked from the accounts and the portal call sites (X3).
 - **Step 13c.1r — split `render.rs` and `golden_tests.rs` by responsibility** (owner,
-  2026-11-18). Why: `core/admin/src/render.rs` (~2060 lines) and `golden_tests.rs` (~3190
+  2026-11-18). Why: `core/admin/src/render.rs` (2057 lines) and `golden_tests.rs` (3194
   lines) are read whole by every later 13c step, 13c.1g and each port; an agent working on
-  one area (cells, forms, queues) should read only that file. Source map:
-  research hand-off of 2026-11-18 (render clusters A–Q, golden clusters H/T/B/C/D/G/M/S/X).
-  Runs after 13c.1a, before 13c.1b. Pure move: no behaviour, template, contract or test
-  change.
-  - (a) `core/admin/src/render.rs` becomes `core/admin/src/render/` (`mod.rs` plus one
-    file per cluster: `seen`, `url`, `style` (tone, avatar, number formats), `cell`,
-    `action`, `shell` (view models), `panel` (`panel`, `prim`, `Ctx`), `table`,
-    `queue`, `tiles` (kpi/spark, timeline, services, chart, attention/header), `form`,
-    `modal`). `core/admin/src/golden_tests.rs` becomes `core/admin/src/golden_tests/`
-    (`mod.rs` with `Case`/`Rendered`/`scoped`/`goldens` and the shared consts;
-    `harness`, `view_tests`, builders, `cases/` as section functions in the original
-    order, `coverage`, `macros` (the macro-case drift guard), `declared` (the Step 28
-    gate and the declaration scan), `selftests`). The implementer may merge or rename files
-    where the map's boundary is wrong; the hand-off names each file's contents.
+  one area (cells, forms, queues) should read only that file. Runs after 13c.1a, before
+  13c.1b. Pure move: no behaviour, template, contract or test change. Line ranges are at
+  `0c380299`; a range boundary inside a cluster that the implementer finds wrong moves to
+  the nearest item boundary, named in the hand-off.
+  - (a) `core/admin/src/render.rs` becomes `core/admin/src/render/`:
+    - `mod.rs`: the `seen` pair (17-95, both cfg variants and its unit test, unchanged and
+      inline, so its `super::` calls resolve through imports of `tone`, `mode_of` and
+      `emphasis_name` in `mod.rs`); templates and entry points (97-139); the `mod` lines
+      and the re-exports.
+    - `url.rs` 141-210; `style.rs` 211-267 plus `thousands` and `fixed1`; `cell.rs`
+      268-372; `action.rs` 373-467; `shell.rs` 468-727 (view models, `ranges`,
+      `layout_columns`, `layout_name`); `panel.rs` 728-986 (`mode_of`, `panel`, `prim`,
+      `Ctx` as `pub(super)` with its fields `pub(super)`); `table.rs` 987-1224 (the
+      helpers `queue` reaches become `pub(super)`); `tiles.rs` 1225-1398 and 1724-1920
+      (kpi/spark, timeline, services, chart, attention/header); `form.rs` 1399-1583;
+      `queue.rs` 1584-1723; `modal.rs` 1921-2057.
+  - `core/admin/src/golden_tests.rs` becomes `core/admin/src/golden_tests/`:
+    - `mod.rs`: header doc, imports, consts (1-73) and case types (2277-2310); `mod` lines.
+    - `harness.rs` 75-278; `view_tests.rs` 280-531 (`table_grid` re-exported as
+      `pub(crate)` for `tests.rs:921`); `build.rs` 533-1326; `cases.rs`: `cases()`
+      1328-2275 moved whole, with `push!`/`panel!` inside it unchanged (its locals `in_mode`,
+      `no_errors`, `ban`, `grant` cross sections, so it is not cut); `coverage.rs`
+      2312-2424; `macros.rs` 2426-2760; `declared.rs` 2762-2961; `selftests.rs`
+      2962-3194.
   - (b) Invariants:
-    - Every external path stays valid: `crate::render::X` for every item routes.rs,
-      lib.rs, engine/actions.rs, events_provider.rs, tests.rs and the goldens use today
+    - Every external path stays valid: `crate::render::X` for every item that routes.rs,
+      lib.rs, engine/actions.rs, events_provider.rs, tests.rs and the goldens use
       (`render::seen::{record, collect, Record, Converted}` included), and
-      `crate::golden_tests::table_grid`; done by re-exports in the two `mod.rs` files, so
-      no file outside the two moved trees changes except for `include_str!` paths.
-    - Moved code is byte-identical apart from `use` lines, visibility widened to the
-      minimum the split needs (`pub(super)` before `pub(crate)`), `include_str!` paths,
-      and the `push!`/`panel!` macros taking `out` (and `env`) explicitly, defined once
-      in `golden_tests/mod.rs` before the `mod` lines; every case still goes through
-      `scoped` (per-case collect of Step 28).
-    - The golden case list keeps its names and order; every testdata file stays
-      byte-identical and no bless runs.
-    - Shared helpers used by two or more clusters live in one file each (no copies).
-    - `cargo fmt` is not run (hand-format).
-  - (c) Tests: none new. Proof: `cargo test -p admin` gives the same pass/fail set as
-    before the step (the Step 28 gate red on exactly the four 13c.1a variants); `cargo
-    clippy -p admin --all-targets -- -D warnings`; `git diff -M --stat` shows the moves;
-    the reviewer checks with `git diff --color-moved` that no moved line's content
-    changed beyond the invariant's list.
-  - (d) Lanes: `[mechanical]` core-implementer `sonnet`, two commits in order (render,
-    then golden_tests). `[review]` core-reviewer `opus`, one round on both commits;
-    no proof-auditor (no gate behaviour changes; the golden byte-identity is the proof).
+      `crate::golden_tests::table_grid`, through re-exports in the two `mod.rs` files. A
+      `pub(super)` item is never re-exported as `pub(crate)`: an item used outside
+      `render` keeps `pub(crate)`.
+    - Moved lines are unchanged apart from: `use` lines, a visibility prefix widened to the
+      minimum the split needs, and the `include_str!` paths (`render.rs:97-100` →
+      `../templates/…`; `golden_tests.rs:2348` → `../engine/panels.rs`).
+    - Every case still goes through `scoped` (Step 28 per-case collect); case names and
+      order are unchanged; every testdata file stays byte-identical and no bless runs.
+    - No item is copied; each lives in one file.
+    - Outside the two moved trees only `docs/todo` line pointers into the moved files
+      change (`apikeys.md`, `admin-second-pass.md`); `docs/plans` and `docs/reviews` are
+      archives and stay. `cargo fmt` is not run (hand-format).
+  - (c) Tests: none new. Proof:
+    - a line-multiset check (a throwaway script, its output in the hand-off): the sorted
+      lines of each old file against the concatenated new files, with `use` lines removed,
+      the visibility prefix and `include_str!` paths normalised, and leading whitespace
+      stripped; any remaining difference is listed and justified;
+    - `cargo test -p admin`: the same test count and the same leaf names with the same
+      outcomes as at `0c380299` (the Step 28 gate red on exactly the four 13c.1a variants);
+    - `cargo clippy -p admin --all-targets -- -D warnings` (catches a bad or unused
+      re-export in both builds);
+    - the reviewer's second view: `git diff <c>~1 <c> --color-moved=zebra
+      --color-moved-ws=allow-indentation-change`.
+  - (d) Lanes: `[mechanical]` core-implementer `sonnet` (fully specified by the map
+    above), two commits in order (render, then golden_tests). `[review]` core-reviewer
+    `opus`, one round on both commits; no proof-auditor (no gate behaviour changes).
 - **Step 13c.1b — chrome, tabs, timeline and forms** (K9–K13, K15, K16). `[opus]`
   core-implementer. Tests in the step: the down-module tab dot (K13); a `readonly` decl
   forces the readonly state with its text (K12).
