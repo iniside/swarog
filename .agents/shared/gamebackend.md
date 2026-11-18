@@ -163,50 +163,10 @@ never a silent last-writer-wins overwrite.
     sanctioned surface for the HTTP-surface owners (webui, admin, accounts-OAuth,
     gateway).
 
-## Adding a module (the recipe)
+## Adding a module
 
-1. `modules/<name>/`: implement `lifecycle::Module` (`name`, `requires`, `init`; +
-   `register` if it provides a capability, `migrate` if it persists, `start`/`stop`
-   for background work). Tests in `src/tests.rs`. `migrate` runs its DDL through
-   `lifecycle::Ddl` (`sql` for schema/tables/functions/seeds, `index(...)` and
-   `trigger(...)` with plain `CREATE`, no `IF NOT EXISTS`/`OR REPLACE`; never raw
-   `ALTER TABLE` or `raw_sql`). DDL text lives in a `*_DDL` const (trigger SQL
-   included, e.g. config's `SETTINGS_NOTIFY_TRIGGER_DDL`) or in the `index(...)`/
-   `trigger(...)` argument, and every `*_DDL` reaches only `Ddl::sql`/`index`/
-   `trigger`. Archcheck rule 22 is a textual tripwire that catches the common
-   violations of this convention (see its banner in `tools/archcheck/src/main.rs`).
-   Test helpers build the schema through the module's own `migrate`.
-2. Contracts in `api/<name>/`: `<name>events` (if it publishes), `<name>api` with
-   `#[rpc]` traits (if it exposes sync capability — `#[http(...)]` for player-facing
-   ops, plain for wire-only), `<name>rpc` containing the one-line
-   `<prefix>_<snake>_meta!(rpc_macro::generate_glue);` invocation (+ re-export
-   `adminrpc::register_admin` if it has an admin page).
-3. In `init`: contribute ops to the `opsapi` slots, edge faces to `edge::EDGE_SLOT`
-   (own glue), admin item to `adminapi::SLOT`; subscribe with
-   `on_tx(SubscriptionSpec { id: "<name>.<topic-kebab>.v1", start: StartPosition::… }, …)`
-   — the id is a durable contract, the start position has no default. Emit with
-   `emit_tx` inside your store tx. Replica-local caches refresh via
-   `ctx.invalidation().register(channel, name, callback)`, not a durable sub.
-4. New `cmd/<name>-svc`: `src/lib.rs` exports
-   `modules(wiring: &ProcessWiring) -> Vec<Box<dyn Module>>` (the `metrics`
-   core-infra module + your module + a `remote::Stub` per consumed capability —
-   peer addresses come from `wiring`, checkers pass dummies); `main.rs` builds the
-   real `ProcessWiring` from env and adds runtime-only handles. Both planes are
-   app-owned (DB ⇒ plane), never listed. It hosts NO gateway (FrontDoor) — the
-   single public front door lives only in `cmd/gateway-svc` + `cmd/server`
-   (monolith); the svc serves its ops ONLY over the internal mTLS edge and
-   gateway-svc dispatches to it Remote. Register the module in `cmd/server`'s lib,
-   add stubs where consumers live, add the svc lib to `tools/checkmodules`'s Split
-   profile, add its typed env/ports/dependencies to
-   `tools/processctl/src/fleet.rs`, and extend `tools/splitproof` with a named
-   assertion (HTTP ops asserted THROUGH gateway-svc; the harness's fleet-drift
-   preflight fails if the centralized fleet != `cmd/*-svc` on disk). Add the module
-   to the centralized convention inventory in `tools/conformance/src/policy.rs`;
-   use the smallest executable fixture that proves each applicable convention and
-   give every genuine non-applicability a concrete reason.
-5. No event-routing wiring exists: producers append to the shared log, consumers
-   pull from their checkpoint — the same code in monolith and split. `topiccheck`
-   validates the subscription graph per deployment profile.
+Use the `add-game-module` skill (`.agents/skills/add-game-module/SKILL.md`); a
+module must boot as its own `cmd/<name>-svc` and ship in both topologies.
 
 ## Domain modules
 
@@ -215,69 +175,12 @@ never a silent last-writer-wins overwrite.
 ## Commands
 
 ```
-cargo run -p devctl -- up monolith
-cargo run -p devctl -- up split
-cargo run -p devctl -- status
-cargo run -p devctl -- down
-weles deploy target/debug --fleet <fleet.toml>   # stage built binaries + stamp the fleet def (weles never builds)
-weles up                         # standalone supervisor: restart-on-crash, weles status / weles down
-cargo run -p verifyctl -- --fast
-cargo run -p verifyctl -- --all
-cargo run -p verifyctl -- --all --strict
-cargo run -p verifyctl -- --slow
-cargo run -p admincheck        # extension-point contract validation (points vs contributed entries)
-cargo build -p demoseed        # before `devctl up`, never while the fleet runs
-target/debug/demoseed          # seed demo data into the running monolith (:8080)
-target/debug/demoseed --base-url http://127.0.0.1:8082 --players 30 --matches 100   # split front door
+cargo run -p devctl -- up monolith    # or: up split; then status / down
+cargo run -p verifyctl -- --fast      # blocking tiers; --all, --all --strict, --slow for more
 ```
 
-`demoseed` seeds demo data through the gateway's public API into a running
-fleet; build it (`cargo build -p demoseed`) BEFORE `cargo run -p devctl -- up ...`,
-then run the direct binary `target/debug/demoseed` (Windows
-`target\debug\demoseed.exe`; adjust for `CARGO_TARGET_DIR`), because devctl's
-parent Cargo stays alive and no second Cargo command may start.
-
-**`weles/`** (top-level crate, binary `weles`) is the standalone mini-orchestrator
-(M0): zero-sharing (no workspace-crate imports — patterns copied from
-devctl/processctl, never imported), native processes only, NEVER builds — it
-executes artifacts staged in `<root>/deploy/` via `weles deploy <src-dir>`.
-Differentiator vs devctl: per-service restart-on-crash with capped backoff (devctl
-tears the whole fleet down). It participates in `run/rollout.lock` bit-compatibly —
-weles and devctl/verifyctl can never run fleets concurrently. Runtime state under
-`run/weles/` (state.json, per-svc logs, control endpoint).
-
-`devctl up` is the owned foreground supervisor. It builds, seeds, starts, and
-health-checks the selected topology, writes bounded state/control metadata and
-ordinary owned per-process logs under `run/devctl/`, and retains ownership until
-shutdown. `status` and `down` validate the recorded
-supervisor identity over a bounded loopback control endpoint; cleanup reaps exactly
-the process groups/job members that supervisor created, never unrelated processes
-selected by name or a reused PID.
-
-`cargo run -p devctl -- up ...` keeps its parent Cargo process active for the life
-of the foreground supervisor. While it is running, do not start another Cargo
-command. Inspect or stop that fleet with the already-built direct binary
-(`target/debug/devctl status` / `down`, under the configured `CARGO_TARGET_DIR`
-when it differs — per-OS spelling in
-[platform notes](../../docs/reference/platform-notes.md)).
-
-`verifyctl` prints a PASS/FAIL/SKIP table and exits non-zero for every applicable
-blocking failure:
-
-- BLOCKING (default / `--fast`): build, clippy `-D warnings`, test, audit,
-  fortress, routecheck, codegen-freshness, contract-golden, conformance,
-  admincheck, docs-current, and split-proof. Audit install/invocation/network errors are FAIL,
-  never green SKIP;
-  only a missing tool with explicit `--no-install` is labeled SKIP.
-- ADVISORY (`--all`, or included and blocking with `--strict`): public-api, fuzz,
-  external C# client, and topiccheck.
-- SLOW (`--slow`): the blocking and advisory manifests plus `cargo mutants`;
-  advisory failures remain non-blocking unless `--strict` is also present.
-
-Intentional baseline updates use `cargo run -p verifyctl -- --bless-public-api`,
-`cargo run -p verifyctl -- --bless-contract-golden`, or
-`cargo run -p verifyctl -- --bless-input-golden` (the conformance input-field
-inventory); each is a recoverable, lease-protected action.
+Stages and flags: read `tools/verifyctl` and `tools/devctl`. For `weles` see
+`docs/reference/weles-design.md`.
 
 ## Dev tooling scope
 
@@ -286,93 +189,12 @@ inventory); each is a recoverable, lease-protected action.
 ## One test rollout at a time
 
 At most ONE rollout-bearing command (`devctl up`, `verifyctl`, or an explicitly
-requested ad-hoc `cargo test`) may execute on this machine at any moment — they
-all share the one local Postgres, and
-concurrent runs contend on the events plane's migrate advisory lock and on
-concurrent DDL (`CREATE OR REPLACE`), which looks like a hang or fails with
-`tuple concurrently updated`. This bites on EVERY rollout, so it is a hard
-protocol, not a tip. Rollout tooling runs on all three platforms — Windows, Linux,
-and macOS (the darwin port landed 2026-07-17; `verifyctl --fast` passes 16/16 on
-Apple Silicon — see [platform notes](../../docs/reference/platform-notes.md)):
-
-- **Before any Cargo-launched rollout**: first check for a live `cargo`/`rustc`
-  (`pgrep -x cargo; pgrep -x rustc` — PowerShell form in
-  [platform notes](../../docs/reference/platform-notes.md)). If either is active, never
-  start a second Cargo command. To inspect or stop an already-running foreground
-  `devctl` fleet, use the already-built direct binary (`target/debug/devctl`,
-  adjusted for `CARGO_TARGET_DIR`),
-  then WAIT for or stop the owning rollout as appropriate. When Cargo/rustc are
-  clear, run `cargo run -p devctl -- status` and require no active fleet. After
-  status exits, re-check Cargo/rustc before launching exactly one selected
-  rollout; never start a second run "to check something quickly".
-- **Never launch a test run in the background and then start another command
-  that compiles or tests** — the second invocation is the classic cause.
-- **When dispatching subagents**: at most one subagent may be running tests at
-  a time; a subagent's prompt must include this check. Sequential steps, not
-  parallel test runs.
-- A hung run's leftovers (orphaned test binaries holding advisory locks,
-  idle-in-transaction sessions) must be killed before retrying — check
-  `pg_stat_activity` for stuck `asyncevents` sessions.
-- `devctl status` reports "starting (N/N healthy)" while a fleet boots, even at
-  N/N; a fleet is up only when it reports "running". Wait for "running", never
-  for "healthy" (a wait loop keyed on "healthy" fired mid-boot and a following
-  `devctl down` aborted a split start).
-- A fleet found up during the pre-flight may be the owner's, started from another
-  terminal. Report it and ask whose it is before stopping it; never stop it
-  silently or wait on it silently (an orchestrator once stopped the owner's
-  monolith fleet after waiting ~55 min on it).
-
-All rollout tools acquire the canonical `run/rollout.lock`. `devctl up` holds an
-exclusive lease for the foreground fleet. `verifyctl` holds one lease for its
-entire manifest and passes a private one-shot inherited lease to the split-proof
-child; the child validates the parent identity/role and participates in that same
-rollout rather than reacquiring the lock. A competing or malformed borrower fails
-closed.
-
-The blocking **split-proof** stage uses the cross-platform Rust harness in
-`tools/splitproof`. It boots the real split — characters
-:8080/:9000, inventory :8081/:9001, gateway :8082 + player-QUIC :9100 + edge
-:9013 (the inbound `push.deliver` face), config
-:8083/:9002, accounts :8084/:9003, admin :8085, audit :8086/:9004, scheduler
-:8087/:9005, match :8088/:9006, rating :8089/:9007, leaderboard :8090/:9008,
-apikeys :8091/:9009, wallet :8092/:9010, notifications :8093/:9011,
-mail :8094/:9012, friends :8095/:9014, groups :8096/:9015,
-storage :8097/:9016, party :8098/:9017. The fleet is spawned with a typed
-environment and owned process containment plus a kill-on-drop guard,
-health-checked over reqwest, DB-asserted via sqlx, and the player QUIC front
-driven through the `edge` crate as a library. It asserts the same named scenarios
-(register/login → real bearer, authz negatives, allow-list, cross-process starter-grant
-+ DB-verified wipe, config live-reload, audit rows, scheduler exactly-once, leaderboard
-accumulation, 429 rate-limit, api-key policy [K1-K5], admin session auth [AD1-AD5],
-audit [AU1-AU3], scheduler/prune [SC/SP], metrics [MX], rate-limit [RL], player QUIC
-[P1-P6], friends [FR1-FR9], groups [GR1-GR6], storage [ST0-ST6],
-party over `/push` [PY1-PY7], `/push` pipelined invoke, revocation, remote failure and
-late-batch drop [PH12-PH15], account-deletion purge [DL0-DL14]), then re-runs the monolith (`cmd/server`)
-on the same player front for parity ([M0-M3b]) and proves native graceful shutdown ([W2]: the platform's native
-cooperative stop to the monolith's process group → clean drain, no force-kill —
-see [platform notes](../../docs/reference/platform-notes.md)). A reachable Postgres with
-the `gamebackend` role is REQUIRED at `DATABASE_URL` (the harness uses sqlx, not the
-`psql` binary); the preceding blocking build stage produces the fleet, harness,
-and C# fixture server, so the live stages run without nested Cargo builds. A
-fleet-drift preflight fails loudly if the centralized `processctl` fleet !=
-`cmd/*-svc` on disk.
-Add a new module's typed service to `tools/processctl/src/fleet.rs` and add its
-named assertion to `tools/splitproof`; cross-process flows also need a named harness
-assertion. **Never ship a monolith-only feature** — both
-topologies are supported compilation paths.
-
-Smoke test (monolith or through gateway-svc). The dev conveniences are explicit
-opt-ins/opt-outs (fail-closed defaults), so the monolith needs `APIKEYS_DEV_SEED=1`
-(dev API keys below), `ACCOUNTS_DEV_AUTH=1` + `INVENTORY_DEV_GRANT=1`
-(register/login + IAP grant), `WALLET_DEV_SEED=1` (the `gold`/`gems` catalog),
-`ADMIN_COOKIE_SECURE=0` (session cookie over plain
-http) and a seeded admin user (`adminctl create-user`) —
-`cargo run -p devctl -- up monolith` sets/seeds all of these for you (dev portal
-creds `admin`/`admin`):
-```
-curl -X POST localhost:8080/match/report -H "X-Api-Key: dev-key-server" -d '{"ReportId":"demo-1","Winner":"alice","Loser":"bob"}'
-curl localhost:8080/leaderboard -H "X-Api-Key: dev-key-client"
-```
+requested ad-hoc `cargo test`) runs on this machine at a time; they share one
+local Postgres and concurrent runs hang or fail with `tuple concurrently updated`.
+The `pgrep`/`tasklist` check for a live cargo/rustc is its own call, read before
+the launch; never start a second cargo "to check something". At most one
+subagent runs tests at a time and its prompt carries this check. Load the
+`safe-verification` skill before any such run.
 
 ## Database
 
@@ -410,37 +232,3 @@ PGPASSWORD=gamebackend psql -U gamebackend -h localhost -d gamebackend
 
 Installers that keep `psql` off `PATH` (Windows, Homebrew) need the full path —
 see [platform notes](../../docs/reference/platform-notes.md).
-
-## Layout
-
-```
-cmd/                       # composition roots — the ONLY topology-aware code
-  server/                  #   monolith (all modules local)
-  gateway-svc/             #   pure-transport front door (stubs only, no DB)
-  <name>-svc/              #   one per domain module (fortress rule)
-core/                      # foundations — never import modules or api/ crates
-  app/                     #   run(): build, migrate, start, HTTP + edge planes
-  bus/ registry/ contrib/  #   async bus, sync capability registry, slots
-  lifecycle/ opsapi/       #   Module/Context/two-phase build; typed ops + slots
-  edge/                    #   internal mTLS QUIC + player plane + EDGE_SLOT
-  push/                    #   ConnId/Target/Message/Sink — the push hub's model, transport-free
-  asyncevents/             #   app-owned durable plane: XID-ordered event log +
-                           #   pull workers + retention (+ eventctl operator CLI)
-  invalidation/            #   app-owned broadcast cache-refresh plane (LISTEN/NOTIFY)
-  remote/                  #   generic Stub (factories injected by cmd roots) + push backplane
-  metrics/                 #   infra Module: GET /metrics + record layer — list in every main
-  httpmw/                  #   rate limit + XFF + readyz + LAYER_SLOT (HTTP layer drain)
-api/<name>/                # contract surface per domain
-  <name>api/               #   pure #[rpc] traits + ops/bindings (transport-free)
-  <name>events/            #   bus::define descriptors + payloads
-  <name>rpc/               #   generated glue (Client/register_server/factories)
-modules/                   # private impls — 17 fortresses + gateway
-demos/                     # non-shipping demo crates (webui) — cmd/server only
-weles/                     # standalone mini-orchestrator (zero-sharing; deploy/ artifacts,
-                           # restart-on-crash supervisor; see Commands)
-tools/                     # devctl/verifyctl/processctl/splitproof, testdb, rpc-macro,
-                           # architecture checkers, generators, edgeca, playercli
-experiments/               # archived sketches: go-sketch (the ported original),
-                           # jvm-kotlin-sketch, jvm-quarkus-sketch — reference only
-UILayout/                  # design mockups (spec for admin UI, not runnable)
-```

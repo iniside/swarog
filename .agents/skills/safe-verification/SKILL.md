@@ -9,7 +9,8 @@ Every rollout-bearing run here (`cargo test`, `devctl up`, `verifyctl`) shares
 ONE local Postgres. Concurrent runs contend on the events plane's migrate advisory
 lock and concurrent DDL — which looks like a hang or fails with
 `tuple concurrently updated`. This protocol is mandatory (`.agents/shared/gamebackend.md` → "One test
-rollout at a time"), and it exists because the failure mode looks like *your*
+rollout at a time"; rollout tooling runs on Windows, Linux and macOS, per-OS
+commands in `docs/reference/platform-notes.md`), and it exists because the failure mode looks like *your*
 change is broken when it isn't.
 
 ## Step 1 — Pre-flight: is anything already running?
@@ -31,6 +32,17 @@ Only when Cargo/rustc are clear, run `cargo run -p devctl -- status`; it must
 report no active fleet. After status exits, re-check Cargo/rustc before launching
 exactly one selected rollout. Never start a second run "to check something
 quickly" — that is the classic cause.
+
+`devctl up` keeps its parent Cargo alive for the life of the foreground fleet, so
+no other Cargo command may start while it runs. `devctl status` says "starting
+(N/N healthy)" while booting, even at N/N: wait for "running", never for
+"healthy" (a loop keyed on "healthy" once fired mid-boot and a following
+`devctl down` aborted a split start). Never launch a test run in the background
+and then start another command that compiles or tests.
+
+A fleet found up during pre-flight may be the owner's, started from another
+terminal: report it and ask whose it is before stopping or waiting on it
+(an orchestrator once stopped the owner's fleet after waiting ~55 min on it).
 
 If status says no active fleet but `*-svc` or `server` processes remain, treat
 them as leftovers and identify ownership before stopping anything; never kill
@@ -80,6 +92,16 @@ the local safety net and includes the blocking split-proof. Use
 `cargo run -p verifyctl -- --all --strict` when the advisory tiers must also
 block. Never rehearse with `--fast` before a broader terminal manifest. Re-run
 pre-flight (Step 1) before launching it.
+
+All rollout tools take the canonical `run/rollout.lock`; `verifyctl` hands its
+split-proof child a one-shot inherited lease, and a competing or malformed
+borrower fails closed. The blocking split-proof stage (`tools/splitproof`) boots
+the real split fleet (typed env from `tools/processctl/src/fleet.rs`), asserts
+named scenarios through gateway-svc and the DB, then re-runs the monolith for
+parity; it needs a reachable Postgres at `DATABASE_URL`, and its fleet-drift
+preflight fails if the processctl fleet differs from `cmd/*-svc` on disk. A new
+module needs its fleet entry and a named assertion; a monolith-only feature is
+never shipped.
 
 ## Subagents
 

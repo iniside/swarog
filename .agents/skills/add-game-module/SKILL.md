@@ -68,6 +68,9 @@ tripwire that catches the common violations (see its banner in
 - resolve every `require` HERE (a `start`-time require escapes requirecheck).
 
 Emit with `emit_tx(AnyTx::new(&mut *tx), …)` inside the store's transaction.
+No event-routing wiring exists: producers append to the shared log, consumers
+pull from their checkpoint, identical in monolith and split; `topiccheck`
+validates the subscription graph per profile.
 Tests in `src/tests.rs`, never inline. Any dev convenience (seed, dev auth):
 default OFF, explicit env opt-in, loud warn when ON.
 
