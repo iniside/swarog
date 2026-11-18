@@ -65,7 +65,7 @@ mod harness;
 mod view_tests;
 mod build;
 mod cases;
-mod coverage;
+mod variant_coverage;
 mod macros;
 mod declared;
 mod selftests;
@@ -73,7 +73,7 @@ mod selftests;
 use self::harness::*;
 use self::build::*;
 use self::cases::*;
-use self::coverage::*;
+use self::variant_coverage::*;
 use self::macros::*;
 pub(crate) use self::view_tests::table_grid;
 
