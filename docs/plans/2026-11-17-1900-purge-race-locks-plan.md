@@ -155,8 +155,9 @@ scheduler seed value, and the wipe-as-migration rule applies.
 2. **Lock order.**
    - A transaction takes its player locks before any module-owned non-player advisory key
      (groups `G`).
-   - When it takes several player locks, it takes them in ascending normalised-uuid order, which
-     is the sweep's claim order.
+   - When it takes several player locks, it takes them in ascending normalised-uuid order. That
+     is the sweep's claim order in every module except groups. Groups claims by `skipped_at` and
+     sorts the claimed set before locking (step 6b).
    - A sweep acquires every player lock of its fire before its first `G`, never inside the
      per-group `SAVEPOINT purge_group`.
    - The plane's shared `WRITER_LOCK_KEY` is exempt from this order: shared never conflicts with
@@ -178,7 +179,11 @@ scheduler seed value, and the wipe-as-migration rule applies.
    - **Groups head-of-line (owner ruling 2026-11-18: fix, do not accept).** A player Skipped on
      a group error is rotated to the back of the claim order rather than reclaimed first, so
      persistently Skipped players cannot shrink every fire (step 6b).
-7. **No topology branch.** No schema change beyond the seed value. Advisory keys are
+   - **Remaining bound.** A Skipped player waits for the first fire that has fewer than 64 fresh
+     tombstones. A steady inflow of 64 or more per fire already exceeds the drain capacity, so
+     the bound only binds when the system is overloaded anyway.
+7. **No topology branch.** The schema changes are the scheduler seed value and the groups
+   `skipped_at` column with its index (step 6b, a wipe). Advisory keys are
    database-global, so the same locks serve the monolith and the split.
 
 ## Steps
@@ -460,7 +465,7 @@ Commit: `fix(groups): serialize create, join and invite with the purge sweep per
 **(b) Why now:** proof-audit batch 3 found that no test pins "P before the tombstone guard"
 (Invariant 1). Moving the guard ahead of the lock leaves every Race 1 and Race 2 test green while
 the race returns. The owner ruled on 2026-11-18 that this gap is fixed, not accepted. It comes
-before 6b because 6b changes the groups sweep the groups test runs against.
+before 6b only because both edit `purge_tests.rs`. The guard-order tests never run a sweep.
 
 **(c) How:** one **guard-order test** per guarded writer:
 - `create` (characters);
@@ -476,13 +481,20 @@ Each test runs in this order:
 3. The test plants the tombstone on another connection and commits it. The plant takes no
    player lock, so it does not wait on the gate.
 4. The gate releases.
-5. The writer must give the deleted answer (409 `PLAYER_DELETED`, or the directory-miss
-   answer for a counterparty, or no row on the durable path) and must write nothing.
+5. The writer must give its own deleted answer and must write nothing. Read each answer from
+   the code:
+   - 409 `PLAYER_DELETED` for characters, friends (requester), inventory and groups
+     `create`/`join`;
+   - `NotFound(NO_SUCH_PLAYER)` for the friends target and the groups `invite` target;
+   - `Error::invalid(PLAYER_DELETED)` for notifications operator mail;
+   - `Ok` with no row on the notifications durable path.
 
 If the guard ran before the lock, the writer would read "no tombstone", park, and then insert
 after the release, so the test fails. The test needs no production hook.
 
-**Mutation, shown red per writer:** move the guard before the lock.
+**Mutations, each shown red:** move the guard before the lock, one mutation per guard. Friends
+has two guards (`service.rs:312` and `:316`). In groups `join` the guard moves before P (P, then
+G, then the guard). Groups `invite` gates the TARGET's key.
 
 No production code changes and no comments. If a writer cannot be parked this way, report it
 and stop on that writer.
@@ -492,30 +504,61 @@ and stop on that writer.
 Commit: `test(characters,friends,notifications,inventory,groups): pin the lock before the tombstone guard (purge-race-locks step 6a)`.
 
 ### Step 6b — groups Skipped rotation `[opus]`
-**(a) What:** `modules/groups/src/{lib.rs,projection.rs}`, `modules/groups/src/purge_tests.rs`.
+**(a) What:**
+- `modules/groups/src/{lib.rs,projection.rs,store.rs}` (`store.rs:117` names the old index);
+- `modules/groups/src/purge_tests.rs`: the new tests, plus the claim-order copies in
+  `assert_claimed_by_the_next_fire` (:398-411) and the `foreign_below` precondition
+  (:1147-1156).
 
-**(b) Why now:** this closes the Invariant 6 head-of-line limit. It comes after 6a, which is
-in the same test file.
+**(b) Why now:** this closes the Invariant 6 head-of-line limit. It comes after 6a, which shares
+the test file.
+
+**Precondition (owner action):** before this step is dispatched, the owner runs
+`DROP SCHEMA groups CASCADE` on the local database, or authorises the lead to run it. The tests
+migrate the persistent local database, create-only DDL does not add a column, and wipe is the
+migration (`.agents/shared/core-rules.md`).
 
 **(c) How:**
-- **Schema:** add `skipped_at timestamptz` to `groups.purged_players` in the create-only DDL.
-  Replace `purged_players_pending_idx` with one partial index on
-  `(skipped_at NULLS FIRST, player_id) WHERE swept_at IS NULL`; this is one rail, so the old
-  index goes.
-  - Wipe is the migration. An existing database needs `DROP SCHEMA groups CASCADE` and a fresh
-    boot. Report that as an owner action; do not run it.
-- **Claim:** `ORDER BY skipped_at NULLS FIRST, player_id LIMIT GROUPS_PLAYERS_PER_FIRE`. Fresh
-  tombstones come first, then the oldest-Skipped. Then take P for the claimed set in **ascending
-  normalised-uuid order**, which keeps Invariant 2, before any G as today.
-- **Skipped:** when a player ends Skipped, set `skipped_at = now()` on its tombstone in the same
-  delivery transaction, outside the rolled-back `purge_group` savepoint. When a player is
-  purged, it is stamped as today.
+- **Schema:**
+  - Add `skipped_at timestamptz` to `groups.purged_players` in the create-only DDL.
+  - Replace `purged_players_pending_idx` with a partial index under a NEW name,
+    `purged_players_claim_idx`, on `(skipped_at NULLS FIRST, player_id) WHERE swept_at IS NULL`.
+    The old index goes; there is one rail.
+  - A database that was not wiped then fails at boot or at the claim, not silently.
+- **Claim:**
+  - The claim orders by `skipped_at NULLS FIRST, groups.purged_players.player_id`
+    (table-qualified, so the index serves it), with `LIMIT GROUPS_PLAYERS_PER_FIRE`. Fresh
+    tombstones come first, then the oldest-Skipped.
+  - Take P for the claimed set in **ascending normalised-uuid order**, before any G as today.
+  - Then purge and stamp the players in **claim order**, not in the sorted order. Otherwise a
+    low-uuid Skipped player would spend `GROUPS_PER_FIRE` or `SWEEP_BUDGET` before the fresh
+    ones.
+- **Skipped:** set `skipped_at = now()` on the player's tombstone in the outer match, after the
+  `purge_group` savepoint has been rolled back. It commits with the fire. A purged player is
+  stamped `swept_at` as today.
+- **Old copies of the claim order:** update the two test helpers in (a) to the new order. Fix
+  or delete the comments this makes false (`projection.rs:258-260` `Skipped` doc,
+  `:318-320` "No stamp…", `store.rs:117`).
+- **Group-error injection (no production hook):**
+  - The test owns the sweep transaction and runs `SET LOCAL lock_timeout` on it.
+  - A gate holds the target group's key, read back through `taken_group_key`.
+  - `lock_group_tx` fails with 55P03 inside `SAVEPOINT purge_group`, and the player ends
+    Skipped.
+
+  This is deterministic: the gate holds until the test releases it.
 - **Tests:**
-  - A player Skipped in fire 1 (use the existing group-error injection the Skipped tests
-    already use, or report if there is none) is claimed after every fresh tombstone in fire 2.
-  - With 64 fresh tombstones plus 1 Skipped player, fire 2 claims the 64 fresh ones.
-  - **Mutations, each shown red:** the `skipped_at` stamp removed; the claim order reverted to
-    `player_id` only.
+  - **Setup:**
+    - The Skipped player's id sorts BELOW the 64 fresh ids (a lower `fixed_uuid` tier).
+    - A precondition checks that no foreign fresh tombstone sorts among them.
+  - **Fire 1:** the player ends Skipped and `skipped_at` is set.
+  - **Fire 2,** with 64 fresh tombstones, claims and stamps the 64 fresh ones. The Skipped
+    player is untouched.
+  - **Fire 3,** with the gate released, purges the Skipped player. This shows rotation, not
+    starvation.
+  - **Mutations, each shown red:**
+    - the `skipped_at` stamp removed;
+    - the claim order reverted to `player_id` only;
+    - the purge loop run in sorted order instead of claim order. This must be caught; say how.
 - No other module changes. Comments: none new.
 
 **(d) Lane:** `core-implementer`, opus.
