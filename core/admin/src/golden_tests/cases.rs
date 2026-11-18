@@ -54,6 +54,25 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
             )
         },
     );
+    let declared_text = "Managed by the deploy pipeline: edit it in the infra repo.";
+    let declared_manifest = Manifest {
+        module: MODULE.to_string(),
+        actions: vec![readonly_tool.clone()],
+        contributions: vec![ContributionDecl {
+            readonly: Some(declared_text.to_string()),
+            ..contribution(CONTRIBUTION, Point::Page("overview".to_string()), Role::Viewer)
+        }],
+        writes: true,
+        ..Manifest::default()
+    };
+    panel!(
+        "state_readonly_declared",
+        PanelCase {
+            readonly: Some(declared_text),
+            actions: routes::panel_tools(&operator(Role::Admin), CSRF, MODULE, &declared_manifest, CONTRIBUTION),
+            ..PanelCase::new(PanelState::Readonly, Some(body(summary())))
+        },
+    );
     panel!(
         "state_stale_hides_module_banner",
         PanelCase {
@@ -104,6 +123,16 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
                 capacity: Some((62.0, 100.0)),
                 ..kpi(delta("+9", Some(Tone::Warn)))
             }))),
+        ),
+    );
+    panel!(
+        "kpi_tiles",
+        PanelCase::tile(
+            PanelState::Ok,
+            Some(body(Primitive::KpiTiles(vec![
+                kpi(delta("+4.2%", Some(Tone::Ok))),
+                KpiTile { label: "Matches running".to_string(), value: "318".to_string(), ..kpi(None) },
+            ]))),
         ),
     );
     panel!("tile_delta_info_flat", tile(delta("±0", Some(Tone::Info))));
@@ -323,6 +352,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
                 ("Warn", bar("75%", 75, Some(Tone::Warn))),
                 ("Err", bar("100%", 100, Some(Tone::Err))),
                 ("Clamped", bar("140%", 140, Some(Tone::Info))),
+                ("Accent", bar("55%", 55, Some(Tone::Accent))),
             ])))),
         ),
     );
@@ -383,33 +413,21 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     );
     panel!("table_noun_no_total", PanelCase::new(PanelState::Ok, Some(body(noun_table(None)))));
     panel!("table_sorted_ascending", PanelCase::new(PanelState::Ok, Some(body(sorted_ascending_table()))));
-    panel!(
-        "table_noun_one",
-        PanelCase::new(
-            PanelState::Ok,
-            Some(body(match players_table(vec![player_row("p-1001", "12", "active", false)], Some(1), None) {
-                Primitive::DataTable(t) => {
-                    Primitive::DataTable(DataTable { item_noun: Some(Noun::new("player", "players")), ..t })
-                }
-                _ => unreachable!("players_table is a DataTable"),
-            })),
-        ),
-    );
-    panel!(
-        "table_wrap_columns",
-        PanelCase::new(
-            PanelState::Ok,
-            Some(body(match players_table(vec![player_row("p-1001", "12", "active", false)], Some(1), None) {
-                Primitive::DataTable(mut t) => {
-                    t.columns[1].wrap = true;
-                    t.columns[2].wrap = true;
-                    Primitive::DataTable(t)
-                }
-                _ => unreachable!("players_table is a DataTable"),
-            })),
-        ),
-    );
+    let one_player = || vec![player_row("p-1001", "12", "active", false)];
+    panel!("table_noun_one", PanelCase::new(PanelState::Ok, Some(body(noun_table_of(one_player(), Some(1), None)))));
+    panel!("table_wrap_columns", PanelCase::new(PanelState::Ok, Some(body(wrap_table(one_player())))));
     panel!("panel_untitled", PanelCase { title: "", ..PanelCase::new(PanelState::Ok, Some(body(summary()))) });
+    panel!(
+        "panel_foot_tag",
+        PanelCase::new(
+            PanelState::Ok,
+            Some(PanelBody {
+                foot: Some("Synced from the deploy pipeline".to_string()),
+                tag: Some("beta".to_string()),
+                ..body(summary())
+            }),
+        ),
+    );
 
     // ---- Timeline ----
     let actor = |kind: CellKind, entity_kind: &str, id: &str| {
@@ -455,6 +473,45 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
                 live: false,
                 days: true,
                 date_only: false,
+            }))),
+        ),
+    );
+    let rollout = || {
+        vec![
+            TimelineEntry {
+                title: Some("Season 4 rollout".to_string()),
+                badges: vec![toned(CellKind::Label, "canary", Tone::Warn), cell(CellKind::Label, "eu-west")],
+                ..entry("2026-10-21T09:12:00Z", Some(cell(CellKind::Strong, "deploy-bot")), "", "promoted build 1.4.2")
+            },
+            entry("2026-10-20T23:59:00Z", Some(actor(CellKind::Ref, "svc", "billing")), "retry", "webhook retried"),
+        ]
+    };
+    panel!(
+        "timeline_one_run",
+        PanelCase::new(
+            PanelState::Ok,
+            Some(PanelBody {
+                foot: Some("2 events".to_string()),
+                ..body(Primitive::Timeline(Timeline {
+                    entries: rollout(),
+                    cursor_before: Some("2026-10-20T23:59:00Z".to_string()),
+                    live: false,
+                    days: false,
+                    date_only: false,
+                }))
+            }),
+        ),
+    );
+    panel!(
+        "timeline_date_only",
+        PanelCase::new(
+            PanelState::Ok,
+            Some(body(Primitive::Timeline(Timeline {
+                entries: rollout(),
+                cursor_before: None,
+                live: false,
+                days: false,
+                date_only: true,
             }))),
         ),
     );
@@ -759,6 +816,31 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     };
     let grant = decl("grant", "Grant item", "gift", Then::Form(grant_spec.clone()));
     push!(plain("modal_form", modal(&grant, ModalSpec::Form(&grant_spec))));
+    let rotate_spec = FormSpec {
+        fields: vec![
+            Field {
+                mono: true,
+                placeholder: Some("e.g. key-2026-10".to_string()),
+                ..field("key_id", "Key id", FieldKind::String, None)
+            },
+            Field {
+                mono: true,
+                placeholder: Some("Why rotate now".to_string()),
+                ..field("why", "Why", FieldKind::Text, None)
+            },
+            Field {
+                placeholder: Some("handle or player id".to_string()),
+                ..field("owner", "Owner", FieldKind::Ref("player".to_string()), None)
+            },
+        ],
+        hidden: BTreeMap::new(),
+        submit_label: "Rotate".to_string(),
+        note: None,
+        revision: None,
+        title: Some("Rotate the signing key".to_string()),
+    };
+    let rotate = decl("rotate", "Rotate key", "key", Then::Form(rotate_spec.clone()));
+    push!(plain("modal_form_title_mono_placeholder", modal(&rotate, ModalSpec::Form(&rotate_spec))));
     // A modal shown again after a POST, through `render::modal_rerender` as
     // `routes::render_instance` calls it.
     let reshow = |d: &ActionDecl,
@@ -823,6 +905,18 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         tone: "ok",
     };
     push!(plain("reveal_secret", render::fragment(env, "modal.html", "reveal", &flash)));
+    let extra_flash = FlashView {
+        message: "API key created".to_string(),
+        reveal: Some(render::reveal(&SecretReveal {
+            label: "Key gb_live_…".to_string(),
+            value: "gb_live_0123456789abcdef".to_string(),
+            hint: None,
+            expires_at: None,
+            extra: Some("Scoped to the ops role; rotate it from the keys page.".to_string()),
+        })),
+        tone: "ok",
+    };
+    push!(plain("reveal_secret_extra", render::fragment(env, "modal.html", "reveal", &extra_flash)));
 
     // ---- row menu and search palette ----
     let row_entity = entity("player", "p-1001");
@@ -933,6 +1027,10 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         ("screen_page_stack", Layout::Stack(strings(&["a", "b"]))),
         ("screen_page_grid21", Layout::Grid21(strings(&["a"]), strings(&["b"]))),
         ("screen_page_grid2", Layout::Grid2(strings(&["a"]), strings(&["b"]))),
+        (
+            "screen_page_rows",
+            Layout::Rows(vec![Layout::Stack(strings(&["a"])), Layout::Grid2(strings(&["b"]), strings(&["c"]))]),
+        ),
     ] {
         push!(plain(name, {
             let export = ActionDecl {
@@ -998,6 +1096,38 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
             selected_tab: Some("items".to_string()),
             tab_grid: false,
             tab_tiles: Vec::new(),
+            tab_panels: vec![at("items", tab())],
+        };
+        screen(env, "entity", &view)
+    }));
+    push!(plain("screen_entity_tab_tiles", {
+        let player = entity("player", "p-1001");
+        let at = |id: &str, point: Point| {
+            routes::slot(&operator(Role::Viewer), MODULE, &contribution(id, point, Role::Viewer), Some(&player), false)
+        };
+        let tab_tile = || Point::EntityTabTile { kind: "player".to_string(), tab: "items".to_string() };
+        let tab_view = |id: &str, label: &str, down: bool, readonly: bool| TabView {
+            id: id.to_string(),
+            label: label.to_string(),
+            url: format!("/admin/e/player/p-1001?tab={id}"),
+            counts: Vec::new(),
+            down,
+            readonly,
+        };
+        let view = EntityView {
+            shell: shell_view("p-1001"),
+            kind_label: "Player".to_string(),
+            entity_id: "p-1001".to_string(),
+            avatar_color: render::avatar_color("p-1001"),
+            avatar_initials: render::initials("p-1001"),
+            menu_url: None,
+            headers: Vec::new(),
+            summaries: Vec::new(),
+            header_actions: Vec::new(),
+            tabs: vec![tab_view("items", "Items", false, true), tab_view("history", "History", true, false)],
+            selected_tab: Some("items".to_string()),
+            tab_grid: false,
+            tab_tiles: vec![at("stock", tab_tile()), at("value", tab_tile())],
             tab_panels: vec![at("items", tab())],
         };
         screen(env, "entity", &view)

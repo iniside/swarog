@@ -45,7 +45,7 @@ use controlplane::{
     ActionDecl, ActionPoint, Align, AttentionItem, Axis, Banner, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
     ContributionDecl, DataTable, DeclaredEnum, Delta, Emphasis, EntityHeader, EntityRef, Field, FieldKind, FilterDef,
     FilterKind, FormSpec, KpiTile, Layout, Link, Manifest, Noun, PageInfo, Palette, PanelBody, Point, Primitive,
-    PropertyList, QueueItem, QueueState, ReasonReq, Role, Row, Series, ServiceItem, ServiceState, ServiceStatus,
+    PropertyList, QueueItem, QueueState, ReasonReq, Role, Row, SecretReveal, Series, ServiceItem, ServiceState, ServiceStatus,
     Severity, SortDir, Then, TimeRange, TimeSeriesChart, Timeline, TimelineEntry, Tone, Variants, WorkQueue,
 };
 use minijinja::Environment;

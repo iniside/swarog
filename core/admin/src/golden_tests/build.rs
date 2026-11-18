@@ -121,6 +121,7 @@ pub(super) struct PanelCase {
     pub(super) last_value: Option<LastValue>,
     pub(super) min_role: &'static str,
     pub(super) fallback_title: &'static str,
+    pub(super) readonly: Option<&'static str>,
     pub(super) body: Option<PanelBody>,
     pub(super) actions: Vec<ActionItem>,
     pub(super) list_columns: Vec<ListColumn>,
@@ -145,6 +146,7 @@ impl PanelCase {
             last_value: None,
             min_role: "viewer",
             fallback_title: "",
+            readonly: None,
             body,
             actions: Vec::new(),
             list_columns: Vec::new(),
@@ -187,7 +189,7 @@ impl PanelCase {
             last_value: self.last_value.as_ref(),
             min_role: self.min_role,
             fallback_title: self.fallback_title,
-            readonly: None,
+            readonly: self.readonly,
             body: self.body.as_ref(),
             actions: &self.actions,
             list_columns: &self.list_columns,
@@ -493,8 +495,23 @@ pub(super) fn table_list_columns_case() -> PanelCase {
 /// Two players of a table counted in players, with a next page.
 pub(super) fn noun_table(total: Option<u64>) -> Primitive {
     let rows = vec![player_row("p-1001", "12", "active", false), player_row("p-1002", "40", "banned", false)];
-    match players_table(rows, total, Some("c3")) {
+    noun_table_of(rows, total, Some("c3"))
+}
+
+pub(super) fn noun_table_of(rows: Vec<Row>, total: Option<u64>, next: Option<&str>) -> Primitive {
+    match players_table(rows, total, next) {
         Primitive::DataTable(t) => Primitive::DataTable(DataTable { item_noun: Some(Noun::new("player", "players")), ..t }),
+        _ => unreachable!("players_table is a DataTable"),
+    }
+}
+
+pub(super) fn wrap_table(rows: Vec<Row>) -> Primitive {
+    match players_table(rows, Some(1), None) {
+        Primitive::DataTable(mut t) => {
+            t.columns[1].wrap = true;
+            t.columns[2].wrap = true;
+            Primitive::DataTable(t)
+        }
         _ => unreachable!("players_table is a DataTable"),
     }
 }

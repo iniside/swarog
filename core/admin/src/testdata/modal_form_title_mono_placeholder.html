@@ -1,0 +1,51 @@
+<div class="scrim" data-scrim>↵
+<form class="modal" role="dialog" aria-modal="true" hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;rotate" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]" data-gate>
+<input type="hidden" name="_csrf" value="csrf-golden">
+<input type="hidden" name="_form" value="form-golden-1">↵
+<div class="modal-head">
+<div class="modal-icon ok">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<circle cx="8" cy="15" r="4"/>
+<path d="m10.8 12.2 8.7-8.7"/>
+<path d="m16.5 6.5 2.5 2.5"/>
+<path d="m14 9 2 2"/>
+</svg>
+</div>
+<div>
+<h2>Rotate the signing key</h2>
+</div>
+</div>
+<div class="modal-body">
+<div class="form">
+<label class="fl">Key id<span class="type">string</span>
+</label>
+<div>
+<input class="input mono" style="width:100%;max-width:520px" name="key_id" value="" placeholder="e.g. key-2026-10">
+</div>
+<label class="fl">Why<span class="type">text</span>
+</label>
+<div>
+<textarea class="input mono" rows="4" style="width:100%" name="why" placeholder="Why rotate now">
+</textarea>
+</div>
+<label class="fl">Owner<span class="type">ref player</span>
+</label>
+<div>
+<span class="input-icon">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<circle cx="12" cy="8" r="4"/>
+<path d="M4 21c1-4.2 4.2-6.5 8-6.5s7 2.3 8 6.5"/>
+</svg>
+<input class="input" style="width:260px" name="owner" value="" placeholder="handle or player id">
+</span>
+</div>
+</div>
+</div>↵
+<div class="modal-foot">
+<span class="muted" style="margin-right:auto;font-size:12px;align-self:center">
+</span>
+<button type="button" class="btn" data-modal-close>Cancel</button>
+<button type="submit" class="btn primary go">Rotate</button>
+</div>↵
+</form>↵
+</div>
