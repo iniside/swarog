@@ -41,10 +41,11 @@ def tearDownModule():
     _TEMP.cleanup()
 
 
-def run_hook(mode, payload=None, raw=None):
+def run_hook(mode, payload=None, raw=None, debug=True):
     data = raw if raw is not None else json.dumps(payload)
     args = [sys.executable, "-B", HOOK] + ([mode] if mode else [])
-    r = subprocess.run(args, input=data.encode("utf-8"), capture_output=True, cwd=ROOT, env=ENV, timeout=60)
+    env = dict(ENV, SCOUT_NAV_DEBUG="1") if debug else {k: v for k, v in ENV.items() if k != "SCOUT_NAV_DEBUG"}
+    r = subprocess.run(args, input=data.encode("utf-8"), capture_output=True, cwd=ROOT, env=env, timeout=60)
     return r.returncode, r.stdout.decode("utf-8"), r.stderr.decode("utf-8")
 
 
@@ -121,8 +122,8 @@ def message(anchor_lines, header="2. **Anchors:**", answer="Answer text.", metho
 class NoOp(unittest.TestCase):
     WIDE = {"pattern": "foo"}
 
-    def assert_silent(self, mode, payload=None, raw=None):
-        rc, out, err = run_hook(mode, payload, raw)
+    def assert_silent(self, mode, payload=None, raw=None, debug=True):
+        rc, out, err = run_hook(mode, payload, raw, debug)
         self.assertEqual((rc, out.strip(), err), (0, "", ""))
 
     def test_main_session_without_agent_type(self):
@@ -134,8 +135,9 @@ class NoOp(unittest.TestCase):
 
     def test_other_agent_with_code_scout_in_pattern(self):
         aid = new_agent()
-        p = scout(aid, "Grep", {"pattern": "\"code-scout\""})
+        p = scout(aid, "Grep", {"pattern": "foo", "note": "code-scout"})
         p["agent_type"] = "core-implementer"
+        self.assertIn('"code-scout"', json.dumps(p))
         self.assert_silent("gate", p)
         self.assertFalse(os.path.exists(state_file(aid)))
 
@@ -156,7 +158,7 @@ class NoOp(unittest.TestCase):
         for mode in ("gate", "record", "report"):
             for raw in ("", "not json {", "[]", "null", "\"code-scout\"", "{\"agent_type\": \"code-scout\"", "\xff"):
                 with self.subTest(mode=mode, raw=raw):
-                    self.assert_silent(mode, raw=raw)
+                    self.assert_silent(mode, raw=raw, debug=False)
 
     def test_no_mode_is_silent(self):
         self.assert_silent("", grep_tool(new_agent(), **self.WIDE))
@@ -185,6 +187,11 @@ class GateDeny(unittest.TestCase):
         "git grep foo -- ':(exclude)*.md'",
         "git grep foo -- '*.rs'",
         "git grep foo",
+        "git grep foo -- ':(top)*.rs'",
+        "git grep foo -- ':/*.rs'",
+        "git grep foo -- ':(glob)*.rs'",
+        "git grep foo -- ':(top)*.md'",
+        "cd modules && rg foo",
     ]
 
     def assert_denied(self, payload):
@@ -202,6 +209,16 @@ class GateDeny(unittest.TestCase):
         for command in self.BASH_CASES:
             with self.subTest(command=command):
                 self.assert_denied(bash(new_agent(), command))
+
+    def test_top_pathspec_resolves_from_repo_root_not_cwd(self):
+        wallet = CWD + "/modules/wallet"
+        self.assert_denied(bash(new_agent(), "git grep foo -- ':(top)core'", wallet))
+        self.assert_denied(bash(new_agent(), "git grep foo -- ':/core'", wallet))
+
+    def test_cd_out_of_a_narrow_cwd_widens_the_search(self):
+        wallet = CWD + "/modules/wallet"
+        self.assert_denied(bash(new_agent(), "cd ../.. && rg foo", wallet))
+        self.assert_denied(bash(new_agent(), "cd .. && rg foo", wallet))
 
     def test_workspace_symbol_and_document_symbol_do_not_open_the_gate(self):
         aid = new_agent()
@@ -227,6 +244,10 @@ class GateAllow(unittest.TestCase):
         ("git grep foo -- ':!*.md' modules/wallet", CWD),
         ("git grep foo -- ':!*.md'", CWD + "/modules/wallet"),
         ("rg foo modules/wallet", CWD),
+        ("git grep foo -- ':(top)modules/wallet/*.rs'", CWD),
+        ("git grep foo -- ':(top)modules/wallet/*.rs'", CWD + "/modules/wallet"),
+        ("cd modules/wallet && rg foo", CWD),
+        ("git -C modules/wallet grep foo", CWD),
         ("git log | grep foo", CWD),
         ("echo hello", CWD),
     ]
@@ -413,6 +434,12 @@ class Report(unittest.TestCase):
         record(lsp(aid, "findReferences", "core/app/src/lib.rs", 1, FIND_REFS, 3))
         self.assert_pass(aid, message([anchor("modules/characters/src/service.rs:85", "grep-only")]))
 
+    def test_line_with_grep_only_and_confirmed_is_grep_only(self):
+        for tail in ("`confirmed` · grep-only", "grep only · confirmed", "`grep-only` `confirmed`"):
+            with self.subTest(tail=tail):
+                aid = new_agent()
+                self.assert_pass(aid, message(["- `modules/a/src/x.rs:10` · Sym · " + tail]))
+
     def test_not_confirmed_is_treated_as_unlabelled(self):
         for word in ("not confirmed", "unconfirmed", "Not Confirmed"):
             with self.subTest(word=word):
@@ -446,6 +473,22 @@ class Report(unittest.TestCase):
         got = report(new_agent(), msg)
         self.assert_deny(got, "modules/a/src/x.rs:10 has no label")
         self.assertNotIn("after.rs", got["permissionDecisionReason"])
+
+    def test_without_anchors_header_only_bullets_before_method_or_open_count(self):
+        for stop in ("3. **Method:** none", "4. **Open:** none"):
+            with self.subTest(stop=stop):
+                msg = "\n".join([
+                    "1. **Answer:** see modules/a/src/answer.rs:10 confirmed",
+                    "* `modules/a/src/star.rs:1` · Sym · text",
+                    "• `modules/a/src/dot.rs:2` · Sym · text",
+                    stop,
+                    "- `modules/z/src/after.rs:1` · Sym · ignored",
+                ])
+                reason = report(new_agent(), msg)["permissionDecisionReason"]
+                self.assertIn("modules/a/src/star.rs:1 has no label", reason)
+                self.assertIn("modules/a/src/dot.rs:2 has no label", reason)
+                self.assertNotIn("answer.rs", reason)
+                self.assertNotIn("after.rs", reason)
 
     def test_anchor_windows_path_is_normalised_to_full_path_in_reason(self):
         got = report(new_agent(), message(["- `G:\\Projects\\swarog\\core\\app\\src\\lib.rs:67` \u00b7 Sym \u00b7 x"]))
