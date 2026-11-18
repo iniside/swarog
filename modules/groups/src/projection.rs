@@ -218,19 +218,16 @@ pub(crate) const PURGE_SWEEP_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec 
 /// some and leave the rest at a day.
 pub(crate) const PURGE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::PLAYER_PURGE;
 
-/// Tombstones claimed per selection statement. It bounds PLAYERS only: one player can cost
-/// anything from zero statements to a dissolution per group, so what bounds a fire's work is
-/// [`SWEEP_BUDGET`], checked after every group.
-pub(crate) const PURGE_BATCH: i64 = 256;
+pub(crate) const GROUPS_PLAYERS_PER_FIRE: i64 = 64;
 
 /// Groups this fire may touch, and therefore the number of committed SAVEPOINTs the delivery
 /// transaction accumulates: the binding constraint is the backend's cached subxid array
 /// (`PGPROC_MAX_CACHED_SUBXIDS` = 64), not the lock table. Every `SAVEPOINT purge_group` that
 /// writes consumes a subtransaction id; past 64 of them in one transaction the backend is
 /// marked suboverflowed, and then EVERY other backend in the cluster resolves this
-/// transaction's tuple visibility through `pg_subtrans` for as long as the fire runs. The 64
-/// transaction-scoped advisory locks it holds alongside are 0.7% of this cluster's shared
-/// lock table (`max_locks_per_transaction` x (`max_connections` +
+/// transaction's tuple visibility through `pg_subtrans` for as long as the fire runs. The 128
+/// transaction-scoped advisory locks it holds alongside (64 groups, 64 players) are 1.3% of
+/// this cluster's shared lock table (`max_locks_per_transaction` x (`max_connections` +
 /// `max_prepared_transactions`) = 64 x 150 = 9600 slots).
 ///
 /// Unlike the retention sweep this IS a per-fire cap, and it costs throughput: a backlog
@@ -248,17 +245,6 @@ pub(crate) const GROUPS_PER_FIRE: usize = 64;
 /// sets it), below which the plane terminates the delivery backend instead and 20 such fires
 /// pause the subscription.
 pub(crate) const SWEEP_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// The scan floor carried across batches, load-bearing rather than an optimisation: every
-/// batch runs inside the ONE still-open delivery transaction, where the tombstones this
-/// transaction already stamped are dead-but-unprunable row versions a `swept_at IS NULL`
-/// re-scan still walks, so a floorless loop goes quadratic. It buys that only while the batch
-/// query's `ORDER BY` names the TABLE's `player_id`: unqualified it binds to the
-/// `player_id::text` output column, which the primary key can serve as neither the ordering
-/// nor an index condition, leaving a seq scan plus a sort that spills to disk inside that
-/// transaction. `>=` rather than `>` costs one already-stamped row per batch and keeps the
-/// floor value itself reachable.
-const PURGE_FLOOR: &str = "00000000-0000-0000-0000-000000000000";
 
 /// What one player's groups did within this fire.
 enum PlayerOutcome {
@@ -291,70 +277,68 @@ impl crate::Service {
     ) -> Result<(), BusError> {
         let started = std::time::Instant::now();
         let mut slots = GROUPS_PER_FIRE;
-        let mut watermark = PURGE_FLOOR.to_string();
-        loop {
-            let due: Vec<(String,)> = sqlx::query_as(
-                "SELECT player_id::text FROM groups.purged_players \
-                  WHERE swept_at IS NULL AND player_id >= $1::uuid \
-                  ORDER BY groups.purged_players.player_id \
-                  LIMIT $2 FOR UPDATE SKIP LOCKED",
-            )
-            .bind(&watermark)
-            .bind(PURGE_BATCH)
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(BusError::transport)?;
-            for (player_id,) in &due {
-                match self
-                    .purge_player_groups(conn, player_id, &mut slots, started)
-                    .await?
-                {
-                    PlayerOutcome::BudgetSpent => {
-                        tracing::warn!(
-                            elapsed_ms = started.elapsed().as_millis() as u64,
-                            player_id,
-                            "groups: purge sweep hit its budget mid-player — resuming next fire"
-                        );
-                        return Ok(());
-                    }
-                    PlayerOutcome::CapReached => {
-                        tracing::warn!(
-                            player_id,
-                            groups_per_fire = GROUPS_PER_FIRE,
-                            "groups: purge sweep hit its per-fire group cap — resuming next fire"
-                        );
-                        return Ok(());
-                    }
-                    // No stamp: the tombstone stays this sweep's work item. The budget
-                    // below still runs, so a batch of failing players cannot outrun
-                    // `ASYNCEVENTS_HANDLER_TIMEOUT` unchecked.
-                    PlayerOutcome::Skipped => {}
-                    PlayerOutcome::Purged => {
-                        sqlx::query(
-                            "UPDATE groups.purged_players SET swept_at = now() \
-                              WHERE player_id = $1::uuid",
-                        )
-                        .bind(player_id)
-                        .execute(&mut *conn)
-                        .await
-                        .map_err(BusError::transport)?;
-                    }
-                }
-                if started.elapsed() >= SWEEP_BUDGET {
+        let due: Vec<(String,)> = sqlx::query_as(
+            "SELECT player_id::text FROM groups.purged_players \
+              WHERE swept_at IS NULL \
+              ORDER BY groups.purged_players.player_id \
+              LIMIT $1 FOR UPDATE SKIP LOCKED",
+        )
+        .bind(GROUPS_PLAYERS_PER_FIRE)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(BusError::transport)?;
+        // Every player lock of the fire before any group lock, outside every `purge_group`.
+        for (player_id,) in &due {
+            self.store
+                .lock_player_tx(&mut *conn, player_id)
+                .await
+                .map_err(BusError::transport)?;
+        }
+        for (player_id,) in &due {
+            match self
+                .purge_player_groups(conn, player_id, &mut slots, started)
+                .await?
+            {
+                PlayerOutcome::BudgetSpent => {
                     tracing::warn!(
                         elapsed_ms = started.elapsed().as_millis() as u64,
-                        "groups: purge sweep hit its budget — resuming next fire"
+                        player_id,
+                        "groups: purge sweep hit its budget mid-player — resuming next fire"
                     );
                     return Ok(());
                 }
+                PlayerOutcome::CapReached => {
+                    tracing::warn!(
+                        player_id,
+                        groups_per_fire = GROUPS_PER_FIRE,
+                        "groups: purge sweep hit its per-fire group cap — resuming next fire"
+                    );
+                    return Ok(());
+                }
+                // No stamp: the tombstone stays this sweep's work item. The budget
+                // below still runs, so a batch of failing players cannot outrun
+                // `ASYNCEVENTS_HANDLER_TIMEOUT` unchecked.
+                PlayerOutcome::Skipped => {}
+                PlayerOutcome::Purged => {
+                    sqlx::query(
+                        "UPDATE groups.purged_players SET swept_at = now() \
+                          WHERE player_id = $1::uuid",
+                    )
+                    .bind(player_id)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(BusError::transport)?;
+                }
             }
-            if (due.len() as i64) < PURGE_BATCH {
+            if started.elapsed() >= SWEEP_BUDGET {
+                tracing::warn!(
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "groups: purge sweep hit its budget — resuming next fire"
+                );
                 return Ok(());
             }
-            if let Some((last,)) = due.last() {
-                watermark.clone_from(last);
-            }
         }
+        Ok(())
     }
 
     /// One player's groups, each under its own SAVEPOINT. The savepoint is what lets a

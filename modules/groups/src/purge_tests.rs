@@ -5,12 +5,18 @@
 //! reusing `crate::tests`' shared live-DB harness.
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use groupsapi::{Player as _, JOIN_OPEN};
+use groupsapi::{Player as _, JOIN_OPEN, MAX_MEMBERS};
 use opsapi::{Identity, Status};
 use sqlx::PgPool;
 
-use crate::tests::{fixed_uuid, test_pool, with_cleanup, wired, FakeDirectory, DB_LOCK};
+use crate::projection::GROUPS_PLAYERS_PER_FIRE;
+use crate::service::{NO_SUCH_PLAYER, PLAYER_DELETED};
+use crate::tests::{
+    cleanup_groups, fixed_uuid, test_pool, with_cleanup, wired, FakeDirectory, DB_LOCK,
+};
+use crate::Service;
 
 async fn purge_swept_at(pool: &PgPool, player_id: &str) -> Option<Option<String>> {
     sqlx::query_as::<_, (Option<String>,)>(
@@ -155,6 +161,8 @@ async fn sweep_dissolves_a_sole_admins_group_but_not_a_two_admin_group() {
             svc.store.plant_purged_player_tx(&mut conn, &solo_admin, "SoloAdmin#0001").await.unwrap();
             svc.store.plant_purged_player_tx(&mut conn, &two_admin_a, "TwoAdminA#0002").await.unwrap();
             drop(conn);
+            assert_claimed_by_the_next_fire(&pool, &solo_admin).await;
+            assert_claimed_by_the_next_fire(&pool, &two_admin_a).await;
 
             let mut tx = pool.begin().await.unwrap();
             svc.sweep_purged_players(&mut tx).await.unwrap();
@@ -233,6 +241,7 @@ async fn sweep_never_dissolves_a_group_over_a_purged_players_pending_relation() 
             let mut conn = pool.acquire().await.unwrap();
             svc.store.plant_purged_player_tx(&mut conn, &pending, "PendingGuest#0002").await.unwrap();
             drop(conn);
+            assert_claimed_by_the_next_fire(&pool, &pending).await;
 
             let mut tx = pool.begin().await.unwrap();
             svc.sweep_purged_players(&mut tx).await.unwrap();
@@ -304,6 +313,7 @@ async fn sweep_hits_the_per_fire_group_cap_leaving_swept_at_null_until_the_next_
             let mut conn = pool.acquire().await.unwrap();
             svc.store.plant_purged_player_tx(&mut conn, &player, "CapPlayer#0001").await.unwrap();
             drop(conn);
+            assert_claimed_by_the_next_fire(&pool, &player).await;
 
             let mut tx = pool.begin().await.unwrap();
             svc.sweep_purged_players(&mut tx).await.unwrap();
@@ -381,4 +391,861 @@ async fn create_is_blocked_by_tombstone_predicate_not_presence() {
 
     cleanup_purge_row(&pool, &purged).await;
     with_cleanup(&pool, vec![created.id], async move {}).await;
+}
+
+async fn assert_claimed_by_the_next_fire(pool: &PgPool, player_id: &str) {
+    let below: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM groups.purged_players \
+          WHERE swept_at IS NULL AND player_id < $1::uuid",
+    )
+    .bind(player_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(
+        below < GROUPS_PLAYERS_PER_FIRE,
+        "precondition: {below} unswept tombstones sort below {player_id}, so the next fire \
+         cannot claim it"
+    );
+}
+
+async fn unstamped_tombstones(pool: &PgPool, ids: &[String]) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT player_id::text FROM groups.purged_players \
+          WHERE player_id = ANY($1::uuid[]) AND swept_at IS NULL ORDER BY player_id",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+async fn cleanup_players(pool: &PgPool, players: &[String]) {
+    let groups: Vec<String> = sqlx::query_scalar(
+        "SELECT id::text FROM groups.groups WHERE creator_id = ANY($1::uuid[]) \
+         UNION SELECT group_id::text FROM groups.memberships WHERE player_id = ANY($1::uuid[])",
+    )
+    .bind(players)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    cleanup_groups(pool, &groups).await;
+    let _ = sqlx::query(
+        "DELETE FROM asyncevents.events \
+          WHERE payload->>'player_id' = ANY($1) OR payload->>'creator_id' = ANY($1)",
+    )
+    .bind(players)
+    .execute(pool)
+    .await;
+    for id in players {
+        cleanup_purge_row(pool, id).await;
+    }
+}
+
+async fn with_purge_cleanup<Fut>(pool: &PgPool, apps: Vec<String>, players: Vec<String>, body: Fut)
+where
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let mut task = tokio::spawn(body);
+    let outcome = tokio::time::timeout(Duration::from_secs(60), &mut task).await;
+    if outcome.is_err() {
+        task.abort();
+        let _ = (&mut task).await;
+    }
+    if !matches!(outcome, Ok(Ok(()))) {
+        for app in &apps {
+            sqlx::query(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1",
+            )
+            .bind(app)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+    cleanup_players(pool, &players).await;
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        Ok(Err(e)) => panic!("groups purge test task ended without completing: {e}"),
+        Err(_) => panic!("groups purge test body did not finish within 60s"),
+    }
+}
+
+fn racer_pool(app: &str) -> PgPool {
+    let options = testdb::dsn()
+        .parse::<sqlx::postgres::PgConnectOptions>()
+        .expect("DATABASE_URL parses")
+        .application_name(app);
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(60))
+        .connect_lazy_with(options)
+}
+
+fn racer_app(what: &str, player_id: &str) -> String {
+    format!("groups-{what}-{player_id}")
+}
+
+fn racer_service(svc: &Service, dir: &Arc<FakeDirectory>, app: &str) -> Arc<Service> {
+    let racer = Service::new(racer_pool(app), svc.bus.clone());
+    racer.directory.set(dir.clone()).ok().expect("directory set once");
+    Arc::new(racer)
+}
+
+async fn finish<T>(what: &str, handle: tokio::task::JoinHandle<T>) -> T {
+    match tokio::time::timeout(Duration::from_secs(30), handle).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(e)) => panic!("{what} task did not complete: {e}"),
+        Err(_) => panic!("{what} did not finish within 30s"),
+    }
+}
+
+async fn parked_on_advisory<T>(
+    pool: &PgPool,
+    app: &str,
+    keys: &[i64],
+    racer: &tokio::task::JoinHandle<T>,
+) -> Option<i64> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let parked: Option<i64> = sqlx::query_scalar(
+            "SELECT (l.classid::bigint << 32) | l.objid::bigint \
+               FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+              WHERE a.application_name = $1 AND NOT l.granted AND l.locktype = 'advisory' \
+                AND l.objsubid = 1 AND ((l.classid::bigint << 32) | l.objid::bigint) = ANY($2) \
+              LIMIT 1",
+        )
+        .bind(app)
+        .bind(keys)
+        .fetch_optional(pool)
+        .await
+        .unwrap();
+        if parked.is_some() {
+            return parked;
+        }
+        if racer.is_finished() {
+            return None;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "racer {app} neither parked on the advisory locks {keys:?} nor finished"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_advisory_parked<T>(
+    pool: &PgPool,
+    app: &str,
+    key: i64,
+    racer: &tokio::task::JoinHandle<T>,
+) -> bool {
+    parked_on_advisory(pool, app, &[key], racer).await.is_some()
+}
+
+async fn wait_xact_parked<T>(
+    pool: &PgPool,
+    app: &str,
+    xid: &str,
+    racer: &tokio::task::JoinHandle<T>,
+) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let parked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+              WHERE a.application_name = $1 AND NOT l.granted AND l.locktype = 'transactionid' \
+                AND l.transactionid::text = $2",
+        )
+        .bind(app)
+        .bind(xid)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if parked > 0 {
+            return true;
+        }
+        if racer.is_finished() {
+            return false;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "racer {app} neither parked on the transaction {xid} nor finished"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn current_xid(conn: &mut sqlx::PgConnection) -> String {
+    sqlx::query_scalar("SELECT (pg_current_xact_id()::text::bigint % 4294967296)::text")
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap()
+}
+
+async fn gate_membership(gate: &mut sqlx::PgConnection, group_id: &str, player_id: &str) -> String {
+    sqlx::query(
+        "INSERT INTO groups.memberships (group_id, player_id, state, role) \
+         VALUES ($1::uuid, $2::uuid, 'invited', '')",
+    )
+    .bind(group_id)
+    .bind(player_id)
+    .execute(&mut *gate)
+    .await
+    .unwrap();
+    current_xid(gate).await
+}
+
+async fn held_advisory_keys(conn: &mut sqlx::PgConnection) -> Vec<i64> {
+    sqlx::query_scalar(
+        "SELECT (classid::bigint << 32) | objid::bigint FROM pg_locks \
+          WHERE locktype = 'advisory' AND objsubid = 1 AND pid = pg_backend_pid()",
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .unwrap()
+}
+
+async fn taken_player_key(pool: &PgPool, svc: &Service, spelling: &str) -> i64 {
+    let mut tx = pool.begin().await.unwrap();
+    svc.store.lock_player_tx(&mut tx, spelling).await.unwrap();
+    let keys = held_advisory_keys(&mut tx).await;
+    tx.rollback().await.unwrap();
+    assert_eq!(keys.len(), 1, "exactly one advisory lock must be held, got {keys:?}");
+    keys[0]
+}
+
+async fn taken_group_key(pool: &PgPool, svc: &Service, group_id: &str) -> i64 {
+    let mut tx = pool.begin().await.unwrap();
+    svc.store.lock_group_tx(&mut tx, group_id).await.unwrap();
+    let keys = held_advisory_keys(&mut tx).await;
+    tx.rollback().await.unwrap();
+    assert_eq!(keys.len(), 1, "exactly one advisory lock must be held, got {keys:?}");
+    keys[0]
+}
+
+async fn plant(svc: &Service, pool: &PgPool, player_id: &str, handle: &str) {
+    let mut conn = pool.acquire().await.unwrap();
+    svc.store.plant_purged_player_tx(&mut conn, player_id, handle).await.unwrap();
+}
+
+async fn swept(pool: &PgPool, player_id: &str) -> bool {
+    purge_swept_at(pool, player_id).await.flatten().is_some()
+}
+
+fn spawn_sweep(svc: &Arc<Service>, app: &str) -> tokio::task::JoinHandle<Result<(), String>> {
+    let svc = svc.clone();
+    let racer = racer_pool(app);
+    tokio::spawn(async move {
+        let mut tx = racer.begin().await.map_err(|e| e.to_string())?;
+        svc.sweep_purged_players(&mut tx).await.map_err(|e| e.to_string())?;
+        tx.commit().await.map_err(|e| e.to_string())
+    })
+}
+
+#[tokio::test]
+async fn player_lock_key_is_one_per_uuid_across_spellings() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    let canon = "a2b7e8c1-0000-4000-8000-0000000000f1";
+    let hex = canon.replace('-', "");
+
+    let key = taken_player_key(&pool, &svc, canon).await;
+    assert_eq!(key, taken_player_key(&pool, &svc, &canon.to_uppercase()).await, "case must not change the key");
+    assert_eq!(
+        key,
+        taken_player_key(&pool, &svc, &format!("{{{canon}}}")).await,
+        "braces must not change the key"
+    );
+    assert_eq!(key, taken_player_key(&pool, &svc, &hex).await, "hyphens must not change the key");
+    assert_ne!(
+        key,
+        taken_player_key(&pool, &svc, "a2b7e8c1-0000-4000-8000-0000000000f2").await,
+        "a genuinely different uuid must take a different key"
+    );
+    assert_ne!(
+        key,
+        taken_group_key(&pool, &svc, canon).await,
+        "the player lock must not be the group lock of the same uuid"
+    );
+    taken_player_key(&pool, &svc, "not-a-uuid").await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sweep_waits_for_an_in_flight_create_and_dissolves_its_group() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let pid = fixed_uuid(0x0a);
+    let lock_key = taken_player_key(&pool, &svc, &pid).await;
+    let gate_app = racer_app("race1-gate", &pid);
+    let create_app = racer_app("race1-create", &pid);
+    let sweep_app = racer_app("race1-sweep", &pid);
+
+    let apps = vec![gate_app.clone(), create_app.clone(), sweep_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![pid.clone()], {
+        let (pool, svc) = (pool.clone(), svc.clone());
+        async move {
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(asyncevents::store::WRITER_LOCK_KEY)
+                .execute(&mut *gate)
+                .await
+                .unwrap();
+
+            let create = tokio::spawn({
+                let racer = racer_service(&svc, &dir, &create_app);
+                let pid = pid.clone();
+                async move {
+                    racer
+                        .create(Identity::player(&pid), "Inflight".into(), JOIN_OPEN.into())
+                        .await
+                        .map_err(|e| (e.status, e.msg))
+                }
+            });
+            assert!(
+                wait_advisory_parked(&pool, &create_app, asyncevents::store::WRITER_LOCK_KEY, &create)
+                    .await,
+                "create must be held at its event append, past its guard and its INSERTs"
+            );
+
+            plant(&svc, &pool, &pid, "Race#0001").await;
+            assert_claimed_by_the_next_fire(&pool, &pid).await;
+            let sweep = spawn_sweep(&svc, &sweep_app);
+            let parked = wait_advisory_parked(&pool, &sweep_app, lock_key, &sweep).await;
+
+            gate.commit().await.unwrap();
+            let group = finish("race-1 create", create)
+                .await
+                .expect("the create passed its guard before the tombstone");
+            assert_eq!(finish("race-1 sweep", sweep).await, Ok(()));
+
+            assert!(!group_exists(&pool, &group.id).await, "the in-flight create's group survived the erasure");
+            assert!(!membership_exists(&pool, &group.id, &pid).await);
+            assert_eq!(member_left_count(&pool, &pid, groupsevents::REASON_ACCOUNT_DELETED).await, 1);
+            assert!(swept(&pool, &pid).await, "the fire must stamp swept_at");
+            assert!(parked, "the sweep must have parked on the player's advisory lock");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sweep_waits_for_an_in_flight_join_and_purges_its_membership() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let owner = fixed_uuid(0x0b);
+    let joiner = fixed_uuid(0x0b);
+    dir.insert(&owner, "JoinOwner#0001");
+    dir.insert(&joiner, "Joiner#0002");
+    let lock_key = taken_player_key(&pool, &svc, &joiner).await;
+    let gate_app = racer_app("race1-gate", &joiner);
+    let join_app = racer_app("race1-join", &joiner);
+    let sweep_app = racer_app("race1-sweep", &joiner);
+
+    let apps = vec![gate_app.clone(), join_app.clone(), sweep_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![owner.clone(), joiner.clone()], {
+        let (pool, svc) = (pool.clone(), svc.clone());
+        async move {
+            let group_id = svc
+                .create(Identity::player(&owner), "JoinRace".into(), JOIN_OPEN.into())
+                .await
+                .unwrap()
+                .id;
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            let gate_xid = gate_membership(&mut gate, &group_id, &joiner).await;
+
+            let join = tokio::spawn({
+                let racer = racer_service(&svc, &dir, &join_app);
+                let (joiner, group_id) = (joiner.clone(), group_id.clone());
+                async move {
+                    racer
+                        .join(Identity::player(&joiner), group_id)
+                        .await
+                        .map(|m| m.state)
+                        .map_err(|e| (e.status, e.msg))
+                }
+            });
+            assert!(
+                wait_xact_parked(&pool, &join_app, &gate_xid, &join).await,
+                "the join must be held at its INSERT, past its locks and its tombstone guard"
+            );
+
+            plant(&svc, &pool, &joiner, "Race#0002").await;
+            assert_claimed_by_the_next_fire(&pool, &joiner).await;
+            let sweep = spawn_sweep(&svc, &sweep_app);
+            let parked = wait_advisory_parked(&pool, &sweep_app, lock_key, &sweep).await;
+
+            gate.rollback().await.unwrap();
+            assert_eq!(
+                finish("race-1 join", join).await,
+                Ok("member".to_string()),
+                "the join passed its guard before the tombstone"
+            );
+            assert_eq!(finish("race-1 sweep", sweep).await, Ok(()));
+
+            assert!(
+                !membership_exists(&pool, &group_id, &joiner).await,
+                "the in-flight join's membership survived the erasure"
+            );
+            assert!(membership_exists(&pool, &group_id, &owner).await, "the owner must stay");
+            assert!(group_exists(&pool, &group_id).await, "a group with its admin left must stay");
+            assert_eq!(member_left_count(&pool, &joiner, groupsevents::REASON_ACCOUNT_DELETED).await, 1);
+            assert!(swept(&pool, &joiner).await, "the fire must stamp swept_at");
+            assert!(parked, "the sweep must have parked on the joiner's advisory lock");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sweep_waits_for_an_in_flight_invite_and_purges_the_invitation() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let admin = fixed_uuid(0x0c);
+    let target = fixed_uuid(0x0c);
+    dir.insert(&admin, "InviteAdmin#0001");
+    dir.insert(&target, "InviteTarget#0002");
+    let lock_key = taken_player_key(&pool, &svc, &target).await;
+    let gate_app = racer_app("race1-gate", &target);
+    let invite_app = racer_app("race1-invite", &target);
+    let sweep_app = racer_app("race1-sweep", &target);
+
+    let apps = vec![gate_app.clone(), invite_app.clone(), sweep_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![admin.clone(), target.clone()], {
+        let (pool, svc) = (pool.clone(), svc.clone());
+        async move {
+            let group_id = svc
+                .create(Identity::player(&admin), "InviteRace".into(), JOIN_OPEN.into())
+                .await
+                .unwrap()
+                .id;
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            let gate_xid = gate_membership(&mut gate, &group_id, &target).await;
+
+            let invite = tokio::spawn({
+                let racer = racer_service(&svc, &dir, &invite_app);
+                let (admin, group_id) = (admin.clone(), group_id.clone());
+                async move {
+                    racer
+                        .invite(Identity::player(&admin), group_id, "InviteTarget#0002".into())
+                        .await
+                        .map_err(|e| (e.status, e.msg))
+                }
+            });
+            assert!(
+                wait_xact_parked(&pool, &invite_app, &gate_xid, &invite).await,
+                "the invite must be held at its INSERT, past its locks and the target's guard"
+            );
+
+            plant(&svc, &pool, &target, "InviteTarget#0002").await;
+            assert_claimed_by_the_next_fire(&pool, &target).await;
+            let sweep = spawn_sweep(&svc, &sweep_app);
+            let parked = wait_advisory_parked(&pool, &sweep_app, lock_key, &sweep).await;
+
+            gate.rollback().await.unwrap();
+            assert_eq!(
+                finish("race-1 invite", invite).await,
+                Ok(()),
+                "the invite passed the target's guard before the tombstone"
+            );
+            assert_eq!(finish("race-1 sweep", sweep).await, Ok(()));
+
+            assert!(
+                !membership_exists(&pool, &group_id, &target).await,
+                "the in-flight invitation survived the erasure"
+            );
+            assert!(group_exists(&pool, &group_id).await);
+            assert_eq!(member_left_count(&pool, &target, groupsevents::REASON_ACCOUNT_DELETED).await, 1);
+            assert!(swept(&pool, &target).await, "the fire must stamp swept_at");
+            assert!(parked, "the sweep must have parked on the target's advisory lock");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn join_parks_behind_an_open_sweep_then_answers_player_deleted() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let owner = fixed_uuid(0x0d);
+    let joiner = fixed_uuid(0x0d);
+    dir.insert(&owner, "LateOwner#0001");
+    dir.insert(&joiner, "LateJoiner#0002");
+    let lock_key = taken_player_key(&pool, &svc, &joiner).await;
+    let sweep_app = racer_app("race2-sweep", &joiner);
+    let join_app = racer_app("race2-join", &joiner);
+
+    let apps = vec![sweep_app.clone(), join_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![owner.clone(), joiner.clone()], {
+        let (pool, svc) = (pool.clone(), svc.clone());
+        async move {
+            let group_id = svc
+                .create(Identity::player(&owner), "LateJoin".into(), JOIN_OPEN.into())
+                .await
+                .unwrap()
+                .id;
+            plant(&svc, &pool, &joiner, "LateJoiner#0002").await;
+            assert_claimed_by_the_next_fire(&pool, &joiner).await;
+
+            let sweep_pool = racer_pool(&sweep_app);
+            let mut sweep_tx = sweep_pool.begin().await.unwrap();
+            svc.sweep_purged_players(&mut sweep_tx).await.unwrap();
+            let stamped: bool = sqlx::query_scalar(
+                "SELECT swept_at IS NOT NULL FROM groups.purged_players WHERE player_id = $1::uuid",
+            )
+            .bind(&joiner)
+            .fetch_one(&mut *sweep_tx)
+            .await
+            .unwrap();
+            assert!(stamped, "the open sweep must have locked and swept this player");
+
+            let join = tokio::spawn({
+                let racer = racer_service(&svc, &dir, &join_app);
+                let (joiner, group_id) = (joiner.clone(), group_id.clone());
+                async move {
+                    racer
+                        .join(Identity::player(&joiner), group_id)
+                        .await
+                        .map(|m| m.state)
+                        .map_err(|e| (e.status, e.msg))
+                }
+            });
+            let parked = wait_advisory_parked(&pool, &join_app, lock_key, &join).await;
+            assert!(parked, "the join must park on the joiner's lock while the sweep is open");
+
+            sweep_tx.commit().await.unwrap();
+            assert_eq!(
+                finish("race-2 join", join).await,
+                Err((Status::Conflict, PLAYER_DELETED.to_string()))
+            );
+            assert!(!membership_exists(&pool, &group_id, &joiner).await, "the refused join must add no row");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invite_parks_behind_an_open_sweep_then_answers_no_such_player() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let admin = fixed_uuid(0x0d);
+    let target = fixed_uuid(0x0d);
+    dir.insert(&admin, "LateAdmin#0001");
+    dir.insert(&target, "LateTarget#0002");
+    let lock_key = taken_player_key(&pool, &svc, &target).await;
+    let sweep_app = racer_app("race2-sweep", &target);
+    let invite_app = racer_app("race2-invite", &target);
+
+    let apps = vec![sweep_app.clone(), invite_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![admin.clone(), target.clone()], {
+        let (pool, svc) = (pool.clone(), svc.clone());
+        async move {
+            let group_id = svc
+                .create(Identity::player(&admin), "LateInvite".into(), JOIN_OPEN.into())
+                .await
+                .unwrap()
+                .id;
+            plant(&svc, &pool, &target, "LateTarget#0002").await;
+            assert_claimed_by_the_next_fire(&pool, &target).await;
+
+            let sweep_pool = racer_pool(&sweep_app);
+            let mut sweep_tx = sweep_pool.begin().await.unwrap();
+            svc.sweep_purged_players(&mut sweep_tx).await.unwrap();
+            let stamped: bool = sqlx::query_scalar(
+                "SELECT swept_at IS NOT NULL FROM groups.purged_players WHERE player_id = $1::uuid",
+            )
+            .bind(&target)
+            .fetch_one(&mut *sweep_tx)
+            .await
+            .unwrap();
+            assert!(stamped, "the open sweep must have locked and swept this player");
+
+            let invite = tokio::spawn({
+                let racer = racer_service(&svc, &dir, &invite_app);
+                let (admin, group_id) = (admin.clone(), group_id.clone());
+                async move {
+                    racer
+                        .invite(Identity::player(&admin), group_id, "LateTarget#0002".into())
+                        .await
+                        .map_err(|e| (e.status, e.msg))
+                }
+            });
+            let parked = wait_advisory_parked(&pool, &invite_app, lock_key, &invite).await;
+            assert!(parked, "the invite must park on the target's lock while the sweep is open");
+
+            sweep_tx.commit().await.unwrap();
+            assert_eq!(
+                finish("race-2 invite", invite).await,
+                Err((Status::NotFound, NO_SUCH_PLAYER.to_string())),
+                "a purged target must get exactly the directory-miss answer"
+            );
+            assert!(!membership_exists(&pool, &group_id, &target).await, "the refused invite must add no row");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sweep_takes_every_player_lock_before_a_group_lock() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let a = fixed_uuid(0x0e);
+    let b = fixed_uuid(0x0f);
+    assert!(a < b);
+    dir.insert(&a, "OrderA#0001");
+    dir.insert(&b, "OrderB#0002");
+    let b_key = taken_player_key(&pool, &svc, &b).await;
+    let gate_app = racer_app("order-gate", &b);
+    let sweep_app = racer_app("order-sweep", &b);
+    let join_app = racer_app("order-join", &b);
+
+    let apps = vec![gate_app.clone(), sweep_app.clone(), join_app.clone()];
+    with_purge_cleanup(&pool, apps, vec![a.clone(), b.clone()], {
+        let (pool, svc) = (pool.clone(), svc.clone());
+        async move {
+            let g1 = svc
+                .create(Identity::player(&a), "OrderG1".into(), JOIN_OPEN.into())
+                .await
+                .unwrap()
+                .id;
+            let g1_key = taken_group_key(&pool, &svc, &g1).await;
+
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            sqlx::query(
+                "UPDATE groups.memberships SET role = role \
+                  WHERE group_id = $1::uuid AND player_id = $2::uuid",
+            )
+            .bind(&g1)
+            .bind(&a)
+            .execute(&mut *gate)
+            .await
+            .unwrap();
+            let gate_xid = current_xid(&mut gate).await;
+
+            plant(&svc, &pool, &a, "OrderA#0001").await;
+            plant(&svc, &pool, &b, "OrderB#0002").await;
+            assert_claimed_by_the_next_fire(&pool, &b).await;
+
+            let sweep = spawn_sweep(&svc, &sweep_app);
+            assert!(
+                wait_xact_parked(&pool, &sweep_app, &gate_xid, &sweep).await,
+                "the sweep must be held at a's delete in G1, holding G1"
+            );
+
+            let join = tokio::spawn({
+                let racer = racer_service(&svc, &dir, &join_app);
+                let (b, g1) = (b.clone(), g1.clone());
+                async move {
+                    racer
+                        .join(Identity::player(&b), g1)
+                        .await
+                        .map(|m| m.state)
+                        .map_err(|e| (e.status, e.msg))
+                }
+            });
+            let parked_on = parked_on_advisory(&pool, &join_app, &[b_key, g1_key], &join).await;
+            assert!(parked_on.is_some(), "the join must park behind the sweep");
+
+            gate.rollback().await.unwrap();
+            let outcome = (finish("order sweep", sweep).await, finish("order join", join).await);
+            assert_eq!(
+                outcome,
+                (Ok(()), Err((Status::Conflict, PLAYER_DELETED.to_string()))),
+                "neither side may fail with a deadlock (40P01)"
+            );
+            assert_eq!(parked_on, Some(b_key), "the join must park on b's lock, taken before G1");
+            assert!(!group_exists(&pool, &g1).await, "a's purge must dissolve G1");
+            assert!(!membership_exists(&pool, &g1, &b).await);
+            assert!(swept(&pool, &a).await && swept(&pool, &b).await, "both players must be purged");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn invite_to_a_full_group_answers_no_such_player_for_a_purged_target() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let admin = fixed_uuid(0x10);
+    let target = fixed_uuid(0x10);
+    let live = fixed_uuid(0x10);
+    dir.insert(&admin, "FullAdmin#0001");
+    dir.insert(&target, "FullTarget#0002");
+    dir.insert(&live, "FullLive#0003");
+
+    with_purge_cleanup(&pool, vec![], vec![admin.clone(), target.clone(), live.clone()], {
+        let (pool, svc) = (pool.clone(), svc.clone());
+        async move {
+            let group_id = svc
+                .create(Identity::player(&admin), "FullGroup".into(), JOIN_OPEN.into())
+                .await
+                .unwrap()
+                .id;
+            sqlx::query(
+                "INSERT INTO groups.memberships (group_id, player_id, state, role) \
+                 SELECT $1::uuid, gen_random_uuid(), 'invited', '' FROM generate_series(2, $2)",
+            )
+            .bind(&group_id)
+            .bind(MAX_MEMBERS)
+            .execute(&pool)
+            .await
+            .unwrap();
+            plant(&svc, &pool, &target, "FullTarget#0002").await;
+
+            let full = svc
+                .invite(Identity::player(&admin), group_id.clone(), "FullLive#0003".into())
+                .await
+                .unwrap_err();
+            assert_eq!(full.status, Status::Conflict, "control: the group must be full");
+
+            let e = svc
+                .invite(Identity::player(&admin), group_id.clone(), "FullTarget#0002".into())
+                .await
+                .unwrap_err();
+            assert_eq!(
+                (e.status, e.msg.as_str()),
+                (Status::NotFound, NO_SUCH_PLAYER),
+                "a purged target must get the directory-miss answer, not \"full\""
+            );
+            cleanup_groups(&pool, &[group_id]).await;
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn one_sweep_fire_stamps_at_most_64_players() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    let mut ids: Vec<String> = (0..GROUPS_PLAYERS_PER_FIRE + 1).map(|_| fixed_uuid(0x00)).collect();
+    ids.sort();
+    let foreign_below: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM groups.purged_players \
+          WHERE swept_at IS NULL AND player_id <= $1::uuid AND player_id <> ALL($2::uuid[])",
+    )
+    .bind(ids.last().unwrap())
+    .bind(&ids)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(foreign_below, 0, "precondition: a foreign unswept tombstone sorts among this test's ids");
+
+    with_purge_cleanup(&pool, vec![], ids.clone(), {
+        let (pool, svc, ids) = (pool.clone(), svc.clone(), ids.clone());
+        async move {
+            for (i, id) in ids.iter().enumerate() {
+                plant(&svc, &pool, id, &format!("Cap#{i:04}")).await;
+            }
+
+            let mut tx = pool.begin().await.unwrap();
+            svc.sweep_purged_players(&mut tx).await.unwrap();
+            tx.commit().await.unwrap();
+            assert_eq!(
+                unstamped_tombstones(&pool, &ids).await,
+                vec![ids[GROUPS_PLAYERS_PER_FIRE as usize].clone()],
+                "one fire must stamp exactly the 64 lowest of 65 tombstones"
+            );
+
+            let mut tx2 = pool.begin().await.unwrap();
+            svc.sweep_purged_players(&mut tx2).await.unwrap();
+            tx2.commit().await.unwrap();
+            assert!(
+                unstamped_tombstones(&pool, &ids).await.is_empty(),
+                "the next fire must resume and stamp the last one"
+            );
+        }
+    })
+    .await;
+}
+
+async fn holds_advisory(pool: &PgPool, app: &str, key: i64) -> bool {
+    let held: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+          WHERE a.application_name = $1 AND l.granted AND l.locktype = 'advisory' \
+            AND l.objsubid = 1 AND ((l.classid::bigint << 32) | l.objid::bigint) = $2",
+    )
+    .bind(app)
+    .bind(key)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    held > 0
+}
+
+fn probe_holds_advisory(app: &str, key: i64) -> bool {
+    std::thread::spawn({
+        let app = app.to_owned();
+        move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let probe = PgPool::connect(&testdb::dsn()).await.unwrap();
+                    holds_advisory(&probe, &app, key).await
+                })
+        }
+    })
+    .join()
+    .unwrap()
+}
+
+#[tokio::test]
+async fn invite_releases_both_locks_before_it_answers_a_purged_target() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let dir = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, dir.clone()).await;
+    let admin = fixed_uuid(0x10);
+    let target = fixed_uuid(0x10);
+    dir.insert(&admin, "ReleaseAdmin#0001");
+    dir.insert(&target, "ReleaseTarget#0002");
+    let player_key = taken_player_key(&pool, &svc, &target).await;
+    let app = racer_app("release", &target);
+
+    let group_id = svc
+        .create(Identity::player(&admin), "ReleaseGroup".into(), JOIN_OPEN.into())
+        .await
+        .unwrap()
+        .id;
+    let group_key = taken_group_key(&pool, &svc, &group_id).await;
+    plant(&svc, &pool, &target, "ReleaseTarget#0002").await;
+
+    let racer = racer_service(&svc, &dir, &app);
+    let mut control = racer.store.pool.begin().await.unwrap();
+    racer.store.lock_player_tx(&mut control, &target).await.unwrap();
+    racer.store.lock_group_tx(&mut control, &group_id).await.unwrap();
+    let seen = (probe_holds_advisory(&app, player_key), probe_holds_advisory(&app, group_key));
+    control.rollback().await.unwrap();
+
+    let invited = racer
+        .invite(Identity::player(&admin), group_id.clone(), "ReleaseTarget#0002".into())
+        .await;
+    let held = (probe_holds_advisory(&app, player_key), probe_holds_advisory(&app, group_key));
+    drop(racer);
+    cleanup_players(&pool, &[admin.clone(), target.clone()]).await;
+
+    assert_eq!(seen, (true, true), "the probe must see the racer's held locks");
+    let Err(e) = invited else { panic!("an invite of a purged target must be refused") };
+    assert_eq!((e.status, e.msg.as_str()), (Status::NotFound, NO_SUCH_PLAYER));
+    assert_eq!(held, (false, false), "a refused invite must not leave its transaction's locks held");
 }

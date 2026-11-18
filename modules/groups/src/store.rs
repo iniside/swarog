@@ -63,21 +63,29 @@ pub(crate) struct AdminGroupRow {
 /// before reading it, so the cap, the last-admin rule and the last-member teardown all
 /// decide on a roster no concurrent writer can change under them.
 ///
-/// The namespace prefix keeps it from colliding with friends' requester key or
-/// scheduler's; a collision would only over-serialize. The id is normalized to Postgres's
-/// uuid-EQUALITY form before hashing, because the row SQL is `$1::uuid`: a
-/// differently-spelled but DB-equal id must yield the SAME lock.
+/// The namespace prefix keeps it from colliding with other modules' keys; a collision would
+/// only over-serialize. The id is normalized to Postgres's uuid-EQUALITY form before
+/// hashing, because the row SQL is `$1::uuid`: a differently-spelled but DB-equal id must
+/// yield the SAME lock.
 fn group_lock_key(group_id: &str) -> i64 {
+    namespaced_key(b"groups.group/", group_id)
+}
+
+fn player_lock_key(player_id: &str) -> i64 {
+    namespaced_key(b"groups.player/", player_id)
+}
+
+fn namespaced_key(namespace: &[u8], id: &str) -> i64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let hex: Vec<u8> = group_id
+    let hex: Vec<u8> = id
         .bytes()
         .filter(u8::is_ascii_hexdigit)
         .map(|b| b.to_ascii_lowercase())
         .collect();
-    let normalized: &[u8] = if hex.len() == 32 { &hex } else { group_id.as_bytes() };
+    let normalized: &[u8] = if hex.len() == 32 { &hex } else { id.as_bytes() };
     let mut h = OFFSET_BASIS;
-    for b in b"groups.group/".iter().copied().chain(normalized.iter().copied()) {
+    for b in namespace.iter().copied().chain(normalized.iter().copied()) {
         h ^= b as u64;
         h = h.wrapping_mul(PRIME);
     }
@@ -91,9 +99,6 @@ pub(crate) struct Store {
 }
 
 impl Store {
-    /// `true` once this player's deletion tombstone is committed. A plain read, no
-    /// advisory lock: the row is permanent, so every statement taken after the plant
-    /// commits sees it.
     pub(crate) async fn is_player_purged_tx(
         &self,
         conn: &mut PgConnection,
@@ -144,8 +149,7 @@ impl Store {
     /// cast. No index serves either spelling (`memberships_player_idx` is
     /// `(player_id, state, created_at DESC, group_id DESC)`, the primary key
     /// `(group_id, player_id)`); the sort is affordable because it is bounded by one player's
-    /// memberships. The sweep is the only multi-lock taker, which is what makes its per-group
-    /// advisory locks deadlock-free — this ordering is per-player and would not establish it.
+    /// memberships.
     ///
     /// The sweep deletes as it goes, so a later call inside the same transaction no longer
     /// sees what it already removed.
@@ -164,6 +168,18 @@ impl Store {
         .fetch_all(&mut *conn)
         .await?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    pub(crate) async fn lock_player_tx(
+        &self,
+        conn: &mut PgConnection,
+        player_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(player_lock_key(player_id))
+            .execute(&mut *conn)
+            .await?;
+        Ok(())
     }
 
     /// Taken ON THE TX CONNECTION — a separate pool connection would lose the

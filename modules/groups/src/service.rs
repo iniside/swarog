@@ -12,7 +12,7 @@ use groupsapi::{
 };
 use groupsevents::{REASON_DECLINED, REASON_GROUP_DISSOLVED, REASON_KICKED, REASON_LEFT};
 use opsapi::{Error, Identity};
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::internal;
 use crate::store::{is_invalid_uuid, MemberRow, Store, MEMBER_ROWS, PENDING_ROWS};
@@ -28,9 +28,7 @@ pub(crate) const MALFORMED_CURSOR: &str = "cursor is malformed";
 
 /// What `create`/`join` answer a caller whose account is already tombstoned. `Conflict`, not
 /// `NotFound`: the request is well-formed and names a real past player — what is stale is
-/// the identity it carries. `invite`'s target needs no such answer: the handle is resolved
-/// through `accountsapi::Directory`, and `accounts` deletes the player row in the same
-/// transaction as the event this tombstone descends from, so the lookup already misses.
+/// the identity it carries.
 pub(crate) const PLAYER_DELETED: &str = "this account has been deleted";
 
 /// `decision` on `respond`/`decide`. Not `groupsapi` consts: the contract states the two
@@ -349,6 +347,214 @@ impl Service {
     }
 }
 
+impl Service {
+    async fn create_tx(
+        &self,
+        conn: &mut PgConnection,
+        me: &str,
+        name: String,
+        policy: &'static str,
+    ) -> Result<GroupSummary, Error> {
+        self.store
+            .lock_player_tx(&mut *conn, me)
+            .await
+            .map_err(internal)?;
+        if self
+            .store
+            .is_player_purged_tx(&mut *conn, me)
+            .await
+            .map_err(internal)?
+        {
+            return Err(Error::conflict(PLAYER_DELETED));
+        }
+        let (group_id, creator_id, created_at) = self
+            .store
+            .insert_group_tx(&mut *conn, &name, policy, me)
+            .await
+            .map_err(write_error)?;
+        // The creator's own row rides the same transaction: a group whose only admin never
+        // joined is a group nobody can administer.
+        let joined = self
+            .store
+            .insert_membership_tx(&mut *conn, &group_id, &creator_id, STATE_MEMBER, ROLE_ADMIN)
+            .await
+            .map_err(write_error)?;
+        if joined.is_none() {
+            return Err(internal("freshly created group already had a member row"));
+        }
+        self.bus
+            .emit_tx(
+                AnyTx::new(&mut *conn),
+                &groupsevents::CREATED,
+                &groupsevents::Created {
+                    group_id: group_id.clone(),
+                    name: name.clone(),
+                    creator_id: creator_id.clone(),
+                    join_policy: policy.to_string(),
+                },
+            )
+            .await
+            .map_err(internal)?;
+        self.bus
+            .emit_tx(
+                AnyTx::new(&mut *conn),
+                &groupsevents::MEMBER_JOINED,
+                &groupsevents::MemberJoined {
+                    group_id: group_id.clone(),
+                    player_id: creator_id,
+                    role: ROLE_ADMIN.to_string(),
+                },
+            )
+            .await
+            .map_err(internal)?;
+
+        Ok(GroupSummary {
+            id: group_id,
+            name,
+            join_policy: policy.to_string(),
+            created_at,
+            my_state: STATE_MEMBER.to_string(),
+            my_role: ROLE_ADMIN.to_string(),
+        })
+    }
+
+    async fn join_tx(
+        &self,
+        conn: &mut PgConnection,
+        me: &str,
+        handle: String,
+        group_id: &str,
+    ) -> Result<MemberSummary, Error> {
+        self.store
+            .lock_player_tx(&mut *conn, me)
+            .await
+            .map_err(internal)?;
+        self.store
+            .lock_group_tx(&mut *conn, group_id)
+            .await
+            .map_err(internal)?;
+        if self
+            .store
+            .is_player_purged_tx(&mut *conn, me)
+            .await
+            .map_err(internal)?
+        {
+            return Err(Error::conflict(PLAYER_DELETED));
+        }
+        let (policy, group_id) = self
+            .store
+            .join_policy_tx(&mut *conn, group_id)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| Error::not_found(NOT_FOUND))?;
+        let (state, role) = match policy.as_str() {
+            JOIN_OPEN => (STATE_MEMBER, ROLE_MEMBER),
+            JOIN_REQUEST => (STATE_REQUESTED, ""),
+            JOIN_INVITE => {
+                return Err(Error::conflict("this group admits members by invitation only"));
+            }
+            other => return Err(internal(format!("unknown join policy {other:?}"))),
+        };
+
+        // Counted under the group lock, which is the whole reason the lock exists: the
+        // cap covers members and pending rows alike.
+        let counts = self
+            .store
+            .counts_tx(&mut *conn, &group_id, STATE_MEMBER, ROLE_ADMIN)
+            .await
+            .map_err(internal)?;
+        if counts.rows >= MAX_MEMBERS {
+            return Err(Error::conflict(format!(
+                "group is full at {MAX_MEMBERS} members"
+            )));
+        }
+
+        let (group_id, player_id, joined_at) = self
+            .store
+            .insert_membership_tx(&mut *conn, &group_id, me, state, role)
+            .await
+            .map_err(write_error)?
+            .ok_or_else(|| Error::conflict("you already have a relation to this group"))?;
+        if state == STATE_MEMBER {
+            self.bus
+                .emit_tx(
+                    AnyTx::new(&mut *conn),
+                    &groupsevents::MEMBER_JOINED,
+                    &groupsevents::MemberJoined {
+                        group_id,
+                        player_id: player_id.clone(),
+                        role: role.to_string(),
+                    },
+                )
+                .await
+                .map_err(internal)?;
+        }
+
+        Ok(MemberSummary {
+            player_id,
+            handle,
+            state: state.to_string(),
+            role: role.to_string(),
+            joined_at,
+        })
+    }
+
+    async fn invite_tx(
+        &self,
+        conn: &mut PgConnection,
+        me: &str,
+        group_id: &str,
+        target_id: &str,
+    ) -> Result<(), Error> {
+        self.store
+            .lock_player_tx(&mut *conn, target_id)
+            .await
+            .map_err(internal)?;
+        self.store
+            .lock_group_tx(&mut *conn, group_id)
+            .await
+            .map_err(internal)?;
+        if self
+            .store
+            .visible_role_tx(&mut *conn, group_id, me, STATE_MEMBER, ROLE_ADMIN)
+            .await
+            .map_err(internal)?
+            .is_none()
+        {
+            return Err(Error::not_found(NOT_FOUND));
+        }
+        if self
+            .store
+            .is_player_purged_tx(&mut *conn, target_id)
+            .await
+            .map_err(internal)?
+        {
+            return Err(Error::not_found(NO_SUCH_PLAYER));
+        }
+        let counts = self
+            .store
+            .counts_tx(&mut *conn, group_id, STATE_MEMBER, ROLE_ADMIN)
+            .await
+            .map_err(internal)?;
+        if counts.rows >= MAX_MEMBERS {
+            return Err(Error::conflict(format!(
+                "group is full at {MAX_MEMBERS} members"
+            )));
+        }
+        let inserted = self
+            .store
+            .insert_membership_tx(&mut *conn, group_id, target_id, STATE_INVITED, "")
+            .await
+            .map_err(internal)?;
+        if inserted.is_none() {
+            return Err(Error::conflict(
+                "that player already has a relation to this group",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl Player for Service {
     async fn create(
@@ -362,66 +568,16 @@ impl Player for Service {
         let policy = validate_policy(&join_policy)?;
 
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        if self
-            .store
-            .is_player_purged_tx(&mut tx, &me)
-            .await
-            .map_err(internal)?
-        {
-            tx.rollback().await.map_err(internal)?;
-            return Err(Error::conflict(PLAYER_DELETED));
+        match self.create_tx(&mut tx, &me, name, policy).await {
+            Ok(summary) => {
+                tx.commit().await.map_err(internal)?;
+                Ok(summary)
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                Err(e)
+            }
         }
-        let (group_id, creator_id, created_at) = self
-            .store
-            .insert_group_tx(&mut tx, &name, policy, &me)
-            .await
-            .map_err(write_error)?;
-        // The creator's own row rides the same transaction: a group whose only admin never
-        // joined is a group nobody can administer.
-        let joined = self
-            .store
-            .insert_membership_tx(&mut tx, &group_id, &creator_id, STATE_MEMBER, ROLE_ADMIN)
-            .await
-            .map_err(write_error)?;
-        if joined.is_none() {
-            tx.rollback().await.map_err(internal)?;
-            return Err(internal("freshly created group already had a member row"));
-        }
-        self.bus
-            .emit_tx(
-                AnyTx::new(&mut *tx),
-                &groupsevents::CREATED,
-                &groupsevents::Created {
-                    group_id: group_id.clone(),
-                    name: name.clone(),
-                    creator_id: creator_id.clone(),
-                    join_policy: policy.to_string(),
-                },
-            )
-            .await
-            .map_err(internal)?;
-        self.bus
-            .emit_tx(
-                AnyTx::new(&mut *tx),
-                &groupsevents::MEMBER_JOINED,
-                &groupsevents::MemberJoined {
-                    group_id: group_id.clone(),
-                    player_id: creator_id,
-                    role: ROLE_ADMIN.to_string(),
-                },
-            )
-            .await
-            .map_err(internal)?;
-        tx.commit().await.map_err(internal)?;
-
-        Ok(GroupSummary {
-            id: group_id,
-            name,
-            join_policy: policy.to_string(),
-            created_at,
-            my_state: STATE_MEMBER.to_string(),
-            my_role: ROLE_ADMIN.to_string(),
-        })
     }
 
     /// The player id comes from `identity` (gateway-verified), NEVER from a body field.
@@ -493,93 +649,16 @@ impl Player for Service {
         let handle = self.my_handle(&me).await?;
 
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        self.store
-            .lock_group_tx(&mut tx, &group_id)
-            .await
-            .map_err(internal)?;
-        if self
-            .store
-            .is_player_purged_tx(&mut tx, &me)
-            .await
-            .map_err(internal)?
-        {
-            tx.rollback().await.map_err(internal)?;
-            return Err(Error::conflict(PLAYER_DELETED));
+        match self.join_tx(&mut tx, &me, handle, &group_id).await {
+            Ok(member) => {
+                tx.commit().await.map_err(internal)?;
+                Ok(member)
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                Err(e)
+            }
         }
-        let (policy, group_id) = match self
-            .store
-            .join_policy_tx(&mut tx, &group_id)
-            .await
-            .map_err(internal)?
-        {
-            Some(row) => row,
-            None => {
-                tx.rollback().await.map_err(internal)?;
-                return Err(Error::not_found(NOT_FOUND));
-            }
-        };
-        let (state, role) = match policy.as_str() {
-            JOIN_OPEN => (STATE_MEMBER, ROLE_MEMBER),
-            JOIN_REQUEST => (STATE_REQUESTED, ""),
-            JOIN_INVITE => {
-                tx.rollback().await.map_err(internal)?;
-                return Err(Error::conflict("this group admits members by invitation only"));
-            }
-            other => {
-                tx.rollback().await.map_err(internal)?;
-                return Err(internal(format!("unknown join policy {other:?}")));
-            }
-        };
-
-        // Counted under the group lock, which is the whole reason the lock exists: the
-        // cap covers members and pending rows alike.
-        let counts = self
-            .store
-            .counts_tx(&mut tx, &group_id, STATE_MEMBER, ROLE_ADMIN)
-            .await
-            .map_err(internal)?;
-        if counts.rows >= MAX_MEMBERS {
-            tx.rollback().await.map_err(internal)?;
-            return Err(Error::conflict(format!(
-                "group is full at {MAX_MEMBERS} members"
-            )));
-        }
-
-        let inserted = self
-            .store
-            .insert_membership_tx(&mut tx, &group_id, &me, state, role)
-            .await
-            .map_err(write_error)?;
-        let (group_id, player_id, joined_at) = match inserted {
-            Some(row) => row,
-            None => {
-                tx.rollback().await.map_err(internal)?;
-                return Err(Error::conflict("you already have a relation to this group"));
-            }
-        };
-        if state == STATE_MEMBER {
-            self.bus
-                .emit_tx(
-                    AnyTx::new(&mut *tx),
-                    &groupsevents::MEMBER_JOINED,
-                    &groupsevents::MemberJoined {
-                        group_id,
-                        player_id: player_id.clone(),
-                        role: role.to_string(),
-                    },
-                )
-                .await
-                .map_err(internal)?;
-        }
-        tx.commit().await.map_err(internal)?;
-
-        Ok(MemberSummary {
-            player_id,
-            handle,
-            state: state.to_string(),
-            role: role.to_string(),
-            joined_at,
-        })
     }
 
     async fn leave(&self, identity: Identity, group_id: String) -> Result<(), Error> {
@@ -705,44 +784,16 @@ impl Player for Service {
             .ok_or_else(|| Error::not_found(NO_SUCH_PLAYER))?;
 
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        self.store
-            .lock_group_tx(&mut tx, &group_id)
-            .await
-            .map_err(internal)?;
-        if self
-            .store
-            .visible_role_tx(&mut tx, &group_id, &me, STATE_MEMBER, ROLE_ADMIN)
-            .await
-            .map_err(internal)?
-            .is_none()
-        {
-            tx.rollback().await.map_err(internal)?;
-            return Err(Error::not_found(NOT_FOUND));
+        match self.invite_tx(&mut tx, &me, &group_id, &target.player_id).await {
+            Ok(()) => {
+                tx.commit().await.map_err(internal)?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                Err(e)
+            }
         }
-        let counts = self
-            .store
-            .counts_tx(&mut tx, &group_id, STATE_MEMBER, ROLE_ADMIN)
-            .await
-            .map_err(internal)?;
-        if counts.rows >= MAX_MEMBERS {
-            tx.rollback().await.map_err(internal)?;
-            return Err(Error::conflict(format!(
-                "group is full at {MAX_MEMBERS} members"
-            )));
-        }
-        let inserted = self
-            .store
-            .insert_membership_tx(&mut tx, &group_id, &target.player_id, STATE_INVITED, "")
-            .await
-            .map_err(internal)?;
-        if inserted.is_none() {
-            tx.rollback().await.map_err(internal)?;
-            return Err(Error::conflict(
-                "that player already has a relation to this group",
-            ));
-        }
-        tx.commit().await.map_err(internal)?;
-        Ok(())
     }
 
     async fn respond(
