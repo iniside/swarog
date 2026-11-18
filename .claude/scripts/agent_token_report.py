@@ -2,7 +2,14 @@
 
 Usage:
   python .claude/scripts/agent_token_report.py [--days N | --since YYYY-MM-DD [--until YYYY-MM-DD]]
-                                               [--projects-dir DIR] [--json]
+                                               [--session ID] [--projects-dir DIR] [--json]
+
+--session ID (a session id or its prefix) limits the report to that main
+transcript and its subagents, over their whole lifetime unless --since is given,
+and adds a per-dispatch table. Calls made inside a REPL script are recorded as
+assistant messages with model "<synthetic>": they count as tool calls but not as
+turns, and their own results are not in the model's context (only the script's
+returned value, a poll_events attachment, is).
 
 Defaults to the last 7 days of $CLAUDE_CONFIG_DIR (default ~/.claude)/projects/<mangled repo path>. Main
 transcripts are <dir>/*.jsonl, subagents <dir>/<session>/subagents/*.jsonl with a
@@ -61,6 +68,7 @@ def parse_args():
     ap.add_argument("--days", type=int, default=7)
     ap.add_argument("--since")
     ap.add_argument("--until")
+    ap.add_argument("--session")
     ap.add_argument("--projects-dir")
     ap.add_argument("--json", action="store_true")
     return ap.parse_args()
@@ -81,7 +89,9 @@ def resolve_dir(a):
 
 def resolve_window(a):
     now = datetime.datetime.now().astimezone()
-    if a.since:
+    if a.session and not a.since:
+        lo = datetime.datetime(2000, 1, 1).astimezone()
+    elif a.since:
         lo = datetime.datetime.strptime(a.since, "%Y-%m-%d").astimezone()
     else:
         lo = now - datetime.timedelta(days=a.days)
@@ -118,8 +128,9 @@ def main():
     lo, hi = resolve_window(a)
     lo_s, hi_s = utc_iso(lo), utc_iso(hi)
     lo_ts = lo.timestamp()
-    files = set(glob.glob(os.path.join(root, "*.jsonl")))
-    files |= set(glob.glob(os.path.join(root, "*", "subagents", "*.jsonl")))
+    sess = glob.escape(a.session) + "*" if a.session else "*"
+    files = set(glob.glob(os.path.join(root, sess + ".jsonl")))
+    files |= set(glob.glob(os.path.join(root, sess, "subagents", "*.jsonl")))
     files = sorted((f for f in files if os.stat(f).st_mtime >= lo_ts), key=os.path.getmtime)
     if not os.path.isdir(root):
         sys.exit(f"error: transcript directory not found: {root}")
@@ -133,18 +144,30 @@ def main():
     nav = collections.defaultdict(collections.Counter)
     first_ctx = {"main": [], "sub": []}
     atts = {}
+    dispatches = []
+    BIG = 20000
 
     for f in files:
         issub = "subagents" in f.replace("\\", "/")
         kind = "sub" if issub else "main"
         at = "MAIN"
+        desc = ""
         if issub:
             at = "unknown"
             try:
                 with open(f[:-6] + ".meta.json", encoding="utf-8") as mf:
-                    at = json.load(mf).get("agentType") or "unknown"
+                    meta = json.load(mf)
+                at = meta.get("agentType") or "unknown"
+                desc = meta.get("description") or ""
             except Exception:
                 pass
+        calls = 0
+        scripts = 0
+        syn_ids = set()
+        max_res = 0
+        big_res = 0
+        ctx_max = 0
+        ctx_sum = 0
         live = collections.Counter()
         seen = set()
         outs = {}
@@ -179,6 +202,12 @@ def main():
                     t = att.get("type")
                     if t == "instructions":
                         atts[(kind, t)] = [(short_path(x.get("path", "")), len(x.get("content", ""))) for x in att.get("files", [])]
+                    elif t == "poll_events":
+                        n_ = sum(len(e) for e in att.get("envelopes") or [] if isinstance(e, str))
+                        live["result:REPL"] += toks(" " * n_)
+                        if inwin:
+                            max_res = max(max_res, n_)
+                            big_res += n_ > BIG
                     elif t in ("skill_listing", "agent_listing_delta", "mcp_instructions_delta", "deferred_tools_delta"):
                         atts[(kind, t)] = len(json.dumps(att))
                     continue
@@ -186,7 +215,8 @@ def main():
                 if not isinstance(m, dict):
                     continue
                 if typ == "assistant":
-                    us = m.get("usage")
+                    syn = m.get("model") == "<synthetic>"
+                    us = None if syn else m.get("usage")
                     mid = m.get("id")
                     if us and mid in outs:
                         outs[mid] = max(outs[mid], us.get("output_tokens") or 0)
@@ -214,6 +244,8 @@ def main():
                             share["_baseline/system+hidden"] += max(0, ctx - est)
                             pa = per_agent[at]
                             pa["ctx"] += ctx
+                            ctx_sum += ctx
+                            ctx_max = max(ctx_max, ctx)
                     for c in m.get("content") or []:
                         if not isinstance(c, dict):
                             continue
@@ -231,7 +263,15 @@ def main():
                                 if w and w[0] in ("cargo", "git"):
                                     k = nm + ":" + " ".join(w[:2])
                             id2[c.get("id")] = k
-                            live["call-input:" + nm] += toks(json.dumps(inp_))
+                            if syn:
+                                syn_ids.add(c.get("id"))
+                            else:
+                                live["call-input:" + nm] += toks(json.dumps(inp_))
+                            if inwin:
+                                if nm == "REPL" and not syn:
+                                    scripts += 1
+                                elif nm not in ("REPL", "Poll", "SubagentHandback"):
+                                    calls += 1
                             if inwin and at in NAV_TYPES:
                                 n = nav[at]
                                 if nm == "LSP":
@@ -261,7 +301,13 @@ def main():
                             if not isinstance(c, dict):
                                 continue
                             if c.get("type") == "tool_result":
+                                if c.get("tool_use_id") in syn_ids:
+                                    continue
                                 live["result:" + id2.get(c.get("tool_use_id"), "?")] += blocktoks(c.get("content"))
+                                if inwin:
+                                    n_ = len(json.dumps(c.get("content")))
+                                    max_res = max(max_res, n_)
+                                    big_res += n_ > BIG
                             elif c.get("type") == "text":
                                 live["user/task prompt"] += toks(c.get("text", ""))
         totals[kind]["output"] += sum(outs.values())
@@ -269,6 +315,15 @@ def main():
             pa = per_agent[at]
             pa["n"] += 1
             pa["turns"].append(turns)
+            pa["calls"] = pa.get("calls", 0) + calls
+            pa["scripts"] = pa.get("scripts", 0) + scripts
+            pa["big"] = pa.get("big", 0) + big_res
+            dispatches.append({
+                "agent": at, "description": desc[:50], "file": os.path.basename(f),
+                "turns": turns, "tool_calls": calls, "repl_scripts": scripts,
+                "calls_per_turn": round(calls / turns, 2), "context_total": ctx_sum,
+                "context_max": ctx_max, "max_result_chars": max_res, "results_over_20k_chars": big_res,
+            })
             first_ctx[kind].append(fctx)
             if at in NAV_TYPES:
                 for n_ in sliced.values():
@@ -288,6 +343,7 @@ def main():
             "by_category": dict(share.most_common()),
         },
         "navigation": {t: dict(nav[t]) for t in NAV_TYPES},
+        "dispatches": dispatches if a.session else [],
         "baseline": {
             "first_turn_context": {
                 k: {"median": int(statistics.median(v)) if v else 0, "mean": int(sum(v) / len(v)) if v else 0, "files": len(v)}
@@ -305,6 +361,10 @@ def main():
             "turns_p50": pct(tr, 0.5),
             "turns_p90": pct(tr, 0.9),
             "turns_max": max(tr) if tr else 0,
+            "tool_calls": pa.get("calls", 0),
+            "repl_scripts": pa.get("scripts", 0),
+            "calls_per_turn": round(pa.get("calls", 0) / sum(tr), 2) if tr else 0,
+            "results_over_20k_chars": pa.get("big", 0),
         }
 
     if a.json:
@@ -331,9 +391,14 @@ def render(r):
         t = r["totals"][k]
         print(f"  {k:10}{fmt(t.get('input', 0)):>10}{fmt(t.get('cache_write', 0)):>10}{fmt(t.get('cache_read', 0)):>10}{fmt(t.get('output', 0)):>10}")
     print(f"  context total (in+cw+cr): {fmt(r['actual_context_tokens'])}\n")
-    print(f"  {'agentType':20}{'disp':>6}{'total ctx':>11}{'avg/disp':>10}{'p50':>6}{'p90':>6}{'max':>6}")
+    print(f"  {'agentType':20}{'disp':>6}{'total ctx':>11}{'avg/disp':>10}{'p50':>6}{'p90':>6}{'max':>6}{'calls/turn':>11}{'REPL':>6}{'>20k res':>9}")
     for at, v in sorted(r["agents"].items(), key=lambda x: -x[1]["total_context_tokens"]):
-        print(f"  {at:20}{v['dispatches']:>6}{fmt(v['total_context_tokens']):>11}{fmt(v['avg_context_per_dispatch']):>10}{v['turns_p50']:>6}{v['turns_p90']:>6}{v['turns_max']:>6}")
+        print(f"  {at:20}{v['dispatches']:>6}{fmt(v['total_context_tokens']):>11}{fmt(v['avg_context_per_dispatch']):>10}{v['turns_p50']:>6}{v['turns_p90']:>6}{v['turns_max']:>6}{v['calls_per_turn']:>11}{v['repl_scripts']:>6}{v['results_over_20k_chars']:>9}")
+    if r["dispatches"]:
+        print("\n  Per dispatch (session)")
+        print(f"  {'agent':18}{'description':52}{'turns':>6}{'calls/t':>8}{'ctx tot':>9}{'ctx max':>9}{'max res':>9}{'>20k':>5}")
+        for d in r["dispatches"]:
+            print(f"  {d['agent'][:17]:18}{d['description']:52}{d['turns']:>6}{d['calls_per_turn']:>8}{fmt(d['context_total']):>9}{fmt(d['context_max']):>9}{fmt(d['max_result_chars']):>9}{d['results_over_20k_chars']:>5}")
     s = r["share"]
     print(f"\n2. Context share (estimated {fmt(s['estimated_tokens'])} vs actual {fmt(s['actual_tokens'])}; residual baseline/hidden {fmt(s['residual_baseline_tokens'])})")
     base = s["actual_tokens"] or 1

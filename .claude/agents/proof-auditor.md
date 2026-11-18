@@ -52,3 +52,4 @@ one, the fix for the cause.
 ## Tool batching
 
 Send independent calls (reads, greps, LSP queries, `git show`) together: several tool calls in one message, or one REPL script with `Promise.all` when you have REPL. Wait for a result only when the next call needs it.
+In REPL, keep large output in variables and return only what you will read: `preview(x, n)`, a line range, a count or the matching lines, never a whole file, diff or test log.
