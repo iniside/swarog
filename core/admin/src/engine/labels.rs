@@ -71,13 +71,12 @@ pub(crate) async fn pass(snapshot: &Snapshot, operator: &Operator, body: &Primit
 /// The `EntityLabel` of `kind`, first by `(order, id)`, of the module whose manifest declares
 /// `kind`; one any other module declares is never asked.
 fn owned_label<'a>(snapshot: &'a Snapshot, kind: &str) -> Option<(&'a str, &'a ContributionDecl)> {
-    let (module, routed) =
-        snapshot.modules.iter().find(|(_, r)| r.manifest.entity_kinds.iter().any(|k| k.kind == kind))?;
-    let decl = routed
-        .manifest
+    let (module, _) = snapshot.kind_owner(kind)?;
+    let (manifest, _) = snapshot.route(module)?;
+    let decl = manifest
         .contributions
         .iter()
         .filter(|c| matches!(&c.point, Point::EntityLabel { kind: k } if k == kind))
         .min_by(|a, b| (a.order, &a.id).cmp(&(b.order, &b.id)))?;
-    Some((module.as_str(), decl))
+    Some((module, decl))
 }

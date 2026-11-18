@@ -527,11 +527,7 @@ async fn entity(
         Err(r) => return *r,
     };
     let snapshot = p.engine.snapshot();
-    let Some((owner, kind_decl)) = snapshot
-        .modules
-        .iter()
-        .find_map(|(m, r)| r.manifest.entity_kinds.iter().find(|k| k.kind == kind).map(|k| (m.clone(), k.clone())))
-    else {
+    let Some((owner, kind_decl)) = snapshot.kind_owner(&kind) else {
         let miss = Missing {
             status: StatusCode::NOT_FOUND,
             what: format!("{kind}:{id}"),

@@ -80,7 +80,7 @@ const CONTROL_PLANE_INVOKE_REQUEST_ID_RATIONALE: &str = concat!(
 const CONTROL_PLANE_READ_RATIONALE: &str = control_plane_read_rationale!();
 const CONTROL_PLANE_PANEL_REFS_RATIONALE: &str = concat!(
     control_plane_read_rationale!(),
-    "; the portal sends at most controlplane::MAX_PANEL_REFS refs per call (admin columns::fan_out chunks a longer list) and LocalFace::panel refuses a longer req.refs with invalid before the provider runs"
+    "; the portal sends at most controlplane::MAX_PANEL_REFS refs per call (admin columns::cells, shared by list columns and entity labels, chunks a longer list) and LocalFace::panel refuses a longer req.refs with invalid before the provider runs"
 );
 const CONTROL_PLANE_PREPARE_ITEM_RATIONALE: &str =
     concat!(control_plane_read_rationale!(), control_plane_item_bound!());

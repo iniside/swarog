@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use controlplane::{ContributionDecl, ControlPlane, Manifest, NavSection, Point, Source};
+use controlplane::{ContributionDecl, ControlPlane, EntityKindDecl, Manifest, NavSection, Point, Source};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -125,6 +125,13 @@ impl Snapshot {
     pub(crate) fn route(&self, module: &str) -> Option<(&Manifest, Arc<dyn ControlPlane>)> {
         let routed = self.modules.get(module)?;
         Some((&routed.manifest, self.sources[routed.source].face.clone()))
+    }
+
+    /// The module whose manifest declares entity kind `kind`, and that declaration.
+    pub(crate) fn kind_owner(&self, kind: &str) -> Option<(&str, &EntityKindDecl)> {
+        self.modules
+            .iter()
+            .find_map(|(m, r)| r.manifest.entity_kinds.iter().find(|k| k.kind == kind).map(|k| (m.as_str(), k)))
     }
 
     /// Every `(module, decl)` across all manifests whose point matches `want`, sorted by
