@@ -5,7 +5,8 @@
 Research, plan, present, then edit, per the `research-plan-present` skill
 (`.agents/skills/research-plan-present/SKILL.md`). A plan gets one
 `core-reviewer` review, before approval; nothing is edited before the owner
-approves.
+approves. Keep the owner's requested shape and exclusions; an unrequested
+mechanism needs a stated requirement or a blocking question.
 
 ## Implementation Mode
 
@@ -24,6 +25,8 @@ Lanes, models, prompts and hand-offs: the `implementation-dispatch` skill
   on it). That list is closed — it is not a size rule. A change that is not
   on it goes to a subagent lane however small it looks; never divide a
   feature to fit the threshold.
+- Never `[inline]`, at any line count: a new function, type or signature, a
+  control-flow change, or anything spanning more than one file.
 
 ## Adversarial Diff Review
 
@@ -56,6 +59,9 @@ The dispatch rules:
   one: the main session proposes a fix for the cause and brings it to the
   owner, and no further step of the same plan is dispatched until the owner
   rules.
+- A fix that exists only for an unrequested mechanism is REJECT (scope loop).
+  A fix needing a new abstraction or cross-module API beyond the plan is a
+  blocking owner question.
 
 ## Fix the Authority, Not the Symptom
 

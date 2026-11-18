@@ -194,7 +194,9 @@ local Postgres and concurrent runs hang or fail with `tuple concurrently updated
 The `pgrep`/`tasklist` check for a live cargo/rustc is its own call, read before
 the launch; never start a second cargo "to check something". At most one
 subagent runs tests at a time and its prompt carries this check. Load the
-`safe-verification` skill before any such run.
+`safe-verification` skill before any such run. A fleet found running may be the
+owner's: ask before stopping it or waiting on it. Wait for "running", never
+"healthy".
 
 ## Database
 
