@@ -36,9 +36,12 @@ on every later turn, so its cost grows with the length of the task.
 
 - Rust symbol (definition, callers, implementations, type): LSP, with the name
   position from `workspaceSymbol`. Grep only when LSP returns nothing, and say so.
-- Non-Rust text and strings: grep always scoped to a folder, never the repo
-  root. List first (`rg -l` / `rg -c`), then read matches with `head_limit` and
-  at most `-C 2`.
+- Non-Rust text and strings: grep scoped to a folder. List first (`rg -l` /
+  `rg -c`), then read matches with `head_limit` and at most `-C 2`. A repo-wide
+  check for a deleted symbol or plain text (LSP cannot find a deleted symbol) is
+  the exception: a Bash `rg` carrying `# nav-ok`. A recursive `grep -r` is also
+  blocked by `.claude/hooks/grep_sweep_guard.py` unless the command contains
+  `force-grep`; use `rg`.
 - File views: about 100 lines around the anchor; a whole file only when the step
   changes most of it. Never view a range already in context unless the file was
   edited since.
@@ -53,9 +56,10 @@ position-based LSP call (`hover`, `goToDefinition`, `findReferences`,
 `goToImplementation`, `incomingCalls`, `outgoingCalls`, `prepareCallHierarchy`)
 or dispatched `code-scout`; two denials at most, then it passes. A Bash `rg` or
 `grep` for plain text or a deleted symbol carries the comment `# nav-ok` to pass.
-A third `sed -n`, `head` or `tail` slice of one repository source file is denied
-(logs and build output are not counted; two denials at most); read the file once
-with `Read` instead.
+A third `sed -n`, `head` or `tail` slice of one repository file outside
+`target/`, `run/`, `deploy/`, `bin/` or `dist/` is denied (any file type; paths
+outside the repo and files written by a redirect in the same command are not
+counted; two denials at most); read the file once with `Read` instead.
 
 ## How research dispatch differs from implementation
 

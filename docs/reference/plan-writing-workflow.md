@@ -72,7 +72,8 @@ The plan body must be `Step 1 → Step 2 → …` where each step spells out, ex
 
 **Step size.** One step is one mechanism in one module or one consumer group,
 sized so one implementer finishes it in about 60 tool calls: roughly eight files
-to change, or one subsystem port. A larger unit is split into ordered steps when
+to change, or one subsystem port; about 100 calls is the point where the
+implementer stops and hands off. A larger unit is split into ordered steps when
 the plan is written, each still a whole slice of the feature (never a split to
 get under the inline threshold or to keep an old path alive). Every tool call
 re-reads the implementer's whole growing context: over the 14 days to 2026-11-18
