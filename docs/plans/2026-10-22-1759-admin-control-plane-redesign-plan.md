@@ -1,8 +1,35 @@
 # Admin control plane — the admin portal moves into core (plan)
 
+Status: waiting for approval (revision 2026-11-18 to the current agent workflow)
+
 Revision 2 (2026-11-10). Revision 1 (bb8c721f) kept the portal as the `modules/admin`
 fortress and moved only the contract into core. The owner corrected that on 2026-11-10:
 the whole admin becomes part of core and there is no admin module.
+
+Revision 2026-11-18: Steps 1–13 have landed (Step 13 closed 2026-11-17, post-mortem
+`2ed237a1`). Steps 28, 13c and 13d are written and not dispatched: the owner holds
+implementation until the owner says go (2026-11-17). This revision moves the steps that are not
+landed to the current agent workflow (`.agents/shared/planning-dispatch.md`, the
+`implementation-dispatch` and `research-plan-present` skills). Landed steps keep their text.
+- Tests are written by the step's implementer, to the bar "revert the change and the test
+  must fail". `[test-author]` stays only for verify gates (goldens, `admindiff`, admincheck
+  and conformance findings), splitproof assertions and new harnesses. The port template's
+  "no test files (Step 25)" goes: each port's part `a` writes its `admin_tests.rs`. This
+  supersedes the per-module `[sonnet]` test-author tier of Step 10b item 4 **Test tier**.
+- Step 13c is cut into Steps 13c.1, 13c.2 (code with its tests) and 13c.3 (gate tests),
+  its two review units, to fit the step size.
+- Step 25 is cut into ordered Steps 25a–25h: fixes, backfill tests for the landed steps on
+  `core-implementer`, then the gate tests and the splitproof rewrite on `test-author`.
+- Step 24a writes its own tests. The splitproof assertions of Steps 13c and 15 are a
+  `[opus]` test-author step after the code, not part `a`.
+- Review: one `core-reviewer` round per step; a second only for `core/`, split wiring or a
+  verify gate. Prose-only steps (`[docs]`, plan edits) get no review.
+- Step 26's anchors are re-read against the tree after the agent-workflow simplification.
+
+Execution order once the owner says go: 28 → 13c.1 → 13c.2 → 13c.3 → 13d → 14 … 24 → 24a
+→ 24b → 25a … 25h → 26 → 27. Open for the owner: X7, the order against
+`docs/plans/2026-11-17-1900-purge-race-locks-plan.md` (Steps 6–7 of it remain); Steps 28,
+13c and 13d touch none of the purging modules, so only Step 14 waits on that answer.
 
 ## Context
 
@@ -413,7 +440,7 @@ Primitive = DataTable(DataTable) | PropertyList(PropertyList) | KpiTile(KpiTile)
   step did not cause.
 - The admincheck stub (Steps 1–6) is an empty gate. Nothing runs it before Step 27, and
   Step 7 replaces it.
-- **Red by design from Step 1 until Step 25:**
+- **Red by design from Step 1 until Step 25h (splitproof):**
   - splitproof's admin groups;
   - every non-admin group driven through the admin wallet grant: PH3, PH6, PH11, NT4, NT4m
     (`tools/splitproof/src/main.rs`) and PY7 (`tools/splitproof/src/party_checks.rs:291-293`);
@@ -1846,7 +1873,11 @@ and an empty log is refused.
     action, or a failed settle;
   - every `// FAKE:` marker and `implemented: false` action it adds gets an item in
     `docs/todo/admin-second-pass.md`, in the same commit;
-  - no test files (Step 25);
+  - tests in part `a`, written by its implementer to the bar "revert the change and
+    the test must fail" (revision 2026-11-18): `modules/<m>/src/admin_tests.rs` covers
+    the panels' data mapping and each REAL action's success and failure path. A golden
+    case or splitproof assertion the port needs is a `[opus]` test-author step right
+    after part `a`, never part `a`'s own;
   - no seed data (Step 10b item 5, **Ports**, as superseded): missing data is a
     `data difference` accept entry until Step 24b;
   - `order` values follow the mockup's order, around the ones Step 9 took:
@@ -2014,8 +2045,9 @@ The ports:
   - Wallet tab; grant/revoke (REAL).
   - Embers list column (DERIV); tile embers spent (DERIV).
   - Writer.
-  - Ledger player column draws accounts' `EntityLabel{player}`; part `a` adds the
-    splitproof assertion of the Step 13c Refs seam (label answered by accounts-svc).
+  - Ledger player column draws accounts' `EntityLabel{player}`; a `[opus]` test-author
+    step after part `a` adds the splitproof assertion of the Step 13c Refs seam (label
+    answered by accounts-svc), audited by proof-auditor.
 - **Step 16 — inventory.** Inventory tab; grant item disabled.
 - **Step 17 — friends.** Friends tab.
 - **Step 18 — groups.**
@@ -2163,37 +2195,51 @@ scattered sentences (F1, F3, F4), so every rule of this seam lives here and nowh
   unit (ii); characters contributes `EntityLabel{character}` in Step 14. Any later kind's
   owner adds its own with its port.
 - Consumers and the split assertion: the first consumer of a cross-module label is the
-  Step 15 wallet ledger (player). Its part `a` adds the committed splitproof assertion
-  that the ledger draws a player label answered by accounts-svc.
+  Step 15 wallet ledger (player). The `[opus]` test-author step after its part `a` adds
+  the committed splitproof assertion that the ledger draws a player label answered by
+  accounts-svc.
 
-(c) Tests, `[opus]` test-author after the code lands:
-- a golden case for each new field: `Column.wrap`, `Cell.row`, `PanelBody.foot`,
-  `PanelBody.tag`, `ContributionDecl.readonly`, the tab tiles row, `Layout::Rows`,
-  `TimelineEntry.title/badges/actor`, `Timeline.days` and the date format, `Field.mono` and
-  `placeholder`, `FormSpec.title`, `SecretReveal.extra`, the singular noun, `a.mono`;
-- row clickability by kind; the down-module row-menu group and tab dot;
-- the Refs seam block, one named test per rule: distinct refs per kind; more distinct
-  refs than `MAX_PANEL_REFS` split into chunks that all run and still fill every cell and
-  label; the chunks of one column share one deadline and run concurrently (paused clock: two
-  chunks each answering at 0.6× the deadline fill the column and it resolves before 1.0×
-  of the deadline has elapsed, which a sequential run cannot; one chunk at 1.1× fails it);
-  only the kind's owner answers a label (a second module's `EntityLabel` for the kind gets
-  zero calls); admincheck rejects two manifests declaring the same `EntityKindDecl` kind; one failing chunk fails the whole
-  column; a row carrying two refs of one kind; a label that fails, times out, is denied or
-  is missing draws the id with no banner; labels read from the body only;
-- the cap refused in `LocalFace` with `invalid` before the provider runs (O2), on the
-  monolith face;
-- split, the at-risk topology: a committed splitproof assertion that an over-cap
-  `cp.panel` is refused over the wire by the remote `LocalFace` (authoring `[opus]`
-  test-author, audit proof-auditor). The cross-svc label assertion is Step 15's (Refs seam
-  block).
+(c) Steps and their tests (revision 2026-11-18). 13c.1 and 13c.2 edit the same files
+(`core/controlplane/src/lib.rs`, `render.rs`), so they run in order.
+- **Step 13c.1 — portal-only cells, chrome, forms and text** (K1–K18 minus K17, the X3
+  helper move). `[opus]` core-implementer. Tests in the step: row clickability by kind
+  (K4); the down-module row-menu group (K14) and tab dot (K13); the singular noun at 1
+  (K18); the FAKE helper is deterministic for one id and differs across ids. Between
+  13c.1 and 13c.3 the Step 28 golden gate is red on the new variants by design.
+- **Step 13c.2 — cross-process seams** (K17, K20, the Refs seam with accounts'
+  `EntityLabel{player}`, the admincheck cross-manifest kind check). `[opus]`
+  core-implementer. Tests in the step:
+  - the Refs seam block, one named test per rule: distinct refs per kind; more distinct
+    refs than `MAX_PANEL_REFS` split into chunks that all run and still fill every cell
+    and label; the chunks of one column share one deadline and run concurrently (paused
+    clock: two chunks each answering at 0.6× the deadline fill the column and it resolves
+    before 1.0× of the deadline has elapsed, which a sequential run cannot; one chunk at
+    1.1× fails it); only the kind's owner answers a label (a second module's
+    `EntityLabel` for the kind gets zero calls); one failing chunk fails the whole
+    column; a row carrying two refs of one kind; a label that fails, times out, is denied
+    or is missing draws the id with no banner; labels read from the body only;
+  - the cap refused in `LocalFace` with `invalid` before the provider runs (O2), on the
+    monolith face;
+  - K17: a search hit reaches its one destination; K20: only the `PageDecl.params` keys
+    reach `PanelQuery.params`.
+- **Step 13c.3 — gate tests.** `[opus]` test-author, after 13c.2 lands:
+  - a golden case for each new field: `Column.wrap`, `Cell.row`, `PanelBody.foot`,
+    `PanelBody.tag`, `ContributionDecl.readonly`, the tab tiles row, `Layout::Rows`,
+    `TimelineEntry.title/badges/actor`, `Timeline.days` and the date format, `Field.mono`
+    and `placeholder`, `FormSpec.title`, `SecretReveal.extra`, the singular noun,
+    `a.mono`, and one per new variant the Step 28 gate observes;
+  - admincheck rejects two manifests declaring the same `EntityKindDecl` kind;
+  - split, the at-risk topology: a committed splitproof assertion that an over-cap
+    `cp.panel` is refused over the wire by the remote `LocalFace`. The cross-svc label
+    assertion is Step 15's (Refs seam block).
+- **Step 13c.4 — docs.** `[docs]` docs-writer: the standing data rules in
+  `.agents/skills/mockup-implementation/SKILL.md` and the Purges-pending text of
+  `docs/reference/event-plane-ops.md`.
 
-(d) Lanes and review units: `[opus]` core-implementer in two review units, each with its
-own review rounds: (i) portal-only cells, chrome, forms and text (K1–K18 minus K17, the
-helper move); (ii) the cross-process seams (K17, K20, and the Refs seam with accounts'
-`EntityLabel{player}`), which carry the split risk. Then `[opus]` test-author; `[docs]` docs-writer for the skill rules and the
-event-plane-ops text; `[review]` core-reviewer, plus proof-auditor on the goldens and the
-splitproof assertion.
+(d) Review: `[review]` core-reviewer after 13c.1, after 13c.2 and after 13c.3, one round
+each; a second round is allowed (`core/`, split wiring, goldens). proof-auditor on 13c.3.
+13c.4 is prose and gets none.
+
 
 ### Step 13d — admindiff sees tabs, modals, menus and ok states (owner, 2026-11-17)
 
@@ -2232,7 +2278,8 @@ target fetches `?tab=`, a modal and a menu target are written and diffed, an unr
 target fails the crawl, `option` collapse, and the force/prelude options reach the harness.
 
 (d) Lanes: `[opus]` core-implementer; `[opus]` test-author; `[docs]` docs-writer for the
-skill; `[review]` core-reviewer plus proof-auditor (admindiff is a gate).
+skill (prose, no review); `[review]` core-reviewer plus proof-auditor (admindiff is a gate),
+one round, a second allowed for the gate.
 
 ### Step 24a — Typed `asyncevents::admin` errors
 
@@ -2251,7 +2298,8 @@ answer NotFound. Only `Retired` is typed today.
 - `eventctl` prints the same messages as today.
 - `SkipResult::AlreadyResolved` (Step 9) stays a result, not an error.
 
-Tests for Step 25: each variant reaches the provider as its mapped status; an unknown id is
+Tests, written in this step by its implementer: each variant reaches the provider as its
+mapped status; an unknown id is
 NotFound with no pre-read.
 
 (d) `[opus]` core-implementer.
@@ -2270,6 +2318,38 @@ dosłownie wszystkiego"). Remaining mockup gaps go to the next iteration, not in
 plan. `eventctl seed-mockup` stays as the Event plane's dev fixture.
 
 ### Step 25 — Tests
+
+**Re-cut (revision 2026-11-18).** The lists below stay the specification; they run as
+these ordered steps, each one dispatch with one review round (a second only for `core/` or
+a gate). Steps 25a–25g depend on no port after Step 13 except the admincheck finding Step 24
+adds, so the owner may move them earlier. A backfill test that exposes a bug is fixed at its
+authority in the same step, or listed under **Leftovers for owner**.
+- **25a — Step 8a fixes.** `[opus]` core-implementer: the test migrate race and the
+  undecodable claimed row (release before the 503), each with a test that fails before the
+  fix. Files: `core/admin/src/tests.rs` and the claim path in `core/admin/src`.
+- **25b — back/forward cache.** `[opus]` mockup-implementer: the `admin.js` `pageshow`
+  re-enable. Checked by hand in Step 27's live pass (no JS test harness exists).
+- **25c — contract and plane backfill.** `[opus]` core-implementer: `core/controlplane`
+  (routing, sections, the `writes: false` Forbidden, the Step 8a encode/decode table),
+  `core/controlplane-rpc` (loopback round trips, including Step 9a's `PanelBody` and
+  `prepare`), `core/app` (`cp.manifests`), `core/asyncevents/src/admin_tests.rs`.
+- **25d — portal form and claim suite.** `[opus]` core-implementer: the `core/admin` tests
+  for Step 8a, including the `classify_form` / `classify_click` unit tests.
+- **25e — portal engine, auth and tools backfill.** `[opus]` core-implementer: the
+  `core/admin/src/engine/*_tests.rs` list; the engine items of the "Tests" lists of Steps
+  9a, 9b and 10a (prepare, `range`, KPI tile stale/error, `when_empty`, `writes: false`,
+  `ServiceStatus`, `Delta.tone`); the auth suite's role; `tools/adminctl`;
+  `weles/master/src/fleet_toml_tests.rs`.
+- **25f — mail and accounts provider tests.** `[opus]` core-implementer:
+  `modules/mail/src/admin_tests.rs` and `modules/accounts/src/admin_tests.rs` (including
+  `players_page`, search, count and `live_families`). These ports landed before the
+  revision; every later port writes its own in part `a`.
+- **25g — gate tests.** `[opus]` test-author: the conformance input-inventory and
+  writer-check tests, and every admincheck fixture listed here and in Steps 9a, 9b and 10a,
+  plus one failing fixture per finding kind. proof-auditor audits.
+- **25h — splitproof.** `[opus]` test-author: the **Splitproof** list below. Ends the red
+  of the intermediate gate. proof-auditor audits; split is the at-risk topology for every
+  engine assertion.
 
 (a) Unit tests:
 - `core/controlplane/src/tests.rs`:
@@ -2407,8 +2487,8 @@ plan. `eventctl seed-mockup` stays as the Event plane's dev fixture.
   - a `__` field key, a `_`-prefixed field key, a field key equal to a `hidden` key;
   - a 65-byte action id and a 65-byte contribution id;
   - an undecodable `Then::Form` default.
-- `core/admin` engine test for the Step 13 `EntityListColumn` fan-out: one call per column
-  per chunk (Step 13c Refs seam), and a failing column does not fail the table.
+- `core/admin` engine test for the Step 13 `EntityListColumn` fan-out: landed in Step 13
+  (`0dd57f9b`); its per-chunk form is Step 13c.2's.
 - `core/admin/src/engine/*_tests.rs`:
   - deadline → error; deadline with last-good → stale;
   - role below `min_role` → denied with zero provider calls;
@@ -2423,9 +2503,8 @@ plan. `eventctl seed-mockup` stays as the Event plane's dev fixture.
 - `tools/adminctl/src/lib_tests.rs`: `--role` on insert; a conflict keeps the role; `set-role`.
 - `weles/master/src/fleet_toml_tests.rs:883-886`: expected args include `--role admin`.
 - `tools/admincheck` tests: every finding kind, each with a failing fixture.
-- One `admin_tests.rs` per ported module (mail, accounts, characters, wallet, inventory,
-  friends, groups, storage, notifications, apikeys, scheduler, config, audit), covering
-  its panels' data mapping and each REAL action's success and failure path.
+- `admin_tests.rs` for mail and accounts (25f), covering their panels' data mapping and
+  each REAL action's success and failure path. Every later port writes its own in part `a`.
 - `tools/conformance` tests for the manifest-derived writer check: a `writes: true`
   manifest without a matching CapCase fails; a CapCase whose cap differs from the
   Validated row fails; `core.events` maps to the `admin` entry.
@@ -2466,29 +2545,25 @@ Splitproof:
   - one real invoke per writing provider (mail, wallet, groups, notifications, apikeys,
     config, `core.events` `resume_retry`).
 
-(b) Why now: after Steps 1–24. (c) Split is the at-risk topology for every engine assertion.
-(d) Lanes per Step 10b item 4, **Test tier**:
-- `[opus]` test-author: splitproof, the `tools/admincheck` and `tools/conformance` finding
-  tests, and the mail `admin_tests.rs`, which is the reference file for the others.
-- `[sonnet]` test-author: the other per-module `admin_tests.rs`, written against the mail
-  reference, and the remaining unit tests.
+(b) Why now: Step 25h after Steps 1–24; see the re-cut above for 25a–25g. (c) Split is
+the at-risk topology for every engine assertion.
+(d) Lanes: per the re-cut above. The per-module `[sonnet]` test-author tier of Step 10b
+item 4 is superseded (revision 2026-11-18).
 
 ### Step 26 — Docs
 
-(a) What is touched:
+(a) What is touched (anchors re-read 2026-11-18):
 - `.agents/shared/gamebackend.md`:
-  - constraint 1 core list `:74-83` (+ controlplane, controlplane-rpc, admin);
-  - constraint 10 `:158-164` (admin is core, not a module);
-  - the module recipe `:62, :175-177`;
-  - the module list and admin description `:261-287`;
-  - the Commands admincheck line `:528`;
-  - the Layout;
+  - constraint 1 core list `:74-79` (+ controlplane, controlplane-rpc, admin);
+  - constraint 10 `:158-165` (admin is core, not a module);
   - every other `admin` line the docs-writer finds in that file;
-- `.agents/skills/add-game-module/SKILL.md` and `.agents/skills/mockup-implementation/SKILL.md`;
-- `.claude/agents/mockup-implementer.md:3, :41-42, :51-54` and
-  `.grok/agents/mockup-implementer.md:3, :49-50`;
-- `docs/reference/event-plane-ops.md:123-134` and `docs/reference/module-reference.md`;
-- `docs/roadmap/feature-tracker.md:230-232` (redesign, RBAC, event-plane surface);
+- `.agents/skills/add-game-module/SKILL.md` (`:31`, `:46`, `:64-65`: `adminapi::SLOT` and
+  `adminrpc` become `controlplane::PROVIDER_SLOT`) and
+  `.agents/skills/mockup-implementation/SKILL.md`;
+- `docs/reference/event-plane-ops.md` (admin prose Step 13c.4 did not cover) and
+  `docs/reference/module-reference.md`;
+- `docs/roadmap/feature-tracker.md:227-233` (admin portal, RBAC, redesign, event-plane
+  surface, and the mockup-driven rows);
 - `docs/todo/admin.md`: ADMIN-01, 04, 05 and 06 are made obsolete by the redesign, so move
   them to `admin-done.md` with this plan's slug;
 - dead-crate prose: `api/wallet/api/Cargo.toml:18-22`, `api/notifications/api/Cargo.toml:16-18`,
@@ -2496,15 +2571,22 @@ Splitproof:
   `core/remote/src/lib.rs:1649-1650`, `Cargo.toml:58`, the admin prose in
   `cmd/{scheduler,audit,wallet,notifications}-svc` (Cargo.toml and lib.rs),
   `modules/apikeys/src/{store.rs,conformance.rs}` and `tools/opscatalog/src/lib.rs:20`;
-- the hook path `.claude/hooks/ref_reminder.py:29` and its test `.claude/hooks/tests/test_hooks.py:693`
-  (`modules/admin/templates/` → `core/admin/src/templates/`). Without this the
-  mockup-skill reminder never fires on `core/admin`;
+  the line numbers are from 2026-11-10, so the docs-writer finds each by its text;
 - errata in `docs/research/2026-10-22-1707-admin-redesign-gap-analysis.md` (D1, and §8
   superseded by revision 2);
 - memory: `memory/admin-extension-points-shipped.md`, `memory/generic-remote-admin-write-seam.md`
-  and the `MEMORY.md` index, then `scripts/memory-sync.sh push`.
+  and `memory/admin-refactor-red-gates-expected.md` (retired once Step 27 is green), the
+  `MEMORY.md` index, then the `memory-backup` skill's push.
 
-(b) Last, against landed code. (d) `[docs]` docs-writer (`model: "sonnet"`).
+Dropped (2026-11-18): the gamebackend.md recipe, module list, Commands and Layout anchors
+(those sections moved or were deleted by the agent-workflow simplification); the
+`.grok` agent file (deleted); `.claude/agents/mockup-implementer.md` (already names
+`core/admin`); the `ref_reminder.py` hook path (the mockup reminder is now
+`.claude/rules/admin-ui.md`, whose `paths:` already name `core/admin`).
+
+(b) Last, against landed code. (d) `[docs]` docs-writer (`model: "sonnet"`); prose, no
+review.
+
 
 ### Step 27 — Verification and live render comparison
 
@@ -2605,6 +2687,11 @@ no fix-on-fix: a finding that needs the mirror back is an owner question.
   `tools/routecheck/src/main.rs:215-240, 460-490`. Step 4's implementer confirms it.
 
 ## Errata (during implementation)
+
+- **Revision 2026-11-18 (workflow).** Supersedes for unlanded steps: Step 10b item 4
+  **Test tier** (per-module `[sonnet]` test-author), the port template's "no test files",
+  the Step 13c single test-author step, and Step 25's single dispatch. The scope,
+  invariants and owner decisions are unchanged; see the revision note under the title.
 
 - **Step 2 (04a9ece4).**
   - `ControlPlane` arguments are spelled `crate::PanelRequest` / `crate::SearchRequest` /
