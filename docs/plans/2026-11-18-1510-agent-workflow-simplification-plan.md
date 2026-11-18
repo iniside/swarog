@@ -1,6 +1,6 @@
 # Agent workflow simplification
 
-Status: approved by owner 2026-11-18 (from the workflow audit in that session)
+Status: done (approved by owner 2026-11-18; steps 1-5 landed 2026-11-18)
 
 ## Context
 
