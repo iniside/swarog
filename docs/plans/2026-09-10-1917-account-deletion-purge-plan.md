@@ -459,6 +459,9 @@ finishes.
    scheduler tick when a tombstone lands just before a due fire, so it is narrow but
    real — not "impossible".
 
+   *Erratum (2026-11-17): the owner reversed this "Not taken" decision;
+   `docs/plans/2026-11-17-1900-purge-race-locks-plan.md` closed the race.*
+
 ## Step 8 — operator visibility  `[opus]`
 
 **(a)** A readiness check on a paused subscription, and a read-only admin view of

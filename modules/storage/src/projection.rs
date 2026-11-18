@@ -24,7 +24,7 @@ pub(crate) const PURGE_SWEEP_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec 
 
 /// ONE schedule for every module holding a `purged_players` table: the purge-latency promise
 /// is a maximum across all of them, so a per-module name would let an operator accelerate
-/// some and leave the rest at a day.
+/// some and leave the rest slower.
 pub(crate) const PURGE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::PLAYER_PURGE;
 
 /// Owners one fire may sweep, and therefore the transaction-scoped advisory locks the
@@ -37,7 +37,7 @@ pub(crate) const PURGE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::PL
 ///
 /// It is equally the claim statement's `LIMIT`: ONE constant decides how many tombstones a
 /// fire claims and how many it may work, so the two cannot disagree. A backlog above 64
-/// players per day drains over several days, and every fire commits what it swept, so each
+/// players per fire drains over successive fires, and every fire commits what it swept, so each
 /// one makes progress.
 pub(crate) const STORAGE_OWNERS_PER_FIRE: i64 = 64;
 

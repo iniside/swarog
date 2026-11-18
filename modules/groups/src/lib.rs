@@ -5,9 +5,8 @@
 //! that case alone. Every other decision is a read-then-write UNDER the group's advisory
 //! lock: the ops that decide from a count (`join`, `invite`, `leave`) and the ones that
 //! decide from the subject's state (`respond`, `decide`) all take it before their read,
-//! because a concurrent writer would invalidate what they read. `create` takes no lock,
-//! and that is not an omission: the group id it mints is unreachable by any other caller
-//! until the transaction commits, so there is nothing to serialize against. The retention
+//! because a concurrent writer would invalidate what they read. `create` takes the creating
+//! player's lock, serializing it against that player's purge sweep. The retention
 //! sweep is the one writer that takes no group lock: it never requests one, so it cannot
 //! deadlock, and its `FOR UPDATE` re-check drops a concurrently accepted invite from the
 //! batch instead of deleting it — the cost is that an `accept`/`decide` on a swept row can
@@ -197,7 +196,7 @@ impl Module for Groups {
         );
 
         // The drain of what that tombstone records, on its OWN subscription: a raw sink on
-        // `scheduler.fired` guarding on the shared daily `player-purge` name.
+        // `scheduler.fired` guarding on the shared `player-purge` name.
         let sweeper: Arc<dyn bus::TxHandler> = Arc::new(projection::PurgeSweepHandler {
             svc: self.svc(),
         });

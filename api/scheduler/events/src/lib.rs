@@ -71,12 +71,10 @@ pub mod schedule_names {
     /// rows past `GROUPS_RETENTION_DAYS`. The scheduler seeds this schedule (86400s);
     /// groups reacts to `scheduler.fired{name}` matching it.
     pub const GROUPS_PRUNE: &str = "groups-prune";
-    /// The daily cadence on which EVERY module holding `<schema>.purged_players`
-    /// tombstones drains them — ONE schedule for all of them, not one per module: the
-    /// deletion-latency promise is the MAXIMUM over those modules, so accelerating or
-    /// slowing the drain is one operator edit of one row rather than six that can
-    /// disagree. The scheduler seeds this schedule (86400s), which is what makes the
-    /// promise one DAY; each module still sweeps on its OWN subscription, with its own
-    /// checkpoint and its own pause behaviour.
+    /// The cadence on which EVERY module holding `<schema>.purged_players` tombstones
+    /// drains them — ONE schedule for all of them, not one per module: the
+    /// deletion-latency promise is the MAXIMUM over those modules, so changing the drain
+    /// rate is one operator edit of one row. The scheduler seeds it at 300s; each module
+    /// sweeps on its OWN subscription, with its own checkpoint and pause behaviour.
     pub const PLAYER_PURGE: &str = "player-purge";
 }

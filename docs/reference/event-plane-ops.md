@@ -98,7 +98,7 @@ first.
 
 ## A paused purge subscription: what an operator sees, and why `/readyz` stays green
 
-The account-deletion purge (six `player.deleted` consumers plus daily sweeps) can
+The account-deletion purge (seven `player.deleted` purge consumers plus `player-purge` sweeps) can
 strand a player half-deleted if one of those consumer subscriptions pauses. `/readyz`
 deliberately does **not** flip on a paused subscription: it is a boot/restart gate
 (`weles`'s supervisor kills a `NotReady` process past its health deadline), and a

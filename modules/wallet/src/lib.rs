@@ -307,7 +307,7 @@ impl Module for WalletModule {
         );
 
         // The drain of what that tombstone records, on its OWN subscription: a raw sink on
-        // `scheduler.fired` guarding on the shared daily `player-purge` name.
+        // `scheduler.fired` guarding on the shared `player-purge` name.
         let sweeper: Arc<dyn bus::TxHandler> = Arc::new(projection::PurgeSweepHandler {
             svc: svc.clone(),
         });

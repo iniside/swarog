@@ -215,7 +215,7 @@ pub(crate) const PURGE_SWEEP_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec 
 
 /// ONE schedule for every module holding a `purged_players` table: the purge-latency promise
 /// is a maximum across all of them, so a per-module name would let an operator accelerate
-/// some and leave the rest at a day.
+/// some and leave the rest slower.
 pub(crate) const PURGE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::PLAYER_PURGE;
 
 pub(crate) const GROUPS_PLAYERS_PER_FIRE: i64 = 64;
@@ -231,7 +231,7 @@ pub(crate) const GROUPS_PLAYERS_PER_FIRE: i64 = 64;
 /// `max_prepared_transactions`) = 64 x 150 = 9600 slots).
 ///
 /// Unlike the retention sweep this IS a per-fire cap, and it costs throughput: a backlog
-/// above 64 groups per day drains over several days. A player whose groups outrun one fire
+/// above 64 groups per fire drains over successive fires. A player whose groups outrun one fire
 /// keeps an unstamped tombstone and resumes on what is left — the deletes already done are
 /// committed, so every fire makes progress.
 pub(crate) const GROUPS_PER_FIRE: usize = 64;

@@ -2679,7 +2679,7 @@ async fn first_purge_fire_after(pool: &PgPool, event_id: &str) -> Option<String>
 /// Polls a POSITIVE count predicate while re-forcing the shared `player-purge` schedule due
 /// on every attempt. One fire sweeps a bounded slice — `groups` caps at 64 groups per fire
 /// and all seven sweeps carry a 5s budget — so a backlog left by an earlier run would defer
-/// this pass's player to a fire 86400s away, which no wait can survive. The UPDATE is the
+/// this pass's player to the next scheduled fire, beyond what the poll waits. The UPDATE is the
 /// `[GR6]`/`[SP2]` force, idempotent, and an extra fire is a committed no-op for every
 /// module with nothing left to sweep.
 async fn poll_swept(pool: &PgPool, sql: &str, id: &str, want: i64) -> bool {
@@ -3071,7 +3071,7 @@ async fn deletion_checks(
     // ---- the seven tombstones, then the sweeps -----------------------------------------
     // The tombstone plants are polled FIRST, before any fire is forced: the sweep reads
     // `purged_players`, so a fire that arrives before the plant does nothing and the next
-    // one is 86400s away.
+    // one is a full cadence (300s) away.
     let mut planted: BTreeMap<&str, bool> = BTreeMap::new();
     for schema in ["characters", "inventory", "wallet", "notifications", "friends", "groups", "storage"] {
         planted.insert(

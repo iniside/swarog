@@ -8,8 +8,8 @@
 //! is fully decoupled and independently deployable (see `cmd/scheduler-svc`).
 //!
 //! Schedules are DATA, not code: the target way to add one is a runtime INSERT into
-//! `scheduler.schedules`, not an edit here. The migration seeds only a
-//! minimal bootstrap row (`audit-prune`, 86400s).
+//! `scheduler.schedules`, not an edit here. The migration seeds only the
+//! built-in rows (the `*-prune` schedules at 86400s, `player-purge` at 300s).
 //!
 //! ## Exactly-once across replicas (the concurrency dance in [`fire`])
 //! Every horizontal replica scans the same `scheduler.schedules`, so two could see the

@@ -137,7 +137,7 @@ the game modules is defined or tested today.
   sessions with short-lived access tokens and rotating refresh-token families;
   federated login (Epic, Google, guest), account linking, and self-service account
   deletion. Deletion emits durable `player.deleted`; seven modules purge the
-  player's data on a daily sweep, `party` removes the player directly, and `audit`
+  player's data on a five-minute sweep, `party` removes the player directly, and `audit`
   records it. `leaderboard`, `rating`, `match`, and `mail` cannot purge yet; the
   open gaps are in [docs/todo/account-deletion.md](docs/todo/account-deletion.md).
 - **config** — database-backed settings with a monotonic revision, live reload

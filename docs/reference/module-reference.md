@@ -138,13 +138,13 @@ DELIBERATELY not reference-grade. Copying them propagates a known defect class.
 
 ### 1. The dev-only grant is NOT a mutation pattern
 
-`modules/inventory/src/service.rs:94-103` carries an explicit "NOT a
-reference-grade mutation pattern" doc block; the gate is `:108-110`, the boot
-warn `modules/inventory/src/lib.rs:317-322`. Why it's wrong to copy: three
-separate pool autocommits (`item_exists` → `grant_pool` → `list`), NO
-idempotency key, and an accumulating `ON CONFLICT … quantity = quantity +
-EXCLUDED.quantity` writer — so a failure after `grant_pool` commits makes a
-manual retry double-grant. **The real pattern is `grant_starter`**
+`Holdings::grant` in `modules/inventory/src/service.rs` carries an explicit
+"NOT a reference-grade mutation pattern" doc block; the gate is the
+`dev_grant` check at its top, the boot warn is in `modules/inventory/src/lib.rs`.
+Why it's wrong to copy: NO idempotency key, an accumulating `ON CONFLICT …
+quantity = quantity + EXCLUDED.quantity` writer, and the final `list` read runs
+after the grant commits — so a failed `list` reports an error for an applied
+grant and a manual retry double-grants. **The real pattern is `grant_starter`**
 (`modules/inventory/src/projection.rs:103-155`): one handed delivery tx,
 exactly-once via the durable subscription.
 

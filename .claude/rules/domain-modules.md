@@ -32,7 +32,7 @@ Per-module mechanics live in each `modules/<name>/src/lib.rs` header and the
   answers it); a client re-POST is a 401 by construction. Seven modules
   (`characters`, `inventory`, `friends`, `groups`, `notifications`, `wallet`,
   `storage`) subscribe to `player.deleted`, tombstone the player in a per-module
-  `purged_players` table and drain it via a daily `player-purge` sweep (`party`
+  `purged_players` table and drain it via a five-minute `player-purge` sweep (`party`
   purges in the delivery tx without a tombstone). Tracker row and open gaps:
   `docs/roadmap/feature-tracker.md` (`accounts` self-delete),
   `docs/todo/account-deletion.md`, `docs/todo/accounts.md`.
