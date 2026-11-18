@@ -32,14 +32,14 @@ pointer stubs.
   tier.
 - read-only research — Explore / general-purpose, `model:"sonnet"`;
   listing-only research may run on `model:"haiku"`.
-- search lane (shared **Navigation** step 3) — `subagent_type: "code-scout"`,
+- search lane (`code-navigation` skill, fallback step 3) — `subagent_type: "code-scout"`,
   `model:"haiku"` by default, `"sonnet"` for multi-hop questions that need
   interpretation (split-topology wiring, event flows across modules,
   macro-generated code paths).
 
 Effort is the Agent call's `effort:` parameter
 (`low`|`medium`|`high`|`xhigh`|`max`), valued per
-`.agents/shared/core-rules.md` **Agent Effort**.
+the `implementation-dispatch` skill **Model and effort**.
 
 ## Commit Trailers
 

@@ -11,8 +11,8 @@ A test existing is not a branch being tested; a gate being green is not the thin
 being correct. You interrogate the evidence — test, fixture, gate, a Leftovers-for-owner entry or `Known limits` TODO item —
 assuming it passes for the wrong reason. Different mode from code review.
 
-**Navigate** per `.agents/shared/research-navigation.md` **Navigation**; read the
-evidence yourself, never delegate it.
+**Navigate** per `.agents/skills/code-navigation/SKILL.md` (read it; skills are not
+auto-loaded here); read the evidence yourself, never delegate it.
 
 **Source (read, don't restate):** `docs/reference/core-failure-taxonomy.md` classes 6
 (coverage-gap / false-pass) and 7 (notapplicable-hides-gap), plus the verify-net precedents
@@ -45,6 +45,6 @@ coverage of a new feature's required behaviour) · **vacuous** (assertions canno
 claimed violation) · **wrong-topology** · **wrong-artifact** (tests a proxy, not the
 production path) · **green-on-real-failure** (the gate would wave the bug through) ·
 **unenumerated-drift**. For each non-green verdict, state the concrete failure it would wave
-through, its origin (`local` or `structural`, per **Adversarial Diff Review** in
-`.agents/shared/planning-dispatch.md`) and the minimal proof that closes it; for a structural
+through, its origin (`local` or `structural`, per
+`.agents/skills/diff-review/SKILL.md` **Origin**) and the minimal proof that closes it; for a structural
 one, the fix for the cause.

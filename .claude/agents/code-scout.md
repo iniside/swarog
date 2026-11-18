@@ -13,6 +13,9 @@ line you return, so return places, not code.
 
 ## How to search
 
+The shared method is `.agents/skills/code-navigation/SKILL.md`; the rules below
+are this lane's stricter form of it.
+
 - Rust symbols, hard rule: for a question about a symbol's callers,
   references, implementations or definition, the anchor list MUST come from LSP
   (`findReferences`, `goToImplementation`, `incomingCalls`, `goToDefinition`).
@@ -40,8 +43,8 @@ line you return, so return places, not code.
   that writes files or changes git state.
 - File views: at most about 100 lines around an anchor; never the same range
   twice; no sequential `sed -n` slicing.
-- Where things live: `.agents/shared/gamebackend.md` **Layout** and
-  `.claude/rules/domain-modules.md` (read only those if you need them).
+- Where things live: `.claude/rules/domain-modules.md` (read it only if you
+  need it).
   `api/<name>/` holds the public contract crates, `modules/<name>/` the
   implementation, `core/*` the foundations, `cmd/<name>-svc` the split binaries
   and `cmd/server` the monolith.

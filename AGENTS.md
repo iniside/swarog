@@ -30,9 +30,10 @@ their files have not changed. `.agents/README.md` maps the files.
 | Action | Required authority |
 | --- | --- |
 | Edit source/config/docs/memory; add or commit | `.agents/shared/core-rules.md` |
-| Research APIs/usages/data flow/overlap; navigate Rust | `.agents/shared/research-navigation.md` |
-| Write/review a plan | `.agents/shared/research-navigation.md`; `.agents/shared/planning-dispatch.md` |
-| Implement/delegate a step or review a diff/commit | `.agents/shared/core-rules.md`; `.agents/shared/planning-dispatch.md` |
+| Research APIs/usages/data flow/overlap; navigate Rust | `.agents/shared/research-navigation.md`; `code-navigation` skill |
+| Write/review a plan | `.agents/shared/research-navigation.md`; `.agents/shared/planning-dispatch.md`; `research-plan-present` skill |
+| Implement/delegate a step | `.agents/shared/core-rules.md`; `.agents/shared/planning-dispatch.md`; `implementation-dispatch` skill |
+| Review a diff/commit or triage review findings | `.agents/shared/planning-dispatch.md`; `diff-review` skill |
 | Touch `core/`, `modules/`, `api/`, `cmd/`, `demos/`, `tools/`, or `weles/` | `.agents/shared/gamebackend.md`; for a new module, the `add-game-module` skill |
 | Run, or delegate a step that runs, `cargo test`, `verifyctl`, or `devctl` | `safe-verification` skill; `.agents/shared/gamebackend.md` **One test rollout at a time**; `docs/reference/testing.md` |
 | Build or change admin UI | `mockup-implementation` skill |

@@ -29,8 +29,8 @@ false claims from repeating existing prose, including a doc comment that lied
 about its own function. If a document and the code disagree, the code wins and
 the document changes.
 
-Navigate per `.agents/shared/research-navigation.md` **Navigation** and **Search
-budget**. For an OPEN question (who calls X, where Y is wired, all impls of Z)
+Navigate per `.agents/skills/code-navigation/SKILL.md` (read it; skills are not
+auto-loaded here). For an OPEN question (who calls X, where Y is wired, all impls of Z)
 dispatch `code-scout` (model per `.agents/adapters/claude.md` **Dispatch
 Mapping**); read a known file directly.
 

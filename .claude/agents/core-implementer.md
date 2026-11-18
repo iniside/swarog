@@ -19,8 +19,8 @@ You implement ONE fully-specified unit (a plan step, or a named fix).
 - `docs/reference/core-failure-taxonomy.md` classes 1-5, 9, 11 and 12: your change must
   not add a new instance of one.
 
-**Navigate** per `.agents/shared/research-navigation.md` **Navigation** and **Search
-budget**, and name the method you used. For an OPEN question (who calls X, where Y is
+**Navigate** per `.agents/skills/code-navigation/SKILL.md` (read it; skills are not
+auto-loaded here), and name the method you used. For an OPEN question (who calls X, where Y is
 wired, all impls of Z) dispatch `code-scout`, one question per dispatch (model per
 `.agents/adapters/claude.md` **Dispatch Mapping**).
 

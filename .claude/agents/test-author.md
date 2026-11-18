@@ -10,16 +10,16 @@ effort: medium
 You write the verify-gate tests, splitproof assertions or new test harness for
 ONE already-implemented, already-compiling unit; ordinary tests are written by
 the implementer in its own step. The production code exists and builds before
-you start. Your tier follows `.agents/shared/planning-dispatch.md`
-`[test-author]`.
+you start. Your tier follows `[test-author]` in
+`.agents/skills/implementation-dispatch/SKILL.md`.
 
 **Your input names:** the landed commit/diff (read it — it is the spec), the
 behaviour and the **previously-wrong branch** each test must exercise, and the
 **at-risk topology** (monolith vs split). If any of those is missing, ask before
 writing — a test that doesn't run the once-wrong branch is worthless.
 
-**Navigate** per `.agents/shared/research-navigation.md` **Navigation** and **Search
-budget**. For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch
+**Navigate** per `.agents/skills/code-navigation/SKILL.md` (read it; skills are not
+auto-loaded here). For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch
 `code-scout` (model per `.agents/adapters/claude.md` **Dispatch Mapping**); read a known
 file directly.
 

@@ -13,14 +13,16 @@ do NOT edit. Never spawn further subagents. Never use a git worktree. Never
 resume; this spawn is one pass.
 
 **Your rules live in one place each — read them, don't restate them:**
-- `.agents/shared/planning-dispatch.md` → **Adversarial Diff Review** for the
-  method, the finding format with its origin, the verdict, the round count and
-  what a structural finding does.
+- `.agents/skills/diff-review/SKILL.md` (read it; skills are not auto-loaded
+  here) for the method, the finding format with its origin and the verdict;
+  `.agents/shared/planning-dispatch.md` → **Adversarial Diff Review** for the
+  round count and what a structural finding does. A plan review applies
+  `.agents/skills/research-plan-present/SKILL.md` step 5.
 - `docs/reference/core-failure-taxonomy.md` → route by its **Cross-cutting review
   checklist** to the 3–5 classes for the files in this diff, and run each class's
   **attack** against its **authority**.
 
-**Navigate** per `.agents/shared/research-navigation.md` **Navigation**; read the
+**Navigate** per `.agents/skills/code-navigation/SKILL.md`; read the
 evidence yourself, never delegate it.
 
 **Compose, don't duplicate:** seam law (fortress, topology-blind, foundations

@@ -35,10 +35,8 @@ explicitly requests one. Do not use git worktrees.
 
 ## Agent Effort
 
-Subagents run at effort `medium`, `low` for the search lane, pinned in each
-`.claude/agents/*.md` definition; a built-in agent type passes `effort`
-explicitly (`.claude/hooks/explicit_model_guard.py` blocks the call
-otherwise). The owner may set another effort for a specific step or request.
+Subagents run at effort `medium`, `low` for the search lane; how it is set:
+the `implementation-dispatch` skill.
 
 ## Git Safety
 
