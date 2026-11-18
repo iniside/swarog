@@ -298,6 +298,58 @@ fn a_macro_invocation_inside_an_rpc_trait_body_is_rejected() {
     assert!(message.contains("\"Demo\""), "{message}");
 }
 
+#[test]
+fn a_variants_wrapped_enum_is_read_like_a_bare_one() {
+    let bare = keys(&contract(
+        "Request",
+        "pub struct Request { pub kind: Kind } pub enum Kind { A, B }",
+    ));
+    for form in ["drawn", "undrawn"] {
+        let wrapped = keys(&contract(
+            "Request",
+            &format!(
+                "pub struct Request {{ pub kind: Kind }} variants! {{ {form}; #[derive(Debug)] pub enum Kind {{ A, B }} }}"
+            ),
+        ));
+        assert_eq!(wrapped, bare, "{form}");
+    }
+    assert!(!bare.is_empty());
+}
+
+#[test]
+fn a_variants_wrapped_data_enum_is_rejected_like_a_bare_one() {
+    let message = rejection(&contract(
+        "Kind",
+        "variants! { drawn; pub enum Kind { A(String), B } }",
+    ));
+    let bare = rejection(&contract("Kind", "pub enum Kind { A(String), B }"));
+    assert_eq!(message, bare);
+}
+
+#[test]
+fn a_malformed_variants_invocation_is_rejected() {
+    for body in [
+        "variants! { pub enum Kind { A } }",
+        "variants! { other; pub enum Kind { A } }",
+        "variants! { drawn; pub struct Kind { pub a: String } }",
+        "variants! { drawn; pub enum Kind { A } pub enum Extra { B } }",
+    ] {
+        let message = rejection(body);
+        assert!(message.contains("followed by exactly one enum"), "{body}: {message}");
+    }
+}
+
+#[test]
+fn a_path_qualified_or_unknown_item_macro_is_still_rejected() {
+    for body in [
+        "other_variants! { drawn; pub enum Kind { A } }",
+        "crate::variants! { drawn; pub enum Kind { A } }",
+    ] {
+        let message = rejection(body);
+        assert!(message.contains("item-position macro invocation"), "{body}: {message}");
+    }
+}
+
 /// A `macro_rules!` DEFINITION declares no contract by itself, and every use of it is an
 /// invocation the check above already rejects.
 #[test]

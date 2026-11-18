@@ -221,6 +221,10 @@ fn walk_items<'a>(
                 }
                 continue;
             }
+            Item::Macro(mac) if mac.ident.is_none() && mac.mac.path.is_ident("variants") => {
+                let item = variants_enum(&mac.mac)?;
+                (item.ident.to_string(), parse_enum(&item))
+            }
             // An item-position macro INVOCATION can expand to a trait or a DTO the scan
             // would never see. A `macro_rules!` DEFINITION (ident set) declares nothing by
             // itself — every use of it is an invocation, caught here.
@@ -237,6 +241,20 @@ fn walk_items<'a>(
         }
     }
     Ok(())
+}
+
+/// The one enum a controlplane `variants! { drawn|undrawn; <enum> }` invocation declares;
+/// the macro re-emits it unchanged, so it is scanned as if written directly.
+fn variants_enum(mac: &syn::Macro) -> Result<ItemEnum> {
+    mac.parse_body_with(|input: syn::parse::ParseStream| {
+        let form: syn::Ident = input.parse()?;
+        if form != "drawn" && form != "undrawn" {
+            return Err(syn::Error::new(form.span(), "expected `drawn` or `undrawn`"));
+        }
+        input.parse::<syn::Token![;]>()?;
+        input.parse::<ItemEnum>()
+    })
+    .context("variants! must hold `drawn;` or `undrawn;` followed by exactly one enum")
 }
 
 fn is_cfg_test(attrs: &[Attribute]) -> bool {
