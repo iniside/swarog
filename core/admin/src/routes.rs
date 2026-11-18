@@ -263,6 +263,20 @@ fn panel_form_action<'a>(manifest: &'a Manifest, contribution: &str) -> Option<&
     manifest.actions.iter().find(|a| matches!(&a.point, ActionPoint::PanelForm(c) if c == contribution))
 }
 
+/// The Save of `contribution`'s panel form and the URL the form posts to: `None` when the
+/// contribution has no `PanelForm` action or `operator` cannot use it.
+pub(crate) fn panel_form_save<'a>(
+    operator: &Operator,
+    module: &str,
+    manifest: &'a Manifest,
+    contribution: &str,
+) -> Option<(&'a ActionDecl, String)> {
+    let action = panel_form_action(manifest, contribution)?;
+    actions::admit(operator, action, manifest.writes).ok()?;
+    render::seen::record(&action.point);
+    Some((action, action_url(module, &action.id)))
+}
+
 fn action_items(
     snapshot: &Snapshot,
     ctx: &Ctx,
@@ -741,12 +755,9 @@ async fn panel_form_instance(
     let Primitive::Form(spec) = &body.primitive else {
         return Ok(None);
     };
-    let Some(action) = panel_form_action(manifest, &decl.id) else {
+    let Some((action, post_url)) = panel_form_save(&ctx.operator, module, manifest, &decl.id) else {
         return Ok(None);
     };
-    if actions::admit(&ctx.operator, action, manifest.writes).is_err() {
-        return Ok(None);
-    }
     let errors = controlplane::form_spec_errors(spec);
     if !errors.is_empty() {
         return Err(format!("Form unavailable: {}", errors.join("; ")));
@@ -762,7 +773,7 @@ async fn panel_form_instance(
         spec: &stored,
     };
     match forms::mint(&p.st.pool, &decl.id, &mint).await {
-        Ok(form_id) => Ok(Some((action_url(module, &action.id), form_id))),
+        Ok(form_id) => Ok(Some((post_url, form_id))),
         Err(err) => {
             tracing::error!(%err, module, contribution = %decl.id, "admin forms: minting a panel form failed");
             Err("Form unavailable".to_string())

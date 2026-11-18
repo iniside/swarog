@@ -715,7 +715,9 @@ impl PanelCase {
             row_menu_kinds: &self.row_menu_kinds,
             csrf: CSRF,
             form: self.form.then(|| FormInstance {
-                post_url: routes::action_item(&operator(Role::Admin), CSRF, MODULE, true, &save_decl(), None).url,
+                post_url: routes::panel_form_save(&operator(Role::Admin), MODULE, &save_manifest(), CONTRIBUTION)
+                    .expect("an admin may save")
+                    .1,
                 form_id: FORM_ID.to_string(),
                 posted: None,
                 errors: &no_errors,
@@ -727,9 +729,17 @@ impl PanelCase {
     }
 }
 
-/// The `PanelForm` action a form case's Save posts to.
-fn save_decl() -> ActionDecl {
-    ActionDecl { point: ActionPoint::PanelForm(CONTRIBUTION.to_string()), ..decl("save", "Save", "check", Then::Invoke) }
+/// A writing module whose one action is the `PanelForm` Save a form case posts to.
+fn save_manifest() -> Manifest {
+    Manifest {
+        module: MODULE.to_string(),
+        actions: vec![ActionDecl {
+            point: ActionPoint::PanelForm(CONTRIBUTION.to_string()),
+            ..decl("save", "Save", "check", Then::Invoke)
+        }],
+        writes: true,
+        ..Manifest::default()
+    }
 }
 
 fn slot(mode: &'static str, denied: bool) -> SlotView {
