@@ -1,6 +1,6 @@
 # Purge race locks (plan B) — plan
 
-Status: approved by the owner 2026-11-18 (revised plan); steps 1–3 landed (`dd789cc2`, `8622b65d`); the owner ruled on proof-audit batch 1 on 2026-11-18, and the review-fix landed; steps 4–5 landed (`a228ccbd`, `424f00b1`), with proof-audit batch 2 addressed. Steps 6–7 remain.
+Status: approved by the owner 2026-11-18 (revised plan); steps 1–3 landed (`dd789cc2`, `8622b65d`); the owner ruled on proof-audit batch 1 on 2026-11-18, and the review-fix landed; steps 4–5 landed (`a228ccbd`, `424f00b1`), with proof-audit batch 2 addressed. Step 6 landed (`769261be`, proof review-fix `e4454955`); step 7 waits for the owner to rule on the structural proof-audit finding from batch 3 (no test pins "P before the guard").
 
 Revision 2026-11-18: the owner approved the original twelve-step plan on 2026-11-18. No step was
 dispatched, and `git log --grep=purge-race-locks` shows no step commit. The plan was then
@@ -467,6 +467,7 @@ plan's erratum. The exact files are listed under (c).
   - `.agents/shared/gamebackend.md:250,451-452`;
   - `docs/reference/event-plane-ops.md:101`;
   - `README.md:140` ("daily sweep");
+  - `modules/groups/src/lib.rs:8-10` ("`create` takes no lock");
   - `.claude/rules/domain-modules.md`, accounts bullet ("a daily `player-purge` sweep");
   - `docs/roadmap/feature-tracker.md:145,256`.
 
