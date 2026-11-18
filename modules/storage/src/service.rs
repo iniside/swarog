@@ -239,50 +239,60 @@ impl Service {
         acl: &str,
     ) -> Result<ObjectVersion, Error> {
         let mut tx = self.store.pool.begin().await.map_err(write_error)?;
-        self.store
-            .lock_owner_tx(&mut tx, owner_id)
-            .await
-            .map_err(write_error)?;
-        // Read UNDER the owner lock, which is what orders it against the purge sweep: an
-        // insert admitted past a committed tombstone is an object nothing collects, because
-        // the sweep has no second pass and this module never prunes by time. The CAS half of
-        // `put` needs no such guard — it creates no row, and a row it can still find is one
-        // the sweep is yet to delete.
-        if self
-            .store
-            .is_player_purged_tx(&mut tx, owner_id)
-            .await
-            .map_err(write_error)?
-        {
-            tx.rollback().await.map_err(write_error)?;
-            return Err(Error::conflict(PLAYER_DELETED));
+        let created: Result<ObjectVersion, Error> = async {
+            self.store
+                .lock_owner_tx(&mut tx, owner_id)
+                .await
+                .map_err(write_error)?;
+            // Read UNDER the owner lock, which is what orders it against the purge sweep: an
+            // insert admitted past a committed tombstone is an object nothing collects, because
+            // the sweep has no second pass and this module never prunes by time. The CAS half
+            // of `put` needs no such guard — it creates no row, and a row it can still find is
+            // one the sweep is yet to delete.
+            if self
+                .store
+                .is_player_purged_tx(&mut tx, owner_id)
+                .await
+                .map_err(write_error)?
+            {
+                return Err(Error::conflict(PLAYER_DELETED));
+            }
+            let held = self
+                .store
+                .count_objects_tx(&mut tx, owner_id)
+                .await
+                .map_err(write_error)?;
+            // An owner at the cap rewriting an address it already holds gets this 409 rather
+            // than the address-taken one: same status, misleading remedy.
+            if held >= MAX_OBJECTS_PER_OWNER {
+                return Err(Error::conflict(format!(
+                    "you already hold the maximum of {MAX_OBJECTS_PER_OWNER} objects"
+                )));
+            }
+            let created = self
+                .store
+                .insert_object_tx(&mut tx, owner_id, collection, key, value, acl)
+                .await
+                .map_err(write_error)?;
+            let Some(version) = created else {
+                return Err(Error::conflict(
+                    "an object already exists at this address; read it and write with its version",
+                ));
+            };
+            Ok(ObjectVersion { version })
         }
-        let held = self
-            .store
-            .count_objects_tx(&mut tx, owner_id)
-            .await
-            .map_err(write_error)?;
-        // An owner at the cap rewriting an address it already holds gets this 409 rather than
-        // the address-taken one: same status, misleading remedy.
-        if held >= MAX_OBJECTS_PER_OWNER {
-            tx.rollback().await.map_err(write_error)?;
-            return Err(Error::conflict(format!(
-                "you already hold the maximum of {MAX_OBJECTS_PER_OWNER} objects"
-            )));
+        .await;
+        match created {
+            Ok(v) => {
+                tx.commit().await.map_err(write_error)?;
+                Ok(v)
+            }
+            Err(e) => {
+                // sqlx defers a dropped tx's ROLLBACK, which would keep the owner lock held.
+                let _ = tx.rollback().await;
+                Err(e)
+            }
         }
-        let created = self
-            .store
-            .insert_object_tx(&mut tx, owner_id, collection, key, value, acl)
-            .await
-            .map_err(write_error)?;
-        let Some(version) = created else {
-            tx.rollback().await.map_err(write_error)?;
-            return Err(Error::conflict(
-                "an object already exists at this address; read it and write with its version",
-            ));
-        };
-        tx.commit().await.map_err(write_error)?;
-        Ok(ObjectVersion { version })
     }
 }
 
