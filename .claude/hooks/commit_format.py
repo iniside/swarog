@@ -13,7 +13,7 @@ sys.dont_write_bytecode = True
 
 PLANS_DIR = Path(__file__).resolve().parents[2] / "docs" / "plans"
 PLAN_FILE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:-\d{4})?-(.+?)(?:-plan)?\.md$", re.I)
-STEP_ID = r"(?:\d+[a-z]?\d*(?:\.\d+)?|[A-Z])"
+STEP_ID = r"(?:\d+[a-z]?\d*(?:\.\d+[a-z]?)?|[A-Z])"
 STEP_SUFFIX = re.compile(
     r"\((?P<slug>[a-z0-9][a-z0-9-]*) (?:step " + STEP_ID + r"|steps " + STEP_ID + r"-" + STEP_ID + r")\)\s*$")
 STEP_MENTION = re.compile(r"\b(?i:steps?)\s+" + STEP_ID + r"(?![A-Za-z0-9])")

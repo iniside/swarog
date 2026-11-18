@@ -433,7 +433,10 @@ class CommitFormat(unittest.TestCase):
     def test_step_suffix(self):
         self.ok("feat(core): add a thing (demo step 3)")
         self.ok("feat(core): add a thing (demo steps 3-4)")
+        self.ok("feat(core): add a thing (demo step 13c.1a)")
+        self.ok("feat(core): add a thing (demo steps 13c.1a-13c.1g)")
         self.bad("feat(core): finish step 3", "does not end with")
+        self.bad("feat(core): finish step 13c.1a", "does not end with")
         self.bad("feat(core): add a thing (demo step 3) now", "does not end with")
         self.ok("feat(core): the next step is harder")
         self.ok("feat(core): add a step function")
