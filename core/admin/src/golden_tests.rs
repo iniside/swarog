@@ -27,8 +27,8 @@
 //!   distinct rendered cases they name must equal the number of variants parsed from the enums'
 //!   own source, so a new variant whose case is not rendered, or that reuses another variant's
 //!   case, fails;
-//! - every variant of every enum `controlplane::drawn_enums` registers is converted into a view
-//!   model by the render path while the cases render, as `render::seen` records it
+//! - every variant of every enum `controlplane::declared_enums` registers as drawn is converted
+//!   into a view model by the render path while the cases render, as `render::seen` records it
 //!   ([`golden_renders_convert_every_drawn_enum_variant`]).
 //!
 //! Inputs are fixed: one csrf, one form id, fixed `age_s`, and no clock or id generator,
@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 
 use controlplane::{
     ActionDecl, ActionPoint, Align, AttentionItem, Axis, Banner, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
-    ContributionDecl, DataTable, Delta, DrawnEnum, Emphasis, EntityHeader, EntityRef, Field, FieldKind, FilterDef,
+    ContributionDecl, DataTable, DeclaredEnum, Delta, Emphasis, EntityHeader, EntityRef, Field, FieldKind, FilterDef,
     FilterKind, FormSpec, KpiTile, Layout, Link, Manifest, PageInfo, Palette, PanelBody, Point, Primitive,
     PropertyList, QueueItem, QueueState, ReasonReq, Role, Row, Series, ServiceItem, ServiceState, ServiceStatus,
     Severity, SortDir, Then, TimeRange, TimeSeriesChart, Timeline, TimelineEntry, Tone, WorkQueue,
@@ -2672,25 +2672,27 @@ fn golden_cases_cover_every_macro_variant_and_state() {
     }
 }
 
-/// Every variant of every enum `controlplane::drawn_enums` registers is converted into a view
-/// model while the golden cases render.
+/// Every variant of every enum `controlplane::declared_enums` registers as drawn is converted
+/// into a view model while the golden cases render.
 #[test]
 fn golden_renders_convert_every_drawn_enum_variant() {
     let env = render::env().expect("templates compile");
     // Collected over the golden run alone: a variant converted elsewhere (a route test, another case builder) is no golden that draws it.
     let ((), record) = render::seen::collect(|| drop(cases(&env)));
-    if let Err(problems) = check_drawn(controlplane::drawn_enums(), &record) {
+    let drawn: Vec<DeclaredEnum> = controlplane::declared_enums().iter().copied().filter(|e| e.drawn).collect();
+    if let Err(problems) = check_drawn(&drawn, &record) {
         panic!("drawn enum variants no golden case converts:\n  {}", problems.join("\n  "));
     }
 }
 
 /// Every problem of `record` against `drawn`: an empty registry, each declared variant no case
 /// converted, each enum no case converted at all, and each converted enum not registered.
-fn check_drawn(drawn: &[DrawnEnum], record: &render::seen::Record) -> Result<(), Vec<String>> {
+fn check_drawn(drawn: &[DeclaredEnum], record: &render::seen::Record) -> Result<(), Vec<String>> {
     if drawn.is_empty() {
-        return Err(vec!["controlplane::drawn_enums() is empty: no variants! entry is linked".to_string()]);
+        let empty = "controlplane::declared_enums() holds no drawn enum: no variants! entry is linked";
+        return Err(vec![empty.to_string()]);
     }
-    let mut drawn: Vec<&DrawnEnum> = drawn.iter().collect();
+    let mut drawn: Vec<&DeclaredEnum> = drawn.iter().collect();
     drawn.sort_by_key(|e| e.name);
     let mut problems = Vec::new();
     for e in &drawn {
@@ -2718,10 +2720,10 @@ fn check_drawn(drawn: &[DrawnEnum], record: &render::seen::Record) -> Result<(),
 #[test]
 fn check_drawn_names_each_unconverted_variant_and_enum() {
     let drawn = [
-        DrawnEnum { name: "Tone", variants: &["Ok", "Warn"] },
-        DrawnEnum { name: "Axis", variants: &["Left", "Right"] },
+        DeclaredEnum { name: "Tone", variants: &["Ok", "Warn"], drawn: true },
+        DeclaredEnum { name: "Axis", variants: &["Left", "Right"], drawn: true },
     ];
-    let entry = |e: &DrawnEnum, converted: &[&'static str]| {
+    let entry = |e: &DeclaredEnum, converted: &[&'static str]| {
         (e.name, render::seen::Converted { declared: e.variants, converted: converted.iter().copied().collect() })
     };
     let full = render::seen::Record::from([entry(&drawn[0], &["Ok", "Warn"]), entry(&drawn[1], &["Left", "Right"])]);
@@ -2737,7 +2739,7 @@ fn check_drawn_names_each_unconverted_variant_and_enum() {
     );
 
     let mut extra = full.clone();
-    extra.extend([entry(&DrawnEnum { name: "Fresh", variants: &["A"] }, &["A"])]);
+    extra.extend([entry(&DeclaredEnum { name: "Fresh", variants: &["A"], drawn: true }, &["A"])]);
     assert_eq!(
         check_drawn(&drawn, &extra),
         Err(vec!["Fresh is converted but not registered through variants!".to_string()])
@@ -2745,7 +2747,7 @@ fn check_drawn_names_each_unconverted_variant_and_enum() {
 
     assert_eq!(
         check_drawn(&[], &full),
-        Err(vec!["controlplane::drawn_enums() is empty: no variants! entry is linked".to_string()])
+        Err(vec!["controlplane::declared_enums() holds no drawn enum: no variants! entry is linked".to_string()])
     );
 }
 

@@ -9,8 +9,6 @@ use async_trait::async_trait;
 use rpc_macro::rpc;
 use serde::{Deserialize, Serialize};
 
-pub mod events;
-
 /// An enum's variant names, generated from the enum's own definition.
 pub trait Variants {
     /// The enum's name.
@@ -21,24 +19,34 @@ pub trait Variants {
     fn variant(&self) -> &'static str;
 }
 
-/// An enum declared through `variants!`: its name and variants.
+/// An enum declared through `variants!`: its name, its variants, and whether the portal draws it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DrawnEnum {
+pub struct DeclaredEnum {
     pub name: &'static str,
     pub variants: &'static [&'static str],
+    /// `true` for `variants! { drawn; .. }`, `false` for `variants! { undrawn; .. }`.
+    pub drawn: bool,
 }
 
 #[linkme::distributed_slice]
-static DRAWN_ENUMS: [DrawnEnum];
+static DECLARED_ENUMS: [DeclaredEnum];
 
 /// Every enum declared through `variants!`, in no fixed order.
-pub fn drawn_enums() -> &'static [DrawnEnum] {
-    &DRAWN_ENUMS
+pub fn declared_enums() -> &'static [DeclaredEnum] {
+    &DECLARED_ENUMS
 }
 
-/// Emits the enum as written plus its [`Variants`] impl, and registers it in [`drawn_enums`].
+/// Emits the enum as written plus its [`Variants`] impl, and registers it in
+/// [`declared_enums`] as drawn or undrawn by the portal.
 macro_rules! variants {
+    (drawn; $($item:tt)*) => {
+        variants!(@emit true; $($item)*);
+    };
+    (undrawn; $($item:tt)*) => {
+        variants!(@emit false; $($item)*);
+    };
     (
+        @emit $drawn:literal;
         $(#[$meta:meta])*
         $vis:vis enum $name:ident {
             $(
@@ -71,12 +79,17 @@ macro_rules! variants {
         }
 
         const _: () = {
-            #[linkme::distributed_slice(DRAWN_ENUMS)]
-            static ENTRY: DrawnEnum =
-                DrawnEnum { name: <$name as Variants>::NAME, variants: <$name as Variants>::VARIANTS };
+            #[linkme::distributed_slice(DECLARED_ENUMS)]
+            static ENTRY: DeclaredEnum = DeclaredEnum {
+                name: <$name as Variants>::NAME,
+                variants: <$name as Variants>::VARIANTS,
+                drawn: $drawn,
+            };
         };
     };
 }
+
+pub mod events;
 
 /// What a module writes: one static manifest plus the panel, search, invoke and prepare
 /// handlers.
@@ -298,6 +311,7 @@ fn make_finite(primitive: &mut Primitive) {
 // ---------------------------------------------------------------------------
 
 variants! {
+    drawn;
     /// Operator role, ordered `Viewer < Operator < Admin`. Only the portal compares roles.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
     pub enum Role {
@@ -319,6 +333,7 @@ pub struct EntityRef {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum Link {
         Page { module: String, page: String, params: BTreeMap<String, String> },
@@ -357,6 +372,7 @@ pub struct PanelQuery {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub enum TimeRange {
         H1,
@@ -413,13 +429,16 @@ pub struct PrepareCall {
     pub operator: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum InvokeOutcome {
-    Ok { message: String, reveal: Option<SecretReveal>, redirect: Option<Link> },
-    FieldErrors(BTreeMap<String, String>),
-    Conflict { current_revision: u64 },
-    /// The request was valid but there was nothing to do.
-    NoOp { message: String },
+variants! {
+    undrawn;
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum InvokeOutcome {
+        Ok { message: String, reveal: Option<SecretReveal>, redirect: Option<Link> },
+        FieldErrors(BTreeMap<String, String>),
+        Conflict { current_revision: u64 },
+        /// The request was valid but there was nothing to do.
+        NoOp { message: String },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -470,6 +489,7 @@ pub struct PageDecl {
 }
 
 variants! {
+    drawn;
     /// Page layout; every string is a contribution id.
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum Layout {
@@ -499,6 +519,7 @@ pub struct ContributionDecl {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum Point {
         Page(String),
@@ -544,6 +565,7 @@ pub struct ActionDecl {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum Emphasis {
         Primary,
@@ -552,27 +574,31 @@ variants! {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ActionPoint {
-    RowAction(String),
-    HeaderAction(String),
-    PageHead(String),
-    /// A contribution id of the same module: the action renders in that panel's tools,
-    /// bound to its `PropertyList::item` when it has one.
-    PanelTool(String),
-    /// A contribution id of the same module whose body is a `Primitive::WorkQueue`: the
-    /// action renders on each `QueueItem` listing it, bound to that item's id.
-    QueueRow(String),
-    /// A contribution id of the same module: the action is the Save of that
-    /// contribution's `Primitive::Form` and renders nowhere else. It is `Then::Invoke`.
-    PanelForm(String),
-    /// A contribution id of the same module whose body is a `Primitive::DataTable`: the
-    /// action renders on each `Row` listing it, bound to the row's entity, else the
-    /// panel's entity, and the row's `item`.
-    TableRow(String),
+variants! {
+    drawn;
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum ActionPoint {
+        RowAction(String),
+        HeaderAction(String),
+        PageHead(String),
+        /// A contribution id of the same module: the action renders in that panel's tools,
+        /// bound to its `PropertyList::item` when it has one.
+        PanelTool(String),
+        /// A contribution id of the same module whose body is a `Primitive::WorkQueue`: the
+        /// action renders on each `QueueItem` listing it, bound to that item's id.
+        QueueRow(String),
+        /// A contribution id of the same module: the action is the Save of that
+        /// contribution's `Primitive::Form` and renders nowhere else. It is `Then::Invoke`.
+        PanelForm(String),
+        /// A contribution id of the same module whose body is a `Primitive::DataTable`: the
+        /// action renders on each `Row` listing it, bound to the row's entity, else the
+        /// panel's entity, and the row's `item`.
+        TableRow(String),
+    }
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum Then {
         Invoke,
@@ -603,6 +629,7 @@ pub struct Field {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum FieldKind {
         String,
@@ -619,16 +646,19 @@ variants! {
     }
 }
 
-/// A decoded field value; [`decode_field`] and [`encode_field`] are the one codec between
-/// a field's raw string (as carried in `InvokeCall::input` and `Field::default`) and it.
-#[derive(Clone, Debug, PartialEq)]
-pub enum FieldValue {
-    Text(String),
-    Int(i64),
-    Float(f64),
-    Bool(bool),
-    Multi(Vec<String>),
-    Money { amount: String, currency: String },
+variants! {
+    undrawn;
+    /// A decoded field value; [`decode_field`] and [`encode_field`] are the one codec between
+    /// a field's raw string (as carried in `InvokeCall::input` and `Field::default`) and it.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum FieldValue {
+        Text(String),
+        Int(i64),
+        Float(f64),
+        Bool(bool),
+        Multi(Vec<String>),
+        Money { amount: String, currency: String },
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -766,6 +796,7 @@ pub struct ConfirmSpec {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum ConfirmTone {
         Danger,
@@ -775,6 +806,7 @@ variants! {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum ReasonReq {
         Required,
@@ -796,6 +828,7 @@ pub struct SearchDecl {
 // ---------------------------------------------------------------------------
 
 variants! {
+    drawn;
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum Tone {
         Ok,
@@ -806,6 +839,7 @@ variants! {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum Align {
         Left,
@@ -814,6 +848,7 @@ variants! {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum CellKind {
         Text,
@@ -857,6 +892,7 @@ pub struct Column {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum SortDir {
         Asc,
@@ -882,13 +918,16 @@ pub struct PageInfo {
     pub total: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FilterKind {
-    Enum(Vec<String>),
-    Text,
-    Range,
-    Bool,
-    Ref(String),
+variants! {
+    undrawn;
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum FilterKind {
+        Enum(Vec<String>),
+        Text,
+        Range,
+        Bool,
+        Ref(String),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -948,6 +987,7 @@ pub struct KpiTile {
 }
 
 variants! {
+    drawn;
     /// The chart colours a module may pick: the design-system `--chart-1`, `--chart-2` and
     /// `--warn` tokens.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1022,6 +1062,7 @@ pub struct WorkQueue {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum ServiceState {
         Running,
@@ -1054,6 +1095,7 @@ pub struct ServiceStatus {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum Axis {
         Left,
@@ -1076,6 +1118,7 @@ pub struct TimeSeriesChart {
 }
 
 variants! {
+    drawn;
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum Severity {
         Err,
@@ -1152,6 +1195,7 @@ pub struct Banner {
 }
 
 variants! {
+    drawn;
     /// The closed set of things a panel can return.
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     pub enum Primitive {
@@ -1215,22 +1259,26 @@ mod tests {
         assert_eq!(Layout::Grid21(Vec::new(), Vec::new()).variant(), "Grid21");
     }
 
-    /// Proves the registry holds the enums named here once each with their own variants; it
-    /// cannot list the macro's call sites, so it does not prove nothing else is registered.
+    /// Proves the registry holds the enums named here once each with their own variants and
+    /// form; it cannot list the macro's call sites, so it does not prove nothing else is
+    /// registered.
     #[test]
-    fn drawn_enums_registers_each_wrapped_enum_once() {
-        let registered: BTreeMap<&str, &[&str]> = drawn_enums().iter().map(|e| (e.name, e.variants)).collect();
-        assert_eq!(registered.len(), drawn_enums().len(), "a name is registered twice");
-        for (name, variants) in [
-            (Point::NAME, Point::VARIANTS),
-            (Role::NAME, Role::VARIANTS),
-            (Layout::NAME, Layout::VARIANTS),
-            (TimeRange::NAME, TimeRange::VARIANTS),
-            (Primitive::NAME, Primitive::VARIANTS),
-            (Tone::NAME, Tone::VARIANTS),
+    fn declared_enums_registers_each_wrapped_enum_once() {
+        let registered: BTreeMap<&str, (&[&str], bool)> =
+            declared_enums().iter().map(|e| (e.name, (e.variants, e.drawn))).collect();
+        assert_eq!(registered.len(), declared_enums().len(), "a name is registered twice");
+        for (name, variants, drawn) in [
+            (Point::NAME, Point::VARIANTS, true),
+            (Role::NAME, Role::VARIANTS, true),
+            (Layout::NAME, Layout::VARIANTS, true),
+            (ActionPoint::NAME, ActionPoint::VARIANTS, true),
+            (Primitive::NAME, Primitive::VARIANTS, true),
+            (InvokeOutcome::NAME, InvokeOutcome::VARIANTS, false),
+            (FieldValue::NAME, FieldValue::VARIANTS, false),
+            (FilterKind::NAME, FilterKind::VARIANTS, false),
         ] {
-            assert_eq!(registered.get(name), Some(&variants), "{name}");
+            assert_eq!(registered.get(name), Some(&(variants, drawn)), "{name}");
         }
-        assert_eq!(registered.len(), 19);
+        assert_eq!(registered.len(), 23);
     }
 }

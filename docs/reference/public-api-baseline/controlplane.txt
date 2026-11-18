@@ -194,6 +194,10 @@ pub controlplane::ActionPoint::PanelTool(alloc::string::String)
 pub controlplane::ActionPoint::QueueRow(alloc::string::String)
 pub controlplane::ActionPoint::RowAction(alloc::string::String)
 pub controlplane::ActionPoint::TableRow(alloc::string::String)
+impl controlplane::Variants for controlplane::ActionPoint
+pub const controlplane::ActionPoint::NAME: &'static str
+pub const controlplane::ActionPoint::VARIANTS: &'static [&'static str]
+pub fn controlplane::ActionPoint::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::ActionPoint
 pub fn controlplane::ActionPoint::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::ActionPoint
@@ -409,6 +413,10 @@ pub controlplane::FieldValue::Money::amount: alloc::string::String
 pub controlplane::FieldValue::Money::currency: alloc::string::String
 pub controlplane::FieldValue::Multi(alloc::vec::Vec<alloc::string::String>)
 pub controlplane::FieldValue::Text(alloc::string::String)
+impl controlplane::Variants for controlplane::FieldValue
+pub const controlplane::FieldValue::NAME: &'static str
+pub const controlplane::FieldValue::VARIANTS: &'static [&'static str]
+pub fn controlplane::FieldValue::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::FieldValue
 pub fn controlplane::FieldValue::clone(&self) -> Self
 impl core::cmp::PartialEq for controlplane::FieldValue
@@ -430,6 +438,10 @@ pub controlplane::FilterKind::Enum(alloc::vec::Vec<alloc::string::String>)
 pub controlplane::FilterKind::Range
 pub controlplane::FilterKind::Ref(alloc::string::String)
 pub controlplane::FilterKind::Text
+impl controlplane::Variants for controlplane::FilterKind
+pub const controlplane::FilterKind::NAME: &'static str
+pub const controlplane::FilterKind::VARIANTS: &'static [&'static str]
+pub fn controlplane::FilterKind::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::FilterKind
 pub fn controlplane::FilterKind::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::FilterKind
@@ -460,6 +472,10 @@ pub controlplane::InvokeOutcome::Ok
 pub controlplane::InvokeOutcome::Ok::message: alloc::string::String
 pub controlplane::InvokeOutcome::Ok::redirect: core::option::Option<controlplane::Link>
 pub controlplane::InvokeOutcome::Ok::reveal: core::option::Option<controlplane::SecretReveal>
+impl controlplane::Variants for controlplane::InvokeOutcome
+pub const controlplane::InvokeOutcome::NAME: &'static str
+pub const controlplane::InvokeOutcome::VARIANTS: &'static [&'static str]
+pub fn controlplane::InvokeOutcome::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::InvokeOutcome
 pub fn controlplane::InvokeOutcome::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::InvokeOutcome
@@ -1119,6 +1135,27 @@ impl core::marker::Unpin for controlplane::DataTable
 impl core::marker::UnsafeUnpin for controlplane::DataTable
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::DataTable
 impl core::panic::unwind_safe::UnwindSafe for controlplane::DataTable
+pub struct controlplane::DeclaredEnum
+pub controlplane::DeclaredEnum::drawn: bool
+pub controlplane::DeclaredEnum::name: &'static str
+pub controlplane::DeclaredEnum::variants: &'static [&'static str]
+impl core::clone::Clone for controlplane::DeclaredEnum
+pub fn controlplane::DeclaredEnum::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::DeclaredEnum
+impl core::cmp::PartialEq for controlplane::DeclaredEnum
+pub fn controlplane::DeclaredEnum::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::DeclaredEnum
+pub fn controlplane::DeclaredEnum::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::DeclaredEnum
+impl core::marker::StructuralPartialEq for controlplane::DeclaredEnum
+impl core::marker::Forget for controlplane::DeclaredEnum
+impl core::marker::Freeze for controlplane::DeclaredEnum
+impl core::marker::Send for controlplane::DeclaredEnum
+impl core::marker::Sync for controlplane::DeclaredEnum
+impl core::marker::Unpin for controlplane::DeclaredEnum
+impl core::marker::UnsafeUnpin for controlplane::DeclaredEnum
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::DeclaredEnum
+impl core::panic::unwind_safe::UnwindSafe for controlplane::DeclaredEnum
 pub struct controlplane::Delta
 pub controlplane::Delta::period: alloc::string::String
 pub controlplane::Delta::tone: core::option::Option<controlplane::Tone>
@@ -1143,26 +1180,6 @@ impl core::marker::Unpin for controlplane::Delta
 impl core::marker::UnsafeUnpin for controlplane::Delta
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Delta
 impl core::panic::unwind_safe::UnwindSafe for controlplane::Delta
-pub struct controlplane::DrawnEnum
-pub controlplane::DrawnEnum::name: &'static str
-pub controlplane::DrawnEnum::variants: &'static [&'static str]
-impl core::clone::Clone for controlplane::DrawnEnum
-pub fn controlplane::DrawnEnum::clone(&self) -> Self
-impl core::cmp::Eq for controlplane::DrawnEnum
-impl core::cmp::PartialEq for controlplane::DrawnEnum
-pub fn controlplane::DrawnEnum::eq(&self, &Self) -> bool
-impl core::fmt::Debug for controlplane::DrawnEnum
-pub fn controlplane::DrawnEnum::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl core::marker::Copy for controlplane::DrawnEnum
-impl core::marker::StructuralPartialEq for controlplane::DrawnEnum
-impl core::marker::Forget for controlplane::DrawnEnum
-impl core::marker::Freeze for controlplane::DrawnEnum
-impl core::marker::Send for controlplane::DrawnEnum
-impl core::marker::Sync for controlplane::DrawnEnum
-impl core::marker::Unpin for controlplane::DrawnEnum
-impl core::marker::UnsafeUnpin for controlplane::DrawnEnum
-impl core::panic::unwind_safe::RefUnwindSafe for controlplane::DrawnEnum
-impl core::panic::unwind_safe::UnwindSafe for controlplane::DrawnEnum
 pub struct controlplane::EntityHeader
 pub controlplane::EntityHeader::avatar_seed: alloc::string::String
 pub controlplane::EntityHeader::badges: alloc::vec::Vec<controlplane::Cell>
@@ -2117,6 +2134,10 @@ pub trait controlplane::Variants
 pub const controlplane::Variants::NAME: &'static str
 pub const controlplane::Variants::VARIANTS: &'static [&'static str]
 pub fn controlplane::Variants::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::ActionPoint
+pub const controlplane::ActionPoint::NAME: &'static str
+pub const controlplane::ActionPoint::VARIANTS: &'static [&'static str]
+pub fn controlplane::ActionPoint::variant(&self) -> &'static str
 impl controlplane::Variants for controlplane::Align
 pub const controlplane::Align::NAME: &'static str
 pub const controlplane::Align::VARIANTS: &'static [&'static str]
@@ -2141,6 +2162,18 @@ impl controlplane::Variants for controlplane::FieldKind
 pub const controlplane::FieldKind::NAME: &'static str
 pub const controlplane::FieldKind::VARIANTS: &'static [&'static str]
 pub fn controlplane::FieldKind::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::FieldValue
+pub const controlplane::FieldValue::NAME: &'static str
+pub const controlplane::FieldValue::VARIANTS: &'static [&'static str]
+pub fn controlplane::FieldValue::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::FilterKind
+pub const controlplane::FilterKind::NAME: &'static str
+pub const controlplane::FilterKind::VARIANTS: &'static [&'static str]
+pub fn controlplane::FilterKind::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::InvokeOutcome
+pub const controlplane::InvokeOutcome::NAME: &'static str
+pub const controlplane::InvokeOutcome::VARIANTS: &'static [&'static str]
+pub fn controlplane::InvokeOutcome::variant(&self) -> &'static str
 impl controlplane::Variants for controlplane::Layout
 pub const controlplane::Layout::NAME: &'static str
 pub const controlplane::Layout::VARIANTS: &'static [&'static str]
@@ -2193,8 +2226,8 @@ impl controlplane::Variants for controlplane::Tone
 pub const controlplane::Tone::NAME: &'static str
 pub const controlplane::Tone::VARIANTS: &'static [&'static str]
 pub fn controlplane::Tone::variant(&self) -> &'static str
+pub fn controlplane::declared_enums() -> &'static [controlplane::DeclaredEnum]
 pub fn controlplane::decode_field(&controlplane::FieldKind, &str) -> core::result::Result<controlplane::FieldValue, controlplane::FieldError>
-pub fn controlplane::drawn_enums() -> &'static [controlplane::DrawnEnum]
 pub fn controlplane::encode_field(&controlplane::FieldKind, &controlplane::FieldValue) -> alloc::string::String
 pub fn controlplane::form_spec_errors(&controlplane::FormSpec) -> alloc::vec::Vec<alloc::string::String>
 pub fn controlplane::merge_sections<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a controlplane::Manifest>) -> controlplane::SectionMerge<'a>

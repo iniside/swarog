@@ -118,6 +118,11 @@ pub(crate) fn page<S: Serialize>(env: &Environment<'_>, template: &str, view: &S
     env.get_template(template)?.render(view)
 }
 
+/// A full screen: the shell with `screen` naming the screen and `v` its view.
+pub(crate) fn screen_page<S: Serialize>(env: &Environment<'_>, screen: &str, view: &S) -> Result<String, minijinja::Error> {
+    page(env, "shell.html", &minijinja::context! { screen => screen, v => Value::from_serialize(view) })
+}
+
 pub(crate) fn fragment<S: Serialize>(
     env: &Environment<'_>,
     template: &str,
@@ -605,6 +610,15 @@ pub(crate) struct PageView {
     pub(crate) columns: Vec<Vec<SlotView>>,
     /// Tile and layout ids naming no contribution of this module.
     pub(crate) missing: Vec<String>,
+}
+
+/// The layout's columns of contribution ids, in declaration order.
+pub(crate) fn layout_columns(layout: &controlplane::Layout) -> Vec<&[String]> {
+    seen::record(layout);
+    match layout {
+        controlplane::Layout::Stack(a) => vec![a],
+        controlplane::Layout::Grid21(a, b) | controlplane::Layout::Grid2(a, b) => vec![a, b],
+    }
 }
 
 pub(crate) fn layout_name(layout: &controlplane::Layout) -> &'static str {

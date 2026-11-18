@@ -12,7 +12,7 @@ use axum::routing::get;
 use axum::{Form, Router};
 use axum_extra::extract::CookieJar;
 use controlplane::{
-    ActionDecl, ActionPoint, ContributionDecl, EntityRef, InvokeCall, InvokeOutcome, Layout, Manifest,
+    ActionDecl, ActionPoint, ContributionDecl, EntityRef, InvokeCall, InvokeOutcome, Manifest,
     PanelBody, PanelQuery, Point, PrepareCall, Primitive, Then,
 };
 use serde::Serialize;
@@ -208,6 +208,7 @@ pub(crate) fn action_item(
     if !csrf.is_empty() {
         vals.insert(actions::FIELD_CSRF.to_string(), csrf.to_string());
     }
+    render::seen::record(&decl.point);
     let item = ActionItem {
         module: module.to_string(),
         id: decl.id.clone(),
@@ -297,8 +298,7 @@ fn screen<V: Serialize>(p: &Portal, name: &str, view: &V) -> Response {
 }
 
 fn screen_with<V: Serialize>(p: &Portal, status: StatusCode, name: &str, view: &V) -> Response {
-    let ctx = minijinja::context! { screen => name, v => minijinja::Value::from_serialize(view) };
-    html(status, render::page(&p.st.env, "shell.html", &ctx))
+    html(status, render::screen_page(&p.st.env, name, view))
 }
 
 /// A toast always lands in `#modal-root`, whatever the request targeted, so it never
@@ -443,10 +443,7 @@ async fn page(
         };
         return missing_page(&p, &ctx, &snapshot, &headers, &query, miss).await;
     };
-    let ids: Vec<&Vec<String>> = match &decl.layout {
-        Layout::Stack(a) => vec![a],
-        Layout::Grid21(a, b) | Layout::Grid2(a, b) => vec![a, b],
-    };
+    let ids = render::layout_columns(&decl.layout);
     let mut missing = Vec::new();
     let mut slots = |ids: &[String]| -> Vec<SlotView> {
         ids.iter()
