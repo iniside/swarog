@@ -27,7 +27,7 @@ landed to the current agent workflow (`.agents/shared/planning-dispatch.md`, the
   verify gate. Prose-only steps (`[docs]`, plan edits) get no review.
 - Step 26's anchors are re-read against the tree after the agent-workflow simplification.
 
-Execution order once the owner says go: 28 → 13c.1a → 13c.1b → 13c.1g → 13c.2a → 13c.2b →
+Execution order once the owner says go: 28 → 13c.1a → 13c.1r → 13c.1b → 13c.1g → 13c.2a → 13c.2b →
 13c.3 → 13c.4 → 13d → 14 … 24 → 24a → 24b → 25a … 25h → 26 → 27. Open for the owner: X7, the order against
 `docs/plans/2026-11-17-1900-purge-race-locks-plan.md` (Steps 6–7 of it remain); Steps 28,
 13c and 13d touch none of the purging modules, so only Step 14 waits on that answer. Its
@@ -2217,6 +2217,46 @@ red by design is Step 28's variant-coverage test naming the new variants, from 1
   `[opus]` core-implementer. Tests in the step: row clickability by kind (K4); the
   down-module row-menu group (K14); the singular noun at 1 (K18); the FAKE helper gives a
   pinned output for a fixed id, checked from the accounts and the portal call sites (X3).
+- **Step 13c.1r — split `render.rs` and `golden_tests.rs` by responsibility** (owner,
+  2026-11-18). Why: `core/admin/src/render.rs` (~2060 lines) and `golden_tests.rs` (~3190
+  lines) are read whole by every later 13c step, 13c.1g and each port; an agent working on
+  one area (cells, forms, queues) should read only that file. Source map:
+  research hand-off of 2026-11-18 (render clusters A–Q, golden clusters H/T/B/C/D/G/M/S/X).
+  Runs after 13c.1a, before 13c.1b. Pure move: no behaviour, template, contract or test
+  change.
+  - (a) `core/admin/src/render.rs` becomes `core/admin/src/render/` (`mod.rs` plus one
+    file per cluster: `seen`, `url`, `style` (tone, avatar, number formats), `cell`,
+    `action`, `shell` (view models), `panel` (`panel`, `prim`, `Ctx`), `table`,
+    `queue`, `tiles` (kpi/spark, timeline, services, chart, attention/header), `form`,
+    `modal`). `core/admin/src/golden_tests.rs` becomes `core/admin/src/golden_tests/`
+    (`mod.rs` with `Case`/`Rendered`/`scoped`/`goldens` and the shared consts;
+    `harness`, `view_tests`, builders, `cases/` as section functions in the original
+    order, `coverage`, `macros` (the macro-case drift guard), `declared` (the Step 28
+    gate and the declaration scan), `selftests`). The implementer may merge or rename files
+    where the map's boundary is wrong; the hand-off names each file's contents.
+  - (b) Invariants:
+    - Every external path stays valid: `crate::render::X` for every item routes.rs,
+      lib.rs, engine/actions.rs, events_provider.rs, tests.rs and the goldens use today
+      (`render::seen::{record, collect, Record, Converted}` included), and
+      `crate::golden_tests::table_grid`; done by re-exports in the two `mod.rs` files, so
+      no file outside the two moved trees changes except for `include_str!` paths.
+    - Moved code is byte-identical apart from `use` lines, visibility widened to the
+      minimum the split needs (`pub(super)` before `pub(crate)`), `include_str!` paths,
+      and the `push!`/`panel!` macros taking `out` (and `env`) explicitly, defined once
+      in `golden_tests/mod.rs` before the `mod` lines; every case still goes through
+      `scoped` (per-case collect of Step 28).
+    - The golden case list keeps its names and order; every testdata file stays
+      byte-identical and no bless runs.
+    - Shared helpers used by two or more clusters live in one file each (no copies).
+    - `cargo fmt` is not run (hand-format).
+  - (c) Tests: none new. Proof: `cargo test -p admin` gives the same pass/fail set as
+    before the step (the Step 28 gate red on exactly the four 13c.1a variants); `cargo
+    clippy -p admin --all-targets -- -D warnings`; `git diff -M --stat` shows the moves;
+    the reviewer checks with `git diff --color-moved` that no moved line's content
+    changed beyond the invariant's list.
+  - (d) Lanes: `[mechanical]` core-implementer `sonnet`, two commits in order (render,
+    then golden_tests). `[review]` core-reviewer `opus`, one round on both commits;
+    no proof-auditor (no gate behaviour changes; the golden byte-identity is the proof).
 - **Step 13c.1b — chrome, tabs, timeline and forms** (K9–K13, K15, K16). `[opus]`
   core-implementer. Tests in the step: the down-module tab dot (K13); a `readonly` decl
   forces the readonly state with its text (K12).
