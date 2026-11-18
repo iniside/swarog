@@ -33,23 +33,22 @@ small":
    leaves order/topology/per-step actions to "figure as you go" is banned;
    steps need not each compile, but every step must be written out.
 
-   **Tests are their own step(s), never bundled into an implementation step —
-   MANDATORY.** If a change touches testable production code, the plan MUST
-   carry a separate, later `[test-author]` step for its tests, sequenced
-   *after* the implementation step it covers has landed and compiled. Banned:
-   any step of the shape "implement X **and** write its tests". The test step
-   names: which landed commit/behaviour it covers, the previously-wrong
-   branch each test must exercise, and the at-risk topology (split, not just
-   monolith). A plan that touches testable production code with **no** test
-   step is incomplete unless the user explicitly waived tests.
+   **Tests.** The implementer writes the tests in the same step as the code,
+   to the bar "revert the fix and the test must fail". A separate, later
+   `[test-author]` step is only for verify gates, splitproof assertions and
+   new test harnesses; it names the landed commit/behaviour, the
+   previously-wrong branch each test must exercise, and the at-risk topology
+   (split, not just monolith). A plan that touches testable production code
+   with no tests is incomplete unless the user explicitly waived tests.
 5. Dispatch `subagent_type: "core-reviewer"` — that field is written first,
    before `description` and before the prompt. Never a generic implementer
    or explore/plan type. Do not hand-author a "grumpy senior engineer"
    persona. Effort is the Agent `effort:` parameter; its value follows
-   `.agents/shared/core-rules.md` **Agent Effort**. It checks scope substitution
-   first, rejects only with evidence, and lists unverified concerns
-   separately. It returns a punch list, never a rewrite. Address it before
-   showing the user, or note deferrals with rationale.
+   `.agents/shared/core-rules.md` **Agent Effort**. A plan gets one review,
+   before approval. It checks scope substitution first, rejects only with
+   evidence, and lists unverified concerns separately. It returns a punch
+   list, never a rewrite. Address it before showing the user, or note
+   deferrals with rationale.
 
 Full detail: `docs/reference/plan-writing-workflow.md`.
 
@@ -65,8 +64,8 @@ Shared tags:
 |---|---|
 | `[inline]` | Main agent. Closed dispatch-threshold list only, or a typo/compile fix in a file this turn already has open. |
 | `[independent]` | Top-tier separate context (`core-implementer`; visual/UI uses `mockup-implementer`). |
-| `[mechanical]` | Cheap implementation. Visual/UI never this, except a port's view part (below). Tests never this. |
-| `[test-author]` | Only lane that writes tests; always a later step. |
+| `[mechanical]` | Cheap implementation. Visual/UI never this, except a port's view part (below). |
+| `[test-author]` | Verify gates, splitproof assertions, new test harnesses; always a later step. |
 | `[docs]` | `docs-writer`. Documentation prose in a planned docs step; a standalone comment edit stays `[inline]`. Runs last, against landed code. |
 | `[review]` | `core-reviewer` (read-only). |
 
@@ -101,18 +100,15 @@ Do not ban `[fable]`.
   Checklist extraction, contract decisions and review of that part stay at
   the top tier. A gap found during the view part goes back to the backend
   part. A port that goes badly is fixed in the skill, its tooling and its
-  tests, never by moving the view part to a higher tier. Tests are never
-  `[mechanical]`. Documentation prose is never `[mechanical]`; it goes
-  through `[docs]`.
-- `[test-author]` — the only lane that writes tests, always a separate step
-  after the implementation it covers. Top tier for a test that is a gate
-  (golden render coverage, `admindiff`, admincheck and conformance
-  findings, splitproof, any test proving a guard fails closed) and for a
-  novel harness/topology (a new event-plane fixture). Cheap tier for
-  repeated patterns (per-module admin provider tests, small fixture tests),
-  copying a reference file written at the top tier. A cheap-tier test that
-  goes badly is fixed in the reference file, skill and tooling, never by
-  moving it to a higher tier.
+  tests, never by moving the view part to a higher tier. Documentation prose
+  is never `[mechanical]`; it goes through `[docs]`.
+- `[test-author]` — verify gates (golden render coverage, `admindiff`,
+  admincheck and conformance findings), splitproof assertions and new test
+  harnesses (a new event-plane fixture), always a separate step after the
+  implementation it covers. Other tests belong to the implementation step.
+  Top tier by default; cheap tier when it copies a reference written at the
+  top tier. A cheap-tier test that goes badly is fixed in the reference
+  file, skill and tooling, never by moving it to a higher tier.
 - `[docs]` — the `docs-writer` agent (`.claude/agents/docs-writer.md`). The
   lane for documentation prose written as a planned docs step — root guidance,
   `docs/reference`, `docs/roadmap`, `docs/todo`, plan errata, and Rust doc-comments. A
@@ -146,7 +142,7 @@ its value per `core-rules.md` **Agent Effort**; prompt wording does not set it. 
 (subagents may commit their own). Mid-rollout, never flip a step's lane tag silently — ask the owner first.
 
 **Review does not gate the next task — run them in parallel when the tasks
-are independent.** Every task still gets its `core-reviewer` pass, but that
+are independent.** Every reviewed task still gets its `core-reviewer` pass, but that
 pass only blocks the next dispatch when the next step actually depends on
 it. Serialize only if the two steps touch any of the same files, or the later
 step builds on an API/behaviour the earlier one introduces (plan step (b)
@@ -163,14 +159,18 @@ Details: `docs/reference/implementation-mode.md` and
 
 ## Adversarial Diff Review - MANDATORY
 
-Every produced diff — a subagent's or the main agent's — is reviewed in
-prosecutor mode: guilty until proven correct, default verdict REJECT. The
-vibes skim ("roughly matches the plan → pass") is banned.
+Every produced code diff — a subagent's or the main agent's — is reviewed
+adversarially: hunt implementation gaps and structural problems, and
+challenge the plan itself. A defect that follows from the plan is reported as
+a plan defect, never passed as "matches the plan". The vibes skim ("roughly
+matches the plan → pass") is banned.
 
 The review runs in a subagent, never inline. Dispatch `core-reviewer` after
 every task commit, on that commit plus the cumulative diff from the
-task-start commit to `HEAD`. Prose-only commits (`.agents/`, `docs/`, plans)
-are reviewed the same way. Inline self-review is the banned failure mode —
+task-start commit to `HEAD`; tests written in the step are reviewed with it.
+Prose-only commits (`docs/`, `.agents/`, `.claude/agents/`, `docs/plans/`,
+memory) get no review, except the one plan review before approval; `.rs` doc
+comments on `api/` and `core/` contracts are code. Inline self-review is the banned failure mode —
 the context that wrote the code cannot judge it. Route by files-touched
 through `docs/reference/core-failure-taxonomy.md`, with a different method
 than the implementer used. Add `proof-auditor` ONLY
@@ -205,7 +205,8 @@ Mechanics:
    "Looks fine" / "mostly matches" / "pass with reservations" / "minor nits"
    without a list are banned phrases. REJECT only for a concrete defect, a
    scope violation, or missing required validation, each with a source
-   anchor and a failing scenario or affected requirement. Unverified
+   anchor and a failing scenario or affected requirement; style, comment and
+   wording findings are not REJECT grounds. Unverified
    concerns go in a separate list and do not change the verdict. No demand
    for unrelated hardening (`gamebackend.md` **Dev tooling scope**), no
    reopening the approved design.
@@ -218,13 +219,14 @@ Origin means what produced the finding, not only its symptom: a local slip,
 or a structural cause. Structural causes include a second copy of a rule (a
 test, gate or tool that restates production logic, a hand list beside the real
 source), a mechanism where each fix adds another special case, a seam where
-new code meets differently-shaped old code, and a plan scope that leaves part
-of the subsystem behind. A finding in a mechanism that an earlier round of the
-same task already fixed is structural by default. Before dispatching any fix,
-the main session groups the findings by origin. Structural findings are not
-patched one by one, in any round: the main session proposes a fix for the
-cause (replace the mechanism, delete the copy, derive from the real source)
-and brings it to the owner.
+new code meets differently-shaped old code, the wrong layer, a flawed plan,
+and a plan scope that leaves part of the subsystem behind. A finding in a
+mechanism that an earlier round of the same task already fixed is structural
+by default. Before dispatching any fix, the main session groups the findings
+by origin. A structural finding stops the loop: it gets no review-fix round
+and is never patched one by one; the main session proposes a fix for the
+cause (fix the plan, finish the subsystem, replace the mechanism, delete the
+copy, derive from the real source) and brings it to the owner.
 
 If a fix exists only because the task introduced an unrequested mechanism,
 the verdict is `REJECT — scope loop`: remove it or return to the approved
@@ -237,11 +239,13 @@ tone does not inherit; effort is the `effort:` parameter). The review is
 mandatory but not a barrier — independent steps proceed while a fix lands
 (see Implementation Mode).
 
-Hard cap: 2 review rounds per task. A task is one plan step (or, off-plan,
+One review round per task by default. A task is one plan step (or, off-plan,
 one user request) — not one commit. Fix-up commits inside a task do not
-restart the count. Round 1 reviews the diff; round-one fixes are committed
-before round 2, which reviews them (fix commits carry `Kind: review-fix`); there is no round 3: stop, report what
-stands open plus the recommended fix, wait. Within the 2 rounds fix by severity, not list order:
+restart the count. A second round only when the task touches `core/`,
+split/edge wiring, or a verify gate (verifyctl, archcheck, conformance,
+splitproof, goldens); it reviews the committed round-one fixes (fix commits
+carry `Kind: review-fix`). There is no further round: stop, report what
+stands open plus the recommended fix, wait. Fix by severity, not list order:
 correctness first, comment/doc-truth only if it fits; leftovers go under
 **Leftovers for owner** in the report, and the owner-deferred ones are written
 to `docs/todo` by the lead.

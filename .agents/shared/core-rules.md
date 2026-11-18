@@ -90,10 +90,10 @@ explicitly requests one. Do not use git worktrees.
 
 ## Agent Effort - RULE
 
-Every subagent runs at effort `medium`. A plan may propose another effort for
-a specific step, written in that step with a one-line reason; the owner
-approves it with the plan. Outside a plan, a different effort needs the
-owner's explicit request. Never raise effort on your own judgment.
+Subagents run at effort `medium`, `low` for the search lane, pinned in each
+`.claude/agents/*.md` definition; a built-in agent type passes `effort`
+explicitly (`.claude/hooks/explicit_model_guard.py` blocks the call
+otherwise).
 
 ## Git Safety - MANDATORY
 

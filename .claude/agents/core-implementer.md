@@ -31,6 +31,10 @@ context, and do not restate them, apply them:**
 3. Grep tool — last, and a labelled lower bound, never the answer. Budget and hook:
    `docs/reference/research-mode.md` **Search budget**; a plain-text or deleted-symbol Bash `rg`/`grep` carries `# nav-ok`.
 
+**Tests are part of your step** (except verify gates, splitproof assertions and new
+test harnesses, which are a later `[test-author]` step). The bar: revert the fix and
+the test must fail.
+
 **Before ANY `cargo test` / `devctl up` / `verifyctl`, follow the `safe-verification`
 skill** — ONE rollout at a time on the shared Postgres.
 
