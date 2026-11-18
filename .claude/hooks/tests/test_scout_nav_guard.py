@@ -13,7 +13,7 @@ import unittest
 import uuid
 
 HOOKS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-HOOK = os.path.join(HOOKS, "scout_nav_guard.py")
+HOOK = os.environ.get("SCOUT_NAV_HOOK") or os.path.join(HOOKS, "scout_nav_guard.py")
 ROOT = os.path.dirname(os.path.dirname(HOOKS))
 CWD = "G:/Projects/swarog"
 
@@ -521,6 +521,353 @@ class Report(unittest.TestCase):
         self.assert_deny(report(aid, message([anchor("modules/a/src/x.rs:10", "confirmed")])), "confirmed")
         record(lsp(aid, "goToDefinition", "modules/a/src/x.rs", 10, "Found 1 definition", 1))
         self.assert_pass(aid, message([anchor("modules/a/src/x.rs:10", "confirmed")]))
+
+
+NAV_AGENTS = ("core-implementer", "test-author", "docs-writer")
+SRC = "modules/inventory/src/lib.rs"
+
+
+def as_agent(payload, agent):
+    payload["agent_type"] = agent
+    return payload
+
+
+def nav_grep(aid, agent, **tool_input):
+    return as_agent(grep_tool(aid, **tool_input), agent)
+
+
+def nav_bash(aid, agent, command, cwd=CWD):
+    return as_agent(bash(aid, command, cwd), agent)
+
+
+def nav_lsp(aid, agent, op, file, line, text, count=None):
+    return as_agent(lsp(aid, op, file, line, text, count), agent)
+
+
+def slice_records(aid):
+    if not os.path.exists(state_file(aid)):
+        return []
+    return [r for r in read_state(aid) if r["kind"] == "slice"]
+
+
+class NavSearchGate(unittest.TestCase):
+    WIDE = [
+        ("Grep no path", lambda aid, a: nav_grep(aid, a)),
+        ("rg foo modules", lambda aid, a: nav_bash(aid, a, "rg foo modules")),
+        ("git grep -n foo", lambda aid, a: nav_bash(aid, a, "git grep -n foo")),
+    ]
+    SCOPED = [
+        ("rg foo modules/inventory", lambda aid, a: nav_bash(aid, a, "rg foo modules/inventory")),
+        ("Grep path core/app", lambda aid, a: nav_grep(aid, a, path="core/app")),
+        ("Grep glob *.md", lambda aid, a: nav_grep(aid, a, glob="*.md")),
+    ]
+
+    def assert_nav_deny(self, got, agent):
+        self.assertIsNotNone(got)
+        self.assertEqual(got["permissionDecision"], "deny")
+        reason = got["permissionDecisionReason"]
+        self.assertIn("Ask LSP first", reason)
+        self.assertTrue(reason.startswith(agent + ":"), reason)
+
+    def test_wide_search_denied_twice_then_allowed(self):
+        for agent in NAV_AGENTS:
+            for name, make in self.WIDE:
+                with self.subTest(agent=agent, case=name):
+                    aid = new_agent()
+                    self.assert_nav_deny(gate(make(aid, agent)), agent)
+                    self.assert_nav_deny(gate(make(aid, agent)), agent)
+                    self.assertIsNone(gate(make(aid, agent)))
+                    self.assertEqual([r["kind"] for r in read_state(aid)], ["gate-deny", "gate-deny"])
+
+    def test_scoped_search_allowed_without_state(self):
+        for agent in NAV_AGENTS:
+            for name, make in self.SCOPED:
+                with self.subTest(agent=agent, case=name):
+                    aid = new_agent()
+                    self.assertIsNone(gate(make(aid, agent)))
+                    self.assertFalse(os.path.exists(state_file(aid)))
+
+    def test_workspace_symbol_alone_keeps_the_gate_closed(self):
+        for agent in NAV_AGENTS:
+            with self.subTest(agent=agent):
+                aid = new_agent()
+                record(nav_lsp(aid, agent, "workspaceSymbol", "core/app/src/lib.rs", 1, WS_SYMBOL, 1))
+                self.assert_nav_deny(gate(nav_grep(aid, agent)), agent)
+
+    def test_position_lsp_record_opens_the_gate(self):
+        for agent in NAV_AGENTS:
+            with self.subTest(agent=agent):
+                aid = new_agent()
+                self.assert_nav_deny(gate(nav_grep(aid, agent)), agent)
+                record(nav_lsp(aid, agent, "findReferences", "core/app/src/lib.rs", 67, FIND_REFS, 3))
+                self.assertEqual(read_state(aid)[-1]["kind"], "lsp")
+                self.assertIsNone(gate(nav_grep(aid, agent)))
+                self.assertIsNone(gate(nav_bash(aid, agent, "rg foo modules")))
+
+    def test_code_scout_dispatch_opens_the_gate(self):
+        for agent in NAV_AGENTS:
+            with self.subTest(agent=agent):
+                aid = new_agent()
+                self.assert_nav_deny(gate(nav_grep(aid, agent)), agent)
+                record(as_agent(scout(aid, "Agent", {"subagent_type": "code-scout", "prompt": "q"},
+                                      event="PostToolUse", tool_response={"result": "ok"}), agent))
+                self.assertEqual(read_state(aid)[-1], {"kind": "scout"})
+                self.assertIsNone(gate(nav_grep(aid, agent)))
+
+    def test_general_purpose_dispatch_does_not_open_the_gate(self):
+        for agent in NAV_AGENTS:
+            with self.subTest(agent=agent):
+                aid = new_agent()
+                record(as_agent(scout(aid, "Agent", {"subagent_type": "general-purpose", "prompt": "q"},
+                                      event="PostToolUse", tool_response={"result": "ok"}), agent))
+                self.assertFalse(os.path.exists(state_file(aid)))
+                self.assert_nav_deny(gate(nav_grep(aid, agent)), agent)
+
+    def test_nav_ok_passes_the_search_gate(self):
+        for agent in NAV_AGENTS:
+            for command in ("rg foo # nav-ok", "rg foo modules #nav-ok"):
+                with self.subTest(agent=agent, command=command):
+                    aid = new_agent()
+                    self.assertIsNone(gate(nav_bash(aid, agent, command)))
+                    self.assertFalse(os.path.exists(state_file(aid)))
+
+    def test_nav_ok_does_not_pass_the_slice_gate(self):
+        aid = new_agent()
+        command = "sed -n '1,5p' %s # nav-ok" % SRC
+        self.assertIsNone(gate(nav_bash(aid, "core-implementer", command)))
+        self.assertIsNone(gate(nav_bash(aid, "core-implementer", command)))
+        got = gate(nav_bash(aid, "core-implementer", command))
+        self.assertEqual(got["permissionDecision"], "deny")
+        self.assertIn("already sliced", got["permissionDecisionReason"])
+
+
+class NavExcluded(unittest.TestCase):
+    MARK = {"note": "code-scout"}
+
+    def assert_silent_all(self, make):
+        aid = new_agent()
+        for command in ("rg foo", "sed -n '1p' %s" % SRC):
+            for _ in range(4):
+                rc, out, err = run_hook("gate", make(aid, command))
+                self.assertEqual((rc, out.strip(), err), (0, "", ""))
+        rc, out, err = run_hook("gate", make(aid, None))
+        self.assertEqual((rc, out.strip(), err), (0, "", ""))
+        self.assertFalse(os.path.exists(state_file(aid)))
+
+    @staticmethod
+    def payload(aid, command, agent):
+        if command is None:
+            p = scout(aid, "Grep", dict({"pattern": "foo"}, **NavExcluded.MARK))
+        else:
+            p = scout(aid, "Bash", dict({"command": command}, **NavExcluded.MARK))
+        if agent is None:
+            del p["agent_type"]
+            del p["agent_id"]
+        else:
+            p["agent_type"] = agent
+        return p
+
+    def test_other_agents_and_main_session_are_silent(self):
+        for agent in ("core-reviewer", "proof-auditor", "mockup-implementer", None):
+            with self.subTest(agent=agent):
+                self.assert_silent_all(lambda aid, command, a=agent: self.payload(aid, command, a))
+
+    def test_nav_agent_without_agent_id_is_silent(self):
+        p = self.payload(new_agent(), "rg foo", "core-implementer")
+        del p["agent_id"]
+        rc, out, err = run_hook("gate", p)
+        self.assertEqual((rc, out.strip(), err), (0, "", ""))
+
+    def test_other_agent_record_and_report_write_nothing(self):
+        aid = new_agent()
+        p = as_agent(lsp(aid, "findReferences", "core/app/src/lib.rs", 1, FIND_REFS), "core-reviewer")
+        p["tool_input"]["note"] = "core-implementer"
+        record(p)
+        rc, out, err = run_hook("report", as_agent(scout(aid, "SubagentHandback", {"message": "core-implementer"}), "core-reviewer"))
+        self.assertEqual((rc, out.strip(), err), (0, "", ""))
+        self.assertFalse(os.path.exists(state_file(aid)))
+
+
+class CodeScoutKeepsItsOwnGate(unittest.TestCase):
+    def test_code_scout_reason_is_its_own_not_the_nav_reason(self):
+        got = gate(grep_tool(new_agent()))
+        reason = got["permissionDecisionReason"]
+        self.assertIn("position-based LSP call", reason)
+        self.assertNotIn("Ask LSP first", reason)
+        self.assertNotIn("dispatch code-scout", reason)
+
+    def test_code_scout_is_not_opened_by_a_scout_dispatch(self):
+        aid = new_agent()
+        record(scout(aid, "Agent", {"subagent_type": "code-scout"}, event="PostToolUse", tool_response={"result": "ok"}))
+        self.assertEqual(gate(grep_tool(aid))["permissionDecision"], "deny")
+
+    def test_code_scout_has_no_slice_gate(self):
+        aid = new_agent()
+        for _ in range(5):
+            self.assertIsNone(gate(bash(aid, "sed -n '1,5p' %s" % SRC)))
+        self.assertFalse(os.path.exists(state_file(aid)))
+
+
+class SliceGate(unittest.TestCase):
+    AGENT = "core-implementer"
+
+    def run_slice(self, aid, command, cwd=CWD):
+        return gate(nav_bash(aid, self.AGENT, command, cwd))
+
+    def assert_slice_deny(self, got, file=SRC):
+        self.assertIsNotNone(got)
+        self.assertEqual(got["permissionDecision"], "deny")
+        reason = got["permissionDecisionReason"]
+        self.assertIn("already sliced 2 times", reason)
+        self.assertIn(file, reason)
+        self.assertNotIn("Ask LSP first", reason)
+
+    def test_third_slice_denied_then_cap_allows(self):
+        for agent in NAV_AGENTS:
+            with self.subTest(agent=agent):
+                aid = new_agent()
+                command = "sed -n '1,5p' %s" % SRC
+                self.assertIsNone(gate(nav_bash(aid, agent, command)))
+                self.assertIsNone(gate(nav_bash(aid, agent, command)))
+                self.assert_slice_deny(gate(nav_bash(aid, agent, command)))
+                self.assert_slice_deny(gate(nav_bash(aid, agent, command)))
+                self.assertIsNone(gate(nav_bash(aid, agent, command)))
+                self.assertEqual([r["kind"] for r in read_state(aid)],
+                                 ["slice", "slice", "slice-deny", "slice-deny", "slice"])
+
+    def test_different_files_do_not_share_a_count(self):
+        aid = new_agent()
+        for name in ("a", "b", "c"):
+            for _ in range(2):
+                self.assertIsNone(self.run_slice(aid, "sed -n '1,5p' modules/inventory/src/%s.rs" % name))
+
+    def test_path_forms_share_one_key(self):
+        forms = [
+            "sed -n '1,5p' " + SRC,
+            "sed -n '6,9p' G:/Projects/swarog/" + SRC,
+            "sed -n '10p' /g/Projects/swarog/" + SRC,
+            "cd modules/inventory && sed -n '2p' src/lib.rs",
+            "cd " + CWD + "/modules/inventory && head -n 3 src/lib.rs",
+        ]
+        for third in range(len(forms)):
+            with self.subTest(third=forms[third]):
+                aid = new_agent()
+                firsts = [form for index, form in enumerate(forms) if index != third][:2]
+                for form in firsts:
+                    self.assertIsNone(self.run_slice(aid, form))
+                self.assert_slice_deny(self.run_slice(aid, forms[third]))
+                self.assertEqual({r["file"] for r in slice_records(aid)}, {SRC})
+
+    def test_cwd_relative_path_shares_the_key(self):
+        aid = new_agent()
+        wallet = CWD + "/modules/inventory"
+        self.assertIsNone(self.run_slice(aid, "sed -n '1p' src/lib.rs", wallet))
+        self.assertIsNone(self.run_slice(aid, "sed -n '2p' src/lib.rs", wallet))
+        self.assert_slice_deny(self.run_slice(aid, "sed -n '3p' " + SRC))
+
+    def test_head_and_tail_forms_are_counted(self):
+        forms = [
+            "head -n 5 " + SRC, "head -n5 " + SRC, "head -5 " + SRC, "head --lines=5 " + SRC,
+            "tail -n 5 " + SRC, "tail -n5 " + SRC, "tail -5 " + SRC, "tail --lines=5 " + SRC,
+            "tail -n +5 " + SRC, "sed -n '$p' " + SRC, "sed -n -e '3,4p' " + SRC,
+        ]
+        for form in forms:
+            with self.subTest(form=form):
+                aid = new_agent()
+                self.assertIsNone(self.run_slice(aid, "sed -n '1p' " + SRC))
+                self.assertIsNone(self.run_slice(aid, "sed -n '2p' " + SRC))
+                self.assert_slice_deny(self.run_slice(aid, form))
+
+    def test_head_and_tail_count_towards_the_same_file_total(self):
+        aid = new_agent()
+        self.assertIsNone(self.run_slice(aid, "head -n 5 " + SRC))
+        self.assertIsNone(self.run_slice(aid, "tail -n 5 " + SRC))
+        self.assert_slice_deny(self.run_slice(aid, "sed -n '9p' " + SRC))
+
+    def assert_never_counted(self, command, cwd=CWD):
+        aid = new_agent()
+        for _ in range(5):
+            self.assertIsNone(self.run_slice(aid, command, cwd), command)
+        self.assertEqual(slice_records(aid), [], command)
+
+    def test_not_counted_forms(self):
+        outside = os.path.join(_TEMP.name, "x.rs").replace("\\", "/")
+        cases = [
+            "git log | head -n 5",
+            "cat " + SRC + " | head -n 5",
+            "sed '5p' " + SRC,
+            "sed -n 's/a/b/p' " + SRC,
+            "sed -n '1p'",
+            "head " + SRC,
+            "head -c 100 " + SRC,
+            "tail -f " + SRC,
+            "sed -n '1p' target/debug/x.rs",
+            "head -n 5 run/server.log",
+            "tail -n 5 deploy/weles/x.log",
+            "tail -n 40 target/t.log",
+            "sed -n '1p' " + outside,
+            "head -n 5 " + outside,
+            "sed -n '1p' /tmp/x.rs",
+            "head -n 5 ../x.rs",
+            "head -n 5 C:/Users/x/y.rs",
+        ]
+        for command in cases:
+            with self.subTest(command=command):
+                self.assert_never_counted(command)
+
+    def test_redirected_file_in_same_command_is_not_counted(self):
+        for command in (
+            "cargo test > target/t.log 2>&1; tail -n 40 target/t.log",
+            "cargo test > notes/t.log 2>&1; tail -n 40 notes/t.log",
+            "cargo test &> notes/t.log; tail -n 40 notes/t.log",
+            "cargo test >> notes/t.log; head -n 40 notes/t.log",
+            "cd notes && cargo test > t.log; tail -n 40 t.log",
+        ):
+            with self.subTest(command=command):
+                self.assert_never_counted(command)
+
+    def test_same_file_without_redirect_is_counted(self):
+        aid = new_agent()
+        self.assertIsNone(self.run_slice(aid, "tail -n 40 notes/t.log"))
+        self.assertIsNone(self.run_slice(aid, "tail -n 40 notes/t.log"))
+        self.assert_slice_deny(self.run_slice(aid, "tail -n 40 notes/t.log"), "notes/t.log")
+
+    def test_redirect_in_an_earlier_command_does_not_exempt_a_later_one(self):
+        aid = new_agent()
+        self.assertIsNone(self.run_slice(aid, "cargo test > notes/t.log"))
+        for _ in range(2):
+            self.assertIsNone(self.run_slice(aid, "tail -n 40 notes/t.log"))
+        self.assert_slice_deny(self.run_slice(aid, "tail -n 40 notes/t.log"), "notes/t.log")
+
+    def test_denied_slice_is_not_recorded_as_a_slice(self):
+        aid = new_agent()
+        for _ in range(4):
+            self.run_slice(aid, "sed -n '1p' " + SRC)
+        self.assertEqual(len(slice_records(aid)), 2)
+
+    def test_slice_gate_does_not_deny_a_search(self):
+        aid = new_agent()
+        self.assertIsNone(self.run_slice(aid, "rg foo modules/inventory"))
+        self.assertEqual(slice_records(aid), [])
+
+
+class NavReport(unittest.TestCase):
+    def test_nav_agent_state_deleted_at_handback(self):
+        for agent in NAV_AGENTS:
+            with self.subTest(agent=agent):
+                aid = new_agent()
+                self.assertIsNotNone(gate(nav_grep(aid, agent)))
+                self.assertTrue(os.path.exists(state_file(aid)))
+                rc, out, err = run_hook("report", as_agent(
+                    scout(aid, "SubagentHandback", {"message": "done " + SRC + ":1"}), agent))
+                self.assertEqual((rc, out.strip(), err), (0, "", ""))
+                self.assertFalse(os.path.exists(state_file(aid)))
+                self.assertIsNotNone(gate(nav_grep(aid, agent)))
+
+    def test_nav_agent_report_without_state_is_silent(self):
+        rc, out, err = run_hook("report", as_agent(
+            scout(new_agent(), "SubagentHandback", {"message": "x"}), "core-implementer"))
+        self.assertEqual((rc, out.strip(), err), (0, "", ""))
 
 
 if __name__ == "__main__":
