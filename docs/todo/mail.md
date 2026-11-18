@@ -1,6 +1,6 @@
 # Mail
 
-Last updated: 2026-11-17
+Last updated: 2026-11-18
 
 ## In progress
 
@@ -8,6 +8,14 @@ _None._
 
 ## Open
 
+- [ ] **Mail projection tests hang**
+  MAIL-04. `cargo test -p mail -- --test-threads=1` never finishes inside
+  `projection_tests`: `a_faulting_handler_is_uncounted_and_backed_off` hangs, and a run
+  skipping only that test still hung in the same group (not narrowed further). Seen
+  2026-11-18 during admin-control-plane-redesign Step 13c.1a, whose diff touches only
+  `modules/mail/src/admin.rs`; suspected to be the durable-plane test deadlock, not that
+  step. Closed by: finding the hanging test and its wait, then a fix at the source.
+  Source: 0c380299 hand-off.
 - [ ] **In-tree producer for `mail.send_requested`**
   MAIL-03. Only mail consumes `SEND_REQUESTED` (Grep of modules/, lower bound). The
   intended producer is accounts. Source: docs/roadmap/feature-tracker.md:246 @ fd797b3a
