@@ -33,7 +33,8 @@ the document changes.
 For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch
 `code-scout` (subagent_type "code-scout", model "haiku" by default, "sonnet" for
 multi-hop questions that need interpretation (split-topology wiring, event flows across modules,
-macro-generated code paths), with explicit `model:` and effort "medium"); read a known file directly.
+macro-generated code paths), with explicit `model:` and effort "medium"); read a known file directly. Search budget and hook:
+`docs/reference/research-mode.md` **Search budget**; a plain-text or deleted-symbol Bash `rg`/`grep` carries `# nav-ok`.
 
 ## Read before writing — do NOT expect these inherited
 

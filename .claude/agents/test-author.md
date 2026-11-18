@@ -22,7 +22,7 @@ behaviour and the **previously-wrong branch** each test must exercise, and the
 **at-risk topology** (monolith vs split). If any of those is missing, ask before
 writing — a test that doesn't run the once-wrong branch is worthless.
 
-**Navigate Rust with the LSP tool first** (go-to-definition, find-references, implementations, workspace/document symbols; query the NAME position from `workspaceSymbol` or the Read line, not `documentSymbol`'s range-start line, where an empty result is not absence), then a targeted read of whole files (not many `sed -n` slices), with Grep last and labelled a lower bound. For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch `code-scout` (subagent_type "code-scout", model "haiku" by default, "sonnet" for multi-hop questions that need interpretation (split-topology wiring, event flows across modules, macro-generated code paths), with explicit `model:` and effort "medium"); read a known file directly.
+**Navigate Rust with the LSP tool first** (go-to-definition, find-references, implementations, workspace/document symbols; query the NAME position from `workspaceSymbol` or the Read line, not `documentSymbol`'s range-start line, where an empty result is not absence), then a targeted read of a known file (once, offset/limit around the anchor; not repeated `sed -n` slices), with Grep last and labelled a lower bound (budget and hook: `docs/reference/research-mode.md` **Search budget**; a plain-text or deleted-symbol Bash `rg`/`grep` carries `# nav-ok`). For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch `code-scout` (subagent_type "code-scout", model "haiku" by default, "sonnet" for multi-hop questions that need interpretation (split-topology wiring, event flows across modules, macro-generated code paths), with explicit `model:` and effort "medium"); read a known file directly.
 
 **Read before writing — these are your rules; do NOT expect them inherited:**
 - `.agents/shared/gamebackend.md` → **Hard constraints (do not violate without
@@ -63,6 +63,13 @@ named assertion in `tools/splitproof`, not by a monolith unit test.
    file per constraint #10, timing-robust per the timing-sensitive-tests
    doctrine — explicit persisted state / paused tokio clock / `Notify`
    happens-before, never race a real clock).
+
+**Long steps.** At about 100 tool calls with the test step unfinished, stop at a
+coherent point, commit what is done as `<subject>, part <k> (<plan-slug> step <id>)`
+(the commit-msg hook requires the step suffix last), and return a part hand-off
+instead of the note below: the commits so far, what remains in step order, the
+anchors you found, and the build/test state. The main session continues in a
+fresh test-author given the step text and your hand-off.
 
 ## What you return
 

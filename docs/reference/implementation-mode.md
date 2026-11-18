@@ -33,6 +33,10 @@ The shared effort/navigation/prompt rules are in [subagent-dispatch.md](subagent
 1. **Review between tasks.** A fresh `core-reviewer` reviews each task commit plus the cumulative diff from the task-start commit against the plan step (did what the plan said? touched out-of-scope files? introduced conflicting patterns — a module importing another module's impl crate, a cross-module foreign key, untyped event JSON outside a deliberate raw sink, or an event publish used where a sync capability was needed?). The review gates only a dependent next step; independent steps proceed while a fix lands (`planning-dispatch.md` **Implementation Mode**). No parallel fan-out for sequential plan steps.
 2. **Trust but verify.** Read the actual edits — self-reports describe intent, not result.
 3. **Commit after each task or independently reviewable part.** Granular history beats one final rollout commit: `git add` + `git commit` immediately after each unit verifies. **Subagents MAY commit their own work** before main-model review. The main-model review still runs afterward; a bad commit is fixed with a follow-up commit, never by discarding history.
+4. **Step parts.** An implementer (or test author) that returns a part hand-off
+   (`.claude/agents/core-implementer.md` **Long steps**) is followed by a fresh
+   one given the step text and that hand-off. A part gets no review of its own;
+   the review runs on the step's cumulative diff once the step is done.
 
 ## Refactor safety
 

@@ -26,11 +26,21 @@ context, and do not restate them, apply them:**
 
 **Rust navigation chain (does not inherit — use it; name the method you used):**
 1. LSP / rust-analyzer — definition, references, implementations, trait impls, call hierarchy, workspace/document symbols. Query the NAME position from `workspaceSymbol` or the Read line, not `documentSymbol`'s range-start line, where an empty result is not absence.
-2. Targeted read of a known file (read whole files, or several in one turn, rather than many `sed -n` slices). For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch `code-scout` (subagent_type "code-scout", model "haiku" by default, "sonnet" for multi-hop questions that need interpretation (split-topology wiring, event flows across modules, macro-generated code paths), with explicit `model:` and effort "medium"), one question per dispatch.
-3. Grep tool — last, and a labelled lower bound, never the answer.
+2. Targeted read of a known file (once, with offset/limit around the anchor; a whole file only when the step changes most of it; not repeated `sed -n` slices). For an OPEN question (who calls X, where Y is wired, all impls of Z) dispatch `code-scout` (subagent_type "code-scout", model "haiku" by default, "sonnet" for multi-hop questions that need interpretation (split-topology wiring, event flows across modules, macro-generated code paths), with explicit `model:` and effort "medium"), one question per dispatch.
+3. Grep tool — last, and a labelled lower bound, never the answer. Budget and hook:
+   `docs/reference/research-mode.md` **Search budget**; a plain-text or deleted-symbol Bash `rg`/`grep` carries `# nav-ok`.
 
 **Before ANY `cargo test` / `devctl up` / `verifyctl`, follow the `safe-verification`
 skill** — ONE rollout at a time on the shared Postgres.
+
+**Long steps.** At about 100 tool calls with the step unfinished, stop at a
+coherent point, commit what is done, and return a part hand-off instead of the
+report below: the commits so far, what remains in step order, the anchors you
+found, and the build/test state. The commit-msg hook requires a step subject to
+end with `(<plan-slug> step <id>)`, so name the part before it:
+`<subject>, part <k> (<plan-slug> step <id>)`. The main session continues in a
+fresh implementer given the step text and your hand-off. The TODO re-check below
+runs with the commit that completes the step.
 
 ## What you return
 

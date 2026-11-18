@@ -61,6 +61,10 @@ Fallback chain, in order — never skip to grep because it feels faster:
 4. **Grep/Glob** — only when nothing else fits, and a labelled lower bound.
    Once grep locates a symbol, re-escalate with the now-known file+symbol.
 
+Searches and file views follow the **Search budget** in
+`docs/reference/research-mode.md`: scoped, list first, narrow views, no
+repeated views.
+
 Never hand symbol navigation to a grep-sweeping agent, and never pre-authorize
 grep in a handoff. Dispatch one subagent per independent question; there is no
 fixed count.

@@ -70,6 +70,15 @@ The plan body must be `Step 1 → Step 2 → …` where each step spells out, ex
   `[test-author]`, `[docs]`, or `[review]` (see [implementation-mode.md](implementation-mode.md)).
   Claude may write `[opus]` / `[fable]` / `[sonnet]`; adapters translate.
 
+**Step size.** One step is one mechanism in one module or one consumer group,
+sized so one implementer finishes it in about 60 tool calls: roughly eight files
+to change, or one subsystem port. A larger unit is split into ordered steps when
+the plan is written, each still a whole slice of the feature (never a split to
+get under the inline threshold or to keep an old path alive). Every tool call
+re-reads the implementer's whole growing context: over the 14 days to 2026-11-18
+`core-implementer` runs averaged about 5.4 M context tokens each and ran up to
+195 turns.
+
 Steps do **NOT** each have to compile or pass tests in isolation — a step may leave the tree broken mid-rollout — but every step MUST be **written out**: a reader follows them top-to-bottom without inventing the order. Reference material (Context, Verified facts, file tables) is fine as supporting sections, but it does not replace the ordered steps — it feeds them.
 
 ## Step 5 — Dispatch `core-reviewer`

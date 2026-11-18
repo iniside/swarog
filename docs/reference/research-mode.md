@@ -29,6 +29,33 @@ Offer the fitting subset:
 - **Targeted main-model read** — small surface, one file end-to-end.
 - **Grep/Glob** — only when nothing else fits; acknowledge it's a lower bound.
 
+## Search budget
+
+Every search result and file view stays in the agent's context and is re-read
+on every later turn, so its cost grows with the length of the task.
+
+- Rust symbol (definition, callers, implementations, type): LSP, with the name
+  position from `workspaceSymbol`. Grep only when LSP returns nothing, and say so.
+- Non-Rust text and strings: grep always scoped to a folder, never the repo
+  root. List first (`rg -l` / `rg -c`), then read matches with `head_limit` and
+  at most `-C 2`.
+- File views: about 100 lines around the anchor; a whole file only when the step
+  changes most of it. Never view a range already in context unless the file was
+  edited since.
+- A search that takes more than one or two lookups goes to the search lane.
+
+On Claude, `.claude/hooks/scout_nav_guard.py` enforces this for
+`core-implementer`, `test-author` and `docs-writer`; the main session and the
+review and proof lanes are not gated. A Rust-capable search (Grep tool, Bash
+`rg`, `grep` or `git grep`) over the repo root or a bare `core`, `modules`,
+`api`, `cmd`, `tools` or `demos` is denied until the agent has made a
+position-based LSP call (`hover`, `goToDefinition`, `findReferences`,
+`goToImplementation`, `incomingCalls`, `outgoingCalls`, `prepareCallHierarchy`)
+or dispatched `code-scout`; two denials at most, then it passes. A Bash `rg` or
+`grep` for plain text or a deleted symbol carries the comment `# nav-ok` to pass.
+A third `sed -n`, `head` or `tail` slice of one file is denied (two denials at
+most); read the file once with `Read` instead.
+
 ## How research dispatch differs from implementation
 
 Research subagents may fan out **in parallel** (distinct angles), are mostly **read-only**, do not commit, and are **synthesized in the main model**—never write a conclusion from one subagent. Give each question one owner; the main agent does not repeat their searches. Each handoff provides verified source anchors, conclusions, and open questions. Escalating a wide fan-out to the top-tier model multiplies cost by its width — name the reason or don't escalate. Implementation is sequential per plan step, uses an execution lane, reviews each diff, and commits completed units—see [implementation-mode.md](implementation-mode.md).
