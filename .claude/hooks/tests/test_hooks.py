@@ -175,7 +175,7 @@ BASE_CASES = [
     ("no_worktree_hook", None, "silent"),
     ("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"prompt": "x"}}, "deny"),
     ("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"prompt": "x", "model": "  "}}, "deny"),
-    ("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"prompt": "x", "model": "sonnet"}}, "silent"),
+    ("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"prompt": "x", "model": "sonnet", "effort": "medium"}}, "silent"),
     ("explicit_model_guard", None, "silent"),
     ("haiku_listing_reminder", {"tool_name": "Agent", "tool_input": {"model": "opus", "prompt": "List all callers of foo"}}, "deny"),
     ("haiku_listing_reminder", {"tool_name": "Agent", "tool_input": {"model": "opus", "prompt": "List all callers of foo force-model"}}, "silent"),
@@ -356,7 +356,7 @@ class HookCases(unittest.TestCase):
 
     def test_explicit_model_guard(self):
         self.check("explicit_model_guard")
-        ok = run("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"model": "opus", "prompt": "x"}})
+        ok = run("explicit_model_guard", {"tool_name": "Agent", "tool_input": {"model": "opus", "effort": "medium", "prompt": "x"}})
         self.assertEqual(ok, "silent")
 
     def test_exit_plan_context_never_deny(self):

@@ -2,6 +2,7 @@
 name: core-implementer
 description: Authority-first implementation of ONE fully-specified plan step or fix in this repo — core/* internals, cross-seam wiring (bus/registry/edge/lifecycle), or correctness-critical module work. Use for [opus]/[fable] implementation lanes when the step is written out. NOT for mechanical rename sweeps ([sonnet] lane) or planning (the plan is an input).
 tools: Read, Edit, Write, Grep, Glob, Bash, LSP, Agent
+effort: medium
 ---
 
 # Core Implementer — authority-first

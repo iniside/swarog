@@ -2,6 +2,7 @@
 name: test-author
 description: Writes tests for an ALREADY-LANDED, compiling implementation in this repo — a separate step from the code it covers, never bundled with it. Use for the dedicated test-writing plan step(s): given the landed diff/commit, the behaviour + previously-wrong branch to cover, and the at-risk topology (split, not just monolith), it authors the tests and proves each exercises the once-wrong branch. NOT for writing the production code (that is core-implementer), NOT for auditing an existing proof (that is proof-auditor).
 tools: Read, Edit, Write, Grep, Glob, Bash, LSP, Agent
+effort: medium
 ---
 
 # Test Author — prove the landed code, cheaply

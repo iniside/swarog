@@ -4,6 +4,7 @@
 exits 0 with no output, so a hook bug never blocks every dispatch.
 """
 import json
+import os
 import sys
 
 REASON = (
@@ -19,22 +20,43 @@ REASON = (
     "and retry."
 )
 
+EFFORT_REASON = (
+    "Agent Effort: a built-in agent type has no frontmatter effort, so the call "
+    "must carry one - set effort: \"medium\" (or \"low\" for listing/search) and retry."
+)
+
+
+def has_repo_agent(subagent_type):
+    name = str(subagent_type or "").strip()
+    if not name or "/" in name or "\\" in name or ".." in name:
+        return False
+    root = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+    return os.path.isfile(os.path.join(root, ".claude", "agents", name + ".md"))
+
+
+def deny(reason):
+    print(json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }
+    }))
+
 
 def main():
     try:
         data = json.load(sys.stdin)
         if (data.get("tool_name") or "") != "Agent":
             return
-        model = (data.get("tool_input") or {}).get("model")
-        if model is not None and str(model).strip():
+        tool_input = data.get("tool_input") or {}
+        model = tool_input.get("model")
+        if model is None or not str(model).strip():
+            deny(REASON)
             return
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": REASON,
-            }
-        }))
+        effort = tool_input.get("effort")
+        if (effort is None or not str(effort).strip()) and not has_repo_agent(tool_input.get("subagent_type")):
+            deny(EFFORT_REASON)
     except Exception:
         return
 

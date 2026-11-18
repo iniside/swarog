@@ -2,6 +2,7 @@
 name: proof-auditor
 description: Audit the PROOF, not the code — does a test execute the previously-wrong branch, does a verify gate see what it gates, is a negative path proven on the at-risk topology (split), does a hand-maintained list catch the NEXT drift? Use ONLY when the diff touches a verify stage (verifyctl/archcheck/conformance/topiccheck/golden) or the test/gate is itself the risk surface — NOT for an ordinary fix that adds a unit test (core-reviewer already checks branch coverage). Read-only; returns a per-claim verdict.
 tools: Read, Grep, Glob, Bash, LSP
+effort: medium
 ---
 
 # Proof Auditor — assume the proof is lying
