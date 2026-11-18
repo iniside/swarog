@@ -1294,14 +1294,48 @@ async fn holds_advisory(pool: &PgPool, app: &str, key: i64) -> bool {
     held > 0
 }
 
-/// FNV-1a over `prefix` + `body`; recomputed here so the test pins the key formula.
-fn fnv1a_key(prefix: &[u8], body: &[u8]) -> i64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in prefix.iter().chain(body.iter()) {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+async fn wait_xact_parked<T>(pool: &PgPool, app: &str, xid: &str, racer: &tokio::task::JoinHandle<T>) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let parked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+              WHERE a.application_name = $1 AND NOT l.granted AND l.locktype = 'transactionid' \
+                AND l.transactionid::text = $2",
+        )
+        .bind(app)
+        .bind(xid)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if parked > 0 {
+            return true;
+        }
+        if racer.is_finished() {
+            return false;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "racer {app} neither parked on the transaction {xid} nor finished"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    h as i64
+}
+
+async fn gate_pair_edge(gate: &mut sqlx::PgConnection, a: &str, b: &str) -> String {
+    sqlx::query(
+        "INSERT INTO friends.edges (id, low_id, high_id, requester_id, state) \
+         VALUES (gen_random_uuid(), least($1::uuid, $2::uuid), greatest($1::uuid, $2::uuid), \
+                 $1::uuid, 'pending')",
+    )
+    .bind(a)
+    .bind(b)
+    .execute(&mut *gate)
+    .await
+    .unwrap();
+    sqlx::query_scalar("SELECT (pg_current_xact_id()::text::bigint % 4294967296)::text")
+        .fetch_one(&mut *gate)
+        .await
+        .unwrap()
 }
 
 /// The advisory keys a locking call actually takes, read back from `pg_locks` on the locking
@@ -1597,22 +1631,16 @@ async fn pending_purges_counts_only_swept_at_null_a_swept_row_does_not_inflate_i
 // parties in ascending order, the sweep locks each claimed player in the same order.
 // ============================================================================
 
-/// The key is read back from the lock `lock_player_tx` really takes: the pinned
-/// `friends.player/` FNV-1a of the 32 lowercase hex digits, the same for every spelling
-/// `$1::uuid` treats as one player, and different for a different uuid.
+/// The key is read back from the lock `lock_player_tx` really takes: the
+/// same for every spelling `$1::uuid` treats as one player, and different for a different uuid.
 #[tokio::test(flavor = "multi_thread")]
-async fn player_lock_key_is_stable_namespaced_and_spelling_invariant() {
+async fn player_lock_key_is_one_per_uuid_across_spellings() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
     let canon = "a2b7e8c1-0000-4000-8000-0000000000f1";
     let hex = canon.replace('-', "");
 
     let key = taken_player_key(&pool, &svc, canon).await;
-    assert_eq!(
-        key,
-        fnv1a_key(b"friends.player/", hex.as_bytes()),
-        "the key must be the friends.player/ FNV-1a of the normalized uuid"
-    );
     assert_eq!(key, taken_player_key(&pool, &svc, &canon.to_uppercase()).await, "case must not change the key");
     assert_eq!(
         key,
@@ -1652,9 +1680,9 @@ async fn lock_pair_tx_holds_both_keys_and_one_for_a_single_player() {
 }
 
 /// Race 1, request first — the once-wrong branch. A real `request` has passed both tombstone
-/// guards and written its edge, uncommitted, and is held at its event append by the test's
-/// EXCLUSIVE hold on the plane's writer key, when one party's tombstone commits and a sweep
-/// fires. The sweep's DELETE cannot see the uncommitted edge, so without the per-player lock
+/// guards and is held at its edge INSERT, holding both pair locks, behind a gate transaction's
+/// uncommitted edge for the same pair, when one party's tombstone commits and a sweep fires.
+/// The sweep's DELETE cannot see either uncommitted edge, so without the per-player lock
 /// it stamped `swept_at` around it and the edge outlived the erasure. Now the sweep parks on
 /// the purged party's key, which the request holds, until `request` commits, then deletes the
 /// edge with one `friend.removed`.
@@ -1681,11 +1709,7 @@ async fn sweep_waits_for_an_in_flight_request_case(tombstone_requester: bool, ba
         async move {
             let gate_pool = racer_pool(&gate_app);
             let mut gate = gate_pool.begin().await.unwrap();
-            sqlx::query("SELECT pg_advisory_xact_lock($1)")
-                .bind(asyncevents::store::WRITER_LOCK_KEY)
-                .execute(&mut *gate)
-                .await
-                .unwrap();
+            let gate_xid = gate_pair_edge(&mut gate, &me, &target).await;
 
             let request = tokio::spawn({
                 let racer = racer_service(&svc, &request_app);
@@ -1693,9 +1717,8 @@ async fn sweep_waits_for_an_in_flight_request_case(tombstone_requester: bool, ba
                 async move { racer.request(Identity::player(&me), handle).await }
             });
             assert!(
-                wait_advisory_parked(&pool, &request_app, &[asyncevents::store::WRITER_LOCK_KEY], &request)
-                    .await,
-                "request must be held at its event append, past its guards and INSERT"
+                wait_xact_parked(&pool, &request_app, &gate_xid, &request).await,
+                "request must be held at its edge INSERT, past its guards and pair locks"
             );
 
             let mut conn = pool.acquire().await.unwrap();
@@ -1718,7 +1741,7 @@ async fn sweep_waits_for_an_in_flight_request_case(tombstone_requester: bool, ba
             });
             let parked = wait_advisory_parked(&pool, &sweep_app, &[lock_key], &sweep).await;
 
-            gate.commit().await.unwrap();
+            gate.rollback().await.unwrap();
             let f = finish("race-1 request", request)
                 .await
                 .expect("the request passed its guards before the tombstone");

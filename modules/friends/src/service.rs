@@ -260,9 +260,9 @@ impl Service {
     /// The cap is counted AFTER the insert, inside its transaction, so a caller already
     /// holding the maximum can still repeat an EXISTING request and be answered with it —
     /// only a relation this call actually created can be refused.
-    async fn commit_new_request(
+    async fn new_request_tx(
         &self,
-        mut tx: Transaction<'_, Postgres>,
+        tx: &mut Transaction<'_, Postgres>,
         edge_id: String,
         requester_id: String,
         requester_handle: String,
@@ -270,11 +270,10 @@ impl Service {
     ) -> Result<Friend, Error> {
         let outstanding = self
             .store
-            .count_authored_pending_tx(&mut tx, &requester_id, STATE_PENDING)
+            .count_authored_pending_tx(tx, &requester_id, STATE_PENDING)
             .await
             .map_err(internal)?;
         if outstanding > MAX_PENDING_OUTSTANDING {
-            tx.rollback().await.map_err(internal)?;
             return Err(Error::conflict(format!(
                 "at most {MAX_PENDING_OUTSTANDING} outstanding friend requests"
             )));
@@ -287,10 +286,9 @@ impl Service {
             addressee_handle: target.handle.clone(),
         };
         self.bus
-            .emit_tx(AnyTx::new(&mut *tx), &friendsevents::REQUESTED, &evt)
+            .emit_tx(AnyTx::new(&mut **tx), &friendsevents::REQUESTED, &evt)
             .await
             .map_err(internal)?;
-        tx.commit().await.map_err(internal)?;
         Ok(friend_of(
             edge_id,
             STATE_PENDING,
@@ -298,6 +296,107 @@ impl Service {
             &target.player_id,
             Some(target),
         ))
+    }
+
+    async fn request_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        me: &str,
+        me_handle: String,
+        target: &PlayerSummary,
+    ) -> Result<(Friend, bool), Error> {
+        self.store
+            .lock_pair_tx(tx, me, &target.player_id)
+            .await
+            .map_err(internal)?;
+        if self.store.is_player_purged_tx(tx, me).await.map_err(internal)? {
+            return Err(Error::conflict(PLAYER_DELETED));
+        }
+        if self
+            .store
+            .is_player_purged_tx(tx, &target.player_id)
+            .await
+            .map_err(internal)?
+        {
+            return Err(Error::not_found(NO_SUCH_PLAYER));
+        }
+
+        if let Some((edge_id, requester_id)) = self
+            .store
+            .insert_pending_tx(tx, me, &target.player_id, STATE_PENDING)
+            .await
+            .map_err(pair_write_error)?
+        {
+            let friend = self
+                .new_request_tx(tx, edge_id, requester_id, me_handle, target)
+                .await?;
+            return Ok((friend, true));
+        }
+
+        if let Some((edge_id, addressee_id)) = self
+            .store
+            .accept_crossing_tx(tx, me, &target.player_id, STATE_PENDING, STATE_ACCEPTED)
+            .await
+            .map_err(pair_write_error)?
+        {
+            // The roles are the ORIGINAL ones: the target authored the request this call
+            // answers, so the caller is the addressee even though it called `request`.
+            let evt = friendsevents::Accepted {
+                edge_id: edge_id.clone(),
+                requester_id: target.player_id.clone(),
+                requester_handle: target.handle.clone(),
+                addressee_id,
+                addressee_handle: me_handle,
+            };
+            self.bus
+                .emit_tx(AnyTx::new(&mut **tx), &friendsevents::ACCEPTED, &evt)
+                .await
+                .map_err(internal)?;
+            let friend = friend_of(
+                edge_id,
+                STATE_ACCEPTED,
+                false,
+                &target.player_id,
+                Some(target),
+            );
+            return Ok((friend, true));
+        }
+
+        if let Some(row) = self
+            .store
+            .find_pair_tx(tx, me, &target.player_id)
+            .await
+            .map_err(pair_write_error)?
+        {
+            let friend = friend_of(
+                row.edge_id,
+                wire_state(&row.state)?,
+                row.requester_is_caller,
+                &target.player_id,
+                Some(target),
+            );
+            return Ok((friend, false));
+        }
+
+        // The pair's row was removed between the conflicting insert and this read, so the
+        // request creates the relation after all: ONE retry, no loop. A second miss means a
+        // third party re-created the pair inside that window; it names no outcome the
+        // contract enumerates for `request` — least of all the cap's 409 — so it stays the
+        // unclassified failure it is.
+        match self
+            .store
+            .insert_pending_tx(tx, me, &target.player_id, STATE_PENDING)
+            .await
+            .map_err(pair_write_error)?
+        {
+            Some((edge_id, requester_id)) => {
+                let friend = self
+                    .new_request_tx(tx, edge_id, requester_id, me_handle, target)
+                    .await?;
+                Ok((friend, true))
+            }
+            None => Err(internal("friend relation neither created nor resolvable")),
+        }
     }
 
     async fn page(
@@ -393,105 +492,18 @@ impl Player for Service {
         );
 
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        if let Err(e) = self.store.lock_pair_tx(&mut tx, &me, &target.player_id).await {
-            tx.rollback().await.map_err(internal)?;
-            return Err(internal(e));
-        }
-        if self
-            .store
-            .is_player_purged_tx(&mut tx, &me)
-            .await
-            .map_err(internal)?
-        {
-            tx.rollback().await.map_err(internal)?;
-            return Err(Error::conflict(PLAYER_DELETED));
-        }
-        match self.store.is_player_purged_tx(&mut tx, &target.player_id).await {
-            Ok(false) => {}
-            Ok(true) => {
+        match self.request_tx(&mut tx, &me, me_summary.handle, &target).await {
+            Ok((friend, true)) => {
+                tx.commit().await.map_err(internal)?;
+                Ok(friend)
+            }
+            Ok((friend, false)) => {
                 tx.rollback().await.map_err(internal)?;
-                return Err(Error::not_found(NO_SUCH_PLAYER));
+                Ok(friend)
             }
             Err(e) => {
-                tx.rollback().await.map_err(internal)?;
-                return Err(internal(e));
-            }
-        }
-
-        if let Some((edge_id, requester_id)) = self
-            .store
-            .insert_pending_tx(&mut tx, &me, &target.player_id, STATE_PENDING)
-            .await
-            .map_err(pair_write_error)?
-        {
-            return self
-                .commit_new_request(tx, edge_id, requester_id, me_summary.handle, &target)
-                .await;
-        }
-
-        if let Some((edge_id, addressee_id)) = self
-            .store
-            .accept_crossing_tx(&mut tx, &me, &target.player_id, STATE_PENDING, STATE_ACCEPTED)
-            .await
-            .map_err(pair_write_error)?
-        {
-            // The roles are the ORIGINAL ones: the target authored the request this call
-            // answers, so the caller is the addressee even though it called `request`.
-            let evt = friendsevents::Accepted {
-                edge_id: edge_id.clone(),
-                requester_id: target.player_id.clone(),
-                requester_handle: target.handle.clone(),
-                addressee_id,
-                addressee_handle: me_summary.handle,
-            };
-            self.bus
-                .emit_tx(AnyTx::new(&mut *tx), &friendsevents::ACCEPTED, &evt)
-                .await
-                .map_err(internal)?;
-            tx.commit().await.map_err(internal)?;
-            return Ok(friend_of(
-                edge_id,
-                STATE_ACCEPTED,
-                false,
-                &target.player_id,
-                Some(&target),
-            ));
-        }
-
-        if let Some(row) = self
-            .store
-            .find_pair_tx(&mut tx, &me, &target.player_id)
-            .await
-            .map_err(pair_write_error)?
-        {
-            tx.rollback().await.map_err(internal)?;
-            return Ok(friend_of(
-                row.edge_id,
-                wire_state(&row.state)?,
-                row.requester_is_caller,
-                &target.player_id,
-                Some(&target),
-            ));
-        }
-
-        // The pair's row was removed between the conflicting insert and this read, so the
-        // request creates the relation after all: ONE retry, no loop. A second miss means a
-        // third party re-created the pair inside that window; it names no outcome the
-        // contract enumerates for `request` — least of all the cap's 409 — so it stays the
-        // unclassified failure it is.
-        match self
-            .store
-            .insert_pending_tx(&mut tx, &me, &target.player_id, STATE_PENDING)
-            .await
-            .map_err(pair_write_error)?
-        {
-            Some((edge_id, requester_id)) => {
-                self.commit_new_request(tx, edge_id, requester_id, me_summary.handle, &target)
-                    .await
-            }
-            None => {
-                tx.rollback().await.map_err(internal)?;
-                Err(internal("friend relation neither created nor resolvable"))
+                let _ = tx.rollback().await;
+                Err(e)
             }
         }
     }
