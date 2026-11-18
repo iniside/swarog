@@ -210,6 +210,12 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
 
 ### Known limits (admin-control-plane-redesign step 28)
 
+- [ ] **The enum gate counts a variant once per enum, not once per draw site** (owner, 2026-11-18: after the panel is final)
+  ADMIN2-42. `render::seen` records (enum, variant), so a variant converted at one site
+  counts as covered at every site. Example: `Tone::Accent` is drawn by `style::tone`,
+  `delta_class` and `bar_tone`; a wrong `bar_tone` arm would pass the gate if no golden drew an
+  accent bar. Closed by: recording (enum, variant, site) and requiring a golden per site, or
+  per-site goldens where risk shows. Source: Step 13c.1g proof audit.
 - [ ] **Confirm `InvokeOutcome` stays declared undrawn** (owner, 2026-11-18)
   ADMIN2-36. `InvokeOutcome` is `variants! { undrawn; .. }` (core/controlplane/src/lib.rs),
   as the plan names "outcome" never converted. `routes.rs:1196-1211` turns each outcome into
