@@ -1,6 +1,6 @@
 # Purge race locks (plan B) — plan
 
-Status: approved by the owner 2026-11-18 (revised plan); steps 1–3 landed (`dd789cc2`, `8622b65d`); the owner ruled on proof-audit batch 1 on 2026-11-18, and the review-fix landed; steps 4–5 landed (`a228ccbd`, `424f00b1`), with proof-audit batch 2 addressed. Step 6 landed (`769261be`, proof review-fix `e4454955`); the owner ruled on 2026-11-18 to close the batch-3 proof gap (step 6a) and the groups head-of-line limit (step 6b) before step 7.
+Status: approved by the owner 2026-11-18 (revised plan); steps 1–3 landed (`dd789cc2`, `8622b65d`); the owner ruled on proof-audit batch 1 on 2026-11-18, and the review-fix landed; steps 4–5 landed (`a228ccbd`, `424f00b1`), with proof-audit batch 2 addressed. Step 6 landed (`769261be`, proof review-fix `e4454955`); step 6a landed (`81596465`, review PASS). Step 6b waits for the local `DROP SCHEMA groups CASCADE` (owner action), then step 7.
 
 Revision 2026-11-18: the owner approved the original twelve-step plan on 2026-11-18. No step was
 dispatched, and `git log --grep=purge-race-locks` shows no step commit. The plan was then
