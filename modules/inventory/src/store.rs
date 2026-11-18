@@ -10,10 +10,6 @@ use crate::Owner;
 /// from list views. Acceptable because the item catalogue is small; revisit if item variety grows.
 pub(crate) const HOLDINGS_HARD_LIMIT: i64 = 1000;
 
-/// Per-player advisory lock key: FNV-1a over an `inventory.player/` namespace plus the uuid
-/// normalized to Postgres's uuid-equality form, so every spelling the `$1::uuid` row SQL
-/// treats as one player takes the SAME lock. A spelling that is not 32 hex digits hashes its
-/// raw bytes, so taking the lock never raises 22P02.
 fn player_lock_key(player_id: &str) -> i64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -134,8 +130,6 @@ impl Store {
         Ok(())
     }
 
-    /// Taken ON THE TX CONNECTION — a separate pool connection would lose the
-    /// serialization — and released at commit/rollback.
     pub(crate) async fn lock_player_tx(
         &self,
         conn: &mut PgConnection,
@@ -148,9 +142,6 @@ impl Store {
         Ok(())
     }
 
-    /// `true` once this player's deletion tombstone is committed. A plain read: its caller
-    /// holds [`Store::lock_player_tx`] first, so the sweep either committed before the read
-    /// or waits for the caller's transaction.
     pub(crate) async fn is_player_purged_tx(
         &self,
         conn: &mut PgConnection,

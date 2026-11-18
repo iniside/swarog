@@ -1001,7 +1001,6 @@ fn purge_payload(name: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({ "name": name })).unwrap()
 }
 
-/// Grants one `starter_sword` to `owner` in a committed transaction of its own.
 async fn seed_holding(inner: &Inner, pool: &PgPool, owner: &Owner) {
     let mut tx = pool.begin().await.unwrap();
     inner.store.grant_exec(&mut tx, owner, "starter_sword", 1).await.unwrap();
@@ -1018,9 +1017,6 @@ async fn holding_count(pool: &PgPool, player_id: &str) -> i64 {
     .unwrap()
 }
 
-/// A red run must not leave unswept tombstones, and a `Drop` guard cannot `await`. On a failure
-/// or a hang the backends of `apps` are terminated first: a racer parked server-side keeps its
-/// locks after its future is gone, and the cleanup DELETEs would wait on them.
 async fn with_purge_cleanup<Fut>(
     pool: &PgPool,
     apps: Vec<String>,
@@ -1062,23 +1058,15 @@ where
     }
 }
 
-/// A fixed player id that sorts below every random tombstone: one fire claims only the
-/// `INVENTORY_PLAYERS_PER_FIRE` lowest unswept ids, so a sweep test's own player must be
-/// among them. Each sweep test owns a distinct `n` range.
 fn fixed_player(n: u64) -> String {
     format!("00000000-0000-0000-0000-{n:012x}")
 }
 
-/// Drops whatever a crashed earlier run left under a fixed id, so the test starts with no
-/// holdings and an absent tombstone.
 async fn clear_fixed_player(pool: &PgPool, player_id: &str) {
     cleanup_owner(pool, player_id).await;
     cleanup_purge_row(pool, player_id).await;
 }
 
-/// Precondition of a sweep test: one fire claims only the `INVENTORY_PLAYERS_PER_FIRE`
-/// lowest unswept tombstones, so leftovers sorting below `player_id` would starve it and the
-/// test would fail as a purge that never happened.
 async fn assert_claimed_by_the_next_fire(pool: &PgPool, player_id: &str) {
     let below: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM inventory.purged_players \
@@ -1212,7 +1200,6 @@ async fn sweep_handler_survivor_untouched_and_ignores_foreign_schedule_name() {
 
             let handler = projection::PurgeSweepHandler { inner: inner.clone() };
 
-            // Negative: a foreign schedule name sweeps nothing.
             let mut tx = pool.begin().await.unwrap();
             let delivery = Delivery { event_id: "inventory:test", tx: AnyTx::new(&mut *tx) };
             handler.call(delivery, purge_payload("some-other-job")).await.unwrap();
@@ -1224,7 +1211,6 @@ async fn sweep_handler_survivor_untouched_and_ignores_foreign_schedule_name() {
             );
             assert_eq!(inner.store.list(&Owner::player(&survivor)).await.unwrap().len(), 1);
 
-            // Positive control, same target row: the real name drains it, survivor unchanged.
             let mut tx2 = pool.begin().await.unwrap();
             let delivery2 = Delivery { event_id: "inventory:test", tx: AnyTx::new(&mut *tx2) };
             handler
@@ -1277,14 +1263,7 @@ async fn grant_is_blocked_by_tombstone_predicate_not_presence() {
     cleanup_purge_row(&pool, &purged).await;
 }
 
-// ============================================================================
-// Player grants and the purge sweep serialize on one per-player advisory lock: `grant`
-// takes it before its tombstone guard, the sweep takes it before each player's DELETE.
-// ============================================================================
 
-// Concurrency is staged, never slept: a racer runs on its OWN pool whose connections carry a
-// unique `application_name`, so a test waits on `pg_locks` until the racer is parked on the
-// lock the test holds, then releases it.
 
 fn racer_pool(app: &str) -> PgPool {
     let options = testdb::dsn()
@@ -1297,13 +1276,10 @@ fn racer_pool(app: &str) -> PgPool {
         .connect_lazy_with(options)
 }
 
-/// A unique `application_name` for one racer of one test run.
 async fn racer_app(pool: &PgPool, what: &str) -> String {
     format!("inventory-{what}-{}", unique_uuid(pool).await)
 }
 
-/// Awaits a spawned racer with a hang guard, so a deadlocked race fails with a name instead
-/// of stalling the run.
 async fn finish<T>(what: &str, handle: tokio::task::JoinHandle<T>) -> T {
     match tokio::time::timeout(Duration::from_secs(30), handle).await {
         Ok(Ok(value)) => value,
@@ -1312,10 +1288,6 @@ async fn finish<T>(what: &str, handle: tokio::task::JoinHandle<T>) -> T {
     }
 }
 
-/// Polls observed database state until a backend of `app` waits on the advisory lock `key`
-/// (`true`), or `racer` finished without ever parking (`false`). The second answer is how an
-/// unserialized racer shows itself; a racer parked on any OTHER lock reaches the deadline,
-/// which is a hang guard, not a timing bound.
 async fn wait_advisory_parked<T>(
     pool: &PgPool,
     app: &str,
@@ -1348,7 +1320,6 @@ async fn wait_advisory_parked<T>(
     }
 }
 
-/// As [`wait_advisory_parked`], for a racer waiting on the transaction `xid` itself.
 async fn wait_xact_parked<T>(
     pool: &PgPool,
     app: &str,
@@ -1381,9 +1352,6 @@ async fn wait_xact_parked<T>(
     }
 }
 
-/// Holds an uncommitted `starter_sword` holding of `player_id` on `gate` and returns the
-/// gate's transaction id: a grant of the same item waits on that transaction at its
-/// `ON CONFLICT`, past its lock and its tombstone guard.
 async fn gate_holding(gate: &mut sqlx::PgConnection, player_id: &str) -> String {
     sqlx::query(
         "INSERT INTO inventory.holdings (owner_type, owner_id, item_id, quantity) \
@@ -1399,8 +1367,6 @@ async fn gate_holding(gate: &mut sqlx::PgConnection, player_id: &str) -> String 
         .unwrap()
 }
 
-/// The one advisory key held by this transaction's backend, read back from `pg_locks` (a
-/// bigint key is split into `classid` high and `objid` low halves, `objsubid = 1`).
 async fn held_advisory_key(conn: &mut sqlx::PgConnection) -> i64 {
     let keys: Vec<i64> = sqlx::query_scalar(
         "SELECT (classid::bigint << 32) | objid::bigint FROM pg_locks \
@@ -1413,7 +1379,6 @@ async fn held_advisory_key(conn: &mut sqlx::PgConnection) -> i64 {
     keys[0]
 }
 
-/// The advisory key `Store::lock_player_tx` actually takes for `spelling`.
 async fn taken_player_key(pool: &PgPool, inner: &Inner, spelling: &str) -> i64 {
     let mut tx = pool.begin().await.unwrap();
     inner.store.lock_player_tx(&mut tx, spelling).await.unwrap();
@@ -1422,8 +1387,6 @@ async fn taken_player_key(pool: &PgPool, inner: &Inner, spelling: &str) -> i64 {
     key
 }
 
-/// One player grant of `starter_sword` through `Holdings::grant` on a connection of `app`:
-/// the number of holdings it answered, or the refusal's status and message.
 async fn race_grant(app: String, player_id: String) -> Result<usize, (Status, String)> {
     let racer = inner_with(racer_pool(&app), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
     racer
@@ -1433,10 +1396,6 @@ async fn race_grant(app: String, player_id: String) -> Result<usize, (Status, St
         .map_err(|e| (e.status, e.msg))
 }
 
-/// The key is read back from the lock `lock_player_tx` really takes: the same for every
-/// spelling `$1::uuid` treats as one player, different for a different uuid, different from
-/// the per-character lock on the same uuid, and taken without error for a spelling that is no
-/// uuid at all.
 #[tokio::test]
 async fn player_lock_key_is_one_per_uuid_across_spellings() {
     let Some(pool) = test_pool().await else { return };
@@ -1466,12 +1425,6 @@ async fn player_lock_key_is_one_per_uuid_across_spellings() {
     taken_player_key(&pool, &inner, "not-a-uuid").await;
 }
 
-/// Race 1, grant first — the once-wrong branch. A grant has passed its lock and its tombstone
-/// guard and is held at its INSERT, behind a gate transaction's uncommitted holding of the same
-/// item, when the player's tombstone commits and a sweep fires. The sweep's DELETE cannot see
-/// the uncommitted row, so without the lock it stamped `swept_at` around it and the holding
-/// outlived the erasure. Now the sweep parks on the player's key until the grant commits, then
-/// deletes the holding.
 #[tokio::test(flavor = "multi_thread")]
 async fn sweep_waits_for_an_in_flight_grant() {
     let Some(pool) = test_pool().await else { return };
@@ -1536,10 +1489,6 @@ async fn sweep_waits_for_an_in_flight_grant() {
     .await;
 }
 
-/// Race 2, sweep first. An open sweep transaction has locked and swept the player; a grant
-/// parks on that player's key, then, once the sweep commits, sees the tombstone and answers
-/// `PLAYER_DELETED` with no holding written. The tombstone is already committed, so only the
-/// "grant parks" assertion needs the lock.
 #[tokio::test(flavor = "multi_thread")]
 async fn grant_parks_behind_an_open_sweep_then_answers_player_deleted() {
     let Some(pool) = test_pool().await else { return };
@@ -1596,19 +1545,12 @@ async fn grant_parks_behind_an_open_sweep_then_answers_player_deleted() {
     .await;
 }
 
-/// One fire claims and locks at most 64 players. With 65 of this test's own lowest-sorting
-/// tombstones, one fire stamps exactly the 64 lowest and leaves the 65th for the next fire.
-/// The counts are literal, not derived from `INVENTORY_PLAYERS_PER_FIRE`, so raising the claim
-/// limit or restoring a batch loop turns this red. The sweep's 5s budget is far above 64
-/// players' three statements each, so it does not stop this fire early.
 #[tokio::test(flavor = "multi_thread")]
 async fn one_sweep_fire_stamps_at_most_64_players() {
     let Some(pool) = test_pool().await else { return };
     let _serialized = DB_LOCK.lock().await;
     ensure_schema(&pool).await;
     let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
-    // The LOWEST fixed range, below the other sweep tests' ids: a sibling that failed and left
-    // its tombstone unswept must not sort among these.
     let ids: Vec<String> = (0x01..0x01 + 65).map(fixed_player).collect();
     for id in &ids {
         cleanup_purge_row(&pool, id).await;
@@ -1665,7 +1607,6 @@ async fn one_sweep_fire_stamps_at_most_64_players() {
     .await;
 }
 
-/// Whether a backend of `app` holds the advisory lock `key`.
 async fn holds_advisory(pool: &PgPool, app: &str, key: i64) -> bool {
     let held: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
@@ -1680,10 +1621,6 @@ async fn holds_advisory(pool: &PgPool, app: &str, key: i64) -> bool {
     held > 0
 }
 
-/// A grant releases the player's lock before it answers a refusal that leaves its transaction
-/// open, here `PLAYER_DELETED`. sqlx only queues a dropped transaction's ROLLBACK and sends it
-/// from a task spawned on this single-threaded runtime, so the probe runs on another thread
-/// while this one is blocked, where that task cannot have run.
 #[tokio::test]
 async fn grant_releases_the_lock_before_it_answers_a_refusal() {
     let Some(pool) = test_pool().await else { return };
