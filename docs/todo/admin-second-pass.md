@@ -189,6 +189,14 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
   but does not refuse an unlisted `PageHead` action. Closed by: an admincheck finding for
   it. Source: the 593010bf hand-off.
 
+- [ ] **A row links to an entity header the operator's role cannot see** (low priority, owner 2026-11-18)
+  ADMIN2-41. A table row is clickable when its kind has any `EntityHeader`
+  contribution (K4, the `header_kinds` set built in core/admin/src/routes.rs), without
+  checking the header's `min_role` against the operator. A Viewer gets a clickable row that
+  opens an entity page drawing "Requires role …". Not a leak: the entity page enforces
+  `min_role`. Closed by: building `header_kinds` only from headers the operator admits.
+  Source: Step 13c.1a proof audit.
+
 ### Contract gaps admindiff cannot see
 
 - [ ] **Per-page toolbar search width** (low priority, owner 2026-11-17)
