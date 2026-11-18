@@ -80,7 +80,8 @@ CREATE TABLE IF NOT EXISTS groups.purged_players (
     player_id  uuid PRIMARY KEY,
     handle     text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
-    swept_at   timestamptz
+    swept_at   timestamptz,
+    skipped_at timestamptz
 );"#;
 
 pub(crate) fn internal<E: std::fmt::Display>(e: E) -> opsapi::Error {
@@ -165,9 +166,10 @@ impl Module for Groups {
                  ON groups.memberships (created_at) WHERE state IN ('invited','requested')",
             )
             .index(
-                "groups.purged_players_pending_idx",
-                "CREATE INDEX purged_players_pending_idx \
-                 ON groups.purged_players (player_id) WHERE swept_at IS NULL",
+                "groups.purged_players_claim_idx",
+                "CREATE INDEX purged_players_claim_idx \
+                 ON groups.purged_players (skipped_at NULLS FIRST, player_id) \
+                 WHERE swept_at IS NULL",
             )
             .run()
             .await?;

@@ -255,8 +255,8 @@ enum PlayerOutcome {
     /// [`SWEEP_BUDGET`] ran out between two of this player's groups; the fire ends with this
     /// player unstamped.
     BudgetSpent,
-    /// One group failed and was rolled back to its savepoint; this player is skipped and
-    /// the fire continues with the next one.
+    /// One group failed and was rolled back to its savepoint; this player is stamped
+    /// `skipped_at`, which claims it after every fresh tombstone, and the fire continues.
     Skipped,
 }
 
@@ -280,15 +280,18 @@ impl crate::Service {
         let due: Vec<(String,)> = sqlx::query_as(
             "SELECT player_id::text FROM groups.purged_players \
               WHERE swept_at IS NULL \
-              ORDER BY groups.purged_players.player_id \
+              ORDER BY groups.purged_players.skipped_at NULLS FIRST, \
+                       groups.purged_players.player_id \
               LIMIT $1 FOR UPDATE SKIP LOCKED",
         )
         .bind(GROUPS_PLAYERS_PER_FIRE)
         .fetch_all(&mut *conn)
         .await
         .map_err(BusError::transport)?;
+        let mut lock_order: Vec<&str> = due.iter().map(|(id,)| id.as_str()).collect();
+        lock_order.sort_unstable();
         // Every player lock of the fire before any group lock, outside every `purge_group`.
-        for (player_id,) in &due {
+        for player_id in lock_order {
             self.store
                 .lock_player_tx(&mut *conn, player_id)
                 .await
@@ -315,10 +318,19 @@ impl crate::Service {
                     );
                     return Ok(());
                 }
-                // No stamp: the tombstone stays this sweep's work item. The budget
-                // below still runs, so a batch of failing players cannot outrun
+                // The tombstone stays this sweep's work item, behind every fresh one. The
+                // budget below still runs, so a batch of failing players cannot outrun
                 // `ASYNCEVENTS_HANDLER_TIMEOUT` unchecked.
-                PlayerOutcome::Skipped => {}
+                PlayerOutcome::Skipped => {
+                    sqlx::query(
+                        "UPDATE groups.purged_players SET skipped_at = now() \
+                          WHERE player_id = $1::uuid",
+                    )
+                    .bind(player_id)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(BusError::transport)?;
+                }
                 PlayerOutcome::Purged => {
                     sqlx::query(
                         "UPDATE groups.purged_players SET swept_at = now() \

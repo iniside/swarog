@@ -114,7 +114,7 @@ impl Store {
 
     /// The purge backlog: tombstones the sweep still owes work
     /// on, and the oldest one's `created_at` (`""` when nothing is outstanding).
-    /// `purged_players_pending_idx` serves the predicate, so the cost tracks
+    /// `purged_players_claim_idx` serves the predicate, so the cost tracks
     /// outstanding work rather than the permanent row per deleted player.
     pub(crate) async fn pending_purges(&self) -> Result<(i64, String), sqlx::Error> {
         let (count, oldest) = sqlx::query_as::<_, (i64, Option<String>)>(

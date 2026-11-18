@@ -397,13 +397,16 @@ async fn create_is_blocked_by_tombstone_predicate_not_presence() {
 
 async fn assert_claimed_by_the_next_fire(pool: &PgPool, player_id: &str) {
     let below: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM groups.purged_players \
-          WHERE swept_at IS NULL AND player_id < $1::uuid",
+        "SELECT ahead FROM ( \
+           SELECT player_id, row_number() OVER ( \
+                    ORDER BY skipped_at NULLS FIRST, player_id) - 1 AS ahead \
+             FROM groups.purged_players WHERE swept_at IS NULL) claim \
+          WHERE player_id = $1::uuid",
     )
     .bind(player_id)
     .fetch_one(pool)
     .await
-    .unwrap();
+    .expect("the player must hold an unswept tombstone");
     assert!(
         below < GROUPS_PLAYERS_PER_FIRE,
         "precondition: {below} unswept tombstones sort below {player_id}, so the next fire \
@@ -1316,7 +1319,8 @@ async fn one_sweep_fire_stamps_at_most_64_players() {
     ids.sort();
     let foreign_below: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM groups.purged_players \
-          WHERE swept_at IS NULL AND player_id <= $1::uuid AND player_id <> ALL($2::uuid[])",
+          WHERE swept_at IS NULL AND skipped_at IS NULL \
+            AND player_id <= $1::uuid AND player_id <> ALL($2::uuid[])",
     )
     .bind(ids.last().unwrap())
     .bind(&ids)
@@ -1347,6 +1351,120 @@ async fn one_sweep_fire_stamps_at_most_64_players() {
             assert!(
                 unstamped_tombstones(&pool, &ids).await.is_empty(),
                 "the next fire must resume and stamp the last one"
+            );
+        }
+    })
+    .await;
+}
+
+async fn skipped_at(pool: &PgPool, player_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT skipped_at::text FROM groups.purged_players WHERE player_id = $1::uuid")
+        .bind(player_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn sweep_under_lock_timeout(pool: &PgPool, svc: &Service) {
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("SET LOCAL lock_timeout = '200ms'").execute(&mut *tx).await.unwrap();
+    svc.sweep_purged_players(&mut tx).await.unwrap();
+    tx.commit().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_skipped_player_rotates_behind_fresh_tombstones_and_is_purged_later() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    let skipped = fixed_uuid(0x00);
+    let mut fresh: Vec<String> = (0..GROUPS_PLAYERS_PER_FIRE).map(|_| fixed_uuid(0x15)).collect();
+    fresh.sort();
+    let late = fixed_uuid(0x15);
+    assert!(skipped < fresh[0] && skipped < late);
+    let mut ours = fresh.clone();
+    ours.extend([skipped.clone(), late.clone()]);
+    let top = ours.iter().max().unwrap().clone();
+    let foreign_among: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM groups.purged_players \
+          WHERE swept_at IS NULL AND skipped_at IS NULL \
+            AND player_id <= $1::uuid AND player_id <> ALL($2::uuid[])",
+    )
+    .bind(&top)
+    .bind(&ours)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(foreign_among, 0, "precondition: a foreign fresh tombstone sorts among this test's ids");
+    let gate_app = racer_app("rotation-gate", &skipped);
+
+    with_purge_cleanup(&pool, vec![gate_app.clone()], ours, {
+        let (pool, svc) = (pool.clone(), svc.clone());
+        async move {
+            let group_id = svc
+                .create(Identity::player(&skipped), "RotationGroup".into(), JOIN_OPEN.into())
+                .await
+                .unwrap()
+                .id;
+            let group_key = taken_group_key(&pool, &svc, &group_id).await;
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(group_key)
+                .execute(&mut *gate)
+                .await
+                .unwrap();
+
+            plant(&svc, &pool, &skipped, "Rotation#0000").await;
+            assert_claimed_by_the_next_fire(&pool, &skipped).await;
+            sweep_under_lock_timeout(&pool, &svc).await;
+            let first_skip = skipped_at(&pool, &skipped).await;
+            assert!(first_skip.is_some(), "a group error must stamp skipped_at");
+            assert!(!swept(&pool, &skipped).await, "a skipped player must stay unswept");
+            assert!(group_exists(&pool, &group_id).await, "the failed group must be rolled back");
+
+            for (i, id) in fresh.iter().enumerate() {
+                plant(&svc, &pool, id, &format!("Rotation#{:04}", i + 1)).await;
+            }
+            sweep_under_lock_timeout(&pool, &svc).await;
+            assert!(
+                unstamped_tombstones(&pool, &fresh).await.is_empty(),
+                "the fire must claim every fresh tombstone ahead of the skipped one"
+            );
+            assert_eq!(
+                skipped_at(&pool, &skipped).await,
+                first_skip,
+                "the skipped player must not be claimed while fresh tombstones fill the fire"
+            );
+            assert!(!swept(&pool, &skipped).await);
+
+            let late_group = svc
+                .create(Identity::player(&late), "RotationLate".into(), JOIN_OPEN.into())
+                .await
+                .unwrap()
+                .id;
+            plant(&svc, &pool, &late, "Rotation#0065").await;
+            gate.rollback().await.unwrap();
+            let mut tx = pool.begin().await.unwrap();
+            svc.sweep_purged_players(&mut tx).await.unwrap();
+            tx.commit().await.unwrap();
+            assert!(swept(&pool, &skipped).await, "the released skipped player must be purged");
+            assert!(swept(&pool, &late).await);
+            assert!(!group_exists(&pool, &group_id).await && !group_exists(&pool, &late_group).await);
+            let purge_order: Vec<String> = sqlx::query_scalar(
+                "SELECT payload->>'player_id' FROM asyncevents.events \
+                  WHERE payload->>'reason' = $1 AND payload->>'player_id' = ANY($2) \
+                  ORDER BY tie_breaker",
+            )
+            .bind(groupsevents::REASON_ACCOUNT_DELETED)
+            .bind(vec![skipped.clone(), late.clone()])
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                purge_order,
+                vec![late.clone(), skipped.clone()],
+                "the fire must purge in claim order, the fresh tombstone before the skipped one"
             );
         }
     })
