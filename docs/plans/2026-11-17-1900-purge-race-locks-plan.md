@@ -1,6 +1,6 @@
 # Purge race locks (plan B) — plan
 
-Status: approved by the owner 2026-11-18 (revised plan); steps 1–3 landed (`dd789cc2`, `8622b65d`); paused on a structural proof-audit finding (batch 1) until the owner rules.
+Status: approved by the owner 2026-11-18 (revised plan); steps 1–3 landed (`dd789cc2`, `8622b65d`); the owner ruled on proof-audit batch 1 on 2026-11-18. The review-fix for steps 2–3 comes before step 4.
 
 Revision 2026-11-18: the owner approved the original twelve-step plan on 2026-11-18. No step was
 dispatched, and `git log --grep=purge-race-locks` shows no step commit. The plan was then
@@ -170,7 +170,9 @@ scheduler seed value, and the wipe-as-migration rule applies.
    before any check whose answer could tell "purged" apart from "absent", such as a cap or
    capacity check.
 5. **Lock release.** Every new or changed transaction that holds a player lock calls
-   `tx.rollback()` explicitly on every return that does not commit.
+   `tx.rollback()` explicitly on every return that does not commit. That includes database-error
+   returns, which must not leave through a bare `?` while the transaction is open (owner ruling
+   2026-11-18).
 6. **Drain cadence.** The `player-purge` seed is **300 s**, so 64 per fire drains about 18k
    deleted accounts per day per module.
    - **Accepted limit (groups only), for the owner to confirm.** A player that is persistently
@@ -197,6 +199,21 @@ Every dispatch prompt carries:
 - "`cargo fmt` is not safe here; hand-format";
 - the path `.agents/skills/code-navigation/SKILL.md`;
 - the `safe-verification` skill for every cargo run.
+
+**Race-test rules (owner rulings 2026-11-18, after proof-audit batch 1):**
+- **Park point.** Park the writer at a point inside the module, after its guard, wherever one
+  exists, for example a uniqueness conflict on an uncommitted row held by a gate transaction.
+  Detect the park with a check matched to the gate's transaction id. Hold the event plane's
+  `WRITER_LOCK_KEY` exclusively only when the module has no such point. That use follows the
+  documented exception in `docs/reference/testing.md` (held only under the crate's `DB_LOCK`,
+  released as soon as the racer is parked), and the step's report must say why no module-scoped
+  park point exists.
+- **Key tests.** A lock-key test pins behaviour, not the formula:
+  - the key is the same for every spelling of one uuid;
+  - different uuids give different keys;
+  - the race tests read the key back from `pg_locks`.
+
+  It never recomputes FNV-1a over the namespace string.
 
 A step fixes, in its own commit, every comment in its own files that it makes false. A comment
 that cannot be made true in one line is deleted. The step reports false comments outside its files
