@@ -1,6 +1,20 @@
 # Purge race locks (plan B) — plan
 
-Status: approved by the owner 2026-11-18; steps 1-4 dispatched first.
+Status: waiting for approval
+
+Revision 2026-11-18: the owner approved the original twelve-step plan on 2026-11-18. No step was
+dispatched, and `git log --grep=purge-race-locks` shows no step commit. The plan was then
+revised to the current agent workflow (`.agents/shared/planning-dispatch.md`, the
+`implementation-dispatch` and `research-plan-present` skills):
+- Each separate `[test-author]` step is folded into its code step. These are in-module tests, not
+  verify gates, splitproof assertions or a new harness, so the implementer writes them.
+- The routine `proof-auditor` passes are dropped. No step touches a verify stage.
+- Step 1 is now `[inline]` because it changes one literal in one file.
+- False comments are fixed in the step that falsifies them. Only cadence prose outside the
+  steps' files stays in the docs step.
+- ACCOUNT-DELETION-05 is closed by the step that closes the race, not by the docs step.
+
+The scope, invariants and lock design are unchanged.
 
 ## Context
 
@@ -37,9 +51,8 @@ Wallet (39e2f802, plan A) and storage already close this race. This plan closes 
 The plan adds no new module, event, capability or contract. The only schema change is the
 scheduler seed value, and the wipe-as-migration rule applies.
 
-**Lead bookkeeping (before step 2):** move ACCOUNT-DELETION-05 from `## Notes` to `## In progress`
-in `docs/todo/account-deletion.md`, citing this plan. This is a docs-only edit by the lead,
-committed separately.
+**Lead bookkeeping:** done. ACCOUNT-DELETION-05 is already under `## In progress` in
+`docs/todo/account-deletion.md`, citing this plan.
 
 ## Verified facts (research 2026-11-17; re-checked by core-reviewer)
 
@@ -166,32 +179,47 @@ committed separately.
 
 ## Steps
 
-Code and test steps alternate. Each test step starts only after its code step has landed and
-compiled. Modules go simplest first and groups last, so the pattern is proven on the simple
-shapes before the two-key ordering. The `[test-author]` steps run at opus, not the adapter's
-sonnet default: each needs a new deterministic interleaving (a two-player order, a P/G
-deadlock shape, and the autocommit-to-transaction proof), which goes beyond porting the wallet
-harness.
+Every code step writes its own tests to the bar "revert the fix and the test must fail". Each
+mutation it lists must be shown red. Steps 2–6 follow the wallet test harness: Race 1, Race 2, the
+fire bound, `racer_pool`, `finish`, the key-matched `wait_advisory_parked`,
+`assert_claimed_by_the_next_fire`, `taken_player_key`, `fixed_player` and the
+spawn-plus-terminate cleanup. That harness is an existing precedent, not a new harness. No step adds
+a verify gate or a splitproof assertion, so there is no `[test-author]` step.
 
-Every code step lists, with file:line in its report, the doc comments it made false; step 12
-fixes them.
+Modules go simplest first and groups last, so the pattern is proven on the simple shapes before
+the two-key ordering. Steps 2–6 touch disjoint files. A step's review may run beside the next
+implementation, but implementations run one at a time, because each one runs `cargo test` (one
+rollout at a time).
 
-### Step 1 — player-purge cadence `[sonnet]`
-**(a) What:** `modules/scheduler/src/lib.rs`, the seed only.
-**(b) Why first:** it is independent and tiny, and it bounds the backlog that the 64-per-fire
-cap would otherwise create, including for wallet and storage.
+Every dispatch prompt carries:
+- `comments: default NONE`, plus the step's **Comments** line;
+- "`cargo fmt` is not safe here; hand-format";
+- the path `.agents/skills/code-navigation/SKILL.md`;
+- the `safe-verification` skill for every cargo run.
+
+A step fixes, in its own commit, every comment in its own files that it makes false. A comment
+that cannot be made true in one line is deleted. The step reports false comments outside its files
+for step 7.
+
+### Step 1 — player-purge cadence `[inline]`
+**(a) What:** `modules/scheduler/src/lib.rs:175`, the seed literal only.
+**(b) Why first:** it is independent and tiny. It bounds the backlog that the 64-per-fire cap would
+otherwise create, including for wallet and storage.
 **(c) How:**
-- Change the seed to `('player-purge', 300)`.
-- If a scheduler test pins the seeded intervals, mirror the new value in it.
-- Existing databases keep 86400 because of `ON CONFLICT DO NOTHING`. Report the one-line
-  operator `UPDATE` for the local dev DB as an owner action; do not run it.
-- Run `cargo test -p scheduler`.
-**(d) Lane:** `core-implementer`, sonnet.
+- Change the seed to `('player-purge', 300)`. No test or splitproof assertion pins 86400 for
+  `player-purge` (Verified facts), so this is one literal in one file. That is under the dispatch
+  threshold, so there is no subagent and no review.
+- Run `cargo test -p scheduler` under the `safe-verification` skill.
+- Existing databases keep 86400 because of `ON CONFLICT DO NOTHING`. Report the one-line operator
+  `UPDATE` for the local dev DB as an owner action; do not run it.
+- The cadence comments this makes false are fixed in step 7.
+**(d) Lane:** `[inline]` (main session).
 
 Commit: `fix(scheduler): drain purged players every five minutes (purge-race-locks step 1)`.
 
-### Step 2 — characters lock `[opus]`
-**(a) What:** `modules/characters/src/{store.rs,service.rs,projection.rs}`.
+### Step 2 — characters lock and race tests `[opus]`
+**(a) What:** `modules/characters/src/{store.rs,service.rs,projection.rs}`,
+`modules/characters/src/tests/purge.rs`, `modules/characters/src/tests.rs`.
 **(b) Why now:** this is the simplest shape: one writer, one key, and the key already exists.
 **(c) How:**
 - Lift `player_lock_key` and its lock query into a single `Store::lock_player_tx`, with the key
@@ -200,33 +228,28 @@ Commit: `fix(scheduler): drain purged players every five minutes (purge-race-loc
   - `CHARACTERS_PLAYERS_PER_FIRE = 64` becomes the only claim `LIMIT`;
   - delete the loop and `PURGE_FLOOR`;
   - take the lock before each player's DELETE.
-- Run build, clippy, and the existing `-p characters` tests. Report any test pinned to the
-  removed loop (`src/tests/purge.rs:250`); do not touch it.
+- Fix the `is_player_purged_tx` "plain read, no advisory lock" doc.
+- **Tests:**
+  - **Race 1:** `create` is in flight past its guard; the sweep parks on the player's key; then
+    it purges the character.
+  - **Race 2:** the sweep holds the player; `create` parks, then gets 409 `PLAYER_DELETED`.
+  - **Fire bound:** 65 tombstones on the lowest fixed ids; the fire stamps exactly 64.
+  - **Existing sweep tests:** move them to fixed low ids with `assert_claimed_by_the_next_fire`.
+    Replace the batch-loop test (`src/tests/purge.rs:250`), which the removed loop invalidates.
+  - No sleeps.
+  - **Mutations, each shown red:** sweep lock removed, writer lock removed, limit raised.
+  - **Topology:** the lock is database-global, so in-module tests on the shared Postgres cover
+    the split.
+- Run build, clippy, then `cargo test -p characters` three times.
+
+**Comments:** none new. The existing sqlx explicit-rollback note stays.
 **(d) Lane:** `core-implementer`, opus.
 
 Commit: `fix(characters): serialize character creation and the purge sweep per player (purge-race-locks step 2)`.
 
-### Step 3 — characters race tests `[test-author]`
-**(a) What:** `modules/characters/src/tests/purge.rs`, `modules/characters/src/tests.rs`.
-**(b) Why now:** step 2 has landed. These tests cover its commit.
-**(c) How:**
-- **Race 1:** `create` is in flight past its guard; the sweep parks on the player's key; then it
-  purges the character.
-- **Race 2:** the sweep holds the player; `create` parks, then gets 409 `PLAYER_DELETED`.
-- **Fire bound:** 65 tombstones on the lowest fixed ids; the fire stamps exactly 64.
-- **Existing sweep tests:** move them to fixed low ids with `assert_claimed_by_the_next_fire`,
-  and replace the batch-loop test.
-- Use the wallet helpers. No sleeps.
-- **Mutations, each shown red:** sweep lock removed, writer lock removed, limit raised.
-- **Topology:** the lock is database-global, so in-module tests on the shared Postgres cover the
-  split.
-- Run `cargo test -p characters` three times.
-**(d) Lane:** `test-author`, opus; `proof-auditor` follows.
-
-Commit: `test(characters): prove creation and the purge sweep serialize per player (purge-race-locks step 3)`.
-
-### Step 4 — friends lock `[opus]`
-**(a) What:** `modules/friends/src/{store.rs,service.rs,projection.rs}`.
+### Step 3 — friends lock and race tests `[opus]`
+**(a) What:** `modules/friends/src/{store.rs,service.rs,projection.rs}`,
+`modules/friends/src/tests.rs` (purge section) and its helpers.
 **(b) Why now:** this introduces the two-player order, while the shape is still simpler than
 groups.
 **(c) How:**
@@ -241,35 +264,34 @@ groups.
 - Sweep: `FRIENDS_PLAYERS_PER_FIRE = 64` as the single claim. No loop, no `PURGE_FLOOR`. Lock
   before `purge_edges_tx`.
 - Every new non-commit return rolls back explicitly (Invariant 5).
-- Run build, clippy and the existing tests for `-p friends`. Report any loop-pinned tests.
+- Fix the false docs: `service.rs:27-32` (it relies on the directory miss) and the
+  `is_player_purged_tx` "no advisory lock" doc.
+- **Tests:**
+  - Race 1, requester tombstoned mid-transaction.
+  - Race 1, target tombstoned mid-transaction.
+  - Race 2, both parties: the request parks, then answers 409 for the requester and the
+    directory-miss answer for the target.
+  - **Order test:**
+    - Players A < B (fixed low ids) are both tombstoned.
+    - A request between them parks while holding one lock.
+    - One sweep claims both players.
+    - The test asserts there is no deadlock error and that both are purged.
+    - With the pair order reversed (mutation), it must fail with 40P01.
+  - Fire bound.
+  - Move the existing sweep tests to `low_uuid()` ids plus the claim precondition. Replace any
+    test pinned to the removed loop.
+  - **Mutations, each shown red:** sweep lock removed, target guard removed, pair order reversed,
+    limit raised.
+- Run build, clippy, then `cargo test -p friends` three times.
+
+**Comments:** one line on `lock_pair_tx`, giving the ascending order as the sweep's claim order.
 **(d) Lane:** `core-implementer`, opus.
 
-Commit: `fix(friends): serialize requests and the purge sweep on both players' locks (purge-race-locks step 4)`.
+Commit: `fix(friends): serialize requests and the purge sweep on both players' locks (purge-race-locks step 3)`.
 
-### Step 5 — friends race tests `[test-author]`
-**(a) What:** `modules/friends/src/tests.rs` (purge section) and its helpers.
-**(b) Why now:** this covers step 4's commit.
-**(c) How:**
-- Race 1, requester tombstoned mid-transaction.
-- Race 1, target tombstoned mid-transaction.
-- Race 2, both parties: the request parks, then answers 409 for the requester and the
-  directory-miss answer for the target.
-- **Order test:**
-  - Players A < B (fixed low ids) are both tombstoned.
-  - A request between them parks while holding one lock.
-  - One sweep claims both players.
-  - The test asserts there is no deadlock error and that both are purged.
-  - With the pair order reversed (mutation), it must fail with 40P01.
-- Fire bound.
-- Move the existing sweep tests to `low_uuid()` ids plus the claim precondition.
-- Mutations: sweep lock removed, target guard removed, pair order reversed, limit raised.
-- Run `cargo test -p friends` three times.
-**(d) Lane:** `test-author`, opus; `proof-auditor` follows.
-
-Commit: `test(friends): prove requests and the purge sweep serialize on both players (purge-race-locks step 5)`.
-
-### Step 6 — notifications lock `[opus]`
-**(a) What:** `modules/notifications/src/{store.rs,service.rs,projection.rs}`.
+### Step 4 — notifications lock and race tests `[opus]`
+**(a) What:** `modules/notifications/src/{store.rs,service.rs,projection.rs,conformance.rs}`,
+`modules/notifications/src/tests.rs` (purge and operator sections).
 **(b) Why now:** this is a single-key shape with two caller kinds, a delivery transaction and an
 operator path.
 **(c) How:**
@@ -283,34 +305,32 @@ operator path.
 - Give `PurgeSweepHandler` the key, following the module's existing handler shapes.
 - Sweep: `NOTIFICATIONS_PLAYERS_PER_FIRE = 64` as the single claim. No loop. Lock before each
   DELETE.
-- Run build, clippy and the existing tests for `-p notifications`.
+- Fix the false docs: `service.rs:307-310,366`, `conformance.rs:39` (`pool.acquire()`) and the
+  `is_player_purged_tx` "no advisory lock" doc.
+- **Tests:**
+  - Race 1 on the durable path: a delivery handler parks between its guard and its insert.
+  - Race 1 on the operator path: this proves the move from autocommit to a transaction.
+  - Race 2.
+  - Fire bound.
+  - Move the existing sweep tests to fixed low ids.
+  - **Mutations, each shown red:**
+    - writer lock removed;
+    - sweep lock removed;
+    - operator path reverted to autocommit;
+    - operator error path without explicit rollback, if it can be made observable; otherwise say
+      why it cannot;
+    - limit raised.
+- Run build, clippy, then `cargo test -p notifications` three times.
+
+**Comments:** none new.
 **(d) Lane:** `core-implementer`, opus.
 
-Commit: `fix(notifications): serialize inbox delivery and the purge sweep per recipient (purge-race-locks step 6)`.
+Commit: `fix(notifications): serialize inbox delivery and the purge sweep per recipient (purge-race-locks step 4)`.
 
-### Step 7 — notifications race tests `[test-author]`
-**(a) What:** `modules/notifications/src/tests.rs` (purge and operator sections).
-**(b) Why now:** this covers step 6's commit.
-**(c) How:**
-- Race 1 on the durable path: a delivery handler parks between its guard and its insert.
-- Race 1 on the operator path: this proves the move from autocommit to a transaction.
-- Race 2.
-- Fire bound.
-- Move the existing sweep tests to fixed low ids.
-- Mutations, each shown red:
-  - writer lock removed;
-  - sweep lock removed;
-  - operator path reverted to autocommit;
-  - operator error path without explicit rollback, if it can be made observable; otherwise
-    say why it cannot;
-  - limit raised.
-- Run `cargo test -p notifications` three times.
-**(d) Lane:** `test-author`, opus. `proof-auditor` follows.
-
-Commit: `test(notifications): prove delivery and the purge sweep serialize per recipient (purge-race-locks step 7)`.
-
-### Step 8 — inventory lock `[opus]`
-**(a) What:** `modules/inventory/src/{store.rs,service.rs,projection.rs}`.
+### Step 5 — inventory lock and race tests `[opus]`
+**(a) What:** `modules/inventory/src/{store.rs,service.rs,projection.rs}`,
+`modules/inventory/src/tests.rs`, `docs/todo/inventory.md` and `docs/todo/inventory-done.md`
+(only if the known failing test changes state).
 **(b) Why now:** this is a single-key shape, and it changes autocommits into one transaction.
 **(c) How:**
 - Add an `inventory.player/` key and a `Store::lock_player_tx`, separate from
@@ -326,35 +346,37 @@ Commit: `test(notifications): prove delivery and the purge sweep serialize per r
 
   Every answer stays the same as today. Every non-commit return rolls back explicitly.
 - Delete `Store::is_player_purged`, `Store::grant_pool` and `Store::item_exists`, the
-  pool-autocommit forms. Replace them with transaction-scoped forms if they don't already exist.
-- Player sweep: `INVENTORY_PLAYERS_PER_FIRE = 64` as the single claim, with no loop and no floor.
-  Take the lock before `clear_owner_exec`.
-- Run build, clippy and the existing tests for `-p inventory`. Report test callers of the
-  deleted helpers; do not fix them here.
+  pool-autocommit forms. Replace them with transaction-scoped forms if those don't already exist.
+  Move every test caller to the transaction-scoped forms in this step; there is no second rail.
+- Player sweep: `INVENTORY_PLAYERS_PER_FIRE = 64` as the single claim, with no loop and no
+  floor. Take the lock before `clear_owner_exec`.
+- Fix the false docs: `service.rs:94-103`, `projection.rs:261-262` and the
+  `is_player_purged_tx` "no advisory lock" doc.
+- **Tests:**
+  - Race 1 and Race 2 on the player-owned grant.
+  - Fire bound.
+  - Move the existing sweep tests to fixed low ids. Run the sweep in
+    `sweep_clears_player_owned_holdings_but_keeps_character_owned_rows` inside a transaction.
+  - Re-seed through `grant_exec` on a transaction or through `Holdings::grant`.
+  - **Known failing test:** re-check
+    `sweep_handler_survivor_untouched_and_ignores_foreign_schedule_name`, which
+    `docs/todo/inventory.md` tracks.
+    - If this step fixes it, move the item to the done file in this commit.
+    - Otherwise leave the item and report the test's state.
+  - **Mutations, each shown red:** grant lock removed, sweep lock removed, limit raised.
+- Run build, clippy, then `cargo test -p inventory` three times.
+
+**Comments:** none new.
 **(d) Lane:** `core-implementer`, opus.
 
-Commit: `fix(inventory): serialize player grants and the purge sweep per player (purge-race-locks step 8)`.
+Commit: `fix(inventory): serialize player grants and the purge sweep per player (purge-race-locks step 5)`.
 
-### Step 9 — inventory race tests `[test-author]`
-**(a) What:** `modules/inventory/src/tests.rs`.
-**(b) Why now:** covers step 8's commit.
-**(c) How:**
-- Race 1 and Race 2 on the player-owned grant.
-- Fire bound.
-- Move the existing sweep tests to fixed low ids. Run the sweep in
-  `sweep_clears_player_owned_holdings_but_keeps_character_owned_rows` inside a transaction.
-- Re-seed through `grant_exec` on a transaction or through `Holdings::grant`, not `grant_pool`.
-- Re-check the known failing `sweep_handler_survivor_untouched_and_ignores_foreign_schedule_name`
-  in `docs/todo/inventory.md` and report its state.
-- Mutations: grant lock removed, sweep lock removed, limit raised.
-- Run `cargo test -p inventory` three times.
-**(d) Lane:** `test-author` (opus), then `proof-auditor`.
-
-Commit: `test(inventory): prove player grants and the purge sweep serialize per player (purge-race-locks step 9)`.
-
-### Step 10 — groups lock `[opus]`
-**(a) What:** `modules/groups/src/{store.rs,service.rs,projection.rs}`.
-**(b) Why last:** it is the only module with two lock kinds, so it needs the P-before-G order.
+### Step 6 — groups lock and race tests `[opus]`
+**(a) What:** `modules/groups/src/{store.rs,service.rs,projection.rs}`,
+`modules/groups/src/purge_tests.rs`, `modules/groups/src/tests.rs`,
+`docs/todo/account-deletion.md`, `docs/todo/account-deletion-done.md`.
+**(b) Why last:** it is the only module with two lock kinds, so it needs the P-before-G order. It
+closes the race in the last module, so it also closes ACCOUNT-DELETION-05.
 **(c) How:**
 - Add a `groups.player/` key and `Store::lock_player_tx`.
 - Writer lock order:
@@ -369,85 +391,94 @@ Commit: `test(inventory): prove player grants and the purge sweep serialize per 
   SAVEPOINT. Then run the existing per-player, per-group purge. `GROUPS_PER_FIRE` still bounds
   the number of groups.
 - Every new non-commit return rolls back explicitly.
-- In the report, write out each path's lock sequence and confirm that no path takes P after G.
-  Record the Skipped head-of-line limit (Invariant 6) as a leftover for the owner.
-- Run build, clippy and the existing tests for `-p groups`.
+- Fix the false docs: `store.rs:147-148`, `service.rs:29-33` and the `is_player_purged_tx`
+  "no advisory lock" doc.
+- **Tests:**
+  - **Race 1** (writer first): `create`, `join` (the first membership in an existing group) and
+    `invite` (target tombstoned), each in flight, with the sweep parking. For `create`, assert
+    the outcome the code produces and explain it.
+  - **Race 2** (sweep first): `join` and `invite` park behind an open sweep. They then answer
+    deleted and directory-miss respectively.
+  - **The former deadlock shape:**
+    - Fixed ids a < b; a is in G1 and is being purged.
+    - Tombstoned b has an in-flight `join(G1)`.
+    - Use a deterministic park point.
+    - Assert no deadlock error and that both players are purged.
+  - `invite` to a full group with a purged target gets the directory-miss answer, not "full".
+  - Fire bound.
+  - Existing sweep tests stay on the low `fixed_uuid` tiers, with the claim precondition. The
+    65-group cap test stays green.
+  - **Mutations, each shown red:**
+    - P taken after G in the sweep: the deadlock test must catch it;
+    - `join` P removed;
+    - `invite` guard removed;
+    - `invite` guard moved after `counts_tx`;
+    - limit raised.
+- Run build, clippy, then `cargo test -p groups` three times.
+- Close ACCOUNT-DELETION-05: move it to `docs/todo/account-deletion-done.md` with ref
+  `purge-race-locks step 6` in this commit.
+- In the report:
+  - write out each path's lock sequence and confirm that no path takes P after G;
+  - list the Skipped head-of-line limit (Invariant 6) under **Leftovers for owner**.
+
+  The lead writes it to `docs/todo/groups.md` only if the owner defers it.
+- If the step runs past about 60 tool calls, hand off at a part boundary (code, then tests). The
+  review runs on the step's cumulative diff.
+
+**Comments:** one line on the sweep's lock phase: all P before any G, outside `purge_group`.
 **(d) Lane:** `core-implementer`, opus.
 
-Commit: `fix(groups): serialize create, join and invite with the purge sweep per player (purge-race-locks step 10)`.
+Commit: `fix(groups): serialize create, join and invite with the purge sweep per player (purge-race-locks step 6)`.
 
-### Step 11 — groups race tests `[test-author]`
-**(a) What:** `modules/groups/src/purge_tests.rs`, `modules/groups/src/tests.rs`.
-**(b) Why now:** this covers step 10's commit.
-**(c) How:**
-- **Race 1** (writer first): `create`, `join` (the first membership in an existing group) and
-  `invite` (target tombstoned), each in flight, with the sweep parking. For `create`, assert
-  the outcome the code produces and explain it.
-- **Race 2** (sweep first): `join` and `invite` park behind an open sweep. They then answer
-  deleted and directory-miss respectively.
-- **The former deadlock shape:**
-  - Fixed ids a < b; a is in G1 and is being purged.
-  - Tombstoned b has an in-flight `join(G1)`.
-  - Use a deterministic park point.
-  - Assert no deadlock error and that both players are purged.
-- `invite` to a full group with a purged target gets the directory-miss answer, not "full".
-- Fire bound.
-- Existing sweep tests stay on the low `fixed_uuid` tiers, with the claim precondition. The
-  65-group cap test stays green.
-- **Mutations:**
-  - P taken after G in the sweep: the deadlock test must catch it;
-  - `join` P removed;
-  - `invite` guard removed;
-  - `invite` guard moved after `counts_tx`;
-  - limit raised.
-- Run `cargo test -p groups` three times.
-**(d) Lane:** `test-author` (opus), then `proof-auditor`.
-
-Commit: `test(groups): prove create, join and invite serialize with the purge sweep (purge-race-locks step 11)`.
-
-### Step 12 — docs `[docs]`
-**(a) What:** the doc-comment, cadence, reference and todo files listed under (c), plus the
-historical plan's erratum.
+### Step 7 — cadence prose `[docs]`
+**(a) What:** every `player-purge` cadence statement that step 1 made false, plus the historical
+plan's erratum. The exact files are listed under (c).
 **(b) Why last:** the prose describes landed code.
 **(c) How:**
-- **Doc comments** that steps 1–11 reported false, and at least the following:
-  - the `is_player_purged_tx` "plain read, no advisory lock" docs in all five modules;
-  - friends `service.rs:27-32`;
-  - groups `store.rs:147-148` and `service.rs:29-33`;
-  - inventory `service.rs:94-103` and `projection.rs:261-262`;
-  - notifications `service.rs:307-310,366` and `conformance.rs:39` (`pool.acquire()`).
-- **Every `player-purge` cadence statement:**
-  - the `PLAYER_PURGE` contract doc (`api/scheduler/events/src/lib.rs:74-81`, one DAY → five
-    minutes);
-  - each module's "shared daily `player-purge`" `lib.rs` comment;
+- **Cadence statements** (one day becomes five minutes):
+  - the `PLAYER_PURGE` contract doc, `api/scheduler/events/src/lib.rs:74-81`;
+  - "shared daily `player-purge`" in `modules/{characters/src/lib.rs:245, friends/src/lib.rs:206,
+    groups/src/lib.rs:198, inventory/src/lib.rs:288, storage/src/lib.rs:129,
+    wallet/src/lib.rs:310}`;
   - `modules/storage/src/projection.rs:27,39-41`;
   - `modules/wallet/src/projection.rs:148`;
   - `modules/groups/src/projection.rs:218,237`;
   - `modules/characters/src/projection.rs:20` and `modules/friends/src/projection.rs:20`;
+  - `modules/scheduler/src/lib.rs:12` (module header);
   - `tools/splitproof/src/main.rs:2682,3074`;
   - `.agents/shared/gamebackend.md:250,451-452`;
   - `docs/reference/event-plane-ops.md:101`;
-  - the README deletion-latency wording.
+  - `README.md:140` ("daily sweep");
+  - `docs/roadmap/feature-tracker.md:145,256`.
 
-  Leave the 86400 s *prune* schedules alone.
-- **References and tracking:**
-  - `docs/reference/module-reference.md` ("Do NOT copy" notes);
-  - feature-tracker rows;
-  - close ACCOUNT-DELETION-05 into `docs/todo/account-deletion-done.md` with ref
-    `purge-race-locks step 11`;
-  - record the groups Skipped head-of-line limit, per the owner's answer.
-- **Historical plan:** add an erratum line to `docs/plans/2026-09-10-1917-account-deletion-purge-plan.md`
-  (no rewrite).
+  Any statement in this list that an earlier step already corrected is skipped. Leave the 86400 s
+  *prune* schedules alone.
+- Any false comment that steps 2–6 reported outside their files.
+- `docs/reference/module-reference.md`: the "Do NOT copy" notes.
+- **Historical plan:** add an erratum line to
+  `docs/plans/2026-09-10-1917-account-deletion-purge-plan.md`. Do not rewrite it.
+- Do not edit `docs/todo/`. Step 6 closes ACCOUNT-DELETION-05, and the lead writes any deferred
+  leftover.
+
 **(d) Lane:** `docs-writer`, sonnet.
 
-Commit: `docs(account-deletion,characters,friends,notifications,inventory,groups,scheduler,wallet,storage,splitproof): the purge race is closed in every module (purge-race-locks step 12)`.
+Commit: `docs(account-deletion,scheduler,splitproof): describe the five-minute player-purge cadence (purge-race-locks step 7)`.
 
 ## Verification / review
 
-- **Reviews:** `core-reviewer` (opus) after every commit. `proof-auditor` (opus) additionally
-  after test steps 3, 5, 7, 9 and 11.
-- **Cargo discipline:** run one cargo command at a time, each preceded by its own `tasklist`
-  check.
+- **Reviews:**
+  - A fresh `core-reviewer` (opus, ≥ the author's tier) reviews each of steps 2–6, on the step
+    commit plus the cumulative diff from the step's start commit. A review is never resumed.
+  - Each task gets one review round. None of these steps touches `core/`, split/edge wiring or a
+    verify gate, so there is no second round.
+  - Step 1 is under the threshold and gets no review.
+  - In step 7, only the `api/scheduler/events` contract doc comment counts as code. It gets one
+    `core-reviewer` pass; the rest of step 7 is prose and is not reviewed.
+  - No `proof-auditor`: no step touches a verify stage, and the race tests are in-module tests
+    that `core-reviewer` checks for branch coverage.
+  - A structural finding pauses the plan until the owner rules.
+- **Cargo discipline:** follow the `safe-verification` skill. Run one cargo command at a time,
+  each preceded by its own `tasklist` check.
 - **Final checks:**
   - `cargo test --workspace --no-fail-fast`;
   - `cargo run -p archcheck`;
