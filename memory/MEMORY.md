@@ -3,15 +3,15 @@
 ## Process / discipline / behavior
 - [pgrep check must GATE](pgrep-check-must-gate-not-decorate.md) — check live cargo in its own call first; diff baselines after --bless
 - [Always fix at the source](always-fix-at-the-source.md) — no test-side workarounds; leftovers fixed unless owner defers
-- [Adversarial subagent review](adversarial-subagent-review.md) — review = core-reviewer subagent, never inline; attack the diff's own seams
+- [Adversarial subagent review](adversarial-subagent-review.md) — subagent, adversarial vs diff and plan; structural → owner; no prose review
 - [Live acceptance: report, don't fix](live-acceptance-report-dont-fix.md) — live-acceptance failure: stop, diagnose, report options; no fix loop
 - [No inline ad-hoc fixes](no-inline-adhoc-fixes.md) — untagged work: ask for the lane before editing
 - [Never git add -A with agents live](never-git-add-all-while-subagents-run.md) — stage by explicit path
 - [Never stash to compare trees](never-stash-to-compare-trees.md) — use git show HEAD:path or a commit, never stash
 - [Amplification proof → unit tests](amplification-proof-belongs-in-unit-tests.md) — prove anti-amplification in sequential unit tests, not split-proof
 - [Fix authority via taxonomy](core-failure-taxonomy.md) — failure classes + review attacks behind the specialized agents
-- [Specialized core agents](specialized-core-agents.md) — which .claude/agents lane does what; all code writing = core-implementer
-- [Split impl and tests](split-impl-and-tests.md) — tests are a separate later test-author step, no exceptions
+- [Specialized core agents](specialized-core-agents.md) — which .claude/agents lane does what (incl. code-scout); code = core-implementer
+- [Who writes tests](split-impl-and-tests.md) — implementer in-step; test-author only for gates/splitproof/harnesses
 - [Plan reviewer at session tier](plan-reviewer-must-be-session-tier.md) — reviewer tier >= author tier
 - [Verify the at-risk path](verify-the-at-risk-path-not-the-safe-one.md) — prove the topology the change risks (split)
 - [Scope claims to what was verified](scope-claims-to-what-was-verified.md) — no global claims from a narrow result

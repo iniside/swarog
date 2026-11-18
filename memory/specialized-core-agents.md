@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
-  modified: 2026-07-22T09:48:06.042Z
+  modified: 2026-11-18T14:20:36.122Z
 ---
 
 `.claude/agents/` holds five specialized personas — three built 2026-07-13 from
@@ -23,11 +23,8 @@ to close the gaps generic agents missed:
   NEW standalone crates (weles platform containment counted), not only literal
   `core/*` paths; `general-purpose` agents are for research only, never a
   code-writing lane. "It's not core/" is not an exemption.
-- **core-reviewer** — prosecutor-mode review (same `name:`; never renamed).
-  Default REJECT; read `git diff`/`git show`; always-on old-rail class;
-  binary PASS-with-class-list or punch list. After EVERY task/commit, not
-  only core/*. Method: `.agents/shared/planning-dispatch.md` +
-  `.claude/agents/core-reviewer.md`.
+- **core-reviewer** — adversarial review of code commits and the one plan review;
+  see [[adversarial-subagent-review]] (owner 2026-11-18 policy).
 - **proof-auditor** — audits the PROOF not the code (coverage-gap/false-pass/
   notapplicable — the verify-net class that ships bugs green). Use on diffs touching
   tests or verify stages, or that claim "proven".
@@ -38,12 +35,11 @@ to close the gaps generic agents missed:
   runs at the cheap tier). Orchestration lives in the `mockup-implementation` skill
   (`.claude/skills/mockup-implementation/SKILL.md`) — invoke it for any "make it
   look like the mockup" task.
-- **test-author** — the ONLY lane that writes tests, on a landed+compiling diff,
-  as a SEPARATE plan step after the impl it covers (never bundled). Proves each
-  test runs the previously-wrong branch on the at-risk topology (split via a
-  `tools/splitproof` assertion, not a monolith-only test); reports pass/fail
-  counts, no fix-everything-red loop. Default `model:"sonnet"`; escalate for the
-  tests `.agents/shared/planning-dispatch.md` `[test-author]` puts at the top tier. See [[split-impl-and-tests]].
+- **test-author** — only for verify gates, splitproof assertions and new test
+  harnesses; ordinary tests are written by the implementer (owner 2026-11-18,
+  [[split-impl-and-tests]]).
+- **code-scout** (2026-11-18) — haiku, read-only search returning file:line
+  anchors; LSP-first enforced by .claude/hooks/scout_nav_guard.py.
 - **docs-writer** (2026-08-31) — the ONLY lane that writes documentation or
   comment prose: root guidance, `docs/reference`, `docs/roadmap`, plan errata,
   Rust doc-comments. Runs LAST, against landed code; deletes false prose as much
@@ -68,6 +64,5 @@ These target the source, not more review rounds — so they must NOT re-create t
   ONLY for diffs touching a verify stage or where the test/gate is the risk, not every fix
   that adds a unit test.
 - They compose with — never duplicate — `architecture-review` (seam law),
-  `split-topology-debugger`, `safe-verification`. All omit frontmatter `model` so they
-  inherit session tier (keeps reviewer >= author tier, per
-  [[plan-reviewer-must-be-session-tier]]); dispatcher passes model:/effort per call.
+  `split-topology-debugger`, `safe-verification`. Each agent pins `effort:` in frontmatter (medium; code-scout low,
+  2026-11-18); the dispatcher still passes model: per call.
