@@ -4,8 +4,10 @@ one `core-reviewer` pass (planning-dispatch.md Adversarial Diff Review -
 MANDATORY), naming `proof-auditor` only when the commit touches a verify stage
 or a golden file. Silent on prose-only commits, --amend, --dry-run and
 output without a `[branch sha]` line (failed or no-op commit), and on step-part
-commits (", part <k> (<plan> step <id>)"; review runs on the step's cumulative diff). Uncertainty
-about which files a landed commit touched resolves toward reminding. Any internal error exits 0 with no output.
+commits (", part <k> (<plan> step <id>)"). The commit that completes a step
+after its parts is classified by the union of the parts' paths and points the
+reviewer at the step's cumulative diff. Uncertainty about which files a landed
+commit touched resolves toward reminding. Any internal error exits 0 with no output.
 """
 import json
 import os
@@ -19,6 +21,10 @@ try:
     import shell_data
 except Exception:
     shell_data = None
+try:
+    from commit_format import STEP_SUFFIX
+except Exception:
+    STEP_SUFFIX = None
 
 SHELL_TOOLS = {"Bash", "PowerShell"}
 
@@ -26,20 +32,21 @@ PROSE_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".rst"})
 
 COMMIT_LINE = re.compile(r"^\[[^\]]*?\b([0-9a-f]{7,40})\]", re.MULTILINE)
 
-PART_SUBJECT = re.compile(r", part \d+ \([^()]*\)$")
+PART_SUBJECT = re.compile(r", part \d+ " + STEP_SUFFIX.pattern) if STEP_SUFFIX else None
 
 PROOF_PREFIXES = (
     "tools/verifyctl/", "tools/archcheck/", "tools/conformance/", "tools/topiccheck/",
     "docs/reference/public-api-baseline/", "docs/reference/contract-golden/",
 )
 
-BASE = (
+BASE_TEMPLATE = (
     "ADVERSARIAL DIFF REVIEW (planning-dispatch.md - MANDATORY): a commit just "
     "landed. Dispatch ONE `core-reviewer` subagent (subagent_type: \"core-reviewer\") "
-    "on it (`git show <sha>`) in a separate context, explicit model: >= the author's "
+    "on {target} in a separate context, explicit model: >= the author's "
     "tier. It routes by files touched through docs/reference/core-failure-taxonomy.md "
     "and returns a binary verdict or a punch list."
 )
+BASE = BASE_TEMPLATE.format(target="it (`git show <sha>`)")
 PROOF = (
     " This commit touches a verify stage or golden file — also dispatch "
     "`proof-auditor`."
@@ -73,6 +80,43 @@ def commit_paths(cwd, sha):
         return None
     paths = [line.strip() for line in listing.splitlines() if line.strip()]
     return paths or None
+
+
+def is_part(subject):
+    return bool(PART_SUBJECT and PART_SUBJECT.search(subject))
+
+
+def step_commits(cwd, sha, subject):
+    match = STEP_SUFFIX.search(subject) if STEP_SUFFIX else None
+    if not match:
+        return [sha]
+    suffix = match.group(0).strip()
+    ok, log = run_git(
+        cwd, ["log", "-F", "--grep", suffix, "--format=%H%x00%s", "-n", "50", sha])
+    if not ok:
+        return [sha]
+    found = []
+    for line in log.splitlines():
+        full, _, title = line.partition("\0")
+        title = title.strip()
+        if not title.endswith(suffix):
+            continue
+        if found and not is_part(title):
+            break
+        found.append(full.strip())
+    if not found or not found[0].startswith(sha):
+        return [sha]
+    return found
+
+
+def union_paths(cwd, commits):
+    paths = []
+    for commit in commits:
+        listed = commit_paths(cwd, commit)
+        if listed is None:
+            return None
+        paths.extend(listed)
+    return paths
 
 
 def is_proof_path(path):
@@ -110,21 +154,32 @@ def reminder(data):
         return None
 
     cwd = data.get("cwd") or None
-    all_paths = []
+    all_paths, ranges = [], []
     for sha in shas:
         ok, subject = run_git(cwd, ["log", "-1", "--format=%s", sha])
-        if ok and PART_SUBJECT.search(subject.strip()):
+        subject = subject.strip() if ok else ""
+        if is_part(subject):
             continue
-        paths = commit_paths(cwd, sha)
+        commits = step_commits(cwd, sha, subject)
+        paths = union_paths(cwd, commits) if len(commits) > 1 else None
+        if paths is None:
+            commits = [sha]
+            paths = commit_paths(cwd, sha)
         if paths is None:
             return BASE + PROOF_UNKNOWN
+        if len(commits) > 1:
+            ranges.append("`git diff %s^..%s`" % (commits[-1][:12], sha))
         all_paths.extend(paths)
 
+    base = BASE
+    if ranges:
+        base = BASE_TEMPLATE.format(
+            target="the step's cumulative diff (%s; not only the last commit)" % ", ".join(ranges))
     if all(os.path.splitext(p)[1].lower() in PROSE_SUFFIXES for p in all_paths):
         return None
     if any(is_proof_path(p) for p in all_paths):
-        return BASE + PROOF
-    return BASE
+        return base + PROOF
+    return base
 
 
 def main():

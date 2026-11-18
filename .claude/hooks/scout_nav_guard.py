@@ -61,7 +61,7 @@ SLICE_REASON = (
 SEPARATORS = ("&&", ";", "||", "|", "&")
 REDIRECTS = {">", ">>", "<", "<<", ">&", "&>", "&>>", ">|", "<&"}
 WRITE_REDIRECTS = {">", ">>", ">&", "&>", "&>>", ">|"}
-OUTPUT_DIRS = {"target", "run", "deploy", "bin", "dist"}
+OUTPUT_DIRS = {"target", "run", "deploy", "bin", "dist", "mutants.out"}
 # Short flags that take a value, per tool; rg's -E/-r take one, grep's do not.
 VALUE_SHORT = {"rg": set("efgtTABCmjMrEd"), "grep": set("efABCmdD"), "git": set("efABCm")}
 VALUE_LONG = {
@@ -257,6 +257,9 @@ def slice_targets(command, cwd):
                 cwds.append(cwd)
             continue
         args = [word.strip("\"'") for word in words[1:]]
+        if head == "tee":
+            sinks.extend(arg for arg in args if not arg.startswith("-"))
+            continue
         target = sed_file(args) if head == "sed" else head_file(args) if head in ("head", "tail") else None
         if target:
             found.append(norm(resolve(target, cwd)))
