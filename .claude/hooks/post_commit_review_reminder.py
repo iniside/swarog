@@ -30,7 +30,9 @@ SHELL_TOOLS = {"Bash", "PowerShell"}
 
 PROSE_SUFFIXES = frozenset({".md", ".markdown", ".txt", ".rst"})
 
-COMMIT_LINE = re.compile(r"^\[[^\]]*?\b([0-9a-f]{7,40})\]", re.MULTILINE)
+PROSE_PREFIXES = ("docs/", ".agents/", ".claude/agents/", "memory/")
+
+COMMIT_LINE =re.compile(r"^\[[^\]]*?\b([0-9a-f]{7,40})\]", re.MULTILINE)
 
 PART_SUBJECT = re.compile(r", part \d+ " + STEP_SUFFIX.pattern) if STEP_SUFFIX else None
 
@@ -124,6 +126,14 @@ def is_proof_path(path):
     return p.startswith(PROOF_PREFIXES) or "golden" in os.path.basename(p).lower()
 
 
+def is_prose_path(path):
+    p = path.replace("\\", "/")
+    suffix = os.path.splitext(p)[1].lower()
+    if suffix == ".rs":
+        return False
+    return p.startswith(PROSE_PREFIXES) or suffix in PROSE_SUFFIXES
+
+
 def response_text(response):
     if isinstance(response, dict):
         return str(response.get("stdout", "")), str(response.get("stderr", ""))
@@ -191,7 +201,7 @@ def reminder(data):
             % (len(targets), ", ".join(targets), note if ranges else ""))
     if unknown:
         return base + PROOF_UNKNOWN
-    if all(os.path.splitext(p)[1].lower() in PROSE_SUFFIXES for p in all_paths):
+    if all(is_prose_path(p) for p in all_paths):
         return None
     if any(is_proof_path(p) for p in all_paths):
         if len(targets) > 1:
