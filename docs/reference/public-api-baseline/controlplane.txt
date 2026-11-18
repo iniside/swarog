@@ -684,6 +684,10 @@ pub enum controlplane::Role
 pub controlplane::Role::Admin
 pub controlplane::Role::Operator
 pub controlplane::Role::Viewer
+impl controlplane::Variants for controlplane::Role
+pub const controlplane::Role::NAME: &'static str
+pub const controlplane::Role::VARIANTS: &'static [&'static str]
+pub fn controlplane::Role::variant(&self) -> &'static str
 impl core::clone::Clone for controlplane::Role
 pub fn controlplane::Role::clone(&self) -> Self
 impl core::cmp::Eq for controlplane::Role
@@ -1139,6 +1143,26 @@ impl core::marker::Unpin for controlplane::Delta
 impl core::marker::UnsafeUnpin for controlplane::Delta
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::Delta
 impl core::panic::unwind_safe::UnwindSafe for controlplane::Delta
+pub struct controlplane::DrawnEnum
+pub controlplane::DrawnEnum::name: &'static str
+pub controlplane::DrawnEnum::variants: &'static [&'static str]
+impl core::clone::Clone for controlplane::DrawnEnum
+pub fn controlplane::DrawnEnum::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::DrawnEnum
+impl core::cmp::PartialEq for controlplane::DrawnEnum
+pub fn controlplane::DrawnEnum::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::DrawnEnum
+pub fn controlplane::DrawnEnum::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::DrawnEnum
+impl core::marker::StructuralPartialEq for controlplane::DrawnEnum
+impl core::marker::Forget for controlplane::DrawnEnum
+impl core::marker::Freeze for controlplane::DrawnEnum
+impl core::marker::Send for controlplane::DrawnEnum
+impl core::marker::Sync for controlplane::DrawnEnum
+impl core::marker::Unpin for controlplane::DrawnEnum
+impl core::marker::UnsafeUnpin for controlplane::DrawnEnum
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::DrawnEnum
+impl core::panic::unwind_safe::UnwindSafe for controlplane::DrawnEnum
 pub struct controlplane::EntityHeader
 pub controlplane::EntityHeader::avatar_seed: alloc::string::String
 pub controlplane::EntityHeader::badges: alloc::vec::Vec<controlplane::Cell>
@@ -2141,6 +2165,10 @@ impl controlplane::Variants for controlplane::ReasonReq
 pub const controlplane::ReasonReq::NAME: &'static str
 pub const controlplane::ReasonReq::VARIANTS: &'static [&'static str]
 pub fn controlplane::ReasonReq::variant(&self) -> &'static str
+impl controlplane::Variants for controlplane::Role
+pub const controlplane::Role::NAME: &'static str
+pub const controlplane::Role::VARIANTS: &'static [&'static str]
+pub fn controlplane::Role::variant(&self) -> &'static str
 impl controlplane::Variants for controlplane::ServiceState
 pub const controlplane::ServiceState::NAME: &'static str
 pub const controlplane::ServiceState::VARIANTS: &'static [&'static str]
@@ -2166,6 +2194,7 @@ pub const controlplane::Tone::NAME: &'static str
 pub const controlplane::Tone::VARIANTS: &'static [&'static str]
 pub fn controlplane::Tone::variant(&self) -> &'static str
 pub fn controlplane::decode_field(&controlplane::FieldKind, &str) -> core::result::Result<controlplane::FieldValue, controlplane::FieldError>
+pub fn controlplane::drawn_enums() -> &'static [controlplane::DrawnEnum]
 pub fn controlplane::encode_field(&controlplane::FieldKind, &controlplane::FieldValue) -> alloc::string::String
 pub fn controlplane::form_spec_errors(&controlplane::FormSpec) -> alloc::vec::Vec<alloc::string::String>
 pub fn controlplane::merge_sections<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a controlplane::Manifest>) -> controlplane::SectionMerge<'a>

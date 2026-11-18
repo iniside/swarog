@@ -12,4 +12,5 @@ bus = { workspace = true }
 rpc-macro = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+linkme = { workspace = true }
 async-trait = { workspace = true }

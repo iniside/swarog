@@ -21,7 +21,22 @@ pub trait Variants {
     fn variant(&self) -> &'static str;
 }
 
-/// Emits the enum as written plus its [`Variants`] impl.
+/// An enum declared through `variants!`: its name and variants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawnEnum {
+    pub name: &'static str,
+    pub variants: &'static [&'static str],
+}
+
+#[linkme::distributed_slice]
+static DRAWN_ENUMS: [DrawnEnum];
+
+/// Every enum declared through `variants!`, in no fixed order.
+pub fn drawn_enums() -> &'static [DrawnEnum] {
+    &DRAWN_ENUMS
+}
+
+/// Emits the enum as written plus its [`Variants`] impl, and registers it in [`drawn_enums`].
 macro_rules! variants {
     (
         $(#[$meta:meta])*
@@ -54,6 +69,12 @@ macro_rules! variants {
                 }
             }
         }
+
+        const _: () = {
+            #[linkme::distributed_slice(DRAWN_ENUMS)]
+            static ENTRY: DrawnEnum =
+                DrawnEnum { name: <$name as Variants>::NAME, variants: <$name as Variants>::VARIANTS };
+        };
     };
 }
 
@@ -276,12 +297,14 @@ fn make_finite(primitive: &mut Primitive) {
 // Roles
 // ---------------------------------------------------------------------------
 
-/// Operator role, ordered `Viewer < Operator < Admin`. Only the portal compares roles.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum Role {
-    Viewer,
-    Operator,
-    Admin,
+variants! {
+    /// Operator role, ordered `Viewer < Operator < Admin`. Only the portal compares roles.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+    pub enum Role {
+        Viewer,
+        Operator,
+        Admin,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1190,5 +1213,24 @@ mod tests {
         assert_eq!(Point::NAME, "Point");
         assert_eq!(Layout::VARIANTS, ["Stack", "Grid21", "Grid2"]);
         assert_eq!(Layout::Grid21(Vec::new(), Vec::new()).variant(), "Grid21");
+    }
+
+    /// Proves the registry holds the enums named here once each with their own variants; it
+    /// cannot list the macro's call sites, so it does not prove nothing else is registered.
+    #[test]
+    fn drawn_enums_registers_each_wrapped_enum_once() {
+        let registered: BTreeMap<&str, &[&str]> = drawn_enums().iter().map(|e| (e.name, e.variants)).collect();
+        assert_eq!(registered.len(), drawn_enums().len(), "a name is registered twice");
+        for (name, variants) in [
+            (Point::NAME, Point::VARIANTS),
+            (Role::NAME, Role::VARIANTS),
+            (Layout::NAME, Layout::VARIANTS),
+            (TimeRange::NAME, TimeRange::VARIANTS),
+            (Primitive::NAME, Primitive::VARIANTS),
+            (Tone::NAME, Tone::VARIANTS),
+        ] {
+            assert_eq!(registered.get(name), Some(&variants), "{name}");
+        }
+        assert_eq!(registered.len(), 19);
     }
 }

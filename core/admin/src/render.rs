@@ -76,9 +76,11 @@ pub(crate) mod seen {
             std::thread::spawn(|| super::emphasis_name(Emphasis::Ghost)).join().expect("thread");
             super::mode_of(&Point::DashboardTile, false);
             super::tone(Tone::Warn);
+            crate::role_name(controlplane::Role::Viewer);
         });
         super::tone(Tone::Err);
-        assert_eq!(record.keys().copied().collect::<Vec<_>>(), ["Point", "Tone"]);
+        assert_eq!(record.keys().copied().collect::<Vec<_>>(), ["Point", "Role", "Tone"]);
+        assert_eq!(record["Role"].converted, BTreeSet::from(["Viewer"]));
         assert_eq!(record["Point"].declared, Point::VARIANTS);
         assert_eq!(record["Point"].converted, BTreeSet::from(["DashboardTile"]));
         assert_eq!(record["Tone"].converted, BTreeSet::from(["Warn"]));
@@ -87,7 +89,7 @@ pub(crate) mod seen {
 }
 
 #[cfg(not(test))]
-mod seen {
+pub(crate) mod seen {
     #[inline(always)]
     pub(crate) fn record<E: controlplane::Variants>(_: &E) {}
 }

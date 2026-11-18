@@ -231,6 +231,8 @@ proptest = "1"
 # rustls to align with the edge stack's TLS; default (native-tls) features off.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 windows-sys = "0.59"
+# Link-time registries (controlplane's `drawn_enums`): link sections, no code before main, no C.
+linkme = "0.3"
 
 # Identity stack for the accounts module (Step 6): argon2id password hashing (PHC
 # string format — byte-compatible with Go's $argon2id$v=19$m=…,t=…,p=…$salt$hash),

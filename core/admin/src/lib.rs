@@ -135,6 +135,7 @@ pub fn parse_role(input: &str) -> Result<controlplane::Role, String> {
 }
 
 pub fn role_name(role: controlplane::Role) -> &'static str {
+    render::seen::record(&role);
     match role {
         controlplane::Role::Admin => "admin",
         controlplane::Role::Operator => "operator",
