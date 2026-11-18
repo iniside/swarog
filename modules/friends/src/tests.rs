@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use super::*;
 
@@ -1127,6 +1128,206 @@ fn purge_payload(name: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({ "name": name })).unwrap()
 }
 
+/// A red run must not leave unswept tombstones, and a `Drop` guard cannot `await`. On a failure
+/// or a hang the backends of `apps` are terminated first: a racer parked server-side keeps its
+/// locks after its future is gone, and the cleanup DELETEs would wait on them.
+async fn with_purge_cleanup<Fut>(
+    pool: &PgPool,
+    apps: Vec<String>,
+    ids: Vec<String>,
+    tombstones: Vec<String>,
+    body: Fut,
+)
+where
+    Fut: Future<Output = ()> + Send + 'static,
+{
+    let mut task = tokio::spawn(body);
+    let outcome = tokio::time::timeout(Duration::from_secs(60), &mut task).await;
+    if outcome.is_err() {
+        task.abort();
+        let _ = (&mut task).await;
+    }
+    if !matches!(outcome, Ok(Ok(()))) {
+        for app in &apps {
+            sqlx::query(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1",
+            )
+            .bind(app)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+    cleanup_ids(pool, &ids).await;
+    for pid in &tombstones {
+        cleanup_purge_row(pool, pid).await;
+    }
+    match outcome {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+        Ok(Err(e)) => panic!("friends purge test task ended without completing: {e}"),
+        Err(_) => panic!("friends purge test body did not finish within 60s"),
+    }
+}
+
+/// A fixed player id that sorts below every `fixed_uuid` id: one fire claims only the
+/// `FRIENDS_PLAYERS_PER_FIRE` lowest unswept ids, so a sweep test's own players must be among
+/// them. Each test owns a distinct `n` range.
+fn fixed_player(n: u64) -> String {
+    format!("00000000-0000-0000-0000-{n:012x}")
+}
+
+/// Drops whatever a crashed earlier run left under fixed ids: edges, events and tombstones.
+async fn clear_fixed_players(pool: &PgPool, ids: &[String]) {
+    cleanup_ids(pool, ids).await;
+    for id in ids {
+        cleanup_purge_row(pool, id).await;
+    }
+}
+
+/// Precondition of a sweep test: one fire claims only the `FRIENDS_PLAYERS_PER_FIRE` lowest
+/// unswept tombstones, so leftovers sorting below `player_id` would starve it and the test
+/// would fail as a purge that never happened.
+async fn assert_claimed_by_the_next_fire(pool: &PgPool, player_id: &str) {
+    let below: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM friends.purged_players \
+          WHERE swept_at IS NULL AND player_id < $1::uuid",
+    )
+    .bind(player_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(
+        below < projection::FRIENDS_PLAYERS_PER_FIRE,
+        "precondition: {below} unswept tombstones sort below {player_id}, so the next fire \
+         cannot claim it"
+    );
+}
+
+// Concurrency is staged, never slept: a racer runs on its OWN pool whose connections carry a
+// unique `application_name`, so a test waits on `pg_stat_activity` until the racer is parked
+// on the lock the test holds, then releases it.
+
+fn racer_pool(app: &str) -> PgPool {
+    let options = testdb::dsn()
+        .parse::<sqlx::postgres::PgConnectOptions>()
+        .expect("DATABASE_URL parses")
+        .application_name(app);
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(Duration::from_secs(60))
+        .connect_lazy_with(options)
+}
+
+/// A service over `racer_pool(app)` sharing `svc`'s bus and directory, so its `request` runs
+/// on a connection the test can find in `pg_stat_activity`.
+fn racer_service(svc: &Service, app: &str) -> Arc<Service> {
+    let racer = Service::new(racer_pool(app), svc.bus.clone());
+    let directory = svc.directory.get().expect("wired sets the directory").clone();
+    racer.directory.set(directory).ok().expect("directory set once");
+    Arc::new(racer)
+}
+
+/// A unique `application_name` for one racer of one test run.
+fn racer_app(what: &str) -> String {
+    format!("friends-{what}-{}", unique_suffix())
+}
+
+/// Awaits a spawned racer with a hang guard, so a deadlocked race fails with a name instead
+/// of stalling the run.
+async fn finish<T>(what: &str, handle: tokio::task::JoinHandle<T>) -> T {
+    match tokio::time::timeout(Duration::from_secs(30), handle).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(e)) => panic!("{what} task did not complete: {e}"),
+        Err(_) => panic!("{what} did not finish within 30s"),
+    }
+}
+
+/// Polls observed database state until a backend of `app` waits on one of the advisory
+/// `keys` (`true`), or `racer` finished without ever parking (`false`). The second answer is
+/// how an unserialized racer shows itself; a racer parked on any OTHER lock reaches the
+/// deadline, which is a hang guard, not a timing bound.
+async fn wait_advisory_parked<T>(
+    pool: &PgPool,
+    app: &str,
+    keys: &[i64],
+    racer: &tokio::task::JoinHandle<T>,
+) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let parked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+              WHERE a.application_name = $1 AND NOT l.granted AND l.locktype = 'advisory' \
+                AND l.objsubid = 1 AND ((l.classid::bigint << 32) | l.objid::bigint) = ANY($2)",
+        )
+        .bind(app)
+        .bind(keys)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        if parked > 0 {
+            return true;
+        }
+        if racer.is_finished() {
+            return false;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "racer {app} neither parked on the advisory locks {keys:?} nor finished"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+/// Whether a backend of `app` holds the advisory lock `key`.
+async fn holds_advisory(pool: &PgPool, app: &str, key: i64) -> bool {
+    let held: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
+          WHERE a.application_name = $1 AND l.granted AND l.locktype = 'advisory' \
+            AND l.objsubid = 1 AND ((l.classid::bigint << 32) | l.objid::bigint) = $2",
+    )
+    .bind(app)
+    .bind(key)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    held > 0
+}
+
+/// FNV-1a over `prefix` + `body`; recomputed here so the test pins the key formula.
+fn fnv1a_key(prefix: &[u8], body: &[u8]) -> i64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in prefix.iter().chain(body.iter()) {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h as i64
+}
+
+/// The advisory keys a locking call actually takes, read back from `pg_locks` on the locking
+/// connection (a bigint key is split into `classid` high and `objid` low halves,
+/// `objsubid = 1`).
+async fn held_keys(tx: &mut sqlx::PgConnection) -> Vec<i64> {
+    sqlx::query_scalar(
+        "SELECT (classid::bigint << 32) | objid::bigint FROM pg_locks \
+          WHERE locktype = 'advisory' AND objsubid = 1 AND pid = pg_backend_pid() \
+          ORDER BY 1",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap()
+}
+
+/// The advisory key `Store::lock_player_tx` takes for `spelling`.
+async fn taken_player_key(pool: &PgPool, svc: &Service, spelling: &str) -> i64 {
+    let mut tx = pool.begin().await.unwrap();
+    svc.store.lock_player_tx(&mut tx, spelling).await.unwrap();
+    let keys = held_keys(&mut tx).await;
+    tx.rollback().await.unwrap();
+    assert_eq!(keys.len(), 1, "lock_player_tx must hold exactly one advisory lock, got {keys:?}");
+    keys[0]
+}
+
 /// The tombstone insert is idempotent, and a redelivery after the sweep stamped
 /// `swept_at` must NOT reset it.
 #[tokio::test]
@@ -1191,7 +1392,7 @@ async fn sweep_removes_edges_on_both_sides_including_a_pending_edge_not_authored
         survivor_b.clone(),
     ];
 
-    with_cleanup(&pool, ids, {
+    with_purge_cleanup(&pool, vec![], ids, vec![target.clone()], {
         let pool = pool.clone();
         let svc = svc.clone();
         let target = target.clone();
@@ -1213,6 +1414,7 @@ async fn sweep_removes_edges_on_both_sides_including_a_pending_edge_not_authored
             let mut conn = pool.acquire().await.unwrap();
             svc.store.plant_purged_player_tx(&mut conn, &target, "Target#0001").await.unwrap();
             drop(conn);
+            assert_claimed_by_the_next_fire(&pool, &target).await;
 
             let mut tx = pool.begin().await.unwrap();
             svc.sweep_purged_players(&mut tx).await.unwrap();
@@ -1255,7 +1457,6 @@ async fn sweep_removes_edges_on_both_sides_including_a_pending_edge_not_authored
         }
     })
     .await;
-    cleanup_purge_row(&pool, &target).await;
 }
 
 /// `request` is blocked by the tombstone PREDICATE, not "a tombstone exists
@@ -1320,7 +1521,7 @@ async fn sweep_handler_ignores_a_foreign_schedule_name_with_positive_control() {
     let target = low_uuid();
     let other = high_uuid();
 
-    with_cleanup(&pool, vec![target.clone(), other.clone()], {
+    with_purge_cleanup(&pool, vec![], vec![target.clone(), other.clone()], vec![target.clone()], {
         let pool = pool.clone();
         let svc = svc.clone();
         let target = target.clone();
@@ -1330,6 +1531,7 @@ async fn sweep_handler_ignores_a_foreign_schedule_name_with_positive_control() {
             let mut conn = pool.acquire().await.unwrap();
             svc.store.plant_purged_player_tx(&mut conn, &target, "Target#0001").await.unwrap();
             drop(conn);
+            assert_claimed_by_the_next_fire(&pool, &target).await;
 
             let handler = projection::PurgeSweepHandler { svc: svc.clone() };
 
@@ -1350,7 +1552,6 @@ async fn sweep_handler_ignores_a_foreign_schedule_name_with_positive_control() {
         }
     })
     .await;
-    cleanup_purge_row(&pool, &target).await;
 }
 
 /// `pending_purges()` counts ONLY `swept_at IS NULL` — a swept row must not inflate
@@ -1389,4 +1590,407 @@ async fn pending_purges_counts_only_swept_at_null_a_swept_row_does_not_inflate_i
         .bind([unswept.as_str(), already_swept.as_str()].as_slice())
         .execute(&pool)
         .await;
+}
+
+// ============================================================================
+// `request` and the purge sweep serialize on per-player advisory locks: a request locks both
+// parties in ascending order, the sweep locks each claimed player in the same order.
+// ============================================================================
+
+/// The key is read back from the lock `lock_player_tx` really takes: the pinned
+/// `friends.player/` FNV-1a of the 32 lowercase hex digits, the same for every spelling
+/// `$1::uuid` treats as one player, and different for a different uuid.
+#[tokio::test(flavor = "multi_thread")]
+async fn player_lock_key_is_stable_namespaced_and_spelling_invariant() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    let canon = "a2b7e8c1-0000-4000-8000-0000000000f1";
+    let hex = canon.replace('-', "");
+
+    let key = taken_player_key(&pool, &svc, canon).await;
+    assert_eq!(
+        key,
+        fnv1a_key(b"friends.player/", hex.as_bytes()),
+        "the key must be the friends.player/ FNV-1a of the normalized uuid"
+    );
+    assert_eq!(key, taken_player_key(&pool, &svc, &canon.to_uppercase()).await, "case must not change the key");
+    assert_eq!(
+        key,
+        taken_player_key(&pool, &svc, &format!("{{{canon}}}")).await,
+        "braces must not change the key"
+    );
+    assert_eq!(key, taken_player_key(&pool, &svc, &hex).await, "hyphenation must not change the key");
+    assert_ne!(
+        key,
+        taken_player_key(&pool, &svc, "a2b7e8c1-0000-4000-8000-0000000000f2").await,
+        "a genuinely different uuid must take a different key"
+    );
+}
+
+/// `lock_pair_tx` holds both players' keys, and one key when both spellings name one player.
+#[tokio::test(flavor = "multi_thread")]
+async fn lock_pair_tx_holds_both_keys_and_one_for_a_single_player() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    let (a, b) = (fixed_player(0x600), fixed_player(0x601));
+    let (ka, kb) = (taken_player_key(&pool, &svc, &a).await, taken_player_key(&pool, &svc, &b).await);
+
+    let mut tx = pool.begin().await.unwrap();
+    svc.store.lock_pair_tx(&mut tx, &b, &a).await.unwrap();
+    let mut both = held_keys(&mut tx).await;
+    tx.rollback().await.unwrap();
+    both.sort_unstable();
+    let mut want = vec![ka, kb];
+    want.sort_unstable();
+    assert_eq!(both, want, "a pair must hold exactly both players' keys");
+
+    let mut tx = pool.begin().await.unwrap();
+    svc.store.lock_pair_tx(&mut tx, &a, &a.to_uppercase()).await.unwrap();
+    let one = held_keys(&mut tx).await;
+    tx.rollback().await.unwrap();
+    assert_eq!(one, vec![ka], "one player spelled twice must take its key once");
+}
+
+/// Race 1, request first — the once-wrong branch. A real `request` has passed both tombstone
+/// guards and written its edge, uncommitted, and is held at its event append by the test's
+/// EXCLUSIVE hold on the plane's writer key, when one party's tombstone commits and a sweep
+/// fires. The sweep's DELETE cannot see the uncommitted edge, so without the per-player lock
+/// it stamped `swept_at` around it and the edge outlived the erasure. Now the sweep parks on
+/// the purged party's key, which the request holds, until `request` commits, then deletes the
+/// edge with one `friend.removed`.
+async fn sweep_waits_for_an_in_flight_request_case(tombstone_requester: bool, base: u64) {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let directory = Arc::new(FakeDirectory::new());
+    let (me, target) = (fixed_player(base), fixed_player(base + 1));
+    directory.insert(&me, &format!("Me#{base:04x}"));
+    directory.insert(&target, &format!("Target#{base:04x}"));
+    let (_ctx, svc) = wired(&pool, directory).await;
+    let pair = vec![me.clone(), target.clone()];
+    clear_fixed_players(&pool, &pair).await;
+    let purged = if tombstone_requester { me.clone() } else { target.clone() };
+    let lock_key = taken_player_key(&pool, &svc, &purged).await;
+    let gate_app = racer_app("race1-gate");
+    let request_app = racer_app("race1-request");
+    let sweep_app = racer_app("race1-sweep");
+
+    let apps = vec![gate_app.clone(), request_app.clone(), sweep_app.clone()];
+    with_purge_cleanup(&pool, apps, pair.clone(), pair, {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        async move {
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(asyncevents::store::WRITER_LOCK_KEY)
+                .execute(&mut *gate)
+                .await
+                .unwrap();
+
+            let request = tokio::spawn({
+                let racer = racer_service(&svc, &request_app);
+                let (me, handle) = (me.clone(), format!("Target#{base:04x}"));
+                async move { racer.request(Identity::player(&me), handle).await }
+            });
+            assert!(
+                wait_advisory_parked(&pool, &request_app, &[asyncevents::store::WRITER_LOCK_KEY], &request)
+                    .await,
+                "request must be held at its event append, past its guards and INSERT"
+            );
+
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &purged, "Race#0001").await.unwrap();
+            drop(conn);
+            assert_claimed_by_the_next_fire(&pool, &purged).await;
+
+            let sweep = tokio::spawn({
+                let handler = projection::PurgeSweepHandler { svc: svc.clone() };
+                let racer = racer_pool(&sweep_app);
+                async move {
+                    let mut tx = racer.begin().await.unwrap();
+                    let delivery = Delivery { event_id: "friends:race1", tx: AnyTx::new(&mut *tx) };
+                    handler
+                        .call(delivery, purge_payload(projection::PURGE_SCHEDULE_NAME))
+                        .await
+                        .unwrap();
+                    tx.commit().await.unwrap();
+                }
+            });
+            let parked = wait_advisory_parked(&pool, &sweep_app, &[lock_key], &sweep).await;
+
+            gate.commit().await.unwrap();
+            let f = finish("race-1 request", request)
+                .await
+                .expect("the request passed its guards before the tombstone");
+            finish("race-1 sweep", sweep).await;
+
+            assert!(!edge_exists(&pool, &f.edge_id).await, "the in-flight request's edge survived the erasure");
+            let removed = asyncevents::testing::events_count(&pool, "friend.removed", "actor_id", &purged)
+                .await
+                .unwrap();
+            assert_eq!(removed, 1, "the sweep must remove the in-flight edge with one friend.removed");
+            assert!(purge_swept_at(&pool, &purged).await.flatten().is_some(), "the fire must stamp swept_at");
+            assert!(parked, "the sweep must have parked on the purged player's advisory lock");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sweep_waits_for_an_in_flight_request_from_a_purged_requester() {
+    sweep_waits_for_an_in_flight_request_case(true, 0x200).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sweep_waits_for_an_in_flight_request_to_a_purged_target() {
+    sweep_waits_for_an_in_flight_request_case(false, 0x210).await;
+}
+
+/// Race 2, sweep first. An open sweep transaction has locked and swept one party; a racer
+/// `request` parks on that party's key, then, once the sweep commits, answers 409
+/// `PLAYER_DELETED` for a purged requester or exactly the directory-miss answer for a purged
+/// target, and writes no edge. For the requester the tombstone is already committed, so only
+/// the "request parks" assertion needs the lock; for the target the answer needs the target
+/// guard, because the directory still resolved the handle.
+async fn request_parks_behind_an_open_sweep_case(tombstone_requester: bool, base: u64) {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let directory = Arc::new(FakeDirectory::new());
+    let (me, target) = (fixed_player(base), fixed_player(base + 1));
+    directory.insert(&me, &format!("Me#{base:04x}"));
+    directory.insert(&target, &format!("Target#{base:04x}"));
+    let (_ctx, svc) = wired(&pool, directory).await;
+    let pair = vec![me.clone(), target.clone()];
+    clear_fixed_players(&pool, &pair).await;
+    let purged = if tombstone_requester { me.clone() } else { target.clone() };
+    let lock_key = taken_player_key(&pool, &svc, &purged).await;
+    let sweep_app = racer_app("race2-sweep");
+    let request_app = racer_app("race2-request");
+
+    let apps = vec![sweep_app.clone(), request_app.clone()];
+    with_purge_cleanup(&pool, apps, pair.clone(), pair, {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        async move {
+            let miss = svc
+                .request(Identity::player(&me), "Nobody#0000".into())
+                .await
+                .unwrap_err();
+
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &purged, "Race#0002").await.unwrap();
+            drop(conn);
+            assert_claimed_by_the_next_fire(&pool, &purged).await;
+
+            let sweep_pool = racer_pool(&sweep_app);
+            let mut sweep_tx = sweep_pool.begin().await.unwrap();
+            svc.sweep_purged_players(&mut sweep_tx).await.unwrap();
+            let stamped: bool = sqlx::query_scalar(
+                "SELECT swept_at IS NOT NULL FROM friends.purged_players WHERE player_id = $1::uuid",
+            )
+            .bind(&purged)
+            .fetch_one(&mut *sweep_tx)
+            .await
+            .unwrap();
+            assert!(stamped, "the open sweep must have locked and swept this player");
+
+            let request = tokio::spawn({
+                let racer = racer_service(&svc, &request_app);
+                let (me, handle) = (me.clone(), format!("Target#{base:04x}"));
+                async move { racer.request(Identity::player(&me), handle).await }
+            });
+            let parked = wait_advisory_parked(&pool, &request_app, &[lock_key], &request).await;
+            assert!(parked, "the request must park on the purged player's lock while the sweep is open");
+
+            sweep_tx.commit().await.unwrap();
+            let e = finish("race-2 request", request).await.unwrap_err();
+            if tombstone_requester {
+                assert_eq!(e.status, Status::Conflict);
+                assert_eq!(e.msg, crate::service::PLAYER_DELETED);
+            } else {
+                assert_eq!(
+                    (e.status, e.msg.as_str()),
+                    (miss.status, miss.msg.as_str()),
+                    "a purged target must get exactly the directory-miss answer"
+                );
+            }
+            assert_eq!(row_count_for_pair(&pool, &me, &target).await, 0, "the refused request must write no edge");
+        }
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn request_parks_behind_an_open_sweep_then_answers_player_deleted() {
+    request_parks_behind_an_open_sweep_case(true, 0x300).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn request_parks_behind_an_open_sweep_then_answers_no_such_player() {
+    request_parks_behind_an_open_sweep_case(false, 0x310).await;
+}
+
+/// The pair order is the sweep's claim order, so a request between two purged players and a
+/// sweep claiming both never deadlock. The test holds B's key; the request A→B takes A and
+/// parks on B; the sweep claims A and B and parks on A. Once B is released the request takes
+/// it, answers `PLAYER_DELETED` and releases both, and the sweep purges both. Locking the
+/// pair B-first instead leaves the request parked on B holding nothing while the sweep takes
+/// A and parks on B; on release the request takes B and waits on A, and Postgres aborts one
+/// of the two with 40P01.
+#[tokio::test(flavor = "multi_thread")]
+async fn request_between_two_purged_players_and_their_sweep_do_not_deadlock() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let directory = Arc::new(FakeDirectory::new());
+    let (a, b, c) = (fixed_player(0x400), fixed_player(0x401), fixed_player(0x402));
+    directory.insert(&a, "OrderA#0001");
+    directory.insert(&b, "OrderB#0002");
+    let (_ctx, svc) = wired(&pool, directory).await;
+    let ids = vec![a.clone(), b.clone(), c.clone()];
+    clear_fixed_players(&pool, &ids).await;
+    let (key_a, key_b) = (taken_player_key(&pool, &svc, &a).await, taken_player_key(&pool, &svc, &b).await);
+    let gate_app = racer_app("order-gate");
+    let request_app = racer_app("order-request");
+    let sweep_app = racer_app("order-sweep");
+
+    let apps = vec![gate_app.clone(), request_app.clone(), sweep_app.clone()];
+    with_purge_cleanup(&pool, apps, ids.clone(), vec![a.clone(), b.clone()], {
+        let pool = pool.clone();
+        let svc = svc.clone();
+        async move {
+            let ab = insert_edge_raw(&pool, &a, &b, &a, STATE_ACCEPTED).await;
+            let bc = insert_edge_raw(&pool, &b, &c, &c, STATE_PENDING).await;
+            let mut conn = pool.acquire().await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &a, "OrderA#0001").await.unwrap();
+            svc.store.plant_purged_player_tx(&mut conn, &b, "OrderB#0002").await.unwrap();
+            drop(conn);
+            assert_claimed_by_the_next_fire(&pool, &b).await;
+
+            let gate_pool = racer_pool(&gate_app);
+            let mut gate = gate_pool.begin().await.unwrap();
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(key_b)
+                .execute(&mut *gate)
+                .await
+                .unwrap();
+
+            let request = tokio::spawn({
+                let racer = racer_service(&svc, &request_app);
+                let a = a.clone();
+                async move { racer.request(Identity::player(&a), "OrderB#0002".into()).await }
+            });
+            assert!(
+                wait_advisory_parked(&pool, &request_app, &[key_b], &request).await,
+                "the request must park on B's key"
+            );
+            let request_held_a = holds_advisory(&pool, &request_app, key_a).await;
+
+            let sweep = tokio::spawn({
+                let handler = projection::PurgeSweepHandler { svc: svc.clone() };
+                let racer = racer_pool(&sweep_app);
+                async move {
+                    let mut tx = racer.begin().await.map_err(|e| e.to_string())?;
+                    let delivery = Delivery { event_id: "friends:order", tx: AnyTx::new(&mut *tx) };
+                    handler
+                        .call(delivery, purge_payload(projection::PURGE_SCHEDULE_NAME))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    tx.commit().await.map_err(|e| e.to_string())
+                }
+            });
+            assert!(
+                wait_advisory_parked(&pool, &sweep_app, &[key_a, key_b], &sweep).await,
+                "the sweep must park on one of the two players' keys"
+            );
+
+            gate.commit().await.unwrap();
+            let answer = finish("order request", request).await;
+            let swept = finish("order sweep", sweep).await;
+            assert!(swept.is_ok(), "the sweep must not fail (40P01 is a deadlock): {swept:?}");
+            let e = answer.expect_err("both parties are purged, so the request is refused");
+            assert_eq!(
+                (e.status, e.msg.as_str()),
+                (Status::Conflict, crate::service::PLAYER_DELETED),
+                "the request must answer PLAYER_DELETED, not a deadlock: {e:?}"
+            );
+
+            assert!(purge_swept_at(&pool, &a).await.flatten().is_some(), "A must be swept");
+            assert!(purge_swept_at(&pool, &b).await.flatten().is_some(), "B must be swept");
+            assert!(!edge_exists(&pool, &ab).await, "the A-B edge must be purged");
+            assert!(!edge_exists(&pool, &bc).await, "B's edge with a live player must be purged");
+            assert!(request_held_a, "the request must have parked on B while holding A");
+        }
+    })
+    .await;
+}
+
+/// One fire claims and locks at most 64 players. With 65 of this test's own lowest-sorting
+/// tombstones, one fire stamps exactly the 64 lowest and leaves the 65th for the next fire.
+/// The counts are literal, not derived from `FRIENDS_PLAYERS_PER_FIRE`, so raising the claim
+/// limit or restoring a batch loop turns this red. The sweep's 5s budget is far above 64
+/// players' few statements each, so it does not stop this fire early.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_sweep_fire_stamps_at_most_64_players() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    // The LOWEST fixed range, below the race tests' ids: a sibling that failed mid-race and
+    // left its tombstone unswept must not sort among these.
+    let ids: Vec<String> = (0x01..0x01 + 65).map(fixed_player).collect();
+    for id in &ids {
+        cleanup_purge_row(&pool, id).await;
+    }
+    let foreign_below: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM friends.purged_players \
+          WHERE swept_at IS NULL AND player_id <= $1::uuid",
+    )
+    .bind(ids.last().unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(foreign_below, 0, "precondition: a foreign unswept tombstone sorts among this test's ids");
+
+    let app = racer_app("fire-bound");
+    with_purge_cleanup(&pool, vec![app.clone()], vec![], ids.clone(), {
+        let (pool, svc, ids) = (racer_pool(&app), svc.clone(), ids.clone());
+        async move {
+            let mut conn = pool.acquire().await.unwrap();
+            for (i, id) in ids.iter().enumerate() {
+                svc.store
+                    .plant_purged_player_tx(&mut conn, id, &format!("Cap#{i:04}"))
+                    .await
+                    .unwrap();
+            }
+            drop(conn);
+
+            let mut tx = pool.begin().await.unwrap();
+            svc.sweep_purged_players(&mut tx).await.unwrap();
+            tx.commit().await.unwrap();
+            assert_eq!(
+                unstamped_tombstones(&pool, &ids).await,
+                vec![ids[64].clone()],
+                "one fire must stamp exactly the 64 lowest of 65 tombstones"
+            );
+
+            let mut tx2 = pool.begin().await.unwrap();
+            svc.sweep_purged_players(&mut tx2).await.unwrap();
+            tx2.commit().await.unwrap();
+            assert!(
+                unstamped_tombstones(&pool, &ids).await.is_empty(),
+                "the next fire must resume and stamp the last one"
+            );
+        }
+    })
+    .await;
+}
+
+async fn unstamped_tombstones(pool: &PgPool, ids: &[String]) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT player_id::text FROM friends.purged_players \
+          WHERE player_id = ANY($1::uuid[]) AND swept_at IS NULL ORDER BY player_id",
+    )
+    .bind(ids)
+    .fetch_all(pool)
+    .await
+    .unwrap()
 }

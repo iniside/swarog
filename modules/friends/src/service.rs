@@ -26,9 +26,7 @@ pub(crate) const MALFORMED_CURSOR: &str = "cursor is malformed";
 
 /// What `request` answers a caller whose account is already tombstoned. `Conflict`, not
 /// `NotFound`: the request is well-formed and names a real past player — what is stale is
-/// the identity it carries. A purged TARGET needs no such answer: the handle is resolved
-/// through `accountsapi::Directory`, and `accounts` deletes the player row in the same
-/// transaction as the event this tombstone descends from, so the lookup already misses.
+/// the identity it carries. A tombstoned TARGET gets [`NO_SUCH_PLAYER`], the directory miss.
 pub(crate) const PLAYER_DELETED: &str = "this account has been deleted";
 
 const B64: base64::engine::general_purpose::GeneralPurpose =
@@ -395,10 +393,10 @@ impl Player for Service {
         );
 
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
-        self.store
-            .lock_requester_tx(&mut tx, &me)
-            .await
-            .map_err(internal)?;
+        if let Err(e) = self.store.lock_pair_tx(&mut tx, &me, &target.player_id).await {
+            tx.rollback().await.map_err(internal)?;
+            return Err(internal(e));
+        }
         if self
             .store
             .is_player_purged_tx(&mut tx, &me)
@@ -407,6 +405,17 @@ impl Player for Service {
         {
             tx.rollback().await.map_err(internal)?;
             return Err(Error::conflict(PLAYER_DELETED));
+        }
+        match self.store.is_player_purged_tx(&mut tx, &target.player_id).await {
+            Ok(false) => {}
+            Ok(true) => {
+                tx.rollback().await.map_err(internal)?;
+                return Err(Error::not_found(NO_SUCH_PLAYER));
+            }
+            Err(e) => {
+                tx.rollback().await.map_err(internal)?;
+                return Err(internal(e));
+            }
         }
 
         if let Some((edge_id, requester_id)) = self

@@ -39,24 +39,24 @@ pub(crate) struct PairRow {
     pub(crate) requester_is_caller: bool,
 }
 
-/// Per-REQUESTER lock key for `request`'s outstanding cap: without it two concurrent
-/// requests by one player both count below the cap (neither committed yet, READ COMMITTED)
-/// and both land past it. The namespace prefix keeps it from colliding with characters' or
-/// scheduler's keys — a collision would only over-serialize.
-///
-/// The id is normalized to Postgres's uuid-EQUALITY form before hashing, because the row SQL
-/// is `$1::uuid`: a differently-spelled but DB-equal id must yield the SAME lock.
-fn requester_lock_key(player_id: &str) -> i64 {
-    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
+/// The uuid as its 32 lowercase hex digits, the form every spelling `$1::uuid` treats as one
+/// player shares; a non-uuid keeps its raw bytes.
+fn normalized_player(player_id: &str) -> Vec<u8> {
     let hex: Vec<u8> = player_id
         .bytes()
         .filter(u8::is_ascii_hexdigit)
         .map(|b| b.to_ascii_lowercase())
         .collect();
-    let normalized: &[u8] = if hex.len() == 32 { &hex } else { player_id.as_bytes() };
+    if hex.len() == 32 { hex } else { player_id.as_bytes().to_vec() }
+}
+
+/// Per-player advisory lock key: FNV-1a over a `friends.player/` namespace plus the
+/// normalized uuid, so every spelling of one player takes the SAME lock.
+fn player_lock_key(player_id: &str) -> i64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut h = OFFSET_BASIS;
-    for b in b"friends.requester/".iter().copied().chain(normalized.iter().copied()) {
+    for b in b"friends.player/".iter().copied().chain(normalized_player(player_id)) {
         h ^= b as u64;
         h = h.wrapping_mul(PRIME);
     }
@@ -72,15 +72,31 @@ pub(crate) struct Store {
 impl Store {
     /// Taken ON THE TX CONNECTION — a separate pool connection would lose the
     /// serialization — and released at commit/rollback.
-    pub(crate) async fn lock_requester_tx(
+    pub(crate) async fn lock_player_tx(
         &self,
         conn: &mut PgConnection,
         player_id: &str,
     ) -> Result<(), sqlx::Error> {
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(requester_lock_key(player_id))
+            .bind(player_lock_key(player_id))
             .execute(&mut *conn)
             .await?;
+        Ok(())
+    }
+
+    /// Locks in ascending normalized-uuid order, the purge sweep's claim order, so the two never deadlock.
+    pub(crate) async fn lock_pair_tx(
+        &self,
+        conn: &mut PgConnection,
+        a: &str,
+        b: &str,
+    ) -> Result<(), sqlx::Error> {
+        let (na, nb) = (normalized_player(a), normalized_player(b));
+        let (first, second) = if na <= nb { (a, b) } else { (b, a) };
+        self.lock_player_tx(&mut *conn, first).await?;
+        if na != nb {
+            self.lock_player_tx(&mut *conn, second).await?;
+        }
         Ok(())
     }
 
@@ -265,9 +281,9 @@ impl Store {
         }
     }
 
-    /// `true` once this player's deletion tombstone is committed. A plain read, no
-    /// advisory lock: the row is permanent, so every statement taken after the plant
-    /// commits sees it.
+    /// `true` once this player's deletion tombstone is committed. A plain read: its caller
+    /// holds [`Store::lock_player_tx`] first, so the sweep either committed before the read
+    /// or waits for the caller's transaction.
     pub(crate) async fn is_player_purged_tx(
         &self,
         conn: &mut PgConnection,
