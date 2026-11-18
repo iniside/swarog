@@ -1,10 +1,13 @@
 #!/usr/bin/env python
 """PreToolUse(Agent) guard: denies an Agent call with no explicit `model`
-(planning-dispatch.md Implementation Mode). Any internal error
+(planning-dispatch.md Implementation Mode), and an implementation-lane prompt
+that sends the subagent to read the whole plan or whole precedent commits
+(implementation-dispatch skill, Prompts and hand-offs). Any internal error
 exits 0 with no output, so a hook bug never blocks every dispatch.
 """
 import json
 import os
+import re
 import sys
 
 REASON = (
@@ -24,6 +27,42 @@ EFFORT_REASON = (
     "Agent Effort: a built-in agent type has no frontmatter effort, so the call "
     "must carry one - set effort: \"medium\" (or \"low\" for listing/search) and retry."
 )
+
+
+IMPLEMENT_LANES = {"core-implementer", "test-author", "docs-writer", "mockup-implementer"}
+WHOLE_PLAN = re.compile(
+    r"\bread\s+(?:through\s+)?(?:the\s+)?(?:whole|entire|full|complete)\s+(?:[\w`./-]+\s+){0,2}?plan\b"
+    r"|\bread\s+(?:the\s+)?plan\s+(?:in\s+full|end\s+to\s+end)\b",
+    re.I,
+)
+NEGATED = re.compile(r"\b(?:not|never|don't|do\s+not|no\s+need\s+to)\s+(?:\w+\s+)?$", re.I)
+SHA = re.compile(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*[0-9])[0-9a-f]{7,40}\b")
+
+PROMPT_REASON = (
+    "implementation-dispatch skill, Prompts and hand-offs (.agents/skills/implementation-dispatch/SKILL.md; "
+    "read it again, it may have changed since you last read it): {what} Everything the subagent reads stays in "
+    "its context for every later turn. Rewrite the prompt and retry."
+)
+WHOLE_PLAN_WHAT = (
+    "this prompt tells the implementer to read the whole plan. Paste the step text and the plan sections it "
+    "depends on (invariants, step preamble), or name them by heading."
+)
+PRECEDENT_WHAT = (
+    "this prompt names precedent commits without saying what to copy from them. For each, name the file and "
+    "function to copy and tell the subagent to read `git show --stat <sha>` and only those hunks."
+)
+
+
+def prompt_problem(subagent_type, prompt):
+    if str(subagent_type or "") not in IMPLEMENT_LANES:
+        return None
+    text = str(prompt or "")
+    for found in WHOLE_PLAN.finditer(text):
+        if not NEGATED.search(text[max(0, found.start() - 30):found.start()]):
+            return WHOLE_PLAN_WHAT
+    if re.search(r"precedent", text, re.I) and SHA.search(text) and "--stat" not in text:
+        return PRECEDENT_WHAT
+    return None
 
 
 def has_repo_agent(subagent_type):
@@ -57,6 +96,10 @@ def main():
         effort = tool_input.get("effort")
         if (effort is None or not str(effort).strip()) and not has_repo_agent(tool_input.get("subagent_type")):
             deny(EFFORT_REASON)
+            return
+        problem = prompt_problem(tool_input.get("subagent_type"), tool_input.get("prompt"))
+        if problem:
+            deny(PROMPT_REASON.format(what=problem))
     except Exception:
         return
 
