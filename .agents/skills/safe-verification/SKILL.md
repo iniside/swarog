@@ -18,7 +18,7 @@ change is broken when it isn't.
 Run the one line for the shell you are in; no output means nothing is running:
 
 - Bash on Windows (Git Bash, also `$` inside REPL): `tasklist //FO CSV //NH | grep -iE '"(cargo|rustc)\.exe"'`
-- PowerShell tool: `Get-Process cargo,rustc -ErrorAction SilentlyContinue`
+- PowerShell tool: `@(Get-Process cargo,rustc -ErrorAction Ignore).ProcessName -join ','`
 - Bash on Linux/macOS: `pgrep -x cargo; pgrep -x rustc`
 
 Never wrap the PowerShell form in `powershell -Command "..."` from Bash: Bash expands `$_` and the error
