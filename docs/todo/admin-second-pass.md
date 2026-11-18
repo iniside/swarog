@@ -210,7 +210,7 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
   golden cases for every outcome. Source: Step 28 round-2 proof audit.
 - [ ] **Declaration-form scan misses some enum spellings**
   ADMIN2-37. `every_controlplane_enum_is_declared_drawn_or_undrawn`
-  (core/admin/src/golden_tests.rs) matches only lines that start with `pub enum`, so an
+  (core/admin/src/golden_tests/declared.rs) matches only lines that start with `pub enum`, so an
   attribute on the same line escapes it, and its naive brace count lets an unbalanced `{` in
   a string or doc comment inside a `variants!` block hide a bare enum after it. Nothing in
   controlplane uses either form today. Closed by: reading the declared set from
@@ -253,11 +253,11 @@ nothing is queued. Owner design decision. Source: b5eb40d5.
 
 ## Blank filter value reads as a filter on an empty outbox
 
-`filter_views` (`core/admin/src/render.rs:881`) maps only a missing param to `"any"`, but
+`filter_views` (`core/admin/src/render/table.rs:76`) maps only a missing param to `"any"`, but
 the providers treat both `""` and `"any"` as unset (`modules/mail/src/admin.rs:402`,
 `core/admin/src/events_provider.rs:432`). A hand-typed `?template=` on an empty outbox
 shows "No matching items" with a blank chip instead of "Queue is empty". Fix: map an empty
-value to `"any"` at `render.rs:881` (a one-liner), with a golden case. Source: review of
+value to `"any"` at `render/table.rs:76` (a one-liner), with a golden case. Source: review of
 7bb53152, 2026-11-17.
 
 ## Data a dev fleet never produces

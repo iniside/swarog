@@ -1,6 +1,6 @@
 # Apikeys
 
-Last updated: 2026-11-17
+Last updated: 2026-11-18
 
 ## In progress
 
@@ -14,7 +14,7 @@ _None._
   `admin.rs`. The requirement stays for its replacement: a policy `Multi` pre-checked
   from the stored policy and a revision-checked save, so saving is not a blind full
   replace. The control plane already supports a pre-checked `FieldKind::Multi` through
-  `Field.default` (`core/controlplane/src/lib.rs:436-454`, `core/admin/src/render.rs:1029-1042`).
+  `Field.default` (`core/controlplane/src/lib.rs:436-454`, `core/admin/src/render/form.rs:57-63`).
   It belongs to step 21 (apikeys) of
   docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md, whose text does not
   yet name it.
