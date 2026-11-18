@@ -10,10 +10,6 @@ pub(crate) fn is_invalid_uuid(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
 }
 
-/// Per-player advisory lock key: FNV-1a over a `notifications.player/` namespace plus the uuid
-/// normalized to Postgres's uuid-equality form, so every spelling the `$1::uuid` row SQL
-/// treats as one player takes the SAME lock. A spelling that is not 32 hex digits hashes its
-/// raw bytes, so taking the lock never raises 22P02.
 fn player_lock_key(player_id: &str) -> i64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -217,8 +213,6 @@ impl Store {
         .await
     }
 
-    /// Taken ON THE TX CONNECTION — a separate pool connection would lose the
-    /// serialization — and released at commit/rollback.
     pub(crate) async fn lock_player_tx(
         &self,
         conn: &mut PgConnection,

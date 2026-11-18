@@ -388,10 +388,6 @@ pub(crate) const PURGE_SWEEP_SUB: bus::SubscriptionSpec = bus::SubscriptionSpec 
 
 pub(crate) const PURGE_SCHEDULE_NAME: &str = schedulerevents::schedule_names::PLAYER_PURGE;
 
-/// Players one fire may sweep, and therefore the transaction-scoped advisory locks the
-/// delivery transaction accumulates: each player swept keeps that player's inbox writes
-/// blocked until the fire commits. It is equally the claim statement's `LIMIT`, so one
-/// constant decides both; a backlog above 64 players per fire drains over several fires.
 pub(crate) const NOTIFICATIONS_PLAYERS_PER_FIRE: i64 = 64;
 
 /// Drains the tombstones planted by [`on_player_deleted`]: the inbox rows of players whose

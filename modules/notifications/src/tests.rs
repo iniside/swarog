@@ -1631,9 +1631,6 @@ fn purge_payload(name: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({ "name": name })).unwrap()
 }
 
-/// A red run must not leave unswept tombstones, and a `Drop` guard cannot `await`. On a failure
-/// or a hang the backends of `apps` are terminated first: a racer parked server-side keeps its
-/// locks after its future is gone, and the cleanup DELETEs would wait on them.
 async fn with_purge_cleanup<Fut>(
     pool: &PgPool,
     apps: Vec<String>,
@@ -1674,23 +1671,15 @@ where
     }
 }
 
-/// A fixed player id that sorts below every random tombstone: one fire claims only the
-/// `NOTIFICATIONS_PLAYERS_PER_FIRE` lowest unswept ids, so a sweep test's own player must be
-/// among them. Each sweep test owns a distinct `n` range.
 fn fixed_player(n: u64) -> String {
     format!("00000000-0000-0000-0000-{n:012x}")
 }
 
-/// Drops whatever a crashed earlier run left under a fixed id, so the test starts with an
-/// empty inbox and an absent tombstone.
 async fn clear_fixed_player(pool: &PgPool, player_id: &str) {
     cleanup(pool, &[player_id]).await;
     cleanup_purge_row(pool, player_id).await;
 }
 
-/// Precondition of a sweep test: one fire claims only the `NOTIFICATIONS_PLAYERS_PER_FIRE`
-/// lowest unswept tombstones, so leftovers sorting below `player_id` would starve it and the
-/// test would fail as a purge that never happened.
 async fn assert_claimed_by_the_next_fire(pool: &PgPool, player_id: &str) {
     let below: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM notifications.purged_players \
@@ -1718,9 +1707,6 @@ async fn unstamped_tombstones(pool: &PgPool, ids: &[String]) -> Vec<String> {
     .unwrap()
 }
 
-// Concurrency is staged, never slept: a racer runs on its OWN pool whose connections carry a
-// unique `application_name`, so a test waits on `pg_locks` until the racer is parked on the
-// lock the test holds, then releases it.
 
 fn racer_pool(app: &str) -> PgPool {
     let options = testdb::dsn()
@@ -1733,13 +1719,10 @@ fn racer_pool(app: &str) -> PgPool {
         .connect_lazy_with(options)
 }
 
-/// A unique `application_name` for one racer of one test run.
 async fn racer_app(pool: &PgPool, what: &str) -> String {
     format!("notifications-{what}-{}", unique_player(pool).await)
 }
 
-/// Awaits a spawned racer with a hang guard, so a deadlocked race fails with a name instead
-/// of stalling the run.
 async fn finish<T>(what: &str, handle: tokio::task::JoinHandle<T>) -> T {
     match tokio::time::timeout(std::time::Duration::from_secs(30), handle).await {
         Ok(Ok(value)) => value,
@@ -1748,10 +1731,6 @@ async fn finish<T>(what: &str, handle: tokio::task::JoinHandle<T>) -> T {
     }
 }
 
-/// Polls observed database state until a backend of `app` waits on the advisory lock `key`
-/// (`true`), or `racer` finished without ever parking (`false`). The second answer is how an
-/// unserialized racer shows itself; a racer parked on any OTHER lock reaches the deadline,
-/// which is a hang guard, not a timing bound.
 async fn wait_advisory_parked<T>(
     pool: &PgPool,
     app: &str,
@@ -1784,7 +1763,6 @@ async fn wait_advisory_parked<T>(
     }
 }
 
-/// As [`wait_advisory_parked`], for a racer waiting on the transaction `xid` itself.
 async fn wait_xact_parked<T>(
     pool: &PgPool,
     app: &str,
@@ -1817,9 +1795,6 @@ async fn wait_xact_parked<T>(
     }
 }
 
-/// Holds an uncommitted inbox row under `key` on `gate` and returns the gate's transaction id:
-/// a writer inserting under the same key waits on that transaction at its `ON CONFLICT`, past
-/// its lock and its tombstone guard.
 async fn gate_dedup_key(gate: &mut sqlx::PgConnection, player_id: &str, key: &str) -> String {
     sqlx::query(
         "INSERT INTO notifications.messages (id, player_id, kind, title, body, source_event_id) \
@@ -1836,9 +1811,6 @@ async fn gate_dedup_key(gate: &mut sqlx::PgConnection, player_id: &str, key: &st
         .unwrap()
 }
 
-/// The advisory key `Store::lock_player_tx` actually takes for `spelling`, read back from
-/// `pg_locks` on the locking connection (a bigint key is split into `classid` high and `objid`
-/// low halves, `objsubid = 1`).
 async fn taken_player_key(pool: &PgPool, svc: &Service, spelling: &str) -> i64 {
     let mut tx = pool.begin().await.unwrap();
     svc.store.lock_player_tx(&mut tx, spelling).await.unwrap();
@@ -2013,14 +1985,7 @@ async fn deliver_or_skip_answers_ok_for_a_purged_recipient_without_pausing_the_s
     cleanup_purge_row(&pool, &purged).await;
 }
 
-// ============================================================================
-// Inbox writes and the purge sweep serialize on one per-recipient advisory lock: `deliver_on`
-// takes it before its tombstone guard, the sweep takes it before each player's DELETE.
-// ============================================================================
 
-/// Runs one inbox write for `player_id` under the dedup `key` on a connection of `app`: the
-/// durable fan-in's handler on a delivery transaction it commits, or operator mail. `Ok(())` is
-/// what the writer answered; operator mail's answer other than `Sent::Appended` is an `Err`.
 async fn race_write(
     svc: Arc<Service>,
     push: Arc<push::Push>,
@@ -2062,9 +2027,6 @@ async fn race_key(pool: &PgPool, operator: bool) -> String {
     }
 }
 
-/// The key is read back from the lock `lock_player_tx` really takes: the same for every
-/// spelling `$1::uuid` treats as one player, different for a different uuid, and taken without
-/// error for a spelling that is no uuid at all.
 #[tokio::test(flavor = "multi_thread")]
 async fn player_lock_key_is_one_per_uuid_across_spellings() {
     let Some(pool) = test_pool().await else { return };
@@ -2089,8 +2051,6 @@ async fn player_lock_key_is_one_per_uuid_across_spellings() {
     taken_player_key(&pool, &svc, "not-a-uuid").await;
 }
 
-/// The lock runs before the tombstone guard, so it must not turn a malformed id into a
-/// database error: operator mail still answers the data-quality verdict, and writes nothing.
 #[tokio::test]
 async fn operator_mail_to_a_malformed_player_id_is_invalid() {
     let Some(pool) = test_pool().await else { return };
@@ -2118,13 +2078,6 @@ async fn operator_mail_to_a_malformed_player_id_is_invalid() {
     assert_eq!(n, 0);
 }
 
-/// Race 1, writer first — the once-wrong branch. A write has passed its lock and its tombstone
-/// guard and is held at its INSERT, behind a gate transaction's uncommitted row under the same
-/// dedup key, when the recipient's tombstone commits and a sweep fires. The sweep's DELETE
-/// cannot see the uncommitted row, so without the lock it stamped `swept_at` around it and the
-/// row outlived the erasure. Now the sweep parks on the recipient's key until the write
-/// commits, then deletes the row. Operator mail held the lock only for one autocommit
-/// statement before it ran in a transaction, so its case fails the same way without that move.
 async fn sweep_waits_for_an_in_flight_write_case(operator: bool, base: u64) {
     let Some(pool) = test_pool().await else { return };
     let _serialized = DB_LOCK.lock().await;
@@ -2205,10 +2158,6 @@ async fn sweep_waits_for_an_in_flight_operator_mail() {
     sweep_waits_for_an_in_flight_write_case(true, 0x210).await;
 }
 
-/// Race 2, sweep first. An open sweep transaction has locked and swept the recipient; a write
-/// parks on that player's key, then, once the sweep commits, sees the tombstone and writes no
-/// row: the durable handler answers `Ok(())`, operator mail `PLAYER_DELETED`. The tombstone is
-/// already committed, so only the "write parks" assertion needs the lock.
 async fn write_parks_behind_an_open_sweep_case(operator: bool, base: u64) {
     let Some(pool) = test_pool().await else { return };
     let _serialized = DB_LOCK.lock().await;
@@ -2288,11 +2237,6 @@ async fn operator_mail_parks_behind_an_open_sweep_then_answers_player_deleted() 
     write_parks_behind_an_open_sweep_case(true, 0x310).await;
 }
 
-/// One fire claims and locks at most 64 players. With 65 of this test's own lowest-sorting
-/// tombstones, one fire stamps exactly the 64 lowest and leaves the 65th for the next fire.
-/// The counts are literal, not derived from `NOTIFICATIONS_PLAYERS_PER_FIRE`, so raising the
-/// claim limit or restoring a batch loop turns this red. The sweep's 5s budget is far above 64
-/// players' two statements each, so it does not stop this fire early.
 #[tokio::test(flavor = "multi_thread")]
 async fn one_sweep_fire_stamps_at_most_64_players() {
     let Some(pool) = test_pool().await else { return };
@@ -2357,7 +2301,6 @@ async fn one_sweep_fire_stamps_at_most_64_players() {
     .await;
 }
 
-/// Whether a backend of `app` holds the advisory lock `key`.
 async fn holds_advisory(pool: &PgPool, app: &str, key: i64) -> bool {
     let held: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid \
@@ -2372,10 +2315,6 @@ async fn holds_advisory(pool: &PgPool, app: &str, key: i64) -> bool {
     held > 0
 }
 
-/// Operator mail releases the recipient's lock before it answers a refusal that leaves its
-/// transaction open, here `PLAYER_DELETED`. sqlx only queues a dropped transaction's ROLLBACK
-/// and sends it from a task spawned on this single-threaded runtime, so the probe runs on
-/// another thread while this one is blocked, where that task cannot have run.
 #[tokio::test]
 async fn operator_mail_releases_the_lock_before_it_answers_a_refusal() {
     let Some(pool) = test_pool().await else { return };
