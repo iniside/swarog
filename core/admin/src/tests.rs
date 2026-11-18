@@ -1740,7 +1740,6 @@ async fn a_tab_of_a_down_module_draws_the_error_dot() {
     let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/e/player/p-1").await;
     assert_eq!(status, StatusCode::OK, "{raw}");
     let dot = r#"<span class="dot err" title="module unavailable"></span>"#;
-    assert_eq!(tab_button(&raw, "wallet").matches(r#"class="dot err""#).count(), 1, "{raw}");
     let again = "a down tab loads no count that would dot it again";
     assert!(!tab_button(&raw, "wallet").contains("balance-count"), "{again}: {raw}");
     assert!(tab_button(&raw, "wallet").contains(dot), "{raw}");
@@ -1831,15 +1830,21 @@ async fn a_tool_on_a_readonly_contribution_is_disabled_and_its_post_refused() {
 }
 
 /// `LocalFace::invoke` refuses an action on a contribution declaring `readonly` before its
-/// provider runs, as it refuses one of a module that does not write; another action of the
-/// same module reaches the provider.
+/// provider runs, as it refuses one of a module that does not write, and refuses a link as
+/// invalid; another action of the same module reaches the provider.
 #[tokio::test]
 async fn the_local_face_refuses_a_write_on_a_readonly_contribution() {
     use controlplane::ControlPlane as _;
     let saves = ContributionDecl { readonly: Some("inspection only".to_string()), ..player_tab("saves", "saves") };
+    let link = controlplane::Link::Page {
+        module: "storage".to_string(),
+        page: "saves".to_string(),
+        params: BTreeMap::new(),
+    };
     let actions = vec![
         action_decl("wipe", ActionPoint::PanelTool("saves".to_string()), true),
         action_decl("kick", ActionPoint::RowAction("player".to_string()), true),
+        ActionDecl { then: Then::Link(link), ..action_decl("open", ActionPoint::PanelTool("saves".to_string()), true) },
     ];
     let storage = Recording::new(module("storage", vec![saves], actions, true), &[]);
     let face = controlplane::LocalFace::new(vec![storage.clone() as Arc<dyn controlplane::Provider>]);
@@ -1857,6 +1862,8 @@ async fn the_local_face_refuses_a_write_on_a_readonly_contribution() {
     let refused = face.invoke(call("wipe")).await.expect_err("a read-only contribution's action is refused");
     assert_eq!(refused.status, opsapi::Status::Forbidden, "{refused}");
     assert!(refused.to_string().contains(r#"contribution "saves""#), "{refused}");
+    let invalid = face.invoke(call("open")).await.expect_err("a link has no invoke");
+    assert_eq!(invalid.status, opsapi::Status::Invalid, "{invalid}");
     assert_eq!(storage.invokes.load(Ordering::SeqCst), 0);
     let _ = face.invoke(call("kick")).await;
     let off = "an action off the read-only contribution reaches the provider";

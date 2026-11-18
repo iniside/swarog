@@ -194,6 +194,8 @@ pub controlplane::ActionPoint::PanelTool(alloc::string::String)
 pub controlplane::ActionPoint::QueueRow(alloc::string::String)
 pub controlplane::ActionPoint::RowAction(alloc::string::String)
 pub controlplane::ActionPoint::TableRow(alloc::string::String)
+impl controlplane::ActionPoint
+pub fn controlplane::ActionPoint::contribution(&self) -> core::option::Option<&str>
 impl controlplane::Variants for controlplane::ActionPoint
 pub const controlplane::ActionPoint::NAME: &'static str
 pub const controlplane::ActionPoint::VARIANTS: &'static [&'static str]
@@ -831,6 +833,8 @@ pub controlplane::Then::Confirm(controlplane::ConfirmSpec)
 pub controlplane::Then::Form(controlplane::FormSpec)
 pub controlplane::Then::Invoke
 pub controlplane::Then::Link(controlplane::Link)
+impl controlplane::Then
+pub fn controlplane::Then::invokes(&self) -> bool
 impl controlplane::Variants for controlplane::Then
 pub const controlplane::Then::NAME: &'static str
 pub const controlplane::Then::VARIANTS: &'static [&'static str]

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use controlplane::{
-    ActionPoint, Banner, ContributionDecl, Manifest, PanelBody, PanelQuery, Point, Primitive, Then, TimeRange,
+    Banner, ContributionDecl, Manifest, PanelBody, PanelQuery, Point, Primitive, TimeRange,
     DEFAULT_PANEL_DEADLINE_MS,
 };
 
@@ -78,18 +78,15 @@ pub(crate) fn module_banner(state: PanelState, banner: Option<&Banner>) -> Optio
     banner.filter(|_| matches!(state, PanelState::Ok | PanelState::Readonly))
 }
 
-/// Whether `body` of contribution `decl` in `manifest` offers a write: a `Form` body, a
-/// `PanelForm` action, or an implemented `PanelTool`, `QueueRow` or `TableRow` action that
-/// is not a `Then::Link`. A module that does not write gets the read-only chrome only on
-/// such a panel; an `implemented: false` action is refused by `admit` before any write.
-fn has_write_affordance(manifest: &Manifest, decl: &ContributionDecl, body: &Primitive) -> bool {
-    matches!(body, Primitive::Form(_))
-        || manifest.actions.iter().any(|a| match &a.point {
-            ActionPoint::PanelForm(c) => *c == decl.id,
-            ActionPoint::PanelTool(c) | ActionPoint::QueueRow(c) | ActionPoint::TableRow(c) => {
-                *c == decl.id && a.implemented && !matches!(a.then, Then::Link(_))
-            }
-            _ => false,
+/// Whether `body` of contribution `decl` in `manifest` draws read-only: the contribution
+/// declares `readonly`, or the module does not write and the panel offers a write, a `Form`
+/// body or an implemented action on it that `Manifest::write_refusal` refuses. An
+/// `implemented: false` action is refused by `admit` before any write.
+fn is_readonly(manifest: &Manifest, decl: &ContributionDecl, body: &Primitive) -> bool {
+    decl.readonly.is_some()
+        || (!manifest.writes && matches!(body, Primitive::Form(_)))
+        || manifest.actions.iter().any(|a| {
+            a.point.contribution() == Some(decl.id.as_str()) && a.implemented && manifest.write_refusal(&a.id).is_some()
         })
 }
 
@@ -271,11 +268,10 @@ pub(crate) async fn resolve(
                     .unwrap_or_else(|e| e.into_inner())
                     .put(key, body.clone(), Duration::from_secs(u64::from(ttl)));
             }
-            let writable = manifest.writes || !has_write_affordance(manifest, decl, &body.primitive);
-            view.state = if decl.readonly.is_none() && writable {
-                PanelState::Ok
-            } else {
+            view.state = if is_readonly(manifest, decl, &body.primitive) {
                 PanelState::Readonly
+            } else {
+                PanelState::Ok
             };
             view.body = Some(body);
             return view;

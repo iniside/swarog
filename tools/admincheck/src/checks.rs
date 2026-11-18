@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use checkmodules::ProcessControlPlane;
-use controlplane::{ActionPoint, Emphasis, Layout, Manifest, Point, Then, SECTIONS};
+use controlplane::{ActionPoint, Emphasis, Layout, Manifest, Point, Then, Variants, SECTIONS};
 
 /// The longest action or contribution id: a form instance id `<id>:<43-byte token>` then
 /// stays within the 128-byte idempotency keys modules accept.
@@ -219,24 +219,19 @@ fn head_actions(m: &Manifest, out: &mut Vec<String>) {
 fn panel_actions(m: &Manifest, out: &mut Vec<String>) {
     let mut forms: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for a in &m.actions {
-        let (point, contribution) = match &a.point {
-            ActionPoint::PanelTool(c) => ("PanelTool", c),
-            ActionPoint::QueueRow(c) => ("QueueRow", c),
-            ActionPoint::TableRow(c) => ("TableRow", c),
-            ActionPoint::PanelForm(c) => ("PanelForm", c),
-            ActionPoint::RowAction(_) | ActionPoint::HeaderAction(_) | ActionPoint::PageHead(_) => continue,
-        };
-        if !m.contributions.iter().any(|c| &c.id == contribution) {
+        let Some(contribution) = a.point.contribution() else { continue };
+        let point = a.point.variant();
+        if !m.contributions.iter().any(|c| c.id == contribution) {
             out.push(format!(
                 "{}: action {:?} is {point}({contribution:?}), which is not a contribution of this module",
                 m.module, a.id
             ));
         }
-        if point == "PanelForm" {
+        if matches!(a.point, ActionPoint::PanelForm(_)) {
             if !matches!(a.then, Then::Invoke) {
                 out.push(format!("{}: PanelForm action {:?} is not Then::Invoke", m.module, a.id));
             }
-            forms.entry(contribution.as_str()).or_default().push(a.id.as_str());
+            forms.entry(contribution).or_default().push(a.id.as_str());
         }
     }
     for (contribution, actions) in forms.iter().filter(|(_, actions)| actions.len() > 1) {

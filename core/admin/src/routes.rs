@@ -249,10 +249,7 @@ pub(crate) fn panel_tools(
     let mut tools: Vec<&ActionDecl> = manifest
         .actions
         .iter()
-        .filter(|a| {
-            matches!(&a.point, ActionPoint::PanelTool(c) | ActionPoint::QueueRow(c) | ActionPoint::TableRow(c)
-                if c == contribution)
-        })
+        .filter(|a| a.point.contribution() == Some(contribution) && !matches!(a.point, ActionPoint::PanelForm(_)))
         .collect();
     tools.sort_by(|a, b| (a.order, &a.id).cmp(&(b.order, &b.id)));
     tools.into_iter().map(|a| action_item(operator, csrf, module, manifest, a, None)).collect()
@@ -1000,7 +997,7 @@ async fn action_submit(
     let Some(found) = actions::find(&snapshot, &module, &action) else {
         return not_found(&p, &format!("{module}/{action}"));
     };
-    if matches!(found.decl.then, Then::Link(_)) {
+    if !found.decl.then.invokes() {
         return toast(&p, StatusCode::BAD_REQUEST, format!("{module}/{action}: a link action has no invoke"));
     }
     let who = Claimant { login: operator.login.clone(), module: module.clone(), action: action.clone() };

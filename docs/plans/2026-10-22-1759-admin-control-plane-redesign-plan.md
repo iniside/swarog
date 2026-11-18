@@ -2894,6 +2894,12 @@ no fix-on-fix: a finding that needs the mirror back is an owner question.
     one as `invalid`, as the portal's submit already did, so a non-writer still never sees an
     invoke. admincheck also requires an `EntityTabCount` or `EntityTabTile` to name a tab an
     `EntityTab` of its kind declares.
+  - One place each (owner, 2026-11-18, round-2 proof audit): `ActionPoint::contribution`
+    names the contribution an action sits on, `Then::invokes` says whether it is invoked, and
+    the panel's read-only state is derived from `Manifest::write_refusal` (`engine::panels`
+    `is_readonly`; `has_write_affordance` is deleted). One state changes: an
+    `implemented: false` `PanelForm` action on a non-`Form` body of a module that does not
+    write no longer draws the panel read-only; every existing golden and test draws the same.
   - K13: a tab is down when a module contributing an `EntityTab` to it is down
     (`Snapshot::module_ok`); a down tab skips the count slots of down modules, which would
     draw a second dot.

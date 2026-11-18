@@ -270,7 +270,7 @@ impl ControlPlane for LocalFace {
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
         let local = self.local(&req.module)?;
-        if local.manifest.actions.iter().any(|a| a.id == req.action && matches!(a.then, Then::Link(_))) {
+        if local.manifest.actions.iter().any(|a| a.id == req.action && !a.then.invokes()) {
             return Err(opsapi::Error::invalid(format!(
                 "control-plane action {:?} of module {:?} is a link and has no invoke",
                 req.action, req.module
@@ -485,29 +485,23 @@ pub struct Manifest {
 
 impl Manifest {
     /// The one write rule, applied by `LocalFace::invoke`, the portal's admission and
-    /// admincheck: `None` when `action` may write. A `Then::Link` action writes nothing and
-    /// is never refused. Any other action is refused when the module declares no `writes`, or
-    /// when the contribution its point names declares `readonly`. An action this manifest
-    /// does not declare is judged by `writes` alone.
+    /// admincheck: `None` when `action` may write. An action that is not invoked
+    /// ([`Then::invokes`]) writes nothing and is never refused. Any other action is refused
+    /// when the module declares no `writes`, or when the contribution its point names declares
+    /// `readonly`. An action this manifest does not declare is judged by `writes` alone.
     pub fn write_refusal(&self, action: &str) -> Option<WriteRefusal> {
         let Some(decl) = self.actions.iter().find(|a| a.id == action) else {
             return (!self.writes).then_some(WriteRefusal { readonly: None });
         };
-        if matches!(decl.then, Then::Link(_)) {
+        if !decl.then.invokes() {
             return None;
         }
         if !self.writes {
             return Some(WriteRefusal { readonly: None });
         }
-        let on = match &decl.point {
-            ActionPoint::PanelTool(c)
-            | ActionPoint::QueueRow(c)
-            | ActionPoint::PanelForm(c)
-            | ActionPoint::TableRow(c) => c,
-            ActionPoint::RowAction(_) | ActionPoint::HeaderAction(_) | ActionPoint::PageHead(_) => return None,
-        };
-        let text = self.contributions.iter().find(|c| &c.id == on)?.readonly.as_ref()?;
-        Some(WriteRefusal { readonly: Some((on.clone(), text.clone())) })
+        let on = decl.point.contribution()?;
+        let text = self.contributions.iter().find(|c| c.id == on)?.readonly.as_ref()?;
+        Some(WriteRefusal { readonly: Some((on.to_string(), text.clone())) })
     }
 }
 
@@ -664,6 +658,20 @@ variants! {
     }
 }
 
+impl ActionPoint {
+    /// The contribution id the point places its action on; `None` for a point placed by
+    /// entity kind or page.
+    pub fn contribution(&self) -> Option<&str> {
+        match self {
+            ActionPoint::PanelTool(c)
+            | ActionPoint::QueueRow(c)
+            | ActionPoint::PanelForm(c)
+            | ActionPoint::TableRow(c) => Some(c),
+            ActionPoint::RowAction(_) | ActionPoint::HeaderAction(_) | ActionPoint::PageHead(_) => None,
+        }
+    }
+}
+
 variants! {
     drawn;
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -672,6 +680,16 @@ variants! {
         Form(FormSpec),
         Confirm(ConfirmSpec),
         Link(Link),
+    }
+}
+
+impl Then {
+    /// Whether the action is invoked through `cp.invoke`; a link only navigates.
+    pub fn invokes(&self) -> bool {
+        match self {
+            Then::Invoke | Then::Form(_) | Then::Confirm(_) => true,
+            Then::Link(_) => false,
+        }
     }
 }
 
