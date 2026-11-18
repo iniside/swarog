@@ -51,8 +51,14 @@ pointer stubs. Use them; do not reimplement. Never use a git worktree.
   Never resume a `core-reviewer` or `proof-auditor`. Round 2 is a fresh
   spawn with its own diff range.
 - listing-only research — `model:"haiku"` unless intentionally overridden.
-- read-only research — Explore / general-purpose, `model:"sonnet"` unless
-  listing-only.
+- read-only research — Explore / general-purpose for broad multi-question
+  research, `model:"sonnet"` unless listing-only.
+- search — `subagent_type: "code-scout"`, `model:"sonnet"` (`"haiku"` for pure
+  listing). One open code-search question (who calls X, where Y is wired, all
+  impls of Z); returns `file:line` anchors only. Dispatched by the main
+  session or by `core-implementer` / `test-author` / `docs-writer`; its
+  answers are leads the caller verifies with a targeted read.
+  `core-reviewer` and `proof-auditor` read evidence themselves.
 - Proof audit — `subagent_type: "proof-auditor"`, `model:` ≥ the author's
   tier. Only when the diff touches a verify stage or the test/gate is the
   risk surface.
@@ -61,7 +67,7 @@ Effort does not inherit: set it with the Agent call's `effort:` parameter
 (`low`|`medium`|`high`|`xhigh`|`max`), never prompt wording. The value
 follows `.agents/shared/core-rules.md` **Agent Effort**. The rust
 navigation chain does not inherit; paste it into every code-touching
-subagent prompt: rust-analyzer → targeted read → research subagent → grep
+subagent prompt: rust-analyzer → targeted read → research subagent (`code-scout`) → grep
 as a labelled lower bound. Comments: default NONE; name at most the one or
 two things that earn a line in that file.
 
