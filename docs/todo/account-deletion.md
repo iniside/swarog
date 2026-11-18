@@ -1,34 +1,12 @@
 # Account deletion
 
-Last updated: 2026-11-17
+Last updated: 2026-11-18
 
 ## In progress
 
-_None._
-
-## Open
-
-- [ ] **Redact `asyncevents.events` and `audit.log` after `player.deleted`**
-  ACCOUNT-DELETION-01. The player id and, for `player.deleted`, the handle survive
-  the 90/30-day retention. Mirrored in docs/reference/game-backend-feature-gaps.md:306
-  and README.md:140 @ fd797b3a. Source: docs/roadmap/feature-tracker.md:145 @ fd797b3a (2026-09-10).
-- [ ] **Purge a deleted player from leaderboard, rating and match**
-  ACCOUNT-DELETION-02. None of the three subscribes to `player.deleted` (Grep of
-  modules/, lower bound). `match.finished` carries opaque contestant strings, so
-  they cannot be mapped to a player. Same root as NOTIFICATIONS-01. Source:
-  docs/roadmap/feature-tracker.md:145 @ fd797b3a (2026-09-10); README.md:140-141 @ fd797b3a;
-  .agents/shared/gamebackend.md:245 @ fd797b3a.
-- [ ] **Purge a deleted player from mail**
-  ACCOUNT-DELETION-03. `mail.outbox` has no `player_id`, and mail does not
-  subscribe to `player.deleted`. Source: docs/roadmap/feature-tracker.md:145 @ fd797b3a
-  (2026-09-10); README.md:140-141 @ fd797b3a.
-
-## Notes
-
-### Not doing
-
-- **Orphan-row race window between the tombstone guard and the purge sweep**
-  (ACCOUNT-DELETION-05, accepted; owner decision 2026-11-17: stays accepted).
+- [ ] **Orphan-row race between the tombstone guard and the purge sweep**
+  ACCOUNT-DELETION-05. Owner reversed the accepted decision on 2026-11-17 ("wyscigow nie
+  zakceptujemy"); closed per module by docs/plans/2026-11-17-1900-purge-race-locks-plan.md.
   - Decision: docs/plans/2026-09-10-1917-account-deletion-purge-plan.md:437-460 ("Known
     gap ... Not taken"). A write that read "no tombstone" before the plant, and commits
     after the player's sweep stamped `swept_at`, leaves one row no later sweep revisits.
@@ -63,3 +41,20 @@ _None._
       in flight holds the group lock with its membership uncommitted
       (lock and guard `service.rs:496-508`, insert `:548-552`), so the sweep never locks that group and the membership
       survives. `create` guards with no lock (`service.rs:364-378`).
+
+## Open
+
+- [ ] **Redact `asyncevents.events` and `audit.log` after `player.deleted`**
+  ACCOUNT-DELETION-01. The player id and, for `player.deleted`, the handle survive
+  the 90/30-day retention. Mirrored in docs/reference/game-backend-feature-gaps.md:306
+  and README.md:140 @ fd797b3a. Source: docs/roadmap/feature-tracker.md:145 @ fd797b3a (2026-09-10).
+- [ ] **Purge a deleted player from leaderboard, rating and match**
+  ACCOUNT-DELETION-02. None of the three subscribes to `player.deleted` (Grep of
+  modules/, lower bound). `match.finished` carries opaque contestant strings, so
+  they cannot be mapped to a player. Same root as NOTIFICATIONS-01. Source:
+  docs/roadmap/feature-tracker.md:145 @ fd797b3a (2026-09-10); README.md:140-141 @ fd797b3a;
+  .agents/shared/gamebackend.md:245 @ fd797b3a.
+- [ ] **Purge a deleted player from mail**
+  ACCOUNT-DELETION-03. `mail.outbox` has no `player_id`, and mail does not
+  subscribe to `player.deleted`. Source: docs/roadmap/feature-tracker.md:145 @ fd797b3a
+  (2026-09-10); README.md:140-141 @ fd797b3a.
