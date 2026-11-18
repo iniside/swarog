@@ -28,8 +28,10 @@
 //!   own source, so a new variant whose case is not rendered, or that reuses another variant's
 //!   case, fails;
 //! - every variant of every enum `controlplane::declared_enums` registers as drawn is converted
-//!   into a view model by the render path while the cases render, as `render::seen` records it
-//!   ([`golden_renders_convert_every_drawn_enum_variant`]).
+//!   into a view model by the render path while some case alone is built and rendered, as
+//!   `render::seen` records it, and no undrawn or undeclared enum is
+//!   ([`golden_renders_convert_every_drawn_enum_variant`]); every `pub enum` of controlplane is
+//!   declared drawn or undrawn ([`every_controlplane_enum_is_declared_drawn_or_undrawn`]).
 //!
 //! Inputs are fixed: one csrf, one form id, fixed `age_s`, and no clock or id generator,
 //! because the render layer reads neither.
@@ -44,7 +46,7 @@ use controlplane::{
     ContributionDecl, DataTable, DeclaredEnum, Delta, Emphasis, EntityHeader, EntityRef, Field, FieldKind, FilterDef,
     FilterKind, FormSpec, KpiTile, Layout, Link, Manifest, PageInfo, Palette, PanelBody, Point, Primitive,
     PropertyList, QueueItem, QueueState, ReasonReq, Role, Row, Series, ServiceItem, ServiceState, ServiceStatus,
-    Severity, SortDir, Then, TimeRange, TimeSeriesChart, Timeline, TimelineEntry, Tone, WorkQueue,
+    Severity, SortDir, Then, TimeRange, TimeSeriesChart, Timeline, TimelineEntry, Tone, Variants, WorkQueue,
 };
 use minijinja::Environment;
 
@@ -53,8 +55,9 @@ use crate::engine::columns::{ColumnOutcome, ListColumn};
 use crate::engine::panels::{LastValue, PanelState};
 use crate::engine::roles::Operator;
 use crate::render::{
-    self, ActionItem, ActionResultView, Crumb, DashboardView, FlashView, FormFrame, FormInstance, MenuView, ModalSpec,
-    OperatorView, PageView, PanelInput, RevealView, SearchGroupView, SearchHitView, SearchView, ShellView, SlotView,
+    self, ActionItem, ActionResultView, Crumb, DashboardView, EntityView, FlashView, FormFrame, FormInstance,
+    MenuView, ModalSpec, OperatorView, PageView, PanelInput, RevealView, SearchGroupView, SearchHitView, SearchView,
+    ShellView, SlotView, TabView,
 };
 use crate::routes;
 
@@ -712,7 +715,7 @@ impl PanelCase {
             row_menu_kinds: &self.row_menu_kinds,
             csrf: CSRF,
             form: self.form.then(|| FormInstance {
-                post_url: format!("/admin/_action/{MODULE}/save"),
+                post_url: routes::action_item(&operator(Role::Admin), CSRF, MODULE, true, &save_decl(), None).url,
                 form_id: FORM_ID.to_string(),
                 posted: None,
                 errors: &no_errors,
@@ -722,6 +725,11 @@ impl PanelCase {
         };
         f(&render::panel(&input))
     }
+}
+
+/// The `PanelForm` action a form case's Save posts to.
+fn save_decl() -> ActionDecl {
+    ActionDecl { point: ActionPoint::PanelForm(CONTRIBUTION.to_string()), ..decl("save", "Save", "check", Then::Invoke) }
 }
 
 fn slot(mode: &'static str, denied: bool) -> SlotView {
@@ -772,13 +780,13 @@ fn shell_view(crumb: &str) -> ShellView {
     }
 }
 
-/// `view` drawn as screen `name` of `shell.html`, as `routes::screen` draws it, cut to its
-/// `<main>`: the shell around it is the same on every screen.
+/// `view` drawn as screen `name` through `render::screen_page`, cut from the sidebar, which
+/// holds the operator chip, to the end of `<main>`: the search palette after it holds the
+/// literal [`RAW_NEWLINE`].
 fn screen(env: &Environment<'_>, name: &str, view: &impl serde::Serialize) -> Result<String, minijinja::Error> {
-    let ctx = minijinja::context! { screen => name, v => minijinja::Value::from_serialize(view) };
-    let raw = render::page(env, "shell.html", &ctx)?;
-    let (open, close) = ("<main class=\"main\">", "</main>");
-    let start = raw.find(open).expect("the shell draws <main>");
+    let raw = render::screen_page(env, name, view)?;
+    let (open, close) = ("<div class=\"app\">", "</main>");
+    let start = raw.find(open).expect("the shell draws its app frame");
     let end = start + raw[start..].find(close).expect("<main> closes") + close.len();
     Ok(raw[start..end].to_string())
 }
@@ -1308,19 +1316,32 @@ fn queue_narrowed_case(query: &[(&str, &str)], search: Option<&'static str>) -> 
 /// Every case as `(name, golden form)`, in a fixed order.
 fn cases(env: &Environment<'_>) -> Vec<Case> {
     let mut out: Vec<Rendered> = Vec::new();
-    let mut panel = |name: &'static str, case: PanelCase| {
-        out.push(Rendered {
-            name,
-            result: case.render(env),
-            primitive: case.body.as_ref().map(|b| primitive_case(&b.primitive)),
-            state: (case.mode == "panel").then(|| state_case(case.state)),
-        })
-    };
+    // Each case is collected around building and rendering it alone, so a view built and not
+    // pushed counts for nothing.
+    macro_rules! push {
+        ($rendered:expr) => {
+            out.push(scoped(|| $rendered))
+        };
+    }
+    macro_rules! panel {
+        ($name:expr, $case:expr $(,)?) => {
+            push!({
+                let case: PanelCase = $case;
+                Rendered {
+                    name: $name,
+                    result: case.render(env),
+                    primitive: case.body.as_ref().map(|b| primitive_case(&b.primitive)),
+                    state: (case.mode == "panel").then(|| state_case(case.state)),
+                    seen: render::seen::Record::new(),
+                }
+            })
+        };
+    }
 
     // ---- each PanelState, in panel chrome ----
-    panel("state_ok", PanelCase::new(PanelState::Ok, Some(body(summary()))));
-    panel("state_empty", PanelCase::new(PanelState::Empty, None));
-    panel(
+    panel!("state_ok", PanelCase::new(PanelState::Ok, Some(body(summary()))));
+    panel!("state_empty", PanelCase::new(PanelState::Empty, None));
+    panel!(
         "state_empty_payload",
         PanelCase::new(
             PanelState::Empty,
@@ -1331,7 +1352,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         ),
     );
     let readonly_tool = decl("restart", "Restart", "refresh", Then::Invoke);
-    panel(
+    panel!(
         "state_readonly",
         PanelCase {
             actions: vec![action(MODULE, &readonly_tool, Role::Admin, false)],
@@ -1344,7 +1365,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             )
         },
     );
-    panel(
+    panel!(
         "state_stale_hides_module_banner",
         PanelCase {
             error: Some("deadline of 2000ms elapsed"),
@@ -1359,7 +1380,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             )
         },
     );
-    panel(
+    panel!(
         "state_error",
         PanelCase {
             error: Some("connection refused"),
@@ -1367,13 +1388,13 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             ..PanelCase::new(PanelState::Error, None)
         },
     );
-    panel("state_error_no_detail", PanelCase::new(PanelState::Error, None));
-    panel("state_denied", PanelCase { min_role: "admin", ..PanelCase::new(PanelState::Denied, None) });
+    panel!("state_error_no_detail", PanelCase::new(PanelState::Error, None));
+    panel!("state_denied", PanelCase { min_role: "admin", ..PanelCase::new(PanelState::Denied, None) });
 
     // ---- KPI tiles: delta tones, then each state ----
     let tile = |d: Option<Delta>| PanelCase::tile(PanelState::Ok, Some(body(Primitive::KpiTile(kpi(d)))));
-    panel("tile_delta_ok_up", tile(delta("+4.2%", Some(Tone::Ok))));
-    panel(
+    panel!("tile_delta_ok_up", tile(delta("+4.2%", Some(Tone::Ok))));
+    panel!(
         "tile_delta_err_down",
         PanelCase::tile(
             PanelState::Ok,
@@ -1385,7 +1406,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             }))),
         ),
     );
-    panel(
+    panel!(
         "tile_delta_warn_bad_up_capacity",
         PanelCase::tile(
             PanelState::Ok,
@@ -1396,8 +1417,8 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             }))),
         ),
     );
-    panel("tile_delta_info_flat", tile(delta("±0", Some(Tone::Info))));
-    panel(
+    panel!("tile_delta_info_flat", tile(delta("±0", Some(Tone::Info))));
+    panel!(
         "tile_delta_none_period_only",
         PanelCase::tile(
             PanelState::Ok,
@@ -1408,7 +1429,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             }))),
         ),
     );
-    panel(
+    panel!(
         "tile_stale",
         PanelCase {
             age_s: Some(185),
@@ -1416,7 +1437,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             ..PanelCase::tile(PanelState::Stale, Some(body(Primitive::KpiTile(kpi(delta("+4.2%", Some(Tone::Ok)))))))
         },
     );
-    panel(
+    panel!(
         "tile_error_last_value",
         PanelCase {
             error: Some("connection refused"),
@@ -1424,12 +1445,12 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             ..PanelCase::tile(PanelState::Error, None)
         },
     );
-    panel("tile_error", PanelCase { error: Some("connection refused"), ..PanelCase::tile(PanelState::Error, None) });
-    panel("tile_empty", PanelCase::tile(PanelState::Empty, None));
-    panel("tile_denied", PanelCase { min_role: "operator", ..PanelCase::tile(PanelState::Denied, None) });
+    panel!("tile_error", PanelCase { error: Some("connection refused"), ..PanelCase::tile(PanelState::Error, None) });
+    panel!("tile_empty", PanelCase::tile(PanelState::Empty, None));
+    panel!("tile_denied", PanelCase { min_role: "operator", ..PanelCase::tile(PanelState::Denied, None) });
 
     // ---- panel chrome: heading, meta, note, module banner in every tone ----
-    panel(
+    panel!(
         "chrome_heading_meta_note",
         PanelCase::new(
             PanelState::Ok,
@@ -1447,7 +1468,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         ("chrome_banner_err", Tone::Err),
         ("chrome_banner_info", Tone::Info),
     ] {
-        panel(
+        panel!(
             name,
             PanelCase::new(
                 PanelState::Ok,
@@ -1478,7 +1499,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     };
     let denied = ActionDecl { min_role: Role::Admin, ..decl("wipe", "Wipe", "trash", Then::Invoke) };
     let unimplemented = ActionDecl { implemented: false, ..decl("export", "Export", "download", Then::Invoke) };
-    panel(
+    panel!(
         "tools_emphasis",
         PanelCase {
             entity: Some(entity("server", "eu-1")),
@@ -1499,11 +1520,11 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         emphasis: Emphasis::Primary,
         ..decl("create", "Create key", "plus", Then::Invoke)
     };
-    panel(
+    panel!(
         "tools_when_empty",
         PanelCase { actions: vec![tool(&create), tool(&default)], ..PanelCase::new(PanelState::Empty, None) },
     );
-    panel(
+    panel!(
         "tools_when_empty_payload",
         PanelCase {
             actions: vec![tool(&create), tool(&default)],
@@ -1523,7 +1544,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         ..decl("rotate", "Rotate", "refresh", Then::Confirm(confirm("Rotate key?", ConfirmTone::Danger)))
     };
     let copy = decl("copy", "Copy", "copy", Then::Invoke);
-    panel(
+    panel!(
         "props_code_footer_tools",
         PanelCase {
             entity: Some(entity("apikey", "k-7")),
@@ -1541,7 +1562,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             )
         },
     );
-    panel(
+    panel!(
         "props_item_head_tools",
         PanelCase {
             actions: vec![tool(&copy)],
@@ -1557,7 +1578,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             )
         },
     );
-    panel(
+    panel!(
         "props_two_columns",
         PanelCase::new(
             PanelState::Ok,
@@ -1572,7 +1593,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             }))),
         ),
     );
-    panel(
+    panel!(
         "cell_kinds",
         PanelCase::new(
             PanelState::Ok,
@@ -1602,7 +1623,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             ])))),
         ),
     );
-    panel(
+    panel!(
         "cell_bar",
         PanelCase::new(
             PanelState::Ok,
@@ -1617,13 +1638,13 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     );
 
     // ---- ServiceStatus: one and two columns, with and without value_label ----
-    panel("services_one_column", PanelCase::new(PanelState::Ok, Some(body(services(3, 1, None)))));
-    panel("services_one_column_value_label", PanelCase::new(PanelState::Ok, Some(body(services(3, 1, Some("p95"))))));
-    panel("services_two_columns", PanelCase::new(PanelState::Ok, Some(body(services(5, 2, None)))));
-    panel("services_two_columns_value_label", PanelCase::new(PanelState::Ok, Some(body(services(5, 2, Some("lag"))))));
+    panel!("services_one_column", PanelCase::new(PanelState::Ok, Some(body(services(3, 1, None)))));
+    panel!("services_one_column_value_label", PanelCase::new(PanelState::Ok, Some(body(services(3, 1, Some("p95"))))));
+    panel!("services_two_columns", PanelCase::new(PanelState::Ok, Some(body(services(5, 2, None)))));
+    panel!("services_two_columns_value_label", PanelCase::new(PanelState::Ok, Some(body(services(5, 2, Some("lag"))))));
 
     // ---- DataTable ----
-    panel(
+    panel!(
         "table_highlight_row_menu",
         PanelCase {
             query: posted(&[("status", "active"), ("cursor", "c1")]),
@@ -1652,7 +1673,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             )
         },
     );
-    panel(
+    panel!(
         "table_empty_search",
         PanelCase {
             query: posted(&[("q", "zed")]),
@@ -1660,19 +1681,19 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             ..PanelCase::new(PanelState::Empty, Some(body(players_table(Vec::new(), Some(0), None))))
         },
     );
-    panel("table_first_page_label", table_first_page_case());
-    panel("table_list_columns", table_list_columns_case());
-    panel("table_row_actions", table_row_actions_case());
-    panel(
+    panel!("table_first_page_label", table_first_page_case());
+    panel!("table_list_columns", table_list_columns_case());
+    panel!("table_row_actions", table_row_actions_case());
+    panel!(
         "table_noun_later_page",
         PanelCase {
             query: posted(&[("cursor", "c2")]),
             ..PanelCase::new(PanelState::Ok, Some(body(noun_table(Some(1234)))))
         },
     );
-    panel("table_noun_no_total", PanelCase::new(PanelState::Ok, Some(body(noun_table(None)))));
-    panel("table_sorted_ascending", PanelCase::new(PanelState::Ok, Some(body(sorted_ascending_table()))));
-    panel("panel_untitled", PanelCase { title: "", ..PanelCase::new(PanelState::Ok, Some(body(summary()))) });
+    panel!("table_noun_no_total", PanelCase::new(PanelState::Ok, Some(body(noun_table(None)))));
+    panel!("table_sorted_ascending", PanelCase::new(PanelState::Ok, Some(body(sorted_ascending_table()))));
+    panel!("panel_untitled", PanelCase { title: "", ..PanelCase::new(PanelState::Ok, Some(body(summary()))) });
 
     // ---- Timeline ----
     let entry = |at: &str, actor: Option<EntityRef>, verb: &str, summary: &str| TimelineEntry {
@@ -1685,7 +1706,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         icon: String::new(),
         tone: None,
     };
-    panel(
+    panel!(
         "timeline_two_days_older",
         PanelCase::new(
             PanelState::Ok,
@@ -1713,23 +1734,23 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         ),
     );
     let no_entries = Timeline { entries: Vec::new(), cursor_before: None, live: false };
-    panel("timeline_empty", PanelCase::new(PanelState::Empty, Some(body(Primitive::Timeline(no_entries)))));
+    panel!("timeline_empty", PanelCase::new(PanelState::Empty, Some(body(Primitive::Timeline(no_entries)))));
 
     // ---- WorkQueue: row actions, a panel tool, the table contract and its foot ----
-    panel("queue_items_actions", queue_items_actions_case());
-    panel(
+    panel!("queue_items_actions", queue_items_actions_case());
+    panel!(
         "queue_empty",
         PanelCase::new(PanelState::Empty, Some(body(Primitive::WorkQueue(work_queue("pending", Vec::new()))))),
     );
-    panel("queue_panel_tool", queue_panel_tool_case());
-    panel("queue_table_contract", queue_table_contract_case());
-    panel("queue_later_page", queue_later_page_case());
-    panel("queue_search_empty", queue_narrowed_case(&[("q", "zed")], Some("zed")));
-    panel("queue_filter_empty", queue_narrowed_case(&[("template", "welcome")], None));
-    panel("queue_unfiltered_empty", queue_narrowed_case(&[("template", "any")], None));
+    panel!("queue_panel_tool", queue_panel_tool_case());
+    panel!("queue_table_contract", queue_table_contract_case());
+    panel!("queue_later_page", queue_later_page_case());
+    panel!("queue_search_empty", queue_narrowed_case(&[("q", "zed")], Some("zed")));
+    panel!("queue_filter_empty", queue_narrowed_case(&[("template", "welcome")], None));
+    panel!("queue_unfiltered_empty", queue_narrowed_case(&[("template", "any")], None));
 
     // ---- TimeSeriesChart ----
-    panel(
+    panel!(
         "chart_two_axes",
         PanelCase::new(
             PanelState::Ok,
@@ -1777,8 +1798,8 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         error: (state == PanelState::Error).then_some("connection refused"),
         ..PanelCase::new(state, primitive.map(body))
     };
-    panel("attention_ok", PanelCase { icon: "", ..in_mode("attention", PanelState::Ok, Some(attention)) });
-    panel("attention_error", in_mode("attention", PanelState::Error, None));
+    panel!("attention_ok", PanelCase { icon: "", ..in_mode("attention", PanelState::Ok, Some(attention)) });
+    panel!("attention_error", in_mode("attention", PanelState::Error, None));
     let header = EntityHeader {
         title: "Anna Kowalska".to_string(),
         crumb: None,
@@ -1787,28 +1808,28 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         badges: Vec::new(),
         avatar_seed: "p-1001".to_string(),
     };
-    panel("header_ok", in_mode("header", PanelState::Ok, Some(Primitive::EntityHeader(header.clone()))));
+    panel!("header_ok", in_mode("header", PanelState::Ok, Some(Primitive::EntityHeader(header.clone()))));
     let crumbed = EntityHeader {
         crumb: Some("anna.k".to_string()),
         badges: vec![cell(CellKind::Label, "verified"), toned(CellKind::Label, "2FA off", Tone::Warn)],
         ..header
     };
-    panel("header_crumb_badges", in_mode("header", PanelState::Ok, Some(Primitive::EntityHeader(crumbed))));
-    panel("header_error", PanelCase { fallback_title: "p-1001", ..in_mode("header", PanelState::Error, None) });
+    panel!("header_crumb_badges", in_mode("header", PanelState::Ok, Some(Primitive::EntityHeader(crumbed))));
+    panel!("header_error", PanelCase { fallback_title: "p-1001", ..in_mode("header", PanelState::Error, None) });
     let one_cell = |c: Cell| Some(Primitive::Cell(c));
-    panel("fact_cell", in_mode("fact", PanelState::Ok, one_cell(toned(CellKind::Badge, "verified", Tone::Ok))));
-    panel("fact_error", in_mode("fact", PanelState::Error, None));
-    panel("count_cell", in_mode("count", PanelState::Ok, one_cell(cell(CellKind::Number, "14"))));
-    panel("count_error", in_mode("count", PanelState::Error, None));
-    panel("nav_counter_err", in_mode("nav", PanelState::Ok, one_cell(toned(CellKind::Number, "3", Tone::Err))));
-    panel("nav_counter_warn", in_mode("nav", PanelState::Ok, one_cell(toned(CellKind::Number, "7", Tone::Warn))));
+    panel!("fact_cell", in_mode("fact", PanelState::Ok, one_cell(toned(CellKind::Badge, "verified", Tone::Ok))));
+    panel!("fact_error", in_mode("fact", PanelState::Error, None));
+    panel!("count_cell", in_mode("count", PanelState::Ok, one_cell(cell(CellKind::Number, "14"))));
+    panel!("count_error", in_mode("count", PanelState::Error, None));
+    panel!("nav_counter_err", in_mode("nav", PanelState::Ok, one_cell(toned(CellKind::Number, "3", Tone::Err))));
+    panel!("nav_counter_warn", in_mode("nav", PanelState::Ok, one_cell(toned(CellKind::Number, "7", Tone::Warn))));
 
     // ---- panel form: fresh, readonly, readonly beside an enabled tool ----
-    panel(
+    panel!(
         "panel_form",
         PanelCase { form: true, ..PanelCase::new(PanelState::Ok, Some(body(Primitive::Form(profile_form())))) },
     );
-    panel("panel_form_readonly", PanelCase::new(PanelState::Readonly, Some(body(Primitive::Form(profile_form())))));
+    panel!("panel_form_readonly", PanelCase::new(PanelState::Readonly, Some(body(Primitive::Form(profile_form())))));
     // The module writes, but the viewer may not use the PanelForm action (so the panel is
     // readonly) while a PanelTool of the same panel stays enabled for them.
     let form_manifest = Manifest {
@@ -1825,7 +1846,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         writes: true,
         ..Manifest::default()
     };
-    panel(
+    panel!(
         "panel_form_readonly_enabled_tool",
         PanelCase {
             actions: routes::panel_tools(&operator(Role::Viewer), CSRF, MODULE, &form_manifest, CONTRIBUTION),
@@ -1834,8 +1855,8 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     );
 
     // ---- the empty cells of the draw-mode x state matrix ----
-    panel("fact_denied", PanelCase { min_role: "admin", ..in_mode("fact", PanelState::Denied, None) });
-    panel(
+    panel!("fact_denied", PanelCase { min_role: "admin", ..in_mode("fact", PanelState::Denied, None) });
+    panel!(
         "state_stale_no_age",
         PanelCase {
             error: Some("deadline of 2000ms elapsed"),
@@ -1844,7 +1865,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
     );
     // `panels::resolve` errors a ColumnCells answer, so a panel never draws one: its body
     // draws nothing of the cells.
-    panel(
+    panel!(
         "column_cells",
         PanelCase::new(
             PanelState::Ok,
@@ -1918,8 +1939,8 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         let rendered = render::panel_form_result(&frame, &profile_spec, &chrome, instance);
         render::fragment(env, "primitives.html", "panel_fragment", &rendered)
     };
-    out.push(plain("panel_form_rerender_422_chrome", rerender(&field_errors, None, false)));
-    out.push(plain(
+    push!(plain("panel_form_rerender_422_chrome", rerender(&field_errors, None, false)));
+    push!(plain(
         "panel_form_rerender_409_locked",
         rerender(&no_errors, Some("Someone else saved this form first."), true),
     ));
@@ -1934,10 +1955,10 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         ("slot_attention_denied", "attention", true),
         ("slot_inline_loading", "fact", false),
     ] {
-        out.push(plain(name, render::fragment(env, "primitives.html", "slot", &slot(mode, denied))));
+        push!(plain(name, render::fragment(env, "primitives.html", "slot", &slot(mode, denied))));
     }
     let untitled = SlotView { title: String::new(), ..slot("panel", false) };
-    out.push(plain("slot_untitled", render::fragment(env, "primitives.html", "slot", &untitled)));
+    push!(plain("slot_untitled", render::fragment(env, "primitives.html", "slot", &untitled)));
 
     // ---- modals ----
     let modal = |d: &ActionDecl, spec: ModalSpec<'_>| {
@@ -1967,7 +1988,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         confirm_label: "Ban".to_string(),
     };
     let ban = ActionDecl { danger: true, ..decl("ban", "Ban player", "", Then::Confirm(ban_spec.clone())) };
-    out.push(plain("modal_confirm_danger_impact_reason", modal(&ban, ModalSpec::Confirm(&ban_spec))));
+    push!(plain("modal_confirm_danger_impact_reason", modal(&ban, ModalSpec::Confirm(&ban_spec))));
     let pause_spec = ConfirmSpec {
         body: "Deliveries stop until resumed.".to_string(),
         reason: ReasonReq::Optional,
@@ -1975,14 +1996,14 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         ..confirm("Pause webhooks?", ConfirmTone::Warn)
     };
     let pause = decl("pause", "Pause queue", "pause", Then::Confirm(pause_spec.clone()));
-    out.push(plain("modal_confirm_warn_optional_reason", modal(&pause, ModalSpec::Confirm(&pause_spec))));
+    push!(plain("modal_confirm_warn_optional_reason", modal(&pause, ModalSpec::Confirm(&pause_spec))));
     let notice_spec = ConfirmSpec {
         body: "Players see the notice on their next sign-in.".to_string(),
         confirm_label: "Send".to_string(),
         ..confirm("Send the notice?", ConfirmTone::Info)
     };
     let notice = decl("notice", "Send notice", "", Then::Confirm(notice_spec.clone()));
-    out.push(plain("modal_confirm_info_no_reason", modal(&notice, ModalSpec::Confirm(&notice_spec))));
+    push!(plain("modal_confirm_info_no_reason", modal(&notice, ModalSpec::Confirm(&notice_spec))));
     let grant_spec = FormSpec {
         fields: vec![
             Field { required: true, ..field("item_id", "Item", FieldKind::Ref("item".to_string()), None) },
@@ -1994,7 +2015,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         revision: None,
     };
     let grant = decl("grant", "Grant item", "gift", Then::Form(grant_spec.clone()));
-    out.push(plain("modal_form", modal(&grant, ModalSpec::Form(&grant_spec))));
+    push!(plain("modal_form", modal(&grant, ModalSpec::Form(&grant_spec))));
     // A modal shown again after a POST, through `render::modal_rerender` as
     // `routes::render_instance` calls it.
     let reshow = |d: &ActionDecl,
@@ -2018,7 +2039,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         ("qty".to_string(), "must be an integer".to_string()),
         ("stray".to_string(), "not a field".to_string()),
     ]);
-    out.push(plain(
+    push!(plain(
         "modal_rerender_form_errors_locked",
         reshow(
             &grant,
@@ -2029,7 +2050,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             true,
         ),
     ));
-    out.push(plain(
+    push!(plain(
         "modal_rerender_form_stray_error",
         reshow(
             &grant,
@@ -2041,12 +2062,12 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         ),
     ));
     let reason_errors = BTreeMap::from([("_reason".to_string(), "a reason is required".to_string())]);
-    out.push(plain(
+    push!(plain(
         "modal_rerender_confirm_reason_error",
         reshow(&ban, ModalSpec::Confirm(&ban_spec), &posted(&[("_reason", "")]), &reason_errors, None, false),
     ));
     let result = ActionResultView { modal: None, toast: Some("Queue paused".to_string()), tone: "info" };
-    out.push(plain("modal_result_toast", render::fragment(env, "modal.html", "result", &result)));
+    push!(plain("modal_result_toast", render::fragment(env, "modal.html", "result", &result)));
     let flash = FlashView {
         message: "API key created".to_string(),
         reveal: Some(RevealView {
@@ -2057,23 +2078,26 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
         }),
         tone: "ok",
     };
-    out.push(plain("reveal_secret", render::fragment(env, "modal.html", "reveal", &flash)));
+    push!(plain("reveal_secret", render::fragment(env, "modal.html", "reveal", &flash)));
 
     // ---- row menu and search palette ----
     let row_entity = entity("player", "p-1001");
     let profile = decl("profile", "Open profile", "", Then::Link(Link::Entity(row_entity.clone())));
-    let row_item = |module: &str, d: &ActionDecl, role: Role| {
-        routes::action_item(&operator(role), CSRF, module, true, d, Some(&row_entity))
-    };
-    let menu_items = vec![
-        row_item("players", &decl("kick", "Kick", "x", Then::Invoke), Role::Admin),
-        row_item("players", &ban, Role::Admin),
-        row_item("players", &profile, Role::Admin),
-        row_item("economy", &grant, Role::Admin),
-        row_item("economy", &ActionDecl { min_role: Role::Admin, ..grant.clone() }, Role::Viewer),
-    ];
-    let menu = MenuView { entity: row_entity.clone(), groups: render::menu_groups(menu_items) };
-    out.push(plain("menu_row_actions", render::fragment(env, "primitives.html", "menu", &menu)));
+    push!(plain("menu_row_actions", {
+        let row_item = |module: &str, d: &ActionDecl, role: Role| {
+            let d = ActionDecl { point: ActionPoint::RowAction("player".to_string()), ..d.clone() };
+            routes::action_item(&operator(role), CSRF, module, true, &d, Some(&row_entity))
+        };
+        let menu_items = vec![
+            row_item("players", &decl("kick", "Kick", "x", Then::Invoke), Role::Admin),
+            row_item("players", &ban, Role::Admin),
+            row_item("players", &profile, Role::Admin),
+            row_item("economy", &grant, Role::Admin),
+            row_item("economy", &ActionDecl { min_role: Role::Admin, ..grant.clone() }, Role::Viewer),
+        ];
+        let menu = MenuView { entity: row_entity.clone(), groups: render::menu_groups(menu_items) };
+        render::fragment(env, "primitives.html", "menu", &menu)
+    }));
     let hit = |title: &str, subtitle: &str, badge: Option<&str>| SearchHitView {
         hl: false,
         title: title.to_string(),
@@ -2101,7 +2125,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             },
         ],
     );
-    out.push(plain("search_results_and_error", render::fragment(env, "primitives.html", "search", &search)));
+    push!(plain("search_results_and_error", render::fragment(env, "primitives.html", "search", &search)));
     let nothing = SearchView::new(
         "zzz".to_string(),
         String::new(),
@@ -2113,75 +2137,112 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
             error: None,
         }],
     );
-    out.push(plain("search_no_matches", render::fragment(env, "primitives.html", "search", &nothing)));
+    push!(plain("search_no_matches", render::fragment(env, "primitives.html", "search", &nothing)));
 
-    // ---- each Point's slot through routes::slot, each Layout's page, the dashboard's ranges ----
+    // ---- each Point's slot through routes::slot; the dashboard, page and entity screens ----
     let tab = || Point::EntityTab {
         kind: "player".to_string(),
         tab: "items".to_string(),
         tab_label: "Items".to_string(),
         columns: 1,
     };
-    let points = [
-        Point::Page("overview".to_string()),
-        Point::DashboardTile,
-        Point::DashboardAttention,
-        Point::DashboardPanel,
-        Point::DashboardWide,
-        Point::EntityHeader("player".to_string()),
-        tab(),
-        Point::EntityTabCount { kind: "player".to_string(), tab: "items".to_string() },
-        Point::EntitySummary("player".to_string()),
-        Point::EntityListColumn { kind: "player".to_string(), label: "Guild".to_string(), align: Align::Left },
-        Point::NavCounter,
-    ];
-    let roles = [Role::Viewer, Role::Operator, Role::Admin];
-    let every_point: Result<Vec<String>, minijinja::Error> = points
-        .into_iter()
-        .zip(roles.into_iter().cycle())
-        .enumerate()
-        .map(|(i, (point, role))| {
-            let s = point_slot(&format!("c{i}"), point, role, false);
-            render::fragment(env, "primitives.html", "slot", &s)
-        })
-        .collect();
-    out.push(plain("slot_every_point", every_point.map(|slots| slots.join("\n"))));
-    let dashboard = DashboardView {
-        shell: shell_view("Dashboard"),
-        subtitle: "Golden deployment".to_string(),
-        tiles: vec![point_slot("tile", Point::DashboardTile, Role::Viewer, false)],
-        attention: vec![point_slot("attention", Point::DashboardAttention, Role::Viewer, false)],
-        panels: vec![point_slot("panel", Point::DashboardPanel, Role::Operator, false)],
-        wide: vec![point_slot("wide", Point::DashboardWide, Role::Admin, false)],
-        ranges: render::ranges(TimeRange::H24),
-    };
-    out.push(plain("screen_dashboard_ranges", screen(env, "dashboard", &dashboard)));
+    push!(plain("slot_every_point", {
+        let points = [
+            Point::Page("overview".to_string()),
+            Point::DashboardTile,
+            Point::DashboardAttention,
+            Point::DashboardPanel,
+            Point::DashboardWide,
+            Point::EntityHeader("player".to_string()),
+            tab(),
+            Point::EntityTabCount { kind: "player".to_string(), tab: "items".to_string() },
+            Point::EntitySummary("player".to_string()),
+            Point::EntityListColumn { kind: "player".to_string(), label: "Guild".to_string(), align: Align::Left },
+            Point::NavCounter,
+        ];
+        let roles = [Role::Viewer, Role::Operator, Role::Admin];
+        let slots: Result<Vec<String>, minijinja::Error> = points
+            .into_iter()
+            .zip(roles.into_iter().cycle())
+            .enumerate()
+            .map(|(i, (point, role))| {
+                let s = point_slot(&format!("c{i}"), point, role, false);
+                render::fragment(env, "primitives.html", "slot", &s)
+            })
+            .collect();
+        slots.map(|slots| slots.join("\n"))
+    }));
+    push!(plain("screen_dashboard_ranges", {
+        let dashboard = DashboardView {
+            shell: shell_view("Dashboard"),
+            subtitle: "Golden deployment".to_string(),
+            tiles: vec![point_slot("tile", Point::DashboardTile, Role::Viewer, false)],
+            attention: vec![point_slot("attention", Point::DashboardAttention, Role::Viewer, false)],
+            panels: vec![point_slot("panel", Point::DashboardPanel, Role::Operator, false)],
+            wide: vec![point_slot("wide", Point::DashboardWide, Role::Admin, false)],
+            ranges: render::ranges(TimeRange::H24),
+        };
+        screen(env, "dashboard", &dashboard)
+    }));
     let page_point = || Point::Page("overview".to_string());
     for (name, layout) in [
         ("screen_page_stack", Layout::Stack(strings(&["a", "b"]))),
         ("screen_page_grid21", Layout::Grid21(strings(&["a"]), strings(&["b"]))),
         ("screen_page_grid2", Layout::Grid2(strings(&["a"]), strings(&["b"]))),
     ] {
-        let ids = match &layout {
-            Layout::Stack(a) => vec![a],
-            Layout::Grid21(a, b) | Layout::Grid2(a, b) => vec![a, b],
-        };
-        let page = PageView {
-            shell: shell_view("Golden page"),
-            module: MODULE.to_string(),
-            title: "Golden page".to_string(),
-            subtitle: String::new(),
-            head_actions: Vec::new(),
-            tiles: vec![point_slot("tile", page_point(), Role::Viewer, true)],
-            layout: render::layout_name(&layout),
-            columns: ids
-                .into_iter()
-                .map(|column| column.iter().map(|id| point_slot(id, page_point(), Role::Viewer, false)).collect())
-                .collect(),
-            missing: Vec::new(),
-        };
-        out.push(plain(name, screen(env, "page", &page)));
+        push!(plain(name, {
+            let export = ActionDecl {
+                point: ActionPoint::PageHead("overview".to_string()),
+                ..decl("export", "Export", "download", Then::Invoke)
+            };
+            let page = PageView {
+                shell: shell_view("Golden page"),
+                module: MODULE.to_string(),
+                title: "Golden page".to_string(),
+                subtitle: String::new(),
+                head_actions: vec![routes::action_item(&operator(Role::Viewer), CSRF, MODULE, true, &export, None)],
+                tiles: vec![point_slot("tile", page_point(), Role::Viewer, true)],
+                layout: render::layout_name(&layout),
+                columns: render::layout_columns(&layout)
+                    .into_iter()
+                    .map(|column| column.iter().map(|id| point_slot(id, page_point(), Role::Viewer, false)).collect())
+                    .collect(),
+                missing: Vec::new(),
+            };
+            screen(env, "page", &page)
+        }));
     }
+    push!(plain("screen_entity", {
+        let player = entity("player", "p-1001");
+        let at = |id: &str, point: Point| {
+            routes::slot(&operator(Role::Viewer), MODULE, &contribution(id, point, Role::Viewer), Some(&player), false)
+        };
+        let kick = ActionDecl {
+            point: ActionPoint::HeaderAction("player".to_string()),
+            ..decl("kick", "Kick", "x", Then::Invoke)
+        };
+        let view = EntityView {
+            shell: shell_view("p-1001"),
+            kind_label: "Player".to_string(),
+            entity_id: "p-1001".to_string(),
+            avatar_color: render::avatar_color("p-1001"),
+            avatar_initials: render::initials("p-1001"),
+            menu_url: Some("/admin/_menu/player/p-1001".to_string()),
+            headers: vec![at("header", Point::EntityHeader("player".to_string()))],
+            summaries: vec![at("summary", Point::EntitySummary("player".to_string()))],
+            header_actions: vec![routes::action_item(&operator(Role::Viewer), CSRF, MODULE, true, &kick, Some(&player))],
+            tabs: vec![TabView {
+                id: "items".to_string(),
+                label: "Items".to_string(),
+                url: "/admin/e/player/p-1001?tab=items".to_string(),
+                counts: vec![at("count", Point::EntityTabCount { kind: "player".to_string(), tab: "items".to_string() })],
+            }],
+            selected_tab: Some("items".to_string()),
+            tab_grid: false,
+            tab_panels: vec![at("items", tab())],
+        };
+        screen(env, "entity", &view)
+    }));
 
     out.into_iter()
         .map(|r| {
@@ -2192,6 +2253,7 @@ fn cases(env: &Environment<'_>) -> Vec<Case> {
                 raw,
                 primitive: r.primitive,
                 state: r.state,
+                seen: r.seen,
             }
         })
         .collect()
@@ -2207,6 +2269,8 @@ struct Case {
     primitive: Option<&'static str>,
     /// [`state_case`] of a `render::panel` case drawn in panel chrome.
     state: Option<&'static str>,
+    /// What the render path converted while this case alone was built and rendered.
+    seen: render::seen::Record,
 }
 
 struct Rendered {
@@ -2214,10 +2278,17 @@ struct Rendered {
     result: Result<String, minijinja::Error>,
     primitive: Option<&'static str>,
     state: Option<&'static str>,
+    seen: render::seen::Record,
 }
 
 fn plain(name: &'static str, result: Result<String, minijinja::Error>) -> Rendered {
-    Rendered { name, result, primitive: None, state: None }
+    Rendered { name, result, primitive: None, state: None, seen: render::seen::Record::new() }
+}
+
+/// `f`'s case with what the render path converted while `f` ran.
+fn scoped(f: impl FnOnce() -> Rendered) -> Rendered {
+    let (rendered, seen) = render::seen::collect(f);
+    Rendered { seen, ..rendered }
 }
 
 fn goldens(cases: &[Case]) -> Vec<(String, String)> {
@@ -2258,9 +2329,8 @@ fn state_case(state: PanelState) -> &'static str {
     }
 }
 
-/// The sources the variant counts come from: the enums themselves, so a variant added there
-/// raises the count the rendered cases must reach.
-const PRIMITIVE_SOURCE: &str = include_str!("../../controlplane/src/lib.rs");
+/// The source `PanelState`'s variant count is parsed from, so a variant added there raises the
+/// count the rendered cases must reach; `Primitive`'s comes from `Variants::VARIANTS`.
 const PANEL_STATE_SOURCE: &str = include_str!("engine/panels.rs");
 
 /// The variant names of `enum <name>` in `source`, in order: the identifiers that open each
@@ -2324,11 +2394,10 @@ fn enum_variants(source: &str, name: &str) -> Result<Vec<String>, String> {
 }
 
 /// Fails unless `rendered`, the distinct cases the variant-to-case match names for the
-/// variants that render, holds one case per variant of `enum <name>` in `source`. The match
-/// has no wildcard, so a new variant names either a new case, which must render, or an
-/// existing one, which leaves the count short.
-fn check_variant_coverage(source: &str, name: &str, rendered: &BTreeSet<&str>) -> Result<(), String> {
-    let variants = enum_variants(source, name)?;
+/// variants that render, holds one case per variant of `name`'s `variants`. The match has no
+/// wildcard, so a new variant names either a new case, which must render, or an existing one,
+/// which leaves the count short.
+fn check_variant_coverage(name: &str, variants: &[&str], rendered: &BTreeSet<&str>) -> Result<(), String> {
     if variants.len() != rendered.len() {
         return Err(format!(
             "{name} has {} variant(s) {variants:?} but {} distinct case(s) render them: {rendered:?}",
@@ -2660,9 +2729,11 @@ fn golden_cases_cover_every_macro_variant_and_state() {
     }
 
     let primitives: BTreeSet<&str> = cases.iter().filter_map(|c| c.primitive).collect();
-    check_variant_coverage(PRIMITIVE_SOURCE, "Primitive", &primitives).unwrap_or_else(|e| panic!("{e}"));
+    check_variant_coverage("Primitive", Primitive::VARIANTS, &primitives).unwrap_or_else(|e| panic!("{e}"));
     let states: BTreeSet<&str> = cases.iter().filter_map(|c| c.state).collect();
-    check_variant_coverage(PANEL_STATE_SOURCE, "PanelState", &states).unwrap_or_else(|e| panic!("{e}"));
+    let state_variants = enum_variants(PANEL_STATE_SOURCE, "PanelState").expect("PanelState parses");
+    let state_variants: Vec<&str> = state_variants.iter().map(String::as_str).collect();
+    check_variant_coverage("PanelState", &state_variants, &states).unwrap_or_else(|e| panic!("{e}"));
     for (named, own) in
         primitives.iter().map(|n| (*n, by_name.get(n).and_then(|c| c.primitive))).chain(
             states.iter().map(|n| (*n, by_name.get(n).and_then(|c| c.state))),
@@ -2673,40 +2744,58 @@ fn golden_cases_cover_every_macro_variant_and_state() {
 }
 
 /// Every variant of every enum `controlplane::declared_enums` registers as drawn is converted
-/// into a view model while the golden cases render.
+/// into a view model by some golden case, and no undrawn or undeclared enum is.
 #[test]
 fn golden_renders_convert_every_drawn_enum_variant() {
     let env = render::env().expect("templates compile");
-    // Collected over the golden run alone: a variant converted elsewhere (a route test, another case builder) is no golden that draws it.
-    let ((), record) = render::seen::collect(|| drop(cases(&env)));
-    let drawn: Vec<DeclaredEnum> = controlplane::declared_enums().iter().copied().filter(|e| e.drawn).collect();
-    if let Err(problems) = check_drawn(&drawn, &record) {
-        panic!("drawn enum variants no golden case converts:\n  {}", problems.join("\n  "));
+    let record = seen_in(&cases(&env));
+    if let Err(problems) = check_declared(controlplane::declared_enums(), &record) {
+        panic!("declared enums against the golden renders:\n  {}", problems.join("\n  "));
     }
 }
 
-/// Every problem of `record` against `drawn`: an empty registry, each declared variant no case
-/// converted, each enum no case converted at all, and each converted enum not registered.
-fn check_drawn(drawn: &[DeclaredEnum], record: &render::seen::Record) -> Result<(), Vec<String>> {
-    if drawn.is_empty() {
+/// The union of what each of `cases` converted while it alone was built and rendered.
+fn seen_in(cases: &[Case]) -> render::seen::Record {
+    let mut out = render::seen::Record::new();
+    for (name, converted) in cases.iter().flat_map(|c| &c.seen) {
+        out.entry(*name)
+            .or_insert_with(|| render::seen::Converted { declared: converted.declared, converted: BTreeSet::new() })
+            .converted
+            .extend(&converted.converted);
+    }
+    out
+}
+
+/// Every problem of `record` against `declared`: no drawn enum declared, each variant of a
+/// drawn enum no case converted, each drawn enum no case converted at all, each undrawn enum a
+/// case converted, and each converted enum not declared.
+fn check_declared(declared: &[DeclaredEnum], record: &render::seen::Record) -> Result<(), Vec<String>> {
+    if !declared.iter().any(|e| e.drawn) {
         let empty = "controlplane::declared_enums() holds no drawn enum: no variants! entry is linked";
         return Err(vec![empty.to_string()]);
     }
-    let mut drawn: Vec<&DeclaredEnum> = drawn.iter().collect();
-    drawn.sort_by_key(|e| e.name);
+    let mut declared: Vec<&DeclaredEnum> = declared.iter().collect();
+    declared.sort_by_key(|e| e.name);
     let mut problems = Vec::new();
-    for e in &drawn {
-        let Some(seen) = record.get(e.name) else {
-            let all: Vec<String> = e.variants.iter().map(|v| format!("{}::{v}", e.name)).collect();
-            problems.push(format!("{} is converted by no golden case: {}", e.name, all.join(", ")));
-            continue;
-        };
-        for v in e.variants.iter().filter(|v| !seen.converted.contains(*v)) {
-            problems.push(format!("{}::{v} is converted by no golden case", e.name));
+    for e in &declared {
+        match record.get(e.name) {
+            Some(_) if !e.drawn => {
+                problems.push(format!("{} is declared undrawn but the render converted it", e.name));
+            }
+            None if !e.drawn => {}
+            None => {
+                let all: Vec<String> = e.variants.iter().map(|v| format!("{}::{v}", e.name)).collect();
+                problems.push(format!("{} is converted by no golden case: {}", e.name, all.join(", ")));
+            }
+            Some(seen) => {
+                for v in e.variants.iter().filter(|v| !seen.converted.contains(*v)) {
+                    problems.push(format!("{}::{v} is converted by no golden case", e.name));
+                }
+            }
         }
     }
-    for name in record.keys().filter(|n| !drawn.iter().any(|e| e.name == **n)) {
-        problems.push(format!("{name} is converted but not registered through variants!"));
+    for name in record.keys().filter(|n| !declared.iter().any(|e| e.name == **n)) {
+        problems.push(format!("{name} is converted but not declared through variants!"));
     }
     if problems.is_empty() {
         Ok(())
@@ -2715,70 +2804,170 @@ fn check_drawn(drawn: &[DeclaredEnum], record: &render::seen::Record) -> Result<
     }
 }
 
-/// A record short one variant, one missing an enum, one holding an unregistered enum and an
-/// empty registry each fail, naming what is missing.
+/// A record short one variant, one missing a drawn enum, one holding an undrawn enum, one
+/// holding an undeclared enum, and a registry with no drawn enum each fail, naming the enum.
 #[test]
-fn check_drawn_names_each_unconverted_variant_and_enum() {
-    let drawn = [
+fn check_declared_names_each_unconverted_variant_and_misdrawn_enum() {
+    let declared = [
         DeclaredEnum { name: "Tone", variants: &["Ok", "Warn"], drawn: true },
         DeclaredEnum { name: "Axis", variants: &["Left", "Right"], drawn: true },
+        DeclaredEnum { name: "FilterKind", variants: &["Text"], drawn: false },
     ];
     let entry = |e: &DeclaredEnum, converted: &[&'static str]| {
         (e.name, render::seen::Converted { declared: e.variants, converted: converted.iter().copied().collect() })
     };
-    let full = render::seen::Record::from([entry(&drawn[0], &["Ok", "Warn"]), entry(&drawn[1], &["Left", "Right"])]);
-    assert_eq!(check_drawn(&drawn, &full), Ok(()));
+    let full =
+        render::seen::Record::from([entry(&declared[0], &["Ok", "Warn"]), entry(&declared[1], &["Left", "Right"])]);
+    assert_eq!(check_declared(&declared, &full), Ok(()));
 
-    let short = render::seen::Record::from([entry(&drawn[0], &["Ok"]), entry(&drawn[1], &["Left", "Right"])]);
-    assert_eq!(check_drawn(&drawn, &short), Err(vec!["Tone::Warn is converted by no golden case".to_string()]));
+    let short =
+        render::seen::Record::from([entry(&declared[0], &["Ok"]), entry(&declared[1], &["Left", "Right"])]);
+    assert_eq!(check_declared(&declared, &short), Err(vec!["Tone::Warn is converted by no golden case".to_string()]));
 
-    let no_axis = render::seen::Record::from([entry(&drawn[0], &["Ok", "Warn"])]);
+    let no_axis = render::seen::Record::from([entry(&declared[0], &["Ok", "Warn"])]);
     assert_eq!(
-        check_drawn(&drawn, &no_axis),
+        check_declared(&declared, &no_axis),
         Err(vec!["Axis is converted by no golden case: Axis::Left, Axis::Right".to_string()])
+    );
+
+    let mut undrawn = full.clone();
+    undrawn.extend([entry(&declared[2], &["Text"])]);
+    assert_eq!(
+        check_declared(&declared, &undrawn),
+        Err(vec!["FilterKind is declared undrawn but the render converted it".to_string()])
     );
 
     let mut extra = full.clone();
     extra.extend([entry(&DeclaredEnum { name: "Fresh", variants: &["A"], drawn: true }, &["A"])]);
     assert_eq!(
-        check_drawn(&drawn, &extra),
-        Err(vec!["Fresh is converted but not registered through variants!".to_string()])
+        check_declared(&declared, &extra),
+        Err(vec!["Fresh is converted but not declared through variants!".to_string()])
     );
 
     assert_eq!(
-        check_drawn(&[], &full),
+        check_declared(&declared[2..], &full),
         Err(vec!["controlplane::declared_enums() holds no drawn enum: no variants! entry is linked".to_string()])
+    );
+}
+
+/// Every `.rs` file under `core/controlplane/src`, read from disk at test time, as (path
+/// relative to that directory, source).
+fn controlplane_sources() -> Vec<(String, String)> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("controlplane").join("src");
+    let mut out = Vec::new();
+    let mut dirs = vec![root.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {}: {e}", dir.display())) {
+            let path = entry.expect("controlplane src entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let rel = path.strip_prefix(&root).expect("under src").to_string_lossy().replace('\\', "/");
+                out.push((rel, fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// One line per `pub enum` opening a line of `files` outside a `variants! { drawn; .. }` or
+/// `variants! { undrawn; .. }` invocation, naming the enum and where it is.
+fn undeclared_enums(files: &[(String, String)]) -> Vec<String> {
+    let open = "variants! {";
+    let mut out = Vec::new();
+    for (path, source) in files {
+        let mut spans = Vec::new();
+        for (at, _) in source.match_indices(open) {
+            let start = at + open.len();
+            let rest = &source[start..];
+            let form = rest.trim_start();
+            if !(form.starts_with("drawn;") || form.starts_with("undrawn;")) {
+                continue;
+            }
+            let mut depth = 1usize;
+            for (i, c) in rest.char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            spans.push(start..start + i);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut offset = 0;
+        for (n, line) in source.split_inclusive('\n').enumerate() {
+            if let Some(rest) = line.trim_start().strip_prefix("pub enum ") {
+                let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                if !spans.iter().any(|s| s.contains(&offset)) {
+                    out.push(format!(
+                        "pub enum {name} at {path}:{} is not declared through variants! {{ drawn; | undrawn; .. }}",
+                        n + 1
+                    ));
+                }
+            }
+            offset += line.len();
+        }
+    }
+    out
+}
+
+/// Every `pub enum` of every file of `core/controlplane/src` is declared drawn or undrawn.
+#[test]
+fn every_controlplane_enum_is_declared_drawn_or_undrawn() {
+    let files = controlplane_sources();
+    assert!(files.iter().any(|(path, _)| path == "lib.rs"), "controlplane's lib.rs is read: {files:?}");
+    let undeclared = undeclared_enums(&files);
+    assert!(undeclared.is_empty(), "undeclared controlplane enums:\n  {}", undeclared.join("\n  "));
+}
+
+/// A bare `pub enum` and one inside a `variants!` with no form each fail, naming the enum; one
+/// inside `drawn;` or `undrawn;`, its variants carrying braces, passes.
+#[test]
+fn undeclared_enums_names_a_bare_or_formless_enum() {
+    let source = concat!(
+        "variants! {\n    drawn;\n    pub enum A {\n        X { a: u8 },\n    }\n}\n",
+        "pub enum B {\n    Y,\n}\n",
+        "variants! {\n    pub enum C {\n        Z,\n    }\n}\n",
+        "variants! {\n    undrawn;\n    pub enum D {\n        W(u8),\n    }\n}\n",
+    );
+    assert_eq!(
+        undeclared_enums(&[("x.rs".to_string(), source.to_string())]),
+        [
+            "pub enum B at x.rs:7 is not declared through variants! { drawn; | undrawn; .. }",
+            "pub enum C at x.rs:11 is not declared through variants! { drawn; | undrawn; .. }",
+        ]
     );
 }
 
 #[test]
 fn enum_variants_reads_the_real_enums() {
-    let primitive = enum_variants(PRIMITIVE_SOURCE, "Primitive").expect("Primitive parses");
-    assert_eq!(primitive.first().map(String::as_str), Some("DataTable"));
-    assert_eq!(primitive.last().map(String::as_str), Some("Empty"));
-    assert!(primitive.iter().any(|v| v == "AttentionItems"), "a tuple variant over a generic: {primitive:?}");
     let states = enum_variants(PANEL_STATE_SOURCE, "PanelState").expect("PanelState parses");
     assert_eq!(states, ["Ok", "Empty", "Stale", "Error", "Readonly", "Denied"]);
     let tricky = "enum T {\n    /// A, B\n    #[serde(rename = \"x,y\")]\n    A { x: u8, y: (u8, u8) },\n    /* C, */ B(Vec<u8>),\n    D = 3,\n}";
     assert_eq!(enum_variants(tricky, "T").expect("T parses"), ["A", "B", "D"]);
 }
 
-/// A scratch copy of each enum source with one variant more fails the coverage check against
-/// the cases rendered today.
+/// Each enum's variants with one more fail the coverage check against the cases rendered today.
 #[test]
 fn variant_coverage_fails_on_a_new_enum_variant() {
     let env = render::env().expect("templates compile");
     let cases = cases(&env);
     let primitives: BTreeSet<&str> = cases.iter().filter_map(|c| c.primitive).collect();
     let states: BTreeSet<&str> = cases.iter().filter_map(|c| c.state).collect();
-    for (source, name, rendered) in
-        [(PRIMITIVE_SOURCE, "Primitive", &primitives), (PANEL_STATE_SOURCE, "PanelState", &states)]
+    let state_variants = enum_variants(PANEL_STATE_SOURCE, "PanelState").expect("PanelState parses");
+    let state_variants: Vec<&str> = state_variants.iter().map(String::as_str).collect();
+    for (name, variants, rendered) in
+        [("Primitive", Primitive::VARIANTS, &primitives), ("PanelState", state_variants.as_slice(), &states)]
     {
-        check_variant_coverage(source, name, rendered).unwrap_or_else(|e| panic!("today's {name}: {e}"));
-        let open = format!("enum {name} {{");
-        let scratch = source.replacen(&open, &format!("{open}\n    Fake(Fake),"), 1);
-        assert_ne!(scratch, source, "the scratch copy of {name} gained a variant");
-        let err = check_variant_coverage(&scratch, name, rendered).expect_err("one variant more must fail");
+        check_variant_coverage(name, variants, rendered).unwrap_or_else(|e| panic!("today's {name}: {e}"));
+        let more: Vec<&str> = variants.iter().copied().chain(["Fake"]).collect();
+        let err = check_variant_coverage(name, &more, rendered).expect_err("one variant more must fail");
         assert!(err.contains("Fake"), "{err}");
     }
 }
