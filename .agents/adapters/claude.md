@@ -54,7 +54,9 @@ pointer stubs. Use them; do not reimplement. Never use a git worktree.
 - read-only research — Explore / general-purpose for broad multi-question
   research, `model:"sonnet"` unless listing-only.
 - search lane (shared **Navigation** step 3) — `subagent_type: "code-scout"`,
-  `model:"sonnet"` (`"haiku"` for pure listing). Implementation lanes:
+  `model:"haiku"` by default, `"sonnet"` for multi-hop questions that need
+  interpretation (split-topology wiring, event flows across modules,
+  macro-generated code paths). Implementation lanes:
   `core-implementer` / `test-author` / `docs-writer`; review and proof
   lanes: `core-reviewer` / `proof-auditor`.
 - Proof audit — `subagent_type: "proof-auditor"`, `model:` ≥ the author's
@@ -65,9 +67,10 @@ Effort does not inherit: set it with the Agent call's `effort:` parameter
 (`low`|`medium`|`high`|`xhigh`|`max`), never prompt wording. The value
 follows `.agents/shared/core-rules.md` **Agent Effort**. The rust
 navigation chain does not inherit; paste it into every code-touching
-subagent prompt: rust-analyzer → targeted read → research subagent (`code-scout`) → grep
-as a labelled lower bound. Comments: default NONE; name at most the one or
-two things that earn a line in that file.
+subagent prompt: rust-analyzer → targeted read → research subagent
+(`code-scout` for one question, implementation lanes only) → grep as a
+labelled lower bound. Comments: default NONE; name at most the one or two
+things that earn a line in that file.
 
 ## Haiku Lanes
 
