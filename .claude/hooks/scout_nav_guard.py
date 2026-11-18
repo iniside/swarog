@@ -60,6 +60,8 @@ SLICE_REASON = (
 
 SEPARATORS = ("&&", ";", "||", "|", "&")
 REDIRECTS = {">", ">>", "<", "<<", ">&", "&>", "&>>", ">|", "<&"}
+WRITE_REDIRECTS = {">", ">>", ">&", "&>", "&>>", ">|"}
+OUTPUT_DIRS = {"target", "run", "deploy", "bin", "dist"}
 # Short flags that take a value, per tool; rg's -E/-r take one, grep's do not.
 VALUE_SHORT = {"rg": set("efgtTABCmjMrEd"), "grep": set("efABCmdD"), "git": set("efABCm")}
 VALUE_LONG = {
@@ -181,18 +183,20 @@ def lsp_hits(text):
     return hits
 
 
-def tokens(command):
+def tokens(command, sinks=None):
     lexer = shlex.shlex(command, posix=False, punctuation_chars=True)
     lexer.whitespace_split = True
-    words, skip = [], False
+    words, skip = [], None
     for word in lexer:
-        if skip:
-            skip = False
+        if skip is not None:
+            if skip and sinks is not None:
+                sinks.append(word.strip("\"'"))
+            skip = None
             continue
         if word in REDIRECTS:
             if words and words[-1].isdigit():
                 words.pop()
-            skip = True
+            skip = word in WRITE_REDIRECTS
             continue
         words.append(word)
     return words
@@ -203,10 +207,10 @@ def head_name(word):
     return name[:-4] if name.endswith(".exe") else name
 
 
-def segments(command):
+def segments(command, sinks=None):
     """Yield (words, piped) per pipeline/sequence segment."""
     current, piped = [], False
-    for word in tokens(command):
+    for word in tokens(command, sinks):
         if word in SEPARATORS:
             if current:
                 yield current, piped
@@ -243,19 +247,27 @@ def grep_invocations(command, cwd):
 
 
 def slice_targets(command, cwd):
-    """Return the normalized file of every `sed -n '<range>p' <file>` and `head|tail -n N <file>` segment."""
-    found = []
-    for words, _ in segments(command):
+    """Return the repository source file of every `sed -n '<range>p' <file>` and `head|tail -n N <file>` segment."""
+    found, sinks, cwds = [], [], [cwd]
+    for words, _ in segments(command, sinks):
         head = head_name(words[0])
         if head == "cd":
             if len(words) > 1:
                 cwd = resolve(words[1].strip("\"'"), cwd)
+                cwds.append(cwd)
             continue
         args = [word.strip("\"'") for word in words[1:]]
         target = sed_file(args) if head == "sed" else head_file(args) if head in ("head", "tail") else None
         if target:
             found.append(norm(resolve(target, cwd)))
-    return found
+    written = {norm(resolve(sink, where)) for sink in sinks for where in cwds}
+    return [target for target in found if target not in written and repo_source(target)]
+
+
+def repo_source(target):
+    if not target or target.startswith("/") or re.match(r"^[a-z]:", target) or target.startswith(".."):
+        return False
+    return target.split("/")[0] not in OUTPUT_DIRS
 
 
 def sed_file(args):
