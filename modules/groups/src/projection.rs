@@ -277,18 +277,12 @@ impl crate::Service {
     ) -> Result<(), BusError> {
         let started = std::time::Instant::now();
         let mut slots = GROUPS_PER_FIRE;
-        let due: Vec<(String,)> = sqlx::query_as(
-            "SELECT player_id::text FROM groups.purged_players \
-              WHERE swept_at IS NULL \
-              ORDER BY groups.purged_players.skipped_at NULLS FIRST, \
-                       groups.purged_players.player_id \
-              LIMIT $1 FOR UPDATE SKIP LOCKED",
-        )
-        .bind(GROUPS_PLAYERS_PER_FIRE)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(BusError::transport)?;
-        let mut lock_order: Vec<&str> = due.iter().map(|(id,)| id.as_str()).collect();
+        let due = self
+            .store
+            .claim_due_tx(&mut *conn, GROUPS_PLAYERS_PER_FIRE)
+            .await
+            .map_err(BusError::transport)?;
+        let mut lock_order: Vec<&str> = due.iter().map(String::as_str).collect();
         lock_order.sort_unstable();
         // Every player lock of the fire before any group lock, outside every `purge_group`.
         for player_id in lock_order {
@@ -297,7 +291,7 @@ impl crate::Service {
                 .await
                 .map_err(BusError::transport)?;
         }
-        for (player_id,) in &due {
+        for player_id in &due {
             match self
                 .purge_player_groups(conn, player_id, &mut slots, started)
                 .await?

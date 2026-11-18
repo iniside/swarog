@@ -13,6 +13,7 @@ use sqlx::PgPool;
 
 use crate::projection::GROUPS_PLAYERS_PER_FIRE;
 use crate::service::{NO_SUCH_PLAYER, PLAYER_DELETED};
+use crate::store::Store;
 use crate::tests::{
     cleanup_groups, fixed_uuid, test_pool, with_cleanup, wired, FakeDirectory, DB_LOCK,
 };
@@ -395,23 +396,30 @@ async fn create_is_blocked_by_tombstone_predicate_not_presence() {
     with_cleanup(&pool, vec![created.id], async move {}).await;
 }
 
+async fn claimed_by_the_next_fire(pool: &PgPool) -> Vec<String> {
+    let store = Store { pool: pool.clone() };
+    let mut tx = pool.begin().await.unwrap();
+    let mut claimed = store.claim_due_tx(&mut tx, GROUPS_PLAYERS_PER_FIRE).await.unwrap();
+    tx.rollback().await.unwrap();
+    claimed.sort();
+    claimed
+}
+
 async fn assert_claimed_by_the_next_fire(pool: &PgPool, player_id: &str) {
-    let below: i64 = sqlx::query_scalar(
-        "SELECT ahead FROM ( \
-           SELECT player_id, row_number() OVER ( \
-                    ORDER BY skipped_at NULLS FIRST, player_id) - 1 AS ahead \
-             FROM groups.purged_players WHERE swept_at IS NULL) claim \
-          WHERE player_id = $1::uuid",
-    )
-    .bind(player_id)
-    .fetch_one(pool)
-    .await
-    .expect("the player must hold an unswept tombstone");
+    let claimed = claimed_by_the_next_fire(pool).await;
     assert!(
-        below < GROUPS_PLAYERS_PER_FIRE,
-        "precondition: {below} unswept tombstones sort below {player_id}, so the next fire \
-         cannot claim it"
+        claimed.iter().any(|id| id == player_id),
+        "precondition: the next fire does not claim {player_id}"
     );
+}
+
+async fn assert_next_fire_claims_only(pool: &PgPool, ours: &[String], expected_len: usize) {
+    let claimed = claimed_by_the_next_fire(pool).await;
+    assert!(
+        claimed.iter().all(|id| ours.contains(id)),
+        "precondition: the next fire claims a foreign tombstone: {claimed:?}"
+    );
+    assert_eq!(claimed.len(), expected_len, "precondition: the next fire claims {claimed:?}");
 }
 
 async fn unstamped_tombstones(pool: &PgPool, ids: &[String]) -> Vec<String> {
@@ -1317,17 +1325,6 @@ async fn one_sweep_fire_stamps_at_most_64_players() {
     let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
     let mut ids: Vec<String> = (0..65).map(|_| fixed_uuid(0x00)).collect();
     ids.sort();
-    let foreign_below: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM groups.purged_players \
-          WHERE swept_at IS NULL AND skipped_at IS NULL \
-            AND player_id <= $1::uuid AND player_id <> ALL($2::uuid[])",
-    )
-    .bind(ids.last().unwrap())
-    .bind(&ids)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(foreign_below, 0, "precondition: a foreign unswept tombstone sorts among this test's ids");
 
     with_purge_cleanup(&pool, vec![], ids.clone(), {
         let (pool, svc, ids) = (pool.clone(), svc.clone(), ids.clone());
@@ -1336,6 +1333,7 @@ async fn one_sweep_fire_stamps_at_most_64_players() {
                 plant(&svc, &pool, id, &format!("Cap#{i:04}")).await;
             }
 
+            assert_next_fire_claims_only(&pool, &ids, 64).await;
             let mut tx = pool.begin().await.unwrap();
             svc.sweep_purged_players(&mut tx).await.unwrap();
             tx.commit().await.unwrap();
@@ -1345,6 +1343,7 @@ async fn one_sweep_fire_stamps_at_most_64_players() {
                 "one fire must stamp exactly the 64 lowest of 65 tombstones"
             );
 
+            assert_next_fire_claims_only(&pool, &ids, 1).await;
             let mut tx2 = pool.begin().await.unwrap();
             svc.sweep_purged_players(&mut tx2).await.unwrap();
             tx2.commit().await.unwrap();
@@ -1384,21 +1383,9 @@ async fn a_skipped_player_rotates_behind_fresh_tombstones_and_is_purged_later() 
     assert!(skipped < fresh[0] && skipped < late);
     let mut ours = fresh.clone();
     ours.extend([skipped.clone(), late.clone()]);
-    let top = ours.iter().max().unwrap().clone();
-    let foreign_among: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM groups.purged_players \
-          WHERE swept_at IS NULL AND skipped_at IS NULL \
-            AND player_id <= $1::uuid AND player_id <> ALL($2::uuid[])",
-    )
-    .bind(&top)
-    .bind(&ours)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(foreign_among, 0, "precondition: a foreign fresh tombstone sorts among this test's ids");
     let gate_app = racer_app("rotation-gate", &skipped);
 
-    with_purge_cleanup(&pool, vec![gate_app.clone()], ours, {
+    with_purge_cleanup(&pool, vec![gate_app.clone()], ours.clone(), {
         let (pool, svc) = (pool.clone(), svc.clone());
         async move {
             let group_id = svc
@@ -1416,6 +1403,7 @@ async fn a_skipped_player_rotates_behind_fresh_tombstones_and_is_purged_later() 
                 .unwrap();
 
             plant(&svc, &pool, &skipped, "Rotation#0000").await;
+            assert_next_fire_claims_only(&pool, &ours, 1).await;
             assert_claimed_by_the_next_fire(&pool, &skipped).await;
             sweep_under_lock_timeout(&pool, &svc).await;
             let first_skip = skipped_at(&pool, &skipped).await;
@@ -1426,6 +1414,7 @@ async fn a_skipped_player_rotates_behind_fresh_tombstones_and_is_purged_later() 
             for (i, id) in fresh.iter().enumerate() {
                 plant(&svc, &pool, id, &format!("Rotation#{:04}", i + 1)).await;
             }
+            assert_next_fire_claims_only(&pool, &ours, 64).await;
             sweep_under_lock_timeout(&pool, &svc).await;
             assert!(
                 unstamped_tombstones(&pool, &fresh).await.is_empty(),
@@ -1445,6 +1434,7 @@ async fn a_skipped_player_rotates_behind_fresh_tombstones_and_is_purged_later() 
                 .id;
             plant(&svc, &pool, &late, "Rotation#0065").await;
             gate.rollback().await.unwrap();
+            assert_next_fire_claims_only(&pool, &ours, 2).await;
             let mut tx = pool.begin().await.unwrap();
             svc.sweep_purged_players(&mut tx).await.unwrap();
             tx.commit().await.unwrap();
@@ -1483,22 +1473,9 @@ async fn the_oldest_skipped_player_is_reclaimed_first() {
     let mut ours = filler.clone();
     ours.extend(fresh.iter().cloned());
     ours.extend([older.clone(), newer.clone()]);
-    let foreign_unswept: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM groups.purged_players \
-          WHERE swept_at IS NULL AND player_id <> ALL($1::uuid[])",
-    )
-    .bind(&ours)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(
-        foreign_unswept,
-        0,
-        "precondition: a foreign unswept tombstone competes for this test's claims"
-    );
     let gate_app = racer_app("oldest-skipped-gate", &older);
 
-    with_purge_cleanup(&pool, vec![gate_app.clone()], ours, {
+    with_purge_cleanup(&pool, vec![gate_app.clone()], ours.clone(), {
         let (pool, svc) = (pool.clone(), svc.clone());
         async move {
             let older_group = svc
@@ -1524,6 +1501,7 @@ async fn the_oldest_skipped_player_is_reclaimed_first() {
             }
 
             plant(&svc, &pool, &older, "Oldest#0000").await;
+            assert_next_fire_claims_only(&pool, &ours, 1).await;
             sweep_under_lock_timeout(&pool, &svc).await;
             let older_skip = skipped_at(&pool, &older).await;
             assert!(
@@ -1535,6 +1513,7 @@ async fn the_oldest_skipped_player_is_reclaimed_first() {
             for (i, id) in filler.iter().enumerate() {
                 plant(&svc, &pool, id, &format!("Oldest#{:04}", i + 2)).await;
             }
+            assert_next_fire_claims_only(&pool, &ours, 64).await;
             sweep_under_lock_timeout(&pool, &svc).await;
             assert!(unstamped_tombstones(&pool, &filler).await.is_empty());
             let newer_skip = skipped_at(&pool, &newer).await;
@@ -1565,6 +1544,7 @@ async fn the_oldest_skipped_player_is_reclaimed_first() {
             for (i, id) in fresh.iter().enumerate() {
                 plant(&svc, &pool, id, &format!("Oldest#{:04}", i + 65)).await;
             }
+            assert_next_fire_claims_only(&pool, &ours, 64).await;
             sweep_under_lock_timeout(&pool, &svc).await;
             assert!(
                 unstamped_tombstones(&pool, &fresh).await.is_empty(),

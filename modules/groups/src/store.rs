@@ -170,6 +170,23 @@ impl Store {
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
+    pub(crate) async fn claim_due_tx(
+        &self,
+        conn: &mut PgConnection,
+        limit: i64,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT player_id::text FROM groups.purged_players \
+              WHERE swept_at IS NULL \
+              ORDER BY groups.purged_players.skipped_at NULLS FIRST, \
+                       groups.purged_players.player_id \
+              LIMIT $1 FOR UPDATE SKIP LOCKED",
+        )
+        .bind(limit)
+        .fetch_all(&mut *conn)
+        .await
+    }
+
     pub(crate) async fn lock_player_tx(
         &self,
         conn: &mut PgConnection,
