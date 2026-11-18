@@ -58,7 +58,7 @@
 - [Generic remote-admin-write seam](generic-remote-admin-write-seam.md) — enrich generic adminapi, never a module-coupled page
 - [Admin extension points shipped](admin-extension-points-shipped.md) — ExtensionPoint/ExtensionEntry cross-module admin seam
 - [Splitproof is proof surface](splitproof-is-proof-surface.md) — authoring = test-author opus; auditing = proof-auditor
-- [Plans: invariants, not prose code](plans-specify-invariants-not-prose-code.md) — specify decisions + invariants; 2-round cap
+- [Plans: invariants, not prose code](plans-specify-invariants-not-prose-code.md) — specify decisions + invariants; one plan review
 - [Purge race is a bug](purge-race-is-a-bug-not-accepted.md) — fix tombstone/sweep races per module, never accept
 - [Cheap-tier ports: fix workflow, not model](cheap-tier-ports-fix-workflow-not-model.md) — view parts stay sonnet
 - [Admin refactor: red gates expected](admin-refactor-red-gates-expected.md) — /admin splitproof 404s expected until the panel lands
