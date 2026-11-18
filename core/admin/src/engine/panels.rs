@@ -101,6 +101,7 @@ pub(crate) fn is_dashboard(point: &Point) -> bool {
         | Point::EntityTabTile { .. }
         | Point::EntitySummary(_)
         | Point::EntityListColumn { .. }
+        | Point::EntityLabel { .. }
         | Point::NavCounter => false,
     }
 }

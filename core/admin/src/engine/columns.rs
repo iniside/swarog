@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use controlplane::{Align, Cell, DataTable, PanelQuery, Point, Primitive, MAX_PANEL_REFS};
+use controlplane::{Align, Cell, ContributionDecl, DataTable, PanelQuery, Point, Primitive, MAX_PANEL_REFS};
 
 use super::manifests::Snapshot;
 use super::panels;
@@ -52,50 +52,63 @@ pub(crate) async fn fan_out(
         let Point::EntityListColumn { label, align, .. } = &decl.point else {
             return None;
         };
-        let column = |outcome| ListColumn { module: module.to_string(), label: label.clone(), align: *align, outcome };
-        let route = snapshot.route(module);
-        let bound = panels::deadline(decl);
         let refs = &refs;
         Some(async move {
-            let Some((_, face)) = route else {
-                return column(ColumnOutcome::Failed(format!("no source serves module {module:?}")));
-            };
-            let chunks = refs.chunks(MAX_PANEL_REFS).map(|chunk| {
-                let req = PanelQuery {
-                    module: module.to_string(),
-                    contribution: decl.id.clone(),
-                    entity: None,
-                    search: None,
-                    cursor: None,
-                    before: None,
-                    queue_state: None,
-                    range: None,
-                    params: BTreeMap::new(),
-                    refs: chunk.to_vec(),
-                };
-                let face = face.clone();
-                async move {
-                    match face.panel(req).await {
-                        Ok(body) => match body.primitive {
-                            Primitive::ColumnCells(cells) => Ok(cells),
-                            _ => Err("answered a primitive other than ColumnCells".to_string()),
-                        },
-                        Err(error) => Err(error.to_string()),
-                    }
-                }
-            });
-            // One deadline over all chunks: the column is drawn only whole, so it is late
-            // once any chunk is, and splitting must not stretch the decl's budget.
-            let outcome = match tokio::time::timeout(bound, futures::future::try_join_all(chunks)).await {
-                Ok(Ok(answers)) => ColumnOutcome::Cells(answers.into_iter().flatten().collect()),
-                Ok(Err(why)) => ColumnOutcome::Failed(why),
-                Err(_) => ColumnOutcome::Failed(format!("deadline of {}ms elapsed", bound.as_millis())),
+            let outcome = match cells(snapshot, module, decl, refs).await {
+                Ok(cells) => ColumnOutcome::Cells(cells),
+                Err(why) => ColumnOutcome::Failed(why),
             };
             if let ColumnOutcome::Failed(why) = &outcome {
                 tracing::warn!(module = %module, contribution = %decl.id, %why, "admin: a list column failed");
             }
-            column(outcome)
+            ListColumn { module: module.to_string(), label: label.clone(), align: *align, outcome }
         })
     });
     futures::future::join_all(calls).await
+}
+
+/// `refs` asked of contribution `decl` of `module` in `PanelQuery::refs` chunks of at most
+/// `MAX_PANEL_REFS`, every chunk concurrently under the decl's one deadline: the merged cells,
+/// or why a chunk failed, the deadline elapsed or a chunk answered other than `ColumnCells`.
+pub(crate) async fn cells(
+    snapshot: &Snapshot,
+    module: &str,
+    decl: &ContributionDecl,
+    refs: &[String],
+) -> Result<BTreeMap<String, Cell>, String> {
+    let Some((_, face)) = snapshot.route(module) else {
+        return Err(format!("no source serves module {module:?}"));
+    };
+    let bound = panels::deadline(decl);
+    let chunks = refs.chunks(MAX_PANEL_REFS).map(|chunk| {
+        let req = PanelQuery {
+            module: module.to_string(),
+            contribution: decl.id.clone(),
+            entity: None,
+            search: None,
+            cursor: None,
+            before: None,
+            queue_state: None,
+            range: None,
+            params: BTreeMap::new(),
+            refs: chunk.to_vec(),
+        };
+        let face = face.clone();
+        async move {
+            match face.panel(req).await {
+                Ok(body) => match body.primitive {
+                    Primitive::ColumnCells(cells) => Ok(cells),
+                    _ => Err("answered a primitive other than ColumnCells".to_string()),
+                },
+                Err(error) => Err(error.to_string()),
+            }
+        }
+    });
+    // One deadline over all chunks: the answer is used only whole, so it is late once any
+    // chunk is, and splitting must not stretch the decl's budget.
+    match tokio::time::timeout(bound, futures::future::try_join_all(chunks)).await {
+        Ok(Ok(answers)) => Ok(answers.into_iter().flatten().collect()),
+        Ok(Err(why)) => Err(why),
+        Err(_) => Err(format!("deadline of {}ms elapsed", bound.as_millis())),
+    }
 }

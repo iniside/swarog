@@ -10,8 +10,9 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// How a contribution's fragment is drawn: inside panel chrome, as a KPI tile, as rows of
-/// the attention host, or inline in the entity header, a tab or the sidebar. A `column`
-/// has no fragment of its own: the panel route refuses it, and its table draws its cells.
+/// the attention host, or inline in the entity header, a tab or the sidebar. A `column` or
+/// a `label` has no fragment of its own: the panel route refuses it, and its table, or the
+/// refs it names, draw its cells.
 pub(crate) fn mode_of(point: &Point, in_tiles: bool) -> &'static str {
     seen::record(point);
     match point {
@@ -23,6 +24,7 @@ pub(crate) fn mode_of(point: &Point, in_tiles: bool) -> &'static str {
         Point::EntityTabTile { .. } => "tile",
         Point::NavCounter => "nav",
         Point::EntityListColumn { .. } => "column",
+        Point::EntityLabel { .. } => "label",
         Point::Page(_) if in_tiles => "tile",
         Point::Page(_) | Point::DashboardPanel | Point::DashboardWide | Point::EntityTab { .. } => "panel",
     }

@@ -66,7 +66,8 @@ fn point_kind(point: &Point) -> Option<&str> {
         | Point::EntityTab { kind, .. }
         | Point::EntityTabCount { kind, .. }
         | Point::EntityTabTile { kind, .. }
-        | Point::EntityListColumn { kind, .. } => Some(kind),
+        | Point::EntityListColumn { kind, .. }
+        | Point::EntityLabel { kind } => Some(kind),
         Point::Page(_)
         | Point::DashboardTile
         | Point::DashboardAttention

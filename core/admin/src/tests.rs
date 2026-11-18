@@ -914,6 +914,7 @@ use controlplane::{
 };
 
 use crate::engine::columns::{self, ColumnOutcome};
+use crate::engine::labels;
 use crate::engine::manifests::{refresh_once, Snapshot};
 use crate::engine::panels::{self, PanelState};
 use crate::engine::roles::Operator;
@@ -1464,8 +1465,12 @@ const CHUNKED_DEADLINE: Duration = Duration::from_millis(100);
 impl Chunked {
     fn new(plan: &[(&str, Duration, ChunkAnswer)]) -> Arc<Chunked> {
         let decl = ContributionDecl { deadline_ms: 100, ..list_column("level", "player", "Level", Role::Viewer, 0) };
+        Chunked::serving(module("levels", vec![decl], Vec::new(), false), plan)
+    }
+
+    /// The provider of `manifest`, answering each of its contributions as `new`'s column.
+    fn serving(manifest: Manifest, plan: &[(&str, Duration, ChunkAnswer)]) -> Arc<Chunked> {
         let plan = plan.iter().map(|(id, delay, answer)| (id.to_string(), (*delay, *answer))).collect();
-        let manifest = module("levels", vec![decl], Vec::new(), false);
         Arc::new(Chunked { manifest, plan, calls: Mutex::new(Vec::new()), starts: Mutex::new(Vec::new()) })
     }
 
@@ -1651,6 +1656,184 @@ async fn the_local_face_refuses_refs_over_the_cap_before_the_provider_runs() {
 
     face.panel(query(controlplane::MAX_PANEL_REFS)).await.expect("at the cap");
     assert_eq!(rec.calls().len(), 1);
+}
+
+// ---- labels ------------------------------------------------------------------------
+
+/// A `player` label, `handle`, under a 100 ms deadline.
+fn player_label(min_role: Role) -> ContributionDecl {
+    let point = Point::EntityLabel { kind: "player".to_string() };
+    ContributionDecl { deadline_ms: 100, ..contribution("handle", point, min_role) }
+}
+
+/// Module `accounts` declaring the `player` kind, with `label` as its one contribution.
+fn label_owner(label: ContributionDecl) -> Manifest {
+    player_owner(module("accounts", vec![label], Vec::new(), false))
+}
+
+fn player_ref(id: &str) -> EntityRef {
+    EntityRef { kind: "player".to_string(), id: id.to_string() }
+}
+
+/// The label pass over `body` for `role`, guarded against a hang.
+async fn label_pass(engine: &Engine, role: Role, body: &Primitive) -> labels::Labels {
+    let operator = Operator { login: "ops".to_string(), role };
+    let snapshot = engine.snapshot();
+    tokio::time::timeout(HANG_GUARD, labels::pass(&snapshot, &operator, body))
+        .await
+        .expect("the label pass returns once its deadlines elapse")
+}
+
+fn labelled(pairs: &[(&str, &str)]) -> labels::Labels {
+    pairs.iter().map(|(id, text)| (("player".to_string(), id.to_string()), text.to_string())).collect()
+}
+
+/// Only the module declaring the `player` kind is asked for its labels; another module's
+/// `EntityLabel` of the kind gets no call, though it sorts first.
+#[tokio::test(start_paused = true)]
+async fn only_the_kinds_owner_answers_its_labels() {
+    let handles = BTreeMap::from([("p-1".to_string(), text("Anna#1")), ("p-2".to_string(), text("Bjorn#2"))]);
+    let owner = Recording::new(
+        label_owner(player_label(Role::Viewer)),
+        &[("handle", answer(Primitive::ColumnCells(handles)))],
+    );
+    let rival = Recording::new(
+        module("aardvark", vec![ContributionDecl { order: -1, ..player_label(Role::Viewer) }], Vec::new(), false),
+        &[("handle", answer(Primitive::ColumnCells(BTreeMap::from([("p-1".to_string(), text("spoofed"))]))))],
+    );
+    let engine = sourced(vec![rival.clone(), owner.clone()]).await;
+
+    let got = label_pass(&engine, Role::Viewer, &players_table(mixed_rows())).await;
+    assert_eq!(got, labelled(&[("p-1", "Anna#1"), ("p-2", "Bjorn#2")]));
+    assert!(rival.calls().is_empty(), "a non-owner's label is never called");
+    let calls = owner.calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0].refs, ["p-1", "p-2"]);
+    assert_eq!(calls[0].entity, None);
+}
+
+/// More distinct refs than `MAX_PANEL_REFS` go out as chunks of at most the cap, and their
+/// answers together label every ref.
+#[tokio::test(start_paused = true)]
+async fn labels_over_the_cap_fill_every_ref() {
+    let owner = Chunked::serving(label_owner(player_label(Role::Viewer)), &[]);
+    let engine = sourced(vec![owner.clone()]).await;
+    let ids = player_ids(2 * controlplane::MAX_PANEL_REFS + 1);
+    let rows = ids.iter().map(|id| table_row(Some(("player", id)), id)).collect();
+
+    let got = label_pass(&engine, Role::Viewer, &players_table(rows)).await;
+    let sizes: Vec<usize> = owner.calls().iter().map(Vec::len).collect();
+    assert_eq!(sizes, [controlplane::MAX_PANEL_REFS, controlplane::MAX_PANEL_REFS, 1]);
+    let pairs: Vec<(&str, &str)> = ids.iter().map(|id| (id.as_str(), id.as_str())).collect();
+    assert_eq!(got, labelled(&pairs));
+}
+
+/// A timeline entry whose actor links one player and whose target is another labels both in
+/// one call; an actor without an entity link and a repeated ref add nothing.
+#[tokio::test(start_paused = true)]
+async fn an_entry_carrying_an_actor_and_a_target_of_one_kind_labels_both() {
+    let owner = Chunked::serving(label_owner(player_label(Role::Viewer)), &[]);
+    let engine = sourced(vec![owner.clone()]).await;
+    let entry = |actor: Option<Cell>, target: &str| controlplane::TimelineEntry {
+        at: "2026-11-19T10:00:00Z".to_string(),
+        actor,
+        title: None,
+        verb: "gifted".to_string(),
+        target: Some(player_ref(target)),
+        summary: String::new(),
+        badges: Vec::new(),
+        detail: None,
+        icon: String::new(),
+        tone: None,
+    };
+    let linked = Cell { link: Some(controlplane::Link::Entity(player_ref("p-1"))), ..text("p-1") };
+    let body = Primitive::Timeline(controlplane::Timeline {
+        entries: vec![entry(Some(linked), "p-2"), entry(Some(text("system")), "p-1")],
+        cursor_before: None,
+        live: false,
+        days: false,
+        date_only: false,
+    });
+
+    let got = label_pass(&engine, Role::Viewer, &body).await;
+    assert_eq!(got, labelled(&[("p-1", "p-1"), ("p-2", "p-2")]));
+    assert_eq!(owner.calls(), [["p-1", "p-2"]]);
+}
+
+/// A label that errors, answers another primitive, times out, sits above the operator's role
+/// or leaves an id out labels nothing of it, and the pass has no failure to report: the ref
+/// draws its plain id with no banner. A denied label makes no call.
+#[tokio::test(start_paused = true)]
+async fn a_failed_timed_out_denied_or_missing_label_leaves_the_plain_id() {
+    let table = || players_table(mixed_rows());
+    for (planned, why) in [(ChunkAnswer::Fail, "an error"), (ChunkAnswer::Wrong, "another primitive")] {
+        let plan = [("p-1", Duration::ZERO, planned)];
+        let owner = Chunked::serving(label_owner(player_label(Role::Viewer)), &plan);
+        let engine = sourced(vec![owner.clone()]).await;
+        assert!(label_pass(&engine, Role::Viewer, &table()).await.is_empty(), "{why}");
+        assert_eq!(owner.calls().len(), 1, "{why}");
+    }
+
+    let late = CHUNKED_DEADLINE * 11 / 10;
+    let plan = [("p-1", late, ChunkAnswer::Cells)];
+    let owner = Chunked::serving(label_owner(player_label(Role::Viewer)), &plan);
+    let engine = sourced(vec![owner.clone()]).await;
+    let start = tokio::time::Instant::now();
+    assert!(label_pass(&engine, Role::Viewer, &table()).await.is_empty(), "a late label");
+    assert!(start.elapsed() < late, "the label is dropped at its deadline: {:?}", start.elapsed());
+
+    let owner = Chunked::serving(label_owner(player_label(Role::Admin)), &[]);
+    let engine = sourced(vec![owner.clone()]).await;
+    assert!(label_pass(&engine, Role::Operator, &table()).await.is_empty(), "a denied label");
+    assert!(owner.calls().is_empty(), "a label above the operator's role is never called");
+    assert_eq!(label_pass(&engine, Role::Admin, &table()).await, labelled(&[("p-1", "p-1"), ("p-2", "p-2")]));
+
+    let partial = BTreeMap::from([("p-2".to_string(), text("Bjorn#2"))]);
+    let owner = Recording::new(
+        label_owner(player_label(Role::Viewer)),
+        &[("handle", answer(Primitive::ColumnCells(partial)))],
+    );
+    let engine = sourced(vec![owner]).await;
+    assert_eq!(label_pass(&engine, Role::Viewer, &table()).await, labelled(&[("p-2", "Bjorn#2")]));
+}
+
+/// The pass reads only the carriers of the body it is given: row entities, not a cell's own
+/// entity link; timeline actors and targets; nothing of any other primitive.
+#[test]
+fn labels_read_refs_from_the_body_only() {
+    let linked = Cell { link: Some(controlplane::Link::Entity(player_ref("p-9"))), ..text("p-9") };
+    let mut rows = mixed_rows();
+    rows[0].cells.push(linked.clone());
+    let got = labels::refs(&players_table(rows));
+    let expected = BTreeMap::from([
+        ("guild".to_string(), vec!["g-7".to_string()]),
+        ("player".to_string(), vec!["p-1".to_string(), "p-2".to_string()]),
+    ]);
+    assert_eq!(got, expected);
+    assert!(labels::refs(&Primitive::Cell(linked)).is_empty());
+    assert!(labels::refs(&Primitive::ColumnCells(BTreeMap::from([("p-1".to_string(), text("x"))]))).is_empty());
+}
+
+/// `Point::EntityLabel` places nowhere: its own panel URL is refused as not found without
+/// calling it, as a list column's is.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_entity_labels_own_panel_url_is_not_found_and_never_called() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-label-404");
+    let cookie = operator_cookie(&pool, &user).await;
+    let owner = Recording::new(
+        label_owner(player_label(Role::Viewer)),
+        &[("handle", answer(Primitive::ColumnCells(BTreeMap::new())))],
+    );
+    let engine = Arc::new(sourced(vec![owner.clone()]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/accounts/handle").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{raw}");
+    assert!(raw.contains("is an entity label; the refs it names draw it"), "{raw}");
+    assert!(owner.calls().is_empty(), "the refused label is never called");
+
+    cleanup_user(&pool, &user).await;
 }
 
 // ---- panels::resolve --------------------------------------------------------------

@@ -400,8 +400,9 @@ pub struct PanelQuery {
     pub range: Option<TimeRange>,
     /// Module-specific keys only.
     pub params: BTreeMap<String, String>,
-    /// The distinct entity ids of one table page an `EntityListColumn` answers for, in
-    /// first-row order, at most [`MAX_PANEL_REFS`]; empty on every other request.
+    /// The distinct entity ids an `EntityListColumn` answers for one table page, or an
+    /// `EntityLabel` for one slot's body, in first-drawn order, at most [`MAX_PANEL_REFS`];
+    /// empty on every other request.
     pub refs: Vec<String>,
 }
 
@@ -608,6 +609,10 @@ variants! {
         /// A column the portal adds to every `DataTable` whose `list_columns_for` is `kind`,
         /// fetched once per table page with `PanelQuery::refs`; answers `Primitive::ColumnCells`.
         EntityListColumn { kind: String, label: String, align: Align },
+        /// The text the portal draws for each `PanelQuery::refs` id of `kind` a slot's body
+        /// names, asked only of the module whose manifest declares `kind`; answers
+        /// `Primitive::ColumnCells` with one text cell per id it knows.
+        EntityLabel { kind: String },
         NavCounter,
     }
 }
@@ -1382,6 +1387,7 @@ mod tests {
             Point::EntityTabTile { .. } => "EntityTabTile",
             Point::EntitySummary(_) => "EntitySummary",
             Point::EntityListColumn { .. } => "EntityListColumn",
+            Point::EntityLabel { .. } => "EntityLabel",
             Point::NavCounter => "NavCounter",
         }
     }
@@ -1401,6 +1407,7 @@ mod tests {
             Point::EntityTabTile { kind: s(), tab: s() },
             Point::EntitySummary(s()),
             Point::EntityListColumn { kind: s(), label: s(), align: Align::Left },
+            Point::EntityLabel { kind: s() },
             Point::NavCounter,
         ];
         assert_eq!(every.iter().map(written).collect::<Vec<_>>(), Point::VARIANTS);

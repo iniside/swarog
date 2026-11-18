@@ -595,6 +595,8 @@ pub controlplane::Point::DashboardPanel
 pub controlplane::Point::DashboardTile
 pub controlplane::Point::DashboardWide
 pub controlplane::Point::EntityHeader(alloc::string::String)
+pub controlplane::Point::EntityLabel
+pub controlplane::Point::EntityLabel::kind: alloc::string::String
 pub controlplane::Point::EntityListColumn
 pub controlplane::Point::EntityListColumn::align: controlplane::Align
 pub controlplane::Point::EntityListColumn::kind: alloc::string::String

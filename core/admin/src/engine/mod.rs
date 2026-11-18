@@ -4,6 +4,8 @@
 pub(crate) mod actions;
 pub(crate) mod columns;
 pub(crate) mod forms;
+#[cfg_attr(not(test), expect(dead_code, reason = "Step 13c.2a2b calls the pass from the slot route"))]
+pub(crate) mod labels;
 pub(crate) mod manifests;
 pub(crate) mod panels;
 pub(crate) mod roles;

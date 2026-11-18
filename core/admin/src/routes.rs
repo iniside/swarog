@@ -649,9 +649,13 @@ async fn panel(
     else {
         return not_found(&p, &format!("{module}/{contribution}"));
     };
-    if matches!(decl.point, Point::EntityListColumn { .. }) {
-        let msg = format!("{module}/{contribution} is a list column; its table draws it");
-        return toast(&p, StatusCode::NOT_FOUND, msg);
+    let drawn_by = match decl.point {
+        Point::EntityListColumn { .. } => Some("a list column; its table draws it"),
+        Point::EntityLabel { .. } => Some("an entity label; the refs it names draw it"),
+        _ => None,
+    };
+    if let Some(drawn_by) = drawn_by {
+        return toast(&p, StatusCode::NOT_FOUND, format!("{module}/{contribution} is {drawn_by}"));
     }
     let raw_entity = query.remove("entity");
     let entity = match &raw_entity {

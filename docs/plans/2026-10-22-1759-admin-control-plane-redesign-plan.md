@@ -466,6 +466,8 @@ Primitive = DataTable(DataTable) | PropertyList(PropertyList) | KpiTile(KpiTile)
     variants only; from Step 13c.1b until Step 13c.1h also the two `Primitive` case-count
     checks `golden_cases_cover_every_macro_variant_and_state` and
     `variant_coverage_fails_on_a_new_enum_variant` (Step 13c.1b errata);
+  - from Step 13c.2a2a until Step 13c.3a: Step 28's variant-coverage test, on
+    `Point::EntityLabel` (Step 13c.2a2a errata);
   - from Step 13c.2b2 until Step 13c.3a: Step 28's variant-coverage test, on
     `FilterKind::Select` (and on any other `FilterKind` variant 13c.2b2's owner decision
     brings into the gate).
@@ -2448,13 +2450,14 @@ variant-coverage test naming the new variants from 13c.1a until 13c.1h (with the
     kind gets zero calls); more distinct refs than `MAX_PANEL_REFS` still fill every label;
     a row carrying two refs of one kind; a label that fails, times out, is denied or is
     missing yields the id with no banner; labels read from the body only; the named
-    placement test for `Point::EntityLabel` (Step 28 does not observe `Point`).
-  - **Owner decision before dispatch:**
-    - what a label answers. Recommended (audit): `Primitive::ColumnCells` with one text
-      cell per ref, which adds no `Primitive` variant and so needs no Step 28 golden;
-    - which `EntityRef` carriers get labels. Recommended (audit): `Row.entity`
-      (`lib.rs:1005`), the timeline `target` (`lib.rs:1131`) and the K10 actor `Cell`
-      (`TimelineEntry.actor`, `lib.rs:1127`).
+    placement test for `Point::EntityLabel` (Step 28 does observe `Point`, through
+    `mode_of`; Step 13c.2a2a errata).
+  - **Owner decision (2026-11-19):**
+    - a label answers `Primitive::ColumnCells` with one text cell per requested ref, which
+      adds no `Primitive` variant; a ref missing from the answer draws its plain id;
+    - the carriers that get labels are `Row.entity` (`lib.rs:1005`), the timeline
+      `target` (`lib.rs:1131`) and the K10 actor `Cell` (`TimelineEntry.actor`,
+      `lib.rs:1127`) where it names an entity.
 - **Step 13c.2a2b — the labelled ref draw.** `[opus]` core-implementer, after 13c.2a2a.
   - Scope: `ref_cell` draws the label the pass returned; without one it draws the plain id.
   - Files: `core/admin/src/routes.rs`, `render/cell.rs` (`ref_cell`, :88, takes the label),
@@ -3225,3 +3228,17 @@ no fix-on-fix: a finding that needs the mirror back is an owner question.
     `variant_coverage_fails_on_a_new_enum_variant`), since `KpiTiles` names the
     `kpi_tiles` case 13c.1g adds.
   - No request field is added, so `tools/conformance` gets no policy row.
+- **Step 13c.2a2a (2026-11-19).**
+  - Step 28 observes `Point`: `render::mode_of` records every point it converts, so
+    `golden_renders_convert_every_drawn_enum_variant` fails on `Point::EntityLabel` until
+    13c.3a's labelled golden converts it (red by design, listed under the intermediate gate).
+    The Cross-module line's "`Point` and `Layout` are placement enums Step 28 does not
+    observe" is wrong for both.
+  - No golden is added here: the one site that converts a `Point` for a golden today is the
+    `slot_every_point` case through `routes::slot`, and a label is never a slot.
+  - The panel route refuses an `EntityLabel`'s own URL as not found, as it refuses a list
+    column's, so a label draws only through the refs it names; `mode_of` names it `label`.
+  - The chunked call of one contribution under its decl's one deadline is
+    `engine::columns::cells`, shared by the list-column fan-out and the label pass.
+  - The pass (`engine::labels::pass`) is not yet called from the slot route; 13c.2a2b calls
+    it there, after the body and its columns, and draws its labels.
