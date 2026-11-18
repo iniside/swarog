@@ -644,6 +644,14 @@ Apple Silicon — see [platform notes](../../docs/reference/platform-notes.md)):
 - A hung run's leftovers (orphaned test binaries holding advisory locks,
   idle-in-transaction sessions) must be killed before retrying — check
   `pg_stat_activity` for stuck `asyncevents` sessions.
+- `devctl status` reports "starting (N/N healthy)" while a fleet boots, even at
+  N/N; a fleet is up only when it reports "running". Wait for "running", never
+  for "healthy" (a wait loop keyed on "healthy" fired mid-boot and a following
+  `devctl down` aborted a split start).
+- A fleet found up during the pre-flight may be the owner's, started from another
+  terminal. Report it and ask whose it is before stopping it; never stop it
+  silently or wait on it silently (an orchestrator once stopped the owner's
+  monolith fleet after waiting ~55 min on it).
 
 All rollout tools acquire the canonical `run/rollout.lock`. `devctl up` holds an
 exclusive lease for the foreground fleet. `verifyctl` holds one lease for its
