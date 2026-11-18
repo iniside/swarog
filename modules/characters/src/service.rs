@@ -91,66 +91,75 @@ impl Player for Service {
         }
 
         let mut tx = self.store.pool.begin().await.map_err(internal)?;
+        let created: Result<Character, Error> = async {
+            // Per-player cap gate, race-safe by construction. Take the per-player
+            // transaction-scoped advisory lock FIRST (released at commit/rollback), so two
+            // concurrent creates for the same player serialize their count-then-insert:
+            // whichever acquires the lock second sees the committed count and is rejected.
+            // Without the lock both would SELECT `count` below the cap under READ COMMITTED
+            // (neither committed yet) and both insert past it.
+            self.store
+                .lock_player_tx(&mut tx, &player_id)
+                .await
+                .map_err(internal)?;
+            if self
+                .store
+                .is_player_purged_tx(&mut tx, &player_id)
+                .await
+                .map_err(internal)?
+            {
+                return Err(Error::conflict(PLAYER_DELETED));
+            }
+            // Clamp to [0, LIST_HARD_LIMIT]: the upper bound so `create` can never admit
+            // more than `list` returns; the lower bound 0 (NOT 1) so `max_per_player = 0`
+            // means "freeze creation" — the gate `n >= cap` rejects even the first create —
+            // and a nonsensical negative also clamps to 0 (fail-CLOSED, never "allow 1").
+            let cap = self
+                .config
+                .get()
+                .expect("characters.init must resolve config before create")
+                .get_int("characters", "max_per_player", MAX_PER_PLAYER)
+                .clamp(0, LIST_HARD_LIMIT);
+            let n = self
+                .store
+                .count_owned_tx(&mut tx, &player_id)
+                .await
+                .map_err(internal)?;
+            if n >= cap {
+                return Err(Error::conflict(format!("character limit reached ({cap})")));
+            }
 
-        // Per-player cap gate, race-safe by construction. Take the per-player
-        // transaction-scoped advisory lock FIRST (released at commit/rollback), so two
-        // concurrent creates for the same player serialize their count-then-insert:
-        // whichever acquires the lock second sees the committed count and is rejected.
-        // Without the lock both would SELECT `count` below the cap under READ COMMITTED
-        // (neither committed yet) and both insert past it.
-        self.store
-            .lock_player_tx(&mut tx, &player_id)
-            .await
-            .map_err(internal)?;
-        if self
-            .store
-            .is_player_purged_tx(&mut tx, &player_id)
-            .await
-            .map_err(internal)?
-        {
-            tx.rollback().await.map_err(internal)?;
-            return Err(Error::conflict(PLAYER_DELETED));
+            let c = self
+                .store
+                .create_tx(&mut tx, &player_id, &name, &class)
+                .await
+                .map_err(internal)?;
+            let evt = charactersevents::Created {
+                character_id: c.id.clone(),
+                player_id: c.player_id.clone(),
+                name: c.name.clone(),
+                class: c.class.clone(),
+            };
+            self.bus
+                .emit_tx(AnyTx::new(&mut *tx), &charactersevents::CREATED, &evt)
+                .await
+                .map_err(internal)?;
+            Ok(c)
         }
-        // Clamp to [0, LIST_HARD_LIMIT]: the upper bound so `create` can never admit
-        // more than `list` returns; the lower bound 0 (NOT 1) so `max_per_player = 0`
-        // means "freeze creation" — the gate `n >= cap` rejects even the first create —
-        // and a nonsensical negative also clamps to 0 (fail-CLOSED, never "allow 1").
-        let cap = self
-            .config
-            .get()
-            .expect("characters.init must resolve config before create")
-            .get_int("characters", "max_per_player", MAX_PER_PLAYER)
-            .clamp(0, LIST_HARD_LIMIT);
-        let n = self
-            .store
-            .count_owned_tx(&mut tx, &player_id)
-            .await
-            .map_err(internal)?;
-        if n >= cap {
-            // Roll back EXPLICITLY (not via drop): sqlx defers a dropped tx's ROLLBACK,
-            // which can leave the advisory lock held and stall a following writer — the
-            // same deterministic-teardown rationale as delete's not-found arm.
-            tx.rollback().await.map_err(internal)?;
-            return Err(Error::conflict(format!("character limit reached ({cap})")));
+        .await;
+        match created {
+            Ok(c) => {
+                tx.commit().await.map_err(internal)?;
+                Ok(c)
+            }
+            Err(e) => {
+                // Roll back EXPLICITLY (not via drop): sqlx defers a dropped tx's ROLLBACK,
+                // which can leave the advisory lock held and stall a following writer — the
+                // same deterministic-teardown rationale as delete's not-found arm.
+                let _ = tx.rollback().await;
+                Err(e)
+            }
         }
-
-        let c = self
-            .store
-            .create_tx(&mut tx, &player_id, &name, &class)
-            .await
-            .map_err(internal)?;
-        let evt = charactersevents::Created {
-            character_id: c.id.clone(),
-            player_id: c.player_id.clone(),
-            name: c.name.clone(),
-            class: c.class.clone(),
-        };
-        self.bus
-            .emit_tx(AnyTx::new(&mut *tx), &charactersevents::CREATED, &evt)
-            .await
-            .map_err(internal)?;
-        tx.commit().await.map_err(internal)?;
-        Ok(c)
     }
 
     /// The caller's own characters (player_id from `identity`).

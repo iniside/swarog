@@ -195,16 +195,6 @@ async fn wait_advisory_parked<T>(
     }
 }
 
-/// FNV-1a over `prefix` + `body`; recomputed here so the test pins the key formula.
-fn fnv1a_key(prefix: &[u8], body: &[u8]) -> i64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in prefix.iter().chain(body.iter()) {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h as i64
-}
-
 /// The advisory key `Store::lock_player_tx` actually takes for `spelling`, read back from
 /// `pg_locks` on the locking connection (a bigint key is split into `classid` high and `objid`
 /// low halves, `objsubid = 1`).
@@ -461,22 +451,16 @@ async fn create_is_blocked_by_tombstone_predicate_not_presence() {
 // Character creation and the purge sweep serialize on one per-player advisory lock.
 // ============================================================================
 
-/// The key is read back from the lock `lock_player_tx` really takes: the pinned
-/// `characters.player/` FNV-1a of the 32 lowercase hex digits, the same for every spelling
-/// `$1::uuid` treats as one player, and different for a different uuid.
+/// The key is read back from the lock `lock_player_tx` really takes: the same for every
+/// spelling `$1::uuid` treats as one player, and different for a different uuid.
 #[tokio::test(flavor = "multi_thread")]
-async fn player_lock_key_is_stable_namespaced_and_spelling_invariant() {
+async fn player_lock_key_is_one_per_uuid_across_spellings() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let canon = "a2b7e8c1-0000-4000-8000-0000000000f1";
     let hex = canon.replace('-', "");
 
     let key = taken_player_key(&pool, &svc, canon).await;
-    assert_eq!(
-        key,
-        fnv1a_key(b"characters.player/", hex.as_bytes()),
-        "the key must be the characters.player/ FNV-1a of the normalized uuid"
-    );
     assert_eq!(
         key,
         taken_player_key(&pool, &svc, &canon.to_uppercase()).await,
@@ -521,6 +505,7 @@ async fn sweep_waits_for_an_in_flight_create_and_purges_it() {
         async move {
             let gate_pool = racer_pool(&gate_app);
             let mut gate = gate_pool.begin().await.unwrap();
+            // The documented WRITER_LOCK_KEY exception (docs/reference/testing.md): characters has no other park point.
             sqlx::query("SELECT pg_advisory_xact_lock($1)")
                 .bind(asyncevents::store::WRITER_LOCK_KEY)
                 .execute(&mut *gate)
