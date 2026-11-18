@@ -1,15 +1,16 @@
 ---
 name: dev-tooling-tests-backend-not-hostile-users
-description: "Dev tooling (devctl/verifyctl/splitproof/processctl) tests the backend, it is not a security product — keeps only the cargo-audit versioning delta not in CLAUDE.md"
+description: "Dev tooling (devctl/verifyctl/splitproof/processctl) tests the backend, it is not a security product — keeps only the cargo-audit versioning delta not in .claude/rules/dev-tooling.md"
 metadata: 
   node_type: memory
   type: feedback
   originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
+  modified: 2026-11-18T14:28:54.414Z
 ---
 
 The threat model (trusted local operator, one OS account; no custom crypto, same-user
 defenses, ACL/reparse hardening, or daemon-grade protocols unless a concrete backend-test
-failure requires it) is fully in CLAUDE.md `## Dev tooling scope — MANDATORY`. This memory
+failure requires it) is fully in `.claude/rules/dev-tooling.md` (**Dev tooling scope**). This memory
 keeps only the delta not there:
 
 **cargo-audit / helper CLIs:** prefer any already-installed version and install the latest
