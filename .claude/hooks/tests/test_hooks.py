@@ -818,7 +818,6 @@ class Wiring(unittest.TestCase):
 
     def test_exact_scripts_per_matcher(self):
         want = {
-            ("PreToolUse", "Edit|Write|MultiEdit|NotebookEdit"): ["ref_reminder.py"],
             ("PreToolUse", "Bash|PowerShell"): ["ref_reminder.py", "git_safety_hook.py",
                                                 "grep_sweep_guard.py"],
             ("PreToolUse", "Agent|EnterWorktree"): ["no_worktree_hook.py"],
@@ -862,14 +861,6 @@ class RefReminder(unittest.TestCase):
     def payload(self, sid, tool, **ti):
         return {"tool_name": tool, "session_id": sid, "cwd": R, "tool_input": ti}
 
-    def test_once_per_session_edit(self):
-        sid = str(uuid.uuid4())
-        p = self.payload(sid, "Edit", file_path=os.path.join(ROOT, "core", "asyncevents", "src", "lib.rs"))
-        self.assertTrue(run("ref_reminder", p).startswith("context:"))
-        self.assertEqual(run("ref_reminder", p), "silent")
-        p2 = self.payload(str(uuid.uuid4()), "Edit", file_path=p["tool_input"]["file_path"])
-        self.assertTrue(run("ref_reminder", p2).startswith("context:"))
-
     def test_once_per_session_command_both_tools(self):
         for tool in SHELL_TOOLS:
             sid = str(uuid.uuid4())
@@ -878,22 +869,11 @@ class RefReminder(unittest.TestCase):
                 self.assertTrue(run("ref_reminder", p).startswith("context:"))
                 self.assertEqual(run("ref_reminder", p), "silent")
 
-    def test_paths(self):
-        for rel, want in (("modules/gateway/src/lib.rs", "context"),
-                          ("modules/wallet/src/lib.rs", "silent")):
+    def test_edit_tools_are_silent(self):
+        for rel in ("core/asyncevents/src/lib.rs", "core/admin/src/portal.css"):
             with self.subTest(rel=rel):
-                p = self.payload(str(uuid.uuid4()), "Write", file_path=R + "/" + rel)
-                self.assertTrue(run("ref_reminder", p).startswith(want))
-
-    def test_mockup_skill_paths(self):
-        skill = "mockup-implementation/SKILL.md"
-        for rel in ("tools/admindiff/accept/x.txt", "core/admin/src/portal.css",
-                    "core/admin/src/templates/x.html"):
-            with self.subTest(rel=rel):
-                p = self.payload(str(uuid.uuid4()), "Write", file_path=R + "/" + rel)
-                self.assertIn(skill, run("ref_reminder", p))
-        p = self.payload(str(uuid.uuid4()), "Write", file_path=R + "/modules/admin/templates/x.html")
-        self.assertNotIn(skill, run("ref_reminder", p))
+                p = self.payload(str(uuid.uuid4()), "Edit", file_path=R + "/" + rel)
+                self.assertEqual(run("ref_reminder", p), "silent")
 
 
 class FailOpen(unittest.TestCase):
