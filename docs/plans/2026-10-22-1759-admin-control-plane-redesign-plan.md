@@ -2152,7 +2152,9 @@ scattered sentences (F1, F3, F4), so every rule of this seam lives here and nowh
 - Labels: one label pass per slot response, after its body (and its columns) are
   built; it reads refs from the body only, never from another slot. A pass per kind calls
   the `EntityLabel{kind}` contribution of the one module whose manifest declares that
-  `EntityKindDecl` (the kind's owner); an `EntityLabel{kind}` declared by any other
+  `EntityKindDecl` (the kind's owner; a kind is declared by exactly one manifest, which
+  `tools/admincheck` enforces across manifests, beside its per-manifest duplicate check at
+  `checks.rs:57`); an `EntityLabel{kind}` declared by any other
   module is never called. That contribution is called under its own decl's deadline, batched and
   chunked as above. A label that fails, times out, is denied (role below `min_role`, zero
   calls) or is missing from the answer draws the plain id, as `ref_cell` does today; a
@@ -2172,10 +2174,11 @@ scattered sentences (F1, F3, F4), so every rule of this seam lives here and nowh
 - row clickability by kind; the down-module row-menu group and tab dot;
 - the Refs seam block, one named test per rule: distinct refs per kind; more distinct
   refs than `MAX_PANEL_REFS` split into chunks that all run and still fill every cell and
-  label; the chunks of one column share one deadline and run concurrently (paused clock: N
-  chunks each answering at 0.6× the deadline fill the column, one chunk at 1.1× fails it);
+  label; the chunks of one column share one deadline and run concurrently (paused clock: two
+  chunks each answering at 0.6× the deadline fill the column and it resolves before 1.0×
+  of the deadline has elapsed, which a sequential run cannot; one chunk at 1.1× fails it);
   only the kind's owner answers a label (a second module's `EntityLabel` for the kind gets
-  zero calls); one failing chunk fails the whole
+  zero calls); admincheck rejects two manifests declaring the same `EntityKindDecl` kind; one failing chunk fails the whole
   column; a row carrying two refs of one kind; a label that fails, times out, is denied or
   is missing draws the id with no banner; labels read from the body only;
 - the cap refused in `LocalFace` with `invalid` before the provider runs (O2), on the
