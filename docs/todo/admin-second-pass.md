@@ -216,6 +216,16 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
   map: neither is a slot response, so no label pass runs for them. A modal impact naming an
   entity draws its raw id. Closed by: a label pass over the modal's impact cells (and the
   form result's body) before they are drawn. Source: 13c.2a2b proof audit.
+- [ ] **Label refs are decided twice, in the label pass and in the renderer** (owner, 2026-11-19: after the panel is final)
+  ADMIN2-44. `labels::refs` (core/admin/src/engine/labels.rs) walks a slot body to pick the
+  ids that need a label, and the draw sites (render/cell.rs, render/tiles.rs, render/queue.rs)
+  decide again where a label replaces the id. A new draw site added to the renderer but not to
+  `labels::refs` draws a raw id. Today only
+  `every_golden_draw_asks_a_label_for_exactly_the_refs_its_body_collects` keeps the two in
+  step, and only for the drawn goldens. Closed by: two render passes per slot: the first
+  records the ids the renderer asks a label for, the label pass fetches exactly those, the
+  second draws with labels; `labels::refs` and the equality test die. Needs a render free
+  of side effects. Source: 13c.2a2b review.
 
 ### Known limits (admin-control-plane-redesign step 28)
 
