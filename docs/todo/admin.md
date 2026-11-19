@@ -1,6 +1,6 @@
 # Admin
 
-Last updated: 2026-10-23
+Last updated: 2026-11-19
 
 ## In progress
 
@@ -43,3 +43,13 @@ _None._
   ADMIN-06. characters, friends, notifications and wallet use priority 0 in their
   src/admin.rs; inventory uses 10. Source:
   docs/plans/2026-09-05-1921-friends-module-plan.md:601 (2026-09-05).
+
+### Known limits (admin-control-plane-redesign step 13d2c)
+
+- [ ] **A source missing its admin provider looks healthy to the portal**
+  `Snapshot::complete` (core/admin/src/engine/manifests.rs) marks a page or menu root
+  `error` only when a source in `snapshot.sources` has never answered. An `Ok([])`
+  reply counts as an answer, because every process without admin providers answers it.
+  So a service built without its admin provider, or a peer missing from the source
+  list, drops its module silently, and `admindiff crawl` passes. Closing it needs a
+  per-source declaration of the modules it is expected to serve. Owner, 2026-11-19.
