@@ -2636,6 +2636,25 @@ gate.
   on it unless `--allow-errors`, as an error-state page fragment does. Files: the
   `core/admin` menu template and its test, `tools/admindiff/src/crawl.rs` and its test.
   Review: core-reviewer plus proof-auditor.
+- **Step 13d2c — whole page and menu state.** `[opus]` core-implementer, after 13d2b, before
+  the first live crawl that writes an accept file. Found in the 13d2b review (owner,
+  2026-11-19): a module that never answered, or answered `Ok([])`, is absent from
+  `snapshot.modules` and draws no menu group and no panel. The menu and the page then answer
+  200 with only the healthy parts, and the crawl passes them, so an accept file can be written
+  from an incomplete fleet.
+  - `core/admin` marks the root of a page and of a row menu with a machine-readable state
+    (`data-state`, as panels and menu groups carry): not ok when any module the snapshot
+    expects is absent or unhealthy and has no last good manifest. The expected set comes from
+    the one source the portal already uses for its module list, not a second list.
+  - `crawl_page` and `crawl_menu` fail on a not-ok root unless `--allow-errors`, and fail
+    on a missing root state always (as `fetch_menu` does for a group).
+  - Tests: a golden or route test for an absent module on a page and in a menu; admindiff crawl
+    tests read those goldens with `include_str!`.
+  - Until this step lands, a live crawl that writes accept files runs only on a fully healthy
+    fleet.
+  - Files: the `core/admin` shell and menu templates and the snapshot code that feeds them,
+    their tests, `tools/admindiff/src/crawl.rs` and its test. Review: core-reviewer plus
+    proof-auditor.
 - **Step 13d3 — modals** (T2). `[opus]` core-implementer, after 13d2. Files: `pages.rs`,
   `crawl.rs`, `mock.rs`, `accept.rs` (the modal accept sections).
   - **Owner decision before dispatch:** how the harness runs a mockup JS opener: the
