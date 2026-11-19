@@ -35,8 +35,8 @@ USAGE:
             non-2xx, an error-state fragment (unless --allow-errors), a fragment without
             data-state, no nav page or no fragment, and an entity page whose list page has no
             row to follow (unless --allow-empty), a tab target whose page does not select the
-            tab, a menu target whose page draws no menu of its kind (unless its page lists no
-            row and --allow-empty), a menu kind an untabbed compared page draws that is neither
+            tab, a menu target whose page draws no menu of its kind (unless its list page lists
+            no row and --allow-empty; an entity page never), a menu kind an untabbed compared page draws that is neither
             a page map menu entry nor in pages::EXCLUDED_MENUS, an excluded menu answering
             non-2xx, the first menu of a kind any other crawled page draws answering
             non-2xx, and an EXCLUDED_MENUS entry its page does not draw
