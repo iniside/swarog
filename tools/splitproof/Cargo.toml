@@ -51,6 +51,10 @@ push = { workspace = true }
 notificationsapi = { workspace = true }
 storageapi = { workspace = true }
 partyapi = { workspace = true }
+# `[CP1]` takes the panel-refs cap, the typed `PanelQuery` and its generated `cp.panel`
+# envelope from the contract crate, so a cap or schema change breaks this build instead of
+# leaving a restated copy to drift.
+controlplane = { workspace = true }
 
 # The fleet-liveness tests drive processctl's production spawn path, which on unix
 # re-execs `current_exe --__processctl-guardian-v1`; only a `harness = false`

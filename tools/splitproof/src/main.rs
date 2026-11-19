@@ -7063,12 +7063,6 @@ async fn player_session(ctx: &Ctx, calls: &[(&str, String)]) -> Result<Vec<serde
     Ok(out)
 }
 
-/// The cap `controlplane::MAX_PANEL_REFS` (`core/controlplane/src/lib.rs`), restated:
-/// splitproof does not depend on `controlplane`. A drift in either direction turns
-/// `[CP1]` red rather than vacuous: a raised cap answers the over-cap probe `Ok`, a
-/// lowered one refuses the at-cap control.
-const PANEL_REFS_CAP: usize = 100;
-
 /// `[CP1]`, split-only: the remote `LocalFace` refuses a `cp.panel` carrying more
 /// `PanelQuery.refs` than the cap, over the wire, before the provider runs. The portal
 /// never sends one (it splits a longer list), so the harness dials accounts-svc's internal
@@ -7081,7 +7075,11 @@ const PANEL_REFS_CAP: usize = 100;
 /// served and the contribution exists, so the over-cap `Invalid` can only be the cap —
 /// not an undecodable body (`edge::Error::InvalidRequest`, which would also fail the
 /// control), an unknown module (`NotFound`) or a dead peer (`Unavailable`/transport).
-/// The refusal's message is pinned to the cap's own wording as the second witness.
+/// The cap, the request envelope and the method name all come from `controlplane` itself
+/// (`MAX_PANEL_REFS`, the generated `control_plane_rpc::PanelRequest` around a typed
+/// `PanelQuery`, `METHOD_PANEL`), so a contract change breaks this harness's build rather
+/// than leaving the probe to send a stale shape. The refusal's message must carry the
+/// over-cap count as a second witness; its wording is not restated here.
 ///
 /// The monolith hosts no internal edge and the portal never sends an over-cap list, so
 /// there is no parity run (the `[GR4e]`/`[DL2e]` convention); the monolith refusal is
@@ -7095,11 +7093,11 @@ async fn panel_cap_assertions(ctx: &Ctx, p: &mut Proof, edge: std::net::SocketAd
             let cap_status = envelope_status(&at_cap).unwrap_or("").to_string();
             let cap_err = at_cap.get("err").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let cap_value = at_cap.get("value").is_some_and(|v| !v.is_null());
-            let cap_words = format!("carries {} refs, over the cap of {PANEL_REFS_CAP}", PANEL_REFS_CAP + 1);
+            let over_count = (controlplane::MAX_PANEL_REFS + 1).to_string();
             p.check(
                 "[CP1] cp.panel over accounts-svc's internal edge: MAX_PANEL_REFS+1 refs -> Invalid (the cap), MAX_PANEL_REFS refs -> Ok",
                 over_status == "Invalid"
-                    && over_err.contains(&cap_words)
+                    && over_err.contains(&over_count)
                     && cap_status == "Ok"
                     && cap_value,
                 format!(
@@ -7135,28 +7133,37 @@ async fn panel_cap_probes(
     let refs = |n: usize| -> Vec<String> {
         (0..n).map(|i| format!("00000000-0000-0000-0000-{i:012}")).collect()
     };
-    // The generated `cp.panel` request envelope: `{"req": PanelQuery}`, every field spelled
-    // out so the body decodes exactly as the portal's would.
-    let body = |refs: Vec<String>| {
-        serde_json::json!({
-            "req": {
-                "module": "accounts",
-                "contribution": "label",
-                "entity": null,
-                "search": null,
-                "cursor": null,
-                "before": null,
-                "queue_state": null,
-                "range": null,
-                "params": {},
-                "refs": refs,
-            }
-        })
-        .to_string()
+    // The generated `cp.panel` request envelope around a typed `PanelQuery`, serialized
+    // exactly as the portal's `control_plane_rpc::Client` would.
+    let body = |refs: Vec<String>| -> Result<Vec<u8>> {
+        let req = controlplane::control_plane_rpc::PanelRequest {
+            req: controlplane::PanelQuery {
+                module: "accounts".to_string(),
+                contribution: "label".to_string(),
+                entity: None,
+                search: None,
+                cursor: None,
+                before: None,
+                queue_state: None,
+                range: None,
+                params: Default::default(),
+                refs,
+            },
+        };
+        serde_json::to_vec(&req).context("serialize cp.panel request")
     };
     let mut answers = Vec::with_capacity(2);
-    for n in [PANEL_REFS_CAP + 1, PANEL_REFS_CAP] {
-        let raw = client.call_raw("cp.panel", body(refs(n)).as_bytes()).await;
+    for n in [controlplane::MAX_PANEL_REFS + 1, controlplane::MAX_PANEL_REFS] {
+        let body = match body(refs(n)) {
+            Ok(body) => body,
+            Err(e) => {
+                client.close();
+                return Err(e);
+            }
+        };
+        let raw = client
+            .call_raw(controlplane::control_plane_rpc::METHOD_PANEL, &body)
+            .await;
         let raw = match raw {
             Ok(raw) => raw,
             Err(e) => {
