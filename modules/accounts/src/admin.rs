@@ -744,12 +744,5 @@ impl Provider for AccountsAdmin {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fakes_draw_pinned_values_from_the_shared_helper() {
-        assert_eq!(fake_country("p-1"), "ES");
-        assert_eq!(fake_ip("fam-1"), "198.51.100.64");
-    }
-}
+#[path = "admin_tests.rs"]
+mod tests;

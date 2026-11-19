@@ -1479,8 +1479,6 @@ fn env_bool(key: &str, default: bool) -> bool {
 // when it is unreachable. In-crate so they can drive the private `Service`/`Store`.
 // ============================================================================
 #[cfg(test)]
-mod admin_tests;
-#[cfg(test)]
 mod oidc_tests;
 #[cfg(test)]
 mod providers_tests;

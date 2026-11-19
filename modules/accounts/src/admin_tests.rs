@@ -7,7 +7,7 @@ use accountsapi::Auth as _;
 use controlplane::{CellKind, EntityRef, Link, PanelQuery, Primitive, Provider as _, SearchQuery};
 use testdb::test_pool;
 
-use crate::admin::AccountsAdmin;
+use super::{fake_country, fake_ip, AccountsAdmin};
 use crate::tests::{cleanup_player, suffix, wired};
 
 /// A canonical uuid no registration mints: registrations are v4, this is v0.
@@ -88,4 +88,10 @@ async fn player_search_hit_links_to_the_player_entity() {
         Link::Entity(EntityRef { kind: "player".to_string(), id: id.clone() }),
         "a player hit opens that player's entity page",
     );
+}
+
+#[test]
+fn fakes_draw_pinned_values_from_the_shared_helper() {
+    assert_eq!(fake_country("p-1"), "ES");
+    assert_eq!(fake_ip("fam-1"), "198.51.100.64");
 }
