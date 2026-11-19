@@ -3,11 +3,12 @@
 the Long steps section of each agent definition).
 
 Modes (argv[1]):
-  send  PreToolUse SendMessage   main session: deny resuming a FINISHED subagent whose context is
-                                 over SEND_LIMIT tokens; dispatch a fresh agent with the punch list
-  work  PreToolUse (every tool)  subagent: over SOFT_LIMIT deny new exploration (Read, Grep, Glob,
-                                 LSP, Agent, web); over HARD_LIMIT deny everything but git, REPL,
-                                 Poll and the hand-off, so the agent commits a part and returns
+  send  PreToolUse SendMessage   main session: deny resuming a FINISHED subagent (by id or name)
+                                 whose context is over SEND_LIMIT tokens; dispatch a fresh agent
+  work  PreToolUse (every tool)  subagent over WORK_LIMIT: deny exploration (Read, Grep, Glob, LSP,
+                                 Agent, web, and shell readers such as rg/cat/Get-Content); Edit,
+                                 Write, cargo and git still run, so the agent finishes the edit in
+                                 hand, checks the build, commits a part and returns a hand-off
 
 Context is the last API turn's input + cache tokens in the subagent transcript. Any error exits 0
 with no output, so a hook bug never blocks work.
@@ -18,13 +19,17 @@ import re
 import sys
 
 SEND_LIMIT = 100_000
-SOFT_LIMIT = 180_000
-HARD_LIMIT = 240_000
+WORK_LIMIT = 180_000
 TAIL_BYTES = 1_000_000
 AGENT_ID = re.compile(r"^a[0-9a-f]{8,}$")
-EXPLORE = {"Read", "Grep", "Glob", "LSP", "Agent", "WebFetch", "WebSearch"}
-ALWAYS = {"REPL", "Poll", "SubagentHandback", "SendMessage"}
-GIT_ONLY = re.compile(r"^\s*(?:cd\s+\S+\s*(?:&&|;)\s*)?git\s+(?:-C\s+\S+\s+)?(?:status|diff|add|commit|log|show|rev-parse)\b")
+EXPLORE = {"Read", "Grep", "Glob", "LSP", "Agent", "WebFetch", "WebSearch", "NotebookRead"}
+SHELLS = {"Bash", "PowerShell"}
+SHELL_READERS = {
+    "rg", "grep", "egrep", "fgrep", "cat", "sed", "awk", "head", "tail", "less", "more", "find", "ls",
+    "tree", "wc", "get-content", "gc", "type", "select-string", "sls", "get-childitem", "gci", "dir",
+}
+SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|&\n]")
+PREFIX_WORDS = {"cd", "set-location", "sl", "pushd", "time", "env", "sudo"}
 
 SEND_REASON = (
     "Context budget: subagent {to} already holds {ctx}k tokens of context, and every turn of a resumed "
@@ -32,16 +37,25 @@ SEND_REASON = (
     "decision, the step's commit sha(s) and the files to touch (implementation-dispatch skill, Prompts and "
     "hand-offs). Resume by SendMessage only below {limit}k."
 )
-SOFT_REASON = (
-    "Context budget: you hold {ctx}k tokens; past {soft}k no new exploration ({tool}). Finish the edit in "
-    "hand, reach a coherent point, commit it as a part and return a part hand-off (your agent definition, "
-    "Long steps). The main session continues in a fresh agent. Past {hard}k only git and the hand-off run."
+WORK_REASON = (
+    "Context budget: you hold {ctx}k tokens; past {limit}k no new reading or search ({what}). Finish the edit "
+    "in hand, run the check or test it needs, commit a coherent part and return a part hand-off (your agent "
+    "definition, Long steps). Edit, Write, cargo and git still run. The main session continues in a fresh agent."
 )
-HARD_REASON = (
-    "Context budget: you hold {ctx}k tokens (limit {hard}k). Only git status/diff/add/commit/log/show and "
-    "the hand-off run now. Commit what is coherent as a part (your agent definition, Long steps) and "
-    "return a part hand-off naming what remains and the build/test state."
-)
+
+
+def shell_reader(command):
+    for segment in SEGMENT_SPLIT.split(command or ""):
+        words = segment.strip().split()
+        while words and (words[0].lower() in PREFIX_WORDS or "=" in words[0]):
+            words = words[2:] if words[0].lower() in {"cd", "set-location", "sl", "pushd"} else words[1:]
+        if words:
+            head = re.split(r"[\\/]", words[0].strip("'\""))[-1].lower()
+            if head.endswith(".exe"):
+                head = head[:-4]
+            if head in SHELL_READERS:
+                return head
+    return None
 
 
 def last_context(path):
@@ -93,6 +107,28 @@ def finished(path):
         return False
 
 
+def resolve_target(transcript_path, to):
+    to = re.sub(r"\s*\[[^\]]*\]\s*$", "", str(to or "")).strip()
+    if AGENT_ID.match(to):
+        return to
+    base = session_dir(transcript_path)
+    if not to or not base:
+        return None
+    folder = os.path.join(base, "subagents")
+    found = None
+    for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else ():
+        if not name.endswith(".meta.json"):
+            continue
+        try:
+            with open(os.path.join(folder, name), encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if meta.get("name") == to:
+            found = name[len("agent-"):-len(".meta.json")]
+    return found
+
+
 def deny(reason):
     print(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}))
@@ -101,9 +137,7 @@ def deny(reason):
 def do_send(payload):
     if payload.get("agent_id"):
         return
-    to = str((payload.get("tool_input") or {}).get("to") or "").strip()
-    if not AGENT_ID.match(to):
-        return
+    to = resolve_target(payload.get("transcript_path"), (payload.get("tool_input") or {}).get("to"))
     path = subagent_file(payload.get("transcript_path"), to)
     if not path or not finished(path):
         return
@@ -117,19 +151,18 @@ def do_work(payload):
     if not agent_id:
         return
     tool = str(payload.get("tool_name") or "")
-    if tool in ALWAYS:
+    if tool in EXPLORE:
+        what = tool
+    elif tool in SHELLS:
+        what = shell_reader(str((payload.get("tool_input") or {}).get("command") or ""))
+        what = what and "{0} via {1}".format(what, tool)
+    else:
+        return
+    if not what:
         return
     ctx = last_context(subagent_file(payload.get("transcript_path"), agent_id))
-    if not ctx or ctx <= SOFT_LIMIT:
-        return
-    values = dict(ctx=ctx // 1000, soft=SOFT_LIMIT // 1000, hard=HARD_LIMIT // 1000, tool=tool)
-    if ctx > HARD_LIMIT:
-        command = str((payload.get("tool_input") or {}).get("command") or "")
-        if tool in ("Bash", "PowerShell") and GIT_ONLY.match(command):
-            return
-        deny(HARD_REASON.format(**values))
-    elif tool in EXPLORE:
-        deny(SOFT_REASON.format(**values))
+    if ctx and ctx > WORK_LIMIT:
+        deny(WORK_REASON.format(ctx=ctx // 1000, limit=WORK_LIMIT // 1000, what=what))
 
 
 def main():

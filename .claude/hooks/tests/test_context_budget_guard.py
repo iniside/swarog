@@ -80,29 +80,42 @@ class Guard(unittest.TestCase):
     def test_send_unknown_agent_is_silent(self):
         self.assertEqual(self.send(to="a99999999999"), "silent")
 
-    def test_work_below_soft_is_silent(self):
+    def test_send_by_agent_name_resolves(self):
+        path = self.agent([300_000])
+        with open(path[:-6] + ".meta.json", "w", encoding="utf-8") as f:
+            json.dump({"finished": True, "name": "impl-13c"}, f)
+        self.assertEqual(self.send(to="impl-13c"), "deny")
+        self.assertEqual(self.send(to="impl-13c [77f0b1]"), "deny")
+        self.assertEqual(self.send(to="someone-else"), "silent")
+
+    def test_work_below_limit_is_silent(self):
         self.agent([170_000], finished=False)
         self.assertEqual(self.work("Read"), "silent")
+        self.assertEqual(self.work("Bash", "rg foo core"), "silent")
 
-    def test_work_soft_denies_exploration_only(self):
+    def test_work_over_limit_denies_exploration(self):
         self.agent([200_000], finished=False)
-        self.assertEqual(self.work("Read"), "deny")
-        self.assertEqual(self.work("Grep"), "deny")
-        self.assertEqual(self.work("Edit"), "silent")
-        self.assertEqual(self.work("Bash", "cargo test -p admin"), "silent")
+        for tool in ("Read", "Grep", "Glob", "LSP", "Agent"):
+            self.assertEqual(self.work(tool), "deny", tool)
+        for command in ("rg -n foo core", "cat a.rs", "sed -n 1,40p a.rs", "git status; rg foo",
+                        "cd G:/p && grep -n x a.rs", "FOO=1 head a.rs", "C:/bin/rg.exe x"):
+            self.assertEqual(self.work("Bash", command), "deny", command)
+        for command in ("Get-Content a.rs", "Set-Location G:/p; Select-String -Path a.rs -Pattern x"):
+            self.assertEqual(self.work("PowerShell", command), "deny", command)
 
-    def test_work_hard_allows_git_and_handback_only(self):
-        self.agent([250_000], finished=False)
-        self.assertEqual(self.work("Edit"), "deny")
-        self.assertEqual(self.work("Bash", "cargo test -p admin"), "deny")
-        self.assertEqual(self.work("Bash", "git add -- core/a.rs"), "silent")
-        self.assertEqual(self.work("PowerShell", "cd G:/p && git commit -m x"), "silent")
-        self.assertEqual(self.work("SubagentHandback"), "silent")
-        self.assertEqual(self.work("REPL"), "silent")
+    def test_work_over_limit_lets_the_part_finish(self):
+        self.agent([300_000], finished=False)
+        for tool in ("Edit", "Write", "REPL", "Poll", "SubagentHandback", "SendMessage"):
+            self.assertEqual(self.work(tool), "silent", tool)
+        for command in ("cargo check -p admin", "cargo test -p admin", "git add -- core/a.rs",
+                        "git -c core.x=y commit -m x", "git --no-pager log -1", "git diff --stat",
+                        "cd G:/p && git commit -m x"):
+            self.assertEqual(self.work("Bash", command), "silent", command)
+        self.assertEqual(self.work("PowerShell", "Set-Location G:/p; git commit -m x"), "silent")
 
     def test_work_resolves_a_subagent_transcript_path(self):
         path = self.agent([250_000], finished=False)
-        self.assertEqual(self.work("Edit", transcript=path), "deny")
+        self.assertEqual(self.work("Read", transcript=path), "deny")
 
     def test_main_session_work_is_silent(self):
         r = self.run_hook("work", {"tool_name": "Read", "transcript_path": self.main, "tool_input": {}})
