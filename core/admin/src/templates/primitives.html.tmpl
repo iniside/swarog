@@ -141,7 +141,7 @@
 {#- GET /admin/_menu/{kind}/{id}: the row-action popover, which `admin.js` puts in place of its
     loading popover, grouped by module; a group whose module is down is marked unavailable and
     its items are disabled (registry.js:101-104). The menu answers 200 either way, so
-    `data-state` (`ok` or `error`, as on a panel slot) is where `tools/admindiff` reads it: on
+    `data-state` (`ok` or `error`; a panel slot has more states) is where `tools/admindiff` reads it: on
     each group, and on the root, `error` while a manifest source has never answered. -#}
 {%- macro menu(m) -%}
 <div class="menu" data-menu-popup="" data-state="{{ "ok" if m.complete else "error" }}">

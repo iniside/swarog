@@ -2244,7 +2244,8 @@ async fn a_row_menu_group_of_a_down_module_is_unavailable_and_disabled() {
 
 /// A manifest source that has never answered draws no module, so the page root and the row
 /// menu root carry `data-state="error"` while the answered module's group stays `ok`; once the
-/// source answers, both roots are `ok`.
+/// source answers, both roots are `ok`. A source answering an empty manifest list has
+/// answered: it draws nothing and keeps the roots `ok`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_source_that_never_answered_marks_the_page_and_menu_root_error() {
     let Some(pool) = test_pool().await else { return };
@@ -2256,7 +2257,7 @@ async fn a_source_that_never_answered_marks_the_page_and_menu_root_error() {
     let (accounts, wallet) = (face("accounts", "suspend"), face("wallet", "grant"));
     wallet.down.store(true, std::sync::atomic::Ordering::SeqCst);
     let engine = Arc::new(Engine::new());
-    let sources = [("accounts-svc", accounts), ("wallet-svc", wallet.clone())]
+    let sources = [("accounts-svc", accounts), ("wallet-svc", wallet.clone()), ("empty-svc", flaky(Vec::new()))]
         .into_iter()
         .map(|(peer, face)| Source { peer: peer.to_string(), face })
         .collect();
