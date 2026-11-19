@@ -11,7 +11,9 @@
 //! one or is in [`EXCLUDED_MENUS`] (`crawl`). An entry that names a modal is its own target,
 //! `<host>.modal.<modal>`: the harness calls the mockup's named opener with the entry's
 //! arguments, and the crawl opens the first opener of the entry's portal action its host page
-//! draws.
+//! draws. Modals are inventoried on untabbed hosts too: every modal action the portal draws
+//! there (an `hx-get` to `/admin/_action/…`) has such an entry or is in [`EXCLUDED_MODALS`]
+//! (`crawl`); on the mockup side an entry's opener must append a `.scrim`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -124,18 +126,53 @@ fn is_id(id: &str) -> bool {
     !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
+/// A portal module or action id: `[a-z0-9._-]+`, as `core.events` and `poison.skip` are.
+fn is_action_id(id: &str) -> bool {
+    is_id(&id.replace('.', "-"))
+}
+
+/// A `<module>/<action>` path of two [`is_action_id`] ids.
+fn is_action_path(path: &str) -> bool {
+    path.split_once('/').is_some_and(|(module, action)| is_action_id(module) && is_action_id(action))
+}
+
+/// A JavaScript identifier the harness can look up as `PAGES[<opener>]`.
+fn is_opener(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    let first = bytes.next().is_some_and(|b| b.is_ascii_alphabetic() || b == b'_' || b == b'$');
+    first && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
+}
+
 /// The user row menu (`registry.js` `UI.defineMenu("user")`), the portal's `player` row actions.
 const USER_MENU: Menu = Menu { mock: "user", kind: "player" };
 
 pub const PAGE_MAP: &[Page] = &[
     Page { page: "index", route: Route::Mapped("/admin"), search: "", tab: None, menu: None, modal: None },
     Page { page: "events", route: Route::Mapped("/admin/p/core.events/events"), search: "", tab: None, menu: None, modal: None },
+    Page {
+        page: "events",
+        route: Route::Mapped("/admin/p/core.events/events"),
+        search: "",
+        tab: None,
+        menu: None,
+        modal: Some(Modal { id: "skip-poison", opener: "skipPoison", args: &[], module: "core.events", action: "poison.skip" }),
+    },
     Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "", tab: None, menu: None, modal: None },
     Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "", tab: None, menu: Some(USER_MENU), modal: None },
     Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None, menu: None, modal: None },
     Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None, menu: Some(USER_MENU), modal: None },
     Page { page: "apikeys", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
     Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None, modal: None },
+    // `m-88213` is the mockup outbox's pending message (data.js `D.mail`), the row the portal
+    // draws a cancel on.
+    Page {
+        page: "mail",
+        route: Route::Mapped("/admin/p/mail/outbox"),
+        search: "",
+        tab: None,
+        menu: None,
+        modal: Some(Modal { id: "cancel", opener: "cancelMail", args: &["m-88213"], module: "mail", action: "cancel" }),
+    },
     Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
     Page { page: "config", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
     Page { page: "audit", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
@@ -178,6 +215,13 @@ pub const EXCLUDED_MENUS: &[(&str, &str, &str)] = &[(
     "the mockup draws no subscription menu: its events row button only toasts (pages-platform.js P.events)",
 )];
 
+/// Modal actions the portal draws on an untabbed compared page that no `PAGE_MAP` modal entry
+/// diffs, as `(<host page id>, <module>/<action>, <reason>)`. [`validate_excluded_modals`]
+/// holds it to `PAGE_MAP`; the crawl still fetches the first of each and fails on an answer
+/// that is no modal, and fails on an entry whose host does not draw it (a stale entry).
+pub const EXCLUDED_MODALS: &[(&str, &str, &str)] =
+    &[("mail", "mail/test-send", "the mockup's Test send button has no onclick, so the mockup has no modal (pages-platform.js P.mail)")];
+
 /// Menus the mockup registry defines (`UI.defineMenu`) that no `PAGE_MAP` menu entry diffs,
 /// with the reason. [`validate_menus`] holds it to the registry.
 pub const EXCLUDED_MOCK_MENUS: &[(&str, &str)] = &[
@@ -219,8 +263,10 @@ fn boot_key(src: &str) -> Option<String> {
 /// Checks [`PAGE_MAP`] and [`EXCLUDED`] against the mockup and each other: every listed
 /// page exists, no target is listed twice or in both lists, every mockup page is listed,
 /// every `FirstRow` names a `Mapped` page, every tab entry has a `[a-z0-9_-]+` id and
-/// an untabbed `FirstRow` entry of its page with the same route, and every menu entry has
-/// `[a-z0-9_-]+` ids and a host entry ([`Page::host`]) of a page that is not pending.
+/// an untabbed `FirstRow` entry of its page with the same route, every menu entry has
+/// `[a-z0-9_-]+` ids and a host entry ([`Page::host`]) of a page that is not pending, and every
+/// modal entry names no menu, has a `[a-z0-9_-]+` id, a JavaScript identifier for its opener,
+/// `[a-z0-9._-]+` module and action ids and such a host entry.
 pub fn validate(mockup: &BTreeMap<String, String>) -> Result<()> {
     validate_lists(mockup, PAGE_MAP, EXCLUDED)
 }
@@ -262,6 +308,29 @@ pub(crate) fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page
                 problems.push(format!("PAGE_MAP {id} names a menu of {}, which is pending", host.id()));
             } else if !page_map.contains(&host) {
                 problems.push(format!("PAGE_MAP {id} is a menu of {}, which has no entry with the same route", host.id()));
+            }
+        }
+        if let Some(modal) = p.modal {
+            let id = p.id();
+            if p.menu.is_some() {
+                problems.push(format!("PAGE_MAP {id} names both a menu and a modal"));
+            }
+            if !is_id(modal.id) {
+                problems.push(format!("PAGE_MAP {id} names modal {:?}, which is not a [a-z0-9_-]+ id", modal.id));
+            }
+            if !is_opener(modal.opener) {
+                problems.push(format!("PAGE_MAP {id} names opener {:?}, which is not a JavaScript identifier", modal.opener));
+            }
+            for (what, name) in [("module", modal.module), ("action", modal.action)] {
+                if !is_action_id(name) {
+                    problems.push(format!("PAGE_MAP {id} names {what} {name:?}, which is not a [a-z0-9._-]+ id"));
+                }
+            }
+            let host = p.host();
+            if p.route == Route::Pending {
+                problems.push(format!("PAGE_MAP {id} names a modal of {}, which is pending", host.id()));
+            } else if !page_map.contains(&host) {
+                problems.push(format!("PAGE_MAP {id} is a modal of {}, which has no entry with the same route", host.id()));
             }
         }
         let Some(tab) = p.tab else { continue };
@@ -393,6 +462,36 @@ pub fn validate_menus(
     }
     if !problems.is_empty() {
         bail!("menu drift:\n  {}", problems.join("\n  "));
+    }
+    Ok(())
+}
+
+/// Checks `excluded_modals` against `page_map`, which its problems name `EXCLUDED_MODALS` and
+/// `PAGE_MAP`: each exclusion is listed once, with a reason, names an untabbed `page_map` page
+/// that is not pending as its host and a `<module>/<action>` of `[a-z0-9._-]+` ids, and is not
+/// a modal entry of that host too.
+pub fn validate_excluded_modals(page_map: &[Page], excluded_modals: &[(&str, &str, &str)]) -> Result<()> {
+    let mut problems = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (host, action, why) in excluded_modals {
+        if !seen.insert((*host, *action)) {
+            problems.push(format!("{host} modal {action} is listed in EXCLUDED_MODALS and again in EXCLUDED_MODALS"));
+        }
+        if why.trim().is_empty() {
+            problems.push(format!("EXCLUDED_MODALS {host} modal {action} has no reason"));
+        }
+        if !page_map.iter().any(|p| p.is_page() && p.tab.is_none() && p.route != Route::Pending && p.page == *host) {
+            problems.push(format!("EXCLUDED_MODALS lists {host} modal {action}, and {host} is no untabbed PAGE_MAP page that is not pending"));
+        }
+        if !is_action_path(action) {
+            problems.push(format!("EXCLUDED_MODALS {host} names action {action:?}, which is not a <module>/<action> of [a-z0-9._-]+ ids"));
+        }
+        if page_map.iter().any(|p| p.modal.is_some_and(|m| m.action_path() == *action) && p.host().id() == *host) {
+            problems.push(format!("{host} modal {action} is listed in PAGE_MAP and again in EXCLUDED_MODALS"));
+        }
+    }
+    if !problems.is_empty() {
+        bail!("modal drift:\n  {}", problems.join("\n  "));
     }
     Ok(())
 }

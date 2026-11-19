@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use super::{run_with, Config, CLEAN_MARKER, MAX_ROUNDS, PANEL_FAIL, PANEL_PASS};
 use crate::mock::mock_tests::FakeRepo;
-use crate::pages::{Page, Route, EXCLUDED_MENUS, PAGE_MAP};
+use crate::pages::{Page, Route, EXCLUDED_MENUS, EXCLUDED_MODALS, PAGE_MAP};
 use crate::tests::{body, mock_html, ScratchDir};
 
 #[derive(Clone, Debug)]
@@ -66,7 +66,7 @@ fn panel_url(page: &str) -> String {
 fn mapped() -> Vec<Target> {
     PAGE_MAP
         .iter()
-        .filter(|p| p.menu.is_none())
+        .filter(|p| p.is_page())
         .filter_map(|p| match p.route {
             Route::Mapped(route) => Some(Target { page: p.page, route, slot: panel_url(p.page) }),
             Route::FirstRow(_) | Route::Pending => None,
@@ -78,7 +78,7 @@ fn mapped() -> Vec<Target> {
 fn followers() -> Vec<(&'static str, &'static str)> {
     PAGE_MAP
         .iter()
-        .filter(|p| p.menu.is_none() && p.tab.is_none())
+        .filter(|p| p.is_page() && p.tab.is_none())
         .filter_map(|p| match p.route {
             Route::FirstRow(list) => Some((p.page, list)),
             Route::Mapped(_) | Route::Pending => None,
@@ -94,6 +94,30 @@ fn menus() -> Vec<(String, &'static str, &'static str)> {
 /// The menu the healthy site's page `page` opens for its `kind` menu entry.
 fn menu_url(kind: &str, page: &str) -> String {
     format!("/admin/_menu/{kind}/{page}")
+}
+
+/// The modal body the healthy site serves at every [`modal_url`]: the portal's own confirm
+/// modal golden.
+const MODAL_BODY: &str = include_str!("../../../core/admin/src/testdata/modal_confirm_danger_impact_reason.html");
+
+/// The opener URL the healthy site's page `page` draws for modal action `action`
+/// (`<module>/<action>`): the item is the page, as a fleet's item ids are its own.
+fn modal_url(action: &str, page: &str) -> String {
+    format!("/admin/_action/{action}?item={page}")
+}
+
+/// The modal openers page `page` draws, as the portal's `hx_action` writes them: one for each
+/// untabbed `PAGE_MAP` modal entry and each [`EXCLUDED_MODALS`] entry it hosts.
+fn modal_buttons(page: &str) -> String {
+    let mapped = PAGE_MAP.iter().filter(|p| p.page == page && p.tab.is_none()).filter_map(|p| p.modal.map(|m| m.action_path()));
+    let excluded = EXCLUDED_MODALS.iter().filter(|(host, _, _)| *host == page).map(|(_, action, _)| action.to_string());
+    mapped
+        .chain(excluded)
+        .map(|a| {
+            let url = escaped(&modal_url(&a, page));
+            format!(r##"<button type="button" class="btn sm" hx-get="{url}" hx-target="#modal-root" hx-swap="innerHTML"></button>"##)
+        })
+        .collect()
 }
 
 /// The menu body the healthy site serves at every [`menu_url`]: the portal's own row menu
@@ -227,13 +251,13 @@ impl Site {
                 .map(|(f, _)| rows(&follower_route(f), &menu_buttons(page)))
                 .collect();
             let in_page = if listed.is_empty() { menu_buttons(page) } else { String::new() };
-            let html = format!("{}{in_page}{}", content(slot_url), excluded_buttons(page));
+            let html = format!("{}{in_page}{}{}", content(slot_url), excluded_buttons(page), modal_buttons(page));
             routes.insert(route.to_string(), ok(shell(&links, title, &html)));
             routes.insert(slot_url.clone(), ok(fragment(Some("ok"), &format!("{page} panel"), &listed)));
         }
         for (page, _) in followers() {
             let slot_url = panel_url(page);
-            let html = format!("{}{}{}", content(&slot_url), menu_buttons(page), excluded_buttons(page));
+            let html = format!("{}{}{}{}", content(&slot_url), menu_buttons(page), excluded_buttons(page), modal_buttons(page));
             routes.insert(follower_route(page), ok(shell(&links, page, &html)));
             routes.insert(slot_url, ok(fragment(Some("ok"), &format!("{page} panel"), "")));
         }
@@ -242,6 +266,14 @@ impl Site {
         }
         for (page, kind, _) in EXCLUDED_MENUS {
             routes.insert(menu_url(kind, page), ok(MENU_BODY));
+        }
+        for p in PAGE_MAP.iter().filter(|p| p.tab.is_none()) {
+            if let Some(m) = p.modal {
+                routes.insert(modal_url(&m.action_path(), p.page), ok(MODAL_BODY));
+            }
+        }
+        for (page, action, _) in EXCLUDED_MODALS {
+            routes.insert(modal_url(action, page), ok(MODAL_BODY));
         }
         Site { login: Response { status: 303, location: Some(DASHBOARD), body: String::new() }, routes, chain_depth: 0 }
     }
@@ -425,7 +457,7 @@ async fn crawl_into(
         allow_empty,
         out: out.path().join("run"),
     };
-    let (result, empty) = match run_with(&cfg, page_map, excluded_menus).await {
+    let (result, empty) = match run_with(&cfg, page_map, excluded_menus, EXCLUDED_MODALS).await {
         Ok(o) => (Ok(o.passed), o.empty),
         Err(e) => (Err(e), Vec::new()),
     };

@@ -40,7 +40,12 @@ pub const ROOT_CLASS: &str = "app";
 /// The element a menu target is compared from: the popover both sides open.
 pub const MENU_CLASS: &str = "menu";
 
-/// What the mockup adds to a menu: its preview labels around each module's group.
+/// The element a modal target is compared from: the dialog inside the `.scrim` both sides
+/// append.
+pub const MODAL_CLASS: &str = "modal";
+
+/// What the mockup adds to a menu or a modal: its preview labels around each module's group,
+/// and around a `UI.confirm` modal's head and body.
 pub const MOCK_MENU_STRIP: &[(&str, Strip)] = &[("frag", Strip::Unwrap), ("frag-label", Strip::Remove)];
 
 /// The `.app` element of `doc` with `strip` applied. Every strip entry must match on this

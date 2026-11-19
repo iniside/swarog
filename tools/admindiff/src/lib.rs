@@ -30,7 +30,8 @@ USAGE:
   admindiff diff --page <target> --portal <crawl dir> [--text]
 
   crawl     log in, fetch every nav page and mapped page, load their slots with HX-Request,
-            fetch the first menu each menu target's page draws; writes
+            fetch the first menu each menu target's page draws and the first modal of each
+            modal target's action its page draws (the opener's hx-get); writes
             target/admindiff/<run>/ (and its CLEAN marker when it has no failure and runs without
             --allow-errors: a run with it is a preview diff refuses) and fails on any
             non-2xx, a page or menu whose root data-state is error (a manifest source has never
@@ -44,11 +45,19 @@ USAGE:
             non-2xx, the first menu of a kind any other crawled page draws answering
             non-2xx, any fetched menu with a module group in the error state (unless
             --allow-errors), with no module group or with a group whose data-state is missing or
-            neither ok nor error, and an EXCLUDED_MENUS entry its page does not draw
-  mock      render the mockup target through node into target/admindiff/mock/<target>.html
+            neither ok nor error, and an EXCLUDED_MENUS entry its page does not draw; a modal
+            target whose page draws no opener of its action (unless --allow-empty), a modal
+            action an untabbed compared page draws that is neither a page map modal entry nor
+            in pages::EXCLUDED_MODALS, any fetched modal answering non-2xx, a toast, no .scrim
+            root or a .scrim with no .modal, an EXCLUDED_MODALS entry its page does not draw
+            (unless --allow-empty) and an EXCLUDED_MODALS entry that is malformed, listed twice,
+            mapped too or hosted by no untabbed compared page (which stops the crawl first)
+  mock      render the mockup target through node into target/admindiff/mock/<target>.html; a
+            modal target is the .scrim its page map opener PAGES.<opener>(<args>) appends
   diff      compare the target's class skeleton with the crawl's: the assembled page, or the
-            menu popover of a menu target; refuses a crawl without its CLEAN marker (one that
-            failed, did not finish or ran with --allow-errors), and fails
+            menu popover of a menu target, or the .modal of a modal target; refuses a crawl
+            without its CLEAN marker (one that failed, did not finish or ran with
+            --allow-errors) and a menu or modal target the crawl skipped as EMPTY, and fails
             on a difference not in tools/admindiff/accept/<target>.txt, a stale accept entry or
             a page with zero matched panels; prints each difference as ok, NEW or STALE. It
             also fails when a tab the mockup draws on an entity page is neither a page map tab
@@ -62,8 +71,9 @@ USAGE:
   --base-url <url>   portal origin (default http://localhost:8080; split: http://localhost:8085)
   --user <name>      admin login (default admin); the password is $ADMINDIFF_PASSWORD (default admin)
   --page <target>    mockup page: the file stem of UILayout/redesign/<page>.html; <page>.<tab>
-                     names a tab target of the page map and <page>[.<tab>].menu.<menu> a menu
-                     target, each diffed against its own accept/<target>.txt
+                     names a tab target of the page map, <page>[.<tab>].menu.<menu> a menu
+                     target and <page>[.<tab>].modal.<modal> a modal target, each diffed against
+                     its own accept/<target>.txt
   --portal <dir>     a crawl run directory
   --text             compare text too
 
@@ -152,9 +162,15 @@ fn render_page(repo: &Path, key: &str, entry: &pages::Page) -> Result<(String, V
     Ok((rendered, doc))
 }
 
-/// The mockup render of `entry`, parsed: its page ([`render_page`]), or for a menu entry the
-/// menu its page opens first ([`mock::menu_arg`]); a page that draws no such menu fails.
+/// The mockup render of `entry`, parsed: its page ([`render_page`]), for a menu entry the
+/// menu its page opens first ([`mock::menu_arg`]), a page that draws no such menu failing,
+/// and for a modal entry the `.scrim` its opener appends, with no page rendered.
 fn render_mock(repo: &Path, key: &str, entry: &pages::Page) -> Result<(String, Vec<html::Node>)> {
+    if let Some(modal) = entry.modal {
+        let rendered = mock::render_modal(repo, modal.opener, modal.args)?;
+        let doc = html::parse(&rendered).with_context(|| format!("parse the PAGES.{} render", modal.opener))?;
+        return Ok((rendered, doc));
+    }
     let (rendered, doc) = render_page(repo, key, entry)?;
     let Some(menu) = entry.menu else { return Ok((rendered, doc)) };
     let arg = mock::menu_arg(&doc, key, menu.mock)?;
@@ -164,14 +180,20 @@ fn render_mock(repo: &Path, key: &str, entry: &pages::Page) -> Result<(String, V
 }
 
 /// The root `entry` is compared from in a mockup render (`mock`) or a crawl output: the
-/// `.menu` popover of a menu entry, else the `.app` shell, with that side's strip applied.
+/// `.menu` popover of a menu entry, the `.modal` of a modal entry, else the `.app` shell,
+/// with that side's strip applied.
 fn prepare(entry: &pages::Page, doc: &[html::Node], mock: bool) -> Result<html::Element> {
     let side = if mock { "mock" } else { "portal" };
-    match (entry.menu.is_some(), mock) {
-        (true, true) => skeleton::prepare_at(doc, skeleton::MENU_CLASS, skeleton::MOCK_MENU_STRIP, side),
-        (true, false) => skeleton::prepare_at(doc, skeleton::MENU_CLASS, &[], side),
-        (false, true) => skeleton::prepare(doc, skeleton::MOCK_STRIP, side),
-        (false, false) => skeleton::prepare(doc, skeleton::PORTAL_STRIP, side),
+    let popup = match (entry.menu, entry.modal) {
+        (Some(_), _) => Some(skeleton::MENU_CLASS),
+        (None, Some(_)) => Some(skeleton::MODAL_CLASS),
+        (None, None) => None,
+    };
+    match (popup, mock) {
+        (Some(class), true) => skeleton::prepare_at(doc, class, skeleton::MOCK_MENU_STRIP, side),
+        (Some(class), false) => skeleton::prepare_at(doc, class, &[], side),
+        (None, true) => skeleton::prepare(doc, skeleton::MOCK_STRIP, side),
+        (None, false) => skeleton::prepare(doc, skeleton::PORTAL_STRIP, side),
     }
 }
 
@@ -204,8 +226,9 @@ pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
 /// against `page_map`'s tab entries and `excluded_tabs` ([`pages::validate_tabs`]), and the
 /// menus the registry defines and each untabbed page that is not pending draws against
 /// `page_map`'s menu entries and `excluded_mock_menus` ([`pages::validate_menus`]); a menu
-/// entry's render fails when its page draws no such menu. The mockup is the side checked: most
-/// portal pages are not ported yet.
+/// entry's render fails when its page draws no such menu, and a modal entry's when its opener
+/// is no function or appends no `.scrim`. The mockup is the side checked: most portal pages
+/// are not ported yet.
 fn validate_renders(
     repo: &Path,
     page_map: &[pages::Page],
@@ -251,8 +274,18 @@ pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Resul
     }
     validate_renders(repo, pages::PAGE_MAP, pages::EXCLUDED_TABS, pages::EXCLUDED_MOCK_MENUS)?;
     let portal_file = portal_dir.join(format!("{page}.html"));
-    if let pages::Route::FirstRow(list) = entry.route {
-        if !portal_file.is_file() {
+    if !portal_file.is_file() {
+        let host = entry.host().id();
+        if let Some(menu) = entry.menu {
+            let (dir, kind) = (portal_dir.display(), menu.kind);
+            bail!("{dir} has no {page} menu: the crawl skipped it as EMPTY ({host} was skipped or drew no {kind} menu) or predates the entry");
+        }
+        if let Some(modal) = entry.modal {
+            let action = modal.action_path();
+            let dir = portal_dir.display();
+            bail!("{dir} has no {page} modal: the crawl skipped it as EMPTY ({host} was skipped or drew no {action} opener) or predates the entry");
+        }
+        if let pages::Route::FirstRow(list) = entry.route {
             bail!("{} has no {page} page: the crawl found no row of {list} to follow", portal_dir.display());
         }
     }

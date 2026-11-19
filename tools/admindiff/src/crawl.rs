@@ -5,7 +5,14 @@
 //! target whose page draws no menu of its kind all fail the crawl. A menu target's output is
 //! the first such menu, the `.menu` popover the portal answers. Every menu kind an untabbed compared
 //! page draws is a menu target of that page or in [`EXCLUDED_MENUS`], whose menus are fetched
-//! once each and must answer 2xx; an exclusion its page does not draw fails as stale. Every
+//! once each and must answer 2xx; an exclusion its page does not draw fails as stale. A modal
+//! target's output is the modal the portal answers for the first opener of its action its
+//! page draws (an `hx-get` to `/admin/_action/<module>/<action>`, whose `?entity=`/`?item=`
+//! a fleet mints); a page drawing none skips it as EMPTY, a failure unless `--allow-empty`.
+//! Every modal action an untabbed compared page draws is a modal target of that page or in
+//! [`EXCLUDED_MODALS`], whose modals are fetched once each; an exclusion its page does not
+//! draw fails as stale unless `--allow-empty`. Every fetched modal fails on a non-2xx answer,
+//! a toast, or a body that is no `.scrim` around a `.modal`. Every
 //! other crawled page, one only the nav links or a tab page, has the first menu of each kind
 //! it draws fetched once, and it must answer 2xx. Every fetched menu, compared or not, fails
 //! when it holds no module group or a group whose `data-state` is missing or neither `ok`
@@ -29,8 +36,8 @@ use reqwest::{Client, StatusCode};
 
 use crate::assemble::{assemble, pending_slots};
 use crate::html::{self, find_all, find_in, Element, Node};
-use crate::pages::{with_tab, Menu, Page, Route, EXCLUDED_MENUS, PAGE_MAP};
-use crate::skeleton::{MENU_CLASS, ROOT_CLASS};
+use crate::pages::{validate_excluded_modals, with_tab, Menu, Modal, Page, Route, EXCLUDED_MENUS, EXCLUDED_MODALS, PAGE_MAP};
+use crate::skeleton::{MENU_CLASS, MODAL_CLASS, ROOT_CLASS};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// The panel states (`PanelState::as_str` in `core/admin`) a fragment passes in.
@@ -52,10 +59,10 @@ pub struct Config {
     pub out: PathBuf,
 }
 
-/// Runs the crawl of [`PAGE_MAP`] and [`EXCLUDED_MENUS`]; `Ok(false)` when it finished with
-/// failures, which it has printed.
+/// Runs the crawl of [`PAGE_MAP`], [`EXCLUDED_MENUS`] and [`EXCLUDED_MODALS`]; `Ok(false)` when
+/// it finished with failures, which it has printed.
 pub async fn run(cfg: &Config) -> Result<bool> {
-    let outcome = run_with(cfg, PAGE_MAP, EXCLUDED_MENUS).await?;
+    let outcome = run_with(cfg, PAGE_MAP, EXCLUDED_MENUS, EXCLUDED_MODALS).await?;
     if !outcome.empty.is_empty() {
         println!("empty, nothing crawled: {}", outcome.empty.join(", "));
     }
@@ -68,8 +75,15 @@ struct Outcome {
     empty: Vec<String>,
 }
 
-/// [`run`] over the given page map and menu exclusions.
-async fn run_with(cfg: &Config, page_map: &[Page], excluded_menus: &[(&str, &str, &str)]) -> Result<Outcome> {
+/// [`run`] over the given page map, menu and modal exclusions; modal exclusions that fail
+/// [`validate_excluded_modals`] stop it before anything is fetched.
+async fn run_with(
+    cfg: &Config,
+    page_map: &[Page],
+    excluded_menus: &[(&str, &str, &str)],
+    excluded_modals: &[(&str, &str, &str)],
+) -> Result<Outcome> {
+    validate_excluded_modals(page_map, excluded_modals)?;
     // A reused run dir keeps a marker from an earlier clean run; drop it before this run decides.
     let marker = cfg.out.join(CLEAN_MARKER);
     match std::fs::remove_file(&marker) {
@@ -104,9 +118,14 @@ async fn run_with(cfg: &Config, page_map: &[Page], excluded_menus: &[(&str, &str
     let mut targets: Vec<(String, String)> = Vec::new();
     let mut followers: Vec<(&Page, &str)> = Vec::new();
     let mut menus: Vec<(&Page, Menu)> = Vec::new();
+    let mut modals: Vec<(&Page, Modal)> = Vec::new();
     for p in page_map {
         if let Some(menu) = p.menu {
             menus.push((p, menu));
+            continue;
+        }
+        if let Some(modal) = p.modal {
+            modals.push((p, modal));
             continue;
         }
         match p.route {
@@ -200,7 +219,34 @@ async fn run_with(cfg: &Config, page_map: &[Page], excluded_menus: &[(&str, &str
             failures.push(format!("{id} ({url}): {e:#}"));
         }
     }
+    for (entry, modal) in modals {
+        let id = entry.id();
+        let host = entry.host().id();
+        let action = modal.action_path();
+        if skipped.contains(&host) {
+            println!("EMPTY {id}: its page {host} was skipped, nothing to crawl");
+            skipped.push(id);
+            continue;
+        }
+        let Some((_, doc)) = crawled.iter().find(|(p, _)| *p == host) else {
+            failures.push(format!("{id}: its page {host} was not crawled"));
+            continue;
+        };
+        let Some(url) = first_modal_url(doc, &action) else {
+            println!("EMPTY {id}: {host} draws no {action} opener, nothing to crawl");
+            if !cfg.allow_empty {
+                failures.push(format!("{id}: {host} draws no {action} opener (--allow-empty skips it)"));
+            }
+            skipped.push(id);
+            continue;
+        };
+        println!("modal {id}  {url}");
+        if let Err(e) = crawl_modal(&client, cfg, &id, &url).await {
+            failures.push(format!("{id} ({url}): {e:#}"));
+        }
+    }
     check_menu_kinds(&client, cfg, page_map, excluded_menus, &crawled, &mut failures).await;
+    check_modal_actions(&client, cfg, page_map, excluded_modals, &crawled, &mut failures).await;
     if fragments == 0 {
         failures.push("no page loaded a fragment".to_string());
     }
@@ -294,6 +340,33 @@ fn menu_kinds(doc: &[Node]) -> Vec<(String, String)> {
     kinds
 }
 
+/// The prefix of a portal action URL; an `hx-get` to one opens that action's modal.
+const ACTION_PREFIX: &str = "/admin/_action/";
+
+/// Each modal action `doc` draws, once, as `<module>/<action>` with the URL of its first
+/// opener: every `hx-get` to [`ACTION_PREFIX`]. A `Form` or `Confirm` action's button GETs its
+/// modal; an `Invoke` action's posts (`hx-post`) and a `Link`'s is an `<a href>`
+/// (`primitives.html.tmpl` `hx_action`).
+fn modal_actions(doc: &[Node]) -> Vec<(String, String)> {
+    let mut openers = Vec::new();
+    find_all(doc, &|e| e.attr("hx-get").is_some_and(|u| u.starts_with(ACTION_PREFIX)), &mut openers);
+    let mut actions: Vec<(String, String)> = Vec::new();
+    for o in openers {
+        let url = o.attr("hx-get").unwrap_or_default();
+        let action = url[ACTION_PREFIX.len()..].split('?').next().unwrap_or_default();
+        if !actions.iter().any(|(a, _)| a == action) {
+            actions.push((action.to_string(), url.to_string()));
+        }
+    }
+    actions
+}
+
+/// The URL of the first opener of `action` (`<module>/<action>`) in `doc`, with the
+/// `?entity=`/`?item=` the portal bound it to.
+fn first_modal_url(doc: &[Node], action: &str) -> Option<String> {
+    modal_actions(doc).into_iter().find(|(a, _)| a == action).map(|(_, url)| url)
+}
+
 /// Whether `doc` lists a row: a `tr` in a `tbody`. An empty portal table draws an empty
 /// state instead of its body rows.
 fn lists_rows(doc: &[Node]) -> bool {
@@ -385,6 +458,99 @@ async fn check_menu_kinds(
         }
         failures.push(format!("EXCLUDED_MENUS lists {host} menu {kind}, which {host} does not draw"));
     }
+}
+
+/// The modal inventory of every untabbed, not pending `page_map` page the crawl reached: each
+/// modal action it draws is a modal entry of that page or an `excluded_modals` entry
+/// ([`validate_excluded_modals`] keeps it from being both); an excluded action's first modal is
+/// fetched ([`fetch_modal`]). An exclusion whose page was crawled and does not draw it fails,
+/// or is reported EMPTY under `--allow-empty`; a page that was not crawled (`--allow-empty`
+/// skipped it, or it failed) cannot make it stale.
+async fn check_modal_actions(
+    client: &Client,
+    cfg: &Config,
+    page_map: &[Page],
+    excluded_modals: &[(&str, &str, &str)],
+    crawled: &[(String, Vec<Node>)],
+    failures: &mut Vec<String>,
+) {
+    let mut hosts: Vec<String> = Vec::new();
+    for p in page_map.iter().filter(|p| p.is_page() && p.tab.is_none() && p.route != Route::Pending) {
+        if !hosts.contains(&p.id()) {
+            hosts.push(p.id());
+        }
+    }
+    let mut drawn: Vec<(String, String)> = Vec::new();
+    for host in &hosts {
+        // A page that was not crawled has failed or been skipped already.
+        let Some((_, doc)) = crawled.iter().find(|(p, _)| p == host) else { continue };
+        for (action, url) in modal_actions(doc) {
+            let mapped = page_map.iter().any(|p| p.modal.is_some_and(|m| m.action_path() == action) && p.host().id() == *host);
+            let excluded = excluded_modals.iter().any(|(h, a, _)| h == host && *a == action);
+            if excluded {
+                println!("modal {host} {action}  {url}  (excluded)");
+                let raw = format!("{host}.excluded-modal.{}", action.replace('/', "."));
+                if let Err(e) = fetch_modal(client, cfg, &raw, &url).await {
+                    failures.push(format!("{host} excluded {action} modal ({url}): {e:#}"));
+                }
+            } else if !mapped {
+                failures.push(format!("{host} draws a {action} modal, which is in neither PAGE_MAP nor EXCLUDED_MODALS"));
+            }
+            drawn.push((host.clone(), action));
+        }
+    }
+    for (host, action, _) in excluded_modals {
+        if drawn.iter().any(|(h, a)| h == host && a == action) {
+            continue;
+        }
+        // A page that was not crawled, skipped or failed, has nothing to compare it with.
+        if !crawled.iter().any(|(p, _)| p == host) {
+            continue;
+        }
+        if cfg.allow_empty {
+            println!("EMPTY EXCLUDED_MODALS {host} modal {action}: {host} draws no opener");
+        } else {
+            failures.push(format!("EXCLUDED_MODALS lists {host} modal {action}, which {host} does not draw (--allow-empty skips it)"));
+        }
+    }
+}
+
+/// Fetches the modal at `url` as htmx does for an opener and writes its body as
+/// `raw/<raw>.html`; a non-2xx answer fails, and so does a toast in its place (the portal's
+/// refusal: a first element carrying `data-toast`) and a body whose first element is no
+/// `.scrim` or holds no `.modal` (`modal.html.tmpl`).
+async fn fetch_modal(client: &Client, cfg: &Config, raw: &str, url: &str) -> Result<String> {
+    let resp = client.get(format!("{}{url}", cfg.base_url)).header("HX-Request", "true").send().await.context("GET")?;
+    let status = resp.status();
+    let body = resp.text().await.context("read body")?;
+    write(&cfg.out.join("raw").join(format!("{raw}.html")), &body)?;
+    let nodes = html::parse(&body).context("parse modal")?;
+    let root = nodes.iter().find_map(|n| match n {
+        Node::Element(e) => Some(e),
+        _ => None,
+    });
+    let toast = root.filter(|r| r.attr("data-toast").is_some()).map(|r| html::collapse(&r.text()));
+    if !status.is_success() {
+        match toast {
+            Some(text) => bail!("answered {status}, a toast: {text:?}"),
+            None => bail!("answered {status}"),
+        }
+    }
+    if let Some(text) = toast {
+        bail!("the portal answers a toast, not a modal: {text:?}");
+    }
+    let Some(root) = root.filter(|r| r.has_class("scrim")) else { bail!("the modal answers no .scrim root") };
+    if root.find(&|e| e.has_class(MODAL_CLASS)).is_none() {
+        bail!("the .scrim holds no .{MODAL_CLASS}");
+    }
+    Ok(body)
+}
+
+/// Fetches the modal at `url` ([`fetch_modal`]) and writes it as `<id>.html`: the `.scrim` the
+/// portal swaps into its modal root.
+async fn crawl_modal(client: &Client, cfg: &Config, id: &str, url: &str) -> Result<()> {
+    let body = fetch_modal(client, cfg, id, url).await?;
+    write(&cfg.out.join(format!("{id}.html")), &body)
 }
 
 /// Fetches the menu at `url` as `admin.js` does and writes its body as `raw/<raw>.html`; a

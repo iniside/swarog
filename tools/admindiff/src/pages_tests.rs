@@ -84,7 +84,7 @@ fn lookup_returns_mapped_first_row_and_pending_pages_and_refuses_excluded_and_un
 #[test]
 fn the_const_lists_are_disjoint_unique_and_reasoned() {
     let mut seen = std::collections::BTreeSet::new();
-    let pages = PAGE_MAP.iter().filter(|p| p.tab.is_none() && p.menu.is_none()).map(|p| p.page);
+    let pages = PAGE_MAP.iter().filter(|p| p.tab.is_none() && p.is_page()).map(|p| p.page);
     for page in pages.chain(EXCLUDED.iter().map(|(p, _)| *p)) {
         assert!(seen.insert(page), "{page} is listed twice");
     }

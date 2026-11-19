@@ -1,6 +1,8 @@
 //! Renders a mockup page through `node`: the mockup's own scripts run against stub browser
 //! globals, `REG.mount` calls `P.<key>.render()`, and the body HTML it assigns is captured.
 //! A menu is rendered the same way: `UI.openMenu` builds it and the `.menu` element it
+//! appends to the body is captured. A modal is rendered without a page too: the named
+//! `PAGES.<opener>` runs with the page map entry's arguments and the `.scrim` element it
 //! appends to the body is captured. The harness also records every menu id the mockup's
 //! registry defines through `UI.defineMenu` ([`defined_menus`]).
 
@@ -28,7 +30,10 @@ const SCRIPTS: &[&str] = &[
 // `REG.render` assigns `document.body.innerHTML` right after `P.<key>.render()`; the setter
 // throws a sentinel there, so the legend fill-in and the page's `after` hook never run. With
 // `input.menu` no page mounts: `UI.openMenu` runs against a stub event and anchor, and the
-// element it appends to the body is written as `<div class="menu">` around its HTML. The
+// element it appends to the body is written as `<div class="menu">` around its HTML. With
+// `input.modal` no page mounts either: `PAGES[opener]` is called with the entry's arguments,
+// and the first element it appends to the body whose class is `scrim` (`UI.modal`, which
+// `UI.confirm` calls) is written as `<div class="scrim">` around its HTML. The
 // global `UI` is an accessor that wraps the `defineMenu` of whatever object a script assigns
 // to it, before any script can call it, so every defined menu id is recorded; with
 // `input.registry` no page mounts and the ids are written as JSON.
@@ -85,6 +90,21 @@ if (input.registry) {
     process.exit(2);
   }
   process.stdout.write(`<div class="menu">${opened.innerHTML ?? ""}</div>`);
+} else if (input.modal) {
+  const open = PAGES[input.modal.opener];
+  if (typeof open !== "function") {
+    process.stderr.write(`PAGES.${input.modal.opener} is not a function\n`);
+    process.exit(2);
+  }
+  const appended = [];
+  body.appendChild = el => { appended.push(el); };
+  open(...input.modal.args);
+  const scrim = appended.find(el => el && el.className === "scrim");
+  if (!scrim) {
+    process.stderr.write(`PAGES.${input.modal.opener}() appended no .scrim element\n`);
+    process.exit(2);
+  }
+  process.stdout.write(`<div class="scrim">${scrim.innerHTML ?? ""}</div>`);
 } else {
   const page = PAGES[input.key];
   if (!page || typeof page.render !== "function") {
@@ -109,6 +129,12 @@ pub fn render(repo: &Path, key: &str, search: &str) -> Result<String> {
 pub fn render_menu(repo: &Path, id: &str, arg: &str) -> Result<String> {
     let input = serde_json::json!({ "search": "", "menu": { "id": id, "arg": arg } });
     run_harness(repo, input, &format!("menu {id}"))
+}
+
+/// The `.scrim` element `PAGES.<opener>(<args>)` appends in the mockup, its modal inside.
+pub fn render_modal(repo: &Path, opener: &str, args: &[&str]) -> Result<String> {
+    let input = serde_json::json!({ "search": "", "modal": { "opener": opener, "args": args } });
+    run_harness(repo, input, &format!("PAGES.{opener}"))
 }
 
 /// Every menu id the mockup's registry defines through `UI.defineMenu`, once each, in order.

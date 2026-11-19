@@ -17,7 +17,9 @@ use crate::tests::{write, ScratchDir};
 /// the `tab` `location.search` names (none: an untabbed host), whose argument is the page.
 /// `UI.openMenu` appends a `.menu` holding [`MOCK_MENU`] with `{arg}` and `{id}` replaced;
 /// `registry.js` defines, through `UI.defineMenu`, every menu `PAGE_MAP` and
-/// `EXCLUDED_MOCK_MENUS` name, as the real registry defines its menus.
+/// `EXCLUDED_MOCK_MENUS` name, as the real registry defines its menus. Each `PAGE_MAP` modal
+/// entry's opener is a `PAGES.<opener>` that appends a `.scrim` holding [`MOCK_MODAL`] with
+/// `{opener}` and `{args}` (its arguments joined by `,`) replaced, as `UI.confirm` does.
 /// `REG.mount` assigns the body and then runs `meta.after`, as the real registry does; the
 /// stand-in `after` prints [`AFTER_RAN`] and exits 0, so a harness that let it run would
 /// return that instead of the page.
@@ -31,6 +33,13 @@ pub(crate) const AFTER_RAN: &str = "AFTER-RAN";
 pub(crate) const MOCK_MENU: &str = concat!(
     r#"<div class="frag"><span class="frag-label">{id}</span><div class="menu-group"><span>{id}</span></div>"#,
     r#"<div class="menu-item"><span>{arg}</span></div></div>"#,
+);
+
+/// The stand-in modal: a `.modal` whose head and body sit in a preview-labelled frag, as the
+/// real `UI.confirm` draws them.
+pub(crate) const MOCK_MODAL: &str = concat!(
+    r#"<div class="modal"><div class="frag left-label"><span class="frag-label">{opener}</span>"#,
+    r#"<div class="modal-head"><h2>{args}</h2></div><div class="modal-body"></div></div><div class="modal-foot"></div></div>"#,
 );
 
 impl FakeRepo {
@@ -66,6 +75,12 @@ impl FakeRepo {
                 defined.push(id);
             }
         }
+        let mut openers: Vec<&str> = Vec::new();
+        for opener in PAGE_MAP.iter().filter_map(|p| p.modal.map(|m| m.opener)) {
+            if !openers.contains(&opener) {
+                openers.push(opener);
+            }
+        }
         for script in super::SCRIPTS {
             write(&dir.path().join(script), "// stand-in\n");
         }
@@ -96,6 +111,12 @@ impl FakeRepo {
                 "  document.body.appendChild(el);\n",
                 "}} }};\n",
                 "for (const id of {defined}) UI.defineMenu(id, function () {{ return []; }});\n",
+                "for (const opener of {openers}) PAGES[opener] = function (...args) {{\n",
+                "  const el = document.createElement(\"div\");\n",
+                "  el.className = \"scrim\";\n",
+                "  el.innerHTML = {modal}.split(\"{{opener}}\").join(opener).split(\"{{args}}\").join(args.join(\",\"));\n",
+                "  document.body.appendChild(el);\n",
+                "}};\n",
                 "for (const key of {keys}) PAGES[key] = {{\n",
                 "  meta: {{ after: function () {{ process.stdout.write({after}); process.exit(0); }} }},\n",
                 "  render: function () {{\n",
@@ -110,6 +131,8 @@ impl FakeRepo {
             menus = serde_json::to_string(&menus).expect("json"),
             menu = serde_json::to_string(MOCK_MENU).expect("json"),
             defined = serde_json::to_string(&defined).expect("json"),
+            openers = serde_json::to_string(&openers).expect("json"),
+            modal = serde_json::to_string(MOCK_MODAL).expect("json"),
         );
         write(&dir.path().join("UILayout/redesign/assets/registry.js"), &registry);
         FakeRepo { dir }
@@ -251,4 +274,48 @@ fn the_harness_records_menus_defined_before_any_page_mounts() {
     write(&repo.path().join("UILayout/redesign/assets/registry.js"), "window.UI = { defineMenu: function () {} };\n");
     let e = format!("{:#}", super::defined_menus(repo.path()).expect_err("no menu"));
     assert_eq!(e, "the mockup defines no menu: the harness recorded no UI.defineMenu call");
+}
+
+/// The real mockup's poison skip, opened through the harness with no page: the `.scrim` its
+/// `UI.confirm` appends, the `.modal` inside it, and nothing of the page around it.
+#[test]
+fn the_harness_opens_the_real_skip_poison_modal() {
+    let out = super::render_modal(&real_repo(), "skipPoison", &[]).expect("opens");
+    assert!(out.starts_with(r#"<div class="scrim"><div class="modal "#) && out.ends_with("</div></div>"), "{out}");
+    assert!(out.contains("Skip event #12,905?") && out.contains(r#"class="frag-label""#), "{out}");
+    assert!(!out.contains(r#"class="app""#), "only the modal: {out}");
+}
+
+/// The arguments reach the opener: `cancelMail` looks its message up in `D.mail` by the id it
+/// is given, so the recipient of `m-88213` is drawn only when the id arrives.
+#[test]
+fn the_harness_passes_the_entry_arguments_to_the_real_opener() {
+    let out = super::render_modal(&real_repo(), "cancelMail", &["m-88213"]).expect("opens");
+    assert!(out.contains("Cancel m-88213?") && out.contains("MiraVoss"), "{out}");
+    let e = format!("{:#}", super::render_modal(&real_repo(), "cancelMail", &[]).expect_err("no message id"));
+    assert!(e.contains("node failed rendering PAGES.cancelMail"), "{e}");
+}
+
+/// An opener the mockup does not define, and a function that appends no `.scrim` (`P.actor`
+/// returns a cell's html), each fail beside the clean case.
+#[test]
+fn a_missing_opener_or_one_that_appends_no_scrim_is_an_error() {
+    super::render_modal(&real_repo(), "skipPoison", &[]).expect("the clean case");
+    let e = format!("{:#}", super::render_modal(&real_repo(), "noSuchOpener", &[]).expect_err("not defined"));
+    assert!(e.contains("node failed rendering PAGES.noSuchOpener") && e.contains("PAGES.noSuchOpener is not a function"), "{e}");
+    let e = format!("{:#}", super::render_modal(&real_repo(), "actor", &["x"]).expect_err("no .scrim"));
+    assert!(e.contains("PAGES.actor() appended no .scrim element"), "{e}");
+}
+
+/// The stand-in opens every `PAGE_MAP` modal entry's opener with its arguments.
+#[test]
+fn the_fake_repo_defines_every_page_map_opener() {
+    let repo = FakeRepo::new("mock-modal", r#"<div class="app"></div>"#);
+    let modals: Vec<_> = PAGE_MAP.iter().filter_map(|p| p.modal).collect();
+    assert!(!modals.is_empty(), "PAGE_MAP names a modal");
+    for m in modals {
+        let out = super::render_modal(repo.path(), m.opener, m.args).expect("opens");
+        let want = MOCK_MODAL.replace("{opener}", m.opener).replace("{args}", &m.args.join(","));
+        assert_eq!(out, format!(r#"<div class="scrim">{want}</div>"#));
+    }
 }
