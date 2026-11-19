@@ -15,6 +15,7 @@ pub fn findings(manifests: &[Manifest]) -> Vec<String> {
         unique_ids(m, &mut out);
     }
     entity_kinds(manifests, &mut out);
+    kind_owners(manifests, &mut out);
     entity_tabs(manifests, &mut out);
     for m in manifests {
         layouts(m, &mut out);
@@ -107,6 +108,48 @@ fn entity_kinds(manifests: &[Manifest], out: &mut Vec<String>) {
                 out.push(format!(
                     "{}: action {:?} targets entity kind {kind:?}, which no manifest declares",
                     m.module, a.id
+                ));
+            }
+        }
+    }
+}
+
+/// A kind has one owner, the one manifest declaring it, and only the owner labels it, with at
+/// most one `EntityLabel`: the portal asks no other module for the kind's labels.
+fn kind_owners(manifests: &[Manifest], out: &mut Vec<String>) {
+    let mut owners: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for m in manifests {
+        for k in &m.entity_kinds {
+            owners.entry(k.kind.as_str()).or_default().insert(m.module.as_str());
+        }
+    }
+    for (kind, modules) in owners.iter().filter(|(_, modules)| modules.len() > 1) {
+        let modules: Vec<&str> = modules.iter().copied().collect();
+        out.push(format!(
+            "entity kind {kind:?} is declared by more than one manifest: {}",
+            modules.join(", ")
+        ));
+    }
+    for m in manifests {
+        let mut labels: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for c in &m.contributions {
+            if let Point::EntityLabel { kind } = &c.point {
+                labels.entry(kind.as_str()).or_default().push(c.id.as_str());
+            }
+        }
+        for (kind, ids) in labels {
+            let owned = owners.get(kind).is_some_and(|modules| modules.contains(m.module.as_str()));
+            if !owned && owners.contains_key(kind) {
+                out.push(format!(
+                    "{}: EntityLabel {:?} labels entity kind {kind:?}, which this module's manifest does not declare",
+                    m.module, ids.join(", ")
+                ));
+            }
+            if owned && ids.len() > 1 {
+                out.push(format!(
+                    "{}: more than one EntityLabel of entity kind {kind:?}: {}",
+                    m.module,
+                    ids.join(", ")
                 ));
             }
         }
