@@ -37,13 +37,6 @@ async fn player_label_answers_each_handle_and_leaves_out_a_missing_player() {
         let email = format!("{name}-{}@test.local", suffix());
         ids.push(svc.register(email, "pw".into(), name.into()).await.unwrap().player_id);
     }
-    let handles: Vec<Option<String>> = {
-        let mut out = Vec::new();
-        for id in &ids {
-            out.push(svc.store.player_summary(id).await.unwrap().map(|p| p.handle));
-        }
-        out
-    };
     let refs = vec![ids[0].clone(), NO_PLAYER.to_string(), "not-a-uuid".to_string(), ids[1].clone()];
     let answer = AccountsAdmin::new(Arc::clone(&svc)).panel(label_query(refs)).await;
     for id in &ids {
@@ -55,11 +48,22 @@ async fn player_label_answers_each_handle_and_leaves_out_a_missing_player() {
     };
     let drawn: BTreeMap<&str, (&str, CellKind)> =
         cells.iter().map(|(id, c)| (id.as_str(), (c.value.as_str(), c.kind))).collect();
-    let expected: BTreeMap<&str, (&str, CellKind)> = ids
-        .iter()
-        .zip(&handles)
-        .map(|(id, h)| (id.as_str(), (h.as_deref().unwrap(), CellKind::Text)))
-        .collect();
-    assert_eq!(drawn, expected, "one handle per known player; a missing or malformed id draws nothing");
-    assert!(expected.values().all(|(h, _)| h.contains('#')), "a label is the Name#1234 handle");
+    let keys: Vec<&str> = drawn.keys().copied().collect();
+    let mut known: Vec<&str> = ids.iter().map(String::as_str).collect();
+    known.sort();
+    assert_eq!(keys, known, "one label per known player; a missing or malformed id draws nothing");
+    for (id, name) in ids.iter().zip(["LabelA", "LabelB"]) {
+        let (value, kind) = drawn[id.as_str()];
+        assert_eq!(kind, CellKind::Text, "a label is a text cell");
+        let digits = value
+            .strip_prefix(name)
+            .and_then(|rest| rest.strip_prefix('#'))
+            .unwrap_or_else(|| {
+                panic!("label {value:?} for {id} is not {name}#...: keyed to the wrong player")
+            });
+        assert!(
+            digits.len() == 4 && digits.bytes().all(|b| b.is_ascii_digit()),
+            "label {value:?} is the registered name plus '#' and exactly 4 digits",
+        );
+    }
 }

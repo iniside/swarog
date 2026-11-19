@@ -17,7 +17,7 @@ use controlplane::{
 use opsapi::Error;
 
 use crate::providers::{DEV, EPIC, GOOGLE, GUEST};
-use crate::store::{FamilyRow, IdentityRow, PlayerListRow, PlayerListing};
+use crate::store::{render_handle, FamilyRow, IdentityRow, PlayerListRow, PlayerListing};
 use crate::Service;
 
 const MODULE: &str = "accounts";
@@ -122,11 +122,6 @@ fn filter_value<'a>(req: &'a PanelQuery, key: &str) -> Option<&'a str> {
         .get(key)
         .map(String::as_str)
         .filter(|v| !v.is_empty() && *v != "any")
-}
-
-/// The one rendering of a `"Name#1234"` handle, as the store's.
-fn handle(row: &PlayerListRow) -> String {
-    format!("{}#{}", row.display_name, row.discriminator)
 }
 
 /// `"now"`, `"4 min ago"`, `"3 h ago"` or `"2 d ago"`.
@@ -551,7 +546,7 @@ impl AccountsAdmin {
 
     async fn header(&self, req: &PanelQuery) -> Result<Primitive, Error> {
         let row = self.player(req).await?;
-        let handle = handle(&row);
+        let handle = render_handle(&row.display_name, &row.discriminator);
         Ok(Primitive::EntityHeader(EntityHeader {
             title: row.display_name.clone(),
             crumb: Some(handle.clone()),
@@ -572,7 +567,7 @@ impl AccountsAdmin {
         Ok(Primitive::PropertyList(PropertyList {
             items: vec![
                 prop("User id", id),
-                prop("Handle", text(CellKind::Text, handle(&row))),
+                prop("Handle", text(CellKind::Text, render_handle(&row.display_name, &row.discriminator))),
                 prop("Display name", text(CellKind::Text, row.display_name.clone())),
                 prop("Kind", text(CellKind::Label, ACCOUNT_KIND)),
                 prop("Status", text(CellKind::Badge, ACCOUNT_STATUS)),
@@ -624,7 +619,7 @@ impl AccountsAdmin {
     }
 
     /// Each requested player's handle, keyed by id; an id naming no player is left out.
-    pub(crate) async fn labels(&self, req: &PanelQuery) -> Result<Primitive, Error> {
+    async fn labels(&self, req: &PanelQuery) -> Result<Primitive, Error> {
         let players = self.svc.store.players_by_id(&req.refs).await.map_err(internal)?;
         let cells = players.into_iter().map(|p| (p.player_id, text(CellKind::Text, p.handle)));
         Ok(Primitive::ColumnCells(cells.collect()))
@@ -634,7 +629,7 @@ impl AccountsAdmin {
 fn player_row(row: &PlayerListRow) -> Row {
     let user = Cell {
         link: Some(Link::Entity(player_ref(&row.id))),
-        ..text(CellKind::User, handle(row))
+        ..text(CellKind::User, render_handle(&row.display_name, &row.discriminator))
     };
     Row {
         entity: Some(player_ref(&row.id)),
@@ -729,7 +724,7 @@ impl Provider for AccountsAdmin {
             .iter()
             .map(|row| SearchHit {
                 target: player_ref(&row.id),
-                title: handle(row),
+                title: render_handle(&row.display_name, &row.discriminator),
                 subtitle: format!("{ACCOUNT_KIND} · {}", row.id),
                 badge: Some(ACCOUNT_STATUS.to_string()),
             })

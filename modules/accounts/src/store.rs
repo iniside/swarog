@@ -124,7 +124,7 @@ const SUMMARY_SELECT: &str = "SELECT p.id::text, p.display_name, p.discriminator
        LEFT JOIN accounts.sessions s ON s.player_id = p.id AND s.expires_at > now() ";
 
 /// The ONE rendering of a `"Name#1234"` handle.
-fn render_handle(display_name: &str, discriminator: &str) -> String {
+pub(crate) fn render_handle(display_name: &str, discriminator: &str) -> String {
     format!("{display_name}#{discriminator}")
 }
 
