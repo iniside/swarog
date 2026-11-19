@@ -119,6 +119,19 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto|manual",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/compact_gate.py\"",
+            "statusMessage": "Compaction waits for running subagents"
+          }
+        ]
+      }
     ]
-  }
+  },
+  "autoCompactWindow": 150000
 }

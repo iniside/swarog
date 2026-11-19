@@ -860,11 +860,12 @@ class Wiring(unittest.TestCase):
             ("PostToolUseFailure", "LSP"): ["scout_nav_guard.py"],
             ("PreToolUse", "SendMessage"): ["context_budget_guard.py"],
             ("PreToolUse", "*"): ["context_budget_guard.py"],
+            ("PreCompact", "auto|manual"): ["compact_gate.py"],
         }
         for (event, matcher), scripts in want.items():
             with self.subTest(event=event, matcher=matcher):
                 self.assertEqual(self.scripts(event, matcher), scripts)
-        self.assertEqual(set(self.hooks), {"PreToolUse", "PostToolUse", "PostToolUseFailure"})
+        self.assertEqual(set(self.hooks), {"PreToolUse", "PostToolUse", "PostToolUseFailure", "PreCompact"})
         self.assertEqual(sum(len(v) for v in self.hooks.values()), len(want))
 
     def test_no_prompt_hooks(self):

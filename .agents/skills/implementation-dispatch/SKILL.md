@@ -84,6 +84,10 @@ SendMessage resumes a finished agent only while its context is under 100k
 tokens; `.claude/hooks/context_budget_guard.py` denies it above that. Inside a
 subagent the same hook denies new reads and searches past 180k while edits,
 cargo and git still run, which forces the part hand-off under **Step parts**.
+The main session auto-compacts at 150k (`autoCompactWindow`), and
+`.claude/hooks/compact_gate.py` holds that compaction until no subagent is
+working, so it lands on a step boundary; subagents never auto-compact. Keep
+owner decisions in the plan or commits, not only in the conversation.
 A hand-off states the outcome, verified anchors, what was and was not
 validated, open questions, and **Leftovers for owner**. A subagent's commit
 trailer names the executing model (adapter **Commit Trailers**); after a
