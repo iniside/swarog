@@ -287,7 +287,7 @@ fn the_real_mockup_defines_only_declared_menus() {
 #[test]
 fn a_real_mockup_tab_entry_needs_no_menu_entry() {
     let repo = crate::repo_root();
-    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.menu.is_none()).expect("PAGE_MAP lists player");
+    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.is_page()).expect("PAGE_MAP lists player");
     let mut page_map = PAGE_MAP.to_vec();
     page_map.push(crate::pages::Page { tab: Some("wallet"), ..*player });
     let tabs: Vec<(&str, &str)> = EXCLUDED_TABS.iter().copied().filter(|(id, _)| *id != "player.wallet").collect();
@@ -313,8 +313,9 @@ fn run_diff_compares_a_menu_target_by_its_menu() {
 }
 
 /// A modal target compares the two `.modal` dialogs, not the pages, and needs no panel: the
-/// stand-in modal against a portal `.scrim` holding the same dialog is clean, and against one
-/// whose dialog has one more child it is not.
+/// stand-in modal against a portal `.scrim` holding the same dialog is clean, beside a
+/// portal-only sibling of the dialog in the `.scrim` too, and against one whose dialog has one
+/// more child it is not.
 #[test]
 fn run_diff_compares_a_modal_target_by_its_modal() {
     let repo = FakeRepo::new("diff-modal", &mock_html(&body(true)));
@@ -331,6 +332,11 @@ fn run_diff_compares_a_modal_target_by_its_modal() {
     write(&dir.path().join(crawl::CLEAN_MARKER), "");
     write(&dir.path().join("mail.modal.cancel.html"), &modal(""));
     assert!(run_diff(repo.path(), "mail.modal.cancel", dir.path(), false).expect("runs"), "the same dialog is clean");
+    let open = r#"<div class="scrim" data-scrim=""><div class="modal">"#;
+    let beside = modal("").replacen(open, r#"<div class="scrim" data-scrim=""><div class="scrim-note"><span></span></div><div class="modal">"#, 1);
+    assert!(beside != modal(""), "the sibling is added: {beside}");
+    write(&dir.path().join("mail.modal.cancel.html"), &beside);
+    assert!(run_diff(repo.path(), "mail.modal.cancel", dir.path(), false).expect("runs"), "a portal-only sibling of the .modal");
     write(&dir.path().join("mail.modal.cancel.html"), &modal(r#"<div class="modal-note"></div>"#));
     assert!(!run_diff(repo.path(), "mail.modal.cancel", dir.path(), false).expect("runs"), "a portal-only child");
 }

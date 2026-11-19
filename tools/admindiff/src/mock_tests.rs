@@ -55,7 +55,7 @@ impl FakeRepo {
             .iter()
             .map(|page| {
                 let first_row = PAGE_MAP.iter().any(|p| p.page == *page && matches!(p.route, Route::FirstRow(_)));
-                let mapped = PAGE_MAP.iter().filter(|p| p.page == *page && p.menu.is_none()).filter_map(|p| p.tab);
+                let mapped = PAGE_MAP.iter().filter(|p| p.page == *page && p.is_page()).filter_map(|p| p.tab);
                 let prefix = format!("{page}.");
                 let excluded = EXCLUDED_TABS.iter().filter_map(|(id, _)| id.strip_prefix(prefix.as_str()));
                 let ids = if first_row { std::iter::once("first").chain(mapped).chain(excluded).collect() } else { Vec::new() };

@@ -195,6 +195,12 @@ fn other_mapped() -> Target {
     mapped().into_iter().find(|t| t.route != DASHBOARD).expect("PAGE_MAP maps a page besides the dashboard")
 }
 
+/// A fragment for [`other_mapped`]'s slot in `state` holding `extra`, with the modal openers
+/// its healthy fragment draws, so a fragment defect put on it drops none of them.
+fn other_fragment(state: Option<&str>, extra: &str) -> String {
+    fragment(state, "Subscriptions", &format!("{extra}{}", modal_buttons(other_mapped().page)))
+}
+
 fn slot(url: &str) -> String {
     format!(r#"<div class="slot" hx-get="{url}" hx-trigger="load" hx-swap="outerHTML"><div class="sk"></div></div>"#)
 }
@@ -230,7 +236,9 @@ impl Site {
     /// lists rows whose first opens its follower's entity page, which has one slot too. A page
     /// hosting menu entries draws their buttons ([`menu_buttons`]), in its rows if it lists
     /// any, and a page an [`EXCLUDED_MENUS`] entry names draws its buttons
-    /// ([`excluded_buttons`]); each menu answers [`MENU_BODY`].
+    /// ([`excluded_buttons`]); each menu answers [`MENU_BODY`]. A page's modal openers
+    /// ([`modal_buttons`]) are drawn in its slot's fragment, as the portal draws a queue row's
+    /// or a panel tool's; each modal answers [`MODAL_BODY`].
     fn healthy() -> Site {
         Site::with_content(&slot)
     }
@@ -253,15 +261,16 @@ impl Site {
                 .map(|(f, _)| rows(&follower_route(f), &menu_buttons(page)))
                 .collect();
             let in_page = if listed.is_empty() { menu_buttons(page) } else { String::new() };
-            let html = format!("{}{in_page}{}{}", content(slot_url), excluded_buttons(page), modal_buttons(page));
+            let html = format!("{}{in_page}{}", content(slot_url), excluded_buttons(page));
             routes.insert(route.to_string(), ok(shell(&links, title, &html)));
-            routes.insert(slot_url.clone(), ok(fragment(Some("ok"), &format!("{page} panel"), &listed)));
+            let fragment_html = format!("{listed}{}", modal_buttons(page));
+            routes.insert(slot_url.clone(), ok(fragment(Some("ok"), &format!("{page} panel"), &fragment_html)));
         }
         for (page, _) in followers() {
             let slot_url = panel_url(page);
-            let html = format!("{}{}{}{}", content(&slot_url), menu_buttons(page), excluded_buttons(page), modal_buttons(page));
+            let html = format!("{}{}{}", content(&slot_url), menu_buttons(page), excluded_buttons(page));
             routes.insert(follower_route(page), ok(shell(&links, page, &html)));
-            routes.insert(slot_url, ok(fragment(Some("ok"), &format!("{page} panel"), "")));
+            routes.insert(slot_url, ok(fragment(Some("ok"), &format!("{page} panel"), &modal_buttons(page))));
         }
         for (_, page, kind) in menus() {
             routes.insert(menu_url(kind, page), ok(MENU_BODY));
@@ -364,6 +373,8 @@ fn serve(stream: TcpStream, site: &Site, log: &Mutex<Vec<Request>>) {
 
 struct Crawl {
     result: anyhow::Result<bool>,
+    /// The failures the crawl reported; none unless `result` is `Ok(false)`.
+    failures: Vec<String>,
     /// The targets the crawl reported EMPTY.
     empty: Vec<String>,
     out: ScratchDir,
@@ -382,6 +393,12 @@ impl Crawl {
             other => panic!("{why}: expected Ok(false), got {other:?}"),
         }
         assert!(!self.clean_marker(), "{why}: a failed crawl wrote {CLEAN_MARKER}");
+    }
+
+    /// [`Crawl::assert_failed`], with a reported failure containing `text`.
+    fn assert_failed_with(&self, why: &str, text: &str) {
+        self.assert_failed(why);
+        assert!(self.failures.iter().any(|f| f.contains(text)), "{why}: expected {text:?} in a failure: {:#?}", self.failures);
     }
 
     /// Asserts the crawl, run without `--allow-errors`, finished clean and wrote the CLEAN marker.
@@ -465,11 +482,11 @@ async fn crawl_into(
         allow_empty,
         out: out.path().join("run"),
     };
-    let (result, empty) = match run_with(&cfg, page_map, excluded_menus, excluded_modals).await {
-        Ok(o) => (Ok(o.passed), o.empty),
-        Err(e) => (Err(e), Vec::new()),
+    let (result, failures, empty) = match run_with(&cfg, page_map, excluded_menus, excluded_modals).await {
+        Ok(o) => (Ok(o.failures.is_empty()), o.failures, o.empty),
+        Err(e) => (Err(e), Vec::new(), Vec::new()),
     };
-    Crawl { result, empty, out, server }
+    Crawl { result, failures, empty, out, server }
 }
 
 #[tokio::test]
@@ -550,14 +567,14 @@ async fn zero_fragments_fails() {
 
 #[tokio::test]
 async fn a_non_2xx_fragment_fails() {
-    let failed = Response { status: 500, ..ok(fragment(Some("ok"), "Subscriptions", "")) };
+    let failed = Response { status: 500, ..ok(other_fragment(Some("ok"), "")) };
     let site = Site::healthy().with(&other_mapped().slot, failed);
     crawl(site, false).await.assert_failed("a 500 fragment");
 }
 
 #[tokio::test]
 async fn a_fragment_without_data_state_fails() {
-    let site = Site::healthy().with(&other_mapped().slot, ok(fragment(None, "Subscriptions", "")));
+    let site = Site::healthy().with(&other_mapped().slot, ok(other_fragment(None, "")));
     crawl(site, false).await.assert_failed("no data-state");
 }
 
@@ -566,7 +583,7 @@ async fn a_fragment_without_data_state_fails() {
 #[tokio::test]
 async fn an_error_or_stale_fragment_fails_unless_errors_are_allowed() {
     for state in ["error", "stale"] {
-        let site = Site::healthy().with(&other_mapped().slot, ok(fragment(Some(state), "Subscriptions", "")));
+        let site = Site::healthy().with(&other_mapped().slot, ok(other_fragment(Some(state), "")));
         crawl(site.clone(), false).await.assert_failed(&format!("a {state} fragment"));
         crawl(site, true).await.assert_preview(&format!("--allow-errors: a {state} fragment"));
     }
@@ -597,7 +614,7 @@ async fn a_crawl_with_errors_allowed_is_never_marked_clean_and_the_diff_refuses_
 #[tokio::test]
 async fn an_empty_readonly_or_denied_fragment_crawls_clean() {
     for state in ["empty", "readonly", "denied"] {
-        let site = Site::healthy().with(&other_mapped().slot, ok(fragment(Some(state), "Subscriptions", "")));
+        let site = Site::healthy().with(&other_mapped().slot, ok(other_fragment(Some(state), "")));
         crawl(site, false).await.assert_clean(&format!("a {state} fragment"));
     }
 }
@@ -608,7 +625,7 @@ async fn an_empty_readonly_or_denied_fragment_crawls_clean() {
 async fn a_fragment_in_no_panel_state_fails_always() {
     let lax = |site: Site| crawl_run(site, PAGE_MAP, EXCLUDED_MENUS, true, true);
     lax(Site::healthy()).await.assert_preview("--allow-errors --allow-empty: the ok fragment");
-    let site = Site::healthy().with(&other_mapped().slot, ok(fragment(Some("down"), "Subscriptions", "")));
+    let site = Site::healthy().with(&other_mapped().slot, ok(other_fragment(Some("down"), "")));
     lax(site).await.assert_failed("--allow-errors --allow-empty: a fragment whose data-state is down");
 }
 
@@ -639,7 +656,7 @@ async fn slots_load_for_at_most_max_rounds() {
     let first = slot("/admin/_panel/chain/1");
     let chained = |depth: usize| {
         let site = Site { chain_depth: depth, ..Site::healthy() };
-        site.with(&other_mapped().slot, ok(fragment(Some("ok"), "Subscriptions", &first)))
+        site.with(&other_mapped().slot, ok(other_fragment(Some("ok"), &first)))
     };
     // Round 1 loads the page's slot, whose fragment holds the chain's first link; each link
     // holds the next until `depth`, so a chain of `depth` links takes `depth + 1` rounds.
@@ -850,7 +867,7 @@ async fn a_stale_or_malformed_menu_exclusion_fails() {
 /// no list declares crawls clean, the menu fetched once for its status; answering 500 it fails.
 #[tokio::test]
 async fn a_tab_target_needs_no_menu_entry() {
-    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.menu.is_none()).expect("PAGE_MAP lists player");
+    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.is_page()).expect("PAGE_MAP lists player");
     let mut page_map = PAGE_MAP.to_vec();
     page_map.push(Page { tab: Some("items"), ..*player });
     let route = follower_route("player");
@@ -923,8 +940,8 @@ async fn an_empty_list_page_fails_unless_empty_is_allowed_and_then_the_diff_refu
     assert_eq!(e, format!("{} has no player page: the crawl found no row of players to follow", run.display()));
 }
 
-/// With `--allow-empty`, an exclusion on a page that lists no row, or on a page that was
-/// skipped, is not stale; on a players page that lists rows, the players one is.
+/// With `--allow-empty`, an exclusion on a page that lists no row, reported EMPTY, or on a page
+/// that was skipped, is not stale; on a players page that lists rows, the players one is.
 #[tokio::test]
 async fn an_empty_or_skipped_page_cannot_make_a_menu_exclusion_stale() {
     let empty = Site::healthy().with(&panel_url("players"), ok(fragment(Some("ok"), "players panel", "")));
@@ -933,7 +950,7 @@ async fn an_empty_or_skipped_page_cannot_make_a_menu_exclusion_stale() {
     excluded.push(("player", "guild", "drawn on the player page"));
     let allowed = crawl_lists(empty.clone(), PAGE_MAP, &excluded, true).await;
     assert!(matches!(allowed.result, Ok(true)), "{:?}", allowed.result);
-    assert_eq!(allowed.empty, ["player", "players.menu.user", "player.menu.user"]);
+    assert_eq!(allowed.empty, ["player", "players.menu.user", "player.menu.user", "players.excluded-menu.guild"]);
     let players_only: Vec<_> = excluded.iter().copied().filter(|e| e.0 != "player" || e.1 != "guild").collect();
     let healthy = crawl_lists(Site::healthy(), PAGE_MAP, &players_only, true).await;
     healthy.assert_failed("players lists rows and draws no guild menu");
@@ -972,7 +989,7 @@ fn selects_tab_needs_the_selected_tab_with_that_id() {
 /// the tab selected crawls clean and writes `player.items.html`.
 #[tokio::test]
 async fn a_tab_target_fetches_its_tab_and_fails_unless_the_page_selects_it() {
-    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.menu.is_none()).expect("PAGE_MAP lists player");
+    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.is_page()).expect("PAGE_MAP lists player");
     let mut page_map = PAGE_MAP.to_vec();
     page_map.push(Page { tab: Some("items"), ..*player });
     let route = follower_route("player");
@@ -1028,8 +1045,9 @@ fn without(site: &Site, route: &str, button: &str) -> Response {
 /// writes it as `<id>.html`; each production exclusion's modal is fetched once and kept under
 /// `raw/`. On `mail.modal.cancel`: a second cancel opener after the first is never fetched; a
 /// modal answering 500, the portal's result toast (at 200 and at 500), a bare `form.modal` with
-/// no `.scrim` around it and a `.scrim` with no `.modal` each fail; a mail page drawing no
-/// cancel opener fails, and with `--allow-empty` crawls clean reporting the target EMPTY.
+/// no `.scrim` around it and a `.scrim` with no `.modal` each fail, each for its own reason; a
+/// mail panel drawing no cancel opener fails, and with `--allow-empty` crawls clean reporting the
+/// target EMPTY.
 #[tokio::test]
 async fn a_modal_target_writes_its_modal_and_fails_unless_reached() {
     let targets = modals();
@@ -1063,17 +1081,19 @@ async fn a_modal_target_writes_its_modal_and_fails_unless_reached() {
     assert!(no_modal != MODAL_BODY && MODAL_BODY.starts_with(r#"<div class="scrim""#), "the golden is a .scrim around a .modal");
     assert!(MODAL_TOAST.starts_with("<div data-toast"), "{MODAL_TOAST}");
     let cases = [
-        ("a modal answering 500", status(500)),
-        ("a toast at 200", ok(MODAL_TOAST)),
-        ("a toast at 500", Response { status: 500, ..ok(MODAL_TOAST) }),
-        ("a bare form.modal", ok(form)),
-        ("a .scrim with no .modal", ok(no_modal)),
+        ("a modal answering 500", status(500), "answered 500 Internal Server Error"),
+        ("a toast at 200", ok(MODAL_TOAST), "the portal answers a toast, not a modal"),
+        ("a toast at 500", Response { status: 500, ..ok(MODAL_TOAST) }, "answered 500 Internal Server Error, a toast"),
+        ("a bare form.modal", ok(form), "the modal answers no .scrim root"),
+        ("a .scrim with no .modal", ok(no_modal), "the .scrim holds no .modal"),
     ];
-    for (why, response) in cases {
-        crawl(healthy.clone().with(&url, response), false).await.assert_failed(why);
+    for (why, response, reason) in cases {
+        let c = crawl(healthy.clone().with(&url, response), false).await;
+        c.assert_failed_with(why, &format!("{id} ({url}): {reason}"));
     }
 
-    let bare = healthy.clone().with(route, without(&healthy, route, &modal_button(&url)));
+    let slot_url = panel_url(page);
+    let bare = healthy.clone().with(&slot_url, without(&healthy, &slot_url, &modal_button(&url)));
     crawl(bare.clone(), false).await.assert_failed("mail draws no cancel opener");
     let allowed = crawl_with(bare, false, true).await;
     allowed.assert_clean("--allow-empty: mail draws no cancel opener");
@@ -1085,8 +1105,10 @@ async fn a_modal_target_writes_its_modal_and_fails_unless_reached() {
 /// A modal action a compared, untabbed page draws must be declared: an undeclared
 /// `guild/kick` opener on a mapped page fails the crawl, and its `EXCLUDED_MODALS` twin crawls
 /// clean, fetching the excluded modal once; an excluded modal answering 500 fails. The same
-/// opener on the page only the nav links needs no declaration and is not fetched, and an
-/// `hx-post` to the action (an `Invoke` button) is no modal opener.
+/// opener on the page only the nav links, or on a tab page, needs no declaration, but the modal
+/// of its first opener is fetched once for its status and a second opener of the action is not:
+/// answering the modal it crawls clean, answering 500 it fails. An `hx-post` to the action (an
+/// `Invoke` button) is no modal opener.
 #[tokio::test]
 async fn every_portal_modal_action_on_a_compared_page_is_declared() {
     let target = other_mapped();
@@ -1104,10 +1126,29 @@ async fn every_portal_modal_action_on_a_compared_page_is_declared() {
     assert!(raw.is_file(), "the excluded modal's body is kept: {}", raw.display());
     crawl_modals(site.with(kick, status(500)), PAGE_MAP, &excluded, false).await.assert_failed("an excluded modal answering 500");
 
-    let nav_only = healthy.clone().with(EXTRA_ROUTE, add_to_page(&healthy, EXTRA_ROUTE, &modal_button(kick)));
-    let c = crawl(nav_only, false).await;
+    let second = "/admin/_action/guild/kick?item=g-2";
+    let openers = format!("{}{}", modal_button(kick), modal_button(second));
+    let nav_only = healthy.clone().with(EXTRA_ROUTE, add_to_page(&healthy, EXTRA_ROUTE, &openers)).with(second, ok(MODAL_BODY));
+    let c = crawl(nav_only.clone().with(kick, ok(MODAL_BODY)), false).await;
     c.assert_clean("the opener on the nav-only page");
-    assert_eq!(fetched(&c, kick), 0, "{:?}", c.server.requests());
+    assert_eq!((fetched(&c, kick), fetched(&c, second)), (1, 0), "the first opener only: {:?}", c.server.requests());
+    let raw = c.out.path().join("run").join("raw").join("p-extra-things.status-modal.guild.kick.html");
+    assert!(raw.is_file(), "the status-only modal's body is kept: {}", raw.display());
+    let failed = crawl(nav_only.with(kick, status(500)), false).await;
+    failed.assert_failed_with("the opener on the nav-only page answering 500", &format!("p-extra-things guild/kick modal ({kick}): answered 500"));
+
+    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.is_page()).expect("PAGE_MAP lists player");
+    let mut page_map = PAGE_MAP.to_vec();
+    page_map.push(Page { tab: Some("items"), ..*player });
+    let route = follower_route("player");
+    let tabbed = format!("{route}?tab=items");
+    let tab = format!(r#"<button class="tab on" data-href="{}">items</button>{}"#, escaped(&tabbed), modal_button(kick));
+    let tab_page = healthy.clone().with(&tabbed, add_to_page(&healthy, &route, &tab));
+    let c = crawl_map(tab_page.clone().with(kick, ok(MODAL_BODY)), &page_map).await;
+    c.assert_clean("the opener on the tab page");
+    assert_eq!(fetched(&c, kick), 1, "{:?}", c.server.requests());
+    let failed = crawl_map(tab_page.with(kick, status(500)), &page_map).await;
+    failed.assert_failed_with("the opener on the tab page answering 500", &format!("player.items guild/kick modal ({kick}): answered 500"));
 
     let post = format!(r##"<button type="button" class="btn sm" hx-post="{}" hx-target="#modal-root"></button>"##, escaped(kick));
     let invoke = crawl(healthy.clone().with(target.route, add_to_page(&healthy, target.route, &post)), false).await;
@@ -1115,19 +1156,32 @@ async fn every_portal_modal_action_on_a_compared_page_is_declared() {
     assert!(!invoke.server.requests().iter().any(|r| r.path == kick), "{:?}", invoke.server.requests());
 }
 
-/// The production exclusion `mail/test-send` is drawn by the healthy site; a mail page no longer
-/// drawing it makes the exclusion stale, a failure unless `--allow-empty`. An exclusion list
-/// that fails validation stops the crawl before it logs in.
+/// The production exclusion `mail/test-send` is drawn by the healthy site; a mail panel no longer
+/// drawing it makes the exclusion stale, a failure unless `--allow-empty` while mail lists no
+/// row, which reports it EMPTY; with `--allow-empty`, the same mail panel listing a row fails,
+/// and so does an exclusion the `FirstRow` player page does not draw. An exclusion list that
+/// fails validation stops the crawl before it logs in.
 #[tokio::test]
 async fn a_stale_or_malformed_modal_exclusion_fails() {
     let (host, action, _) = *EXCLUDED_MODALS.first().expect("EXCLUDED_MODALS has an entry");
     assert_eq!((host, action), ("mail", "mail/test-send"));
     let healthy = Site::healthy();
-    let route = mapped().into_iter().find(|t| t.page == host).expect("the exclusion's page is mapped").route;
-    let gone = healthy.clone().with(route, without(&healthy, route, &modal_button(&modal_url(action, host))));
+    let slot_url = panel_url(host);
+    let gone = healthy.clone().with(&slot_url, without(&healthy, &slot_url, &modal_button(&modal_url(action, host))));
+    let stale = "EXCLUDED_MODALS lists mail modal mail/test-send, which mail does not draw";
     crawl(healthy.clone(), false).await.assert_clean("mail draws test-send");
-    crawl(gone.clone(), false).await.assert_failed("mail no longer draws test-send");
-    crawl_with(gone, false, true).await.assert_clean("--allow-empty: mail no longer draws test-send");
+    crawl(gone.clone(), false).await.assert_failed_with("mail no longer draws test-send", stale);
+    let allowed = crawl_with(gone.clone(), false, true).await;
+    allowed.assert_clean("--allow-empty: mail lists no row and no longer draws test-send");
+    assert_eq!(allowed.empty, ["mail.excluded-modal.mail.test-send"]);
+    let panel = gone.routes.get(&slot_url).expect("the mail panel").body.clone();
+    assert!(panel.contains("</section>"), "{panel}");
+    let row = r#"<table class="tbl"><tbody><tr><td>m-1</td></tr></tbody></table></section>"#;
+    let listed = gone.with(&slot_url, ok(panel.replacen("</section>", row, 1)));
+    crawl_with(listed, false, true).await.assert_failed_with("--allow-empty: mail lists a row and no longer draws test-send", stale);
+    let player: Vec<_> = EXCLUDED_MODALS.iter().copied().chain([("player", "guild/kick", "why")]).collect();
+    let c = crawl_modals(healthy.clone(), PAGE_MAP, &player, true).await;
+    c.assert_failed_with("--allow-empty: the FirstRow player page draws no guild/kick", "EXCLUDED_MODALS lists player modal guild/kick");
 
     let twice: Vec<_> = EXCLUDED_MODALS.iter().copied().chain([(host, action, "again")]).collect();
     let c = crawl_modals(healthy.clone(), PAGE_MAP, &twice, false).await;
