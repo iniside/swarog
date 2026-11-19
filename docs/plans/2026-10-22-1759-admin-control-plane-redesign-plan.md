@@ -2532,10 +2532,14 @@ variant-coverage test naming the new variants from 13c.1a until 13c.1h (with the
 - **Step 13c.3a — gate tests for 13c.2a3 and 13c.2b2.** `[opus]` test-author, after
   13c.2b2:
   - the `FilterKind::Select` golden (`golden_tests/cases.rs`, `build.rs`, testdata); ends
-    the Select red window;
+    the Select red window; with it the `FilterKind::Range`, `Bool` and `Ref` goldens, which
+    entered the same red window when 13c.2b2 made `FilterKind` drawn (Step 13c.2b2 errata,
+    owner 2026-11-19);
   - admincheck fixtures (`tools/admincheck/src/checks_tests.rs`): two manifests declaring
     the same `EntityKindDecl` kind; an `EntityLabel{kind}` from a module that does not own
     the kind; two `EntityLabel{kind}` in the owner's manifest.
+    Also a non-owner with two labels of one kind yields exactly one non-owner finding
+    (13c.2a3 proof audit).
   - The labelled-draw golden is 13c.2a2b's (owner, 2026-11-19).
 - **Step 13c.3b — the over-cap refusal in the split.** `[opus]` test-author, after 13c.2a1;
   file-disjoint from 13c.3a (`tools/splitproof/src/main.rs` only), but its fleet run never
