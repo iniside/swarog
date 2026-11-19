@@ -290,6 +290,7 @@ fn manifest() -> Manifest {
             head_actions: vec![TEST_SEND.to_string()],
             tiles: Vec::new(),
             layout: Layout::Stack(vec![OUTBOX.to_string()]),
+            params: vec![FILTER_TEMPLATE.to_string()],
         }],
         entity_kinds: Vec::new(),
         contributions: vec![

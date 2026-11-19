@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use checkmodules::ProcessControlPlane;
-use controlplane::{ActionPoint, Emphasis, Layout, Manifest, Point, Then, Variants, SECTIONS};
+use controlplane::{ActionPoint, Emphasis, Manifest, Point, Then, Variants, SECTIONS};
 
 /// The longest action or contribution id: a form instance id `<id>:<43-byte token>` then
 /// stays within the 128-byte idempotency keys modules accept.
@@ -196,17 +196,9 @@ fn readonly_writes(m: &Manifest, out: &mut Vec<String>) {
     }
 }
 
-fn laid_out(layout: &Layout) -> Vec<&String> {
-    match layout {
-        Layout::Stack(ids) => ids.iter().collect(),
-        Layout::Grid21(a, b) | Layout::Grid2(a, b) => a.iter().chain(b).collect(),
-        Layout::Rows(rows) => rows.iter().flat_map(laid_out).collect(),
-    }
-}
-
 fn layouts(m: &Manifest, out: &mut Vec<String>) {
     for page in &m.pages {
-        let laid_out = laid_out(&page.layout);
+        let laid_out = page.layout.ids();
         for id in page.tiles.iter().filter(|id| laid_out.contains(id)) {
             out.push(format!("{}: page {:?} places {id:?} in both its tiles and its layout", m.module, page.id));
         }

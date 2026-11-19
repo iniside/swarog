@@ -195,7 +195,8 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- macro table_toolbar(t) -%}
 {%- if t.toolbar %}<div class="tbl-toolbar">
 {%- if t.search_placeholder %}<form class="input-icon" hx-get="{{ t.search_url }}" hx-target="closest .slot" hx-swap="outerHTML">{{ icon("search") }}<input class="input" name="q" style="width:220px" placeholder="{{ t.search_placeholder }}" value="{{ t.q }}"></form>{% endif -%}
-{%- for f in t.filters %}<span class="filter-chip">{{ f.label }}: <b>{{ f.value }}</b><span class="x">{{ icon("x") }}</span></span>{% endfor -%}
+{%- for f in t.filters %}{% if f.select %}<select class="select" style="height:24px;font-size:12px" name="{{ f.select.key }}" hx-get="{{ f.select.url }}" hx-target="closest .slot" hx-swap="outerHTML"><option value="">{{ f.label }}: all</option>{% for o in f.select.options %}<option{% if o.selected %} selected{% endif %}>{{ o.value }}</option>{% endfor %}</select>
+{%- else %}<span class="filter-chip">{{ f.label }}: <b>{{ f.value }}</b><span class="x">{{ icon("x") }}</span></span>{% endif %}{% endfor -%}
 <span class="filter-chip add">{{ icon("plus") }} Filter</span><span class="grow"></span></div>
 {%- endif -%}
 {%- endmacro %}

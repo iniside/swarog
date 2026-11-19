@@ -21,6 +21,7 @@ fn page(id: &str, head_actions: &[&str], layout: &[&str]) -> PageDecl {
         head_actions: head_actions.iter().map(|s| s.to_string()).collect(),
         tiles: Vec::new(),
         layout: Layout::Stack(layout.iter().map(|s| s.to_string()).collect()),
+        params: Vec::new(),
     }
 }
 

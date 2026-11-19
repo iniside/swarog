@@ -1,7 +1,7 @@
 //! The control-plane portal routes. Each handler resolves a typed view model through the
 //! engine and renders it through the templates in `crate::render`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
@@ -469,9 +469,11 @@ async fn page(
             .collect()
     };
     let tiles = slots(&decl.tiles);
-    // A `Link::Page` reaches the page's panels through the typed search and queue-state keys.
+    // A `Link::Page` reaches the page's panels through the typed search and queue-state keys
+    // and the keys the page declares.
     let forwarded: Vec<(String, String)> = [render::QUERY_SEARCH, render::QUERY_STATE]
         .into_iter()
+        .chain(decl.params.iter().map(String::as_str))
         .filter_map(|key| query.get(key).map(|value| (key.to_string(), value.clone())))
         .collect();
     let rows: Vec<LayoutRow> = layout
@@ -627,6 +629,16 @@ async fn entity(
     screen(&p, "entity", &view)
 }
 
+/// The `PageDecl::params` of every page of `manifest` that places `contribution`.
+fn page_params<'m>(manifest: &'m Manifest, contribution: &str) -> BTreeSet<&'m str> {
+    manifest
+        .pages
+        .iter()
+        .filter(|pg| pg.tiles.iter().chain(pg.layout.ids()).any(|id| id == contribution))
+        .flat_map(|pg| pg.params.iter().map(String::as_str))
+        .collect()
+}
+
 /// `GET /admin/_panel/{module}/{contribution}?entity=kind:id&...` — one panel; every
 /// state answers 200 so the fragment swaps in.
 async fn panel(
@@ -662,6 +674,10 @@ async fn panel(
             None => return toast(&p, StatusCode::BAD_REQUEST, "entity must be kind:id".to_string()),
         },
     };
+    let declared = page_params(manifest, &contribution);
+    let owned =
+        [panels::QUERY_RANGE, render::QUERY_SEARCH, render::QUERY_CURSOR, render::QUERY_BEFORE, render::QUERY_STATE];
+    query.retain(|key, _| owned.contains(&key.as_str()) || declared.contains(key.as_str()));
     let mut url_query: Vec<(String, String)> = raw_entity.into_iter().map(|e| ("entity".to_string(), e)).collect();
     url_query.extend(query.iter().map(|(k, v)| (k.clone(), v.clone())));
     let raw_range = query.remove(panels::QUERY_RANGE);

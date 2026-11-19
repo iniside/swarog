@@ -442,6 +442,7 @@ pub controlplane::FilterKind::Bool
 pub controlplane::FilterKind::Enum(alloc::vec::Vec<alloc::string::String>)
 pub controlplane::FilterKind::Range
 pub controlplane::FilterKind::Ref(alloc::string::String)
+pub controlplane::FilterKind::Select(alloc::vec::Vec<alloc::string::String>)
 pub controlplane::FilterKind::Text
 impl controlplane::Variants for controlplane::FilterKind
 pub const controlplane::FilterKind::NAME: &'static str
@@ -506,6 +507,8 @@ pub controlplane::Layout::Grid2(alloc::vec::Vec<alloc::string::String>, alloc::v
 pub controlplane::Layout::Grid21(alloc::vec::Vec<alloc::string::String>, alloc::vec::Vec<alloc::string::String>)
 pub controlplane::Layout::Rows(alloc::vec::Vec<controlplane::Layout>)
 pub controlplane::Layout::Stack(alloc::vec::Vec<alloc::string::String>)
+impl controlplane::Layout
+pub fn controlplane::Layout::ids(&self) -> alloc::vec::Vec<&alloc::string::String>
 impl controlplane::Variants for controlplane::Layout
 pub const controlplane::Layout::NAME: &'static str
 pub const controlplane::Layout::VARIANTS: &'static [&'static str]
@@ -1601,6 +1604,7 @@ pub struct controlplane::PageDecl
 pub controlplane::PageDecl::head_actions: alloc::vec::Vec<alloc::string::String>
 pub controlplane::PageDecl::id: alloc::string::String
 pub controlplane::PageDecl::layout: controlplane::Layout
+pub controlplane::PageDecl::params: alloc::vec::Vec<alloc::string::String>
 pub controlplane::PageDecl::subtitle: alloc::string::String
 pub controlplane::PageDecl::tiles: alloc::vec::Vec<alloc::string::String>
 pub controlplane::PageDecl::title: alloc::string::String

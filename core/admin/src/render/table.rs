@@ -1,4 +1,4 @@
-use controlplane::{Align, CellKind, Point, SortDir};
+use controlplane::{Align, CellKind, FilterKind, Point, SortDir};
 use serde::Serialize;
 use crate::engine::columns::{ColumnOutcome, ListColumn};
 use crate::engine::labels::Labels;
@@ -39,6 +39,22 @@ pub(crate) struct RowView {
 pub(crate) struct FilterView {
     pub(crate) label: String,
     pub(crate) value: String,
+    /// A `FilterKind::Select` draws a select; every other kind a chip.
+    pub(crate) select: Option<SelectView>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct SelectView {
+    pub(crate) key: String,
+    /// The panel URL without this filter's key; the select sends its own value.
+    pub(crate) url: String,
+    pub(crate) options: Vec<OptionView>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct OptionView {
+    pub(crate) value: String,
+    pub(crate) selected: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -74,10 +90,26 @@ pub(super) fn page_label(page: &controlplane::PageInfo, ctx: &Ctx<'_>) -> Option
     }
 }
 
+/// An empty filter value narrows nothing, so it reads as `"any"`.
 pub(super) fn filter_views(filters: &[controlplane::FilterDef], ctx: &Ctx<'_>) -> Vec<FilterView> {
     filters
         .iter()
-        .map(|f| FilterView { label: f.label.clone(), value: ctx.param(&f.key).unwrap_or("any").to_string() })
+        .map(|f| {
+            seen::record(&f.kind);
+            let current = ctx.param(&f.key).filter(|v| !v.is_empty());
+            let select = match &f.kind {
+                FilterKind::Select(options) => Some(SelectView {
+                    key: f.key.clone(),
+                    url: with_param(ctx.path, ctx.query, &f.key, None),
+                    options: options
+                        .iter()
+                        .map(|o| OptionView { value: o.clone(), selected: current == Some(o.as_str()) })
+                        .collect(),
+                }),
+                FilterKind::Enum(_) | FilterKind::Text | FilterKind::Range | FilterKind::Bool | FilterKind::Ref(_) => None,
+            };
+            FilterView { label: f.label.clone(), value: current.unwrap_or("any").to_string(), select }
+        })
         .collect()
 }
 

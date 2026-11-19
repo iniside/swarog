@@ -372,6 +372,7 @@ fn manifest() -> Manifest {
             head_actions: vec![EXPORT_CSV.to_string(), CREATE_ACCOUNT.to_string()],
             tiles: Vec::new(),
             layout: Layout::Stack(vec![PLAYERS.to_string()]),
+            params: [FILTER_KIND, FILTER_STATUS, FILTER_PROVIDER].map(str::to_string).to_vec(),
         }],
         entity_kinds: vec![EntityKindDecl {
             kind: KIND.to_string(),

@@ -276,6 +276,7 @@ fn manifest() -> Manifest {
             head_actions: Vec::new(),
             tiles: [KPI_HEAD, KPI_SUBSCRIPTIONS, KPI_MAX_LAG, KPI_DEAD_LETTERED].map(str::to_string).to_vec(),
             layout: Layout::Stack([POISON, SUBSCRIPTIONS].map(str::to_string).to_vec()),
+            params: vec![FILTER_STATE.to_string()],
         }],
         entity_kinds: vec![EntityKindDecl {
             kind: KIND.to_string(),

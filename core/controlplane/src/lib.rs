@@ -552,6 +552,9 @@ pub struct PageDecl {
     /// Contribution ids rendered as one KPI tile row above `layout`.
     pub tiles: Vec<String>,
     pub layout: Layout,
+    /// The page URL keys the portal forwards to the page's panels as `PanelQuery::params`;
+    /// a key no page laying out the contribution names never reaches its provider.
+    pub params: Vec<String>,
 }
 
 variants! {
@@ -564,6 +567,17 @@ variants! {
         Grid2(Vec<String>, Vec<String>),
         /// Each layout below the one before it.
         Rows(Vec<Layout>),
+    }
+}
+
+impl Layout {
+    /// Every contribution id the layout places, in declaration order.
+    pub fn ids(&self) -> Vec<&String> {
+        match self {
+            Layout::Stack(ids) => ids.iter().collect(),
+            Layout::Grid21(a, b) | Layout::Grid2(a, b) => a.iter().chain(b).collect(),
+            Layout::Rows(rows) => rows.iter().flat_map(Layout::ids).collect(),
+        }
     }
 }
 
@@ -1035,7 +1049,7 @@ pub struct PageInfo {
 }
 
 variants! {
-    undrawn;
+    drawn;
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
     pub enum FilterKind {
         Enum(Vec<String>),
@@ -1043,6 +1057,8 @@ variants! {
         Range,
         Bool,
         Ref(String),
+        /// A toolbar select over these options; its empty first option narrows nothing.
+        Select(Vec<String>),
     }
 }
 
@@ -1434,7 +1450,7 @@ mod tests {
             (Primitive::NAME, Primitive::VARIANTS, true),
             (InvokeOutcome::NAME, InvokeOutcome::VARIANTS, false),
             (FieldValue::NAME, FieldValue::VARIANTS, true),
-            (FilterKind::NAME, FilterKind::VARIANTS, false),
+            (FilterKind::NAME, FilterKind::VARIANTS, true),
         ] {
             assert_eq!(registered.get(name), Some(&(variants, drawn)), "{name}");
         }

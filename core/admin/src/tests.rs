@@ -2486,3 +2486,60 @@ async fn a_search_hit_opens_its_entity_or_its_page() {
 
     cleanup_user(&pool, &user).await;
 }
+
+/// A page passes to its panels, and the panel route to its provider, only the URL keys a
+/// page placing the contribution declares in `PageDecl::params`; an undeclared key is
+/// dropped while the portal's own keys keep their typed fields. A blank filter value reads
+/// as `any`.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_declared_page_params_reach_the_panel_query() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-page-params");
+    let cookie = operator_cookie(&pool, &user).await;
+    let page = controlplane::PageDecl {
+        id: "queue".to_string(),
+        title: "Queue".to_string(),
+        subtitle: String::new(),
+        head_actions: Vec::new(),
+        tiles: Vec::new(),
+        layout: controlplane::Layout::Stack(vec!["list".to_string()]),
+        params: vec!["region".to_string(), "tier".to_string()],
+    };
+    let list = contribution("list", Point::Page("queue".to_string()), Role::Viewer);
+    let manifest = Manifest { pages: vec![page], ..module("support", vec![list], Vec::new(), false) };
+    let mut table = players_table(vec![table_row(None, "Anna")]);
+    if let Primitive::DataTable(t) = &mut table {
+        let kind = controlplane::FilterKind::Select(vec!["eu".to_string(), "us".to_string()]);
+        let tier = controlplane::FilterKind::Enum(vec!["gold".to_string()]);
+        t.filters = vec![
+            controlplane::FilterDef { key: "region".to_string(), label: "Region".to_string(), kind },
+            controlplane::FilterDef { key: "tier".to_string(), label: "Tier".to_string(), kind: tier },
+        ];
+    }
+    let recording = Recording::new(manifest, &[("list", answer(table))]);
+    let engine = Arc::new(sourced(vec![recording.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) =
+        portal_get(&engine, &st, &cookie, "/admin/p/support/queue?region=eu&undeclared=x&q=ann").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains("region=eu"), "the declared key reaches the page's slots: {raw}");
+    assert!(raw.contains("q=ann"), "the search key reaches the page's slots: {raw}");
+    assert!(!raw.contains("undeclared"), "an undeclared key reaches no slot: {raw}");
+
+    let uri = "/admin/_panel/support/list?region=eu&tier=&undeclared=x&q=ann&state=open";
+    let (status, raw) = portal_get(&engine, &st, &cookie, uri).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let calls = recording.calls();
+    let req = calls.last().expect("the panel reaches its provider");
+    let declared = BTreeMap::from([("region".to_string(), "eu".to_string()), ("tier".to_string(), String::new())]);
+    assert_eq!(req.params, declared, "only the declared keys reach PanelQuery.params");
+    assert_eq!(req.search.as_deref(), Some("ann"));
+    assert_eq!(req.queue_state.as_deref(), Some("open"));
+    assert!(!raw.contains("undeclared"), "an undeclared key stays out of the panel's URLs: {raw}");
+    assert!(raw.contains(r#"<select class="select""#), "a Select filter draws a select: {raw}");
+    assert!(raw.contains("<option selected>eu</option><option>us</option>"), "{raw}");
+    assert!(raw.contains("Tier: <b>any</b>"), "a blank filter value narrows nothing: {raw}");
+
+    cleanup_user(&pool, &user).await;
+}

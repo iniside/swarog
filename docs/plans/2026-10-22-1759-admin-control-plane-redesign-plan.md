@@ -470,7 +470,8 @@ Primitive = DataTable(DataTable) | PropertyList(PropertyList) | KpiTile(KpiTile)
     `Point::EntityLabel` (Step 13c.2a2a errata; owner, 2026-11-19);
   - from Step 13c.2b2 until Step 13c.3a: Step 28's variant-coverage test, on
     `FilterKind::Select` (and on any other `FilterKind` variant 13c.2b2's owner decision
-    brings into the gate).
+    brings into the gate: `Range`, `Bool` and `Ref`, which no golden draws; Step 13c.2b2
+    errata, owner 2026-11-19).
 
   `wallet_form` (`main.rs:1086-1100`) returns empty strings on a missing form, so these
   checks fail rather than abort.

@@ -29,7 +29,7 @@ fn queue_and_table_views_carry_the_work_queue_table_contract() {
     assert_eq!(q["search_placeholder"], "Recipient, template or message id");
     assert_eq!(q["q"], "anna");
     assert_eq!(q["search_url"], "/admin/_panel/golden/panel?template=welcome");
-    assert_eq!(q["filters"], serde_json::json!([{"label": "Template", "value": "welcome"}]));
+    assert_eq!(q["filters"], serde_json::json!([{"label": "Template", "value": "welcome", "select": null}]));
     assert_eq!(q["foot"], true);
     assert_eq!(q["total"], "3 of 309 messages");
     assert_eq!(q["size"], 25);
