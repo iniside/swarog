@@ -532,7 +532,8 @@ async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
 /// A menu kind a compared, untabbed page draws must be declared: an undeclared `guild` menu on
 /// a mapped page fails the crawl, and its `EXCLUDED_MENUS` twin crawls clean, fetching the
 /// excluded menu once; an excluded menu answering 500 fails. The same menu on the page only
-/// the nav links is no compared page's and crawls clean.
+/// the nav links needs no declaration but is fetched once for its status: answering 200 it
+/// crawls clean, answering 500 it fails.
 #[tokio::test]
 async fn every_portal_menu_kind_on_a_compared_page_is_declared() {
     let target = other_mapped();
@@ -550,9 +551,11 @@ async fn every_portal_menu_kind_on_a_compared_page_is_declared() {
     assert!(raw.is_file(), "the excluded menu's body is kept: {}", raw.display());
     crawl_lists(site.with(guild, status(500)), PAGE_MAP, &excluded, false).await.assert_failed("an excluded menu answering 500");
 
-    let nav_only = healthy.clone().with(EXTRA_ROUTE, add_to_page(&healthy, EXTRA_ROUTE, &menu_button(guild)));
-    let c = crawl(nav_only, false).await;
+    let nav_only = healthy.clone().with(EXTRA_ROUTE, add_to_page(&healthy, EXTRA_ROUTE, &menu_button(guild))).with(guild, ok(MENU_BODY));
+    let c = crawl(nav_only.clone(), false).await;
     assert!(matches!(c.result, Ok(true)), "{:?}", c.result);
+    assert_eq!(c.server.requests().iter().filter(|r| r.path == guild && r.hx).count(), 1, "{:?}", c.server.requests());
+    crawl(nav_only.with(guild, status(500)), false).await.assert_failed("a menu on the nav-only page answering 500");
 }
 
 /// The production [`EXCLUDED_MENUS`] kinds are drawn by the healthy site and fetched; dropping
@@ -577,6 +580,7 @@ async fn a_stale_or_malformed_menu_exclusion_fails() {
         ("a page no untabbed entry names", EXCLUDED_MENUS.iter().copied().chain([("nosuchpage", "guild", "why")]).collect::<Vec<_>>()),
         ("listed twice", EXCLUDED_MENUS.iter().copied().chain([(host, kind, "again")]).collect()),
         ("no reason", others().chain([(host, kind, " ")]).collect()),
+        ("mapped and excluded", EXCLUDED_MENUS.iter().copied().chain([("players", "player", "why")]).collect()),
     ];
     for (why, excluded) in cases {
         crawl_lists(healthy.clone(), PAGE_MAP, &excluded, false).await.assert_failed(why);
@@ -584,7 +588,7 @@ async fn a_stale_or_malformed_menu_exclusion_fails() {
 }
 
 /// Menus are inventoried on untabbed pages only: a tab target whose page draws a `guild` menu
-/// no list declares crawls clean, and the menu is not fetched.
+/// no list declares crawls clean, the menu fetched once for its status; answering 500 it fails.
 #[tokio::test]
 async fn a_tab_target_needs_no_menu_entry() {
     let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.menu.is_none()).expect("PAGE_MAP lists player");
@@ -595,10 +599,11 @@ async fn a_tab_target_needs_no_menu_entry() {
     let healthy = Site::healthy();
     let guild = "/admin/_menu/guild/g-1";
     let tab = format!(r#"<button class="tab on" data-href="{}">items</button>{}"#, escaped(&tabbed), menu_button(guild));
-    let site = healthy.clone().with(&tabbed, add_to_page(&healthy, &route, &tab));
-    let c = crawl_map(site, &page_map).await;
+    let site = healthy.clone().with(&tabbed, add_to_page(&healthy, &route, &tab)).with(guild, ok(MENU_BODY));
+    let c = crawl_map(site.clone(), &page_map).await;
     assert!(matches!(c.result, Ok(true)), "{:?}", c.result);
-    assert!(!c.server.requests().iter().any(|r| r.path == guild), "{:?}", c.server.requests());
+    assert_eq!(c.server.requests().iter().filter(|r| r.path == guild && r.hx).count(), 1, "{:?}", c.server.requests());
+    crawl_map(site.with(guild, status(500)), &page_map).await.assert_failed("a menu on the tab page answering 500");
     let untabbed = healthy.clone().with(&route, add_to_page(&healthy, &route, &menu_button(guild)));
     crawl_map(untabbed, &page_map).await.assert_failed("the same menu on the untabbed player page");
 }
@@ -673,6 +678,24 @@ async fn an_empty_or_skipped_page_cannot_make_a_menu_exclusion_stale() {
     let players_only: Vec<_> = excluded.iter().copied().filter(|e| e.0 != "player" || e.1 != "guild").collect();
     let healthy = crawl_lists(Site::healthy(), PAGE_MAP, &players_only, true).await;
     healthy.assert_failed("players lists rows and draws no guild menu");
+}
+
+/// A `FirstRow` page exists only because its list had a row, so `--allow-empty` never makes
+/// its menus EMPTY: a player page without its `player` menu, or without a `guild` menu an
+/// exclusion names, fails the crawl with `--allow-empty` too.
+#[tokio::test]
+async fn a_first_row_page_is_never_empty_for_its_menus() {
+    let healthy = Site::healthy();
+    let route = follower_route("player");
+    let html = healthy.routes.get(&route).expect("the healthy site serves the player page").body.clone();
+    let button = menu_buttons("player");
+    assert!(!button.is_empty() && html.contains(&button), "the player page draws its menu: {html}");
+    let bare = healthy.clone().with(&route, ok(html.replace(&button, "")));
+    crawl_with(bare, false, true).await.assert_failed("--allow-empty: player draws no player menu");
+
+    let mut excluded = EXCLUDED_MENUS.to_vec();
+    excluded.push(("player", "guild", "why"));
+    crawl_lists(healthy, PAGE_MAP, &excluded, true).await.assert_failed("--allow-empty: player draws no guild menu");
 }
 
 #[test]

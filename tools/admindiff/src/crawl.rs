@@ -5,7 +5,9 @@
 //! target whose page draws no menu of its kind all fail the crawl. A menu target's output is
 //! the first such menu, assembled as `admin.js` opens it. Every menu kind an untabbed compared
 //! page draws is a menu target of that page or in [`EXCLUDED_MENUS`], whose menus are fetched
-//! once each and must answer 2xx; an exclusion its page does not draw fails as stale.
+//! once each and must answer 2xx; an exclusion its page does not draw fails as stale. Every
+//! other crawled page, one only the nav links or a tab page, has the first menu of each kind
+//! it draws fetched once, and it must answer 2xx.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -156,7 +158,8 @@ async fn run_with(cfg: &Config, page_map: &[Page], excluded_menus: &[(&str, &str
             continue;
         };
         let Some(url) = first_menu_url(doc, menu.kind) else {
-            if !lists_rows(doc) {
+            // A FirstRow host exists only because its list had a row, so it has no empty state.
+            if !matches!(entry.host().route, Route::FirstRow(_)) && !lists_rows(doc) {
                 println!("EMPTY {id}: {host} lists no row, nothing to crawl");
                 if !cfg.allow_empty {
                     failures.push(format!("{id}: {host} lists no row and draws no {} menu (--allow-empty skips it)", menu.kind));
@@ -270,10 +273,12 @@ fn lists_rows(doc: &[Node]) -> bool {
 
 /// The menu inventory of every untabbed, not pending `page_map` page the crawl reached: each
 /// menu kind it draws is a menu entry of that page or an `excluded_menus` entry, not both; an
-/// excluded kind's first menu is fetched and a non-2xx answer fails. An exclusion is listed
-/// once, with a reason, on such a page, and that page draws it; a page that was not crawled
-/// (`--allow-empty` skipped it, or it failed), or one that lists no row under
-/// `--allow-empty`, cannot make it stale.
+/// excluded kind's first menu is fetched and a non-2xx answer fails. Every other crawled page,
+/// a page only the nav links or a tab page, needs no declaration, but the first menu of each
+/// kind it draws is fetched and a non-2xx answer fails. An exclusion is listed once, with a
+/// reason, on such a page, and that page draws it; a page that was not crawled
+/// (`--allow-empty` skipped it, or it failed), or a page other than a `FirstRow` page that
+/// lists no row under `--allow-empty`, cannot make it stale.
 async fn check_menu_kinds(
     client: &Client,
     cfg: &Config,
@@ -283,9 +288,21 @@ async fn check_menu_kinds(
     failures: &mut Vec<String>,
 ) {
     let mut hosts: Vec<String> = Vec::new();
+    let mut first_row_hosts: Vec<String> = Vec::new();
     for p in page_map.iter().filter(|p| p.menu.is_none() && p.tab.is_none() && p.route != Route::Pending) {
         if !hosts.contains(&p.id()) {
             hosts.push(p.id());
+        }
+        if matches!(p.route, Route::FirstRow(_)) && !first_row_hosts.contains(&p.id()) {
+            first_row_hosts.push(p.id());
+        }
+    }
+    for (page, doc) in crawled.iter().filter(|(p, _)| !hosts.contains(p)) {
+        for (kind, url) in menu_kinds(doc) {
+            println!("menu {page} {kind}  {url}  (status only)");
+            if let Err(e) = fetch_menu(client, cfg, &format!("{page}.status-menu.{kind}"), &url).await {
+                failures.push(format!("{page} {kind} menu ({url}): {e:#}"));
+            }
         }
     }
     let mut drawn: Vec<(String, String)> = Vec::new();
@@ -328,8 +345,13 @@ async fn check_menu_kinds(
         }
         // A page that was not crawled, skipped or failed, has nothing to compare it with.
         let Some((_, doc)) = crawled.iter().find(|(p, _)| p == host) else { continue };
-        if cfg.allow_empty && !lists_rows(doc) {
-            println!("EMPTY EXCLUDED_MENUS {host} menu {kind}: {host} lists no row");
+        // A FirstRow host exists only because its list had a row, so it has no empty state.
+        if !first_row_hosts.iter().any(|h| h == host) && !lists_rows(doc) {
+            if cfg.allow_empty {
+                println!("EMPTY EXCLUDED_MENUS {host} menu {kind}: {host} lists no row");
+            } else {
+                failures.push(format!("EXCLUDED_MENUS lists {host} menu {kind}, and {host} lists no row (--allow-empty skips it)"));
+            }
             continue;
         }
         failures.push(format!("EXCLUDED_MENUS lists {host} menu {kind}, which {host} does not draw"));

@@ -38,6 +38,7 @@ USAGE:
             tab, a menu target whose page draws no menu of its kind (unless its page lists no
             row and --allow-empty), a menu kind an untabbed compared page draws that is neither
             a page map menu entry nor in pages::EXCLUDED_MENUS, an excluded menu answering
+            non-2xx, the first menu of a kind any other crawled page draws answering
             non-2xx, and an EXCLUDED_MENUS entry its page does not draw
   mock      render the mockup target through node into target/admindiff/mock/<target>.html
   diff      compare the target's class skeleton with the crawl's: the assembled page, or the
