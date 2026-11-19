@@ -249,3 +249,38 @@ fn the_real_mockup_draws_only_declared_tabs() {
     let e = format!("{:#}", validate_renders(&repo, PAGE_MAP, &fewer).expect_err("wallet undeclared"));
     assert_eq!(e, "tab drift:\n  mockup tab player.wallet is in neither PAGE_MAP nor EXCLUDED_TABS");
 }
+
+/// The real mockup, rendered through node: every menu it draws on a compared page is a menu
+/// entry, a menu entry whose page draws no such menu fails, and dropping one entry is caught.
+#[test]
+fn the_real_mockup_draws_only_declared_menus() {
+    let repo = crate::repo_root();
+    let fewer: Vec<crate::pages::Page> = PAGE_MAP.iter().copied().filter(|p| p.id() != "players.menu.user").collect();
+    assert_eq!(fewer.len() + 1, PAGE_MAP.len(), "PAGE_MAP lists players.menu.user");
+    let e = format!("{:#}", validate_renders(&repo, &fewer, EXCLUDED_TABS).expect_err("players' user menu undeclared"));
+    assert_eq!(e, "menu drift:\n  mockup menu players.menu.user is not a PAGE_MAP menu entry");
+    let events = PAGE_MAP.iter().find(|p| p.page == "events").expect("PAGE_MAP lists events");
+    let menu = crate::pages::Menu { mock: "user", kind: "player" };
+    let mut more = PAGE_MAP.to_vec();
+    more.push(crate::pages::Page { menu: Some(menu), ..*events });
+    let e = format!("{:#}", validate_renders(&repo, &more, EXCLUDED_TABS).expect_err("events draws no user menu"));
+    assert_eq!(e, "P.events draws no user menu; the mockup has no such menu");
+}
+
+/// A menu target compares the two `.menu` popovers, not the pages, and needs no panel: the
+/// stand-in menu against the same menu is clean, and against a portal menu with one more item
+/// it is not.
+#[test]
+fn run_diff_compares_a_menu_target_by_its_menu() {
+    let repo = FakeRepo::new("diff-menu", &mock_html(&body(true)));
+    let same = crate::mock::mock_tests::MOCK_MENU.replace("{id}", "user").replace("{arg}", "players");
+    let same = same.replace(r#"<div class="frag"><span class="frag-label">user</span>"#, "").replacen("</div></div>", "</div>", 1);
+    let menu = |inner: &str| format!(r#"<div class="menu" data-menu-popup="">{inner}</div>"#);
+    let dir = ScratchDir::new("diff-menu-crawl");
+    write(&dir.path().join(crawl::CLEAN_MARKER), "");
+    write(&dir.path().join("players.menu.user.html"), &menu(&same));
+    assert!(run_diff(repo.path(), "players.menu.user", dir.path(), false).expect("runs"), "the same menu is clean");
+    let more = format!(r#"{same}<div class="menu-item"><span>more</span></div>"#);
+    write(&dir.path().join("players.menu.user.html"), &menu(&more));
+    assert!(!run_diff(repo.path(), "players.menu.user", dir.path(), false).expect("runs"), "a portal-only item");
+}

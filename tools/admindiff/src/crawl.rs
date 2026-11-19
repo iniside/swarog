@@ -1,8 +1,9 @@
 //! `admindiff crawl`: log in, fetch every page the nav links and the page map name, load
 //! each page's slots the way htmx does, and write the responses under the run directory.
 //! Every declared target must be reached: a mapped page that fails, a `FirstRow` page whose
-//! list has no row (unless `--allow-empty`) and a tab the portal does not select all fail
-//! the crawl.
+//! list has no row (unless `--allow-empty`), a tab the portal does not select and a menu
+//! target whose page draws no menu of its kind all fail the crawl. A menu target's output is
+//! the first such menu, assembled as `admin.js` opens it.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -12,7 +13,7 @@ use reqwest::{Client, StatusCode};
 
 use crate::assemble::{assemble, pending_slots};
 use crate::html::{self, find_all, find_in, Element, Node};
-use crate::pages::{with_tab, Page, Route, PAGE_MAP};
+use crate::pages::{with_tab, Menu, Page, Route, PAGE_MAP};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Written into the run directory only by a clean crawl; `diff` refuses a run without it.
@@ -62,7 +63,12 @@ async fn run_with(cfg: &Config, page_map: &[Page]) -> Result<bool> {
 
     let mut targets: Vec<(String, String)> = Vec::new();
     let mut followers: Vec<(&Page, &str)> = Vec::new();
+    let mut menus: Vec<(&Page, Menu)> = Vec::new();
     for p in page_map {
+        if let Some(menu) = p.menu {
+            menus.push((p, menu));
+            continue;
+        }
         match p.route {
             Route::Mapped(route) => targets.push((p.page.to_string(), route.to_string())),
             Route::FirstRow(list) => followers.push((p, list)),
@@ -78,7 +84,9 @@ async fn run_with(cfg: &Config, page_map: &[Page]) -> Result<bool> {
     std::fs::create_dir_all(cfg.out.join("raw")).with_context(|| format!("create {}", cfg.out.display()))?;
     let mut fragments = 0;
     let mut pages = targets.len();
+    // Each crawled target's id and assembled page, and the ids `--allow-empty` skipped.
     let mut crawled: Vec<(String, Vec<Node>)> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
     for (page, route) in &targets {
         println!("page {page}  {route}");
         match crawl_page(&client, cfg, page, route, &mut failures).await {
@@ -100,6 +108,7 @@ async fn run_with(cfg: &Config, page_map: &[Page]) -> Result<bool> {
             if !cfg.allow_empty {
                 failures.push(format!("{page}: {list} lists no row to follow (--allow-empty skips it)"));
             }
+            skipped.push(page);
             continue;
         };
         let route = match entry.tab {
@@ -116,8 +125,29 @@ async fn run_with(cfg: &Config, page_map: &[Page]) -> Result<bool> {
                         failures.push(format!("{page} ({route}): the page does not select tab {tab}; the portal has no such tab"));
                     }
                 }
+                crawled.push((page, doc));
             }
             Err(e) => failures.push(format!("{page} ({route}): {e:#}")),
+        }
+    }
+    for (entry, menu) in menus {
+        let id = entry.id();
+        let host = entry.host().id();
+        if skipped.contains(&host) {
+            println!("EMPTY {id}: its page {host} was skipped, nothing to crawl");
+            continue;
+        }
+        let Some((_, doc)) = crawled.iter().find(|(p, _)| *p == host) else {
+            failures.push(format!("{id}: its page {host} was not crawled"));
+            continue;
+        };
+        let Some(url) = first_menu_url(doc, menu.kind) else {
+            failures.push(format!("{id}: {host} draws no {} menu; the portal has no such menu", menu.kind));
+            continue;
+        };
+        println!("menu {id}  {url}");
+        if let Err(e) = crawl_menu(&client, cfg, &id, &url).await {
+            failures.push(format!("{id} ({url}): {e:#}"));
         }
     }
     if fragments == 0 {
@@ -184,8 +214,30 @@ fn selects_tab(doc: &[Node], tab: &str) -> bool {
     .is_some()
 }
 
-/// Fetches one page, its slots round by round and its row menus; returns the fragment count
-/// and the assembled page.
+/// The `data-menu-url` of the first element in `doc` that opens a `kind` menu.
+fn first_menu_url(doc: &[Node], kind: &str) -> Option<String> {
+    let prefix = format!("/admin/_menu/{kind}/");
+    find_in(doc, &|e| e.attr("data-menu-url").is_some_and(|u| u.starts_with(&prefix)))
+        .and_then(|e| e.attr("data-menu-url"))
+        .map(str::to_string)
+}
+
+/// Fetches the menu at `url` as `admin.js` does and writes it as `<id>.html`, inside the
+/// `.menu` popover `admin.js` puts it in; a non-2xx answer fails.
+async fn crawl_menu(client: &Client, cfg: &Config, id: &str, url: &str) -> Result<()> {
+    let resp = client.get(format!("{}{url}", cfg.base_url)).header("HX-Request", "true").send().await.context("GET")?;
+    let status = resp.status();
+    let body = resp.text().await.context("read body")?;
+    write(&cfg.out.join("raw").join(format!("{id}.html")), &body)?;
+    if !status.is_success() {
+        bail!("answered {status}");
+    }
+    html::parse(&body).context("parse menu")?;
+    write(&cfg.out.join(format!("{id}.html")), &format!(r#"<div class="menu" data-menu-popup="">{body}</div>"#))
+}
+
+/// Fetches one page and its slots round by round; returns the fragment count and the
+/// assembled page.
 async fn crawl_page(
     client: &Client,
     cfg: &Config,
@@ -240,23 +292,6 @@ async fn crawl_page(
         doc = assemble(doc, parsed).context("assemble")?;
     }
     write(&cfg.out.join(format!("{page}.html")), &html::serialize(&doc))?;
-
-    let mut menus = Vec::new();
-    find_all(&doc, &|e| e.attr("data-menu-url").is_some(), &mut menus);
-    let mut seen: Vec<&str> = Vec::new();
-    for m in menus {
-        let url = m.attr("data-menu-url").unwrap_or_default();
-        if seen.contains(&url) {
-            continue;
-        }
-        seen.push(url);
-        let status = client.get(format!("{}{url}", cfg.base_url)).header("HX-Request", "true").send().await.map(|r| r.status());
-        match status {
-            Ok(s) if s.is_success() => println!("  menu {} {url}", s.as_u16()),
-            Ok(s) => failures.push(format!("{page}: menu {url} answered {s}")),
-            Err(e) => failures.push(format!("{page}: menu {url}: {e}")),
-        }
-    }
     Ok((count, doc))
 }
 

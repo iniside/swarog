@@ -37,10 +37,21 @@ pub const PORTAL_STRIP: &[(&str, Strip)] = &[("slot", Strip::Unwrap)];
 /// modal root sit outside it; the mockup builds those in the DOM on interaction.
 pub const ROOT_CLASS: &str = "app";
 
+/// The element a menu target is compared from: the popover both sides open.
+pub const MENU_CLASS: &str = "menu";
+
+/// What the mockup adds to a menu: its preview labels around each module's group.
+pub const MOCK_MENU_STRIP: &[(&str, Strip)] = &[("frag", Strip::Unwrap), ("frag-label", Strip::Remove)];
+
 /// The `.app` element of `doc` with `strip` applied. Every strip entry must match on this
 /// side, so a dead entry is an error.
 pub fn prepare(doc: &[Node], strip: &[(&str, Strip)], side: &str) -> Result<Element> {
-    let Some(root) = find_in(doc, &|e| e.has_class(ROOT_CLASS)) else { bail!("{side}: no .{ROOT_CLASS} element") };
+    prepare_at(doc, ROOT_CLASS, strip, side)
+}
+
+/// [`prepare`] from the first element of class `root_class`.
+pub fn prepare_at(doc: &[Node], root_class: &str, strip: &[(&str, Strip)], side: &str) -> Result<Element> {
+    let Some(root) = find_in(doc, &|e| e.has_class(root_class)) else { bail!("{side}: no .{root_class} element") };
     let mut dead = Vec::new();
     for (class, _) in strip {
         if root.find(&|e| e.has_class(class)).is_none() {

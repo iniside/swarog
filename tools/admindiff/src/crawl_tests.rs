@@ -66,6 +66,7 @@ fn panel_url(page: &str) -> String {
 fn mapped() -> Vec<Target> {
     PAGE_MAP
         .iter()
+        .filter(|p| p.menu.is_none())
         .filter_map(|p| match p.route {
             Route::Mapped(route) => Some(Target { page: p.page, route, slot: panel_url(p.page) }),
             Route::FirstRow(_) | Route::Pending => None,
@@ -77,11 +78,31 @@ fn mapped() -> Vec<Target> {
 fn followers() -> Vec<(&'static str, &'static str)> {
     PAGE_MAP
         .iter()
+        .filter(|p| p.menu.is_none() && p.tab.is_none())
         .filter_map(|p| match p.route {
             Route::FirstRow(list) => Some((p.page, list)),
             Route::Mapped(_) | Route::Pending => None,
         })
         .collect()
+}
+
+/// Every menu entry of [`PAGE_MAP`] on an untabbed page: its target id, host page and kind.
+fn menus() -> Vec<(String, &'static str, &'static str)> {
+    PAGE_MAP.iter().filter(|p| p.tab.is_none()).filter_map(|p| p.menu.map(|m| (p.id(), p.page, m.kind))).collect()
+}
+
+/// The menu the healthy site's page `page` opens for its `kind` menu entry.
+fn menu_url(kind: &str, page: &str) -> String {
+    format!("/admin/_menu/{kind}/{page}")
+}
+
+/// The menu body the healthy site serves at every [`menu_url`].
+const MENU_BODY: &str = r#"<div class="menu-group"><span>accounts</span></div><button class="menu-item"><span>Open</span></button>"#;
+
+/// The buttons page `page` draws for its menu entries, as the portal's template writes them.
+fn menu_buttons(page: &str) -> String {
+    let button = |kind: &str| format!(r#"<button class="btn sm icon ghost" data-menu-url="{}"></button>"#, escaped(&menu_url(kind, page)));
+    menus().iter().filter(|(_, host, _)| *host == page).map(|(_, _, kind)| button(kind)).collect()
 }
 
 /// The entity route the healthy site's list page links first for follower `page`.
@@ -150,7 +171,9 @@ fn shell(nav_links: &str, h1: &str, content: &str) -> String {
 impl Site {
     /// Clean: the dashboard, every mapped page of [`PAGE_MAP`] and one page only the nav
     /// links, each with one slot whose fragment is in the ok state; a list page's fragment
-    /// lists rows whose first opens its follower's entity page, which has one slot too.
+    /// lists rows whose first opens its follower's entity page, which has one slot too. A page
+    /// hosting menu entries draws their buttons ([`menu_buttons`]), whose menus answer
+    /// [`MENU_BODY`].
     fn healthy() -> Site {
         Site::with_content(&slot)
     }
@@ -169,13 +192,16 @@ impl Site {
             let title = if *route == DASHBOARD { "Dashboard" } else { page };
             let listed: String =
                 followers().iter().filter(|(_, list)| list == page).map(|(f, _)| rows(&follower_route(f))).collect();
-            routes.insert(route.to_string(), ok(shell(&links, title, &content(slot_url))));
+            routes.insert(route.to_string(), ok(shell(&links, title, &format!("{}{}", content(slot_url), menu_buttons(page)))));
             routes.insert(slot_url.clone(), ok(fragment(Some("ok"), &format!("{page} panel"), &listed)));
         }
         for (page, _) in followers() {
             let slot_url = panel_url(page);
-            routes.insert(follower_route(page), ok(shell(&links, page, &content(&slot_url))));
+            routes.insert(follower_route(page), ok(shell(&links, page, &format!("{}{}", content(&slot_url), menu_buttons(page)))));
             routes.insert(slot_url, ok(fragment(Some("ok"), &format!("{page} panel"), "")));
+        }
+        for (_, page, kind) in menus() {
+            routes.insert(menu_url(kind, page), ok(MENU_BODY));
         }
         Site { login: Response { status: 303, location: Some(DASHBOARD), body: String::new() }, routes, chain_depth: 0 }
     }
@@ -429,16 +455,33 @@ async fn slots_load_for_at_most_max_rounds() {
     crawl(chained(MAX_ROUNDS), false).await.assert_failed("one round more than MAX_ROUNDS");
 }
 
+/// The `players.menu.user` target: the crawl fetches the first `player` menu the players
+/// page draws, with `HX-Request`, and writes it inside a `.menu` as `players.menu.user.html`;
+/// a menu answering 500 and a page that draws no `player` menu each fail the crawl. Another
+/// kind's menu, before it on the page, is not fetched.
 #[tokio::test]
-async fn a_non_2xx_row_menu_fails() {
-    let menu = r#"<button class="btn sm icon ghost" data-menu-url="/admin/_menu/player/p-1"></button>"#;
-    let site = Site::healthy().with(&other_mapped().slot, ok(fragment(Some("ok"), "Subscriptions", menu)));
-    let fine = crawl(site.clone().with("/admin/_menu/player/p-1", ok("<div class=\"menu-group\"></div>")), false).await;
+async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
+    let (id, page, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let healthy = Site::healthy();
+    let route = mapped().into_iter().find(|t| t.page == page).expect("players is mapped").route;
+    let host = healthy.routes.get(route).expect("the healthy site serves players").body.clone();
+    let button = menu_buttons(page);
+    assert!(host.contains(&button), "the players page draws its menu button");
+    let other = format!(r#"<button data-menu-url="{}"></button>"#, escaped("/admin/_menu/guild/g-1"));
+    let site = healthy.clone().with(route, ok(host.replacen(&button, &format!("{other}{button}"), 1)));
+
+    let fine = crawl(site.clone(), false).await;
     assert!(matches!(fine.result, Ok(true)), "{:?}", fine.result);
-    let menus: Vec<Request> =
-        fine.server.requests().into_iter().filter(|r| r.path.starts_with("/admin/_menu/")).collect();
-    assert_eq!(menus.len(), 1, "a menu is fetched once: {menus:?}");
-    crawl(site.with("/admin/_menu/player/p-1", status(500)), false).await.assert_failed("a 500 row menu");
+    let fetched: Vec<Request> = fine.server.requests().into_iter().filter(|r| r.path.starts_with("/admin/_menu/")).collect();
+    let url = menu_url(kind, page);
+    assert_eq!(fetched.iter().filter(|r| r.path == url && r.hx).count(), 1, "{fetched:?}");
+    assert!(!fetched.iter().any(|r| r.path.contains("guild")), "another kind's menu is not fetched: {fetched:?}");
+    let written = std::fs::read_to_string(fine.out.path().join("run").join(format!("{id}.html"))).expect("the menu is written");
+    assert_eq!(written, format!(r#"<div class="menu" data-menu-popup="">{MENU_BODY}</div>"#));
+
+    crawl(site.with(&url, status(500)), false).await.assert_failed("a 500 menu");
+    let bare = healthy.with(route, ok(host.replacen(&button, &other, 1)));
+    crawl(bare, false).await.assert_failed("players draws no player menu");
 }
 
 /// `crawl_page`'s status check: a page answering 500 fails even when its body, a whole page
@@ -506,7 +549,7 @@ fn selects_tab_needs_the_selected_tab_with_that_id() {
 /// the tab selected crawls clean and writes `player.items.html`.
 #[tokio::test]
 async fn a_tab_target_fetches_its_tab_and_fails_unless_the_page_selects_it() {
-    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none()).expect("PAGE_MAP lists player");
+    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.menu.is_none()).expect("PAGE_MAP lists player");
     let mut page_map = PAGE_MAP.to_vec();
     page_map.push(Page { tab: Some("items"), ..*player });
     let route = follower_route("player");

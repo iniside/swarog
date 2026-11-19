@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    boot_key, lookup, mockup_pages, validate, validate_lists, validate_tabs, with_tab, DrawnTabs, Page, Route, EXCLUDED,
-    EXCLUDED_TABS, PAGE_MAP,
+    boot_key, lookup, mockup_pages, validate, validate_lists, validate_menus, validate_tabs, with_tab, DrawnTabs, Menu, Page,
+    Route, EXCLUDED, EXCLUDED_TABS, PAGE_MAP,
 };
 use crate::tests::ScratchDir;
 
@@ -84,7 +84,8 @@ fn lookup_returns_mapped_first_row_and_pending_pages_and_refuses_excluded_and_un
 #[test]
 fn the_const_lists_are_disjoint_unique_and_reasoned() {
     let mut seen = std::collections::BTreeSet::new();
-    for page in PAGE_MAP.iter().map(|p| p.page).chain(EXCLUDED.iter().map(|(p, _)| *p)) {
+    let pages = PAGE_MAP.iter().filter(|p| p.tab.is_none() && p.menu.is_none()).map(|p| p.page);
+    for page in pages.chain(EXCLUDED.iter().map(|(p, _)| *p)) {
         assert!(seen.insert(page), "{page} is listed twice");
     }
     assert!(EXCLUDED.iter().all(|(_, why)| !why.trim().is_empty()));
@@ -92,8 +93,8 @@ fn the_const_lists_are_disjoint_unique_and_reasoned() {
 
 // ---- validate_lists: each defect beside its clean twin --------------------------------
 
-const MAPPED: Page = Page { page: "a", route: Route::Mapped("/admin/a"), search: "", tab: None };
-const PENDING: Page = Page { page: "b", route: Route::Pending, search: "", tab: None };
+const MAPPED: Page = Page { page: "a", route: Route::Mapped("/admin/a"), search: "", tab: None, menu: None };
+const PENDING: Page = Page { page: "b", route: Route::Pending, search: "", tab: None, menu: None };
 
 /// Mockup pages `a`, `b` and `c`.
 fn abc() -> BTreeMap<String, String> {
@@ -139,7 +140,7 @@ fn validate_lists_rejects_an_excluded_page_without_a_reason() {
 
 #[test]
 fn validate_lists_rejects_an_unknown_page_in_either_list() {
-    let z = Page { page: "z", route: Route::Pending, search: "", tab: None };
+    let z = Page { page: "z", route: Route::Pending, search: "", tab: None, menu: None };
     let mapped = lists_drift(&[MAPPED, PENDING, z], &[("c", "why")]);
     assert_eq!(mapped, "page map drift:
   PAGE_MAP lists z, which is not a mockup page");
@@ -150,7 +151,7 @@ fn validate_lists_rejects_an_unknown_page_in_either_list() {
 
 #[test]
 fn validate_lists_rejects_a_first_row_page_following_a_page_that_is_not_mapped() {
-    let follows = |list: &'static str| Page { page: "c", route: Route::FirstRow(list), search: "", tab: None };
+    let follows = |list: &'static str| Page { page: "c", route: Route::FirstRow(list), search: "", tab: None, menu: None };
     validate_lists(&abc(), &[MAPPED, PENDING, follows("a")], &[]).expect("following a Mapped page passes");
     let pending = lists_drift(&[MAPPED, PENDING, follows("b")], &[]);
     assert_eq!(pending, "page map drift:
@@ -162,7 +163,7 @@ fn validate_lists_rejects_a_first_row_page_following_a_page_that_is_not_mapped()
 
 // ---- tab targets ---------------------------------------------------------------------
 
-const FOLLOWS: Page = Page { page: "c", route: Route::FirstRow("a"), search: "?u=x", tab: None };
+const FOLLOWS: Page = Page { page: "c", route: Route::FirstRow("a"), search: "?u=x", tab: None, menu: None };
 
 #[test]
 fn a_tab_entry_has_its_own_id_and_adds_its_tab_to_the_search() {
@@ -268,4 +269,51 @@ fn every_excluded_tab_names_a_first_row_page() {
         assert!(PAGE_MAP.iter().any(|p| p.page == page && matches!(p.route, Route::FirstRow(_))), "{id}");
         assert!(!tab.is_empty(), "{id}");
     }
+}
+
+// ---- menu targets --------------------------------------------------------------------
+
+const MENU: Menu = Menu { mock: "user", kind: "player" };
+
+#[test]
+fn a_menu_entry_has_its_own_id_and_its_host_is_the_entry_without_it() {
+    let menu = Page { menu: Some(MENU), ..MAPPED };
+    assert_eq!((menu.id(), menu.host()), ("a.menu.user".to_string(), MAPPED));
+    let tabbed = Page { tab: Some("items"), menu: Some(MENU), ..FOLLOWS };
+    assert_eq!(tabbed.id(), "c.items.menu.user");
+    assert_eq!(tabbed.host().id(), "c.items");
+}
+
+#[test]
+fn validate_lists_checks_menu_entries() {
+    let menu = Page { menu: Some(MENU), ..MAPPED };
+    validate_lists(&abc(), &[MAPPED, PENDING, menu], &[("c", "why")]).expect("a menu of a listed page passes");
+    let orphan = lists_drift(&[PENDING, menu], &[("c", "why")]);
+    assert_eq!(orphan, "page map drift:\n  PAGE_MAP a.menu.user is a menu of a, which has no entry with the same route");
+    let moved = Page { search: "?u=x", ..menu };
+    let e = lists_drift(&[MAPPED, PENDING, moved], &[("c", "why")]);
+    assert_eq!(e, "page map drift:\n  PAGE_MAP a.menu.user is a menu of a, which has no entry with the same route");
+    let pending = lists_drift(&[MAPPED, PENDING, Page { menu: Some(MENU), ..PENDING }], &[("c", "why")]);
+    assert_eq!(pending, "page map drift:\n  PAGE_MAP b.menu.user names a menu of b, which is pending");
+    let bad = Page { menu: Some(Menu { mock: "User", kind: "play/er" }), ..MAPPED };
+    let e = lists_drift(&[MAPPED, PENDING, bad], &[("c", "why")]);
+    assert_eq!(
+        e,
+        concat!(
+            "page map drift:\n  PAGE_MAP a.menu.User names menu \"User\", which is not a [a-z0-9_-]+ id\n",
+            "  PAGE_MAP a.menu.User names kind \"play/er\", which is not a [a-z0-9_-]+ id",
+        )
+    );
+}
+
+#[test]
+fn validate_menus_needs_a_menu_entry_for_each_drawn_menu() {
+    let page_map = [MAPPED, Page { menu: Some(MENU), ..MAPPED }];
+    let drawn = |host: &str, ids: &[&str]| vec![(host.to_string(), ids.iter().map(|s| s.to_string()).collect::<Vec<_>>())];
+    validate_menus(&drawn("a", &["user"]), &page_map).expect("the drawn menu is an entry");
+    validate_menus(&drawn("a", &[]), &page_map).expect("a page that draws none");
+    let e = format!("{:#}", validate_menus(&drawn("a", &["user", "lock"]), &page_map).expect_err("lock undeclared"));
+    assert_eq!(e, "menu drift:\n  mockup menu a.menu.lock is not a PAGE_MAP menu entry");
+    let e = format!("{:#}", validate_menus(&drawn("c", &["user"]), &page_map).expect_err("another host"));
+    assert_eq!(e, "menu drift:\n  mockup menu c.menu.user is not a PAGE_MAP menu entry");
 }

@@ -12,15 +12,24 @@ use crate::tests::{write, ScratchDir};
 /// `PAGES.<page>` for each page. `render()` returns the given html with `{search}` replaced by
 /// `location.search`; after it, outside the html, a `FirstRow` page draws a tab bar as the real
 /// mockup does: a first tab, then every `PAGE_MAP` tab entry and `EXCLUDED_TABS` tab of the
-/// page, the one `location.search` names selected, else the first. `REG.mount` assigns the body
-/// and then runs `meta.after`, as the real registry does; the stand-in `after` prints
-/// [`AFTER_RAN`] and exits 0, so a harness that let it run would return that instead of the
-/// page.
+/// page, the one `location.search` names selected, else the first; then, as the real mockup
+/// does, a `UI.openMenu` button for each `PAGE_MAP` menu entry whose host is the page with
+/// the `tab` `location.search` names (none: an untabbed host), whose argument is the page.
+/// `UI.openMenu` appends a `.menu` holding [`MOCK_MENU`] with `{arg}` and `{id}` replaced.
+/// `REG.mount` assigns the body and then runs `meta.after`, as the real registry does; the
+/// stand-in `after` prints [`AFTER_RAN`] and exits 0, so a harness that let it run would
+/// return that instead of the page.
 pub(crate) struct FakeRepo {
     dir: ScratchDir,
 }
 
 pub(crate) const AFTER_RAN: &str = "AFTER-RAN";
+
+/// The stand-in menu body: one preview-labelled group, as the real `UI.openMenu` draws it.
+pub(crate) const MOCK_MENU: &str = concat!(
+    r#"<div class="frag"><span class="frag-label">{id}</span><div class="menu-group"><span>{id}</span></div>"#,
+    r#"<div class="menu-item"><span>{arg}</span></div></div>"#,
+);
 
 impl FakeRepo {
     pub(crate) fn new(name: &str, html: &str) -> FakeRepo {
@@ -35,13 +44,20 @@ impl FakeRepo {
             .iter()
             .map(|page| {
                 let first_row = PAGE_MAP.iter().any(|p| p.page == *page && matches!(p.route, Route::FirstRow(_)));
-                let mapped = PAGE_MAP.iter().filter(|p| p.page == *page).filter_map(|p| p.tab);
+                let mapped = PAGE_MAP.iter().filter(|p| p.page == *page && p.menu.is_none()).filter_map(|p| p.tab);
                 let prefix = format!("{page}.");
                 let excluded = EXCLUDED_TABS.iter().filter_map(|(id, _)| id.strip_prefix(prefix.as_str()));
                 let ids = if first_row { std::iter::once("first").chain(mapped).chain(excluded).collect() } else { Vec::new() };
                 (*page, ids)
             })
             .collect();
+        // Each page's menus: [host tab or null, menu id].
+        let mut menus: std::collections::BTreeMap<&str, Vec<(Option<&str>, &str)>> = std::collections::BTreeMap::new();
+        for p in PAGE_MAP {
+            if let Some(menu) = p.menu {
+                menus.entry(p.page).or_default().push((p.tab, menu.mock));
+            }
+        }
         for script in super::SCRIPTS {
             write(&dir.path().join(script), "// stand-in\n");
         }
@@ -58,15 +74,32 @@ impl FakeRepo {
                 "    + ' onclick=\"PAGES.tab=\\'' + id + '\\';REG.render()\">' + id + '</button>';\n",
                 "  return '<div class=\"tabs\">' + ids.map(tab).join(\"\") + '</div>';\n",
                 "}};\n",
+                "const MENUS = {menus};\n",
+                "const menuButtons = function (key) {{\n",
+                "  const tab = new URLSearchParams(location.search).get(\"tab\");\n",
+                "  return (MENUS[key] || []).filter(m => m[0] === tab).map(m =>\n",
+                "    '<button class=\"btn\" onclick=\"UI.openMenu(event,\\'' + m[1] + '\\',\\'' + key + '\\')\"></button>').join(\"\");\n",
+                "}};\n",
+                "var UI = {{ openMenu: function (ev, id, arg) {{\n",
+                "  ev.stopPropagation();\n",
+                "  const el = document.createElement(\"div\");\n",
+                "  el.className = \"menu\";\n",
+                "  el.innerHTML = {menu}.split(\"{{arg}}\").join(arg).split(\"{{id}}\").join(id);\n",
+                "  document.body.appendChild(el);\n",
+                "}} }};\n",
                 "for (const key of {keys}) PAGES[key] = {{\n",
                 "  meta: {{ after: function () {{ process.stdout.write({after}); process.exit(0); }} }},\n",
-                "  render: function () {{ return {html}.split(\"{{search}}\").join(location.search) + tabBar(TABS[key]); }},\n",
+                "  render: function () {{\n",
+                "    return {html}.split(\"{{search}}\").join(location.search) + tabBar(TABS[key]) + menuButtons(key);\n",
+                "  }},\n",
                 "}};\n",
             ),
             keys = serde_json::to_string(&pages).expect("json"),
             after = serde_json::to_string(AFTER_RAN).expect("json"),
             html = serde_json::to_string(html).expect("json"),
             tabs = serde_json::to_string(&tabs).expect("json"),
+            menus = serde_json::to_string(&menus).expect("json"),
+            menu = serde_json::to_string(MOCK_MENU).expect("json"),
         );
         write(&dir.path().join("UILayout/redesign/assets/registry.js"), &registry);
         FakeRepo { dir }
@@ -151,4 +184,33 @@ fn drawn_tabs_reads_every_tab_id_and_the_selected_one() {
     let open = doc(r#"<button class="tab" onclick="PAGES.tab='items">I</button>"#);
     let e = format!("{:#}", super::drawn_tabs(&open).expect_err("an unterminated id"));
     assert!(e.contains("does not close its PAGES.tab id"), "{e}");
+}
+
+#[test]
+fn menu_arg_reads_the_first_opener_of_that_menu() {
+    let doc = |html: &str| crate::html::parse(html).expect("parses");
+    let page = doc(concat!(
+        r#"<button onclick="UI.openMenu(event,'lock','L-1')"></button>"#,
+        r#"<button onclick="UI.openMenu(event,'user','aiko.tanaka')"></button>"#,
+        r#"<button onclick="UI.openMenu(event,'user','bo')"></button>"#,
+    ));
+    assert_eq!(super::menu_arg(&page, "players", "user").expect("drawn"), "aiko.tanaka");
+    let e = format!("{:#}", super::menu_arg(&page, "players", "use").expect_err("another id"));
+    assert_eq!(e, "P.players draws no use menu; the mockup has no such menu");
+    assert_eq!(super::drawn_menus(&page).expect("reads"), ["lock", "user"]);
+    assert!(super::drawn_menus(&doc("<div></div>")).expect("reads").is_empty());
+    let open = doc(r#"<button onclick="UI.openMenu(event,'user"></button>"#);
+    assert!(format!("{:#}", super::drawn_menus(&open).expect_err("unterminated")).contains("does not close its menu id"));
+}
+
+/// The real mockup's user menu, opened through the harness: a `.menu` whose groups are the
+/// registry's `entity.user.row_action` modules, with nothing of the page around it.
+#[test]
+fn the_harness_opens_the_real_user_menu() {
+    let out = super::render_menu(&real_repo(), "user", "aiko.tanaka").expect("opens");
+    assert!(out.starts_with(r#"<div class="menu">"#) && out.ends_with("</div>"), "{out}");
+    assert!(out.contains(r#"class="menu-group""#) && out.contains("Suspend account"), "{out}");
+    assert!(!out.contains(r#"class="app""#), "only the menu: {out}");
+    let e = format!("{:#}", super::render_menu(&real_repo(), "nosuchmenu", "x").expect_err("no such menu"));
+    assert!(e.contains("node failed rendering menu nosuchmenu"), "{e}");
 }

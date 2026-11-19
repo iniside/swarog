@@ -3,7 +3,10 @@
 //! `P.<key>` builder the harness renders. An entry that names a tab of a `FirstRow` page is
 //! its own target, `<page>.<tab>`, with its own crawl output and accept file. Every other tab
 //! the mockup draws on a `FirstRow` page, besides the one its untabbed entry renders
-//! selected, is in [`EXCLUDED_TABS`].
+//! selected, is in [`EXCLUDED_TABS`]. An entry that names a menu is its own target too,
+//! `<host>.menu.<menu>`: the first menu of that kind its host page draws, opened on both
+//! sides; every menu the mockup draws on a compared page has such an entry
+//! ([`validate_menus`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -21,7 +24,7 @@ pub enum Route {
     Pending,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Page {
     pub page: &'static str,
     pub route: Route,
@@ -30,16 +33,38 @@ pub struct Page {
     /// A tab of a `FirstRow` page: both sides add `tab=<id>` to their query, and a crawl
     /// or render that does not select it fails.
     pub tab: Option<&'static str>,
+    /// A menu drawn on the page this entry's route, search and tab name, its host: the crawl
+    /// fetches the first such menu the portal draws and the harness opens the first the
+    /// mockup draws; a host that draws none fails.
+    pub menu: Option<Menu>,
+}
+
+/// A row or header menu: the mockup opens it with `UI.openMenu(event,'<mock>','<arg>')`, the
+/// portal serves it at `/admin/_menu/<kind>/<id>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Menu {
+    pub mock: &'static str,
+    pub kind: &'static str,
 }
 
 impl Page {
-    /// The target's name: `<page>`, or `<page>.<tab>` for a tab entry. It names the
-    /// crawl's output, the accept file and the `--page` argument.
+    /// The target's name: `<page>`, `<page>.<tab>` for a tab entry, and `.menu.<menu>`
+    /// after either for a menu entry. It names the crawl's output, the accept file and the
+    /// `--page` argument. A tab id holds no `.`, so a menu id is never a tab's.
     pub fn id(&self) -> String {
-        match self.tab {
-            Some(tab) => format!("{}.{tab}", self.page),
-            None => self.page.to_string(),
+        let mut id = self.page.to_string();
+        if let Some(tab) = self.tab {
+            id = format!("{id}.{tab}");
         }
+        if let Some(menu) = self.menu {
+            id = format!("{id}.menu.{}", menu.mock);
+        }
+        id
+    }
+
+    /// The page a menu entry's menu is drawn on: this entry without its menu.
+    pub fn host(&self) -> Page {
+        Page { menu: None, ..*self }
     }
 
     /// The harness's `location.search`: [`Page::search`] plus the tab's `tab=<id>`.
@@ -58,21 +83,26 @@ pub fn with_tab(url: &str, tab: &str) -> String {
     format!("{url}{sep}tab={tab}")
 }
 
-fn is_tab_id(tab: &str) -> bool {
-    !tab.is_empty() && tab.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+fn is_id(id: &str) -> bool {
+    !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
+/// The user row menu (`registry.js` `UI.defineMenu("user")`), the portal's `player` row actions.
+const USER_MENU: Menu = Menu { mock: "user", kind: "player" };
+
 pub const PAGE_MAP: &[Page] = &[
-    Page { page: "index", route: Route::Mapped("/admin"), search: "", tab: None },
-    Page { page: "events", route: Route::Mapped("/admin/p/core.events/events"), search: "", tab: None },
-    Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "", tab: None },
-    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None },
-    Page { page: "apikeys", route: Route::Pending, search: "", tab: None },
-    Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None },
-    Page { page: "scheduler", route: Route::Pending, search: "", tab: None },
-    Page { page: "config", route: Route::Pending, search: "", tab: None },
-    Page { page: "audit", route: Route::Pending, search: "", tab: None },
-    Page { page: "economy", route: Route::Pending, search: "", tab: None },
+    Page { page: "index", route: Route::Mapped("/admin"), search: "", tab: None, menu: None },
+    Page { page: "events", route: Route::Mapped("/admin/p/core.events/events"), search: "", tab: None, menu: None },
+    Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "", tab: None, menu: None },
+    Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "", tab: None, menu: Some(USER_MENU) },
+    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None, menu: None },
+    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None, menu: Some(USER_MENU) },
+    Page { page: "apikeys", route: Route::Pending, search: "", tab: None, menu: None },
+    Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None },
+    Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None },
+    Page { page: "config", route: Route::Pending, search: "", tab: None, menu: None },
+    Page { page: "audit", route: Route::Pending, search: "", tab: None, menu: None },
+    Page { page: "economy", route: Route::Pending, search: "", tab: None, menu: None },
 ];
 
 const NO_LORE: &str = "no Lore module exists yet";
@@ -134,8 +164,9 @@ fn boot_key(src: &str) -> Option<String> {
 
 /// Checks [`PAGE_MAP`] and [`EXCLUDED`] against the mockup and each other: every listed
 /// page exists, no target is listed twice or in both lists, every mockup page is listed,
-/// every `FirstRow` names a `Mapped` page, and every tab entry has a `[a-z0-9_-]+` id and
-/// an untabbed `FirstRow` entry of its page with the same route.
+/// every `FirstRow` names a `Mapped` page, every tab entry has a `[a-z0-9_-]+` id and
+/// an untabbed `FirstRow` entry of its page with the same route, and every menu entry has
+/// `[a-z0-9_-]+` ids and a host entry ([`Page::host`]) of a page that is not pending.
 pub fn validate(mockup: &BTreeMap<String, String>) -> Result<()> {
     validate_lists(mockup, PAGE_MAP, EXCLUDED)
 }
@@ -165,14 +196,28 @@ pub(crate) fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page
                 problems.push(format!("PAGE_MAP {} follows {list}, which is not a Mapped page", p.page));
             }
         }
+        if let Some(menu) = p.menu {
+            let id = p.id();
+            for (what, name) in [("menu", menu.mock), ("kind", menu.kind)] {
+                if !is_id(name) {
+                    problems.push(format!("PAGE_MAP {id} names {what} {name:?}, which is not a [a-z0-9_-]+ id"));
+                }
+            }
+            let host = p.host();
+            if p.route == Route::Pending {
+                problems.push(format!("PAGE_MAP {id} names a menu of {}, which is pending", host.id()));
+            } else if !page_map.contains(&host) {
+                problems.push(format!("PAGE_MAP {id} is a menu of {}, which has no entry with the same route", host.id()));
+            }
+        }
         let Some(tab) = p.tab else { continue };
         let id = p.id();
-        if !is_tab_id(tab) {
+        if !is_id(tab) {
             problems.push(format!("PAGE_MAP {id} names tab {tab:?}, which is not a [a-z0-9_-]+ id"));
         }
         if !matches!(p.route, Route::FirstRow(_)) {
             problems.push(format!("PAGE_MAP {id} names a tab, which only a FirstRow page has"));
-        } else if !page_map.iter().any(|q| q.page == p.page && q.tab.is_none() && q.route == p.route) {
+        } else if !page_map.iter().any(|q| q.page == p.page && q.tab.is_none() && q.menu.is_none() && q.route == p.route) {
             problems.push(format!("PAGE_MAP {id} is a tab of {}, which has no untabbed entry with the same route", p.page));
         }
     }
@@ -197,7 +242,7 @@ pub fn validate_tabs(drawn: &[(&str, DrawnTabs)], page_map: &[Page], excluded_ta
     for (page, d) in drawn {
         for tab in d.tabs.iter().filter(|t| d.selected.as_ref() != Some(*t)) {
             let id = format!("{page}.{tab}");
-            let mapped = page_map.iter().any(|p| p.page == *page && p.tab == Some(tab.as_str()));
+            let mapped = page_map.iter().any(|p| p.page == *page && p.tab == Some(tab.as_str()) && p.menu.is_none());
             let excluded = excluded_tabs.iter().any(|(t, _)| *t == id);
             match (mapped, excluded) {
                 (false, false) => problems.push(format!("mockup tab {id} is in neither PAGE_MAP nor EXCLUDED_TABS")),
@@ -215,7 +260,7 @@ pub fn validate_tabs(drawn: &[(&str, DrawnTabs)], page_map: &[Page], excluded_ta
     };
     // A mapped tab the mockup stops drawing: without this, a markup change that hides every
     // tab from `drawn` would pass once no tab is left in EXCLUDED_TABS.
-    for p in page_map {
+    for p in page_map.iter().filter(|p| p.menu.is_none()) {
         let Some(tab) = p.tab else { continue };
         let id = format!("{}.{tab}", p.page);
         match drawn_as(&id) {
@@ -240,6 +285,24 @@ pub fn validate_tabs(drawn: &[(&str, DrawnTabs)], page_map: &[Page], excluded_ta
     }
     if !problems.is_empty() {
         bail!("tab drift:\n  {}", problems.join("\n  "));
+    }
+    Ok(())
+}
+
+/// Checks the menus the mockup draws on each compared target (`drawn`: the target's id and
+/// the `UI.openMenu` ids its render draws) against `page_map`: each is a menu entry of that
+/// target. A menu entry the mockup does not draw fails its own render ([`crate::mock::menu_arg`]).
+pub fn validate_menus(drawn: &[(String, Vec<String>)], page_map: &[Page]) -> Result<()> {
+    let mut problems = Vec::new();
+    for (host, menus) in drawn {
+        for menu in menus {
+            if !page_map.iter().any(|p| p.menu.is_some_and(|m| m.mock == menu) && p.host().id() == *host) {
+                problems.push(format!("mockup menu {host}.menu.{menu} is not a PAGE_MAP menu entry"));
+            }
+        }
+    }
+    if !problems.is_empty() {
+        bail!("menu drift:\n  {}", problems.join("\n  "));
     }
     Ok(())
 }
