@@ -426,7 +426,8 @@ pub struct SearchQuery {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchHit {
-    pub target: EntityRef,
+    /// The hit's one destination: an entity's page or a module page.
+    pub link: Link,
     pub title: String,
     pub subtitle: String,
     pub badge: Option<String>,

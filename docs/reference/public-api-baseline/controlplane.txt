@@ -1868,8 +1868,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for controlplane::SearchDecl
 impl core::panic::unwind_safe::UnwindSafe for controlplane::SearchDecl
 pub struct controlplane::SearchHit
 pub controlplane::SearchHit::badge: core::option::Option<alloc::string::String>
+pub controlplane::SearchHit::link: controlplane::Link
 pub controlplane::SearchHit::subtitle: alloc::string::String
-pub controlplane::SearchHit::target: controlplane::EntityRef
 pub controlplane::SearchHit::title: alloc::string::String
 impl core::clone::Clone for controlplane::SearchHit
 pub fn controlplane::SearchHit::clone(&self) -> Self

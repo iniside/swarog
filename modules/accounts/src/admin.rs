@@ -723,7 +723,7 @@ impl Provider for AccountsAdmin {
         Ok(rows
             .iter()
             .map(|row| SearchHit {
-                target: player_ref(&row.id),
+                link: Link::Entity(player_ref(&row.id)),
                 title: render_handle(&row.display_name, &row.discriminator),
                 subtitle: format!("{ACCOUNT_KIND} · {}", row.id),
                 badge: Some(ACCOUNT_STATUS.to_string()),

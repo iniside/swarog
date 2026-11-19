@@ -910,7 +910,7 @@ use std::collections::BTreeMap;
 use controlplane::{
     ActionDecl, ActionPoint, Align, Cell, CellKind, ContributionDecl, DataTable, Emphasis, EntityKindDecl, EntityRef,
     InvokeCall, InvokeOutcome, KpiTile, Manifest, PageInfo, Palette, PanelBody, PanelQuery, Point, Primitive,
-    PropertyList, Role, Row, SearchHit, SearchQuery, Source, Then,
+    Link, PropertyList, Role, Row, SearchDecl, SearchHit, SearchQuery, Source, Then,
 };
 
 use crate::engine::columns::{self, ColumnOutcome};
@@ -932,11 +932,12 @@ fn answer(primitive: Primitive) -> Answer {
 }
 
 /// A provider that records every `PanelQuery` it is asked and answers by contribution id; it
-/// counts invokes and refuses each.
+/// answers every search with its set hits, counts invokes and refuses each.
 struct Recording {
     manifest: Manifest,
     answers: Mutex<BTreeMap<String, Answer>>,
     calls: Mutex<Vec<PanelQuery>>,
+    hits: Mutex<Vec<SearchHit>>,
     invokes: AtomicU32,
 }
 
@@ -944,7 +945,11 @@ impl Recording {
     fn new(manifest: Manifest, answers: &[(&str, Answer)]) -> Arc<Recording> {
         let answers = answers.iter().map(|(id, a)| (id.to_string(), a.clone())).collect();
         let (answers, calls, invokes) = (Mutex::new(answers), Mutex::new(Vec::new()), AtomicU32::new(0));
-        Arc::new(Recording { manifest, answers, calls, invokes })
+        Arc::new(Recording { manifest, answers, calls, hits: Mutex::new(Vec::new()), invokes })
+    }
+
+    fn hits(&self, hits: Vec<SearchHit>) {
+        *self.hits.lock().unwrap() = hits;
     }
 
     fn answer(&self, contribution: &str, answer: Answer) {
@@ -972,7 +977,7 @@ impl controlplane::Provider for Recording {
     }
 
     async fn search(&self, _req: SearchQuery) -> Result<Vec<SearchHit>, opsapi::Error> {
-        Ok(Vec::new())
+        Ok(self.hits.lock().unwrap().clone())
     }
 
     async fn invoke(&self, _req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
@@ -2446,4 +2451,38 @@ async fn the_local_face_refuses_a_write_on_a_readonly_contribution() {
     let _ = face.invoke(call("kick")).await;
     let off = "an action off the read-only contribution reaches the provider";
     assert_eq!(storage.invokes.load(Ordering::SeqCst), 1, "{off}");
+}
+
+/// A search hit opens its one destination: an entity hit the entity's page, a page hit the
+/// module page with its params.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_search_hit_opens_its_entity_or_its_page() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-search-link");
+    let cookie = operator_cookie(&pool, &user).await;
+    let decl = SearchDecl {
+        kind: "player".to_string(),
+        label: "Players".to_string(),
+        icon: "user".to_string(),
+        deadline_ms: 0,
+    };
+    let manifest = Manifest { search: vec![decl], ..module("players", Vec::new(), Vec::new(), false) };
+    let recording = Recording::new(manifest, &[]);
+    let hit = |title: &str, link: Link| SearchHit { link, title: title.to_string(), subtitle: String::new(), badge: None };
+    let params = BTreeMap::from([("state".to_string(), "open".to_string())]);
+    recording.hits(vec![
+        hit("Anna", Link::Entity(EntityRef { kind: "player".to_string(), id: "p-1".to_string() })),
+        hit("Open tickets", Link::Page { module: "support".to_string(), page: "queue".to_string(), params }),
+    ]);
+    let engine = Arc::new(sourced(vec![recording as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_search?q=ann").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains(r#"href="&#x2f;admin&#x2f;e&#x2f;player&#x2f;p-1""#), "the entity hit opens the entity: {raw}");
+    let page = r#"href="&#x2f;admin&#x2f;p&#x2f;support&#x2f;queue?state=open""#;
+    assert!(raw.contains(page), "the page hit opens the page: {raw}");
+    assert_eq!(raw.matches(r#"<a class="palette-item"#).count(), 2, "{raw}");
+
+    cleanup_user(&pool, &user).await;
 }

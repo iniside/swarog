@@ -858,7 +858,7 @@ async fn search_route(
                     title: h.title.clone(),
                     subtitle: h.subtitle.clone(),
                     badge: h.badge.clone(),
-                    href: render::entity_url(&h.target),
+                    href: render::link_url(&h.link),
                 })
                 .collect(),
             error: g.error,
