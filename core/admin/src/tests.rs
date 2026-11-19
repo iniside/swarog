@@ -2537,6 +2537,16 @@ async fn only_declared_page_params_reach_the_panel_query() {
     assert!(raw.contains("region=eu"), "the declared key reaches the page's slots: {raw}");
     assert!(raw.contains("q=ann"), "the search key reaches the page's slots: {raw}");
     assert!(!raw.contains("undeclared"), "an undeclared key reaches no slot: {raw}");
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/p/support/queue?shard=s1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let list_slot = r#"hx-get="&#x2f;admin&#x2f;_panel&#x2f;support&#x2f;list""#;
+    assert!(raw.contains(list_slot), "the list slot carries no other page's key: {raw}");
+    assert!(!raw.contains("shard"), "another page's key reaches no slot of this page: {raw}");
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/p/support/ops?shard=s1&region=eu").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let tile_slot = r#"hx-get="&#x2f;admin&#x2f;_panel&#x2f;support&#x2f;load?shard=s1""#;
+    assert!(raw.contains(tile_slot), "a tile slot gets its page's keys: {raw}");
+    assert!(!raw.contains("region"), "a tile slot gets no other page's keys: {raw}");
 
     let uri = "/admin/_panel/support/list?region=eu&tier=&undeclared=x&shard=s1&q=ann&state=open&cursor=c&before=b";
     let (status, raw) = portal_get(&engine, &st, &cookie, uri).await;
@@ -2553,6 +2563,7 @@ async fn only_declared_page_params_reach_the_panel_query() {
     assert!(raw.contains(r#"<select class="select""#), "a Select filter draws a select: {raw}");
     assert!(raw.contains("<option selected>eu</option><option>us</option>"), "{raw}");
     assert!(raw.contains("Tier: <b>any</b>"), "a blank filter value narrows nothing: {raw}");
+    assert!(raw.contains("q=ann") && raw.contains("state=open"), "the panel's own links keep its typed keys: {raw}");
 
     let uri = "/admin/_panel/support/load?shard=s1&region=eu&range=7d";
     let (status, raw) = portal_get(&engine, &st, &cookie, uri).await;

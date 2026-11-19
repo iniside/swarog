@@ -456,6 +456,13 @@ async fn page(
         return missing_page(&p, &ctx, &snapshot, &headers, &query, miss).await;
     };
     let layout = render::layout_rows(&decl.layout);
+    // A `Link::Page` reaches every panel the page places, tiles and columns alike, through
+    // the typed search and queue-state keys and the keys the page declares.
+    let forwarded: Vec<(String, String)> = [render::QUERY_SEARCH, render::QUERY_STATE]
+        .into_iter()
+        .chain(decl.params.iter().map(String::as_str))
+        .filter_map(|key| query.get(key).map(|value| (key.to_string(), value.clone())))
+        .collect();
     let mut missing = Vec::new();
     let mut slots = |ids: &[String]| -> Vec<SlotView> {
         ids.iter()
@@ -464,31 +471,22 @@ async fn page(
                 if found.is_none() {
                     missing.push(id.clone());
                 }
-                found.map(|c| slot(&ctx.operator, &module, c, None, in_tiles(manifest, c)))
+                found.map(|c| {
+                    let mut s = slot(&ctx.operator, &module, c, None, in_tiles(manifest, c));
+                    s.url = render::with_param(&s.url, &forwarded, "", None);
+                    s
+                })
             })
             .collect()
     };
     let tiles = slots(&decl.tiles);
-    // A `Link::Page` reaches the page's panels through the typed search and queue-state keys
-    // and the keys the page declares.
-    let forwarded: Vec<(String, String)> = [render::QUERY_SEARCH, render::QUERY_STATE]
-        .into_iter()
-        .chain(decl.params.iter().map(String::as_str))
-        .filter_map(|key| query.get(key).map(|value| (key.to_string(), value.clone())))
-        .collect();
     let rows: Vec<LayoutRow> = layout
         .into_iter()
         .map(|(layout, ids)| LayoutRow {
             layout,
             columns: ids
                 .into_iter()
-                .map(|column| {
-                    let mut column = slots(column);
-                    for s in &mut column {
-                        s.url = render::with_param(&s.url, &forwarded, "", None);
-                    }
-                    column
-                })
+                .map(&mut slots)
                 .collect(),
         })
         .collect();
