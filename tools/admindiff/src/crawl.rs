@@ -15,7 +15,10 @@
 //! of its modules, fails unless `--allow-errors`, and a root state missing or neither `ok` nor
 //! `error` fails always. A slot fragment's `data-state` must be a panel state: `ok`, `empty`,
 //! `readonly` and `denied` pass, `error` and `stale` (a failed provider call) fail unless
-//! `--allow-errors`, and anything else fails always.
+//! `--allow-errors`, and anything else fails always. Only a crawl with no failure and without
+//! `--allow-errors` writes [`CLEAN_MARKER`]: a run with `--allow-errors` is a preview whose
+//! output can be read but never diffed, so a page drawn while a provider was down can never
+//! make an accept file. `--allow-empty` only skips a target, which writes no page to diff.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -34,7 +37,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const PANEL_PASS: &[&str] = &["ok", "empty", "readonly", "denied"];
 /// The panel states of a failed provider call, which fail unless `--allow-errors`.
 const PANEL_FAIL: &[&str] = &["error", "stale"];
-/// Written into the run directory only by a clean crawl; `diff` refuses a run without it.
+/// Written into the run directory only by a crawl with no failure and without `--allow-errors`;
+/// `diff` refuses a run without it.
 pub const CLEAN_MARKER: &str = "CLEAN";
 /// A fragment may hold slots of its own; past this many load rounds the page fails.
 const MAX_ROUNDS: usize = 4;
@@ -55,12 +59,12 @@ pub async fn run(cfg: &Config) -> Result<bool> {
     if !outcome.empty.is_empty() {
         println!("empty, nothing crawled: {}", outcome.empty.join(", "));
     }
-    Ok(outcome.clean)
+    Ok(outcome.passed)
 }
 
-/// How a crawl finished: clean or not, and the targets it reported EMPTY.
+/// How a crawl finished: without failures or not, and the targets it reported EMPTY.
 struct Outcome {
-    clean: bool,
+    passed: bool,
     empty: Vec<String>,
 }
 
@@ -194,15 +198,19 @@ async fn run_with(cfg: &Config, page_map: &[Page], excluded_menus: &[(&str, &str
     }
     println!("wrote {}", cfg.out.display());
     if failures.is_empty() {
-        write(&cfg.out.join(CLEAN_MARKER), "")?;
-        println!("crawl: {pages} page(s), {fragments} fragment(s), clean");
-        return Ok(Outcome { clean: true, empty: skipped });
+        if cfg.allow_errors {
+            println!("crawl: {pages} page(s), {fragments} fragment(s), no failures; --allow-errors makes it a preview, not marked {CLEAN_MARKER}");
+        } else {
+            write(&cfg.out.join(CLEAN_MARKER), "")?;
+            println!("crawl: {pages} page(s), {fragments} fragment(s), clean");
+        }
+        return Ok(Outcome { passed: true, empty: skipped });
     }
     eprintln!("crawl FAILED, {} problem(s):", failures.len());
     for f in &failures {
         eprintln!("  {f}");
     }
-    Ok(Outcome { clean: false, empty: skipped })
+    Ok(Outcome { passed: false, empty: skipped })
 }
 
 /// Logs in and returns the dashboard it lands on; anything but the dashboard shell fails.

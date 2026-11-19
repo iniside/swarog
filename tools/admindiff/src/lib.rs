@@ -31,7 +31,8 @@ USAGE:
 
   crawl     log in, fetch every nav page and mapped page, load their slots with HX-Request,
             fetch the first menu each menu target's page draws; writes
-            target/admindiff/<run>/ (and its CLEAN marker when clean) and fails on any
+            target/admindiff/<run>/ (and its CLEAN marker when it has no failure and runs without
+            --allow-errors: a run with it is a preview diff refuses) and fails on any
             non-2xx, a page or menu whose root data-state is error (a manifest source has never
             answered) or a fragment in the error or stale state (each unless --allow-errors), a
             root data-state missing or neither ok nor error, a fragment data-state missing or no
@@ -46,7 +47,8 @@ USAGE:
             neither ok nor error, and an EXCLUDED_MENUS entry its page does not draw
   mock      render the mockup target through node into target/admindiff/mock/<target>.html
   diff      compare the target's class skeleton with the crawl's: the assembled page, or the
-            menu popover of a menu target; refuses a crawl without its CLEAN marker, and fails
+            menu popover of a menu target; refuses a crawl without its CLEAN marker (one that
+            failed, did not finish or ran with --allow-errors), and fails
             on a difference not in tools/admindiff/accept/<target>.txt, a stale accept entry or
             a page with zero matched panels; prints each difference as ok, NEW or STALE. It
             also fails when a tab the mockup draws on an entity page is neither a page map tab
