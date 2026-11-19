@@ -674,13 +674,24 @@ async fn panel(
             None => return toast(&p, StatusCode::BAD_REQUEST, "entity must be kind:id".to_string()),
         },
     };
-    let declared = page_params(manifest, &contribution);
-    let owned =
-        [panels::QUERY_RANGE, render::QUERY_SEARCH, render::QUERY_CURSOR, render::QUERY_BEFORE, render::QUERY_STATE];
-    query.retain(|key, _| owned.contains(&key.as_str()) || declared.contains(key.as_str()));
-    let mut url_query: Vec<(String, String)> = raw_entity.into_iter().map(|e| ("entity".to_string(), e)).collect();
-    url_query.extend(query.iter().map(|(k, v)| (k.clone(), v.clone())));
     let raw_range = query.remove(panels::QUERY_RANGE);
+    let search = query.remove(render::QUERY_SEARCH);
+    let cursor = query.remove(render::QUERY_CURSOR);
+    let before = query.remove(render::QUERY_BEFORE);
+    let queue_state = query.remove(render::QUERY_STATE);
+    let declared = page_params(manifest, &contribution);
+    query.retain(|key, _| declared.contains(key.as_str()));
+    let mut kept = query.clone();
+    let typed = [
+        (panels::QUERY_RANGE, &raw_range),
+        (render::QUERY_SEARCH, &search),
+        (render::QUERY_CURSOR, &cursor),
+        (render::QUERY_BEFORE, &before),
+        (render::QUERY_STATE, &queue_state),
+    ];
+    kept.extend(typed.into_iter().filter_map(|(key, value)| value.clone().map(|v| (key.to_string(), v))));
+    let mut url_query: Vec<(String, String)> = raw_entity.into_iter().map(|e| ("entity".to_string(), e)).collect();
+    url_query.extend(kept);
     let range = if panels::is_dashboard(&decl.point) {
         match panels::parse_range(raw_range.as_deref()) {
             Ok(range) => Some(range),
@@ -689,15 +700,14 @@ async fn panel(
     } else {
         None
     };
-    let search = query.remove(render::QUERY_SEARCH);
     let req = PanelQuery {
         module: module.clone(),
         contribution: contribution.clone(),
         entity: entity.clone(),
         search: search.clone(),
-        cursor: query.remove(render::QUERY_CURSOR),
-        before: query.remove(render::QUERY_BEFORE),
-        queue_state: query.remove(render::QUERY_STATE),
+        cursor,
+        before,
+        queue_state,
         range,
         params: query,
         refs: Vec::new(),

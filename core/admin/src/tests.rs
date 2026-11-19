@@ -2506,8 +2506,18 @@ async fn only_declared_page_params_reach_the_panel_query() {
         layout: controlplane::Layout::Stack(vec!["list".to_string()]),
         params: vec!["region".to_string(), "tier".to_string()],
     };
+    let ops = controlplane::PageDecl {
+        id: "ops".to_string(),
+        title: "Ops".to_string(),
+        subtitle: String::new(),
+        head_actions: Vec::new(),
+        tiles: vec!["load".to_string()],
+        layout: controlplane::Layout::Stack(Vec::new()),
+        params: vec!["shard".to_string()],
+    };
     let list = contribution("list", Point::Page("queue".to_string()), Role::Viewer);
-    let manifest = Manifest { pages: vec![page], ..module("support", vec![list], Vec::new(), false) };
+    let load = contribution("load", Point::DashboardTile, Role::Viewer);
+    let manifest = Manifest { pages: vec![page, ops], ..module("support", vec![list, load], Vec::new(), false) };
     let mut table = players_table(vec![table_row(None, "Anna")]);
     if let Primitive::DataTable(t) = &mut table {
         let kind = controlplane::FilterKind::Select(vec!["eu".to_string(), "us".to_string()]);
@@ -2517,7 +2527,8 @@ async fn only_declared_page_params_reach_the_panel_query() {
             controlplane::FilterDef { key: "tier".to_string(), label: "Tier".to_string(), kind: tier },
         ];
     }
-    let recording = Recording::new(manifest, &[("list", answer(table))]);
+    let tiles = Primitive::KpiTiles(vec![kpi_tile(vec![1.0], None)]);
+    let recording = Recording::new(manifest, &[("list", answer(table)), ("load", answer(tiles))]);
     let engine = Arc::new(sourced(vec![recording.clone() as Arc<dyn controlplane::Provider>]).await);
 
     let (status, raw) =
@@ -2527,7 +2538,7 @@ async fn only_declared_page_params_reach_the_panel_query() {
     assert!(raw.contains("q=ann"), "the search key reaches the page's slots: {raw}");
     assert!(!raw.contains("undeclared"), "an undeclared key reaches no slot: {raw}");
 
-    let uri = "/admin/_panel/support/list?region=eu&tier=&undeclared=x&q=ann&state=open";
+    let uri = "/admin/_panel/support/list?region=eu&tier=&undeclared=x&shard=s1&q=ann&state=open&cursor=c&before=b";
     let (status, raw) = portal_get(&engine, &st, &cookie, uri).await;
     assert_eq!(status, StatusCode::OK, "{raw}");
     let calls = recording.calls();
@@ -2536,10 +2547,22 @@ async fn only_declared_page_params_reach_the_panel_query() {
     assert_eq!(req.params, declared, "only the declared keys reach PanelQuery.params");
     assert_eq!(req.search.as_deref(), Some("ann"));
     assert_eq!(req.queue_state.as_deref(), Some("open"));
+    assert_eq!(req.cursor.as_deref(), Some("c"));
+    assert_eq!(req.before.as_deref(), Some("b"));
     assert!(!raw.contains("undeclared"), "an undeclared key stays out of the panel's URLs: {raw}");
     assert!(raw.contains(r#"<select class="select""#), "a Select filter draws a select: {raw}");
     assert!(raw.contains("<option selected>eu</option><option>us</option>"), "{raw}");
     assert!(raw.contains("Tier: <b>any</b>"), "a blank filter value narrows nothing: {raw}");
+
+    let uri = "/admin/_panel/support/load?shard=s1&region=eu&range=7d";
+    let (status, raw) = portal_get(&engine, &st, &cookie, uri).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let calls = recording.calls();
+    let req = calls.last().expect("the tile reaches its provider");
+    assert_eq!(req.contribution, "load");
+    let shard = BTreeMap::from([("shard".to_string(), "s1".to_string())]);
+    assert_eq!(req.params, shard, "a tile gets its own page's keys and not another page's");
+    assert_eq!(req.range, Some(controlplane::TimeRange::D7), "the range reaches the typed field");
 
     cleanup_user(&pool, &user).await;
 }
