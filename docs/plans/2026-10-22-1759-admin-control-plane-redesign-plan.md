@@ -2618,6 +2618,24 @@ gate.
 - **Step 13d2 — menus diffed** (T3). `[opus]` core-implementer, after 13d1. The diffed menu
   body replaces the status-only check at `crawl.rs:210-223`. Files: `crawl.rs`, `mock.rs`,
   `lib.rs`.
+  - **Review fix (owner, 2026-11-19, review of 05489704):**
+    - Portal side: every `/admin/_menu/<kind>/` a crawled untabbed host draws is a `PAGE_MAP`
+      menu entry for that host or an `EXCLUDED_MENUS` entry with a reason; an excluded kind is
+      still fetched once and a non-2xx answer fails the crawl; an exclusion no host draws is
+      stale and fails. This replaces the coverage the deleted status-only check gave.
+    - Mockup side: the menu inventory comes from the mockup's own registry (the harness records
+      every `UI.defineMenu` id), not from matching `UI.openMenu(event,'…')` text; each id is a
+      menu entry, drawn only on pending or excluded pages, or excluded with a reason.
+    - Menus are collected on untabbed hosts only, so a tab entry needs no menu entry of its own.
+    - With `--allow-empty`, a menu whose host list is empty is reported EMPTY like the page;
+      the crawl test fixture draws the row-menu button inside the table rows, as the portal does.
+- **Step 13d2b — menu state marker.** `[opus]` core-implementer, after the 13d2 review fix,
+  before the first live crawl that writes a menu accept file. A menu group the portal draws
+  for an unavailable module carries a machine-readable state marker in the `core/admin` menu
+  template (as panels carry `data-state`), with a golden or route test; `crawl_menu` fails
+  on it unless `--allow-errors`, as an error-state page fragment does. Files: the
+  `core/admin` menu template and its test, `tools/admindiff/src/crawl.rs` and its test.
+  Review: core-reviewer plus proof-auditor.
 - **Step 13d3 — modals** (T2). `[opus]` core-implementer, after 13d2. Files: `pages.rs`,
   `crawl.rs`, `mock.rs`, `accept.rs` (the modal accept sections).
   - **Owner decision before dispatch:** how the harness runs a mockup JS opener: the
