@@ -10,11 +10,21 @@ import unittest
 HOOK = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "compact_gate.py")
 
 
+def usage_line(ctx):
+    return json.dumps({"type": "assistant", "message": {"model": "claude-opus-5-5", "usage": {
+        "input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": ctx}}})
+
+
 class Gate(unittest.TestCase):
+    @staticmethod
+    def usage(path, ctx):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(usage_line(ctx) + "\n")
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.main = os.path.join(self.tmp.name, "sess.jsonl")
-        open(self.main, "w").close()
+        self.usage(self.main, 160_000)
         self.sub = os.path.join(self.tmp.name, "sess", "subagents")
         os.makedirs(self.sub)
 
@@ -23,7 +33,7 @@ class Gate(unittest.TestCase):
 
     def agent(self, aid, finished, age=0):
         path = os.path.join(self.sub, "agent-" + aid + ".jsonl")
-        open(path, "w").close()
+        self.usage(path, 160_000)
         if age:
             t = time.time() - age
             os.utime(path, (t, t))
@@ -60,6 +70,7 @@ class Gate(unittest.TestCase):
         self.assertEqual(self.run_hook("manual"), "instructions")
 
     def test_subagent_auto_blocks_and_manual_is_silent(self):
+        self.agent("a1", finished=False)
         path = os.path.join(self.sub, "agent-a1.jsonl")
         self.assertEqual(self.run_hook("auto", transcript=path), "block")
         self.assertEqual(self.run_hook("auto", agent_id="a1"), "block")
@@ -67,8 +78,20 @@ class Gate(unittest.TestCase):
 
     def test_no_subagent_folder(self):
         lone = os.path.join(self.tmp.name, "lone.jsonl")
-        open(lone, "w").close()
+        self.usage(lone, 160_000)
         self.assertEqual(self.run_hook("auto", transcript=lone), "instructions")
+
+    def test_never_blocks_at_the_ceiling(self):
+        self.agent("a1", finished=False)
+        self.usage(self.main, 450_000)
+        self.assertEqual(self.run_hook("auto"), "instructions")
+        self.usage(os.path.join(self.sub, "agent-a1.jsonl"), 450_000)
+        self.assertEqual(self.run_hook("auto", agent_id="a1"), "silent")
+
+    def test_unknown_context_never_blocks(self):
+        self.agent("a1", finished=False)
+        open(self.main, "w").close()
+        self.assertEqual(self.run_hook("auto"), "instructions")
 
     def test_bad_input_fails_open(self):
         r = subprocess.run([sys.executable, "-I", HOOK], input="nope", capture_output=True, text=True, timeout=30)

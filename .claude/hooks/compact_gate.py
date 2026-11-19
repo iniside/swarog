@@ -7,7 +7,9 @@ The auto-compact window is set in .claude/settings.json (autoCompactWindow). On 
   - the main session's compaction is blocked while any subagent of the session is still working
     (no finished flag, transcript written in the last ACTIVE_SECONDS), so it fires at the first
     turn past the window after the step's agents have returned.
-A blocked proactive compaction is skipped and retried on the next turn past the window. When not
+A blocked proactive compaction is skipped and retried on the next turn past the window. Nothing is
+blocked at CEILING tokens or above, or when the context size is unknown: a blocked recovery
+compaction (after a real context-limit error) would fail the request. When not
 blocking, stdout is added to the summary instructions (manual /compact too). Any error exits 0 with
 no output, so compaction is never blocked by a hook bug.
 """
@@ -17,7 +19,9 @@ import os
 import sys
 import time
 
-ACTIVE_SECONDS = 20 * 60
+ACTIVE_SECONDS = 60 * 60
+CEILING = 400_000
+TAIL_BYTES = 1_000_000
 
 SUMMARY_INSTRUCTIONS = (
     "Keep, verbatim where short: the owner's decisions and rulings with their dates; the active plan "
@@ -33,6 +37,40 @@ def session_dir(transcript_path):
     if cut >= 0:
         return path[:cut]
     return path[:-6] if path.endswith(".jsonl") else None
+
+
+def last_context(path):
+    if not path or not os.path.isfile(path):
+        return None
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        f.seek(max(0, f.tell() - TAIL_BYTES))
+        lines = f.read().decode("utf-8", "replace").splitlines()
+    for line in reversed(lines):
+        if '"usage"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        message = entry.get("message") or {}
+        if entry.get("type") != "assistant" or message.get("model") == "<synthetic>":
+            continue
+        usage = message.get("usage") or {}
+        total = sum(int(usage.get(k) or 0) for k in (
+            "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
+        if total:
+            return total
+    return None
+
+
+def own_transcript(payload):
+    path = str(payload.get("transcript_path") or "")
+    agent_id = payload.get("agent_id")
+    if agent_id and "/subagents/" not in path.replace("\\", "/"):
+        base = session_dir(path)
+        return os.path.join(base, "subagents", "agent-" + str(agent_id) + ".jsonl") if base else None
+    return path
 
 
 def is_subagent(payload):
@@ -70,6 +108,9 @@ def main():
         if not isinstance(payload, dict):
             return
         auto = payload.get("trigger") == "auto"
+        if auto:
+            ctx = last_context(own_transcript(payload))
+            auto = bool(ctx) and ctx < CEILING
         if is_subagent(payload):
             if auto:
                 block("subagent: no auto-compaction; finish with a part hand-off past the context budget")
