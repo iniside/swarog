@@ -514,7 +514,7 @@ async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
     let site = healthy
         .clone()
         .with(&list_url, ok(list.replace(&button, &format!("{}{button}", menu_button(guild)))))
-        .with(guild, ok(r#"<div class="menu-group" data-state="ok"><span>guild</span></div><div class="menu-item"><span>guild</span></div>"#));
+        .with(guild, ok(MENU_BODY.replace("players", "guild")));
     let mut excluded = EXCLUDED_MENUS.to_vec();
     excluded.push((page, "guild", "another kind"));
 
@@ -556,10 +556,12 @@ async fn an_error_state_menu_group_fails_unless_errors_are_allowed() {
     clean(&crawl(healthy.clone(), false).await, "the healthy menu target");
     crawl(healthy.clone().with(&url, ok(down.clone())), false).await.assert_failed("an error-state menu target");
     clean(&crawl(healthy.clone().with(&url, ok(down.clone())), true).await, "--allow-errors: an error-state menu target");
-    crawl(healthy.clone().with(&url, ok(stateless)), true).await.assert_failed("a menu group without data-state");
     let lax = |site: Site| crawl_run(site, PAGE_MAP, EXCLUDED_MENUS, true, true);
+    clean(&lax(healthy.clone()).await, "--allow-errors --allow-empty: the healthy menu target");
+    clean(&lax(healthy.clone().with(&url, ok(down.clone()))).await, "--allow-errors --allow-empty: an error-state menu target");
+    lax(healthy.clone().with(&url, ok(stateless))).await.assert_failed("a menu group without data-state");
     lax(healthy.clone().with(&url, ok(unknown))).await.assert_failed("a menu group whose data-state is down");
-    lax(healthy.clone().with(&url, ok(groupless))).await.assert_failed("a menu with no group");
+    lax(healthy.clone().with(&url, ok(groupless.clone()))).await.assert_failed("a menu with no group");
 
     let target = other_mapped();
     let guild = "/admin/_menu/guild/g-1";
@@ -574,7 +576,9 @@ async fn an_error_state_menu_group_fails_unless_errors_are_allowed() {
     let nav_only = healthy.clone().with(EXTRA_ROUTE, add_to_page(&healthy, EXTRA_ROUTE, &menu_button(guild)));
     clean(&crawl(nav_only.clone().with(guild, ok(MENU_BODY)), false).await, "the healthy status-only menu");
     crawl(nav_only.clone().with(guild, ok(down.clone())), false).await.assert_failed("an error-state status-only menu");
-    clean(&crawl(nav_only.with(guild, ok(down)), true).await, "--allow-errors: an error-state status-only menu");
+    clean(&crawl(nav_only.clone().with(guild, ok(down)), true).await, "--allow-errors: an error-state status-only menu");
+    clean(&lax(nav_only.clone().with(guild, ok(MENU_BODY))).await, "--allow-errors --allow-empty: the healthy status-only menu");
+    lax(nav_only.with(guild, ok(groupless))).await.assert_failed("--allow-errors --allow-empty: a status-only menu with no group");
 }
 
 /// A menu kind a compared, untabbed page draws must be declared: an undeclared `guild` menu on
