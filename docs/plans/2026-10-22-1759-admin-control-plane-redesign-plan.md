@@ -2551,6 +2551,9 @@ variant-coverage test naming the new variants from 13c.1a until 13c.1h (with the
     which the portal never does: a direct dial of the remote svc's internal edge (splitproof
     already dials internal mTLS edges with `edge::Client::dial`, `main.rs:2508`, :2989) or an
     HTTP route able to send more refs than the cap. The audit gives no recommendation.
+  - **Owner decision (2026-11-19):** the direct dial: splitproof dials the remote svc's
+    internal edge with `edge::Client::dial` and sends a `cp.panel` with `MAX_PANEL_REFS + 1`
+    refs; no production route is added for the test.
 - **Step 13c.4 — docs.** `[docs]` docs-writer: the standing data rules in
   `.agents/skills/mockup-implementation/SKILL.md` and the Purges-pending text of
   `docs/reference/event-plane-ops.md`. Lands before Step 14, whose checklist uses the rules.
