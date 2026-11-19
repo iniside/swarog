@@ -80,13 +80,9 @@ class Guard(unittest.TestCase):
     def test_send_unknown_agent_is_silent(self):
         self.assertEqual(self.send(to="a99999999999"), "silent")
 
-    def test_send_by_agent_name_resolves(self):
-        path = self.agent([300_000])
-        with open(path[:-6] + ".meta.json", "w", encoding="utf-8") as f:
-            json.dump({"finished": True, "name": "impl-13c"}, f)
-        self.assertEqual(self.send(to="impl-13c"), "deny")
-        self.assertEqual(self.send(to="impl-13c [77f0b1]"), "deny")
-        self.assertEqual(self.send(to="someone-else"), "silent")
+    def test_send_strips_a_ref_suffix(self):
+        self.agent([300_000])
+        self.assertEqual(self.send(to=AID + " [77f0b1]"), "deny")
 
     def test_work_below_limit_is_silent(self):
         self.agent([170_000], finished=False)
@@ -112,6 +108,12 @@ class Guard(unittest.TestCase):
                         "cd G:/p && git commit -m x"):
             self.assertEqual(self.work("Bash", command), "silent", command)
         self.assertEqual(self.work("PowerShell", "Set-Location G:/p; git commit -m x"), "silent")
+        for command in ("cargo test -p admin 2>&1 | tail -n 40", "git log | head -5",
+                        "git commit -m \"fix(x): y\n\nMore text\nType here | head of it\"",
+                        "git commit -m \"$(cat <<'EOF'\nfix(x): y\n\nMore lines\nFind this\nEOF\n)\"",
+                        "echo \"a | head b\""):
+            self.assertEqual(self.work("Bash", command), "silent", command)
+        self.assertEqual(self.work("PowerShell", "git commit -m @'\nfix(x): y\n\nMore\n'@"), "silent")
 
     def test_work_resolves_a_subagent_transcript_path(self):
         path = self.agent([250_000], finished=False)

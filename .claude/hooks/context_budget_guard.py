@@ -3,12 +3,14 @@
 the Long steps section of each agent definition).
 
 Modes (argv[1]):
-  send  PreToolUse SendMessage   main session: deny resuming a FINISHED subagent (by id or name)
+  send  PreToolUse SendMessage   main session: deny resuming a FINISHED subagent (by agent id)
                                  whose context is over SEND_LIMIT tokens; dispatch a fresh agent
   work  PreToolUse (every tool)  subagent over WORK_LIMIT: deny exploration (Read, Grep, Glob, LSP,
                                  Agent, web, and shell readers such as rg/cat/Get-Content); Edit,
                                  Write, cargo and git still run, so the agent finishes the edit in
-                                 hand, checks the build, commits a part and returns a hand-off
+                                 hand, checks the build, commits a part and returns a hand-off.
+                                 Best effort: git show/grep and readers hidden in python -c,
+                                 bash -c or xargs still read
 
 Context is the last API turn's input + cache tokens in the subagent transcript. Any error exits 0
 with no output, so a hook bug never blocks work.
@@ -28,7 +30,9 @@ SHELL_READERS = {
     "rg", "grep", "egrep", "fgrep", "cat", "sed", "awk", "head", "tail", "less", "more", "find", "ls",
     "tree", "wc", "get-content", "gc", "type", "select-string", "sls", "get-childitem", "gci", "dir",
 }
-SEGMENT_SPLIT = re.compile(r"&&|\|\||[;|&\n]")
+SEGMENT_SPLIT = re.compile(r"(&&|\|\||[;|&\n])")
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\s*(?=\n|$)", re.S)
+QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"|@'.*?'@|@\".*?\"@", re.S)
 PREFIX_WORDS = {"cd", "set-location", "sl", "pushd", "time", "env", "sudo"}
 
 SEND_REASON = (
@@ -45,16 +49,24 @@ WORK_REASON = (
 
 
 def shell_reader(command):
-    for segment in SEGMENT_SPLIT.split(command or ""):
-        words = segment.strip().split()
+    """Best effort: the first word of each unquoted command segment. Heredoc bodies and quoted text
+    are dropped first, and a reader fed by a pipe (cargo test | tail) is a filter, not a read."""
+    text = QUOTED.sub("''", HEREDOC.sub("", command or ""))
+    pieces = SEGMENT_SPLIT.split(text)
+    separator = None
+    for index in range(0, len(pieces), 2):
+        words = pieces[index].strip().split()
+        piped = separator == "|"
+        separator = pieces[index + 1] if index + 1 < len(pieces) else None
         while words and (words[0].lower() in PREFIX_WORDS or "=" in words[0]):
             words = words[2:] if words[0].lower() in {"cd", "set-location", "sl", "pushd"} else words[1:]
-        if words:
-            head = re.split(r"[\\/]", words[0].strip("'\""))[-1].lower()
-            if head.endswith(".exe"):
-                head = head[:-4]
-            if head in SHELL_READERS:
-                return head
+        if not words or piped:
+            continue
+        head = re.split(r"[\\/]", words[0].strip("'\""))[-1].lower()
+        if head.endswith(".exe"):
+            head = head[:-4]
+        if head in SHELL_READERS:
+            return head
     return None
 
 
@@ -107,26 +119,10 @@ def finished(path):
         return False
 
 
-def resolve_target(transcript_path, to):
+def resolve_target(to):
+    """Only raw agent ids are checked; Claude Code records no agent name in .meta.json."""
     to = re.sub(r"\s*\[[^\]]*\]\s*$", "", str(to or "")).strip()
-    if AGENT_ID.match(to):
-        return to
-    base = session_dir(transcript_path)
-    if not to or not base:
-        return None
-    folder = os.path.join(base, "subagents")
-    found = None
-    for name in sorted(os.listdir(folder)) if os.path.isdir(folder) else ():
-        if not name.endswith(".meta.json"):
-            continue
-        try:
-            with open(os.path.join(folder, name), encoding="utf-8") as f:
-                meta = json.load(f)
-        except (OSError, ValueError):
-            continue
-        if meta.get("name") == to:
-            found = name[len("agent-"):-len(".meta.json")]
-    return found
+    return to if AGENT_ID.match(to) else None
 
 
 def deny(reason):
@@ -137,7 +133,7 @@ def deny(reason):
 def do_send(payload):
     if payload.get("agent_id"):
         return
-    to = resolve_target(payload.get("transcript_path"), (payload.get("tool_input") or {}).get("to"))
+    to = resolve_target((payload.get("tool_input") or {}).get("to"))
     path = subagent_file(payload.get("transcript_path"), to)
     if not path or not finished(path):
         return
