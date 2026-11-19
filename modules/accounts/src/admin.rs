@@ -34,6 +34,7 @@ const FACT_JOINED: &str = "fact.joined";
 const PROFILE: &str = "profile";
 const IDENTITIES: &str = "identities";
 const SESSIONS: &str = "sessions";
+const LABEL: &str = "label";
 
 const EXPORT_CSV: &str = "export-csv";
 const CREATE_ACCOUNT: &str = "create-account";
@@ -393,6 +394,7 @@ fn manifest() -> Manifest {
             tab(PROFILE, 10, "Profile"),
             tab(IDENTITIES, 30, "Linked identities"),
             tab(SESSIONS, 40, "Active sessions"),
+            contribution(LABEL, Point::EntityLabel { kind: KIND.to_string() }, 0, "Player", "", None),
         ],
         actions: vec![
             // NEW: no export exists.
@@ -620,6 +622,13 @@ impl AccountsAdmin {
             ..PanelBody::new(Primitive::DataTable(detail_table(columns, rows)))
         })
     }
+
+    /// Each requested player's handle, keyed by id; an id naming no player is left out.
+    pub(crate) async fn labels(&self, req: &PanelQuery) -> Result<Primitive, Error> {
+        let players = self.svc.store.players_by_id(&req.refs).await.map_err(internal)?;
+        let cells = players.into_iter().map(|p| (p.player_id, text(CellKind::Text, p.handle)));
+        Ok(Primitive::ColumnCells(cells.collect()))
+    }
 }
 
 fn player_row(row: &PlayerListRow) -> Row {
@@ -697,6 +706,7 @@ impl Provider for AccountsAdmin {
             PROFILE => self.profile(&req).await.map(PanelBody::new),
             IDENTITIES => self.identities(&req).await,
             SESSIONS => self.sessions(&req).await,
+            LABEL => self.labels(&req).await.map(PanelBody::new),
             other => Err(Error::not_found(format!(
                 "{MODULE} has no contribution {other:?}"
             ))),

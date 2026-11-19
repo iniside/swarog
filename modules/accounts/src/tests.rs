@@ -638,7 +638,7 @@ async fn ensure_schema(pool: &PgPool) {
 /// Builds a real durable plane over the live pool: the
 /// asyncevents `bus::Transport` is injected at `Context` construction (needed before any
 /// `emit_tx`), and accounts registers against the same ctx.
-async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
+pub(crate) async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     wired_with_verifier(pool, Arc::new(ArgonVerifier)).await
 }
 
@@ -668,11 +668,11 @@ async fn wired_with_verifier(
 
 /// A unique suffix per test so parallel runs never collide on the email/subject
 /// unique keys.
-fn suffix() -> String {
+pub(crate) fn suffix() -> String {
     store::new_token()[..12].to_string()
 }
 
-async fn cleanup_player(pool: &PgPool, player_id: &str) {
+pub(crate) async fn cleanup_player(pool: &PgPool, player_id: &str) {
     // players CASCADEs to identities + sessions inside the accounts schema.
     let _ = sqlx::query("DELETE FROM accounts.players WHERE id = $1::uuid")
         .bind(player_id)
