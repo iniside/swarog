@@ -87,7 +87,7 @@ cargo and git still run, which forces the part hand-off under **Step parts**.
 The main session auto-compacts around 150k (`autoCompactWindow`), and
 `.claude/hooks/compact_gate.py` holds that compaction while a subagent is
 working (best effort: written in the last hour), so it usually lands on a step
-boundary; subagents do not auto-compact. Neither is held above 400k. Keep
+boundary; subagents do not auto-compact. Neither is held at 400k or more. Keep
 owner decisions in the plan or commits, not only in the conversation.
 A hand-off states the outcome, verified anchors, what was and was not
 validated, open questions, and **Leftovers for owner**. A subagent's commit

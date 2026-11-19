@@ -93,6 +93,23 @@ class Gate(unittest.TestCase):
         open(self.main, "w").close()
         self.assertEqual(self.run_hook("auto"), "instructions")
 
+    def test_ceiling_boundary(self):
+        self.agent("a1", finished=False)
+        self.usage(self.main, 399_999)
+        self.assertEqual(self.run_hook("auto"), "block")
+        self.usage(self.main, 400_000)
+        self.assertEqual(self.run_hook("auto"), "instructions")
+
+    def test_missing_subagent_file_never_blocks(self):
+        self.assertEqual(self.run_hook("auto", agent_id="anotthere"), "silent")
+
+    def test_synthetic_usage_is_skipped(self):
+        self.agent("a1", finished=False)
+        with open(self.main, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "assistant", "message": {"model": "<synthetic>", "usage": {
+                "input_tokens": 0, "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}}) + "\n")
+        self.assertEqual(self.run_hook("auto"), "block")
+
     def test_bad_input_fails_open(self):
         r = subprocess.run([sys.executable, "-I", HOOK], input="nope", capture_output=True, text=True, timeout=30)
         self.assertEqual((r.returncode, r.stdout), (0, ""))
