@@ -208,6 +208,26 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
   `DataTable` search-width field in `core/controlplane` that the template reads, set by
   accounts and mail.
 
+### Known limits (admin-control-plane-redesign step 13c.2b2)
+
+- [ ] **A filter on an undeclared key draws but does nothing** (owner, 2026-11-19)
+  ADMIN2-45. `PageDecl.params` (core/controlplane/src/lib.rs) is fixed in the manifest, while
+  `FilterDef.key` arrives in each response, and nothing binds them. A filter whose key no
+  placing page declares (for example a filtered table on an entity tab or a dashboard
+  panel, which no `PageDecl` places) draws its chip or select, but the panel route drops
+  the chosen value, so the table never filters. No such filter exists today. Closed by:
+  not drawing a filter control whose key the slot does not forward, or a check that binds
+  the two. Source: 13c.2b2 review.
+- [ ] **A page can declare a key the portal owns** (owner, 2026-11-19)
+  ADMIN2-46. Nothing stops a `PageDecl.params` entry naming `q`, `state`, `cursor`,
+  `before`, `range` or `entity`; the route routes or drops it silently. No page does
+  today. Closed by: an admincheck finding for a declared portal-owned key. Source: 13c.2b2
+  review.
+- [ ] **Two filter kinds carry options: `Enum` (chip) and `Select`** (owner, 2026-11-19: design call)
+  ADMIN2-47. `FilterKind::Enum` draws a chip and `FilterKind::Select` a select, both with an
+  option list. Closed by: an owner ruling whether `Enum` becomes the select (one kind) or
+  both stay, with the reason. Source: 13c.2b2 hand-off.
+
 ### Known limits (admin-control-plane-redesign step 13c.2a2b)
 
 - [ ] **Modal impact and panel form cells draw no entity label** (owner, 2026-11-19)
