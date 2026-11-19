@@ -235,6 +235,17 @@ fn validate_tabs_rejects_a_stale_exclusion() {
 }
 
 #[test]
+fn validate_tabs_rejects_a_mapped_tab_the_mockup_does_not_draw() {
+    let tabs = ["profile", "saves"].iter().map(|t| t.to_string()).collect();
+    let drawn = vec![("c", DrawnTabs { tabs, selected: Some("profile".to_string()) })];
+    let e = format!("{:#}", validate_tabs(&drawn, &c_with_items(), &[("c.saves", "why")]).expect_err("items undrawn"));
+    assert_eq!(e, "tab drift:\n  PAGE_MAP maps c.items, which the mockup does not draw");
+    let selected = vec![MAPPED, FOLLOWS, Page { tab: Some("profile"), ..FOLLOWS }];
+    let e = format!("{:#}", validate_tabs(&drawn_c(), &selected, &[("c.saves", "why"), ("c.items", "why")]).expect_err("profile"));
+    assert_eq!(e, "tab drift:\n  PAGE_MAP maps c.profile, the tab the untabbed c entry diffs");
+}
+
+#[test]
 fn validate_tabs_rejects_a_tab_both_mapped_and_excluded() {
     let both = tabs_drift(&[("c.saves", "why"), ("c.items", "why")]);
     assert_eq!(both, "tab drift:\n  c.items is listed in PAGE_MAP and again in EXCLUDED_TABS");

@@ -186,7 +186,7 @@ fn parse_args_rejects_unknown_missing_and_misplaced_arguments() {
     assert_eq!(args_err("diff --page"), "admindiff: --page requires a value");
 }
 
-/// The production `validate_repeats` call in `run_diff`: the same page and crawl as the clean
+/// The production repeat check `run_diff` makes through `validate_renders`: the same page and crawl as the clean
 /// twin, minus the mockup's only `.uptime > i`, is an error before anything is compared.
 #[test]
 fn run_diff_fails_on_a_repeat_entry_dead_in_the_mockup() {

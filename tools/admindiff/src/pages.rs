@@ -213,6 +213,20 @@ pub fn validate_tabs(drawn: &[(&str, DrawnTabs)], page_map: &[Page], excluded_ta
             d.tabs.iter().any(|t| t == tab).then_some((*page, d.selected.as_deref() == Some(tab)))
         })
     };
+    // A mapped tab the mockup stops drawing: without this, a markup change that hides every
+    // tab from `drawn` would pass once no tab is left in EXCLUDED_TABS.
+    for p in page_map {
+        let Some(tab) = p.tab else { continue };
+        if !drawn.iter().any(|(page, _)| *page == p.page) {
+            continue;
+        }
+        let id = format!("{}.{tab}", p.page);
+        match drawn_as(&id) {
+            None => problems.push(format!("PAGE_MAP maps {id}, which the mockup does not draw")),
+            Some((page, true)) => problems.push(format!("PAGE_MAP maps {id}, the tab the untabbed {page} entry diffs")),
+            Some((_, false)) => {}
+        }
+    }
     let mut seen = BTreeSet::new();
     for (id, why) in excluded_tabs {
         if !seen.insert(*id) {
