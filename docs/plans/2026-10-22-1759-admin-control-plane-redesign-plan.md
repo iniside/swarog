@@ -2671,6 +2671,21 @@ gate.
   - **Owner decision before dispatch:** how the harness runs a mockup JS opener: the
     `innerHTML` setter throws a sentinel right after render, so `after` hooks and openers
     never run (`mock.rs:22-23`). The audit gives no recommendation.
+  - **Owner decision (2026-11-19): call the opener directly, as a menu is rendered.** No page
+    mounts: the harness loads the mockup scripts, calls the named opener (`P.<name>(args)`,
+    e.g. `P.deleteAccount('<handle>')`) with the arguments the page map entry gives, and
+    captures the `.scrim` element `UI.modal` appends to the body (its `.modal` child is what
+    is diffed). An opener whose default argument comes from page state
+    (`P.currentUser?.handle`) gets its argument from the entry. A `UI.confirm` or `UI.modal`
+    call with no named opener is not reachable this way; such a modal is a declared deviation
+    (an excluded entry with its reason), not a hand copy of its arguments. No jsdom, no click
+    simulation.
+  - The crawl GETs `/admin/_action/{module}/{action}` (with `?entity=`/`?item=` from the
+    entry) and fails on a non-200, a toast instead of a modal, or a missing `.modal` root,
+    as `fetch_menu` does for a menu. The pair has its own accept file, `<page>.modal.<id>`.
+  - Both sides are inventoried, as for menus: every mapped opener exists in the mockup (the
+    harness fails when the opener appends no `.scrim`), and the map validates each modal
+    entry's portal action against the page it hangs off.
 - **Step 13d4 — forced ok state** (T4). `[opus]` core-implementer, after 13d3. Files:
   `pages.rs`, `mock.rs`.
 - **Step 13d5 — admindiff tests.** `[opus]` test-author, after 13d4, on the fake-server crawl
