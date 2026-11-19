@@ -2647,7 +2647,9 @@ gate.
     expects is absent or unhealthy and has no last good manifest. The expected set comes from
     the one source the portal already uses for its module list, not a second list.
   - `crawl_page` and `crawl_menu` fail on a not-ok root unless `--allow-errors`, and fail
-    on a missing root state always (as `fetch_menu` does for a group).
+    on a missing root state always (as `fetch_menu` does for a group). The panel-fragment gate
+    in `crawl.rs` takes the same closed set (`ok`, and `error` with `--allow-errors`); today any
+    value other than missing or `error` passes it (13d2b review-fix leftover).
   - Tests: a golden or route test for an absent module on a page and in a menu; admindiff crawl
     tests read those goldens with `include_str!`.
   - Until this step lands, a live crawl that writes accept files runs only on a fully healthy
