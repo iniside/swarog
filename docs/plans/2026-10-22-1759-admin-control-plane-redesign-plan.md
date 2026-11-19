@@ -2096,13 +2096,15 @@ The ports:
 - **Step 14 — characters.** Characters tab, summary fact, tab count. Starts after Steps 13c
   and 13d (13c.4, 13d6); its checklist
   (`docs/plans/2026-11-17-step14-characters-checklist.md`) is re-cut against them,
-  leaving only its own data decisions (G2, G3, G7, G8, G10, G11); G6 moved to Step 13d
-  (13d1).
+  leaving only its own data decisions (G2, G3, G7, G8, G10, G11); G6's accept line is
+  14a3's (moved back from 13d1, 2026-11-19).
   Contributes `EntityLabel{character}` (Step 13c Refs seam). Not a writer: no 14a2.
   - **14a1** (Na1): the Characters tab (order 20), the summary fact (30) and the tab count;
     data decisions G2, G3, G7, G8, G10, G11.
   - **14a3** (Na3): the players list column (order 10), `EntityLabel{character}` (Refs seam
-    **Producers**), Purges pending at 61. Depends on 14a1.
+    **Producers**), Purges pending at 61. Depends on 14a1. It also adds the G6 `template
+    choice` accept line to `tools/admindiff/accept/players.txt` (checklist line 220), copied
+    from the difference its column first produces.
   - **Owner decision before dispatch:** X7 (port template).
 - **Step 15 — wallet.**
   - Economy page (`pages-platform.js:164-185`; the global ledger is FAKE per R1).
@@ -2602,9 +2604,17 @@ the crawl's status-only row-menu check (T3 replaces it with a diffed menu body).
 they run in order; each runs `cargo test -p admindiff`. Review: `[review]` core-reviewer plus
 proof-auditor (admindiff is a gate) on each of 13d1–13d5, one round, a second allowed for the
 gate.
-- **Step 13d1 — tab targets and reachability** (T1, T5, the reachability invariant, G6).
+- **Step 13d1 — tab targets and reachability** (T1, T5, the reachability invariant).
   `[opus]` core-implementer, after 13c.4. Files: `tools/admindiff/src/{pages.rs,crawl.rs,
-  mock.rs,lib.rs,skeleton.rs}`, the G6 accept line in `tools/admindiff/accept/`.
+  mock.rs,lib.rs,skeleton.rs}`.
+  - **Erratum (2026-11-19, review of bbe6840b):** the G6 accept line moved to Step 14a3: an
+    accept entry that matches no difference fails the diff as stale (`accept::judge`), and no
+    module draws a list column before 14a3.
+  - **Review fix (owner, 2026-11-19):** `crawl::run` takes the page map as a parameter, as
+    `validate_lists` does, so 13d5 tests a tab target without editing `PAGE_MAP`; and
+    every tab the mockup draws on a `FirstRow` page is a `PAGE_MAP` tab entry or an
+    excluded tab with a reason, derived from the mockup render, as pages are against
+    `EXCLUDED`. The not-ported tabs' prose in `accept/player.txt` moves to those reasons.
 - **Step 13d2 — menus diffed** (T3). `[opus]` core-implementer, after 13d1. The diffed menu
   body replaces the status-only check at `crawl.rs:210-223`. Files: `crawl.rs`, `mock.rs`,
   `lib.rs`.
@@ -2622,6 +2632,8 @@ gate.
   reaches the harness (the prelude's test is Step 23t).
 - **Step 13d6 — skill.** `[docs]` docs-writer: `.agents/skills/mockup-implementation/SKILL.md`
   §1 (with G6's sentence), §6 and §7; prose, no review. After 13d4; file-disjoint from 13d5.
+  It settles the header-shape sentence of §1 (today: hand-check) against G6 (the diff reports
+  it, from Step 14a3 on).
 
 ### Step 24a — Typed `asyncevents::admin` errors
 
