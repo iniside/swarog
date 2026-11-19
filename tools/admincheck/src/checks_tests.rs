@@ -185,3 +185,61 @@ fn a_tab_count_or_tile_must_name_a_declared_tab_of_its_kind() {
         ]
     );
 }
+
+fn label(id: &str, kind: &str) -> ContributionDecl {
+    contribution(id, Point::EntityLabel { kind: kind.into() })
+}
+
+/// A manifest of module `post` declaring no kind and contributing `contributions`.
+fn post(contributions: Vec<ContributionDecl>) -> Manifest {
+    Manifest { module: "post".into(), contributions, ..Manifest::default() }
+}
+
+#[test]
+fn the_owner_with_one_label_of_its_kind_is_clean() {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.contributions.push(label("message-label", "message"));
+    assert_eq!(findings(&[m, post(Vec::new())]), Vec::<String>::new());
+}
+
+#[test]
+fn a_kind_declared_by_two_manifests_is_refused() {
+    let mut second = post(Vec::new());
+    second.entity_kinds = manifest(ActionPoint::PageHead(PAGE.into())).entity_kinds;
+    assert_eq!(
+        findings(&[manifest(ActionPoint::PageHead(PAGE.into())), second]),
+        vec![r#"entity kind "message" is declared by more than one manifest: mail, post"#.to_string()]
+    );
+}
+
+#[test]
+fn a_label_from_a_module_not_owning_the_kind_is_refused_once() {
+    let owner = manifest(ActionPoint::PageHead(PAGE.into()));
+    let undeclared = "which this module's manifest does not declare";
+    assert_eq!(
+        findings(&[owner.clone(), post(vec![label("post-label", "message")])]),
+        vec![format!(r#"post: EntityLabel "post-label" labels entity kind "message", {undeclared}"#)]
+    );
+    assert_eq!(
+        findings(&[owner, post(vec![label("post-a", "message"), label("post-b", "message")])]),
+        vec![format!(r#"post: EntityLabel "post-a, post-b" labels entity kind "message", {undeclared}"#)]
+    );
+}
+
+#[test]
+fn a_label_of_a_kind_no_manifest_declares_is_only_entity_kinds_finding() {
+    assert_eq!(
+        findings(&[manifest(ActionPoint::PageHead(PAGE.into())), post(vec![label("post-label", "player")])]),
+        vec![r#"post: contribution "post-label" targets entity kind "player", which no manifest declares"#.to_string()]
+    );
+}
+
+#[test]
+fn two_labels_of_its_kind_in_the_owner_manifest_are_refused() {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.contributions.extend([label("label-a", "message"), label("label-b", "message")]);
+    assert_eq!(
+        findings(&[m]),
+        vec![r#"mail: more than one EntityLabel of entity kind "message": label-a, label-b"#.to_string()]
+    );
+}
