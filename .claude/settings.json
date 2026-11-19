@@ -64,6 +64,26 @@
             "statusMessage": "code-scout: checking anchor labels against LSP calls"
           }
         ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/context_budget_guard.py\" send",
+            "statusMessage": "Context budget: fresh agent instead of resuming a large one"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/context_budget_guard.py\" work",
+            "statusMessage": "Context budget: part hand-off past the subagent limit"
+          }
+        ]
       }
     ],
     "PostToolUse": [

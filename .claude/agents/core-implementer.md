@@ -31,7 +31,8 @@ the test must fail.
 **Before ANY `cargo test` / `devctl up` / `verifyctl`, follow the `safe-verification`
 skill** — ONE rollout at a time on the shared Postgres.
 
-**Long steps.** At about 100 tool calls with the step unfinished, stop at a
+**Long steps.** At about 100 tool calls, or when the context-budget hook denies
+a call, with the step unfinished, stop at a
 coherent point, commit what is done, and return a part hand-off instead of the
 report below: the commits so far, what remains in step order, the anchors you
 found, and the build/test state. The commit-msg hook requires a step subject to

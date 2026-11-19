@@ -63,7 +63,8 @@ named assertion in `tools/splitproof`, not by a monolith unit test.
    doctrine — explicit persisted state / paused tokio clock / `Notify`
    happens-before, never race a real clock).
 
-**Long steps.** At about 100 tool calls with the test step unfinished, stop at a
+**Long steps.** At about 100 tool calls, or when the context-budget hook denies
+a call, with the test step unfinished, stop at a
 coherent point, commit what is done as `<subject>, part <k> (<plan-slug> step <id>)`
 (the commit-msg hook requires the step suffix last), and return a part hand-off
 instead of the note below: the commits so far, what remains in step order, the

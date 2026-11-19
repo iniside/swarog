@@ -78,6 +78,12 @@ depends on (invariants, step preamble) pasted, or named by heading; never
 "read the whole plan". A precedent commit is named with what to copy from it
 (file and function), so the subagent reads `git show --stat` and those hunks,
 not the whole commit.
+A review-fix or follow-up goes to a fresh agent of the same lane, given the
+punch list or decision, the step's commit sha(s) and the files to touch.
+SendMessage resumes a finished agent only while its context is under 100k
+tokens; `.claude/hooks/context_budget_guard.py` denies it above that. Inside a
+subagent the same hook denies new reads past 180k and everything but git past
+240k, which forces the part hand-off under **Step parts**.
 A hand-off states the outcome, verified anchors, what was and was not
 validated, open questions, and **Leftovers for owner**. A subagent's commit
 trailer names the executing model (adapter **Commit Trailers**); after a

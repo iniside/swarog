@@ -858,6 +858,8 @@ class Wiring(unittest.TestCase):
             ("PostToolUse", "Bash|PowerShell"): ["post_commit_review_reminder.py"],
             ("PostToolUse", "LSP|Agent"): ["scout_nav_guard.py"],
             ("PostToolUseFailure", "LSP"): ["scout_nav_guard.py"],
+            ("PreToolUse", "SendMessage"): ["context_budget_guard.py"],
+            ("PreToolUse", "*"): ["context_budget_guard.py"],
         }
         for (event, matcher), scripts in want.items():
             with self.subTest(event=event, matcher=matcher):
