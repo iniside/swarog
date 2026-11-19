@@ -114,12 +114,14 @@ The operator surface instead is:
   `asyncevents_subscriptions_paused` (`core/asyncevents/src/plane_metrics.rs`),
   scoped to the process's own subscription ids;
 - `cargo run -p eventctl -- list`, which prints `paused_since` for a paused row;
-- the per-module **Purges Pending** admin KPI (`swept_at IS NULL` count plus the
-  oldest pending `created_at`) on each purging module's existing admin page
-  (`characters`, `inventory`, `friends`, `groups`, `notifications`, `wallet`) — this
-  reports outstanding sweep work, not a paused *subscription*, and there is no
-  cross-schema admin view: `core/*` cannot contribute an `adminapi::Item` and
-  archcheck bans a foreign module reading another schema's tables.
+- **Purges pending**, a conditional `DashboardAttention` item (not a KPI tile) that each
+  purging module contributes from its own schema — `characters` (order 61), `wallet`
+  (62), `inventory` (63), `friends` (64), `groups` (65), `storage` (66),
+  `notifications` (67) — and shows only while its sweep is behind (rows with
+  `swept_at IS NULL`, plus the oldest pending `created_at`). It reports outstanding sweep
+  work, not a paused *subscription*, and there is no cross-schema admin view: `core/*`
+  cannot contribute an `adminapi::Item` and archcheck bans a foreign module reading
+  another schema's tables.
 
 ## Related
 

@@ -29,6 +29,32 @@ fake rows in `assets/data.js`. The portal that renders it is `core/admin`.
     owns it;
   - a port that writes a new `contract gap` accept entry adds its item under
     **Accepted contract gaps** in the same file.
+- Standing data rules. The checklist (§1) applies each one to every cell, column and
+  panel of the page, and part `a` obeys them:
+  - Identifiers are shown in full, never cut to a prefix.
+  - Times and relative times are computed in SQL, never from a Rust clock, in the
+    mockup's format for that column.
+  - Rows have a real, stable order. The sort arrow sits only on the column the query
+    really sorts by.
+  - A counted noun is singular at exactly 1: give `DataTable.item_noun` a
+    `controlplane::Noun` (`one`, `many`; `Noun::of` picks), never a bare plural.
+  - A count is always a `Cell`, `0` included; never an absent cell.
+  - A never-happened value (no last login, no first run) shows "—".
+  - An element the mockup draws only in a demo state takes the nearest designed
+    sibling's `ok` shape, and the checklist's hand-check section (§1) declares it.
+  - An empty state is the portal default (`Primitive::Empty`, no hand-made text). A
+    search or filter narrowed to zero keeps the toolbar. A toolbar select is
+    `FilterKind::Select`.
+  - A truthful constant beats FAKE. Data with no source that must be faked comes from
+    `controlplane::fake_hash(salt, id)`, never a per-module hash. A count the query
+    cannot index is an exact `count(*)` whose comment names the missing index.
+  - Page URL keys a panel needs are listed in `PageDecl.params`; they reach the provider
+    as `PanelQuery.params`.
+  - D4 vocabulary: real currencies, roles, topics and schedule intervals replace the
+    mockup's invented ones.
+  - Each purging module's "Purges pending" is a conditional `Point::DashboardAttention`
+    item, shown only while its sweep is behind (`docs/reference/event-plane-ops.md`), never
+    a KPI tile.
 - Lanes: `.agents/skills/implementation-dispatch/SKILL.md`. The view part
   runs at the cheap tier on `mockup-implementer`; checklist, contract decisions and
   review stay at the top tier. No fallback to a stronger model: a port that goes
