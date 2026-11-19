@@ -2191,7 +2191,8 @@ impl controlplane::ControlPlane for Flaky {
 }
 
 /// The row menu of a module whose source missed the latest refresh marks its group
-/// unavailable and draws its items disabled; a healthy module's group is unchanged.
+/// unavailable, `data-state="error"`, and draws its items disabled; a healthy module's group
+/// is unchanged and `data-state="ok"`.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_row_menu_group_of_a_down_module_is_unavailable_and_disabled() {
     let Some(pool) = test_pool().await else { return };
@@ -2226,6 +2227,9 @@ async fn a_row_menu_group_of_a_down_module_is_unavailable_and_disabled() {
     let (accounts_group, wallet_group) = raw.split_once(r#"<div class="menu-sep">"#).expect("two groups");
     assert!(accounts_group.contains("<span>accounts</span>") && !accounts_group.contains(unavailable), "{raw}");
     assert!(accounts_group.contains(r#"<button type="button" class="menu-item""#), "{raw}");
+    assert!(accounts_group.contains(r#"<div class="menu-group" data-state="ok">"#), "{raw}");
+    assert!(!accounts_group.contains(r#"data-state="error""#), "{raw}");
+    assert!(wallet_group.contains(r#"<div class="menu-group" data-state="error">"#), "{raw}");
     assert!(wallet_group.contains("<span>wallet</span>") && wallet_group.contains(unavailable), "{raw}");
     assert!(
         wallet_group.contains(r#"<div class="menu-item disabled" title="wallet module unavailable">"#),

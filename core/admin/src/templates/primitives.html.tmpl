@@ -139,11 +139,13 @@
 {%- endmacro %}
 
 {#- GET /admin/_menu/{kind}/{id}: the row-action popover body, grouped by module; a group whose
-    module is down is marked unavailable and its items are disabled (registry.js:101-104). -#}
+    module is down is marked unavailable and its items are disabled (registry.js:101-104). The
+    menu answers 200 either way, so each group's `data-state` (`ok` or `error`, as on a panel
+    slot) is where `tools/admindiff` reads it. -#}
 {%- macro menu(m) -%}
 {%- for g in m.groups -%}
 {%- if not loop.first %}<div class="menu-sep"></div>{% endif -%}
-<div class="menu-group"><span>{{ g.module }}</span>{% if g.down %}<span style="text-transform:none;letter-spacing:0;font-weight:500"><span style="color:var(--err)">unavailable</span></span>{% endif %}</div>
+<div class="menu-group" data-state="{{ "error" if g.down else "ok" }}"><span>{{ g.module }}</span>{% if g.down %}<span style="text-transform:none;letter-spacing:0;font-weight:500"><span style="color:var(--err)">unavailable</span></span>{% endif %}</div>
 {%- for it in g.items %}{{ menu_item(it, g.module ~ " module unavailable" if g.down else "") }}{% endfor -%}
 {%- endfor -%}
 {%- endmacro %}
