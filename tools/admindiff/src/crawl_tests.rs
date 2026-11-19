@@ -97,7 +97,7 @@ fn menu_url(kind: &str, page: &str) -> String {
 }
 
 /// The menu body the healthy site serves at every [`menu_url`].
-const MENU_BODY: &str = r#"<div class="menu-group"><span>accounts</span></div><button class="menu-item"><span>Open</span></button>"#;
+const MENU_BODY: &str = r#"<div class="menu-group" data-state="ok"><span>accounts</span></div><button class="menu-item"><span>Open</span></button>"#;
 
 /// A menu button opening `url`, as the portal's template writes it.
 fn menu_button(url: &str) -> String {
@@ -527,6 +527,42 @@ async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
     let bare = healthy.with(&list_url, ok(list.replace(&button, "")));
     crawl(bare.clone(), false).await.assert_failed("players draws no player menu");
     crawl_with(bare, false, true).await.assert_failed("--allow-empty: players lists rows but draws no player menu");
+}
+
+/// A menu answers 200 while a module is down, so its group's `data-state` is the state: a
+/// group in the error state fails the crawl unless `--allow-errors`, on a menu target, an
+/// excluded menu and a status-only menu alike, each beside its clean twin; a group without
+/// `data-state` fails even with `--allow-errors`.
+#[tokio::test]
+async fn an_error_state_menu_group_fails_unless_errors_are_allowed() {
+    let (_, page, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let url = menu_url(kind, page);
+    let down = MENU_BODY.replace(r#"data-state="ok""#, r#"data-state="error""#);
+    let stateless = MENU_BODY.replace(r#" data-state="ok""#, "");
+    assert!(down != MENU_BODY && stateless != MENU_BODY, "MENU_BODY carries data-state");
+    let clean = |c: &Crawl, why: &str| {
+        assert!(matches!(c.result, Ok(true)) && c.clean_marker(), "{why}: {:?}", c.result);
+    };
+    let healthy = Site::healthy();
+    clean(&crawl(healthy.clone(), false).await, "the healthy menu target");
+    crawl(healthy.clone().with(&url, ok(down.clone())), false).await.assert_failed("an error-state menu target");
+    clean(&crawl(healthy.clone().with(&url, ok(down.clone())), true).await, "--allow-errors: an error-state menu target");
+    crawl(healthy.clone().with(&url, ok(stateless)), true).await.assert_failed("a menu group without data-state");
+
+    let target = other_mapped();
+    let guild = "/admin/_menu/guild/g-1";
+    let drawn = healthy.clone().with(target.route, add_to_page(&healthy, target.route, &menu_button(guild)));
+    let mut excluded = EXCLUDED_MENUS.to_vec();
+    excluded.push((target.page, "guild", "why"));
+    let excluded_run = |site: Site, allow_errors: bool| crawl_run(site, PAGE_MAP, &excluded, allow_errors, false);
+    clean(&excluded_run(drawn.clone().with(guild, ok(MENU_BODY)), false).await, "the healthy excluded menu");
+    excluded_run(drawn.clone().with(guild, ok(down.clone())), false).await.assert_failed("an error-state excluded menu");
+    clean(&excluded_run(drawn.with(guild, ok(down.clone())), true).await, "--allow-errors: an error-state excluded menu");
+
+    let nav_only = healthy.clone().with(EXTRA_ROUTE, add_to_page(&healthy, EXTRA_ROUTE, &menu_button(guild)));
+    clean(&crawl(nav_only.clone().with(guild, ok(MENU_BODY)), false).await, "the healthy status-only menu");
+    crawl(nav_only.clone().with(guild, ok(down.clone())), false).await.assert_failed("an error-state status-only menu");
+    clean(&crawl(nav_only.with(guild, ok(down)), true).await, "--allow-errors: an error-state status-only menu");
 }
 
 /// A menu kind a compared, untabbed page draws must be declared: an undeclared `guild` menu on
