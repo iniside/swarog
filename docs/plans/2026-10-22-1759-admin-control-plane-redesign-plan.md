@@ -2686,6 +2686,13 @@ gate.
   - Both sides are inventoried, as for menus: every mapped opener exists in the mockup (the
     harness fails when the opener appends no `.scrim`), and the map validates each modal
     entry's portal action against the page it hangs off.
+  - **Erratum (2026-11-19, part 1 hand-off):** the crawl takes the modal URL (with its
+    `?entity=`/`?item=`) from the first opener of that action drawn on the crawled host page
+    (`hx-get` to `/admin/_action/…`), not from the entry: the fleet mints item ids, so a
+    fixed value would 404. The entry names module and action; the mockup side takes its
+    opener and arguments from the entry. Every modal action a compared host draws is mapped
+    or excluded (`EXCLUDED_MODALS`, with a reason). Only `mail/cancel` and
+    `core.events/poison.skip` have both a mockup opener and a portal modal today.
 - **Step 13d4 — forced ok state** (T4). `[opus]` core-implementer, after 13d3. Files:
   `pages.rs`, `mock.rs`.
 - **Step 13d5 — admindiff tests.** `[opus]` test-author, after 13d4, on the fake-server crawl
