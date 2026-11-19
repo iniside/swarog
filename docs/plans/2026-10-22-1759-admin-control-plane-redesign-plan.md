@@ -2650,6 +2650,15 @@ gate.
     on a missing root state always (as `fetch_menu` does for a group). The panel-fragment gate
     in `crawl.rs` takes the same closed set (`ok`, and `error` with `--allow-errors`); today any
     value other than missing or `error` passes it (13d2b review-fix leftover).
+  - **Erratum (2026-11-19, as implemented):** an `Ok([])` reply is a source with no providers
+    and counts as an answer; the root is `error` only when a source in `snapshot.sources` has
+    no last-good manifest (`Snapshot::complete`). A source that missed the latest wave keeps
+    the root `ok`; its modules are already marked down per panel and menu group. The menu
+    fragment had no root, so the `menu` macro now renders the `.menu[data-menu-popup]` popover
+    element itself and `admin.js` swaps its loading popover for it (the drawn DOM is
+    unchanged). The panel-fragment set follows `PanelState`, not the two values above:
+    `ok`, `empty`, `readonly` and `denied` pass; `error` and `stale` fail unless
+    `--allow-errors`; any other value or none fails.
   - Tests: a golden or route test for an absent module on a page and in a menu; admindiff crawl
     tests read those goldens with `include_str!`.
   - Until this step lands, a live crawl that writes accept files runs only on a fully healthy
