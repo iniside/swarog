@@ -32,8 +32,10 @@ USAGE:
   crawl     log in, fetch every nav page and mapped page, load their slots with HX-Request,
             fetch the first menu each menu target's page draws; writes
             target/admindiff/<run>/ (and its CLEAN marker when clean) and fails on any
-            non-2xx, an error-state fragment (unless --allow-errors), a fragment without
-            data-state, no nav page or no fragment, and an entity page whose list page has no
+            non-2xx, a page or menu whose root data-state is error (a manifest source has never
+            answered) or a fragment in the error or stale state (each unless --allow-errors), a
+            root data-state missing or neither ok nor error, a fragment data-state missing or no
+            panel state, no nav page or no fragment, and an entity page whose list page has no
             row to follow (unless --allow-empty), a tab target whose page does not select the
             tab, a menu target whose page draws no menu of its kind (unless its list page lists
             no row and --allow-empty; an entity page never), a menu kind an untabbed compared page draws that is neither

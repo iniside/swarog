@@ -3,13 +3,19 @@
 //! Every declared target must be reached: a mapped page that fails, a `FirstRow` page whose
 //! list has no row (unless `--allow-empty`), a tab the portal does not select and a menu
 //! target whose page draws no menu of its kind all fail the crawl. A menu target's output is
-//! the first such menu, assembled as `admin.js` opens it. Every menu kind an untabbed compared
+//! the first such menu, the `.menu` popover the portal answers. Every menu kind an untabbed compared
 //! page draws is a menu target of that page or in [`EXCLUDED_MENUS`], whose menus are fetched
 //! once each and must answer 2xx; an exclusion its page does not draw fails as stale. Every
 //! other crawled page, one only the nav links or a tab page, has the first menu of each kind
 //! it draws fetched once, and it must answer 2xx. Every fetched menu, compared or not, fails
 //! when it holds no module group or a group whose `data-state` is missing or neither `ok`
-//! nor `error`, and, unless `--allow-errors`, on a group in the error state.
+//! nor `error`, and, unless `--allow-errors`, on a group in the error state. A page and a
+//! menu answer 200 whatever their state, so the root of each ([`ROOT_CLASS`], [`MENU_CLASS`])
+//! carries one: `error`, while a manifest source has never answered and the portal draws none
+//! of its modules, fails unless `--allow-errors`, and a root state missing or neither `ok` nor
+//! `error` fails always. A slot fragment's `data-state` must be a panel state: `ok`, `empty`,
+//! `readonly` and `denied` pass, `error` and `stale` (a failed provider call) fail unless
+//! `--allow-errors`, and anything else fails always.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -21,8 +27,13 @@ use reqwest::{Client, StatusCode};
 use crate::assemble::{assemble, pending_slots};
 use crate::html::{self, find_all, find_in, Element, Node};
 use crate::pages::{with_tab, Menu, Page, Route, EXCLUDED_MENUS, PAGE_MAP};
+use crate::skeleton::{MENU_CLASS, ROOT_CLASS};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// The panel states (`PanelState::as_str` in `core/admin`) a fragment passes in.
+const PANEL_PASS: &[&str] = &["ok", "empty", "readonly", "denied"];
+/// The panel states of a failed provider call, which fail unless `--allow-errors`.
+const PANEL_FAIL: &[&str] = &["error", "stale"];
 /// Written into the run directory only by a clean crawl; `diff` refuses a run without it.
 pub const CLEAN_MARKER: &str = "CLEAN";
 /// A fragment may hold slots of its own; past this many load rounds the page fails.
@@ -361,7 +372,8 @@ async fn check_menu_kinds(
 }
 
 /// Fetches the menu at `url` as `admin.js` does and writes its body as `raw/<raw>.html`; a
-/// non-2xx answer fails, and so does a body with no module group (a drawn menu button always
+/// non-2xx answer fails, and so does a body whose first element is no `.menu` root, a root
+/// state that fails [`root_state`], a body with no module group (a drawn menu button always
 /// has a row action, so an empty menu is template drift), a group whose `data-state` is
 /// missing or neither `ok` nor `error`, and, unless `--allow-errors`, a group whose module
 /// is down (`data-state="error"`): the menu answers 200 either way.
@@ -374,6 +386,12 @@ async fn fetch_menu(client: &Client, cfg: &Config, raw: &str, url: &str) -> Resu
         bail!("answered {status}");
     }
     let nodes = html::parse(&body).context("parse menu")?;
+    let root = nodes.iter().find_map(|n| match n {
+        Node::Element(e) => Some(e),
+        _ => None,
+    });
+    let Some(root) = root.filter(|r| r.has_class(MENU_CLASS)) else { bail!("the menu answers no .{MENU_CLASS} root") };
+    root_state(cfg, root, "menu")?;
     let mut groups = Vec::new();
     find_all(&nodes, &|e| e.has_class("menu-group"), &mut groups);
     if groups.is_empty() {
@@ -395,15 +413,27 @@ async fn fetch_menu(client: &Client, cfg: &Config, raw: &str, url: &str) -> Resu
     Ok(body)
 }
 
-/// Fetches the menu at `url` ([`fetch_menu`]) and writes it as `<id>.html`, inside the
-/// `.menu` popover `admin.js` puts it in.
+/// Fetches the menu at `url` ([`fetch_menu`]) and writes it as `<id>.html`: the portal
+/// answers the `.menu` popover `admin.js` shows.
 async fn crawl_menu(client: &Client, cfg: &Config, id: &str, url: &str) -> Result<()> {
     let body = fetch_menu(client, cfg, id, url).await?;
-    write(&cfg.out.join(format!("{id}.html")), &format!(r#"<div class="menu" data-menu-popup="">{body}</div>"#))
+    write(&cfg.out.join(format!("{id}.html")), &body)
+}
+
+/// Checks the `data-state` of a page or menu root (`what`): `ok` passes, `error` only under
+/// `--allow-errors`, and any other value or none fails.
+fn root_state(cfg: &Config, root: &Element, what: &str) -> Result<()> {
+    match root.attr("data-state") {
+        Some("ok") => Ok(()),
+        Some("error") if cfg.allow_errors => Ok(()),
+        Some("error") => bail!("the {what} root is in the error state: a manifest source has never answered"),
+        Some(other) => bail!("the {what} root carries data-state {other:?}, neither ok nor error"),
+        None => bail!("the {what} root carries no data-state"),
+    }
 }
 
 /// Fetches one page and its slots round by round; returns the fragment count and the
-/// assembled page.
+/// assembled page. A page root or fragment state that fails is pushed to `failures`.
 async fn crawl_page(
     client: &Client,
     cfg: &Config,
@@ -419,6 +449,14 @@ async fn crawl_page(
         bail!("answered {status}");
     }
     let mut doc = html::parse(&body).context("parse page")?;
+    match find_in(&doc, &|e| e.has_class(ROOT_CLASS)) {
+        Some(root) => {
+            if let Err(e) = root_state(cfg, root, "page") {
+                failures.push(format!("{page}: {e}"));
+            }
+        }
+        None => failures.push(format!("{page}: the page has no .{ROOT_CLASS} root")),
+    }
     let frag_dir = cfg.out.join("fragments").join(page);
     let mut count = 0;
     for round in 1..=MAX_ROUNDS + 1 {
@@ -449,8 +487,13 @@ async fn crawl_page(
             } else {
                 match state.as_deref() {
                     None => failures.push(format!("{page}: {url} carries no data-state")),
-                    Some("error") if !cfg.allow_errors => failures.push(format!("{page}: {url} is in the error state")),
-                    _ => {}
+                    Some(s) if PANEL_PASS.contains(&s) => {}
+                    Some(s) if PANEL_FAIL.contains(&s) => {
+                        if !cfg.allow_errors {
+                            failures.push(format!("{page}: {url} is in the {s} state"));
+                        }
+                    }
+                    Some(other) => failures.push(format!("{page}: {url} carries data-state {other:?}, no panel state")),
                 }
             }
             parsed.push(nodes);

@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
-use super::{run_with, Config, CLEAN_MARKER, MAX_ROUNDS};
+use super::{run_with, Config, CLEAN_MARKER, MAX_ROUNDS, PANEL_FAIL, PANEL_PASS};
 use crate::mock::mock_tests::FakeRepo;
 use crate::pages::{Page, Route, EXCLUDED_MENUS, PAGE_MAP};
 use crate::tests::{body, mock_html, ScratchDir};
@@ -103,6 +103,19 @@ const MENU_BODY: &str = include_str!("../../../core/admin/src/testdata/menu_row_
 /// The same row menu golden with the economy module down.
 const MENU_DOWN: &str = include_str!("../../../core/admin/src/testdata/menu_row_actions_down.html");
 
+/// The same row menu golden while a manifest source has never answered.
+const MENU_INCOMPLETE: &str = include_str!("../../../core/admin/src/testdata/menu_row_actions_incomplete.html");
+
+/// A dashboard golden whose fleet is complete, and the same while a manifest source has never
+/// answered: the healthy site's pages carry the former's `.app` root.
+const PAGE_OK: &str = include_str!("../../../core/admin/src/testdata/screen_dashboard_ranges.html");
+const PAGE_INCOMPLETE: &str = include_str!("../../../core/admin/src/testdata/screen_dashboard_incomplete.html");
+
+/// The opening tag of the root element `golden` starts with.
+fn root_tag(golden: &str) -> &str {
+    &golden[..=golden.find('>').expect("the golden opens an element")]
+}
+
 /// A menu button opening `url`, as the portal's template writes it.
 fn menu_button(url: &str) -> String {
     format!(r#"<button class="btn sm icon ghost" data-menu-url="{}"></button>"#, escaped(url))
@@ -174,10 +187,11 @@ fn nav(links: &[&str]) -> String {
 fn shell(nav_links: &str, h1: &str, content: &str) -> String {
     format!(
         concat!(
-            r#"<!DOCTYPE html><html><body><div class="app"><aside class="sidebar"><nav class="nav">{nav_links}</nav></aside>"#,
+            r#"<!DOCTYPE html><html><body>{app}<aside class="sidebar"><nav class="nav">{nav_links}</nav></aside>"#,
             r#"<main class="main"><div class="page"><div class="page-head"><h1>{h1}</h1></div>{content}</div></main>"#,
             r#"</div></body></html>"#,
         ),
+        app = root_tag(PAGE_OK),
         nav_links = nav_links,
         h1 = h1,
         content = content
@@ -336,6 +350,11 @@ impl Crawl {
         assert!(!self.clean_marker(), "{why}: a failed crawl wrote {CLEAN_MARKER}");
     }
 
+    /// Asserts the crawl finished clean and wrote the CLEAN marker.
+    fn assert_clean(&self, why: &str) {
+        assert!(matches!(self.result, Ok(true)) && self.clean_marker(), "{why}: {:?}", self.result);
+    }
+
     /// Asserts the crawl stopped with an error containing `text` and wrote no CLEAN marker.
     fn assert_error(&self, text: &str) {
         match &self.result {
@@ -474,13 +493,56 @@ async fn a_fragment_without_data_state_fails() {
     crawl(site, false).await.assert_failed("no data-state");
 }
 
+/// A fragment of a failed provider call, `error` or `stale` (a cached body), fails the crawl
+/// unless `--allow-errors`.
 #[tokio::test]
-async fn an_error_state_fragment_fails_unless_errors_are_allowed() {
-    let site = Site::healthy().with(&other_mapped().slot, ok(fragment(Some("error"), "Subscriptions", "")));
-    crawl(site.clone(), false).await.assert_failed("an error-state fragment");
-    let allowed = crawl(site, true).await;
-    assert!(matches!(allowed.result, Ok(true)), "{:?}", allowed.result);
-    assert!(allowed.clean_marker(), "--allow-errors crawls clean");
+async fn an_error_or_stale_fragment_fails_unless_errors_are_allowed() {
+    for state in ["error", "stale"] {
+        let site = Site::healthy().with(&other_mapped().slot, ok(fragment(Some(state), "Subscriptions", "")));
+        crawl(site.clone(), false).await.assert_failed(&format!("a {state} fragment"));
+        crawl(site, true).await.assert_clean(&format!("--allow-errors: a {state} fragment"));
+    }
+}
+
+/// The panel states of a provider that answered crawl clean beside the ok fragment.
+#[tokio::test]
+async fn an_empty_readonly_or_denied_fragment_crawls_clean() {
+    for state in ["empty", "readonly", "denied"] {
+        let site = Site::healthy().with(&other_mapped().slot, ok(fragment(Some(state), "Subscriptions", "")));
+        crawl(site, false).await.assert_clean(&format!("a {state} fragment"));
+    }
+}
+
+/// A fragment whose `data-state` is no panel state fails even with `--allow-errors` and
+/// `--allow-empty`, under which the healthy site crawls clean.
+#[tokio::test]
+async fn a_fragment_in_no_panel_state_fails_always() {
+    let lax = |site: Site| crawl_run(site, PAGE_MAP, EXCLUDED_MENUS, true, true);
+    lax(Site::healthy()).await.assert_clean("--allow-errors --allow-empty: the ok fragment");
+    let site = Site::healthy().with(&other_mapped().slot, ok(fragment(Some("down"), "Subscriptions", "")));
+    lax(site).await.assert_failed("--allow-errors --allow-empty: a fragment whose data-state is down");
+}
+
+/// [`PANEL_PASS`] and [`PANEL_FAIL`] split exactly the portal's panel states. admindiff takes no
+/// workspace crate, so the states are read from `PanelState` and its `as_str` in the source.
+#[test]
+fn the_panel_states_are_the_portals() {
+    const PANELS: &str = include_str!("../../../core/admin/src/engine/panels.rs");
+    let variants = PANELS.split_once("enum PanelState {").expect("the portal declares PanelState").1;
+    let variants = variants.split_once('}').expect("PanelState closes").0.split(',').filter(|v| !v.trim().is_empty()).count();
+    let as_str = PANELS.split_once("fn as_str(self)").expect("PanelState::as_str").1;
+    let mut states: Vec<&str> = as_str
+        .lines()
+        .map(str::trim)
+        .skip_while(|l| !l.starts_with("PanelState::"))
+        .map_while(|l| l.strip_prefix("PanelState::"))
+        .filter_map(|arm| arm.split_once("=> \"").map(|(_, s)| s.trim_end_matches("\",")))
+        .collect();
+    assert_eq!(states.len(), variants, "as_str maps each of the {variants} PanelState variants: {states:?}");
+    states.sort_unstable();
+    let mut ours: Vec<&str> = PANEL_PASS.iter().chain(PANEL_FAIL).copied().collect();
+    ours.sort_unstable();
+    assert_eq!(ours, states, "PANEL_PASS and PANEL_FAIL hold each panel state once");
 }
 
 #[tokio::test]
@@ -498,7 +560,7 @@ async fn slots_load_for_at_most_max_rounds() {
 }
 
 /// The `players.menu.user` target: the crawl fetches the first `player` menu the players
-/// rows draw, with `HX-Request`, and writes it inside a `.menu` as `players.menu.user.html`;
+/// rows draw, with `HX-Request`, and writes the `.menu` it answers as `players.menu.user.html`;
 /// a menu answering 500 and rows that draw no `player` menu each fail the crawl, the latter
 /// with `--allow-empty` too, since players lists rows. An excluded kind's menu before it in
 /// the row is fetched for its status but is not the target's menu.
@@ -525,7 +587,7 @@ async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
     assert_eq!(fetched.iter().filter(|r| r.path == url && r.hx).count(), 1, "{fetched:?}");
     assert_eq!(fetched.iter().filter(|r| r.path == guild && r.hx).count(), 1, "the excluded kind once: {fetched:?}");
     let written = std::fs::read_to_string(fine.out.path().join("run").join(format!("{id}.html"))).expect("the menu is written");
-    assert_eq!(written, format!(r#"<div class="menu" data-menu-popup="">{MENU_BODY}</div>"#));
+    assert_eq!(written, MENU_BODY, "the menu is written as the portal answers it");
 
     crawl_lists(site.with(&url, status(500)), PAGE_MAP, &excluded, false).await.assert_failed("a 500 menu");
     let bare = healthy.with(&list_url, ok(list.replace(&button, "")));
@@ -545,20 +607,18 @@ async fn an_error_state_menu_group_fails_unless_errors_are_allowed() {
     let down = MENU_DOWN.to_string();
     assert!(down.contains(r#"data-state="error""#) && down.contains(r#"data-state="ok""#), "one group down: {down}");
     assert!(!MENU_BODY.contains(r#"data-state="error""#), "every group up: {MENU_BODY}");
-    let stateless = MENU_BODY.replace(r#" data-state="ok""#, "");
-    let unknown = MENU_BODY.replace(r#"data-state="ok""#, r#"data-state="down""#);
+    let group = r#"<div class="menu-group" data-state="ok">"#;
+    let stateless = MENU_BODY.replace(group, r#"<div class="menu-group">"#);
+    let unknown = MENU_BODY.replace(group, r#"<div class="menu-group" data-state="down">"#);
     let groupless = MENU_BODY.replace(r#"class="menu-group""#, r#"class="menu-head""#);
     assert!(stateless != MENU_BODY && unknown != MENU_BODY && groupless != MENU_BODY, "MENU_BODY carries a stated group");
-    let clean = |c: &Crawl, why: &str| {
-        assert!(matches!(c.result, Ok(true)) && c.clean_marker(), "{why}: {:?}", c.result);
-    };
     let healthy = Site::healthy();
-    clean(&crawl(healthy.clone(), false).await, "the healthy menu target");
+    crawl(healthy.clone(), false).await.assert_clean("the healthy menu target");
     crawl(healthy.clone().with(&url, ok(down.clone())), false).await.assert_failed("an error-state menu target");
-    clean(&crawl(healthy.clone().with(&url, ok(down.clone())), true).await, "--allow-errors: an error-state menu target");
+    crawl(healthy.clone().with(&url, ok(down.clone())), true).await.assert_clean("--allow-errors: an error-state menu target");
     let lax = |site: Site| crawl_run(site, PAGE_MAP, EXCLUDED_MENUS, true, true);
-    clean(&lax(healthy.clone()).await, "--allow-errors --allow-empty: the healthy menu target");
-    clean(&lax(healthy.clone().with(&url, ok(down.clone()))).await, "--allow-errors --allow-empty: an error-state menu target");
+    lax(healthy.clone()).await.assert_clean("--allow-errors --allow-empty: the healthy menu target");
+    lax(healthy.clone().with(&url, ok(down.clone()))).await.assert_clean("--allow-errors --allow-empty: an error-state menu target");
     lax(healthy.clone().with(&url, ok(stateless))).await.assert_failed("a menu group without data-state");
     lax(healthy.clone().with(&url, ok(unknown))).await.assert_failed("a menu group whose data-state is down");
     lax(healthy.clone().with(&url, ok(groupless.clone()))).await.assert_failed("a menu with no group");
@@ -569,16 +629,74 @@ async fn an_error_state_menu_group_fails_unless_errors_are_allowed() {
     let mut excluded = EXCLUDED_MENUS.to_vec();
     excluded.push((target.page, "guild", "why"));
     let excluded_run = |site: Site, allow_errors: bool| crawl_run(site, PAGE_MAP, &excluded, allow_errors, false);
-    clean(&excluded_run(drawn.clone().with(guild, ok(MENU_BODY)), false).await, "the healthy excluded menu");
+    excluded_run(drawn.clone().with(guild, ok(MENU_BODY)), false).await.assert_clean("the healthy excluded menu");
     excluded_run(drawn.clone().with(guild, ok(down.clone())), false).await.assert_failed("an error-state excluded menu");
-    clean(&excluded_run(drawn.with(guild, ok(down.clone())), true).await, "--allow-errors: an error-state excluded menu");
+    excluded_run(drawn.with(guild, ok(down.clone())), true).await.assert_clean("--allow-errors: an error-state excluded menu");
 
     let nav_only = healthy.clone().with(EXTRA_ROUTE, add_to_page(&healthy, EXTRA_ROUTE, &menu_button(guild)));
-    clean(&crawl(nav_only.clone().with(guild, ok(MENU_BODY)), false).await, "the healthy status-only menu");
+    crawl(nav_only.clone().with(guild, ok(MENU_BODY)), false).await.assert_clean("the healthy status-only menu");
     crawl(nav_only.clone().with(guild, ok(down.clone())), false).await.assert_failed("an error-state status-only menu");
-    clean(&crawl(nav_only.clone().with(guild, ok(down)), true).await, "--allow-errors: an error-state status-only menu");
-    clean(&lax(nav_only.clone().with(guild, ok(MENU_BODY))).await, "--allow-errors --allow-empty: the healthy status-only menu");
+    crawl(nav_only.clone().with(guild, ok(down)), true).await.assert_clean("--allow-errors: an error-state status-only menu");
+    lax(nav_only.clone().with(guild, ok(MENU_BODY))).await.assert_clean("--allow-errors --allow-empty: the healthy status-only menu");
     lax(nav_only.with(guild, ok(groupless))).await.assert_failed("--allow-errors --allow-empty: a status-only menu with no group");
+}
+
+/// A menu answers 200 while a manifest source has never answered, so its `.menu` root's
+/// `data-state` is the state: the portal's incomplete golden, which differs from the ok golden
+/// only by that root, fails the crawl unless `--allow-errors`, each beside the ok golden under
+/// the same flags. A root without `data-state` or with one neither `ok` nor `error`, and a
+/// body whose first element is no `.menu` root (bare groups), fail even with `--allow-errors`
+/// and `--allow-empty`.
+#[tokio::test]
+async fn an_error_state_menu_root_fails_unless_errors_are_allowed() {
+    let (_, page, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let url = menu_url(kind, page);
+    let root = root_tag(MENU_BODY);
+    assert_eq!(root, r#"<div class="menu" data-menu-popup="" data-state="ok">"#, "the ok golden's root");
+    assert_eq!(MENU_INCOMPLETE.replacen(root_tag(MENU_INCOMPLETE), root, 1), MENU_BODY, "only the root differs");
+    assert!(MENU_INCOMPLETE.starts_with(r#"<div class="menu" data-menu-popup="" data-state="error">"#), "{MENU_INCOMPLETE}");
+    let with_root = |r: &str| MENU_BODY.replacen(root, r, 1);
+    let bare = MENU_BODY.strip_prefix(root).and_then(|b| b.trim_end().strip_suffix("</div>")).expect("the root wraps the groups");
+    assert!(bare.contains(r#"class="menu-group""#) && !bare.contains(r#"class="menu""#), "{bare}");
+    let healthy = Site::healthy();
+    crawl(healthy.clone(), false).await.assert_clean("the ok menu root");
+    crawl(healthy.clone().with(&url, ok(MENU_INCOMPLETE)), false).await.assert_failed("an error-state menu root");
+    crawl(healthy.clone(), true).await.assert_clean("--allow-errors: the ok menu root");
+    crawl(healthy.clone().with(&url, ok(MENU_INCOMPLETE)), true).await.assert_clean("--allow-errors: an error-state menu root");
+    let lax = |site: Site| crawl_run(site, PAGE_MAP, EXCLUDED_MENUS, true, true);
+    lax(healthy.clone()).await.assert_clean("--allow-errors --allow-empty: the ok menu root");
+    let stateless = with_root(r#"<div class="menu" data-menu-popup="">"#);
+    lax(healthy.clone().with(&url, ok(stateless))).await.assert_failed("a menu root without data-state");
+    let unknown = with_root(r#"<div class="menu" data-menu-popup="" data-state="down">"#);
+    lax(healthy.clone().with(&url, ok(unknown))).await.assert_failed("a menu root whose data-state is down");
+    lax(healthy.with(&url, ok(bare))).await.assert_failed("a menu with no .menu root");
+}
+
+/// A page answers 200 while a manifest source has never answered, so its `.app` root's
+/// `data-state` is the state: the portal's incomplete dashboard root fails the crawl unless
+/// `--allow-errors`, each beside the ok root under the same flags. A root without
+/// `data-state` or with one neither `ok` nor `error`, and a page with no `.app` root, fail
+/// even with `--allow-errors` and `--allow-empty`.
+#[tokio::test]
+async fn an_error_state_page_root_fails_unless_errors_are_allowed() {
+    let target = other_mapped();
+    let healthy = Site::healthy();
+    let html = healthy.routes.get(target.route).expect("the healthy site serves the page").body.clone();
+    let root = root_tag(PAGE_OK);
+    assert_eq!(root, r#"<div class="app" data-state="ok">"#, "the ok golden's root");
+    assert_eq!(root_tag(PAGE_INCOMPLETE), r#"<div class="app" data-state="error">"#, "the incomplete golden's root");
+    assert!(html.contains(root), "the healthy page carries the ok root: {html}");
+    let with_root = |r: &str| healthy.clone().with(target.route, ok(html.replacen(root, r, 1)));
+    let incomplete = with_root(root_tag(PAGE_INCOMPLETE));
+    crawl(healthy.clone(), false).await.assert_clean("the ok page root");
+    crawl(incomplete.clone(), false).await.assert_failed("an error-state page root");
+    crawl(healthy.clone(), true).await.assert_clean("--allow-errors: the ok page root");
+    crawl(incomplete, true).await.assert_clean("--allow-errors: an error-state page root");
+    let lax = |site: Site| crawl_run(site, PAGE_MAP, EXCLUDED_MENUS, true, true);
+    lax(healthy.clone()).await.assert_clean("--allow-errors --allow-empty: the ok page root");
+    lax(with_root(r#"<div class="app">"#)).await.assert_failed("a page root without data-state");
+    lax(with_root(r#"<div class="app" data-state="down">"#)).await.assert_failed("a page root whose data-state is down");
+    lax(with_root(r#"<div class="shell">"#)).await.assert_failed("a page with no .app root");
 }
 
 /// A menu kind a compared, untabbed page draws must be declared: an undeclared `guild` menu on
