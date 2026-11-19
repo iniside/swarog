@@ -318,7 +318,7 @@ async fn check_menu_kinds(
 ) {
     let mut hosts: Vec<String> = Vec::new();
     let mut first_row_hosts: Vec<String> = Vec::new();
-    for p in page_map.iter().filter(|p| p.menu.is_none() && p.tab.is_none() && p.route != Route::Pending) {
+    for p in page_map.iter().filter(|p| p.is_page() && p.tab.is_none() && p.route != Route::Pending) {
         if !hosts.contains(&p.id()) {
             hosts.push(p.id());
         }

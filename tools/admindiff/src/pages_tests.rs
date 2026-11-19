@@ -93,8 +93,8 @@ fn the_const_lists_are_disjoint_unique_and_reasoned() {
 
 // ---- validate_lists: each defect beside its clean twin --------------------------------
 
-const MAPPED: Page = Page { page: "a", route: Route::Mapped("/admin/a"), search: "", tab: None, menu: None };
-const PENDING: Page = Page { page: "b", route: Route::Pending, search: "", tab: None, menu: None };
+const MAPPED: Page = Page { page: "a", route: Route::Mapped("/admin/a"), search: "", tab: None, menu: None, modal: None };
+const PENDING: Page = Page { page: "b", route: Route::Pending, search: "", tab: None, menu: None, modal: None };
 
 /// Mockup pages `a`, `b` and `c`.
 fn abc() -> BTreeMap<String, String> {
@@ -140,7 +140,7 @@ fn validate_lists_rejects_an_excluded_page_without_a_reason() {
 
 #[test]
 fn validate_lists_rejects_an_unknown_page_in_either_list() {
-    let z = Page { page: "z", route: Route::Pending, search: "", tab: None, menu: None };
+    let z = Page { page: "z", route: Route::Pending, search: "", tab: None, menu: None, modal: None };
     let mapped = lists_drift(&[MAPPED, PENDING, z], &[("c", "why")]);
     assert_eq!(mapped, "page map drift:
   PAGE_MAP lists z, which is not a mockup page");
@@ -151,7 +151,7 @@ fn validate_lists_rejects_an_unknown_page_in_either_list() {
 
 #[test]
 fn validate_lists_rejects_a_first_row_page_following_a_page_that_is_not_mapped() {
-    let follows = |list: &'static str| Page { page: "c", route: Route::FirstRow(list), search: "", tab: None, menu: None };
+    let follows = |list: &'static str| Page { page: "c", route: Route::FirstRow(list), search: "", tab: None, menu: None, modal: None };
     validate_lists(&abc(), &[MAPPED, PENDING, follows("a")], &[]).expect("following a Mapped page passes");
     let pending = lists_drift(&[MAPPED, PENDING, follows("b")], &[]);
     assert_eq!(pending, "page map drift:
@@ -163,7 +163,7 @@ fn validate_lists_rejects_a_first_row_page_following_a_page_that_is_not_mapped()
 
 // ---- tab targets ---------------------------------------------------------------------
 
-const FOLLOWS: Page = Page { page: "c", route: Route::FirstRow("a"), search: "?u=x", tab: None, menu: None };
+const FOLLOWS: Page = Page { page: "c", route: Route::FirstRow("a"), search: "?u=x", tab: None, menu: None, modal: None };
 
 #[test]
 fn a_tab_entry_has_its_own_id_and_adds_its_tab_to_the_search() {

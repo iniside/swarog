@@ -219,7 +219,7 @@ fn validate_renders(
     for p in page_map {
         let key = mockup.get(p.page).ok_or_else(|| anyhow!("page {} has no mockup file", p.page))?;
         let (_, doc) = render_mock(repo, key, p)?;
-        if p.menu.is_none() {
+        if p.is_page() {
             if matches!(p.route, pages::Route::FirstRow(_)) && p.tab.is_none() {
                 drawn.push((p.page, mock::drawn_tabs(&doc).with_context(|| format!("the P.{key} render"))?));
             }
@@ -282,7 +282,7 @@ pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Resul
     }
     let mut failed = false;
     // A menu holds no panel; a page that matches none compared nothing.
-    if outcome.matched_panels == 0 && entry.menu.is_none() {
+    if outcome.matched_panels == 0 && entry.is_page() {
         eprintln!("diff {page} FAILED: no panel matched between the mockup and the portal");
         failed = true;
     }

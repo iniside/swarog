@@ -8,7 +8,10 @@
 //! sides. Menus are inventoried on untabbed hosts only: every menu the mockup draws there has
 //! such an entry and every menu its registry defines has one or is in
 //! [`EXCLUDED_MOCK_MENUS`] ([`validate_menus`]); every menu kind the portal draws there has
-//! one or is in [`EXCLUDED_MENUS`] (`crawl`).
+//! one or is in [`EXCLUDED_MENUS`] (`crawl`). An entry that names a modal is its own target,
+//! `<host>.modal.<modal>`: the harness calls the mockup's named opener with the entry's
+//! arguments, and the crawl opens the first opener of the entry's portal action its host page
+//! draws.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -39,6 +42,10 @@ pub struct Page {
     /// fetches the first such menu the portal draws and the harness opens the first the
     /// mockup draws; a host that draws none fails.
     pub menu: Option<Menu>,
+    /// A modal opened from the page this entry's route, search and tab name, its host: the
+    /// harness calls its mockup opener, and the crawl fetches the first opener of its portal
+    /// action the host draws.
+    pub modal: Option<Modal>,
 }
 
 /// A row or header menu: the mockup opens it with `UI.openMenu(event,'<mock>','<arg>')`, the
@@ -49,10 +56,30 @@ pub struct Menu {
     pub kind: &'static str,
 }
 
+/// A modal: the mockup opens it with `PAGES.<opener>(<args>)`, which appends a `.scrim` to the
+/// body; the portal serves it at `/admin/_action/<module>/<action>`, with the `?entity=` and
+/// `?item=` its host page's opener carries, since a fleet mints those ids.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Modal {
+    pub id: &'static str,
+    pub opener: &'static str,
+    pub args: &'static [&'static str],
+    pub module: &'static str,
+    pub action: &'static str,
+}
+
+impl Modal {
+    /// `<module>/<action>`, as the portal's action URL names it.
+    pub fn action_path(&self) -> String {
+        format!("{}/{}", self.module, self.action)
+    }
+}
+
 impl Page {
-    /// The target's name: `<page>`, `<page>.<tab>` for a tab entry, and `.menu.<menu>`
-    /// after either for a menu entry. It names the crawl's output, the accept file and the
-    /// `--page` argument. A tab id holds no `.`, so a menu id is never a tab's.
+    /// The target's name: `<page>`, `<page>.<tab>` for a tab entry, and `.menu.<menu>` or
+    /// `.modal.<modal>` after either for a menu or modal entry. It names the crawl's output,
+    /// the accept file and the `--page` argument. A tab id holds no `.`, so a menu or modal id
+    /// is never a tab's.
     pub fn id(&self) -> String {
         let mut id = self.page.to_string();
         if let Some(tab) = self.tab {
@@ -61,12 +88,20 @@ impl Page {
         if let Some(menu) = self.menu {
             id = format!("{id}.menu.{}", menu.mock);
         }
+        if let Some(modal) = self.modal {
+            id = format!("{id}.modal.{}", modal.id);
+        }
         id
     }
 
-    /// The page a menu entry's menu is drawn on: this entry without its menu.
+    /// The page a menu or modal entry's target is drawn on: this entry without it.
     pub fn host(&self) -> Page {
-        Page { menu: None, ..*self }
+        Page { menu: None, modal: None, ..*self }
+    }
+
+    /// Whether this entry is a page or tab target, neither a menu nor a modal.
+    pub fn is_page(&self) -> bool {
+        self.menu.is_none() && self.modal.is_none()
     }
 
     /// The harness's `location.search`: [`Page::search`] plus the tab's `tab=<id>`.
@@ -93,18 +128,18 @@ fn is_id(id: &str) -> bool {
 const USER_MENU: Menu = Menu { mock: "user", kind: "player" };
 
 pub const PAGE_MAP: &[Page] = &[
-    Page { page: "index", route: Route::Mapped("/admin"), search: "", tab: None, menu: None },
-    Page { page: "events", route: Route::Mapped("/admin/p/core.events/events"), search: "", tab: None, menu: None },
-    Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "", tab: None, menu: None },
-    Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "", tab: None, menu: Some(USER_MENU) },
-    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None, menu: None },
-    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None, menu: Some(USER_MENU) },
-    Page { page: "apikeys", route: Route::Pending, search: "", tab: None, menu: None },
-    Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None },
-    Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None },
-    Page { page: "config", route: Route::Pending, search: "", tab: None, menu: None },
-    Page { page: "audit", route: Route::Pending, search: "", tab: None, menu: None },
-    Page { page: "economy", route: Route::Pending, search: "", tab: None, menu: None },
+    Page { page: "index", route: Route::Mapped("/admin"), search: "", tab: None, menu: None, modal: None },
+    Page { page: "events", route: Route::Mapped("/admin/p/core.events/events"), search: "", tab: None, menu: None, modal: None },
+    Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "", tab: None, menu: None, modal: None },
+    Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "", tab: None, menu: Some(USER_MENU), modal: None },
+    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None, menu: None, modal: None },
+    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None, menu: Some(USER_MENU), modal: None },
+    Page { page: "apikeys", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
+    Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None, modal: None },
+    Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
+    Page { page: "config", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
+    Page { page: "audit", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
+    Page { page: "economy", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
 ];
 
 const NO_LORE: &str = "no Lore module exists yet";
@@ -236,7 +271,7 @@ pub(crate) fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page
         }
         if !matches!(p.route, Route::FirstRow(_)) {
             problems.push(format!("PAGE_MAP {id} names a tab, which only a FirstRow page has"));
-        } else if !page_map.iter().any(|q| q.page == p.page && q.tab.is_none() && q.menu.is_none() && q.route == p.route) {
+        } else if !page_map.iter().any(|q| q.page == p.page && q.tab.is_none() && q.is_page() && q.route == p.route) {
             problems.push(format!("PAGE_MAP {id} is a tab of {}, which has no untabbed entry with the same route", p.page));
         }
     }
@@ -261,7 +296,7 @@ pub fn validate_tabs(drawn: &[(&str, DrawnTabs)], page_map: &[Page], excluded_ta
     for (page, d) in drawn {
         for tab in d.tabs.iter().filter(|t| d.selected.as_ref() != Some(*t)) {
             let id = format!("{page}.{tab}");
-            let mapped = page_map.iter().any(|p| p.page == *page && p.tab == Some(tab.as_str()) && p.menu.is_none());
+            let mapped = page_map.iter().any(|p| p.page == *page && p.tab == Some(tab.as_str()) && p.is_page());
             let excluded = excluded_tabs.iter().any(|(t, _)| *t == id);
             match (mapped, excluded) {
                 (false, false) => problems.push(format!("mockup tab {id} is in neither PAGE_MAP nor EXCLUDED_TABS")),
@@ -279,7 +314,7 @@ pub fn validate_tabs(drawn: &[(&str, DrawnTabs)], page_map: &[Page], excluded_ta
     };
     // A mapped tab the mockup stops drawing: without this, a markup change that hides every
     // tab from `drawn` would pass once no tab is left in EXCLUDED_TABS.
-    for p in page_map.iter().filter(|p| p.menu.is_none()) {
+    for p in page_map.iter().filter(|p| p.is_page()) {
         let Some(tab) = p.tab else { continue };
         let id = format!("{}.{tab}", p.page);
         match drawn_as(&id) {
