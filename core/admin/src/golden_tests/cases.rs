@@ -979,7 +979,8 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     // ---- row menu and search palette ----
     let row_entity = entity("player", "p-1001");
     let profile = decl("profile", "Open profile", "", Then::Link(Link::Entity(row_entity.clone())));
-    push!(plain("menu_row_actions", {
+    // The same row menu with each module up, and with economy down.
+    let row_menu = |down: &dyn Fn(&str) -> bool| {
         let row_item = |module: &str, d: &ActionDecl, role: Role| {
             let d = ActionDecl { point: ActionPoint::RowAction("player".to_string()), ..d.clone() };
             routes::action_item(&operator(role), CSRF, module, &declaring(&d, true), &d, Some(&row_entity))
@@ -991,9 +992,11 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
             row_item("economy", &grant, Role::Admin),
             row_item("economy", &ActionDecl { min_role: Role::Admin, ..grant.clone() }, Role::Viewer),
         ];
-        let menu = MenuView { entity: row_entity.clone(), groups: render::menu_groups(menu_items, |_| false) };
+        let menu = MenuView { entity: row_entity.clone(), groups: render::menu_groups(menu_items, down) };
         render::fragment(env, "primitives.html", "menu", &menu)
-    }));
+    };
+    push!(plain("menu_row_actions", row_menu(&|_| false)));
+    push!(plain("menu_row_actions_down", row_menu(&|m| m == "economy")));
     let hit = |title: &str, subtitle: &str, badge: Option<&str>| {
         render::search_hit(&SearchHit {
             link: Link::Entity(entity("player", subtitle)),
