@@ -495,6 +495,28 @@ pub(super) fn table_list_columns_case() -> PanelCase {
     }
 }
 
+/// A players table filtered by a Select with `us` chosen, a Bool set to `true`, and a Range
+/// and a Ref left unset.
+pub(super) fn table_filter_kinds_case() -> PanelCase {
+    let filter = |key: &str, label: &str, kind: FilterKind| FilterDef { key: key.to_string(), label: label.to_string(), kind };
+    let table = DataTable {
+        filters: vec![
+            filter("region", "Region", FilterKind::Select(strings(&["eu", "us", "asia"]))),
+            filter("level", "Level", FilterKind::Range),
+            filter("online", "Online", FilterKind::Bool),
+            filter("guild", "Guild", FilterKind::Ref("guild".to_string())),
+        ],
+        ..match players_table(vec![player_row("p-1001", "12", "active", false)], Some(1), None) {
+            Primitive::DataTable(t) => t,
+            _ => unreachable!("players_table is a DataTable"),
+        }
+    };
+    PanelCase {
+        query: posted(&[("region", "us"), ("online", "true")]),
+        ..PanelCase::new(PanelState::Ok, Some(body(Primitive::DataTable(table))))
+    }
+}
+
 /// `primitive` drawn with a label for `p-1001` and none for `p-1002`.
 pub(super) fn labelled_case(mode: &'static str, primitive: Primitive) -> PanelCase {
     PanelCase {

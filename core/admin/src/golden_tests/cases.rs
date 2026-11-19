@@ -420,6 +420,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel!("table_first_page_label", table_first_page_case());
     panel!("table_list_columns", table_list_columns_case());
     panel!("table_labelled", table_labelled_case());
+    panel!("table_filter_kinds", table_filter_kinds_case());
     let owners = props(vec![("Owner", player_cell("p-1001")), ("Buyer", player_cell("p-1002"))]);
     panel!("labelled_props", labelled_case("panel", Primitive::PropertyList(owners)));
     let gifted = TimelineEntry {
