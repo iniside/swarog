@@ -6171,6 +6171,20 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     .await?;
     party_checks::deletion_assertion(ctx, pool, p, &g, "").await?;
 
+    // --- The control-plane face's panel-refs cap, refused by accounts-svc's `LocalFace` on
+    // its internal edge. Split-only: the monolith hosts no internal edge.
+    panel_cap_assertions(
+        ctx,
+        p,
+        format!(
+            "127.0.0.1:{}",
+            ctx.service("accounts-svc").edge_port.context("accounts edge port")?
+        )
+        .parse()
+        .context("accounts edge address")?,
+    )
+    .await;
+
     // --- Metrics ---
     // [MX1] characters-svc /metrics -> 200 + http_requests_total (one recorded hit first).
     let characters_port = ctx.http_port("characters-svc");
@@ -7047,6 +7061,122 @@ async fn player_session(ctx: &Ctx, calls: &[(&str, String)]) -> Result<Vec<serde
         out.push(answer);
     }
     Ok(out)
+}
+
+/// The cap `controlplane::MAX_PANEL_REFS` (`core/controlplane/src/lib.rs`), restated:
+/// splitproof does not depend on `controlplane`. A drift in either direction turns
+/// `[CP1]` red rather than vacuous: a raised cap answers the over-cap probe `Ok`, a
+/// lowered one refuses the at-cap control.
+const PANEL_REFS_CAP: usize = 100;
+
+/// `[CP1]`, split-only: the remote `LocalFace` refuses a `cp.panel` carrying more
+/// `PanelQuery.refs` than the cap, over the wire, before the provider runs. The portal
+/// never sends one (it splits a longer list), so the harness dials accounts-svc's internal
+/// mTLS edge directly — the face `core/app` registers on every edge peer — and sends the
+/// raw request; no production route exists to carry it.
+///
+/// The two probes differ ONLY in the ref count: the same `accounts`/`label`
+/// contribution (an `EntityLabel` that reads `req.refs`), the same body shape, the same
+/// connection. The at-cap control answering `Ok` proves the body decodes, the face is
+/// served and the contribution exists, so the over-cap `Invalid` can only be the cap —
+/// not an undecodable body (`edge::Error::InvalidRequest`, which would also fail the
+/// control), an unknown module (`NotFound`) or a dead peer (`Unavailable`/transport).
+/// The refusal's message is pinned to the cap's own wording as the second witness.
+///
+/// The monolith hosts no internal edge and the portal never sends an over-cap list, so
+/// there is no parity run (the `[GR4e]`/`[DL2e]` convention); the monolith refusal is
+/// `core/admin/src/tests.rs`'s. Transport errors collapse into one failing check, the
+/// `[DL0]` convention.
+async fn panel_cap_assertions(ctx: &Ctx, p: &mut Proof, edge: std::net::SocketAddr) {
+    match panel_cap_probes(ctx, edge).await {
+        Ok((over, at_cap)) => {
+            let over_status = envelope_status(&over).unwrap_or("").to_string();
+            let over_err = over.get("err").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let cap_status = envelope_status(&at_cap).unwrap_or("").to_string();
+            let cap_err = at_cap.get("err").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let cap_value = at_cap.get("value").is_some_and(|v| !v.is_null());
+            let cap_words = format!("carries {} refs, over the cap of {PANEL_REFS_CAP}", PANEL_REFS_CAP + 1);
+            p.check(
+                "[CP1] cp.panel over accounts-svc's internal edge: MAX_PANEL_REFS+1 refs -> Invalid (the cap), MAX_PANEL_REFS refs -> Ok",
+                over_status == "Invalid"
+                    && over_err.contains(&cap_words)
+                    && cap_status == "Ok"
+                    && cap_value,
+                format!(
+                    "over_cap: status={over_status} err={over_err:?} | at_cap: status={cap_status} \
+                     err={cap_err:?} value={cap_value}"
+                ),
+            );
+        }
+        Err(e) => p.check(
+            "[CP1] cp.panel over accounts-svc's internal edge: MAX_PANEL_REFS+1 refs -> Invalid (the cap), MAX_PANEL_REFS refs -> Ok",
+            false,
+            format!("{e:#}"),
+        ),
+    }
+}
+
+/// The over-cap probe's and the at-cap control's response envelopes, in that order, from
+/// one connection to `edge`.
+async fn panel_cap_probes(
+    ctx: &Ctx,
+    edge: std::net::SocketAddr,
+) -> Result<(serde_json::Value, serde_json::Value)> {
+    let ca = DevCA::load(
+        ctx.ca_cert.to_str().context("CA cert path not UTF-8")?,
+        ctx.ca_key.to_str().context("CA key path not UTF-8")?,
+    )
+    .map_err(|e| anyhow::anyhow!("load dev CA: {e}"))?;
+    let client = edge::Client::dial(edge, &ca)
+        .await
+        .map_err(|e| anyhow::anyhow!("dial accounts-svc edge: {e}"))?;
+    // Canonical uuids no registration mints (registrations are v4, these are v0), each
+    // distinct, so the at-cap control reads the players table and answers an empty label set.
+    let refs = |n: usize| -> Vec<String> {
+        (0..n).map(|i| format!("00000000-0000-0000-0000-{i:012}")).collect()
+    };
+    // The generated `cp.panel` request envelope: `{"req": PanelQuery}`, every field spelled
+    // out so the body decodes exactly as the portal's would.
+    let body = |refs: Vec<String>| {
+        serde_json::json!({
+            "req": {
+                "module": "accounts",
+                "contribution": "label",
+                "entity": null,
+                "search": null,
+                "cursor": null,
+                "before": null,
+                "queue_state": null,
+                "range": null,
+                "params": {},
+                "refs": refs,
+            }
+        })
+        .to_string()
+    };
+    let mut answers = Vec::with_capacity(2);
+    for n in [PANEL_REFS_CAP + 1, PANEL_REFS_CAP] {
+        let raw = client.call_raw("cp.panel", body(refs(n)).as_bytes()).await;
+        let raw = match raw {
+            Ok(raw) => raw,
+            Err(e) => {
+                client.close();
+                bail!("cp.panel with {n} refs over the edge: {e}");
+            }
+        };
+        let answer: serde_json::Value = match serde_json::from_slice(&raw) {
+            Ok(answer) => answer,
+            Err(e) => {
+                client.close();
+                bail!("cp.panel with {n} refs: response is not JSON: {e}");
+            }
+        };
+        answers.push(answer);
+    }
+    client.close();
+    let at_cap = answers.pop().unwrap_or_default();
+    let over = answers.pop().unwrap_or_default();
+    Ok((over, at_cap))
 }
 
 fn envelope_status(v: &serde_json::Value) -> Option<&str> {
