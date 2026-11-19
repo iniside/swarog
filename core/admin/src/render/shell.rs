@@ -109,6 +109,8 @@ pub(crate) struct ShellView {
     pub(crate) deployment: Option<String>,
     pub(crate) health: Option<HealthView>,
     pub(crate) notifications: Option<Vec<NotificationView>>,
+    /// `Snapshot::complete`: `data-state` of the page root.
+    pub(crate) complete: bool,
 }
 
 /// A panel the view loads from `url`; `denied` panels are never fetched.
@@ -234,6 +236,8 @@ pub(crate) struct MissingView {
 pub(crate) struct MenuView {
     pub(crate) entity: EntityRef,
     pub(crate) groups: Vec<MenuGroup>,
+    /// `Snapshot::complete`: `data-state` of the menu root.
+    pub(crate) complete: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

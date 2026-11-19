@@ -72,6 +72,12 @@
       .then(function (html) {
         if (!el.isConnected) return;
         el.innerHTML = html;
+        // The menu route answers the popover itself, whose root carries the menu's data-state.
+        var menu = el.firstElementChild;
+        if (menu && menu.matches(".menu[data-menu-popup]")) {
+          el.replaceWith(menu);
+          el = menu;
+        }
         el.removeAttribute("aria-busy");
         if (window.htmx) htmx.process(el);
         placeAt(el, btn, "right");

@@ -979,8 +979,9 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     // ---- row menu and search palette ----
     let row_entity = entity("player", "p-1001");
     let profile = decl("profile", "Open profile", "", Then::Link(Link::Entity(row_entity.clone())));
-    // The same row menu with each module up, and with economy down.
-    let row_menu = |down: &dyn Fn(&str) -> bool| {
+    // The same row menu with each module up, with economy down, and with a manifest source
+    // that has never answered.
+    let row_menu = |down: &dyn Fn(&str) -> bool, complete: bool| {
         let row_item = |module: &str, d: &ActionDecl, role: Role| {
             let d = ActionDecl { point: ActionPoint::RowAction("player".to_string()), ..d.clone() };
             routes::action_item(&operator(role), CSRF, module, &declaring(&d, true), &d, Some(&row_entity))
@@ -992,11 +993,12 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
             row_item("economy", &grant, Role::Admin),
             row_item("economy", &ActionDecl { min_role: Role::Admin, ..grant.clone() }, Role::Viewer),
         ];
-        let menu = MenuView { entity: row_entity.clone(), groups: render::menu_groups(menu_items, down) };
+        let menu = MenuView { entity: row_entity.clone(), groups: render::menu_groups(menu_items, down), complete };
         render::fragment(env, "primitives.html", "menu", &menu)
     };
-    push!(plain("menu_row_actions", row_menu(&|_| false)));
-    push!(plain("menu_row_actions_down", row_menu(&|m| m == "economy")));
+    push!(plain("menu_row_actions", row_menu(&|_| false, true)));
+    push!(plain("menu_row_actions_down", row_menu(&|m| m == "economy", true)));
+    push!(plain("menu_row_actions_incomplete", row_menu(&|_| false, false)));
     let hit = |title: &str, subtitle: &str, badge: Option<&str>| {
         render::search_hit(&SearchHit {
             link: Link::Entity(entity("player", subtitle)),
@@ -1079,6 +1081,18 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
             attention: vec![point_slot("attention", Point::DashboardAttention, Role::Viewer, false)],
             panels: vec![point_slot("panel", Point::DashboardPanel, Role::Operator, false)],
             wide: vec![point_slot("wide", Point::DashboardWide, Role::Admin, false)],
+            ranges: render::ranges(TimeRange::H24),
+        };
+        screen(env, "dashboard", &dashboard)
+    }));
+    push!(plain("screen_dashboard_incomplete", {
+        let dashboard = DashboardView {
+            shell: ShellView { complete: false, ..shell_view("Dashboard") },
+            subtitle: "Golden deployment".to_string(),
+            tiles: Vec::new(),
+            attention: Vec::new(),
+            panels: Vec::new(),
+            wide: Vec::new(),
             ranges: render::ranges(TimeRange::H24),
         };
         screen(env, "dashboard", &dashboard)

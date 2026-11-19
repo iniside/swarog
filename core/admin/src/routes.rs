@@ -149,6 +149,7 @@ async fn shell(
                 })
                 .collect(),
         ),
+        complete: snapshot.complete(),
     }
 }
 
@@ -848,7 +849,11 @@ async fn menu(State(p): State<Portal>, jar: CookieJar, Path((kind, id)): Path<(S
     let entity = EntityRef { kind: kind.clone(), id };
     let items =
         action_items(&snapshot, &ctx, Some(&entity), |pt| matches!(pt, ActionPoint::RowAction(k) if *k == kind));
-    let view = MenuView { entity, groups: render::menu_groups(items, |m| !snapshot.module_ok(m)) };
+    let view = MenuView {
+        entity,
+        groups: render::menu_groups(items, |m| !snapshot.module_ok(m)),
+        complete: snapshot.complete(),
+    };
     html(StatusCode::OK, render::fragment(&p.st.env, "primitives.html", "menu", &view))
 }
 

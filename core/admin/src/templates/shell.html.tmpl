@@ -17,7 +17,9 @@
 <script src="/admin/assets/htmx.min.js" defer></script>
 </head>
 <body>
-<div class="app">
+{#- The app root's `data-state` is `error` while a manifest source has never answered: its
+    modules draw nothing and the page answers 200 either way, so `tools/admindiff` reads it. #}
+<div class="app" data-state="{{ "ok" if shell.complete else "error" }}">
 <aside class="sidebar"><div class="brand"><div class="brand-mark">S</div><div><div class="brand-name">Swarog Admin</div><div class="brand-sub">{{ shell.deployment or "—" }}</div></div></div>
 <nav class="nav">
 {#- The fixed `overview` section always shows: it opens with the portal's own Dashboard entry. -#}

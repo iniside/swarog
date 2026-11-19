@@ -273,6 +273,7 @@ pub(super) fn shell_view(crumb: &str) -> ShellView {
         deployment: None,
         health: None,
         notifications: None,
+        complete: true,
     }
 }
 
@@ -281,7 +282,7 @@ pub(super) fn shell_view(crumb: &str) -> ShellView {
 /// literal [`RAW_NEWLINE`].
 pub(super) fn screen(env: &Environment<'_>, name: &str, view: &impl serde::Serialize) -> Result<String, minijinja::Error> {
     let raw = render::screen_page(env, name, view)?;
-    let (open, close) = ("<div class=\"app\">", "</main>");
+    let (open, close) = ("<div class=\"app\"", "</main>");
     let start = raw.find(open).expect("the shell draws its app frame");
     let end = start + raw[start..].find(close).expect("<main> closes") + close.len();
     Ok(raw[start..end].to_string())

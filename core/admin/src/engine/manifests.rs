@@ -121,6 +121,13 @@ impl Snapshot {
         self.modules.get(module).is_some_and(|r| self.healthy[r.source])
     }
 
+    /// Every source has answered once, so the modules of every source are drawn. A source
+    /// that answered before and missed the latest wave counts: its modules keep their
+    /// last-good manifest and `module_ok` marks them down.
+    pub(crate) fn complete(&self) -> bool {
+        self.last_good.iter().all(Option::is_some)
+    }
+
     /// The module's manifest and the face that serves it.
     pub(crate) fn route(&self, module: &str) -> Option<(&Manifest, Arc<dyn ControlPlane>)> {
         let routed = self.modules.get(module)?;

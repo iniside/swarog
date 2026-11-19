@@ -2192,7 +2192,8 @@ impl controlplane::ControlPlane for Flaky {
 
 /// The row menu of a module whose source missed the latest refresh marks its group
 /// unavailable, `data-state="error"`, and draws its items disabled; a healthy module's group
-/// is unchanged and `data-state="ok"`.
+/// is unchanged and `data-state="ok"`. The menu root stays `ok`: the down source has answered
+/// before, so its module is drawn.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_row_menu_group_of_a_down_module_is_unavailable_and_disabled() {
     let Some(pool) = test_pool().await else { return };
@@ -2223,6 +2224,7 @@ async fn a_row_menu_group_of_a_down_module_is_unavailable_and_disabled() {
 
     let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_menu/player/p-1").await;
     assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.starts_with(r#"<div class="menu" data-menu-popup="" data-state="ok">"#), "{raw}");
     let unavailable = r#"<span style="color:var(--err)">unavailable</span>"#;
     let (accounts_group, wallet_group) = raw.split_once(r#"<div class="menu-sep">"#).expect("two groups");
     assert!(accounts_group.contains("<span>accounts</span>") && !accounts_group.contains(unavailable), "{raw}");
@@ -2236,6 +2238,54 @@ async fn a_row_menu_group_of_a_down_module_is_unavailable_and_disabled() {
         "{raw}"
     );
     assert!(!wallet_group.contains("<button"), "a down module's item is not actionable: {raw}");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A manifest source that has never answered draws no module, so the page root and the row
+/// menu root carry `data-state="error"` while the answered module's group stays `ok`; once the
+/// source answers, both roots are `ok`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_source_that_never_answered_marks_the_page_and_menu_root_error() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-root-incomplete");
+    let cookie = operator_cookie(&pool, &user).await;
+    let row_action = |id: &str| action_decl(id, ActionPoint::RowAction("player".to_string()), true);
+    let face = |name: &str, action: &str| flaky(vec![Recording::new(module(name, Vec::new(), vec![row_action(action)], true), &[])]);
+    let (accounts, wallet) = (face("accounts", "suspend"), face("wallet", "grant"));
+    wallet.down.store(true, std::sync::atomic::Ordering::SeqCst);
+    let engine = Arc::new(Engine::new());
+    let sources = [("accounts-svc", accounts), ("wallet-svc", wallet.clone())]
+        .into_iter()
+        .map(|(peer, face)| Source { peer: peer.to_string(), face })
+        .collect();
+    engine.install(Snapshot::seeded(sources, None));
+    refresh_once(&engine).await;
+    assert!(engine.snapshot().module_ok("accounts"));
+    assert!(engine.snapshot().route("wallet").is_none(), "wallet-svc has never answered");
+    assert!(!engine.snapshot().complete());
+
+    let page_root = |state: &str| format!(r#"<div class="app" data-state="{state}">"#);
+    let menu_root = |state: &str| format!(r#"<div class="menu" data-menu-popup="" data-state="{state}">"#);
+    let (status, page) = portal_get(&engine, &st, &cookie, "/admin").await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page.contains(&page_root("error")), "{page}");
+    let (status, menu) = portal_get(&engine, &st, &cookie, "/admin/_menu/player/p-1").await;
+    assert_eq!(status, StatusCode::OK, "{menu}");
+    assert!(menu.starts_with(&menu_root("error")), "{menu}");
+    assert!(menu.contains(r#"<div class="menu-group" data-state="ok"><span>accounts</span>"#), "{menu}");
+    assert!(!menu.contains("<span>wallet</span>"), "a source that never answered draws no group: {menu}");
+
+    wallet.down.store(false, std::sync::atomic::Ordering::SeqCst);
+    refresh_once(&engine).await;
+    assert!(engine.snapshot().complete());
+    let (status, page) = portal_get(&engine, &st, &cookie, "/admin").await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page.contains(&page_root("ok")), "{page}");
+    let (status, menu) = portal_get(&engine, &st, &cookie, "/admin/_menu/player/p-1").await;
+    assert_eq!(status, StatusCode::OK, "{menu}");
+    assert!(menu.starts_with(&menu_root("ok")) && menu.contains("<span>wallet</span>"), "{menu}");
 
     cleanup_user(&pool, &user).await;
 }
