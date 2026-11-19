@@ -243,6 +243,8 @@ fn validate_tabs_rejects_a_mapped_tab_the_mockup_does_not_draw() {
     let selected = vec![MAPPED, FOLLOWS, Page { tab: Some("profile"), ..FOLLOWS }];
     let e = format!("{:#}", validate_tabs(&drawn_c(), &selected, &[("c.saves", "why"), ("c.items", "why")]).expect_err("profile"));
     assert_eq!(e, "tab drift:\n  PAGE_MAP maps c.profile, the tab the untabbed c entry diffs");
+    let e = format!("{:#}", validate_tabs(&[], &c_with_items(), &[]).expect_err("c not drawn"));
+    assert_eq!(e, "tab drift:\n  PAGE_MAP maps c.items, which the mockup does not draw");
 }
 
 #[test]

@@ -217,9 +217,6 @@ pub fn validate_tabs(drawn: &[(&str, DrawnTabs)], page_map: &[Page], excluded_ta
     // tab from `drawn` would pass once no tab is left in EXCLUDED_TABS.
     for p in page_map {
         let Some(tab) = p.tab else { continue };
-        if !drawn.iter().any(|(page, _)| *page == p.page) {
-            continue;
-        }
         let id = format!("{}.{tab}", p.page);
         match drawn_as(&id) {
             None => problems.push(format!("PAGE_MAP maps {id}, which the mockup does not draw")),
