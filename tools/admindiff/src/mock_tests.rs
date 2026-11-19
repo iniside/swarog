@@ -100,3 +100,13 @@ fn a_render_that_never_assigns_the_body_is_an_error() {
     let e = format!("{:#}", render(repo.path(), "index", "").expect_err("nothing captured"));
     assert!(e.contains("REG.mount returned without assigning document.body.innerHTML"), "{e}");
 }
+
+#[test]
+fn check_tab_needs_the_selected_tab_button() {
+    let doc = |html: &str| crate::html::parse(html).expect("parses");
+    let on = doc(r#"<span><button class="tab on" onclick="PAGES.tab='items';REG.render()">Items</button></span>"#);
+    super::check_tab(&on, "user", "items").expect("the selected tab");
+    let off = doc(r#"<button class="tab" onclick="PAGES.tab='items';REG.render()">Items</button><button class="tab on" onclick="PAGES.tab='profile';REG.render()">Profile</button>"#);
+    let e = format!("{:#}", super::check_tab(&off, "user", "items").expect_err("not selected"));
+    assert_eq!(e, "P.user does not select tab items; the mockup has no such tab");
+}

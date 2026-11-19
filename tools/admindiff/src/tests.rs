@@ -39,7 +39,7 @@ pub(crate) fn write(path: &Path, body: &str) {
 pub(crate) fn body(panel: bool) -> String {
     let mut out = concat!(
         r#"<table><tbody><tr><td></td></tr></tbody></table><ul><li></li></ul><div class="svc"></div>"#,
-        r#"<div class="pop-row"></div><div class="uptime"><i></i></div>"#,
+        r#"<div class="pop-row"></div><div class="uptime"><i></i></div><select><option></option></select>"#,
         r#"<a class="panel"><div class="kpi"><div class="kpi-label">Tile</div></div></a>"#,
     )
     .to_string();

@@ -1,6 +1,7 @@
 //! Which mockup page compares with which portal route. A page is named by its mockup file
 //! stem (`UILayout/redesign/<page>.html`); the file's `PAGES.boot("<key>")` names the
-//! `P.<key>` builder the harness renders.
+//! `P.<key>` builder the harness renders. An entry that names a tab of a `FirstRow` page is
+//! its own target, `<page>.<tab>`, with its own crawl output and accept file.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -24,19 +25,52 @@ pub struct Page {
     pub route: Route,
     /// The harness's `location.search`; an entity page's fixed entity lives here.
     pub search: &'static str,
+    /// A tab of a `FirstRow` page: both sides add `tab=<id>` to their query, and a crawl
+    /// or render that does not select it fails.
+    pub tab: Option<&'static str>,
+}
+
+impl Page {
+    /// The target's name: `<page>`, or `<page>.<tab>` for a tab entry. It names the
+    /// crawl's output, the accept file and the `--page` argument.
+    pub fn id(&self) -> String {
+        match self.tab {
+            Some(tab) => format!("{}.{tab}", self.page),
+            None => self.page.to_string(),
+        }
+    }
+
+    /// The harness's `location.search`: [`Page::search`] plus the tab's `tab=<id>`.
+    pub fn mock_search(&self) -> String {
+        match self.tab {
+            Some(tab) => with_tab(self.search, tab),
+            None => self.search.to_string(),
+        }
+    }
+}
+
+/// `url` with `tab=<tab>` added to its query. A tab id is `[a-z0-9_-]+` ([`validate`]),
+/// so it needs no encoding.
+pub fn with_tab(url: &str, tab: &str) -> String {
+    let sep = if url.contains('?') { '&' } else { '?' };
+    format!("{url}{sep}tab={tab}")
+}
+
+fn is_tab_id(tab: &str) -> bool {
+    !tab.is_empty() && tab.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
 }
 
 pub const PAGE_MAP: &[Page] = &[
-    Page { page: "index", route: Route::Mapped("/admin"), search: "" },
-    Page { page: "events", route: Route::Mapped("/admin/p/core.events/events"), search: "" },
-    Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "" },
-    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka" },
-    Page { page: "apikeys", route: Route::Pending, search: "" },
-    Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "" },
-    Page { page: "scheduler", route: Route::Pending, search: "" },
-    Page { page: "config", route: Route::Pending, search: "" },
-    Page { page: "audit", route: Route::Pending, search: "" },
-    Page { page: "economy", route: Route::Pending, search: "" },
+    Page { page: "index", route: Route::Mapped("/admin"), search: "", tab: None },
+    Page { page: "events", route: Route::Mapped("/admin/p/core.events/events"), search: "", tab: None },
+    Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "", tab: None },
+    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None },
+    Page { page: "apikeys", route: Route::Pending, search: "", tab: None },
+    Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None },
+    Page { page: "scheduler", route: Route::Pending, search: "", tab: None },
+    Page { page: "config", route: Route::Pending, search: "", tab: None },
+    Page { page: "audit", route: Route::Pending, search: "", tab: None },
+    Page { page: "economy", route: Route::Pending, search: "", tab: None },
 ];
 
 const NO_LORE: &str = "no Lore module exists yet";
@@ -77,8 +111,9 @@ fn boot_key(src: &str) -> Option<String> {
 }
 
 /// Checks [`PAGE_MAP`] and [`EXCLUDED`] against the mockup and each other: every listed
-/// page exists, no page is listed twice or in both lists, every mockup page is listed, and
-/// every `FirstRow` names a `Mapped` page.
+/// page exists, no target is listed twice or in both lists, every mockup page is listed,
+/// every `FirstRow` names a `Mapped` page, and every tab entry has a `[a-z0-9_-]+` id and
+/// an untabbed `FirstRow` entry of its page with the same route.
 pub fn validate(mockup: &BTreeMap<String, String>) -> Result<()> {
     validate_lists(mockup, PAGE_MAP, EXCLUDED)
 }
@@ -86,18 +121,19 @@ pub fn validate(mockup: &BTreeMap<String, String>) -> Result<()> {
 /// [`validate`] over the given lists, which its problems name `PAGE_MAP` and `EXCLUDED`.
 fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page], excluded: &[(&str, &str)]) -> Result<()> {
     let mut problems = Vec::new();
-    let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
-    let listed = page_map.iter().map(|p| (p.page, "PAGE_MAP")).chain(excluded.iter().map(|(p, _)| (*p, "EXCLUDED")));
-    for (page, list) in listed {
-        if let Some(first) = seen.insert(page, list) {
-            problems.push(format!("{page} is listed in {first} and again in {list}"));
+    let mut seen: BTreeMap<String, &str> = BTreeMap::new();
+    let listed =
+        page_map.iter().map(|p| (p.id(), p.page, "PAGE_MAP")).chain(excluded.iter().map(|(p, _)| (p.to_string(), *p, "EXCLUDED")));
+    for (id, page, list) in listed {
+        if let Some(first) = seen.insert(id.clone(), list) {
+            problems.push(format!("{id} is listed in {first} and again in {list}"));
         }
         if !mockup.contains_key(page) {
-            problems.push(format!("{list} lists {page}, which is not a mockup page"));
+            problems.push(format!("{list} lists {id}, which is not a mockup page"));
         }
     }
     for page in mockup.keys() {
-        if !seen.contains_key(page.as_str()) {
+        if !seen.contains_key(page.as_str()) && !page_map.iter().any(|p| p.page == page) {
             problems.push(format!("mockup page {page} is in neither PAGE_MAP nor EXCLUDED"));
         }
     }
@@ -106,6 +142,16 @@ fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page], excluded
             if !page_map.iter().any(|q| q.page == list && matches!(q.route, Route::Mapped(_))) {
                 problems.push(format!("PAGE_MAP {} follows {list}, which is not a Mapped page", p.page));
             }
+        }
+        let Some(tab) = p.tab else { continue };
+        let id = p.id();
+        if !is_tab_id(tab) {
+            problems.push(format!("PAGE_MAP {id} names tab {tab:?}, which is not a [a-z0-9_-]+ id"));
+        }
+        if !matches!(p.route, Route::FirstRow(_)) {
+            problems.push(format!("PAGE_MAP {id} names a tab, which only a FirstRow page has"));
+        } else if !page_map.iter().any(|q| q.page == p.page && q.tab.is_none() && q.route == p.route) {
+            problems.push(format!("PAGE_MAP {id} is a tab of {}, which has no untabbed entry with the same route", p.page));
         }
     }
     for (page, why) in excluded {
@@ -119,14 +165,15 @@ fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page], excluded
     Ok(())
 }
 
+/// The [`PAGE_MAP`] entry whose [`Page::id`] is `page`.
 pub fn lookup(page: &str) -> Result<&'static Page> {
-    if let Some(p) = PAGE_MAP.iter().find(|p| p.page == page) {
+    if let Some(p) = PAGE_MAP.iter().find(|p| p.id() == page) {
         return Ok(p);
     }
     if let Some((_, why)) = EXCLUDED.iter().find(|(p, _)| *p == page) {
         bail!("page {page} is excluded: {why}");
     }
-    bail!("unknown page {page}; pages: {}", PAGE_MAP.iter().map(|p| p.page).collect::<Vec<_>>().join(", "))
+    bail!("unknown page {page}; pages: {}", PAGE_MAP.iter().map(Page::id).collect::<Vec<_>>().join(", "))
 }
 
 #[cfg(test)]

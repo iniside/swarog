@@ -1,5 +1,8 @@
 //! `admindiff crawl`: log in, fetch every page the nav links and the page map name, load
 //! each page's slots the way htmx does, and write the responses under the run directory.
+//! Every declared target must be reached: a mapped page that fails, a `FirstRow` page whose
+//! list has no row (unless `--allow-empty`) and a tab the portal does not select all fail
+//! the crawl.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -9,7 +12,7 @@ use reqwest::{Client, StatusCode};
 
 use crate::assemble::{assemble, pending_slots};
 use crate::html::{self, find_all, find_in, Element, Node};
-use crate::pages::{Route, PAGE_MAP};
+use crate::pages::{with_tab, Page, Route, PAGE_MAP};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Written into the run directory only by a clean crawl; `diff` refuses a run without it.
@@ -52,11 +55,11 @@ pub async fn run(cfg: &Config) -> Result<bool> {
     }
 
     let mut targets: Vec<(String, String)> = Vec::new();
-    let mut followers: Vec<(&str, &str)> = Vec::new();
+    let mut followers: Vec<(&Page, &str)> = Vec::new();
     for p in PAGE_MAP {
         match p.route {
             Route::Mapped(route) => targets.push((p.page.to_string(), route.to_string())),
-            Route::FirstRow(list) => followers.push((p.page, list)),
+            Route::FirstRow(list) => followers.push((p, list)),
             Route::Pending => println!("PENDING {}: not ported, nothing to crawl", p.page),
         }
     }
@@ -80,22 +83,34 @@ pub async fn run(cfg: &Config) -> Result<bool> {
             Err(e) => failures.push(format!("{page} ({route}): {e:#}")),
         }
     }
-    for (page, list) in followers {
+    for (entry, list) in followers {
+        let page = entry.id();
         let Some((_, doc)) = crawled.iter().find(|(p, _)| p == list) else {
             failures.push(format!("{page}: its list page {list} was not crawled"));
             continue;
         };
-        let Some(route) = first_row_href(doc) else {
+        let Some(row) = first_row_href(doc) else {
             println!("EMPTY {page}: {list} lists no row to follow, nothing to crawl");
             if !cfg.allow_empty {
                 failures.push(format!("{page}: {list} lists no row to follow (--allow-empty skips it)"));
             }
             continue;
         };
+        let route = match entry.tab {
+            Some(tab) => with_tab(&row, tab),
+            None => row,
+        };
         println!("page {page}  {route}  (first row of {list})");
         pages += 1;
-        match crawl_page(&client, cfg, page, &route, &mut failures).await {
-            Ok((n, _)) => fragments += n,
+        match crawl_page(&client, cfg, &page, &route, &mut failures).await {
+            Ok((n, doc)) => {
+                fragments += n;
+                if let Some(tab) = entry.tab {
+                    if !selects_tab(&doc, tab) {
+                        failures.push(format!("{page} ({route}): the page does not select tab {tab}; the portal has no such tab"));
+                    }
+                }
+            }
             Err(e) => failures.push(format!("{page} ({route}): {e:#}")),
         }
     }
@@ -148,6 +163,19 @@ fn first_row_href(doc: &[Node]) -> Option<String> {
     find_in(doc, &|e| e.tag == "tr" && e.has_class("clickable") && e.attr("data-href").is_some())
         .and_then(|tr| tr.attr("data-href"))
         .map(str::to_string)
+}
+
+/// Whether `doc` draws tab `tab` selected: a `.tab.on` whose `data-href` ends in
+/// `tab=<tab>`. The portal falls back to its first tab for an id it does not know, so the
+/// response status alone does not show the tab was reached.
+fn selects_tab(doc: &[Node], tab: &str) -> bool {
+    let want = format!("tab={tab}");
+    find_in(doc, &|e| {
+        e.has_class("tab")
+            && e.has_class("on")
+            && e.attr("data-href").is_some_and(|h| h.ends_with(&want) && h[..h.len() - want.len()].ends_with(['?', '&']))
+    })
+    .is_some()
 }
 
 /// Fetches one page, its slots round by round and its row menus; returns the fragment count

@@ -7,6 +7,8 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
+use crate::html::{find_in, Node};
+
 /// The scripts in the order the mockup's html files load them; `catalog.js` only builds
 /// the excluded catalog page.
 const SCRIPTS: &[&str] = &[
@@ -89,6 +91,18 @@ pub fn render(repo: &Path, key: &str, search: &str) -> Result<String> {
         bail!("node failed rendering P.{key} ({}):\n{}", out.status, String::from_utf8_lossy(&out.stderr).trim());
     }
     String::from_utf8(out.stdout).context("node output is not UTF-8")
+}
+
+/// Fails unless the rendered mockup `doc` selects tab `tab`: a `.tab.on` whose `onclick`
+/// sets `PAGES.tab='<tab>'`. The mockup falls back to its first tab for an id it does not
+/// know, so a render alone does not show the tab was reached.
+pub fn check_tab(doc: &[Node], key: &str, tab: &str) -> Result<()> {
+    let want = format!("PAGES.tab='{tab}'");
+    let on = find_in(doc, &|e| e.has_class("tab") && e.has_class("on") && e.attr("onclick").is_some_and(|c| c.contains(&want)));
+    if on.is_none() {
+        bail!("P.{key} does not select tab {tab}; the mockup has no such tab");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

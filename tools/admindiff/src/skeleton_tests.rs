@@ -73,7 +73,8 @@ fn a_head_sorts_and_dedups_its_classes() {
 
 #[test]
 fn validate_repeats_fails_on_a_dead_entry_and_passes_on_a_match_in_any_root() {
-    let tables = root(r#"<div class="app"><table><tbody><tr></tr></tbody></table><ul><li></li></ul></div>"#);
+    let tables =
+        root(r#"<div class="app"><table><tbody><tr></tr></tbody></table><ul><li></li></ul><select><option></option></select></div>"#);
     let rows = root(r#"<div class="app"><div class="svc"></div><div class="pop-row"></div></div>"#);
     let bars = root(r#"<div class="app"><span class="uptime"><i class="ok"></i></span></div>"#);
     validate_repeats(&[tables.clone(), rows.clone(), bars]).expect("each entry matches in some root");
@@ -97,6 +98,14 @@ fn n_rows_against_m_rows_of_one_shape_is_no_difference() {
     let portal = format!("<table><tbody>{ROW}</tbody></table>");
     assert_eq!(diff(&mock, &portal), set(&[]));
     assert_eq!(page_of(&mock).frame.canon, "div.app{table{tbody{tr*{tr{td,td}}}}}");
+}
+
+#[test]
+fn n_options_against_m_options_collapse_like_rows() {
+    let mock = r#"<select class="select"><option value="">all</option><option selected>a</option><option>b</option></select>"#;
+    let portal = r#"<select class="select"><option>x</option></select>"#;
+    assert_eq!(diff(mock, portal), set(&[]));
+    assert_eq!(page_of(mock).frame.canon, "div.app{select.select{option*{option}}}");
 }
 
 #[test]

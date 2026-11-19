@@ -126,6 +126,7 @@ pub struct Repeat {
 pub const REPEAT: &[Repeat] = &[
     Repeat { container: Sel::Tag("tbody"), item: Sel::Tag("tr"), shape: Shape::Full, why: "table rows" },
     Repeat { container: Sel::Tag("ul"), item: Sel::Tag("li"), shape: Shape::Full, why: "list and timeline items" },
+    Repeat { container: Sel::Tag("select"), item: Sel::Tag("option"), shape: Shape::Full, why: "select options" },
     Repeat { container: Sel::Any, item: Sel::Class("svc"), shape: Shape::Full, why: "service rows" },
     Repeat { container: Sel::Any, item: Sel::Class("pop-row"), shape: Shape::Full, why: "attention rows" },
     Repeat {

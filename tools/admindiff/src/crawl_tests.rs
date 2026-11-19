@@ -474,3 +474,13 @@ async fn an_empty_list_page_fails_unless_empty_is_allowed_and_then_the_diff_refu
     let e = format!("{:#}", crate::run_diff(repo.path(), "player", &run, false).expect_err("no player page"));
     assert_eq!(e, format!("{} has no player page: the crawl found no row of players to follow", run.display()));
 }
+
+#[test]
+fn selects_tab_needs_the_selected_tab_with_that_id() {
+    let doc = |html: &str| crate::html::parse(html).expect("parses");
+    let on = r#"<button class="tab on" data-href="&#x2f;admin&#x2f;e&#x2f;player&#x2f;p-1?tab=items">Items</button>"#;
+    assert!(super::selects_tab(&doc(on), "items"));
+    assert!(!super::selects_tab(&doc(on), "item"), "another id is not that tab");
+    let fallback = r#"<button class="tab on" data-href="/admin/e/player/p-1?tab=profile"></button><button class="tab" data-href="/admin/e/player/p-1?tab=items"></button>"#;
+    assert!(!super::selects_tab(&doc(fallback), "items"), "the portal fell back to its first tab");
+}

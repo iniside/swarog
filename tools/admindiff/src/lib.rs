@@ -1,8 +1,8 @@
 //! `admindiff` — compares the running admin portal with the UILayout mockup.
 //!
 //!   admindiff crawl [--base-url <url>] [--user <name>] [--allow-errors] [--allow-empty]
-//!   admindiff mock --page <page>
-//!   admindiff diff --page <page> --portal <crawl dir> [--text]
+//!   admindiff mock --page <page>[.<tab>]
+//!   admindiff diff --page <page>[.<tab>] --portal <crawl dir> [--text]
 
 pub mod accept;
 pub mod assemble;
@@ -26,14 +26,15 @@ admindiff — crawl the admin portal and diff its pages against the UILayout moc
 
 USAGE:
   admindiff crawl [--base-url <url>] [--user <name>] [--allow-errors] [--allow-empty]
-  admindiff mock --page <page>
-  admindiff diff --page <page> --portal <crawl dir> [--text]
+  admindiff mock --page <page>[.<tab>]
+  admindiff diff --page <page>[.<tab>] --portal <crawl dir> [--text]
 
   crawl     log in, fetch every nav page and mapped page, load their slots with HX-Request,
             fetch row menus for status; writes target/admindiff/<run>/ (and its CLEAN marker
             when clean) and fails on any non-2xx, an error-state fragment (unless
             --allow-errors), a fragment without data-state, no nav page or no fragment, and an
-            entity page whose list page has no row to follow (unless --allow-empty)
+            entity page whose list page has no row to follow (unless --allow-empty), and a
+            tab target whose page does not select the tab
   mock      render the mockup page through node into target/admindiff/mock/<page>.html
   diff      compare the page's class skeleton with the crawl's assembled page; refuses a
             crawl without its CLEAN marker, and fails on a difference not in
@@ -45,7 +46,8 @@ USAGE:
 
   --base-url <url>   portal origin (default http://localhost:8080; split: http://localhost:8085)
   --user <name>      admin login (default admin); the password is $ADMINDIFF_PASSWORD (default admin)
-  --page <page>      mockup page: the file stem of UILayout/redesign/<page>.html
+  --page <page>      mockup page: the file stem of UILayout/redesign/<page>.html; <page>.<tab>
+                     names a tab target of the page map, diffed against accept/<page>.<tab>.txt
   --portal <dir>     a crawl run directory
   --text             compare text too
 
@@ -123,18 +125,28 @@ pub fn validated_mockup(repo: &Path) -> Result<std::collections::BTreeMap<String
     Ok(mockup)
 }
 
+/// The mockup render of `entry`, parsed: `P.<key>` with the entry's search and tab; a tab
+/// entry the render does not select fails.
+fn render_mock(repo: &Path, key: &str, entry: &pages::Page) -> Result<(String, Vec<html::Node>)> {
+    let rendered = mock::render(repo, key, &entry.mock_search())?;
+    let doc = html::parse(&rendered).with_context(|| format!("parse the P.{key} render"))?;
+    if let Some(tab) = entry.tab {
+        mock::check_tab(&doc, key, tab)?;
+    }
+    Ok((rendered, doc))
+}
+
 /// The validated page map entry for `page` and its mockup `P.<key>`.
 fn resolve(repo: &Path, page: &str) -> Result<(&'static pages::Page, String)> {
     let mockup = validated_mockup(repo)?;
     let entry = pages::lookup(page)?;
-    let key = mockup.get(page).cloned().ok_or_else(|| anyhow!("page {page} has no mockup file"))?;
+    let key = mockup.get(entry.page).cloned().ok_or_else(|| anyhow!("page {} has no mockup file", entry.page))?;
     Ok((entry, key))
 }
 
 pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
     let (entry, key) = resolve(repo, page)?;
-    let rendered = mock::render(repo, &key, entry.search)?;
-    let doc = html::parse(&rendered).with_context(|| format!("parse the P.{key} render"))?;
+    let (rendered, doc) = render_mock(repo, &key, entry)?;
     let root = skeleton::prepare(&doc, skeleton::MOCK_STRIP, "mock")?;
     let shape = skeleton::page(&root, false);
     let out = target_dir(repo).join("mock").join(format!("{page}.html"));
@@ -155,7 +167,7 @@ fn validate_repeats(repo: &Path) -> Result<()> {
     let mut roots = Vec::new();
     for p in pages::PAGE_MAP {
         let key = mockup.get(p.page).ok_or_else(|| anyhow!("page {} has no mockup file", p.page))?;
-        let doc = html::parse(&mock::render(repo, key, p.search)?).with_context(|| format!("parse the P.{key} render"))?;
+        let (_, doc) = render_mock(repo, key, p)?;
         roots.push(skeleton::prepare(&doc, skeleton::MOCK_STRIP, "mock")?);
     }
     skeleton::validate_repeats(&roots)
@@ -186,7 +198,7 @@ pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Resul
     let portal_src =
         std::fs::read_to_string(&portal_file).with_context(|| format!("read {} (run crawl first)", portal_file.display()))?;
     let portal_doc = html::parse(&portal_src).with_context(|| format!("parse {}", portal_file.display()))?;
-    let mock_doc = html::parse(&mock::render(repo, &key, entry.search)?).with_context(|| format!("parse the P.{key} render"))?;
+    let (_, mock_doc) = render_mock(repo, &key, entry)?;
     let mock_page = skeleton::page(&skeleton::prepare(&mock_doc, skeleton::MOCK_STRIP, "mock")?, text);
     let portal_page = skeleton::page(&skeleton::prepare(&portal_doc, skeleton::PORTAL_STRIP, "portal")?, text);
     let outcome = skeleton::diff_pages(&mock_page, &portal_page);
