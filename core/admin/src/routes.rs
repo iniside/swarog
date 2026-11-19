@@ -29,7 +29,7 @@ use crate::engine::Engine;
 use crate::render::{
     self, ActionItem, ActionResultView, Crumb, DashboardView, EntityView, FlashView, FormFrame, FormInstance,
     HealthView, LayoutRow, MenuView, MissingView, ModalSpec, NavSectionView, NavView, NotificationView, OperatorView,
-    PageView, PanelInput, ScopeView, SearchGroupView, SearchHitView, SearchView, ShellView, SlotView, TabView,
+    PageView, PanelInput, ScopeView, SearchGroupView, SearchView, ShellView, SlotView, TabView,
 };
 use crate::{fakes, see_other, AdminState};
 
@@ -850,17 +850,7 @@ async fn search_route(
             module: g.module,
             label: g.label,
             icon: g.icon,
-            hits: g
-                .hits
-                .iter()
-                .map(|h| SearchHitView {
-                    hl: false,
-                    title: h.title.clone(),
-                    subtitle: h.subtitle.clone(),
-                    badge: h.badge.clone(),
-                    href: render::link_url(&h.link),
-                })
-                .collect(),
+            hits: g.hits.iter().map(render::search_hit).collect(),
             error: g.error,
         })
         .collect();

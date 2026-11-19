@@ -1,4 +1,4 @@
-use controlplane::EntityRef;
+use controlplane::{EntityRef, SearchHit};
 use serde::Serialize;
 use crate::engine::panels;
 use super::*;
@@ -244,6 +244,16 @@ pub(crate) struct SearchHitView {
     pub(crate) subtitle: String,
     pub(crate) badge: Option<String>,
     pub(crate) href: String,
+}
+
+pub(crate) fn search_hit(hit: &SearchHit) -> SearchHitView {
+    SearchHitView {
+        hl: false,
+        title: hit.title.clone(),
+        subtitle: hit.subtitle.clone(),
+        badge: hit.badge.clone(),
+        href: link_url(&hit.link),
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

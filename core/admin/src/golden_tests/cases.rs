@@ -993,12 +993,13 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         let menu = MenuView { entity: row_entity.clone(), groups: render::menu_groups(menu_items, |_| false) };
         render::fragment(env, "primitives.html", "menu", &menu)
     }));
-    let hit = |title: &str, subtitle: &str, badge: Option<&str>| SearchHitView {
-        hl: false,
-        title: title.to_string(),
-        subtitle: subtitle.to_string(),
-        badge: badge.map(str::to_string),
-        href: format!("/admin/e/player/{subtitle}"),
+    let hit = |title: &str, subtitle: &str, badge: Option<&str>| {
+        render::search_hit(&SearchHit {
+            link: Link::Entity(entity("player", subtitle)),
+            title: title.to_string(),
+            subtitle: subtitle.to_string(),
+            badge: badge.map(str::to_string),
+        })
     };
     let search = SearchView::new(
         "ann".to_string(),

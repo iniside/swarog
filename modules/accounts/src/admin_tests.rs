@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use accountsapi::Auth as _;
-use controlplane::{CellKind, PanelQuery, Primitive, Provider as _};
+use controlplane::{CellKind, EntityRef, Link, PanelQuery, Primitive, Provider as _, SearchQuery};
 use testdb::test_pool;
 
 use crate::admin::AccountsAdmin;
@@ -66,4 +66,26 @@ async fn player_label_answers_each_handle_and_leaves_out_a_missing_player() {
             "label {value:?} is the registered name plus '#' and exactly 4 digits",
         );
     }
+}
+
+#[tokio::test]
+async fn player_search_hit_links_to_the_player_entity() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let email = format!("Seeker-{}@test.local", suffix());
+    let id = svc.register(email, "pw".into(), "Seeker".into()).await.unwrap().player_id;
+    let query = SearchQuery { module: "accounts".to_string(), kind: "player".to_string(), q: id.clone(), limit: 10 };
+    let hits = AccountsAdmin::new(Arc::clone(&svc)).search(query).await;
+    cleanup_player(&pool, &id).await;
+
+    let hits = hits.unwrap();
+    let hit = hits
+        .iter()
+        .find(|h| h.subtitle.ends_with(&id))
+        .unwrap_or_else(|| panic!("searching by id finds player {id}: {hits:?}"));
+    assert_eq!(
+        hit.link,
+        Link::Entity(EntityRef { kind: "player".to_string(), id: id.clone() }),
+        "a player hit opens that player's entity page",
+    );
 }

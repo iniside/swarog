@@ -45,8 +45,8 @@ use controlplane::{
     ActionDecl, ActionPoint, Align, AttentionItem, Axis, Banner, Cell, CellKind, Column, ConfirmSpec, ConfirmTone,
     ContributionDecl, DataTable, DeclaredEnum, Delta, Emphasis, EntityHeader, EntityRef, Field, FieldKind, FilterDef,
     FilterKind, FormSpec, KpiTile, Layout, Link, Manifest, Noun, PageInfo, Palette, PanelBody, Point, Primitive,
-    PropertyList, QueueItem, QueueState, ReasonReq, Role, Row, SecretReveal, Series, ServiceItem, ServiceState, ServiceStatus,
-    Severity, SortDir, Then, TimeRange, TimeSeriesChart, Timeline, TimelineEntry, Tone, Variants, WorkQueue,
+    PropertyList, QueueItem, QueueState, ReasonReq, Role, Row, SearchHit, SecretReveal, Series, ServiceItem,
+    ServiceState, ServiceStatus, Severity, SortDir, Then, TimeRange, TimeSeriesChart, Timeline, TimelineEntry, Tone, Variants, WorkQueue,
 };
 use minijinja::Environment;
 
@@ -57,8 +57,8 @@ use crate::engine::panels::{LastValue, PanelState};
 use crate::engine::roles::Operator;
 use crate::render::{
     self, ActionItem, ActionResultView, Crumb, DashboardView, EntityView, FlashView, FormFrame, FormInstance,
-    LayoutRow, MenuView, ModalSpec, OperatorView, PageView, PanelInput, RevealView, SearchGroupView, SearchHitView,
-    SearchView, ShellView, SlotView, TabView,
+    LayoutRow, MenuView, ModalSpec, OperatorView, PageView, PanelInput, RevealView, SearchGroupView, SearchView,
+    ShellView, SlotView, TabView,
 };
 use crate::routes;
 
