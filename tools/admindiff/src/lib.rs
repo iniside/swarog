@@ -40,8 +40,8 @@ USAGE:
             a page map menu entry nor in pages::EXCLUDED_MENUS, an excluded menu answering
             non-2xx, the first menu of a kind any other crawled page draws answering
             non-2xx, any fetched menu with a module group in the error state (unless
-            --allow-errors) or without data-state, and an EXCLUDED_MENUS entry its page does
-            not draw
+            --allow-errors), with no module group or with a group whose data-state is missing or
+            neither ok nor error, and an EXCLUDED_MENUS entry its page does not draw
   mock      render the mockup target through node into target/admindiff/mock/<target>.html
   diff      compare the target's class skeleton with the crawl's: the assembled page, or the
             menu popover of a menu target; refuses a crawl without its CLEAN marker, and fails

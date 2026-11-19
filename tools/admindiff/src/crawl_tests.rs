@@ -96,8 +96,12 @@ fn menu_url(kind: &str, page: &str) -> String {
     format!("/admin/_menu/{kind}/{page}")
 }
 
-/// The menu body the healthy site serves at every [`menu_url`].
-const MENU_BODY: &str = r#"<div class="menu-group" data-state="ok"><span>accounts</span></div><button class="menu-item"><span>Open</span></button>"#;
+/// The menu body the healthy site serves at every [`menu_url`]: the portal's own row menu
+/// golden, each module up.
+const MENU_BODY: &str = include_str!("../../../core/admin/src/testdata/menu_row_actions.html");
+
+/// The same row menu golden with the economy module down.
+const MENU_DOWN: &str = include_str!("../../../core/admin/src/testdata/menu_row_actions_down.html");
 
 /// A menu button opening `url`, as the portal's template writes it.
 fn menu_button(url: &str) -> String {
@@ -510,7 +514,7 @@ async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
     let site = healthy
         .clone()
         .with(&list_url, ok(list.replace(&button, &format!("{}{button}", menu_button(guild)))))
-        .with(guild, ok(r#"<div class="menu-item"><span>guild</span></div>"#));
+        .with(guild, ok(r#"<div class="menu-group" data-state="ok"><span>guild</span></div><div class="menu-item"><span>guild</span></div>"#));
     let mut excluded = EXCLUDED_MENUS.to_vec();
     excluded.push((page, "guild", "another kind"));
 
@@ -529,17 +533,22 @@ async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
     crawl_with(bare, false, true).await.assert_failed("--allow-empty: players lists rows but draws no player menu");
 }
 
-/// A menu answers 200 while a module is down, so its group's `data-state` is the state: a
-/// group in the error state fails the crawl unless `--allow-errors`, on a menu target, an
-/// excluded menu and a status-only menu alike, each beside its clean twin; a group without
-/// `data-state` fails even with `--allow-errors`.
+/// A menu answers 200 while a module is down, so its group's `data-state` is the state: the
+/// portal's down golden fails the crawl unless `--allow-errors`, on a menu target, an
+/// excluded menu and a status-only menu alike, each beside its clean twin, the ok golden. A
+/// group without `data-state` or with one neither `ok` nor `error`, and a menu with no group
+/// at all, fail even with `--allow-errors` and `--allow-empty`.
 #[tokio::test]
 async fn an_error_state_menu_group_fails_unless_errors_are_allowed() {
     let (_, page, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
     let url = menu_url(kind, page);
-    let down = MENU_BODY.replace(r#"data-state="ok""#, r#"data-state="error""#);
+    let down = MENU_DOWN.to_string();
+    assert!(down.contains(r#"data-state="error""#) && down.contains(r#"data-state="ok""#), "one group down: {down}");
+    assert!(!MENU_BODY.contains(r#"data-state="error""#), "every group up: {MENU_BODY}");
     let stateless = MENU_BODY.replace(r#" data-state="ok""#, "");
-    assert!(down != MENU_BODY && stateless != MENU_BODY, "MENU_BODY carries data-state");
+    let unknown = MENU_BODY.replace(r#"data-state="ok""#, r#"data-state="down""#);
+    let groupless = MENU_BODY.replace(r#"class="menu-group""#, r#"class="menu-head""#);
+    assert!(stateless != MENU_BODY && unknown != MENU_BODY && groupless != MENU_BODY, "MENU_BODY carries a stated group");
     let clean = |c: &Crawl, why: &str| {
         assert!(matches!(c.result, Ok(true)) && c.clean_marker(), "{why}: {:?}", c.result);
     };
@@ -548,6 +557,9 @@ async fn an_error_state_menu_group_fails_unless_errors_are_allowed() {
     crawl(healthy.clone().with(&url, ok(down.clone())), false).await.assert_failed("an error-state menu target");
     clean(&crawl(healthy.clone().with(&url, ok(down.clone())), true).await, "--allow-errors: an error-state menu target");
     crawl(healthy.clone().with(&url, ok(stateless)), true).await.assert_failed("a menu group without data-state");
+    let lax = |site: Site| crawl_run(site, PAGE_MAP, EXCLUDED_MENUS, true, true);
+    lax(healthy.clone().with(&url, ok(unknown))).await.assert_failed("a menu group whose data-state is down");
+    lax(healthy.clone().with(&url, ok(groupless))).await.assert_failed("a menu with no group");
 
     let target = other_mapped();
     let guild = "/admin/_menu/guild/g-1";

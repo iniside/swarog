@@ -8,8 +8,8 @@
 //! once each and must answer 2xx; an exclusion its page does not draw fails as stale. Every
 //! other crawled page, one only the nav links or a tab page, has the first menu of each kind
 //! it draws fetched once, and it must answer 2xx. Every fetched menu, compared or not, fails
-//! on a group without `data-state` and, unless `--allow-errors`, on a group in the error
-//! state, as a fragment does.
+//! when it holds no module group or a group whose `data-state` is missing or neither `ok`
+//! nor `error`, and, unless `--allow-errors`, on a group in the error state.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -361,9 +361,10 @@ async fn check_menu_kinds(
 }
 
 /// Fetches the menu at `url` as `admin.js` does and writes its body as `raw/<raw>.html`; a
-/// non-2xx answer fails, and so does a module group without `data-state` or, unless
-/// `--allow-errors`, one whose module is down (`data-state="error"`): the menu answers 200
-/// either way.
+/// non-2xx answer fails, and so does a body with no module group (a drawn menu button always
+/// has a row action, so an empty menu is template drift), a group whose `data-state` is
+/// missing or neither `ok` nor `error`, and, unless `--allow-errors`, a group whose module
+/// is down (`data-state="error"`): the menu answers 200 either way.
 async fn fetch_menu(client: &Client, cfg: &Config, raw: &str, url: &str) -> Result<String> {
     let resp = client.get(format!("{}{url}", cfg.base_url)).header("HX-Request", "true").send().await.context("GET")?;
     let status = resp.status();
@@ -375,12 +376,20 @@ async fn fetch_menu(client: &Client, cfg: &Config, raw: &str, url: &str) -> Resu
     let nodes = html::parse(&body).context("parse menu")?;
     let mut groups = Vec::new();
     find_all(&nodes, &|e| e.has_class("menu-group"), &mut groups);
+    if groups.is_empty() {
+        bail!("the menu holds no menu-group");
+    }
     for group in groups {
         let name = group.text();
         match group.attr("data-state") {
             None => bail!("menu group {name:?} carries no data-state"),
-            Some("error") if !cfg.allow_errors => bail!("menu group {name:?} is in the error state"),
-            _ => {}
+            Some("ok") => {}
+            Some("error") => {
+                if !cfg.allow_errors {
+                    bail!("menu group {name:?} is in the error state");
+                }
+            }
+            Some(other) => bail!("menu group {name:?} carries data-state {other:?}, neither ok nor error"),
         }
     }
     Ok(body)
