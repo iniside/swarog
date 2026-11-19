@@ -311,3 +311,50 @@ fn run_diff_compares_a_menu_target_by_its_menu() {
     write(&dir.path().join("players.menu.user.html"), &menu(&more));
     assert!(!run_diff(repo.path(), "players.menu.user", dir.path(), false).expect("runs"), "a portal-only item");
 }
+
+/// A modal target compares the two `.modal` dialogs, not the pages, and needs no panel: the
+/// stand-in modal against a portal `.scrim` holding the same dialog is clean, and against one
+/// whose dialog has one more child it is not.
+#[test]
+fn run_diff_compares_a_modal_target_by_its_modal() {
+    let repo = FakeRepo::new("diff-modal", &mock_html(&body(true)));
+    let modal = |extra: &str| {
+        format!(
+            concat!(
+                r#"<div class="scrim" data-scrim=""><div class="modal"><div class="modal-head"><h2>x</h2></div>"#,
+                r#"<div class="modal-body"></div><div class="modal-foot"></div>{}</div></div>"#,
+            ),
+            extra
+        )
+    };
+    let dir = ScratchDir::new("diff-modal-crawl");
+    write(&dir.path().join(crawl::CLEAN_MARKER), "");
+    write(&dir.path().join("mail.modal.cancel.html"), &modal(""));
+    assert!(run_diff(repo.path(), "mail.modal.cancel", dir.path(), false).expect("runs"), "the same dialog is clean");
+    write(&dir.path().join("mail.modal.cancel.html"), &modal(r#"<div class="modal-note"></div>"#));
+    assert!(!run_diff(repo.path(), "mail.modal.cancel", dir.path(), false).expect("runs"), "a portal-only child");
+}
+
+/// A clean crawl with no output for a menu or modal target skipped it as EMPTY: the diff names
+/// that, the target's host and what it did not draw, instead of a missing-file error; the twin
+/// with the modal written runs.
+#[test]
+fn run_diff_names_a_menu_or_modal_target_the_crawl_skipped() {
+    let repo = FakeRepo::new("diff-skipped", &mock_html(&body(true)));
+    let dir = ScratchDir::new("diff-skipped-crawl");
+    write(&dir.path().join(crawl::CLEAN_MARKER), "");
+    let shown = dir.path().display();
+    let e = format!("{:#}", run_diff(repo.path(), "mail.modal.cancel", dir.path(), false).expect_err("no modal"));
+    let want = format!(
+        "{shown} has no mail.modal.cancel modal: the crawl skipped it as EMPTY (mail was skipped or drew no mail/cancel opener) or predates the entry"
+    );
+    assert_eq!(e, want);
+    let e = format!("{:#}", run_diff(repo.path(), "players.menu.user", dir.path(), false).expect_err("no menu"));
+    let want = format!(
+        "{shown} has no players.menu.user menu: the crawl skipped it as EMPTY (players was skipped or drew no player menu) or predates the entry"
+    );
+    assert_eq!(e, want);
+    let modal = r#"<div class="scrim" data-scrim=""><div class="modal"></div></div>"#;
+    write(&dir.path().join("mail.modal.cancel.html"), modal);
+    run_diff(repo.path(), "mail.modal.cancel", dir.path(), false).expect("the written modal is diffed");
+}
