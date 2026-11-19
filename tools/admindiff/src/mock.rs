@@ -7,7 +7,8 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
-use crate::html::{find_in, Node};
+use crate::html::{find_all, find_in, Node};
+use crate::pages::DrawnTabs;
 
 /// The scripts in the order the mockup's html files load them; `catalog.js` only builds
 /// the excluded catalog page.
@@ -103,6 +104,26 @@ pub fn check_tab(doc: &[Node], key: &str, tab: &str) -> Result<()> {
         bail!("P.{key} does not select tab {tab}; the mockup has no such tab");
     }
     Ok(())
+}
+
+/// The tabs the rendered mockup `doc` draws: every `.tab` whose `onclick` sets
+/// `PAGES.tab='<id>'`, in order, and the first of them drawn `.on`.
+pub fn drawn_tabs(doc: &[Node]) -> Result<DrawnTabs> {
+    const SET: &str = "PAGES.tab='";
+    let mut buttons = Vec::new();
+    find_all(doc, &|e| e.has_class("tab") && e.attr("onclick").is_some_and(|c| c.contains(SET)), &mut buttons);
+    let mut drawn = DrawnTabs::default();
+    for b in buttons {
+        let onclick = b.attr("onclick").unwrap_or_default();
+        let at = onclick.find(SET).map_or(0, |i| i + SET.len());
+        let Some(len) = onclick[at..].find('\'') else { bail!("a tab's onclick {onclick:?} does not close its PAGES.tab id") };
+        let id = onclick[at..at + len].to_string();
+        if b.has_class("on") && drawn.selected.is_none() {
+            drawn.selected = Some(id.clone());
+        }
+        drawn.tabs.push(id);
+    }
+    Ok(drawn)
 }
 
 #[cfg(test)]

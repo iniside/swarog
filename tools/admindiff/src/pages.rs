@@ -1,9 +1,11 @@
 //! Which mockup page compares with which portal route. A page is named by its mockup file
 //! stem (`UILayout/redesign/<page>.html`); the file's `PAGES.boot("<key>")` names the
 //! `P.<key>` builder the harness renders. An entry that names a tab of a `FirstRow` page is
-//! its own target, `<page>.<tab>`, with its own crawl output and accept file.
+//! its own target, `<page>.<tab>`, with its own crawl output and accept file. Every other tab
+//! the mockup draws on a `FirstRow` page, besides the one its untabbed entry renders
+//! selected, is in [`EXCLUDED_TABS`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -87,6 +89,26 @@ pub const EXCLUDED: &[(&str, &str)] = &[
     ("lore-billing", NO_LORE),
 ];
 
+/// Tabs the mockup draws on a `FirstRow` page that no `PAGE_MAP` tab entry diffs, as
+/// `<page>.<tab>` with the reason. [`validate_tabs`] holds it to the mockup render.
+pub const EXCLUDED_TABS: &[(&str, &str)] = &[
+    ("player.characters", "not ported yet: the Characters tab arrives with the characters port (Step 14)"),
+    ("player.wallet", "not ported yet: the Wallet tab arrives with the wallet port (Step 15)"),
+    ("player.inventory", "not ported yet: the Inventory tab arrives with the inventory port (Step 16)"),
+    ("player.friends", "not ported yet: the Friends tab arrives with the friends port (Step 17)"),
+    ("player.groups", "not ported yet: the Groups tab arrives with the groups port (Step 18)"),
+    ("player.saves", "not ported yet: the Cloud saves tab arrives with the storage port (Step 19)"),
+    ("player.inbox", "not ported yet: the Inbox tab arrives with the notifications port (Step 20)"),
+    ("player.lore", NO_LORE),
+];
+
+/// The tabs a mockup render draws, in order, and the one it draws selected.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DrawnTabs {
+    pub tabs: Vec<String>,
+    pub selected: Option<String>,
+}
+
 /// Every mockup page under `redesign` with its `P.<key>`, read from the `PAGES.boot` call.
 pub fn mockup_pages(redesign: &Path) -> Result<BTreeMap<String, String>> {
     let mut out = BTreeMap::new();
@@ -119,7 +141,7 @@ pub fn validate(mockup: &BTreeMap<String, String>) -> Result<()> {
 }
 
 /// [`validate`] over the given lists, which its problems name `PAGE_MAP` and `EXCLUDED`.
-fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page], excluded: &[(&str, &str)]) -> Result<()> {
+pub(crate) fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page], excluded: &[(&str, &str)]) -> Result<()> {
     let mut problems = Vec::new();
     let mut seen: BTreeMap<String, &str> = BTreeMap::new();
     let listed =
@@ -165,6 +187,52 @@ fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page], excluded
     Ok(())
 }
 
+/// Checks the tabs the mockup draws on each untabbed `FirstRow` page (`drawn`, by page)
+/// against `page_map` and `excluded_tabs`, which its problems name `PAGE_MAP` and
+/// `EXCLUDED_TABS`: every drawn tab but the selected one, which the untabbed entry diffs, is a
+/// tab entry or excluded, not both; an exclusion names a drawn, unselected tab, once, with a
+/// reason.
+pub fn validate_tabs(drawn: &[(&str, DrawnTabs)], page_map: &[Page], excluded_tabs: &[(&str, &str)]) -> Result<()> {
+    let mut problems = Vec::new();
+    for (page, d) in drawn {
+        for tab in d.tabs.iter().filter(|t| d.selected.as_ref() != Some(*t)) {
+            let id = format!("{page}.{tab}");
+            let mapped = page_map.iter().any(|p| p.page == *page && p.tab == Some(tab.as_str()));
+            let excluded = excluded_tabs.iter().any(|(t, _)| *t == id);
+            match (mapped, excluded) {
+                (false, false) => problems.push(format!("mockup tab {id} is in neither PAGE_MAP nor EXCLUDED_TABS")),
+                (true, true) => problems.push(format!("{id} is listed in PAGE_MAP and again in EXCLUDED_TABS")),
+                _ => {}
+            }
+        }
+    }
+    // The page drawing `id`'s tab, and whether it draws that tab selected.
+    let drawn_as = |id: &str| {
+        drawn.iter().find_map(|(page, d)| {
+            let tab = id.strip_prefix(page)?.strip_prefix('.')?;
+            d.tabs.iter().any(|t| t == tab).then_some((*page, d.selected.as_deref() == Some(tab)))
+        })
+    };
+    let mut seen = BTreeSet::new();
+    for (id, why) in excluded_tabs {
+        if !seen.insert(*id) {
+            problems.push(format!("{id} is listed in EXCLUDED_TABS and again in EXCLUDED_TABS"));
+        }
+        if why.trim().is_empty() {
+            problems.push(format!("EXCLUDED_TABS {id} has no reason"));
+        }
+        match drawn_as(id) {
+            None => problems.push(format!("EXCLUDED_TABS lists {id}, which the mockup does not draw")),
+            Some((page, true)) => problems.push(format!("EXCLUDED_TABS lists {id}, the tab the untabbed {page} entry diffs")),
+            Some((_, false)) => {}
+        }
+    }
+    if !problems.is_empty() {
+        bail!("tab drift:\n  {}", problems.join("\n  "));
+    }
+    Ok(())
+}
+
 /// The [`PAGE_MAP`] entry whose [`Page::id`] is `page`.
 pub fn lookup(page: &str) -> Result<&'static Page> {
     if let Some(p) = PAGE_MAP.iter().find(|p| p.id() == page) {
@@ -172,6 +240,9 @@ pub fn lookup(page: &str) -> Result<&'static Page> {
     }
     if let Some((_, why)) = EXCLUDED.iter().find(|(p, _)| *p == page) {
         bail!("page {page} is excluded: {why}");
+    }
+    if let Some((_, why)) = EXCLUDED_TABS.iter().find(|(t, _)| *t == page) {
+        bail!("tab {page} is excluded: {why}");
     }
     bail!("unknown page {page}; pages: {}", PAGE_MAP.iter().map(Page::id).collect::<Vec<_>>().join(", "))
 }

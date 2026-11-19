@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use super::{boot_key, lookup, mockup_pages, validate, validate_lists, with_tab, Page, Route, EXCLUDED, PAGE_MAP};
+use super::{
+    boot_key, lookup, mockup_pages, validate, validate_lists, validate_tabs, with_tab, DrawnTabs, Page, Route, EXCLUDED,
+    EXCLUDED_TABS, PAGE_MAP,
+};
 use crate::tests::ScratchDir;
 
 /// Every page the two lists name, as a mockup map would hold it.
@@ -71,6 +74,8 @@ fn lookup_returns_mapped_first_row_and_pending_pages_and_refuses_excluded_and_un
     assert_eq!(entity.search, "?u=aiko.tanaka", "an entity page carries its fixed entity");
     let excluded = format!("{:#}", lookup("states").expect_err("excluded"));
     assert!(excluded.contains("page states is excluded: Declared deviation D3"), "{excluded}");
+    let tab = format!("{:#}", lookup("player.wallet").expect_err("an excluded tab"));
+    assert!(tab.contains("tab player.wallet is excluded: not ported yet"), "{tab}");
     let unknown = format!("{:#}", lookup("nope").expect_err("unknown"));
     assert!(unknown.contains("unknown page nope; pages: index, events"), "{unknown}");
 }
@@ -187,5 +192,67 @@ fn validate_lists_checks_tab_entries() {
 fn lookup_finds_an_entry_by_its_id() {
     for p in PAGE_MAP {
         assert_eq!(lookup(&p.id()).expect("listed").id(), p.id());
+    }
+}
+
+// ---- validate_tabs: each defect beside its clean twin ---------------------------------
+
+/// Page `c` draws tabs `profile` (selected), `items` and `saves`.
+fn drawn_c() -> Vec<(&'static str, DrawnTabs)> {
+    let tabs = ["profile", "items", "saves"].iter().map(|t| t.to_string()).collect();
+    vec![("c", DrawnTabs { tabs, selected: Some("profile".to_string()) })]
+}
+
+/// `PAGE_MAP` with `c` and its tab entry `c.items`.
+fn c_with_items() -> Vec<Page> {
+    vec![MAPPED, FOLLOWS, Page { tab: Some("items"), ..FOLLOWS }]
+}
+
+fn tabs_drift(excluded_tabs: &[(&str, &str)]) -> String {
+    format!("{:#}", validate_tabs(&drawn_c(), &c_with_items(), excluded_tabs).expect_err("must drift"))
+}
+
+#[test]
+fn validate_tabs_passes_the_clean_twin() {
+    validate_tabs(&drawn_c(), &c_with_items(), &[("c.saves", "why")]).expect("items mapped, saves excluded, profile selected");
+}
+
+#[test]
+fn validate_tabs_rejects_a_drawn_tab_neither_mapped_nor_excluded() {
+    assert_eq!(tabs_drift(&[]), "tab drift:\n  mockup tab c.saves is in neither PAGE_MAP nor EXCLUDED_TABS");
+    let e = format!("{:#}", validate_tabs(&drawn_c(), &[MAPPED, FOLLOWS], &[("c.saves", "why")]).expect_err("items unlisted"));
+    assert_eq!(e, "tab drift:\n  mockup tab c.items is in neither PAGE_MAP nor EXCLUDED_TABS");
+}
+
+#[test]
+fn validate_tabs_rejects_a_stale_exclusion() {
+    let gone = tabs_drift(&[("c.saves", "why"), ("c.gone", "why")]);
+    assert_eq!(gone, "tab drift:\n  EXCLUDED_TABS lists c.gone, which the mockup does not draw");
+    let other_page = tabs_drift(&[("c.saves", "why"), ("a.saves", "why")]);
+    assert_eq!(other_page, "tab drift:\n  EXCLUDED_TABS lists a.saves, which the mockup does not draw");
+    let selected = tabs_drift(&[("c.saves", "why"), ("c.profile", "why")]);
+    assert_eq!(selected, "tab drift:\n  EXCLUDED_TABS lists c.profile, the tab the untabbed c entry diffs");
+}
+
+#[test]
+fn validate_tabs_rejects_a_tab_both_mapped_and_excluded() {
+    let both = tabs_drift(&[("c.saves", "why"), ("c.items", "why")]);
+    assert_eq!(both, "tab drift:\n  c.items is listed in PAGE_MAP and again in EXCLUDED_TABS");
+}
+
+#[test]
+fn validate_tabs_rejects_an_exclusion_listed_twice_or_without_a_reason() {
+    let twice = tabs_drift(&[("c.saves", "why"), ("c.saves", "why")]);
+    assert_eq!(twice, "tab drift:\n  c.saves is listed in EXCLUDED_TABS and again in EXCLUDED_TABS");
+    let blank = tabs_drift(&[("c.saves", " \t ")]);
+    assert_eq!(blank, "tab drift:\n  EXCLUDED_TABS c.saves has no reason");
+}
+
+#[test]
+fn every_excluded_tab_names_a_first_row_page() {
+    for (id, _) in EXCLUDED_TABS {
+        let (page, tab) = id.split_once('.').expect("<page>.<tab>");
+        assert!(PAGE_MAP.iter().any(|p| p.page == page && matches!(p.route, Route::FirstRow(_))), "{id}");
+        assert!(!tab.is_empty(), "{id}");
     }
 }

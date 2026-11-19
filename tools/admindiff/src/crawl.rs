@@ -29,8 +29,14 @@ pub struct Config {
     pub out: PathBuf,
 }
 
-/// Runs the crawl; `Ok(false)` when it finished with failures, which it has printed.
+/// Runs the crawl of [`PAGE_MAP`]; `Ok(false)` when it finished with failures, which it has
+/// printed.
 pub async fn run(cfg: &Config) -> Result<bool> {
+    run_with(cfg, PAGE_MAP).await
+}
+
+/// [`run`] over the given page map.
+async fn run_with(cfg: &Config, page_map: &[Page]) -> Result<bool> {
     let client = Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .cookie_store(true)
@@ -56,7 +62,7 @@ pub async fn run(cfg: &Config) -> Result<bool> {
 
     let mut targets: Vec<(String, String)> = Vec::new();
     let mut followers: Vec<(&Page, &str)> = Vec::new();
-    for p in PAGE_MAP {
+    for p in page_map {
         match p.route {
             Route::Mapped(route) => targets.push((p.page.to_string(), route.to_string())),
             Route::FirstRow(list) => followers.push((p, list)),

@@ -8,9 +8,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
-use super::{run, Config, CLEAN_MARKER, MAX_ROUNDS};
+use super::{run, run_with, Config, CLEAN_MARKER, MAX_ROUNDS};
 use crate::mock::mock_tests::FakeRepo;
-use crate::pages::{Route, PAGE_MAP};
+use crate::pages::{Page, Route, PAGE_MAP};
 use crate::tests::{body, mock_html, ScratchDir};
 
 #[derive(Clone, Debug)]
@@ -311,6 +311,22 @@ async fn crawl_with(site: Site, allow_errors: bool, allow_empty: bool) -> Crawl 
     Crawl { result, out, server }
 }
 
+/// [`crawl`] of `page_map` instead of [`PAGE_MAP`].
+async fn crawl_map(site: Site, page_map: &[Page]) -> Crawl {
+    let server = Server::start(site);
+    let out = ScratchDir::new("crawl");
+    let cfg = Config {
+        base_url: server.base_url.clone(),
+        username: "admin".to_string(),
+        password: "admin".to_string(),
+        allow_errors: false,
+        allow_empty: false,
+        out: out.path().join("run"),
+    };
+    let result = run_with(&cfg, page_map).await;
+    Crawl { result, out, server }
+}
+
 #[tokio::test]
 async fn a_healthy_portal_crawls_clean_and_writes_the_assembled_pages() {
     let c = crawl(Site::healthy(), false).await;
@@ -483,4 +499,41 @@ fn selects_tab_needs_the_selected_tab_with_that_id() {
     assert!(!super::selects_tab(&doc(on), "item"), "another id is not that tab");
     let fallback = r#"<button class="tab on" data-href="/admin/e/player/p-1?tab=profile"></button><button class="tab" data-href="/admin/e/player/p-1?tab=items"></button>"#;
     assert!(!super::selects_tab(&doc(fallback), "items"), "the portal fell back to its first tab");
+}
+
+/// A page map with a tab entry `player.items`: the crawl fetches the first row's page with
+/// `?tab=items`; a page that falls back to its first tab fails the crawl, and one that draws
+/// the tab selected crawls clean and writes `player.items.html`.
+#[tokio::test]
+async fn a_tab_target_fetches_its_tab_and_fails_unless_the_page_selects_it() {
+    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none()).expect("PAGE_MAP lists player");
+    let mut page_map = PAGE_MAP.to_vec();
+    page_map.push(Page { tab: Some("items"), ..*player });
+    let route = follower_route("player");
+    let tabbed = format!("{route}?tab=items");
+    let healthy = Site::healthy();
+    let untabbed = healthy.routes.get(&route).expect("the healthy site serves player").body.clone();
+    let slot_start = r#"<div class="slot""#;
+    assert!(untabbed.contains(slot_start), "the player page holds the slot the tabs go before");
+    // The player page drawing its Profile and Items tabs, `selected` drawn `.on`.
+    let with_tabs = |selected: &str| {
+        let tab = |id: &str| {
+            let on = if id == selected { " on" } else { "" };
+            format!(r#"<button class="tab{on}" data-href="{}">{id}</button>"#, escaped(&format!("{route}?tab={id}")))
+        };
+        let tabs = format!(r#"<div class="tabs">{}{}</div>{slot_start}"#, tab("profile"), tab("items"));
+        ok(untabbed.replacen(slot_start, &tabs, 1))
+    };
+    let fetched = |c: &Crawl| c.server.requests().iter().filter(|r| r.method == "GET" && r.path == tabbed).count();
+
+    let fallback = crawl_map(healthy.clone().with(&tabbed, with_tabs("profile")), &page_map).await;
+    fallback.assert_failed("the page fell back to its first tab");
+    assert_eq!(fetched(&fallback), 1, "the tab target is fetched with ?tab=items: {:?}", fallback.server.requests());
+
+    let selected = crawl_map(healthy.with(&tabbed, with_tabs("items")), &page_map).await;
+    assert!(matches!(selected.result, Ok(true)), "{:?}", selected.result);
+    assert!(selected.clean_marker(), "a crawl reaching the tab writes {CLEAN_MARKER}");
+    assert_eq!(fetched(&selected), 1, "{:?}", selected.server.requests());
+    let page = std::fs::read_to_string(selected.out.path().join("run").join("player.items.html")).expect("player.items.html");
+    assert!(page.contains("player panel") && page.contains(r#"class="tab on""#), "{page}");
 }

@@ -39,7 +39,8 @@ USAGE:
   diff      compare the page's class skeleton with the crawl's assembled page; refuses a
             crawl without its CLEAN marker, and fails on a difference not in
             tools/admindiff/accept/<page>.txt, a stale accept entry or zero matched panels;
-            prints each difference as ok, NEW or STALE. A mock-only or portal-only repeat
+            prints each difference as ok, NEW or STALE. It also fails when a tab the mockup
+            draws on an entity page is neither a page map tab entry nor in pages::EXCLUDED_TABS. A mock-only or portal-only repeat
             item (a table row, list item, ...) ends in (\"<hint>\"): its first badge's text and
             its first cell's, as \"badge · cell\". The hint is not part of the difference: an accept entry
             may keep or drop it and matches either way
@@ -160,17 +161,24 @@ pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
     Ok(())
 }
 
-/// Checks [`skeleton::REPEAT`] against every mapped and pending mockup page. The mockup is
-/// its side: most portal pages are not ported yet.
-fn validate_repeats(repo: &Path) -> Result<()> {
+/// Checks the mockup render of every `page_map` entry against the lists that name its parts:
+/// [`skeleton::REPEAT`] against all of them, and the tabs each untabbed `FirstRow` page draws
+/// against `page_map`'s tab entries and `excluded_tabs` ([`pages::validate_tabs`]). The
+/// mockup is the side checked: most portal pages are not ported yet.
+fn validate_renders(repo: &Path, page_map: &[pages::Page], excluded_tabs: &[(&str, &str)]) -> Result<()> {
     let mockup = validated_mockup(repo)?;
     let mut roots = Vec::new();
-    for p in pages::PAGE_MAP {
+    let mut drawn = Vec::new();
+    for p in page_map {
         let key = mockup.get(p.page).ok_or_else(|| anyhow!("page {} has no mockup file", p.page))?;
         let (_, doc) = render_mock(repo, key, p)?;
+        if matches!(p.route, pages::Route::FirstRow(_)) && p.tab.is_none() {
+            drawn.push((p.page, mock::drawn_tabs(&doc).with_context(|| format!("the P.{key} render"))?));
+        }
         roots.push(skeleton::prepare(&doc, skeleton::MOCK_STRIP, "mock")?);
     }
-    skeleton::validate_repeats(&roots)
+    skeleton::validate_repeats(&roots)?;
+    pages::validate_tabs(&drawn, page_map, excluded_tabs)
 }
 
 /// Runs the diff; `Ok(false)` when the page fails, which it has printed.
@@ -188,7 +196,7 @@ pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Resul
     if !portal_dir.join(crawl::CLEAN_MARKER).is_file() {
         bail!("{} has no {} marker: its crawl failed or did not finish", portal_dir.display(), crawl::CLEAN_MARKER);
     }
-    validate_repeats(repo)?;
+    validate_renders(repo, pages::PAGE_MAP, pages::EXCLUDED_TABS)?;
     let portal_file = portal_dir.join(format!("{page}.html"));
     if let pages::Route::FirstRow(list) = entry.route {
         if !portal_file.is_file() {

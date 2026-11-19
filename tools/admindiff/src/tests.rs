@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::mock::mock_tests::FakeRepo;
-use crate::{crawl, parse_args, run_diff, Command, DEFAULT_BASE_URL, DEFAULT_USER};
+use crate::pages::{EXCLUDED_TABS, PAGE_MAP};
+use crate::{crawl, parse_args, run_diff, validate_renders, Command, DEFAULT_BASE_URL, DEFAULT_USER};
 
 // ---- shared fixtures ---------------------------------------------------------------
 
@@ -221,4 +222,30 @@ fn run_diff_matches_a_hinted_accept_entry_whose_hint_has_changed() {
     let accept = repo.path().join("tools/admindiff/accept/index.txt");
     write(&accept, &format!("{key} (\"done · m-0\") | data difference: test\n"));
     assert!(run_diff(repo.path(), "index", dir.path(), false).expect("runs"), "the hinted entry accepts the row");
+}
+
+/// The production `validate_renders` call in `run_diff`: the clean twin's player render
+/// drawing one more tab, which neither a page map tab entry nor `EXCLUDED_TABS` declares, is
+/// an error before anything is compared. The stand-in renders the same body for every page.
+#[test]
+fn run_diff_fails_on_a_mockup_tab_no_list_declares() {
+    let portal = crawl_dir("diff-tab-crawl", &portal_html(&body(true)), true);
+    let live = FakeRepo::new("diff-tab-live", &mock_html(&body(true)));
+    assert!(run_diff(live.path(), "index", portal.path(), false).expect("runs"), "the clean twin");
+
+    let zzz = r#"<button class="tab" onclick="PAGES.tab='zzz';REG.render()">zzz</button>"#;
+    let undeclared = FakeRepo::new("diff-tab-undeclared", &mock_html(&format!("{}{zzz}", body(true))));
+    let e = format!("{:#}", run_diff(undeclared.path(), "index", portal.path(), false).expect_err("an undeclared tab"));
+    assert_eq!(e, "tab drift:\n  mockup tab player.zzz is in neither PAGE_MAP nor EXCLUDED_TABS");
+}
+
+/// The real mockup, rendered through node: every tab it draws on every `FirstRow` page is
+/// declared, and dropping one exclusion is caught.
+#[test]
+fn the_real_mockup_draws_only_declared_tabs() {
+    let repo = crate::repo_root();
+    validate_renders(&repo, PAGE_MAP, EXCLUDED_TABS).expect("every real mockup tab is declared");
+    let fewer: Vec<(&str, &str)> = EXCLUDED_TABS.iter().copied().filter(|(id, _)| *id != "player.wallet").collect();
+    let e = format!("{:#}", validate_renders(&repo, PAGE_MAP, &fewer).expect_err("wallet undeclared"));
+    assert_eq!(e, "tab drift:\n  mockup tab player.wallet is in neither PAGE_MAP nor EXCLUDED_TABS");
 }
