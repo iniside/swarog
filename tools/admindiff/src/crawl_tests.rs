@@ -404,8 +404,19 @@ async fn crawl_run(
     allow_errors: bool,
     allow_empty: bool,
 ) -> Crawl {
+    crawl_into(ScratchDir::new("crawl"), site, page_map, excluded_menus, allow_errors, allow_empty).await
+}
+
+/// [`crawl_run`] into `out`, which may already hold an earlier run.
+async fn crawl_into(
+    out: ScratchDir,
+    site: Site,
+    page_map: &[Page],
+    excluded_menus: &[(&str, &str, &str)],
+    allow_errors: bool,
+    allow_empty: bool,
+) -> Crawl {
     let server = Server::start(site);
-    let out = ScratchDir::new("crawl");
     let cfg = Config {
         base_url: server.base_url.clone(),
         username: "admin".to_string(),
@@ -419,6 +430,16 @@ async fn crawl_run(
         Err(e) => (Err(e), Vec::new()),
     };
     Crawl { result, empty, out, server }
+}
+
+#[tokio::test]
+async fn a_stale_clean_marker_in_a_reused_run_dir_is_dropped() {
+    let out = ScratchDir::new("crawl");
+    std::fs::create_dir_all(out.path().join("run")).expect("run dir");
+    std::fs::write(out.path().join("run").join(CLEAN_MARKER), "").expect("stale marker");
+    let c = crawl_into(out, Site::healthy(), PAGE_MAP, EXCLUDED_MENUS, true, false).await;
+    assert!(matches!(c.result, Ok(true)), "{:?}", c.result);
+    assert!(!c.clean_marker(), "a crawl with --allow-errors kept a stale {CLEAN_MARKER}");
 }
 
 #[tokio::test]

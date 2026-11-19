@@ -247,7 +247,7 @@ pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Resul
         Err(e) => return Err(e).with_context(|| format!("read {}", accept_path.display())),
     };
     if !portal_dir.join(crawl::CLEAN_MARKER).is_file() {
-        bail!("{} has no {} marker: its crawl failed or did not finish", portal_dir.display(), crawl::CLEAN_MARKER);
+        bail!("{} has no {} marker: its crawl failed, did not finish or ran with --allow-errors", portal_dir.display(), crawl::CLEAN_MARKER);
     }
     validate_renders(repo, pages::PAGE_MAP, pages::EXCLUDED_TABS, pages::EXCLUDED_MOCK_MENUS)?;
     let portal_file = portal_dir.join(format!("{page}.html"));

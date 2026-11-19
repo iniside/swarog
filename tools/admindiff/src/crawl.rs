@@ -70,6 +70,14 @@ struct Outcome {
 
 /// [`run`] over the given page map and menu exclusions.
 async fn run_with(cfg: &Config, page_map: &[Page], excluded_menus: &[(&str, &str, &str)]) -> Result<Outcome> {
+    // A reused run dir keeps a marker from an earlier clean run; drop it before this run decides.
+    let marker = cfg.out.join(CLEAN_MARKER);
+    match std::fs::remove_file(&marker) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            return Err(e).with_context(|| format!("remove {}", marker.display()));
+        }
+        _ => {}
+    }
     let client = Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .cookie_store(true)

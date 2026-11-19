@@ -91,7 +91,7 @@ fn run_diff_refuses_a_crawl_without_its_clean_marker() {
     let repo = FakeRepo::new("diff-clean", &mock_html(&body(true)));
     let dir = crawl_dir("diff-unclean-crawl", &portal_html(&body(true)), false);
     let e = format!("{:#}", run_diff(repo.path(), "index", dir.path(), false).expect_err("no CLEAN marker"));
-    assert!(e.contains("has no CLEAN marker: its crawl failed or did not finish"), "{e}");
+    assert!(e.contains("has no CLEAN marker: its crawl failed, did not finish or ran with --allow-errors"), "{e}");
     write(&dir.path().join(crawl::CLEAN_MARKER), "");
     assert!(run_diff(repo.path(), "index", dir.path(), false).expect("runs once marked clean"));
 }
