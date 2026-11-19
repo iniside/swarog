@@ -1,7 +1,8 @@
 //! Renders a mockup page through `node`: the mockup's own scripts run against stub browser
 //! globals, `REG.mount` calls `P.<key>.render()`, and the body HTML it assigns is captured.
 //! A menu is rendered the same way: `UI.openMenu` builds it and the `.menu` element it
-//! appends to the body is captured.
+//! appends to the body is captured. The harness also records every menu id the mockup's
+//! registry defines through `UI.defineMenu` ([`defined_menus`]).
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -27,7 +28,10 @@ const SCRIPTS: &[&str] = &[
 // `REG.render` assigns `document.body.innerHTML` right after `P.<key>.render()`; the setter
 // throws a sentinel there, so the legend fill-in and the page's `after` hook never run. With
 // `input.menu` no page mounts: `UI.openMenu` runs against a stub event and anchor, and the
-// element it appends to the body is written as `<div class="menu">` around its HTML.
+// element it appends to the body is written as `<div class="menu">` around its HTML. The
+// global `UI` is an accessor that wraps the `defineMenu` of whatever object a script assigns
+// to it, before any script can call it, so every defined menu id is recorded; with
+// `input.registry` no page mounts and the ids are written as JSON.
 const HARNESS: &str = r#""use strict";
 const fs = require("fs"), vm = require("vm");
 const input = JSON.parse(process.env.ADMINDIFF_INPUT);
@@ -46,6 +50,19 @@ Object.defineProperty(body, "innerHTML", {
   set: v => { html = String(v); throw CAPTURED; },
 });
 globalThis.window = globalThis;
+const defined = [];
+let ui;
+Object.defineProperty(globalThis, "UI", {
+  configurable: true, enumerable: true,
+  get: () => ui,
+  set: v => {
+    ui = v;
+    const define = v && v.defineMenu;
+    if (typeof define === "function") {
+      v.defineMenu = function (id, ...rest) { defined.push(String(id)); return define.call(this, id, ...rest); };
+    }
+  },
+});
 globalThis.document = {
   addEventListener: inert, querySelector: () => null, querySelectorAll: () => [],
   createElement: element, body, documentElement: { dataset: {} }, title: "",
@@ -56,7 +73,9 @@ globalThis.location = { search: input.search, href: "" };
 globalThis.innerWidth = 1280;
 globalThis.innerHeight = 800;
 for (const file of input.scripts) vm.runInThisContext(fs.readFileSync(file, "utf8"), { filename: file });
-if (input.menu) {
+if (input.registry) {
+  process.stdout.write(JSON.stringify(defined));
+} else if (input.menu) {
   let opened = null;
   body.appendChild = el => { opened = el; };
   const anchor = { getBoundingClientRect: () => ({ left: 0, right: 0, top: 0, bottom: 0 }) };
@@ -90,6 +109,23 @@ pub fn render(repo: &Path, key: &str, search: &str) -> Result<String> {
 pub fn render_menu(repo: &Path, id: &str, arg: &str) -> Result<String> {
     let input = serde_json::json!({ "search": "", "menu": { "id": id, "arg": arg } });
     run_harness(repo, input, &format!("menu {id}"))
+}
+
+/// Every menu id the mockup's registry defines through `UI.defineMenu`, once each, in order.
+/// A registry that defines none fails: the harness no longer sees its `UI.defineMenu` calls.
+pub fn defined_menus(repo: &Path) -> Result<Vec<String>> {
+    let out = run_harness(repo, serde_json::json!({ "search": "", "registry": true }), "the menu registry")?;
+    let all: Vec<String> = serde_json::from_str(&out).context("the harness's menu registry is not a JSON string list")?;
+    let mut ids: Vec<String> = Vec::new();
+    for id in all {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if ids.is_empty() {
+        bail!("the mockup defines no menu: the harness recorded no UI.defineMenu call");
+    }
+    Ok(ids)
 }
 
 /// Runs [`HARNESS`] with `input` plus the script list; `what` names the render in errors.

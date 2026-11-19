@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::mock::mock_tests::FakeRepo;
-use crate::pages::{EXCLUDED_TABS, PAGE_MAP};
+use crate::pages::{EXCLUDED_MOCK_MENUS, EXCLUDED_TABS, PAGE_MAP};
 use crate::{crawl, parse_args, run_diff, validate_renders, Command, DEFAULT_BASE_URL, DEFAULT_USER};
 
 // ---- shared fixtures ---------------------------------------------------------------
@@ -244,9 +244,9 @@ fn run_diff_fails_on_a_mockup_tab_no_list_declares() {
 #[test]
 fn the_real_mockup_draws_only_declared_tabs() {
     let repo = crate::repo_root();
-    validate_renders(&repo, PAGE_MAP, EXCLUDED_TABS).expect("every real mockup tab is declared");
+    validate_renders(&repo, PAGE_MAP, EXCLUDED_TABS, EXCLUDED_MOCK_MENUS).expect("every real mockup tab is declared");
     let fewer: Vec<(&str, &str)> = EXCLUDED_TABS.iter().copied().filter(|(id, _)| *id != "player.wallet").collect();
-    let e = format!("{:#}", validate_renders(&repo, PAGE_MAP, &fewer).expect_err("wallet undeclared"));
+    let e = format!("{:#}", validate_renders(&repo, PAGE_MAP, &fewer, EXCLUDED_MOCK_MENUS).expect_err("wallet undeclared"));
     assert_eq!(e, "tab drift:\n  mockup tab player.wallet is in neither PAGE_MAP nor EXCLUDED_TABS");
 }
 
@@ -257,14 +257,41 @@ fn the_real_mockup_draws_only_declared_menus() {
     let repo = crate::repo_root();
     let fewer: Vec<crate::pages::Page> = PAGE_MAP.iter().copied().filter(|p| p.id() != "players.menu.user").collect();
     assert_eq!(fewer.len() + 1, PAGE_MAP.len(), "PAGE_MAP lists players.menu.user");
-    let e = format!("{:#}", validate_renders(&repo, &fewer, EXCLUDED_TABS).expect_err("players' user menu undeclared"));
+    let e = format!("{:#}", validate_renders(&repo, &fewer, EXCLUDED_TABS, EXCLUDED_MOCK_MENUS).expect_err("players' user menu undeclared"));
     assert_eq!(e, "menu drift:\n  mockup menu players.menu.user is not a PAGE_MAP menu entry");
     let events = PAGE_MAP.iter().find(|p| p.page == "events").expect("PAGE_MAP lists events");
     let menu = crate::pages::Menu { mock: "user", kind: "player" };
     let mut more = PAGE_MAP.to_vec();
     more.push(crate::pages::Page { menu: Some(menu), ..*events });
-    let e = format!("{:#}", validate_renders(&repo, &more, EXCLUDED_TABS).expect_err("events draws no user menu"));
+    let e = format!("{:#}", validate_renders(&repo, &more, EXCLUDED_TABS, EXCLUDED_MOCK_MENUS).expect_err("events draws no user menu"));
     assert_eq!(e, "P.events draws no user menu; the mockup has no such menu");
+}
+
+/// The real mockup's registry, read through node: every menu it defines is declared, and
+/// dropping the exclusion of `repo`, which no compared page draws, is caught; an exclusion the
+/// registry does not define is stale.
+#[test]
+fn the_real_mockup_defines_only_declared_menus() {
+    let repo = crate::repo_root();
+    let fewer: Vec<(&str, &str)> = EXCLUDED_MOCK_MENUS.iter().copied().filter(|(id, _)| *id != "repo").collect();
+    assert_eq!(fewer.len() + 1, EXCLUDED_MOCK_MENUS.len(), "EXCLUDED_MOCK_MENUS lists repo");
+    let e = format!("{:#}", validate_renders(&repo, PAGE_MAP, EXCLUDED_TABS, &fewer).expect_err("repo undeclared"));
+    assert_eq!(e, "menu drift:\n  mockup menu repo is in neither PAGE_MAP nor EXCLUDED_MOCK_MENUS");
+    let more: Vec<(&str, &str)> = EXCLUDED_MOCK_MENUS.iter().copied().chain([("zzz", "why")]).collect();
+    let e = format!("{:#}", validate_renders(&repo, PAGE_MAP, EXCLUDED_TABS, &more).expect_err("zzz is stale"));
+    assert_eq!(e, "menu drift:\n  EXCLUDED_MOCK_MENUS lists zzz, which the mockup registry does not define");
+}
+
+/// Menus are inventoried on untabbed pages only: the real player page draws its user menu on
+/// every tab, and a tab entry for the wallet tab needs no menu entry of its own.
+#[test]
+fn a_real_mockup_tab_entry_needs_no_menu_entry() {
+    let repo = crate::repo_root();
+    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.menu.is_none()).expect("PAGE_MAP lists player");
+    let mut page_map = PAGE_MAP.to_vec();
+    page_map.push(crate::pages::Page { tab: Some("wallet"), ..*player });
+    let tabs: Vec<(&str, &str)> = EXCLUDED_TABS.iter().copied().filter(|(id, _)| *id != "player.wallet").collect();
+    validate_renders(&repo, &page_map, &tabs, EXCLUDED_MOCK_MENUS).expect("the wallet tab draws the user menu undeclared");
 }
 
 /// A menu target compares the two `.menu` popovers, not the pages, and needs no panel: the

@@ -1,16 +1,16 @@
 //! `crawl` against a loopback fake portal: no Postgres, no fleet. Each failing site differs
 //! from [`Site::healthy`], which crawls clean, by the one defect it names. The healthy site
-//! is built from [`PAGE_MAP`], so a page added there is served too and every failing site
-//! still has only its own defect.
+//! is built from [`PAGE_MAP`] and [`EXCLUDED_MENUS`], so a page or exclusion added there is
+//! served too and every failing site still has only its own defect.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 
-use super::{run, run_with, Config, CLEAN_MARKER, MAX_ROUNDS};
+use super::{run_with, Config, CLEAN_MARKER, MAX_ROUNDS};
 use crate::mock::mock_tests::FakeRepo;
-use crate::pages::{Page, Route, PAGE_MAP};
+use crate::pages::{Page, Route, EXCLUDED_MENUS, PAGE_MAP};
 use crate::tests::{body, mock_html, ScratchDir};
 
 #[derive(Clone, Debug)]
@@ -99,10 +99,20 @@ fn menu_url(kind: &str, page: &str) -> String {
 /// The menu body the healthy site serves at every [`menu_url`].
 const MENU_BODY: &str = r#"<div class="menu-group"><span>accounts</span></div><button class="menu-item"><span>Open</span></button>"#;
 
-/// The buttons page `page` draws for its menu entries, as the portal's template writes them.
+/// A menu button opening `url`, as the portal's template writes it.
+fn menu_button(url: &str) -> String {
+    format!(r#"<button class="btn sm icon ghost" data-menu-url="{}"></button>"#, escaped(url))
+}
+
+/// The buttons page `page` draws for its menu entries: in each table row on a list page
+/// ([`rows`]), as the portal draws a row menu, else in the page.
 fn menu_buttons(page: &str) -> String {
-    let button = |kind: &str| format!(r#"<button class="btn sm icon ghost" data-menu-url="{}"></button>"#, escaped(&menu_url(kind, page)));
-    menus().iter().filter(|(_, host, _)| *host == page).map(|(_, _, kind)| button(kind)).collect()
+    menus().iter().filter(|(_, host, _)| *host == page).map(|(_, _, kind)| menu_button(&menu_url(kind, page))).collect()
+}
+
+/// The buttons page `page` draws for its [`EXCLUDED_MENUS`] kinds.
+fn excluded_buttons(page: &str) -> String {
+    EXCLUDED_MENUS.iter().filter(|(host, _, _)| *host == page).map(|(_, kind, _)| menu_button(&menu_url(kind, page))).collect()
 }
 
 /// The entity route the healthy site's list page links first for follower `page`.
@@ -116,17 +126,19 @@ fn escaped(route: &str) -> String {
 }
 
 /// A table whose first `tr.clickable` opens `first`: a plain row with a `data-href` before
-/// it, and a second clickable row after it.
-fn rows(first: &str) -> String {
+/// it, and a second clickable row after it; each clickable row draws `menu` in its last cell,
+/// as the portal's `table.rs` row menu does.
+fn rows(first: &str, menu: &str) -> String {
     format!(
         concat!(
             r#"<table class="tbl"><tbody><tr data-href="{plain}"><td>header</td></tr>"#,
-            r#"<tr class="clickable" data-href="{first}"><td>first</td></tr>"#,
-            r#"<tr class="clickable" data-href="{second}"><td>second</td></tr></tbody></table>"#,
+            r#"<tr class="clickable" data-href="{first}"><td>first</td><td class="act">{menu}</td></tr>"#,
+            r#"<tr class="clickable" data-href="{second}"><td>second</td><td class="act">{menu}</td></tr></tbody></table>"#,
         ),
         plain = escaped("/admin/e/plain/row"),
         first = escaped(first),
         second = escaped("/admin/e/second/row"),
+        menu = menu,
     )
 }
 
@@ -172,8 +184,9 @@ impl Site {
     /// Clean: the dashboard, every mapped page of [`PAGE_MAP`] and one page only the nav
     /// links, each with one slot whose fragment is in the ok state; a list page's fragment
     /// lists rows whose first opens its follower's entity page, which has one slot too. A page
-    /// hosting menu entries draws their buttons ([`menu_buttons`]), whose menus answer
-    /// [`MENU_BODY`].
+    /// hosting menu entries draws their buttons ([`menu_buttons`]), in its rows if it lists
+    /// any, and a page an [`EXCLUDED_MENUS`] entry names draws its buttons
+    /// ([`excluded_buttons`]); each menu answers [`MENU_BODY`].
     fn healthy() -> Site {
         Site::with_content(&slot)
     }
@@ -190,17 +203,26 @@ impl Site {
         let mut routes = BTreeMap::new();
         for (route, page, slot_url) in &pages {
             let title = if *route == DASHBOARD { "Dashboard" } else { page };
-            let listed: String =
-                followers().iter().filter(|(_, list)| list == page).map(|(f, _)| rows(&follower_route(f))).collect();
-            routes.insert(route.to_string(), ok(shell(&links, title, &format!("{}{}", content(slot_url), menu_buttons(page)))));
+            let listed: String = followers()
+                .iter()
+                .filter(|(_, list)| list == page)
+                .map(|(f, _)| rows(&follower_route(f), &menu_buttons(page)))
+                .collect();
+            let in_page = if listed.is_empty() { menu_buttons(page) } else { String::new() };
+            let html = format!("{}{in_page}{}", content(slot_url), excluded_buttons(page));
+            routes.insert(route.to_string(), ok(shell(&links, title, &html)));
             routes.insert(slot_url.clone(), ok(fragment(Some("ok"), &format!("{page} panel"), &listed)));
         }
         for (page, _) in followers() {
             let slot_url = panel_url(page);
-            routes.insert(follower_route(page), ok(shell(&links, page, &format!("{}{}", content(&slot_url), menu_buttons(page)))));
+            let html = format!("{}{}{}", content(&slot_url), menu_buttons(page), excluded_buttons(page));
+            routes.insert(follower_route(page), ok(shell(&links, page, &html)));
             routes.insert(slot_url, ok(fragment(Some("ok"), &format!("{page} panel"), "")));
         }
         for (_, page, kind) in menus() {
+            routes.insert(menu_url(kind, page), ok(MENU_BODY));
+        }
+        for (page, kind, _) in EXCLUDED_MENUS {
             routes.insert(menu_url(kind, page), ok(MENU_BODY));
         }
         Site { login: Response { status: 303, location: Some(DASHBOARD), body: String::new() }, routes, chain_depth: 0 }
@@ -290,6 +312,8 @@ fn serve(stream: TcpStream, site: &Site, log: &Mutex<Vec<Request>>) {
 
 struct Crawl {
     result: anyhow::Result<bool>,
+    /// The targets the crawl reported EMPTY.
+    empty: Vec<String>,
     out: ScratchDir,
     server: Server,
 }
@@ -322,7 +346,34 @@ async fn crawl(site: Site, allow_errors: bool) -> Crawl {
     crawl_with(site, allow_errors, false).await
 }
 
+/// `page`'s html on `site` with `extra` added at the end of its main content.
+fn add_to_page(site: &Site, route: &str, extra: &str) -> Response {
+    let html = site.routes.get(route).expect("the site serves the page").body.clone();
+    assert!(html.contains("</main>"), "the page has a main: {html}");
+    ok(html.replacen("</main>", &format!("{extra}</main>"), 1))
+}
+
 async fn crawl_with(site: Site, allow_errors: bool, allow_empty: bool) -> Crawl {
+    crawl_run(site, PAGE_MAP, EXCLUDED_MENUS, allow_errors, allow_empty).await
+}
+
+/// [`crawl`] of `page_map` instead of [`PAGE_MAP`].
+async fn crawl_map(site: Site, page_map: &[Page]) -> Crawl {
+    crawl_lists(site, page_map, EXCLUDED_MENUS, false).await
+}
+
+/// [`crawl_with`] of `page_map` and `excluded_menus` instead of the production lists.
+async fn crawl_lists(site: Site, page_map: &[Page], excluded_menus: &[(&str, &str, &str)], allow_empty: bool) -> Crawl {
+    crawl_run(site, page_map, excluded_menus, false, allow_empty).await
+}
+
+async fn crawl_run(
+    site: Site,
+    page_map: &[Page],
+    excluded_menus: &[(&str, &str, &str)],
+    allow_errors: bool,
+    allow_empty: bool,
+) -> Crawl {
     let server = Server::start(site);
     let out = ScratchDir::new("crawl");
     let cfg = Config {
@@ -333,24 +384,11 @@ async fn crawl_with(site: Site, allow_errors: bool, allow_empty: bool) -> Crawl 
         allow_empty,
         out: out.path().join("run"),
     };
-    let result = run(&cfg).await;
-    Crawl { result, out, server }
-}
-
-/// [`crawl`] of `page_map` instead of [`PAGE_MAP`].
-async fn crawl_map(site: Site, page_map: &[Page]) -> Crawl {
-    let server = Server::start(site);
-    let out = ScratchDir::new("crawl");
-    let cfg = Config {
-        base_url: server.base_url.clone(),
-        username: "admin".to_string(),
-        password: "admin".to_string(),
-        allow_errors: false,
-        allow_empty: false,
-        out: out.path().join("run"),
+    let (result, empty) = match run_with(&cfg, page_map, excluded_menus).await {
+        Ok(o) => (Ok(o.clean), o.empty),
+        Err(e) => (Err(e), Vec::new()),
     };
-    let result = run_with(&cfg, page_map).await;
-    Crawl { result, out, server }
+    Crawl { result, empty, out, server }
 }
 
 #[tokio::test]
@@ -456,32 +494,113 @@ async fn slots_load_for_at_most_max_rounds() {
 }
 
 /// The `players.menu.user` target: the crawl fetches the first `player` menu the players
-/// page draws, with `HX-Request`, and writes it inside a `.menu` as `players.menu.user.html`;
-/// a menu answering 500 and a page that draws no `player` menu each fail the crawl. Another
-/// kind's menu, before it on the page, is not fetched.
+/// rows draw, with `HX-Request`, and writes it inside a `.menu` as `players.menu.user.html`;
+/// a menu answering 500 and rows that draw no `player` menu each fail the crawl, the latter
+/// with `--allow-empty` too, since players lists rows. An excluded kind's menu before it in
+/// the row is fetched for its status but is not the target's menu.
 #[tokio::test]
 async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
     let (id, page, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
     let healthy = Site::healthy();
-    let route = mapped().into_iter().find(|t| t.page == page).expect("players is mapped").route;
-    let host = healthy.routes.get(route).expect("the healthy site serves players").body.clone();
+    let list_url = panel_url(page);
+    let list = healthy.routes.get(&list_url).expect("the healthy site serves the players rows").body.clone();
     let button = menu_buttons(page);
-    assert!(host.contains(&button), "the players page draws its menu button");
-    let other = format!(r#"<button data-menu-url="{}"></button>"#, escaped("/admin/_menu/guild/g-1"));
-    let site = healthy.clone().with(route, ok(host.replacen(&button, &format!("{other}{button}"), 1)));
+    assert!(list.contains(&format!(r#"<td class="act">{button}</td>"#)), "the players rows draw the menu button: {list}");
+    let guild = "/admin/_menu/guild/g-1";
+    let site = healthy
+        .clone()
+        .with(&list_url, ok(list.replace(&button, &format!("{}{button}", menu_button(guild)))))
+        .with(guild, ok(r#"<div class="menu-item"><span>guild</span></div>"#));
+    let mut excluded = EXCLUDED_MENUS.to_vec();
+    excluded.push((page, "guild", "another kind"));
 
-    let fine = crawl(site.clone(), false).await;
+    let fine = crawl_lists(site.clone(), PAGE_MAP, &excluded, false).await;
     assert!(matches!(fine.result, Ok(true)), "{:?}", fine.result);
     let fetched: Vec<Request> = fine.server.requests().into_iter().filter(|r| r.path.starts_with("/admin/_menu/")).collect();
     let url = menu_url(kind, page);
     assert_eq!(fetched.iter().filter(|r| r.path == url && r.hx).count(), 1, "{fetched:?}");
-    assert!(!fetched.iter().any(|r| r.path.contains("guild")), "another kind's menu is not fetched: {fetched:?}");
+    assert_eq!(fetched.iter().filter(|r| r.path == guild && r.hx).count(), 1, "the excluded kind once: {fetched:?}");
     let written = std::fs::read_to_string(fine.out.path().join("run").join(format!("{id}.html"))).expect("the menu is written");
     assert_eq!(written, format!(r#"<div class="menu" data-menu-popup="">{MENU_BODY}</div>"#));
 
-    crawl(site.with(&url, status(500)), false).await.assert_failed("a 500 menu");
-    let bare = healthy.with(route, ok(host.replacen(&button, &other, 1)));
-    crawl(bare, false).await.assert_failed("players draws no player menu");
+    crawl_lists(site.with(&url, status(500)), PAGE_MAP, &excluded, false).await.assert_failed("a 500 menu");
+    let bare = healthy.with(&list_url, ok(list.replace(&button, "")));
+    crawl(bare.clone(), false).await.assert_failed("players draws no player menu");
+    crawl_with(bare, false, true).await.assert_failed("--allow-empty: players lists rows but draws no player menu");
+}
+
+/// A menu kind a compared, untabbed page draws must be declared: an undeclared `guild` menu on
+/// a mapped page fails the crawl, and its `EXCLUDED_MENUS` twin crawls clean, fetching the
+/// excluded menu once; an excluded menu answering 500 fails. The same menu on the page only
+/// the nav links is no compared page's and crawls clean.
+#[tokio::test]
+async fn every_portal_menu_kind_on_a_compared_page_is_declared() {
+    let target = other_mapped();
+    let guild = "/admin/_menu/guild/g-1";
+    let healthy = Site::healthy();
+    let site = healthy.clone().with(target.route, add_to_page(&healthy, target.route, &menu_button(guild))).with(guild, ok(MENU_BODY));
+    crawl(site.clone(), false).await.assert_failed("an undeclared guild menu");
+
+    let mut excluded = EXCLUDED_MENUS.to_vec();
+    excluded.push((target.page, "guild", "why"));
+    let declared = crawl_lists(site.clone(), PAGE_MAP, &excluded, false).await;
+    assert!(matches!(declared.result, Ok(true)), "{:?}", declared.result);
+    assert_eq!(declared.server.requests().iter().filter(|r| r.path == guild && r.hx).count(), 1, "{:?}", declared.server.requests());
+    let raw = declared.out.path().join("run").join("raw").join(format!("{}.excluded-menu.guild.html", target.page));
+    assert!(raw.is_file(), "the excluded menu's body is kept: {}", raw.display());
+    crawl_lists(site.with(guild, status(500)), PAGE_MAP, &excluded, false).await.assert_failed("an excluded menu answering 500");
+
+    let nav_only = healthy.clone().with(EXTRA_ROUTE, add_to_page(&healthy, EXTRA_ROUTE, &menu_button(guild)));
+    let c = crawl(nav_only, false).await;
+    assert!(matches!(c.result, Ok(true)), "{:?}", c.result);
+}
+
+/// The production [`EXCLUDED_MENUS`] kinds are drawn by the healthy site and fetched; dropping
+/// the page's button makes the exclusion stale, as does one naming a page the crawl does not
+/// treat as an untabbed compared page, or one listed twice or without a reason.
+#[tokio::test]
+async fn a_stale_or_malformed_menu_exclusion_fails() {
+    let (host, kind, _) = *EXCLUDED_MENUS.first().expect("EXCLUDED_MENUS has an entry");
+    let healthy = Site::healthy();
+    let clean = crawl(healthy.clone(), false).await;
+    assert!(matches!(clean.result, Ok(true)), "{:?}", clean.result);
+    let url = menu_url(kind, host);
+    assert_eq!(clean.server.requests().iter().filter(|r| r.path == url && r.hx).count(), 1, "the excluded kind is fetched");
+
+    let route = mapped().into_iter().find(|t| t.page == host).expect("the exclusion's page is mapped").route;
+    let html = healthy.routes.get(route).expect("served").body.clone();
+    let gone = healthy.clone().with(route, ok(html.replace(&menu_button(&url), "")));
+    crawl(gone, false).await.assert_failed("the page no longer draws the excluded kind");
+
+    let others = || EXCLUDED_MENUS.iter().copied().filter(|e| (e.0, e.1) != (host, kind));
+    let cases = [
+        ("a page no untabbed entry names", EXCLUDED_MENUS.iter().copied().chain([("nosuchpage", "guild", "why")]).collect::<Vec<_>>()),
+        ("listed twice", EXCLUDED_MENUS.iter().copied().chain([(host, kind, "again")]).collect()),
+        ("no reason", others().chain([(host, kind, " ")]).collect()),
+    ];
+    for (why, excluded) in cases {
+        crawl_lists(healthy.clone(), PAGE_MAP, &excluded, false).await.assert_failed(why);
+    }
+}
+
+/// Menus are inventoried on untabbed pages only: a tab target whose page draws a `guild` menu
+/// no list declares crawls clean, and the menu is not fetched.
+#[tokio::test]
+async fn a_tab_target_needs_no_menu_entry() {
+    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.menu.is_none()).expect("PAGE_MAP lists player");
+    let mut page_map = PAGE_MAP.to_vec();
+    page_map.push(Page { tab: Some("items"), ..*player });
+    let route = follower_route("player");
+    let tabbed = format!("{route}?tab=items");
+    let healthy = Site::healthy();
+    let guild = "/admin/_menu/guild/g-1";
+    let tab = format!(r#"<button class="tab on" data-href="{}">items</button>{}"#, escaped(&tabbed), menu_button(guild));
+    let site = healthy.clone().with(&tabbed, add_to_page(&healthy, &route, &tab));
+    let c = crawl_map(site, &page_map).await;
+    assert!(matches!(c.result, Ok(true)), "{:?}", c.result);
+    assert!(!c.server.requests().iter().any(|r| r.path == guild), "{:?}", c.server.requests());
+    let untabbed = healthy.clone().with(&route, add_to_page(&healthy, &route, &menu_button(guild)));
+    crawl_map(untabbed, &page_map).await.assert_failed("the same menu on the untabbed player page");
 }
 
 /// `crawl_page`'s status check: a page answering 500 fails even when its body, a whole page
@@ -514,7 +633,9 @@ async fn an_entity_page_follows_the_first_clickable_row_of_its_list_page() {
 }
 
 /// A players page that lists no row fails the crawl; `--allow-empty` crawls it clean without
-/// a `player.html`, and the diff of player then refuses, naming the list page.
+/// a `player.html`, reporting EMPTY the player page, the players row menu (players draws no
+/// row to hang it on) and the player header menu (its page was skipped), and the diff of
+/// player then refuses, naming the list page.
 #[tokio::test]
 async fn an_empty_list_page_fails_unless_empty_is_allowed_and_then_the_diff_refuses() {
     let empty = Site::healthy().with(&panel_url("players"), ok(fragment(Some("ok"), "players panel", "")));
@@ -528,10 +649,30 @@ async fn an_empty_list_page_fails_unless_empty_is_allowed_and_then_the_diff_refu
     let run = allowed.out.path().join("run");
     assert!(run.join("players.html").is_file() && !run.join("player.html").exists());
     assert!(!allowed.server.requests().iter().any(|r| r.path.starts_with("/admin/e/")), "nothing was followed");
+    assert_eq!(allowed.empty, ["player", "players.menu.user", "player.menu.user"]);
+    assert!(!run.join("players.menu.user.html").exists() && !run.join("player.menu.user.html").exists());
+    let menus: Vec<String> = allowed.server.requests().into_iter().map(|r| r.path).filter(|p| p.contains("/_menu/player/")).collect();
+    assert!(menus.is_empty(), "no player menu was fetched: {menus:?}");
 
     let repo = FakeRepo::new("crawl-empty-diff", &mock_html(&body(true)));
     let e = format!("{:#}", crate::run_diff(repo.path(), "player", &run, false).expect_err("no player page"));
     assert_eq!(e, format!("{} has no player page: the crawl found no row of players to follow", run.display()));
+}
+
+/// With `--allow-empty`, an exclusion on a page that lists no row, or on a page that was
+/// skipped, is not stale; on a players page that lists rows, the players one is.
+#[tokio::test]
+async fn an_empty_or_skipped_page_cannot_make_a_menu_exclusion_stale() {
+    let empty = Site::healthy().with(&panel_url("players"), ok(fragment(Some("ok"), "players panel", "")));
+    let mut excluded = EXCLUDED_MENUS.to_vec();
+    excluded.push(("players", "guild", "drawn in the players rows"));
+    excluded.push(("player", "guild", "drawn on the player page"));
+    let allowed = crawl_lists(empty.clone(), PAGE_MAP, &excluded, true).await;
+    assert!(matches!(allowed.result, Ok(true)), "{:?}", allowed.result);
+    assert_eq!(allowed.empty, ["player", "players.menu.user", "player.menu.user"]);
+    let players_only: Vec<_> = excluded.iter().copied().filter(|e| e.0 != "player" || e.1 != "guild").collect();
+    let healthy = crawl_lists(Site::healthy(), PAGE_MAP, &players_only, true).await;
+    healthy.assert_failed("players lists rows and draws no guild menu");
 }
 
 #[test]

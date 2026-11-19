@@ -306,14 +306,47 @@ fn validate_lists_checks_menu_entries() {
     );
 }
 
+fn strings(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|s| s.to_string()).collect()
+}
+
 #[test]
 fn validate_menus_needs_a_menu_entry_for_each_drawn_menu() {
     let page_map = [MAPPED, Page { menu: Some(MENU), ..MAPPED }];
-    let drawn = |host: &str, ids: &[&str]| vec![(host.to_string(), ids.iter().map(|s| s.to_string()).collect::<Vec<_>>())];
-    validate_menus(&drawn("a", &["user"]), &page_map).expect("the drawn menu is an entry");
-    validate_menus(&drawn("a", &[]), &page_map).expect("a page that draws none");
-    let e = format!("{:#}", validate_menus(&drawn("a", &["user", "lock"]), &page_map).expect_err("lock undeclared"));
+    let drawn = |host: &str, ids: &[&str]| vec![(host.to_string(), strings(ids))];
+    let defined = strings(&["user", "lock"]);
+    let excluded = [("lock", "why")];
+    validate_menus(&drawn("a", &["user"]), &defined, &page_map, &excluded).expect("the drawn menu is an entry");
+    validate_menus(&drawn("a", &[]), &defined, &page_map, &excluded).expect("a page that draws none");
+    let e = format!("{:#}", validate_menus(&drawn("a", &["user", "lock"]), &defined, &page_map, &excluded).expect_err("lock drawn"));
     assert_eq!(e, "menu drift:\n  mockup menu a.menu.lock is not a PAGE_MAP menu entry");
-    let e = format!("{:#}", validate_menus(&drawn("c", &["user"]), &page_map).expect_err("another host"));
+    let e = format!("{:#}", validate_menus(&drawn("c", &["user"]), &defined, &page_map, &excluded).expect_err("another host"));
     assert_eq!(e, "menu drift:\n  mockup menu c.menu.user is not a PAGE_MAP menu entry");
+}
+
+/// The registry inventory, each defect beside the clean twin: every defined id is an entry's
+/// or excluded, and every entry and exclusion names a defined id.
+#[test]
+fn validate_menus_needs_every_registry_menu_declared() {
+    let page_map = [MAPPED, Page { menu: Some(MENU), ..MAPPED }];
+    let check = |defined: &[&str], excluded: &[(&str, &str)]| {
+        validate_menus(&[], &strings(defined), &page_map, excluded).map_err(|e| format!("{e:#}"))
+    };
+    check(&["user", "lock"], &[("lock", "why")]).expect("the clean twin");
+    let e = check(&["user", "lock"], &[]).expect_err("lock undeclared");
+    assert_eq!(e, "menu drift:\n  mockup menu lock is in neither PAGE_MAP nor EXCLUDED_MOCK_MENUS");
+    let e = check(&["user", "lock"], &[("lock", "why"), ("user", "why")]).expect_err("user both");
+    assert_eq!(e, "menu drift:\n  mockup menu user is listed in PAGE_MAP and again in EXCLUDED_MOCK_MENUS");
+    let e = check(&["lock"], &[("lock", "why")]).expect_err("user not defined");
+    assert_eq!(e, "menu drift:\n  PAGE_MAP a.menu.user names menu user, which the mockup registry does not define");
+    let e = check(&["user"], &[("lock", "why")]).expect_err("lock stale");
+    assert_eq!(e, "menu drift:\n  EXCLUDED_MOCK_MENUS lists lock, which the mockup registry does not define");
+    let e = check(&["user", "lock"], &[("lock", "why"), ("lock", " ")]).expect_err("twice, no reason");
+    assert_eq!(
+        e,
+        concat!(
+            "menu drift:\n  lock is listed in EXCLUDED_MOCK_MENUS and again in EXCLUDED_MOCK_MENUS\n",
+            "  EXCLUDED_MOCK_MENUS lock has no reason",
+        )
+    );
 }

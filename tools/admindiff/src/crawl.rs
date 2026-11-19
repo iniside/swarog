@@ -3,8 +3,11 @@
 //! Every declared target must be reached: a mapped page that fails, a `FirstRow` page whose
 //! list has no row (unless `--allow-empty`), a tab the portal does not select and a menu
 //! target whose page draws no menu of its kind all fail the crawl. A menu target's output is
-//! the first such menu, assembled as `admin.js` opens it.
+//! the first such menu, assembled as `admin.js` opens it. Every menu kind an untabbed compared
+//! page draws is a menu target of that page or in [`EXCLUDED_MENUS`], whose menus are fetched
+//! once each and must answer 2xx; an exclusion its page does not draw fails as stale.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -13,7 +16,7 @@ use reqwest::{Client, StatusCode};
 
 use crate::assemble::{assemble, pending_slots};
 use crate::html::{self, find_all, find_in, Element, Node};
-use crate::pages::{with_tab, Menu, Page, Route, PAGE_MAP};
+use crate::pages::{with_tab, Menu, Page, Route, EXCLUDED_MENUS, PAGE_MAP};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Written into the run directory only by a clean crawl; `diff` refuses a run without it.
@@ -30,14 +33,24 @@ pub struct Config {
     pub out: PathBuf,
 }
 
-/// Runs the crawl of [`PAGE_MAP`]; `Ok(false)` when it finished with failures, which it has
-/// printed.
+/// Runs the crawl of [`PAGE_MAP`] and [`EXCLUDED_MENUS`]; `Ok(false)` when it finished with
+/// failures, which it has printed.
 pub async fn run(cfg: &Config) -> Result<bool> {
-    run_with(cfg, PAGE_MAP).await
+    let outcome = run_with(cfg, PAGE_MAP, EXCLUDED_MENUS).await?;
+    if !outcome.empty.is_empty() {
+        println!("empty, nothing crawled: {}", outcome.empty.join(", "));
+    }
+    Ok(outcome.clean)
 }
 
-/// [`run`] over the given page map.
-async fn run_with(cfg: &Config, page_map: &[Page]) -> Result<bool> {
+/// How a crawl finished: clean or not, and the targets it reported EMPTY.
+struct Outcome {
+    clean: bool,
+    empty: Vec<String>,
+}
+
+/// [`run`] over the given page map and menu exclusions.
+async fn run_with(cfg: &Config, page_map: &[Page], excluded_menus: &[(&str, &str, &str)]) -> Result<Outcome> {
     let client = Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .cookie_store(true)
@@ -84,7 +97,7 @@ async fn run_with(cfg: &Config, page_map: &[Page]) -> Result<bool> {
     std::fs::create_dir_all(cfg.out.join("raw")).with_context(|| format!("create {}", cfg.out.display()))?;
     let mut fragments = 0;
     let mut pages = targets.len();
-    // Each crawled target's id and assembled page, and the ids `--allow-empty` skipped.
+    // Each crawled target's id and assembled page, and the ids reported EMPTY.
     let mut crawled: Vec<(String, Vec<Node>)> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
     for (page, route) in &targets {
@@ -135,6 +148,7 @@ async fn run_with(cfg: &Config, page_map: &[Page]) -> Result<bool> {
         let host = entry.host().id();
         if skipped.contains(&host) {
             println!("EMPTY {id}: its page {host} was skipped, nothing to crawl");
+            skipped.push(id);
             continue;
         }
         let Some((_, doc)) = crawled.iter().find(|(p, _)| *p == host) else {
@@ -142,6 +156,14 @@ async fn run_with(cfg: &Config, page_map: &[Page]) -> Result<bool> {
             continue;
         };
         let Some(url) = first_menu_url(doc, menu.kind) else {
+            if !lists_rows(doc) {
+                println!("EMPTY {id}: {host} lists no row, nothing to crawl");
+                if !cfg.allow_empty {
+                    failures.push(format!("{id}: {host} lists no row and draws no {} menu (--allow-empty skips it)", menu.kind));
+                }
+                skipped.push(id);
+                continue;
+            }
             failures.push(format!("{id}: {host} draws no {} menu; the portal has no such menu", menu.kind));
             continue;
         };
@@ -150,6 +172,7 @@ async fn run_with(cfg: &Config, page_map: &[Page]) -> Result<bool> {
             failures.push(format!("{id} ({url}): {e:#}"));
         }
     }
+    check_menu_kinds(&client, cfg, page_map, excluded_menus, &crawled, &mut failures).await;
     if fragments == 0 {
         failures.push("no page loaded a fragment".to_string());
     }
@@ -157,13 +180,13 @@ async fn run_with(cfg: &Config, page_map: &[Page]) -> Result<bool> {
     if failures.is_empty() {
         write(&cfg.out.join(CLEAN_MARKER), "")?;
         println!("crawl: {pages} page(s), {fragments} fragment(s), clean");
-        return Ok(true);
+        return Ok(Outcome { clean: true, empty: skipped });
     }
     eprintln!("crawl FAILED, {} problem(s):", failures.len());
     for f in &failures {
         eprintln!("  {f}");
     }
-    Ok(false)
+    Ok(Outcome { clean: false, empty: skipped })
 }
 
 /// Logs in and returns the dashboard it lands on; anything but the dashboard shell fails.
@@ -222,17 +245,115 @@ fn first_menu_url(doc: &[Node], kind: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Fetches the menu at `url` as `admin.js` does and writes it as `<id>.html`, inside the
-/// `.menu` popover `admin.js` puts it in; a non-2xx answer fails.
-async fn crawl_menu(client: &Client, cfg: &Config, id: &str, url: &str) -> Result<()> {
+/// Each menu kind `doc` draws, once, with the first `data-menu-url` of that kind: the
+/// `/admin/_menu/<kind>/` segment, as the portal writes it.
+fn menu_kinds(doc: &[Node]) -> Vec<(String, String)> {
+    const PREFIX: &str = "/admin/_menu/";
+    let mut openers = Vec::new();
+    find_all(doc, &|e| e.attr("data-menu-url").is_some_and(|u| u.starts_with(PREFIX)), &mut openers);
+    let mut kinds: Vec<(String, String)> = Vec::new();
+    for o in openers {
+        let url = o.attr("data-menu-url").unwrap_or_default();
+        let kind = url[PREFIX.len()..].split('/').next().unwrap_or_default();
+        if !kinds.iter().any(|(k, _)| k == kind) {
+            kinds.push((kind.to_string(), url.to_string()));
+        }
+    }
+    kinds
+}
+
+/// Whether `doc` lists a row: a `tr` in a `tbody`. An empty portal table draws an empty
+/// state instead of its body rows.
+fn lists_rows(doc: &[Node]) -> bool {
+    find_in(doc, &|e| e.tag == "tbody" && e.find(&|r| r.tag == "tr").is_some()).is_some()
+}
+
+/// The menu inventory of every untabbed, not pending `page_map` page the crawl reached: each
+/// menu kind it draws is a menu entry of that page or an `excluded_menus` entry, not both; an
+/// excluded kind's first menu is fetched and a non-2xx answer fails. An exclusion is listed
+/// once, with a reason, on such a page, and that page draws it; a page that was not crawled
+/// (`--allow-empty` skipped it, or it failed), or one that lists no row under
+/// `--allow-empty`, cannot make it stale.
+async fn check_menu_kinds(
+    client: &Client,
+    cfg: &Config,
+    page_map: &[Page],
+    excluded_menus: &[(&str, &str, &str)],
+    crawled: &[(String, Vec<Node>)],
+    failures: &mut Vec<String>,
+) {
+    let mut hosts: Vec<String> = Vec::new();
+    for p in page_map.iter().filter(|p| p.menu.is_none() && p.tab.is_none() && p.route != Route::Pending) {
+        if !hosts.contains(&p.id()) {
+            hosts.push(p.id());
+        }
+    }
+    let mut drawn: Vec<(String, String)> = Vec::new();
+    for host in &hosts {
+        // A page that was not crawled has failed or been skipped already.
+        let Some((_, doc)) = crawled.iter().find(|(p, _)| p == host) else { continue };
+        for (kind, url) in menu_kinds(doc) {
+            let mapped = page_map.iter().any(|p| p.menu.is_some_and(|m| m.kind == kind) && p.host().id() == *host);
+            let excluded = excluded_menus.iter().any(|(h, k, _)| h == host && *k == kind);
+            match (mapped, excluded) {
+                (false, false) => {
+                    failures.push(format!("{host} draws a {kind} menu, which is in neither PAGE_MAP nor EXCLUDED_MENUS"))
+                }
+                (true, true) => failures.push(format!("{host} menu {kind} is listed in PAGE_MAP and again in EXCLUDED_MENUS")),
+                (false, true) => {
+                    println!("menu {host} {kind}  {url}  (excluded)");
+                    if let Err(e) = fetch_menu(client, cfg, &format!("{host}.excluded-menu.{kind}"), &url).await {
+                        failures.push(format!("{host} excluded {kind} menu ({url}): {e:#}"));
+                    }
+                }
+                (true, false) => {}
+            }
+            drawn.push((host.clone(), kind));
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for (host, kind, why) in excluded_menus {
+        if !seen.insert((*host, *kind)) {
+            failures.push(format!("{host} menu {kind} is listed in EXCLUDED_MENUS and again in EXCLUDED_MENUS"));
+        }
+        if why.trim().is_empty() {
+            failures.push(format!("EXCLUDED_MENUS {host} menu {kind} has no reason"));
+        }
+        if !hosts.iter().any(|h| h == host) {
+            failures.push(format!("EXCLUDED_MENUS lists {host} menu {kind}, and {host} is no untabbed PAGE_MAP page"));
+            continue;
+        }
+        if drawn.iter().any(|(h, k)| h == host && k == kind) {
+            continue;
+        }
+        // A page that was not crawled, skipped or failed, has nothing to compare it with.
+        let Some((_, doc)) = crawled.iter().find(|(p, _)| p == host) else { continue };
+        if cfg.allow_empty && !lists_rows(doc) {
+            println!("EMPTY EXCLUDED_MENUS {host} menu {kind}: {host} lists no row");
+            continue;
+        }
+        failures.push(format!("EXCLUDED_MENUS lists {host} menu {kind}, which {host} does not draw"));
+    }
+}
+
+/// Fetches the menu at `url` as `admin.js` does and writes its body as `raw/<raw>.html`; a
+/// non-2xx answer fails.
+async fn fetch_menu(client: &Client, cfg: &Config, raw: &str, url: &str) -> Result<String> {
     let resp = client.get(format!("{}{url}", cfg.base_url)).header("HX-Request", "true").send().await.context("GET")?;
     let status = resp.status();
     let body = resp.text().await.context("read body")?;
-    write(&cfg.out.join("raw").join(format!("{id}.html")), &body)?;
+    write(&cfg.out.join("raw").join(format!("{raw}.html")), &body)?;
     if !status.is_success() {
         bail!("answered {status}");
     }
     html::parse(&body).context("parse menu")?;
+    Ok(body)
+}
+
+/// Fetches the menu at `url` ([`fetch_menu`]) and writes it as `<id>.html`, inside the
+/// `.menu` popover `admin.js` puts it in.
+async fn crawl_menu(client: &Client, cfg: &Config, id: &str, url: &str) -> Result<()> {
+    let body = fetch_menu(client, cfg, id, url).await?;
     write(&cfg.out.join(format!("{id}.html")), &format!(r#"<div class="menu" data-menu-popup="">{body}</div>"#))
 }
 

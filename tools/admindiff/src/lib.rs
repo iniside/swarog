@@ -35,15 +35,19 @@ USAGE:
             non-2xx, an error-state fragment (unless --allow-errors), a fragment without
             data-state, no nav page or no fragment, and an entity page whose list page has no
             row to follow (unless --allow-empty), a tab target whose page does not select the
-            tab, and a menu target whose page draws no menu of its kind
+            tab, a menu target whose page draws no menu of its kind (unless its page lists no
+            row and --allow-empty), a menu kind an untabbed compared page draws that is neither
+            a page map menu entry nor in pages::EXCLUDED_MENUS, an excluded menu answering
+            non-2xx, and an EXCLUDED_MENUS entry its page does not draw
   mock      render the mockup target through node into target/admindiff/mock/<target>.html
   diff      compare the target's class skeleton with the crawl's: the assembled page, or the
             menu popover of a menu target; refuses a crawl without its CLEAN marker, and fails
             on a difference not in tools/admindiff/accept/<target>.txt, a stale accept entry or
             a page with zero matched panels; prints each difference as ok, NEW or STALE. It
             also fails when a tab the mockup draws on an entity page is neither a page map tab
-            entry nor in pages::EXCLUDED_TABS, and when a menu the mockup draws on a compared
-            page is not a page map menu entry. A mock-only or portal-only repeat
+            entry nor in pages::EXCLUDED_TABS, when a menu the mockup draws on an untabbed
+            compared page is not a page map menu entry, and when a menu the mockup registry
+            defines is neither a page map menu entry nor in pages::EXCLUDED_MOCK_MENUS. A mock-only or portal-only repeat
             item (a table row, list item, ...) ends in (\"<hint>\"): its first badge's text and
             its first cell's, as \"badge · cell\". The hint is not part of the difference: an accept entry
             may keep or drop it and matches either way
@@ -191,10 +195,16 @@ pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
 /// Checks the mockup render of every `page_map` entry against the lists that name its parts:
 /// [`skeleton::REPEAT`] against all of them, the tabs each untabbed `FirstRow` page draws
 /// against `page_map`'s tab entries and `excluded_tabs` ([`pages::validate_tabs`]), and the
-/// menus each page or tab that is not pending draws against `page_map`'s menu entries
-/// ([`pages::validate_menus`]); a menu entry's render fails when its page draws no such menu.
-/// The mockup is the side checked: most portal pages are not ported yet.
-fn validate_renders(repo: &Path, page_map: &[pages::Page], excluded_tabs: &[(&str, &str)]) -> Result<()> {
+/// menus the registry defines and each untabbed page that is not pending draws against
+/// `page_map`'s menu entries and `excluded_mock_menus` ([`pages::validate_menus`]); a menu
+/// entry's render fails when its page draws no such menu. The mockup is the side checked: most
+/// portal pages are not ported yet.
+fn validate_renders(
+    repo: &Path,
+    page_map: &[pages::Page],
+    excluded_tabs: &[(&str, &str)],
+    excluded_mock_menus: &[(&str, &str)],
+) -> Result<()> {
     let mockup = validated_mockup(repo)?;
     let mut roots = Vec::new();
     let mut drawn = Vec::new();
@@ -206,7 +216,7 @@ fn validate_renders(repo: &Path, page_map: &[pages::Page], excluded_tabs: &[(&st
             if matches!(p.route, pages::Route::FirstRow(_)) && p.tab.is_none() {
                 drawn.push((p.page, mock::drawn_tabs(&doc).with_context(|| format!("the P.{key} render"))?));
             }
-            if p.route != pages::Route::Pending {
+            if p.route != pages::Route::Pending && p.tab.is_none() {
                 menus.push((p.id(), mock::drawn_menus(&doc).with_context(|| format!("the P.{key} render"))?));
             }
         }
@@ -214,7 +224,7 @@ fn validate_renders(repo: &Path, page_map: &[pages::Page], excluded_tabs: &[(&st
     }
     skeleton::validate_repeats(&roots)?;
     pages::validate_tabs(&drawn, page_map, excluded_tabs)?;
-    pages::validate_menus(&menus, page_map)
+    pages::validate_menus(&menus, &mock::defined_menus(repo)?, page_map, excluded_mock_menus)
 }
 
 /// Runs the diff; `Ok(false)` when the page fails, which it has printed.
@@ -232,7 +242,7 @@ pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Resul
     if !portal_dir.join(crawl::CLEAN_MARKER).is_file() {
         bail!("{} has no {} marker: its crawl failed or did not finish", portal_dir.display(), crawl::CLEAN_MARKER);
     }
-    validate_renders(repo, pages::PAGE_MAP, pages::EXCLUDED_TABS)?;
+    validate_renders(repo, pages::PAGE_MAP, pages::EXCLUDED_TABS, pages::EXCLUDED_MOCK_MENUS)?;
     let portal_file = portal_dir.join(format!("{page}.html"));
     if let pages::Route::FirstRow(list) = entry.route {
         if !portal_file.is_file() {

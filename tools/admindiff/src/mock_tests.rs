@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use super::render;
-use crate::pages::{Route, EXCLUDED, EXCLUDED_TABS, PAGE_MAP};
+use crate::pages::{Route, EXCLUDED, EXCLUDED_MOCK_MENUS, EXCLUDED_TABS, PAGE_MAP};
 use crate::tests::{write, ScratchDir};
 
 /// A scratch repo whose mockup is a stand-in: every page the two lists name has its html
@@ -15,7 +15,9 @@ use crate::tests::{write, ScratchDir};
 /// page, the one `location.search` names selected, else the first; then, as the real mockup
 /// does, a `UI.openMenu` button for each `PAGE_MAP` menu entry whose host is the page with
 /// the `tab` `location.search` names (none: an untabbed host), whose argument is the page.
-/// `UI.openMenu` appends a `.menu` holding [`MOCK_MENU`] with `{arg}` and `{id}` replaced.
+/// `UI.openMenu` appends a `.menu` holding [`MOCK_MENU`] with `{arg}` and `{id}` replaced;
+/// `registry.js` defines, through `UI.defineMenu`, every menu `PAGE_MAP` and
+/// `EXCLUDED_MOCK_MENUS` name, as the real registry defines its menus.
 /// `REG.mount` assigns the body and then runs `meta.after`, as the real registry does; the
 /// stand-in `after` prints [`AFTER_RAN`] and exits 0, so a harness that let it run would
 /// return that instead of the page.
@@ -58,6 +60,12 @@ impl FakeRepo {
                 menus.entry(p.page).or_default().push((p.tab, menu.mock));
             }
         }
+        let mut defined: Vec<&str> = Vec::new();
+        for id in PAGE_MAP.iter().filter_map(|p| p.menu.map(|m| m.mock)).chain(EXCLUDED_MOCK_MENUS.iter().map(|(id, _)| *id)) {
+            if !defined.contains(&id) {
+                defined.push(id);
+            }
+        }
         for script in super::SCRIPTS {
             write(&dir.path().join(script), "// stand-in\n");
         }
@@ -80,13 +88,14 @@ impl FakeRepo {
                 "  return (MENUS[key] || []).filter(m => m[0] === tab).map(m =>\n",
                 "    '<button class=\"btn\" onclick=\"UI.openMenu(event,\\'' + m[1] + '\\',\\'' + key + '\\')\"></button>').join(\"\");\n",
                 "}};\n",
-                "var UI = {{ openMenu: function (ev, id, arg) {{\n",
+                "var UI = {{ defineMenu: function () {{}}, openMenu: function (ev, id, arg) {{\n",
                 "  ev.stopPropagation();\n",
                 "  const el = document.createElement(\"div\");\n",
                 "  el.className = \"menu\";\n",
                 "  el.innerHTML = {menu}.split(\"{{arg}}\").join(arg).split(\"{{id}}\").join(id);\n",
                 "  document.body.appendChild(el);\n",
                 "}} }};\n",
+                "for (const id of {defined}) UI.defineMenu(id, function () {{ return []; }});\n",
                 "for (const key of {keys}) PAGES[key] = {{\n",
                 "  meta: {{ after: function () {{ process.stdout.write({after}); process.exit(0); }} }},\n",
                 "  render: function () {{\n",
@@ -100,6 +109,7 @@ impl FakeRepo {
             tabs = serde_json::to_string(&tabs).expect("json"),
             menus = serde_json::to_string(&menus).expect("json"),
             menu = serde_json::to_string(MOCK_MENU).expect("json"),
+            defined = serde_json::to_string(&defined).expect("json"),
         );
         write(&dir.path().join("UILayout/redesign/assets/registry.js"), &registry);
         FakeRepo { dir }
@@ -213,4 +223,32 @@ fn the_harness_opens_the_real_user_menu() {
     assert!(!out.contains(r#"class="app""#), "only the menu: {out}");
     let e = format!("{:#}", super::render_menu(&real_repo(), "nosuchmenu", "x").expect_err("no such menu"));
     assert!(e.contains("node failed rendering menu nosuchmenu"), "{e}");
+}
+
+/// The real mockup's registry, read through the harness: every `UI.defineMenu` id, whether
+/// or not a compared page draws it.
+#[test]
+fn the_harness_records_every_real_registry_menu() {
+    let mut ids = super::defined_menus(&real_repo()).expect("reads the registry");
+    ids.sort();
+    assert_eq!(ids, ["apikey", "lock", "repo", "user"]);
+}
+
+/// The harness wraps `defineMenu` when a script assigns `UI`, so a menu defined through a
+/// destructured `defineMenu` is recorded, once; a registry that defines none is an error.
+#[test]
+fn the_harness_records_menus_defined_before_any_page_mounts() {
+    let repo = FakeRepo::new("mock-registry", r#"<div class="app"></div>"#);
+    let registry = concat!(
+        "window.UI = { defineMenu: function () {} };\n",
+        "const { defineMenu } = UI;\n",
+        "defineMenu(\"alpha\", () => []);\n",
+        "UI.defineMenu(\"beta\", () => []);\n",
+        "UI.defineMenu(\"alpha\", () => []);\n",
+    );
+    write(&repo.path().join("UILayout/redesign/assets/registry.js"), registry);
+    assert_eq!(super::defined_menus(repo.path()).expect("reads"), ["alpha", "beta"]);
+    write(&repo.path().join("UILayout/redesign/assets/registry.js"), "window.UI = { defineMenu: function () {} };\n");
+    let e = format!("{:#}", super::defined_menus(repo.path()).expect_err("no menu"));
+    assert_eq!(e, "the mockup defines no menu: the harness recorded no UI.defineMenu call");
 }

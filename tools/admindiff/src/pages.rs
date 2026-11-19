@@ -5,8 +5,10 @@
 //! the mockup draws on a `FirstRow` page, besides the one its untabbed entry renders
 //! selected, is in [`EXCLUDED_TABS`]. An entry that names a menu is its own target too,
 //! `<host>.menu.<menu>`: the first menu of that kind its host page draws, opened on both
-//! sides; every menu the mockup draws on a compared page has such an entry
-//! ([`validate_menus`]).
+//! sides. Menus are inventoried on untabbed hosts only: every menu the mockup draws there has
+//! such an entry and every menu its registry defines has one or is in
+//! [`EXCLUDED_MOCK_MENUS`] ([`validate_menus`]); every menu kind the portal draws there has
+//! one or is in [`EXCLUDED_MENUS`] (`crawl`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -130,6 +132,23 @@ pub const EXCLUDED_TABS: &[(&str, &str)] = &[
     ("player.saves", "not ported yet: the Cloud saves tab arrives with the storage port (Step 19)"),
     ("player.inbox", "not ported yet: the Inbox tab arrives with the notifications port (Step 20)"),
     ("player.lore", NO_LORE),
+];
+
+/// Menus the portal draws on an untabbed compared page that no `PAGE_MAP` menu entry diffs, as
+/// `(<host page id>, <kind>, <reason>)`. The crawl still fetches the first of each and fails on
+/// a non-2xx answer, and fails on an entry whose host does not draw it (a stale entry).
+pub const EXCLUDED_MENUS: &[(&str, &str, &str)] = &[(
+    "events",
+    "subscription",
+    "the mockup draws no subscription menu: its events row button only toasts (pages-platform.js P.events)",
+)];
+
+/// Menus the mockup registry defines (`UI.defineMenu`) that no `PAGE_MAP` menu entry diffs,
+/// with the reason. [`validate_menus`] holds it to the registry.
+pub const EXCLUDED_MOCK_MENUS: &[(&str, &str)] = &[
+    ("apikey", "drawn only on apikeys, which is pending"),
+    ("repo", NO_LORE),
+    ("lock", NO_LORE),
 ];
 
 /// The tabs a mockup render draws, in order, and the one it draws selected.
@@ -289,16 +308,52 @@ pub fn validate_tabs(drawn: &[(&str, DrawnTabs)], page_map: &[Page], excluded_ta
     Ok(())
 }
 
-/// Checks the menus the mockup draws on each compared target (`drawn`: the target's id and
-/// the `UI.openMenu` ids its render draws) against `page_map`: each is a menu entry of that
-/// target. A menu entry the mockup does not draw fails its own render ([`crate::mock::menu_arg`]).
-pub fn validate_menus(drawn: &[(String, Vec<String>)], page_map: &[Page]) -> Result<()> {
+/// Checks the mockup's menus against `page_map` and `excluded_mock_menus`, which its problems
+/// name `PAGE_MAP` and `EXCLUDED_MOCK_MENUS`. `defined` is every menu id the registry defines
+/// (`UI.defineMenu`): each is a menu entry's or excluded, not both, and every menu entry and
+/// exclusion names a defined id; an exclusion is listed once, with a reason. `drawn` is each
+/// untabbed compared host's id with the `UI.openMenu` ids its render draws: each is a menu
+/// entry of that host. A menu entry its host does not draw fails its own render
+/// ([`crate::mock::menu_arg`]).
+pub fn validate_menus(
+    drawn: &[(String, Vec<String>)],
+    defined: &[String],
+    page_map: &[Page],
+    excluded_mock_menus: &[(&str, &str)],
+) -> Result<()> {
     let mut problems = Vec::new();
     for (host, menus) in drawn {
         for menu in menus {
             if !page_map.iter().any(|p| p.menu.is_some_and(|m| m.mock == menu) && p.host().id() == *host) {
                 problems.push(format!("mockup menu {host}.menu.{menu} is not a PAGE_MAP menu entry"));
             }
+        }
+    }
+    for id in defined {
+        let mapped = page_map.iter().any(|p| p.menu.is_some_and(|m| m.mock == id));
+        let excluded = excluded_mock_menus.iter().any(|(m, _)| m == id);
+        match (mapped, excluded) {
+            (false, false) => problems.push(format!("mockup menu {id} is in neither PAGE_MAP nor EXCLUDED_MOCK_MENUS")),
+            (true, true) => problems.push(format!("mockup menu {id} is listed in PAGE_MAP and again in EXCLUDED_MOCK_MENUS")),
+            _ => {}
+        }
+    }
+    let is_defined = |id: &str| defined.iter().any(|d| d == id);
+    for p in page_map {
+        if let Some(menu) = p.menu.filter(|m| !is_defined(m.mock)) {
+            problems.push(format!("PAGE_MAP {} names menu {}, which the mockup registry does not define", p.id(), menu.mock));
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for (id, why) in excluded_mock_menus {
+        if !seen.insert(*id) {
+            problems.push(format!("{id} is listed in EXCLUDED_MOCK_MENUS and again in EXCLUDED_MOCK_MENUS"));
+        }
+        if why.trim().is_empty() {
+            problems.push(format!("EXCLUDED_MOCK_MENUS {id} has no reason"));
+        }
+        if !is_defined(id) {
+            problems.push(format!("EXCLUDED_MOCK_MENUS lists {id}, which the mockup registry does not define"));
         }
     }
     if !problems.is_empty() {
