@@ -574,7 +574,10 @@ fn a_scrim_by_class_token_is_a_modal() {
 }
 
 /// A modal or menu target renders the `.scrim` or `.menu` its opener appends whichever way the
-/// element gets its class: through `classList.add` or beside another class.
+/// element gets its class: through `classList.add` or beside another class. Only the
+/// "beside another class" cases (`wideModal`, menu `wide`) fail an exact-`className` check
+/// (mock.rs modal and menu render paths): the stub's `classList.add` on an empty class writes
+/// exactly `scrim` or `menu`. Keep those two cases.
 #[test]
 fn a_modal_or_menu_target_renders_its_element_by_class_token() {
     let repo = opener_repo("render-class-token", &[]);
