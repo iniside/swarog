@@ -267,59 +267,89 @@ fn a_render_that_never_assigns_the_body_is_an_error() {
     assert!(e.contains("REG.mount returned without assigning document.body.innerHTML"), "{e}");
 }
 
-#[test]
-fn check_tab_needs_the_selected_tab_button() {
-    let doc = |html: &str| crate::html::parse(html).expect("parses");
-    let on = doc(r#"<span><button class="tab on" onclick="PAGES.tab='items';REG.render()">Items</button></span>"#);
-    super::check_tab(&on, "user", "items").expect("the selected tab");
-    let off = doc(r#"<button class="tab" onclick="PAGES.tab='items';REG.render()">Items</button><button class="tab on" onclick="PAGES.tab='profile';REG.render()">Profile</button>"#);
-    let e = format!("{:#}", super::check_tab(&off, "user", "items").expect_err("not selected"));
-    assert_eq!(e, "P.user does not select tab items; the mockup has no such tab");
+/// The stand-in page every [`probe`](super::probe) test runs its bodies on: `index`, untabbed.
+fn index_page() -> &'static Page {
+    PAGE_MAP.iter().find(|p| p.page == "index" && p.is_page() && p.tab.is_none()).expect("PAGE_MAP has the index page")
 }
 
+/// Probes every onclick of `html` on the stand-in `index` page.
+fn probe_html(repo: &Path, html: &str) -> anyhow::Result<super::Probe> {
+    let doc = crate::html::parse(html).expect("parses");
+    super::probe(repo, "index", "index", index_page(), &doc, super::Onclicks::All)
+}
+
+/// The tabs and menus a render draws are what its onclicks do in the harness: each `.tab` whose
+/// body assigns `PAGES.tab`, the first drawn `.on` selected, a tab of another page's state
+/// (`PAGES.repoTab`) not one; each menu `UI.openMenu` opens, with the argument of its first
+/// opener. The calls are written as the mockup writes them; [`a_call_is_seen_whatever_its_spelling`]
+/// is the twin with other spellings.
 #[test]
-fn drawn_tabs_reads_every_tab_id_and_the_selected_one() {
-    let doc = |html: &str| crate::html::parse(html).expect("parses");
-    let tabs = doc(concat!(
+fn the_probe_records_the_tabs_and_menus_the_onclicks_open() {
+    let repo = FakeRepo::new("mock-probe-calls", r#"<div class="app"></div>"#);
+    let probe = probe_html(repo.path(), concat!(
         r#"<div class="tabs"><span><button class="tab " onclick="PAGES.tab='profile';REG.render()">P</button></span>"#,
         r#"<span><button class="tab on" onclick="PAGES.tab='items';REG.render()">I</button></span>"#,
         r#"<button class="tab" onclick="PAGES.repoTab='files';REG.render()">F</button></div>"#,
-    ));
-    let drawn = super::drawn_tabs(&tabs).expect("reads");
-    assert_eq!(drawn.tabs, ["profile", "items"], "another page's tab state is not a PAGES.tab tab");
-    assert_eq!(drawn.selected.as_deref(), Some("items"));
-    assert_eq!(super::drawn_tabs(&doc("<div></div>")).expect("reads"), crate::pages::DrawnTabs::default());
-    let open = doc(r#"<button class="tab" onclick="PAGES.tab='items">I</button>"#);
-    let e = format!("{:#}", super::drawn_tabs(&open).expect_err("an unterminated id"));
-    assert!(e.contains("does not close its PAGES.tab id"), "{e}");
-}
-
-#[test]
-fn menu_arg_reads_the_first_opener_of_that_menu() {
-    let doc = |html: &str| crate::html::parse(html).expect("parses");
-    let page = doc(concat!(
         r#"<button onclick="UI.openMenu(event,'lock','L-1')"></button>"#,
         r#"<button onclick="UI.openMenu(event,'user','aiko.tanaka')"></button>"#,
         r#"<button onclick="UI.openMenu(event,'user','bo')"></button>"#,
-    ));
-    assert_eq!(super::menu_arg(&page, "players", "user").expect("drawn"), "aiko.tanaka");
-    let e = format!("{:#}", super::menu_arg(&page, "players", "use").expect_err("another id"));
-    assert_eq!(e, "P.players draws no use menu; the mockup has no such menu");
-    assert_eq!(super::drawn_menus(&page).expect("reads"), ["lock", "user"]);
-    assert!(super::drawn_menus(&doc("<div></div>")).expect("reads").is_empty());
-    let open = doc(r#"<button onclick="UI.openMenu(event,'user"></button>"#);
-    assert!(format!("{:#}", super::drawn_menus(&open).expect_err("unterminated")).contains("does not close its menu id"));
+    ))
+    .expect("probes");
+    assert_eq!(probe.tabs.tabs, ["profile", "items"], "another page's tab state is not a PAGES.tab tab");
+    assert_eq!(probe.tabs.selected.as_deref(), Some("items"));
+    probe.check_tab("items").expect("the selected tab");
+    let e = format!("{:#}", probe.check_tab("profile").expect_err("not selected"));
+    assert_eq!(e, "P.index does not select tab profile; the mockup has no such tab");
+    assert_eq!(probe.menu_ids(), ["lock", "user"]);
+    assert_eq!(probe.menu_arg("user").expect("drawn"), Some("aiko.tanaka"));
+    let e = format!("{:#}", probe.menu_arg("use").expect_err("another id"));
+    assert_eq!(e, "P.index draws no use menu; the mockup has no such menu");
+
+    let none = probe_html(repo.path(), "<div></div>").expect("probes nothing");
+    assert_eq!(none.tabs, crate::pages::DrawnTabs::default());
+    assert!(none.menus.is_empty() && none.modals.is_empty());
+    let e = format!("{:#}", none.check_tab("items").expect_err("no tab"));
+    assert_eq!(e, "P.index does not select tab items; the mockup has no such tab");
 }
 
-/// The real mockup's user menu, opened through the harness: a `.menu` whose groups are the
-/// registry's `entity.user.row_action` modules, with nothing of the page around it.
+/// A call spelled with spaces and double quotes, which no text match on the mockup's own
+/// spelling sees, opens the same tab and menu: the harness records the call, not its text.
+/// A menu opened with no argument passes none.
+#[test]
+fn a_call_is_seen_whatever_its_spelling() {
+    let repo = FakeRepo::new("mock-probe-spelling", r#"<div class="app"></div>"#);
+    let probe = probe_html(repo.path(), concat!(
+        r#"<button class="tab" onclick='PAGES.tab = "profile"; REG.render()'>P</button>"#,
+        r#"<button class="tab on" onclick="window.PAGES.tab = &quot;items&quot;;REG.render()">I</button>"#,
+        r#"<button onclick='UI.openMenu(event, "user", "aiko")'></button>"#,
+        r#"<button onclick="UI.openMenu( event , 'lock' )"></button>"#,
+    ))
+    .expect("probes");
+    assert_eq!(probe.tabs.tabs, ["profile", "items"]);
+    probe.check_tab("items").expect("the selected tab, set with double quotes");
+    assert_eq!(probe.menus, [("user".to_string(), Some("aiko".to_string())), ("lock".to_string(), None)]);
+    assert_eq!(probe.menu_arg("user").expect("drawn with spaces and double quotes"), Some("aiko"));
+}
+
+/// A tab entry's render probes only its `.tab` onclicks: a throwing body elsewhere on the page is
+/// not run, and one on a tab fails by name.
+#[test]
+fn a_tab_probe_runs_only_the_tab_onclicks() {
+    let repo = FakeRepo::new("mock-probe-tabs", r#"<div class="app"></div>"#);
+    let doc = crate::html::parse(r#"<button class="tab on" onclick="PAGES.tab='items'"></button><button onclick="nosuch()"></button>"#).expect("parses");
+    let probe = super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::Tabs).expect("the tab body only");
+    probe.check_tab("items").expect("selected");
+    let e = format!("{:#}", super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::All).expect_err("nosuch throws"));
+    assert!(e.contains(r#"onclick "nosuch()" drawn on index threw in the harness"#), "{e}");
+}
+
 #[test]
 fn the_harness_opens_the_real_user_menu() {
-    let out = super::render_menu(&real_repo(), "user", "aiko.tanaka").expect("opens");
+    let out = super::render_menu(&real_repo(), "user", Some("aiko.tanaka")).expect("opens");
     assert!(out.starts_with(r#"<div class="menu">"#) && out.ends_with("</div>"), "{out}");
     assert!(out.contains(r#"class="menu-group""#) && out.contains("Suspend account"), "{out}");
     assert!(!out.contains(r#"class="app""#), "only the menu: {out}");
-    let e = format!("{:#}", super::render_menu(&real_repo(), "nosuchmenu", "x").expect_err("no such menu"));
+    let e = format!("{:#}", super::render_menu(&real_repo(), "nosuchmenu", Some("x")).expect_err("no such menu"));
     assert!(e.contains("node failed rendering menu nosuchmenu"), "{e}");
 }
 
@@ -397,6 +427,19 @@ fn the_fake_repo_defines_every_page_map_opener() {
 
 /// The real player profile draws its Personal data panel denied as designed; forced ok it
 /// draws no denied state, so the force reaches the render.
+/// The real player page, probed as its untabbed page map entry renders it: its tab bar's tabs
+/// with profile selected, and the user menu its header opens on the profile's handle.
+#[test]
+fn the_probe_reads_the_real_player_tabs_and_menu() {
+    let page = PAGE_MAP.iter().find(|p| p.page == "player" && p.is_page() && p.tab.is_none()).expect("PAGE_MAP has the player page");
+    let html = render(&real_repo(), "player", &page.mock_search(), page.force).expect("renders");
+    let doc = crate::html::parse(&html).expect("parses");
+    let probe = super::probe(&real_repo(), "player", "player", page, &doc, super::Onclicks::All).expect("probes");
+    assert_eq!(probe.tabs.selected.as_deref(), Some("profile"));
+    assert!(probe.tabs.tabs.len() > 1 && probe.tabs.tabs.iter().any(|t| t == "wallet"), "{:?}", probe.tabs);
+    assert_eq!(probe.menu_arg("user").expect("the header menu"), Some("aiko.tanaka"));
+}
+
 #[test]
 fn the_harness_forces_the_ok_state_on_the_real_mockup() {
     let designed = render(&real_repo(), "player", "?u=aiko.tanaka", false).expect("renders");
@@ -434,9 +477,11 @@ fn the_onclick_probe_mounts_the_page_forced_ok_when_its_render_forces() {
         "};\n",
     );
     let repo = FakeRepo::with_openers("mock-probe-forced", r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
-    let body = ["PAGES.okOnly()".to_string()];
-    let forced = super::modal_openers(repo.path(), "index", "index", "", true, &body).expect("the forced probe");
+    let doc = crate::html::parse(r#"<button onclick="PAGES.okOnly()"></button>"#).expect("parses");
+    let forced = Page { force: true, ..*index_page() };
+    let forced = super::probe(repo.path(), "index", "index", &forced, &doc, super::Onclicks::All).expect("the forced probe").modals;
     assert_eq!(forced, [MockOpener::Pages("okOnly".to_string())]);
-    let designed = super::modal_openers(repo.path(), "index", "index", "", false, &body).expect("the unforced probe");
+    let designed = Page { force: false, ..*index_page() };
+    let designed = super::probe(repo.path(), "index", "index", &designed, &doc, super::Onclicks::All).expect("the unforced probe").modals;
     assert!(designed.is_empty(), "unforced, the opener appends no .scrim: {designed:?}");
 }

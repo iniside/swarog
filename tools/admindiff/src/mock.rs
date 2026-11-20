@@ -6,10 +6,12 @@
 //! appends to the body is captured. The harness also records every menu id the mockup's
 //! registry defines through `UI.defineMenu` ([`defined_menus`]). A page render can force the
 //! ok state: the harness sets `UI.state.force = "ok"`, as the mockup's state picker
-//! (`REG.setForce`) does, before `REG.mount`. The mockup's modal inventory comes from the
-//! renders too: [`modal_openers`] runs every `onclick` body a render draws ([`onclicks`]), as
-//! written, on its page mounted in a fresh harness mockup, and names each `.scrim` a body appends
-//! by the `PAGES` function whose call appended it, or by the body; a body that throws fails by name.
+//! (`REG.setForce`) does, before `REG.mount`. The modals, menus and tabs a render draws come from
+//! the renders too: [`probe`] runs every `onclick` body a render draws ([`onclicks`]), as
+//! written, on its page mounted in a fresh harness mockup, and records what it does: each `.scrim`
+//! it appends, named by the `PAGES` function whose call appended it or by the body, each
+//! `UI.openMenu` call and each `PAGES.tab` assignment; a body that throws fails by name. No
+//! `onclick` text is parsed, so every spelling of a call is seen.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,8 +19,8 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
-use crate::html::{find_all, find_in, Node};
-use crate::pages::{DrawnTabs, MockOpener};
+use crate::html::{find_all, Node};
+use crate::pages::{DrawnTabs, MockOpener, Page};
 
 /// The scripts in the order the mockup's html files load them; `catalog.js` only builds
 /// the excluded catalog page.
@@ -55,9 +57,12 @@ const SCRIPTS: &[&str] = &[
 // normally from the sentinel, so a body that re-renders the page goes on running; a body
 // assignment outside every `REG` call is an error. Timer callbacks queue, each with the outermost
 // `PAGES` call running when it was scheduled (an interval runs once), and run after the body,
-// for at most `MAX_TIMER_ROUNDS` rounds. Each body is written as `{scrims}`, one entry per `.scrim` it
-// appended to the body: the name of the `PAGES` function that appended it, or null when it was
-// appended outside every such call; or as `{error}` when it threw.
+// for at most `MAX_TIMER_ROUNDS` rounds. While it runs, `PAGES.tab` is an accessor recording each
+// value assigned to it, and `UI.openMenu` is wrapped to record each call's menu id and argument
+// (null when it has none) before it opens the menu. Each body is written as `{scrims, menus, tabs}`:
+// one `scrims` entry per `.scrim` it appended to the body, the name of the `PAGES` function that
+// appended it or null when it was appended outside every such call; each `UI.openMenu` call as
+// `[id, arg]`; each `PAGES.tab` value; or as `{error}` when it threw.
 const HARNESS: &str = r#""use strict";
 const fs = require("fs"), vm = require("vm");
 const input = JSON.parse(process.env.ADMINDIFF_INPUT);
@@ -145,7 +150,7 @@ if (input.registry) {
   process.stdout.write(JSON.stringify(boot().defined));
 } else if (input.menu) {
   const m = boot();
-  m.ctx.UI.openMenu(click(element()), input.menu.id, input.menu.arg);
+  m.ctx.UI.openMenu(click(element()), input.menu.id, input.menu.arg ?? undefined);
   const opened = m.appended.length ? m.appended[m.appended.length - 1].el : null;
   if (!hasClass(opened, "menu")) {
     process.stderr.write(`UI.openMenu('${input.menu.id}') appended no .menu element\n`);
@@ -192,6 +197,21 @@ if (input.registry) {
         try { return fn.apply(this, args); } finally { m.opener = null; }
       };
     }
+    const menus = [], tabs = [];
+    let tab = pages.tab;
+    Object.defineProperty(pages, "tab", {
+      configurable: true, enumerable: true,
+      get: () => tab,
+      set: v => { tab = v; tabs.push(String(v)); },
+    });
+    const ui = m.ctx.UI;
+    if (ui && typeof ui.openMenu === "function") {
+      const open = ui.openMenu;
+      ui.openMenu = function (ev, id, arg, ...rest) {
+        menus.push([String(id), arg === undefined || arg === null ? null : String(arg)]);
+        return open.call(this, ev, id, arg, ...rest);
+      };
+    }
     let error = null;
     m.probing = true;
     try {
@@ -209,7 +229,7 @@ if (input.registry) {
       error = String(e && e.message !== undefined ? e.message : e);
     }
     const scrims = m.appended.filter(a => hasClass(a.el, "scrim")).map(a => a.opener);
-    results.push(error === null ? { scrims } : { error });
+    results.push(error === null ? { scrims, menus, tabs } : { error });
   }
   process.stdout.write(JSON.stringify(results));
 } else {
@@ -246,8 +266,9 @@ pub fn render(repo: &Path, key: &str, search: &str, force: bool) -> Result<Strin
     run_harness(repo, serde_json::json!({ "key": key, "search": search, "force": force }), &what)
 }
 
-/// The `.menu` element `UI.openMenu(event, '<id>', '<arg>')` opens in the mockup.
-pub fn render_menu(repo: &Path, id: &str, arg: &str) -> Result<String> {
+/// The `.menu` element `UI.openMenu(event, '<id>', '<arg>')` opens in the mockup; with no `arg`
+/// the call passes none.
+pub fn render_menu(repo: &Path, id: &str, arg: Option<&str>) -> Result<String> {
     let input = serde_json::json!({ "search": "", "menu": { "id": id, "arg": arg } });
     run_harness(repo, input, &format!("menu {id}"))
 }
@@ -272,45 +293,138 @@ pub fn onclicks(doc: &[Node]) -> Vec<String> {
     bodies
 }
 
-/// The modal openers among the `onclick` bodies a mockup render of host `host` draws: each body
-/// runs verbatim on its own fresh `P.<key>`, mounted with `search` and forced ok when `force`
-/// (the render that drew it, or for a menu its host page's), and each `.scrim` it appends is a
-/// modal of the `PAGES` function whose call by the body appended it ([`MockOpener::Pages`]), or of
-/// the body itself when no such call did ([`MockOpener::Onclick`]). A body that calls two `PAGES`
-/// functions has a modal of each one that appended a `.scrim`. Once each, in order. A body that
-/// throws fails with its host and its text; one that re-renders the page is no error.
-pub fn modal_openers(repo: &Path, host: &str, key: &str, search: &str, force: bool, onclicks: &[String]) -> Result<Vec<MockOpener<String>>> {
-    if onclicks.is_empty() {
-        return Ok(Vec::new());
+/// Which `onclick` bodies of a render [`probe`] runs: every one, or only those of its `.tab`
+/// elements when only the tabs are read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Onclicks {
+    All,
+    Tabs,
+}
+
+/// What the `onclick` bodies a mockup render draws did when the harness ran them on its page
+/// ([`probe`]): the mockup's calls, whatever their spelling, are the only source of the modals,
+/// menus and tabs it draws.
+#[derive(Debug)]
+pub struct Probe {
+    key: String,
+    /// Each `.scrim` a body appended, named by the `PAGES` function whose call by the body
+    /// appended it ([`MockOpener::Pages`]), or by the body itself when no such call did
+    /// ([`MockOpener::Onclick`]); a body that calls two `PAGES` functions has a modal of each one
+    /// that appended a `.scrim`. Once each, in order.
+    pub modals: Vec<MockOpener<String>>,
+    /// Each menu id a body opened through `UI.openMenu`, once each, in the order of the bodies,
+    /// with the argument of the first such call (none when it passed none).
+    pub menus: Vec<(String, Option<String>)>,
+    /// Every `.tab` element whose body assigned `PAGES.tab`, as the first value it assigned, in
+    /// order, and the first of them drawn `.on`.
+    pub tabs: DrawnTabs,
+}
+
+impl Probe {
+    /// The ids of [`Probe::menus`].
+    pub fn menu_ids(&self) -> Vec<String> {
+        self.menus.iter().map(|(id, _)| id.clone()).collect()
     }
-    let input = serde_json::json!({ "key": key, "search": search, "force": force, "probe": onclicks });
+
+    /// The argument the first body that opens menu `menu` passes; a render that opens no such
+    /// menu fails, as the crawl fails a portal page that draws no such menu.
+    pub fn menu_arg(&self, menu: &str) -> Result<Option<&str>> {
+        match self.menus.iter().find(|(id, _)| id == menu) {
+            Some((_, arg)) => Ok(arg.as_deref()),
+            None => bail!("P.{} draws no {menu} menu; the mockup has no such menu", self.key),
+        }
+    }
+
+    /// Fails unless the render selects tab `tab` ([`DrawnTabs::selected`]). The mockup falls back
+    /// to its first tab for an id it does not know, so a render alone does not show the tab was
+    /// reached.
+    pub fn check_tab(&self, tab: &str) -> Result<()> {
+        if self.tabs.selected.as_deref() != Some(tab) {
+            bail!("P.{} does not select tab {tab}; the mockup has no such tab", self.key);
+        }
+        Ok(())
+    }
+}
+
+/// Runs the `onclick` bodies (`scope`) the mockup render `doc` of `P.<key>` draws, each verbatim
+/// on its own fresh `P.<key>` mounted as `page` renders it (its search, forced ok when it
+/// forces; for a menu its host page's), and returns what they did; `host` names the render in
+/// errors. A body that throws fails with its host and its text; one that re-renders the page is
+/// no error.
+pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scope: Onclicks) -> Result<Probe> {
+    let bodies = match scope {
+        Onclicks::All => onclicks(doc),
+        Onclicks::Tabs => tab_onclicks(doc),
+    };
+    let mut probe = Probe { key: key.to_string(), modals: Vec::new(), menus: Vec::new(), tabs: DrawnTabs::default() };
+    if bodies.is_empty() {
+        return Ok(probe);
+    }
+    let input = serde_json::json!({ "key": key, "search": page.mock_search(), "force": page.force, "probe": bodies });
     let out = run_harness(repo, input, &format!("the onclicks {host} draws"))?;
     let results: Vec<serde_json::Value> = serde_json::from_str(&out).context("the harness's onclick probe is not a JSON list")?;
-    if results.len() != onclicks.len() {
-        bail!("the harness ran {} of the {} onclicks {host} draws", results.len(), onclicks.len());
+    if results.len() != bodies.len() {
+        bail!("the harness ran {} of the {} onclicks {host} draws", results.len(), bodies.len());
     }
     let mut thrown = Vec::new();
-    let mut modals: Vec<MockOpener<String>> = Vec::new();
-    for (body, result) in onclicks.iter().zip(&results) {
+    // Each body that assigned `PAGES.tab`, with the first value it assigned.
+    let mut tab_of: Vec<(&str, String)> = Vec::new();
+    for (body, result) in bodies.iter().zip(&results) {
         if let Some(error) = result.get("error") {
             thrown.push(format!("onclick {body:?} drawn on {host} threw in the harness: {}", error.as_str().unwrap_or_default()));
             continue;
         }
-        let scrims = result.get("scrims").and_then(serde_json::Value::as_array).context("an onclick probe result has no scrims list")?;
-        for scrim in scrims {
+        let list = |field: &str| {
+            result.get(field).and_then(serde_json::Value::as_array).with_context(|| format!("an onclick probe result has no {field} list"))
+        };
+        for scrim in list("scrims")? {
             let opener = match scrim.as_str() {
                 Some(name) => MockOpener::Pages(name.to_string()),
                 None => MockOpener::Onclick(body.clone()),
             };
-            if !modals.contains(&opener) {
-                modals.push(opener);
+            if !probe.modals.contains(&opener) {
+                probe.modals.push(opener);
             }
+        }
+        for call in list("menus")? {
+            let id = call.get(0).and_then(serde_json::Value::as_str).context("a recorded UI.openMenu call has no menu id")?;
+            let arg = call.get(1).and_then(serde_json::Value::as_str).map(str::to_string);
+            if !probe.menus.iter().any(|(m, _)| m == id) {
+                probe.menus.push((id.to_string(), arg));
+            }
+        }
+        if let Some(tab) = list("tabs")?.first() {
+            tab_of.push((body.as_str(), tab.as_str().context("a recorded PAGES.tab value is no string")?.to_string()));
         }
     }
     if !thrown.is_empty() {
         bail!("mockup onclick failed:\n  {}", thrown.join("\n  "));
     }
-    Ok(modals)
+    let mut buttons = Vec::new();
+    find_all(doc, &|e| e.has_class("tab") && e.attr("onclick").is_some(), &mut buttons);
+    for b in buttons {
+        let body = b.attr("onclick").unwrap_or_default();
+        let Some((_, id)) = tab_of.iter().find(|(set, _)| *set == body) else { continue };
+        if b.has_class("on") && probe.tabs.selected.is_none() {
+            probe.tabs.selected = Some(id.clone());
+        }
+        probe.tabs.tabs.push(id.clone());
+    }
+    Ok(probe)
+}
+
+/// Every `onclick` body of a `.tab` element the rendered mockup `doc` draws, once each, in order.
+fn tab_onclicks(doc: &[Node]) -> Vec<String> {
+    let mut elements = Vec::new();
+    find_all(doc, &|e| e.has_class("tab") && e.attr("onclick").is_some(), &mut elements);
+    let mut bodies: Vec<String> = Vec::new();
+    for e in elements {
+        let body = e.attr("onclick").unwrap_or_default();
+        if !bodies.iter().any(|b| b == body) {
+            bodies.push(body.to_string());
+        }
+    }
+    bodies
 }
 
 /// Every menu id the mockup's registry defines through `UI.defineMenu`, once each, in order.
@@ -359,73 +473,6 @@ fn run_harness(repo: &Path, mut input: serde_json::Value, what: &str) -> Result<
         bail!("node failed rendering {what} ({}):\n{}", out.status, String::from_utf8_lossy(&out.stderr).trim());
     }
     String::from_utf8(out.stdout).context("node output is not UTF-8")
-}
-
-/// Fails unless the rendered mockup `doc` selects tab `tab`: a `.tab.on` whose `onclick`
-/// sets `PAGES.tab='<tab>'`. The mockup falls back to its first tab for an id it does not
-/// know, so a render alone does not show the tab was reached.
-pub fn check_tab(doc: &[Node], key: &str, tab: &str) -> Result<()> {
-    let want = format!("PAGES.tab='{tab}'");
-    let on = find_in(doc, &|e| e.has_class("tab") && e.has_class("on") && e.attr("onclick").is_some_and(|c| c.contains(&want)));
-    if on.is_none() {
-        bail!("P.{key} does not select tab {tab}; the mockup has no such tab");
-    }
-    Ok(())
-}
-
-/// The `UI.openMenu` call that opens a menu in the mockup, up to its id.
-const OPEN_MENU: &str = "UI.openMenu(event,'";
-
-/// The argument of the first menu `menu` the rendered mockup `doc` draws: the first element
-/// whose `onclick` calls `UI.openMenu(event,'<menu>','<arg>')`. A page that draws none fails,
-/// as the crawl fails a portal page that draws no such menu.
-pub fn menu_arg(doc: &[Node], key: &str, menu: &str) -> Result<String> {
-    let call = format!("{OPEN_MENU}{menu}','");
-    let Some(opener) = find_in(doc, &|e| e.attr("onclick").is_some_and(|c| c.contains(&call))) else {
-        bail!("P.{key} draws no {menu} menu; the mockup has no such menu");
-    };
-    let onclick = opener.attr("onclick").unwrap_or_default();
-    let at = onclick.find(&call).map_or(0, |i| i + call.len());
-    let Some(len) = onclick[at..].find('\'') else { bail!("a menu's onclick {onclick:?} does not close its argument") };
-    Ok(onclick[at..at + len].to_string())
-}
-
-/// The ids of the menus the rendered mockup `doc` draws, once each, in order: every
-/// `UI.openMenu(event,'<id>',…)` in an `onclick`.
-pub fn drawn_menus(doc: &[Node]) -> Result<Vec<String>> {
-    let mut openers = Vec::new();
-    find_all(doc, &|e| e.attr("onclick").is_some_and(|c| c.contains(OPEN_MENU)), &mut openers);
-    let mut ids: Vec<String> = Vec::new();
-    for o in openers {
-        let onclick = o.attr("onclick").unwrap_or_default();
-        let at = onclick.find(OPEN_MENU).map_or(0, |i| i + OPEN_MENU.len());
-        let Some(len) = onclick[at..].find('\'') else { bail!("a menu's onclick {onclick:?} does not close its menu id") };
-        let id = &onclick[at..at + len];
-        if !ids.iter().any(|i| i == id) {
-            ids.push(id.to_string());
-        }
-    }
-    Ok(ids)
-}
-
-/// The tabs the rendered mockup `doc` draws: every `.tab` whose `onclick` sets
-/// `PAGES.tab='<id>'`, in order, and the first of them drawn `.on`.
-pub fn drawn_tabs(doc: &[Node]) -> Result<DrawnTabs> {
-    const SET: &str = "PAGES.tab='";
-    let mut buttons = Vec::new();
-    find_all(doc, &|e| e.has_class("tab") && e.attr("onclick").is_some_and(|c| c.contains(SET)), &mut buttons);
-    let mut drawn = DrawnTabs::default();
-    for b in buttons {
-        let onclick = b.attr("onclick").unwrap_or_default();
-        let at = onclick.find(SET).map_or(0, |i| i + SET.len());
-        let Some(len) = onclick[at..].find('\'') else { bail!("a tab's onclick {onclick:?} does not close its PAGES.tab id") };
-        let id = onclick[at..at + len].to_string();
-        if b.has_class("on") && drawn.selected.is_none() {
-            drawn.selected = Some(id.clone());
-        }
-        drawn.tabs.push(id);
-    }
-    Ok(drawn)
 }
 
 #[cfg(test)]

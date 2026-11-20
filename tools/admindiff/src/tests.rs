@@ -592,7 +592,7 @@ fn a_modal_or_menu_target_renders_its_element_by_class_token() {
     );
     let menus = FakeRepo::with_openers("render-menu-class-token", &mock_html(&body(true)), PAGE_MAP, &[], script);
     for id in ["listed", "wide"] {
-        let html = crate::mock::render_menu(menus.path(), id, "players").unwrap_or_else(|e| panic!("menu {id}: {e:#}"));
+        let html = crate::mock::render_menu(menus.path(), id, Some("players")).unwrap_or_else(|e| panic!("menu {id}: {e:#}"));
         assert_eq!(html, r#"<div class="menu"><div class="menu-item"></div></div>"#, "menu {id}");
     }
 }
