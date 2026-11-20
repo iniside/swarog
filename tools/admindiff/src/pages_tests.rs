@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::{
-    boot_key, lookup, mockup_pages, validate_excluded_modals, validate_lists, validate_menus, validate_tabs, with_tab,
+    boot_key, excluded_menu_id, lookup, mockup_pages, validate_excluded_modals, validate_lists, validate_menus, validate_tabs, with_tab,
     DrawnTabs, Lists, Menu, Modal, ModalWhy, Page, Route, EXCLUDED, EXCLUDED_TABS, LISTS, PAGE_MAP,
 };
 use crate::tests::ScratchDir;
@@ -471,6 +471,32 @@ fn a_tab_or_a_tab_menu_target_hosts_modals() {
     with(&[MAPPED, FOLLOWS, tab, modal], "c.items", "guild/kick").expect("another action on the tab");
     let e = format!("{:#}", with(&[MAPPED, FOLLOWS, tab, modal], "c.items", "mail/cancel").expect_err("mapped on the tab too"));
     assert_eq!(e, "modal drift:\n  c.items modal mail/cancel is listed in PAGE_MAP and again in EXCLUDED_MODALS");
+}
+
+/// An `EXCLUDED_MENUS` menu of a tab entry, `excluded_menu_id(<page>.<tab>, kind)`, hosts a
+/// modal exclusion as one of a page does; one whose host is no compared page or tab, a tab no
+/// entry lists or a pending page, hosts none.
+#[test]
+fn an_excluded_menu_of_a_tab_hosts_modal_exclusions() {
+    let tab = Page { tab: Some("items"), ..FOLLOWS };
+    let page_map = [MAPPED, PENDING, FOLLOWS, tab];
+    let check = |page: &str| {
+        let host = excluded_menu_id(page, "guild");
+        let excluded_menus = [(page, "guild", "why")];
+        let excluded_modals = [(host.as_str(), "guild/kick", ModalWhy::NoMockOpener { others: &[], why: "why" })];
+        let lists = Lists { page_map: &page_map, excluded_menus: &excluded_menus, excluded_modals: &excluded_modals, ..LISTS };
+        validate_excluded_modals(&lists).map_err(|e| format!("{e:#}"))
+    };
+    assert_eq!(excluded_menu_id("c.items", "guild"), "c.items.excluded-menu.guild");
+    check("c.items").expect("an excluded menu of the tab hosts it");
+    for page in ["c.saves", "b"] {
+        let host = excluded_menu_id(page, "guild");
+        let e = check(page).expect_err("an excluded menu of no compared page or tab");
+        let want = format!(
+            "modal drift:\n  EXCLUDED_MODALS lists {host} modal guild/kick, and {host} is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu"
+        );
+        assert_eq!(e, want, "excluded menu host {page}");
+    }
 }
 
 /// `a` maps the `mail/cancel` modal; `b` is pending; `c` is an untabbed `FirstRow` page with a

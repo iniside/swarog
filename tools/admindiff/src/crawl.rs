@@ -3,22 +3,23 @@
 //! Every declared target must be reached: a mapped page that fails, a `FirstRow` page whose
 //! list has no row (unless `--allow-empty`), a tab the portal does not select and a menu
 //! target whose page draws no menu of its kind all fail the crawl. A menu target's output is
-//! the first such menu, the `.menu` popover the portal answers. Every menu kind an untabbed compared
-//! page draws is a menu target of that page or in [`EXCLUDED_MENUS`], whose menus are fetched
-//! once each and must answer 2xx; an exclusion its page does not draw fails as stale. A modal
+//! the first such menu, the `.menu` popover the portal answers. Every menu kind a compared page
+//! or tab target draws is a menu target of that page or tab or in [`EXCLUDED_MENUS`], whose
+//! menus are fetched once each and must answer 2xx; an exclusion its page does not draw fails
+//! as stale. A modal
 //! target's output is the modal the portal answers for the first opener of its action its
 //! page draws (an `hx-get` to `/admin/_action/<module>/<action>`, whose `?entity=`/`?item=`
 //! a fleet mints); a page drawing none skips it as EMPTY, a failure unless `--allow-empty`.
 //! A modal target hosted by a menu target opens the first opener of its action in that fetched
 //! menu. Every modal action a compared page or tab target draws, and every one a menu target's
-//! fetched menu or an untabbed compared page's excluded kind draws, is a modal target of that
+//! fetched menu or a compared page or tab's excluded kind draws, is a modal target of that
 //! page, tab or menu or in [`EXCLUDED_MODALS`], whose modals are fetched once each; an exclusion its page or menu
 //! does not draw fails as stale, `--allow-empty` or not: an opener sits in a page head, a panel
 //! tool, a row or a menu, so a page listing no row does not excuse a missing one. Every fetched
 //! modal fails on a non-2xx answer, a toast, or a body that is no `.scrim` around a `.modal`.
 //! Every other crawled page, one only the nav links, has the first menu of each kind and the
-//! first modal of each action it and those menus draw fetched once, and so has a tab page for
-//! the menus it draws; the menu must answer 2xx, the modal as every fetched modal must. Every fetched menu, compared or not, fails
+//! first modal of each action it and those menus draw fetched once; the menu must answer 2xx,
+//! the modal as every fetched modal must. Every fetched menu, compared or not, fails
 //! when it holds no module group or a group whose `data-state` is missing or neither `ok`
 //! nor `error`, and, unless `--allow-errors`, on a group in the error state. A page and a
 //! menu answer 200 whatever their state, so the root of each ([`ROOT_CLASS`], [`MENU_CLASS`])
@@ -40,7 +41,7 @@ use reqwest::{Client, StatusCode};
 
 use crate::assemble::{assemble, pending_slots};
 use crate::html::{self, find_all, find_in, Element, Node};
-use crate::pages::{excluded_menu_id, validate_excluded_modals, with_tab, Lists, Menu, Modal, Page, Route, LISTS};
+use crate::pages::{compared_hosts, excluded_menu_id, validate_excluded_modals, with_tab, Lists, Menu, Modal, Page, Route, LISTS};
 use crate::skeleton::{MENU_CLASS, MODAL_CLASS, ROOT_CLASS};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -88,9 +89,9 @@ struct Outcome {
 }
 
 /// The menu bodies a crawl fetched, as `(<host id>, <body>)`: `compared` holds each menu
-/// target's (its id, on a page or a tab) and each excluded menu's on an untabbed compared page
+/// target's (its id, on a page or a tab) and each excluded menu's on a compared page or tab
 /// ([`excluded_menu_id`]), whose modal actions are inventoried; `status` the first menu of each
-/// kind any other crawled page draws (`<page>.status-menu.<kind>`), whose modals are fetched
+/// kind any other crawled page, one only the nav links, draws (`<page>.status-menu.<kind>`), whose modals are fetched
 /// for their status only.
 #[derive(Default)]
 struct MenuBodies {
@@ -391,10 +392,11 @@ fn lists_rows(doc: &[Node]) -> bool {
     find_in(doc, &|e| e.tag == "tbody" && e.find(&|r| r.tag == "tr").is_some()).is_some()
 }
 
-/// The menu inventory of every untabbed, not pending `page_map` page the crawl reached: each
-/// menu kind it draws is a menu entry of that page or an `excluded_menus` entry, not both; an
-/// excluded kind's first menu is fetched and a non-2xx answer fails. Every other crawled page,
-/// a page only the nav links or a tab page, needs no declaration, but the first menu of each
+/// The menu inventory of every compared host (a not pending `page_map` page or tab entry,
+/// [`compared_hosts`]) the crawl reached: each menu kind it draws is a menu entry of that host
+/// or an `excluded_menus` entry, not both; an excluded kind's first menu is fetched and a
+/// non-2xx answer fails, and a mapped kind's is not fetched again (`run_with` fetched it as
+/// its menu target). Every other crawled page, a page only the nav links, needs no declaration, but the first menu of each
 /// kind it draws is fetched and a non-2xx answer fails. An exclusion is listed once, with a
 /// reason, on such a page, and that page draws it; a page that was not crawled
 /// (`--allow-empty` skipped it, or it failed), or a page other than a `FirstRow` page that
@@ -410,16 +412,10 @@ async fn check_menu_kinds(
 ) -> MenuBodies {
     let Lists { page_map, excluded_menus, .. } = *lists;
     let mut bodies = MenuBodies::default();
-    let mut hosts: Vec<String> = Vec::new();
-    let mut first_row_hosts: Vec<String> = Vec::new();
-    for p in page_map.iter().filter(|p| p.is_page() && p.tab.is_none() && p.route != Route::Pending) {
-        if !hosts.contains(&p.id()) {
-            hosts.push(p.id());
-        }
-        if matches!(p.route, Route::FirstRow(_)) && !first_row_hosts.contains(&p.id()) {
-            first_row_hosts.push(p.id());
-        }
-    }
+    let hosts = compared_hosts(page_map);
+    // A FirstRow host, a tab entry included, exists only because its list had a row.
+    let first_row_hosts: Vec<String> =
+        page_map.iter().filter(|p| p.is_compared_host() && matches!(p.route, Route::FirstRow(_))).map(Page::id).collect();
     for (page, doc) in crawled.iter().filter(|(p, _)| !hosts.contains(p)) {
         for (kind, url) in menu_kinds(doc) {
             println!("menu {page} {kind}  {url}  (status only)");
@@ -464,7 +460,7 @@ async fn check_menu_kinds(
             failures.push(format!("EXCLUDED_MENUS {host} menu {kind} has no reason"));
         }
         if !hosts.iter().any(|h| h == host) {
-            failures.push(format!("EXCLUDED_MENUS lists {host} menu {kind}, and {host} is no untabbed PAGE_MAP page"));
+            failures.push(format!("EXCLUDED_MENUS lists {host} menu {kind}, and {host} is no PAGE_MAP page or tab that is not pending"));
             continue;
         }
         if drawn.iter().any(|(h, k)| h == host && k == kind) {
@@ -506,12 +502,7 @@ async fn check_modal_actions(
     failures: &mut Vec<String>,
 ) {
     let Lists { page_map, excluded_modals, .. } = *lists;
-    let mut pages: Vec<String> = Vec::new();
-    for p in page_map.iter().filter(|p| p.is_page() && p.route != Route::Pending) {
-        if !pages.contains(&p.id()) {
-            pages.push(p.id());
-        }
-    }
+    let pages = compared_hosts(page_map);
     let (compared, status): (Vec<_>, Vec<_>) = crawled.iter().partition(|(p, _)| pages.contains(p));
     let compared: Vec<&(String, Vec<Node>)> = compared.into_iter().chain(&menus.compared).collect();
     for (page, doc) in status.into_iter().chain(&menus.status) {

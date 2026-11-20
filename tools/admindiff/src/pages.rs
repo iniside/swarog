@@ -5,10 +5,11 @@
 //! the mockup draws on a `FirstRow` page, besides the one its untabbed entry renders
 //! selected, is in [`EXCLUDED_TABS`]. An entry that names a menu is its own target too,
 //! `<host>.menu.<menu>`: the first menu of that kind its host page draws, opened on both
-//! sides. Menus are inventoried on untabbed hosts only: every menu the mockup draws there has
-//! such an entry and every menu its registry defines has one or is in
-//! [`EXCLUDED_MOCK_MENUS`] ([`validate_menus`]); every menu kind the portal draws there has
-//! one or is in [`EXCLUDED_MENUS`] (`crawl`). An entry that names a modal is its own target,
+//! sides. On the mockup side menus are inventoried on untabbed hosts only: every menu the
+//! mockup draws there has such an entry and every menu its registry defines has one or is in
+//! [`EXCLUDED_MOCK_MENUS`] ([`validate_menus`]). On the portal side every menu kind a
+//! compared page or tab ([`Page::is_compared_host`]) draws has one or is in
+//! [`EXCLUDED_MENUS`] (`crawl`). An entry that names a modal is its own target,
 //! `<host>.modal.<modal>`: the harness calls the mockup's named opener with the entry's
 //! arguments, and the crawl opens the first opener of the entry's portal action its host
 //! draws. A modal's host is a page, a tab (`<page>.<tab>.modal.<modal>`) or a menu target
@@ -133,6 +134,14 @@ impl Page {
         self.is_page() && self.host() == *host
     }
 
+    /// Whether this entry is a compared host: a page or tab entry that is not pending. The
+    /// crawl holds every menu kind and modal action such a host draws to the lists, and a menu
+    /// or modal exclusion names one, a menu target of one or an excluded menu of one as its
+    /// host ([`compared_hosts`]).
+    pub fn is_compared_host(&self) -> bool {
+        self.is_page() && self.route != Route::Pending
+    }
+
     /// Whether this entry is a page or tab target, neither a menu nor a modal.
     pub fn is_page(&self) -> bool {
         self.menu.is_none() && self.modal.is_none()
@@ -145,6 +154,17 @@ impl Page {
             None => self.search.to_string(),
         }
     }
+}
+
+/// The id of every [`Page::is_compared_host`] entry of `page_map`, once each, in map order.
+pub fn compared_hosts(page_map: &[Page]) -> Vec<String> {
+    let mut hosts: Vec<String> = Vec::new();
+    for p in page_map.iter().filter(|p| p.is_compared_host()) {
+        if !hosts.contains(&p.id()) {
+            hosts.push(p.id());
+        }
+    }
+    hosts
 }
 
 /// `url` with `tab=<tab>` added to its query. A tab id is `[a-z0-9_-]+` ([`validate_lists`]),
@@ -267,8 +287,9 @@ pub const EXCLUDED_TABS: &[(&str, &str)] = &[
     ("player.lore", NO_LORE),
 ];
 
-/// Menus the portal draws on an untabbed compared page that no `PAGE_MAP` menu entry diffs, as
-/// `(<host page id>, <kind>, <reason>)`. The crawl still fetches the first of each and fails on
+/// Menus the portal draws on a compared page or tab ([`Page::is_compared_host`]) that no
+/// `PAGE_MAP` menu entry diffs, as `(<host id>, <kind>, <reason>)`, the host a page or tab
+/// entry's id (`<page>`, `<page>.<tab>`). The crawl still fetches the first of each and fails on
 /// a non-2xx answer, and fails on an entry whose host does not draw it (a stale entry).
 pub const EXCLUDED_MENUS: &[(&str, &str, &str)] = &[(
     "events",
@@ -323,7 +344,7 @@ impl ModalWhy<'_> {
     }
 }
 
-/// The host id of the menu of `kind` an [`EXCLUDED_MENUS`] entry excludes on page `host`, as an
+/// The host id of the menu of `kind` an [`EXCLUDED_MENUS`] entry excludes on page or tab `host`, as an
 /// [`EXCLUDED_MODALS`] entry names it: no `PAGE_MAP` id has the `.excluded-menu.` segment.
 pub fn excluded_menu_id(host: &str, kind: &str) -> String {
     format!("{host}.excluded-menu.{kind}")
@@ -632,12 +653,12 @@ pub fn validate_menus(
 
 /// Checks the modal exclusions of `lists` against its page map and menu exclusions, which its
 /// problems name `EXCLUDED_MODALS`, `PAGE_MAP` and `EXCLUDED_MENUS`: each exclusion is listed
-/// once, with a reason, names as its host a page or tab entry that is not pending, a menu
-/// target of one, or an excluded menu of an untabbed one ([`excluded_menu_id`]), and a
+/// once, with a reason, names as its host a compared host ([`Page::is_compared_host`]), a
+/// menu target of one, or an excluded menu of one ([`excluded_menu_id`]), and a
 /// `<module>/<action>` of `[a-z0-9._-]+` ids, and is not a modal entry of that host too.
 pub fn validate_excluded_modals(lists: &Lists) -> Result<()> {
     let Lists { page_map, excluded_menus, excluded_modals, .. } = *lists;
-    let compared = |p: &Page| p.route != Route::Pending;
+    let hosts = compared_hosts(page_map);
     let mut problems = Vec::new();
     let mut seen = BTreeSet::new();
     for (host, action, why) in excluded_modals {
@@ -647,9 +668,9 @@ pub fn validate_excluded_modals(lists: &Lists) -> Result<()> {
         if why.text().trim().is_empty() {
             problems.push(format!("EXCLUDED_MODALS {host} modal {action} has no reason"));
         }
-        let page = page_map.iter().any(|p| p.is_page() && compared(p) && p.id() == *host);
-        let menu = page_map.iter().any(|p| p.is_menu() && compared(p) && p.id() == *host);
-        let excluded_menu = excluded_menus.iter().any(|(h, kind, _)| excluded_menu_id(h, kind) == *host);
+        let page = hosts.iter().any(|h| h == host);
+        let menu = page_map.iter().any(|p| p.is_menu() && p.host().is_compared_host() && p.id() == *host);
+        let excluded_menu = excluded_menus.iter().any(|(h, kind, _)| hosts.iter().any(|c| c == h) && excluded_menu_id(h, kind) == *host);
         if !page && !menu && !excluded_menu {
             problems.push(format!(
                 "EXCLUDED_MODALS lists {host} modal {action}, and {host} is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu"

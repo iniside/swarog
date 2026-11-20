@@ -41,8 +41,9 @@ USAGE:
             panel state, no nav page or no fragment, and an entity page whose list page has no
             row to follow (unless --allow-empty), a tab target whose page does not select the
             tab, a menu target whose page draws no menu of its kind (unless its list page lists
-            no row and --allow-empty; an entity page never), a menu kind an untabbed compared page draws that is neither
-            a page map menu entry nor in pages::EXCLUDED_MENUS, an excluded menu answering
+            no row and --allow-empty; an entity page never), a menu kind a compared page or tab
+            target draws that is neither a page map menu entry of it nor in
+            pages::EXCLUDED_MENUS (a tab's host <page>.<tab>), an excluded menu answering
             non-2xx, the first menu of a kind any other crawled page draws answering
             non-2xx, any fetched menu with a module group in the error state (unless
             --allow-errors), with no module group or with a group whose data-state is missing or
@@ -57,8 +58,8 @@ USAGE:
             too or hosted by no compared page or tab, menu target of one or EXCLUDED_MENUS menu
             (which stops the crawl first); a tab target's modals are held to the page rules, an
             exclusion naming the tab (<page>.<tab>) as its host; every menu target's fetched
-            menu, on a page or a tab, and every excluded kind's menu of an untabbed compared page
-            (host <page>.excluded-menu.<kind>), is held to
+            menu, on a page or a tab, and every excluded kind's menu of a compared page or tab
+            (host <page>[.<tab>].excluded-menu.<kind>), is held to
             the same modal rules as a page: each modal action it draws is a page map modal entry
             of that menu target or in pages::EXCLUDED_MODALS, an excluded one is fetched, and an
             exclusion it does not draw is stale; any other fetched menu's modals are fetched for
