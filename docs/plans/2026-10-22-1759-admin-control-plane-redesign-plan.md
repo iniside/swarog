@@ -2818,14 +2818,11 @@ gate.
     the raw body. Each mode has its own submit label, and `admin.js` swaps the label with
     the mode (pp:172-173). A form without modes draws and submits as today. Closes ADMIN2-40
     (`docs/todo/admin-second-pass.md`), moved to the done file in this commit. (W1.)
-    - **Owner decision before dispatch (N1 of the plan re-review, 2026-11-20):** what a
-      mode's action is. (a) Each mode names a declared action of the same module. Manifest
-      validation checks that it exists, can be invoked and sits at the form's point. Mode
-      actions stay out of the menus. The portal draws only the modes `admit` lets the
-      operator use. Submit admits and claims against the chosen mode's action, and
-      `InvokeCall.action` and the audit carry it. (b) Every mode shares the form's one
-      action and reaches the provider as an input value. Recommendation: (a), so that
-      permission and audit stay per action.
+    - **Mode authority (owner, 2026-11-20, N1 of the plan re-review):** each mode names a
+      declared action of the same module. Manifest validation checks that it exists, can be
+      invoked and sits at the form's point. Mode actions stay out of the menus. The portal
+      draws only the modes `admit` lets the operator use. Submit admits and claims against
+      the chosen mode's action, and `InvokeCall.action` and the audit carry it.
   - **13e5 — request-id field.** After 13e4. A `FieldKind` that the provider declares
     with no value. On every drawn form instance (panel or modal) the portal fills it with
     the instance id it mints, which is the same id the submit sends as `request_id`
