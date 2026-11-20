@@ -32,14 +32,23 @@ the test must fail.
 skill** — ONE rollout at a time on the shared Postgres.
 
 **Long steps.** At about 100 tool calls, or when the context-budget hook denies
-a call, with the step unfinished, stop at a
-coherent point, commit what is done, and return a part hand-off instead of the
-report below: the commits so far, what remains in step order, the anchors you
-found, and the build/test state. The commit-msg hook requires a step subject to
-end with `(<plan-slug> step <id>)`, so name the part before it:
-`<subject>, part <k> (<plan-slug> step <id>)`. The main session continues in a
-fresh implementer given the step text and your hand-off. The TODO re-check below
-runs with the commit that completes the step.
+a call, with the step unfinished, stop at a coherent point, commit what is
+done, and return a part hand-off instead of the report below, in the shape of
+a diagnosis:
+- `Done:` the commit shas and the build/test state;
+- `Remaining:` one point per line in step order, each with its `path:line`
+  anchor and a `Change:` line saying what to edit there.
+
+The commit-msg hook requires a step subject to end with
+`(<plan-slug> step <id>)`, so name the part before it:
+`<subject>, part <k> (<plan-slug> step <id>)`. The main session pastes
+`Done:` and `Remaining:` into a fresh implementer's brief with the step text
+(`.claude/hooks/fix_brief_guard.py` denies a continuation brief without
+them). When your brief carries them, or a `Diagnosis:` section, start at
+those anchors and read only the ranges they name; do not re-diagnose the
+area, and when the change shows the anchors wrong or incomplete, ask
+`code-scout` the new question. The TODO re-check below runs with the commit
+that completes the step.
 
 ## What you return
 

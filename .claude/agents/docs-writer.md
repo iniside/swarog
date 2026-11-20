@@ -93,6 +93,20 @@ path reference in `CLAUDE.md`, `AGENTS.md` or `docs/reference/*.md`, confirm the
 path exists. **Before ANY cargo command follow the `safe-verification` skill** —
 ONE rollout at a time on the shared Postgres; never start a second while one runs.
 
+**Long steps.** At about 100 tool calls, or when the context-budget hook
+(`.claude/hooks/context_budget_guard.py`, past 180k tokens) denies a reading
+call, with the task not finished, stop at a coherent point: commit the files
+that are done (a plan step's subject ends `, part <k> (<plan-slug> step <id>)`)
+and return a part hand-off instead of the report below:
+- `Done:` the commit shas;
+- `Remaining:` one file or claim per line, each with its `path:line` anchor
+  and a `Change:` line saying what to write there.
+
+The main session pastes `Done:` and `Remaining:` into a fresh docs-writer's
+brief (`.claude/hooks/fix_brief_guard.py` denies a continuation brief
+without them). When your brief carries them, start at those anchors and read
+only the ranges they name.
+
 ## What you return
 
 The diff, plus: **(a)** every file changed with a one-line statement of what was

@@ -83,7 +83,10 @@ punch list or decision, the step's commit sha(s) and the files to touch.
 SendMessage resumes a finished agent only while its context is under 100k
 tokens; `.claude/hooks/context_budget_guard.py` denies it above that. Inside a
 subagent the same hook denies new reads and searches past 180k while edits,
-cargo and git still run, which forces the part hand-off under **Step parts**.
+cargo and git still run, which forces the part hand-off under **Step parts**;
+a read-only lane (general-purpose, Explore, Plan, code-scout, core-reviewer,
+proof-auditor) is told instead to return its report with a `Not checked:`
+list, which goes to a fresh agent. Split a broad review by files up front.
 The main session auto-compacts around 150k (`autoCompactWindow`), and
 `.claude/hooks/compact_gate.py` holds that compaction while a subagent is
 working (best effort: written in the last hour), so it usually lands on a step
@@ -95,9 +98,39 @@ trailer names the executing model (adapter **Commit Trailers**); after a
 multi-subagent rollout, audit the trailers against each step's lane.
 
 **Step parts.** An implementer that returns a part hand-off
-(`.claude/agents/core-implementer.md` **Long steps**) is followed by a fresh
-one given the step text and that hand-off. A part gets no review of its own;
+(`.claude/agents/core-implementer.md` **Long steps**; test-author,
+docs-writer and mockup-implementer have the same paragraph) is followed by a
+fresh one of the same lane. Its brief repeats the step line (`Do Step <id> of
+<plan>, part <k>`) with the step text and pastes the hand-off's `Done:` and
+`Remaining:` (`path:line` anchors and `Change:` lines), never only a
+pointer to the earlier agent's output; `.claude/hooks/fix_brief_guard.py`
+denies a continuation brief without them. A part gets no review of its own;
 the review runs on the step's cumulative diff once the step is done.
+
+## Fixes outside a plan
+
+A `core-implementer`, `mockup-implementer` or `test-author` call is either
+a plan step (the prompt names the plan file and says `Do Step <id>` or
+`Implement Step <id>` for a step of that plan: a `### Step <id>` heading, a
+`- **Step <id>` bullet, or an id in its execution order) or carries a
+`Diagnosis:` section: the cause with `path:line` anchors and a `Change:`
+line per change point. `.claude/hooks/fix_brief_guard.py` denies any other
+call to those lanes, so an implementer never re-investigates a problem from
+scratch.
+
+- An owner-ordered fix, a core gap a step found, a failing test or a bug in a
+  step's area: first ask `code-scout` a diagnosis question
+  (`model:"sonnet"`, `effort:"medium"`) with the symptom, the expected
+  behaviour and how it shows (log, test name, repro). Paste its **Answer**,
+  **Anchors** and **Change** into the brief as `Diagnosis:`.
+- A review punch list goes in as the `Diagnosis:` with the reviewer's
+  anchors; each finding is a `Change:` line.
+- Extra work bundled into a plan step's brief (a core fix "then finish step
+  4") needs its own `Diagnosis:` section, or its own diagnosed call.
+- An implementer whose brief carries a `Diagnosis:` starts from its anchors
+  and `Change:` lines; when the change shows the diagnosis wrong or
+  incomplete, it asks `code-scout` the new question instead of tracing it
+  itself.
 
 ## Review in parallel
 

@@ -64,12 +64,19 @@ named assertion in `tools/splitproof`, not by a monolith unit test.
    happens-before, never race a real clock).
 
 **Long steps.** At about 100 tool calls, or when the context-budget hook denies
-a call, with the test step unfinished, stop at a
-coherent point, commit what is done as `<subject>, part <k> (<plan-slug> step <id>)`
-(the commit-msg hook requires the step suffix last), and return a part hand-off
-instead of the note below: the commits so far, what remains in step order, the
-anchors you found, and the build/test state. The main session continues in a
-fresh test-author given the step text and your hand-off.
+a call, with the test step unfinished, stop at a coherent point, commit what is
+done as `<subject>, part <k> (<plan-slug> step <id>)` (the commit-msg hook
+requires the step suffix last), and return a part hand-off instead of the note
+below:
+- `Done:` the commit shas and the build/test state;
+- `Remaining:` one test or branch per line in step order, each with its
+  `path:line` anchor and a `Change:` line saying what to write there.
+
+The main session pastes `Done:` and `Remaining:` into a fresh test-author's
+brief with the step text (`.claude/hooks/fix_brief_guard.py` denies a
+continuation brief without them). When your brief carries them, or a
+`Diagnosis:` section, start at those anchors and read only the ranges they
+name.
 
 ## What you return
 

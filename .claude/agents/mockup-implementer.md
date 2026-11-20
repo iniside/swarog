@@ -54,6 +54,23 @@ the named failure mode this agent exists to end (2026-07-14: invented "Character
 **Before ANY `cargo test` / `cargo run`, follow the `safe-verification` skill** — ONE
 rollout at a time on the shared Postgres.
 
+**Long steps.** At about 100 tool calls, or when the context-budget hook
+(`.claude/hooks/context_budget_guard.py`, past 180k tokens) denies a reading
+call, with the view part not finished, stop at a coherent point: commit what is
+done when your prompt says to commit (subject ending
+`, part <k> (<plan-slug> step <id>)`), and return a part hand-off instead of
+the note below:
+- `Done:` the commit shas (or the uncommitted files) and the golden test
+  state;
+- `Remaining:` one checklist row or file per line, each with its `path:line`
+  anchor (template and mockup) and a `Change:` line saying what to edit there.
+
+The main session pastes `Done:` and `Remaining:` into a fresh
+mockup-implementer's brief with the step text
+(`.claude/hooks/fix_brief_guard.py` denies a continuation brief without
+them). When your brief carries them, or a `Diagnosis:` section, start at
+those anchors and read only the ranges they name.
+
 ## What you return
 
 The diff, plus a hand-off note with: **(a)** the mockup file + line ranges you copied

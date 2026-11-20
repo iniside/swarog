@@ -35,7 +35,9 @@ pointer stubs.
 - search lane (`code-navigation` skill, fallback step 3) — `subagent_type: "code-scout"`,
   `model:"haiku"` by default, `"sonnet"` for multi-hop questions that need
   interpretation (split-topology wiring, event flows across modules,
-  macro-generated code paths).
+  macro-generated code paths); a diagnosis question before a fix outside a
+  plan is `model:"sonnet"`, `effort:"medium"` (`implementation-dispatch`
+  skill **Fixes outside a plan**).
 
 Effort is the Agent call's `effort:` parameter
 (`low`|`medium`|`high`|`xhigh`|`max`), valued per
