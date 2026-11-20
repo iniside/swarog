@@ -260,6 +260,15 @@ fn the_real_mockup_draws_only_declared_tabs() {
     assert_eq!(e, "tab drift:\n  mockup tab player.wallet is in neither PAGE_MAP nor EXCLUDED_TABS");
 }
 
+/// The real mockup, rendered through node: a `NON_TAB_KEYS` key no `.tab` a compared render draws
+/// assigns is stale. `repoTab` is assigned only on lore-repo, which no page map entry compares.
+#[test]
+fn a_non_tab_key_no_compared_tab_assigns_is_stale() {
+    let repo = crate::repo_root();
+    let e = format!("{:#}", renders(&repo, &Lists { non_tab_keys: &["repoTab"], ..LISTS }).expect_err("repoTab is stale"));
+    assert_eq!(e, "tab drift:\n  NON_TAB_KEYS lists PAGES.repoTab, which no .tab a compared render draws assigns");
+}
+
 /// The real mockup, rendered through node: every menu it draws on a compared page is a menu
 /// entry, a menu entry whose page draws no such menu fails, and dropping one entry is caught.
 #[test]

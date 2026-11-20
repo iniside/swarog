@@ -349,6 +349,14 @@ pub const EXCLUDED_MOCK_MENUS: &[(&str, &str)] = &[
     ("lock", NO_LORE),
 ];
 
+/// The `PAGES` keys other than `tab` that a compared page's `.tab` buttons assign when they
+/// are not tabs of the page: a probed `.tab` whose body assigns no `PAGES.tab` fails unless it
+/// assigns one of these ([`crate::mock::probe`]), and a key no probed `.tab` assigns is stale. A
+/// key is added only when a compared page draws a `.tab` that is not a tab. Lore-repo's
+/// `PAGES.repoTab` (`UILayout/redesign/assets/pages-lore.js`, `P.loreRepo`) joins when the lore
+/// pages are compared; lore-repo is excluded with `NO_LORE`, so no compared page draws one.
+pub const NON_TAB_KEYS: &[&str] = &[];
+
 /// What opened a `.scrim` an `onclick` body of a mockup render appended in the harness: the
 /// `PAGES` function whose call by the body appended it, or the body itself, verbatim, when it was
 /// appended outside every such call (`REG.openSearch()`, an inline `UI.confirm`).
@@ -456,6 +464,7 @@ pub struct Lists<'a> {
     pub excluded_modals: &'a [(&'a str, &'a str, ModalWhy<'a>)],
     pub excluded_mock_menus: &'a [(&'a str, &'a str)],
     pub excluded_mock_modals: &'a [MockModalExclusion<'a>],
+    pub non_tab_keys: &'a [&'a str],
 }
 
 /// The production lists the CLI runs on.
@@ -467,6 +476,7 @@ pub const LISTS: Lists<'static> = Lists {
     excluded_modals: EXCLUDED_MODALS,
     excluded_mock_menus: EXCLUDED_MOCK_MENUS,
     excluded_mock_modals: EXCLUDED_MOCK_MODALS,
+    non_tab_keys: NON_TAB_KEYS,
 };
 
 /// The tabs a mockup render draws, in order, and the one it draws selected.

@@ -274,26 +274,31 @@ fn index_page() -> &'static Page {
 
 /// Probes every onclick of `html` on the stand-in `index` page.
 fn probe_html(repo: &Path, html: &str) -> anyhow::Result<super::Probe> {
+    probe_listed(repo, html, &[])
+}
+
+/// [`probe_html`] with `non_tab_keys` the `PAGES` keys a `.tab` that is not a tab may assign.
+fn probe_listed(repo: &Path, html: &str, non_tab_keys: &[&str]) -> anyhow::Result<super::Probe> {
     let doc = crate::html::parse(html).expect("parses");
-    super::probe(repo, "index", "index", index_page(), &doc, super::Onclicks::All)
+    super::probe(repo, "index", "index", index_page(), &doc, super::Onclicks::All, non_tab_keys)
 }
 
 /// The tabs and menus a render draws are what its onclicks do in the harness: each `.tab` whose
 /// body assigns `PAGES.tab`, the first drawn `.on` selected, a tab of another page's state
-/// (`PAGES.repoTab`) not one; each menu `UI.openMenu` opens, with the argument of its first
+/// (`PAGES.repoTab`, listed) not one; each menu `UI.openMenu` opens, with the argument of its first
 /// opener. The calls are written as the mockup writes them; [`a_call_is_seen_whatever_its_spelling`]
 /// is the twin with other spellings.
 #[test]
 fn the_probe_records_the_tabs_and_menus_the_onclicks_open() {
     let repo = FakeRepo::new("mock-probe-calls", r#"<div class="app"></div>"#);
-    let probe = probe_html(repo.path(), concat!(
+    let probe = probe_listed(repo.path(), concat!(
         r#"<div class="tabs"><span><button class="tab " onclick="PAGES.tab='profile';REG.render()">P</button></span>"#,
         r#"<span><button class="tab on" onclick="PAGES.tab='items';REG.render()">I</button></span>"#,
         r#"<button class="tab" onclick="PAGES.repoTab='files';REG.render()">F</button></div>"#,
         r#"<button onclick="UI.openMenu(event,'lock','L-1')"></button>"#,
         r#"<button onclick="UI.openMenu(event,'user','aiko.tanaka')"></button>"#,
         r#"<button onclick="UI.openMenu(event,'user','bo')"></button>"#,
-    ))
+    ), &["repoTab"])
     .expect("probes");
     assert_eq!(probe.tabs.tabs, ["profile", "items"], "another page's tab state is not a PAGES.tab tab");
     assert_eq!(probe.tabs.selected.as_deref(), Some("items"));
@@ -337,9 +342,9 @@ fn a_call_is_seen_whatever_its_spelling() {
 fn a_tab_probe_runs_only_the_tab_onclicks() {
     let repo = FakeRepo::new("mock-probe-tabs", r#"<div class="app"></div>"#);
     let doc = crate::html::parse(r#"<button class="tab on" onclick="PAGES.tab='items'"></button><button onclick="nosuch()"></button>"#).expect("parses");
-    let probe = super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::Tabs).expect("the tab body only");
+    let probe = super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::Tabs, &[]).expect("the tab body only");
     probe.check_tab("items").expect("selected");
-    let e = format!("{:#}", super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::All).expect_err("nosuch throws"));
+    let e = format!("{:#}", super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::All, &[]).expect_err("nosuch throws"));
     assert!(e.contains(r#"onclick "nosuch()" drawn on index threw in the harness"#), "{e}");
 }
 
@@ -373,19 +378,50 @@ fn only_the_calls_that_run_are_recorded() {
 }
 
 /// Each tab is the first value its body assigns to `PAGES.tab`, and the selected tab is the first
-/// `.tab.on` whose body assigns one: a `.tab.on` of another page's state (`PAGES.repoTab`) is no
-/// tab and selects none, and a body that assigns twice is the tab of its first assignment.
+/// `.tab.on` whose body assigns one: a `.tab.on` of another page's state (`PAGES.repoTab`), its
+/// key listed, is no tab and selects none, and a body that assigns twice is the tab of its first
+/// assignment. With the key not listed, the same `.tab` fails by host and onclick.
 #[test]
 fn the_selected_tab_is_the_first_on_tab_that_assigns_one() {
     let repo = FakeRepo::new("mock-probe-selected", r#"<div class="app"></div>"#);
-    let probe = probe_html(repo.path(), concat!(
+    let html = concat!(
         r#"<button class="tab on" onclick="PAGES.repoTab='f'"></button>"#,
         r#"<button class="tab on" onclick="PAGES.tab='a'"></button>"#,
         r#"<button class="tab" onclick="PAGES.tab='b'; PAGES.tab='c'"></button>"#,
-    ))
-    .expect("probes");
+    );
+    let probe = probe_listed(repo.path(), html, &["repoTab"]).expect("probes");
     assert_eq!(probe.tabs.selected.as_deref(), Some("a"));
     assert_eq!(probe.tabs.tabs, ["a", "b"]);
+    assert_eq!(probe.non_tab_keys, ["repoTab"]);
+    let e = format!("{:#}", probe_html(repo.path(), html).expect_err("repoTab not listed"));
+    let want = r#"mockup onclick failed:
+  onclick "PAGES.repoTab='f'" drawn on index is a .tab that assigns no PAGES.tab and no NON_TAB_KEYS key"#;
+    assert_eq!(e, want);
+}
+
+/// A `.tab` whose body assigns nothing, `.on` or not, fails by host and onclick, once per body;
+/// so does one whose assignment sits behind a guard the stubs make false, as the probe records the
+/// assignments that run. A listed key another tab assigns does not excuse it.
+#[test]
+fn a_tab_that_assigns_no_tab_fails() {
+    let repo = FakeRepo::new("mock-probe-no-tab", r#"<div class="app"></div>"#);
+    let html = concat!(
+        r#"<button class="tab on" onclick="PAGES.tab='a'"></button>"#,
+        r#"<button class="tab" onclick="REG.render()"></button>"#,
+        r#"<button class="tab on" onclick="REG.render()"></button>"#,
+        r#"<button class="tab" onclick="if (false) PAGES.tab='x'"></button>"#,
+        r#"<button class="tab" onclick="PAGES.repoTab='f'"></button>"#,
+    );
+    let e = format!("{:#}", probe_listed(repo.path(), html, &["repoTab"]).expect_err("two bodies assign no tab"));
+    let want = concat!(
+        "mockup onclick failed:\n",
+        r#"  onclick "REG.render()" drawn on index is a .tab that assigns no PAGES.tab and no NON_TAB_KEYS key"#,
+        "\n",
+        r#"  onclick "if (false) PAGES.tab='x'" drawn on index is a .tab that assigns no PAGES.tab and no NON_TAB_KEYS key"#,
+    );
+    assert_eq!(e, want);
+    let tabs = super::probe(repo.path(), "index", "index", index_page(), &crate::html::parse(html).expect("parses"), super::Onclicks::Tabs, &["repoTab"]);
+    assert_eq!(format!("{:#}", tabs.expect_err("a tab probe checks too")), want);
 }
 
 /// A menu a body opens through a re-render (`REG.render` opens it), a timer, or a guard the stubs
@@ -537,7 +573,7 @@ fn the_probe_reads_the_real_player_tabs_and_menu() {
     let page = PAGE_MAP.iter().find(|p| p.page == "player" && p.is_page() && p.tab.is_none()).expect("PAGE_MAP has the player page");
     let html = render(&real_repo(), "player", &page.mock_search(), page.force).expect("renders");
     let doc = crate::html::parse(&html).expect("parses");
-    let probe = super::probe(&real_repo(), "player", "player", page, &doc, super::Onclicks::All).expect("probes");
+    let probe = super::probe(&real_repo(), "player", "player", page, &doc, super::Onclicks::All, &[]).expect("probes");
     assert_eq!(probe.tabs.selected.as_deref(), Some("profile"));
     assert!(probe.tabs.tabs.len() > 1 && probe.tabs.tabs.iter().any(|t| t == "wallet"), "{:?}", probe.tabs);
     assert_eq!(probe.menu_arg("user").expect("the header menu"), Some("aiko.tanaka"));
@@ -584,9 +620,9 @@ fn the_onclick_probe_mounts_the_page_forced_ok_when_its_render_forces() {
     let repo = FakeRepo::with_openers("mock-probe-forced", r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
     let doc = crate::html::parse(r#"<button onclick="PAGES.okOnly()"></button>"#).expect("parses");
     let forced = Page { force: true, ..*index_page() };
-    let forced = super::probe(repo.path(), "index", "index", &forced, &doc, super::Onclicks::All).expect("the forced probe").modals;
+    let forced = super::probe(repo.path(), "index", "index", &forced, &doc, super::Onclicks::All, &[]).expect("the forced probe").modals;
     assert_eq!(forced, [MockOpener::Pages("okOnly".to_string())]);
     let designed = Page { force: false, ..*index_page() };
-    let designed = super::probe(repo.path(), "index", "index", &designed, &doc, super::Onclicks::All).expect("the unforced probe").modals;
+    let designed = super::probe(repo.path(), "index", "index", &designed, &doc, super::Onclicks::All, &[]).expect("the unforced probe").modals;
     assert!(designed.is_empty(), "unforced, the opener appends no .scrim: {designed:?}");
 }

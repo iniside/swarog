@@ -59,11 +59,14 @@ const SCRIPTS: &[&str] = &[
 // assignment outside every `REG` call is an error. Timer callbacks queue, each with the outermost
 // `PAGES` call running when it was scheduled (an interval runs once), and run after the body,
 // for at most `MAX_TIMER_ROUNDS` rounds. While it runs, `PAGES.tab` is an accessor recording each
-// value assigned to it. A probe of a mockup whose `UI.openMenu` is not the recording wrapper (none,
-// or replaced after `UI` was set) fails. Each body is written as `{scrims, menus, tabs, loose}`:
+// value assigned to it, and the global `PAGES` a proxy recording the name of every other key
+// assigned through it. A probe of a mockup whose `UI.openMenu` is not the recording wrapper (none,
+// or replaced after `UI` was set) fails. Each body is written as
+// `{scrims, menus, tabs, keys, loose}`:
 // one `scrims` entry per `.scrim` it appended to the body, the name of the `PAGES` function that
 // appended it or null when it was appended outside every such call; each `UI.openMenu` call as
-// `[id, arg]` (arg null when it has none); each `PAGES.tab` value; `loose` the number of `.menu`
+// `[id, arg]` (arg null when it has none); each `PAGES.tab` value; `keys` each other `PAGES` key
+// assigned; `loose` the number of `.menu`
 // elements it appended outside every `UI.openMenu` call, which no call recorded; or as `{error}`
 // when it threw.
 const HARNESS: &str = r#""use strict";
@@ -218,6 +221,13 @@ if (input.registry) {
       get: () => tab,
       set: v => { tab = v; tabs.push(String(v)); },
     });
+    const keys = [];
+    m.ctx.PAGES = new Proxy(pages, {
+      set: (target, name, v, receiver) => {
+        if (name !== "tab") keys.push(String(name));
+        return Reflect.set(target, name, v, receiver);
+      },
+    });
     const ui = m.ctx.UI;
     if (!ui || typeof ui.openMenu !== "function" || !ui.openMenu[RECORDS]) {
       process.stderr.write("the mockup's UI.openMenu is not the harness's recording wrapper: it is missing or was replaced after UI was set\n");
@@ -242,7 +252,7 @@ if (input.registry) {
     }
     const scrims = m.appended.filter(a => hasClass(a.el, "scrim")).map(a => a.opener);
     const loose = m.appended.filter(a => hasClass(a.el, "menu") && !a.menu).length;
-    results.push(error === null ? { scrims, menus: m.menus, tabs, loose } : { error });
+    results.push(error === null ? { scrims, menus: m.menus, tabs, keys, loose } : { error });
   }
   process.stdout.write(JSON.stringify(results));
 } else {
@@ -331,6 +341,9 @@ pub struct Probe {
     /// Every `.tab` element whose body assigned `PAGES.tab`, as the first value it assigned, in
     /// order, and the first of them drawn `.on`.
     pub tabs: DrawnTabs,
+    /// Each key of the `non_tab_keys` the probe was given that a `.tab` body assigned, once each,
+    /// in order.
+    pub non_tab_keys: Vec<String>,
 }
 
 impl Probe {
@@ -363,14 +376,16 @@ impl Probe {
 /// on its own fresh `P.<key>` mounted as `page` renders it (its search, forced ok when it
 /// forces; for a menu its host page's), and returns what they did; `host` names the render in
 /// errors. A body that throws fails with its host and its text, and so does one that appends a
-/// `.menu` outside every `UI.openMenu` call, which no call recorded; one that re-renders the page
-/// is no error.
-pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scope: Onclicks) -> Result<Probe> {
+/// `.menu` outside every `UI.openMenu` call, which no call recorded, and so does a `.tab` whose
+/// body assigns no `PAGES.tab` and none of `non_tab_keys` (the production list is
+/// [`crate::pages::NON_TAB_KEYS`]), a guarded assignment that does not run among them; one that
+/// re-renders the page is no error.
+pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scope: Onclicks, non_tab_keys: &[&str]) -> Result<Probe> {
     let bodies = match scope {
         Onclicks::All => onclicks(doc),
         Onclicks::Tabs => tab_onclicks(doc),
     };
-    let mut probe = Probe { key: key.to_string(), modals: Vec::new(), menus: Vec::new(), tabs: DrawnTabs::default() };
+    let mut probe = Probe { key: key.to_string(), modals: Vec::new(), menus: Vec::new(), tabs: DrawnTabs::default(), non_tab_keys: Vec::new() };
     if bodies.is_empty() {
         return Ok(probe);
     }
@@ -383,6 +398,8 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
     let mut failed = Vec::new();
     // Each body that assigned `PAGES.tab`, with the first value it assigned.
     let mut tab_of: Vec<(&str, String)> = Vec::new();
+    // Each body that did not throw, with the other `PAGES` keys it assigned.
+    let mut keys_of: Vec<(&str, Vec<String>)> = Vec::new();
     for (body, result) in bodies.iter().zip(&results) {
         if let Some(error) = result.get("error") {
             failed.push(format!("onclick {body:?} drawn on {host} threw in the harness: {}", error.as_str().unwrap_or_default()));
@@ -414,6 +431,12 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
             let tab = tab.as_str().with_context(|| format!("a PAGES.tab value onclick {body:?} drawn on {host} assigned was recorded as no string"))?;
             tab_of.push((body.as_str(), tab.to_string()));
         }
+        let mut keys = Vec::new();
+        for k in list("keys")? {
+            let k = k.as_str().with_context(|| format!("a PAGES key onclick {body:?} drawn on {host} assigned was recorded as no string"))?;
+            keys.push(k.to_string());
+        }
+        keys_of.push((body.as_str(), keys));
         let loose = result
             .get("loose")
             .and_then(serde_json::Value::as_u64)
@@ -422,11 +445,26 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
             failed.push(format!("onclick {body:?} drawn on {host} appended a .menu outside every UI.openMenu call, so no menu id was recorded"));
         }
     }
+    let mut buttons = Vec::new();
+    find_all(doc, &|e| e.has_class("tab") && e.attr("onclick").is_some(), &mut buttons);
+    for b in &buttons {
+        let body = b.attr("onclick").unwrap_or_default();
+        // A body that threw has failed already.
+        let Some((_, keys)) = keys_of.iter().find(|(set, _)| *set == body) else { continue };
+        let listed: Vec<&String> = keys.iter().filter(|k| non_tab_keys.contains(&k.as_str())).collect();
+        for k in &listed {
+            if !probe.non_tab_keys.contains(*k) {
+                probe.non_tab_keys.push((*k).clone());
+            }
+        }
+        let error = format!("onclick {body:?} drawn on {host} is a .tab that assigns no PAGES.tab and no NON_TAB_KEYS key");
+        if listed.is_empty() && !tab_of.iter().any(|(set, _)| *set == body) && !failed.contains(&error) {
+            failed.push(error);
+        }
+    }
     if !failed.is_empty() {
         bail!("mockup onclick failed:\n  {}", failed.join("\n  "));
     }
-    let mut buttons = Vec::new();
-    find_all(doc, &|e| e.has_class("tab") && e.attr("onclick").is_some(), &mut buttons);
     for b in buttons {
         let body = b.attr("onclick").unwrap_or_default();
         let Some((_, id)) = tab_of.iter().find(|(set, _)| *set == body) else { continue };
