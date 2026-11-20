@@ -1,10 +1,15 @@
 # Admin
 
-Last updated: 2026-11-19
+Last updated: 2026-11-20
 
 ## In progress
 
 _None._
+
+## Owner checks
+
+- **The popover swap in a browser:** open a row menu on `/admin/players` in a live fleet and
+  check that `admin.js` replaces the popover body; no test runs it in a browser.
 
 ## Open
 
@@ -43,6 +48,27 @@ _None._
   ADMIN-06. characters, friends, notifications and wallet use priority 0 in their
   src/admin.rs; inventory uses 10. Source:
   docs/plans/2026-09-05-1921-friends-module-plan.md:601 (2026-09-05).
+
+### Known limits (admin-control-plane-redesign step 13d3b4)
+
+- [ ] **The mockup harness runs only onclick handlers**
+  `tools/admindiff/src/mock.rs` runs each `onclick` body of a rendered page, tab or menu.
+  It does not run `onchange`, `oninput` or `onsubmit` handlers, `meta.after` hooks, or
+  the onclicks inside a modal or popover it opened. A modal reachable only from one of those
+  is not in the inventory.
+- [ ] **Modal and menu renders do not drain timers**
+  Only the page probe drains queued timers (`MAX_TIMER_ROUNDS`). A modal or menu render
+  that defers its drawing to a timer fails loudly instead of being drawn.
+- [ ] **`HEAD_ACTIONS` is a hand list in the crawl tests**
+  `tools/admindiff/src/crawl_tests.rs:170` names the page head actions of the fake server
+  (`mail/test-send`) by hand instead of deriving them from the page map.
+- [ ] **`validate_lists` is linked from docs but `pub(crate)`**
+  `tools/admindiff/src/pages.rs:512`; the rustdoc link at `pages.rs:178` resolves only
+  inside the crate.
+- [ ] **Force candidates not yet forced**
+  The index wallet KPI, the player page's Personal data (the mockup draws `undefined`) and
+  the hard-coded banners have states admindiff never forces, so their other shapes are not
+  compared.
 
 ### Known limits (admin-control-plane-redesign step 13d2c)
 

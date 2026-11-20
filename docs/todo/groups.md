@@ -1,12 +1,16 @@
 # Groups
 
-Last updated: 2026-10-23
+Last updated: 2026-11-20
 
 ## In progress
 
 _None._
 
 ## Open
+
+- [ ] **Flaky purge fire bound test**
+  `groups::purge_tests::one_sweep_fire_stamps_at_most_64_players` failed intermittently in
+  workspace runs during the admin redesign (2026-11) and passed on rerun; not diagnosed.
 
 - [ ] **Push nudge or notification for group invites and membership changes**
   GROUPS-01. Neither `modules/groups` nor `modules/notifications/src` handles

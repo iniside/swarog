@@ -36,15 +36,10 @@ step.
 
 Execution order once the owner says go: 28 → 13c.1a → 13c.1r → 13c.1b → 13c.1g → 13c.1h →
 13c.2a1 → 13c.2a2a → 13c.2a2b → 13c.2a3 → 13c.2b1 → 13c.2b2 → 13c.3a → 13c.3b → 13c.4 →
-13d1 … 13d6 → 14 … 24 (per port: Na0 when needed, Na1, Na2, Na3, Nt, Nb; port 24 as
+13d1 … 13d7c → 14 … 24 (per port: Na0 when needed, Na1, Na2, Na3, Nt, Nb; port 24 as
 24.a1 … 24.a3, 24.t, 24.a4, 24.b) → 24a → 24b0 … 24b4 → 25a … 25h4 → 26a … 26d → 27.
-Open for the owner: X7, the order against
-`docs/plans/2026-11-17-1900-purge-race-locks-plan.md` (Steps 6–7 of it remain); Steps 28,
-13c and 13d touch none of the purging modules, so only Step 14 waits on that answer. Its
-Step 7 also edits `tools/splitproof/src/main.rs`, `docs/reference/event-plane-ops.md` and
-`.claude/rules/domain-modules.md`, which Steps 13c.3b, 15t, 25h1–25h4 (`main.rs`), 13c.4
-and 26b (`event-plane-ops.md`) and 26a (`domain-modules.md`) edit: those never run at the
-same time as it.
+X7, the order against `docs/plans/2026-11-17-1900-purge-race-locks-plan.md`, needs no
+answer: that plan finished first (Step 7, 825d5494), so the ports start after it (2026-11-20).
 
 ## Context
 
@@ -1975,9 +1970,8 @@ in the port bullets.
   never in parallel: they share `tools/admindiff/src/pages.rs`,
   `tools/conformance/src/policy.rs`, `docs/todo/admin-second-pass.md` and
   `core/admin/src/golden_tests/cases.rs`, and only one test rollout runs at a time.
-- **Owner decision before dispatch (X7, Steps 14–20):** the order of the ports against
-  `docs/plans/2026-11-17-1900-purge-race-locks-plan.md` (Steps 6–7 of it remain). The
-  audit gives no recommendation.
+- **X7 (Steps 14–20), settled 2026-11-20:** the purge-race-locks plan finished (Step 7,
+  825d5494) before the ports start, so no order is needed.
 
 The ports:
 
@@ -2751,6 +2745,30 @@ gate.
   §1 (with G6's sentence), §6 and §7; prose, no review. After 13d4; file-disjoint from 13d5.
   It settles the header-shape sentence of §1 (today: hand-check) against G6 (the diff reports
   it, from Step 14a3 on).
+- **Step 13d7 — the harness and the exclusion lists check what they claim** (owner,
+  2026-11-20; after 13d5 and 13d6, before Step 14). Found in the 13d3b4 reviews. Three parts,
+  each with its own commit and review (core-reviewer plus proof-auditor).
+  - **13d7a — one source for drawn menus and tabs.** `[opus]` core-implementer,
+    `tools/admindiff/src/{mock.rs,lib.rs}` and their tests. The harness records each
+    `UI.openMenu` call (menu id and argument) and each `PAGES.tab` assignment that a
+    rendered page's onclicks make when it runs them. `menu_arg`, `drawn_menus`,
+    `drawn_tabs` and every other read of onclick text are deleted, so the mockup's call is
+    the only source: any spelling (spaces, double quotes) is seen. The selected tab is still the first tab drawn `.on`. A test feeds
+    the spellings the old parsers missed, and fails if a text parser comes back.
+  - **13d7b — the palette declared once and checked on the portal.** `[opus]`
+    core-implementer, `tools/admindiff/src/{pages.rs,crawl.rs,lib.rs}` and their tests. The
+    five per-host palette entries become one shell-level declaration: the mockup topbar's
+    `REG.openSearch()` opener is the shell palette on every compared host that draws it. The
+    crawl asserts that every fetched portal page holds exactly one hidden
+    `.scrim[data-palette]`, and fails naming the page otherwise.
+  - **13d7c — the portal side of `EXCLUDED_MOCK_MODALS` checked against the crawl.**
+    `[opus]` core-implementer, `tools/admindiff/src/{pages.rs,crawl.rs}` and their tests.
+    Every `PortalModal` claim is checked against what the crawl fetched: `Action(a)` holds
+    only when the portal host draws an opener of `a`. An action the portal draws disabled,
+    with no modal (accounts' suspend and delete-account today), is a variant of its own,
+    checked against the drawn disabled control if the crawl can see it. A claim the crawl
+    cannot check is named in the variant's doc comment and as a Known limit, never left as
+    prose. The `NO_SUSPEND`/`NO_DELETE` reasons and their entries agree.
 
 ### Step 24a — Typed `asyncevents::admin` errors
 
