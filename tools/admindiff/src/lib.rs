@@ -92,7 +92,9 @@ USAGE:
             an EXCLUDED_MOCK_MODALS entry of another action, or a host with no compared render)
             fail. A .tab a probed render draws whose body assigns no PAGES.tab fails unless it
             assigns a key in pages::NON_TAB_KEYS, and a NON_TAB_KEYS key no .tab of a compared
-            render assigns is stale. A mock-only or portal-only repeat
+            render assigns, or with no reason, is stale. A .tab with no onclick fails, and so
+            does a render (the mount or a re-render) that assigns PAGES.tab or a NON_TAB_KEYS
+            key. A mock-only or portal-only repeat
             item (a table row, list item, ...) ends in (\"<hint>\"): its first badge's text and
             its first cell's, as \"badge · cell\". The hint is not part of the difference: an accept entry
             may keep or drop it and matches either way
@@ -207,17 +209,22 @@ fn render_mock<'m>(repo: &Path, lists: &pages::Lists<'m>, key: &str, entry: &'m 
         return Ok((rendered, doc, None));
     }
     let Some(menu) = entry.menu else {
-        let (rendered, doc) = render_page(repo, lists.non_tab_keys, key, entry)?;
+        let (rendered, doc) = render_page(repo, &non_tab_keys(lists), key, entry)?;
         return Ok((rendered, doc, Some(entry)));
     };
     let host = entry.host();
     let host = lists.page_map.iter().find(|q| q.hosts(&host)).ok_or_else(|| anyhow!("PAGE_MAP {} has no host entry", entry.id()))?;
-    let (_, doc) = render_page(repo, lists.non_tab_keys, key, host)?;
-    let probe = mock::probe(repo, &host.id(), key, host, &doc, mock::Onclicks::All, lists.non_tab_keys)?;
+    let (_, doc) = render_page(repo, &non_tab_keys(lists), key, host)?;
+    let probe = mock::probe(repo, &host.id(), key, host, &doc, mock::Onclicks::All, &non_tab_keys(lists))?;
     let arg = probe.menu_arg(menu.mock)?;
     let rendered = mock::render_menu(repo, menu.mock, arg)?;
     let doc = html::parse(&rendered).with_context(|| format!("parse the {} menu render", menu.mock))?;
     Ok((rendered, doc, Some(host)))
+}
+
+/// The keys of `lists.non_tab_keys`.
+fn non_tab_keys<'a>(lists: &pages::Lists<'a>) -> Vec<&'a str> {
+    lists.non_tab_keys.iter().map(|(k, _)| *k).collect()
 }
 
 /// The root `entry` is compared from in a mockup render (`mock`) or a crawl output: the
@@ -276,7 +283,7 @@ pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
 /// checked against the page map's modal entries, `excluded_mock_modals` and the mockup facts of
 /// `excluded_modals` ([`pages::validate_mock_modals`]). A `.tab` a probed render draws whose body
 /// assigns no `PAGES.tab` fails unless it assigns a `non_tab_keys` key, and a `non_tab_keys` key
-/// that no `.tab` a compared target draws assigns is stale. `mockup` is what [`validated_mockup`]
+/// that no `.tab` a compared target draws assigns is stale, as is one with no reason. `mockup` is what [`validated_mockup`]
 /// returned for `lists`. The mockup is the side checked: most portal pages are not ported yet.
 fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections::BTreeMap<String, String>) -> Result<()> {
     let page_map = lists.page_map;
@@ -284,7 +291,7 @@ fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections
     let mut drawn = Vec::new();
     let mut menus = Vec::new();
     let mut modals = Vec::new();
-    let mut non_tab_keys: Vec<String> = Vec::new();
+    let mut assigned: Vec<String> = Vec::new();
     for p in page_map {
         let key = mockup.get(p.page).ok_or_else(|| anyhow!("page {} has no mockup file", p.page))?;
         let (_, doc, page) = render_mock(repo, lists, key, p)?;
@@ -293,8 +300,8 @@ fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections
         // targets are every entry probed. A compared target is no modal, so it has a page; a
         // menu's onclicks run on its host page, rendered as its host entry is.
         if let (true, Some(page)) = (p.is_compared_target(), page) {
-            let probe = mock::probe(repo, &p.id(), key, page, &doc, mock::Onclicks::All, lists.non_tab_keys)?;
-            non_tab_keys.extend(probe.non_tab_keys.iter().cloned());
+            let probe = mock::probe(repo, &p.id(), key, page, &doc, mock::Onclicks::All, &non_tab_keys(lists))?;
+            assigned.extend(probe.non_tab_keys.iter().cloned());
             if p.is_compared_host() {
                 menus.push((p.id(), probe.menu_ids()));
             }
@@ -308,12 +315,15 @@ fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections
         roots.push(prepare(p, &doc, true)?);
     }
     skeleton::validate_repeats(&roots)?;
-    let stale: Vec<String> = lists
-        .non_tab_keys
-        .iter()
-        .filter(|k| !non_tab_keys.iter().any(|a| a == *k))
-        .map(|k| format!("NON_TAB_KEYS lists PAGES.{k}, which no .tab a compared render draws assigns"))
-        .collect();
+    let mut stale = Vec::new();
+    for (k, why) in lists.non_tab_keys {
+        if why.trim().is_empty() {
+            stale.push(format!("NON_TAB_KEYS {k} has no reason"));
+        }
+        if !assigned.iter().any(|a| a == k) {
+            stale.push(format!("NON_TAB_KEYS lists PAGES.{k}, which no .tab a compared render draws assigns"));
+        }
+    }
     if !stale.is_empty() {
         bail!("tab drift:\n  {}", stale.join("\n  "));
     }

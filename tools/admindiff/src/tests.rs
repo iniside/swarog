@@ -265,8 +265,20 @@ fn the_real_mockup_draws_only_declared_tabs() {
 #[test]
 fn a_non_tab_key_no_compared_tab_assigns_is_stale() {
     let repo = crate::repo_root();
-    let e = format!("{:#}", renders(&repo, &Lists { non_tab_keys: &["repoTab"], ..LISTS }).expect_err("repoTab is stale"));
+    let e = format!("{:#}", renders(&repo, &Lists { non_tab_keys: &[("repoTab", "lore-repo's file tabs")], ..LISTS }).expect_err("repoTab is stale"));
     assert_eq!(e, "tab drift:\n  NON_TAB_KEYS lists PAGES.repoTab, which no .tab a compared render draws assigns");
+}
+
+/// The clean twin of [`a_non_tab_key_no_compared_tab_assigns_is_stale`] on the stand-in: a listed
+/// key a `.tab` of every compared render assigns is not stale, and the run is green; the same key
+/// listed with no reason fails.
+#[test]
+fn a_non_tab_key_a_compared_tab_assigns_is_not_stale() {
+    let repo_tab = r#"<button class="tab" onclick="PAGES.repoTab='files';REG.render()">files</button>"#;
+    let repo = FakeRepo::new("renders-non-tab-key", &mock_html(&format!("{}{repo_tab}", body(true))));
+    renders(repo.path(), &Lists { non_tab_keys: &[("repoTab", "another page's tab state")], ..LISTS }).expect("repoTab is assigned");
+    let e = format!("{:#}", renders(repo.path(), &Lists { non_tab_keys: &[("repoTab", " ")], ..LISTS }).expect_err("no reason"));
+    assert_eq!(e, "tab drift:\n  NON_TAB_KEYS repoTab has no reason");
 }
 
 /// The real mockup, rendered through node: every menu it draws on a compared page is a menu

@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
-use crate::html::{find_all, Node};
+use crate::html::{collapse, find_all, Node};
 use crate::pages::{DrawnTabs, MockOpener, Page};
 
 /// The scripts in the order the mockup's html files load them; `catalog.js` only builds
@@ -58,17 +58,20 @@ const SCRIPTS: &[&str] = &[
 // normally from the sentinel, so a body that re-renders the page goes on running; a body
 // assignment outside every `REG` call is an error. Timer callbacks queue, each with the outermost
 // `PAGES` call running when it was scheduled (an interval runs once), and run after the body,
-// for at most `MAX_TIMER_ROUNDS` rounds. While it runs, `PAGES.tab` is an accessor recording each
-// value assigned to it, and the global `PAGES` a proxy recording the name of every other key
-// assigned through it. A probe of a mockup whose `UI.openMenu` is not the recording wrapper (none,
+// for at most `MAX_TIMER_ROUNDS` rounds. From before the page mounts, `PAGES.tab` and each key of
+// `input.listed` are accessors on the `PAGES` object, so a write through any alias of it is seen:
+// one made while the body or a timer it scheduled runs outside every `REG` call records the value
+// (`tab`) or the key (a listed key) as the body's own, and one made by the mount, a `REG` call or
+// a timer scheduled inside one records the key as assigned by a render. A probe of a mockup whose `UI.openMenu` is not the recording wrapper (none,
 // or replaced after `UI` was set) fails. Each body is written as
-// `{scrims, menus, tabs, keys, loose}`:
+// `{scrims, menus, tabs, keys, loose, rendered}`:
 // one `scrims` entry per `.scrim` it appended to the body, the name of the `PAGES` function that
 // appended it or null when it was appended outside every such call; each `UI.openMenu` call as
-// `[id, arg]` (arg null when it has none); each `PAGES.tab` value; `keys` each other `PAGES` key
+// `[id, arg]` (arg null when it has none); each `PAGES.tab` value; `keys` each listed key
 // assigned; `loose` the number of `.menu`
-// elements it appended outside every `UI.openMenu` call, which no call recorded; or as `{error}`
-// when it threw.
+// elements it appended outside every `UI.openMenu` call, which no call recorded; `rendered` each
+// of `tab` and the listed keys a render assigned, once each; or as `{error, rendered}` when it
+// threw.
 const HARNESS: &str = r#""use strict";
 const fs = require("fs"), vm = require("vm");
 const input = JSON.parse(process.env.ADMINDIFF_INPUT);
@@ -105,7 +108,7 @@ const click = el => ({ stopPropagation: inert, preventDefault: inert, currentTar
 // call, `menu` whether a `UI.openMenu` call was running), `defined` each menu id `UI.defineMenu` was
 // called with, `menus` each `UI.openMenu` call as `[id, arg]`, `ctx` the context the scripts ran in.
 function boot() {
-  const m = { html: null, appended: [], defined: [], menus: [], inMenu: 0, opener: null, ctx: null, timers: [], cleared: new Set(), probing: false, rendering: 0 };
+  const m = { html: null, appended: [], defined: [], menus: [], inMenu: 0, opener: null, ctx: null, timers: [], cleared: new Set(), probing: false, rendering: 0, fromRender: false };
   const body = element();
   Object.defineProperty(body, "innerHTML", {
     get: () => m.html ?? "",
@@ -118,7 +121,7 @@ function boot() {
   let timerId = 0;
   const schedule = (fn, ...args) => {
     timerId += 1;
-    if (typeof fn === "function") m.timers.push({ id: timerId, fn, args, opener: m.opener });
+    if (typeof fn === "function") m.timers.push({ id: timerId, fn, args, opener: m.opener, render: m.rendering > 0 || m.fromRender });
     return timerId;
   };
   const clear = id => { m.cleared.add(id); };
@@ -192,6 +195,25 @@ if (input.registry) {
   const results = [];
   for (const onclick of input.probe) {
     const m = boot();
+    const pages = m.ctx.PAGES;
+    const tabs = [], keys = [], rendered = [];
+    for (const k of ["tab", ...input.listed]) {
+      let value = pages[k];
+      Object.defineProperty(pages, k, {
+        configurable: true, enumerable: true,
+        get: () => value,
+        set: v => {
+          value = v;
+          if (!m.probing || m.rendering > 0 || m.fromRender) {
+            if (!rendered.includes(k)) rendered.push(k);
+          } else if (k === "tab") {
+            tabs.push(String(v));
+          } else {
+            keys.push(k);
+          }
+        },
+      });
+    }
     mount(m);
     m.appended.length = 0;
     m.timers.length = 0;
@@ -204,7 +226,6 @@ if (input.registry) {
         try { return fn.apply(this, args); } catch (e) { if (e !== CAPTURED) throw e; } finally { m.rendering -= 1; }
       };
     }
-    const pages = m.ctx.PAGES;
     for (const name of Object.keys(pages)) {
       const fn = pages[name];
       if (typeof fn !== "function") continue;
@@ -214,20 +235,6 @@ if (input.registry) {
         try { return fn.apply(this, args); } finally { m.opener = null; }
       };
     }
-    const tabs = [];
-    let tab = pages.tab;
-    Object.defineProperty(pages, "tab", {
-      configurable: true, enumerable: true,
-      get: () => tab,
-      set: v => { tab = v; tabs.push(String(v)); },
-    });
-    const keys = [];
-    m.ctx.PAGES = new Proxy(pages, {
-      set: (target, name, v, receiver) => {
-        if (name !== "tab") keys.push(String(name));
-        return Reflect.set(target, name, v, receiver);
-      },
-    });
     const ui = m.ctx.UI;
     if (!ui || typeof ui.openMenu !== "function" || !ui.openMenu[RECORDS]) {
       process.stderr.write("the mockup's UI.openMenu is not the harness's recording wrapper: it is missing or was replaced after UI was set\n");
@@ -244,7 +251,8 @@ if (input.registry) {
         for (const timer of m.timers.splice(0)) {
           if (m.cleared.has(timer.id)) continue;
           m.opener = timer.opener;
-          try { timer.fn(...timer.args); } finally { m.opener = null; }
+          m.fromRender = timer.render;
+          try { timer.fn(...timer.args); } finally { m.opener = null; m.fromRender = false; }
         }
       }
     } catch (e) {
@@ -252,7 +260,7 @@ if (input.registry) {
     }
     const scrims = m.appended.filter(a => hasClass(a.el, "scrim")).map(a => a.opener);
     const loose = m.appended.filter(a => hasClass(a.el, "menu") && !a.menu).length;
-    results.push(error === null ? { scrims, menus: m.menus, tabs, keys, loose } : { error });
+    results.push(error === null ? { scrims, menus: m.menus, tabs, keys, loose, rendered } : { error, rendered });
   }
   process.stdout.write(JSON.stringify(results));
 } else {
@@ -341,8 +349,8 @@ pub struct Probe {
     /// Every `.tab` element whose body assigned `PAGES.tab`, as the first value it assigned, in
     /// order, and the first of them drawn `.on`.
     pub tabs: DrawnTabs,
-    /// Each key of the `non_tab_keys` the probe was given that a `.tab` body assigned, once each,
-    /// in order.
+    /// Each key of the `non_tab_keys` the probe was given that a `.tab` body assigned itself,
+    /// outside every render, once each, in order.
     pub non_tab_keys: Vec<String>,
 }
 
@@ -377,30 +385,53 @@ impl Probe {
 /// forces; for a menu its host page's), and returns what they did; `host` names the render in
 /// errors. A body that throws fails with its host and its text, and so does one that appends a
 /// `.menu` outside every `UI.openMenu` call, which no call recorded, and so does a `.tab` whose
-/// body assigns no `PAGES.tab` and none of `non_tab_keys` (the production list is
+/// body assigns no `PAGES.tab` and none of `non_tab_keys` (the production list's keys are
 /// [`crate::pages::NON_TAB_KEYS`]), a guarded assignment that does not run among them; one that
-/// re-renders the page is no error.
+/// re-renders the page is no error. A `.tab` with no `onclick` fails by host and element, as
+/// does a render (the mount, a re-render, a timer one schedules) that assigns `PAGES.tab` or a
+/// `non_tab_keys` key: only a body's own assignments say which tab it is.
 pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scope: Onclicks, non_tab_keys: &[&str]) -> Result<Probe> {
     let bodies = match scope {
         Onclicks::All => onclicks(doc),
         Onclicks::Tabs => tab_onclicks(doc),
     };
     let mut probe = Probe { key: key.to_string(), modals: Vec::new(), menus: Vec::new(), tabs: DrawnTabs::default(), non_tab_keys: Vec::new() };
+    let mut failed = Vec::new();
+    let mut bare = Vec::new();
+    find_all(doc, &|e| e.has_class("tab") && e.attr("onclick").is_none(), &mut bare);
+    for e in bare {
+        let attrs: String = e.attrs.iter().map(|(k, v)| format!(" {k}={v:?}")).collect();
+        failed.push(format!("<{}{attrs}> ({:?}) drawn on {host} is a .tab with no onclick", e.tag, collapse(&e.text())));
+    }
     if bodies.is_empty() {
+        if !failed.is_empty() {
+            bail!("mockup onclick failed:\n  {}", failed.join("\n  "));
+        }
         return Ok(probe);
     }
-    let input = serde_json::json!({ "key": key, "search": page.mock_search(), "force": page.force, "probe": bodies });
+    let input = serde_json::json!({ "key": key, "search": page.mock_search(), "force": page.force, "probe": bodies, "listed": non_tab_keys });
     let out = run_harness(repo, input, &format!("the onclicks {host} draws"))?;
     let results: Vec<serde_json::Value> = serde_json::from_str(&out).context("the harness's onclick probe is not a JSON list")?;
     if results.len() != bodies.len() {
         bail!("the harness ran {} of the {} onclicks {host} draws", results.len(), bodies.len());
     }
-    let mut failed = Vec::new();
     // Each body that assigned `PAGES.tab`, with the first value it assigned.
     let mut tab_of: Vec<(&str, String)> = Vec::new();
     // Each body that did not throw, with the other `PAGES` keys it assigned.
     let mut keys_of: Vec<(&str, Vec<String>)> = Vec::new();
+    // Each of `tab` and the listed keys a render assigned.
+    let mut rendered: Vec<String> = Vec::new();
     for (body, result) in bodies.iter().zip(&results) {
+        let by_render = result
+            .get("rendered")
+            .and_then(serde_json::Value::as_array)
+            .with_context(|| format!("the probe of onclick {body:?} drawn on {host} has no rendered list"))?;
+        for k in by_render {
+            let k = k.as_str().with_context(|| format!("a PAGES key a render on {host} assigned was recorded as no string"))?;
+            if !rendered.iter().any(|r| r == k) {
+                rendered.push(k.to_string());
+            }
+        }
         if let Some(error) = result.get("error") {
             failed.push(format!("onclick {body:?} drawn on {host} threw in the harness: {}", error.as_str().unwrap_or_default()));
             continue;
@@ -444,6 +475,9 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
         if loose > 0 {
             failed.push(format!("onclick {body:?} drawn on {host} appended a .menu outside every UI.openMenu call, so no menu id was recorded"));
         }
+    }
+    for k in &rendered {
+        failed.push(format!("{host}: a render assigns PAGES.{k}; tab ownership is unattributable"));
     }
     let mut buttons = Vec::new();
     find_all(doc, &|e| e.has_class("tab") && e.attr("onclick").is_some(), &mut buttons);

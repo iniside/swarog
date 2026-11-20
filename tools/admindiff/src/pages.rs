@@ -355,7 +355,8 @@ pub const EXCLUDED_MOCK_MENUS: &[(&str, &str)] = &[
 /// key is added only when a compared page draws a `.tab` that is not a tab. Lore-repo's
 /// `PAGES.repoTab` (`UILayout/redesign/assets/pages-lore.js`, `P.loreRepo`) joins when the lore
 /// pages are compared; lore-repo is excluded with `NO_LORE`, so no compared page draws one.
-pub const NON_TAB_KEYS: &[&str] = &[];
+/// Each key comes with the reason its `.tab` is not a tab of the page.
+pub const NON_TAB_KEYS: &[(&str, &str)] = &[];
 
 /// What opened a `.scrim` an `onclick` body of a mockup render appended in the harness: the
 /// `PAGES` function whose call by the body appended it, or the body itself, verbatim, when it was
@@ -464,7 +465,7 @@ pub struct Lists<'a> {
     pub excluded_modals: &'a [(&'a str, &'a str, ModalWhy<'a>)],
     pub excluded_mock_menus: &'a [(&'a str, &'a str)],
     pub excluded_mock_modals: &'a [MockModalExclusion<'a>],
-    pub non_tab_keys: &'a [&'a str],
+    pub non_tab_keys: &'a [(&'a str, &'a str)],
 }
 
 /// The production lists the CLI runs on.

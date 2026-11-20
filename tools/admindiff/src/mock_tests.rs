@@ -378,9 +378,10 @@ fn only_the_calls_that_run_are_recorded() {
 }
 
 /// Each tab is the first value its body assigns to `PAGES.tab`, and the selected tab is the first
-/// `.tab.on` whose body assigns one: a `.tab.on` of another page's state (`PAGES.repoTab`), its
-/// key listed, is no tab and selects none, and a body that assigns twice is the tab of its first
-/// assignment. With the key not listed, the same `.tab` fails by host and onclick.
+/// `.tab.on` whose body assigns one, not a later one: a `.tab.on` of another page's state
+/// (`PAGES.repoTab`), its key listed, is no tab and selects none, and a body that assigns twice
+/// is the tab of its first assignment. With the key not listed, the same `.tab` fails by host
+/// and onclick.
 #[test]
 fn the_selected_tab_is_the_first_on_tab_that_assigns_one() {
     let repo = FakeRepo::new("mock-probe-selected", r#"<div class="app"></div>"#);
@@ -388,10 +389,11 @@ fn the_selected_tab_is_the_first_on_tab_that_assigns_one() {
         r#"<button class="tab on" onclick="PAGES.repoTab='f'"></button>"#,
         r#"<button class="tab on" onclick="PAGES.tab='a'"></button>"#,
         r#"<button class="tab" onclick="PAGES.tab='b'; PAGES.tab='c'"></button>"#,
+        r#"<button class="tab on" onclick="PAGES.tab='d'"></button>"#,
     );
     let probe = probe_listed(repo.path(), html, &["repoTab"]).expect("probes");
     assert_eq!(probe.tabs.selected.as_deref(), Some("a"));
-    assert_eq!(probe.tabs.tabs, ["a", "b"]);
+    assert_eq!(probe.tabs.tabs, ["a", "b", "d"]);
     assert_eq!(probe.non_tab_keys, ["repoTab"]);
     let e = format!("{:#}", probe_html(repo.path(), html).expect_err("repoTab not listed"));
     let want = r#"mockup onclick failed:
@@ -422,6 +424,55 @@ fn a_tab_that_assigns_no_tab_fails() {
     assert_eq!(e, want);
     let tabs = super::probe(repo.path(), "index", "index", index_page(), &crate::html::parse(html).expect("parses"), super::Onclicks::Tabs, &["repoTab"]);
     assert_eq!(format!("{:#}", tabs.expect_err("a tab probe checks too")), want);
+}
+
+/// A `.tab` with no `onclick` (a link, say) fails by host and element on every probed render, a
+/// tab probe among them, and on a render that draws no `onclick` at all.
+#[test]
+fn a_tab_with_no_onclick_fails() {
+    let repo = FakeRepo::new("mock-probe-bare-tab", r#"<div class="app"></div>"#);
+    let want = r##"mockup onclick failed:
+  <a class="tab" href="#items"> ("Items") drawn on index is a .tab with no onclick"##;
+    let with = concat!(r#"<button class="tab on" onclick="PAGES.tab='a'"></button>"#, r##"<a class="tab" href="#items">Items</a>"##);
+    assert_eq!(format!("{:#}", probe_html(repo.path(), with).expect_err("a bare tab")), want);
+    let doc = crate::html::parse(with).expect("parses");
+    let tabs = super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::Tabs, &[]);
+    assert_eq!(format!("{:#}", tabs.expect_err("a tab probe checks too")), want);
+    let alone = probe_html(repo.path(), r##"<a class="tab" href="#items">Items</a>"##);
+    assert_eq!(format!("{:#}", alone.expect_err("no onclick at all")), want);
+}
+
+/// Only a body's own assignments say which tab it is: one the mount makes, or a re-render the body
+/// calls, or a timer that re-render schedules, fails the probe by host, for `PAGES.tab` and for a
+/// listed key alike, assigned through an alias of `PAGES`; the twin with no assigning render is
+/// clean, a listed key a `PAGES` function assigns through an alias the scripts took while
+/// loading recorded as the body's. Without the check the `.tab` whose body only re-renders would pass as the render's tab.
+#[test]
+fn a_render_that_assigns_a_tab_key_fails() {
+    let html = r#"<button class="tab on" onclick="PAGES.tab='a'"></button><button class="tab" onclick="REG.render()"></button>"#;
+    let rerender = concat!(
+        "REG.render = function () { const P = window.PAGES; P.tab = P.tab || 'profile'; ",
+        "setTimeout(function () { P.repoTab = 'f'; }, 1); document.body.innerHTML = ''; };\n",
+    );
+    let repo = FakeRepo::with_openers("mock-probe-render-tab", r#"<div class="app"></div>"#, PAGE_MAP, &[], rerender);
+    let e = format!("{:#}", probe_listed(repo.path(), html, &["repoTab"]).expect_err("a re-render assigns"));
+    let want = concat!(
+        "mockup onclick failed:\n",
+        "  index: a render assigns PAGES.tab; tab ownership is unattributable\n",
+        "  index: a render assigns PAGES.repoTab; tab ownership is unattributable\n",
+        r#"  onclick "REG.render()" drawn on index is a .tab that assigns no PAGES.tab and no NON_TAB_KEYS key"#,
+    );
+    assert_eq!(e, want);
+    let mounted = "const r0 = PAGES.index.render; PAGES.index.render = function () { const P = window.PAGES; P.tab = 'x'; return r0.apply(this, arguments); };\n";
+    let repo = FakeRepo::with_openers("mock-probe-mount-tab", r#"<div class="app"></div>"#, PAGE_MAP, &[], mounted);
+    let e = format!("{:#}", probe_html(repo.path(), r#"<button class="tab on" onclick="PAGES.tab='a'"></button>"#).expect_err("the mount assigns"));
+    assert_eq!(e, "mockup onclick failed:\n  index: a render assigns PAGES.tab; tab ownership is unattributable");
+    let alias = "const P = window.PAGES; PAGES.viaAlias = function () { P.repoTab = 'f'; };\n";
+    let clean = FakeRepo::with_openers("mock-probe-render-clean", r#"<div class="app"></div>"#, PAGE_MAP, &[], alias);
+    let twin = r#"<button class="tab on" onclick="const P = window.PAGES; P.tab='a'; REG.render()"></button><button class="tab" onclick="PAGES.viaAlias();REG.render()"></button>"#;
+    let probe = probe_listed(clean.path(), twin, &["repoTab"]).expect("only the bodies assign");
+    assert_eq!(probe.tabs.tabs, ["a"]);
+    assert_eq!(probe.non_tab_keys, ["repoTab"]);
 }
 
 /// A menu a body opens through a re-render (`REG.render` opens it), a timer, or a guard the stubs
