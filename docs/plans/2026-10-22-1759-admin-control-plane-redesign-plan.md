@@ -2693,9 +2693,34 @@ gate.
     opener and arguments from the entry. Every modal action a compared host draws is mapped
     or excluded (`EXCLUDED_MODALS`, with a reason). Only `mail/cancel` and
     `core.events/poison.skip` have both a mockup opener and a portal modal today.
+  - **Owner decisions (2026-11-20, review of 3af4c861):**
+    - A stale `EXCLUDED_MODALS` entry always fails, with or without `--allow-empty`. A
+      modal opener is drawn in a page head, a panel tool or a queue row, so whether the page
+      lists rows says nothing about it; the menus' row rule does not carry over to modals.
+    - `mail.modal.cancel` leaves `PAGE_MAP`: the dev fleet seeds no pending mail, so its
+      opener is never drawn. Step 24b3 adds it back once demoseed seeds one.
+- **Step 13d3b — full modal inventory** (owner, 2026-11-20). `[opus]` core-implementer,
+  after 13d4 and the 3af4c861 review fix, before 13d5. Found in the 13d3 review: modals
+  opened from row menus, modals on tab pages and the mockup's own modals are not
+  inventoried. Split into parts (owner: smaller steps when large), each with its own commit
+  and review (core-reviewer plus proof-auditor). Files: `tools/admindiff/src/{pages.rs,
+  crawl.rs,mock.rs,lib.rs}` and their tests.
+  - **13d3b1 — modals in menus.** The crawl collects the `/admin/_action/` openers in each
+    fetched menu body; a modal entry can hang off a menu target; every modal action a
+    fetched menu draws is mapped or excluded with a reason, as on pages (today
+    `core.events/sub.pause`).
+  - **13d3b2 — modals on tab pages.** A modal entry can hang off a tab entry; every modal
+    action a crawled tab page draws is mapped or excluded, replacing the status-only fetch
+    for tab pages.
+  - **13d3b3 — the mockup-side inventory.** The harness lists every opener the mockup can
+    reach (each `PAGES.<fn>(…)` onclick in a rendered page, tab and menu, run in the
+    harness; one that appends a `.scrim` is a modal). Each is a modal entry, on a pending
+    or excluded page, or an `EXCLUDED_MOCK_MODALS` entry with a reason; a stale entry
+    fails. An `EXCLUDED_MODALS` reason that states a mockup fact (test-send has no opener)
+    is checked against this inventory.
 - **Step 13d4 — forced ok state** (T4). `[opus]` core-implementer, after 13d3. Files:
   `pages.rs`, `mock.rs`.
-- **Step 13d5 — admindiff tests.** `[opus]` test-author, after 13d4, on the fake-server crawl
+- **Step 13d5 — admindiff tests.** `[opus]` test-author, after 13d3b, on the fake-server crawl
   tests and the harness (`tools/admindiff/src/{crawl_tests.rs,mock_tests.rs,skeleton_tests.rs,
   pages_tests.rs}`): a tab target fetches `?tab=`, a modal and a menu target are written and
   diffed, an unreachable target fails the crawl, `option` collapse, and the force option
@@ -2753,7 +2778,8 @@ round.
 - **Step 24b2 — seed friends, groups, party, notifications.** `[opus]` core-implementer,
   after 24b1.
 - **Step 24b3 — seed storage, apikeys, config, mail.** `[opus]` core-implementer, after
-  24b2.
+  24b2. It seeds a pending mail and adds back the `mail.modal.cancel` `PAGE_MAP` entry
+  (owner, 2026-11-20; removed in the 13d3 review fix).
 - **Step 24b4 — resolve the accept entries.** `[inline]`, after 24b3: under
   `safe-verification`, a fleet `admindiff crawl` and `diff`, then delete the `data
   difference` entries in `tools/admindiff/accept/` the seed resolved.
