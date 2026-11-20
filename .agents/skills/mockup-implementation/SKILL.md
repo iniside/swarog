@@ -109,7 +109,7 @@ and `error`, plus `narrowed to zero` for a panel with search or filters:
   the golden case that covers it (`table_empty_search` for a `DataTable`); with none,
   it is a gap for part `a`. `crawl` never searches, so `admindiff` cannot see it.
 - `readonly`: `Manifest.writes: false` on a panel with a write affordance
-  (`core/admin/src/engine/panels.rs:84-91`).
+  (`is_readonly`, `core/admin/src/engine/panels.rs:85-91`).
 - `stale`: needs `ContributionDecl.cache_ttl_s`.
 
 Per module: `writes` (true/false) and every tool, meaning each `ActionDecl` with
@@ -161,7 +161,7 @@ that maps to nothing is a `contract gap` row.
 | `span.dim` | `CellKind::Time` |
 | `span.tag` | `CellKind::Ref` |
 | `span.user-cell` (avatar + name) | `CellKind::User`; avatar colour and initials come from the value |
-| `span.badge <ok\|warn\|err\|info>` | `CellKind::Badge` + `Cell.tone`; with no tone the class comes from the value (`render.rs:160-168`) |
+| `span.badge <ok\|warn\|err\|info>` | `CellKind::Badge` + `Cell.tone`; with no tone the class comes from the value (`core/admin/src/render/cell.rs:79-84`) |
 | `style="color:var(--<tone>)"` on a value that is not a badge, ref or user | `Cell.tone` |
 | `span.lag-bar > i.w\|i.e` + `span.mono` | `Cell.bar` (0–100); `Tone::Warn` → `w`, `Tone::Err` → `e`, else no class |
 | `<a href>` around a value | `Cell.link` |
@@ -255,13 +255,13 @@ iteration.
 - `<target>` is the `PAGE_MAP` entry's id (`Page::id`): `<page>`, `<page>.<tab>`,
   `<page>[.<tab>].menu.<menu>`, `<page>[.<tab>][.menu.<menu>].modal.<modal>`. Each entry
   has its own file.
-- Order: `diff` needs a clean crawl (`tools/admindiff/src/lib.rs:170`) and part `b`
+- Order: `diff` needs a clean crawl (`tools/admindiff/src/lib.rs:322-323`) and part `b`
   never starts a fleet, so `b`'s first pass commits templates and goldens only. The
   orchestrator then runs crawl and diff (§7) and passes the `NEW` lines in `b`'s
   next prompt.
 - One entry per difference: `<difference> | <kind>: <reason>`. `<difference>` is
   the text after the `NEW` tag of a `diff` line, copied verbatim with the tag and its
-  padding dropped (`lib.rs:191` prints `  NEW    <difference>`).
+  padding dropped (`lib.rs:361` prints `  NEW    <difference>`).
 - Kinds, as the existing files use them:
   - `data difference`
   - `not ported yet`: names a port step other than the current one. An element the
@@ -294,7 +294,7 @@ iteration.
 When the generic macros already render the page exactly, `b` changes no template
 and makes no commit; this sequence then runs on the part `a` commit.
 
-Templates are compiled into the binary (`include_str!`, `render.rs:16-19`), so the
+Templates are compiled into the binary (`include_str!`, `core/admin/src/render/mod.rs:158-161`), so the
 fleet is booted after the commit. Run the `safe-verification` pre-flight first. The
 golden test is re-run here as the gate, whatever `b` reported. While the fleet runs,
 no Cargo command may start, so every Cargo command comes before it boots. On Windows
@@ -329,7 +329,7 @@ target/debug/devctl down
 - The split is the at-risk topology and is crawled too: `devctl up split`, then
   `demoseed --base-url http://127.0.0.1:8082` (the split's gateway; its 8080 is
   characters-svc, where `/accounts/register` is a 404), `eventctl seed-mockup`,
-  `crawl --base-url http://localhost:8085` and `diff` for every page.
+  `crawl --base-url http://localhost:8085` and `diff` for every non-`Pending` target.
 
 ## 8. Post-mortem
 
