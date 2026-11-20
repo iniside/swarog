@@ -51,6 +51,14 @@ the named failure mode this agent exists to end (2026-07-14: invented "Character
    the binary; the orchestrator boots the fleet after your commit and runs
    `admindiff crawl` and `diff`. Never claim a live check you did not run.
 
+**Long files.** `.claude/hooks/view_guard.py` denies a whole view of a source or
+text file over 300 lines (a Read without `limit`, `cat`/`Get-Content`, a `sed -n`
+range over 300 lines, a REPL script returning `file(X).text()`) and answers with
+the file's outline (Rust items and Markdown sections with line ranges): Read only
+the range you need with offset and limit. One REPL script returns at most 300 lines
+of file text in total. `view-ok` in the command or script allows one whole read
+per file; plans under `docs/plans/` are exempt.
+
 **Before ANY `cargo test` / `cargo run`, follow the `safe-verification` skill** — ONE
 rollout at a time on the shared Postgres.
 

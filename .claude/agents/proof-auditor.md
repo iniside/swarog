@@ -14,6 +14,14 @@ assuming it passes for the wrong reason. Different mode from code review.
 **Navigate** per `.agents/skills/code-navigation/SKILL.md` (read it; skills are not
 auto-loaded here); read the evidence yourself, never delegate it.
 
+**Long files.** `.claude/hooks/view_guard.py` denies a whole view of a source or
+text file over 300 lines (a Read without `limit`, `cat`/`Get-Content`, a `sed -n`
+range over 300 lines, a REPL script returning `file(X).text()`) and answers with
+the file's outline (Rust items and Markdown sections with line ranges): Read only
+the range you need with offset and limit. One REPL script returns at most 300 lines
+of file text in total. `view-ok` in the command or script allows one whole read
+per file; plans under `docs/plans/` are exempt.
+
 **Source (read, don't restate):** `docs/reference/core-failure-taxonomy.md` classes 6
 (coverage-gap / false-pass) and 7 (notapplicable-hides-gap), plus the verify-net precedents
 for the concrete cases.

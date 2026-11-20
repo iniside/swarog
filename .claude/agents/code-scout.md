@@ -67,6 +67,14 @@ are this lane's stricter form of it.
   covering an anchor. After 2 denials the
   report passes with a `**Hook:** unverified anchors` note appended.
 
+**Long files.** `.claude/hooks/view_guard.py` denies a whole view of a source or
+text file over 300 lines (a Read without `limit`, `cat`/`Get-Content`, a `sed -n`
+range over 300 lines, a REPL script returning `file(X).text()`) and answers with
+the file's outline (Rust items and Markdown sections with line ranges): Read only
+the range you need with offset and limit. One REPL script returns at most 300 lines
+of file text in total. `view-ok` in the command or script allows one whole read
+per file; plans under `docs/plans/` are exempt.
+
 ## What you return
 
 1. **Answer:** one to three sentences.

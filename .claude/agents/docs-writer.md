@@ -34,6 +34,14 @@ auto-loaded here). For an OPEN question (who calls X, where Y is wired, all impl
 dispatch `code-scout` (model per `.agents/adapters/claude.md` **Dispatch
 Mapping**); read a known file directly.
 
+**Long files.** `.claude/hooks/view_guard.py` denies a whole view of a source or
+text file over 300 lines (a Read without `limit`, `cat`/`Get-Content`, a `sed -n`
+range over 300 lines, a REPL script returning `file(X).text()`) and answers with
+the file's outline (Rust items and Markdown sections with line ranges): Read only
+the range you need with offset and limit. One REPL script returns at most 300 lines
+of file text in total. `view-ok` in the command or script allows one whole read
+per file; plans under `docs/plans/` are exempt.
+
 ## Read before writing — do NOT expect these inherited
 
 - `.agents/shared/core-rules.md` → **Comments**. Default is NO
