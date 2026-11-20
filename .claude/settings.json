@@ -42,6 +42,11 @@
             "type": "command",
             "command": "python \"$CLAUDE_PROJECT_DIR/.claude/hooks/explicit_model_guard.py\"",
             "statusMessage": "Enforcing explicit subagent model"
+          },
+          {
+            "type": "command",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/fix_brief_guard.py\"",
+            "statusMessage": "Checking the implementer brief"
           }
         ]
       },
