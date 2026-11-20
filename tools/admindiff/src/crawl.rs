@@ -11,7 +11,8 @@
 //! a fleet mints); a page drawing none skips it as EMPTY, a failure unless `--allow-empty`.
 //! Every modal action an untabbed compared page draws is a modal target of that page or in
 //! [`EXCLUDED_MODALS`], whose modals are fetched once each; an exclusion its page does not
-//! draw fails as stale unless `--allow-empty` and the page lists no row. Every fetched modal
+//! draw fails as stale, `--allow-empty` or not: an opener sits in a page head, a panel tool or
+//! a row, so a page listing no row does not excuse a missing one. Every fetched modal
 //! fails on a non-2xx answer, a toast, or a body that is no `.scrim` around a `.modal`. Every
 //! other crawled page, one only the nav links or a tab page, has the first menu of each kind
 //! and the first modal of each action it draws fetched once; the menu must answer 2xx, the
@@ -255,7 +256,7 @@ async fn run_with(
         }
     }
     check_menu_kinds(&client, cfg, page_map, excluded_menus, &crawled, &mut failures, &mut skipped).await;
-    check_modal_actions(&client, cfg, page_map, excluded_modals, &crawled, &mut failures, &mut skipped).await;
+    check_modal_actions(&client, cfg, page_map, excluded_modals, &crawled, &mut failures).await;
     if fragments == 0 {
         failures.push("no page loaded a fragment".to_string());
     }
@@ -472,9 +473,9 @@ async fn check_menu_kinds(
 /// fetched ([`fetch_modal`]). Every other crawled page, a page only the nav links or a tab
 /// page, needs no declaration, but the first modal of each action it draws is fetched
 /// ([`fetch_modal`]) for its status. An exclusion whose page was crawled and does not draw it
-/// fails; under `--allow-empty` a page other than a `FirstRow` page that lists no row
-/// reports it EMPTY in `empty` instead. A page that was not crawled (`--allow-empty` skipped
-/// it, or it failed) cannot make it stale.
+/// fails, `--allow-empty` or not: an opener sits in a page head, a panel tool or a row, so a
+/// page listing no row does not excuse it, unlike a row menu. A page that was not crawled
+/// (`--allow-empty` skipped it, or it failed) cannot make it stale.
 async fn check_modal_actions(
     client: &Client,
     cfg: &Config,
@@ -482,16 +483,11 @@ async fn check_modal_actions(
     excluded_modals: &[(&str, &str, &str)],
     crawled: &[(String, Vec<Node>)],
     failures: &mut Vec<String>,
-    empty: &mut Vec<String>,
 ) {
     let mut hosts: Vec<String> = Vec::new();
-    let mut first_row_hosts: Vec<String> = Vec::new();
     for p in page_map.iter().filter(|p| p.is_page() && p.tab.is_none() && p.route != Route::Pending) {
         if !hosts.contains(&p.id()) {
             hosts.push(p.id());
-        }
-        if matches!(p.route, Route::FirstRow(_)) && !first_row_hosts.contains(&p.id()) {
-            first_row_hosts.push(p.id());
         }
     }
     for (page, doc) in crawled.iter().filter(|(p, _)| !hosts.contains(p)) {
@@ -527,14 +523,10 @@ async fn check_modal_actions(
             continue;
         }
         // A page that was not crawled, skipped or failed, has nothing to compare it with.
-        let Some((_, doc)) = crawled.iter().find(|(p, _)| p == host) else { continue };
-        // A FirstRow host exists only because its list had a row, so it has no empty state.
-        if cfg.allow_empty && !first_row_hosts.iter().any(|h| h == host) && !lists_rows(doc) {
-            println!("EMPTY EXCLUDED_MODALS {host} modal {action}: {host} lists no row");
-            empty.push(format!("{host}.excluded-modal.{}", action.replace('/', ".")));
+        if !crawled.iter().any(|(p, _)| p == host) {
             continue;
         }
-        failures.push(format!("EXCLUDED_MODALS lists {host} modal {action}, which {host} does not draw (--allow-empty skips it only while {host} lists no row)"));
+        failures.push(format!("EXCLUDED_MODALS lists {host} modal {action}, which {host} does not draw"));
     }
 }
 

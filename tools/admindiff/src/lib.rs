@@ -45,14 +45,15 @@ USAGE:
             non-2xx, the first menu of a kind any other crawled page draws answering
             non-2xx, any fetched menu with a module group in the error state (unless
             --allow-errors), with no module group or with a group whose data-state is missing or
-            neither ok nor error, and an EXCLUDED_MENUS entry its page does not draw; a modal
-            target whose page draws no opener of its action (unless --allow-empty), a modal
-            action an untabbed compared page draws that is neither a page map modal entry nor
-            in pages::EXCLUDED_MODALS, the first modal of an action any other crawled page draws
+            neither ok nor error, and an EXCLUDED_MENUS entry its page does not draw (unless
+            its page lists no row and --allow-empty; an entity page never); a modal target
+            whose page draws no opener of its action (unless --allow-empty), a modal action an
+            untabbed compared page draws that is neither a page map modal entry nor in
+            pages::EXCLUDED_MODALS, the first modal of an action any other crawled page draws
             and any other fetched modal answering non-2xx, a toast, no .scrim root or a .scrim
-            with no .modal, an EXCLUDED_MODALS entry its page does not draw (unless
-            --allow-empty and its page lists no row; an entity page never) and an EXCLUDED_MODALS entry that is malformed, listed twice,
-            mapped too or hosted by no untabbed compared page (which stops the crawl first)
+            with no .modal, an EXCLUDED_MODALS entry its page does not draw (with or without
+            --allow-empty) and an EXCLUDED_MODALS entry that is malformed, listed twice, mapped
+            too or hosted by no untabbed compared page (which stops the crawl first)
   mock      render the mockup target through node into target/admindiff/mock/<target>.html; a
             modal target is the .scrim its page map opener PAGES.<opener>(<args>) appends; a
             page or tab target whose page map entry forces a state renders with that state as

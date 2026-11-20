@@ -225,17 +225,6 @@ pub const PAGE_MAP: &[Page] = &[
     },
     Page { page: "apikeys", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: None },
     Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None, modal: None, force: None },
-    // `m-88213` is the mockup outbox's pending message (data.js `D.mail`), the row the portal
-    // draws a cancel on.
-    Page {
-        page: "mail",
-        route: Route::Mapped("/admin/p/mail/outbox"),
-        search: "",
-        tab: None,
-        menu: None,
-        modal: Some(Modal { id: "cancel", opener: "cancelMail", args: &["m-88213"], module: "mail", action: "cancel" }),
-        force: None,
-    },
     Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: None },
     Page { page: "config", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: None },
     Page { page: "audit", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: None },

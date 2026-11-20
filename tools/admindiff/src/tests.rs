@@ -330,15 +330,15 @@ fn run_diff_compares_a_modal_target_by_its_modal() {
     };
     let dir = ScratchDir::new("diff-modal-crawl");
     write(&dir.path().join(crawl::CLEAN_MARKER), "");
-    write(&dir.path().join("mail.modal.cancel.html"), &modal(""));
-    assert!(run_diff(repo.path(), "mail.modal.cancel", dir.path(), false).expect("runs"), "the same dialog is clean");
+    write(&dir.path().join("events.modal.skip-poison.html"), &modal(""));
+    assert!(run_diff(repo.path(), "events.modal.skip-poison", dir.path(), false).expect("runs"), "the same dialog is clean");
     let open = r#"<div class="scrim" data-scrim=""><div class="modal">"#;
     let beside = modal("").replacen(open, r#"<div class="scrim" data-scrim=""><div class="scrim-note"><span></span></div><div class="modal">"#, 1);
     assert!(beside != modal(""), "the sibling is added: {beside}");
-    write(&dir.path().join("mail.modal.cancel.html"), &beside);
-    assert!(run_diff(repo.path(), "mail.modal.cancel", dir.path(), false).expect("runs"), "a portal-only sibling of the .modal");
-    write(&dir.path().join("mail.modal.cancel.html"), &modal(r#"<div class="modal-note"></div>"#));
-    assert!(!run_diff(repo.path(), "mail.modal.cancel", dir.path(), false).expect("runs"), "a portal-only child");
+    write(&dir.path().join("events.modal.skip-poison.html"), &beside);
+    assert!(run_diff(repo.path(), "events.modal.skip-poison", dir.path(), false).expect("runs"), "a portal-only sibling of the .modal");
+    write(&dir.path().join("events.modal.skip-poison.html"), &modal(r#"<div class="modal-note"></div>"#));
+    assert!(!run_diff(repo.path(), "events.modal.skip-poison", dir.path(), false).expect("runs"), "a portal-only child");
 }
 
 /// A clean crawl with no output for a menu or modal target skipped it as EMPTY: the diff names
@@ -350,9 +350,9 @@ fn run_diff_names_a_menu_or_modal_target_the_crawl_skipped() {
     let dir = ScratchDir::new("diff-skipped-crawl");
     write(&dir.path().join(crawl::CLEAN_MARKER), "");
     let shown = dir.path().display();
-    let e = format!("{:#}", run_diff(repo.path(), "mail.modal.cancel", dir.path(), false).expect_err("no modal"));
+    let e = format!("{:#}", run_diff(repo.path(), "events.modal.skip-poison", dir.path(), false).expect_err("no modal"));
     let want = format!(
-        "{shown} has no mail.modal.cancel modal: the crawl skipped it as EMPTY (mail was skipped or drew no mail/cancel opener) or predates the entry"
+        "{shown} has no events.modal.skip-poison modal: the crawl skipped it as EMPTY (events was skipped or drew no core.events/poison.skip opener) or predates the entry"
     );
     assert_eq!(e, want);
     let e = format!("{:#}", run_diff(repo.path(), "players.menu.user", dir.path(), false).expect_err("no menu"));
@@ -361,6 +361,6 @@ fn run_diff_names_a_menu_or_modal_target_the_crawl_skipped() {
     );
     assert_eq!(e, want);
     let modal = r#"<div class="scrim" data-scrim=""><div class="modal"></div></div>"#;
-    write(&dir.path().join("mail.modal.cancel.html"), modal);
-    run_diff(repo.path(), "mail.modal.cancel", dir.path(), false).expect("the written modal is diffed");
+    write(&dir.path().join("events.modal.skip-poison.html"), modal);
+    run_diff(repo.path(), "events.modal.skip-poison", dir.path(), false).expect("the written modal is diffed");
 }
