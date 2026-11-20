@@ -77,8 +77,8 @@ USAGE:
             on a difference not in tools/admindiff/accept/<target>.txt, a stale accept entry or
             a page with zero matched panels; prints each difference as ok, NEW or STALE. It
             also fails when a tab the mockup draws on an entity page is neither a page map tab
-            entry nor in pages::EXCLUDED_TABS, when a menu the mockup draws on an untabbed
-            compared page is not a page map menu entry, and when a menu the mockup registry
+            entry nor in pages::EXCLUDED_TABS, when a menu the mockup draws on a compared page
+            or tab is not a page map menu entry of it, and when a menu the mockup registry
             defines is neither a page map menu entry nor in pages::EXCLUDED_MOCK_MENUS. It fails
             on the mockup's modals too: every PAGES.<fn>(...) call in an onclick of a compared page,
             tab or menu target's mockup render is run, as written, on its page in node, and one
@@ -258,11 +258,11 @@ pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
 /// Checks the mockup render of every page map entry of `lists` against the lists that name its
 /// parts: [`skeleton::REPEAT`] against all of them, the tabs each untabbed `FirstRow` page draws
 /// against the page map's tab entries and `excluded_tabs` ([`pages::validate_tabs`]), and the
-/// menus the registry defines and each untabbed page that is not pending draws against the
-/// page map's menu entries and `excluded_mock_menus` ([`pages::validate_menus`]); a menu
+/// menus the registry defines and each compared page or tab ([`pages::Page::is_compared_host`])
+/// draws against the page map's menu entries and `excluded_mock_menus` ([`pages::validate_menus`]); a menu
 /// entry's render fails when its page draws no such menu, and a modal entry's, a page's or a
-/// menu's, when its opener is no function or appends no `.scrim`. The modal openers each page,
-/// tab and menu target that is not pending draws (every `onclick` `PAGES.<fn>(…)` its render
+/// menu's, when its opener is no function or appends no `.scrim`. The modal openers each compared
+/// page, tab and menu target ([`pages::Page::is_compared_target`]) draws (every `onclick` `PAGES.<fn>(…)` its render
 /// draws, run in the harness on its page, [`mock::modal_openers`]; one that throws fails) are
 /// checked against the page map's modal entries, `excluded_mock_modals` and the mockup facts of
 /// `excluded_modals` ([`pages::validate_mock_modals`]). `mockup` is what [`validated_mockup`]
@@ -276,19 +276,17 @@ fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections
     for p in page_map {
         let key = mockup.get(p.page).ok_or_else(|| anyhow!("page {} has no mockup file", p.page))?;
         let (_, doc) = render_mock(repo, page_map, key, p)?;
-        if p.route != pages::Route::Pending && p.modal.is_none() {
+        if p.is_compared_target() {
             // A menu's openers run on its host page, rendered as its host entry is.
             let page = if p.is_page() { p } else { page_map.iter().find(|q| q.hosts(&p.host())).ok_or_else(|| anyhow!("PAGE_MAP {} has no host entry", p.id()))? };
             let drawn = mock::drawn_openers(&doc).with_context(|| format!("the {} mockup render", p.id()))?;
             openers.push((p.id(), key, page, drawn));
         }
-        if p.is_page() {
-            if matches!(p.route, pages::Route::FirstRow(_)) && p.tab.is_none() {
-                drawn.push((p.page, mock::drawn_tabs(&doc).with_context(|| format!("the P.{key} render"))?));
-            }
-            if p.route != pages::Route::Pending && p.tab.is_none() {
-                menus.push((p.id(), mock::drawn_menus(&doc).with_context(|| format!("the P.{key} render"))?));
-            }
+        if p.is_page() && matches!(p.route, pages::Route::FirstRow(_)) && p.tab.is_none() {
+            drawn.push((p.page, mock::drawn_tabs(&doc).with_context(|| format!("the P.{key} render"))?));
+        }
+        if p.is_compared_host() {
+            menus.push((p.id(), mock::drawn_menus(&doc).with_context(|| format!("the P.{key} render"))?));
         }
         roots.push(prepare(p, &doc, true)?);
     }

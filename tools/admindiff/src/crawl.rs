@@ -5,7 +5,7 @@
 //! target whose page draws no menu of its kind all fail the crawl. A menu target's output is
 //! the first such menu, the `.menu` popover the portal answers. Every menu kind a compared page
 //! or tab target draws is a menu target of that page or tab or in [`EXCLUDED_MENUS`], whose
-//! menus are fetched once each and must answer 2xx; an exclusion its page does not draw fails
+//! menus are fetched once per target and must answer 2xx; an exclusion its page does not draw fails
 //! as stale. A modal
 //! target's output is the modal the portal answers for the first opener of its action its
 //! page draws (an `hx-get` to `/admin/_action/<module>/<action>`, whose `?entity=`/`?item=`
@@ -13,7 +13,7 @@
 //! A modal target hosted by a menu target opens the first opener of its action in that fetched
 //! menu. Every modal action a compared page or tab target draws, and every one a menu target's
 //! fetched menu or a compared page or tab's excluded kind draws, is a modal target of that
-//! page, tab or menu or in [`EXCLUDED_MODALS`], whose modals are fetched once each; an exclusion its page or menu
+//! page, tab or menu or in [`EXCLUDED_MODALS`], whose modals are fetched once per target; an exclusion its page or menu
 //! does not draw fails as stale, `--allow-empty` or not: an opener sits in a page head, a panel
 //! tool, a row or a menu, so a page listing no row does not excuse a missing one. Every fetched
 //! modal fails on a non-2xx answer, a toast, or a body that is no `.scrim` around a `.modal`.

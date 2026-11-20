@@ -5,11 +5,10 @@
 //! the mockup draws on a `FirstRow` page, besides the one its untabbed entry renders
 //! selected, is in [`EXCLUDED_TABS`]. An entry that names a menu is its own target too,
 //! `<host>.menu.<menu>`: the first menu of that kind its host page draws, opened on both
-//! sides. On the mockup side menus are inventoried on untabbed hosts only: every menu the
-//! mockup draws there has such an entry and every menu its registry defines has one or is in
-//! [`EXCLUDED_MOCK_MENUS`] ([`validate_menus`]). On the portal side every menu kind a
-//! compared page or tab ([`Page::is_compared_host`]) draws has one or is in
-//! [`EXCLUDED_MENUS`] (`crawl`). An entry that names a modal is its own target,
+//! sides. Menus are inventoried on every compared page or tab ([`Page::is_compared_host`]),
+//! on both sides: every menu the mockup draws there has such an entry and every menu its
+//! registry defines has one or is in [`EXCLUDED_MOCK_MENUS`] ([`validate_menus`]); every
+//! menu kind the portal draws there has one or is in [`EXCLUDED_MENUS`] (`crawl`). An entry that names a modal is its own target,
 //! `<host>.modal.<modal>`: the harness calls the mockup's named opener with the entry's
 //! arguments, and the crawl opens the first opener of the entry's portal action its host
 //! draws. A modal's host is a page, a tab (`<page>.<tab>.modal.<modal>`) or a menu target
@@ -140,6 +139,12 @@ impl Page {
     /// host ([`compared_hosts`]).
     pub fn is_compared_host(&self) -> bool {
         self.is_page() && self.route != Route::Pending
+    }
+
+    /// Whether this entry is a compared target that hosts menus or modals: a compared host, or
+    /// a menu target of one. Both sides inventory the modal openers each such target draws.
+    pub fn is_compared_target(&self) -> bool {
+        self.modal.is_none() && self.host().is_compared_host()
     }
 
     /// Whether this entry is a page or tab target, neither a menu nor a modal.
@@ -601,8 +606,8 @@ pub fn validate_tabs(drawn: &[(&str, DrawnTabs)], page_map: &[Page], excluded_ta
 /// name `PAGE_MAP` and `EXCLUDED_MOCK_MENUS`. `defined` is every menu id the registry defines
 /// (`UI.defineMenu`): each is a menu entry's or excluded, not both, and every menu entry and
 /// exclusion names a defined id; an exclusion is listed once, with a reason. `drawn` is each
-/// untabbed compared host's id with the `UI.openMenu` ids its render draws: each is a menu
-/// entry of that host. A menu entry its host does not draw fails its own render
+/// compared host's id ([`Page::is_compared_host`]), a page or a tab, with the `UI.openMenu`
+/// ids its render draws: each is a menu entry of that host. A menu entry its host does not draw fails its own render
 /// ([`crate::mock::menu_arg`]).
 pub fn validate_menus(
     drawn: &[(String, Vec<String>)],
@@ -669,7 +674,7 @@ pub fn validate_excluded_modals(lists: &Lists) -> Result<()> {
             problems.push(format!("EXCLUDED_MODALS {host} modal {action} has no reason"));
         }
         let page = hosts.iter().any(|h| h == host);
-        let menu = page_map.iter().any(|p| p.is_menu() && p.host().is_compared_host() && p.id() == *host);
+        let menu = page_map.iter().any(|p| p.is_menu() && p.is_compared_target() && p.id() == *host);
         let excluded_menu = excluded_menus.iter().any(|(h, kind, _)| hosts.iter().any(|c| c == h) && excluded_menu_id(h, kind) == *host);
         if !page && !menu && !excluded_menu {
             problems.push(format!(

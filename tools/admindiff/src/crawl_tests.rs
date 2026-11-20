@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use super::{run_with, Config, CLEAN_MARKER, MAX_ROUNDS, PANEL_FAIL, PANEL_PASS};
 use crate::mock::mock_tests::FakeRepo;
-use crate::pages::{excluded_menu_id, Lists, Modal, ModalWhy, Page, Route, EXCLUDED_MENUS, EXCLUDED_MODALS, LISTS, PAGE_MAP};
+use crate::pages::{excluded_menu_id, with_tab, Lists, Modal, ModalWhy, Page, Route, EXCLUDED_MENUS, EXCLUDED_MODALS, LISTS, PAGE_MAP};
 use crate::tests::{body, mock_html, ScratchDir};
 
 #[derive(Clone, Debug)]
@@ -64,7 +64,12 @@ fn panel_url(page: &str) -> String {
 
 /// Every mapped page of [`PAGE_MAP`].
 fn mapped() -> Vec<Target> {
-    PAGE_MAP
+    mapped_in(PAGE_MAP)
+}
+
+/// Every mapped page of `page_map`.
+fn mapped_in(page_map: &[Page]) -> Vec<Target> {
+    page_map
         .iter()
         .filter(|p| p.is_page())
         .filter_map(|p| match p.route {
@@ -74,21 +79,40 @@ fn mapped() -> Vec<Target> {
         .collect()
 }
 
-/// Every `FirstRow` page of [`PAGE_MAP`] with the list page it follows.
-fn followers() -> Vec<(&'static str, &'static str)> {
-    PAGE_MAP
+/// Every compared `FirstRow` page or tab entry of `page_map` ([`Page::is_compared_host`]) with
+/// the list page it follows.
+fn followers_in(page_map: &[Page]) -> Vec<(Page, &'static str)> {
+    page_map
         .iter()
-        .filter(|p| p.is_page() && p.tab.is_none())
+        .filter(|p| p.is_compared_host())
         .filter_map(|p| match p.route {
-            Route::FirstRow(list) => Some((p.page, list)),
+            Route::FirstRow(list) => Some((*p, list)),
             Route::Mapped(_) | Route::Pending => None,
         })
         .collect()
 }
 
-/// Every menu entry of [`PAGE_MAP`] on an untabbed page: its target id, host page and kind.
-fn menus() -> Vec<(String, &'static str, &'static str)> {
-    PAGE_MAP.iter().filter(|p| p.tab.is_none() && p.is_menu()).filter_map(|p| p.menu.map(|m| (p.id(), p.page, m.kind))).collect()
+/// [`followers_in`] of [`PAGE_MAP`], each by its target id.
+fn followers() -> Vec<(String, &'static str)> {
+    followers_in(PAGE_MAP).into_iter().map(|(p, list)| (p.id(), list)).collect()
+}
+
+/// The route the healthy site serves follower `entry` at: its entity route, with `?tab=` for a
+/// tab entry, as the crawl follows it.
+fn entry_route(entry: &Page) -> String {
+    let route = follower_route(entry.page);
+    entry.tab.map_or_else(|| route.clone(), |tab| with_tab(&route, tab))
+}
+
+/// Every menu target of `page_map` on a compared page or tab ([`Page::is_compared_target`]):
+/// its target id, host id and kind.
+fn menus_in(page_map: &[Page]) -> Vec<(String, String, &'static str)> {
+    page_map.iter().filter(|p| p.is_menu() && p.is_compared_target()).filter_map(|p| p.menu.map(|m| (p.id(), p.host().id(), m.kind))).collect()
+}
+
+/// [`menus_in`] of [`PAGE_MAP`].
+fn menus() -> Vec<(String, String, &'static str)> {
+    menus_in(PAGE_MAP)
 }
 
 /// [`MENU_BODY`] drawing only the modal openers `host`, a menu target's id or an excluded
@@ -97,13 +121,23 @@ fn menu_body(host: &str) -> String {
     declared_menu(MENU_BODY, host)
 }
 
+/// [`menu_body`] against `page_map` instead of [`PAGE_MAP`].
+fn menu_body_in(page_map: &[Page], host: &str) -> String {
+    declared_menu_in(page_map, MENU_BODY, host)
+}
+
 /// The menu golden `golden` drawing only the modal openers `host` declares: the golden's own
 /// `hx-get` openers are drawn as `hx-post` (`Invoke`) buttons, and one opener is added for
 /// each `PAGE_MAP` modal entry and [`EXCLUDED_MODALS`] entry `host` hosts, at the end of the
 /// `.menu` root. A host no entry names, a status-only menu's, gets no opener at all.
 fn declared_menu(golden: &str, host: &str) -> String {
+    declared_menu_in(PAGE_MAP, golden, host)
+}
+
+/// [`declared_menu`] against `page_map` instead of [`PAGE_MAP`].
+fn declared_menu_in(page_map: &[Page], golden: &str, host: &str) -> String {
     let body = golden.replace(r#"hx-get="&#x2f;admin&#x2f;_action"#, r#"hx-post="&#x2f;admin&#x2f;_action"#);
-    let mapped = PAGE_MAP.iter().filter(|p| p.host().id() == host).filter_map(|p| p.modal.map(|m| m.action_path()));
+    let mapped = page_map.iter().filter(|p| p.host().id() == host).filter_map(|p| p.modal.map(|m| m.action_path()));
     let excluded = EXCLUDED_MODALS.iter().filter(|(h, _, _)| *h == host).map(|(_, action, _)| action.to_string());
     let openers: String = mapped.chain(excluded).map(|a| modal_button(&modal_url(&a, host))).collect();
     in_menu(&body, &openers)
@@ -135,11 +169,16 @@ fn modal_url(action: &str, page: &str) -> String {
 /// action is drawn in a panel, on a queue row or as a panel tool.
 const HEAD_ACTIONS: &[&str] = &["mail/test-send"];
 
-/// The modal openers page `page` draws, as the portal's `hx_action` writes them: one for each
-/// untabbed `PAGE_MAP` modal entry and each [`EXCLUDED_MODALS`] entry it hosts whose action
-/// is a page head action ([`HEAD_ACTIONS`]) when `head` holds, a panel's otherwise.
+/// The modal openers page or tab `page` draws, as the portal's `hx_action` writes them: one for
+/// each `PAGE_MAP` modal entry and each [`EXCLUDED_MODALS`] entry it hosts whose action is a
+/// page head action ([`HEAD_ACTIONS`]) when `head` holds, a panel's otherwise.
 fn modal_buttons(page: &str, head: bool) -> String {
-    let mapped = PAGE_MAP.iter().filter(|p| p.page == page && p.tab.is_none() && p.menu.is_none()).filter_map(|p| p.modal.map(|m| m.action_path()));
+    modal_buttons_in(PAGE_MAP, page, head)
+}
+
+/// [`modal_buttons`] against `page_map` instead of [`PAGE_MAP`].
+fn modal_buttons_in(page_map: &[Page], page: &str, head: bool) -> String {
+    let mapped = page_map.iter().filter(|p| p.host().id() == page).filter_map(|p| p.modal.map(|m| m.action_path()));
     let excluded = EXCLUDED_MODALS.iter().filter(|(host, _, _)| *host == page).map(|(_, action, _)| action.to_string());
     mapped.chain(excluded).filter(|a| HEAD_ACTIONS.contains(&a.as_str()) == head).map(|a| modal_button(&modal_url(&a, page))).collect()
 }
@@ -177,10 +216,15 @@ fn menu_button(url: &str) -> String {
     format!(r#"<button class="btn sm icon ghost" data-menu-url="{}"></button>"#, escaped(url))
 }
 
-/// The buttons page `page` draws for its menu entries: in each table row on a list page
+/// The buttons page or tab `page` draws for its menu entries: in each table row on a list page
 /// ([`rows`]), as the portal draws a row menu, else in the page.
 fn menu_buttons(page: &str) -> String {
-    menus().iter().filter(|(_, host, _)| *host == page).map(|(_, _, kind)| menu_button(&menu_url(kind, page))).collect()
+    menu_buttons_in(PAGE_MAP, page)
+}
+
+/// [`menu_buttons`] against `page_map` instead of [`PAGE_MAP`].
+fn menu_buttons_in(page_map: &[Page], page: &str) -> String {
+    menus_in(page_map).iter().filter(|(_, host, _)| host == page).map(|(_, _, kind)| menu_button(&menu_url(kind, page))).collect()
 }
 
 /// The buttons page `page` draws for its [`EXCLUDED_MENUS`] kinds.
@@ -280,7 +324,18 @@ impl Site {
     /// The healthy site's pages and nav with each page's content `content(<its slot url>)`;
     /// every slot url answers its ok fragment.
     fn with_content(content: &dyn Fn(&str) -> String) -> Site {
-        let mut pages: Vec<(&str, &str, String)> = mapped().into_iter().map(|t| (t.route, t.page, t.slot)).collect();
+        Site::with_map(PAGE_MAP, content)
+    }
+
+    /// [`Site::with_content`] serving `page_map` instead of [`PAGE_MAP`]: each compared page or
+    /// tab ([`Page::is_compared_host`]) and menu target ([`Page::is_compared_target`]) of it is
+    /// served with the menus and modals it hosts; a tab entry at its `?tab=` route, drawing its
+    /// tab selected.
+    fn with_map(page_map: &[Page], content: &dyn Fn(&str) -> String) -> Site {
+        let menu_buttons = |page: &str| menu_buttons_in(page_map, page);
+        let modal_buttons = |page: &str, head: bool| modal_buttons_in(page_map, page, head);
+        let followers = followers_in(page_map);
+        let mut pages: Vec<(&str, &str, String)> = mapped_in(page_map).into_iter().map(|t| (t.route, t.page, t.slot)).collect();
         if !pages.iter().any(|(route, _, _)| *route == DASHBOARD) {
             pages.push((DASHBOARD, "dashboard", dashboard_slot()));
         }
@@ -289,33 +344,39 @@ impl Site {
         let mut routes = BTreeMap::new();
         for (route, page, slot_url) in &pages {
             let title = if *route == DASHBOARD { "Dashboard" } else { page };
-            let listed: String = followers()
-                .iter()
-                .filter(|(_, list)| list == page)
-                .map(|(f, _)| rows(&follower_route(f), &menu_buttons(page)))
-                .collect();
+            // One table per entity page that follows this list, whose tab entries follow the same row.
+            let mut entities: Vec<&str> = Vec::new();
+            for (entry, list) in &followers {
+                if list == page && !entities.contains(&entry.page) {
+                    entities.push(entry.page);
+                }
+            }
+            let listed: String = entities.iter().map(|f| rows(&follower_route(f), &menu_buttons(page))).collect();
             let in_page = if listed.is_empty() { menu_buttons(page) } else { String::new() };
             let html = format!("{}{in_page}{}", content(slot_url), excluded_buttons(page));
             routes.insert(route.to_string(), ok(shell(&links, title, &modal_buttons(page, true), &html)));
             let fragment_html = format!("{listed}{}", modal_buttons(page, false));
             routes.insert(slot_url.clone(), ok(fragment(Some("ok"), &format!("{page} panel"), &fragment_html)));
         }
-        for (page, _) in followers() {
-            let slot_url = panel_url(page);
-            let html = format!("{}{}{}", content(&slot_url), menu_buttons(page), excluded_buttons(page));
-            routes.insert(follower_route(page), ok(shell(&links, page, &modal_buttons(page, true), &html)));
-            routes.insert(slot_url, ok(fragment(Some("ok"), &format!("{page} panel"), &modal_buttons(page, false))));
+        for (entry, _) in &followers {
+            let (page, route) = (entry.id(), entry_route(entry));
+            let tab = match entry.tab {
+                Some(tab) => format!(r#"<button class="tab on" data-href="{}">{tab}</button>"#, escaped(&route)),
+                None => String::new(),
+            };
+            let slot_url = panel_url(&page);
+            let html = format!("{tab}{}{}{}", content(&slot_url), menu_buttons(&page), excluded_buttons(&page));
+            routes.insert(route, ok(shell(&links, &page, &modal_buttons(&page, true), &html)));
+            routes.insert(slot_url, ok(fragment(Some("ok"), &format!("{page} panel"), &modal_buttons(&page, false))));
         }
-        for (id, page, kind) in menus() {
-            routes.insert(menu_url(kind, page), ok(menu_body(&id)));
+        for (id, host, kind) in menus_in(page_map) {
+            routes.insert(menu_url(kind, &host), ok(menu_body_in(page_map, &id)));
         }
         for (page, kind, _) in EXCLUDED_MENUS {
-            routes.insert(menu_url(kind, page), ok(menu_body(&excluded_menu_id(page, kind))));
+            routes.insert(menu_url(kind, page), ok(menu_body_in(page_map, &excluded_menu_id(page, kind))));
         }
-        for p in PAGE_MAP.iter().filter(|p| p.tab.is_none()) {
-            if let Some(m) = p.modal {
-                routes.insert(modal_url(&m.action_path(), &p.host().id()), ok(MODAL_BODY));
-            }
+        for (_, host, action) in modals_in(page_map) {
+            routes.insert(modal_url(&action, &host), ok(MODAL_BODY));
         }
         for (page, action, _) in EXCLUDED_MODALS {
             routes.insert(modal_url(action, page), ok(MODAL_BODY));
@@ -707,7 +768,8 @@ async fn slots_load_for_at_most_max_rounds() {
 /// the row is fetched for its status but is not the target's menu.
 #[tokio::test]
 async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
-    let (id, page, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let (id, host, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let page = host.as_str();
     let healthy = Site::healthy();
     let list_url = panel_url(page);
     let list = healthy.routes.get(&list_url).expect("the healthy site serves the players rows").body.clone();
@@ -743,7 +805,8 @@ async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
 /// at all, fail even with `--allow-errors` and `--allow-empty`.
 #[tokio::test]
 async fn an_error_state_menu_group_fails_unless_errors_are_allowed() {
-    let (id, page, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let (id, host, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let page = host.as_str();
     let url = menu_url(kind, page);
     let down = declared_menu(MENU_DOWN, &id);
     assert!(down.contains(r#"data-state="error""#) && down.contains(r#"data-state="ok""#), "one group down: {down}");
@@ -794,7 +857,8 @@ async fn an_error_state_menu_group_fails_unless_errors_are_allowed() {
 /// and `--allow-empty`.
 #[tokio::test]
 async fn an_error_state_menu_root_fails_unless_errors_are_allowed() {
-    let (id, page, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let (id, host, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let page = host.as_str();
     let url = menu_url(kind, page);
     let root = root_tag(MENU_BODY);
     assert_eq!(root, r#"<div class="menu" data-menu-popup="" data-state="ok">"#, "the ok golden's root");
@@ -906,14 +970,17 @@ async fn a_stale_or_malformed_menu_exclusion_fails() {
 
 /// Tab pages join the menu inventory on the page rules: the `player.items` tab page drawing
 /// its user menu with no `player.items.menu.user` entry fails, and so does an undeclared
-/// `guild` menu on it; its `EXCLUDED_MENUS` twin hosted by the tab crawls clean, the excluded
-/// menu fetched once and its body kept, fails answering 500, and is stale when the tab page
-/// does not draw it.
+/// `guild` menu on it. Its `EXCLUDED_MENUS` twin hosted by the tab holds the `guild/kick`
+/// modal its menu draws to the page rules: undeclared it fails, and with an `EXCLUDED_MODALS`
+/// entry hosted by that excluded menu it crawls clean, the excluded menu and modal each fetched
+/// once and the menu's body kept; the menu answering 500 fails, and it is stale when the tab
+/// page does not draw it.
 #[tokio::test]
 async fn every_portal_menu_kind_on_a_tab_page_is_declared() {
     let guild = "/admin/_menu/guild/g-1";
     let host = excluded_menu_id("player.items", "guild");
-    let site = items_site(&menu_button(guild)).with(guild, ok(menu_body(&host)));
+    let kick = modal_url("guild/kick", &host);
+    let site = items_site(&menu_button(guild)).with(guild, ok(in_menu(&menu_body(&host), &modal_button(&kick)))).with(&kick, ok(MODAL_BODY));
     let bare: Vec<Page> = PAGE_MAP.iter().copied().chain([items_tab()]).collect();
     let user = "player.items draws a player menu, which is in neither PAGE_MAP nor EXCLUDED_MENUS";
     crawl_map(items_site(""), &bare).await.assert_failed_with("the tab page's user menu undeclared", user);
@@ -924,16 +991,41 @@ async fn every_portal_menu_kind_on_a_tab_page_is_declared() {
 
     let mut excluded = EXCLUDED_MENUS.to_vec();
     excluded.push(("player.items", "guild", "why"));
-    let declared = crawl_lists(site.clone(), &page_map, &excluded, false).await;
-    declared.assert_clean("the tab page's guild menu is excluded");
+    let modal = format!("{host} draws a guild/kick modal, which is in neither PAGE_MAP nor EXCLUDED_MODALS");
+    let undeclared = crawl_lists(site.clone(), &page_map, &excluded, false).await;
+    undeclared.assert_failed_with("an undeclared guild/kick modal in the tab page's excluded menu", &modal);
+    let mut modals = EXCLUDED_MODALS.to_vec();
+    modals.push((&host, "guild/kick", ModalWhy::NoMockOpener { others: &[], why: "why" }));
+    let (page_map, excluded, modals) = (&page_map, &excluded, &modals);
+    let run = move |site: Site| crawl_into(ScratchDir::new("crawl"), site, page_map, excluded, modals, false, false);
+    let declared = run(site.clone()).await;
+    declared.assert_clean("the tab page's guild menu and its guild/kick modal are excluded");
     assert_eq!(fetched(&declared, guild), 1, "{:?}", declared.server.requests());
+    assert_eq!(fetched(&declared, &kick), 1, "{:?}", declared.server.requests());
     let raw = declared.out.path().join("run").join("raw").join(format!("{host}.html"));
     assert!(raw.is_file(), "the excluded menu's body is kept: {}", raw.display());
     let down = format!("player.items excluded guild menu ({guild}): answered 500");
-    let failed = crawl_lists(site.with(guild, status(500)), &page_map, &excluded, false).await;
-    failed.assert_failed_with("the excluded menu answering 500", &down);
+    run(site.with(guild, status(500))).await.assert_failed_with("the excluded menu answering 500", &down);
     let stale = "EXCLUDED_MENUS lists player.items menu guild, which player.items does not draw";
-    crawl_lists(items_site(""), &page_map, &excluded, false).await.assert_failed_with("the tab page no longer draws guild", stale);
+    run(items_site("")).await.assert_failed_with("the tab page no longer draws guild", stale);
+}
+
+/// The healthy site of a page map with a tab entry, `player.items`, a menu target on it and a
+/// modal entry it hosts serves each from that map: the crawl reaches the tab at its `?tab=`
+/// route, selected, and writes the tab page, its menu and its modal.
+#[tokio::test]
+async fn the_healthy_site_serves_a_tab_entry_its_menus_and_modals() {
+    let tab = items_tab();
+    let test = Modal { id: "test", opener: "testOpener", args: &["a"], module: "test", action: "do" };
+    let entry = Page { modal: Some(test), ..tab };
+    let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([tab, items_menu(), entry]).collect();
+    let c = crawl_modals(Site::with_map(&page_map, &slot), &page_map, EXCLUDED_MODALS, false).await;
+    c.assert_clean("the healthy site of a map with a tab entry");
+    assert_eq!(fetched(&c, &panel_url("player.items")), 1, "{:?}", c.server.requests());
+    let run = c.out.path().join("run");
+    for id in ["player.items", "player.items.menu.user", "player.items.modal.test"] {
+        assert!(run.join(format!("{id}.html")).is_file(), "{id} is written");
+    }
 }
 
 /// `crawl_page`'s status check: a page answering 500 fails even when its body, a whole page
@@ -954,7 +1046,7 @@ async fn a_non_2xx_page_fails() {
 /// a page and written as `player.html`; the plain row before it and the row after it are not.
 #[tokio::test]
 async fn an_entity_page_follows_the_first_clickable_row_of_its_list_page() {
-    assert!(followers().contains(&("player", "players")), "PAGE_MAP: player follows players");
+    assert!(followers().iter().any(|(id, list)| id == "player" && *list == "players"), "PAGE_MAP: player follows players");
     let c = crawl(Site::healthy(), false).await;
     assert!(matches!(c.result, Ok(true)), "{:?}", c.result);
     let pages: Vec<String> =
@@ -1075,10 +1167,15 @@ async fn a_tab_target_fetches_its_tab_and_fails_unless_the_page_selects_it() {
 
 // ---- modal targets -------------------------------------------------------------------
 
-/// Every modal entry of [`PAGE_MAP`] on an untabbed page: its target id, host page and
-/// `<module>/<action>`.
-fn modals() -> Vec<(String, &'static str, String)> {
-    PAGE_MAP.iter().filter(|p| p.tab.is_none()).filter_map(|p| p.modal.map(|m| (p.id(), p.page, m.action_path()))).collect()
+/// Every modal entry of `page_map` hosted by a compared page, tab or menu target
+/// ([`Page::is_compared_target`]): its target id, host id and `<module>/<action>`.
+fn modals_in(page_map: &[Page]) -> Vec<(String, String, String)> {
+    page_map.iter().filter(|p| p.host().is_compared_target()).filter_map(|p| p.modal.map(|m| (p.id(), p.host().id(), m.action_path()))).collect()
+}
+
+/// [`modals_in`] of [`PAGE_MAP`].
+fn modals() -> Vec<(String, String, String)> {
+    modals_in(PAGE_MAP)
 }
 
 /// How many times `c` GET `path` with `HX-Request`.

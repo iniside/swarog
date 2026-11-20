@@ -289,18 +289,32 @@ fn the_real_mockup_defines_only_declared_menus() {
     assert_eq!(e, "menu drift:\n  EXCLUDED_MOCK_MENUS lists zzz, which the mockup registry does not define");
 }
 
-/// Menus are inventoried on untabbed pages only: the real player page draws its user menu on
-/// every tab, and a tab entry for the wallet tab needs no menu entry of its own.
+/// Menus are inventoried on every compared page and tab: the real player page draws its user
+/// menu on every tab, so a tab entry for the wallet tab fails without a
+/// `player.wallet.menu.user` entry and passes with one. The player page's and its user menu's
+/// `EXCLUDED_MOCK_MODALS` entries are hosted by the wallet tab and its menu too, as those draw
+/// the same openers.
 #[test]
-fn a_real_mockup_tab_entry_needs_no_menu_entry() {
+fn a_real_mockup_tab_entry_needs_its_menu_entries() {
     let repo = crate::repo_root();
     let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.is_page()).expect("PAGE_MAP lists player");
-    let mut page_map = PAGE_MAP.to_vec();
-    page_map.push(crate::pages::Page { tab: Some("wallet"), ..*player });
+    let user = PAGE_MAP.iter().find(|p| p.id() == "player.menu.user").expect("PAGE_MAP lists player.menu.user");
+    let wallet = crate::pages::Page { tab: Some("wallet"), ..*player };
+    let wallet_user = crate::pages::Page { tab: Some("wallet"), ..*user };
     let tabs: Vec<(&str, &str)> = EXCLUDED_TABS.iter().copied().filter(|(id, _)| *id != "player.wallet").collect();
-    let on_tab: Vec<(&str, &str, &str)> = EXCLUDED_MOCK_MODALS.iter().filter(|(h, _, _)| *h == "player").map(|(_, o, w)| ("player.wallet", *o, *w)).collect();
-    let lists = Lists { page_map: &page_map, excluded_tabs: &tabs, excluded_mock_modals: &mock_modals(&on_tab), ..LISTS };
-    renders(&repo, &lists).expect("the wallet tab draws the user menu undeclared");
+    let rehost = |host: &str| match host {
+        "player" => Some("player.wallet"),
+        "player.menu.user" => Some("player.wallet.menu.user"),
+        _ => None,
+    };
+    let on_tab: Vec<(&str, &str, &str)> = EXCLUDED_MOCK_MODALS.iter().filter_map(|(h, o, w)| rehost(h).map(|t| (t, *o, *w))).collect();
+    let mock_modals = mock_modals(&on_tab);
+    let bare: Vec<Page> = PAGE_MAP.iter().copied().chain([wallet]).collect();
+    let lists = Lists { page_map: &bare, excluded_tabs: &tabs, excluded_mock_modals: &mock_modals, ..LISTS };
+    let e = format!("{:#}", renders(&repo, &lists).expect_err("the wallet tab draws the user menu undeclared"));
+    assert_eq!(e, "menu drift:\n  mockup menu player.wallet.menu.user is not a PAGE_MAP menu entry");
+    let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([wallet, wallet_user]).collect();
+    renders(&repo, &Lists { page_map: &page_map, ..lists }).expect("the wallet tab's user menu is a menu entry");
 }
 
 /// The portal side of the stand-in's `players.menu.user`: the same menu body, unlabelled, in the
