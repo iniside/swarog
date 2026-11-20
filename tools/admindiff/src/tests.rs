@@ -430,7 +430,9 @@ fn run_diff_opens_a_menu_of_a_forced_host_on_the_forced_render() {
 /// Stand-in openers: `extraModal` appends a `.scrim` holding a preview-labelled `.modal`, as `UI.confirm` does, `toastOnly` a
 /// `.toast`, `boom` throws and `rerender` re-renders the page through `REG.render()`, which the stand-in registry
 /// gets here as a mount; `armedModal` calls `extraModal` only once `window.armed` is set, and the
-/// global `inlineScrim`, no `PAGES` function, appends a `.scrim` as an inline `UI.modal` call does.
+/// global `inlineScrim`, no `PAGES` function, appends a `.scrim` as an inline `UI.modal` call does;
+/// `classListModal` and `wideModal` append one through `classList.add` and as `"scrim wide"`,
+/// `deferredModal` opens `extraModal` from a timer and `forever` re-schedules itself without end.
 const OPENERS: &str = concat!(
     "PAGES.extraModal = function () { const el = document.createElement(\"div\"); el.className = \"scrim\"; el.innerHTML = '<div class=\"modal\"><div class=\"frag\"><span class=\"frag-label\"></span></div></div>'; document.body.appendChild(el); };\n",
     "PAGES.toastOnly = function () { const el = document.createElement(\"div\"); el.className = \"toast\"; document.body.appendChild(el); };\n",
@@ -439,6 +441,10 @@ const OPENERS: &str = concat!(
     "REG.render = function () { REG.mount({}, function () { return \"\"; }); };\n",
     "PAGES.rerender = function () { REG.render(); };\n",
     "PAGES.armedModal = function () { if (window.armed) PAGES.extraModal(); };\n",
+    "PAGES.classListModal = function () { const el = document.createElement(\"div\"); el.classList.add(\"scrim\"); document.body.appendChild(el); };\n",
+    "PAGES.wideModal = function () { const el = document.createElement(\"div\"); el.className = \"scrim wide\"; document.body.appendChild(el); };\n",
+    "PAGES.deferredModal = function () { setTimeout(function () { PAGES.extraModal(); }, 10); };\n",
+    "PAGES.forever = function tick() { setTimeout(tick, 10); };\n",
     "window.inlineScrim = function () { const el = document.createElement(\"div\"); el.className = \"scrim\"; document.body.appendChild(el); };\n",
 );
 
@@ -541,6 +547,64 @@ fn an_onclick_that_re_renders_is_no_error_and_no_modal() {
     assert_eq!(e, want);
 }
 
+/// A body that re-renders the page and then opens a modal has that modal; a body that assigns the
+/// page body outside every `REG` call fails by name, as its modal would go unseen.
+#[test]
+fn an_onclick_that_opens_after_a_re_render_or_assigns_the_body_is_seen() {
+    let repo = opener_repo("modal-rerender-open", &[("index", "REG.render();PAGES.extraModal()")]);
+    let e = format!("{:#}", renders(repo.path(), &LISTS).expect_err("opens after the re-render"));
+    assert_eq!(e, "modal drift:\n  mockup modal index PAGES.extraModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS");
+    let bare = opener_repo("modal-bare-body", &[("index", "document.body.innerHTML = ''")]);
+    let e = format!("{:#}", renders(bare.path(), &LISTS).expect_err("a bare body assignment"));
+    assert_eq!(e, "mockup onclick failed:\n  onclick \"document.body.innerHTML = ''\" drawn on index threw in the harness: assigned document.body.innerHTML outside every REG call");
+}
+
+/// A `.scrim` is any element with the `scrim` class: one added through `classList.add` or
+/// written beside another class is a modal, drawn unlisted it fails.
+#[test]
+fn a_scrim_by_class_token_is_a_modal() {
+    let repo = opener_repo("modal-class-token", &[("index", "PAGES.classListModal()"), ("index", "PAGES.wideModal()")]);
+    let e = format!("{:#}", renders(repo.path(), &LISTS).expect_err("two modals"));
+    let want = concat!(
+        "modal drift:\n",
+        "  mockup modal index PAGES.classListModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS\n",
+        "  mockup modal index PAGES.wideModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS",
+    );
+    assert_eq!(e, want);
+}
+
+/// A timer callback runs after the body, its modal named by the `PAGES` call that scheduled it;
+/// one scheduled by the body itself (an interval, run once) is named by the `PAGES` call it
+/// makes. Timers that never stop fail by name.
+#[test]
+fn a_deferred_opener_is_a_modal_and_endless_timers_fail() {
+    let repo = opener_repo("modal-deferred", &[("index", "PAGES.deferredModal()"), ("index", "setInterval(function () { PAGES.testOpener(); }, 10)")]);
+    let e = format!("{:#}", renders(repo.path(), &LISTS).expect_err("deferred modals"));
+    let want = concat!(
+        "modal drift:\n",
+        "  mockup modal index PAGES.deferredModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS\n",
+        "  mockup modal index PAGES.testOpener is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS",
+    );
+    assert_eq!(e, want);
+    let endless = opener_repo("modal-endless", &[("index", "PAGES.forever()")]);
+    let e = format!("{:#}", renders(endless.path(), &LISTS).expect_err("endless timers"));
+    assert_eq!(e, "mockup onclick failed:\n  onclick \"PAGES.forever()\" drawn on index threw in the harness: timers still pending after 10 rounds");
+}
+
+/// A body guarded on an ancestor (`closest`) or a typed value takes the path a user reaches, so
+/// the modal behind the guard is seen.
+#[test]
+fn a_guarded_opener_is_a_modal() {
+    let repo = opener_repo("modal-guarded", &[("index", "if (this.closest('tr')) PAGES.extraModal()"), ("index", "if (this.querySelector('input').value) PAGES.testOpener()")]);
+    let e = format!("{:#}", renders(repo.path(), &LISTS).expect_err("guarded modals"));
+    let want = concat!(
+        "modal drift:\n",
+        "  mockup modal index PAGES.extraModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS\n",
+        "  mockup modal index PAGES.testOpener is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS",
+    );
+    assert_eq!(e, want);
+}
+
 /// A body that throws in the harness fails with its host and its text, as drawn; its
 /// non-throwing twin passes.
 #[test]
@@ -616,8 +680,9 @@ fn a_modal_entry_its_host_does_not_draw_fails() {
 }
 
 /// An `EXCLUDED_MODALS` claim that the mockup has no opener of an action fails when its mockup
-/// host draws a modal opener excluded with that same portal action, on a page and on the page of
-/// an excluded menu host; excluded with another action, the palette or nothing, it passes.
+/// host draws a modal opener excluded with that same portal action or with no portal side, on a
+/// page and on the page of an excluded menu host; excluded with another action or the palette, it
+/// passes.
 #[test]
 fn a_false_no_mock_opener_claim_fails() {
     let repo = opener_repo("modal-claim", &[("mail", "PAGES.extraModal('x')"), ("events", "PAGES.extraModal('y')")]);
@@ -637,11 +702,10 @@ fn a_false_no_mock_opener_claim_fails() {
         "but events draws PAGES.extraModal, which is neither a PAGE_MAP modal entry nor an EXCLUDED_MOCK_MODALS entry of another action there",
     );
     assert_eq!(e, want);
-    for (mail, events) in [
-        (PortalModal::Action("mail/other"), PortalModal::Action("core.events/other")),
-        (PortalModal::Palette, PortalModal::Palette),
-        (PortalModal::Absent, PortalModal::Absent),
-    ] {
+    let absent = with(PortalModal::Absent, PortalModal::Absent);
+    let e = format!("{:#}", renders(repo.path(), &Lists { excluded_mock_modals: &absent, ..LISTS }).expect_err("absent holds no claim"));
+    assert_eq!(e, want);
+    for (mail, events) in [(PortalModal::Action("mail/other"), PortalModal::Action("core.events/other")), (PortalModal::Palette, PortalModal::Palette)] {
         renders(repo.path(), &Lists { excluded_mock_modals: &with(mail, events), ..LISTS }).expect("another action");
     }
 }

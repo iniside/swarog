@@ -33,13 +33,16 @@ const SCRIPTS: &[&str] = &[
 ];
 
 // Each render boots a fresh mockup: a new context holding stub browser globals, in which the
-// mockup's scripts run. A stub element finds a fresh stub for every `querySelector`, no
-// `closest` ancestor, and holds an empty `value`; timers never fire, so nothing deferred runs. `REG.render` assigns `document.body.innerHTML` right after `P.<key>.render()`; the
-// setter throws a sentinel there, so the legend fill-in and the page's `after` hook never run. With
+// mockup's scripts run. A stub element finds a fresh stub for every `querySelector` and
+// `closest`, holds the non-empty `value` "stub" and a `classList` that edits its `className`, so a
+// guard on an ancestor or a typed value takes the path a user reaches; `checked` stays falsy, so
+// only one branch of a guard on it runs. Outside a probe timers never fire. `REG.render` assigns
+// `document.body.innerHTML` right after `P.<key>.render()`; the setter throws a sentinel there,
+// so the legend fill-in and the page's `after` hook never run. With
 // `input.menu` no page mounts: `UI.openMenu` runs against a stub event and anchor, and the
 // element it appends to the body is written as `<div class="menu">` around its HTML. With
 // `input.modal` no page mounts either: `PAGES[opener]` is called with the entry's arguments,
-// and the first element it appends to the body whose class is `scrim` (`UI.modal`, which
+// and the first element it appends to the body with the class `scrim` (`UI.modal`, which
 // `UI.confirm` calls) is written as `<div class="scrim">` around its HTML. The
 // global `UI` is an accessor that wraps the `defineMenu` of whatever object a script assigns
 // to it, before any script can call it, so every defined menu id is recorded; with
@@ -48,39 +51,68 @@ const SCRIPTS: &[&str] = &[
 // every forceable panel and tile draws ok. With `input.probe`, a list of `onclick` bodies, each
 // body runs verbatim on its own fresh mockup with the page mounted as for a render (`this` a stub
 // element, `event` a click on it), after every function of `PAGES` is wrapped to record its name
-// while a call the body made to it runs. Each body is written as `{scrims}`, one entry per `.scrim` it
-// appended to the body: the name of the `PAGES` function the body called that appended it, or null
-// when it was appended outside every such call; or as `{error}` when it threw. A body that
-// re-renders the page throws the sentinel, which is no error.
+// while a call the body made to it runs, and every function of `REG` is wrapped to return
+// normally from the sentinel, so a body that re-renders the page goes on running; a body
+// assignment outside every `REG` call is an error. Timer callbacks queue, each with the outermost
+// `PAGES` call running when it was scheduled (an interval runs once), and run after the body,
+// for at most `MAX_TIMER_ROUNDS` rounds. Each body is written as `{scrims}`, one entry per `.scrim` it
+// appended to the body: the name of the `PAGES` function that appended it, or null when it was
+// appended outside every such call; or as `{error}` when it threw.
 const HARNESS: &str = r#""use strict";
 const fs = require("fs"), vm = require("vm");
 const input = JSON.parse(process.env.ADMINDIFF_INPUT);
 const CAPTURED = Symbol("captured");
 const scripts = input.scripts.map(file => new vm.Script(fs.readFileSync(file, "utf8"), { filename: file }));
 const inert = () => {};
-const element = () => ({
-  style: {}, dataset: {}, children: [], value: "",
-  classList: { add: inert, remove: inert, toggle: inert, contains: () => false },
-  addEventListener: inert, appendChild: inert, remove: inert, setAttribute: inert, focus: inert,
-  querySelector: () => element(), querySelectorAll: () => [], closest: () => null,
-  getBoundingClientRect: () => ({ left: 0, right: 0, top: 0, bottom: 0 }),
-});
+const element = () => {
+  const el = {
+    style: {}, dataset: {}, children: [], className: "", value: "stub",
+    addEventListener: inert, appendChild: inert, remove: inert, setAttribute: inert, focus: inert,
+    querySelector: () => element(), querySelectorAll: () => [], closest: () => element(),
+    getBoundingClientRect: () => ({ left: 0, right: 0, top: 0, bottom: 0 }),
+  };
+  const tokens = () => String(el.className).split(/\s+/).filter(Boolean);
+  el.classList = {
+    add: (...names) => { el.className = [...new Set([...tokens(), ...names])].join(" "); },
+    remove: (...names) => { el.className = tokens().filter(t => !names.includes(t)).join(" "); },
+    toggle: (name, force) => {
+      const on = force === undefined ? !tokens().includes(name) : !!force;
+      if (on) el.classList.add(name); else el.classList.remove(name);
+      return on;
+    },
+    contains: name => tokens().includes(name),
+  };
+  return el;
+};
+const hasClass = (el, name) => !!el && typeof el.className === "string" && el.className.split(/\s+/).includes(name);
+const MAX_TIMER_ROUNDS = 10;
 // A click on `el`: its target and current target.
 const click = el => ({ stopPropagation: inert, preventDefault: inert, currentTarget: el, target: el });
 // A fresh mockup: `html` is what the body was last assigned, `appended` each element appended to
 // the body with the `PAGES` function running when it was (`opener`, null outside every recorded
 // call), `defined` each menu id `UI.defineMenu` was called with, `ctx` the context the scripts ran in.
 function boot() {
-  const m = { html: null, appended: [], defined: [], opener: null, ctx: null };
+  const m = { html: null, appended: [], defined: [], opener: null, ctx: null, timers: [], cleared: new Set(), probing: false, rendering: 0 };
   const body = element();
   Object.defineProperty(body, "innerHTML", {
     get: () => m.html ?? "",
-    set: v => { m.html = String(v); throw CAPTURED; },
+    set: v => {
+      if (m.probing && m.rendering === 0) throw new Error("assigned document.body.innerHTML outside every REG call");
+      m.html = String(v);
+      throw CAPTURED;
+    },
   });
+  let timerId = 0;
+  const schedule = (fn, ...args) => {
+    timerId += 1;
+    if (typeof fn === "function") m.timers.push({ id: timerId, fn, args, opener: m.opener });
+    return timerId;
+  };
+  const clear = id => { m.cleared.add(id); };
   body.appendChild = el => { m.appended.push({ el, opener: m.opener }); };
   const ctx = {
     console, process, URL, URLSearchParams,
-    setTimeout: () => 0, clearTimeout: inert, setInterval: () => 0, clearInterval: inert,
+    setTimeout: schedule, clearTimeout: clear, setInterval: schedule, clearInterval: clear,
     document: {
       addEventListener: inert, querySelector: () => null, querySelectorAll: () => [],
       createElement: element, body, documentElement: { dataset: {} }, title: "",
@@ -115,7 +147,7 @@ if (input.registry) {
   const m = boot();
   m.ctx.UI.openMenu(click(element()), input.menu.id, input.menu.arg);
   const opened = m.appended.length ? m.appended[m.appended.length - 1].el : null;
-  if (opened === null || opened.className !== "menu") {
+  if (!hasClass(opened, "menu")) {
     process.stderr.write(`UI.openMenu('${input.menu.id}') appended no .menu element\n`);
     process.exit(2);
   }
@@ -128,7 +160,7 @@ if (input.registry) {
     process.exit(2);
   }
   open(...input.modal.args);
-  const scrim = m.appended.map(a => a.el).find(el => el && el.className === "scrim");
+  const scrim = m.appended.map(a => a.el).find(el => hasClass(el, "scrim"));
   if (!scrim) {
     process.stderr.write(`PAGES.${input.modal.opener}() appended no .scrim element\n`);
     process.exit(2);
@@ -140,6 +172,16 @@ if (input.registry) {
     const m = boot();
     mount(m);
     m.appended.length = 0;
+    m.timers.length = 0;
+    const reg = m.ctx.REG;
+    for (const name of Object.keys(reg)) {
+      const fn = reg[name];
+      if (typeof fn !== "function") continue;
+      reg[name] = function (...args) {
+        m.rendering += 1;
+        try { return fn.apply(this, args); } catch (e) { if (e !== CAPTURED) throw e; } finally { m.rendering -= 1; }
+      };
+    }
     const pages = m.ctx.PAGES;
     for (const name of Object.keys(pages)) {
       const fn = pages[name];
@@ -151,13 +193,22 @@ if (input.registry) {
       };
     }
     let error = null;
+    m.probing = true;
     try {
       const clicked = element();
       vm.runInContext(`(function (event) {\n${onclick}\n})`, m.ctx).call(clicked, click(clicked));
+      for (let round = 0; m.timers.length; round++) {
+        if (round === MAX_TIMER_ROUNDS) throw new Error(`timers still pending after ${MAX_TIMER_ROUNDS} rounds`);
+        for (const timer of m.timers.splice(0)) {
+          if (m.cleared.has(timer.id)) continue;
+          m.opener = timer.opener;
+          try { timer.fn(...timer.args); } finally { m.opener = null; }
+        }
+      }
     } catch (e) {
-      if (e !== CAPTURED) error = String(e && e.message !== undefined ? e.message : e);
+      error = String(e && e.message !== undefined ? e.message : e);
     }
-    const scrims = m.appended.filter(a => a.el && a.el.className === "scrim").map(a => a.opener);
+    const scrims = m.appended.filter(a => hasClass(a.el, "scrim")).map(a => a.opener);
     results.push(error === null ? { scrims } : { error });
   }
   process.stdout.write(JSON.stringify(results));

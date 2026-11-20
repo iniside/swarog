@@ -758,7 +758,8 @@ pub fn validate_excluded_modals(lists: &Lists) -> Result<()> {
 /// ids, and names an opener its host draws (else it is stale, a pending or unknown host drawing
 /// nothing checked). An `EXCLUDED_MODALS` [`ModalWhy`] claim holds when its mockup host has a
 /// compared render and every modal opener that render draws is a modal entry of another action
-/// there or an exclusion there whose portal side is another action, the palette or nothing.
+/// there or an exclusion there whose portal side is another action or the palette; one whose
+/// portal side is nothing could be the claimed action's opener, so it does not hold the claim.
 pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: &Lists) -> Result<()> {
     let Lists { page_map, excluded_menus, excluded_modals, excluded_mock_modals, .. } = *lists;
     let drawn_on = |host: &str| drawn.iter().find(|(h, _)| h == host).map(|(_, o)| o.as_slice());
@@ -809,7 +810,11 @@ pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: 
         for opener in openers {
             let opener = opener.as_str();
             let mapped_other = mapped(mock_host, opener).is_some_and(|p| p.modal.is_some_and(|m| m.action_path() != *action));
-            let excluded_other = excluded(mock_host, opener).is_some_and(|x| x.portal != PortalModal::Action(action));
+            let excluded_other = excluded(mock_host, opener).is_some_and(|x| match x.portal {
+                PortalModal::Action(other) => other != *action,
+                PortalModal::Palette => true,
+                PortalModal::Absent => false,
+            });
             if !mapped_other && !excluded_other {
                 problems.push(format!(
                     "EXCLUDED_MODALS {host} modal {action} says the mockup has no opener of it, but {mock_host} draws {opener}, which is neither a PAGE_MAP modal entry nor an EXCLUDED_MOCK_MODALS entry of another action there"
