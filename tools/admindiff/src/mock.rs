@@ -271,10 +271,10 @@ pub fn modal_openers(repo: &Path, host: &str, key: &str, search: &str, force: bo
     for (opener, result) in openers.iter().zip(&results) {
         if let Some(error) = result.get("error") {
             thrown.push(format!("PAGES.{} drawn on {host} threw in the harness: {} ({})", opener.name, opener.call, error.as_str().unwrap_or_default()));
-        } else if result.get("modal").and_then(serde_json::Value::as_bool).context("an opener probe result has no modal flag")? {
-            if !modals.contains(&opener.name) {
-                modals.push(opener.name.clone());
-            }
+        } else if result.get("modal").and_then(serde_json::Value::as_bool).context("an opener probe result has no modal flag")?
+            && !modals.contains(&opener.name)
+        {
+            modals.push(opener.name.clone());
         }
     }
     if !thrown.is_empty() {

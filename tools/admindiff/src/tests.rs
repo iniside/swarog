@@ -298,7 +298,9 @@ fn a_real_mockup_tab_entry_needs_no_menu_entry() {
     let mut page_map = PAGE_MAP.to_vec();
     page_map.push(crate::pages::Page { tab: Some("wallet"), ..*player });
     let tabs: Vec<(&str, &str)> = EXCLUDED_TABS.iter().copied().filter(|(id, _)| *id != "player.wallet").collect();
-    renders(&repo, &Lists { page_map: &page_map, excluded_tabs: &tabs, ..LISTS }).expect("the wallet tab draws the user menu undeclared");
+    let on_tab: Vec<(&str, &str, &str)> = EXCLUDED_MOCK_MODALS.iter().filter(|(h, _, _)| *h == "player").map(|(_, o, w)| ("player.wallet", *o, *w)).collect();
+    let lists = Lists { page_map: &page_map, excluded_tabs: &tabs, excluded_mock_modals: &mock_modals(&on_tab), ..LISTS };
+    renders(&repo, &lists).expect("the wallet tab draws the user menu undeclared");
 }
 
 /// The portal side of the stand-in's `players.menu.user`: the same menu body, unlabelled, in the
@@ -408,10 +410,10 @@ fn run_diff_opens_a_menu_of_a_forced_host_on_the_forced_render() {
 
 // ---- the mockup's modal inventory ---------------------------------------------------
 
-/// Stand-in openers: `extraModal` appends a `.scrim`, as `UI.confirm` does, `toastOnly` a
+/// Stand-in openers: `extraModal` appends a `.scrim` holding a preview-labelled `.modal`, as `UI.confirm` does, `toastOnly` a
 /// `.toast` and `boom` throws.
 const OPENERS: &str = concat!(
-    "PAGES.extraModal = function () { const el = document.createElement(\"div\"); el.className = \"scrim\"; document.body.appendChild(el); };\n",
+    "PAGES.extraModal = function () { const el = document.createElement(\"div\"); el.className = \"scrim\"; el.innerHTML = '<div class=\"modal\"><div class=\"frag\"><span class=\"frag-label\"></span></div></div>'; document.body.appendChild(el); };\n",
     "PAGES.toastOnly = function () { const el = document.createElement(\"div\"); el.className = \"toast\"; document.body.appendChild(el); };\n",
     "PAGES.boom = function () { throw new Error(\"kaboom\"); };\n",
     "PAGES.testOpener = PAGES.extraModal;\n",
@@ -492,13 +494,14 @@ fn an_opener_that_throws_fails_by_name() {
     renders(twin.path(), &LISTS).expect("no throw");
 }
 
-/// A `PAGE_MAP` modal entry whose opener its compared host does not draw fails; the stand-in
-/// that draws it passes.
+/// A `PAGE_MAP` modal entry whose opener its compared host does not draw fails, on a stand-in of
+/// the page map without modal entries; the stand-in that draws it passes.
 #[test]
 fn a_modal_entry_its_host_does_not_draw_fails() {
     let map = modal_map();
     let lists = Lists { page_map: &map, ..LISTS };
-    let undrawn = FakeRepo::with_openers("modal-undrawn", &mock_html(&body(true)), PAGE_MAP, &[], OPENERS);
+    let bare: Vec<Page> = PAGE_MAP.iter().copied().filter(|p| p.modal.is_none()).collect();
+    let undrawn = FakeRepo::with_openers("modal-undrawn", &mock_html(&body(true)), &bare, &[], OPENERS);
     let e = format!("{:#}", renders(undrawn.path(), &lists).expect_err("index draws no testOpener"));
     assert_eq!(e, "modal drift:\n  PAGE_MAP index.modal.test opens PAGES.testOpener, which the index mockup render does not draw as a modal");
     let drawn = FakeRepo::with_map("modal-drawn", &mock_html(&body(true)), &map);
@@ -525,7 +528,7 @@ fn a_false_no_mock_opener_claim_fails() {
     let named: Vec<(&str, &str, ModalWhy)> = EXCLUDED_MODALS
         .iter()
         .map(|(host, action, why)| match why {
-            ModalWhy::NoMockOpener { others, why } if others.is_empty() => (*host, *action, ModalWhy::NoMockOpener { others: &["extraModal"], why }),
+            ModalWhy::NoMockOpener { others: [], why } => (*host, *action, ModalWhy::NoMockOpener { others: &["extraModal"], why }),
             ModalWhy::NoMockOpener { why, .. } => (*host, *action, ModalWhy::NoMockOpener { others: &["cancelMail", "extraModal"], why }),
             ModalWhy::Other(_) => (*host, *action, *why),
         })
