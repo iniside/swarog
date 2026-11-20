@@ -419,3 +419,24 @@ fn forcing_a_mockup_without_ui_state_is_an_error() {
     let e = format!("{:#}", render(repo.path(), "index", "", true).expect_err("no UI.state"));
     assert!(e.contains("node failed rendering P.index forced ok") && e.contains("the mockup has no UI.state to force ok on"), "{e}");
 }
+
+/// The onclick probe runs each body on the page mounted as the render that drew it: forced ok,
+/// a body whose opener appends its `.scrim` only in the ok state is a modal of that opener;
+/// unforced, the same body appends nothing.
+#[test]
+fn the_onclick_probe_mounts_the_page_forced_ok_when_its_render_forces() {
+    let script = concat!(
+        "PAGES.okOnly = function () {\n",
+        "  if (UI.state.force !== \"ok\") return;\n",
+        "  const el = document.createElement(\"div\");\n",
+        "  el.className = \"scrim\";\n",
+        "  document.body.appendChild(el);\n",
+        "};\n",
+    );
+    let repo = FakeRepo::with_openers("mock-probe-forced", r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
+    let body = ["PAGES.okOnly()".to_string()];
+    let forced = super::modal_openers(repo.path(), "index", "index", "", true, &body).expect("the forced probe");
+    assert_eq!(forced, [MockOpener::Pages("okOnly".to_string())]);
+    let designed = super::modal_openers(repo.path(), "index", "index", "", false, &body).expect("the unforced probe");
+    assert!(designed.is_empty(), "unforced, the opener appends no .scrim: {designed:?}");
+}
