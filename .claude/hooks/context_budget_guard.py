@@ -6,11 +6,17 @@ Modes (argv[1]):
   send  PreToolUse SendMessage   main session: deny resuming a FINISHED subagent (by agent id)
                                  whose context is over SEND_LIMIT tokens; dispatch a fresh agent
   work  PreToolUse (every tool)  subagent over WORK_LIMIT: deny exploration (Read, Grep, Glob, LSP,
-                                 Agent, web, and shell readers such as rg/cat/Get-Content); Edit,
-                                 Write, cargo and git still run, so the agent finishes the edit in
-                                 hand, checks the build, commits a part and returns a hand-off.
+                                 Agent, web, shell readers such as rg/cat/Get-Content, and REPL
+                                 scripts that read: file(), tools.Read/Grep/Glob/LSP/WebFetch/
+                                 WebSearch, tools.Agent, or a $`...` command that starts with a
+                                 reader); Edit, Write, edit(), write(), cargo and git still run, so
+                                 the agent finishes the edit in hand, checks the build, commits a
+                                 part and returns a hand-off. A read-only lane (READ_ONLY_AGENTS) is
+                                 told to return its report with a 'Not checked:' list instead.
                                  Best effort: git show/grep and readers hidden in python -c,
-                                 bash -c or xargs still read
+                                 bash -c, xargs or tools.Bash inside REPL still read; a $(string)
+                                 call counts when one of the script's string literals starts with
+                                 a reader
 
 Context is the last API turn's input + cache tokens in the subagent transcript. Any error exits 0
 with no output, so a hook bug never blocks work.
@@ -25,6 +31,12 @@ WORK_LIMIT = 180_000
 TAIL_BYTES = 1_000_000
 AGENT_ID = re.compile(r"^a[0-9a-f]{8,}$")
 EXPLORE = {"Read", "Grep", "Glob", "LSP", "Agent", "WebFetch", "WebSearch", "NotebookRead"}
+READ_ONLY_AGENTS = {"general-purpose", "Explore", "Plan", "code-scout", "core-reviewer", "proof-auditor"}
+REPL_READ = re.compile(
+    r"(?<![\w.])file\s*\(|\btools\s*\.\s*(?:Read|Grep|Glob|LSP|WebFetch|WebSearch|NotebookRead|Agent)\b")
+REPL_SHELL_CALL = re.compile(r"(?<![\w.])\$\s*\(")
+REPL_SHELL = re.compile(r"(?<![\w.])\$\s*`((?:\\.|\$\{[^}]*\}|[^`\\])*)`", re.S)
+REGEX_PREV = set("(,=:[!&|?{};+-*%<>~^")
 SHELLS = {"Bash", "PowerShell"}
 SHELL_READERS = {
     "rg", "grep", "egrep", "fgrep", "cat", "sed", "awk", "head", "tail", "less", "more", "find", "ls",
@@ -44,7 +56,13 @@ SEND_REASON = (
 WORK_REASON = (
     "Context budget: you hold {ctx}k tokens; past {limit}k no new reading or search ({what}). Finish the edit "
     "in hand, run the check or test it needs, commit a coherent part and return a part hand-off (your agent "
-    "definition, Long steps). Edit, Write, cargo and git still run. The main session continues in a fresh agent."
+    "definition, Long steps). Edit, Write, edit(), write(), cargo and git still run. The main session continues "
+    "in a fresh agent."
+)
+READ_ONLY_REASON = (
+    "Context budget: you hold {ctx}k tokens; past {limit}k no new reading or search ({what}). Return your report "
+    "now: the findings you have, each with its anchors, and a 'Not checked:' list of what you did not reach, so the "
+    "main session can send it to a fresh agent."
 )
 
 
@@ -67,6 +85,95 @@ def shell_reader(command):
             head = head[:-4]
         if head in SHELL_READERS:
             return head
+    return None
+
+
+def scan_literals(code):
+    """Spans (start, end, kind) of '...', "..." and plain `...` literal text, skipping // and /* */ comments
+    and /.../ regex literals (each also a span), keeping $`...` commands. None when a literal does not
+    close, so the caller falls back to the raw code."""
+    spans = []
+    i, n = 0, len(code)
+    prev = ""
+    while i < n:
+        ch = code[i]
+        nxt = code[i + 1] if i + 1 < n else ""
+        if ch == "/" and nxt == "/":
+            j = code.find("\n", i)
+            j = n if j < 0 else j
+            spans.append((i, j, "comment"))
+            i = j
+            continue
+        if ch == "/" and nxt == "*":
+            j = code.find("*/", i + 2)
+            if j < 0:
+                return None
+            spans.append((i, j + 2, "comment"))
+            i = j + 2
+            continue
+        if ch == "/" and (prev == "" or prev in REGEX_PREV or code[max(0, i - 6):i].rstrip().endswith("return")):
+            j, in_class = i + 1, False
+            while j < n and code[j] != "\n" and (code[j] != "/" or in_class):
+                if code[j] == "\\":
+                    j += 1
+                elif code[j] == "[":
+                    in_class = True
+                elif code[j] == "]":
+                    in_class = False
+                j += 1
+            if j >= n or code[j] != "/":
+                return None
+            spans.append((i + 1, j, "regex"))
+            i = j + 1
+            prev = "/"
+            continue
+        if ch in "'\"`":
+            command = ch == "`" and i > 0 and code[i - 1] == "$"
+            j = i + 1
+            while j < n and code[j] != ch:
+                j += 2 if code[j] == "\\" else 1
+            if j >= n:
+                return None
+            if not command:
+                spans.append((i + 1, j, "string"))
+            i = j + 1
+            prev = ch
+            continue
+        if not ch.isspace():
+            prev = ch
+        i += 1
+    return spans
+
+
+def mask_strings(code, spans):
+    """Blank the given spans (string, comment and regex text, string arguments of edit() and
+    write() among them), keeping offsets, so text that only mentions file( or rg is not a call."""
+    chars = list(code)
+    for start, end, _kind in spans:
+        for k in range(start, end):
+            if chars[k] != "\n":
+                chars[k] = " "
+    return "".join(chars)
+
+
+def repl_reader(code):
+    """Best effort: a REPL script reads when it calls file(), a reading tool or tools.Agent, or runs a
+    $`...` command (or a $(string) call) whose segments start with a reader."""
+    spans = scan_literals(code)
+    masked = code if spans is None else mask_strings(code, spans)
+    found = REPL_READ.search(masked)
+    if found:
+        return "tools.Agent" if found.group(0).endswith("Agent") else "file() or a reading tool"
+    for m in REPL_SHELL.finditer(masked):
+        reader = shell_reader(re.sub(r"\$\{[^}]*\}", "X", m.group(1)))
+        if reader:
+            return reader
+    if spans and REPL_SHELL_CALL.search(masked):
+        for start, end, kind in spans:
+            if kind == "string":
+                reader = shell_reader(re.sub(r"\$\{[^}]*\}", "X", code[start:end]))
+                if reader:
+                    return reader
     return None
 
 
@@ -147,10 +254,14 @@ def do_work(payload):
     if not agent_id:
         return
     tool = str(payload.get("tool_name") or "")
+    tool_input = payload.get("tool_input") or {}
     if tool in EXPLORE:
         what = tool
+    elif tool == "REPL":
+        what = repl_reader(str(tool_input.get("code") or ""))
+        what = what and "{0} in REPL".format(what)
     elif tool in SHELLS:
-        what = shell_reader(str((payload.get("tool_input") or {}).get("command") or ""))
+        what = shell_reader(str(tool_input.get("command") or ""))
         what = what and "{0} via {1}".format(what, tool)
     else:
         return
@@ -158,7 +269,8 @@ def do_work(payload):
         return
     ctx = last_context(subagent_file(payload.get("transcript_path"), agent_id))
     if ctx and ctx > WORK_LIMIT:
-        deny(WORK_REASON.format(ctx=ctx // 1000, limit=WORK_LIMIT // 1000, what=what))
+        reason = READ_ONLY_REASON if payload.get("agent_type") in READ_ONLY_AGENTS else WORK_REASON
+        deny(reason.format(ctx=ctx // 1000, limit=WORK_LIMIT // 1000, what=what))
 
 
 def main():

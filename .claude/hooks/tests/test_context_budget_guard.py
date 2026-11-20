@@ -1,4 +1,4 @@
-"""context_budget_guard: resume limit on SendMessage and the in-agent context limit."""
+"""context_budget_guard: resume limit on SendMessage, the in-agent context limit and its REPL script analysis."""
 import json
 import os
 import subprocess
@@ -55,6 +55,62 @@ class Guard(unittest.TestCase):
         p = {"tool_name": tool, "agent_id": AID, "transcript_path": transcript or self.main,
              "tool_input": {"command": command} if command else {"file_path": "x"}}
         return self.run_hook("work", p)
+
+    def repl(self, code, agent_type=None):
+        p = {"tool_name": "REPL", "agent_id": AID, "transcript_path": self.main, "tool_input": {"code": code}}
+        if agent_type:
+            p["agent_type"] = agent_type
+        return self.run_hook("work", p)
+
+    def test_repl_over_limit_denies_reading_scripts(self):
+        self.agent([200_000], finished=False)
+        for code in ("const t = await file('core/a.rs').text()",
+                     "await tools.Read({file_path: 'a.rs'})",
+                     "await tools.Grep({pattern: 'x'})",
+                     "await tools.LSP({operation: 'hover'})",
+                     "await tools.WebFetch({url: 'u'})",
+                     "await tools.Agent({subagent_type: 'code-scout', model: 'haiku', prompt: 'q'})",
+                     "const out = await $`rg -n foo ${dir}`.text()",
+                     "await $`cd G:/p && cat a.rs`",
+                     "const cmd = 'sed -n 1,40p a.rs'; await $(cmd)"):
+            self.assertEqual(self.repl(code), "deny", code)
+
+    def test_repl_over_limit_lets_edits_builds_and_git_run(self):
+        self.agent([200_000], finished=False)
+        for code in ("await edit('a.rs', 'file(x)', 'rg -n y')",
+                     "await write('a.md', 'cat a.rs and tools.Read here')",
+                     "// file('a.rs') is read later\nawait $`cargo check -p admin`",
+                     "/* tools.Grep */ await $`git commit -m x`",
+                     "const re = /file\\(/; await $`git status`",
+                     "await $`cargo test -p admin 2>&1 | tail -n 40`",
+                     "await $(`git log -1`)",
+                     "const profile = 1; myfile(2)",
+                     ""):
+            self.assertEqual(self.repl(code), "silent", code)
+
+    def test_repl_below_limit_is_silent(self):
+        self.agent([170_000], finished=False)
+        self.assertEqual(self.repl("await file('a.rs').text()"), "silent")
+
+    def test_read_only_lane_is_told_to_return_its_report(self):
+        self.agent([200_000], finished=False)
+        for lane in ("general-purpose", "Explore", "Plan", "code-scout", "core-reviewer", "proof-auditor"):
+            p = {"tool_name": "Read", "agent_id": AID, "agent_type": lane, "transcript_path": self.main,
+                 "tool_input": {"file_path": "x"}}
+            out = self.run_hook_raw(p)
+            self.assertEqual(out["permissionDecision"], "deny", lane)
+            self.assertIn("Not checked:", out["permissionDecisionReason"], lane)
+        p = {"tool_name": "Read", "agent_id": AID, "agent_type": "core-implementer", "transcript_path": self.main,
+             "tool_input": {"file_path": "x"}}
+        out = self.run_hook_raw(p)
+        self.assertIn("part hand-off", out["permissionDecisionReason"])
+        self.assertNotIn("Not checked:", out["permissionDecisionReason"])
+
+    def run_hook_raw(self, payload):
+        r = subprocess.run([sys.executable, "-I", HOOK, "work"], input=json.dumps(payload),
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)["hookSpecificOutput"]
 
     def test_send_denies_large_finished_agent(self):
         self.agent([20_000, 150_000])
