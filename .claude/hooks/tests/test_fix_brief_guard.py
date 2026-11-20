@@ -88,6 +88,8 @@ class FixBriefGuard(unittest.TestCase):
             prompt = "Do Step {0} of {1}.".format(step, PLAN)
             self.assertEqual(self.run_hook("core-implementer", prompt), "silent", step)
         self.assertEqual(self.run_hook("test-author", "Implement Step 3 of " + PLAN), "silent")
+        for prompt in ("Implement ONLY Step 3 of " + PLAN, "Implement **Step 3 - heading** of " + PLAN):
+            self.assertEqual(self.run_hook("core-implementer", prompt), "silent", prompt)
 
     def test_step_missing_from_plan_or_plan_missing_is_denied(self):
         for prompt in ("Do Step 4 of " + PLAN, "Do Step 13d2 of " + PLAN, "Do Step 13c.2a of " + PLAN,
@@ -104,10 +106,22 @@ class FixBriefGuard(unittest.TestCase):
         self.assertEqual(self.run_hook("core-implementer", both), "silent")
         one_bad = "Do Step 3 of {0}.\nDo Step 4 of {0}.".format(PLAN)
         self.assertEqual(self.run_hook("core-implementer", one_bad), "deny")
+        repeat = "Do Step 3 of {0}; see {1}. Implement ONLY Step 3.".format(PLAN, OTHER_PLAN)
+        self.assertEqual(self.run_hook("core-implementer", repeat), "silent")
         unbound = "Do Step 3.\nPlans: {0}, {1}.".format(PLAN, OTHER_PLAN)
         self.assertEqual(self.run_hook("core-implementer", unbound), "deny")
         only_plan = "Do Step 3.\nPlan: {0}.".format(PLAN)
         self.assertEqual(self.run_hook("core-implementer", only_plan), "silent")
+
+    def test_negated_step_is_a_scope_fence(self):
+        for fence in ("Do NOT do Step 14 or later", "Do not do Step 4", "Don't implement Step 4",
+                      "never do Step 4"):
+            prompt = "Do Step 13d2b of {0}. {1}.\nUntracked: {2}".format(PLAN, fence, OTHER_PLAN)
+            self.assertEqual(self.run_hook("core-implementer", prompt), "silent", fence)
+        self.assertEqual(self.run_hook("core-implementer", "Do NOT do Step 3 of " + PLAN), "deny")
+        unfenced = "Do Step 13d2b of {0}. Then do Step 4.\nUntracked: {1}".format(PLAN, OTHER_PLAN)
+        self.assertEqual(self.run_hook("core-implementer", unfenced), "deny")
+        self.assertIn("same sentence", self.last_reason)
 
     def test_real_plan_steps_resolve(self):
         real = os.path.join(os.path.dirname(HOOKS), "..", *REAL_PLAN.split("/"))

@@ -3,10 +3,12 @@
 
 PreToolUse Agent. .agents/skills/implementation-dispatch/SKILL.md **Fixes outside a plan**.
 A core-implementer, mockup-implementer or test-author prompt passes when it
-  (a) says "Do Step <id>" or "Implement Step <id>" with an existing plan file (docs/plans/...-plan.md) named in
-      the same sentence (or as the only plan path in the prompt), for a step of that plan: a "### Step <id>"
-      heading, a bold "**<id>" or "**Step <id>" at a line start, or the id in the plan's "Execution order"
-      paragraph (a part hand-off repeats this line); every such step must resolve, or
+  (a) says "Do Step <id>" or "Implement Step <id>" ("only" or "**" may stand before "Step") with an existing
+      plan file (docs/plans/...-plan.md) named in the same sentence, or as the only plan path in the prompt
+      (a repeated id keeps the plan it was first bound to), for a step of that plan: a "### Step <id>" heading,
+      a bold "**<id>" or "**Step <id>" at a line start, or the id in the plan's "Execution order" paragraph (a
+      part hand-off repeats this line); every such step must resolve, except one negated in its clause
+      ("Do NOT do Step 14"), which is a scope fence, or
   (b) holds a "Diagnosis:" section with at least one path:line anchor and a "Change:" line (a review punch
       list passes as the Diagnosis with the reviewer's anchors).
 Anything else is denied with the diagnosis route.
@@ -29,10 +31,11 @@ CONT_LANES = {"core-implementer", "test-author", "docs-writer", "mockup-implemen
 STEP = r"(?:[0-9]+[0-9a-z]*(?:\.[0-9a-z]+)*|[A-Z])"
 STEP_END = r"(?![\w-]|\.\w)"
 PLAN = re.compile(r"(docs/plans/[\w./-]+?-plan\.md)")
-DO_STEP = re.compile(r"\b(?:Do|Implement)\s+Step\s+(" + STEP + r")" + STEP_END, re.I)
+DO_STEP = re.compile(r"\b(?:Do|Implement)\s+(?:only\s+)?(?:\*\*)?Step\s+(" + STEP + r")" + STEP_END, re.I)
 DIAG = re.compile(r"^\s*(?:#+\s*)?(?:\*\*)?Diagnosis\b(?:\*\*)?\s*:", re.I | re.M)
 ANCHOR = re.compile(r"[\w./\\-]*\w\.(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{1,10}:\d+")
 SENTENCE_END = re.compile(r"[.;!?](?=\s|$)|\n")
+NEGATED = re.compile(r"(?:\b(?:not|never|no)\b|n't\b)[^.;:,!?\n]{0,15}$", re.I)
 CHANGE = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?Change\b(?:\*\*)?\s*:", re.I | re.M)
 PART_K = r"part\s+(?:[2-9]|\d{2,})[a-z]?\b"
 CONT = re.compile(r"\bstep\s+" + STEP + STEP_END + r"[^\n]{0,120}?\b" + PART_K +
@@ -47,7 +50,8 @@ REASON = (
     "**Fixes outside a plan**). Dispatch code-scout with a diagnosis question (subagent_type:\"code-scout\", "
     "model:\"sonnet\", effort:\"medium\"; the symptom, the expected behaviour and how it shows), then put its result "
     "in this prompt as a 'Diagnosis:' section: the cause with path:line anchors and a 'Change:' line per change "
-    "point. A plan step passes as 'Do Step <id>' (or 'Implement Step <id>') with the plan path; a review punch "
+    "point. A plan step passes as 'Do Step <id>' (or 'Implement Step <id>') with the plan path in the same sentence, "
+    "or as the only plan path in the prompt; a negated 'do not do Step <id>' fence is not a step. A review punch "
     "list goes in as the Diagnosis with the reviewer's anchors, one 'Change:' line per finding."
 )
 CONT_REASON = (
@@ -77,12 +81,15 @@ def sentence_plan(prompt, at):
 
 
 def plan_step_ok(prompt):
-    steps = list(DO_STEP.finditer(prompt))
+    steps = [m for m in DO_STEP.finditer(prompt) if not NEGATED.search(prompt[max(0, m.start() - 30):m.start()])]
     if not steps:
         return False
     plans = set(PLAN.findall(prompt))
+    bound = {}
     for m in steps:
-        path = sentence_plan(prompt, m.start()) or (len(plans) == 1 and next(iter(plans)))
+        path = (sentence_plan(prompt, m.start()) or bound.get(m.group(1).lower())
+                or (len(plans) == 1 and next(iter(plans))))
+        bound.setdefault(m.group(1).lower(), path)
         full = path and os.path.join(REPO, path)
         if not full or not os.path.isfile(full):
             return False

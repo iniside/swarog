@@ -16,7 +16,10 @@ Modes (argv[1]):
                                  Best effort: git show/grep and readers hidden in python -c,
                                  bash -c, xargs or tools.Bash inside REPL still read; a $(...)
                                  call counts when its first argument is a literal (or a variable
-                                 assigned one) that starts with a reader
+                                 assigned one) that starts with a reader. A $ call wrapped in a helper
+                                 function (const sh = c => $(c); sh("rg ...")) is not seen in the
+                                 script; its command still reaches the Bash check when it runs, since
+                                 a REPL $ call fires PreToolUse hooks as tool Bash
 
 Context is the last API turn's input + cache tokens in the subagent transcript. Any error exits 0
 with no output, so a hook bug never blocks work.
@@ -91,8 +94,9 @@ def shell_reader(command):
 
 def scan_literals(code):
     """Spans (start, end, kind, text) of '...', "..." and `...` literals ("command" for a $`...` command, with
-    each ${...} as X in its text), // and /* */ comments and /.../ regex literals. Literals inside a ${...}
-    are spans too. None when a literal, comment or ${...} does not close."""
+    each ${...} as X in its text), // and /* */ comments, /.../ regex literals and the "code" inside each
+    ${...} of a template. Literals inside a ${...} are spans too. None when a literal, comment or ${...} does
+    not close."""
     spans = []
     n = len(code)
 
@@ -106,10 +110,12 @@ def scan_literals(code):
             elif c == "`":
                 return j, "".join(out)
             elif c == "$" and code[j + 1:j + 2] == "{":
-                j = scan(j + 2, True)
-                if j is None:
+                k = scan(j + 2, True)
+                if k is None:
                     return None
+                spans.append((j + 2, k - 1, "code", ""))
                 out.append("X")
+                j = k
             else:
                 out.append(c)
                 j += 1
@@ -185,12 +191,13 @@ def scan_literals(code):
 
 def mask_strings(code, spans):
     """Blank the given spans (string, command, comment and regex text, string arguments of edit() and
-    write() among them), keeping offsets, so text that only mentions file( or rg is not a call."""
+    write() among them), keeping offsets, so text that only mentions file( or rg is not a call. The code of a
+    template's ${...} stays, and the innermost span decides each character."""
     chars = list(code)
-    for start, end, _kind, _text in spans:
+    for start, end, kind, _text in sorted(spans, key=lambda s: (s[0], -s[1])):
         for k in range(start, end):
             if chars[k] != "\n":
-                chars[k] = " "
+                chars[k] = code[k] if kind == "code" else " "
     return "".join(chars)
 
 

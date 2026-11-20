@@ -77,6 +77,9 @@ class Guard(unittest.TestCase):
                      "await $(`grep -n x ${dir}`, 5000)",
                      "await $`echo ${'`'} && cat a.rs`",
                      "const out = await $`rg ${`a${b}`} src`",
+                     "log(`${(await file(p).text()).length}`)",
+                     "const s = `${await tools.Read({file_path: 'a.rs'})}`",
+                     "const s = `x ${`y ${file('a.rs')}`}`",
                      "await write('x.rs', 'y'); await $('git status'); await $('cat a.rs')"):
             self.assertEqual(self.repl(code), "deny", code)
 
