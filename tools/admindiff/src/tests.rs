@@ -713,6 +713,32 @@ fn the_onclick_probe_of_a_forced_page_sees_a_modal_that_opens_only_forced() {
     assert_eq!(e, "modal drift:\n  EXCLUDED_MOCK_MODALS lists index PAGES.okOnly, which no compared index mockup render draws as a modal");
 }
 
+/// A menu's onclick probe runs on its host forced as the host entry is (a menu entry never
+/// forces): with the players entry forcing, an opener drawn in the players user menu that appends
+/// its `.scrim` only in the ok state is a mockup modal of that menu, unlisted failing and listed
+/// passing; probed with the menu entry's own unforced flag it would open nothing.
+#[test]
+fn the_onclick_probe_of_a_forced_hosts_menu_sees_a_modal_that_opens_only_forced() {
+    let ok_only = concat!(
+        "PAGES.okOnly = function () {\n",
+        "  if (UI.state.force !== \"ok\") return;\n",
+        "  const el = document.createElement(\"div\");\n",
+        "  el.className = \"scrim\";\n",
+        "  document.body.appendChild(el);\n",
+        "};\n",
+    );
+    let forced: Vec<Page> = PAGE_MAP.iter().map(|p| Page { force: p.id() == "players", ..*p }).collect();
+    assert_eq!(forced.iter().filter(|p| p.force).count(), 1, "PAGE_MAP lists players once");
+    let menu = forced.iter().find(|p| p.id() == "players.menu.user").expect("PAGE_MAP lists players.menu.user");
+    assert!(!menu.force, "the menu entry itself does not force");
+    let drawn = [("players.menu.user", "PAGES.okOnly()")];
+    let repo = FakeRepo::with_openers("modal-forced-menu", &mock_html(&body(true)), &forced, &drawn, ok_only);
+    let e = format!("{:#}", renders(repo.path(), &Lists { page_map: &forced, ..LISTS }).expect_err("forced host, okOnly opens"));
+    assert_eq!(e, "modal drift:\n  mockup modal players.menu.user PAGES.okOnly is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS");
+    let listed = mock_modals(&[pages_modal("players.menu.user", "okOnly", "why")]);
+    renders(repo.path(), &Lists { page_map: &forced, excluded_mock_modals: &listed, ..LISTS }).expect("forced and listed");
+}
+
 /// A `PAGE_MAP` modal entry whose opener its compared host does not draw fails, on a stand-in of
 /// the page map without modal entries; the stand-in that draws it passes.
 #[test]
