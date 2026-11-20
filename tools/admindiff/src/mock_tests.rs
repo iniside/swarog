@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use super::render;
-use crate::pages::{Route, EXCLUDED, EXCLUDED_MOCK_MENUS, EXCLUDED_TABS, PAGE_MAP};
+use crate::pages::{Page, Route, EXCLUDED, EXCLUDED_MOCK_MENUS, EXCLUDED_TABS, PAGE_MAP};
 use crate::tests::{write, ScratchDir};
 
 /// A scratch repo whose mockup is a stand-in: every page the two lists name has its html
@@ -14,7 +14,9 @@ use crate::tests::{write, ScratchDir};
 /// mockup does: a first tab, then every `PAGE_MAP` tab entry and `EXCLUDED_TABS` tab of the
 /// page, the one `location.search` names selected, else the first; then, as the real mockup
 /// does, a `UI.openMenu` button for each `PAGE_MAP` menu entry whose host is the page with
-/// the `tab` `location.search` names (none: an untabbed host), whose argument is the page.
+/// the `tab` `location.search` names (none: an untabbed host), whose argument is the page;
+/// the button of a menu whose host entry forces is drawn only on a render forced ok (`UI.state`
+/// starts empty), as a mockup panel draws its row menus only in its ok state.
 /// `UI.openMenu` appends a `.menu` holding [`MOCK_MENU`] with `{arg}` and `{id}` replaced;
 /// `registry.js` defines, through `UI.defineMenu`, every menu `PAGE_MAP` and
 /// `EXCLUDED_MOCK_MENUS` name, as the real registry defines its menus. Each `PAGE_MAP` modal
@@ -22,12 +24,17 @@ use crate::tests::{write, ScratchDir};
 /// `{opener}` and `{args}` (its arguments joined by `,`) replaced, as `UI.confirm` does.
 /// `REG.mount` assigns the body and then runs `meta.after`, as the real registry does; the
 /// stand-in `after` prints [`AFTER_RAN`] and exits 0, so a harness that let it run would
-/// return that instead of the page.
+/// return that instead of the page. [`FakeRepo::with_map`] reads a given page map in place of
+/// `PAGE_MAP`.
 pub(crate) struct FakeRepo {
     dir: ScratchDir,
 }
 
 pub(crate) const AFTER_RAN: &str = "AFTER-RAN";
+
+/// A stand-in menu button: its host's tab (none: an untabbed host), the menu id, and whether
+/// its host entry forces, so the button is drawn only forced ok.
+type MenuButton<'a> = (Option<&'a str>, &'a str, bool);
 
 /// The stand-in menu body: one preview-labelled group, as the real `UI.openMenu` draws it.
 pub(crate) const MOCK_MENU: &str = concat!(
@@ -44,9 +51,13 @@ pub(crate) const MOCK_MODAL: &str = concat!(
 
 impl FakeRepo {
     pub(crate) fn new(name: &str, html: &str) -> FakeRepo {
+        FakeRepo::with_map(name, html, PAGE_MAP)
+    }
+
+    pub(crate) fn with_map(name: &str, html: &str, page_map: &[Page]) -> FakeRepo {
         let dir = ScratchDir::new(name);
         let redesign = dir.path().join("UILayout").join("redesign");
-        let pages: Vec<&str> = PAGE_MAP.iter().map(|p| p.page).chain(EXCLUDED.iter().map(|(p, _)| *p)).collect();
+        let pages: Vec<&str> = page_map.iter().map(|p| p.page).chain(EXCLUDED.iter().map(|(p, _)| *p)).collect();
         for page in &pages {
             write(&redesign.join(format!("{page}.html")), &format!("<script>PAGES.boot(\"{page}\")</script>"));
         }
@@ -54,29 +65,30 @@ impl FakeRepo {
         let tabs: std::collections::BTreeMap<&str, Vec<&str>> = pages
             .iter()
             .map(|page| {
-                let first_row = PAGE_MAP.iter().any(|p| p.page == *page && matches!(p.route, Route::FirstRow(_)));
-                let mapped = PAGE_MAP.iter().filter(|p| p.page == *page && p.is_page()).filter_map(|p| p.tab);
+                let first_row = page_map.iter().any(|p| p.page == *page && matches!(p.route, Route::FirstRow(_)));
+                let mapped = page_map.iter().filter(|p| p.page == *page && p.is_page()).filter_map(|p| p.tab);
                 let prefix = format!("{page}.");
                 let excluded = EXCLUDED_TABS.iter().filter_map(|(id, _)| id.strip_prefix(prefix.as_str()));
                 let ids = if first_row { std::iter::once("first").chain(mapped).chain(excluded).collect() } else { Vec::new() };
                 (*page, ids)
             })
             .collect();
-        // Each page's menus: [host tab or null, menu id].
-        let mut menus: std::collections::BTreeMap<&str, Vec<(Option<&str>, &str)>> = std::collections::BTreeMap::new();
-        for p in PAGE_MAP {
+        // Each page's menus: [host tab or null, menu id, whether its host entry forces].
+        let mut menus: std::collections::BTreeMap<&str, Vec<MenuButton>> = std::collections::BTreeMap::new();
+        for p in page_map {
             if let Some(menu) = p.menu {
-                menus.entry(p.page).or_default().push((p.tab, menu.mock));
+                let forced = page_map.iter().any(|q| q.hosts(&p.host()) && q.force);
+                menus.entry(p.page).or_default().push((p.tab, menu.mock, forced));
             }
         }
         let mut defined: Vec<&str> = Vec::new();
-        for id in PAGE_MAP.iter().filter_map(|p| p.menu.map(|m| m.mock)).chain(EXCLUDED_MOCK_MENUS.iter().map(|(id, _)| *id)) {
+        for id in page_map.iter().filter_map(|p| p.menu.map(|m| m.mock)).chain(EXCLUDED_MOCK_MENUS.iter().map(|(id, _)| *id)) {
             if !defined.contains(&id) {
                 defined.push(id);
             }
         }
         let mut openers: Vec<&str> = Vec::new();
-        for opener in PAGE_MAP.iter().filter_map(|p| p.modal.map(|m| m.opener)) {
+        for opener in page_map.iter().filter_map(|p| p.modal.map(|m| m.opener)) {
             if !openers.contains(&opener) {
                 openers.push(opener);
             }
@@ -100,10 +112,10 @@ impl FakeRepo {
                 "const MENUS = {menus};\n",
                 "const menuButtons = function (key) {{\n",
                 "  const tab = new URLSearchParams(location.search).get(\"tab\");\n",
-                "  return (MENUS[key] || []).filter(m => m[0] === tab).map(m =>\n",
+                "  return (MENUS[key] || []).filter(m => m[0] === tab && (!m[2] || UI.state.force === \"ok\")).map(m =>\n",
                 "    '<button class=\"btn\" onclick=\"UI.openMenu(event,\\'' + m[1] + '\\',\\'' + key + '\\')\"></button>').join(\"\");\n",
                 "}};\n",
-                "var UI = {{ defineMenu: function () {{}}, openMenu: function (ev, id, arg) {{\n",
+                "var UI = {{ state: {{}}, defineMenu: function () {{}}, openMenu: function (ev, id, arg) {{\n",
                 "  ev.stopPropagation();\n",
                 "  const el = document.createElement(\"div\");\n",
                 "  el.className = \"menu\";\n",
@@ -150,7 +162,7 @@ fn real_repo() -> std::path::PathBuf {
 #[test]
 fn the_harness_captures_the_body_before_an_after_hook_can_run() {
     let repo = FakeRepo::new("mock-after", r#"<div class="app">search={search}</div>"#);
-    let out = render(repo.path(), "index", "?u=aiko.tanaka", None).expect("renders");
+    let out = render(repo.path(), "index", "?u=aiko.tanaka", false).expect("renders");
     assert_eq!(out, r#"<div class="app">search=?u=aiko.tanaka</div>"#, "the page with its search, not {AFTER_RAN}");
 }
 
@@ -158,8 +170,8 @@ fn the_harness_captures_the_body_before_an_after_hook_can_run() {
 fn the_real_apikeys_reveal_hook_does_not_run() {
     // pages-platform.js: apikeys' `after` opens the reveal modal when `?reveal=1`; nothing
     // else reads `reveal`, so the body is the same with and without it.
-    let plain = render(&real_repo(), "apikeys", "", None).expect("renders");
-    let reveal = render(&real_repo(), "apikeys", "?reveal=1", None).expect("renders with ?reveal=1");
+    let plain = render(&real_repo(), "apikeys", "", false).expect("renders");
+    let reveal = render(&real_repo(), "apikeys", "?reveal=1", false).expect("renders with ?reveal=1");
     assert!(plain.contains(r#"<div class="app">"#), "{plain}");
     assert_eq!(reveal, plain);
     assert!(!reveal.contains("Qm9yZWFsaXMt"), "the revealed secret is not in the page");
@@ -167,16 +179,16 @@ fn the_real_apikeys_reveal_hook_does_not_run() {
 
 #[test]
 fn a_missing_page_key_is_an_error() {
-    let e = format!("{:#}", render(&real_repo(), "noSuchPage", "", None).expect_err("no P.noSuchPage"));
+    let e = format!("{:#}", render(&real_repo(), "noSuchPage", "", false).expect_err("no P.noSuchPage"));
     assert!(e.contains("node failed rendering P.noSuchPage") && e.contains("PAGES.noSuchPage has no render()"), "{e}");
 }
 
 #[test]
 fn a_missing_mockup_script_is_an_error() {
     let repo = FakeRepo::new("mock-missing-script", r#"<div class="app"></div>"#);
-    render(repo.path(), "index", "", None).expect("the full stand-in renders");
+    render(repo.path(), "index", "", false).expect("the full stand-in renders");
     std::fs::remove_file(repo.path().join(super::SCRIPTS[1])).expect("remove bundle.js");
-    let e = format!("{:#}", render(repo.path(), "index", "", None).expect_err("a script is missing"));
+    let e = format!("{:#}", render(repo.path(), "index", "", false).expect_err("a script is missing"));
     assert!(e.starts_with("mockup script ") && e.ends_with("bundle.js is missing"), "{e}");
 }
 
@@ -188,7 +200,7 @@ fn a_render_that_never_assigns_the_body_is_an_error() {
         "var PAGES = { index: { meta: {}, render: function () { return ''; } } };\n",
     );
     write(&repo.path().join("UILayout/redesign/assets/registry.js"), registry);
-    let e = format!("{:#}", render(repo.path(), "index", "", None).expect_err("nothing captured"));
+    let e = format!("{:#}", render(repo.path(), "index", "", false).expect_err("nothing captured"));
     assert!(e.contains("REG.mount returned without assigning document.body.innerHTML"), "{e}");
 }
 
@@ -321,38 +333,26 @@ fn the_fake_repo_defines_every_page_map_opener() {
 }
 
 /// The real player profile draws its Personal data panel denied as designed; forced ok it
-/// draws no denied state, and forced error the accounts panels draw module unavailable, so the
-/// force reaches the render.
+/// draws no denied state, so the force reaches the render.
 #[test]
-fn the_harness_forces_a_panel_state_on_the_real_mockup() {
-    let designed = render(&real_repo(), "player", "?u=aiko.tanaka", None).expect("renders");
+fn the_harness_forces_the_ok_state_on_the_real_mockup() {
+    let designed = render(&real_repo(), "player", "?u=aiko.tanaka", false).expect("renders");
     assert!(designed.contains("Permission denied"), "the designed profile draws a denied panel");
-    let ok = render(&real_repo(), "player", "?u=aiko.tanaka", Some("ok")).expect("renders forced ok");
+    let ok = render(&real_repo(), "player", "?u=aiko.tanaka", true).expect("renders forced ok");
     assert!(ok.contains("Personal data") && !ok.contains("Permission denied"), "forced ok draws no denied panel");
-    let error = render(&real_repo(), "player", "?u=aiko.tanaka", Some("error")).expect("renders forced error");
-    assert!(error.contains("accounts module unavailable"), "forced error draws module unavailable");
-}
-
-/// The real mockup's Panel states page labels every state the panel chrome owns.
-#[test]
-fn the_harness_reads_the_real_panel_states() {
-    let states = super::panel_states(&real_repo()).expect("reads");
-    assert_eq!(states, ["ok", "loading", "empty", "stale", "error", "readonly", "denied"]);
 }
 
 /// A mockup with no `UI.state` cannot be forced; its unforced render is the clean twin.
 #[test]
 fn forcing_a_mockup_without_ui_state_is_an_error() {
-    let repo = FakeRepo::new("mock-force", r#"<div class="app"></div>"#);
-    render(repo.path(), "index", "", None).expect("the unforced render");
-    let e = format!("{:#}", render(repo.path(), "index", "", Some("ok")).expect_err("no UI.state"));
+    let repo = FakeRepo::new("mock-force", "");
+    let registry = concat!(
+        "var REG = { mount: function (meta, fn) { document.body.innerHTML = fn(); } };\n",
+        "var UI = {};\n",
+        "var PAGES = { index: { meta: {}, render: function () { return '<div class=\"app\"></div>'; } } };\n",
+    );
+    write(&repo.path().join("UILayout/redesign/assets/registry.js"), registry);
+    render(repo.path(), "index", "", false).expect("the unforced render");
+    let e = format!("{:#}", render(repo.path(), "index", "", true).expect_err("no UI.state"));
     assert!(e.contains("node failed rendering P.index forced ok") && e.contains("the mockup has no UI.state to force ok on"), "{e}");
-}
-
-/// A states page that labels no state fails; the real one above is the clean twin.
-#[test]
-fn a_states_page_without_labels_is_an_error() {
-    let repo = FakeRepo::new("mock-states", r#"<div class="app"></div>"#);
-    let e = format!("{:#}", super::panel_states(repo.path()).expect_err("no label"));
-    assert_eq!(e, "P.states labels no panel state: the harness reads no .cat-state-label");
 }

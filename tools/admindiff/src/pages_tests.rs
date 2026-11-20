@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::{
-    boot_key, check_force, lookup, mockup_pages, validate, validate_excluded_modals, validate_lists, validate_menus, validate_tabs, with_tab,
+    boot_key, lookup, mockup_pages, validate, validate_excluded_modals, validate_lists, validate_menus, validate_tabs, with_tab,
     DrawnTabs, Menu, Modal, Page, Route, EXCLUDED, EXCLUDED_MODALS, EXCLUDED_TABS, PAGE_MAP,
 };
 use crate::tests::ScratchDir;
@@ -67,16 +67,16 @@ fn mockup_pages_reads_html_stems_and_fails_on_a_page_without_boot() {
 
 #[test]
 fn lookup_returns_mapped_first_row_and_pending_pages_and_refuses_excluded_and_unknown() {
-    assert_eq!(lookup("index").expect("mapped").route, Route::Mapped("/admin"));
-    assert_eq!(lookup("apikeys").expect("pending pages resolve").route, Route::Pending);
-    let entity = lookup("player").expect("first-row pages resolve");
+    assert_eq!(lookup(PAGE_MAP, "index").expect("mapped").route, Route::Mapped("/admin"));
+    assert_eq!(lookup(PAGE_MAP, "apikeys").expect("pending pages resolve").route, Route::Pending);
+    let entity = lookup(PAGE_MAP, "player").expect("first-row pages resolve");
     assert_eq!(entity.route, Route::FirstRow("players"));
     assert_eq!(entity.search, "?u=aiko.tanaka", "an entity page carries its fixed entity");
-    let excluded = format!("{:#}", lookup("states").expect_err("excluded"));
+    let excluded = format!("{:#}", lookup(PAGE_MAP, "states").expect_err("excluded"));
     assert!(excluded.contains("page states is excluded: Declared deviation D3"), "{excluded}");
-    let tab = format!("{:#}", lookup("player.wallet").expect_err("an excluded tab"));
+    let tab = format!("{:#}", lookup(PAGE_MAP, "player.wallet").expect_err("an excluded tab"));
     assert!(tab.contains("tab player.wallet is excluded: not ported yet"), "{tab}");
-    let unknown = format!("{:#}", lookup("nope").expect_err("unknown"));
+    let unknown = format!("{:#}", lookup(PAGE_MAP, "nope").expect_err("unknown"));
     assert!(unknown.contains("unknown page nope; pages: index, events"), "{unknown}");
 }
 
@@ -93,8 +93,8 @@ fn the_const_lists_are_disjoint_unique_and_reasoned() {
 
 // ---- validate_lists: each defect beside its clean twin --------------------------------
 
-const MAPPED: Page = Page { page: "a", route: Route::Mapped("/admin/a"), search: "", tab: None, menu: None, modal: None, force: None };
-const PENDING: Page = Page { page: "b", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: None };
+const MAPPED: Page = Page { page: "a", route: Route::Mapped("/admin/a"), search: "", tab: None, menu: None, modal: None, force: false };
+const PENDING: Page = Page { page: "b", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false };
 
 /// Mockup pages `a`, `b` and `c`.
 fn abc() -> BTreeMap<String, String> {
@@ -140,7 +140,7 @@ fn validate_lists_rejects_an_excluded_page_without_a_reason() {
 
 #[test]
 fn validate_lists_rejects_an_unknown_page_in_either_list() {
-    let z = Page { page: "z", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: None };
+    let z = Page { page: "z", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false };
     let mapped = lists_drift(&[MAPPED, PENDING, z], &[("c", "why")]);
     assert_eq!(mapped, "page map drift:
   PAGE_MAP lists z, which is not a mockup page");
@@ -151,7 +151,7 @@ fn validate_lists_rejects_an_unknown_page_in_either_list() {
 
 #[test]
 fn validate_lists_rejects_a_first_row_page_following_a_page_that_is_not_mapped() {
-    let follows = |list: &'static str| Page { page: "c", route: Route::FirstRow(list), search: "", tab: None, menu: None, modal: None, force: None };
+    let follows = |list: &'static str| Page { page: "c", route: Route::FirstRow(list), search: "", tab: None, menu: None, modal: None, force: false };
     validate_lists(&abc(), &[MAPPED, PENDING, follows("a")], &[]).expect("following a Mapped page passes");
     let pending = lists_drift(&[MAPPED, PENDING, follows("b")], &[]);
     assert_eq!(pending, "page map drift:
@@ -163,7 +163,7 @@ fn validate_lists_rejects_a_first_row_page_following_a_page_that_is_not_mapped()
 
 // ---- tab targets ---------------------------------------------------------------------
 
-const FOLLOWS: Page = Page { page: "c", route: Route::FirstRow("a"), search: "?u=x", tab: None, menu: None, modal: None, force: None };
+const FOLLOWS: Page = Page { page: "c", route: Route::FirstRow("a"), search: "?u=x", tab: None, menu: None, modal: None, force: false };
 
 #[test]
 fn a_tab_entry_has_its_own_id_and_adds_its_tab_to_the_search() {
@@ -192,7 +192,7 @@ fn validate_lists_checks_tab_entries() {
 #[test]
 fn lookup_finds_an_entry_by_its_id() {
     for p in PAGE_MAP {
-        assert_eq!(lookup(&p.id()).expect("listed").id(), p.id());
+        assert_eq!(lookup(PAGE_MAP, &p.id()).expect("listed").id(), p.id());
     }
 }
 
@@ -459,7 +459,7 @@ fn the_production_modal_exclusions_are_valid() {
     validate_excluded_modals(PAGE_MAP, EXCLUDED_MODALS).expect("EXCLUDED_MODALS holds to PAGE_MAP");
     assert!(PAGE_MAP.iter().any(|p| p.modal.is_some()), "PAGE_MAP names a modal");
     for p in PAGE_MAP.iter().filter(|p| p.modal.is_some()) {
-        assert!(p.id().contains(".modal.") && PAGE_MAP.contains(&p.host()), "{}", p.id());
+        assert!(p.id().contains(".modal.") && PAGE_MAP.iter().any(|q| q.hosts(&p.host())), "{}", p.id());
     }
 }
 
@@ -467,20 +467,18 @@ fn the_production_modal_exclusions_are_valid() {
 
 #[test]
 fn validate_lists_checks_forced_states() {
-    let forced = Page { force: Some("ok"), ..MAPPED };
+    let forced = Page { force: true, ..MAPPED };
     assert_eq!((forced.id(), forced.host()), ("a".to_string(), MAPPED), "a forced page is the same target");
     validate_lists(&abc(), &[forced, PENDING], &[("c", "why")]).expect("a forced page passes");
-    let tab = Page { tab: Some("items"), force: Some("ok"), ..FOLLOWS };
+    let tab = Page { tab: Some("items"), force: true, ..FOLLOWS };
     validate_lists(&abc(), &[MAPPED, PENDING, FOLLOWS, tab], &[]).expect("a forced tab passes");
     let menu = Page { menu: Some(MENU), ..MAPPED };
     let modal = Page { modal: Some(MODAL), ..MAPPED };
     validate_lists(&abc(), &[forced, PENDING, menu, modal], &[("c", "why")]).expect("a menu and a modal of a forced page pass");
-    let e = lists_drift(&[MAPPED, PENDING, Page { force: Some("ok"), ..menu }], &[("c", "why")]);
-    assert_eq!(e, "page map drift:\n  PAGE_MAP a.menu.user forces state \"ok\", which only a page or tab entry may");
-    let e = lists_drift(&[MAPPED, PENDING, Page { force: Some("ok"), ..modal }], &[("c", "why")]);
-    assert_eq!(e, "page map drift:\n  PAGE_MAP a.modal.cancel forces state \"ok\", which only a page or tab entry may");
-    let e = lists_drift(&[Page { force: Some("O K"), ..MAPPED }, PENDING], &[("c", "why")]);
-    assert_eq!(e, "page map drift:\n  PAGE_MAP a forces state \"O K\", which is not a [a-z0-9_-]+ id");
+    let e = lists_drift(&[MAPPED, PENDING, Page { force: true, ..menu }], &[("c", "why")]);
+    assert_eq!(e, "page map drift:\n  PAGE_MAP a.menu.user forces the ok state, which only a page or tab entry may");
+    let e = lists_drift(&[MAPPED, PENDING, Page { force: true, ..modal }], &[("c", "why")]);
+    assert_eq!(e, "page map drift:\n  PAGE_MAP a.modal.cancel forces the ok state, which only a page or tab entry may");
 }
 
 #[test]
@@ -491,12 +489,4 @@ fn validate_lists_refuses_a_state_parameter_in_search() {
         let e = lists_drift(&[Page { search, ..MAPPED }, PENDING], &[("c", "why")]);
         assert_eq!(e, "page map drift:\n  PAGE_MAP a carries state in its search; a forced state is the force field", "{search}");
     }
-}
-
-#[test]
-fn check_force_needs_a_state_the_mockup_labels() {
-    let states = ["ok".to_string(), "error".to_string()];
-    check_force("a", "ok", &states).expect("a labelled state");
-    let e = format!("{:#}", check_force("a", "fine", &states).expect_err("not labelled"));
-    assert_eq!(e, "PAGE_MAP a forces state \"fine\", which is not a panel state of the mockup (ok, error)");
 }

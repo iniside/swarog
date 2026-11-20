@@ -56,9 +56,9 @@ USAGE:
             too or hosted by no untabbed compared page (which stops the crawl first)
   mock      render the mockup target through node into target/admindiff/mock/<target>.html; a
             modal target is the .scrim its page map opener PAGES.<opener>(<args>) appends; a
-            page or tab target whose page map entry forces a state renders with that state as
-            UI.state.force (one of the labels of the mockup's Panel states page, else it fails),
-            so its panels draw in it; the crawl draws the portal's real state
+            page or tab target whose page map entry forces the ok state renders with
+            UI.state.force = \"ok\", so its panels draw ok, and a menu target opens its menu
+            on its host page rendered the same way; the crawl draws the portal's real state
   diff      compare the target's class skeleton with the crawl's: the assembled page, or the
             menu popover of a menu target, or the .modal of a modal target; refuses a crawl
             without its CLEAN marker (one that failed, did not finish or ran with
@@ -157,12 +157,8 @@ pub fn validated_mockup(repo: &Path) -> Result<std::collections::BTreeMap<String
 }
 
 /// The mockup render of `entry`'s page, parsed: `P.<key>` with the entry's search and tab,
-/// and its forced state, which must be one of the mockup's panel states; a tab entry the
-/// render does not select fails.
+/// forced ok when the entry forces; a tab entry the render does not select fails.
 fn render_page(repo: &Path, key: &str, entry: &pages::Page) -> Result<(String, Vec<html::Node>)> {
-    if let Some(force) = entry.force {
-        pages::check_force(&entry.id(), force, &mock::panel_states(repo)?)?;
-    }
     let rendered = mock::render(repo, key, &entry.mock_search(), entry.force)?;
     let doc = html::parse(&rendered).with_context(|| format!("parse the P.{key} render"))?;
     if let Some(tab) = entry.tab {
@@ -172,16 +168,20 @@ fn render_page(repo: &Path, key: &str, entry: &pages::Page) -> Result<(String, V
 }
 
 /// The mockup render of `entry`, parsed: its page ([`render_page`]), for a menu entry the
-/// menu its page opens first ([`mock::menu_arg`]), a page that draws no such menu failing,
-/// and for a modal entry the `.scrim` its opener appends, with no page rendered.
-fn render_mock(repo: &Path, key: &str, entry: &pages::Page) -> Result<(String, Vec<html::Node>)> {
+/// menu its host page opens first ([`mock::menu_arg`]), a host that draws no such menu
+/// failing, and for a modal entry the `.scrim` its opener appends, with no page rendered. A
+/// menu entry's host is rendered as its `page_map` host entry is, forced ok when that forces,
+/// so the menu is the one the compared page draws.
+fn render_mock(repo: &Path, page_map: &[pages::Page], key: &str, entry: &pages::Page) -> Result<(String, Vec<html::Node>)> {
     if let Some(modal) = entry.modal {
         let rendered = mock::render_modal(repo, modal.opener, modal.args)?;
         let doc = html::parse(&rendered).with_context(|| format!("parse the PAGES.{} render", modal.opener))?;
         return Ok((rendered, doc));
     }
-    let (rendered, doc) = render_page(repo, key, entry)?;
-    let Some(menu) = entry.menu else { return Ok((rendered, doc)) };
+    let Some(menu) = entry.menu else { return render_page(repo, key, entry) };
+    let host = entry.host();
+    let host = page_map.iter().find(|q| q.hosts(&host)).ok_or_else(|| anyhow!("PAGE_MAP {} has no host entry", entry.id()))?;
+    let (_, doc) = render_page(repo, key, host)?;
     let arg = mock::menu_arg(&doc, key, menu.mock)?;
     let rendered = mock::render_menu(repo, menu.mock, &arg)?;
     let doc = html::parse(&rendered).with_context(|| format!("parse the {} menu render", menu.mock))?;
@@ -207,16 +207,17 @@ fn prepare(entry: &pages::Page, doc: &[html::Node], mock: bool) -> Result<html::
 }
 
 /// The validated page map entry for `page` and its mockup `P.<key>`.
-fn resolve(repo: &Path, page: &str) -> Result<(&'static pages::Page, String)> {
-    let mockup = validated_mockup(repo)?;
-    let entry = pages::lookup(page)?;
+fn resolve<'m>(repo: &Path, page_map: &'m [pages::Page], page: &str) -> Result<(&'m pages::Page, String)> {
+    let mockup = pages::mockup_pages(&repo.join("UILayout").join("redesign"))?;
+    pages::validate_lists(&mockup, page_map, pages::EXCLUDED)?;
+    let entry = pages::lookup(page_map, page)?;
     let key = mockup.get(entry.page).cloned().ok_or_else(|| anyhow!("page {} has no mockup file", entry.page))?;
     Ok((entry, key))
 }
 
 pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
-    let (entry, key) = resolve(repo, page)?;
-    let (rendered, doc) = render_mock(repo, &key, entry)?;
+    let (entry, key) = resolve(repo, pages::PAGE_MAP, page)?;
+    let (rendered, doc) = render_mock(repo, pages::PAGE_MAP, &key, entry)?;
     let root = prepare(entry, &doc, true)?;
     let shape = skeleton::page(&root, false);
     let out = target_dir(repo).join("mock").join(format!("{page}.html"));
@@ -244,13 +245,14 @@ fn validate_renders(
     excluded_tabs: &[(&str, &str)],
     excluded_mock_menus: &[(&str, &str)],
 ) -> Result<()> {
-    let mockup = validated_mockup(repo)?;
+    let mockup = pages::mockup_pages(&repo.join("UILayout").join("redesign"))?;
+    pages::validate_lists(&mockup, page_map, pages::EXCLUDED)?;
     let mut roots = Vec::new();
     let mut drawn = Vec::new();
     let mut menus = Vec::new();
     for p in page_map {
         let key = mockup.get(p.page).ok_or_else(|| anyhow!("page {} has no mockup file", p.page))?;
-        let (_, doc) = render_mock(repo, key, p)?;
+        let (_, doc) = render_mock(repo, page_map, key, p)?;
         if p.is_page() {
             if matches!(p.route, pages::Route::FirstRow(_)) && p.tab.is_none() {
                 drawn.push((p.page, mock::drawn_tabs(&doc).with_context(|| format!("the P.{key} render"))?));
@@ -266,9 +268,10 @@ fn validate_renders(
     pages::validate_menus(&menus, &mock::defined_menus(repo)?, page_map, excluded_mock_menus)
 }
 
-/// Runs the diff; `Ok(false)` when the page fails, which it has printed.
-pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Result<bool> {
-    let (entry, key) = resolve(repo, page)?;
+/// Runs the diff of target `page` of `page_map` (the CLI passes [`pages::PAGE_MAP`]);
+/// `Ok(false)` when the page fails, which it has printed.
+pub fn run_diff(repo: &Path, page_map: &[pages::Page], page: &str, portal_dir: &Path, text: bool) -> Result<bool> {
+    let (entry, key) = resolve(repo, page_map, page)?;
     if entry.route == pages::Route::Pending {
         bail!("page {page} is pending: it has no portal route to diff yet");
     }
@@ -281,7 +284,7 @@ pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Resul
     if !portal_dir.join(crawl::CLEAN_MARKER).is_file() {
         bail!("{} has no {} marker: its crawl failed, did not finish or ran with --allow-errors", portal_dir.display(), crawl::CLEAN_MARKER);
     }
-    validate_renders(repo, pages::PAGE_MAP, pages::EXCLUDED_TABS, pages::EXCLUDED_MOCK_MENUS)?;
+    validate_renders(repo, page_map, pages::EXCLUDED_TABS, pages::EXCLUDED_MOCK_MENUS)?;
     let portal_file = portal_dir.join(format!("{page}.html"));
     if !portal_file.is_file() {
         let host = entry.host().id();
@@ -301,7 +304,7 @@ pub fn run_diff(repo: &Path, page: &str, portal_dir: &Path, text: bool) -> Resul
     let portal_src =
         std::fs::read_to_string(&portal_file).with_context(|| format!("read {} (run crawl first)", portal_file.display()))?;
     let portal_doc = html::parse(&portal_src).with_context(|| format!("parse {}", portal_file.display()))?;
-    let (_, mock_doc) = render_mock(repo, &key, entry)?;
+    let (_, mock_doc) = render_mock(repo, page_map, &key, entry)?;
     let mock_page = skeleton::page(&prepare(entry, &mock_doc, true)?, text);
     let portal_page = skeleton::page(&prepare(entry, &portal_doc, false)?, text);
     let outcome = skeleton::diff_pages(&mock_page, &portal_page);

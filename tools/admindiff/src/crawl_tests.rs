@@ -610,13 +610,13 @@ async fn a_crawl_with_errors_allowed_is_never_marked_clean_and_the_diff_refuses_
     preview.assert_preview("--allow-errors: the healthy site");
     let run = preview.out.path().join("run");
     assert!(run.join("index.html").is_file(), "a preview still writes its pages");
-    let e = format!("{:#}", crate::run_diff(repo.path(), "index", &run, false).expect_err("a preview"));
+    let e = format!("{:#}", crate::run_diff(repo.path(), PAGE_MAP, "index", &run, false).expect_err("a preview"));
     assert!(e.contains(&marker), "{e}");
 
     let clean = crawl(Site::healthy(), false).await;
     clean.assert_clean("the healthy site");
     let run = clean.out.path().join("run");
-    let e = crate::run_diff(repo.path(), "index", &run, false).err().map(|e| format!("{e:#}")).unwrap_or_default();
+    let e = crate::run_diff(repo.path(), PAGE_MAP, "index", &run, false).err().map(|e| format!("{e:#}")).unwrap_or_default();
     assert!(!e.contains(&marker), "{e}");
 }
 
@@ -946,7 +946,7 @@ async fn an_empty_list_page_fails_unless_empty_is_allowed_and_then_the_diff_refu
     assert!(menus.is_empty(), "no player menu was fetched: {menus:?}");
 
     let repo = FakeRepo::new("crawl-empty-diff", &mock_html(&body(true)));
-    let e = format!("{:#}", crate::run_diff(repo.path(), "player", &run, false).expect_err("no player page"));
+    let e = format!("{:#}", crate::run_diff(repo.path(), PAGE_MAP, "player", &run, false).expect_err("no player page"));
     assert_eq!(e, format!("{} has no player page: the crawl found no row of players to follow", run.display()));
 }
 

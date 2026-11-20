@@ -37,7 +37,7 @@ async fn main() -> ExitCode {
             crawl::run(&cfg).await
         }
         Command::Mock { page } => run_mock(&repo, &page).map(|()| true),
-        Command::Diff { page, portal, text } => run_diff(&repo, &page, &portal, text),
+        Command::Diff { page, portal, text } => run_diff(&repo, admindiff::pages::PAGE_MAP, &page, &portal, text),
     };
     match result {
         Ok(true) => ExitCode::SUCCESS,

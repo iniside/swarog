@@ -4,10 +4,9 @@
 //! appends to the body is captured. A modal is rendered without a page too: the named
 //! `PAGES.<opener>` runs with the page map entry's arguments and the `.scrim` element it
 //! appends to the body is captured. The harness also records every menu id the mockup's
-//! registry defines through `UI.defineMenu` ([`defined_menus`]). A page render can force a
-//! panel state: the harness sets `UI.state.force`, as the mockup's state picker
-//! (`REG.setForce`) does, before `REG.mount`; the states the mockup knows are the labels of
-//! its Panel states page ([`panel_states`]).
+//! registry defines through `UI.defineMenu` ([`defined_menus`]). A page render can force the
+//! ok state: the harness sets `UI.state.force = "ok"`, as the mockup's state picker
+//! (`REG.setForce`) does, before `REG.mount`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -15,7 +14,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 
-use crate::html::{find_all, find_in, parse, Node};
+use crate::html::{find_all, find_in, Node};
 use crate::pages::DrawnTabs;
 
 /// The scripts in the order the mockup's html files load them; `catalog.js` only builds
@@ -40,8 +39,8 @@ const SCRIPTS: &[&str] = &[
 // global `UI` is an accessor that wraps the `defineMenu` of whatever object a script assigns
 // to it, before any script can call it, so every defined menu id is recorded; with
 // `input.registry` no page mounts and the ids are written as JSON. With `input.force` the page
-// render sets `UI.state.force` before it mounts, after `boot.js` has read `?state=`, so the
-// entry's force is the state every forceable panel and tile draws in.
+// render sets `UI.state.force = "ok"` before it mounts, after `boot.js` has read `?state=`, so
+// every forceable panel and tile draws ok.
 const HARNESS: &str = r#""use strict";
 const fs = require("fs"), vm = require("vm");
 const input = JSON.parse(process.env.ADMINDIFF_INPUT);
@@ -116,12 +115,12 @@ if (input.registry) {
     process.stderr.write(`PAGES.${input.key} has no render()\n`);
     process.exit(2);
   }
-  if (input.force != null) {
+  if (input.force) {
     if (!UI.state || typeof UI.state !== "object") {
-      process.stderr.write(`the mockup has no UI.state to force ${input.force} on\n`);
+      process.stderr.write("the mockup has no UI.state to force ok on\n");
       process.exit(2);
     }
-    UI.state.force = input.force;
+    UI.state.force = "ok";
   }
   try { REG.mount(page.meta, page.render); } catch (e) { if (e !== CAPTURED) throw e; }
   if (html === null) {
@@ -133,38 +132,10 @@ if (input.registry) {
 "#;
 
 /// The body HTML the mockup page `key` renders with `search` as `location.search`, and with
-/// `UI.state.force` set to `force` when it is given.
-pub fn render(repo: &Path, key: &str, search: &str, force: Option<&str>) -> Result<String> {
-    let what = match force {
-        Some(force) => format!("P.{key} forced {force}"),
-        None => format!("P.{key}"),
-    };
+/// `UI.state.force = "ok"` when `force`.
+pub fn render(repo: &Path, key: &str, search: &str, force: bool) -> Result<String> {
+    let what = if force { format!("P.{key} forced ok") } else { format!("P.{key}") };
     run_harness(repo, serde_json::json!({ "key": key, "search": search, "force": force }), &what)
-}
-
-/// The mockup's Panel states page, `P.states` (`states.html`), which draws a panel in each
-/// state the panel chrome owns under a `.cat-state-label` naming it.
-const STATES_KEY: &str = "states";
-
-/// The panel states the mockup knows, once each, in order: the `.cat-state-label` texts its
-/// Panel states page draws. A page map entry may force only one of them. A page that labels
-/// none fails: the harness no longer reads the mockup's states.
-pub fn panel_states(repo: &Path) -> Result<Vec<String>> {
-    let rendered = render(repo, STATES_KEY, "", None)?;
-    let doc = parse(&rendered).with_context(|| format!("parse the P.{STATES_KEY} render"))?;
-    let mut labels = Vec::new();
-    find_all(&doc, &|e| e.has_class("cat-state-label"), &mut labels);
-    let mut states: Vec<String> = Vec::new();
-    for label in labels {
-        let state = label.text().trim().to_string();
-        if !states.contains(&state) {
-            states.push(state);
-        }
-    }
-    if states.is_empty() {
-        bail!("P.{STATES_KEY} labels no panel state: the harness reads no .cat-state-label");
-    }
-    Ok(states)
 }
 
 /// The `.menu` element `UI.openMenu(event, '<id>', '<arg>')` opens in the mockup.
