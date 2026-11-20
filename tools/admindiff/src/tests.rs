@@ -411,12 +411,15 @@ fn run_diff_opens_a_menu_of_a_forced_host_on_the_forced_render() {
 // ---- the mockup's modal inventory ---------------------------------------------------
 
 /// Stand-in openers: `extraModal` appends a `.scrim` holding a preview-labelled `.modal`, as `UI.confirm` does, `toastOnly` a
-/// `.toast` and `boom` throws.
+/// `.toast`, `boom` throws and `rerender` re-renders the page through `REG.render()`, which the stand-in registry
+/// gets here as a mount.
 const OPENERS: &str = concat!(
     "PAGES.extraModal = function () { const el = document.createElement(\"div\"); el.className = \"scrim\"; el.innerHTML = '<div class=\"modal\"><div class=\"frag\"><span class=\"frag-label\"></span></div></div>'; document.body.appendChild(el); };\n",
     "PAGES.toastOnly = function () { const el = document.createElement(\"div\"); el.className = \"toast\"; document.body.appendChild(el); };\n",
     "PAGES.boom = function () { throw new Error(\"kaboom\"); };\n",
     "PAGES.testOpener = PAGES.extraModal;\n",
+    "REG.render = function () { REG.mount({}, function () { return \"\"; }); };\n",
+    "PAGES.rerender = function () { REG.render(); };\n",
 );
 
 /// The stand-in mockup of the production page map that also draws `drawn` and defines [`OPENERS`].
@@ -451,6 +454,15 @@ fn an_unlisted_mockup_modal_fails_and_a_listed_one_passes() {
         "  EXCLUDED_MOCK_MODALS index PAGES.extraModal has no reason",
     );
     assert_eq!(e, want);
+    let mapped = mock_modals(&[("events", "skipPoison", "why")]);
+    let e = format!("{:#}", renders(repo.path(), &Lists { excluded_mock_modals: &mapped, ..LISTS }).expect_err("mapped too"));
+    let want = concat!(
+        "modal drift:\n",
+        "  mockup modal index PAGES.extraModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS\n",
+        "  mockup modal events PAGES.skipPoison is listed in PAGE_MAP and again in EXCLUDED_MOCK_MODALS\n",
+        "  mockup modal players.menu.user PAGES.extraModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS",
+    );
+    assert_eq!(e, want);
 }
 
 /// An `EXCLUDED_MOCK_MODALS` entry its host does not draw is stale, as is one hosted by a
@@ -481,6 +493,17 @@ fn an_opener_that_appends_no_scrim_is_no_modal() {
     let modal = opener_repo("modal-toast-twin", &[("index", "PAGES.extraModal('x')")]);
     let e = format!("{:#}", renders(modal.path(), &LISTS).expect_err("a modal"));
     assert_eq!(e, "modal drift:\n  mockup modal index PAGES.extraModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS");
+}
+
+/// An opener that re-renders the page (`REG.render()`, whose body assignment the harness stops)
+/// neither throws nor is a modal: drawn unlisted it passes, and listed it is stale.
+#[test]
+fn an_opener_that_re_renders_is_no_error_and_no_modal() {
+    let repo = opener_repo("modal-rerender", &[("index", "PAGES.rerender('x')")]);
+    renders(repo.path(), &LISTS).expect("a re-render is no error and no modal");
+    let listed = mock_modals(&[("index", "rerender", "why")]);
+    let e = format!("{:#}", renders(repo.path(), &Lists { excluded_mock_modals: &listed, ..LISTS }).expect_err("stale"));
+    assert_eq!(e, "modal drift:\n  EXCLUDED_MOCK_MODALS lists index PAGES.rerender, which no compared index mockup render draws as a modal");
 }
 
 /// An opener that throws in the harness fails with its name, host and call as drawn; its
@@ -530,7 +553,6 @@ fn a_false_no_mock_opener_claim_fails() {
         .map(|(host, action, why)| match why {
             ModalWhy::NoMockOpener { others: [], why } => (*host, *action, ModalWhy::NoMockOpener { others: &["extraModal"], why }),
             ModalWhy::NoMockOpener { why, .. } => (*host, *action, ModalWhy::NoMockOpener { others: &["cancelMail", "extraModal"], why }),
-            ModalWhy::Other(_) => (*host, *action, *why),
         })
         .collect();
     renders(repo.path(), &Lists { excluded_mock_modals: &listed, excluded_modals: &named, ..LISTS }).expect("named in others");
@@ -541,6 +563,48 @@ fn a_false_no_mock_opener_claim_fails() {
         "  EXCLUDED_MODALS mail modal mail/test-send names PAGES.extraModal in its others, which mail does not draw as a modal\n",
         "  EXCLUDED_MODALS events.excluded-menu.subscription modal core.events/sub.pause names PAGES.extraModal in its others, ",
         "which events does not draw as a modal",
+    );
+    assert_eq!(e, want);
+}
+
+/// The inventory a clean [`crate::pages::validate_mock_modals`] call of the production lists sees, without
+/// `EXCLUDED_MOCK_MODALS` but its `mail` `cancelMail`, which `mail` draws, as `events` does its mapped `skipPoison`.
+fn claim_inventory() -> Vec<(String, Vec<String>)> {
+    vec![("mail".to_string(), vec!["cancelMail".to_string()]), ("events".to_string(), vec!["skipPoison".to_string()])]
+}
+
+/// An `EXCLUDED_MODALS` no-opener claim whose mockup host has no compared render fails, as
+/// nothing checked it; the inventory with the host passes.
+#[test]
+fn a_no_mock_opener_claim_on_an_unrendered_host_fails() {
+    let lists = Lists { excluded_mock_modals: &[("mail", "cancelMail", "why")], ..LISTS };
+    crate::pages::validate_mock_modals(&claim_inventory(), &lists).expect("both hosts rendered");
+    let mail_only: Vec<_> = claim_inventory().into_iter().filter(|(h, _)| h == "mail").collect();
+    let e = format!("{:#}", crate::pages::validate_mock_modals(&mail_only, &lists).expect_err("events unrendered"));
+    let want = concat!(
+        "modal drift:\n  EXCLUDED_MODALS events.excluded-menu.subscription modal core.events/sub.pause says the mockup has no opener of it, ",
+        "but no compared events mockup render was checked",
+    );
+    assert_eq!(e, want);
+}
+
+/// An `EXCLUDED_MODALS` no-opener claim that names in its `others` an opener a `PAGE_MAP` modal
+/// entry maps on its mockup host fails as stale; without it the claim passes.
+#[test]
+fn a_no_mock_opener_claim_naming_a_mapped_opener_fails() {
+    let named: Vec<(&str, &str, ModalWhy)> = EXCLUDED_MODALS
+        .iter()
+        .map(|&(host, action, why)| match why {
+            ModalWhy::NoMockOpener { others: [], why } => (host, action, ModalWhy::NoMockOpener { others: &["skipPoison"], why }),
+            why => (host, action, why),
+        })
+        .collect();
+    let lists = Lists { excluded_mock_modals: &[("mail", "cancelMail", "why")], ..LISTS };
+    crate::pages::validate_mock_modals(&claim_inventory(), &lists).expect("the production claims");
+    let e = format!("{:#}", crate::pages::validate_mock_modals(&claim_inventory(), &Lists { excluded_modals: &named, ..lists }).expect_err("mapped"));
+    let want = concat!(
+        "modal drift:\n  EXCLUDED_MODALS events.excluded-menu.subscription modal core.events/sub.pause names PAGES.skipPoison in its others, ",
+        "which is already mapped by PAGE_MAP events.modal.skip-poison on events",
     );
     assert_eq!(e, want);
 }
@@ -558,10 +622,7 @@ fn the_real_mockup_draws_only_declared_modals() {
     assert_eq!(e, "modal drift:\n  mockup modal mail PAGES.cancelMail is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS");
     let bare: Vec<(&str, &str, ModalWhy)> = EXCLUDED_MODALS
         .iter()
-        .map(|(host, action, why)| match why {
-            ModalWhy::NoMockOpener { why, .. } => (*host, *action, ModalWhy::NoMockOpener { others: &[], why }),
-            ModalWhy::Other(_) => (*host, *action, *why),
-        })
+        .map(|&(host, action, ModalWhy::NoMockOpener { why, .. })| (host, action, ModalWhy::NoMockOpener { others: &[], why }))
         .collect();
     let e = format!("{:#}", renders(&repo, &Lists { excluded_modals: &bare, ..LISTS }).expect_err("cancelMail on mail"));
     let want = concat!(

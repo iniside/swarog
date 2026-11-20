@@ -87,7 +87,8 @@ USAGE:
             draw, an EXCLUDED_MOCK_MODALS entry its host does not draw, listed twice, with no
             reason or mapped too, and an EXCLUDED_MODALS NoMockOpener reason its mockup host
             contradicts (a modal opener drawn there that is no modal entry of another action
-            and not in its others) fail. A mock-only or portal-only repeat
+            and not in its others, a host with no compared render, or an others name that is a
+            page map modal entry there) fail. A mock-only or portal-only repeat
             item (a table row, list item, ...) ends in (\"<hint>\"): its first badge's text and
             its first cell's, as \"badge · cell\". The hint is not part of the difference: an accept entry
             may keep or drop it and matches either way
@@ -276,7 +277,7 @@ fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections
         let (_, doc) = render_mock(repo, page_map, key, p)?;
         if p.route != pages::Route::Pending && p.modal.is_none() {
             // A menu's openers run on its host page, rendered as its host entry is.
-            let page = if p.is_page() { p } else { page_map.iter().find(|q| q.hosts(&p.host())).unwrap_or(p) };
+            let page = if p.is_page() { p } else { page_map.iter().find(|q| q.hosts(&p.host())).ok_or_else(|| anyhow!("PAGE_MAP {} has no host entry", p.id()))? };
             let drawn = mock::drawn_openers(&doc).with_context(|| format!("the {} mockup render", p.id()))?;
             openers.push((p.id(), key, page, drawn));
         }
