@@ -141,7 +141,7 @@ impl Page {
     }
 }
 
-/// `url` with `tab=<tab>` added to its query. A tab id is `[a-z0-9_-]+` ([`validate`]),
+/// `url` with `tab=<tab>` added to its query. A tab id is `[a-z0-9_-]+` ([`validate_lists`]),
 /// so it needs no encoding.
 pub fn with_tab(url: &str, tab: &str) -> String {
     let sep = if url.contains('?') { '&' } else { '?' };
@@ -352,8 +352,9 @@ fn boot_key(src: &str) -> Option<String> {
     Some(src[at..at + len].to_string())
 }
 
-/// Checks [`PAGE_MAP`] and [`EXCLUDED`] against the mockup and each other: every listed
-/// page exists, no target is listed twice or in both lists, every mockup page is listed,
+/// Checks `page_map` and `excluded`, which its problems name `PAGE_MAP` and `EXCLUDED`, against
+/// the mockup and each other: every listed page exists, no target is listed twice or in both
+/// lists, every mockup page is listed,
 /// every `FirstRow` names a `Mapped` page, every tab entry has a `[a-z0-9_-]+` id and
 /// an untabbed `FirstRow` entry of its page with the same route, every menu entry has
 /// `[a-z0-9_-]+` ids and a host entry ([`Page::host`]) of a page that is not pending, and every
@@ -361,11 +362,6 @@ fn boot_key(src: &str) -> Option<String> {
 /// module and action ids and such a host entry, or, when it names a menu, that menu target as
 /// a `PAGE_MAP` menu entry. No search names a `state`
 /// parameter, and only a page or tab entry forces the ok state.
-pub fn validate(mockup: &BTreeMap<String, String>) -> Result<()> {
-    validate_lists(mockup, PAGE_MAP, EXCLUDED)
-}
-
-/// [`validate`] over the given lists, which its problems name `PAGE_MAP` and `EXCLUDED`.
 pub(crate) fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page], excluded: &[(&str, &str)]) -> Result<()> {
     let mut problems = Vec::new();
     let mut seen: BTreeMap<String, &str> = BTreeMap::new();

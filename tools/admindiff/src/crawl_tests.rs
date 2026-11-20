@@ -1330,13 +1330,41 @@ async fn a_menu_hosted_modal_target_opens_from_the_fetched_menu() {
     let lists = Lists { page_map: &diff_map, ..LISTS };
     assert!(crate::run_diff(repo.path(), &lists, &id, &run, false).expect("runs"), "the same dialog is clean");
 
-    let bare = drawn.with(&at, ok(menu_body(&menu.id())));
+    let bare = drawn.clone().with(&at, ok(menu_body(&menu.id())));
     let missing = "players.menu.user.modal.test: players.menu.user draws no test/do opener (--allow-empty skips it)";
     crawl_modals(bare.clone(), &page_map, EXCLUDED_MODALS, false).await.assert_failed_with("the menu draws no test opener", missing);
     let allowed = crawl_modals(bare, &page_map, EXCLUDED_MODALS, true).await;
     allowed.assert_clean("--allow-empty: the menu draws no test opener");
     assert_eq!(allowed.empty, [id.as_str()]);
     assert_eq!(fetched(&allowed, &url), 0);
+
+    // players listing no row skips its user menu, so the modal that menu hosts is EMPTY too.
+    let rowless = drawn.with(&panel_url("players"), ok(fragment(Some("ok"), "players panel", "")));
+    let skipped = crawl_modals(rowless, &page_map, EXCLUDED_MODALS, true).await;
+    skipped.assert_clean("--allow-empty: players lists no row");
+    let menu_id = menu.id();
+    assert!(skipped.empty.contains(&menu_id) && skipped.empty.contains(&id), "{:?}", skipped.empty);
+    assert_eq!(fetched(&skipped, &url), 0, "{:?}", skipped.server.requests());
+}
+
+/// A status-only menu, the guild menu of the nav-only extra page, declares none of the modal
+/// actions it draws, but the first opener of each is fetched for its status: a guild/kick
+/// opener in it crawls clean, fetched once with its body kept, and fails answering 500.
+#[tokio::test]
+async fn a_status_only_menu_fetches_its_modals_for_their_status() {
+    let guild = "/admin/_menu/guild/g-1";
+    let kick = "/admin/_action/guild/kick?item=g-1";
+    let healthy = Site::healthy();
+    let menu = in_menu(&menu_body("p-extra-things.status-menu.guild"), &modal_button(kick));
+    let nav_only = healthy.clone().with(EXTRA_ROUTE, add_to_page(&healthy, EXTRA_ROUTE, &menu_button(guild))).with(guild, ok(menu));
+    let c = crawl(nav_only.clone().with(kick, ok(MODAL_BODY)), false).await;
+    c.assert_clean("the opener in the status-only menu");
+    assert_eq!(fetched(&c, kick), 1, "{:?}", c.server.requests());
+    let raw = c.out.path().join("run").join("raw").join("p-extra-things.status-menu.guild.status-modal.guild.kick.html");
+    assert!(raw.is_file(), "the status-only modal's body is kept: {}", raw.display());
+    let failed = crawl(nav_only.with(kick, status(500)), false).await;
+    let down = format!("p-extra-things.status-menu.guild guild/kick modal ({kick}): answered 500");
+    failed.assert_failed_with("the opener in the status-only menu answering 500", &down);
 }
 
 /// A compared menu holds the modal actions it draws to the page rules: a `guild/kick` opener

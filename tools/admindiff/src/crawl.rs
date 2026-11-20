@@ -476,7 +476,7 @@ async fn check_menu_kinds(
         if !first_row_hosts.iter().any(|h| h == host) && !lists_rows(doc) {
             if cfg.allow_empty {
                 println!("EMPTY EXCLUDED_MENUS {host} menu {kind}: {host} lists no row");
-                empty.push(format!("{host}.excluded-menu.{kind}"));
+                empty.push(excluded_menu_id(host, kind));
             } else {
                 failures.push(format!("EXCLUDED_MENUS lists {host} menu {kind}, and {host} lists no row (--allow-empty skips it)"));
             }

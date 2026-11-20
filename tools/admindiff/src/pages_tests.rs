@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::{
-    boot_key, lookup, mockup_pages, validate, validate_excluded_modals, validate_lists, validate_menus, validate_tabs, with_tab,
+    boot_key, lookup, mockup_pages, validate_excluded_modals, validate_lists, validate_menus, validate_tabs, with_tab,
     DrawnTabs, Lists, Menu, Modal, Page, Route, EXCLUDED, EXCLUDED_TABS, LISTS, PAGE_MAP,
 };
 use crate::tests::ScratchDir;
@@ -13,20 +13,19 @@ fn listed() -> BTreeMap<String, String> {
 }
 
 fn drift(mockup: &BTreeMap<String, String>) -> String {
-    format!("{:#}", validate(mockup).expect_err("must drift"))
+    format!("{:#}", validate_lists(mockup, LISTS.page_map, LISTS.excluded).expect_err("must drift"))
 }
 
 #[test]
 fn the_page_map_matches_the_real_mockup() {
-    let mockup = mockup_pages(&crate::repo_root().join("UILayout").join("redesign")).expect("the mockup reads");
-    validate(&mockup).expect("PAGE_MAP and EXCLUDED cover the mockup exactly");
+    let mockup = crate::validated_mockup(&crate::repo_root(), &LISTS).expect("PAGE_MAP and EXCLUDED cover the mockup exactly");
     assert_eq!(mockup.get("index").map(String::as_str), Some("dashboard"), "{mockup:?}");
 }
 
 #[test]
 fn validate_rejects_a_listed_page_the_mockup_lacks() {
     let mut mockup = listed();
-    validate(&mockup).expect("every listed page present passes");
+    validate_lists(&mockup, LISTS.page_map, LISTS.excluded).expect("every listed page present passes");
     mockup.remove("players");
     let e = drift(&mockup);
     assert!(e.contains("PAGE_MAP lists players, which is not a mockup page"), "{e}");
@@ -80,7 +79,23 @@ fn lookup_returns_mapped_first_row_and_pending_pages_and_refuses_excluded_and_un
     assert!(unknown.contains("unknown page nope; pages: index, events"), "{unknown}");
 }
 
-/// The const lists themselves hold none of the defects `validate` reports for them.
+/// `lookup` reads the exclusions of the lists it is given: a page or tab only they exclude
+/// fails with their reason, and a production exclusion they drop is an unknown page.
+#[test]
+fn lookup_refuses_by_the_given_exclusion_lists() {
+    let excluded = Lists { excluded: &[("zzz", "why page")], ..LISTS };
+    let e = format!("{:#}", lookup(&excluded, "zzz").expect_err("excluded by the given list"));
+    assert_eq!(e, "page zzz is excluded: why page");
+    let e = format!("{:#}", lookup(&Lists { excluded: &[], ..LISTS }, "states").expect_err("unknown without its exclusion"));
+    assert!(e.starts_with("unknown page states; pages: "), "{e}");
+    let tabs = Lists { excluded_tabs: &[("player.zzz", "why tab")], ..LISTS };
+    let e = format!("{:#}", lookup(&tabs, "player.zzz").expect_err("excluded by the given list"));
+    assert_eq!(e, "tab player.zzz is excluded: why tab");
+    let e = format!("{:#}", lookup(&Lists { excluded_tabs: &[], ..LISTS }, "player.wallet").expect_err("unknown without its exclusion"));
+    assert!(e.starts_with("unknown page player.wallet; pages: "), "{e}");
+}
+
+/// The const lists themselves hold none of the defects `validate_lists` reports for them.
 #[test]
 fn the_const_lists_are_disjoint_unique_and_reasoned() {
     let mut seen = std::collections::BTreeSet::new();
