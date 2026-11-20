@@ -51,6 +51,16 @@
         ]
       },
       {
+        "matcher": "Read|Bash|PowerShell|REPL",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -I \"$CLAUDE_PROJECT_DIR/.claude/hooks/view_guard.py\"",
+            "statusMessage": "View guard: no whole views of long files, 300-line REPL budget"
+          }
+        ]
+      },
+      {
         "matcher": "Grep|Bash",
         "hooks": [
           {

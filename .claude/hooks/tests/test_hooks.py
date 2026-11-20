@@ -853,6 +853,7 @@ class Wiring(unittest.TestCase):
                                                 "grep_sweep_guard.py"],
             ("PreToolUse", "Agent|EnterWorktree"): ["no_worktree_hook.py"],
             ("PreToolUse", "Agent"): ["explicit_model_guard.py", "fix_brief_guard.py"],
+            ("PreToolUse", "Read|Bash|PowerShell|REPL"): ["view_guard.py"],
             ("PreToolUse", "Grep|Bash"): ["scout_nav_guard.py"],
             ("PreToolUse", "SubagentHandback"): ["scout_nav_guard.py"],
             ("PostToolUse", "Bash|PowerShell"): ["post_commit_review_reminder.py"],
@@ -877,8 +878,7 @@ class Wiring(unittest.TestCase):
                  for h in g["hooks"] if h["type"] == "command"}
         for name in wired:
             self.assertTrue(os.path.isfile(os.path.join(HOOKS, name)), name)
-        on_disk = {f for f in os.listdir(HOOKS) if f.endswith(".py")} - {"shell_data.py", "shell_segments.py", "commit_format.py",
-                                                                    "view_guard.py"}
+        on_disk = {f for f in os.listdir(HOOKS) if f.endswith(".py")} - {"shell_data.py", "shell_segments.py", "commit_format.py"}
         self.assertEqual(wired, on_disk)
 
     def test_command_form(self):
