@@ -118,15 +118,16 @@ point, `Emphasis`, `danger`, `implemented` and `then`.
 Per page, a hand-check section: every element whose difference the §7 `diff` cannot see.
 It runs without `--text`, so it compares tags and classes, and `admindiff` never compares
 attributes. That covers attributes and inline styles (a `title`, a width), text (a crumb, a
-foot count), which header carries the sort arrow, and anything the crawl never opens (the
-row-menu popover, the palette). Each row names its check: a golden assertion, or a look at
+foot count), which header carries the sort arrow, and any state the crawl does not open: it renders each
+`PAGE_MAP` entry's first state only. Each row names its check: a golden assertion, or a look at
 the live page in §7. A declared deviation no accept entry can carry is declared in this
 section, and the step report cites it (§6).
 
-The mock harness never runs a page's `meta.after` hook. On players that hook wraps each
-contributed column's header text in a `span` (`pages-core.js:109-112`), so that `th > span`
-is never compared. The port that contributes such a column puts its header shape in the
-hand-check section.
+The mock harness never runs a page's `meta.after` hook (`mock.rs:40-41`). On players that
+hook wraps each contributed column's header text in a `span` (`pages-core.js:109-112`), so
+the mock draws a bare `th.num` and the portal `th.num > span`. The diff reports that line;
+the port that contributes such a column accepts it with a kind and reason in the accept
+plan (G6 of the characters checklist).
 
 Per panel, every URL the renderer builds for it (state tabs, search, pager): which
 query keys it keeps and which it drops. Every non-pager URL must build from `Ctx.query`
@@ -249,8 +250,11 @@ mail, stays an entry for good. `eventctl seed-mockup` stays as the Event plane's
 fixture. Do not chase a mockup gap beyond the checklist's decisions; it goes to the next
 iteration.
 
-## 6. Accept file — `tools/admindiff/accept/<page>.txt`
+## 6. Accept file — `tools/admindiff/accept/<target>.txt`
 
+- `<target>` is the `PAGE_MAP` entry's id (`Page::id`): `<page>`, `<page>.<tab>`,
+  `<page>[.<tab>].menu.<menu>`, `<page>[.<tab>][.menu.<menu>].modal.<modal>`. Each entry
+  has its own file.
 - Order: `diff` needs a clean crawl (`tools/admindiff/src/lib.rs:170`) and part `b`
   never starts a fleet, so `b`'s first pass commits templates and goldens only. The
   orchestrator then runs crawl and diff (§7) and passes the `NEW` lines in `b`'s
@@ -307,13 +311,19 @@ target/debug/admindiff diff --page <page> --portal <that path>
 target/debug/devctl down
 ```
 
-- Diff every page with a `Route::Mapped` or `Route::FirstRow` entry, not only the ported one.
+- Diff every `PAGE_MAP` target whose route is not `Pending` (`--page <target>`, ids as in
+  §6), not only the ported one.
+- `crawl` and `diff` also hold `PAGE_MAP` to what the compared pages draw: every tab, menu
+  kind and modal action a compared host draws, and every mockup menu and modal opener, is a
+  `PAGE_MAP` entry or sits in an `EXCLUDED_*` list in `pages.rs` with a reason. An exclusion
+  its host no longer draws is `STALE`. A port that resolves an exclusion moves it to a
+  `PAGE_MAP` entry.
 - The loop is closed when all three hold:
   - the golden test passes;
   - `crawl` is clean: it wrote the run's `CLEAN` marker, which `diff` refuses to run
     without. A `FirstRow` follower that finds no row fails the crawl; on a demoseeded
     fleet that is a defect, and `--allow-empty` is only the opt-out for an empty fleet;
-  - `diff` prints `clean` for every mapped and first-row page: no `NEW` line, no `STALE` line, at
+  - `diff` prints `clean` for every non-`Pending` target: no `NEW` line, no `STALE` line, at
     least one matched panel.
 - `NEW` and `STALE` lines go back to part `b` as a fix round.
 - The split is the at-risk topology and is crawled too: `devctl up split`, then
