@@ -72,8 +72,19 @@ class Guard(unittest.TestCase):
                      "await tools.Agent({subagent_type: 'code-scout', model: 'haiku', prompt: 'q'})",
                      "const out = await $`rg -n foo ${dir}`.text()",
                      "await $`cd G:/p && cat a.rs`",
-                     "const cmd = 'sed -n 1,40p a.rs'; await $(cmd)"):
+                     "const cmd = 'sed -n 1,40p a.rs'; await $(cmd)",
+                     "await $('rg foo src')",
+                     "await $(`grep -n x ${dir}`, 5000)",
+                     "await $`echo ${'`'} && cat a.rs`",
+                     "const out = await $`rg ${`a${b}`} src`",
+                     "await write('x.rs', 'y'); await $('git status'); await $('cat a.rs')"):
             self.assertEqual(self.repl(code), "deny", code)
+
+    def test_repl_over_limit_unparseable_script_checks_only_its_commands(self):
+        self.agent([200_000], finished=False)
+        self.assertEqual(self.repl("const a = 'open; await $`rg foo src`"), "deny")
+        self.assertEqual(self.repl("const a = 'open; await $('cat a.rs')"), "deny")
+        self.assertEqual(self.repl("const a = 'open; await write('x.rs', `fn file(a) {}`)"), "silent")
 
     def test_repl_over_limit_lets_edits_builds_and_git_run(self):
         self.agent([200_000], finished=False)
@@ -84,6 +95,12 @@ class Guard(unittest.TestCase):
                      "const re = /file\\(/; await $`git status`",
                      "await $`cargo test -p admin 2>&1 | tail -n 40`",
                      "await $(`git log -1`)",
+                     "await $`echo ${'`'}`; await write('x.rs', `fn file(a) {}`)",
+                     "const s = `${`fn file(a){}`}`; await write('x.rs', `fn file(a) {}`)",
+                     "await write('a.rs', 'type Foo = u8;'); await $('git status')",
+                     "await write('a.md', `Intro\nFind the cause\nmore`); await $('cargo check')",
+                     "await $`git commit -m \"$(cat msg)\"`; await write('a.rs', 'type Foo = u8;')",
+                     "const cmd = 'git status'; const t = 'cat x'; await $(cmd)",
                      "const profile = 1; myfile(2)",
                      ""):
             self.assertEqual(self.repl(code), "silent", code)

@@ -14,9 +14,9 @@ Modes (argv[1]):
                                  part and returns a hand-off. A read-only lane (READ_ONLY_AGENTS) is
                                  told to return its report with a 'Not checked:' list instead.
                                  Best effort: git show/grep and readers hidden in python -c,
-                                 bash -c, xargs or tools.Bash inside REPL still read; a $(string)
-                                 call counts when one of the script's string literals starts with
-                                 a reader
+                                 bash -c, xargs or tools.Bash inside REPL still read; a $(...)
+                                 call counts when its first argument is a literal (or a variable
+                                 assigned one) that starts with a reader
 
 Context is the last API turn's input + cache tokens in the subagent transcript. Any error exits 0
 with no output, so a hook bug never blocks work.
@@ -36,6 +36,7 @@ REPL_READ = re.compile(
     r"(?<![\w.])file\s*\(|\btools\s*\.\s*(?:Read|Grep|Glob|LSP|WebFetch|WebSearch|NotebookRead|Agent)\b")
 REPL_SHELL_CALL = re.compile(r"(?<![\w.])\$\s*\(")
 REPL_SHELL = re.compile(r"(?<![\w.])\$\s*`((?:\\.|\$\{[^}]*\}|[^`\\])*)`", re.S)
+REPL_SHELL_LITERAL = re.compile(r"(?<![\w.])\$\s*\(\s*(['\"`])((?:\\.|(?!\1).)*)\1", re.S)
 REGEX_PREV = set("(,=:[!&|?{};+-*%<>~^")
 SHELLS = {"Bash", "PowerShell"}
 SHELL_READERS = {
@@ -89,91 +90,148 @@ def shell_reader(command):
 
 
 def scan_literals(code):
-    """Spans (start, end, kind) of '...', "..." and plain `...` literal text, skipping // and /* */ comments
-    and /.../ regex literals (each also a span), keeping $`...` commands. None when a literal does not
-    close, so the caller falls back to the raw code."""
+    """Spans (start, end, kind, text) of '...', "..." and `...` literals ("command" for a $`...` command, with
+    each ${...} as X in its text), // and /* */ comments and /.../ regex literals. Literals inside a ${...}
+    are spans too. None when a literal, comment or ${...} does not close."""
     spans = []
-    i, n = 0, len(code)
-    prev = ""
-    while i < n:
-        ch = code[i]
-        nxt = code[i + 1] if i + 1 < n else ""
-        if ch == "/" and nxt == "/":
-            j = code.find("\n", i)
-            j = n if j < 0 else j
-            spans.append((i, j, "comment"))
-            i = j
-            continue
-        if ch == "/" and nxt == "*":
-            j = code.find("*/", i + 2)
-            if j < 0:
-                return None
-            spans.append((i, j + 2, "comment"))
-            i = j + 2
-            continue
-        if ch == "/" and (prev == "" or prev in REGEX_PREV or code[max(0, i - 6):i].rstrip().endswith("return")):
-            j, in_class = i + 1, False
-            while j < n and code[j] != "\n" and (code[j] != "/" or in_class):
-                if code[j] == "\\":
-                    j += 1
-                elif code[j] == "[":
-                    in_class = True
-                elif code[j] == "]":
-                    in_class = False
+    n = len(code)
+
+    def template(i):
+        j, out = i + 1, []
+        while j < n:
+            c = code[j]
+            if c == "\\":
+                out.append(code[j:j + 2])
+                j += 2
+            elif c == "`":
+                return j, "".join(out)
+            elif c == "$" and code[j + 1:j + 2] == "{":
+                j = scan(j + 2, True)
+                if j is None:
+                    return None
+                out.append("X")
+            else:
+                out.append(c)
                 j += 1
-            if j >= n or code[j] != "/":
-                return None
-            spans.append((i + 1, j, "regex"))
-            i = j + 1
-            prev = "/"
-            continue
-        if ch in "'\"`":
-            command = ch == "`" and i > 0 and code[i - 1] == "$"
-            j = i + 1
-            while j < n and code[j] != ch:
-                j += 2 if code[j] == "\\" else 1
-            if j >= n:
-                return None
-            if not command:
-                spans.append((i + 1, j, "string"))
-            i = j + 1
-            prev = ch
-            continue
-        if not ch.isspace():
-            prev = ch
-        i += 1
-    return spans
+        return None
+
+    def scan(i, nested):
+        depth, prev = 0, ""
+        while i < n:
+            ch = code[i]
+            nxt = code[i + 1] if i + 1 < n else ""
+            if ch == "/" and nxt == "/":
+                j = code.find("\n", i)
+                j = n if j < 0 else j
+                spans.append((i, j, "comment", ""))
+                i = j
+                continue
+            if ch == "/" and nxt == "*":
+                j = code.find("*/", i + 2)
+                if j < 0:
+                    return None
+                spans.append((i, j + 2, "comment", ""))
+                i = j + 2
+                continue
+            if ch == "/" and (prev == "" or prev in REGEX_PREV or code[max(0, i - 6):i].rstrip().endswith("return")):
+                j, in_class = i + 1, False
+                while j < n and code[j] != "\n" and (code[j] != "/" or in_class):
+                    if code[j] == "\\":
+                        j += 1
+                    elif code[j] == "[":
+                        in_class = True
+                    elif code[j] == "]":
+                        in_class = False
+                    j += 1
+                if j >= n or code[j] != "/":
+                    return None
+                spans.append((i + 1, j, "regex", ""))
+                i = j + 1
+                prev = "/"
+                continue
+            if ch == "`":
+                found = template(i)
+                if found is None:
+                    return None
+                j, text = found
+                command = re.search(r"(?<![\w.])\$\s*$", code[max(0, i - 8):i])
+                spans.append((i + 1, j, "command" if command else "string", text))
+                i = j + 1
+                prev = ch
+                continue
+            if ch in "'\"":
+                j = i + 1
+                while j < n and code[j] != ch and code[j] != "\n":
+                    j += 2 if code[j] == "\\" else 1
+                if j >= n or code[j] != ch:
+                    return None
+                spans.append((i + 1, j, "string", code[i + 1:j]))
+                i = j + 1
+                prev = ch
+                continue
+            if nested and ch == "{":
+                depth += 1
+            elif nested and ch == "}":
+                if depth == 0:
+                    return i + 1
+                depth -= 1
+            if not ch.isspace():
+                prev = ch
+            i += 1
+        return None if nested else n
+
+    return spans if scan(0, False) is not None else None
 
 
 def mask_strings(code, spans):
-    """Blank the given spans (string, comment and regex text, string arguments of edit() and
+    """Blank the given spans (string, command, comment and regex text, string arguments of edit() and
     write() among them), keeping offsets, so text that only mentions file( or rg is not a call."""
     chars = list(code)
-    for start, end, _kind in spans:
+    for start, end, _kind, _text in spans:
         for k in range(start, end):
             if chars[k] != "\n":
                 chars[k] = " "
     return "".join(chars)
 
 
+def shell_call_literals(masked, literals):
+    """The literal text each $(...) call runs: its first argument when that is a literal, or the literal a
+    const/let/var of that name is assigned."""
+    for m in REPL_SHELL_CALL.finditer(masked):
+        k = m.end()
+        while k < len(masked) and masked[k].isspace():
+            k += 1
+        if k in literals:
+            yield literals[k]
+            continue
+        name = re.match(r"[A-Za-z_$][\w$]*", masked[k:])
+        if not name:
+            continue
+        for d in re.finditer(r"(?<![\w.$])(?:const|let|var)\s+" + re.escape(name.group(0)) + r"\s*=\s*", masked):
+            if d.end() in literals:
+                yield literals[d.end()]
+
+
 def repl_reader(code):
     """Best effort: a REPL script reads when it calls file(), a reading tool or tools.Agent, or runs a
-    $`...` command (or a $(string) call) whose segments start with a reader."""
+    $`...` command or a $(...) call whose first argument (a literal, or a variable assigned one) has a
+    segment that starts with a reader. A script that does not parse has only its commands checked."""
     spans = scan_literals(code)
-    masked = code if spans is None else mask_strings(code, spans)
-    found = REPL_READ.search(masked)
-    if found:
-        return "tools.Agent" if found.group(0).endswith("Agent") else "file() or a reading tool"
-    for m in REPL_SHELL.finditer(masked):
-        reader = shell_reader(re.sub(r"\$\{[^}]*\}", "X", m.group(1)))
+    if spans is None:
+        commands = [m.group(1) for m in REPL_SHELL.finditer(code)]
+        commands += [m.group(2) for m in REPL_SHELL_LITERAL.finditer(code)]
+    else:
+        masked = mask_strings(code, spans)
+        found = REPL_READ.search(masked)
+        if found:
+            return "tools.Agent" if found.group(0).endswith("Agent") else "file() or a reading tool"
+        commands = [text for _start, _end, kind, text in spans if kind == "command"]
+        literals = {start - 1: text for start, _end, kind, text in spans if kind in ("string", "command")}
+        commands += list(shell_call_literals(masked, literals))
+    for command in commands:
+        reader = shell_reader(re.sub(r"\$\{[^}]*\}", "X", command))
         if reader:
             return reader
-    if spans and REPL_SHELL_CALL.search(masked):
-        for start, end, kind in spans:
-            if kind == "string":
-                reader = shell_reader(re.sub(r"\$\{[^}]*\}", "X", code[start:end]))
-                if reader:
-                    return reader
     return None
 
 

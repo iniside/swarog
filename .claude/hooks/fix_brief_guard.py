@@ -3,9 +3,10 @@
 
 PreToolUse Agent. .agents/skills/implementation-dispatch/SKILL.md **Fixes outside a plan**.
 A core-implementer, mockup-implementer or test-author prompt passes when it
-  (a) names an existing plan file (docs/plans/...-plan.md) and says "Do Step <id>" or "Implement Step <id>" for a
-      step of that plan: a "### Step <id>" heading, a "- **Step <id>" bullet, or the id in the plan's
-      "Execution order" paragraph (a part hand-off repeats this line), or
+  (a) says "Do Step <id>" or "Implement Step <id>" with an existing plan file (docs/plans/...-plan.md) named in
+      the same sentence (or as the only plan path in the prompt), for a step of that plan: a "### Step <id>"
+      heading, a bold "**<id>" or "**Step <id>" at a line start, or the id in the plan's "Execution order"
+      paragraph (a part hand-off repeats this line); every such step must resolve, or
   (b) holds a "Diagnosis:" section with at least one path:line anchor and a "Change:" line (a review punch
       list passes as the Diagnosis with the reviewer's anchors).
 Anything else is denied with the diagnosis route.
@@ -30,8 +31,8 @@ STEP_END = r"(?![\w-]|\.\w)"
 PLAN = re.compile(r"(docs/plans/[\w./-]+?-plan\.md)")
 DO_STEP = re.compile(r"\b(?:Do|Implement)\s+Step\s+(" + STEP + r")" + STEP_END, re.I)
 DIAG = re.compile(r"^\s*(?:#+\s*)?(?:\*\*)?Diagnosis\b(?:\*\*)?\s*:", re.I | re.M)
-ANCHOR = re.compile(
-    r"[\w./-]+\.(?:rs|toml|sql|md|js|css|html|tmpl|py|json|yaml|ps1|sh):\d+")
+ANCHOR = re.compile(r"[\w./\\-]*\w\.(?=[A-Za-z0-9]*[A-Za-z])[A-Za-z0-9]{1,10}:\d+")
+SENTENCE_END = re.compile(r"[.;!?](?=\s|$)|\n")
 CHANGE = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?Change\b(?:\*\*)?\s*:", re.I | re.M)
 PART_K = r"part\s+(?:[2-9]|\d{2,})[a-z]?\b"
 CONT = re.compile(r"\bstep\s+" + STEP + STEP_END + r"[^\n]{0,120}?\b" + PART_K +
@@ -40,7 +41,6 @@ CONT = re.compile(r"\bstep\s+" + STEP + STEP_END + r"[^\n]{0,120}?\b" + PART_K +
                   r"|\bcontinu\w*\s+(?:from\s+)?(?:the\s+|a\s+)?part(?:[- ]\d+)?\s+hand-?off\b", re.I)
 DONE = re.compile(r"^\s*(?:#+\s*)?(?:[-*]\s*)?(?:\*\*)?Done\b(?:\*\*)?\s*:", re.I | re.M)
 REMAIN = re.compile(r"^\s*(?:#+\s*)?(?:[-*]\s*)?(?:\*\*)?Remaining\b(?:\*\*)?\s*:", re.I | re.M)
-LOOSE_ANCHOR = re.compile(r"[\w./-]+:\d+")
 
 REASON = (
     "{lane} outside a plan step needs a diagnosis first (.agents/skills/implementation-dispatch/SKILL.md "
@@ -63,25 +63,33 @@ def step_in_plan(step, text):
     sid = re.escape(step)
     if re.search(r"^#{2,4}\s*Steps?\s+" + sid + STEP_END, text, re.M | re.I):
         return True
-    if re.search(r"^\s*[-*]\s+\*\*Steps?\s+" + sid + STEP_END, text, re.M | re.I):
+    if re.search(r"^\s*(?:[-*]\s+)?\*\*(?:Steps?\s+)?" + sid + STEP_END, text, re.M | re.I):
         return True
     order = re.search(r"^Execution order\b.*?(?:\n\s*\n|\Z)", text, re.M | re.S | re.I)
     return bool(order and re.search(r"(?<![\w.])" + sid + STEP_END, order.group(0)))
 
 
+def sentence_plan(prompt, at):
+    start = max((m.end() for m in SENTENCE_END.finditer(prompt, 0, at)), default=0)
+    end = SENTENCE_END.search(prompt, at)
+    found = PLAN.search(prompt[start:end.start() if end else len(prompt)])
+    return found and found.group(1)
+
+
 def plan_step_ok(prompt):
-    steps = DO_STEP.findall(prompt)
+    steps = list(DO_STEP.finditer(prompt))
     if not steps:
         return False
-    for path in PLAN.findall(prompt):
-        full = os.path.join(REPO, path)
-        if not os.path.isfile(full):
-            continue
+    plans = set(PLAN.findall(prompt))
+    for m in steps:
+        path = sentence_plan(prompt, m.start()) or (len(plans) == 1 and next(iter(plans)))
+        full = path and os.path.join(REPO, path)
+        if not full or not os.path.isfile(full):
+            return False
         with open(full, encoding="utf-8", errors="replace") as f:
-            text = f.read()
-        if any(step_in_plan(step, text) for step in steps):
-            return True
-    return False
+            if not step_in_plan(m.group(1), f.read()):
+                return False
+    return True
 
 
 def diagnosis_ok(prompt):
@@ -99,7 +107,7 @@ def continuation_ok(prompt):
     if not m or not DONE.search(prompt):
         return False
     rest = prompt[m.end():]
-    return bool(LOOSE_ANCHOR.search(rest)) and bool(CHANGE.search(rest))
+    return bool(ANCHOR.search(rest)) and bool(CHANGE.search(rest))
 
 
 def deny(reason):
