@@ -78,7 +78,16 @@ USAGE:
             also fails when a tab the mockup draws on an entity page is neither a page map tab
             entry nor in pages::EXCLUDED_TABS, when a menu the mockup draws on an untabbed
             compared page is not a page map menu entry, and when a menu the mockup registry
-            defines is neither a page map menu entry nor in pages::EXCLUDED_MOCK_MENUS. A mock-only or portal-only repeat
+            defines is neither a page map menu entry nor in pages::EXCLUDED_MOCK_MENUS. It fails
+            on the mockup's modals too: every PAGES.<fn>(...) call in an onclick of a compared page,
+            tab or menu target's mockup render is run, as written, on its page in node, and one
+            that throws fails by name; one that appends a .scrim is a modal opener, which must be
+            a page map modal entry of that host or in pages::EXCLUDED_MOCK_MODALS (an opener drawn
+            only on pending or excluded pages is not checked); a modal entry its host does not
+            draw, an EXCLUDED_MOCK_MODALS entry its host does not draw, listed twice, with no
+            reason or mapped too, and an EXCLUDED_MODALS NoMockOpener reason its mockup host
+            contradicts (a modal opener drawn there that is no modal entry of another action
+            and not in its others) fail. A mock-only or portal-only repeat
             item (a table row, list item, ...) ends in (\"<hint>\"): its first badge's text and
             its first cell's, as \"badge · cell\". The hint is not part of the difference: an accept entry
             may keep or drop it and matches either way
@@ -250,17 +259,27 @@ pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
 /// menus the registry defines and each untabbed page that is not pending draws against the
 /// page map's menu entries and `excluded_mock_menus` ([`pages::validate_menus`]); a menu
 /// entry's render fails when its page draws no such menu, and a modal entry's, a page's or a
-/// menu's, when its opener is no function or appends no `.scrim`. `mockup` is what
-/// [`validated_mockup`] returned for `lists`. The mockup is the side checked: most portal pages
-/// are not ported yet.
+/// menu's, when its opener is no function or appends no `.scrim`. The modal openers each page,
+/// tab and menu target that is not pending draws (every `onclick` `PAGES.<fn>(…)` its render
+/// draws, run in the harness on its page, [`mock::modal_openers`]; one that throws fails) are
+/// checked against the page map's modal entries, `excluded_mock_modals` and the mockup facts of
+/// `excluded_modals` ([`pages::validate_mock_modals`]). `mockup` is what [`validated_mockup`]
+/// returned for `lists`. The mockup is the side checked: most portal pages are not ported yet.
 fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections::BTreeMap<String, String>) -> Result<()> {
     let page_map = lists.page_map;
     let mut roots = Vec::new();
     let mut drawn = Vec::new();
     let mut menus = Vec::new();
+    let mut openers = Vec::new();
     for p in page_map {
         let key = mockup.get(p.page).ok_or_else(|| anyhow!("page {} has no mockup file", p.page))?;
         let (_, doc) = render_mock(repo, page_map, key, p)?;
+        if p.route != pages::Route::Pending && p.modal.is_none() {
+            // A menu's openers run on its host page, rendered as its host entry is.
+            let page = if p.is_page() { p } else { page_map.iter().find(|q| q.hosts(&p.host())).unwrap_or(p) };
+            let drawn = mock::drawn_openers(&doc).with_context(|| format!("the {} mockup render", p.id()))?;
+            openers.push((p.id(), key, page, drawn));
+        }
         if p.is_page() {
             if matches!(p.route, pages::Route::FirstRow(_)) && p.tab.is_none() {
                 drawn.push((p.page, mock::drawn_tabs(&doc).with_context(|| format!("the P.{key} render"))?));
@@ -273,7 +292,13 @@ fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections
     }
     skeleton::validate_repeats(&roots)?;
     pages::validate_tabs(&drawn, page_map, lists.excluded_tabs)?;
-    pages::validate_menus(&menus, &mock::defined_menus(repo)?, page_map, lists.excluded_mock_menus)
+    pages::validate_menus(&menus, &mock::defined_menus(repo)?, page_map, lists.excluded_mock_menus)?;
+    let mut modals = Vec::new();
+    for (host, key, page, drawn) in openers {
+        let found = mock::modal_openers(repo, &host, key, &page.mock_search(), page.force, &drawn)?;
+        modals.push((host, found));
+    }
+    pages::validate_mock_modals(&modals, lists)
 }
 
 /// Runs the diff of target `page` of `lists` (the CLI passes [`pages::LISTS`]); `Ok(false)`

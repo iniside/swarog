@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use super::render;
-use crate::pages::{Page, Route, EXCLUDED, EXCLUDED_MOCK_MENUS, EXCLUDED_TABS, PAGE_MAP};
+use crate::pages::{Page, Route, EXCLUDED, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS, PAGE_MAP};
 use crate::tests::{write, ScratchDir};
 
 /// A scratch repo whose mockup is a stand-in: every page the two lists name has its html
@@ -21,7 +21,13 @@ use crate::tests::{write, ScratchDir};
 /// `registry.js` defines, through `UI.defineMenu`, every menu `PAGE_MAP` and
 /// `EXCLUDED_MOCK_MENUS` name, as the real registry defines its menus. Each `PAGE_MAP` modal
 /// entry's opener is a `PAGES.<opener>` that appends a `.scrim` holding [`MOCK_MODAL`] with
-/// `{opener}` and `{args}` (its arguments joined by `,`) replaced, as `UI.confirm` does.
+/// `{opener}` and `{args}` (its arguments joined by `,`) replaced, as `UI.confirm` does, and so
+/// is each `EXCLUDED_MOCK_MODALS` opener. Each modal entry's opener is drawn on its host, with
+/// its arguments, and each `EXCLUDED_MOCK_MODALS` opener on its host, with none, as the real
+/// mockup draws them: on a page or tab host in one `<button class="btn">` after the menu buttons
+/// whose `onclick` runs them all, on a menu target in the `onclick` of the menu's `.menu-item`
+/// (`{run}` in [`MOCK_MENU`]) when the menu opens with the host's page as its argument.
+/// [`FakeRepo::with_openers`] draws more calls and appends a script defining their openers.
 /// `REG.mount` assigns the body and then runs `meta.after`, as the real registry does; the
 /// stand-in `after` prints [`AFTER_RAN`] and exits 0, so a harness that let it run would
 /// return that instead of the page. [`FakeRepo::with_map`] reads a given page map in place of
@@ -39,7 +45,7 @@ type MenuButton<'a> = (Option<&'a str>, &'a str, bool);
 /// The stand-in menu body: one preview-labelled group, as the real `UI.openMenu` draws it.
 pub(crate) const MOCK_MENU: &str = concat!(
     r#"<div class="frag"><span class="frag-label">{id}</span><div class="menu-group"><span>{id}</span></div>"#,
-    r#"<div class="menu-item"><span>{arg}</span></div></div>"#,
+    r#"<div class="menu-item" onclick="{run}"><span>{arg}</span></div></div>"#,
 );
 
 /// The stand-in modal: a `.modal` whose head and body sit in a preview-labelled frag, as the
@@ -55,6 +61,13 @@ impl FakeRepo {
     }
 
     pub(crate) fn with_map(name: &str, html: &str, page_map: &[Page]) -> FakeRepo {
+        FakeRepo::with_openers(name, html, page_map, &[], "")
+    }
+
+    /// [`FakeRepo::with_map`] that also draws each `(<host id>, <call>)` of `drawn` on its host,
+    /// a page, tab or menu target of `page_map`, as a modal entry's opener is drawn, and appends
+    /// `script` to `registry.js`, after `PAGES` and the stand-in modal openers are defined.
+    pub(crate) fn with_openers(name: &str, html: &str, page_map: &[Page], drawn: &[(&str, &str)], script: &str) -> FakeRepo {
         let dir = ScratchDir::new(name);
         let redesign = dir.path().join("UILayout").join("redesign");
         let pages: Vec<&str> = page_map.iter().map(|p| p.page).chain(EXCLUDED.iter().map(|(p, _)| *p)).collect();
@@ -88,9 +101,30 @@ impl FakeRepo {
             }
         }
         let mut openers: Vec<&str> = Vec::new();
-        for opener in page_map.iter().filter_map(|p| p.modal.map(|m| m.opener)) {
+        for opener in page_map.iter().filter_map(|p| p.modal.map(|m| m.opener)).chain(EXCLUDED_MOCK_MODALS.iter().map(|(_, o, _)| *o)) {
             if !openers.contains(&opener) {
                 openers.push(opener);
+            }
+        }
+        // The calls each host draws: a page or tab host keyed `<page>|<tab>`, a menu target keyed
+        // `<menu id>|<page>`, as `UI.openMenu` gets its page as the argument.
+        let mut calls: Vec<(String, String)> = Vec::new();
+        for p in page_map {
+            if let Some(m) = p.modal {
+                let args: Vec<String> = m.args.iter().map(|a| format!("'{a}'")).collect();
+                calls.push((p.host().id(), format!("PAGES.{}({})", m.opener, args.join(","))));
+            }
+        }
+        calls.extend(EXCLUDED_MOCK_MODALS.iter().map(|(host, opener, _)| (host.to_string(), format!("PAGES.{opener}()"))));
+        calls.extend(drawn.iter().map(|(host, call)| (host.to_string(), call.to_string())));
+        let mut page_draws: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        let mut menu_draws: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        for (host, call) in calls {
+            let entry = page_map.iter().find(|q| q.id() == host && (q.is_page() || q.is_menu()));
+            let entry = entry.unwrap_or_else(|| panic!("FakeRepo: {host} is no page, tab or menu target of the page map"));
+            match entry.menu {
+                Some(menu) => menu_draws.entry(format!("{}|{}", menu.mock, entry.page)).or_default().push(call),
+                None => page_draws.entry(format!("{}|{}", entry.page, entry.tab.unwrap_or_default())).or_default().push(call),
             }
         }
         for script in super::SCRIPTS {
@@ -115,11 +149,18 @@ impl FakeRepo {
                 "  return (MENUS[key] || []).filter(m => m[0] === tab && (!m[2] || UI.state.force === \"ok\")).map(m =>\n",
                 "    '<button class=\"btn\" onclick=\"UI.openMenu(event,\\'' + m[1] + '\\',\\'' + key + '\\')\"></button>').join(\"\");\n",
                 "}};\n",
+                "const PAGE_DRAWS = {page_draws};\n",
+                "const MENU_DRAWS = {menu_draws};\n",
+                "const pageOpeners = function (key) {{\n",
+                "  const calls = PAGE_DRAWS[key + \"|\" + (new URLSearchParams(location.search).get(\"tab\") || \"\")] || [];\n",
+                "  return calls.length ? '<button class=\"btn\" onclick=\"' + calls.join(\";\") + '\"></button>' : \"\";\n",
+                "}};\n",
                 "var UI = {{ state: {{}}, defineMenu: function () {{}}, openMenu: function (ev, id, arg) {{\n",
                 "  ev.stopPropagation();\n",
                 "  const el = document.createElement(\"div\");\n",
                 "  el.className = \"menu\";\n",
-                "  el.innerHTML = {menu}.split(\"{{arg}}\").join(arg).split(\"{{id}}\").join(id);\n",
+                "  const run = (MENU_DRAWS[id + \"|\" + arg] || []).join(\";\");\n",
+                "  el.innerHTML = {menu}.split(\"{{arg}}\").join(arg).split(\"{{id}}\").join(id).split(\"{{run}}\").join(run);\n",
                 "  document.body.appendChild(el);\n",
                 "}} }};\n",
                 "for (const id of {defined}) UI.defineMenu(id, function () {{ return []; }});\n",
@@ -132,9 +173,10 @@ impl FakeRepo {
                 "for (const key of {keys}) PAGES[key] = {{\n",
                 "  meta: {{ after: function () {{ process.stdout.write({after}); process.exit(0); }} }},\n",
                 "  render: function () {{\n",
-                "    return {html}.split(\"{{search}}\").join(location.search) + tabBar(TABS[key]) + menuButtons(key);\n",
+                "    return {html}.split(\"{{search}}\").join(location.search) + tabBar(TABS[key]) + menuButtons(key) + pageOpeners(key);\n",
                 "  }},\n",
                 "}};\n",
+                "{script}\n",
             ),
             keys = serde_json::to_string(&pages).expect("json"),
             after = serde_json::to_string(AFTER_RAN).expect("json"),
@@ -145,6 +187,9 @@ impl FakeRepo {
             defined = serde_json::to_string(&defined).expect("json"),
             openers = serde_json::to_string(&openers).expect("json"),
             modal = serde_json::to_string(MOCK_MODAL).expect("json"),
+            page_draws = serde_json::to_string(&page_draws).expect("json"),
+            menu_draws = serde_json::to_string(&menu_draws).expect("json"),
+            script = script,
         );
         write(&dir.path().join("UILayout/redesign/assets/registry.js"), &registry);
         FakeRepo { dir }

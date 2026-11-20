@@ -16,7 +16,12 @@
 //! inventoried on every crawled page and tab entry that is not pending, in every menu target's
 //! fetched menu, and in every excluded menu's ([`excluded_menu_id`]): every modal action the
 //! portal draws in them (an `hx-get` to `/admin/_action/…`) has such an entry or is in
-//! [`EXCLUDED_MODALS`] (`crawl`); on the mockup side an entry's opener must append a `.scrim`. A page or tab entry
+//! [`EXCLUDED_MODALS`] (`crawl`); on the mockup side an entry's opener must append a `.scrim`.
+//! The mockup's modals are inventoried from its renders of every page, tab and menu target that
+//! is not pending: each `PAGES.<fn>(…)` `onclick` call drawn there that appends a `.scrim` when
+//! the harness runs it is a modal entry of that host or in [`EXCLUDED_MOCK_MODALS`], and an
+//! `EXCLUDED_MODALS` reason that the mockup has no opener ([`ModalWhy::NoMockOpener`]) is held
+//! to that inventory ([`validate_mock_modals`]). A page or tab entry
 //! can force the mockup's ok state on its render ([`Page::force`]), so a panel the mockup draws
 //! only down, stale or denied is compared in its ok shape, and its menu entries open their menu
 //! on that forced render; the portal side draws its real state.
@@ -272,19 +277,53 @@ pub const EXCLUDED_MENUS: &[(&str, &str, &str)] = &[(
 )];
 
 /// Modal actions the portal draws on a compared page or tab, or in a menu target's or excluded
-/// menu's body, that no `PAGE_MAP` modal entry diffs, as `(<host id>, <module>/<action>, <reason>)`:
+/// menu's body, that no `PAGE_MAP` modal entry diffs, as `(<host id>, <module>/<action>, <why>)`:
 /// the host is a page or tab entry's id (`<page>`, `<page>.<tab>`), a `PAGE_MAP` menu
 /// target's id or an [`EXCLUDED_MENUS`] menu's [`excluded_menu_id`]. [`validate_excluded_modals`] holds it to `PAGE_MAP` and
 /// `EXCLUDED_MENUS`; the crawl still fetches the first of each and fails on an answer that is no
-/// modal, and fails on an entry whose host does not draw it (a stale entry).
-pub const EXCLUDED_MODALS: &[(&str, &str, &str)] = &[
-    ("mail", "mail/test-send", "the mockup's Test send button has no onclick, so the mockup has no modal (pages-platform.js P.mail)"),
+/// modal, and fails on an entry whose host does not draw it (a stale entry). A reason that the
+/// mockup has no opener is [`ModalWhy::NoMockOpener`], which [`validate_mock_modals`] holds to
+/// the mockup render.
+pub const EXCLUDED_MODALS: &[(&str, &str, ModalWhy)] = &[
+    (
+        "mail",
+        "mail/test-send",
+        ModalWhy::NoMockOpener {
+            others: &["cancelMail"],
+            why: "the mockup's Test send button has no onclick, so the mockup has no modal; its cancelMail opens mail/cancel (pages-platform.js P.mail)",
+        },
+    ),
     (
         "events.excluded-menu.subscription",
         "core.events/sub.pause",
-        "the mockup draws no subscription menu and no pause opener: its events row button only toasts (pages-platform.js P.events)",
+        ModalWhy::NoMockOpener {
+            others: &[],
+            why: "the mockup draws no subscription menu and no pause opener: its events row button only toasts (pages-platform.js P.events)",
+        },
     ),
 ];
+
+/// Why an [`EXCLUDED_MODALS`] action is not diffed. That the mockup has no opener of it is a
+/// mockup fact, so it is typed and checked against the mockup render; any other reason is text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModalWhy<'a> {
+    /// The mockup draws no opener of the action on the host, or, for an [`excluded_menu_id`]
+    /// host, on its page: every modal opener the host's mockup render draws is a `PAGE_MAP`
+    /// modal entry of another action there or named in `others`, an opener of another action
+    /// ([`validate_mock_modals`]).
+    NoMockOpener { others: &'a [&'a str], why: &'a str },
+    /// Any other reason, which nothing checks.
+    Other(&'a str),
+}
+
+impl ModalWhy<'_> {
+    /// The reason's text.
+    pub fn text(&self) -> &str {
+        match self {
+            ModalWhy::NoMockOpener { why, .. } | ModalWhy::Other(why) => why,
+        }
+    }
+}
 
 /// The host id of the menu of `kind` an [`EXCLUDED_MENUS`] entry excludes on page `host`, as an
 /// [`EXCLUDED_MODALS`] entry names it: no `PAGE_MAP` id has the `.excluded-menu.` segment.
@@ -300,6 +339,33 @@ pub const EXCLUDED_MOCK_MENUS: &[(&str, &str)] = &[
     ("lock", NO_LORE),
 ];
 
+/// Modal openers the mockup draws on a compared page, tab or menu target that no `PAGE_MAP`
+/// modal entry of that host diffs, as `(<host id>, <opener>, <reason>)`: an opener is a
+/// `PAGES.<opener>(…)` call in an `onclick` of the host's render that appends a `.scrim` when
+/// the harness runs it. [`validate_mock_modals`] holds it to the mockup render.
+pub const EXCLUDED_MOCK_MODALS: &[(&str, &str, &str)] = &[
+    ("players.menu.user", "suspend", NO_SUSPEND),
+    ("players.menu.user", "deleteAccount", NO_DELETE),
+    ("players.menu.user", "changeRole", NO_LORE),
+    ("players.menu.user", "releaseAll", NO_LORE),
+    ("player", "changeRole", NO_LORE),
+    ("player", "suspend", NO_SUSPEND),
+    ("player.menu.user", "suspend", NO_SUSPEND),
+    ("player.menu.user", "deleteAccount", NO_DELETE),
+    ("player.menu.user", "changeRole", NO_LORE),
+    ("player.menu.user", "releaseAll", NO_LORE),
+    (
+        "mail",
+        "cancelMail",
+        "mail.modal.cancel left PAGE_MAP: the dev fleet seeds no pending mail, so the portal draws no cancel opener; Step 24b3 adds it back",
+    ),
+];
+
+const NO_SUSPEND: &str =
+    "no suspension exists: suspend is new domain behaviour the plan excludes, and the portal draws accounts' suspend actions disabled, with no modal";
+const NO_DELETE: &str =
+    "deletion is the player's own two-step flow with no operator path: the portal draws accounts' delete-account action disabled, with no modal";
+
 /// A page map with the exclusion lists that complete it: what the crawl, the mockup render
 /// checks and the diff read, so a caller that passes its own map passes its own lists too.
 /// Problems name the production lists either way.
@@ -309,8 +375,9 @@ pub struct Lists<'a> {
     pub excluded: &'a [(&'a str, &'a str)],
     pub excluded_tabs: &'a [(&'a str, &'a str)],
     pub excluded_menus: &'a [(&'a str, &'a str, &'a str)],
-    pub excluded_modals: &'a [(&'a str, &'a str, &'a str)],
+    pub excluded_modals: &'a [(&'a str, &'a str, ModalWhy<'a>)],
     pub excluded_mock_menus: &'a [(&'a str, &'a str)],
+    pub excluded_mock_modals: &'a [(&'a str, &'a str, &'a str)],
 }
 
 /// The production lists the CLI runs on.
@@ -321,6 +388,7 @@ pub const LISTS: Lists<'static> = Lists {
     excluded_menus: EXCLUDED_MENUS,
     excluded_modals: EXCLUDED_MODALS,
     excluded_mock_menus: EXCLUDED_MOCK_MENUS,
+    excluded_mock_modals: EXCLUDED_MOCK_MODALS,
 };
 
 /// The tabs a mockup render draws, in order, and the one it draws selected.
@@ -578,7 +646,7 @@ pub fn validate_excluded_modals(lists: &Lists) -> Result<()> {
         if !seen.insert((*host, *action)) {
             problems.push(format!("{host} modal {action} is listed in EXCLUDED_MODALS and again in EXCLUDED_MODALS"));
         }
-        if why.trim().is_empty() {
+        if why.text().trim().is_empty() {
             problems.push(format!("EXCLUDED_MODALS {host} modal {action} has no reason"));
         }
         let page = page_map.iter().any(|p| p.is_page() && compared(p) && p.id() == *host);
@@ -594,6 +662,75 @@ pub fn validate_excluded_modals(lists: &Lists) -> Result<()> {
         }
         if page_map.iter().any(|p| p.modal.is_some_and(|m| m.action_path() == *action) && p.host().id() == *host) {
             problems.push(format!("{host} modal {action} is listed in PAGE_MAP and again in EXCLUDED_MODALS"));
+        }
+    }
+    if !problems.is_empty() {
+        bail!("modal drift:\n  {}", problems.join("\n  "));
+    }
+    Ok(())
+}
+
+/// Checks the mockup's modal openers against the modal entries and exclusions of `lists`,
+/// which its problems name `PAGE_MAP`, `EXCLUDED_MOCK_MODALS` and `EXCLUDED_MODALS`. `drawn` is
+/// each compared page, tab and menu target's id with the modal openers its mockup render draws
+/// (an `onclick` `PAGES.<opener>(…)` the harness ran and saw append a `.scrim`,
+/// [`crate::mock::modal_openers`]), every such host listed, an empty list when it draws none.
+/// Each opener drawn is a modal entry of that host or an `EXCLUDED_MOCK_MODALS` entry, not both;
+/// a modal entry hosted by a listed host names an opener it draws; an exclusion is listed once,
+/// with a reason, and names an opener its host draws (else it is stale, a pending or unknown
+/// host drawing nothing checked). An `EXCLUDED_MODALS` [`ModalWhy::NoMockOpener`] claim holds
+/// when every modal opener its mockup host draws is a modal entry of another action there or in
+/// its `others`, and each of `others` is drawn there.
+pub fn validate_mock_modals(drawn: &[(String, Vec<String>)], lists: &Lists) -> Result<()> {
+    let Lists { page_map, excluded_menus, excluded_modals, excluded_mock_modals, .. } = *lists;
+    let drawn_on = |host: &str| drawn.iter().find(|(h, _)| h == host).map(|(_, o)| o.as_slice());
+    let mapped = |host: &str, opener: &str| page_map.iter().find(|p| p.modal.is_some_and(|m| m.opener == opener) && p.host().id() == host);
+    let mut problems = Vec::new();
+    for (host, openers) in drawn {
+        for opener in openers {
+            let excluded = excluded_mock_modals.iter().any(|(h, o, _)| h == host && o == opener);
+            match (mapped(host, opener).is_some(), excluded) {
+                (false, false) => problems.push(format!("mockup modal {host} PAGES.{opener} is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS")),
+                (true, true) => problems.push(format!("mockup modal {host} PAGES.{opener} is listed in PAGE_MAP and again in EXCLUDED_MOCK_MODALS")),
+                _ => {}
+            }
+        }
+    }
+    for p in page_map {
+        let Some(modal) = p.modal else { continue };
+        let host = p.host().id();
+        if drawn_on(&host).is_some_and(|openers| !openers.iter().any(|o| o == modal.opener)) {
+            problems.push(format!("PAGE_MAP {} opens PAGES.{}, which the {host} mockup render does not draw as a modal", p.id(), modal.opener));
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for (host, opener, why) in excluded_mock_modals {
+        if !seen.insert((*host, *opener)) {
+            problems.push(format!("{host} PAGES.{opener} is listed in EXCLUDED_MOCK_MODALS and again in EXCLUDED_MOCK_MODALS"));
+        }
+        if why.trim().is_empty() {
+            problems.push(format!("EXCLUDED_MOCK_MODALS {host} PAGES.{opener} has no reason"));
+        }
+        if !drawn_on(host).is_some_and(|openers| openers.iter().any(|o| o == opener)) {
+            problems.push(format!("EXCLUDED_MOCK_MODALS lists {host} PAGES.{opener}, which no compared {host} mockup render draws as a modal"));
+        }
+    }
+    for (host, action, why) in excluded_modals {
+        let ModalWhy::NoMockOpener { others, .. } = why else { continue };
+        let mock_host = excluded_menus.iter().find(|(h, kind, _)| excluded_menu_id(h, kind) == *host).map_or(*host, |(h, _, _)| *h);
+        let openers = drawn_on(mock_host).unwrap_or_default();
+        for opener in openers {
+            let other = mapped(mock_host, opener).is_some_and(|p| p.modal.is_some_and(|m| m.action_path() != *action));
+            if !other && !others.contains(&opener.as_str()) {
+                problems.push(format!(
+                    "EXCLUDED_MODALS {host} modal {action} says the mockup has no opener of it, but {mock_host} draws PAGES.{opener}, which is neither a PAGE_MAP modal entry of another action there nor in its others"
+                ));
+            }
+        }
+        for other in *others {
+            if !openers.iter().any(|o| o == other) {
+                problems.push(format!("EXCLUDED_MODALS {host} modal {action} names PAGES.{other} in its others, which {mock_host} does not draw as a modal"));
+            }
         }
     }
     if !problems.is_empty() {

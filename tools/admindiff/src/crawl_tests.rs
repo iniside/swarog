@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use super::{run_with, Config, CLEAN_MARKER, MAX_ROUNDS, PANEL_FAIL, PANEL_PASS};
 use crate::mock::mock_tests::FakeRepo;
-use crate::pages::{excluded_menu_id, Lists, Modal, Page, Route, EXCLUDED_MENUS, EXCLUDED_MODALS, LISTS, PAGE_MAP};
+use crate::pages::{excluded_menu_id, Lists, Modal, ModalWhy, Page, Route, EXCLUDED_MENUS, EXCLUDED_MODALS, LISTS, PAGE_MAP};
 use crate::tests::{body, mock_html, ScratchDir};
 
 #[derive(Clone, Debug)]
@@ -493,7 +493,7 @@ async fn crawl_run(
 }
 
 /// [`crawl_with`] of `page_map` and `excluded_modals` instead of the production lists.
-async fn crawl_modals(site: Site, page_map: &[Page], excluded_modals: &[(&str, &str, &str)], allow_empty: bool) -> Crawl {
+async fn crawl_modals(site: Site, page_map: &[Page], excluded_modals: &[(&str, &str, ModalWhy<'_>)], allow_empty: bool) -> Crawl {
     crawl_into(ScratchDir::new("crawl"), site, page_map, EXCLUDED_MENUS, excluded_modals, false, allow_empty).await
 }
 
@@ -503,7 +503,7 @@ async fn crawl_into(
     site: Site,
     page_map: &[Page],
     excluded_menus: &[(&str, &str, &str)],
-    excluded_modals: &[(&str, &str, &str)],
+    excluded_modals: &[(&str, &str, ModalWhy<'_>)],
     allow_errors: bool,
     allow_empty: bool,
 ) -> Crawl {
@@ -1195,7 +1195,7 @@ async fn every_portal_modal_action_on_a_compared_page_is_declared() {
     crawl(site.clone(), false).await.assert_failed_with("an undeclared guild/kick modal", &undeclared);
 
     let mut excluded = EXCLUDED_MODALS.to_vec();
-    excluded.push((target.page, "guild/kick", "why"));
+    excluded.push((target.page, "guild/kick", ModalWhy::Other("why")));
     let declared = crawl_modals(site.clone(), PAGE_MAP, &excluded, false).await;
     declared.assert_clean("the excluded guild/kick modal");
     assert_eq!(fetched(&declared, kick), 1, "{:?}", declared.server.requests());
@@ -1220,7 +1220,7 @@ async fn every_portal_modal_action_on_a_compared_page_is_declared() {
     let undeclared = "player.items draws a guild/kick modal, which is in neither PAGE_MAP nor EXCLUDED_MODALS";
     crawl_map(tab_page.clone(), &page_map).await.assert_failed_with("an undeclared guild/kick modal on the tab page", undeclared);
     let mut on_tab = EXCLUDED_MODALS.to_vec();
-    on_tab.push(("player.items", "guild/kick", "why"));
+    on_tab.push(("player.items", "guild/kick", ModalWhy::Other("why")));
     let c = crawl_modals(tab_page.clone(), &page_map, &on_tab, false).await;
     c.assert_clean("the excluded guild/kick modal on the tab page");
     assert_eq!(fetched(&c, kick), 1, "{:?}", c.server.requests());
@@ -1257,14 +1257,14 @@ async fn a_stale_or_malformed_modal_exclusion_fails() {
     allowed.assert_failed_with("--allow-empty: mail lists no row and no longer draws test-send", stale);
     assert!(allowed.empty.is_empty(), "{:?}", allowed.empty);
 
-    let twice: Vec<_> = EXCLUDED_MODALS.iter().copied().chain([(host, action, "again")]).collect();
+    let twice: Vec<_> = EXCLUDED_MODALS.iter().copied().chain([(host, action, ModalWhy::Other("again"))]).collect();
     let c = crawl_modals(healthy.clone(), PAGE_MAP, &twice, false).await;
     c.assert_error("modal drift:\n  mail modal mail/test-send is listed in EXCLUDED_MODALS and again in EXCLUDED_MODALS");
     assert!(c.server.requests().is_empty(), "validated before anything is fetched: {:?}", c.server.requests());
     let cases = [
-        ("mapped and excluded", ("mail", "mail/cancel", "why")),
-        ("a host that is no page", ("z", "guild/kick", "why")),
-        ("a malformed action", ("mail", "Mail/x", "why")),
+        ("mapped and excluded", ("mail", "mail/cancel", ModalWhy::Other("why"))),
+        ("a host that is no page", ("z", "guild/kick", ModalWhy::Other("why"))),
+        ("a malformed action", ("mail", "Mail/x", ModalWhy::Other("why"))),
     ];
     for (why, entry) in cases {
         let excluded: Vec<_> = EXCLUDED_MODALS.iter().copied().chain([entry]).collect();
@@ -1388,7 +1388,7 @@ async fn every_modal_action_a_compared_menu_draws_is_declared() {
     crawl(site.clone(), false).await.assert_failed_with("an undeclared guild/kick modal in a menu", undeclared);
 
     let mut excluded = EXCLUDED_MODALS.to_vec();
-    excluded.push((&host, "guild/kick", "why"));
+    excluded.push((&host, "guild/kick", ModalWhy::Other("why")));
     let declared = crawl_modals(site, PAGE_MAP, &excluded, false).await;
     declared.assert_clean("the excluded guild/kick modal in a menu");
     assert_eq!(fetched(&declared, &kick), 1, "{:?}", declared.server.requests());
@@ -1481,7 +1481,7 @@ async fn a_stale_tab_modal_exclusion_fails_with_or_without_allow_empty() {
     let kick = modal_url("guild/kick", "player.items");
     let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([items_tab()]).collect();
     let mut excluded = EXCLUDED_MODALS.to_vec();
-    excluded.push(("player.items", "guild/kick", "why"));
+    excluded.push(("player.items", "guild/kick", ModalWhy::Other("why")));
     let drawn = items_site(&modal_button(&kick)).with(&kick, ok(MODAL_BODY));
     let gone = items_site("");
     let stale = "EXCLUDED_MODALS lists player.items modal guild/kick, which player.items does not draw";
@@ -1529,7 +1529,7 @@ async fn a_tab_page_menu_target_holds_its_modals_to_the_page_rules() {
     assert_eq!(written, MODAL_BODY);
 
     let mut excluded = EXCLUDED_MODALS.to_vec();
-    excluded.push((&host, "guild/kick", "why"));
+    excluded.push((&host, "guild/kick", ModalWhy::Other("why")));
     let c = crawl_modals(site.clone(), &page_map, &excluded, false).await;
     c.assert_clean("the excluded guild/kick modal in the tab's menu");
     let raw = c.out.path().join("run").join("raw").join("player.items.menu.user.excluded-modal.guild.kick.html");
