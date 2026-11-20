@@ -2718,6 +2718,28 @@ gate.
     or excluded page, or an `EXCLUDED_MOCK_MODALS` entry with a reason; a stale entry
     fails. An `EXCLUDED_MODALS` reason that states a mockup fact (test-send has no opener)
     is checked against this inventory.
+    Scope (owner, 2026-11-20): the inventory covers the first render of each entry. Another
+    state of a page (a mail tab, a forced state, a filter) is covered by its own `PAGE_MAP`
+    entry once that page is compared; state switches are not followed.
+  - **13d3b2b — menus on tab pages** (owner, 2026-11-20; after 13d3b3). `[opus]`
+    core-implementer, `tools/admindiff/src/{crawl.rs,pages.rs}` and their tests. Tab pages
+    join the menu inventory on the untabbed pages' rules: each menu a compared tab page draws
+    is a menu target or an `EXCLUDED_MENUS` entry with the tab as host
+    (`excluded_menu_id(<page>.<tab>, kind)`), so its modals are mapped, excluded or diffed.
+    One shared "compared host" predicate replaces the copies in `crawl.rs` (menu kinds,
+    modal actions) and `pages.rs` (`validate_excluded_modals`). A menu target on a tab page
+    is fetched once, and its modals once.
+  - **13d3b4 — run the mockup's onclicks as written** (owner, 2026-11-20; after 13d3b2b).
+    `[opus]` core-implementer, `tools/admindiff/src/{mock.rs,pages.rs,lib.rs}` and their
+    tests. The harness runs each distinct `onclick` body verbatim, with every `PAGES`
+    function wrapped to record its name; the Rust call parser (`drawn_openers`,
+    `closing_paren`) is deleted. A body that appends a `.scrim` is a modal of the `PAGES`
+    function it called; one that appends a `.scrim` with no `PAGES` call (`REG.openSearch`,
+    an inline `UI.confirm`/`UI.modal`) fails unless listed. Each `EXCLUDED_MOCK_MODALS`
+    entry names the portal action its opener belongs to (`cancelMail` → `mail/cancel`); a
+    `NoMockOpener` claim holds when every modal opener on its host is mapped to, or excluded
+    with, another action, and `others` is deleted. `ModalWhy` becomes a struct;
+    `render_mock` returns the menu's host entry so `validate_renders` does not look it up again.
 - **Step 13d4 — forced ok state** (T4). `[opus]` core-implementer, after 13d3. Files:
   `pages.rs`, `mock.rs`.
 - **Step 13d5 — admindiff tests.** `[opus]` test-author, after 13d3b, on the fake-server crawl
