@@ -1,15 +1,17 @@
 """View guard: a whole-file view of a long source file is denied and answered with its outline.
 
 PreToolUse Read|Bash|PowerShell|REPL. For core-implementer, test-author, docs-writer, mockup-implementer,
-code-scout, core-reviewer, proof-auditor and general-purpose:
+code-scout, core-reviewer, proof-auditor, general-purpose and the built-in Explore and Plan:
   - Read of a .rs, .py, .md, .js, .css, .html, .tmpl, .toml, .txt or .log file longer than LINE_CAP lines
     without a 'limit'. A Read with offset and no limit that starts within LINE_CAP lines of the end is a
     small view.
   - Bash/PowerShell cat/type/Get-Content/gc of such a file with no pipe in the command (a pipe into head,
     sed -n, rg or a script cuts the output) and no -TotalCount/-Head/-Tail, and sed -n ranges and head/tail
     counts wider than RANGE_CAP lines; segments come from shell_segments.py (quotes, here-docs, comments,
-    launchers). A Bash command a $ template of one of the agent's REPL scripts since its last shell call ran
-    is judged by that script (check_repl), not again on its own.
+    launchers).
+  - A call a REPL script made (a repl_ tool_use_id: a $ command as Bash, file(X).text() as a Read without
+    limit) is judged by the script that resolved exactly that command or file (making_script, check_repl);
+    one no script resolved, and every direct call, gets the checks above.
   - REPL: a whole long file that reaches the script's output (the last statement's value or a log()
     argument): file(X).text()/.lines(), file(X).slice(a, n) with n over RANGE_CAP, or a $`...` command
     check_bash denies, followed through methods that keep the whole text, literals, templates and names;
@@ -40,8 +42,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shell_segments  # noqa: E402
 
 AGENTS = {"core-implementer", "test-author", "docs-writer", "mockup-implementer", "code-scout", "core-reviewer",
-          "proof-auditor", "general-purpose"}
-EXEMPT = set()  # .claude/agents lanes with Read, Bash or REPL that are deliberately left unguarded
+          "proof-auditor", "general-purpose", "Explore", "Plan"}  # Explore and Plan: built-in research lanes
+EXEMPT = set()  # lanes with Read, Bash, PowerShell or REPL that are deliberately left unguarded
 RS_EXT = (".rs",)
 PY_EXT = (".py",)
 MD_EXT = (".md",)
@@ -299,6 +301,7 @@ def tail_lines(total, offset):
 
 
 def check_read(inp, cwd):
+    """A direct Read; a Read a REPL script made (file(X).text()) is judged by its script in main."""
     if inp.get("limit"):
         return None
     path = inp.get("file_path") or ""
@@ -330,10 +333,10 @@ def files_in(tokens):
 
 def check_bash(cmd, cwd, payload=None):
     if payload and payload.get("tool_name") == "Bash":
-        script = running_script(payload, cmd)
-        if script is not None:
+        k = making_script(payload)
+        if k is not None:
             # a $ command of a REPL script: the script was judged as a whole, so judge it again, not the command
-            return check_repl(script, cwd, payload)
+            return check_repl(transcript_calls(payload)[k][1], cwd, payload)
     if ESCAPE in cmd:
         return repeat_escape("Bash", cmd, cwd, payload)
     # A pipe into any program shapes or cuts the output (head, sed -n, rg, python); allowed.
@@ -346,14 +349,17 @@ def check_bash(cmd, cwd, payload=None):
             head = shell_segments.basename(words[0]).lower()
             if head.endswith(".exe"):
                 head = head[:-4]
+            redirected = any(re.match(r"^(?:1?>>?|&>>?)", w) for w in words[1:])
             if head in ("head", "tail"):
+                # stdout redirected to a file (a copy or an append) never enters the context
+                if redirected:
+                    continue
                 for w in files_in(words):
                     hit = long_file(w, cwd)
                     if hit and head_tail_lines(words, hit[0]) > RANGE_CAP:
                         return hit
             elif head in VIEWERS:
-                # stdout redirected to a file (a copy or an append) never enters the context
-                if any(re.match(r"^(?:1?>>?|&>>?)", w) for w in words[1:]):
+                if redirected:
                     continue
                 if any(re.match(r"^-(totalcount|head|tail|first|last)$", w, re.I) for w in words):
                     continue
@@ -657,7 +663,10 @@ def carried(masked, pair, subst, start, pos, lo, hi, box=False):
         pos = pair[opener] + 1
 
 
-def read_sites(code, masked, pair, value, cwd, hfuncs=None):
+def read_sites(code, masked, pair, value, cwd, hfuncs=None, seen=None):
+    """Read sites of a script; when seen is a list, the calls the script resolved are added to it: ("Read", path)
+    for each file(X) and tools.Read file it resolved, ("Bash", pattern) for each $ template whose every ${...}
+    it resolved (pattern matches the command with each value bare or single-quoted, as $ quotes it)."""
     hfuncs = hfuncs or {}
     sites = []
     for m in re.finditer(r"(?<![\w$.])file\s*\(", masked):
@@ -671,6 +680,8 @@ def read_sites(code, masked, pair, value, cwd, hfuncs=None):
         if mo not in pair:
             continue
         path = value(code[o + 1:pair[o]])
+        if seen is not None and path:
+            seen.append(("Read", norm_path(path, cwd)))
         if meth.group(1) == "slice":
             nums = [x.strip() for x in code[mo + 1:pair[mo]].split(",") if x.strip()]
             try:
@@ -702,6 +713,10 @@ def read_sites(code, masked, pair, value, cwd, hfuncs=None):
         if not t:
             continue
         cmd = value(t.group(0))
+        if seen is not None:
+            pat = template_pattern(t.group(0), value)
+            if pat:
+                seen.append(("Bash", pat))
         hit = check_bash(cmd, cwd) if cmd else None
         if hit:
             sites.append((m.start(), t.end(), ("long",) + hit))
@@ -718,6 +733,8 @@ def read_sites(code, masked, pair, value, cwd, hfuncs=None):
         off = re.search(r"\boffset\s*:\s*(\d+)", args)
         fp = re.search(r"\bfile_path\s*:\s*([^,}]+)", args)
         path = value(fp.group(1)) if fp else None
+        if seen is not None and path:
+            seen.append(("Read", norm_path(path, cwd)))
         if lim:
             sites.append((m.start(), pair[o] + 1, ("part", int(lim.group(1)), f"{short(path)} Read limit {lim.group(1)}", path)))
         elif path and os.path.isfile(resolve(path, cwd)) and path.lower().endswith(VIEW_EXT):
@@ -797,12 +814,13 @@ def bash_lines(cmd, cwd):
     """Lines of file text a shell command prints: a sed -n range, a (Get-Content f)[a..b] range, a viewer's
     files, or a trailing head/tail count; 0 when unknown (rg, grep and other programs are not counted)."""
     body = shell_segments.strip_bodies(cmd)
-    ht = re.search(r"\|\s*(?:head|tail)\s+(?:-n\s*)?-?(\d+)\s*$", body)
+    ht = re.search(r"\|\s*(head|tail)((?:\s+[-+\w=]+)*)\s*$", body)
     if ht:
         # only a cut of file text: the part before the pipe is itself a viewer or a sed range on a file
         left, _ = bash_lines(cmd[:cmd.rfind("|")], cwd)
-        n = min(int(ht.group(1)), left)
-        return n, ("| head/tail " + ht.group(1)) if n else ""
+        k = head_count([ht.group(1)] + ht.group(2).split())
+        n = max(left - k[1] + 1, 0) if isinstance(k, tuple) else min(k, left) if k is not None else left
+        return n, ("| " + ht.group(1) + ht.group(2)) if n else ""
     if re.search(r"(?<!\|)\|(?!\|)", body):
         return 0, ""
     rng = re.search(r"sed\s+(?:-\w+\s+)*-n\s+['\"]?(\d+)\s*,\s*(\d+)\s*p", cmd)
@@ -824,66 +842,73 @@ def bash_lines(cmd, cwd):
     return total, ("cat " + " ".join(names[:3])) if total else ""
 
 
-TEMPLATE = re.compile(r"(?<![\w.])\$\s*`((?:\\.|\$\{[^}]*\}|\$(?!\{)|[^`\\$])*)`", re.S)
-INTERP = re.compile(r"\$\{[^}]*\}")
+TEMPLATE_STR = re.compile(r"(?<!\\)\$\{([^}]*)\}")
 
 
-def template_matches(template, cmd):
-    pieces = [re.escape(p.replace("\\`", "`").replace("\\${", "${")) for p in INTERP.split(template)]
-    return re.fullmatch(r"\s*" + ".*?".join(pieces) + r"\s*", cmd, re.S) is not None
+def norm_path(path, cwd):
+    return os.path.normcase(os.path.normpath(resolve(path, cwd)))
 
 
-def enclosing_script(entries, cmd):
-    """The REPL script that ran this Bash command through $: the newest script with a $ template matching the
-    command, else the newest script (a $(string) call has no template)."""
-    newest = None
-    for k in range(len(entries) - 1, -1, -1):
-        name, code = entries[k]
-        if name != "REPL":
-            continue
-        if newest is None:
-            newest = k
-        try:
-            if any(template_matches(t, cmd) for t in TEMPLATE.findall(code)):
-                return k
-        except re.error:
-            pass
-    return newest
+def shell_quote(v):
+    return "'" + v.replace("'", "'\\''") + "'"
 
 
-def running_script(payload, cmd):
-    """The REPL script whose $ template ran this Bash command, or None for a command the agent called itself:
-    its own tool_use is in the transcript, or no script since the agent's last shell call has a matching template."""
-    calls, own = transcript_calls(payload), payload.get("tool_use_id")
-    if own and any(i == own and n in SHELLS for n, _, i in calls):
+def template_pattern(literal, value):
+    """The commands a $ template literal runs, as a compiled regex (each ${...} value bare or single-quoted), or
+    None when the script does not resolve one of its ${...}."""
+    body, parts, pos = literal[1:-1], [], 0
+    for m in TEMPLATE_STR.finditer(body):
+        v = value(m.group(1))
+        if v is None:
+            return None
+        parts.append(re.escape(body[pos:m.start()].replace("\\`", "`").replace("\\${", "${")))
+        parts.append("(?:" + re.escape(v) + "|" + re.escape(shell_quote(v)) + ")")
+        pos = m.end()
+    parts.append(re.escape(body[pos:].replace("\\`", "`").replace("\\${", "${")))
+    try:
+        return re.compile(r"\s*" + "".join(parts) + r"\s*", re.S)
+    except re.error:
         return None
-    scripts = []
-    for n, t, i in reversed(calls):
-        if n in SHELLS and i != own:
-            break
-        if n == "REPL":
-            scripts.append(t)
-    for code in scripts:
-        try:
-            if any(template_matches(t, cmd) for t in TEMPLATE.findall(code)):
-                return code
-        except re.error:
-            pass
-    return None
+
+
+def made_by_script(payload):
+    """A call a REPL script made: its hook event carries a repl_ tool_use_id, a direct call the model's toolu_ id.
+    A missing or other id is judged as a direct call."""
+    return str((payload or {}).get("tool_use_id") or "").startswith("repl_")
+
+
+def making_script(payload):
+    """The one resolver of which REPL script made this call: the index in transcript_calls of the newest script
+    that resolved exactly this Bash command (a $ template) or this Read file (file(X), tools.Read). None for a
+    direct call, or a script call no script resolved (it gets the check of a direct call)."""
+    if "maker" in _EARLIER:
+        return _EARLIER["maker"]
+    found, tool = None, (payload or {}).get("tool_name")
+    if made_by_script(payload) and tool in ("Bash", "Read"):
+        inp, cwd = payload.get("tool_input") or {}, payload.get("cwd") or DEFAULT_CWD
+        cmd = str(inp.get("command") or "")
+        path = norm_path(str(inp.get("file_path") or ""), cwd) if tool == "Read" and inp.get("file_path") else None
+        calls = transcript_calls(payload)
+        for k in range(len(calls) - 1, -1, -1):
+            if calls[k][0] != "REPL":
+                continue
+            seen = []
+            script_sites(calls[k][1], cwd, payload, seen)
+            if any(kind == tool and (v.fullmatch(cmd) if tool == "Bash" else v == path) for kind, v in seen):
+                found = k
+                break
+    _EARLIER["maker"] = found
+    return found
 
 
 def earlier_escapes(payload):
     """The agent's earlier REPL scripts and Bash commands that carried the escape, oldest first. The current call
-    is left out by its tool_use_id; for a Bash call the REPL script that ran it is left out too (enclosing_script),
-    since a $ command inside a script reaches this hook after that script entered the transcript."""
+    is left out by its tool_use_id; for a call a REPL script made, that script is left out too (making_script),
+    since its calls reach this hook after it entered the transcript."""
     if "esc" in _EARLIER:
         return _EARLIER["esc"]
-    own = payload.get("tool_use_id")
-    out = [(n, t) for n, t, i in transcript_calls(payload) if i != own]
-    if payload.get("tool_name") == "Bash":
-        k = enclosing_script(out, str((payload.get("tool_input") or {}).get("command") or ""))
-        if k is not None:
-            del out[k]
+    own, maker = payload.get("tool_use_id"), making_script(payload)
+    out = [(n, t) for k, (n, t, i) in enumerate(transcript_calls(payload)) if i != own and k != maker]
     _EARLIER["esc"] = [(n, t) for n, t in out if ESCAPE in t]
     return _EARLIER["esc"]
 
@@ -913,9 +938,8 @@ def repeat_escape(kind, text, cwd, payload):
     return None
 
 
-def check_repl(code, cwd, payload):
-    if ESCAPE in code:
-        return repeat_escape("REPL", code, cwd, payload)
+def script_sites(code, cwd, payload, seen=None):
+    """A script's mask, bracket pairs, template braces and read sites (see read_sites for seen)."""
     env, full = js_env(code), None
 
     def value(expr):
@@ -931,7 +955,14 @@ def check_repl(code, cwd, payload):
     hfuncs = helpers(code)
     if re.search(r"(?<![\w$.])[A-Za-z_$][\w$]*\s*\([^()]*,\s*\d+\s*,\s*\d+\s*\)", code):
         hfuncs = {**earlier_helpers(payload), **hfuncs}
-    sites = [(a, b, h + (a,) if h[0] == "part" else h) for a, b, h in read_sites(code, masked, pair, value, cwd, hfuncs)]
+    return masked, pair, subst, read_sites(code, masked, pair, value, cwd, hfuncs, seen)
+
+
+def check_repl(code, cwd, payload):
+    if ESCAPE in code:
+        return repeat_escape("REPL", code, cwd, payload)
+    masked, pair, subst, raw = script_sites(code, cwd, payload)
+    sites = [(a, b, h + (a,) if h[0] == "part" else h) for a, b, h in raw]
     if not sites:
         return None
     spans = statements(masked, pair)
@@ -1004,8 +1035,10 @@ def main():
     inp = payload.get("tool_input") or {}
     cwd = payload.get("cwd") or DEFAULT_CWD
     tool = payload.get("tool_name")
+    maker = making_script(payload)
     if tool == "Read":
-        hit = check_read(inp, cwd)
+        # a Read a REPL script made (file(X).text() arrives without limit) is judged by its script
+        hit = check_repl(transcript_calls(payload)[maker][1], cwd, payload) if maker is not None else check_read(inp, cwd)
     elif tool in SHELLS:
         hit = check_bash(inp.get("command") or "", cwd, payload)
     elif tool == "REPL":
@@ -1021,7 +1054,7 @@ def main():
     elif hit and hit[0] == "BUDGET":
         deny_budget(hit[1], hit[2])
     elif hit:
-        deny(*hit, repl=tool == "REPL")
+        deny(*hit, repl=tool == "REPL" or maker is not None)
 
 
 if __name__ == "__main__":

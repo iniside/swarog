@@ -54,8 +54,8 @@ NAV_REASON = (
 )
 
 SLICE_REASON = (
-    "{agent}: {file} was already sliced {count} times with sed -n/head/tail; read the file once with the Read tool "
-    "(whole file, or offset/limit around the anchor) instead of slicing it again. .claude/agents/{agent}.md."
+    "{agent}: {file} was already sliced {count} times with sed -n/head/tail; Read the range you need "
+    "with offset/limit (about 100 lines around the anchor) instead of slicing it again. .claude/agents/{agent}.md."
 )
 
 SEPARATORS = ("&&", ";", "||", "|", "&")

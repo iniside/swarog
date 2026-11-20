@@ -117,16 +117,17 @@ def transcript(calls):
     return path
 
 
-def payload_for(tool, inp, agent="core-implementer", calls=(), main=False):
+def payload_for(tool, inp, agent="core-implementer", calls=(), main=False, own="toolu_now"):
+    """own is the call's tool_use_id: toolu_ for a direct call, repl_ for a call a REPL script made."""
     payload = {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": inp, "cwd": ROOT,
-               "tool_use_id": "toolu_now", "session_id": "s"}
+               "tool_use_id": own, "session_id": "s"}
     if not main:
         payload.update(agent_id="a" + uuid.uuid4().hex[:8], agent_type=agent, transcript_path=transcript(calls))
     return payload
 
 
-def run(tool, inp, agent="core-implementer", calls=(), main=False, timeout=30):
-    payload = payload_for(tool, inp, agent, calls, main)
+def run(tool, inp, agent="core-implementer", calls=(), main=False, timeout=30, own="toolu_now"):
+    payload = payload_for(tool, inp, agent, calls, main, own)
     r = subprocess.run([sys.executable, "-I", "-B", HOOK], input=json.dumps(payload).encode("utf-8"),
                        capture_output=True, timeout=timeout)
     assert r.returncode == 0, r.stderr
@@ -145,11 +146,11 @@ def repl(code, **kw):
 class Scope(unittest.TestCase):
     def test_main_session_and_other_agents_are_no_ops(self):
         self.assertIsNone(run("Read", {"file_path": LONG_RS}, main=True))
-        self.assertIsNone(run("Read", {"file_path": LONG_RS}, agent="Explore"))
+        self.assertIsNone(run("Read", {"file_path": LONG_RS}, agent="statusline-setup"))
 
     def test_every_lane_is_covered(self):
         for agent in ("core-implementer", "test-author", "docs-writer", "mockup-implementer", "code-scout",
-                      "core-reviewer", "proof-auditor", "general-purpose"):
+                      "core-reviewer", "proof-auditor", "general-purpose", "Explore", "Plan"):
             self.assertIsNotNone(run("Read", {"file_path": LONG_RS}, agent=agent), agent)
 
     def test_every_agents_md_lane_with_a_viewing_tool_is_guarded_or_exempt(self):
@@ -165,8 +166,18 @@ class Scope(unittest.TestCase):
             lanes[lane] = {t.strip() for t in tools.group(1).split(",")} if tools else {"*"}
         self.assertTrue(lanes)
         for lane, tools in lanes.items():
-            if tools & {"Read", "Bash", "REPL", "*"}:
+            if tools & {"Read", "Bash", "PowerShell", "REPL", "*"}:
                 self.assertIn(lane, view_guard.AGENTS | view_guard.EXEMPT, lane)
+
+    def test_built_in_lanes_the_adapter_names_are_guarded_or_exempt(self):
+        with open(os.path.join(os.path.dirname(os.path.dirname(HOOKS)), ".agents", "adapters", "claude.md"),
+                  encoding="utf-8") as f:
+            line = re.search(r"^- read-only research — (.*)$", f.read(), re.M)
+        self.assertIsNotNone(line, "the adapter's read-only research lane line moved")
+        named = {w.strip() for w in line.group(1).split(",")[0].split("/")}
+        self.assertIn("Explore", named)
+        for lane in named | {"Plan"}:  # Plan: the other built-in research lane with viewing tools
+            self.assertIn(lane, view_guard.AGENTS | view_guard.EXEMPT, lane)
 
     def test_garbage_input_fails_open(self):
         r = subprocess.run([sys.executable, "-I", "-B", HOOK], input=b'{"agent_type": nope', capture_output=True,
@@ -256,6 +267,7 @@ class Shell(unittest.TestCase):
 
     def test_cut_views_pass(self):
         for cmd in (f"cat {LONG_RS} | head -50", f"sed -n '1,100p' {LONG_RS}", f"cat {LONG_RS} > copy.rs",
+                    f"head -n 5000 {LONG_RS} > copy.rs", f"tail -n +10 {LONG_RS} >> copy.rs",
                     f"Get-Content {LONG_RS} -TotalCount 40", f"cat {SHORT_RS}", f"cat {LONG_PLAN}",
                     f"cat {LONG_RS} # view-ok"):
             self.assertIsNone(run("Bash", {"command": cmd}), cmd)
@@ -318,6 +330,12 @@ class Repl(unittest.TestCase):
         code = "({a: $" + BT + f"head -n 250 {LONG_RS}" + BT + f".text(), b: file('{OTHER_RS}').slice(1, 100)}})"
         self.assertIn("about 350 lines", repl(code))
 
+    def test_budget_counts_a_piped_tail_from_an_offset_and_long_head_flags(self):
+        total = view_guard.line_count(LONG_RS)
+        self.assertIn(f"about {total - 1} lines", repl("$" + BT + f"cat {LONG_RS} | tail -n +2" + BT + ".text()"))
+        code = "({a: $" + BT + f"cat {LONG_RS} | head --lines=250" + BT + f".text(), b: file('{OTHER_RS}').slice(1, 100)}})"
+        self.assertIn("about 350 lines", repl(code))
+
     def test_long_identifiers_do_not_hang_the_name_scan(self):
         code = ("const x = " + "a" * 60 + ".foo()\n") * 30 + f"await file('{LONG_RS}').text()"
         start = time.monotonic()
@@ -326,30 +344,51 @@ class Repl(unittest.TestCase):
 
 
 class ReplShell(unittest.TestCase):
-    """A $ command reaches the Bash hook bare after its script was judged as a whole."""
+    """A call a REPL script made (a repl_ tool_use_id) reaches the hook bare after its script was judged as a
+    whole: a $ command as Bash, file(X).text() as a Read without limit."""
     SCRIPT = f"const p = '{LONG_RS}';\nconst t = await ${BT}cat ${{p}}{BT}.text();\nt.split('x').length"
+    READ = f"const t = await file('{LONG_RS}').text();\nt.split('x').length"
 
     def test_command_of_an_allowed_script_passes(self):
-        self.assertIsNone(run("Bash", {"command": f"cat '{LONG_RS}'"}, calls=[("REPL", {"code": self.SCRIPT})]))
+        self.assertIsNone(run("Bash", {"command": f"cat '{LONG_RS}'"}, calls=[("REPL", {"code": self.SCRIPT})],
+                              own="repl_1"))
 
     def test_command_of_an_escaped_script_passes(self):
         script = f"const p = '{LONG_RS}';\nawait ${BT}cat ${{p}}{BT}.text() // view-ok"
-        self.assertIsNone(run("Bash", {"command": f"cat '{LONG_RS}'"}, calls=[("REPL", {"code": script})]))
+        self.assertIsNone(run("Bash", {"command": f"cat '{LONG_RS}'"}, calls=[("REPL", {"code": script})],
+                              own="repl_1"))
+
+    def test_a_template_the_script_did_not_resolve_gets_the_bare_check(self):
+        script = "const t = await $" + BT + "cat ${unknown}" + BT + ".text();\nt.length"
+        self.assertIsNotNone(run("Bash", {"command": f"cat '{LONG_RS}'"}, calls=[("REPL", {"code": script})],
+                                 own="repl_1"))
+
+    def test_a_script_call_after_a_later_direct_shell_call_is_its_scripts(self):
+        # a detached script's $ command arrives after the agent's own later calls
+        calls = [("REPL", {"code": self.SCRIPT}), ("Bash", {"command": "ls"}), ("REPL", {"code": "'other'"})]
+        self.assertIsNone(run("Bash", {"command": f"cat '{LONG_RS}'"}, calls=calls, own="repl_1"))
 
     def test_a_direct_call_is_still_judged(self):
         cmd = {"command": f"cat '{LONG_RS}'"}
-        self.assertIsNotNone(run("Bash", cmd, calls=[("REPL", {"code": self.SCRIPT}), ("Bash", {"command": "ls"})]))
+        self.assertIsNotNone(run("Bash", cmd, calls=[("REPL", {"code": self.SCRIPT})]))
         self.assertIsNotNone(run("Bash", cmd, calls=[("REPL", {"code": self.SCRIPT}), ("Bash", cmd, "toolu_now")]))
-        self.assertIsNotNone(run("Bash", cmd, calls=[("REPL", {"code": "await $" + BT + "ls" + BT + ".text()"})]))
+        self.assertIsNotNone(run("Bash", cmd, calls=[("REPL", {"code": self.SCRIPT})], own=None))
+        self.assertIsNotNone(run("Bash", cmd, calls=[("REPL", {"code": "await $" + BT + "ls" + BT + ".text()"})],
+                                 own="repl_1"))
+
+    def test_a_read_a_script_made_is_judged_by_the_script(self):
+        read = {"file_path": LONG_RS}
+        self.assertIsNone(run("Read", read, calls=[("REPL", {"code": self.READ})], own="repl_1"))
+        self.assertIsNotNone(run("Read", read, calls=[("REPL", {"code": self.READ})]))
+        self.assertIsNotNone(run("Read", {"file_path": OTHER_RS}, calls=[("REPL", {"code": self.READ})], own="repl_1"))
 
 
 class Cost(unittest.TestCase):
     def test_unterminated_template_is_linear(self):
         code = "$" + BT + "${a}" * 40
         start = time.monotonic()
-        view_guard.TEMPLATE.findall(code)
-        view_guard.enclosing_script([("REPL", code)] * 5, "cat x")
-        self.assertLess(time.monotonic() - start, 1)
+        self.assertIsNone(run("Bash", {"command": "cat x"}, calls=[("REPL", {"code": code})] * 5, own="repl_1"))
+        self.assertLess(time.monotonic() - start, 10)
 
     def test_earlier_environment_is_built_once_per_run(self):
         scripts = [("REPL", {"code": f"const Q = '{LONG_RS}';\n'set'"})]
@@ -375,7 +414,7 @@ class Escape(unittest.TestCase):
         first = f"await file('{LONG_RS}').text() // view-ok"
         self.assertIn("already read whole", repl(first, calls=[("REPL", {"code": first})]))
         self.assertIsNone(repl(f"await file('{OTHER_RS}').text() // view-ok", calls=[("REPL", {"code": first})]))
-        # a Bash call is taken as run by the newest REPL script, which is left out of the earlier reads
+        # a direct Bash call: no script is left out of the earlier reads
         later = ("REPL", {"code": "'unrelated'"})
         self.assertIn("already read whole", run("Bash", {"command": f"cat {LONG_RS} # view-ok"},
                                                 calls=[("REPL", {"code": first}), later]))
@@ -383,11 +422,18 @@ class Escape(unittest.TestCase):
     def test_bash_run_by_a_repl_script_is_not_its_own_repeat(self):
         script = f"const f = '{LONG_RS}';\nawait ${BT}cat ${{f}} # view-ok{BT}.text()"
         cmd = f"cat '{LONG_RS}' # view-ok"
-        self.assertIsNone(run("Bash", {"command": cmd}, calls=[("REPL", {"code": script})]))
+        self.assertIsNone(run("Bash", {"command": cmd}, calls=[("REPL", {"code": script})], own="repl_1"))
         other = f"await file('{OTHER_RS}').text() // view-ok"
-        self.assertIsNone(run("Bash", {"command": cmd}, calls=[("REPL", {"code": script}), ("REPL", {"code": other})]))
+        self.assertIsNone(run("Bash", {"command": cmd}, calls=[("REPL", {"code": script}), ("REPL", {"code": other})],
+                              own="repl_1"))
         self.assertIsNotNone(run("Bash", {"command": cmd},
-                                 calls=[("REPL", {"code": script}), ("REPL", {"code": script})]))
+                                 calls=[("REPL", {"code": script}), ("REPL", {"code": script})], own="repl_1"))
+
+    def test_a_direct_escaped_call_after_a_matching_script_is_a_repeat(self):
+        # one resolver: a direct call never leaves out a script whose template it happens to match
+        script = f"const f = '{LONG_RS}';\nawait ${BT}cat ${{f}} # view-ok{BT}.text()"
+        self.assertIn("already read whole", run("Bash", {"command": f"cat '{LONG_RS}' # view-ok"},
+                                                calls=[("REPL", {"code": script})]))
 
 
 if __name__ == "__main__":

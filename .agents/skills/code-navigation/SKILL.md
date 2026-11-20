@@ -76,4 +76,7 @@ on every later turn, so its cost grows with the length of the task.
 
 On Claude, `.claude/hooks/scout_nav_guard.py` enforces this for
 `core-implementer`, `test-author` and `docs-writer`, and
-`.claude/hooks/grep_sweep_guard.py` blocks recursive shell greps.
+`.claude/hooks/grep_sweep_guard.py` blocks recursive shell greps;
+`.claude/hooks/view_guard.py` denies a whole view of a source or text file over
+300 lines (Read without `limit`, `cat`/`Get-Content`, wide `sed -n`/`head`/`tail`,
+or a REPL script returning the text) and answers with the file's outline.
