@@ -9,14 +9,16 @@ code-scout, core-reviewer, proof-auditor, general-purpose and the built-in Explo
     sed -n, rg or a script cuts the output) and no -TotalCount/-Head/-Tail, and sed -n ranges and head/tail
     counts wider than RANGE_CAP lines; segments come from shell_segments.py (quotes, here-docs, comments,
     launchers).
-  - A call a REPL script made (a repl_ tool_use_id: a $ command as Bash, file(X).text() as a Read without
-    limit) is judged by the script that resolved exactly that command or file (making_script, check_repl);
-    one no script resolved, and every direct call, gets the checks above.
+  - A call a REPL script made (a repl_ tool_use_id: a $ command as Bash or PowerShell, file(X).text() as a
+    Read without limit) is allowed unchecked: its script was judged once at dispatch (check_repl). A call
+    with any other id, or none, is a direct call and gets the checks above.
   - REPL: a whole long file that reaches the script's output (the last statement's value or a log()
     argument): file(X).text()/.lines(), file(X).slice(a, n) with n over RANGE_CAP, or a $`...` command
     check_bash denies, followed through methods that keep the whole text, literals, templates and names;
     X is resolved from string literals and the names this script or the agent's earlier REPL scripts
     assigned (unresolved: allowed). A value kept in a name and returned by a later script is not seen.
+    Best effort: a $ template or a file(X)/tools.Read site whose value the analysis cannot resolve is not
+    checked (like a $ wrapped in a helper), and the calls the script makes are not judged again.
     file(X).slice(offset) and tools.Read with an offset and no limit follow the Read tail rule.
   - REPL budget: the file text one script returns (file().slice/text/lines, tools.Read, sed -n ranges,
     (Get-Content f)[a..b], viewers, head/tail counts, (await file(X).lines()/.text()).slice(a, b) with literal
@@ -332,11 +334,6 @@ def files_in(tokens):
 
 
 def check_bash(cmd, cwd, payload=None):
-    if payload and payload.get("tool_name") == "Bash":
-        k = making_script(payload)
-        if k is not None:
-            # a $ command of a REPL script: the script was judged as a whole, so judge it again, not the command
-            return check_repl(transcript_calls(payload)[k][1], cwd, payload)
     if ESCAPE in cmd:
         return repeat_escape("Bash", cmd, cwd, payload)
     # A pipe into any program shapes or cuts the output (head, sed -n, rg, python); allowed.
@@ -663,10 +660,8 @@ def carried(masked, pair, subst, start, pos, lo, hi, box=False):
         pos = pair[opener] + 1
 
 
-def read_sites(code, masked, pair, value, cwd, hfuncs=None, seen=None):
-    """Read sites of a script; when seen is a list, the calls the script resolved are added to it: ("Read", path)
-    for each file(X) and tools.Read file it resolved, ("Bash", pattern) for each $ template whose every ${...}
-    it resolved (pattern matches the command with each value bare or single-quoted, as $ quotes it)."""
+def read_sites(code, masked, pair, value, cwd, hfuncs=None):
+    """Read sites of a script; a site whose file or command the script does not resolve is not one."""
     hfuncs = hfuncs or {}
     sites = []
     for m in re.finditer(r"(?<![\w$.])file\s*\(", masked):
@@ -680,8 +675,6 @@ def read_sites(code, masked, pair, value, cwd, hfuncs=None, seen=None):
         if mo not in pair:
             continue
         path = value(code[o + 1:pair[o]])
-        if seen is not None and path:
-            seen.append(("Read", norm_path(path, cwd)))
         if meth.group(1) == "slice":
             nums = [x.strip() for x in code[mo + 1:pair[mo]].split(",") if x.strip()]
             try:
@@ -713,10 +706,6 @@ def read_sites(code, masked, pair, value, cwd, hfuncs=None, seen=None):
         if not t:
             continue
         cmd = value(t.group(0))
-        if seen is not None:
-            pat = template_pattern(t.group(0), value)
-            if pat:
-                seen.append(("Bash", pat))
         hit = check_bash(cmd, cwd) if cmd else None
         if hit:
             sites.append((m.start(), t.end(), ("long",) + hit))
@@ -733,8 +722,6 @@ def read_sites(code, masked, pair, value, cwd, hfuncs=None, seen=None):
         off = re.search(r"\boffset\s*:\s*(\d+)", args)
         fp = re.search(r"\bfile_path\s*:\s*([^,}]+)", args)
         path = value(fp.group(1)) if fp else None
-        if seen is not None and path:
-            seen.append(("Read", norm_path(path, cwd)))
         if lim:
             sites.append((m.start(), pair[o] + 1, ("part", int(lim.group(1)), f"{short(path)} Read limit {lim.group(1)}", path)))
         elif path and os.path.isfile(resolve(path, cwd)) and path.lower().endswith(VIEW_EXT):
@@ -842,73 +829,20 @@ def bash_lines(cmd, cwd):
     return total, ("cat " + " ".join(names[:3])) if total else ""
 
 
-TEMPLATE_STR = re.compile(r"(?<!\\)\$\{([^}]*)\}")
-
-
-def norm_path(path, cwd):
-    return os.path.normcase(os.path.normpath(resolve(path, cwd)))
-
-
-def shell_quote(v):
-    return "'" + v.replace("'", "'\\''") + "'"
-
-
-def template_pattern(literal, value):
-    """The commands a $ template literal runs, as a compiled regex (each ${...} value bare or single-quoted), or
-    None when the script does not resolve one of its ${...}."""
-    body, parts, pos = literal[1:-1], [], 0
-    for m in TEMPLATE_STR.finditer(body):
-        v = value(m.group(1))
-        if v is None:
-            return None
-        parts.append(re.escape(body[pos:m.start()].replace("\\`", "`").replace("\\${", "${")))
-        parts.append("(?:" + re.escape(v) + "|" + re.escape(shell_quote(v)) + ")")
-        pos = m.end()
-    parts.append(re.escape(body[pos:].replace("\\`", "`").replace("\\${", "${")))
-    try:
-        return re.compile(r"\s*" + "".join(parts) + r"\s*", re.S)
-    except re.error:
-        return None
-
-
 def made_by_script(payload):
     """A call a REPL script made: its hook event carries a repl_ tool_use_id, a direct call the model's toolu_ id.
-    A missing or other id is judged as a direct call."""
+    A missing or other id is a direct call."""
     return str((payload or {}).get("tool_use_id") or "").startswith("repl_")
 
 
-def making_script(payload):
-    """The one resolver of which REPL script made this call: the index in transcript_calls of the newest script
-    that resolved exactly this Bash command (a $ template) or this Read file (file(X), tools.Read). None for a
-    direct call, or a script call no script resolved (it gets the check of a direct call)."""
-    if "maker" in _EARLIER:
-        return _EARLIER["maker"]
-    found, tool = None, (payload or {}).get("tool_name")
-    if made_by_script(payload) and tool in ("Bash", "Read"):
-        inp, cwd = payload.get("tool_input") or {}, payload.get("cwd") or DEFAULT_CWD
-        cmd = str(inp.get("command") or "")
-        path = norm_path(str(inp.get("file_path") or ""), cwd) if tool == "Read" and inp.get("file_path") else None
-        calls = transcript_calls(payload)
-        for k in range(len(calls) - 1, -1, -1):
-            if calls[k][0] != "REPL":
-                continue
-            seen = []
-            script_sites(calls[k][1], cwd, payload, seen)
-            if any(kind == tool and (v.fullmatch(cmd) if tool == "Bash" else v == path) for kind, v in seen):
-                found = k
-                break
-    _EARLIER["maker"] = found
-    return found
-
-
 def earlier_escapes(payload):
-    """The agent's earlier REPL scripts and Bash commands that carried the escape, oldest first. The current call
-    is left out by its tool_use_id; for a call a REPL script made, that script is left out too (making_script),
-    since its calls reach this hook after it entered the transcript."""
+    """The agent's earlier REPL scripts and direct Bash/PowerShell commands that carried the escape, oldest first.
+    The current call is left out by its tool_use_id, and a call a REPL script made (a repl_ id) never counts: its
+    script carries the escape itself."""
     if "esc" in _EARLIER:
         return _EARLIER["esc"]
-    own, maker = payload.get("tool_use_id"), making_script(payload)
-    out = [(n, t) for k, (n, t, i) in enumerate(transcript_calls(payload)) if i != own and k != maker]
+    own = payload.get("tool_use_id")
+    out = [(n, t) for n, t, i in transcript_calls(payload) if i != own and not str(i or "").startswith("repl_")]
     _EARLIER["esc"] = [(n, t) for n, t in out if ESCAPE in t]
     return _EARLIER["esc"]
 
@@ -938,8 +872,8 @@ def repeat_escape(kind, text, cwd, payload):
     return None
 
 
-def script_sites(code, cwd, payload, seen=None):
-    """A script's mask, bracket pairs, template braces and read sites (see read_sites for seen)."""
+def script_sites(code, cwd, payload):
+    """A script's mask, bracket pairs, template braces and read sites."""
     env, full = js_env(code), None
 
     def value(expr):
@@ -955,10 +889,12 @@ def script_sites(code, cwd, payload, seen=None):
     hfuncs = helpers(code)
     if re.search(r"(?<![\w$.])[A-Za-z_$][\w$]*\s*\([^()]*,\s*\d+\s*,\s*\d+\s*\)", code):
         hfuncs = {**earlier_helpers(payload), **hfuncs}
-    return masked, pair, subst, read_sites(code, masked, pair, value, cwd, hfuncs, seen)
+    return masked, pair, subst, read_sites(code, masked, pair, value, cwd, hfuncs)
 
 
 def check_repl(code, cwd, payload):
+    """The one judgment of a script, at dispatch: the calls it makes reach this hook with a repl_ id and are
+    not judged again (main). A site the analysis cannot resolve is not checked (best effort)."""
     if ESCAPE in code:
         return repeat_escape("REPL", code, cwd, payload)
     masked, pair, subst, raw = script_sites(code, cwd, payload)
@@ -1035,10 +971,10 @@ def main():
     inp = payload.get("tool_input") or {}
     cwd = payload.get("cwd") or DEFAULT_CWD
     tool = payload.get("tool_name")
-    maker = making_script(payload)
+    if tool in SHELLS | {"Read"} and made_by_script(payload):
+        return  # a call a REPL script made: the script was judged at dispatch (check_repl)
     if tool == "Read":
-        # a Read a REPL script made (file(X).text() arrives without limit) is judged by its script
-        hit = check_repl(transcript_calls(payload)[maker][1], cwd, payload) if maker is not None else check_read(inp, cwd)
+        hit = check_read(inp, cwd)
     elif tool in SHELLS:
         hit = check_bash(inp.get("command") or "", cwd, payload)
     elif tool == "REPL":
@@ -1054,7 +990,7 @@ def main():
     elif hit and hit[0] == "BUDGET":
         deny_budget(hit[1], hit[2])
     elif hit:
-        deny(*hit, repl=tool == "REPL" or maker is not None)
+        deny(*hit, repl=tool == "REPL")
 
 
 if __name__ == "__main__":
