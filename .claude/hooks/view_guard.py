@@ -13,14 +13,17 @@ code-scout, core-reviewer, proof-auditor, general-purpose and the built-in Explo
     Read without limit) is allowed unchecked: its script was judged once at dispatch (check_repl). A call
     with any other id, or none, is a direct call and gets the checks above.
   - REPL: a whole long file that reaches the script's output (the last statement's value or a log()
-    argument): file(X).text()/.lines(), file(X).slice(a, n) with n over RANGE_CAP, or a $`...` command
-    check_bash denies, followed through methods that keep the whole text, literals, templates and names;
-    X is resolved from string literals and the names this script or the agent's earlier REPL scripts
+    argument), followed through methods that keep the whole text, literals, templates and names. The call
+    forms judged: file(X).text()/.lines(), file(X).slice(a, n) with n over RANGE_CAP; a shell command
+    check_bash denies, as $`...`, $(cmd[, ms]), or {command} of tools.Bash/tools.PowerShell, tools['Bash'],
+    tools["PowerShell"] or bare Bash(/PowerShell(; a Read without limit as tools.Read(, tools['Read'](,
+    tools["Read"]( or bare Read(. X, the file_path and the command are resolved from string literals and the names this script or the agent's earlier REPL scripts
     assigned (unresolved: allowed). A value kept in a name and returned by a later script is not seen.
-    Best effort: a $ template or a file(X)/tools.Read site whose value the analysis cannot resolve is not
-    checked (like a $ wrapped in a helper), and the calls the script makes are not judged again.
-    file(X).slice(offset) and tools.Read with an offset and no limit follow the Read tail rule.
-  - REPL budget: the file text one script returns (file().slice/text/lines, tools.Read, sed -n ranges,
+    Best effort: a site of these forms whose path or command the analysis cannot resolve is not checked,
+    nor is a call in any other form (a $ wrapped in a helper, tools[name] with a computed name), and the
+    calls the script makes are not judged again. file(X).slice(offset) and a Read with an offset and no
+    limit follow the Read tail rule.
+  - REPL budget: the file text one script returns (file().slice/text/lines, a Read of the forms above, sed -n ranges,
     (Get-Content f)[a..b], viewers, head/tail counts, (await file(X).lines()/.text()).slice(a, b) with literal
     bounds, and calls of the script's own range helpers on a resolved file) adds up to at most SCRIPT_CAP lines; preview(x, n) with n over PREVIEW_CAP counts as
     uncut.
@@ -660,6 +663,54 @@ def carried(masked, pair, subst, start, pos, lo, hi, box=False):
         pos = pair[opener] + 1
 
 
+def call_args(masked, pair, o):
+    """Top-level argument spans inside the bracket that opens at o (a call's '(' or an object's '{')."""
+    spans, s, k = [], o + 1, o + 1
+    while k < pair[o]:
+        if masked[k] in "([{" and k in pair:
+            k = pair[k] + 1
+            continue
+        if masked[k] == ",":
+            spans.append((s, k))
+            s = k + 1
+        k += 1
+    spans.append((s, pair[o]))
+    return [(a, b) for a, b in spans if masked[a:b].strip()]
+
+
+def prop(code, masked, pair, o, key):
+    """The source text of key in the object literal that is the first argument of the call at o, or None."""
+    args = call_args(masked, pair, o)
+    if not args:
+        return None
+    b = args[0][0] + len(masked[args[0][0]:args[0][1]]) - len(masked[args[0][0]:args[0][1]].lstrip())
+    if masked[b] != "{" or b not in pair:
+        return None
+    for lo, hi in call_args(masked, pair, b):
+        k = re.compile(r"\s*(?:(\w+)|(['\"])(\w+)\2)\s*:").match(code, lo)
+        if k and k.end() <= hi and (k.group(1) or k.group(3)) == key:
+            return code[k.end():hi].strip()
+    return None
+
+
+TOOL_CALL = re.compile(r"(?<![\w$.])(?:tools\s*(?:\.\s*(\w+)|\[\s*(['\"])(\w+)\2\s*\])|(\w+))\s*\(")
+
+
+def tool_calls(code, masked, pair):
+    """(start, '(' index, tool) of each tools.X(, tools['X'](, tools["X"]( and bare X( for X in Read, Bash and
+    PowerShell; a function declaration of that name is not a call."""
+    out = []
+    for m in TOOL_CALL.finditer(code):
+        o = m.end() - 1
+        tool = m.group(1) or m.group(3) or m.group(4)
+        if tool not in SHELLS | {"Read"} or masked[o] != "(" or o not in pair:
+            continue  # masked[o] is '(' only outside strings and comments
+        if masked[m.start()] != code[m.start()] or re.search(r"(?:function|const|let|var|class)\s+$", masked[:m.start()]):
+            continue
+        out.append((m.start(), o, tool))
+    return out
+
+
 def read_sites(code, masked, pair, value, cwd, hfuncs=None):
     """Read sites of a script; a site whose file or command the script does not resolve is not one."""
     hfuncs = hfuncs or {}
@@ -701,34 +752,43 @@ def read_sites(code, masked, pair, value, cwd, hfuncs=None):
         elif path and os.path.isfile(resolve(path, cwd)):
             n = line_count(resolve(path, cwd))
             sites.append((m.start(), pair[mo] + 1, ("part", n, f"{short(path)} whole ({n})", path)))
-    for m in re.finditer(r"(?<![\w$.])\$\s*\x60", masked):
-        t = re.compile(JS_STR).match(code, m.end() - 1)
-        if not t:
-            continue
-        cmd = value(t.group(0))
+
+    def shell(start, end, cmd):
         hit = check_bash(cmd, cwd) if cmd else None
         if hit:
-            sites.append((m.start(), t.end(), ("long",) + hit))
+            sites.append((start, end, ("long",) + hit))
         elif cmd:
             n, label = bash_lines(cmd, cwd)
             if n:
-                sites.append((m.start(), t.end(), ("part", n, label, None)))
-    for m in re.finditer(r"(?<![\w$.])tools\s*\.\s*Read\s*\(", masked):
+                sites.append((start, end, ("part", n, label, None)))
+
+    for m in re.finditer(r"(?<![\w$.])\$\s*\x60", masked):
+        t = re.compile(JS_STR).match(code, m.end() - 1)
+        if t:
+            shell(m.start(), t.end(), value(t.group(0)))
+    for m in re.finditer(r"(?<![\w$.])\$\s*\(", masked):  # $(cmd[, ms])
         o = m.end() - 1
-        if o not in pair:
+        args = call_args(masked, pair, o) if o in pair else []
+        if args:
+            shell(m.start(), pair[o] + 1, value(code[args[0][0]:args[0][1]].strip()))
+    for start, o, tool in tool_calls(code, masked, pair):
+        if tool in SHELLS:
+            cmd = prop(code, masked, pair, o, "command")
+            shell(start, pair[o] + 1, value(cmd) if cmd else None)
             continue
-        args = code[o + 1:pair[o]]
-        lim = re.search(r"\blimit\s*:\s*(\d+)", args)
-        off = re.search(r"\boffset\s*:\s*(\d+)", args)
-        fp = re.search(r"\bfile_path\s*:\s*([^,}]+)", args)
-        path = value(fp.group(1)) if fp else None
+        lim = prop(code, masked, pair, o, "limit")
+        off = prop(code, masked, pair, o, "offset")
+        fp = prop(code, masked, pair, o, "file_path")
+        lim = lim if lim and lim.isdigit() else None
+        off = int(off) if off and off.isdigit() else 0
+        path = value(fp) if fp else None
         if lim:
-            sites.append((m.start(), pair[o] + 1, ("part", int(lim.group(1)), f"{short(path)} Read limit {lim.group(1)}", path)))
+            sites.append((start, pair[o] + 1, ("part", int(lim), f"{short(path)} Read limit {lim}", path)))
         elif path and os.path.isfile(resolve(path, cwd)) and path.lower().endswith(VIEW_EXT):
             n = line_count(resolve(path, cwd))
-            if off and int(off.group(1)) > 1:
-                n = max(n - int(off.group(1)) + 1, 0)
-            sites.append((m.start(), pair[o] + 1, ("part", n, f"{short(path)} Read ({n})", path)))
+            if off > 1:
+                n = max(n - off + 1, 0)
+            sites.append((start, pair[o] + 1, ("part", n, f"{short(path)} Read ({n})", path)))
     for name, kind in hfuncs.items():
         for m in re.finditer(r"(?<![\w$.])" + re.escape(name) + r"\s*\(", masked):
             o = m.end() - 1

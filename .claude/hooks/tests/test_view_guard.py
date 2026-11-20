@@ -336,6 +336,43 @@ class Repl(unittest.TestCase):
         code = "({a: $" + BT + f"cat {LONG_RS} | head --lines=250" + BT + f".text(), b: file('{OTHER_RS}').slice(1, 100)}})"
         self.assertIn("about 350 lines", repl(code))
 
+    def test_every_read_and_shell_call_form_is_judged(self):
+        """Each form a script can read a file through: returned whole it is denied, cut it passes."""
+        forms = {"$(str)": f"$('cat {LONG_RS}').text()",
+                 "$(str, ms)": f"$('cat {LONG_RS}', 5000).text()",
+                 "$(name)": None,
+                 "tools.Bash": f"tools.Bash({{command: 'cat {LONG_RS}'}})",
+                 "tools['Bash']": f"tools['Bash']({{command: 'cat {LONG_RS}', timeout: 5000}})",
+                 "Bash": f"Bash({{description: 'x', command: 'cat {LONG_RS}'}})",
+                 "tools.PowerShell": f"tools.PowerShell({{command: 'Get-Content {LONG_RS}'}})",
+                 'tools["PowerShell"]': f'tools["PowerShell"]({{"command": "Get-Content {LONG_RS}"}})',
+                 "PowerShell": f"PowerShell({{command: 'gc {LONG_RS}'}})",
+                 "tools.Read": f"tools.Read({{file_path: '{LONG_RS}'}})",
+                 "tools['Read']": f"tools['Read']({{file_path: '{LONG_RS}'}})",
+                 'tools["Read"]': f'tools["Read"]({{"file_path": "{LONG_RS}"}})',
+                 "Read": f"Read({{file_path: '{LONG_RS}'}})"}
+        for name, call in forms.items():
+            pre = f"const c = 'cat {LONG_RS}';\n" if call is None else ""
+            call = call or "$(c).text()"
+            whole = f"{pre}(await {call})"
+            with self.subTest(form=name, case="returned whole"):
+                self.assertIsNotNone(repl(whole))
+            with self.subTest(form=name, case="logged whole"):
+                self.assertIsNotNone(repl(f"{pre}const r = await {call};\nlog(r)"))
+            with self.subTest(form=name, case="processed"):
+                self.assertIsNone(repl(whole + ".length"))
+                self.assertIsNone(repl(whole + ".slice(0, 200)"))
+        self.assertIn("about 400 lines", repl(f"({{a: tools['Read']({{file_path: '{LONG_RS}', limit: 200}}), "
+                                              f"b: $('sed -n 1,200p {OTHER_RS}').text()}})"))
+
+    def test_lookalike_calls_are_not_sites(self):
+        for code in (f"const s = \"Read({{file_path: '{LONG_RS}'}})\";\ns",
+                     f"// tools.Bash({{command: 'cat {LONG_RS}'}})\n'x'",
+                     f"x.Read({{file_path: '{LONG_RS}'}})",
+                     f"tools.Read({{file_path: '{LONG_RS}', limit: 100}})",
+                     f"await $('cat {LONG_RS}', 5000).text() // view-ok"):
+            self.assertIsNone(repl(code), code)
+
     def test_long_identifiers_do_not_hang_the_name_scan(self):
         code = ("const x = " + "a" * 60 + ".foo()\n") * 30 + f"await file('{LONG_RS}').text()"
         start = time.monotonic()
