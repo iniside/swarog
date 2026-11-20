@@ -46,8 +46,9 @@ const SCRIPTS: &[&str] = &[
 // `input.modal` no page mounts either: `PAGES[opener]` is called with the entry's arguments,
 // and the first element it appends to the body with the class `scrim` (`UI.modal`, which
 // `UI.confirm` calls) is written as `<div class="scrim">` around its HTML. The
-// global `UI` is an accessor that wraps the `defineMenu` of whatever object a script assigns
-// to it, before any script can call it, so every defined menu id is recorded; with
+// global `UI` is an accessor that wraps the `defineMenu` and `openMenu` of whatever object a
+// script assigns to it, before any script can call or alias them, so every defined menu id is
+// recorded, and so is each `openMenu` call, through `UI` or an alias taken from it; with
 // `input.registry` no page mounts and the ids are written as JSON. With `input.force` the page
 // render sets `UI.state.force = "ok"` before it mounts, after `boot.js` has read `?state=`, so
 // every forceable panel and tile draws ok. With `input.probe`, a list of `onclick` bodies, each
@@ -58,15 +59,18 @@ const SCRIPTS: &[&str] = &[
 // assignment outside every `REG` call is an error. Timer callbacks queue, each with the outermost
 // `PAGES` call running when it was scheduled (an interval runs once), and run after the body,
 // for at most `MAX_TIMER_ROUNDS` rounds. While it runs, `PAGES.tab` is an accessor recording each
-// value assigned to it, and `UI.openMenu` is wrapped to record each call's menu id and argument
-// (null when it has none) before it opens the menu. Each body is written as `{scrims, menus, tabs}`:
+// value assigned to it. A probe of a mockup whose `UI.openMenu` is not the recording wrapper (none,
+// or replaced after `UI` was set) fails. Each body is written as `{scrims, menus, tabs, loose}`:
 // one `scrims` entry per `.scrim` it appended to the body, the name of the `PAGES` function that
 // appended it or null when it was appended outside every such call; each `UI.openMenu` call as
-// `[id, arg]`; each `PAGES.tab` value; or as `{error}` when it threw.
+// `[id, arg]` (arg null when it has none); each `PAGES.tab` value; `loose` the number of `.menu`
+// elements it appended outside every `UI.openMenu` call, which no call recorded; or as `{error}`
+// when it threw.
 const HARNESS: &str = r#""use strict";
 const fs = require("fs"), vm = require("vm");
 const input = JSON.parse(process.env.ADMINDIFF_INPUT);
 const CAPTURED = Symbol("captured");
+const RECORDS = Symbol("records");
 const scripts = input.scripts.map(file => new vm.Script(fs.readFileSync(file, "utf8"), { filename: file }));
 const inert = () => {};
 const element = () => {
@@ -95,9 +99,10 @@ const MAX_TIMER_ROUNDS = 10;
 const click = el => ({ stopPropagation: inert, preventDefault: inert, currentTarget: el, target: el });
 // A fresh mockup: `html` is what the body was last assigned, `appended` each element appended to
 // the body with the `PAGES` function running when it was (`opener`, null outside every recorded
-// call), `defined` each menu id `UI.defineMenu` was called with, `ctx` the context the scripts ran in.
+// call, `menu` whether a `UI.openMenu` call was running), `defined` each menu id `UI.defineMenu` was
+// called with, `menus` each `UI.openMenu` call as `[id, arg]`, `ctx` the context the scripts ran in.
 function boot() {
-  const m = { html: null, appended: [], defined: [], opener: null, ctx: null, timers: [], cleared: new Set(), probing: false, rendering: 0 };
+  const m = { html: null, appended: [], defined: [], menus: [], inMenu: 0, opener: null, ctx: null, timers: [], cleared: new Set(), probing: false, rendering: 0 };
   const body = element();
   Object.defineProperty(body, "innerHTML", {
     get: () => m.html ?? "",
@@ -114,7 +119,7 @@ function boot() {
     return timerId;
   };
   const clear = id => { m.cleared.add(id); };
-  body.appendChild = el => { m.appended.push({ el, opener: m.opener }); };
+  body.appendChild = el => { m.appended.push({ el, opener: m.opener, menu: m.inMenu > 0 }); };
   const ctx = {
     console, process, URL, URLSearchParams,
     setTimeout: schedule, clearTimeout: clear, setInterval: schedule, clearInterval: clear,
@@ -138,6 +143,15 @@ function boot() {
       const define = v && v.defineMenu;
       if (typeof define === "function") {
         v.defineMenu = function (id, ...rest) { m.defined.push(String(id)); return define.call(this, id, ...rest); };
+      }
+      const open = v && v.openMenu;
+      if (typeof open === "function") {
+        v.openMenu = function (ev, id, arg, ...rest) {
+          m.menus.push([String(id), arg === undefined || arg === null ? null : String(arg)]);
+          m.inMenu += 1;
+          try { return open.call(this, ev, id, arg, ...rest); } finally { m.inMenu -= 1; }
+        };
+        v.openMenu[RECORDS] = true;
       }
     },
   });
@@ -197,7 +211,7 @@ if (input.registry) {
         try { return fn.apply(this, args); } finally { m.opener = null; }
       };
     }
-    const menus = [], tabs = [];
+    const tabs = [];
     let tab = pages.tab;
     Object.defineProperty(pages, "tab", {
       configurable: true, enumerable: true,
@@ -205,13 +219,11 @@ if (input.registry) {
       set: v => { tab = v; tabs.push(String(v)); },
     });
     const ui = m.ctx.UI;
-    if (ui && typeof ui.openMenu === "function") {
-      const open = ui.openMenu;
-      ui.openMenu = function (ev, id, arg, ...rest) {
-        menus.push([String(id), arg === undefined || arg === null ? null : String(arg)]);
-        return open.call(this, ev, id, arg, ...rest);
-      };
+    if (!ui || typeof ui.openMenu !== "function" || !ui.openMenu[RECORDS]) {
+      process.stderr.write("the mockup's UI.openMenu is not the harness's recording wrapper: it is missing or was replaced after UI was set\n");
+      process.exit(2);
     }
+    m.menus.length = 0;
     let error = null;
     m.probing = true;
     try {
@@ -229,7 +241,8 @@ if (input.registry) {
       error = String(e && e.message !== undefined ? e.message : e);
     }
     const scrims = m.appended.filter(a => hasClass(a.el, "scrim")).map(a => a.opener);
-    results.push(error === null ? { scrims, menus, tabs } : { error });
+    const loose = m.appended.filter(a => hasClass(a.el, "menu") && !a.menu).length;
+    results.push(error === null ? { scrims, menus: m.menus, tabs, loose } : { error });
   }
   process.stdout.write(JSON.stringify(results));
 } else {
@@ -349,8 +362,9 @@ impl Probe {
 /// Runs the `onclick` bodies (`scope`) the mockup render `doc` of `P.<key>` draws, each verbatim
 /// on its own fresh `P.<key>` mounted as `page` renders it (its search, forced ok when it
 /// forces; for a menu its host page's), and returns what they did; `host` names the render in
-/// errors. A body that throws fails with its host and its text; one that re-renders the page is
-/// no error.
+/// errors. A body that throws fails with its host and its text, and so does one that appends a
+/// `.menu` outside every `UI.openMenu` call, which no call recorded; one that re-renders the page
+/// is no error.
 pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scope: Onclicks) -> Result<Probe> {
     let bodies = match scope {
         Onclicks::All => onclicks(doc),
@@ -366,16 +380,16 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
     if results.len() != bodies.len() {
         bail!("the harness ran {} of the {} onclicks {host} draws", results.len(), bodies.len());
     }
-    let mut thrown = Vec::new();
+    let mut failed = Vec::new();
     // Each body that assigned `PAGES.tab`, with the first value it assigned.
     let mut tab_of: Vec<(&str, String)> = Vec::new();
     for (body, result) in bodies.iter().zip(&results) {
         if let Some(error) = result.get("error") {
-            thrown.push(format!("onclick {body:?} drawn on {host} threw in the harness: {}", error.as_str().unwrap_or_default()));
+            failed.push(format!("onclick {body:?} drawn on {host} threw in the harness: {}", error.as_str().unwrap_or_default()));
             continue;
         }
         let list = |field: &str| {
-            result.get(field).and_then(serde_json::Value::as_array).with_context(|| format!("an onclick probe result has no {field} list"))
+            result.get(field).and_then(serde_json::Value::as_array).with_context(|| format!("the probe of onclick {body:?} drawn on {host} has no {field} list"))
         };
         for scrim in list("scrims")? {
             let opener = match scrim.as_str() {
@@ -387,18 +401,29 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
             }
         }
         for call in list("menus")? {
-            let id = call.get(0).and_then(serde_json::Value::as_str).context("a recorded UI.openMenu call has no menu id")?;
+            let id = call
+                .get(0)
+                .and_then(serde_json::Value::as_str)
+                .with_context(|| format!("a UI.openMenu call by onclick {body:?} drawn on {host} was recorded with no menu id"))?;
             let arg = call.get(1).and_then(serde_json::Value::as_str).map(str::to_string);
             if !probe.menus.iter().any(|(m, _)| m == id) {
                 probe.menus.push((id.to_string(), arg));
             }
         }
         if let Some(tab) = list("tabs")?.first() {
-            tab_of.push((body.as_str(), tab.as_str().context("a recorded PAGES.tab value is no string")?.to_string()));
+            let tab = tab.as_str().with_context(|| format!("a PAGES.tab value onclick {body:?} drawn on {host} assigned was recorded as no string"))?;
+            tab_of.push((body.as_str(), tab.to_string()));
+        }
+        let loose = result
+            .get("loose")
+            .and_then(serde_json::Value::as_u64)
+            .with_context(|| format!("the probe of onclick {body:?} drawn on {host} has no loose count"))?;
+        if loose > 0 {
+            failed.push(format!("onclick {body:?} drawn on {host} appended a .menu outside every UI.openMenu call, so no menu id was recorded"));
         }
     }
-    if !thrown.is_empty() {
-        bail!("mockup onclick failed:\n  {}", thrown.join("\n  "));
+    if !failed.is_empty() {
+        bail!("mockup onclick failed:\n  {}", failed.join("\n  "));
     }
     let mut buttons = Vec::new();
     find_all(doc, &|e| e.has_class("tab") && e.attr("onclick").is_some(), &mut buttons);

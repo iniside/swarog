@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use super::render;
-use crate::pages::{MockOpener, Page, Route, EXCLUDED, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS, PAGE_MAP};
+use crate::pages::{validate_menus, MockOpener, Page, Route, EXCLUDED, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS, PAGE_MAP};
 use crate::tests::{write, ScratchDir};
 
 /// A scratch repo whose mockup is a stand-in: every page the two lists name has its html
@@ -343,6 +343,111 @@ fn a_tab_probe_runs_only_the_tab_onclicks() {
     assert!(e.contains(r#"onclick "nosuch()" drawn on index threw in the harness"#), "{e}");
 }
 
+/// The menu drift [`validate_menus`] reports for the menus `probe` recorded on the stand-in
+/// `index` page, against the stand-in registry; empty when there is none.
+fn menu_drift(repo: &Path, probe: &super::Probe) -> String {
+    let defined = super::defined_menus(repo).expect("the stand-in registry");
+    let drawn = [(index_page().id(), probe.menu_ids())];
+    match validate_menus(&drawn, &defined, PAGE_MAP, EXCLUDED_MOCK_MENUS) {
+        Ok(()) => String::new(),
+        Err(e) => format!("{e:#}"),
+    }
+}
+
+/// The probe records the calls that run, not their text: a call behind a guard that never holds
+/// and a string that only names a call open no menu, and `PAGES.tab` assigned through a computed
+/// key is a tab. A parser of the `onclick` text beside the probe would report the first two and
+/// miss the third.
+#[test]
+fn only_the_calls_that_run_are_recorded() {
+    let repo = FakeRepo::new("mock-probe-run", r#"<div class="app"></div>"#);
+    let probe = probe_html(repo.path(), concat!(
+        r#"<button onclick="if (false) UI.openMenu(event,'ghost','x')"></button>"#,
+        r#"<button onclick="const s = &quot;UI.openMenu(event,'shade','y')&quot;; s.length"></button>"#,
+        r#"<button class="tab on" onclick="const k = 'tab'; PAGES[k] = 'items'"></button>"#,
+    ))
+    .expect("probes");
+    assert!(probe.menus.is_empty(), "no call ran: {:?}", probe.menus);
+    assert_eq!(probe.tabs.tabs, ["items"]);
+    assert_eq!(probe.tabs.selected.as_deref(), Some("items"));
+}
+
+/// Each tab is the first value its body assigns to `PAGES.tab`, and the selected tab is the first
+/// `.tab.on` whose body assigns one: a `.tab.on` of another page's state (`PAGES.repoTab`) is no
+/// tab and selects none, and a body that assigns twice is the tab of its first assignment.
+#[test]
+fn the_selected_tab_is_the_first_on_tab_that_assigns_one() {
+    let repo = FakeRepo::new("mock-probe-selected", r#"<div class="app"></div>"#);
+    let probe = probe_html(repo.path(), concat!(
+        r#"<button class="tab on" onclick="PAGES.repoTab='f'"></button>"#,
+        r#"<button class="tab on" onclick="PAGES.tab='a'"></button>"#,
+        r#"<button class="tab" onclick="PAGES.tab='b'; PAGES.tab='c'"></button>"#,
+    ))
+    .expect("probes");
+    assert_eq!(probe.tabs.selected.as_deref(), Some("a"));
+    assert_eq!(probe.tabs.tabs, ["a", "b"]);
+}
+
+/// A menu a body opens through a re-render (`REG.render` opens it), a timer, or a guard the stubs
+/// make true (`closest` finds a stub) is recorded, so each, undeclared, is menu drift.
+#[test]
+fn menus_opened_through_a_re_render_a_timer_or_a_guard_are_recorded() {
+    let script = "REG.render = function () { UI.openMenu({ stopPropagation: function () {} }, 'm1', 'a'); document.body.innerHTML = ''; };\n";
+    let repo = FakeRepo::with_openers("mock-probe-paths", r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
+    let probe = probe_html(repo.path(), concat!(
+        r#"<button onclick="REG.render()"></button>"#,
+        r#"<button onclick="setTimeout(function () { UI.openMenu(event,'m2','b') }, 50)"></button>"#,
+        r#"<button onclick="if (this.closest('.row')) UI.openMenu(event,'m3','c')"></button>"#,
+    ))
+    .expect("probes");
+    assert_eq!(probe.menu_ids(), ["m1", "m2", "m3"]);
+    let e = menu_drift(repo.path(), &probe);
+    for id in ["m1", "m2", "m3"] {
+        assert!(e.contains(&format!("mockup menu index.menu.{id} is not a PAGE_MAP menu entry")), "{id}: {e}");
+    }
+}
+
+/// A menu opened through an alias of `UI.openMenu` taken as the scripts load, as `bundle.js`
+/// aliases it as `MenuAction`, is recorded: the harness wraps `openMenu` as `UI` is set, before
+/// any script can take the alias, so the menu, undeclared, is menu drift.
+#[test]
+fn a_menu_opened_through_an_alias_is_recorded() {
+    let script = "window.Swarog = Object.assign(window.UI, { MenuAction: UI.openMenu });\n";
+    let repo = FakeRepo::with_openers("mock-probe-alias", r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
+    let probe = probe_html(repo.path(), r#"<button onclick="UI.MenuAction(event,'m4','a')"></button>"#).expect("probes");
+    assert_eq!(probe.menus, [("m4".to_string(), Some("a".to_string()))]);
+    let e = menu_drift(repo.path(), &probe);
+    assert!(e.contains("mockup menu index.menu.m4 is not a PAGE_MAP menu entry"), "{e}");
+}
+
+/// A body that appends a `.menu` outside every `UI.openMenu` call, which no call recorded, fails
+/// naming its host and its text; one appended inside a call is the clean twin.
+#[test]
+fn a_menu_appended_outside_every_open_menu_call_is_an_error() {
+    let repo = FakeRepo::new("mock-probe-loose", r#"<div class="app"></div>"#);
+    let body = "const el = document.createElement('div'); el.className = 'menu'; document.body.appendChild(el)";
+    let e = format!("{:#}", probe_html(repo.path(), &format!(r#"<button onclick="{body}"></button>"#)).expect_err("a loose .menu"));
+    assert!(e.contains(&format!("onclick {body:?} drawn on index appended a .menu outside every UI.openMenu call")), "{e}");
+    probe_html(repo.path(), r#"<button onclick="UI.openMenu(event,'user','a')"></button>"#).expect("a recorded menu");
+}
+
+/// A mockup whose `UI.openMenu` is not the harness's recording wrapper, missing or replaced after
+/// `UI` was set, cannot be probed, so no menu it draws goes unrecorded.
+#[test]
+fn probing_a_mockup_whose_open_menu_is_not_recorded_is_an_error() {
+    let cases = [
+        ("mock-probe-no-open-menu", "UI = { state: {}, defineMenu: function () {} };\n"),
+        ("mock-probe-replaced-open-menu", "UI.openMenu = function () {};\n"),
+    ];
+    for (name, script) in cases {
+        let repo = FakeRepo::with_openers(name, r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
+        let e = format!("{:#}", probe_html(repo.path(), r#"<button onclick="PAGES.tab='a'"></button>"#).expect_err("not recorded"));
+        assert!(e.contains("the mockup's UI.openMenu is not the harness's recording wrapper"), "{name}: {e}");
+    }
+}
+
+/// The real mockup's user menu, opened through the harness: a `.menu` whose groups are the
+/// registry's `entity.user.row_action` modules, with nothing of the page around it.
 #[test]
 fn the_harness_opens_the_real_user_menu() {
     let out = super::render_menu(&real_repo(), "user", Some("aiko.tanaka")).expect("opens");
@@ -425,8 +530,6 @@ fn the_fake_repo_defines_every_page_map_opener() {
     }
 }
 
-/// The real player profile draws its Personal data panel denied as designed; forced ok it
-/// draws no denied state, so the force reaches the render.
 /// The real player page, probed as its untabbed page map entry renders it: its tab bar's tabs
 /// with profile selected, and the user menu its header opens on the profile's handle.
 #[test]
@@ -440,6 +543,8 @@ fn the_probe_reads_the_real_player_tabs_and_menu() {
     assert_eq!(probe.menu_arg("user").expect("the header menu"), Some("aiko.tanaka"));
 }
 
+/// The real player profile draws its Personal data panel denied as designed; forced ok it
+/// draws no denied state, so the force reaches the render.
 #[test]
 fn the_harness_forces_the_ok_state_on_the_real_mockup() {
     let designed = render(&real_repo(), "player", "?u=aiko.tanaka", false).expect("renders");

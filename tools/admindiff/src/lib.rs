@@ -284,9 +284,10 @@ fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections
         let key = mockup.get(p.page).ok_or_else(|| anyhow!("page {} has no mockup file", p.page))?;
         let (_, doc, page) = render_mock(repo, page_map, key, p)?;
         let tabbed = p.is_page() && matches!(p.route, pages::Route::FirstRow(_)) && p.tab.is_none();
-        // A compared target is no modal, so it has a page; a menu's onclicks run on its host
-        // page, rendered as its host entry is. A tabbed page and a compared host are pages.
-        if let (true, Some(page)) = (p.is_compared_target() || tabbed || p.is_compared_host(), page) {
+        // Every compared host, a tabbed page among them, is a compared target, so the compared
+        // targets are every entry probed. A compared target is no modal, so it has a page; a
+        // menu's onclicks run on its host page, rendered as its host entry is.
+        if let (true, Some(page)) = (p.is_compared_target(), page) {
             let probe = mock::probe(repo, &p.id(), key, page, &doc, mock::Onclicks::All)?;
             if p.is_compared_host() {
                 menus.push((p.id(), probe.menu_ids()));
