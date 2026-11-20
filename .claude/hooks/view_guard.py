@@ -1,7 +1,7 @@
 """View guard: a whole-file view of a long source file is denied and answered with its outline.
 
 PreToolUse Read|Bash|PowerShell|REPL. For core-implementer, test-author, docs-writer, mockup-implementer,
-code-scout, core-reviewer, proof-auditor, general-purpose and the built-in Explore and Plan:
+code-scout, researcher, core-reviewer, proof-auditor, general-purpose and the built-in Explore and Plan:
   - Read of a .rs, .py, .md, .js, .css, .html, .tmpl, .toml, .txt or .log file longer than LINE_CAP lines
     without a 'limit'. A Read with offset and no limit that starts within LINE_CAP lines of the end is a
     small view.
@@ -46,7 +46,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shell_segments  # noqa: E402
 
-AGENTS = {"core-implementer", "test-author", "docs-writer", "mockup-implementer", "code-scout", "core-reviewer",
+AGENTS = {"researcher", "core-implementer", "test-author", "docs-writer", "mockup-implementer", "code-scout", "core-reviewer",
           "proof-auditor", "general-purpose", "Explore", "Plan"}  # Explore and Plan: built-in research lanes
 EXEMPT = set()  # lanes with Read, Bash, PowerShell or REPL that are deliberately left unguarded
 RS_EXT = (".rs",)

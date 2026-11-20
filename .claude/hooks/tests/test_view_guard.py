@@ -150,7 +150,7 @@ class Scope(unittest.TestCase):
 
     def test_every_lane_is_covered(self):
         for agent in ("core-implementer", "test-author", "docs-writer", "mockup-implementer", "code-scout",
-                      "core-reviewer", "proof-auditor", "general-purpose", "Explore", "Plan"):
+                      "core-reviewer", "proof-auditor", "general-purpose", "Explore", "Plan", "researcher"):
             self.assertIsNotNone(run("Read", {"file_path": LONG_RS}, agent=agent), agent)
 
     def test_every_agents_md_lane_with_a_viewing_tool_is_guarded_or_exempt(self):
@@ -172,7 +172,7 @@ class Scope(unittest.TestCase):
     def test_built_in_lanes_the_adapter_names_are_guarded_or_exempt(self):
         with open(os.path.join(os.path.dirname(os.path.dirname(HOOKS)), ".agents", "adapters", "claude.md"),
                   encoding="utf-8") as f:
-            line = re.search(r"^- read-only research — (.*)$", f.read(), re.M)
+            line = re.search(r"^- other read-only research — (.*)$", f.read(), re.M)
         self.assertIsNotNone(line, "the adapter's read-only research lane line moved")
         named = {w.strip() for w in line.group(1).split(",")[0].split("/")}
         self.assertIn("Explore", named)

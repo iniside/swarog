@@ -114,7 +114,8 @@ class Guard(unittest.TestCase):
 
     def test_read_only_lane_is_told_to_return_its_report(self):
         self.agent([200_000], finished=False)
-        for lane in ("general-purpose", "Explore", "Plan", "code-scout", "core-reviewer", "proof-auditor"):
+        for lane in ("researcher", "general-purpose", "Explore", "Plan", "code-scout", "core-reviewer",
+                     "proof-auditor"):
             p = {"tool_name": "Read", "agent_id": AID, "agent_type": lane, "transcript_path": self.main,
                  "tool_input": {"file_path": "x"}}
             out = self.run_hook_raw(p)

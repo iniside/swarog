@@ -34,7 +34,7 @@ WORK_LIMIT = 180_000
 TAIL_BYTES = 1_000_000
 AGENT_ID = re.compile(r"^a[0-9a-f]{8,}$")
 EXPLORE = {"Read", "Grep", "Glob", "LSP", "Agent", "WebFetch", "WebSearch", "NotebookRead"}
-READ_ONLY_AGENTS = {"general-purpose", "Explore", "Plan", "code-scout", "core-reviewer", "proof-auditor"}
+READ_ONLY_AGENTS = {"researcher", "general-purpose", "Explore", "Plan", "code-scout", "core-reviewer", "proof-auditor"}
 REPL_READ = re.compile(
     r"(?<![\w.])file\s*\(|\btools\s*\.\s*(?:Read|Grep|Glob|LSP|WebFetch|WebSearch|NotebookRead|Agent)\b")
 REPL_SHELL_CALL = re.compile(r"(?<![\w.])\$\s*\(")

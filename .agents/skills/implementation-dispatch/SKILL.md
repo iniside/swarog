@@ -84,8 +84,8 @@ SendMessage resumes a finished agent only while its context is under 100k
 tokens; `.claude/hooks/context_budget_guard.py` denies it above that. Inside a
 subagent the same hook denies new reads and searches past 180k while edits,
 cargo and git still run, which forces the part hand-off under **Step parts**;
-a read-only lane (general-purpose, Explore, Plan, code-scout, core-reviewer,
-proof-auditor) is told instead to return its report with a `Not checked:`
+a read-only lane (researcher, general-purpose, Explore, Plan, code-scout,
+core-reviewer, proof-auditor) is told instead to return its report with a `Not checked:`
 list, which goes to a fresh agent. Split a broad review by files up front.
 The main session auto-compacts around 150k (`autoCompactWindow`), and
 `.claude/hooks/compact_gate.py` holds that compaction while a subagent is

@@ -30,7 +30,17 @@ pointer stubs.
 - `[review]` — `subagent_type: "core-reviewer"`, `model:` ≥ the author's tier.
 - Proof audit — `subagent_type: "proof-auditor"`, `model:` ≥ the author's
   tier.
-- read-only research — Explore / general-purpose, `model:"sonnet"`;
+- architecture research (how an area is built, ownership, contracts, flows in
+  both topologies, overlap with a proposed change) — `subagent_type:
+  "researcher"`, `effort:"medium"`, one question per agent, several in
+  parallel only for non-overlapping questions. `model:"sonnet"` by default
+  (mapping one area: ownership, contracts, flows, existing overlap); the
+  session's top tier (`"opus"` / `"fable"`) when the answer is a design
+  judgment: placing a new module or seam, choosing between extending and
+  adding across several modules, or settling evidence a Sonnet researcher
+  left contradictory (paste its report). Listing-only questions go to
+  Explore on `model:"haiku"`.
+- other read-only research — Explore / general-purpose, `model:"sonnet"`;
   listing-only research may run on `model:"haiku"`.
 - search lane (`code-navigation` skill, fallback step 3) — `subagent_type: "code-scout"`,
   `model:"haiku"` by default, `"sonnet"` for multi-hop questions that need
