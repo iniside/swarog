@@ -13,7 +13,9 @@
 //! arguments, and the crawl opens the first opener of the entry's portal action its host page
 //! draws. Modals are inventoried on untabbed hosts too: every modal action the portal draws
 //! there (an `hx-get` to `/admin/_action/…`) has such an entry or is in [`EXCLUDED_MODALS`]
-//! (`crawl`); on the mockup side an entry's opener must append a `.scrim`.
+//! (`crawl`); on the mockup side an entry's opener must append a `.scrim`. A page or tab entry
+//! can force a panel state on the mockup render ([`Page::force`]), so a panel the mockup draws
+//! only down, stale or denied is compared in its ok shape; the portal side draws its real state.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -48,6 +50,12 @@ pub struct Page {
     /// harness calls its mockup opener, and the crawl fetches the first opener of its portal
     /// action the host draws.
     pub modal: Option<Modal>,
+    /// The panel state the harness forces on this entry's mockup render: it sets
+    /// `UI.state.force`, as the mockup's state picker does, before the page renders. Only a
+    /// page or tab entry forces, and only a state the mockup's Panel states page labels
+    /// ([`check_force`]); a `state=` parameter in [`Page::search`] is refused, so this field
+    /// is the one way to force. The crawl ignores it: the portal draws its real state.
+    pub force: Option<&'static str>,
 }
 
 /// A row or header menu: the mockup opens it with `UI.openMenu(event,'<mock>','<arg>')`, the
@@ -96,9 +104,15 @@ impl Page {
         id
     }
 
-    /// The page a menu or modal entry's target is drawn on: this entry without it.
+    /// The page a menu or modal entry's target is drawn on: this entry without it, and
+    /// without a forced state, which a menu or modal entry never has.
     pub fn host(&self) -> Page {
-        Page { menu: None, modal: None, ..*self }
+        Page { menu: None, modal: None, force: None, ..*self }
+    }
+
+    /// Whether `self` is a page or tab entry that hosts `host`, forced or not.
+    fn hosts(&self, host: &Page) -> bool {
+        self.is_page() && self.host() == *host
     }
 
     /// Whether this entry is a page or tab target, neither a menu nor a modal.
@@ -120,6 +134,21 @@ impl Page {
 pub fn with_tab(url: &str, tab: &str) -> String {
     let sep = if url.contains('?') { '&' } else { '?' };
     format!("{url}{sep}tab={tab}")
+}
+
+/// Whether the query of `search` (`?a=1&b`) names parameter `name`, with or without a value.
+fn names_param(search: &str, name: &str) -> bool {
+    let query = search.strip_prefix('?').unwrap_or(search);
+    query.split('&').any(|pair| pair.split('=').next() == Some(name))
+}
+
+/// Fails unless `force`, the state page map entry `id` forces, is one of `states`, the panel
+/// states the mockup's Panel states page labels (`mock::panel_states`).
+pub fn check_force(id: &str, force: &str, states: &[String]) -> Result<()> {
+    if !states.iter().any(|s| s == force) {
+        bail!("PAGE_MAP {id} forces state {force:?}, which is not a panel state of the mockup ({})", states.join(", "));
+    }
+    Ok(())
 }
 
 fn is_id(id: &str) -> bool {
@@ -147,8 +176,16 @@ fn is_opener(name: &str) -> bool {
 const USER_MENU: Menu = Menu { mock: "user", kind: "player" };
 
 pub const PAGE_MAP: &[Page] = &[
-    Page { page: "index", route: Route::Mapped("/admin"), search: "", tab: None, menu: None, modal: None },
-    Page { page: "events", route: Route::Mapped("/admin/p/core.events/events"), search: "", tab: None, menu: None, modal: None },
+    Page { page: "index", route: Route::Mapped("/admin"), search: "", tab: None, menu: None, modal: None, force: None },
+    Page {
+        page: "events",
+        route: Route::Mapped("/admin/p/core.events/events"),
+        search: "",
+        tab: None,
+        menu: None,
+        modal: None,
+        force: None,
+    },
     Page {
         page: "events",
         route: Route::Mapped("/admin/p/core.events/events"),
@@ -156,13 +193,38 @@ pub const PAGE_MAP: &[Page] = &[
         tab: None,
         menu: None,
         modal: Some(Modal { id: "skip-poison", opener: "skipPoison", args: &[], module: "core.events", action: "poison.skip" }),
+        force: None,
     },
-    Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "", tab: None, menu: None, modal: None },
-    Page { page: "players", route: Route::Mapped("/admin/p/accounts/players"), search: "", tab: None, menu: Some(USER_MENU), modal: None },
-    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None, menu: None, modal: None },
-    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None, menu: Some(USER_MENU), modal: None },
-    Page { page: "apikeys", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
-    Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None, modal: None },
+    Page {
+        page: "players",
+        route: Route::Mapped("/admin/p/accounts/players"),
+        search: "",
+        tab: None,
+        menu: None,
+        modal: None,
+        force: None,
+    },
+    Page {
+        page: "players",
+        route: Route::Mapped("/admin/p/accounts/players"),
+        search: "",
+        tab: None,
+        menu: Some(USER_MENU),
+        modal: None,
+        force: None,
+    },
+    Page { page: "player", route: Route::FirstRow("players"), search: "?u=aiko.tanaka", tab: None, menu: None, modal: None, force: None },
+    Page {
+        page: "player",
+        route: Route::FirstRow("players"),
+        search: "?u=aiko.tanaka",
+        tab: None,
+        menu: Some(USER_MENU),
+        modal: None,
+        force: None,
+    },
+    Page { page: "apikeys", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: None },
+    Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None, modal: None, force: None },
     // `m-88213` is the mockup outbox's pending message (data.js `D.mail`), the row the portal
     // draws a cancel on.
     Page {
@@ -172,11 +234,12 @@ pub const PAGE_MAP: &[Page] = &[
         tab: None,
         menu: None,
         modal: Some(Modal { id: "cancel", opener: "cancelMail", args: &["m-88213"], module: "mail", action: "cancel" }),
+        force: None,
     },
-    Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
-    Page { page: "config", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
-    Page { page: "audit", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
-    Page { page: "economy", route: Route::Pending, search: "", tab: None, menu: None, modal: None },
+    Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: None },
+    Page { page: "config", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: None },
+    Page { page: "audit", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: None },
+    Page { page: "economy", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: None },
 ];
 
 const NO_LORE: &str = "no Lore module exists yet";
@@ -266,7 +329,9 @@ fn boot_key(src: &str) -> Option<String> {
 /// an untabbed `FirstRow` entry of its page with the same route, every menu entry has
 /// `[a-z0-9_-]+` ids and a host entry ([`Page::host`]) of a page that is not pending, and every
 /// modal entry names no menu, has a `[a-z0-9_-]+` id, a JavaScript identifier for its opener,
-/// `[a-z0-9._-]+` module and action ids and such a host entry.
+/// `[a-z0-9._-]+` module and action ids and such a host entry. No search names a `state`
+/// parameter, and only a page or tab entry forces a state, a `[a-z0-9_-]+` id; whether the
+/// mockup knows the state is [`check_force`]'s, which needs a mockup render.
 pub fn validate(mockup: &BTreeMap<String, String>) -> Result<()> {
     validate_lists(mockup, PAGE_MAP, EXCLUDED)
 }
@@ -306,7 +371,7 @@ pub(crate) fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page
             let host = p.host();
             if p.route == Route::Pending {
                 problems.push(format!("PAGE_MAP {id} names a menu of {}, which is pending", host.id()));
-            } else if !page_map.contains(&host) {
+            } else if !page_map.iter().any(|q| q.hosts(&host)) {
                 problems.push(format!("PAGE_MAP {id} is a menu of {}, which has no entry with the same route", host.id()));
             }
         }
@@ -329,8 +394,20 @@ pub(crate) fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page
             let host = p.host();
             if p.route == Route::Pending {
                 problems.push(format!("PAGE_MAP {id} names a modal of {}, which is pending", host.id()));
-            } else if !page_map.contains(&host) {
+            } else if !page_map.iter().any(|q| q.hosts(&host)) {
                 problems.push(format!("PAGE_MAP {id} is a modal of {}, which has no entry with the same route", host.id()));
+            }
+        }
+        if names_param(p.search, "state") {
+            problems.push(format!("PAGE_MAP {} carries state in its search; a forced state is the force field", p.id()));
+        }
+        if let Some(force) = p.force {
+            let id = p.id();
+            if !p.is_page() {
+                problems.push(format!("PAGE_MAP {id} forces state {force:?}, which only a page or tab entry may"));
+            }
+            if !is_id(force) {
+                problems.push(format!("PAGE_MAP {id} forces state {force:?}, which is not a [a-z0-9_-]+ id"));
             }
         }
         let Some(tab) = p.tab else { continue };

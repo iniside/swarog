@@ -150,7 +150,7 @@ fn real_repo() -> std::path::PathBuf {
 #[test]
 fn the_harness_captures_the_body_before_an_after_hook_can_run() {
     let repo = FakeRepo::new("mock-after", r#"<div class="app">search={search}</div>"#);
-    let out = render(repo.path(), "index", "?u=aiko.tanaka").expect("renders");
+    let out = render(repo.path(), "index", "?u=aiko.tanaka", None).expect("renders");
     assert_eq!(out, r#"<div class="app">search=?u=aiko.tanaka</div>"#, "the page with its search, not {AFTER_RAN}");
 }
 
@@ -158,8 +158,8 @@ fn the_harness_captures_the_body_before_an_after_hook_can_run() {
 fn the_real_apikeys_reveal_hook_does_not_run() {
     // pages-platform.js: apikeys' `after` opens the reveal modal when `?reveal=1`; nothing
     // else reads `reveal`, so the body is the same with and without it.
-    let plain = render(&real_repo(), "apikeys", "").expect("renders");
-    let reveal = render(&real_repo(), "apikeys", "?reveal=1").expect("renders with ?reveal=1");
+    let plain = render(&real_repo(), "apikeys", "", None).expect("renders");
+    let reveal = render(&real_repo(), "apikeys", "?reveal=1", None).expect("renders with ?reveal=1");
     assert!(plain.contains(r#"<div class="app">"#), "{plain}");
     assert_eq!(reveal, plain);
     assert!(!reveal.contains("Qm9yZWFsaXMt"), "the revealed secret is not in the page");
@@ -167,16 +167,16 @@ fn the_real_apikeys_reveal_hook_does_not_run() {
 
 #[test]
 fn a_missing_page_key_is_an_error() {
-    let e = format!("{:#}", render(&real_repo(), "noSuchPage", "").expect_err("no P.noSuchPage"));
+    let e = format!("{:#}", render(&real_repo(), "noSuchPage", "", None).expect_err("no P.noSuchPage"));
     assert!(e.contains("node failed rendering P.noSuchPage") && e.contains("PAGES.noSuchPage has no render()"), "{e}");
 }
 
 #[test]
 fn a_missing_mockup_script_is_an_error() {
     let repo = FakeRepo::new("mock-missing-script", r#"<div class="app"></div>"#);
-    render(repo.path(), "index", "").expect("the full stand-in renders");
+    render(repo.path(), "index", "", None).expect("the full stand-in renders");
     std::fs::remove_file(repo.path().join(super::SCRIPTS[1])).expect("remove bundle.js");
-    let e = format!("{:#}", render(repo.path(), "index", "").expect_err("a script is missing"));
+    let e = format!("{:#}", render(repo.path(), "index", "", None).expect_err("a script is missing"));
     assert!(e.starts_with("mockup script ") && e.ends_with("bundle.js is missing"), "{e}");
 }
 
@@ -188,7 +188,7 @@ fn a_render_that_never_assigns_the_body_is_an_error() {
         "var PAGES = { index: { meta: {}, render: function () { return ''; } } };\n",
     );
     write(&repo.path().join("UILayout/redesign/assets/registry.js"), registry);
-    let e = format!("{:#}", render(repo.path(), "index", "").expect_err("nothing captured"));
+    let e = format!("{:#}", render(repo.path(), "index", "", None).expect_err("nothing captured"));
     assert!(e.contains("REG.mount returned without assigning document.body.innerHTML"), "{e}");
 }
 
@@ -318,4 +318,41 @@ fn the_fake_repo_defines_every_page_map_opener() {
         let want = MOCK_MODAL.replace("{opener}", m.opener).replace("{args}", &m.args.join(","));
         assert_eq!(out, format!(r#"<div class="scrim">{want}</div>"#));
     }
+}
+
+/// The real player profile draws its Personal data panel denied as designed; forced ok it
+/// draws no denied state, and forced error the accounts panels draw module unavailable, so the
+/// force reaches the render.
+#[test]
+fn the_harness_forces_a_panel_state_on_the_real_mockup() {
+    let designed = render(&real_repo(), "player", "?u=aiko.tanaka", None).expect("renders");
+    assert!(designed.contains("Permission denied"), "the designed profile draws a denied panel");
+    let ok = render(&real_repo(), "player", "?u=aiko.tanaka", Some("ok")).expect("renders forced ok");
+    assert!(ok.contains("Personal data") && !ok.contains("Permission denied"), "forced ok draws no denied panel");
+    let error = render(&real_repo(), "player", "?u=aiko.tanaka", Some("error")).expect("renders forced error");
+    assert!(error.contains("accounts module unavailable"), "forced error draws module unavailable");
+}
+
+/// The real mockup's Panel states page labels every state the panel chrome owns.
+#[test]
+fn the_harness_reads_the_real_panel_states() {
+    let states = super::panel_states(&real_repo()).expect("reads");
+    assert_eq!(states, ["ok", "loading", "empty", "stale", "error", "readonly", "denied"]);
+}
+
+/// A mockup with no `UI.state` cannot be forced; its unforced render is the clean twin.
+#[test]
+fn forcing_a_mockup_without_ui_state_is_an_error() {
+    let repo = FakeRepo::new("mock-force", r#"<div class="app"></div>"#);
+    render(repo.path(), "index", "", None).expect("the unforced render");
+    let e = format!("{:#}", render(repo.path(), "index", "", Some("ok")).expect_err("no UI.state"));
+    assert!(e.contains("node failed rendering P.index forced ok") && e.contains("the mockup has no UI.state to force ok on"), "{e}");
+}
+
+/// A states page that labels no state fails; the real one above is the clean twin.
+#[test]
+fn a_states_page_without_labels_is_an_error() {
+    let repo = FakeRepo::new("mock-states", r#"<div class="app"></div>"#);
+    let e = format!("{:#}", super::panel_states(repo.path()).expect_err("no label"));
+    assert_eq!(e, "P.states labels no panel state: the harness reads no .cat-state-label");
 }

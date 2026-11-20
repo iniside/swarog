@@ -54,7 +54,10 @@ USAGE:
             --allow-empty and its page lists no row; an entity page never) and an EXCLUDED_MODALS entry that is malformed, listed twice,
             mapped too or hosted by no untabbed compared page (which stops the crawl first)
   mock      render the mockup target through node into target/admindiff/mock/<target>.html; a
-            modal target is the .scrim its page map opener PAGES.<opener>(<args>) appends
+            modal target is the .scrim its page map opener PAGES.<opener>(<args>) appends; a
+            page or tab target whose page map entry forces a state renders with that state as
+            UI.state.force (one of the labels of the mockup's Panel states page, else it fails),
+            so its panels draw in it; the crawl draws the portal's real state
   diff      compare the target's class skeleton with the crawl's: the assembled page, or the
             menu popover of a menu target, or the .modal of a modal target; refuses a crawl
             without its CLEAN marker (one that failed, did not finish or ran with
@@ -152,10 +155,14 @@ pub fn validated_mockup(repo: &Path) -> Result<std::collections::BTreeMap<String
     Ok(mockup)
 }
 
-/// The mockup render of `entry`'s page, parsed: `P.<key>` with the entry's search and tab;
-/// a tab entry the render does not select fails.
+/// The mockup render of `entry`'s page, parsed: `P.<key>` with the entry's search and tab,
+/// and its forced state, which must be one of the mockup's panel states; a tab entry the
+/// render does not select fails.
 fn render_page(repo: &Path, key: &str, entry: &pages::Page) -> Result<(String, Vec<html::Node>)> {
-    let rendered = mock::render(repo, key, &entry.mock_search())?;
+    if let Some(force) = entry.force {
+        pages::check_force(&entry.id(), force, &mock::panel_states(repo)?)?;
+    }
+    let rendered = mock::render(repo, key, &entry.mock_search(), entry.force)?;
     let doc = html::parse(&rendered).with_context(|| format!("parse the P.{key} render"))?;
     if let Some(tab) = entry.tab {
         mock::check_tab(&doc, key, tab)?;
