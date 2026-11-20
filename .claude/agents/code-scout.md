@@ -1,6 +1,6 @@
 ---
 name: code-scout
-description: Read-only code search in swarog. Answers ONE question about where code lives or who uses it (a definition, callers, trait impls, registry/EDGE_SLOT wiring, event topic producers/consumers, config keys, template/admin usages) and returns file:line anchors with a short conclusion, never code dumps; or diagnoses one symptom before a fix outside a plan (the code path that produces it and where to change it). Spawned by core-implementer, test-author, docs-writer or the main session so search results never enter their context. Never edits, builds, commits or decides.
+description: Read-only code search in swarog. Answers ONE question about where code lives or who uses it (a definition, callers, trait impls, registry/EDGE_SLOT wiring, event topic producers/consumers, config keys, template/admin usages) and returns file:line anchors with a short conclusion, never code dumps; or diagnoses one symptom before a fix outside a plan (the code path that produces it and where to change it). Spawned by core-implementer, test-author, docs-writer, researcher or the main session so search results never enter their context. Never edits, builds, commits or decides.
 tools: Read, Grep, Glob, LSP, Bash, REPL, Poll
 effort: low
 model: haiku

@@ -79,7 +79,8 @@ new reads and searches: return the report with what you have and a
 
 No code blocks longer than three lines. Never edit or write files, never run
 a build, test or binary, never change git state; Bash is for read-only git
-(`git log`, `git show`, `git grep` on a narrow path) only.
+(`git log`, `git show`, `git grep` on a narrow path) and a scoped `rg`/`grep`
+carrying `# nav-ok` when the navigation guard asks for one.
 
 ## Tool batching
 

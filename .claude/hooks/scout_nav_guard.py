@@ -11,7 +11,7 @@ Modes (argv[1]):
                                         label claims; the other agents: drop their state
 Every other agent and the main session are no-ops.
 
-Rules: .claude/agents/code-scout.md and the implementation lanes' .claude/agents/<name>.md;
+Rules: .claude/agents/code-scout.md and the navigation lanes' .claude/agents/<name>.md;
 .agents/skills/code-navigation/SKILL.md Fallback chain.
 """
 
