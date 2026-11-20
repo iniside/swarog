@@ -573,6 +573,27 @@ fn a_scrim_by_class_token_is_a_modal() {
     assert_eq!(e, want);
 }
 
+/// A modal or menu target renders the `.scrim` or `.menu` its opener appends whichever way the
+/// element gets its class: through `classList.add` or beside another class.
+#[test]
+fn a_modal_or_menu_target_renders_its_element_by_class_token() {
+    let repo = opener_repo("render-class-token", &[]);
+    for opener in ["classListModal", "wideModal"] {
+        let html = crate::mock::render_modal(repo.path(), opener, &["a"]).unwrap_or_else(|e| panic!("PAGES.{opener}: {e:#}"));
+        assert_eq!(html, r#"<div class="scrim"></div>"#, "PAGES.{opener}");
+    }
+    let script = concat!(
+        "UI.openMenu = function (ev, id) { const el = document.createElement(\"div\");",
+        " if (id === \"wide\") el.className = \"menu wide\"; else el.classList.add(\"menu\");",
+        " el.innerHTML = '<div class=\"menu-item\"></div>'; document.body.appendChild(el); };\n",
+    );
+    let menus = FakeRepo::with_openers("render-menu-class-token", &mock_html(&body(true)), PAGE_MAP, &[], script);
+    for id in ["listed", "wide"] {
+        let html = crate::mock::render_menu(menus.path(), id, "players").unwrap_or_else(|e| panic!("menu {id}: {e:#}"));
+        assert_eq!(html, r#"<div class="menu"><div class="menu-item"></div></div>"#, "menu {id}");
+    }
+}
+
 /// A timer callback runs after the body, its modal named by the `PAGES` call that scheduled it;
 /// one scheduled by the body itself (an interval, run once) is named by the `PAGES` call it
 /// makes. Timers that never stop fail by name.
