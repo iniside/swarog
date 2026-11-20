@@ -352,14 +352,15 @@ fn run_diff_compares_a_modal_target_by_its_modal() {
     let dir = ScratchDir::new("diff-modal-crawl");
     write(&dir.path().join(crawl::CLEAN_MARKER), "");
     write(&dir.path().join("index.modal.test.html"), &modal(""));
-    assert!(run_diff(repo.path(), &Lists { page_map: &map, ..LISTS }, "index.modal.test", dir.path(), false).expect("runs"), "the same dialog is clean");
+    let lists = Lists { page_map: &map, ..LISTS };
+    assert!(run_diff(repo.path(), &lists, "index.modal.test", dir.path(), false).expect("runs"), "the same dialog is clean");
     let open = r#"<div class="scrim" data-scrim=""><div class="modal">"#;
     let beside = modal("").replacen(open, r#"<div class="scrim" data-scrim=""><div class="scrim-note"><span></span></div><div class="modal">"#, 1);
     assert!(beside != modal(""), "the sibling is added: {beside}");
     write(&dir.path().join("index.modal.test.html"), &beside);
-    assert!(run_diff(repo.path(), &Lists { page_map: &map, ..LISTS }, "index.modal.test", dir.path(), false).expect("runs"), "a portal-only sibling of the .modal");
+    assert!(run_diff(repo.path(), &lists, "index.modal.test", dir.path(), false).expect("runs"), "a portal-only sibling of the .modal");
     write(&dir.path().join("index.modal.test.html"), &modal(r#"<div class="modal-note"></div>"#));
-    assert!(!run_diff(repo.path(), &Lists { page_map: &map, ..LISTS }, "index.modal.test", dir.path(), false).expect("runs"), "a portal-only child");
+    assert!(!run_diff(repo.path(), &lists, "index.modal.test", dir.path(), false).expect("runs"), "a portal-only child");
 }
 
 /// A clean crawl with no output for a menu or modal target skipped it as EMPTY: the diff names
@@ -372,19 +373,20 @@ fn run_diff_names_a_menu_or_modal_target_the_crawl_skipped() {
     let dir = ScratchDir::new("diff-skipped-crawl");
     write(&dir.path().join(crawl::CLEAN_MARKER), "");
     let shown = dir.path().display();
-    let e = format!("{:#}", run_diff(repo.path(), &Lists { page_map: &map, ..LISTS }, "index.modal.test", dir.path(), false).expect_err("no modal"));
+    let lists = Lists { page_map: &map, ..LISTS };
+    let e = format!("{:#}", run_diff(repo.path(), &lists, "index.modal.test", dir.path(), false).expect_err("no modal"));
     let want = format!(
         "{shown} has no index.modal.test modal: the crawl skipped it as EMPTY (index was skipped or drew no test/do opener) or predates the entry"
     );
     assert_eq!(e, want);
-    let e = format!("{:#}", run_diff(repo.path(), &Lists { page_map: &map, ..LISTS }, "players.menu.user", dir.path(), false).expect_err("no menu"));
+    let e = format!("{:#}", run_diff(repo.path(), &lists, "players.menu.user", dir.path(), false).expect_err("no menu"));
     let want = format!(
         "{shown} has no players.menu.user menu: the crawl skipped it as EMPTY (players was skipped or drew no player menu) or predates the entry"
     );
     assert_eq!(e, want);
     let modal = r#"<div class="scrim" data-scrim=""><div class="modal"></div></div>"#;
     write(&dir.path().join("index.modal.test.html"), modal);
-    run_diff(repo.path(), &Lists { page_map: &map, ..LISTS }, "index.modal.test", dir.path(), false).expect("the written modal is diffed");
+    run_diff(repo.path(), &lists, "index.modal.test", dir.path(), false).expect("the written modal is diffed");
 }
 
 /// A menu entry opens its menu on its host page rendered as the host entry is: the stand-in

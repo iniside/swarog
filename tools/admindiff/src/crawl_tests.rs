@@ -92,16 +92,27 @@ fn menus() -> Vec<(String, &'static str, &'static str)> {
 }
 
 /// [`MENU_BODY`] drawing only the modal openers `host`, a menu target's id or an excluded
-/// menu's ([`excluded_menu_id`]), declares: the golden's own `hx-get` openers are drawn as
-/// `hx-post` (`Invoke`) buttons, and one opener is added for each `PAGE_MAP` modal entry and
-/// [`EXCLUDED_MODALS`] entry `host` hosts, at the end of the `.menu` root.
+/// menu's ([`excluded_menu_id`]), declares ([`declared_menu`]).
 fn menu_body(host: &str) -> String {
-    let body = MENU_BODY.replace(r#"hx-get="&#x2f;admin&#x2f;_action"#, r#"hx-post="&#x2f;admin&#x2f;_action"#);
+    declared_menu(MENU_BODY, host)
+}
+
+/// The menu golden `golden` drawing only the modal openers `host` declares: the golden's own
+/// `hx-get` openers are drawn as `hx-post` (`Invoke`) buttons, and one opener is added for
+/// each `PAGE_MAP` modal entry and [`EXCLUDED_MODALS`] entry `host` hosts, at the end of the
+/// `.menu` root. A host no entry names, a status-only menu's, gets no opener at all.
+fn declared_menu(golden: &str, host: &str) -> String {
+    let body = golden.replace(r#"hx-get="&#x2f;admin&#x2f;_action"#, r#"hx-post="&#x2f;admin&#x2f;_action"#);
     let mapped = PAGE_MAP.iter().filter(|p| p.host().id() == host).filter_map(|p| p.modal.map(|m| m.action_path()));
     let excluded = EXCLUDED_MODALS.iter().filter(|(h, _, _)| *h == host).map(|(_, action, _)| action.to_string());
     let openers: String = mapped.chain(excluded).map(|a| modal_button(&modal_url(&a, host))).collect();
-    let end = body.rfind("</div>").expect("the golden closes its .menu root");
-    format!("{}{openers}{}", &body[..end], &body[end..])
+    in_menu(&body, &openers)
+}
+
+/// The menu `body` with `extra` added at the end of its `.menu` root.
+fn in_menu(body: &str, extra: &str) -> String {
+    let end = body.rfind("</div>").expect("a menu body closes its .menu root");
+    format!("{}{extra}{}", &body[..end], &body[end..])
 }
 
 /// The menu the healthy site's page `page` opens for its `kind` menu entry.
@@ -706,7 +717,7 @@ async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
     let site = healthy
         .clone()
         .with(&list_url, ok(list.replace(&button, &format!("{}{button}", menu_button(guild)))))
-        .with(guild, ok(MENU_BODY.replace("players", "guild")));
+        .with(guild, ok(menu_body(&excluded_menu_id(page, "guild")).replace("players", "guild")));
     let mut excluded = EXCLUDED_MENUS.to_vec();
     excluded.push((page, "guild", "another kind"));
 
@@ -717,7 +728,7 @@ async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
     assert_eq!(fetched.iter().filter(|r| r.path == url && r.hx).count(), 1, "{fetched:?}");
     assert_eq!(fetched.iter().filter(|r| r.path == guild && r.hx).count(), 1, "the excluded kind once: {fetched:?}");
     let written = std::fs::read_to_string(fine.out.path().join("run").join(format!("{id}.html"))).expect("the menu is written");
-    assert_eq!(written, MENU_BODY, "the menu is written as the portal answers it");
+    assert_eq!(written, menu_body(&id), "the menu is written as the portal answers it");
 
     crawl_lists(site.with(&url, status(500)), PAGE_MAP, &excluded, false).await.assert_failed("a 500 menu");
     let bare = healthy.with(&list_url, ok(list.replace(&button, "")));
@@ -732,16 +743,17 @@ async fn a_menu_target_writes_its_menu_and_fails_unless_reached() {
 /// at all, fail even with `--allow-errors` and `--allow-empty`.
 #[tokio::test]
 async fn an_error_state_menu_group_fails_unless_errors_are_allowed() {
-    let (_, page, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let (id, page, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
     let url = menu_url(kind, page);
-    let down = MENU_DOWN.to_string();
+    let down = declared_menu(MENU_DOWN, &id);
     assert!(down.contains(r#"data-state="error""#) && down.contains(r#"data-state="ok""#), "one group down: {down}");
     assert!(!MENU_BODY.contains(r#"data-state="error""#), "every group up: {MENU_BODY}");
     let group = r#"<div class="menu-group" data-state="ok">"#;
-    let stateless = MENU_BODY.replace(group, r#"<div class="menu-group">"#);
-    let unknown = MENU_BODY.replace(group, r#"<div class="menu-group" data-state="down">"#);
-    let groupless = MENU_BODY.replace(r#"class="menu-group""#, r#"class="menu-head""#);
-    assert!(stateless != MENU_BODY && unknown != MENU_BODY && groupless != MENU_BODY, "MENU_BODY carries a stated group");
+    let up = menu_body(&id);
+    let stateless = up.replace(group, r#"<div class="menu-group">"#);
+    let unknown = up.replace(group, r#"<div class="menu-group" data-state="down">"#);
+    let groupless = up.replace(r#"class="menu-group""#, r#"class="menu-head""#);
+    assert!(stateless != up && unknown != up && groupless != up, "MENU_BODY carries a stated group");
     let healthy = Site::healthy();
     crawl(healthy.clone(), false).await.assert_clean("the healthy menu target");
     crawl(healthy.clone().with(&url, ok(down.clone())), false).await.assert_failed("an error-state menu target");
@@ -759,15 +771,18 @@ async fn an_error_state_menu_group_fails_unless_errors_are_allowed() {
     let mut excluded = EXCLUDED_MENUS.to_vec();
     excluded.push((target.page, "guild", "why"));
     let excluded_run = |site: Site, allow_errors: bool| crawl_run(site, PAGE_MAP, &excluded, allow_errors, false);
-    excluded_run(drawn.clone().with(guild, ok(MENU_BODY)), false).await.assert_clean("the healthy excluded menu");
-    excluded_run(drawn.clone().with(guild, ok(down.clone())), false).await.assert_failed("an error-state excluded menu");
-    excluded_run(drawn.with(guild, ok(down.clone())), true).await.assert_preview("--allow-errors: an error-state excluded menu");
+    let guild_id = excluded_menu_id(target.page, "guild");
+    let (guild_up, guild_down) = (declared_menu(MENU_BODY, &guild_id), declared_menu(MENU_DOWN, &guild_id));
+    excluded_run(drawn.clone().with(guild, ok(guild_up.clone())), false).await.assert_clean("the healthy excluded menu");
+    excluded_run(drawn.clone().with(guild, ok(guild_down.clone())), false).await.assert_failed("an error-state excluded menu");
+    excluded_run(drawn.with(guild, ok(guild_down.clone())), true).await.assert_preview("--allow-errors: an error-state excluded menu");
 
+    // A status-only menu's modals are fetched for their status; guild_up draws none.
     let nav_only = healthy.clone().with(EXTRA_ROUTE, add_to_page(&healthy, EXTRA_ROUTE, &menu_button(guild)));
-    crawl(nav_only.clone().with(guild, ok(MENU_BODY)), false).await.assert_clean("the healthy status-only menu");
-    crawl(nav_only.clone().with(guild, ok(down.clone())), false).await.assert_failed("an error-state status-only menu");
-    crawl(nav_only.clone().with(guild, ok(down)), true).await.assert_preview("--allow-errors: an error-state status-only menu");
-    lax(nav_only.clone().with(guild, ok(MENU_BODY))).await.assert_preview("--allow-errors --allow-empty: the healthy status-only menu");
+    crawl(nav_only.clone().with(guild, ok(guild_up.clone())), false).await.assert_clean("the healthy status-only menu");
+    crawl(nav_only.clone().with(guild, ok(guild_down.clone())), false).await.assert_failed("an error-state status-only menu");
+    crawl(nav_only.clone().with(guild, ok(guild_down)), true).await.assert_preview("--allow-errors: an error-state status-only menu");
+    lax(nav_only.clone().with(guild, ok(guild_up))).await.assert_preview("--allow-errors --allow-empty: the healthy status-only menu");
     lax(nav_only.with(guild, ok(groupless))).await.assert_failed("--allow-errors --allow-empty: a status-only menu with no group");
 }
 
@@ -779,20 +794,21 @@ async fn an_error_state_menu_group_fails_unless_errors_are_allowed() {
 /// and `--allow-empty`.
 #[tokio::test]
 async fn an_error_state_menu_root_fails_unless_errors_are_allowed() {
-    let (_, page, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let (id, page, kind) = menus().into_iter().find(|(id, _, _)| id == "players.menu.user").expect("PAGE_MAP: players.menu.user");
     let url = menu_url(kind, page);
     let root = root_tag(MENU_BODY);
     assert_eq!(root, r#"<div class="menu" data-menu-popup="" data-state="ok">"#, "the ok golden's root");
     assert_eq!(MENU_INCOMPLETE.replacen(root_tag(MENU_INCOMPLETE), root, 1), MENU_BODY, "only the root differs");
     assert!(MENU_INCOMPLETE.starts_with(r#"<div class="menu" data-menu-popup="" data-state="error">"#), "{MENU_INCOMPLETE}");
-    let with_root = |r: &str| MENU_BODY.replacen(root, r, 1);
+    let with_root = |r: &str| menu_body(&id).replacen(root, r, 1);
     let bare = MENU_BODY.strip_prefix(root).and_then(|b| b.trim_end().strip_suffix("</div>")).expect("the root wraps the groups");
     assert!(bare.contains(r#"class="menu-group""#) && !bare.contains(r#"class="menu""#), "{bare}");
     let healthy = Site::healthy();
     crawl(healthy.clone(), false).await.assert_clean("the ok menu root");
-    crawl(healthy.clone().with(&url, ok(MENU_INCOMPLETE)), false).await.assert_failed("an error-state menu root");
+    let incomplete = declared_menu(MENU_INCOMPLETE, &id);
+    crawl(healthy.clone().with(&url, ok(incomplete.clone())), false).await.assert_failed("an error-state menu root");
     crawl(healthy.clone(), true).await.assert_preview("--allow-errors: the ok menu root");
-    crawl(healthy.clone().with(&url, ok(MENU_INCOMPLETE)), true).await.assert_preview("--allow-errors: an error-state menu root");
+    crawl(healthy.clone().with(&url, ok(incomplete)), true).await.assert_preview("--allow-errors: an error-state menu root");
     let lax = |site: Site| crawl_run(site, PAGE_MAP, EXCLUDED_MENUS, true, true);
     lax(healthy.clone()).await.assert_preview("--allow-errors --allow-empty: the ok menu root");
     let stateless = with_root(r#"<div class="menu" data-menu-popup="">"#);
@@ -839,7 +855,8 @@ async fn every_portal_menu_kind_on_a_compared_page_is_declared() {
     let target = other_mapped();
     let guild = "/admin/_menu/guild/g-1";
     let healthy = Site::healthy();
-    let site = healthy.clone().with(target.route, add_to_page(&healthy, target.route, &menu_button(guild))).with(guild, ok(MENU_BODY));
+    let body = menu_body(&excluded_menu_id(target.page, "guild"));
+    let site = healthy.clone().with(target.route, add_to_page(&healthy, target.route, &menu_button(guild))).with(guild, ok(body.clone()));
     crawl(site.clone(), false).await.assert_failed("an undeclared guild menu");
 
     let mut excluded = EXCLUDED_MENUS.to_vec();
@@ -851,7 +868,7 @@ async fn every_portal_menu_kind_on_a_compared_page_is_declared() {
     assert!(raw.is_file(), "the excluded menu's body is kept: {}", raw.display());
     crawl_lists(site.with(guild, status(500)), PAGE_MAP, &excluded, false).await.assert_failed("an excluded menu answering 500");
 
-    let nav_only = healthy.clone().with(EXTRA_ROUTE, add_to_page(&healthy, EXTRA_ROUTE, &menu_button(guild))).with(guild, ok(MENU_BODY));
+    let nav_only = healthy.clone().with(EXTRA_ROUTE, add_to_page(&healthy, EXTRA_ROUTE, &menu_button(guild))).with(guild, ok(body));
     let c = crawl(nav_only.clone(), false).await;
     assert!(matches!(c.result, Ok(true)), "{:?}", c.result);
     assert_eq!(c.server.requests().iter().filter(|r| r.path == guild && r.hx).count(), 1, "{:?}", c.server.requests());
@@ -899,7 +916,8 @@ async fn a_tab_target_needs_no_menu_entry() {
     let healthy = Site::healthy();
     let guild = "/admin/_menu/guild/g-1";
     let tab = format!(r#"<button class="tab on" data-href="{}">items</button>{}"#, escaped(&tabbed), menu_button(guild));
-    let site = healthy.clone().with(&tabbed, add_to_page(&healthy, &route, &tab)).with(guild, ok(MENU_BODY));
+    // A status-only menu's modals are fetched for their status; this body draws none.
+    let site = healthy.clone().with(&tabbed, add_to_page(&healthy, &route, &tab)).with(guild, ok(declared_menu(MENU_BODY, "player.items.status-menu.guild")));
     let c = crawl_map(site.clone(), &page_map).await;
     assert!(matches!(c.result, Ok(true)), "{:?}", c.result);
     assert_eq!(c.server.requests().iter().filter(|r| r.path == guild && r.hx).count(), 1, "{:?}", c.server.requests());
@@ -1277,4 +1295,96 @@ async fn a_modal_target_on_a_skipped_page_is_empty() {
     assert_eq!(allowed.empty, ["player", "players.menu.user", "player.menu.user", "player.modal.kick"]);
     assert_eq!(fetched(&allowed, &url), 0);
     crawl_modals(empty, &page_map, EXCLUDED_MODALS, false).await.assert_failed("players lists no row");
+}
+
+/// A modal entry hosted by the `players.menu.user` menu target, `players.menu.user.modal.test`,
+/// opens from the menu the crawl fetched, not from the players page, which draws no opener of
+/// it: the menu drawing its opener crawls clean, fetches the modal once, writes it as
+/// `<id>.html`, and `run_diff` compares it with the stand-in's dialog; the menu drawing no
+/// opener fails, and with `--allow-empty` crawls clean reporting the target EMPTY.
+#[tokio::test]
+async fn a_menu_hosted_modal_target_opens_from_the_fetched_menu() {
+    let menu = *PAGE_MAP.iter().find(|p| p.id() == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let test = Modal { id: "test", opener: "testOpener", args: &["a"], module: "test", action: "do" };
+    let entry = Page { modal: Some(test), ..menu };
+    let id = entry.id();
+    assert_eq!(id, "players.menu.user.modal.test");
+    let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([entry]).collect();
+    let at = menu_url(menu.menu.expect("a menu entry").kind, menu.page);
+    let url = modal_url("test/do", &menu.id());
+    let dialog = concat!(
+        r#"<div class="scrim" data-scrim=""><div class="modal"><div class="modal-head"><h2>x</h2></div>"#,
+        r#"<div class="modal-body"></div><div class="modal-foot"></div></div></div>"#,
+    );
+    let healthy = Site::healthy();
+    let drawn = healthy.clone().with(&at, ok(in_menu(&menu_body(&menu.id()), &modal_button(&url)))).with(&url, ok(dialog));
+    let c = crawl_modals(drawn.clone(), &page_map, EXCLUDED_MODALS, false).await;
+    c.assert_clean("the players user menu draws the test opener");
+    assert_eq!(fetched(&c, &url), 1, "{:?}", c.server.requests());
+    let run = c.out.path().join("run");
+    let written = std::fs::read_to_string(run.join(format!("{id}.html"))).expect("the modal is written");
+    assert_eq!(written, dialog);
+    // The stand-in defines no production modal opener, so the diff reads a map without them.
+    let diff_map: Vec<Page> = PAGE_MAP.iter().copied().filter(|p| p.modal.is_none()).chain([entry]).collect();
+    let repo = FakeRepo::with_map("crawl-menu-modal-diff", &mock_html(&body(true)), &diff_map);
+    let lists = Lists { page_map: &diff_map, ..LISTS };
+    assert!(crate::run_diff(repo.path(), &lists, &id, &run, false).expect("runs"), "the same dialog is clean");
+
+    let bare = drawn.with(&at, ok(menu_body(&menu.id())));
+    let missing = "players.menu.user.modal.test: players.menu.user draws no test/do opener (--allow-empty skips it)";
+    crawl_modals(bare.clone(), &page_map, EXCLUDED_MODALS, false).await.assert_failed_with("the menu draws no test opener", missing);
+    let allowed = crawl_modals(bare, &page_map, EXCLUDED_MODALS, true).await;
+    allowed.assert_clean("--allow-empty: the menu draws no test opener");
+    assert_eq!(allowed.empty, [id.as_str()]);
+    assert_eq!(fetched(&allowed, &url), 0);
+}
+
+/// A compared menu holds the modal actions it draws to the page rules: a `guild/kick` opener
+/// in the `players.menu.user` menu fails the crawl as undeclared, and its `EXCLUDED_MODALS`
+/// twin hosted by that menu crawls clean, fetching the excluded modal once and keeping its body.
+#[tokio::test]
+async fn every_modal_action_a_compared_menu_draws_is_declared() {
+    let menu = *PAGE_MAP.iter().find(|p| p.id() == "players.menu.user").expect("PAGE_MAP: players.menu.user");
+    let host = menu.id();
+    let at = menu_url(menu.menu.expect("a menu entry").kind, menu.page);
+    let kick = modal_url("guild/kick", &host);
+    let healthy = Site::healthy();
+    let site = healthy.clone().with(&at, ok(in_menu(&menu_body(&host), &modal_button(&kick)))).with(&kick, ok(MODAL_BODY));
+    let undeclared = "players.menu.user draws a guild/kick modal, which is in neither PAGE_MAP nor EXCLUDED_MODALS";
+    crawl(site.clone(), false).await.assert_failed_with("an undeclared guild/kick modal in a menu", undeclared);
+
+    let mut excluded = EXCLUDED_MODALS.to_vec();
+    excluded.push((&host, "guild/kick", "why"));
+    let declared = crawl_modals(site, PAGE_MAP, &excluded, false).await;
+    declared.assert_clean("the excluded guild/kick modal in a menu");
+    assert_eq!(fetched(&declared, &kick), 1, "{:?}", declared.server.requests());
+    let raw = declared.out.path().join("run").join("raw").join("players.menu.user.excluded-modal.guild.kick.html");
+    assert!(raw.is_file(), "the excluded modal's body is kept: {}", raw.display());
+}
+
+/// The production exclusion `core.events/sub.pause` hangs off the excluded events
+/// `subscription` menu: the healthy crawl fetches its modal once from that menu. The menu no
+/// longer drawing it makes the exclusion stale, with `--allow-empty` too, each beside its clean
+/// twin; the excluded modal answering 500 fails.
+#[tokio::test]
+async fn a_menu_modal_exclusion_is_fetched_and_fails_stale_or_down() {
+    let host = excluded_menu_id("events", "subscription");
+    let action = "core.events/sub.pause";
+    assert!(EXCLUDED_MODALS.iter().any(|(h, a, _)| *h == host && *a == action), "EXCLUDED_MODALS: {host} {action}");
+    let url = modal_url(action, &host);
+    let healthy = Site::healthy();
+    let fine = crawl(healthy.clone(), false).await;
+    fine.assert_clean("the subscription menu draws sub.pause");
+    assert_eq!(fetched(&fine, &url), 1, "{:?}", fine.server.requests());
+    let raw = fine.out.path().join("run").join("raw").join(format!("{host}.excluded-modal.core.events.sub.pause.html"));
+    assert!(raw.is_file(), "the excluded modal's body is kept: {}", raw.display());
+
+    let gone = healthy.clone().with(&menu_url("subscription", "events"), ok(declared_menu(MENU_BODY, "")));
+    let stale = format!("EXCLUDED_MODALS lists {host} modal {action}, which {host} does not draw");
+    crawl(gone.clone(), false).await.assert_failed_with("the subscription menu no longer draws sub.pause", &stale);
+    crawl_with(healthy.clone(), false, true).await.assert_clean("--allow-empty: the subscription menu draws sub.pause");
+    crawl_with(gone, false, true).await.assert_failed_with("--allow-empty: the subscription menu no longer draws sub.pause", &stale);
+
+    let down = format!("{host} excluded {action} modal ({url}): answered 500");
+    crawl(healthy.with(&url, status(500)), false).await.assert_failed_with("the excluded sub.pause modal answering 500", &down);
 }

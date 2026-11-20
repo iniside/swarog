@@ -407,6 +407,31 @@ fn validate_lists_checks_menu_modal_entries() {
     assert_eq!(orphan, want);
 }
 
+/// A modal exclusion may name as its host a menu target of an untabbed page, or an
+/// `EXCLUDED_MENUS` menu of one, each beside a host that is neither: a menu id no entry maps and
+/// an excluded menu of a kind no exclusion lists. A modal mapped and excluded on the same menu
+/// fails.
+#[test]
+fn validate_excluded_modals_accepts_a_menu_target_or_excluded_menu_host() {
+    let menu = Page { menu: Some(MENU), ..MAPPED };
+    let page_map = [MAPPED, PENDING, menu, Page { modal: Some(MODAL), ..menu }];
+    let excluded_menus = [("a", "guild", "why")];
+    let check = |excluded_modals: &[(&str, &str, &str)]| {
+        validate_excluded_modals(&Lists { page_map: &page_map, excluded_menus: &excluded_menus, excluded_modals, ..LISTS })
+    };
+    check(&[("a.menu.user", "mail/test-send", "why")]).expect("a menu target hosts it");
+    check(&[("a.excluded-menu.guild", "mail/test-send", "why")]).expect("an excluded menu hosts it");
+    for host in ["a.menu.other", "a.excluded-menu.other"] {
+        let e = format!("{:#}", check(&[(host, "mail/test-send", "why")]).expect_err("neither a menu target nor an excluded menu"));
+        let want = format!(
+            "modal drift:\n  EXCLUDED_MODALS lists {host} modal mail/test-send, and {host} is no untabbed PAGE_MAP page that is not pending, menu target of one or EXCLUDED_MENUS menu"
+        );
+        assert_eq!(e, want, "host {host}");
+    }
+    let e = format!("{:#}", check(&[("a.menu.user", "mail/cancel", "why")]).expect_err("mapped on the menu too"));
+    assert_eq!(e, "modal drift:\n  a.menu.user modal mail/cancel is listed in PAGE_MAP and again in EXCLUDED_MODALS");
+}
+
 /// `a` maps the `mail/cancel` modal; `b` is pending; `c` is an untabbed `FirstRow` page with a
 /// tab entry `c.items`.
 fn modal_map() -> Vec<Page> {
