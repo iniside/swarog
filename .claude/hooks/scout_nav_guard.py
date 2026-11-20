@@ -4,7 +4,7 @@ Modes (argv[1]):
   record  PostToolUse LSP|Agent, PostToolUseFailure LSP   append the LSP call and its file:line hits, or a
                                         code-scout dispatch, to state
   gate    PreToolUse Grep|Bash          code-scout: deny a wide Rust search before a position-based LSP call;
-                                        core-implementer, test-author, docs-writer: deny it before such an
+                                        core-implementer, test-author, docs-writer, researcher: deny it before such an
                                         LSP call or a code-scout dispatch (a Bash search carrying '# nav-ok'
                                         passes), and deny a third sed/head/tail slice of one file (all capped)
   report  PreToolUse SubagentHandback   code-scout: deny a report whose anchors lack the LSP evidence their
@@ -40,7 +40,7 @@ GATE_REASON = (
     ".agents/skills/code-navigation/SKILL.md Fallback chain."
 )
 
-NAV_AGENTS = {"core-implementer", "test-author", "docs-writer"}
+NAV_AGENTS = {"core-implementer", "test-author", "docs-writer", "researcher"}
 RAW_MARKERS = ('"code-scout"',) + tuple('"{0}"'.format(name) for name in sorted(NAV_AGENTS))
 SLICE_LIMIT = 2
 

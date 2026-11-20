@@ -28,7 +28,7 @@ import re
 import statistics
 import sys
 
-NAV_TYPES = ("core-implementer", "test-author", "docs-writer", "code-scout")
+NAV_TYPES = ("core-implementer", "test-author", "docs-writer", "researcher", "code-scout")
 SED_RE = re.compile(r"sed -n\s+'?[\d,]+p'?\s+(\S+)")
 
 

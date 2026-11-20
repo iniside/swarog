@@ -46,8 +46,8 @@ In order — never skip to grep because it feels faster:
    non-overlapping angles (API surface / callers+consumers / event
    publishers+subscribers / config+env wiring). Synthesize in the main agent;
    never write a conclusion off a single subagent. For ONE open search
-   question, the main session or an implementation lane may instead dispatch
-   `code-scout`. Its answers are leads: the caller verifies every anchor it
+   question, the main session, an implementation lane or the `researcher`
+   lane may instead dispatch `code-scout`. Its answers are leads: the caller verifies every anchor it
    relies on with a targeted read, and a completeness or absence claim counts
    only when labelled LSP-derived, otherwise it is a lower bound. Review and
    proof lanes read evidence themselves and do not delegate it.
@@ -75,7 +75,7 @@ on every later turn, so its cost grows with the length of the task.
 - A search that takes more than one or two lookups goes to `code-scout`.
 
 On Claude, `.claude/hooks/scout_nav_guard.py` enforces this for
-`core-implementer`, `test-author` and `docs-writer`, and
+`core-implementer`, `test-author`, `docs-writer` and `researcher`, and
 `.claude/hooks/grep_sweep_guard.py` blocks recursive shell greps;
 `.claude/hooks/view_guard.py` denies a whole view of a source or text file over
 300 lines (Read without `limit`, `cat`/`Get-Content`, wide `sed -n`/`head`/`tail`,

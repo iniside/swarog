@@ -523,7 +523,7 @@ class Report(unittest.TestCase):
         self.assert_pass(aid, message([anchor("modules/a/src/x.rs:10", "confirmed")]))
 
 
-NAV_AGENTS = ("core-implementer", "test-author", "docs-writer")
+NAV_AGENTS = ("core-implementer", "test-author", "docs-writer", "researcher")
 SRC = "modules/inventory/src/lib.rs"
 
 

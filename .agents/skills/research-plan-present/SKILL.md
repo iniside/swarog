@@ -35,8 +35,9 @@ Run these in order for any plan (plan mode / "write me a plan" / a
    `lifecycle::Module` methods, contract traits, `bus::define` descriptors),
    API usages (who constructs and consumes, `registry::require` callers,
    `on_tx` subscribers, slot contributors), and patterns (how existing
-   modules register, migrate, emit/subscribe, contribute admin). Synthesize
-   in the main agent — never write off one subagent; a search-lane answer is
+   modules register, migrate, emit/subscribe, contribute admin), one
+   `researcher` agent per angle (tier per the adapter **Dispatch Mapping**).
+   Synthesize in the main agent — never write off one subagent; a search-lane answer is
    a lead.
 3. Write concrete specifics: exact files, exact signatures, exact API calls,
    sequencing. Banned phrases ("figure out as we go", "TBD", "investigate
