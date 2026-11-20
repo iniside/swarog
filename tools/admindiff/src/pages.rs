@@ -662,7 +662,7 @@ pub fn validate_tabs(drawn: &[(&str, DrawnTabs)], page_map: &[Page], excluded_ta
 /// exclusion names a defined id; an exclusion is listed once, with a reason. `drawn` is each
 /// compared host's id ([`Page::is_compared_host`]), a page or a tab, with the `UI.openMenu`
 /// ids its render draws: each is a menu entry of that host. A menu entry its host does not draw fails its own render
-/// ([`crate::mock::menu_arg`]).
+/// ([`crate::mock::Probe::menu_arg`]).
 pub fn validate_menus(
     drawn: &[(String, Vec<String>)],
     defined: &[String],
@@ -751,7 +751,7 @@ pub fn validate_excluded_modals(lists: &Lists) -> Result<()> {
 /// Checks the mockup's modal openers against the modal entries and exclusions of `lists`,
 /// which its problems name `PAGE_MAP`, `EXCLUDED_MOCK_MODALS` and `EXCLUDED_MODALS`. `drawn` is
 /// each compared page, tab and menu target's id with the modal openers its mockup render draws
-/// ([`crate::mock::modal_openers`]), every such host listed, an empty list when it draws none.
+/// ([`crate::mock::probe`]), every such host listed, an empty list when it draws none.
 /// Each opener drawn is a modal entry of that host or an `EXCLUDED_MOCK_MODALS` entry, not both;
 /// a modal entry hosted by a listed host names an opener it draws; an exclusion is listed once,
 /// with a reason and, when it names a portal action, a `<module>/<action>` of `[a-z0-9._-]+`
