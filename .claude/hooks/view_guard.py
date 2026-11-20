@@ -6,16 +6,19 @@ code-scout, core-reviewer, proof-auditor and general-purpose:
     without a 'limit'. A Read with offset and no limit that starts within LINE_CAP lines of the end is a
     small view.
   - Bash/PowerShell cat/type/Get-Content/gc of such a file with no pipe in the command (a pipe into head,
-    sed -n, rg or a script cuts the output) and no -TotalCount/-Head/-Tail, and sed -n ranges wider than
-    RANGE_CAP lines; segments come from shell_segments.py (quotes, here-docs, comments, launchers).
+    sed -n, rg or a script cuts the output) and no -TotalCount/-Head/-Tail, and sed -n ranges and head/tail
+    counts wider than RANGE_CAP lines; segments come from shell_segments.py (quotes, here-docs, comments,
+    launchers). A Bash command a $ template of one of the agent's REPL scripts since its last shell call ran
+    is judged by that script (check_repl), not again on its own.
   - REPL: a whole long file that reaches the script's output (the last statement's value or a log()
     argument): file(X).text()/.lines(), file(X).slice(a, n) with n over RANGE_CAP, or a $`...` command
     check_bash denies, followed through methods that keep the whole text, literals, templates and names;
     X is resolved from string literals and the names this script or the agent's earlier REPL scripts
     assigned (unresolved: allowed). A value kept in a name and returned by a later script is not seen.
+    file(X).slice(offset) and tools.Read with an offset and no limit follow the Read tail rule.
   - REPL budget: the file text one script returns (file().slice/text/lines, tools.Read, sed -n ranges,
-    (Get-Content f)[a..b], viewers, head/tail counts, and calls of the script's own range helpers on a
-    resolved file) adds up to at most SCRIPT_CAP lines; preview(x, n) with n over PREVIEW_CAP counts as
+    (Get-Content f)[a..b], viewers, head/tail counts, (await file(X).lines()/.text()).slice(a, b) with literal
+    bounds, and calls of the script's own range helpers on a resolved file) adds up to at most SCRIPT_CAP lines; preview(x, n) with n over PREVIEW_CAP counts as
     uncut.
 Plans under docs/plans/ are exempt everywhere (read whole by design).
 The denial carries the file's outline (Rust: fn, impl, struct, enum, trait, mod, macro_rules with line
@@ -38,6 +41,7 @@ import shell_segments  # noqa: E402
 
 AGENTS = {"core-implementer", "test-author", "docs-writer", "mockup-implementer", "code-scout", "core-reviewer",
           "proof-auditor", "general-purpose"}
+EXEMPT = set()  # .claude/agents lanes with Read, Bash or REPL that are deliberately left unguarded
 RS_EXT = (".rs",)
 PY_EXT = (".py",)
 MD_EXT = (".md",)
@@ -288,6 +292,12 @@ def deny_budget(total, infos):
         "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}}))
 
 
+def tail_lines(total, offset):
+    """Lines a view from the 1-based offset to the end shows, or None when that is a whole view of a long file."""
+    count = max(total - offset + 1, 0)
+    return count if total <= LINE_CAP or total - offset < LINE_CAP else None
+
+
 def check_read(inp, cwd):
     if inp.get("limit"):
         return None
@@ -297,7 +307,7 @@ def check_read(inp, cwd):
         offset = int(inp.get("offset") or 0)
     except (TypeError, ValueError):
         offset = 0
-    if hit and offset and hit[1] - offset < LINE_CAP:
+    if hit and offset and tail_lines(hit[1], offset) is not None:
         return None  # the tail of the file, a small view
     return hit
 
@@ -319,6 +329,11 @@ def files_in(tokens):
 
 
 def check_bash(cmd, cwd, payload=None):
+    if payload and payload.get("tool_name") == "Bash":
+        script = running_script(payload, cmd)
+        if script is not None:
+            # a $ command of a REPL script: the script was judged as a whole, so judge it again, not the command
+            return check_repl(script, cwd, payload)
     if ESCAPE in cmd:
         return repeat_escape("Bash", cmd, cwd, payload)
     # A pipe into any program shapes or cuts the output (head, sed -n, rg, python); allowed.
@@ -331,7 +346,12 @@ def check_bash(cmd, cwd, payload=None):
             head = shell_segments.basename(words[0]).lower()
             if head.endswith(".exe"):
                 head = head[:-4]
-            if head in VIEWERS:
+            if head in ("head", "tail"):
+                for w in files_in(words):
+                    hit = long_file(w, cwd)
+                    if hit and head_tail_lines(words, hit[0]) > RANGE_CAP:
+                        return hit
+            elif head in VIEWERS:
                 # stdout redirected to a file (a copy or an append) never enters the context
                 if any(re.match(r"^(?:1?>>?|&>>?)", w) for w in words[1:]):
                     continue
@@ -421,31 +441,37 @@ def subagent_transcript(payload):
     return cand if os.path.isfile(cand) else None
 
 
-_EARLIER = {}
+_EARLIER = {}  # one hook run's transcript reads and what is derived from them
 
 
-def earlier_codes(payload):
-    """The agent's earlier REPL scripts, oldest first."""
-    if "codes" in _EARLIER:
-        return _EARLIER["codes"]
-    codes, path = [], subagent_transcript(payload)
+def transcript_calls(payload):
+    """The agent's REPL, Bash and PowerShell calls in its transcript as (tool, code or command, id), oldest first."""
+    if "calls" in _EARLIER:
+        return _EARLIER["calls"]
+    out, path = [], subagent_transcript(payload or {})
     if path:
         try:
             with open(path, encoding="utf-8", errors="replace") as f:
                 for line in f:
-                    if '"REPL"' not in line:
+                    if '"REPL"' not in line and '"Bash"' not in line and '"PowerShell"' not in line:
                         continue
                     try:
                         o = json.loads(line)
                     except ValueError:
                         continue
                     for b in (o.get("message") or {}).get("content") or []:
-                        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "REPL":
-                            codes.append((b.get("input") or {}).get("code") or "")
+                        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in ("REPL", "Bash", "PowerShell"):
+                            i = b.get("input") or {}
+                            out.append((b.get("name"), str(i.get("code") or i.get("command") or ""), b.get("id")))
         except OSError:
             pass
-    _EARLIER["codes"] = codes
-    return codes
+    _EARLIER["calls"] = out
+    return out
+
+
+def earlier_codes(payload):
+    """The agent's earlier REPL scripts, oldest first."""
+    return [t for n, t, _ in transcript_calls(payload) if n == "REPL"]
 
 
 def helpers(code):
@@ -471,10 +497,22 @@ def helpers(code):
 
 def earlier_env(payload):
     """Names the agent's earlier REPL scripts assigned (the REPL context persists between calls)."""
-    env = {}
-    for c in earlier_codes(payload):
-        env = js_env(c, env)
-    return env
+    if "env" not in _EARLIER:
+        env = {}
+        for c in earlier_codes(payload):
+            env = js_env(c, env)
+        _EARLIER["env"] = env
+    return _EARLIER["env"]
+
+
+def earlier_helpers(payload):
+    """Range helpers the agent's earlier REPL scripts defined, a newer definition winning."""
+    if "helpers" not in _EARLIER:
+        out = {}
+        for c in earlier_codes(payload):
+            out.update(helpers(c))
+        _EARLIER["helpers"] = out
+    return _EARLIER["helpers"]
 
 
 def js_mask(code):
@@ -640,7 +678,18 @@ def read_sites(code, masked, pair, value, cwd, hfuncs=None):
                     a0 = int(nums[0])
                     sites.append((m.start(), pair[mo] + 1, ("part", int(nums[1]), f"{short(path)} {a0}-{a0 + int(nums[1]) - 1}", path)))
                     continue
+                if len(nums) == 1 and int(nums[0]) > 1 and path and os.path.isfile(resolve(path, cwd)):
+                    a0, total = int(nums[0]), line_count(resolve(path, cwd))
+                    n = tail_lines(total, a0)
+                    if n is not None:  # else a whole view, judged below
+                        sites.append((m.start(), pair[mo] + 1, ("part", n, f"{short(path)} {a0}-end ({n})", path)))
+                        continue
             except ValueError:
+                continue
+        elif path and os.path.isfile(resolve(path, cwd)):
+            cut = sliced(code, masked, pair, m.start(), pair[mo] + 1, meth.group(1), resolve(path, cwd))
+            if cut:
+                sites.append(cut[:2] + (("part", cut[2], f"{short(path)} {meth.group(1)}().slice ({cut[2]})", path),))
                 continue
         hit = long_file(path, cwd) if path else None
         if hit:
@@ -666,12 +715,15 @@ def read_sites(code, masked, pair, value, cwd, hfuncs=None):
             continue
         args = code[o + 1:pair[o]]
         lim = re.search(r"\blimit\s*:\s*(\d+)", args)
+        off = re.search(r"\boffset\s*:\s*(\d+)", args)
         fp = re.search(r"\bfile_path\s*:\s*([^,}]+)", args)
         path = value(fp.group(1)) if fp else None
         if lim:
             sites.append((m.start(), pair[o] + 1, ("part", int(lim.group(1)), f"{short(path)} Read limit {lim.group(1)}", path)))
         elif path and os.path.isfile(resolve(path, cwd)) and path.lower().endswith(VIEW_EXT):
             n = line_count(resolve(path, cwd))
+            if off and int(off.group(1)) > 1:
+                n = max(n - int(off.group(1)) + 1, 0)
             sites.append((m.start(), pair[o] + 1, ("part", n, f"{short(path)} Read ({n})", path)))
     for name, kind in hfuncs.items():
         for m in re.finditer(r"(?<![\w$.])" + re.escape(name) + r"\s*\(", masked):
@@ -691,6 +743,28 @@ def read_sites(code, masked, pair, value, cwd, hfuncs=None):
     return sites
 
 
+def sliced(code, masked, pair, start, end, meth, path):
+    """(await file(X).lines()).slice(a, b) or (await file(X).text()).slice(a, b) with literal bounds:
+    (start, end, lines of file text it keeps), or None."""
+    g = re.search(r"\(\s*(?:await\s+)?$", masked[:start])
+    if not g or g.start() not in pair or masked[end:pair[g.start()]].strip():
+        return None
+    s = re.compile(r"\s*\.\s*slice\s*\(").match(masked, pair[g.start()] + 1)
+    if not s or s.end() - 1 not in pair:
+        return None
+    nums = [x.strip() for x in code[s.end():pair[s.end() - 1]].split(",")]
+    if not nums or len(nums) > 2 or not all(re.fullmatch(r"-?\d+", x) for x in nums):
+        return None
+    bounds = slice(*(int(x) for x in nums))
+    if meth == "lines":
+        n = len(read_lines(path)[bounds])
+    else:
+        with open(path, encoding="utf-8-sig", errors="replace") as f:
+            text = f.read()[bounds]
+        n = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
+    return g.start(), pair[s.end() - 1] + 1, n
+
+
 def exempt(info):
     """Plans are read whole by design (the reviewer reads the whole approved plan)."""
     return is_plan((info[3] if len(info) > 3 else "") or "")
@@ -698,6 +772,25 @@ def exempt(info):
 
 def short(path):
     return "/".join((path or "?").replace("\\", "/").split("/")[-2:])
+
+
+def head_count(words):
+    """Lines a head/tail command prints from each file: an int, ('from', k) for tail -n +k, None when unknown."""
+    n = "10"
+    for k, w in enumerate(words[1:], 1):
+        m = re.match(r"^(?:-n|--lines=?)(\+?\d*)$", w) or re.match(r"^-(\d+)$", w)
+        if m:
+            n = m.group(1) or (words[k + 1] if k + 1 < len(words) else "")
+    if n.startswith("+") and n[1:].isdigit():
+        return ("from", int(n[1:]))
+    return int(n) if n.isdigit() else None
+
+
+def head_tail_lines(words, path):
+    total, n = line_count(path), head_count(words)
+    if isinstance(n, tuple):
+        return max(total - n[1] + 1, 0)
+    return min(n, total) if n is not None else total
 
 
 def bash_lines(cmd, cwd):
@@ -721,16 +814,17 @@ def bash_lines(cmd, cwd):
     total, names = 0, []
     for segment in shell_segments.segments(cmd):
         for words in shell_segments.programs(segment):
-            if words and shell_segments.basename(words[0]).lower().removesuffix(".exe") in VIEWERS:
+            head = shell_segments.basename(words[0]).lower().removesuffix(".exe") if words else ""
+            if head in VIEWERS or head in ("head", "tail"):
                 for w in files_in(words):
                     p = resolve(w, cwd)
                     if os.path.isfile(p):
-                        total += line_count(p)
+                        total += head_tail_lines(words, p) if head in ("head", "tail") else line_count(p)
                         names.append(short(p))
     return total, ("cat " + " ".join(names[:3])) if total else ""
 
 
-TEMPLATE = re.compile(r"(?<![\w.])\$\s*`((?:\\.|\$\{[^}]*\}|[^`\\])*)`", re.S)
+TEMPLATE = re.compile(r"(?<![\w.])\$\s*`((?:\\.|\$\{[^}]*\}|\$(?!\{)|[^`\\$])*)`", re.S)
 INTERP = re.compile(r"\$\{[^}]*\}")
 
 
@@ -757,30 +851,35 @@ def enclosing_script(entries, cmd):
     return newest
 
 
+def running_script(payload, cmd):
+    """The REPL script whose $ template ran this Bash command, or None for a command the agent called itself:
+    its own tool_use is in the transcript, or no script since the agent's last shell call has a matching template."""
+    calls, own = transcript_calls(payload), payload.get("tool_use_id")
+    if own and any(i == own and n in SHELLS for n, _, i in calls):
+        return None
+    scripts = []
+    for n, t, i in reversed(calls):
+        if n in SHELLS and i != own:
+            break
+        if n == "REPL":
+            scripts.append(t)
+    for code in scripts:
+        try:
+            if any(template_matches(t, cmd) for t in TEMPLATE.findall(code)):
+                return code
+        except re.error:
+            pass
+    return None
+
+
 def earlier_escapes(payload):
     """The agent's earlier REPL scripts and Bash commands that carried the escape, oldest first. The current call
     is left out by its tool_use_id; for a Bash call the REPL script that ran it is left out too (enclosing_script),
     since a $ command inside a script reaches this hook after that script entered the transcript."""
     if "esc" in _EARLIER:
         return _EARLIER["esc"]
-    out, path, own = [], subagent_transcript(payload), payload.get("tool_use_id")
-    if path:
-        try:
-            with open(path, encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    if '"REPL"' not in line and '"Bash"' not in line and '"PowerShell"' not in line:
-                        continue
-                    try:
-                        o = json.loads(line)
-                    except ValueError:
-                        continue
-                    for b in (o.get("message") or {}).get("content") or []:
-                        if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") in ("REPL", "Bash", "PowerShell") \
-                                and b.get("id") != own:
-                            i = b.get("input") or {}
-                            out.append((b.get("name"), i.get("code") or i.get("command") or ""))
-        except OSError:
-            pass
+    own = payload.get("tool_use_id")
+    out = [(n, t) for n, t, i in transcript_calls(payload) if i != own]
     if payload.get("tool_name") == "Bash":
         k = enclosing_script(out, str((payload.get("tool_input") or {}).get("command") or ""))
         if k is not None:
@@ -830,8 +929,8 @@ def check_repl(code, cwd, payload):
 
     masked, pair, subst = js_mask(code)
     hfuncs = helpers(code)
-    for c in earlier_codes(payload) if re.search(r"(?<![\w$.])[A-Za-z_$][\w$]*\s*\([^()]*,\s*\d+\s*,\s*\d+\s*\)", code) else []:
-        hfuncs = {**helpers(c), **hfuncs}
+    if re.search(r"(?<![\w$.])[A-Za-z_$][\w$]*\s*\([^()]*,\s*\d+\s*,\s*\d+\s*\)", code):
+        hfuncs = {**earlier_helpers(payload), **hfuncs}
     sites = [(a, b, h + (a,) if h[0] == "part" else h) for a, b, h in read_sites(code, masked, pair, value, cwd, hfuncs)]
     if not sites:
         return None

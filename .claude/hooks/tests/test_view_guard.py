@@ -7,6 +7,7 @@ test writes there.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -106,21 +107,26 @@ def tearDownModule():
 
 
 def transcript(calls):
-    """A subagent transcript with the given (tool, input) tool_use blocks, oldest first."""
+    """A subagent transcript with the given (tool, input[, id]) tool_use blocks, oldest first."""
     path = os.path.join(ROOT, "subagents", "agent-" + uuid.uuid4().hex + ".jsonl")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        for tool, inp in calls:
-            block = {"type": "tool_use", "id": "toolu_" + uuid.uuid4().hex, "name": tool, "input": inp}
+        for tool, inp, *own in calls:
+            block = {"type": "tool_use", "id": own[0] if own else "toolu_" + uuid.uuid4().hex, "name": tool, "input": inp}
             f.write(json.dumps({"message": {"role": "assistant", "content": [block]}}) + "\n")
     return path
 
 
-def run(tool, inp, agent="core-implementer", calls=(), main=False, timeout=30):
+def payload_for(tool, inp, agent="core-implementer", calls=(), main=False):
     payload = {"hook_event_name": "PreToolUse", "tool_name": tool, "tool_input": inp, "cwd": ROOT,
                "tool_use_id": "toolu_now", "session_id": "s"}
     if not main:
         payload.update(agent_id="a" + uuid.uuid4().hex[:8], agent_type=agent, transcript_path=transcript(calls))
+    return payload
+
+
+def run(tool, inp, agent="core-implementer", calls=(), main=False, timeout=30):
+    payload = payload_for(tool, inp, agent, calls, main)
     r = subprocess.run([sys.executable, "-I", "-B", HOOK], input=json.dumps(payload).encode("utf-8"),
                        capture_output=True, timeout=timeout)
     assert r.returncode == 0, r.stderr
@@ -145,6 +151,22 @@ class Scope(unittest.TestCase):
         for agent in ("core-implementer", "test-author", "docs-writer", "mockup-implementer", "code-scout",
                       "core-reviewer", "proof-auditor", "general-purpose"):
             self.assertIsNotNone(run("Read", {"file_path": LONG_RS}, agent=agent), agent)
+
+    def test_every_agents_md_lane_with_a_viewing_tool_is_guarded_or_exempt(self):
+        agents_dir = os.path.join(os.path.dirname(HOOKS), "agents")
+        lanes = {}
+        for name in sorted(os.listdir(agents_dir)):
+            if not name.endswith(".md"):
+                continue
+            with open(os.path.join(agents_dir, name), encoding="utf-8") as f:
+                head = f.read().split("---")[1]
+            lane = re.search(r"^name:\s*(\S+)", head, re.M).group(1)
+            tools = re.search(r"^tools:\s*(.*)$", head, re.M)
+            lanes[lane] = {t.strip() for t in tools.group(1).split(",")} if tools else {"*"}
+        self.assertTrue(lanes)
+        for lane, tools in lanes.items():
+            if tools & {"Read", "Bash", "REPL", "*"}:
+                self.assertIn(lane, view_guard.AGENTS | view_guard.EXEMPT, lane)
 
     def test_garbage_input_fails_open(self):
         r = subprocess.run([sys.executable, "-I", "-B", HOOK], input=b'{"agent_type": nope', capture_output=True,
@@ -226,6 +248,12 @@ class Shell(unittest.TestCase):
         self.assertIsNotNone(run("PowerShell", {"command": f"Get-Content '{LONG_RS}'"}))
         self.assertIsNotNone(run("Bash", {"command": f"sed -n '1,400p' {LONG_RS}"}))
 
+    def test_head_tail_counts_against_the_range_cap(self):
+        self.assertIsNotNone(run("Bash", {"command": f"head -n 5000 {LONG_RS}"}))
+        self.assertIsNotNone(run("Bash", {"command": f"tail -n +10 {LONG_RS}"}))
+        self.assertIsNone(run("Bash", {"command": f"head -n 50 {LONG_RS}"}))
+        self.assertIsNone(run("Bash", {"command": f"tail -50 {LONG_RS}"}))
+
     def test_cut_views_pass(self):
         for cmd in (f"cat {LONG_RS} | head -50", f"sed -n '1,100p' {LONG_RS}", f"cat {LONG_RS} > copy.rs",
                     f"Get-Content {LONG_RS} -TotalCount 40", f"cat {SHORT_RS}", f"cat {LONG_PLAN}",
@@ -270,11 +298,76 @@ class Repl(unittest.TestCase):
                 f"({{x: show('{LONG_RS}', 1, 250), y: tools.Read({{file_path: '{OTHER_RS}', limit: 100}})}})")
         self.assertIn("about 350 lines", repl(code))
 
+    def test_tail_from_an_offset_follows_the_read_tail_rule(self):
+        total = view_guard.line_count(LONG_RS)
+        self.assertIsNone(repl(f"await file('{LONG_RS}').slice(300)"))
+        self.assertIsNotNone(repl(f"await file('{LONG_RS}').slice(10)"))
+        self.assertIsNone(repl(f"tools.Read({{file_path: '{LONG_RS}', offset: 300}})"))
+        self.assertIn(f"about {total - 300 + 1 + 200} lines",
+                      repl(f"({{a: file('{LONG_RS}').slice(300), b: file('{OTHER_RS}').slice(1, 200)}})"))
+        self.assertIn(f"about {total - 300 + 1 + 200} lines",
+                      repl(f"({{a: tools.Read({{file_path: '{LONG_RS}', offset: 300}}), b: file('{OTHER_RS}').slice(1, 200)}})"))
+
+    def test_slices_of_whole_file_text_are_counted(self):
+        kept = len(view_guard.read_lines(LONG_RS)[100:1900])
+        self.assertIn(f"about {kept} lines", repl(f"(await file('{LONG_RS}').lines()).slice(100, 1900)"))
+        self.assertIsNone(repl(f"(await file('{LONG_RS}').lines()).slice(100, 200)"))
+        self.assertIsNone(repl(f"(await file('{LONG_RS}').text()).slice(0, 2000)"))
+
+    def test_budget_counts_head_of_a_file(self):
+        code = "({a: $" + BT + f"head -n 250 {LONG_RS}" + BT + f".text(), b: file('{OTHER_RS}').slice(1, 100)}})"
+        self.assertIn("about 350 lines", repl(code))
+
     def test_long_identifiers_do_not_hang_the_name_scan(self):
         code = ("const x = " + "a" * 60 + ".foo()\n") * 30 + f"await file('{LONG_RS}').text()"
         start = time.monotonic()
         self.assertIsNotNone(repl(code, timeout=20))
         self.assertLess(time.monotonic() - start, 10)
+
+
+class ReplShell(unittest.TestCase):
+    """A $ command reaches the Bash hook bare after its script was judged as a whole."""
+    SCRIPT = f"const p = '{LONG_RS}';\nconst t = await ${BT}cat ${{p}}{BT}.text();\nt.split('x').length"
+
+    def test_command_of_an_allowed_script_passes(self):
+        self.assertIsNone(run("Bash", {"command": f"cat '{LONG_RS}'"}, calls=[("REPL", {"code": self.SCRIPT})]))
+
+    def test_command_of_an_escaped_script_passes(self):
+        script = f"const p = '{LONG_RS}';\nawait ${BT}cat ${{p}}{BT}.text() // view-ok"
+        self.assertIsNone(run("Bash", {"command": f"cat '{LONG_RS}'"}, calls=[("REPL", {"code": script})]))
+
+    def test_a_direct_call_is_still_judged(self):
+        cmd = {"command": f"cat '{LONG_RS}'"}
+        self.assertIsNotNone(run("Bash", cmd, calls=[("REPL", {"code": self.SCRIPT}), ("Bash", {"command": "ls"})]))
+        self.assertIsNotNone(run("Bash", cmd, calls=[("REPL", {"code": self.SCRIPT}), ("Bash", cmd, "toolu_now")]))
+        self.assertIsNotNone(run("Bash", cmd, calls=[("REPL", {"code": "await $" + BT + "ls" + BT + ".text()"})]))
+
+
+class Cost(unittest.TestCase):
+    def test_unterminated_template_is_linear(self):
+        code = "$" + BT + "${a}" * 40
+        start = time.monotonic()
+        view_guard.TEMPLATE.findall(code)
+        view_guard.enclosing_script([("REPL", code)] * 5, "cat x")
+        self.assertLess(time.monotonic() - start, 1)
+
+    def test_earlier_environment_is_built_once_per_run(self):
+        scripts = [("REPL", {"code": f"const Q = '{LONG_RS}';\n'set'"})]
+        scripts += [("REPL", {"code": f"await file(Q).slice(1, {k + 1}) // view-ok"}) for k in range(20)]
+        payload = payload_for("REPL", {"code": "await file(Q).text() // view-ok"}, calls=scripts)
+        calls, real = [0], view_guard.js_env
+
+        def counting(*a, **kw):
+            calls[0] += 1
+            return real(*a, **kw)
+        view_guard._EARLIER.clear()
+        view_guard.js_env = counting
+        try:
+            view_guard.check_repl(payload["tool_input"]["code"], ROOT, payload)
+        finally:
+            view_guard.js_env = real
+            view_guard._EARLIER.clear()
+        self.assertLess(calls[0], 5 * len(scripts))
 
 
 class Escape(unittest.TestCase):
