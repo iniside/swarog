@@ -995,7 +995,7 @@ async fn every_portal_menu_kind_on_a_tab_page_is_declared() {
     let undeclared = crawl_lists(site.clone(), &page_map, &excluded, false).await;
     undeclared.assert_failed_with("an undeclared guild/kick modal in the tab page's excluded menu", &modal);
     let mut modals = EXCLUDED_MODALS.to_vec();
-    modals.push((&host, "guild/kick", ModalWhy::NoMockOpener { others: &[], why: "why" }));
+    modals.push((&host, "guild/kick", ModalWhy { why: "why" }));
     let (page_map, excluded, modals) = (&page_map, &excluded, &modals);
     let run = move |site: Site| crawl_into(ScratchDir::new("crawl"), site, page_map, excluded, modals, false, false);
     let declared = run(site.clone()).await;
@@ -1302,7 +1302,7 @@ async fn every_portal_modal_action_on_a_compared_page_is_declared() {
     crawl(site.clone(), false).await.assert_failed_with("an undeclared guild/kick modal", &undeclared);
 
     let mut excluded = EXCLUDED_MODALS.to_vec();
-    excluded.push((target.page, "guild/kick", ModalWhy::NoMockOpener { others: &[], why: "why" }));
+    excluded.push((target.page, "guild/kick", ModalWhy { why: "why" }));
     let declared = crawl_modals(site.clone(), PAGE_MAP, &excluded, false).await;
     declared.assert_clean("the excluded guild/kick modal");
     assert_eq!(fetched(&declared, kick), 1, "{:?}", declared.server.requests());
@@ -1327,7 +1327,7 @@ async fn every_portal_modal_action_on_a_compared_page_is_declared() {
     let undeclared = "player.items draws a guild/kick modal, which is in neither PAGE_MAP nor EXCLUDED_MODALS";
     crawl_map(tab_page.clone(), &page_map).await.assert_failed_with("an undeclared guild/kick modal on the tab page", undeclared);
     let mut on_tab = EXCLUDED_MODALS.to_vec();
-    on_tab.push(("player.items", "guild/kick", ModalWhy::NoMockOpener { others: &[], why: "why" }));
+    on_tab.push(("player.items", "guild/kick", ModalWhy { why: "why" }));
     let c = crawl_modals(tab_page.clone(), &page_map, &on_tab, false).await;
     c.assert_clean("the excluded guild/kick modal on the tab page");
     assert_eq!(fetched(&c, kick), 1, "{:?}", c.server.requests());
@@ -1364,14 +1364,14 @@ async fn a_stale_or_malformed_modal_exclusion_fails() {
     allowed.assert_failed_with("--allow-empty: mail lists no row and no longer draws test-send", stale);
     assert!(allowed.empty.is_empty(), "{:?}", allowed.empty);
 
-    let twice: Vec<_> = EXCLUDED_MODALS.iter().copied().chain([(host, action, ModalWhy::NoMockOpener { others: &[], why: "again" })]).collect();
+    let twice: Vec<_> = EXCLUDED_MODALS.iter().copied().chain([(host, action, ModalWhy { why: "again" })]).collect();
     let c = crawl_modals(healthy.clone(), PAGE_MAP, &twice, false).await;
     c.assert_error("modal drift:\n  mail modal mail/test-send is listed in EXCLUDED_MODALS and again in EXCLUDED_MODALS");
     assert!(c.server.requests().is_empty(), "validated before anything is fetched: {:?}", c.server.requests());
     let cases = [
-        ("mapped and excluded", ("mail", "mail/cancel", ModalWhy::NoMockOpener { others: &[], why: "why" })),
-        ("a host that is no page", ("z", "guild/kick", ModalWhy::NoMockOpener { others: &[], why: "why" })),
-        ("a malformed action", ("mail", "Mail/x", ModalWhy::NoMockOpener { others: &[], why: "why" })),
+        ("mapped and excluded", ("mail", "mail/cancel", ModalWhy { why: "why" })),
+        ("a host that is no page", ("z", "guild/kick", ModalWhy { why: "why" })),
+        ("a malformed action", ("mail", "Mail/x", ModalWhy { why: "why" })),
     ];
     for (why, entry) in cases {
         let excluded: Vec<_> = EXCLUDED_MODALS.iter().copied().chain([entry]).collect();
@@ -1495,7 +1495,7 @@ async fn every_modal_action_a_compared_menu_draws_is_declared() {
     crawl(site.clone(), false).await.assert_failed_with("an undeclared guild/kick modal in a menu", undeclared);
 
     let mut excluded = EXCLUDED_MODALS.to_vec();
-    excluded.push((&host, "guild/kick", ModalWhy::NoMockOpener { others: &[], why: "why" }));
+    excluded.push((&host, "guild/kick", ModalWhy { why: "why" }));
     let declared = crawl_modals(site, PAGE_MAP, &excluded, false).await;
     declared.assert_clean("the excluded guild/kick modal in a menu");
     assert_eq!(fetched(&declared, &kick), 1, "{:?}", declared.server.requests());
@@ -1595,7 +1595,7 @@ async fn a_stale_tab_modal_exclusion_fails_with_or_without_allow_empty() {
     let kick = modal_url("guild/kick", "player.items");
     let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([items_tab(), items_menu()]).collect();
     let mut excluded = EXCLUDED_MODALS.to_vec();
-    excluded.push(("player.items", "guild/kick", ModalWhy::NoMockOpener { others: &[], why: "why" }));
+    excluded.push(("player.items", "guild/kick", ModalWhy { why: "why" }));
     let drawn = items_site(&modal_button(&kick)).with(&kick, ok(MODAL_BODY));
     let gone = items_site("");
     let stale = "EXCLUDED_MODALS lists player.items modal guild/kick, which player.items does not draw";
@@ -1642,7 +1642,7 @@ async fn a_tab_page_menu_target_holds_its_modals_to_the_page_rules() {
     assert_eq!(written, MODAL_BODY);
 
     let mut excluded = EXCLUDED_MODALS.to_vec();
-    excluded.push((&host, "guild/kick", ModalWhy::NoMockOpener { others: &[], why: "why" }));
+    excluded.push((&host, "guild/kick", ModalWhy { why: "why" }));
     let c = crawl_modals(site.clone(), &page_map, &excluded, false).await;
     c.assert_clean("the excluded guild/kick modal in the tab's menu");
     // The menu target is fetched once, as a target, not again as a status-only menu.

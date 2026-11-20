@@ -434,16 +434,16 @@ fn validate_excluded_modals_accepts_a_menu_target_or_excluded_menu_host() {
     let check = |excluded_modals: &[(&str, &str, ModalWhy<'_>)]| {
         validate_excluded_modals(&Lists { page_map: &page_map, excluded_menus: &excluded_menus, excluded_modals, ..LISTS })
     };
-    check(&[("a.menu.user", "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: "why" })]).expect("a menu target hosts it");
-    check(&[("a.excluded-menu.guild", "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: "why" })]).expect("an excluded menu hosts it");
+    check(&[("a.menu.user", "mail/test-send", ModalWhy { why: "why" })]).expect("a menu target hosts it");
+    check(&[("a.excluded-menu.guild", "mail/test-send", ModalWhy { why: "why" })]).expect("an excluded menu hosts it");
     for host in ["a.menu.other", "a.excluded-menu.other"] {
-        let e = format!("{:#}", check(&[(host, "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: "why" })]).expect_err("neither a menu target nor an excluded menu"));
+        let e = format!("{:#}", check(&[(host, "mail/test-send", ModalWhy { why: "why" })]).expect_err("neither a menu target nor an excluded menu"));
         let want = format!(
             "modal drift:\n  EXCLUDED_MODALS lists {host} modal mail/test-send, and {host} is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu"
         );
         assert_eq!(e, want, "host {host}");
     }
-    let e = format!("{:#}", check(&[("a.menu.user", "mail/cancel", ModalWhy::NoMockOpener { others: &[], why: "why" })]).expect_err("mapped on the menu too"));
+    let e = format!("{:#}", check(&[("a.menu.user", "mail/cancel", ModalWhy { why: "why" })]).expect_err("mapped on the menu too"));
     assert_eq!(e, "modal drift:\n  a.menu.user modal mail/cancel is listed in PAGE_MAP and again in EXCLUDED_MODALS");
 }
 
@@ -463,7 +463,7 @@ fn a_tab_or_a_tab_menu_target_hosts_modals() {
     assert_eq!(menu_modal.id(), "c.items.menu.user.modal.cancel");
     validate_lists(&abc(), &[MAPPED, PENDING, FOLLOWS, tab, menu, menu_modal], &[]).expect("a modal of a tab's menu target passes");
 
-    let with = |page_map: &[Page], host: &str, action: &str| check_modals(page_map, &[(host, action, ModalWhy::NoMockOpener { others: &[], why: "why" })]);
+    let with = |page_map: &[Page], host: &str, action: &str| check_modals(page_map, &[(host, action, ModalWhy { why: "why" })]);
     with(&[MAPPED, FOLLOWS, tab, menu], "c.items.menu.user", "guild/kick").expect("a tab's menu target hosts it");
     let e = format!("{:#}", with(&[MAPPED, FOLLOWS, tab], "c.items.menu.user", "guild/kick").expect_err("no such menu target"));
     let want = "modal drift:\n  EXCLUDED_MODALS lists c.items.menu.user modal guild/kick, and c.items.menu.user is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu";
@@ -483,7 +483,7 @@ fn an_excluded_menu_of_a_tab_hosts_modal_exclusions() {
     let check = |page: &str| {
         let host = excluded_menu_id(page, "guild");
         let excluded_menus = [(page, "guild", "why")];
-        let excluded_modals = [(host.as_str(), "guild/kick", ModalWhy::NoMockOpener { others: &[], why: "why" })];
+        let excluded_modals = [(host.as_str(), "guild/kick", ModalWhy { why: "why" })];
         let lists = Lists { page_map: &page_map, excluded_menus: &excluded_menus, excluded_modals: &excluded_modals, ..LISTS };
         validate_excluded_modals(&lists).map_err(|e| format!("{e:#}"))
     };
@@ -517,10 +517,10 @@ fn modals_drift(excluded_modals: &[(&str, &str, ModalWhy<'_>)]) -> String {
 #[test]
 fn validate_excluded_modals_passes_the_clean_twin() {
     let clean = [
-        ("a", "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: "why" }),
-        ("c", "core.events/poison.skip", ModalWhy::NoMockOpener { others: &[], why: "why" }),
-        ("c", "mail/cancel", ModalWhy::NoMockOpener { others: &[], why: "mapped on a only" }),
-        ("c.items", "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: "why" }),
+        ("a", "mail/test-send", ModalWhy { why: "why" }),
+        ("c", "core.events/poison.skip", ModalWhy { why: "why" }),
+        ("c", "mail/cancel", ModalWhy { why: "mapped on a only" }),
+        ("c.items", "mail/test-send", ModalWhy { why: "why" }),
     ];
     check_modals(&modal_map(), &clean).expect("each exclusion once, reasoned, on a page or tab, not mapped there");
     check_modals(&modal_map(), &[]).expect("no exclusion");
@@ -528,37 +528,37 @@ fn validate_excluded_modals_passes_the_clean_twin() {
 
 #[test]
 fn validate_excluded_modals_rejects_an_exclusion_listed_twice_or_without_a_reason() {
-    let twice = modals_drift(&[("a", "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: "why" }), ("a", "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: "why" })]);
+    let twice = modals_drift(&[("a", "mail/test-send", ModalWhy { why: "why" }), ("a", "mail/test-send", ModalWhy { why: "why" })]);
     assert_eq!(twice, "modal drift:\n  a modal mail/test-send is listed in EXCLUDED_MODALS and again in EXCLUDED_MODALS");
-    let blank = modals_drift(&[("a", "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: " \t " })]);
+    let blank = modals_drift(&[("a", "mail/test-send", ModalWhy { why: " \t " })]);
     assert_eq!(blank, "modal drift:\n  EXCLUDED_MODALS a modal mail/test-send has no reason");
 }
 
 #[test]
 fn validate_excluded_modals_rejects_a_host_that_is_no_page_or_tab_that_is_not_pending() {
     for host in ["z", "b", "c.saves", "a.items"] {
-        let e = modals_drift(&[(host, "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: "why" })]);
+        let e = modals_drift(&[(host, "mail/test-send", ModalWhy { why: "why" })]);
         let want = format!(
             "modal drift:\n  EXCLUDED_MODALS lists {host} modal mail/test-send, and {host} is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu"
         );
         assert_eq!(e, want, "host {host}");
     }
     let tab_only = [MAPPED, Page { tab: Some("items"), ..FOLLOWS }];
-    check_modals(&tab_only, &[("c.items", "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: "why" })]).expect("the tab entry hosts it");
-    let e = format!("{:#}", check_modals(&tab_only, &[("c", "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: "why" })]).expect_err("c is tabbed only"));
+    check_modals(&tab_only, &[("c.items", "mail/test-send", ModalWhy { why: "why" })]).expect("the tab entry hosts it");
+    let e = format!("{:#}", check_modals(&tab_only, &[("c", "mail/test-send", ModalWhy { why: "why" })]).expect_err("c is tabbed only"));
     assert_eq!(e, "modal drift:\n  EXCLUDED_MODALS lists c modal mail/test-send, and c is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu");
     let pending_tab = [MAPPED, Page { tab: Some("items"), ..PENDING }];
-    let e = format!("{:#}", check_modals(&pending_tab, &[("b.items", "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: "why" })]).expect_err("b.items is pending"));
+    let e = format!("{:#}", check_modals(&pending_tab, &[("b.items", "mail/test-send", ModalWhy { why: "why" })]).expect_err("b.items is pending"));
     assert_eq!(e, "modal drift:\n  EXCLUDED_MODALS lists b.items modal mail/test-send, and b.items is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu");
     let modal_only = [PENDING, Page { modal: Some(MODAL), ..MAPPED }];
-    let e = format!("{:#}", check_modals(&modal_only, &[("a", "mail/test-send", ModalWhy::NoMockOpener { others: &[], why: "why" })]).expect_err("a is a modal entry only"));
+    let e = format!("{:#}", check_modals(&modal_only, &[("a", "mail/test-send", ModalWhy { why: "why" })]).expect_err("a is a modal entry only"));
     assert_eq!(e, "modal drift:\n  EXCLUDED_MODALS lists a modal mail/test-send, and a is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu");
 }
 
 #[test]
 fn validate_excluded_modals_rejects_a_malformed_action() {
     for action in ["mail", "Mail/x", "a/b/c", "/x", "x/"] {
-        let e = modals_drift(&[("a", action, ModalWhy::NoMockOpener { others: &[], why: "why" })]);
+        let e = modals_drift(&[("a", action, ModalWhy { why: "why" })]);
         let want =
             format!("modal drift:\n  EXCLUDED_MODALS a names action {action:?}, which is not a <module>/<action> of [a-z0-9._-]+ ids");
         assert_eq!(e, want, "action {action}");
@@ -567,7 +567,7 @@ fn validate_excluded_modals_rejects_a_malformed_action() {
 
 #[test]
 fn validate_excluded_modals_rejects_a_modal_both_mapped_and_excluded() {
-    let both = modals_drift(&[("a", "mail/cancel", ModalWhy::NoMockOpener { others: &[], why: "why" })]);
+    let both = modals_drift(&[("a", "mail/cancel", ModalWhy { why: "why" })]);
     assert_eq!(both, "modal drift:\n  a modal mail/cancel is listed in PAGE_MAP and again in EXCLUDED_MODALS");
 }
 

@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use super::render;
-use crate::pages::{Page, Route, EXCLUDED, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS, PAGE_MAP};
+use crate::pages::{MockOpener, Page, Route, EXCLUDED, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS, PAGE_MAP};
 use crate::tests::{write, ScratchDir};
 
 /// A scratch repo whose mockup is a stand-in: every page the two lists name has its html
@@ -22,12 +22,15 @@ use crate::tests::{write, ScratchDir};
 /// `EXCLUDED_MOCK_MENUS` name, as the real registry defines its menus. Each `PAGE_MAP` modal
 /// entry's opener is a `PAGES.<opener>` that appends a `.scrim` holding [`MOCK_MODAL`] with
 /// `{opener}` and `{args}` (its arguments joined by `,`) replaced, as `UI.confirm` does, and so
-/// is each `EXCLUDED_MOCK_MODALS` opener. Each modal entry's opener is drawn on its host, with
-/// its arguments, and each `EXCLUDED_MOCK_MODALS` opener on its host, with none, as the real
-/// mockup draws them: on a page or tab host in one `<button class="btn">` after the menu buttons
-/// whose `onclick` runs them all, on a menu target in the `onclick` of the menu's `.menu-item`
-/// (`{run}` in [`MOCK_MENU`]) when the menu opens with the host's page as its argument.
+/// is each `EXCLUDED_MOCK_MODALS` `PAGES` opener. Each modal entry's opener is drawn on its host,
+/// with its arguments, and each `EXCLUDED_MOCK_MODALS` opener on its host, a `PAGES` opener with
+/// none and an `onclick` opener as its body, as the real mockup draws them: on a page or tab host
+/// each in its own `<button class="btn">` after the menu buttons, on a menu target in the
+/// `onclick` of the menu's `.menu-item` (`{run}` in [`MOCK_MENU`]), joined by `;`, when the
+/// menu opens with the host's page as its argument.
 /// [`FakeRepo::with_openers`] draws more calls and appends a script defining their openers.
+/// `REG.openSearch` appends an empty `.scrim`, as the real registry's palette does, and
+/// `REG.render` assigns the body, as the real one re-renders the page.
 /// `REG.mount` assigns the body and then runs `meta.after`, as the real registry does; the
 /// stand-in `after` prints [`AFTER_RAN`] and exits 0, so a harness that let it run would
 /// return that instead of the page. [`FakeRepo::with_map`] reads a given page map in place of
@@ -101,7 +104,11 @@ impl FakeRepo {
             }
         }
         let mut openers: Vec<&str> = Vec::new();
-        for opener in page_map.iter().filter_map(|p| p.modal.map(|m| m.opener)).chain(EXCLUDED_MOCK_MODALS.iter().map(|(_, o, _)| *o)) {
+        let excluded_openers = EXCLUDED_MOCK_MODALS.iter().filter_map(|x| match x.opener {
+            MockOpener::Pages(name) => Some(name),
+            MockOpener::Onclick(_) => None,
+        });
+        for opener in page_map.iter().filter_map(|p| p.modal.map(|m| m.opener)).chain(excluded_openers) {
             if !openers.contains(&opener) {
                 openers.push(opener);
             }
@@ -115,7 +122,13 @@ impl FakeRepo {
                 calls.push((p.host().id(), format!("PAGES.{}({})", m.opener, args.join(","))));
             }
         }
-        calls.extend(EXCLUDED_MOCK_MODALS.iter().map(|(host, opener, _)| (host.to_string(), format!("PAGES.{opener}()"))));
+        calls.extend(EXCLUDED_MOCK_MODALS.iter().map(|x| {
+            let call = match x.opener {
+                MockOpener::Pages(name) => format!("PAGES.{name}()"),
+                MockOpener::Onclick(body) => body.to_string(),
+            };
+            (x.host.to_string(), call)
+        }));
         calls.extend(drawn.iter().map(|(host, call)| (host.to_string(), call.to_string())));
         let mut page_draws: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
         let mut menu_draws: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
@@ -132,7 +145,11 @@ impl FakeRepo {
         }
         let registry = format!(
             concat!(
-                "var REG = {{ mount: function (meta, fn) {{ document.body.innerHTML = fn(); if (meta.after) meta.after(); }} }};\n",
+                "var REG = {{ mount: function (meta, fn) {{ document.body.innerHTML = fn(); if (meta.after) meta.after(); }}, openSearch: function () {{\n",
+                "  const el = document.createElement(\"div\");\n",
+                "  el.className = \"scrim\";\n",
+                "  document.body.appendChild(el);\n",
+                "}}, render: function () {{ document.body.innerHTML = \"\"; }} }};\n",
                 "var PAGES = {{}};\n",
                 "const TABS = {tabs};\n",
                 "const tabBar = function (ids) {{\n",
@@ -153,7 +170,7 @@ impl FakeRepo {
                 "const MENU_DRAWS = {menu_draws};\n",
                 "const pageOpeners = function (key) {{\n",
                 "  const calls = PAGE_DRAWS[key + \"|\" + (new URLSearchParams(location.search).get(\"tab\") || \"\")] || [];\n",
-                "  return calls.length ? '<button class=\"btn\" onclick=\"' + calls.join(\";\") + '\"></button>' : \"\";\n",
+                "  return calls.map(call => '<button class=\"btn\" onclick=\"' + call + '\"></button>').join(\"\");\n",
                 "}};\n",
                 "var UI = {{ state: {{}}, defineMenu: function () {{}}, openMenu: function (ev, id, arg) {{\n",
                 "  ev.stopPropagation();\n",
@@ -208,7 +225,8 @@ fn real_repo() -> std::path::PathBuf {
 fn the_harness_captures_the_body_before_an_after_hook_can_run() {
     let repo = FakeRepo::new("mock-after", r#"<div class="app">search={search}</div>"#);
     let out = render(repo.path(), "index", "?u=aiko.tanaka", false).expect("renders");
-    assert_eq!(out, r#"<div class="app">search=?u=aiko.tanaka</div>"#, "the page with its search, not {AFTER_RAN}");
+    let want = r#"<div class="app">search=?u=aiko.tanaka</div><button class="btn" onclick="REG.openSearch()"></button>"#;
+    assert_eq!(out, want, "the page with its search and its palette opener, not {AFTER_RAN}");
 }
 
 #[test]

@@ -80,16 +80,17 @@ USAGE:
             entry nor in pages::EXCLUDED_TABS, when a menu the mockup draws on a compared page
             or tab is not a page map menu entry of it, and when a menu the mockup registry
             defines is neither a page map menu entry nor in pages::EXCLUDED_MOCK_MENUS. It fails
-            on the mockup's modals too: every PAGES.<fn>(...) call in an onclick of a compared page,
-            tab or menu target's mockup render is run, as written, on its page in node, and one
-            that throws fails by name; one that appends a .scrim is a modal opener, which must be
-            a page map modal entry of that host or in pages::EXCLUDED_MOCK_MODALS (an opener drawn
-            only on pending or excluded pages is not checked); a modal entry its host does not
-            draw, an EXCLUDED_MOCK_MODALS entry its host does not draw, listed twice, with no
-            reason or mapped too, and an EXCLUDED_MODALS NoMockOpener reason its mockup host
-            contradicts (a modal opener drawn there that is no modal entry of another action
-            and not in its others, a host with no compared render, or an others name that is a
-            page map modal entry there) fail. A mock-only or portal-only repeat
+            on the mockup's modals too: every onclick body of a compared page, tab or menu
+            target's mockup render runs, as written, on its page in node, and one that throws
+            fails by name; each .scrim one appends is a modal of the PAGES function whose call
+            appended it, or of the body when no PAGES call did, which must be a page map modal
+            entry of that host or in pages::EXCLUDED_MOCK_MODALS (an opener drawn only on
+            pending or excluded pages is not checked); a modal entry its host does not draw, an
+            EXCLUDED_MOCK_MODALS entry its host does not draw, listed twice, with no reason, a
+            malformed portal action or mapped too, and an EXCLUDED_MODALS reason its mockup host
+            contradicts (a modal opener drawn there that is neither a page map modal entry nor
+            an EXCLUDED_MOCK_MODALS entry of another action, or a host with no compared render)
+            fail. A mock-only or portal-only repeat
             item (a table row, list item, ...) ends in (\"<hint>\"): its first badge's text and
             its first cell's, as \"badge · cell\". The hint is not part of the difference: an accept entry
             may keep or drop it and matches either way
@@ -189,26 +190,30 @@ fn render_page(repo: &Path, key: &str, entry: &pages::Page) -> Result<(String, V
     Ok((rendered, doc))
 }
 
-/// The mockup render of `entry`, parsed: its page ([`render_page`]), for a menu entry the
+/// The mockup render of `entry`, parsed, with the `page_map` entry whose page render it was
+/// taken from or opened on: its page ([`render_page`]), `entry` itself; for a menu entry the
 /// menu its host page opens first ([`mock::menu_arg`]), a host that draws no such menu
-/// failing, and for a modal entry the `.scrim` its opener appends, with no page rendered. A
-/// menu entry's host is rendered as its `page_map` host entry is, forced ok when that forces,
-/// so the menu is the one the compared page draws.
-fn render_mock(repo: &Path, page_map: &[pages::Page], key: &str, entry: &pages::Page) -> Result<(String, Vec<html::Node>)> {
+/// failing, and the host entry; for a modal entry the `.scrim` its opener appends, with no page
+/// rendered and none returned. A menu entry's host is rendered as its `page_map` host entry is,
+/// forced ok when that forces, so the menu is the one the compared page draws.
+fn render_mock<'m>(repo: &Path, page_map: &'m [pages::Page], key: &str, entry: &'m pages::Page) -> Result<(String, Vec<html::Node>, Option<&'m pages::Page>)> {
     // A modal is opened by its named opener, whether a page or a menu hosts it.
     if let Some(modal) = entry.modal {
         let rendered = mock::render_modal(repo, modal.opener, modal.args)?;
         let doc = html::parse(&rendered).with_context(|| format!("parse the PAGES.{} render", modal.opener))?;
-        return Ok((rendered, doc));
+        return Ok((rendered, doc, None));
     }
-    let Some(menu) = entry.menu else { return render_page(repo, key, entry) };
+    let Some(menu) = entry.menu else {
+        let (rendered, doc) = render_page(repo, key, entry)?;
+        return Ok((rendered, doc, Some(entry)));
+    };
     let host = entry.host();
     let host = page_map.iter().find(|q| q.hosts(&host)).ok_or_else(|| anyhow!("PAGE_MAP {} has no host entry", entry.id()))?;
     let (_, doc) = render_page(repo, key, host)?;
     let arg = mock::menu_arg(&doc, key, menu.mock)?;
     let rendered = mock::render_menu(repo, menu.mock, &arg)?;
     let doc = html::parse(&rendered).with_context(|| format!("parse the {} menu render", menu.mock))?;
-    Ok((rendered, doc))
+    Ok((rendered, doc, Some(host)))
 }
 
 /// The root `entry` is compared from in a mockup render (`mock`) or a crawl output: the
@@ -241,7 +246,7 @@ pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
     let lists = pages::LISTS;
     let mockup = validated_mockup(repo, &lists)?;
     let (entry, key) = resolve(&mockup, &lists, page)?;
-    let (rendered, doc) = render_mock(repo, lists.page_map, &key, entry)?;
+    let (rendered, doc, _) = render_mock(repo, lists.page_map, &key, entry)?;
     let root = prepare(entry, &doc, true)?;
     let shape = skeleton::page(&root, false);
     let out = target_dir(repo).join("mock").join(format!("{page}.html"));
@@ -262,8 +267,8 @@ pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
 /// draws against the page map's menu entries and `excluded_mock_menus` ([`pages::validate_menus`]); a menu
 /// entry's render fails when its page draws no such menu, and a modal entry's, a page's or a
 /// menu's, when its opener is no function or appends no `.scrim`. The modal openers each compared
-/// page, tab and menu target ([`pages::Page::is_compared_target`]) draws (every `onclick` `PAGES.<fn>(…)` its render
-/// draws, run in the harness on its page, [`mock::modal_openers`]; one that throws fails) are
+/// page, tab and menu target ([`pages::Page::is_compared_target`]) draws (each `.scrim` an `onclick` body its
+/// render draws appends, run in the harness on its page, [`mock::modal_openers`]; one that throws fails) are
 /// checked against the page map's modal entries, `excluded_mock_modals` and the mockup facts of
 /// `excluded_modals` ([`pages::validate_mock_modals`]). `mockup` is what [`validated_mockup`]
 /// returned for `lists`. The mockup is the side checked: most portal pages are not ported yet.
@@ -275,12 +280,11 @@ fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections
     let mut openers = Vec::new();
     for p in page_map {
         let key = mockup.get(p.page).ok_or_else(|| anyhow!("page {} has no mockup file", p.page))?;
-        let (_, doc) = render_mock(repo, page_map, key, p)?;
-        if p.is_compared_target() {
-            // A menu's openers run on its host page, rendered as its host entry is.
-            let page = if p.is_page() { p } else { page_map.iter().find(|q| q.hosts(&p.host())).ok_or_else(|| anyhow!("PAGE_MAP {} has no host entry", p.id()))? };
-            let drawn = mock::drawn_openers(&doc).with_context(|| format!("the {} mockup render", p.id()))?;
-            openers.push((p.id(), key, page, drawn));
+        let (_, doc, page) = render_mock(repo, page_map, key, p)?;
+        // A compared target is no modal, so it has a page; a menu's onclicks run on its host
+        // page, rendered as its host entry is.
+        if let (true, Some(page)) = (p.is_compared_target(), page) {
+            openers.push((p.id(), key, page, mock::onclicks(&doc)));
         }
         if p.is_page() && matches!(p.route, pages::Route::FirstRow(_)) && p.tab.is_none() {
             drawn.push((p.page, mock::drawn_tabs(&doc).with_context(|| format!("the P.{key} render"))?));
@@ -338,7 +342,7 @@ pub fn run_diff(repo: &Path, lists: &pages::Lists, page: &str, portal_dir: &Path
     let portal_src =
         std::fs::read_to_string(&portal_file).with_context(|| format!("read {} (run crawl first)", portal_file.display()))?;
     let portal_doc = html::parse(&portal_src).with_context(|| format!("parse {}", portal_file.display()))?;
-    let (_, mock_doc) = render_mock(repo, lists.page_map, &key, entry)?;
+    let (_, mock_doc, _) = render_mock(repo, lists.page_map, &key, entry)?;
     let mock_page = skeleton::page(&prepare(entry, &mock_doc, true)?, text);
     let portal_page = skeleton::page(&prepare(entry, &portal_doc, false)?, text);
     let outcome = skeleton::diff_pages(&mock_page, &portal_page);
