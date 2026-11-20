@@ -10,15 +10,15 @@
 //! page draws (an `hx-get` to `/admin/_action/<module>/<action>`, whose `?entity=`/`?item=`
 //! a fleet mints); a page drawing none skips it as EMPTY, a failure unless `--allow-empty`.
 //! A modal target hosted by a menu target opens the first opener of its action in that fetched
-//! menu. Every modal action an untabbed compared page draws, and every one a menu fetched for
-//! it draws (a menu target's or an excluded kind's), is a modal target of that page or menu or
-//! in [`EXCLUDED_MODALS`], whose modals are fetched once each; an exclusion its page or menu
+//! menu. Every modal action a compared page or tab target draws, and every one a menu target's
+//! fetched menu or an untabbed compared page's excluded kind draws, is a modal target of that
+//! page, tab or menu or in [`EXCLUDED_MODALS`], whose modals are fetched once each; an exclusion its page or menu
 //! does not draw fails as stale, `--allow-empty` or not: an opener sits in a page head, a panel
 //! tool, a row or a menu, so a page listing no row does not excuse a missing one. Every fetched
 //! modal fails on a non-2xx answer, a toast, or a body that is no `.scrim` around a `.modal`.
-//! Every other crawled page, one only the nav links or a tab page, has the first menu of each
-//! kind and the first modal of each action it and those menus draw fetched once; the menu must
-//! answer 2xx, the modal as every fetched modal must. Every fetched menu, compared or not, fails
+//! Every other crawled page, one only the nav links, has the first menu of each kind and the
+//! first modal of each action it and those menus draw fetched once, and so has a tab page for
+//! the menus it draws; the menu must answer 2xx, the modal as every fetched modal must. Every fetched menu, compared or not, fails
 //! when it holds no module group or a group whose `data-state` is missing or neither `ok`
 //! nor `error`, and, unless `--allow-errors`, on a group in the error state. A page and a
 //! menu answer 200 whatever their state, so the root of each ([`ROOT_CLASS`], [`MENU_CLASS`])
@@ -88,7 +88,7 @@ struct Outcome {
 }
 
 /// The menu bodies a crawl fetched, as `(<host id>, <body>)`: `compared` holds each menu
-/// target's (its id) and each excluded menu's on an untabbed compared page
+/// target's (its id, on a page or a tab) and each excluded menu's on an untabbed compared page
 /// ([`excluded_menu_id`]), whose modal actions are inventoried; `status` the first menu of each
 /// kind any other crawled page draws (`<page>.status-menu.<kind>`), whose modals are fetched
 /// for their status only.
@@ -487,11 +487,11 @@ async fn check_menu_kinds(
     bodies
 }
 
-/// The modal inventory of every untabbed, not pending page the crawl reached and of every
+/// The modal inventory of every not pending page and tab entry the crawl reached and of every
 /// compared menu body it fetched (`menus.compared`): each modal action one draws is a modal
 /// entry hosted by it or an `excluded_modals` entry ([`validate_excluded_modals`] keeps it from
 /// being both); an excluded action's first modal is fetched ([`fetch_modal`]). Every other
-/// crawled page, a page only the nav links or a tab page, and every status-only menu
+/// crawled page, a page only the nav links, and every status-only menu
 /// (`menus.status`) needs no declaration, but the first modal of each action it draws is
 /// fetched ([`fetch_modal`]) for its status. An exclusion whose host was fetched and does not
 /// draw it fails, `--allow-empty` or not: an opener sits in a page head, a panel tool, a row or
@@ -507,7 +507,7 @@ async fn check_modal_actions(
 ) {
     let Lists { page_map, excluded_modals, .. } = *lists;
     let mut pages: Vec<String> = Vec::new();
-    for p in page_map.iter().filter(|p| p.is_page() && p.tab.is_none() && p.route != Route::Pending) {
+    for p in page_map.iter().filter(|p| p.is_page() && p.route != Route::Pending) {
         if !pages.contains(&p.id()) {
             pages.push(p.id());
         }

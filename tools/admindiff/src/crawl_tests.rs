@@ -1177,13 +1177,14 @@ async fn a_modal_target_writes_its_modal_and_fails_unless_reached() {
     assert_eq!(fetched(&allowed, &url), 0);
 }
 
-/// A modal action a compared, untabbed page draws must be declared: an undeclared
-/// `guild/kick` opener on a mapped page fails the crawl, and its `EXCLUDED_MODALS` twin crawls
-/// clean, fetching the excluded modal once; an excluded modal answering 500 fails. The same
-/// opener on the page only the nav links, or on a tab page, needs no declaration, but the modal
-/// of its first opener is fetched once for its status and a second opener of the action is not:
-/// answering the modal it crawls clean, answering 500 it fails. An `hx-post` to the action (an
-/// `Invoke` button) is no modal opener.
+/// A modal action a compared page or tab draws must be declared: an undeclared `guild/kick`
+/// opener on a mapped page, or on the `player.items` tab page, fails the crawl, and its
+/// `EXCLUDED_MODALS` twin hosted by that page or tab crawls clean, fetching the excluded modal
+/// once and keeping its body; an excluded modal answering 500 fails. The same opener on the
+/// page only the nav links needs no declaration, but the modal of its first opener is fetched
+/// once for its status and a second opener of the action is not: answering the modal it crawls
+/// clean, answering 500 it fails. An `hx-post` to the action (an `Invoke` button) is no modal
+/// opener.
 #[tokio::test]
 async fn every_portal_modal_action_on_a_compared_page_is_declared() {
     let target = other_mapped();
@@ -1214,18 +1215,20 @@ async fn every_portal_modal_action_on_a_compared_page_is_declared() {
     let failed = crawl(nav_only.with(kick, status(500)), false).await;
     failed.assert_failed_with("the opener on the nav-only page answering 500", &format!("p-extra-things guild/kick modal ({kick}): answered 500"));
 
-    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.is_page()).expect("PAGE_MAP lists player");
-    let mut page_map = PAGE_MAP.to_vec();
-    page_map.push(Page { tab: Some("items"), ..*player });
-    let route = follower_route("player");
-    let tabbed = format!("{route}?tab=items");
-    let tab = format!(r#"<button class="tab on" data-href="{}">items</button>{}"#, escaped(&tabbed), modal_button(kick));
-    let tab_page = healthy.clone().with(&tabbed, add_to_page(&healthy, &route, &tab));
-    let c = crawl_map(tab_page.clone().with(kick, ok(MODAL_BODY)), &page_map).await;
-    c.assert_clean("the opener on the tab page");
+    let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([items_tab()]).collect();
+    let tab_page = items_site(&modal_button(kick)).with(kick, ok(MODAL_BODY));
+    let undeclared = "player.items draws a guild/kick modal, which is in neither PAGE_MAP nor EXCLUDED_MODALS";
+    crawl_map(tab_page.clone(), &page_map).await.assert_failed_with("an undeclared guild/kick modal on the tab page", undeclared);
+    let mut on_tab = EXCLUDED_MODALS.to_vec();
+    on_tab.push(("player.items", "guild/kick", "why"));
+    let c = crawl_modals(tab_page.clone(), &page_map, &on_tab, false).await;
+    c.assert_clean("the excluded guild/kick modal on the tab page");
     assert_eq!(fetched(&c, kick), 1, "{:?}", c.server.requests());
-    let failed = crawl_map(tab_page.with(kick, status(500)), &page_map).await;
-    failed.assert_failed_with("the opener on the tab page answering 500", &format!("player.items guild/kick modal ({kick}): answered 500"));
+    let raw = c.out.path().join("run").join("raw").join("player.items.excluded-modal.guild.kick.html");
+    assert!(raw.is_file(), "the excluded modal's body is kept: {}", raw.display());
+    let failed = crawl_modals(tab_page.with(kick, status(500)), &page_map, &on_tab, false).await;
+    let down = format!("player.items excluded guild/kick modal ({kick}): answered 500");
+    failed.assert_failed_with("the excluded modal on the tab page answering 500", &down);
 
     let post = format!(r##"<button type="button" class="btn sm" hx-post="{}" hx-target="#modal-root"></button>"##, escaped(kick));
     let invoke = crawl(healthy.clone().with(target.route, add_to_page(&healthy, target.route, &post)), false).await;
@@ -1297,6 +1300,12 @@ async fn a_modal_target_on_a_skipped_page_is_empty() {
     crawl_modals(empty, &page_map, EXCLUDED_MODALS, false).await.assert_failed("players lists no row");
 }
 
+/// A portal modal whose skeleton matches the stand-in mockup's [`crate::mock::mock_tests::MOCK_MODAL`].
+const DIALOG: &str = concat!(
+    r#"<div class="scrim" data-scrim=""><div class="modal"><div class="modal-head"><h2>x</h2></div>"#,
+    r#"<div class="modal-body"></div><div class="modal-foot"></div></div></div>"#,
+);
+
 /// A modal entry hosted by the `players.menu.user` menu target, `players.menu.user.modal.test`,
 /// opens from the menu the crawl fetched, not from the players page, which draws no opener of
 /// it: the menu drawing its opener crawls clean, fetches the modal once, writes it as
@@ -1312,10 +1321,7 @@ async fn a_menu_hosted_modal_target_opens_from_the_fetched_menu() {
     let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([entry]).collect();
     let at = menu_url(menu.menu.expect("a menu entry").kind, menu.page);
     let url = modal_url("test/do", &menu.id());
-    let dialog = concat!(
-        r#"<div class="scrim" data-scrim=""><div class="modal"><div class="modal-head"><h2>x</h2></div>"#,
-        r#"<div class="modal-body"></div><div class="modal-foot"></div></div></div>"#,
-    );
+    let dialog = DIALOG;
     let healthy = Site::healthy();
     let drawn = healthy.clone().with(&at, ok(in_menu(&menu_body(&menu.id()), &modal_button(&url)))).with(&url, ok(dialog));
     let c = crawl_modals(drawn.clone(), &page_map, EXCLUDED_MODALS, false).await;
@@ -1415,4 +1421,120 @@ async fn a_menu_modal_exclusion_is_fetched_and_fails_stale_or_down() {
 
     let down = format!("{host} excluded {action} modal ({url}): answered 500");
     crawl(healthy.with(&url, status(500)), false).await.assert_failed_with("the excluded sub.pause modal answering 500", &down);
+}
+
+// ---- modals on tab pages -------------------------------------------------------------
+
+/// The `items` tab entry of the `FirstRow` player page, which [`PAGE_MAP`] does not list.
+fn items_tab() -> Page {
+    let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.is_page()).expect("PAGE_MAP lists player");
+    Page { tab: Some("items"), ..*player }
+}
+
+/// The player entity route with `?tab=items`, as the crawl follows [`items_tab`].
+fn items_route() -> String {
+    format!("{}?tab=items", follower_route("player"))
+}
+
+/// The healthy site answering [`items_route`] with the player page, its `items` tab drawn
+/// selected and `extra` after it.
+fn items_site(extra: &str) -> Site {
+    let healthy = Site::healthy();
+    let tab = format!(r#"<button class="tab on" data-href="{}">items</button>{extra}"#, escaped(&items_route()));
+    healthy.clone().with(&items_route(), add_to_page(&healthy, &follower_route("player"), &tab))
+}
+
+/// A modal entry hosted by the `player.items` tab entry, `player.items.modal.test`, opens from
+/// the tab page, not from the untabbed player page, which draws no opener of it: the tab page
+/// drawing its opener crawls clean, fetches the modal once, writes it as `<id>.html`, and
+/// `run_diff` compares it with the stand-in's dialog; the tab page drawing no opener fails.
+#[tokio::test]
+async fn a_tab_hosted_modal_target_opens_from_the_tab_page_and_is_diffed() {
+    let tab = items_tab();
+    let test = Modal { id: "test", opener: "testOpener", args: &["a"], module: "test", action: "do" };
+    let entry = Page { modal: Some(test), ..tab };
+    let id = entry.id();
+    assert_eq!(id, "player.items.modal.test");
+    let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([tab, entry]).collect();
+    let url = modal_url("test/do", &tab.id());
+    let c = crawl_modals(items_site(&modal_button(&url)).with(&url, ok(DIALOG)), &page_map, EXCLUDED_MODALS, false).await;
+    c.assert_clean("the items tab draws the test opener");
+    assert_eq!(fetched(&c, &url), 1, "{:?}", c.server.requests());
+    let run = c.out.path().join("run");
+    let written = std::fs::read_to_string(run.join(format!("{id}.html"))).expect("the modal is written");
+    assert_eq!(written, DIALOG);
+    // The stand-in defines no production modal opener, so the diff reads a map without them.
+    let diff_map: Vec<Page> = PAGE_MAP.iter().copied().filter(|p| p.modal.is_none()).chain([tab, entry]).collect();
+    let repo = FakeRepo::with_map("crawl-tab-modal-diff", &mock_html(&body(true)), &diff_map);
+    let lists = Lists { page_map: &diff_map, ..LISTS };
+    assert!(crate::run_diff(repo.path(), &lists, &id, &run, false).expect("runs"), "the same dialog is clean");
+
+    let bare = items_site("").with(&url, ok(DIALOG));
+    let missing = "player.items.modal.test: player.items draws no test/do opener (--allow-empty skips it)";
+    crawl_modals(bare, &page_map, EXCLUDED_MODALS, false).await.assert_failed_with("the items tab draws no test opener", missing);
+}
+
+/// An `EXCLUDED_MODALS` entry hosted by the `player.items` tab its page no longer draws is
+/// stale, with `--allow-empty` or not, each beside its clean twin drawing it.
+#[tokio::test]
+async fn a_stale_tab_modal_exclusion_fails_with_or_without_allow_empty() {
+    let kick = modal_url("guild/kick", "player.items");
+    let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([items_tab()]).collect();
+    let mut excluded = EXCLUDED_MODALS.to_vec();
+    excluded.push(("player.items", "guild/kick", "why"));
+    let drawn = items_site(&modal_button(&kick)).with(&kick, ok(MODAL_BODY));
+    let gone = items_site("");
+    let stale = "EXCLUDED_MODALS lists player.items modal guild/kick, which player.items does not draw";
+    for allow_empty in [false, true] {
+        let c = crawl_modals(drawn.clone(), &page_map, &excluded, allow_empty).await;
+        c.assert_clean(&format!("--allow-empty {allow_empty}: the items tab draws guild/kick"));
+        assert_eq!(fetched(&c, &kick), 1, "{:?}", c.server.requests());
+        let c = crawl_modals(gone.clone(), &page_map, &excluded, allow_empty).await;
+        c.assert_failed_with(&format!("--allow-empty {allow_empty}: the items tab no longer draws guild/kick"), stale);
+    }
+}
+
+/// A menu target on a tab page, `player.items.menu.user`, holds the modal actions its fetched
+/// menu draws to the page rules, as on an untabbed page: an undeclared `guild/kick` opener in
+/// it fails the crawl; its mapped twin, a modal entry hosted by that menu target, is written,
+/// and its `EXCLUDED_MODALS` twin hosted by it crawls clean, its body kept, and fails
+/// answering 500.
+#[tokio::test]
+async fn a_tab_page_menu_target_holds_its_modals_to_the_page_rules() {
+    let tab = items_tab();
+    let user = *PAGE_MAP.iter().find(|p| p.id() == "player.menu.user").expect("PAGE_MAP: player.menu.user");
+    let menu = Page { tab: Some("items"), ..user };
+    let host = menu.id();
+    assert_eq!(host, "player.items.menu.user");
+    let kind = menu.menu.expect("a menu entry").kind;
+    let (own, at) = (menu_url(kind, "player"), menu_url(kind, &host));
+    let kick = modal_url("guild/kick", &host);
+    // The tab page opens its own menu, so the untabbed player.menu.user keeps the healthy one.
+    let page = items_site("").routes.get(&items_route()).expect("the items tab page").body.clone();
+    assert!(page.contains(&escaped(&own)), "the tab page draws the user menu: {page}");
+    let site = Site::healthy()
+        .with(&items_route(), ok(page.replace(&escaped(&own), &escaped(&at))))
+        .with(&at, ok(in_menu(&menu_body(&host), &modal_button(&kick))))
+        .with(&kick, ok(MODAL_BODY));
+    let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([tab, menu]).collect();
+    let undeclared = "player.items.menu.user draws a guild/kick modal, which is in neither PAGE_MAP nor EXCLUDED_MODALS";
+    crawl_map(site.clone(), &page_map).await.assert_failed_with("an undeclared guild/kick modal in the tab's menu", undeclared);
+
+    let kick_modal = Modal { id: "kick", opener: "kickGuild", args: &[], module: "guild", action: "kick" };
+    let entry = Page { modal: Some(kick_modal), ..menu };
+    let mapped: Vec<Page> = page_map.iter().copied().chain([entry]).collect();
+    let c = crawl_modals(site.clone(), &mapped, EXCLUDED_MODALS, false).await;
+    c.assert_clean("the mapped guild/kick modal in the tab's menu");
+    let written = std::fs::read_to_string(c.out.path().join("run").join(format!("{}.html", entry.id()))).expect("the modal is written");
+    assert_eq!(written, MODAL_BODY);
+
+    let mut excluded = EXCLUDED_MODALS.to_vec();
+    excluded.push((&host, "guild/kick", "why"));
+    let c = crawl_modals(site.clone(), &page_map, &excluded, false).await;
+    c.assert_clean("the excluded guild/kick modal in the tab's menu");
+    let raw = c.out.path().join("run").join("raw").join("player.items.menu.user.excluded-modal.guild.kick.html");
+    assert!(raw.is_file(), "the excluded modal's body is kept: {}", raw.display());
+    let down = format!("{host} excluded guild/kick modal ({kick}): answered 500");
+    let failed = crawl_modals(site.with(&kick, status(500)), &page_map, &excluded, false).await;
+    failed.assert_failed_with("the excluded modal in the tab's menu answering 500", &down);
 }

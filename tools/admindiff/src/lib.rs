@@ -48,21 +48,23 @@ USAGE:
             --allow-errors), with no module group or with a group whose data-state is missing or
             neither ok nor error, and an EXCLUDED_MENUS entry its page does not draw (unless
             its page lists no row and --allow-empty; an entity page never); a modal target
-            whose page draws no opener of its action (unless --allow-empty), a modal action an
-            untabbed compared page draws that is neither a page map modal entry nor in
+            whose page draws no opener of its action (unless --allow-empty), a modal action a
+            compared page or tab target draws that is neither a page map modal entry nor in
             pages::EXCLUDED_MODALS, the first modal of an action any other crawled page draws
             and any other fetched modal answering non-2xx, a toast, no .scrim root or a .scrim
             with no .modal, an EXCLUDED_MODALS entry its page does not draw (with or without
             --allow-empty) and an EXCLUDED_MODALS entry that is malformed, listed twice, mapped
-            too or hosted by no untabbed compared page, menu target of one or EXCLUDED_MENUS menu
-            (which stops the crawl first); every menu fetched for an untabbed compared page, a
-            menu target's or an excluded kind's (host <page>.excluded-menu.<kind>), is held to
+            too or hosted by no compared page or tab, menu target of one or EXCLUDED_MENUS menu
+            (which stops the crawl first); a tab target's modals are held to the page rules, an
+            exclusion naming the tab (<page>.<tab>) as its host; every menu target's fetched
+            menu, on a page or a tab, and every excluded kind's menu of an untabbed compared page
+            (host <page>.excluded-menu.<kind>), is held to
             the same modal rules as a page: each modal action it draws is a page map modal entry
             of that menu target or in pages::EXCLUDED_MODALS, an excluded one is fetched, and an
             exclusion it does not draw is stale; any other fetched menu's modals are fetched for
             their status
   mock      render the mockup target through node into target/admindiff/mock/<target>.html; a
-            modal target, hosted by a page or a menu, is the .scrim its page map opener
+            modal target, hosted by a page, a tab or a menu, is the .scrim its page map opener
             PAGES.<opener>(<args>) appends; a
             page or tab target whose page map entry forces the ok state renders with
             UI.state.force = \"ok\", so its panels draw ok, and a menu target opens its menu

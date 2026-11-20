@@ -439,12 +439,38 @@ fn validate_excluded_modals_accepts_a_menu_target_or_excluded_menu_host() {
     for host in ["a.menu.other", "a.excluded-menu.other"] {
         let e = format!("{:#}", check(&[(host, "mail/test-send", "why")]).expect_err("neither a menu target nor an excluded menu"));
         let want = format!(
-            "modal drift:\n  EXCLUDED_MODALS lists {host} modal mail/test-send, and {host} is no untabbed PAGE_MAP page that is not pending, menu target of one or EXCLUDED_MENUS menu"
+            "modal drift:\n  EXCLUDED_MODALS lists {host} modal mail/test-send, and {host} is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu"
         );
         assert_eq!(e, want, "host {host}");
     }
     let e = format!("{:#}", check(&[("a.menu.user", "mail/cancel", "why")]).expect_err("mapped on the menu too"));
     assert_eq!(e, "modal drift:\n  a.menu.user modal mail/cancel is listed in PAGE_MAP and again in EXCLUDED_MODALS");
+}
+
+/// A modal hosted by a tab entry, or by a menu target on a tab page, validates against that
+/// entry, and its exclusion names that entry as its host, each beside its twin with no such
+/// entry; a modal mapped and excluded on the same tab fails.
+#[test]
+fn a_tab_or_a_tab_menu_target_hosts_modals() {
+    let tab = Page { tab: Some("items"), ..FOLLOWS };
+    let modal = Page { modal: Some(MODAL), ..tab };
+    assert_eq!((modal.id(), modal.host()), ("c.items.modal.cancel".to_string(), tab));
+    validate_lists(&abc(), &[MAPPED, PENDING, FOLLOWS, tab, modal], &[]).expect("a modal of a listed tab passes");
+    let orphan = lists_drift(&[MAPPED, PENDING, FOLLOWS, modal], &[]);
+    assert_eq!(orphan, "page map drift:\n  PAGE_MAP c.items.modal.cancel is a modal of c.items, which has no entry with the same route");
+    let menu = Page { menu: Some(MENU), ..tab };
+    let menu_modal = Page { modal: Some(MODAL), ..menu };
+    assert_eq!(menu_modal.id(), "c.items.menu.user.modal.cancel");
+    validate_lists(&abc(), &[MAPPED, PENDING, FOLLOWS, tab, menu, menu_modal], &[]).expect("a modal of a tab's menu target passes");
+
+    let with = |page_map: &[Page], host: &str, action: &str| check_modals(page_map, &[(host, action, "why")]);
+    with(&[MAPPED, FOLLOWS, tab, menu], "c.items.menu.user", "guild/kick").expect("a tab's menu target hosts it");
+    let e = format!("{:#}", with(&[MAPPED, FOLLOWS, tab], "c.items.menu.user", "guild/kick").expect_err("no such menu target"));
+    let want = "modal drift:\n  EXCLUDED_MODALS lists c.items.menu.user modal guild/kick, and c.items.menu.user is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu";
+    assert_eq!(e, want);
+    with(&[MAPPED, FOLLOWS, tab, modal], "c.items", "guild/kick").expect("another action on the tab");
+    let e = format!("{:#}", with(&[MAPPED, FOLLOWS, tab, modal], "c.items", "mail/cancel").expect_err("mapped on the tab too"));
+    assert_eq!(e, "modal drift:\n  c.items modal mail/cancel is listed in PAGE_MAP and again in EXCLUDED_MODALS");
 }
 
 /// `a` maps the `mail/cancel` modal; `b` is pending; `c` is an untabbed `FirstRow` page with a
@@ -464,8 +490,13 @@ fn modals_drift(excluded_modals: &[(&str, &str, &str)]) -> String {
 
 #[test]
 fn validate_excluded_modals_passes_the_clean_twin() {
-    let clean = [("a", "mail/test-send", "why"), ("c", "core.events/poison.skip", "why"), ("c", "mail/cancel", "mapped on a only")];
-    check_modals(&modal_map(), &clean).expect("each exclusion once, reasoned, on an untabbed page, not mapped there");
+    let clean = [
+        ("a", "mail/test-send", "why"),
+        ("c", "core.events/poison.skip", "why"),
+        ("c", "mail/cancel", "mapped on a only"),
+        ("c.items", "mail/test-send", "why"),
+    ];
+    check_modals(&modal_map(), &clean).expect("each exclusion once, reasoned, on a page or tab, not mapped there");
     check_modals(&modal_map(), &[]).expect("no exclusion");
 }
 
@@ -478,20 +509,24 @@ fn validate_excluded_modals_rejects_an_exclusion_listed_twice_or_without_a_reaso
 }
 
 #[test]
-fn validate_excluded_modals_rejects_a_host_that_is_no_untabbed_page_that_is_not_pending() {
-    for host in ["z", "b", "c.items"] {
+fn validate_excluded_modals_rejects_a_host_that_is_no_page_or_tab_that_is_not_pending() {
+    for host in ["z", "b", "c.saves", "a.items"] {
         let e = modals_drift(&[(host, "mail/test-send", "why")]);
         let want = format!(
-            "modal drift:\n  EXCLUDED_MODALS lists {host} modal mail/test-send, and {host} is no untabbed PAGE_MAP page that is not pending, menu target of one or EXCLUDED_MENUS menu"
+            "modal drift:\n  EXCLUDED_MODALS lists {host} modal mail/test-send, and {host} is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu"
         );
         assert_eq!(e, want, "host {host}");
     }
     let tab_only = [MAPPED, Page { tab: Some("items"), ..FOLLOWS }];
+    check_modals(&tab_only, &[("c.items", "mail/test-send", "why")]).expect("the tab entry hosts it");
     let e = format!("{:#}", check_modals(&tab_only, &[("c", "mail/test-send", "why")]).expect_err("c is tabbed only"));
-    assert_eq!(e, "modal drift:\n  EXCLUDED_MODALS lists c modal mail/test-send, and c is no untabbed PAGE_MAP page that is not pending, menu target of one or EXCLUDED_MENUS menu");
+    assert_eq!(e, "modal drift:\n  EXCLUDED_MODALS lists c modal mail/test-send, and c is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu");
+    let pending_tab = [MAPPED, Page { tab: Some("items"), ..PENDING }];
+    let e = format!("{:#}", check_modals(&pending_tab, &[("b.items", "mail/test-send", "why")]).expect_err("b.items is pending"));
+    assert_eq!(e, "modal drift:\n  EXCLUDED_MODALS lists b.items modal mail/test-send, and b.items is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu");
     let modal_only = [PENDING, Page { modal: Some(MODAL), ..MAPPED }];
     let e = format!("{:#}", check_modals(&modal_only, &[("a", "mail/test-send", "why")]).expect_err("a is a modal entry only"));
-    assert_eq!(e, "modal drift:\n  EXCLUDED_MODALS lists a modal mail/test-send, and a is no untabbed PAGE_MAP page that is not pending, menu target of one or EXCLUDED_MENUS menu");
+    assert_eq!(e, "modal drift:\n  EXCLUDED_MODALS lists a modal mail/test-send, and a is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu");
 }
 
 #[test]
