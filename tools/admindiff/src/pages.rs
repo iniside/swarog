@@ -10,10 +10,12 @@
 //! [`EXCLUDED_MOCK_MENUS`] ([`validate_menus`]); every menu kind the portal draws there has
 //! one or is in [`EXCLUDED_MENUS`] (`crawl`). An entry that names a modal is its own target,
 //! `<host>.modal.<modal>`: the harness calls the mockup's named opener with the entry's
-//! arguments, and the crawl opens the first opener of the entry's portal action its host page
-//! draws. Modals are inventoried on untabbed hosts too: every modal action the portal draws
-//! there (an `hx-get` to `/admin/_action/…`) has such an entry or is in [`EXCLUDED_MODALS`]
-//! (`crawl`); on the mockup side an entry's opener must append a `.scrim`. A page or tab entry
+//! arguments, and the crawl opens the first opener of the entry's portal action its host
+//! draws. A modal's host is a page or a menu target (`<page>.menu.<menu>.modal.<modal>`, a
+//! modal a row menu opens). Modals are inventoried on untabbed hosts and in every menu the crawl
+//! fetches there, a menu target's or an excluded menu's ([`excluded_menu_id`]): every modal
+//! action the portal draws in them (an `hx-get` to `/admin/_action/…`) has such an entry or is
+//! in [`EXCLUDED_MODALS`] (`crawl`); on the mockup side an entry's opener must append a `.scrim`. A page or tab entry
 //! can force the mockup's ok state on its render ([`Page::force`]), so a panel the mockup draws
 //! only down, stale or denied is compared in its ok shape, and its menu entries open their menu
 //! on that forced render; the portal side draws its real state.
@@ -47,9 +49,9 @@ pub struct Page {
     /// fetches the first such menu the portal draws and the harness opens the first the
     /// mockup draws; a host that draws none fails.
     pub menu: Option<Menu>,
-    /// A modal opened from the page this entry's route, search and tab name, its host: the
-    /// harness calls its mockup opener, and the crawl fetches the first opener of its portal
-    /// action the host draws.
+    /// A modal opened from its host ([`Page::host`]): the page this entry's route, search and tab
+    /// name, or, when [`Page::menu`] is set too, that menu target. The harness calls its mockup
+    /// opener, and the crawl fetches the first opener of its portal action the host draws.
     pub modal: Option<Modal>,
     /// Whether the harness forces the mockup's ok state on this entry's render: it sets
     /// `UI.state.force = "ok"`, as the mockup's state picker does, before the page renders.
@@ -69,7 +71,7 @@ pub struct Menu {
 
 /// A modal: the mockup opens it with `PAGES.<opener>(<args>)`, which appends a `.scrim` to the
 /// body; the portal serves it at `/admin/_action/<module>/<action>`, with the `?entity=` and
-/// `?item=` its host page's opener carries, since a fleet mints those ids.
+/// `?item=` its host's opener carries, since a fleet mints those ids.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Modal {
     pub id: &'static str,
@@ -105,10 +107,19 @@ impl Page {
         id
     }
 
-    /// The page a menu or modal entry's target is drawn on: this entry without it, and
-    /// unforced, as a menu or modal entry always is; its host entry ([`Page::hosts`]) may force.
+    /// What a menu or modal entry's target is drawn on, unforced, as a menu or modal entry
+    /// always is: for a modal entry this entry without its modal, a page or a menu target; else
+    /// this entry without its menu, a page, whose host entry ([`Page::hosts`]) may force.
     pub fn host(&self) -> Page {
-        Page { menu: None, modal: None, force: false, ..*self }
+        match self.modal {
+            Some(_) => Page { modal: None, force: false, ..*self },
+            None => Page { menu: None, force: false, ..*self },
+        }
+    }
+
+    /// Whether this entry is a menu target: a menu and no modal.
+    pub fn is_menu(&self) -> bool {
+        self.menu.is_some() && self.modal.is_none()
     }
 
     /// Whether `self` is a page or tab entry that hosts `host`, forced or not.
@@ -259,12 +270,26 @@ pub const EXCLUDED_MENUS: &[(&str, &str, &str)] = &[(
     "the mockup draws no subscription menu: its events row button only toasts (pages-platform.js P.events)",
 )];
 
-/// Modal actions the portal draws on an untabbed compared page that no `PAGE_MAP` modal entry
-/// diffs, as `(<host page id>, <module>/<action>, <reason>)`. [`validate_excluded_modals`]
-/// holds it to `PAGE_MAP`; the crawl still fetches the first of each and fails on an answer
-/// that is no modal, and fails on an entry whose host does not draw it (a stale entry).
-pub const EXCLUDED_MODALS: &[(&str, &str, &str)] =
-    &[("mail", "mail/test-send", "the mockup's Test send button has no onclick, so the mockup has no modal (pages-platform.js P.mail)")];
+/// Modal actions the portal draws on an untabbed compared page, or in a menu the crawl fetches
+/// there, that no `PAGE_MAP` modal entry diffs, as `(<host id>, <module>/<action>, <reason>)`:
+/// the host is the page id, a `PAGE_MAP` menu target's id or an [`EXCLUDED_MENUS`] menu's
+/// [`excluded_menu_id`]. [`validate_excluded_modals`] holds it to `PAGE_MAP` and
+/// `EXCLUDED_MENUS`; the crawl still fetches the first of each and fails on an answer that is no
+/// modal, and fails on an entry whose host does not draw it (a stale entry).
+pub const EXCLUDED_MODALS: &[(&str, &str, &str)] = &[
+    ("mail", "mail/test-send", "the mockup's Test send button has no onclick, so the mockup has no modal (pages-platform.js P.mail)"),
+    (
+        "events.excluded-menu.subscription",
+        "core.events/sub.pause",
+        "the mockup draws no subscription menu and no pause opener: its events row button only toasts (pages-platform.js P.events)",
+    ),
+];
+
+/// The host id of the menu of `kind` an [`EXCLUDED_MENUS`] entry excludes on page `host`, as an
+/// [`EXCLUDED_MODALS`] entry names it: no `PAGE_MAP` id has the `.excluded-menu.` segment.
+pub fn excluded_menu_id(host: &str, kind: &str) -> String {
+    format!("{host}.excluded-menu.{kind}")
+}
 
 /// Menus the mockup registry defines (`UI.defineMenu`) that no `PAGE_MAP` menu entry diffs,
 /// with the reason. [`validate_menus`] holds it to the registry.
@@ -273,6 +298,29 @@ pub const EXCLUDED_MOCK_MENUS: &[(&str, &str)] = &[
     ("repo", NO_LORE),
     ("lock", NO_LORE),
 ];
+
+/// A page map with the exclusion lists that complete it: what the crawl, the mockup render
+/// checks and the diff read, so a caller that passes its own map passes its own lists too.
+/// Problems name the production lists either way.
+#[derive(Clone, Copy, Debug)]
+pub struct Lists<'a> {
+    pub page_map: &'a [Page],
+    pub excluded: &'a [(&'a str, &'a str)],
+    pub excluded_tabs: &'a [(&'a str, &'a str)],
+    pub excluded_menus: &'a [(&'a str, &'a str, &'a str)],
+    pub excluded_modals: &'a [(&'a str, &'a str, &'a str)],
+    pub excluded_mock_menus: &'a [(&'a str, &'a str)],
+}
+
+/// The production lists the CLI runs on.
+pub const LISTS: Lists<'static> = Lists {
+    page_map: PAGE_MAP,
+    excluded: EXCLUDED,
+    excluded_tabs: EXCLUDED_TABS,
+    excluded_menus: EXCLUDED_MENUS,
+    excluded_modals: EXCLUDED_MODALS,
+    excluded_mock_menus: EXCLUDED_MOCK_MENUS,
+};
 
 /// The tabs a mockup render draws, in order, and the one it draws selected.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -309,8 +357,9 @@ fn boot_key(src: &str) -> Option<String> {
 /// every `FirstRow` names a `Mapped` page, every tab entry has a `[a-z0-9_-]+` id and
 /// an untabbed `FirstRow` entry of its page with the same route, every menu entry has
 /// `[a-z0-9_-]+` ids and a host entry ([`Page::host`]) of a page that is not pending, and every
-/// modal entry names no menu, has a `[a-z0-9_-]+` id, a JavaScript identifier for its opener,
-/// `[a-z0-9._-]+` module and action ids and such a host entry. No search names a `state`
+/// modal entry has a `[a-z0-9_-]+` id, a JavaScript identifier for its opener, `[a-z0-9._-]+`
+/// module and action ids and such a host entry, or, when it names a menu, that menu target as
+/// a `PAGE_MAP` menu entry. No search names a `state`
 /// parameter, and only a page or tab entry forces the ok state.
 pub fn validate(mockup: &BTreeMap<String, String>) -> Result<()> {
     validate_lists(mockup, PAGE_MAP, EXCLUDED)
@@ -341,7 +390,7 @@ pub(crate) fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page
                 problems.push(format!("PAGE_MAP {} follows {list}, which is not a Mapped page", p.page));
             }
         }
-        if let Some(menu) = p.menu {
+        if let Some(menu) = p.menu.filter(|_| p.is_menu()) {
             let id = p.id();
             for (what, name) in [("menu", menu.mock), ("kind", menu.kind)] {
                 if !is_id(name) {
@@ -357,9 +406,6 @@ pub(crate) fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page
         }
         if let Some(modal) = p.modal {
             let id = p.id();
-            if p.menu.is_some() {
-                problems.push(format!("PAGE_MAP {id} names both a menu and a modal"));
-            }
             if !is_id(modal.id) {
                 problems.push(format!("PAGE_MAP {id} names modal {:?}, which is not a [a-z0-9_-]+ id", modal.id));
             }
@@ -374,6 +420,10 @@ pub(crate) fn validate_lists(mockup: &BTreeMap<String, String>, page_map: &[Page
             let host = p.host();
             if p.route == Route::Pending {
                 problems.push(format!("PAGE_MAP {id} names a modal of {}, which is pending", host.id()));
+            } else if host.menu.is_some() {
+                if !page_map.iter().any(|q| q.is_menu() && *q == host) {
+                    problems.push(format!("PAGE_MAP {id} is a modal of menu {}, which is no PAGE_MAP menu entry", host.id()));
+                }
             } else if !page_map.iter().any(|q| q.hosts(&host)) {
                 problems.push(format!("PAGE_MAP {id} is a modal of {}, which has no entry with the same route", host.id()));
             }
@@ -479,13 +529,13 @@ pub fn validate_menus(
     let mut problems = Vec::new();
     for (host, menus) in drawn {
         for menu in menus {
-            if !page_map.iter().any(|p| p.menu.is_some_and(|m| m.mock == menu) && p.host().id() == *host) {
+            if !page_map.iter().any(|p| p.is_menu() && p.menu.is_some_and(|m| m.mock == menu) && p.host().id() == *host) {
                 problems.push(format!("mockup menu {host}.menu.{menu} is not a PAGE_MAP menu entry"));
             }
         }
     }
     for id in defined {
-        let mapped = page_map.iter().any(|p| p.menu.is_some_and(|m| m.mock == id));
+        let mapped = page_map.iter().any(|p| p.is_menu() && p.menu.is_some_and(|m| m.mock == id));
         let excluded = excluded_mock_menus.iter().any(|(m, _)| m == id);
         match (mapped, excluded) {
             (false, false) => problems.push(format!("mockup menu {id} is in neither PAGE_MAP nor EXCLUDED_MOCK_MENUS")),
@@ -517,11 +567,14 @@ pub fn validate_menus(
     Ok(())
 }
 
-/// Checks `excluded_modals` against `page_map`, which its problems name `EXCLUDED_MODALS` and
-/// `PAGE_MAP`: each exclusion is listed once, with a reason, names an untabbed `page_map` page
-/// that is not pending as its host and a `<module>/<action>` of `[a-z0-9._-]+` ids, and is not
-/// a modal entry of that host too.
-pub fn validate_excluded_modals(page_map: &[Page], excluded_modals: &[(&str, &str, &str)]) -> Result<()> {
+/// Checks the modal exclusions of `lists` against its page map and menu exclusions, which its
+/// problems name `EXCLUDED_MODALS`, `PAGE_MAP` and `EXCLUDED_MENUS`: each exclusion is listed
+/// once, with a reason, names as its host an untabbed page that is not pending, a menu target
+/// of one, or an excluded menu of one ([`excluded_menu_id`]), and a `<module>/<action>` of
+/// `[a-z0-9._-]+` ids, and is not a modal entry of that host too.
+pub fn validate_excluded_modals(lists: &Lists) -> Result<()> {
+    let Lists { page_map, excluded_menus, excluded_modals, .. } = *lists;
+    let compared = |p: &Page| p.tab.is_none() && p.route != Route::Pending;
     let mut problems = Vec::new();
     let mut seen = BTreeSet::new();
     for (host, action, why) in excluded_modals {
@@ -531,8 +584,13 @@ pub fn validate_excluded_modals(page_map: &[Page], excluded_modals: &[(&str, &st
         if why.trim().is_empty() {
             problems.push(format!("EXCLUDED_MODALS {host} modal {action} has no reason"));
         }
-        if !page_map.iter().any(|p| p.is_page() && p.tab.is_none() && p.route != Route::Pending && p.page == *host) {
-            problems.push(format!("EXCLUDED_MODALS lists {host} modal {action}, and {host} is no untabbed PAGE_MAP page that is not pending"));
+        let page = page_map.iter().any(|p| p.is_page() && compared(p) && p.page == *host);
+        let menu = page_map.iter().any(|p| p.is_menu() && compared(p) && p.id() == *host);
+        let excluded_menu = excluded_menus.iter().any(|(h, kind, _)| excluded_menu_id(h, kind) == *host);
+        if !page && !menu && !excluded_menu {
+            problems.push(format!(
+                "EXCLUDED_MODALS lists {host} modal {action}, and {host} is no untabbed PAGE_MAP page that is not pending, menu target of one or EXCLUDED_MENUS menu"
+            ));
         }
         if !is_action_path(action) {
             problems.push(format!("EXCLUDED_MODALS {host} names action {action:?}, which is not a <module>/<action> of [a-z0-9._-]+ ids"));
@@ -547,18 +605,19 @@ pub fn validate_excluded_modals(page_map: &[Page], excluded_modals: &[(&str, &st
     Ok(())
 }
 
-/// The `page_map` entry whose [`Page::id`] is `page`; its errors name the production lists.
-pub fn lookup<'m>(page_map: &'m [Page], page: &str) -> Result<&'m Page> {
-    if let Some(p) = page_map.iter().find(|p| p.id() == page) {
+/// The page map entry of `lists` whose [`Page::id`] is `page`; an excluded page or tab of
+/// `lists` fails with its reason.
+pub fn lookup<'m>(lists: &Lists<'m>, page: &str) -> Result<&'m Page> {
+    if let Some(p) = lists.page_map.iter().find(|p| p.id() == page) {
         return Ok(p);
     }
-    if let Some((_, why)) = EXCLUDED.iter().find(|(p, _)| *p == page) {
+    if let Some((_, why)) = lists.excluded.iter().find(|(p, _)| *p == page) {
         bail!("page {page} is excluded: {why}");
     }
-    if let Some((_, why)) = EXCLUDED_TABS.iter().find(|(t, _)| *t == page) {
+    if let Some((_, why)) = lists.excluded_tabs.iter().find(|(t, _)| *t == page) {
         bail!("tab {page} is excluded: {why}");
     }
-    bail!("unknown page {page}; pages: {}", page_map.iter().map(Page::id).collect::<Vec<_>>().join(", "))
+    bail!("unknown page {page}; pages: {}", lists.page_map.iter().map(Page::id).collect::<Vec<_>>().join(", "))
 }
 
 #[cfg(test)]

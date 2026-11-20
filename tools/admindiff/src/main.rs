@@ -21,7 +21,7 @@ async fn main() -> ExitCode {
     let result = match command {
         Command::Help => unreachable!("handled above"),
         Command::Crawl { base_url, user, allow_errors, allow_empty } => {
-            if let Err(err) = admindiff::validated_mockup(&repo) {
+            if let Err(err) = admindiff::validated_mockup(&repo, &admindiff::pages::LISTS) {
                 eprintln!("admindiff: {err:#}");
                 return ExitCode::FAILURE;
             }
@@ -37,7 +37,7 @@ async fn main() -> ExitCode {
             crawl::run(&cfg).await
         }
         Command::Mock { page } => run_mock(&repo, &page).map(|()| true),
-        Command::Diff { page, portal, text } => run_diff(&repo, admindiff::pages::PAGE_MAP, &page, &portal, text),
+        Command::Diff { page, portal, text } => run_diff(&repo, &admindiff::pages::LISTS, &page, &portal, text),
     };
     match result {
         Ok(true) => ExitCode::SUCCESS,

@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use super::{run_with, Config, CLEAN_MARKER, MAX_ROUNDS, PANEL_FAIL, PANEL_PASS};
 use crate::mock::mock_tests::FakeRepo;
-use crate::pages::{Modal, Page, Route, EXCLUDED_MENUS, EXCLUDED_MODALS, PAGE_MAP};
+use crate::pages::{excluded_menu_id, Lists, Modal, Page, Route, EXCLUDED_MENUS, EXCLUDED_MODALS, LISTS, PAGE_MAP};
 use crate::tests::{body, mock_html, ScratchDir};
 
 #[derive(Clone, Debug)]
@@ -88,7 +88,20 @@ fn followers() -> Vec<(&'static str, &'static str)> {
 
 /// Every menu entry of [`PAGE_MAP`] on an untabbed page: its target id, host page and kind.
 fn menus() -> Vec<(String, &'static str, &'static str)> {
-    PAGE_MAP.iter().filter(|p| p.tab.is_none()).filter_map(|p| p.menu.map(|m| (p.id(), p.page, m.kind))).collect()
+    PAGE_MAP.iter().filter(|p| p.tab.is_none() && p.is_menu()).filter_map(|p| p.menu.map(|m| (p.id(), p.page, m.kind))).collect()
+}
+
+/// [`MENU_BODY`] drawing only the modal openers `host`, a menu target's id or an excluded
+/// menu's ([`excluded_menu_id`]), declares: the golden's own `hx-get` openers are drawn as
+/// `hx-post` (`Invoke`) buttons, and one opener is added for each `PAGE_MAP` modal entry and
+/// [`EXCLUDED_MODALS`] entry `host` hosts, at the end of the `.menu` root.
+fn menu_body(host: &str) -> String {
+    let body = MENU_BODY.replace(r#"hx-get="&#x2f;admin&#x2f;_action"#, r#"hx-post="&#x2f;admin&#x2f;_action"#);
+    let mapped = PAGE_MAP.iter().filter(|p| p.host().id() == host).filter_map(|p| p.modal.map(|m| m.action_path()));
+    let excluded = EXCLUDED_MODALS.iter().filter(|(h, _, _)| *h == host).map(|(_, action, _)| action.to_string());
+    let openers: String = mapped.chain(excluded).map(|a| modal_button(&modal_url(&a, host))).collect();
+    let end = body.rfind("</div>").expect("the golden closes its .menu root");
+    format!("{}{openers}{}", &body[..end], &body[end..])
 }
 
 /// The menu the healthy site's page `page` opens for its `kind` menu entry.
@@ -115,7 +128,7 @@ const HEAD_ACTIONS: &[&str] = &["mail/test-send"];
 /// untabbed `PAGE_MAP` modal entry and each [`EXCLUDED_MODALS`] entry it hosts whose action
 /// is a page head action ([`HEAD_ACTIONS`]) when `head` holds, a panel's otherwise.
 fn modal_buttons(page: &str, head: bool) -> String {
-    let mapped = PAGE_MAP.iter().filter(|p| p.page == page && p.tab.is_none()).filter_map(|p| p.modal.map(|m| m.action_path()));
+    let mapped = PAGE_MAP.iter().filter(|p| p.page == page && p.tab.is_none() && p.menu.is_none()).filter_map(|p| p.modal.map(|m| m.action_path()));
     let excluded = EXCLUDED_MODALS.iter().filter(|(host, _, _)| *host == page).map(|(_, action, _)| action.to_string());
     mapped.chain(excluded).filter(|a| HEAD_ACTIONS.contains(&a.as_str()) == head).map(|a| modal_button(&modal_url(&a, page))).collect()
 }
@@ -282,15 +295,15 @@ impl Site {
             routes.insert(follower_route(page), ok(shell(&links, page, &modal_buttons(page, true), &html)));
             routes.insert(slot_url, ok(fragment(Some("ok"), &format!("{page} panel"), &modal_buttons(page, false))));
         }
-        for (_, page, kind) in menus() {
-            routes.insert(menu_url(kind, page), ok(MENU_BODY));
+        for (id, page, kind) in menus() {
+            routes.insert(menu_url(kind, page), ok(menu_body(&id)));
         }
         for (page, kind, _) in EXCLUDED_MENUS {
-            routes.insert(menu_url(kind, page), ok(MENU_BODY));
+            routes.insert(menu_url(kind, page), ok(menu_body(&excluded_menu_id(page, kind))));
         }
         for p in PAGE_MAP.iter().filter(|p| p.tab.is_none()) {
             if let Some(m) = p.modal {
-                routes.insert(modal_url(&m.action_path(), p.page), ok(MODAL_BODY));
+                routes.insert(modal_url(&m.action_path(), &p.host().id()), ok(MODAL_BODY));
             }
         }
         for (page, action, _) in EXCLUDED_MODALS {
@@ -492,7 +505,8 @@ async fn crawl_into(
         allow_empty,
         out: out.path().join("run"),
     };
-    let (result, failures, empty) = match run_with(&cfg, page_map, excluded_menus, excluded_modals).await {
+    let lists = Lists { page_map, excluded_menus, excluded_modals, ..LISTS };
+    let (result, failures, empty) = match run_with(&cfg, &lists).await {
         Ok(o) => (Ok(o.failures.is_empty()), o.failures, o.empty),
         Err(e) => (Err(e), Vec::new(), Vec::new()),
     };
@@ -610,13 +624,13 @@ async fn a_crawl_with_errors_allowed_is_never_marked_clean_and_the_diff_refuses_
     preview.assert_preview("--allow-errors: the healthy site");
     let run = preview.out.path().join("run");
     assert!(run.join("index.html").is_file(), "a preview still writes its pages");
-    let e = format!("{:#}", crate::run_diff(repo.path(), PAGE_MAP, "index", &run, false).expect_err("a preview"));
+    let e = format!("{:#}", crate::run_diff(repo.path(), &LISTS, "index", &run, false).expect_err("a preview"));
     assert!(e.contains(&marker), "{e}");
 
     let clean = crawl(Site::healthy(), false).await;
     clean.assert_clean("the healthy site");
     let run = clean.out.path().join("run");
-    let e = crate::run_diff(repo.path(), PAGE_MAP, "index", &run, false).err().map(|e| format!("{e:#}")).unwrap_or_default();
+    let e = crate::run_diff(repo.path(), &LISTS, "index", &run, false).err().map(|e| format!("{e:#}")).unwrap_or_default();
     assert!(!e.contains(&marker), "{e}");
 }
 
@@ -946,7 +960,7 @@ async fn an_empty_list_page_fails_unless_empty_is_allowed_and_then_the_diff_refu
     assert!(menus.is_empty(), "no player menu was fetched: {menus:?}");
 
     let repo = FakeRepo::new("crawl-empty-diff", &mock_html(&body(true)));
-    let e = format!("{:#}", crate::run_diff(repo.path(), PAGE_MAP, "player", &run, false).expect_err("no player page"));
+    let e = format!("{:#}", crate::run_diff(repo.path(), &LISTS, "player", &run, false).expect_err("no player page"));
     assert_eq!(e, format!("{} has no player page: the crawl found no row of players to follow", run.display()));
 }
 

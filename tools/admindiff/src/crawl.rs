@@ -9,14 +9,16 @@
 //! target's output is the modal the portal answers for the first opener of its action its
 //! page draws (an `hx-get` to `/admin/_action/<module>/<action>`, whose `?entity=`/`?item=`
 //! a fleet mints); a page drawing none skips it as EMPTY, a failure unless `--allow-empty`.
-//! Every modal action an untabbed compared page draws is a modal target of that page or in
-//! [`EXCLUDED_MODALS`], whose modals are fetched once each; an exclusion its page does not
-//! draw fails as stale, `--allow-empty` or not: an opener sits in a page head, a panel tool or
-//! a row, so a page listing no row does not excuse a missing one. Every fetched modal
-//! fails on a non-2xx answer, a toast, or a body that is no `.scrim` around a `.modal`. Every
-//! other crawled page, one only the nav links or a tab page, has the first menu of each kind
-//! and the first modal of each action it draws fetched once; the menu must answer 2xx, the
-//! modal as every fetched modal must. Every fetched menu, compared or not, fails
+//! A modal target hosted by a menu target opens the first opener of its action in that fetched
+//! menu. Every modal action an untabbed compared page draws, and every one a menu fetched for
+//! it draws (a menu target's or an excluded kind's), is a modal target of that page or menu or
+//! in [`EXCLUDED_MODALS`], whose modals are fetched once each; an exclusion its page or menu
+//! does not draw fails as stale, `--allow-empty` or not: an opener sits in a page head, a panel
+//! tool, a row or a menu, so a page listing no row does not excuse a missing one. Every fetched
+//! modal fails on a non-2xx answer, a toast, or a body that is no `.scrim` around a `.modal`.
+//! Every other crawled page, one only the nav links or a tab page, has the first menu of each
+//! kind and the first modal of each action it and those menus draw fetched once; the menu must
+//! answer 2xx, the modal as every fetched modal must. Every fetched menu, compared or not, fails
 //! when it holds no module group or a group whose `data-state` is missing or neither `ok`
 //! nor `error`, and, unless `--allow-errors`, on a group in the error state. A page and a
 //! menu answer 200 whatever their state, so the root of each ([`ROOT_CLASS`], [`MENU_CLASS`])
@@ -38,7 +40,7 @@ use reqwest::{Client, StatusCode};
 
 use crate::assemble::{assemble, pending_slots};
 use crate::html::{self, find_all, find_in, Element, Node};
-use crate::pages::{validate_excluded_modals, with_tab, Menu, Modal, Page, Route, EXCLUDED_MENUS, EXCLUDED_MODALS, PAGE_MAP};
+use crate::pages::{excluded_menu_id, validate_excluded_modals, with_tab, Lists, Menu, Modal, Page, Route, LISTS};
 use crate::skeleton::{MENU_CLASS, MODAL_CLASS, ROOT_CLASS};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -61,10 +63,10 @@ pub struct Config {
     pub out: PathBuf,
 }
 
-/// Runs the crawl of [`PAGE_MAP`], [`EXCLUDED_MENUS`] and [`EXCLUDED_MODALS`]; `Ok(false)` when
-/// it finished with failures, which it has printed.
+/// Runs the crawl of the production [`LISTS`]; `Ok(false)` when it finished with failures, which
+/// it has printed.
 pub async fn run(cfg: &Config) -> Result<bool> {
-    let outcome = run_with(cfg, PAGE_MAP, EXCLUDED_MENUS, EXCLUDED_MODALS).await?;
+    let outcome = run_with(cfg, &LISTS).await?;
     if !outcome.empty.is_empty() {
         println!("empty, nothing crawled: {}", outcome.empty.join(", "));
     }
@@ -85,15 +87,22 @@ struct Outcome {
     empty: Vec<String>,
 }
 
-/// [`run`] over the given page map, menu and modal exclusions; modal exclusions that fail
+/// The menu bodies a crawl fetched, as `(<host id>, <body>)`: `compared` holds each menu
+/// target's (its id) and each excluded menu's on an untabbed compared page
+/// ([`excluded_menu_id`]), whose modal actions are inventoried; `status` the first menu of each
+/// kind any other crawled page draws (`<page>.status-menu.<kind>`), whose modals are fetched
+/// for their status only.
+#[derive(Default)]
+struct MenuBodies {
+    compared: Vec<(String, Vec<Node>)>,
+    status: Vec<(String, Vec<Node>)>,
+}
+
+/// [`run`] over `lists`: its page map, menu and modal exclusions; modal exclusions that fail
 /// [`validate_excluded_modals`] stop it before anything is fetched.
-async fn run_with(
-    cfg: &Config,
-    page_map: &[Page],
-    excluded_menus: &[(&str, &str, &str)],
-    excluded_modals: &[(&str, &str, &str)],
-) -> Result<Outcome> {
-    validate_excluded_modals(page_map, excluded_modals)?;
+async fn run_with(cfg: &Config, lists: &Lists<'_>) -> Result<Outcome> {
+    validate_excluded_modals(lists)?;
+    let page_map = lists.page_map;
     // A reused run dir keeps a marker from an earlier clean run; drop it before this run decides.
     let marker = cfg.out.join(CLEAN_MARKER);
     match std::fs::remove_file(&marker) {
@@ -130,12 +139,12 @@ async fn run_with(
     let mut menus: Vec<(&Page, Menu)> = Vec::new();
     let mut modals: Vec<(&Page, Modal)> = Vec::new();
     for p in page_map {
-        if let Some(menu) = p.menu {
-            menus.push((p, menu));
-            continue;
-        }
         if let Some(modal) = p.modal {
             modals.push((p, modal));
+            continue;
+        }
+        if let Some(menu) = p.menu {
+            menus.push((p, menu));
             continue;
         }
         match p.route {
@@ -199,6 +208,7 @@ async fn run_with(
             Err(e) => failures.push(format!("{page} ({route}): {e:#}")),
         }
     }
+    let mut menu_targets: Vec<(String, Vec<Node>)> = Vec::new();
     for (entry, menu) in menus {
         let id = entry.id();
         let host = entry.host().id();
@@ -225,21 +235,25 @@ async fn run_with(
             continue;
         };
         println!("menu {id}  {url}");
-        if let Err(e) = crawl_menu(&client, cfg, &id, &url).await {
-            failures.push(format!("{id} ({url}): {e:#}"));
+        match crawl_menu(&client, cfg, &id, &url).await {
+            Ok(doc) => menu_targets.push((id, doc)),
+            Err(e) => failures.push(format!("{id} ({url}): {e:#}")),
         }
     }
+    let mut menu_bodies = check_menu_kinds(&client, cfg, lists, &crawled, &mut failures, &mut skipped).await;
+    menu_bodies.compared.extend(menu_targets);
     for (entry, modal) in modals {
         let id = entry.id();
         let host = entry.host().id();
         let action = modal.action_path();
         if skipped.contains(&host) {
-            println!("EMPTY {id}: its page {host} was skipped, nothing to crawl");
+            println!("EMPTY {id}: its host {host} was skipped, nothing to crawl");
             skipped.push(id);
             continue;
         }
-        let Some((_, doc)) = crawled.iter().find(|(p, _)| *p == host) else {
-            failures.push(format!("{id}: its page {host} was not crawled"));
+        // A menu target's modal opens from its fetched menu, a page's from the page.
+        let Some((_, doc)) = crawled.iter().chain(&menu_bodies.compared).find(|(p, _)| *p == host) else {
+            failures.push(format!("{id}: its host {host} was not crawled"));
             continue;
         };
         let Some(url) = first_modal_url(doc, &action) else {
@@ -255,8 +269,7 @@ async fn run_with(
             failures.push(format!("{id} ({url}): {e:#}"));
         }
     }
-    check_menu_kinds(&client, cfg, page_map, excluded_menus, &crawled, &mut failures, &mut skipped).await;
-    check_modal_actions(&client, cfg, page_map, excluded_modals, &crawled, &mut failures).await;
+    check_modal_actions(&client, cfg, lists, &crawled, &menu_bodies, &mut failures).await;
     if fragments == 0 {
         failures.push("no page loaded a fragment".to_string());
     }
@@ -386,15 +399,17 @@ fn lists_rows(doc: &[Node]) -> bool {
 /// reason, on such a page, and that page draws it; a page that was not crawled
 /// (`--allow-empty` skipped it, or it failed), or a page other than a `FirstRow` page that
 /// lists no row under `--allow-empty`, which reports it EMPTY in `empty`, cannot make it stale.
+/// Returns the bodies it fetched: an excluded menu's as compared, any other as status only.
 async fn check_menu_kinds(
     client: &Client,
     cfg: &Config,
-    page_map: &[Page],
-    excluded_menus: &[(&str, &str, &str)],
+    lists: &Lists<'_>,
     crawled: &[(String, Vec<Node>)],
     failures: &mut Vec<String>,
     empty: &mut Vec<String>,
-) {
+) -> MenuBodies {
+    let Lists { page_map, excluded_menus, .. } = *lists;
+    let mut bodies = MenuBodies::default();
     let mut hosts: Vec<String> = Vec::new();
     let mut first_row_hosts: Vec<String> = Vec::new();
     for p in page_map.iter().filter(|p| p.is_page() && p.tab.is_none() && p.route != Route::Pending) {
@@ -408,8 +423,10 @@ async fn check_menu_kinds(
     for (page, doc) in crawled.iter().filter(|(p, _)| !hosts.contains(p)) {
         for (kind, url) in menu_kinds(doc) {
             println!("menu {page} {kind}  {url}  (status only)");
-            if let Err(e) = fetch_menu(client, cfg, &format!("{page}.status-menu.{kind}"), &url).await {
-                failures.push(format!("{page} {kind} menu ({url}): {e:#}"));
+            let id = format!("{page}.status-menu.{kind}");
+            match fetch_menu(client, cfg, &id, &url).await {
+                Ok((_, doc)) => bodies.status.push((id, doc)),
+                Err(e) => failures.push(format!("{page} {kind} menu ({url}): {e:#}")),
             }
         }
     }
@@ -418,7 +435,7 @@ async fn check_menu_kinds(
         // A page that was not crawled has failed or been skipped already.
         let Some((_, doc)) = crawled.iter().find(|(p, _)| p == host) else { continue };
         for (kind, url) in menu_kinds(doc) {
-            let mapped = page_map.iter().any(|p| p.menu.is_some_and(|m| m.kind == kind) && p.host().id() == *host);
+            let mapped = page_map.iter().any(|p| p.is_menu() && p.menu.is_some_and(|m| m.kind == kind) && p.host().id() == *host);
             let excluded = excluded_menus.iter().any(|(h, k, _)| h == host && *k == kind);
             match (mapped, excluded) {
                 (false, false) => {
@@ -427,8 +444,10 @@ async fn check_menu_kinds(
                 (true, true) => failures.push(format!("{host} menu {kind} is listed in PAGE_MAP and again in EXCLUDED_MENUS")),
                 (false, true) => {
                     println!("menu {host} {kind}  {url}  (excluded)");
-                    if let Err(e) = fetch_menu(client, cfg, &format!("{host}.excluded-menu.{kind}"), &url).await {
-                        failures.push(format!("{host} excluded {kind} menu ({url}): {e:#}"));
+                    let id = excluded_menu_id(host, &kind);
+                    match fetch_menu(client, cfg, &id, &url).await {
+                        Ok((_, doc)) => bodies.compared.push((id, doc)),
+                        Err(e) => failures.push(format!("{host} excluded {kind} menu ({url}): {e:#}")),
                     }
                 }
                 (true, false) => {}
@@ -465,32 +484,37 @@ async fn check_menu_kinds(
         }
         failures.push(format!("EXCLUDED_MENUS lists {host} menu {kind}, which {host} does not draw"));
     }
+    bodies
 }
 
-/// The modal inventory of every untabbed, not pending `page_map` page the crawl reached: each
-/// modal action it draws is a modal entry of that page or an `excluded_modals` entry
-/// ([`validate_excluded_modals`] keeps it from being both); an excluded action's first modal is
-/// fetched ([`fetch_modal`]). Every other crawled page, a page only the nav links or a tab
-/// page, needs no declaration, but the first modal of each action it draws is fetched
-/// ([`fetch_modal`]) for its status. An exclusion whose page was crawled and does not draw it
-/// fails, `--allow-empty` or not: an opener sits in a page head, a panel tool or a row, so a
-/// page listing no row does not excuse it, unlike a row menu. A page that was not crawled
-/// (`--allow-empty` skipped it, or it failed) cannot make it stale.
+/// The modal inventory of every untabbed, not pending page the crawl reached and of every
+/// compared menu body it fetched (`menus.compared`): each modal action one draws is a modal
+/// entry hosted by it or an `excluded_modals` entry ([`validate_excluded_modals`] keeps it from
+/// being both); an excluded action's first modal is fetched ([`fetch_modal`]). Every other
+/// crawled page, a page only the nav links or a tab page, and every status-only menu
+/// (`menus.status`) needs no declaration, but the first modal of each action it draws is
+/// fetched ([`fetch_modal`]) for its status. An exclusion whose host was fetched and does not
+/// draw it fails, `--allow-empty` or not: an opener sits in a page head, a panel tool, a row or
+/// a menu, so a page listing no row does not excuse it, unlike a row menu. A host that was not
+/// fetched (`--allow-empty` skipped it, or it failed) cannot make it stale.
 async fn check_modal_actions(
     client: &Client,
     cfg: &Config,
-    page_map: &[Page],
-    excluded_modals: &[(&str, &str, &str)],
+    lists: &Lists<'_>,
     crawled: &[(String, Vec<Node>)],
+    menus: &MenuBodies,
     failures: &mut Vec<String>,
 ) {
-    let mut hosts: Vec<String> = Vec::new();
+    let Lists { page_map, excluded_modals, .. } = *lists;
+    let mut pages: Vec<String> = Vec::new();
     for p in page_map.iter().filter(|p| p.is_page() && p.tab.is_none() && p.route != Route::Pending) {
-        if !hosts.contains(&p.id()) {
-            hosts.push(p.id());
+        if !pages.contains(&p.id()) {
+            pages.push(p.id());
         }
     }
-    for (page, doc) in crawled.iter().filter(|(p, _)| !hosts.contains(p)) {
+    let (compared, status): (Vec<_>, Vec<_>) = crawled.iter().partition(|(p, _)| pages.contains(p));
+    let compared: Vec<&(String, Vec<Node>)> = compared.into_iter().chain(&menus.compared).collect();
+    for (page, doc) in status.into_iter().chain(&menus.status) {
         for (action, url) in modal_actions(doc) {
             println!("modal {page} {action}  {url}  (status only)");
             let raw = format!("{page}.status-modal.{}", action.replace('/', "."));
@@ -500,9 +524,7 @@ async fn check_modal_actions(
         }
     }
     let mut drawn: Vec<(String, String)> = Vec::new();
-    for host in &hosts {
-        // A page that was not crawled has failed or been skipped already.
-        let Some((_, doc)) = crawled.iter().find(|(p, _)| p == host) else { continue };
+    for (host, doc) in compared.iter().copied() {
         for (action, url) in modal_actions(doc) {
             let mapped = page_map.iter().any(|p| p.modal.is_some_and(|m| m.action_path() == action) && p.host().id() == *host);
             let excluded = excluded_modals.iter().any(|(h, a, _)| h == host && *a == action);
@@ -522,8 +544,8 @@ async fn check_modal_actions(
         if drawn.iter().any(|(h, a)| h == host && a == action) {
             continue;
         }
-        // A page that was not crawled, skipped or failed, has nothing to compare it with.
-        if !crawled.iter().any(|(p, _)| p == host) {
+        // A host that was not fetched, skipped or failed, has nothing to compare it with.
+        if !compared.iter().any(|(p, _)| p == host) {
             continue;
         }
         failures.push(format!("EXCLUDED_MODALS lists {host} modal {action}, which {host} does not draw"));
@@ -574,7 +596,7 @@ async fn crawl_modal(client: &Client, cfg: &Config, id: &str, url: &str) -> Resu
 /// has a row action, so an empty menu is template drift), a group whose `data-state` is
 /// missing or neither `ok` nor `error`, and, unless `--allow-errors`, a group whose module
 /// is down (`data-state="error"`): the menu answers 200 either way.
-async fn fetch_menu(client: &Client, cfg: &Config, raw: &str, url: &str) -> Result<String> {
+async fn fetch_menu(client: &Client, cfg: &Config, raw: &str, url: &str) -> Result<(String, Vec<Node>)> {
     let resp = client.get(format!("{}{url}", cfg.base_url)).header("HX-Request", "true").send().await.context("GET")?;
     let status = resp.status();
     let body = resp.text().await.context("read body")?;
@@ -607,14 +629,15 @@ async fn fetch_menu(client: &Client, cfg: &Config, raw: &str, url: &str) -> Resu
             Some(other) => bail!("menu group {name:?} carries data-state {other:?}, neither ok nor error"),
         }
     }
-    Ok(body)
+    Ok((body, nodes))
 }
 
-/// Fetches the menu at `url` ([`fetch_menu`]) and writes it as `<id>.html`: the portal
-/// answers the `.menu` popover `admin.js` shows.
-async fn crawl_menu(client: &Client, cfg: &Config, id: &str, url: &str) -> Result<()> {
-    let body = fetch_menu(client, cfg, id, url).await?;
-    write(&cfg.out.join(format!("{id}.html")), &body)
+/// Fetches the menu at `url` ([`fetch_menu`]), writes it as `<id>.html` and returns it parsed:
+/// the portal answers the `.menu` popover `admin.js` shows.
+async fn crawl_menu(client: &Client, cfg: &Config, id: &str, url: &str) -> Result<Vec<Node>> {
+    let (body, nodes) = fetch_menu(client, cfg, id, url).await?;
+    write(&cfg.out.join(format!("{id}.html")), &body)?;
+    Ok(nodes)
 }
 
 /// Checks the `data-state` of a page or menu root (`what`): `ok` passes, `error` only under

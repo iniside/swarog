@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::mock::mock_tests::FakeRepo;
-use crate::pages::{Modal, Page, EXCLUDED_MOCK_MENUS, EXCLUDED_TABS, PAGE_MAP};
-use crate::{crawl, parse_args, run_diff, validate_renders, Command, DEFAULT_BASE_URL, DEFAULT_USER};
+use crate::pages::{Lists, Modal, Page, EXCLUDED_MOCK_MENUS, EXCLUDED_TABS, LISTS, PAGE_MAP};
+use crate::{crawl, parse_args, run_diff, validate_renders, validated_mockup, Command, DEFAULT_BASE_URL, DEFAULT_USER};
 
 // ---- shared fixtures ---------------------------------------------------------------
 
@@ -78,11 +78,11 @@ fn crawl_dir(name: &str, page: &str, clean: bool) -> ScratchDir {
 fn run_diff_fails_a_page_with_zero_matched_panels_and_nothing_else_wrong() {
     let tiles_only = FakeRepo::new("diff-zero", &mock_html(&body(false)));
     let portal = crawl_dir("diff-zero-crawl", &portal_html(&body(false)), true);
-    assert!(!run_diff(tiles_only.path(), PAGE_MAP, "index", portal.path(), false).expect("runs"), "no panel matched");
+    assert!(!run_diff(tiles_only.path(), &LISTS, "index", portal.path(), false).expect("runs"), "no panel matched");
 
     let with_panel = FakeRepo::new("diff-one", &mock_html(&body(true)));
     let portal = crawl_dir("diff-one-crawl", &portal_html(&body(true)), true);
-    let clean = run_diff(with_panel.path(), PAGE_MAP, "index", portal.path(), false).expect("runs");
+    let clean = run_diff(with_panel.path(), &LISTS, "index", portal.path(), false).expect("runs");
     assert!(clean, "the same page with a panel is clean");
 }
 
@@ -90,17 +90,17 @@ fn run_diff_fails_a_page_with_zero_matched_panels_and_nothing_else_wrong() {
 fn run_diff_refuses_a_crawl_without_its_clean_marker() {
     let repo = FakeRepo::new("diff-clean", &mock_html(&body(true)));
     let dir = crawl_dir("diff-unclean-crawl", &portal_html(&body(true)), false);
-    let e = format!("{:#}", run_diff(repo.path(), PAGE_MAP, "index", dir.path(), false).expect_err("no CLEAN marker"));
+    let e = format!("{:#}", run_diff(repo.path(), &LISTS, "index", dir.path(), false).expect_err("no CLEAN marker"));
     assert!(e.contains("has no CLEAN marker: its crawl failed, did not finish or ran with --allow-errors"), "{e}");
     write(&dir.path().join(crawl::CLEAN_MARKER), "");
-    assert!(run_diff(repo.path(), PAGE_MAP, "index", dir.path(), false).expect("runs once marked clean"));
+    assert!(run_diff(repo.path(), &LISTS, "index", dir.path(), false).expect("runs once marked clean"));
 }
 
 #[test]
 fn run_diff_refuses_a_pending_page() {
     let repo = FakeRepo::new("diff-pending", &mock_html(&body(true)));
     let dir = crawl_dir("diff-pending-crawl", &portal_html(&body(true)), true);
-    let e = format!("{:#}", run_diff(repo.path(), PAGE_MAP, "apikeys", dir.path(), false).expect_err("pending"));
+    let e = format!("{:#}", run_diff(repo.path(), &LISTS, "apikeys", dir.path(), false).expect_err("pending"));
     assert!(e.contains("page apikeys is pending"), "{e}");
 }
 
@@ -109,17 +109,17 @@ fn run_diff_fails_on_an_unaccepted_difference_and_on_a_stale_accept_entry() {
     let repo = FakeRepo::new("diff-accept", &mock_html(&body(true)));
     let extra = format!("{}<footer></footer>", body(true));
     let dir = crawl_dir("diff-accept-crawl", &portal_html(&extra), true);
-    assert!(!run_diff(repo.path(), PAGE_MAP, "index", dir.path(), false).expect("runs"), "an unaccepted portal-only footer");
+    assert!(!run_diff(repo.path(), &LISTS, "index", dir.path(), false).expect("runs"), "an unaccepted portal-only footer");
 
     let accept = repo.path().join("tools/admindiff/accept/index.txt");
     write(&accept, "frame div.app: portal-only footer | template choice: test\n");
-    assert!(run_diff(repo.path(), PAGE_MAP, "index", dir.path(), false).expect("runs"), "the accepted difference passes");
+    assert!(run_diff(repo.path(), &LISTS, "index", dir.path(), false).expect("runs"), "the accepted difference passes");
 
     write(&accept, "frame div.app: portal-only footer | template choice: test\nframe div.app: mock-only nav | gone\n");
-    assert!(!run_diff(repo.path(), PAGE_MAP, "index", dir.path(), false).expect("runs"), "a stale entry fails");
+    assert!(!run_diff(repo.path(), &LISTS, "index", dir.path(), false).expect("runs"), "a stale entry fails");
 
     write(&accept, "frame div.app: portal-only footer\n");
-    assert!(run_diff(repo.path(), PAGE_MAP, "index", dir.path(), false).is_err(), "a malformed accept file is an error");
+    assert!(run_diff(repo.path(), &LISTS, "index", dir.path(), false).is_err(), "a malformed accept file is an error");
 }
 
 // ---- parse_args --------------------------------------------------------------------
@@ -192,12 +192,12 @@ fn parse_args_rejects_unknown_missing_and_misplaced_arguments() {
 fn run_diff_fails_on_a_repeat_entry_dead_in_the_mockup() {
     let portal = crawl_dir("diff-repeat-crawl", &portal_html(&body(true)), true);
     let live = FakeRepo::new("diff-repeat-live", &mock_html(&body(true)));
-    assert!(run_diff(live.path(), PAGE_MAP, "index", portal.path(), false).expect("runs"), "the clean twin");
+    assert!(run_diff(live.path(), &LISTS, "index", portal.path(), false).expect("runs"), "the clean twin");
 
     let bars = r#"<div class="uptime"><i></i></div>"#;
     assert!(body(true).contains(bars), "the fixture holds the bars it removes");
     let dead = FakeRepo::new("diff-repeat-dead", &mock_html(&body(true).replace(bars, "")));
-    let e = format!("{:#}", run_diff(dead.path(), PAGE_MAP, "index", portal.path(), false).expect_err("a dead REPEAT entry"));
+    let e = format!("{:#}", run_diff(dead.path(), &LISTS, "index", portal.path(), false).expect_err("a dead REPEAT entry"));
     assert_eq!(
         e,
         "REPEAT entries matching nothing in the mockup: .uptime > i (uptime bars: a bar's class is its sample's tone, which is data)"
@@ -213,7 +213,7 @@ fn run_diff_matches_a_hinted_accept_entry_whose_hint_has_changed() {
     assert!(body(true).contains(plain), "the fixture holds the tbody it extends");
     let repo = FakeRepo::new("diff-hint", &mock_html(&body(true).replace(plain, &format!("{plain}{row}"))));
     let dir = crawl_dir("diff-hint-crawl", &portal_html(&body(true)), true);
-    assert!(!run_diff(repo.path(), PAGE_MAP, "index", dir.path(), false).expect("runs"), "the extra mock row is unaccepted");
+    assert!(!run_diff(repo.path(), &LISTS, "index", dir.path(), false).expect("runs"), "the extra mock row is unaccepted");
 
     let wrapped = crate::html::parse(&format!(r#"<div class="app">{row}</div>"#)).expect("parses");
     let root = crate::skeleton::prepare(&wrapped, &[], "t").expect("has .app");
@@ -221,7 +221,7 @@ fn run_diff_matches_a_hinted_accept_entry_whose_hint_has_changed() {
     let key = format!("frame div.app > table > tbody > tr*: mock-only {label}");
     let accept = repo.path().join("tools/admindiff/accept/index.txt");
     write(&accept, &format!("{key} (\"done · m-0\") | data difference: test\n"));
-    assert!(run_diff(repo.path(), PAGE_MAP, "index", dir.path(), false).expect("runs"), "the hinted entry accepts the row");
+    assert!(run_diff(repo.path(), &LISTS, "index", dir.path(), false).expect("runs"), "the hinted entry accepts the row");
 }
 
 /// The production `validate_renders` call in `run_diff`: the clean twin's player render
@@ -231,12 +231,19 @@ fn run_diff_matches_a_hinted_accept_entry_whose_hint_has_changed() {
 fn run_diff_fails_on_a_mockup_tab_no_list_declares() {
     let portal = crawl_dir("diff-tab-crawl", &portal_html(&body(true)), true);
     let live = FakeRepo::new("diff-tab-live", &mock_html(&body(true)));
-    assert!(run_diff(live.path(), PAGE_MAP, "index", portal.path(), false).expect("runs"), "the clean twin");
+    assert!(run_diff(live.path(), &LISTS, "index", portal.path(), false).expect("runs"), "the clean twin");
 
     let zzz = r#"<button class="tab" onclick="PAGES.tab='zzz';REG.render()">zzz</button>"#;
     let undeclared = FakeRepo::new("diff-tab-undeclared", &mock_html(&format!("{}{zzz}", body(true))));
-    let e = format!("{:#}", run_diff(undeclared.path(), PAGE_MAP, "index", portal.path(), false).expect_err("an undeclared tab"));
+    let e = format!("{:#}", run_diff(undeclared.path(), &LISTS, "index", portal.path(), false).expect_err("an undeclared tab"));
     assert_eq!(e, "tab drift:\n  mockup tab player.zzz is in neither PAGE_MAP nor EXCLUDED_TABS");
+}
+
+/// [`validate_renders`] of `lists` against the mockup [`validated_mockup`] checks them against,
+/// as `run_diff` calls it.
+fn renders(repo: &Path, lists: &Lists) -> anyhow::Result<()> {
+    let mockup = validated_mockup(repo, lists)?;
+    validate_renders(repo, lists, &mockup)
 }
 
 /// The real mockup, rendered through node: every tab it draws on every `FirstRow` page is
@@ -244,9 +251,9 @@ fn run_diff_fails_on_a_mockup_tab_no_list_declares() {
 #[test]
 fn the_real_mockup_draws_only_declared_tabs() {
     let repo = crate::repo_root();
-    validate_renders(&repo, PAGE_MAP, EXCLUDED_TABS, EXCLUDED_MOCK_MENUS).expect("every real mockup tab is declared");
+    renders(&repo, &LISTS).expect("every real mockup tab is declared");
     let fewer: Vec<(&str, &str)> = EXCLUDED_TABS.iter().copied().filter(|(id, _)| *id != "player.wallet").collect();
-    let e = format!("{:#}", validate_renders(&repo, PAGE_MAP, &fewer, EXCLUDED_MOCK_MENUS).expect_err("wallet undeclared"));
+    let e = format!("{:#}", renders(&repo, &Lists { excluded_tabs: &fewer, ..LISTS }).expect_err("wallet undeclared"));
     assert_eq!(e, "tab drift:\n  mockup tab player.wallet is in neither PAGE_MAP nor EXCLUDED_TABS");
 }
 
@@ -257,13 +264,13 @@ fn the_real_mockup_draws_only_declared_menus() {
     let repo = crate::repo_root();
     let fewer: Vec<crate::pages::Page> = PAGE_MAP.iter().copied().filter(|p| p.id() != "players.menu.user").collect();
     assert_eq!(fewer.len() + 1, PAGE_MAP.len(), "PAGE_MAP lists players.menu.user");
-    let e = format!("{:#}", validate_renders(&repo, &fewer, EXCLUDED_TABS, EXCLUDED_MOCK_MENUS).expect_err("players' user menu undeclared"));
+    let e = format!("{:#}", renders(&repo, &Lists { page_map: &fewer, ..LISTS }).expect_err("players' user menu undeclared"));
     assert_eq!(e, "menu drift:\n  mockup menu players.menu.user is not a PAGE_MAP menu entry");
     let events = PAGE_MAP.iter().find(|p| p.page == "events").expect("PAGE_MAP lists events");
     let menu = crate::pages::Menu { mock: "user", kind: "player" };
     let mut more = PAGE_MAP.to_vec();
     more.push(crate::pages::Page { menu: Some(menu), ..*events });
-    let e = format!("{:#}", validate_renders(&repo, &more, EXCLUDED_TABS, EXCLUDED_MOCK_MENUS).expect_err("events draws no user menu"));
+    let e = format!("{:#}", renders(&repo, &Lists { page_map: &more, ..LISTS }).expect_err("events draws no user menu"));
     assert_eq!(e, "P.events draws no user menu; the mockup has no such menu");
 }
 
@@ -275,10 +282,10 @@ fn the_real_mockup_defines_only_declared_menus() {
     let repo = crate::repo_root();
     let fewer: Vec<(&str, &str)> = EXCLUDED_MOCK_MENUS.iter().copied().filter(|(id, _)| *id != "repo").collect();
     assert_eq!(fewer.len() + 1, EXCLUDED_MOCK_MENUS.len(), "EXCLUDED_MOCK_MENUS lists repo");
-    let e = format!("{:#}", validate_renders(&repo, PAGE_MAP, EXCLUDED_TABS, &fewer).expect_err("repo undeclared"));
+    let e = format!("{:#}", renders(&repo, &Lists { excluded_mock_menus: &fewer, ..LISTS }).expect_err("repo undeclared"));
     assert_eq!(e, "menu drift:\n  mockup menu repo is in neither PAGE_MAP nor EXCLUDED_MOCK_MENUS");
     let more: Vec<(&str, &str)> = EXCLUDED_MOCK_MENUS.iter().copied().chain([("zzz", "why")]).collect();
-    let e = format!("{:#}", validate_renders(&repo, PAGE_MAP, EXCLUDED_TABS, &more).expect_err("zzz is stale"));
+    let e = format!("{:#}", renders(&repo, &Lists { excluded_mock_menus: &more, ..LISTS }).expect_err("zzz is stale"));
     assert_eq!(e, "menu drift:\n  EXCLUDED_MOCK_MENUS lists zzz, which the mockup registry does not define");
 }
 
@@ -291,7 +298,7 @@ fn a_real_mockup_tab_entry_needs_no_menu_entry() {
     let mut page_map = PAGE_MAP.to_vec();
     page_map.push(crate::pages::Page { tab: Some("wallet"), ..*player });
     let tabs: Vec<(&str, &str)> = EXCLUDED_TABS.iter().copied().filter(|(id, _)| *id != "player.wallet").collect();
-    validate_renders(&repo, &page_map, &tabs, EXCLUDED_MOCK_MENUS).expect("the wallet tab draws the user menu undeclared");
+    renders(&repo, &Lists { page_map: &page_map, excluded_tabs: &tabs, ..LISTS }).expect("the wallet tab draws the user menu undeclared");
 }
 
 /// The portal side of the stand-in's `players.menu.user`: the same menu body, unlabelled, in the
@@ -311,10 +318,10 @@ fn run_diff_compares_a_menu_target_by_its_menu() {
     let dir = ScratchDir::new("diff-menu-crawl");
     write(&dir.path().join(crawl::CLEAN_MARKER), "");
     write(&dir.path().join("players.menu.user.html"), &players_user_menu(""));
-    assert!(run_diff(repo.path(), PAGE_MAP, "players.menu.user", dir.path(), false).expect("runs"), "the same menu is clean");
+    assert!(run_diff(repo.path(), &LISTS, "players.menu.user", dir.path(), false).expect("runs"), "the same menu is clean");
     let more = players_user_menu(r#"<div class="menu-item"><span>more</span></div>"#);
     write(&dir.path().join("players.menu.user.html"), &more);
-    assert!(!run_diff(repo.path(), PAGE_MAP, "players.menu.user", dir.path(), false).expect("runs"), "a portal-only item");
+    assert!(!run_diff(repo.path(), &LISTS, "players.menu.user", dir.path(), false).expect("runs"), "a portal-only item");
 }
 
 /// The production page map with its modal entries replaced by one stand-in modal of `index`,
@@ -345,14 +352,14 @@ fn run_diff_compares_a_modal_target_by_its_modal() {
     let dir = ScratchDir::new("diff-modal-crawl");
     write(&dir.path().join(crawl::CLEAN_MARKER), "");
     write(&dir.path().join("index.modal.test.html"), &modal(""));
-    assert!(run_diff(repo.path(), &map, "index.modal.test", dir.path(), false).expect("runs"), "the same dialog is clean");
+    assert!(run_diff(repo.path(), &Lists { page_map: &map, ..LISTS }, "index.modal.test", dir.path(), false).expect("runs"), "the same dialog is clean");
     let open = r#"<div class="scrim" data-scrim=""><div class="modal">"#;
     let beside = modal("").replacen(open, r#"<div class="scrim" data-scrim=""><div class="scrim-note"><span></span></div><div class="modal">"#, 1);
     assert!(beside != modal(""), "the sibling is added: {beside}");
     write(&dir.path().join("index.modal.test.html"), &beside);
-    assert!(run_diff(repo.path(), &map, "index.modal.test", dir.path(), false).expect("runs"), "a portal-only sibling of the .modal");
+    assert!(run_diff(repo.path(), &Lists { page_map: &map, ..LISTS }, "index.modal.test", dir.path(), false).expect("runs"), "a portal-only sibling of the .modal");
     write(&dir.path().join("index.modal.test.html"), &modal(r#"<div class="modal-note"></div>"#));
-    assert!(!run_diff(repo.path(), &map, "index.modal.test", dir.path(), false).expect("runs"), "a portal-only child");
+    assert!(!run_diff(repo.path(), &Lists { page_map: &map, ..LISTS }, "index.modal.test", dir.path(), false).expect("runs"), "a portal-only child");
 }
 
 /// A clean crawl with no output for a menu or modal target skipped it as EMPTY: the diff names
@@ -365,19 +372,19 @@ fn run_diff_names_a_menu_or_modal_target_the_crawl_skipped() {
     let dir = ScratchDir::new("diff-skipped-crawl");
     write(&dir.path().join(crawl::CLEAN_MARKER), "");
     let shown = dir.path().display();
-    let e = format!("{:#}", run_diff(repo.path(), &map, "index.modal.test", dir.path(), false).expect_err("no modal"));
+    let e = format!("{:#}", run_diff(repo.path(), &Lists { page_map: &map, ..LISTS }, "index.modal.test", dir.path(), false).expect_err("no modal"));
     let want = format!(
         "{shown} has no index.modal.test modal: the crawl skipped it as EMPTY (index was skipped or drew no test/do opener) or predates the entry"
     );
     assert_eq!(e, want);
-    let e = format!("{:#}", run_diff(repo.path(), &map, "players.menu.user", dir.path(), false).expect_err("no menu"));
+    let e = format!("{:#}", run_diff(repo.path(), &Lists { page_map: &map, ..LISTS }, "players.menu.user", dir.path(), false).expect_err("no menu"));
     let want = format!(
         "{shown} has no players.menu.user menu: the crawl skipped it as EMPTY (players was skipped or drew no player menu) or predates the entry"
     );
     assert_eq!(e, want);
     let modal = r#"<div class="scrim" data-scrim=""><div class="modal"></div></div>"#;
     write(&dir.path().join("index.modal.test.html"), modal);
-    run_diff(repo.path(), &map, "index.modal.test", dir.path(), false).expect("the written modal is diffed");
+    run_diff(repo.path(), &Lists { page_map: &map, ..LISTS }, "index.modal.test", dir.path(), false).expect("the written modal is diffed");
 }
 
 /// A menu entry opens its menu on its host page rendered as the host entry is: the stand-in
@@ -392,7 +399,7 @@ fn run_diff_opens_a_menu_of_a_forced_host_on_the_forced_render() {
     let dir = ScratchDir::new("diff-forced-menu-crawl");
     write(&dir.path().join(crawl::CLEAN_MARKER), "");
     write(&dir.path().join("players.menu.user.html"), &players_user_menu(""));
-    assert!(run_diff(repo.path(), &forced, "players.menu.user", dir.path(), false).expect("runs"), "the forced host's menu is clean");
-    let e = format!("{:#}", run_diff(repo.path(), PAGE_MAP, "players.menu.user", dir.path(), false).expect_err("unforced"));
+    assert!(run_diff(repo.path(), &Lists { page_map: &forced, ..LISTS }, "players.menu.user", dir.path(), false).expect("runs"), "the forced host's menu is clean");
+    let e = format!("{:#}", run_diff(repo.path(), &LISTS, "players.menu.user", dir.path(), false).expect_err("unforced"));
     assert_eq!(e, "P.players draws no user menu; the mockup has no such menu");
 }
