@@ -36,7 +36,7 @@ step.
 
 Execution order once the owner says go: 28 → 13c.1a → 13c.1r → 13c.1b → 13c.1g → 13c.1h →
 13c.2a1 → 13c.2a2a → 13c.2a2b → 13c.2a3 → 13c.2b1 → 13c.2b2 → 13c.3a → 13c.3b → 13c.4 →
-13d1 … 13d7c → 14 … 24 (per port: Na0 when needed, Na1, Na2, Na3, Nt, Nb; port 24 as
+13d1 … 13d7c → 13e1 … 13e6 → 14 … 24 (per port: Na0 when needed, Na1, Na2, Na3, Nt, Nb; port 24 as
 24.a1 … 24.a3, 24.t, 24.a4, 24.b) → 24a → 24b0 … 24b4 → 25a … 25h4 → 26a … 26d → 27.
 X7, the order against `docs/plans/2026-11-17-1900-purge-race-locks-plan.md`, needs no
 answer: that plan finished first (Step 7, 825d5494), so the ports start after it (2026-11-20).
@@ -2102,8 +2102,9 @@ The ports:
   - **Owner decision before dispatch:** X7 (port template).
 - **Step 15 — wallet.**
   - Economy page (`pages-platform.js:164-185`; the global ledger is FAKE per R1).
-  - Wallet tab; grant/revoke (REAL). Writes the Grant/Revoke seg `contract gap` accept
-    entry of ADMIN2-40 (`docs/todo/admin-second-pass.md`).
+  - Wallet tab; grant/revoke (REAL) as one form with the Grant and Revoke modes of Step 13e4
+    and the request-id field of 13e5 (owner O-1, O-2, 2026-11-20). No wallet search provider
+    (O-5, `docs/todo/wallet.md`).
   - Embers list column (DERIV); tile embers spent (DERIV).
   - Writer.
   - Ledger player column draws accounts' `EntityLabel{player}`; a `[opus]` test-author
@@ -2112,8 +2113,8 @@ The ports:
   - Parts, in order:
     - **15a1** (Na1): the Wallet tab (order 30) and its fact (50).
     - **15a2** (Na2): grant/revoke (REAL) in the row-menu group (40), `request_id` →
-      `idempotency_key` (X8), the probe and CapCase rows, and the ADMIN2-40 Grant/Revoke seg
-      accept entry (an Enum field, K16).
+      `idempotency_key` (X8), the probe and CapCase rows; the Grant/Revoke modes (13e4) and
+      the request-id field (13e5).
     - **15a3**: the Economy page reads, the FAKE global ledger whose player column
       draws accounts' `EntityLabel{player}` (Refs seam **Consumers**), and
       `pages.rs` mapping the economy page.
@@ -2128,11 +2129,15 @@ The ports:
     recommendation.
 - **Step 16 — inventory.** Inventory tab; grant item disabled. One a (Na1 with Na3): the tab
   (order 40), the disabled grant item in the row-menu group (50) with its todo item, Purges
-  pending at 63.
+  pending at 63. Rows are a module-owned row kind with `RowAction`s and no `EntityHeader`
+  (O-6); the Owner column uses `Cell.label` (13e3, O-7). Before dispatch, check that
+  admincheck accepts such a kind.
 - **Step 17 — friends.** Friends tab. One a (Na1 with Na3): the tab (order 50), Purges
-  pending at 64.
+  pending at 64. Rows are a module-owned row kind (O-6); the user cell links
+  `Link::Entity(player)` itself.
 - **Step 18 — groups.**
   - Groups tab (DERIV via `page_mine`); promote member to admin (REAL, Q1).
+  - Declares the `group` entity kind and links the group name to its entity page (O-4).
   - Writer: restores the groups probe deleted in Step 1.
   - **18a1** (Na1 with Na3): the Groups tab (order 60), Purges pending at 65.
   - **18a2** (Na2): promote member to admin and the probe, restored from
@@ -2140,7 +2145,8 @@ The ports:
     CapCase.
 - **Step 19 — storage.** Cloud saves tab (`writes: false`); tile cloud saves used (DERIV).
   One a (Na1 with Na3): the tab (order 70), the row-menu group (80), the tile (40), Purges
-  pending at 66.
+  pending at 66. Downloads are `implemented:false` (O-3, `docs/todo/storage.md`); the
+  per-row download is the icon-only row button of 13e1.
 - **Step 20 — notifications.** Inbox tab, Notify header action, Send notification row action. Writer.
   - **20a1** (Na1 with Na3): the Inbox tab (order 80), Purges pending at 67.
   - **20a2** (Na2): the Notify header action (20), the Send notification row action (row-menu
@@ -2769,6 +2775,71 @@ gate.
     checked against the drawn disabled control if the crawl can see it. A claim the crawl
     cannot check is named in the variant's doc comment and as a Known limit, never left as
     prose. The `NO_SUSPEND`/`NO_DELETE` reasons and their entries agree.
+- **Step 13e — contract additions for the ports** (owner, 2026-11-20, on
+  `docs/research/2026-11-20-2230-admin-ports-contract-gaps.md`; after 13d7c, before Step 14).
+  The owner rulings on that doc's decisions:
+  - O-1: build form modes.
+  - O-2: a request-id field that the portal fills.
+  - O-3: storage downloads stay `implemented:false` in Step 19; the download carrier is a
+    todo item.
+  - O-4: the group name links to the group's entity page (Step 18 declares the kind).
+  - O-5: the wallet search provider is a todo item, not in Step 15.
+  - O-6: a row that has a menu but is not clickable is a module-owned row kind with
+    `RowAction`s and no `EntityHeader` (Steps 16 and 17), with no contract change.
+  - O-7: `Cell.label`.
+  - O-8: a dim cell kind.
+  - O-9: the renderer draws the mockup's wrappers instead of each port taking accept lines.
+  Each part is `[opus]` core-implementer with its own commit. Review is a core-reviewer plus
+  a proof-auditor, because every part changes `core/controlplane`'s public surface
+  (`docs/reference/public-api-baseline/controlplane.txt`) or deletes accept lines. The
+  golden tests and the controlplane conformance cover each new carrier. A part that changes
+  an already diffed page updates that page's accept file in the same commit, and admindiff
+  shows no new drift. Order: 13e6 may land first; 13e5 lands after 13e4.
+  - **13e1 — icon-only row button.** A row action can be declared icon-only. It draws as
+    the mockup's icon button (`td > button.btn.sm.ghost > svg`, pc:141), and its label stays
+    as the accessible name. No enabled-item hint: its only consumer (reg:111) is the
+    download action, which O-3 keeps disabled, and the disabled branch already draws
+    `span.hint`. (St3; St2 closes with O-3.)
+  - **13e2 — dim cell.** A `CellKind` that draws `span.dim`. `Time` keeps its own meaning
+    and is not used to carry dim text. (S1; pp:169, 181.)
+  - **13e3 — label on an unlinked cell.** `Cell.label: Option<EntityRef>` is labelled by
+    the same Refs pass as a linked cell (labels.rs:15-20), under the same rule: only when the
+    cell value equals the ref's id. It draws the label text with no link and keeps the cell
+    kind's tag. A label that does not resolve falls back to the raw value, as a linked cell
+    does. Provider-response validation refuses a cell with both `link` and `label`. The
+    mockup's `character:` prefix (pc:132) is a text-only difference that the port
+    hand-checks. (I2.)
+  - **13e4 — form modes.** `FormSpec` can declare modes, each with an id, a label and its
+    own action. The modes apply wherever a `FormSpec` is drawn, as a panel form or a modal
+    `Then::Form`. The portal draws them as `div.seg` above the form (pp:172), and
+    `admin.js` switches the selected mode on the client with no refetch. The minted form row
+    stores the set of modes. The posted body names one mode; the submit refuses a mode the
+    row does not hold and runs that mode's action. The stored row decides the action, never
+    the raw body. Each mode has its own submit label, and `admin.js` swaps the label with
+    the mode (pp:172-173). A form without modes draws and submits as today. Closes ADMIN2-40
+    (`docs/todo/admin-second-pass.md`), moved to the done file in this commit. (W1.)
+    - **Owner decision before dispatch (N1 of the plan re-review, 2026-11-20):** what a
+      mode's action is. (a) Each mode names a declared action of the same module. Manifest
+      validation checks that it exists, can be invoked and sits at the form's point. Mode
+      actions stay out of the menus. The portal draws only the modes `admit` lets the
+      operator use. Submit admits and claims against the chosen mode's action, and
+      `InvokeCall.action` and the audit carry it. (b) Every mode shares the form's one
+      action and reaches the provider as an input value. Recommendation: (a), so that
+      permission and audit stay per action.
+  - **13e5 — request-id field.** After 13e4. A `FieldKind` that the provider declares
+    with no value. On every drawn form instance (panel or modal) the portal fills it with
+    the instance id it mints, which is the same id the submit sends as `request_id`
+    (routes.rs:833-834, 1146). One instance has one id whatever its mode. The field draws
+    read-only and mono with no `name`. It never enters `InvokeCall.input` and needs no
+    stored default, so no second key exists. A form drawn without an instance (the operator
+    may not use it, routes.rs:813-817) leaves the field out. (W2; pp:176.)
+  - **13e6 — the mockup's wrappers.** A layout row, a grid column and an entity tab with
+    exactly one panel draw it bare. Two or more panels draw `div.stack`, as the mockup does
+    (pp:42, 83, 107, 155; pages-lore.js:264). This covers the layout rows (shell:56-57) and
+    the entity tab body (shell:69's single-panel `stack` branch). The non-last row's 12px
+    bottom margin stays on the row element the mockup draws. Accept lines that only covered
+    the dropped wrappers are deleted. The panel `form` wrapper and its hidden inputs stay
+    (they carry the submit) and keep a template-choice accept line. (R1.)
 
 ### Step 24a — Typed `asyncevents::admin` errors
 

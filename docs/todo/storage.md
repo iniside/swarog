@@ -1,6 +1,6 @@
 # Storage
 
-Last updated: 2026-10-23
+Last updated: 2026-11-20
 
 ## In progress
 
@@ -8,6 +8,12 @@ _None._
 
 ## Open
 
+- [ ] **Admin download carrier for cloud saves**
+  The mockup's Download all, per-row download and row-menu "Download cloud saves"
+  (`UILayout/redesign/assets/pages-core.js:140-141`, `registry.js:111`) have no carrier:
+  `Then` is Invoke/Form/Confirm/Link and nothing serves bytes. Step 19 ships them
+  `implemented:false` (owner, 2026-11-20, O-1..O-9 in
+  `docs/research/2026-11-20-2230-admin-ports-contract-gaps.md`).
 - [ ] **Misleading 409 at the object cap for put(expected_version = 0)**
   STORAGE-09. At 10,000 objects a create-style `put` to an address the owner
   already holds returns the "maximum of N objects" 409 instead of the

@@ -1,6 +1,6 @@
 # Admin second pass
 
-Last updated: 2026-11-19
+Last updated: 2026-11-20
 
 The admin redesign ships mockup elements the backend cannot back as deterministic fakes
 (`// FAKE: <why>`, plan R1) and not-yet-possible actions as `implemented: false`, rendered
@@ -309,7 +309,8 @@ gaps go to the next iteration.
   since no accept file maps that page yet. Mockup: pages-platform.js:172. `FormSpec` has no
   form modes, so the port draws the choice as a `FieldKind::Enum` field
   (admin-control-plane-redesign step 13c.1b, K16). Closed by: a segmented control in
-  `FormSpec` and the form macro; then delete the accept line.
+  `FormSpec` and the form macro; then delete the accept line. Step 13e4 builds the modes
+  and closes this item (owner, 2026-11-20).
 
 ## Mail nav counter with only parked rows
 

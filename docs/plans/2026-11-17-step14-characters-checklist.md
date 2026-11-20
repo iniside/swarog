@@ -75,7 +75,7 @@ Shell frame: unchanged. The `players.txt:5-12` copies stay. Characters adds no n
 | Class: plain text | `pc:127` | `CellKind::Text` | REAL `class` (D4 vocabulary: seeded classes, `tools/demoseed/src/tests.rs:92`) |
 | Level `td.num` | `pc:127` | `CellKind::Number`, `Align::Right` | **data: FAKE** (`ds:85`), **G3** |
 | Region `span.tag` | `pc:127` | `CellKind::Ref` | **data: FAKE** (`ds:85`), **G3** |
-| Last played: plain text ("4 min ago", not `span.dim`) | `pc:127` | `CellKind::Text` | **data: FAKE** (`ds:85`), **G3** |
+| Last played: plain text ("4 min ago", not `span.dim`) | `pc:127` | `CellKind::Text` | **"—"**: characters stores no last-played time (owner, 2026-11-20), **G3** |
 | Id `span.mono.muted` "c_91a2" | `pc:127` | `Mono` draws `span.mono` (+ an inline colour for a tone), `Muted` draws `span.muted` (`tmpl:76,79`); nothing draws both classes | **contract gap G1**; value **G2** |
 | Row count: at least 1 even when `u.characters` is 0 (`slice(0, Math.max(1, …))`) | `pc:127` | — | mock quirk; no designed empty state (**G8**) |
 
@@ -105,7 +105,7 @@ The mockup shows no characters action anywhere: none in the `tabRender.character
 
 ## 5. Contributions and `order`
 
-All have `min_role: Viewer` and `deadline_ms: DEFAULT_PANEL_DEADLINE_MS` (2000 ms, `cp:119`), as the accounts `contribution()` helper sets them (`aa:301-319`), and `cache_ttl_s: None`. The manifest has no sections, entries, pages, `entity_kinds` (accounts declares `player`, `aa:387-391`) or search.
+All have `min_role: Viewer` and `deadline_ms: DEFAULT_PANEL_DEADLINE_MS` (2000 ms, `cp:119`), as the accounts `contribution()` helper sets them (`aa:301-319`), and `cache_ttl_s: None`. The manifest has no sections, entries, pages or search. **Owner, 2026-11-20:** it declares `EntityKindDecl{character}` in `entity_kinds`, which `EntityLabel{character}` requires (accounts declares `player` the same way, `aa:387-391`).
 
 | Contribution | Point | order | Content |
 |---|---|---|---|
@@ -114,6 +114,7 @@ All have `min_role: Viewer` and `deadline_ms: DEFAULT_PANEL_DEADLINE_MS` (2000 m
 | `characters` | `EntityTab{player, "characters", "Characters", columns: 1}`, title "Characters" | 20 (accounts' Profile tab is 10/30/40 `aa:400-402`; it comes first because 10 < 20) | the §2 DataTable, `meta` = row count |
 | `tab.count` | `EntityTabCount{kind:"player", tab:"characters"}` | 0 (counts attach by tab id, `rt:552-557`) | `Cell{Number, n}` |
 | purges (G9) | per G9 | per G9 | `pending_purges()` (`cs:163-171`) |
+| `label.character` | `EntityLabel{character}` (Step 13c Refs seam, Step 14a3) | 0 | `ColumnCells` of character names keyed by the input ref |
 
 Store (part `a`):
 - One new pooled reader, `counts_by_player(&[String]) -> BTreeMap<String, i64>`, serves the column, the fact and the tab count. Suggested SQL: `unnest($1::text[]) LEFT JOIN … ON player_id = r::uuid GROUP BY r`, which answers 0 for every absent ref and keys by the exact input.
@@ -150,14 +151,15 @@ Store (part `a`):
 - Width and text are a hand-check deviation (H8).
 - Alternative: the first 8 hex digits, which is not copyable as an id.
 
-**G3. FAKE Level, Region, Last played (R1, `plan:45-49`; `ds:85`).**
+**G3. FAKE Level and Region; Last played "—" (R1, `plan:45-49`; `ds:85`).**
 - Each is a pure function of the character id, using an explicit-width FNV-1a 64 hash with no clock and no rand, marked `// FAKE:`:
   - Level: 1–60.
   - Region: a pick from `eu-west, eu-central, us-east, us-west, ap-ne, sa-east` (the mock's shapes).
-  - Last played: a pick from relative strings ("4 min ago", "2 h ago", "6 d ago", "41 d ago").
+  - Last played: superseded by the owner ruling below; it is not faked.
 - Proposal: a local `fake_hash`/`fake_pick` copied from `aa:174-186`. The fortress rule means no import from accounts.
 - Alternative: one shared `controlplane` fake helper, which would also move accounts (a refactor beyond this step).
 - Each marker gets a todo item (§9).
+- **Owner, 2026-11-20:** Level and Region use the shared `controlplane::fake_hash` (`cp:212`). Last played is not faked: it draws "—" until characters stores a last-played time.
 
 **G4. `PanelQuery.refs` bound (the proof-auditor remark).**
 - Problem: `refs` is `Opaque` on the wire (`tools/conformance/src/policy.rs:192`) and unbounded. The portal sends one page's ids (accounts `PAGE_SIZE` 25, `aa:59`), but a provider must not trust that.
@@ -190,7 +192,7 @@ Store (part `a`):
 - Alternative: verbatim.
 
 **G8. Row order and zero characters.**
-- Order: the mock lists rows by recency of Last played, which is FAKE. Proposal: the real `created_at, id` order of `list_by_player` (`cs:63-72`). No sort arrow is drawn, so there is no header deviation.
+- Order: the mock lists rows by recency of Last played, which the portal draws as "—". Proposal: the real `created_at, id` order of `list_by_player` (`cs:63-72`). No sort arrow is drawn, so there is no header deviation.
 - Zero characters: the mock draws a row even at 0 (`pc:127`). Proposal: the portal's empty state ("Nothing here yet"), declared in H10.
 
 **G9. "Purges pending" KPI (Q1, D6: `plan:2021`, `plan:2349-2352`).**
@@ -239,7 +241,7 @@ The pairing was worked out by hand from `sk:451-559`; it is a prediction.
 New subsection "Fake data of the characters port", continuing after ADMIN2-35:
 - FAKE character level.
 - FAKE character region.
-- FAKE character last played.
+- Characters stores no last-played time; the Last played column draws "—" (a real gap, not a FAKE).
 
 Conditional:
 - Under **Accepted contract gaps**: the `span.mono.muted` Id cell, if G1 is rejected.
@@ -256,7 +258,7 @@ None for `players` and `player`, which are already `Mapped` and `FirstRow` (`pag
 
 - No `cargo`, `admindiff mock`, crawl or diff was run. Every accept line, including the exact hash ids staying put, comes from reading `sk:431-570` by hand.
 - Whether row-shape pairing keeps `players.txt:24-27` unchanged once portal rows gain `td.num`.
-- Whether core accepts a manifest with no pages, nav or entity kinds, whose contributions name a kind another module declares. Characters is the first such provider.
+- Whether core accepts a manifest with no pages or nav whose contributions name a kind another module declares, beside its own `character` kind. Characters is the first such provider.
 - Whether a tool-less titled panel's head matches the mock's (relevant to G5's predicted entries).
 - Whether the conformance policy has a bounded kind that could replace `Opaque` for `req.refs` (G4).
 - Whether the purge-race-locks plan is already being executed.
