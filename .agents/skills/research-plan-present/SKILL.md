@@ -59,6 +59,14 @@ Run these in order for any plan (plan mode / "write me a plan" / a
    steps when the plan is written, each still a whole slice of the feature
    (never split to get under the inline threshold or to keep an old path
    alive).
+   A step that moves or rewrites code of a very large file (over about 1500
+   lines or 100 KB) is sized by that file: every view of it is large, so the
+   context fills in half the calls. Split such a move by function group when
+   the plan is written (measured in a sibling repo, 2026-11-20: steps moving
+   code out of a 105 KB and a 56 KB file each hit the 180k context budget
+   after 30 to 35 calls and needed a part 2). This sizes the step; it does
+   not split the file, which happens only inside a purposeful refactor
+   (owner, 2026-11-18).
 
    **Tests.** The implementer writes the tests in the same step as the code,
    to the bar "revert the fix and the test must fail". A separate, later
