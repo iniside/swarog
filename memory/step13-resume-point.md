@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-21: Step 15 (wallet) complete incl. 15b; owner decisions pending; ask before Step 16"
+description: "Admin redesign resume point 2026-11-22: Step 15 (wallet) complete incl. 15c/15d; next Step 16 (inventory) after owner says go"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-21T22:38:18.520Z
+  modified: 2026-11-21T23:20:17.113Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -35,3 +35,6 @@ Owner answered: Q1 done fccafdf8 (controlplane::decode_money, review PASS); Q2 l
 ## State 2026-11-21 (Step 15 complete)
 15a4 + 15a5 (515de79a, a7b922ec, 025f33b7), when_empty row restored 5e70dfe7 (when_empty = drawn in EVERY state plus empty, panel.rs:151), 15b accept files 129ea189 + 6f29ad32 + 3f8ed968 (proof-auditor fixes). Monolith + split crawls clean on all wallet targets; index red only on Mail queue (owner Q2: leave).
 Owner open: purge-backlog helper in core/controlplane before Step 16 (copied per module); spent tile cache_ttl_s; tests.rs:888 vacuous EXCLUDED_MODALS count; date-slice in pending_purges. Next: ask owner before Step 16.
+
+## State 2026-11-22 (15c/15d done)
+Owner: 1 tak, 2 dodaj, 3 usun, 4 ok. 15c 28552db9 controlplane::purge_backlog_body (ports 16-24 call it; review ACCEPT). 15d da950074 spent tile cache 60s, vacuous count removed, characters Known limit (review ACCEPT). Next: Step 16 inventory — ask owner.
