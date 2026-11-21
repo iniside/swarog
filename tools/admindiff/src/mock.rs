@@ -61,23 +61,25 @@ const SCRIPTS: &[&str] = &[
 // page render sets `UI.state.force = "ok"` before it mounts, after `boot.js` has read `?state=`,
 // so every forceable panel and tile draws ok. Every recorder reads one attribution context
 // (`at`): the phase (`mount` while the page mounts, `render` inside a `REG` call of a probe,
-// `body` while a probed body runs), the outermost `PAGES` call running and the `UI` calls
-// running. A timer saves the context it was scheduled in and runs in it. With `input.probe`, a list
-// of `onclick` bodies, the page first mounts on a fresh mockup as for a render and the timers the
-// mount scheduled run, for at most `MAX_TIMER_ROUNDS` rounds; then each body runs verbatim on its
-// own fresh mockup mounted the same way (`this` a stub element, `event` a click on it), and the
-// timers it scheduled after it. Before the timers, every function of `PAGES` is wrapped to name
+// `body` while a probed body runs), the origin (`mount` or `body`, which work it is part of, kept
+// inside a `REG` call), the outermost `PAGES` call running and the `UI` calls running. A timer
+// saves the context it was scheduled in and runs in it, so what a mount timer appends, opens or
+// renders is the mount's, never a body's. With `input.probe`, a list of `onclick` bodies, the page
+// first mounts on a fresh mockup as for a render and the timers the mount scheduled run, for at
+// most `MAX_TIMER_ROUNDS` rounds; then each body runs verbatim on its own fresh mockup mounted the
+// same way (`this` a stub element, `event` a click on it), and the timers it scheduled after it. Before the timers, every function of `PAGES` is wrapped to name
 // itself the opener while a call to it runs outside every other such call, and every function of
 // `REG` is wrapped to return normally from the sentinel, so a body that re-renders the page goes
 // on running; a body assignment outside every `REG` call is an error. A `PAGES` key written in
 // the body phase is the body's own (`tab` with its value), one written in the mount or render
 // phase is assigned by a render. A probe or menu render of a mockup whose `UI.openMenu` is not the
 // recording wrapper (replaced after `UI` was set) fails. The probe is written as `{mount, bodies}`:
-// `mount` as `{error, loose, excluded, rendered}` for what the scripts and the mount appended and
-// assigned, with no body run when `error` is set; each body as
-// `{scrims, menus, tabs, keys, loose, excluded, rendered}` for what it and the renders it called
-// did: one `scrims` entry per modal appended, the name of the `PAGES` function that appended it
-// or null when it was appended outside every such call; each `UI.openMenu` call as `[id, arg]`
+// `mount` as `{error, scrims, menus, loose, excluded, rendered}` for what the scripts and the mount
+// (its timers and the `REG` calls they make included) opened, appended and assigned, with no body
+// run when `error` is set; each body as `{scrims, menus, tabs, keys, loose, excluded, rendered}`
+// for what it, its timers and the renders it called did: one `scrims` entry per modal appended,
+// the name of the `PAGES` function that appended it or null when it was appended outside every
+// such call; each `UI.openMenu` call as `[id, arg]`
 // (arg null when it has none); each `PAGES.tab` value; `keys` each other `PAGES` key it
 // assigned, once each; `loose` each element appended that is no menu, no modal and no
 // `input.appenders` call's, whatever its class, with its drawers; `excluded` each of
@@ -130,9 +132,11 @@ const kindOf = drawers => {
 // A click on `el`: its target and current target.
 const click = el => ({ stopPropagation: inert, preventDefault: inert, currentTarget: el, target: el });
 // The attribution context outside every recorded call: the scripts loading, the harness setting up.
-const LOADING = { phase: "load", opener: null, drawers: [] };
+const LOADING = { phase: "load", origin: null, opener: null, drawers: [] };
 // A fresh mockup: `html` is what the body was last assigned, `at` the attribution context every
-// recorder reads (`phase` load, mount, render or body; `opener` the outermost `PAGES` call running;
+// recorder reads (`phase` load, mount, render or body; `origin` the work it belongs to, `mount` or
+// `body`, kept through every `REG` call and timer, or null outside both; `opener` the outermost
+// `PAGES` call running;
 // `drawers` each `UI` call running, as `UI.<name>`, outermost first), `appended` each element
 // appended to the body with the context it was appended in, `defined` each menu id
 // `UI.defineMenu` was called with, `menus` each `UI.openMenu` call as `[id, arg]` with its
@@ -264,7 +268,7 @@ function checkRecorded(m) {
 function sort(m, keep) {
   const scrims = [], loose = [], excluded = [];
   for (const a of m.appended) {
-    if (!keep(a.at.phase)) continue;
+    if (!keep(a.at)) continue;
     const kind = kindOf(a.at.drawers);
     if (kind === "menu") continue;
     if (kind === "modal") {
@@ -348,18 +352,19 @@ if (input.registry) {
   }
   process.stdout.write(`<div class="scrim">${opened.el.innerHTML ?? ""}</div>`);
 } else if (input.probe) {
-  const inBody = phase => phase === "body" || phase === "render";
+  const ofBody = at => at.origin === "body";
   const first = settle();
   const sorted = sort(first.m, () => true);
+  const mountMenus = first.m.menus.map(c => c.call);
   const out = {
-    mount: { error: first.error, loose: sorted.loose, excluded: sorted.excluded, rendered: renderedOf(first.m) },
+    mount: { error: first.error, scrims: sorted.scrims, menus: mountMenus, loose: sorted.loose, excluded: sorted.excluded, rendered: renderedOf(first.m) },
     bodies: [],
   };
   for (const onclick of first.error === null ? input.probe : []) {
     const { m, error: settled } = settle();
     let error = settled === null ? null : `the mount threw on this run: ${settled}`;
     if (error === null) {
-      m.at = { phase: "body", opener: null, drawers: [] };
+      m.at = { phase: "body", origin: "body", opener: null, drawers: [] };
       try {
         const clicked = element();
         vm.runInContext(`(function (event) {\n${onclick}\n})`, m.ctx).call(clicked, click(clicked));
@@ -379,8 +384,8 @@ if (input.registry) {
       out.bodies.push({ error, rendered });
       continue;
     }
-    const { scrims, loose, excluded } = sort(m, inBody);
-    const menus = m.menus.filter(c => inBody(c.at.phase)).map(c => c.call);
+    const { scrims, loose, excluded } = sort(m, ofBody);
+    const menus = m.menus.filter(c => ofBody(c.at)).map(c => c.call);
     out.bodies.push({ scrims, menus, tabs, keys, loose, excluded, rendered });
   }
   process.stdout.write(JSON.stringify(out));
@@ -403,7 +408,7 @@ function mount(m) {
     }
     ui.state.force = "ok";
   }
-  m.at = { phase: "mount", opener: null, drawers: [] };
+  m.at = { phase: "mount", origin: "mount", opener: null, drawers: [] };
   try { m.ctx.REG.mount(page.meta, page.render); } catch (e) { if (e !== CAPTURED) throw e; } finally { m.at = LOADING; }
   if (m.html === null) {
     process.stderr.write("REG.mount returned without assigning document.body.innerHTML\n");
@@ -533,8 +538,10 @@ impl Probe {
 /// `UI.openMenu`, a modal of `UI.modal`, `UI.confirm` or `REG.openSearch`) and no `UI` call in
 /// `declared.appenders`, whatever its class, fails naming its host, the element and the body, or
 /// the mount when the scripts, the mount or a timer it scheduled appended it; the mount is checked
-/// with no body drawn too, and a timer it scheduled that throws fails once, as the mount's. A `.tab` whose body assigns no
-/// `PAGES.tab` and no declared key, a guarded assignment that does not run among them, fails, as
+/// with no body drawn too, and a timer it scheduled that throws fails once, as the mount's. A
+/// modal or menu the mount opens (itself, a timer it scheduled or a `REG` call that timer makes)
+/// fails once as the mount's, by host and opener or menu id: no drawn control opens it, so it
+/// never counts for a body. A `.tab` whose body assigns no `PAGES.tab` and no declared key, a guarded assignment that does not run among them, fails, as
 /// does a `.tab` with no `onclick`, by host and element. A render (the mount, a timer it
 /// schedules, a re-render, a timer one schedules) that assigns `PAGES.tab` or a
 /// `declared.non_tab_keys` key fails: only a body's own assignments say which tab it is.
@@ -577,6 +584,14 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
     }
     for loose in list(mount, "loose", &what)? {
         failed.push(loose_failure(&format!("{host}: the mount"), loose)?);
+    }
+    for scrim in list(mount, "scrims", &what)? {
+        let opener = scrim.as_str().map_or_else(|| "outside every PAGES call".to_string(), |name| format!("in PAGES.{name}"));
+        failed.push(format!("{host}: the mount opened a modal {opener}, which no drawn control opens"));
+    }
+    for call in list(mount, "menus", &what)? {
+        let id = call.get(0).and_then(serde_json::Value::as_str).with_context(|| format!("a UI.openMenu call by {what} was recorded with no menu id"))?;
+        failed.push(format!("{host}: the mount opened menu {id}, which no drawn control opens"));
     }
     // Each body that assigned `PAGES.tab`, with the first value it assigned.
     let mut tab_of: Vec<(&str, String)> = Vec::new();

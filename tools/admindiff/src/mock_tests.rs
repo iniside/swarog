@@ -903,3 +903,61 @@ fn the_mount_is_checked_once_and_with_no_body_drawn() {
         }
     }
 }
+
+/// The harness's probe record of `bodies` on the stand-in `index` page, nothing declared.
+fn harness_probe(repo: &Path, bodies: &[&str]) -> serde_json::Value {
+    let input = serde_json::json!({ "key": "index", "search": index_page().mock_search(), "force": false, "probe": bodies, "listed": [], "appenders": [] });
+    serde_json::from_str(&super::run_harness(repo, input, "the probe").expect("the harness runs")).expect("the probe record is JSON")
+}
+
+/// The mount's timers schedule `inner`, run as `PAGES.index` renders.
+fn mount_timer(inner: &str) -> String {
+    format!("const r0 = PAGES.index.render; PAGES.index.render = function () {{ setTimeout(function () {{ {inner} }}, 1); return r0.apply(this, arguments); }};\n")
+}
+
+/// A mount timer that re-renders through `REG.render` is still the mount's: what the render
+/// appends fails once, as the mount's, and no body counts it, whatever bodies the render draws.
+#[test]
+fn a_mount_timer_that_re_renders_appends_as_the_mount() {
+    let script = format!(
+        "{}{}",
+        "REG.render = function () { document.body.appendChild(document.createElement(\"aside\")); document.body.innerHTML = \"\"; };\n",
+        mount_timer("REG.render();"),
+    );
+    let repo = FakeRepo::with_openers("mock-probe-mount-render", r#"<div class="app"></div>"#, PAGE_MAP, &[], &script);
+    let record = harness_probe(repo.path(), &["1", "2"]);
+    assert_eq!(record["mount"]["loose"].as_array().expect("a loose list").len(), 1, "{record}");
+    for body in record["bodies"].as_array().expect("a body list") {
+        assert_eq!(body["loose"], serde_json::json!([]), "{record}");
+    }
+    let want = "mockup onclick failed:\n  index: the mount appended <aside> under REG.mount, which no recorded opener drew and no EXCLUDED_MOCK_APPENDS entry names";
+    for html in ["<div></div>", r#"<button onclick="1"></button><button onclick="2"></button>"#] {
+        let e = format!("{:#}", probe_html(repo.path(), html).expect_err("the mount appends"));
+        assert_eq!(e, want, "{html}");
+    }
+}
+
+/// A modal or menu a mount timer opens (`REG.openSearch`, a `PAGES` opener, `UI.openMenu`) is
+/// the mount's: the record keeps it under the mount and never under a body, and it fails once,
+/// as the mount's, since no drawn control opens it.
+#[test]
+fn a_modal_or_menu_the_mount_opens_is_the_mounts() {
+    let cases = [
+        ("search", "REG.openSearch();", "scrims", serde_json::json!([null]), "index: the mount opened a modal outside every PAGES call, which no drawn control opens"),
+        ("pages", "PAGES.viaModal();", "scrims", serde_json::json!(["viaModal"]), "index: the mount opened a modal in PAGES.viaModal, which no drawn control opens"),
+        ("menu", "UI.openMenu({ stopPropagation: function () {} }, 'user', 'a');", "menus", serde_json::json!([["user", "a"]]), "index: the mount opened menu user, which no drawn control opens"),
+    ];
+    for (name, inner, field, mounted, want) in cases {
+        let script = format!("PAGES.viaModal = function () {{ UI.modal(\"\"); }};\n{}", mount_timer(inner));
+        let repo = FakeRepo::with_openers(&format!("mock-probe-mount-opens-{name}"), r#"<div class="app"></div>"#, PAGE_MAP, &[], &script);
+        let record = harness_probe(repo.path(), &["1", "2"]);
+        assert_eq!(record["mount"][field], mounted, "{name}: {record}");
+        for body in record["bodies"].as_array().expect("a body list") {
+            assert_eq!(body[field], serde_json::json!([]), "{name}: {record}");
+        }
+        for html in ["<div></div>", r#"<button onclick="1"></button><button onclick="2"></button>"#] {
+            let e = format!("{:#}", probe_html(repo.path(), html).expect_err("the mount opens"));
+            assert_eq!(e, format!("mockup onclick failed:\n  {want}"), "{name}: {html}");
+        }
+    }
+}
