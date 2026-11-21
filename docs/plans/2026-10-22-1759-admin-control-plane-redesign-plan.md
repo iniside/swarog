@@ -2104,6 +2104,12 @@ The ports:
     choice` accept line to `tools/admindiff/accept/players.txt` (checklist line 220), copied
     from the difference its column first produces. Landed as 1135d9ab, 630ffe45 and 632eed06;
     the accept line went in with the live monolith and split crawls (both clean).
+  - **14t** (Nt): no new golden case (every shape characters draws already has one);
+    splitproof CH0-CH4 (the Characters tab, its panels and the players list column, monolith
+    and split). Landed as dcfa7cb9 and 873426bf; green in both topologies, and CH1-CH4 go red
+    in the split with admin-svc's characters `peer_face` removed.
+  - **14b** (Nb): a fidelity check with no commit. The monolith and split crawls at 873426bf
+    were clean, and `admindiff diff` was clean on every ported target.
   - **Owner decision before dispatch:** X7 (port template).
   - **Decisions (2026-11-21, owner: "mozemy sprobowac zrobic punkt14"; the checklist's
     proposals, taken as written):** G1 is closed by 13c (`CellKind::MonoMuted`), G4 by 13c
