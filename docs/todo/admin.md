@@ -64,6 +64,20 @@ _None._
   `PAGES.auditTopic` (`UILayout/redesign/assets/pages-platform.js:121`) and
   `PAGES.effUser`/`effRepo` (`pages-lore.js:158`) fall under no PAGE_MAP /
   `NON_TAB_KEYS` rule. Matters once the audit page is mapped (it is `Route::Pending`).
+- [ ] **The golden refusal check sees only titled `.btn` and `.menu-item` controls**
+  `core/admin/src/golden_tests/refusals.rs` skips a disabled control with no title and
+  any refused control that is not a `button.btn` or `.menu-item.disabled` (admindiff's
+  `refusals_of` takes any `button[disabled]`). It checks that `data-refused-action` and
+  `data-refusal` are well formed, not that they match the `ActionItem`; exact values are
+  pinned only by the golden bytes. No golden declares a `ReadOnly(Some(..))` hint, so the
+  recorded-hint branch never decides on a real case. Every refusal macro draws its title today.
+- [ ] **A palette list outside the palette is not caught**
+  `admin.js:276` reads `[data-palette-list] a.palette-item` across the whole document,
+  but the crawl counts the input and list only inside the palette scrim.
+- [ ] **Most controls of the crawl tests' fake portal are still hand-written**
+  The shell, the palette and the disabled item and button come from `core/admin` goldens;
+  the modal and menu openers, table rows, slots, nav items and tabs in
+  `tools/admindiff/src/crawl_tests.rs` do not (the shell golden draws an empty `<nav>`).
 
 ### Known limits (admin-control-plane-redesign step 13d7c)
 

@@ -2879,7 +2879,9 @@ gate.
       2026-11-21) the mock harness was frozen: it checks that no mockup state was forgotten,
       not the layout or the actions, and its open holes do not change a result on the real
       mockup. A2 landed as a27cbc8a with no review; A3 and S7 went to `docs/todo/admin.md`
-      (Known limits, step 13d7d). Part B is S4, S5 and S6 only.
+      (Known limits, step 13d7d). Part B is S4, S5 and S6 only; it landed as f7ce8a75, and
+      its review (a core-reviewer plus a proof-auditor) found nothing blocking; its known
+      limits went to the same todo section.
       - A2 (S3's context, landed a27cbc8a): the harness context keeps the origin of the work (the mount or a
         body) in its own field, separate from "inside a REG render". A mount timer that calls
         `REG.render()` or `REG.openSearch()` is the mount's: what it appends or opens is
