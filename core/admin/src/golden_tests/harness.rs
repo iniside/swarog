@@ -196,7 +196,7 @@ fn golden_form_is_injective_over_render_newlines() {
     assert_ne!(golden_form("<a><b>"), golden_form("<a>\n<b>"));
     assert_eq!(golden_form("<a><b>x</b>"), "<a>\n<b>x</b>\n");
     // A render that holds the marker itself still maps one to one.
-    let marked = [format!("<a>{RAW_NEWLINE}\n<b>"), format!("<a>{RAW_NEWLINE}<b>"), format!("<a>\n<b>"), "<a><b>".to_string()];
+    let marked = [format!("<a>{RAW_NEWLINE}\n<b>"), format!("<a>{RAW_NEWLINE}<b>"), "<a>\n<b>".to_string(), "<a><b>".to_string()];
     let forms: BTreeSet<String> = marked.iter().map(|raw| golden_form(raw)).collect();
     assert_eq!(forms.len(), marked.len(), "{forms:#?}");
 }
