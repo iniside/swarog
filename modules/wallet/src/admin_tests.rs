@@ -347,7 +347,7 @@ fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_pane
     for a in &m.actions {
         assert!(a.implemented && !a.danger && a.min_role == Role::Operator, "{}", a.id);
         assert_eq!(a.emphasis, controlplane::Emphasis::Default, "{}", a.id);
-        assert_eq!(a.when_empty, a.id == "currency.create", "only the create tool waits for an empty catalog: {}", a.id);
+        assert_eq!(a.when_empty, a.id == "currency.create", "only the create tool also draws on an empty catalog: {}", a.id);
     }
     assert!(m.actions[..4].iter().all(|a| a.order == 40), "the row menu's wallet group");
     assert_eq!(m.actions[4].order, 10);

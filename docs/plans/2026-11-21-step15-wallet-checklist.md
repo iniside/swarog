@@ -141,7 +141,7 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 | H12 | Ledger: time format, Amount sign and colour, grouping, Reason wrap, Tx full uuid, no sort arrow, foot text, search placeholder | live look; golden for the coloured Mono cell |
 | H13 | Embers-spent tile label and value (G19) | live look |
 | H14 | Purges pending item (G16) | golden or live look after deleting a player |
-| H15 | Create-currency tool and modal (D6, G13) | live look on an empty catalog (a fleet without `WALLET_DEV_SEED`, or the seed rows deleted) |
+| H15 | Create-currency tool and modal (D6, G13) | live look on a seeded catalog (drawn there too, `core/admin/src/render/panel.rs:151`) and on an empty catalog (a fleet without `WALLET_DEV_SEED`, or the seed rows deleted) |
 | H16 | Demo states declared, not drawn: stale Currencies/Ledger, Grant err banner, nav `down`, error tile, error fact, disabled row group | declared here; cited by the step report |
 
 ## 7. Gaps and decisions for part `a`

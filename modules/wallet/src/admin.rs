@@ -70,7 +70,7 @@ const CURRENCY_REVOKE: &str = "currency.revoke";
 /// The modes of the Grant-or-revoke form.
 pub(crate) const LEDGER_GRANT: &str = "ledger.grant";
 const LEDGER_REVOKE: &str = "ledger.revoke";
-/// The Currencies panel's tool (`when_empty`: the portal draws it on an empty catalog only).
+/// The Currencies panel's tool (`when_empty`: the portal draws it in every state, the empty catalog included).
 pub(crate) const CURRENCY_CREATE: &str = "currency.create";
 
 /// The namespace of every movement key the portal mints: `admin:<request id>`. Never under
