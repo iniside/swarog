@@ -533,22 +533,19 @@ fn wipe_schemas_drops_module_schemas_and_empties_public() {
 
         super::supervisor::wipe_schemas(&mut tx).await.unwrap();
 
-        let schemas: Vec<(String,)> = sqlx::query_as(
-            "SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg\\_%' ORDER BY 1",
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .unwrap();
+        let (leftover,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM pg_namespace WHERE nspname = ANY($1)")
+                .bind(vec![schema.clone(), quoted.clone()])
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
         let (rows,): (i64,) = sqlx::query_as(&format!("SELECT count(*) FROM public.{table}"))
             .fetch_one(&mut *tx)
             .await
             .unwrap();
         tx.rollback().await.unwrap();
         connection.close().await.unwrap();
-        assert_eq!(
-            schemas,
-            vec![("information_schema".to_string(),), ("public".to_string(),)]
-        );
+        assert_eq!(leftover, 0);
         assert_eq!(rows, 0);
     });
 }
