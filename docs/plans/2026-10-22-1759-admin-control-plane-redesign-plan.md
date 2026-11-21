@@ -2150,6 +2150,14 @@ The ports:
     - **15b** (Nb): the monolith and split crawls, the accept files of checklist §8
       (`economy.txt`, `player.wallet.txt` and the updated shared pages), and view fixes only
       where a crawl shows the portal drawing differently from the mockup.
+    - **15c** (owner, 2026-11-22): one purge-backlog attention item in `core/controlplane`
+      (title, pending count, oldest tombstone text, the sweep subscription id → `PanelBody`),
+      replacing the per-module copies in characters and wallet; drawn output unchanged.
+      Steps 16–24 call it instead of copying.
+    - **15d** (owner, 2026-11-22): the wallet spent tile caches for 60 s (`cache_ttl_s`,
+      as accounts' tiles); the vacuous `EXCLUDED_MODALS` wallet count assertion in
+      `tools/admindiff/src/tests.rs` goes (the crawl is the gate); the purge oldest-day
+      slice and characters' `counts_by_player` malformed-ref question become Known limits.
   - **Owner decision before dispatch (15a5):** which currency is "Embers". D4 names
     `gold/gems` as the real vocabulary; the audit points at research P's list and gives no
     recommendation.
