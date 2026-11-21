@@ -100,6 +100,10 @@
 {%- endif -%}
 {%- endmacro %}
 
+{#- A disabled action control's action id and refusal kind (`denied`, `not-implemented`,
+    `read-only`, `module-down`), both from its `ActionItem`; `tools/admindiff` reads them. -#}
+{%- macro refused(a) %} data-refused-action="{{ a.module }}/{{ a.id }}" data-refusal="{{ a.refusal }}"{% endmacro -%}
+
 {#- An action with no icon draws its label alone. -#}
 {%- macro action_content(a) -%}
 {%- if not a.icon %}{{ a.label }}
@@ -113,7 +117,7 @@
 {%- set look = "danger-ghost" if a.danger else {"primary": "primary", "ghost": "ghost"}[a.emphasis] or "" -%}
 {%- set c = (size ~ " " ~ look)|trim -%}
 {%- set content = action_content(a) -%}
-{%- if not a.enabled %}<button type="button" class="btn{{ ' ' ~ c if c }}" disabled title="{{ a.hint }}">{{ content }}</button>
+{%- if not a.enabled %}<button type="button" class="btn{{ ' ' ~ c if c }}" disabled title="{{ a.hint }}"{{ refused(a) }}>{{ content }}</button>
 {%- elif a.then == "link" %}<a class="btn{{ ' ' ~ c if c }}" href="{{ a.href }}" style="text-decoration:none">{{ content }}</a>
 {%- else %}<button type="button" class="btn{{ ' ' ~ c if c }}"{{ hx_action(a) }}>{{ content }}</button>
 {%- endif -%}
@@ -123,7 +127,7 @@
     danger's `danger-ghost` (pages-core.js:122,124). -#}
 {%- macro row_button(a) -%}
 {%- set c = "btn sm" ~ (" ghost" if a.emphasis == "ghost" else "") ~ (" danger-ghost" if a.danger else "") -%}
-{%- if not a.enabled %}<button type="button" class="{{ c }}" disabled title="{{ a.hint }}">{{ action_content(a) }}</button>
+{%- if not a.enabled %}<button type="button" class="{{ c }}" disabled title="{{ a.hint }}"{{ refused(a) }}>{{ action_content(a) }}</button>
 {%- elif a.then == "link" %}<a class="{{ c }}" href="{{ a.href }}" style="text-decoration:none">{{ action_content(a) }}</a>
 {%- else %}<button type="button" class="{{ c }}"{{ hx_action(a) }}>{{ action_content(a) }}</button>
 {%- endif -%}
@@ -131,8 +135,8 @@
 
 {#- `down`: the item's module is down; the item is drawn disabled with that reason. -#}
 {%- macro menu_item(a, down="") -%}
-{%- if down %}<div class="menu-item disabled{% if a.danger %} danger{% endif %}" title="{{ down }}">{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></div>
-{%- elif not a.enabled %}<div class="menu-item disabled{% if a.danger %} danger{% endif %}" title="{{ a.hint }}">{{ icon(a.icon or "right") }}<span>{{ a.label }}</span><span class="hint">{{ a.hint }}</span></div>
+{%- if down %}<div class="menu-item disabled{% if a.danger %} danger{% endif %}" title="{{ down }}"{{ refused(a) }}>{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></div>
+{%- elif not a.enabled %}<div class="menu-item disabled{% if a.danger %} danger{% endif %}" title="{{ a.hint }}"{{ refused(a) }}>{{ icon(a.icon or "right") }}<span>{{ a.label }}</span><span class="hint">{{ a.hint }}</span></div>
 {%- elif a.then == "link" %}<a class="menu-item{% if a.danger %} danger{% endif %}" href="{{ a.href }}" style="text-decoration:none">{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></a>
 {%- else %}<button type="button" class="menu-item{% if a.danger %} danger{% endif %}"{{ hx_action(a) }}>{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></button>
 {%- endif -%}
@@ -294,7 +298,7 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- else -%}
 {%- set c = "btn sm ghost" ~ (" danger-ghost" if a.danger else "") -%}
 {%- set shown -%}{% if a.icon %}{{ icon(a.icon) }}{% else %}{{ a.label }}{% endif %}{%- endset -%}
-{%- if a.enabled %}<button type="button" class="{{ c }}" title="{{ a.label }}"{{ hx_action(a) }}>{{ shown }}</button>{% else %}<button type="button" class="{{ c }}" disabled title="{{ a.hint }}">{{ shown }}</button>{% endif -%}
+{%- if a.enabled %}<button type="button" class="{{ c }}" title="{{ a.label }}"{{ hx_action(a) }}>{{ shown }}</button>{% else %}<button type="button" class="{{ c }}" disabled title="{{ a.hint }}"{{ refused(a) }}>{{ shown }}</button>{% endif -%}
 {%- endif -%}
 {%- endmacro %}
 

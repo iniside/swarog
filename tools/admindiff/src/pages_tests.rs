@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    boot_key, excluded_menu_id, lookup, mockup_pages, validate_excluded_modals, validate_lists, validate_menus, validate_tabs, with_tab,
+    boot_key, excluded_menu_id, lookup, mockup_pages, validate_excluded_modals, validate_lists, validate_menus, validate_mock_modal_hosts, validate_tabs,
+    with_tab,
     DrawnTabs, Lists, Menu, Modal, ModalWhy, Page, Route, EXCLUDED, EXCLUDED_TABS, LISTS, PAGE_MAP,
 };
 use crate::tests::ScratchDir;
@@ -574,6 +575,7 @@ fn validate_excluded_modals_rejects_a_modal_both_mapped_and_excluded() {
 #[test]
 fn the_production_modal_exclusions_are_valid() {
     validate_excluded_modals(&LISTS).expect("EXCLUDED_MODALS holds to PAGE_MAP and EXCLUDED_MENUS");
+    validate_mock_modal_hosts(&LISTS).expect("every EXCLUDED_MOCK_MODALS claim names a compared target");
     assert!(PAGE_MAP.iter().any(|p| p.modal.is_some()), "PAGE_MAP names a modal");
     for p in PAGE_MAP.iter().filter(|p| p.modal.is_some()) {
         assert!(p.id().contains(".modal.") && PAGE_MAP.iter().any(|q| q.hosts(&p.host())), "{}", p.id());

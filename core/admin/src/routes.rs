@@ -202,9 +202,9 @@ pub(crate) fn action_item(
     entity: Option<&EntityRef>,
 ) -> ActionItem {
     let url = action_url(module, &decl.id);
-    let (enabled, hint) = match actions::admit(operator, manifest, decl) {
-        Ok(()) => (true, None),
-        Err(refusal) => (false, Some(refusal.hint())),
+    let (enabled, hint, refusal) = match actions::admit(operator, manifest, decl) {
+        Ok(()) => (true, None, None),
+        Err(refusal) => (false, Some(refusal.hint()), Some(refusal.kind())),
     };
     let mut vals = BTreeMap::new();
     if !csrf.is_empty() {
@@ -225,6 +225,7 @@ pub(crate) fn action_item(
         url,
         enabled,
         hint,
+        refusal,
         then: render::then_name(&decl.then),
         href: match &decl.then {
             controlplane::Then::Link(link) => Some(render::link_url(link)),

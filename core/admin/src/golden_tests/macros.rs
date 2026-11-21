@@ -47,6 +47,7 @@ pub(super) const MACRO_CASES: &[MacroCase] = &[
         &["table_row_actions"],
     ),
     mc("primitives", "menu_item", "menu-item", &[], &["menu_row_actions"]),
+    mc("primitives", "refused", "data-refusal=\"", &[], &["tools_emphasis", "menu_row_actions_down"]),
     mc("primitives", "menu", "menu-group", &[], &["menu_row_actions"]),
     mc("primitives", "toast", "data-toast", &[], &["modal_result_toast"]),
     mc("primitives", "state_block", "state-icon", &[], &["state_empty", "state_error", "state_denied"]),

@@ -2234,7 +2234,9 @@ async fn a_row_menu_group_of_a_down_module_is_unavailable_and_disabled() {
     assert!(wallet_group.contains(r#"<div class="menu-group" data-state="error">"#), "{raw}");
     assert!(wallet_group.contains("<span>wallet</span>") && wallet_group.contains(unavailable), "{raw}");
     assert!(
-        wallet_group.contains(r#"<div class="menu-item disabled" title="wallet module unavailable">"#),
+        wallet_group.contains(
+            r#"<div class="menu-item disabled" title="wallet module unavailable" data-refused-action="wallet/grant" data-refusal="module-down">"#
+        ),
         "{raw}"
     );
     assert!(!wallet_group.contains("<button"), "a down module's item is not actionable: {raw}");

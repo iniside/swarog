@@ -66,9 +66,11 @@ USAGE:
             exclusion it does not draw is stale; any other fetched menu's modals are fetched for
             their status. It fails on an EXCLUDED_MOCK_MODALS claim its fetched host
             contradicts: an Action claim's action it does not draw, a Disabled claim's action it
-            draws an opener of or whose label no disabled control of it carries, and an Unseeded
-            claim's action it draws an opener of (an Absent claim names no action and is not
-            checked), and on a claim whose host is no crawl target; a claim whose host it did
+            draws an opener of, draws no disabled control of refused as not-implemented
+            (data-refused-action, data-refusal) or draws disabled for another reason, and an
+            Unseeded claim's action it draws an opener of (an Absent claim names no action and
+            is not checked), and, before fetching anything, on a claim whose host is no compared
+            page, tab or menu target; a claim whose host it did
             not fetch is printed as an UNCHECKED EXCLUDED_MOCK_MODALS <host> <opener> line. It fails, too, on a fetched page, its slots loaded, whose
             [data-palette] elements are other than one hidden .scrim (the shell's search
             palette, which admin.js opens) or that draws other than one [data-action=palette]

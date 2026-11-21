@@ -8,7 +8,7 @@ use super::*;
 // Actions
 // ---------------------------------------------------------------------------
 
-/// Disabled actions carry their reason in `hint`.
+/// Disabled actions carry their reason in `hint` and its kind in `refusal`.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ActionItem {
     pub(crate) module: String,
@@ -32,6 +32,9 @@ pub(crate) struct ActionItem {
     pub(crate) url: String,
     pub(crate) enabled: bool,
     pub(crate) hint: Option<String>,
+    /// Why the action is drawn disabled: its admission refusal, or `ModuleDown` in a menu group
+    /// whose module is down ([`menu_groups`]); `None` for an action drawn enabled.
+    pub(crate) refusal: Option<actions::RefusalKind>,
     /// `invoke`, `form`, `confirm` or `link`.
     pub(crate) then: &'static str,
     pub(crate) href: Option<String>,
@@ -85,13 +88,16 @@ pub(crate) struct MenuGroup {
     pub(crate) module: String,
     pub(crate) items: Vec<ActionItem>,
     /// The module's source missed the latest manifest refresh: the group is marked
-    /// unavailable and its items are drawn disabled.
+    /// unavailable and its items are drawn disabled, each with the `ModuleDown` refusal.
     pub(crate) down: bool,
 }
 
 pub(crate) fn menu_groups(items: Vec<ActionItem>, down: impl Fn(&str) -> bool) -> Vec<MenuGroup> {
     let mut groups: Vec<MenuGroup> = Vec::new();
-    for item in items {
+    for mut item in items {
+        if down(&item.module) {
+            item.refusal = Some(actions::RefusalKind::ModuleDown);
+        }
         match groups.iter_mut().find(|g| g.module == item.module) {
             Some(group) => group.items.push(item),
             None => groups.push(MenuGroup { module: item.module.clone(), down: down(&item.module), items: vec![item] }),

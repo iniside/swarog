@@ -65,7 +65,27 @@ pub(crate) enum Refusal {
     ReadOnly(Option<String>),
 }
 
+/// Why the portal draws an action control disabled: an admission [`Refusal`] or a menu group
+/// whose module is down. A disabled control carries it as `data-refusal` (`denied`,
+/// `not-implemented`, `read-only`, `module-down`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum RefusalKind {
+    Denied,
+    NotImplemented,
+    ReadOnly,
+    ModuleDown,
+}
+
 impl Refusal {
+    pub(crate) fn kind(&self) -> RefusalKind {
+        match self {
+            Refusal::Denied => RefusalKind::Denied,
+            Refusal::NotImplemented => RefusalKind::NotImplemented,
+            Refusal::ReadOnly(_) => RefusalKind::ReadOnly,
+        }
+    }
+
     /// The disabled control's hint and the refused request's message.
     pub(crate) fn hint(&self) -> String {
         match self {

@@ -391,19 +391,18 @@ impl<S: AsRef<str>> fmt::Display for MockOpener<S> {
 
 /// What the portal draws on its host for a mockup modal opener [`EXCLUDED_MOCK_MODALS`] lists. The
 /// crawl checks each claim on the host it fetched; a host it did not fetch (skipped or failed)
-/// checks none, and the crawl prints the claim UNCHECKED. A claim whose host is no crawl target
-/// ([`is_modal_host`]) fails the crawl.
+/// checks none, and the crawl prints the claim UNCHECKED. A claim whose host is no compared target
+/// fails [`validate_mock_modal_hosts`], before the crawl fetches anything.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortalModal<'a> {
     /// The portal modal action `<module>/<action>`, served at `/admin/_action/<module>/<action>`:
     /// the host draws an opener of it, whose modal the crawl fetches.
     Action(&'a str),
-    /// The portal action `<module>/<action>` drawn disabled, with no modal: the host draws a
-    /// disabled control (`button[disabled]`, `.menu-item.disabled`) labelled `label` and no
-    /// opener of the action. A disabled control carries no action URL (`primitives.html.tmpl`
-    /// `action_button`, `menu_item`), so the crawl checks the label, not that the control is
-    /// this action's.
-    Disabled { action: &'a str, label: &'a str },
+    /// The portal action `<module>/<action>` drawn disabled as not implemented, with no modal: the
+    /// host draws a disabled control (`button[disabled]`, `.menu-item.disabled`) whose
+    /// `data-refused-action` is the action and `data-refusal` is `not-implemented`, none of the
+    /// action with another `data-refusal`, and no opener of the action.
+    Disabled(&'a str),
     /// The portal modal action `<module>/<action>`, whose opener the portal draws only on data the
     /// dev fleet does not seed, as the reason says: the host draws no opener of it. That the
     /// portal has the action is not checked, as the crawl sees no opener of it.
@@ -417,7 +416,7 @@ impl<'a> PortalModal<'a> {
     /// The portal action `<module>/<action>` the claim names; none for [`PortalModal::Absent`].
     pub fn action(&self) -> Option<&'a str> {
         match *self {
-            PortalModal::Action(a) | PortalModal::Disabled { action: a, .. } | PortalModal::Unseeded(a) => Some(a),
+            PortalModal::Action(a) | PortalModal::Disabled(a) | PortalModal::Unseeded(a) => Some(a),
             PortalModal::Absent => None,
         }
     }
@@ -454,7 +453,7 @@ pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
     mock_modal("players.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
     mock_modal("players.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent, NO_LORE),
     mock_modal("player", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
-    mock_modal("player", MockOpener::Pages("suspend"), PortalModal::Disabled { action: "accounts/suspend-header", label: "Suspend" }, NO_SUSPEND),
+    mock_modal("player", MockOpener::Pages("suspend"), PortalModal::Disabled("accounts/suspend-header"), NO_SUSPEND),
     mock_modal("player.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
     mock_modal("player.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
     mock_modal("player.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
@@ -467,10 +466,9 @@ pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
     ),
 ];
 
-/// Accounts' row menu suspend and delete-account actions, as `modules/accounts/src/admin.rs`
-/// labels them.
-const SUSPEND: PortalModal = PortalModal::Disabled { action: "accounts/suspend", label: "Suspend account…" };
-const DELETE_ACCOUNT: PortalModal = PortalModal::Disabled { action: "accounts/delete-account", label: "Delete account…" };
+/// Accounts' row menu suspend and delete-account actions (`modules/accounts/src/admin.rs`).
+const SUSPEND: PortalModal = PortalModal::Disabled("accounts/suspend");
+const DELETE_ACCOUNT: PortalModal = PortalModal::Disabled("accounts/delete-account");
 
 const NO_SUSPEND: &str = "no suspension exists: suspend is new domain behaviour the plan excludes, so the portal has no suspend modal";
 const NO_DELETE: &str =
@@ -792,6 +790,25 @@ pub fn validate_excluded_modals(lists: &Lists) -> Result<()> {
     Ok(())
 }
 
+/// Checks that each `EXCLUDED_MOCK_MODALS` claim of `lists` names as its host a compared target
+/// of its page map ([`Page::is_compared_target`]), the hosts [`validate_mock_modals`] is handed:
+/// a claim on any other host, an `EXCLUDED_MENUS` menu among them, is never checked on either
+/// side. The crawl runs it before it fetches anything.
+pub fn validate_mock_modal_hosts(lists: &Lists) -> Result<()> {
+    let Lists { page_map, excluded_mock_modals, .. } = *lists;
+    let problems: Vec<String> = excluded_mock_modals
+        .iter()
+        .filter(|x| !page_map.iter().any(|p| p.is_compared_target() && p.id() == x.host))
+        .map(|MockModalExclusion { host, opener, .. }| {
+            format!("EXCLUDED_MOCK_MODALS {host} {opener} names host {host}, which is no PAGE_MAP page or tab that is not pending or menu target of one")
+        })
+        .collect();
+    if !problems.is_empty() {
+        bail!("modal drift:\n  {}", problems.join("\n  "));
+    }
+    Ok(())
+}
+
 /// Checks the mockup's modal openers against the modal entries and exclusions of `lists`,
 /// which its problems name `PAGE_MAP`, `EXCLUDED_MOCK_MODALS` and `EXCLUDED_MODALS`. `drawn` is
 /// each compared page, tab and menu target's id with the modal openers its mockup render draws
@@ -844,11 +861,6 @@ pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: 
         }
         if *opener == palette {
             problems.push(format!("EXCLUDED_MOCK_MODALS lists {host} {opener}, the shell palette PALETTE_ONCLICK declares on every host"));
-        }
-        if let PortalModal::Disabled { action, label } = portal {
-            if label.trim().is_empty() {
-                problems.push(format!("EXCLUDED_MOCK_MODALS {host} {opener} names no label of the disabled {action}"));
-            }
         }
         if let Some(action) = portal.action() {
             if !is_action_path(action) {

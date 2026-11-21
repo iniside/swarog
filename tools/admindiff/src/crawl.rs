@@ -18,10 +18,10 @@
 //! or menu does not draw fails as stale, `--allow-empty` or not: an opener sits in a page head,
 //! a panel tool, a row or a menu, so a page listing no row does not excuse a missing one. A claim
 //! is held to its fetched host the same way: an `Action` claim's host draws an opener of it, a
-//! `Disabled` claim's a disabled control with its label and no opener of it, an `Unseeded`
-//! claim's no opener of it. A claim whose host was not fetched is printed as an
-//! `UNCHECKED EXCLUDED_MOCK_MODALS <host> <opener>` line, and one whose host is no crawl target
-//! fails. Every fetched modal fails on a non-2xx answer, a toast, or a body
+//! `Disabled` claim's a disabled control of it refused as not implemented, none refused for
+//! another reason and no opener of it, an `Unseeded` claim's no opener of it. A claim whose host
+//! was not fetched is printed as an `UNCHECKED EXCLUDED_MOCK_MODALS <host> <opener>` line; one
+//! whose host is no compared target fails before anything is fetched. Every fetched modal fails on a non-2xx answer, a toast, or a body
 //! that is no `.scrim` around a `.modal`.
 //! Every other crawled page, one only the nav links, has the first menu of each kind and the
 //! first modal of each action it and those menus draw fetched once; the menu must answer 2xx,
@@ -53,7 +53,7 @@ use reqwest::{Client, StatusCode};
 use crate::assemble::{assemble, pending_slots};
 use crate::html::{self, find_all, find_in, Element, Node};
 use crate::pages::{
-    compared_hosts, excluded_menu_id, is_modal_host, validate_excluded_modals, with_tab, Lists, Menu, MockModalExclusion, Modal, Page, PortalModal, Route, LISTS,
+    compared_hosts, excluded_menu_id, validate_excluded_modals, validate_mock_modal_hosts, with_tab, Lists, Menu, MockModalExclusion, Modal, Page, PortalModal, Route, LISTS,
 };
 use crate::skeleton::{MENU_CLASS, MODAL_CLASS, ROOT_CLASS};
 
@@ -117,10 +117,12 @@ struct MenuBodies {
     status: Vec<(String, Vec<Node>)>,
 }
 
-/// [`run`] over `lists`: its page map, menu and modal exclusions; modal exclusions that fail
-/// [`validate_excluded_modals`] stop it before anything is fetched.
+/// [`run`] over `lists`: its page map, menu and modal exclusions; modal exclusions and
+/// `EXCLUDED_MOCK_MODALS` claims that fail [`validate_excluded_modals`] or
+/// [`validate_mock_modal_hosts`] stop it before anything is fetched.
 async fn run_with(cfg: &Config, lists: &Lists<'_>) -> Result<Outcome> {
     validate_excluded_modals(lists)?;
+    validate_mock_modal_hosts(lists)?;
     let page_map = lists.page_map;
     // A reused run dir keeps a marker from an earlier clean run; drop it before this run decides.
     let marker = cfg.out.join(CLEAN_MARKER);
@@ -405,28 +407,21 @@ fn first_modal_url(doc: &[Node], action: &str) -> Option<String> {
     modal_actions(doc).into_iter().find(|(a, _)| a == action).map(|(_, url)| url)
 }
 
-/// The label of each disabled control `doc` draws, a `button[disabled]` or a
-/// `.menu-item.disabled`: its text less its `.hint` (`primitives.html.tmpl` `action_button`,
-/// `row_button`, `menu_item`).
-fn disabled_labels(doc: &[Node]) -> Vec<String> {
+/// The `data-refusal` of a control the portal draws disabled because its action is declared not
+/// implemented (`core/admin` `RefusalKind::NotImplemented`).
+const NOT_IMPLEMENTED: &str = "not-implemented";
+
+/// The refusal kind (`data-refusal`) of each disabled control `doc` draws of `action`
+/// (`data-refused-action`), a `button[disabled]` or a `.menu-item.disabled`, in document order;
+/// a control with no `data-refusal` gives `""` (`primitives.html.tmpl` `refused`).
+fn refusals_of(doc: &[Node], action: &str) -> Vec<String> {
     let mut controls = Vec::new();
-    let disabled = |e: &Element| (e.tag == "button" && e.attr("disabled").is_some()) || (e.has_class("menu-item") && e.has_class("disabled"));
+    let disabled = |e: &Element| {
+        let control = (e.tag == "button" && e.attr("disabled").is_some()) || (e.has_class("menu-item") && e.has_class("disabled"));
+        control && e.attr("data-refused-action") == Some(action)
+    };
     find_all(doc, &disabled, &mut controls);
-    controls
-        .iter()
-        .map(|e| {
-            let parts: Vec<String> = e
-                .children
-                .iter()
-                .filter_map(|n| match n {
-                    Node::Text(t) => Some(html::decode(t)),
-                    Node::Element(c) if !c.has_class("hint") => Some(c.text()),
-                    Node::Element(_) => None,
-                })
-                .collect();
-            html::collapse(&parts.join(" "))
-        })
-        .collect()
+    controls.iter().map(|e| e.attr("data-refusal").unwrap_or_default().to_string()).collect()
 }
 
 /// Whether `doc` lists a row: a `tr` in a `tbody`. An empty portal table draws an empty
@@ -540,7 +535,8 @@ async fn check_menu_kinds(
 /// its fetched host as its [`PortalModal`] variant says. A host that was not fetched
 /// (`--allow-empty` skipped it, or it failed) cannot make an exclusion stale or a claim false;
 /// each claim of it is printed as an `UNCHECKED EXCLUDED_MOCK_MODALS <host> <opener>` line and
-/// pushed to `unchecked`. A claim whose host is no crawl target ([`is_modal_host`]) fails.
+/// pushed to `unchecked`. [`validate_mock_modal_hosts`] has failed a claim whose host is no
+/// compared target before anything was fetched.
 async fn check_modal_actions(
     client: &Client,
     cfg: &Config,
@@ -550,7 +546,7 @@ async fn check_modal_actions(
     failures: &mut Vec<String>,
     unchecked: &mut Vec<String>,
 ) {
-    let Lists { page_map, excluded_menus, excluded_modals, excluded_mock_modals, .. } = *lists;
+    let Lists { page_map, excluded_modals, excluded_mock_modals, .. } = *lists;
     let pages = compared_hosts(page_map);
     let (compared, status): (Vec<_>, Vec<_>) = crawled.iter().partition(|(p, _)| pages.contains(p));
     let compared: Vec<&(String, Vec<Node>)> = compared.into_iter().chain(&menus.compared).collect();
@@ -601,12 +597,6 @@ async fn check_modal_actions(
     }
     for MockModalExclusion { host, opener, portal, .. } in excluded_mock_modals {
         let claim = format!("EXCLUDED_MOCK_MODALS {host} {opener}");
-        if !is_modal_host(page_map, excluded_menus, host) {
-            failures.push(format!(
-                "{claim} names host {host}, which is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu"
-            ));
-            continue;
-        }
         // A host that was not fetched, skipped or failed, has nothing to compare it with.
         let Some((_, doc)) = compared.iter().copied().find(|(p, _)| p == host) else {
             println!("UNCHECKED {claim}");
@@ -618,12 +608,16 @@ async fn check_modal_actions(
             PortalModal::Action(action) if !draws(action) => {
                 failures.push(format!("{claim} says the portal opens {action}, which {host} does not draw"));
             }
-            PortalModal::Disabled { action, label } => {
+            PortalModal::Disabled(action) => {
                 if draws(action) {
                     failures.push(format!("{claim} says the portal draws {action} disabled, but {host} draws an opener of it"));
                 }
-                if !disabled_labels(doc).iter().any(|l| l == label) {
-                    failures.push(format!("{claim} says the portal draws {action} disabled as {label:?}, but {host} draws no disabled control labelled so"));
+                let refusals = refusals_of(doc, action);
+                if !refusals.iter().any(|k| k == NOT_IMPLEMENTED) {
+                    failures.push(format!("{claim} says the portal draws {action} disabled as {NOT_IMPLEMENTED}, but {host} draws no disabled control of it refused so"));
+                }
+                for kind in refusals.iter().filter(|k| *k != NOT_IMPLEMENTED) {
+                    failures.push(format!("{claim} says the portal draws {action} disabled as {NOT_IMPLEMENTED}, but {host} draws it disabled as {kind:?}"));
                 }
             }
             PortalModal::Unseeded(action) if draws(action) => failures.push(format!(

@@ -132,8 +132,8 @@ fn menu_body_in(page_map: &[Page], host: &str) -> String {
 /// The menu golden `golden` drawing only the modal openers `host` declares: the golden's own
 /// `hx-get` openers are drawn as `hx-post` (`Invoke`) buttons, and one opener is added for
 /// each `PAGE_MAP` modal entry and [`EXCLUDED_MODALS`] entry `host` hosts, at the end of the
-/// `.menu` root, after the disabled item of each [`EXCLUDED_MOCK_MODALS`] `Disabled` claim of
-/// `host` ([`disabled_item`]). A host no entry names, a status-only menu's, gets no opener at all.
+/// `.menu` root, after the not implemented item of each [`EXCLUDED_MOCK_MODALS`] `Disabled`
+/// claim of `host` ([`disabled_item`]). A host no entry names, a status-only menu's, gets no opener at all.
 fn declared_menu(golden: &str, host: &str) -> String {
     declared_menu_in(PAGE_MAP, golden, host)
 }
@@ -144,29 +144,31 @@ fn declared_menu_in(page_map: &[Page], golden: &str, host: &str) -> String {
     let mapped = page_map.iter().filter(|p| p.host().id() == host).filter_map(|p| p.modal.map(|m| m.action_path()));
     let excluded = EXCLUDED_MODALS.iter().filter(|(h, _, _)| *h == host).map(|(_, action, _)| action.to_string());
     let openers: String = mapped.chain(excluded).map(|a| modal_button(&modal_url(&a, host))).collect();
-    let disabled: String = disabled_labels(host).map(disabled_item).collect();
+    let disabled: String = disabled_actions(host).map(|a| disabled_item(a, "not-implemented")).collect();
     in_menu(&body, &format!("{disabled}{openers}"))
 }
 
-/// The label of each production [`EXCLUDED_MOCK_MODALS`] `Disabled` claim of `host`.
-fn disabled_labels(host: &str) -> impl Iterator<Item = &'static str> + '_ {
+/// The action of each production [`EXCLUDED_MOCK_MODALS`] `Disabled` claim of `host`.
+fn disabled_actions(host: &str) -> impl Iterator<Item = &'static str> + '_ {
     EXCLUDED_MOCK_MODALS.iter().filter(move |x| x.host == host).filter_map(|x| match x.portal {
-        PortalModal::Disabled { label, .. } => Some(label),
+        PortalModal::Disabled(action) => Some(action),
         _ => None,
     })
 }
 
-/// A not implemented row menu action labelled `label`, as the portal's `menu_item` draws it.
-fn disabled_item(label: &str) -> String {
+/// Row menu action `action` (`<module>/<action>`) drawn disabled with refusal `kind`, as the
+/// portal's `menu_item` draws it.
+fn disabled_item(action: &str, kind: &str) -> String {
     format!(
-        r#"<div class="menu-item disabled danger" title="Not implemented yet"><svg class="i " viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 14"/></svg><span>{label}</span><span class="hint">Not implemented yet</span></div>"#
+        r#"<div class="menu-item disabled danger" title="x" data-refused-action="{action}" data-refusal="{kind}"><svg class="i " viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 14"/></svg><span>{action}</span><span class="hint">x</span></div>"#
     )
 }
 
-/// A not implemented page head action labelled `label`, as the portal's `action_button` draws it.
-fn disabled_button(label: &str) -> String {
+/// Page head action `action` (`<module>/<action>`) drawn disabled with refusal `kind`, as the
+/// portal's `action_button` draws it.
+fn disabled_button(action: &str, kind: &str) -> String {
     format!(
-        r#"<button type="button" class="btn sm danger-ghost" disabled title="Not implemented yet"><svg class="i " viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 14"/></svg> {label}</button>"#
+        r#"<button type="button" class="btn sm danger-ghost" disabled title="x" data-refused-action="{action}" data-refusal="{kind}"><svg class="i " viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 14"/></svg> {action}</button>"#
     )
 }
 
@@ -199,7 +201,7 @@ const HEAD_ACTIONS: &[&str] = &["mail/test-send"];
 /// The modal openers page or tab `page` draws, as the portal's `hx_action` writes them: one for
 /// each `PAGE_MAP` modal entry and each [`EXCLUDED_MODALS`] entry it hosts whose action is a
 /// page head action ([`HEAD_ACTIONS`]) when `head` holds, a panel's otherwise; the head draws
-/// the disabled button of each [`EXCLUDED_MOCK_MODALS`] `Disabled` claim of `page` first
+/// the not implemented button of each [`EXCLUDED_MOCK_MODALS`] `Disabled` claim of `page` first
 /// ([`disabled_button`]).
 fn modal_buttons(page: &str, head: bool) -> String {
     modal_buttons_in(PAGE_MAP, page, head)
@@ -211,7 +213,8 @@ fn modal_buttons_in(page_map: &[Page], page: &str, head: bool) -> String {
     let excluded = EXCLUDED_MODALS.iter().filter(|(host, _, _)| *host == page).map(|(_, action, _)| action.to_string());
     let openers: String =
         mapped.chain(excluded).filter(|a| HEAD_ACTIONS.contains(&a.as_str()) == head).map(|a| modal_button(&modal_url(&a, page))).collect();
-    let disabled: String = if head { disabled_labels(page).map(disabled_button).collect() } else { String::new() };
+    let disabled: String =
+        if head { disabled_actions(page).map(|a| disabled_button(a, "not-implemented")).collect() } else { String::new() };
     format!("{disabled}{openers}")
 }
 
@@ -1778,13 +1781,13 @@ async fn a_tab_page_menu_target_holds_its_modals_to_the_page_rules() {
 }
 
 /// Each production `EXCLUDED_MOCK_MODALS` claim holds on the healthy site, which draws the
-/// `Disabled` claims' controls and no opener of the `Unseeded` mail cancel. A `Disabled` claim
-/// fails when its host, a page head or a menu, draws no disabled control with its label, or
-/// draws an opener of its action; the `Unseeded` claim fails when mail draws a cancel opener.
-/// Neither drawn opener fails as undeclared too: the claim names it.
+/// `Disabled` claims' controls refused as not implemented and no opener of the `Unseeded` mail
+/// cancel. A `Disabled` claim fails when its host, a page head or a menu, draws no disabled
+/// control of its action, or draws an opener of its action; the `Unseeded` claim fails when
+/// mail draws a cancel opener. Neither drawn opener fails as undeclared too: the claim names it.
 ///
 /// The healthy site draws its disabled controls from the production `EXCLUDED_MOCK_MODALS`
-/// labels ([`disabled_labels`]), so its clean crawl proves the checker, not that the claims
+/// actions ([`disabled_actions`]), so its clean crawl proves the checker, not that the claims
 /// hold on the portal; a live crawl of the dev fleet proves that.
 #[tokio::test]
 async fn each_portal_claim_of_a_mockup_modal_exclusion_holds_on_its_host() {
@@ -1795,17 +1798,19 @@ async fn each_portal_claim_of_a_mockup_modal_exclusion_holds_on_its_host() {
 
     let healthy = Site::healthy();
     let head = follower_route("player");
-    let c = crawl(healthy.clone().with(&head, without(&healthy, &head, &disabled_button("Suspend"))), false).await;
+    let suspend = disabled_button("accounts/suspend-header", "not-implemented");
+    let c = crawl(healthy.clone().with(&head, without(&healthy, &head, &suspend)), false).await;
     c.assert_failed_with(
-        "player draws no Suspend",
-        "EXCLUDED_MOCK_MODALS player PAGES.suspend says the portal draws accounts/suspend-header disabled as \"Suspend\", but player draws no disabled control labelled so",
+        "player draws no suspend-header",
+        "EXCLUDED_MOCK_MODALS player PAGES.suspend says the portal draws accounts/suspend-header disabled as not-implemented, but player draws no disabled control of it refused so",
     );
 
     let menu = menu_url("player", "players");
-    let c = crawl(healthy.clone().with(&menu, without(&healthy, &menu, &disabled_item("Delete account…"))), false).await;
+    let delete = disabled_item("accounts/delete-account", "not-implemented");
+    let c = crawl(healthy.clone().with(&menu, without(&healthy, &menu, &delete)), false).await;
     c.assert_failed_with(
-        "the players menu draws no Delete account…",
-        "EXCLUDED_MOCK_MODALS players.menu.user PAGES.deleteAccount says the portal draws accounts/delete-account disabled as \"Delete account…\", but players.menu.user draws no disabled control labelled so",
+        "the players menu draws no delete-account",
+        "EXCLUDED_MOCK_MODALS players.menu.user PAGES.deleteAccount says the portal draws accounts/delete-account disabled as not-implemented, but players.menu.user draws no disabled control of it refused so",
     );
 
     let body = healthy.routes.get(&menu).expect("the players menu").body.clone();
@@ -1826,20 +1831,46 @@ async fn each_portal_claim_of_a_mockup_modal_exclusion_holds_on_its_host() {
     assert!(!c.failures.iter().any(|f| f.contains(undeclared)), "{:#?}", c.failures);
 }
 
-/// A disabled control's label is its text less its `.hint`: a menu item whose hint alone
-/// carries the label, or a disabled control whose label only starts with it, holds no claim.
+/// A `Disabled` claim holds on a disabled control of its action refused as not implemented,
+/// wherever the host draws it: the players menu with its delete-account item moved to the head
+/// of the menu crawls clean.
 #[tokio::test]
-async fn a_disabled_claim_matches_the_whole_label_and_not_the_hint() {
+async fn a_disabled_claim_holds_on_a_not_implemented_control_of_its_action() {
     let healthy = Site::healthy();
     let menu = menu_url("player", "players");
-    let item = disabled_item("Delete account…");
+    let item = disabled_item("accounts/delete-account", "not-implemented");
     let body = without(&healthy, &menu, &item).body;
-    let hint_only = r#"<div class="menu-item disabled" title="x"><span>Remove</span><span class="hint">Delete account…</span></div>"#;
-    let longer = disabled_item("Delete account… now");
-    for (why, control) in [("the hint", hint_only.to_string()), ("a longer label", longer)] {
-        let c = crawl(healthy.clone().with(&menu, ok(in_menu(&body, &control))), false).await;
-        c.assert_failed_with(why, "says the portal draws accounts/delete-account disabled as \"Delete account…\"");
+    let at = body.find('>').expect("the .menu root opens") + 1;
+    let moved = format!("{}{item}{}", &body[..at], &body[at..]);
+    crawl(healthy.with(&menu, ok(moved)), false).await.assert_clean("delete-account drawn not implemented at the menu head");
+}
+
+/// A `Disabled` claim holds only for a control refused as not implemented: the players menu
+/// drawing delete-account disabled for any other reason, or with no refusal kind, fails the
+/// claim naming the host, the action and the kind, alone or beside a not implemented control of
+/// it; a not implemented control of another action holds no claim.
+#[tokio::test]
+async fn a_disabled_claim_fails_on_a_control_refused_for_another_reason() {
+    let healthy = Site::healthy();
+    let menu = menu_url("player", "players");
+    let action = "accounts/delete-account";
+    let item = disabled_item(action, "not-implemented");
+    let body = without(&healthy, &menu, &item).body;
+    let claim = "EXCLUDED_MOCK_MODALS players.menu.user PAGES.deleteAccount says the portal draws accounts/delete-account disabled as not-implemented";
+    let missing = format!("{claim}, but players.menu.user draws no disabled control of it refused so");
+    for kind in ["denied", "read-only", "module-down", ""] {
+        let other = format!("{claim}, but players.menu.user draws it disabled as {kind:?}");
+        let c = crawl(healthy.clone().with(&menu, ok(in_menu(&body, &disabled_item(action, kind)))), false).await;
+        c.assert_failed_with(kind, &other);
+        assert!(c.failures.iter().any(|f| f == &missing), "{kind}: {:#?}", c.failures);
+        let both = in_menu(&body, &format!("{item}{}", disabled_item(action, kind)));
+        let c = crawl(healthy.clone().with(&menu, ok(both)), false).await;
+        c.assert_failed_with(&format!("{kind} beside not-implemented"), &other);
+        assert!(!c.failures.iter().any(|f| f == &missing), "{kind}: {:#?}", c.failures);
     }
+    let elsewhere = disabled_item("accounts/delete-other", "not-implemented");
+    let c = crawl(healthy.clone().with(&menu, ok(in_menu(&body, &elsewhere))), false).await;
+    c.assert_failed_with("another action's control", &missing);
 }
 
 /// An `Action` claim declares the action it names on its host: drawn there, it crawls clean
@@ -1875,17 +1906,26 @@ async fn a_claim_on_an_unfetched_host_is_reported_unchecked() {
     assert_eq!(c.unchecked, want);
 }
 
-/// A claim whose host is no crawl target fails, naming the claim and the host, and is not
-/// reported UNCHECKED; the production claims crawl clean.
+/// A claim whose host is no compared page, tab or menu target fails before anything is
+/// fetched, naming the claim and the host, and as the only problem: the production claims
+/// beside it pass. An `EXCLUDED_MENUS` menu of a compared page is no such host either.
 #[tokio::test]
 async fn a_claim_on_a_host_that_is_no_crawl_target_fails() {
-    let claim = MockModalExclusion { host: "nowhere", opener: MockOpener::Pages("kick"), portal: PortalModal::Absent, why: "why" };
-    let claims: Vec<_> = unmapped_claims(PAGE_MAP).into_iter().chain([claim]).collect();
-    let lists = Lists { excluded_mock_modals: &claims, ..LISTS };
-    let c = crawl_lists_into(ScratchDir::new("crawl"), Site::healthy(), &lists, false, false).await;
-    c.assert_failed_with(
-        "nowhere is no crawl target",
-        "EXCLUDED_MOCK_MODALS nowhere PAGES.kick names host nowhere, which is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu",
-    );
-    assert!(c.unchecked.is_empty(), "{:?}", c.unchecked);
+    let (page, kind, _) = EXCLUDED_MENUS[0];
+    for host in ["nowhere".to_string(), excluded_menu_id(page, kind)] {
+        let host: &str = &host;
+        let claim = MockModalExclusion { host, opener: MockOpener::Pages("kick"), portal: PortalModal::Absent, why: "why" };
+        let claims: Vec<_> = unmapped_claims(PAGE_MAP).into_iter().chain([claim]).collect();
+        let lists = Lists { excluded_mock_modals: &claims, ..LISTS };
+        let c = crawl_lists_into(ScratchDir::new("crawl"), Site::healthy(), &lists, false, false).await;
+        let want = format!(
+            "modal drift:\n  EXCLUDED_MOCK_MODALS {host} PAGES.kick names host {host}, which is no PAGE_MAP page or tab that is not pending or menu target of one"
+        );
+        match &c.result {
+            Err(e) => assert_eq!(format!("{e:#}"), want),
+            other => panic!("{host}: expected {want:?}, got {other:?}"),
+        }
+        assert!(c.server.requests().is_empty(), "{host}: validated before anything is fetched: {:?}", c.server.requests());
+        assert!(!c.clean_marker(), "{host}");
+    }
 }
