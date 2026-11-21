@@ -19,8 +19,8 @@
 //! [`EXCLUDED_MODALS`] or is the action of an [`EXCLUDED_MOCK_MODALS`] claim of that host
 //! (`crawl`); on the mockup side an entry's opener must append a `.scrim`.
 //! The mockup's modals are inventoried from its renders of every page, tab and menu target that
-//! is not pending: every `onclick` body drawn there runs in the harness, and each `.scrim` it
-//! appends is a modal of the `PAGES` function that appended it, or of the body when no `PAGES`
+//! is not pending: every `onclick` body drawn there runs in the harness, and each element a
+//! `UI.modal`, `UI.confirm` or `REG.openSearch` call draws that it appends is a modal of the `PAGES` function that appended it, or of the body when no `PAGES`
 //! call did ([`MockOpener`]); each is the shell palette ([`PALETTE_ONCLICK`]), a modal entry of
 //! that host or in [`EXCLUDED_MOCK_MODALS`], which names what the portal draws instead
 //! ([`PortalModal`], a claim the crawl checks), and an `EXCLUDED_MODALS` reason that the
@@ -363,16 +363,20 @@ pub const NON_TAB_KEYS: &[(&str, &str)] = &[(
 )];
 
 /// The `UI.<name>` calls that append an element to the body that no recorded opener draws
-/// (`UI.openMenu`, `UI.popover`, a `.scrim` modal), each with the reason the element is not
+/// (`UI.openMenu`, `UI.popover`, the modal openers `UI.modal`, `UI.confirm` and `REG.openSearch`), each with the reason the element is not
 /// compared: an element no recorded opener and no listed call drew fails ([`crate::mock::probe`]),
 /// and an entry that drew no element a compared render's body appended is stale, as is one with no
 /// reason, one listed twice and one that is no `UI.<name>`.
 pub const EXCLUDED_MOCK_APPENDS: &[(&str, &str)] = &[(
     "UI.toast",
     "a transient status line (bundle.js toast) that reports a mockup action's outcome and removes itself after 2.6 s; it is no page, menu or modal the diff compares",
+), (
+    "UI.retry",
+    "the module-down banner's Retry button (bundle.js retry, drawn on index's wallet banner) reports its outcome 0.9 s later through the bundle's own toast, a transient status line; it is no page, menu or modal the diff compares",
 )];
 
-/// What opened a `.scrim` an `onclick` body of a mockup render appended in the harness: the
+/// What opened a modal (an element a `UI.modal`, `UI.confirm` or `REG.openSearch` call drew) an
+/// `onclick` body of a mockup render appended in the harness: the
 /// `PAGES` function whose call by the body appended it, or the body itself, verbatim, when it was
 /// appended outside every such call (`REG.openSearch()`, an inline `UI.confirm`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

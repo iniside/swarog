@@ -8,8 +8,9 @@
 //! ok state: the harness sets `UI.state.force = "ok"`, as the mockup's state picker
 //! (`REG.setForce`) does, before `REG.mount`. The modals, menus and tabs a render draws come from
 //! the renders too: [`probe`] runs every `onclick` body a render draws ([`onclicks`]), as
-//! written, on its page mounted in a fresh harness mockup, and records what it does: each `.scrim`
-//! it appends, named by the `PAGES` function whose call appended it or by the body, each
+//! written, on its page mounted in a fresh harness mockup, and records what it does: each modal
+//! it appends (an element a `UI.modal`, `UI.confirm` or `REG.openSearch` call drew), named by the
+//! `PAGES` function whose call appended it or by the body, each
 //! `UI.openMenu` call, each `PAGES` key it assigns and each element it appends that no recorded
 //! opener draws; a body that throws fails by name. No `onclick` text is parsed, so every spelling
 //! of a call is seen.
@@ -49,7 +50,8 @@ const SCRIPTS: &[&str] = &[
 // `UI.confirm` calls) is written as `<div class="scrim">` around its HTML. The global `UI` is an
 // accessor that wraps every function of whatever object a script assigns to it, before any script
 // can call or alias them, so each call through `UI` or an alias taken from it is a drawer of what
-// it appends, every defined menu id is recorded, and so is each `openMenu` call; with
+// it appends, every defined menu id is recorded, and so is each `openMenu` call; the global `REG`
+// is an accessor that wraps every function of its object the same way, as `REG.<name>`; with
 // `input.registry` no page mounts and the ids are written as JSON. The global `PAGES` is an
 // accessor that hands out a proxy of the object a script assigns to it, so every key written
 // through it or an alias taken from it after the scripts load is recorded. With `input.force` the
@@ -67,12 +69,13 @@ const SCRIPTS: &[&str] = &[
 // key written in the body phase is the body's own (`tab` with its value), one written in the mount
 // or render phase is assigned by a render. A probe of a mockup whose `UI.openMenu` is not the
 // recording wrapper (none, or replaced after `UI` was set) fails. Each body is written as
-// `{scrims, menus, tabs, keys, loose, excluded, rendered}`: one `scrims` entry per `.scrim` it
-// appended to the body, the name of the `PAGES` function that appended it or null when it was
+// `{scrims, menus, tabs, keys, loose, excluded, rendered}`: one `scrims` entry per element a
+// `MODAL_OPENERS` call drew that it appended to the body, the name of the `PAGES` function that appended it or null when it was
 // appended outside every such call; each `UI.openMenu` call as `[id, arg]` (arg null when it has
 // none); each `PAGES.tab` value; `keys` each other `PAGES` key it assigned, once each; `loose`
-// each element appended to the body, the mount's included, that no `UI.openMenu` or `UI.popover`
-// call drew, that is no `.scrim` and whose drawers name none of `input.appenders`, with whether
+// each element appended to the body, the mount's included, that no `MENU_OPENERS` or
+// `MODAL_OPENERS` call drew and whose drawers name none of `input.appenders`, whatever its class,
+// with whether
 // the mount appended it and its drawers; `excluded` each of `input.appenders` that drew an
 // element, the innermost drawer named; `rendered` each of `tab` and the listed keys a render
 // assigned, once each; or as `{error, rendered}` when it threw.
@@ -105,6 +108,10 @@ const element = () => {
 };
 const hasClass = (el, name) => !!el && typeof el.className === "string" && el.className.split(/\s+/).includes(name);
 const MAX_TIMER_ROUNDS = 10;
+// The calls whose appended element is a menu or a popover, and those whose appended element is a
+// modal (`UI.confirm` calls the bundle's `modal` directly, past the wrapper).
+const MENU_OPENERS = ["UI.openMenu", "UI.popover"];
+const MODAL_OPENERS = ["UI.modal", "UI.confirm", "REG.openSearch"];
 // A click on `el`: its target and current target.
 const click = el => ({ stopPropagation: inert, preventDefault: inert, currentTarget: el, target: el });
 // The attribution context outside every recorded call: the scripts loading, the harness setting up.
@@ -155,32 +162,34 @@ function boot() {
     innerHeight: 800,
   };
   ctx.window = ctx;
-  let ui;
-  Object.defineProperty(ctx, "UI", {
-    configurable: true, enumerable: true,
-    get: () => ui,
-    set: v => {
-      ui = v;
-      if (!v || typeof v !== "object") return;
-      for (const name of Object.keys(v)) {
-        const fn = v[name];
-        if (typeof fn !== "function" || fn[RECORDS]) continue;
-        const drawer = "UI." + name;
-        const wrapped = function (...args) {
-          if (name === "defineMenu") m.defined.push(String(args[0]));
-          if (name === "openMenu") {
-            const arg = args[2];
-            m.menus.push({ call: [String(args[1]), arg === undefined || arg === null ? null : String(arg)], at: m.at });
-          }
-          const outer = m.at;
-          m.at = { ...outer, drawers: [...outer.drawers, drawer] };
-          try { return fn.apply(this, args); } finally { m.at = outer; }
-        };
-        wrapped[RECORDS] = true;
-        v[name] = wrapped;
-      }
-    },
-  });
+  const drawers = (v, prefix) => {
+    if (!v || typeof v !== "object") return;
+    for (const name of Object.keys(v)) {
+      const fn = v[name];
+      if (typeof fn !== "function" || fn[RECORDS]) continue;
+      const drawer = prefix + "." + name;
+      const wrapped = function (...args) {
+        if (drawer === "UI.defineMenu") m.defined.push(String(args[0]));
+        if (drawer === "UI.openMenu") {
+          const arg = args[2];
+          m.menus.push({ call: [String(args[1]), arg === undefined || arg === null ? null : String(arg)], at: m.at });
+        }
+        const outer = m.at;
+        m.at = { ...outer, drawers: [...outer.drawers, drawer] };
+        try { return fn.apply(this, args); } finally { m.at = outer; }
+      };
+      wrapped[RECORDS] = true;
+      v[name] = wrapped;
+    }
+  };
+  for (const prefix of ["UI", "REG"]) {
+    let held;
+    Object.defineProperty(ctx, prefix, {
+      configurable: true, enumerable: true,
+      get: () => held,
+      set: v => { held = v; drawers(v, prefix); },
+    });
+  }
   let pages;
   Object.defineProperty(ctx, "PAGES", {
     configurable: true, enumerable: true,
@@ -307,8 +316,8 @@ if (input.registry) {
     const scrims = [], loose = [], excluded = [];
     for (const a of m.appended) {
       const drawers = a.at.drawers;
-      if (drawers.includes("UI.openMenu") || drawers.includes("UI.popover")) continue;
-      if (hasClass(a.el, "scrim")) {
+      if (drawers.some(d => MENU_OPENERS.includes(d))) continue;
+      if (drawers.some(d => MODAL_OPENERS.includes(d))) {
         if (a.at.phase !== "mount") scrims.push(a.at.opener);
         continue;
       }
@@ -399,10 +408,11 @@ pub enum Onclicks {
 #[derive(Debug)]
 pub struct Probe {
     key: String,
-    /// Each `.scrim` a body appended, named by the `PAGES` function whose call by the body
+    /// Each modal (an element a `UI.modal`, `UI.confirm` or `REG.openSearch` call drew) a body
+    /// appended, named by the `PAGES` function whose call by the body
     /// appended it ([`MockOpener::Pages`]), or by the body itself when no such call did
     /// ([`MockOpener::Onclick`]); a body that calls two `PAGES` functions has a modal of each one
-    /// that appended a `.scrim`. Once each, in order.
+    /// that appended one. Once each, in order.
     pub modals: Vec<MockOpener<String>>,
     /// Each menu id a body opened through `UI.openMenu`, once each, in the order of the bodies,
     /// with the argument of the first such call (none when it passed none).
@@ -461,9 +471,9 @@ impl Probe {
 /// errors. A body that throws fails with its host and its text; one that re-renders the page is
 /// no error. A body that assigns a `PAGES` key other than `tab` that is not in
 /// `declared.non_tab_keys` fails naming its host, the key and its text. An element appended to
-/// the body that no `UI.openMenu` or `UI.popover` call drew, that is no `.scrim` (a modal of
-/// its opener) and that no `UI` call in `declared.appenders` drew fails naming its host, the
-/// element and the body, or the mount when the mount appended it. A `.tab` whose body assigns no
+/// the body that no recorded opener drew (a menu or popover of `UI.openMenu` or `UI.popover`, a
+/// modal of `UI.modal`, `UI.confirm` or `REG.openSearch`), whatever its class, and that no `UI`
+/// call in `declared.appenders` drew fails naming its host, the element and the body, or the mount when the mount appended it. A `.tab` whose body assigns no
 /// `PAGES.tab` and no declared key, a guarded assignment that does not run among them, fails, as
 /// does a `.tab` with no `onclick`, by host and element. A render (the mount, a timer it
 /// schedules, a re-render, a timer one schedules) that assigns `PAGES.tab` or a

@@ -93,7 +93,8 @@ USAGE:
             defines is neither a page map menu entry nor in pages::EXCLUDED_MOCK_MENUS. It fails
             on the mockup's modals too: every onclick body of a compared page, tab or menu
             target's mockup render runs, as written, on its page in node, and one that throws
-            fails by name; each .scrim one appends is a modal of the PAGES function whose call
+            fails by name; each element a UI.modal, UI.confirm or REG.openSearch call draws
+            that one appends is a modal of the PAGES function whose call
             appended it, or of the body when no PAGES call did, which must be the shell palette
             pages::PALETTE_ONCLICK declares once for every host, a page map modal entry of that
             host or in pages::EXCLUDED_MOCK_MODALS (an opener drawn only on pending or excluded
@@ -106,8 +107,9 @@ USAGE:
             an EXCLUDED_MOCK_MODALS entry of another action, or a host with no compared render)
             fail. A probed body that assigns a PAGES key other than tab fails unless the key is
             in pages::NON_TAB_KEYS, and an element appended to the page body that no
-            UI.openMenu or UI.popover call drew, that is no .scrim and that no
-            pages::EXCLUDED_MOCK_APPENDS call drew fails naming its host; an entry of either
+            recorded opener drew (UI.openMenu, UI.popover or one of those modal openers),
+            whatever its class, and that no pages::EXCLUDED_MOCK_APPENDS call drew fails naming
+            its host; an entry of either
             list no compared render uses, with no reason, listed twice or malformed is stale. A
             .tab whose body assigns no PAGES.tab and no NON_TAB_KEYS key fails, as does a .tab
             with no onclick and a render (the mount, a timer it schedules, a re-render, or a
@@ -297,8 +299,8 @@ pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
 /// draws against the page map's menu entries and `excluded_mock_menus` ([`pages::validate_menus`]); a menu
 /// entry's render fails when its page draws no such menu, and a modal entry's, a page's or a
 /// menu's, when its opener is no function or appends no `.scrim`. The modal openers each compared
-/// page, tab and menu target ([`pages::Page::is_compared_target`]) draws (each `.scrim` an `onclick` body its
-/// render draws appends, run in the harness on its page, [`mock::probe`]; one that throws fails) are
+/// page, tab and menu target ([`pages::Page::is_compared_target`]) draws (each modal, an element a `UI.modal`, `UI.confirm`
+/// or `REG.openSearch` call drew, an `onclick` body its render draws appends, run in the harness on its page, [`mock::probe`]; one that throws fails) are
 /// checked against the shell palette (`palette_onclick`), the page map's modal entries,
 /// `excluded_mock_modals` and the mockup facts of `excluded_modals` ([`pages::validate_mock_modals`]). A probed body
 /// that assigns a `PAGES` key other than `tab` not in `non_tab_keys` fails, and so does an element

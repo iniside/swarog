@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::mock::mock_tests::FakeRepo;
 use crate::pages::{
-    Lists, MockModalExclusion, MockOpener, Modal, ModalWhy, Page, PortalModal, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS, LISTS,
-    PAGE_MAP, PALETTE_ONCLICK,
+    Lists, MockModalExclusion, MockOpener, Modal, ModalWhy, Page, PortalModal, EXCLUDED_MOCK_APPENDS, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS,
+    LISTS, NON_TAB_KEYS, PAGE_MAP, PALETTE_ONCLICK,
 };
 use crate::{crawl, parse_args, run_diff, validate_renders, validated_mockup, Command, DEFAULT_BASE_URL, DEFAULT_USER};
 
@@ -260,13 +260,15 @@ fn the_real_mockup_draws_only_declared_tabs() {
     assert_eq!(e, "tab drift:\n  mockup tab player.wallet is in neither PAGE_MAP nor EXCLUDED_TABS");
 }
 
-/// The real mockup, rendered through node: a `NON_TAB_KEYS` key no `.tab` a compared render draws
-/// assigns is stale. `repoTab` is assigned only on lore-repo, which no page map entry compares.
+/// The real mockup, rendered through node: a `NON_TAB_KEYS` key no onclick a compared render
+/// draws assigns is stale. `repoTab` is assigned only on lore-repo, which no page map entry
+/// compares; mail's `mailTab` is assigned.
 #[test]
 fn a_non_tab_key_no_compared_tab_assigns_is_stale() {
     let repo = crate::repo_root();
-    let e = format!("{:#}", renders(&repo, &Lists { non_tab_keys: &[("repoTab", "lore-repo's file tabs")], ..LISTS }).expect_err("repoTab is stale"));
-    assert_eq!(e, "tab drift:\n  NON_TAB_KEYS lists PAGES.repoTab, which no .tab a compared render draws assigns");
+    let keys = [NON_TAB_KEYS[0], ("repoTab", "lore-repo's file tabs")];
+    let e = format!("{:#}", renders(&repo, &Lists { non_tab_keys: &keys, ..LISTS }).expect_err("repoTab is stale"));
+    assert_eq!(e, "tab drift:\n  NON_TAB_KEYS lists PAGES.repoTab, which no onclick a compared render draws assigns");
 }
 
 /// The clean twin of [`a_non_tab_key_no_compared_tab_assigns_is_stale`] on the stand-in: a listed
@@ -276,9 +278,46 @@ fn a_non_tab_key_no_compared_tab_assigns_is_stale() {
 fn a_non_tab_key_a_compared_tab_assigns_is_not_stale() {
     let repo_tab = r#"<button class="tab" onclick="PAGES.repoTab='files';REG.render()">files</button>"#;
     let repo = FakeRepo::new("renders-non-tab-key", &mock_html(&format!("{}{repo_tab}", body(true))));
-    renders(repo.path(), &Lists { non_tab_keys: &[("repoTab", "another page's tab state")], ..LISTS }).expect("repoTab is assigned");
-    let e = format!("{:#}", renders(repo.path(), &Lists { non_tab_keys: &[("repoTab", " ")], ..LISTS }).expect_err("no reason"));
+    renders(repo.path(), &Lists { non_tab_keys: &[NON_TAB_KEYS[0], ("repoTab", "another page's tab state")], ..LISTS }).expect("repoTab is assigned");
+    let e = format!("{:#}", renders(repo.path(), &Lists { non_tab_keys: &[NON_TAB_KEYS[0], ("repoTab", " ")], ..LISTS }).expect_err("no reason"));
     assert_eq!(e, "tab drift:\n  NON_TAB_KEYS repoTab has no reason");
+}
+
+/// The stand-in draws each `NON_TAB_KEYS` key and `EXCLUDED_MOCK_APPENDS` call on a compared
+/// page, so the production lists are clean on it; each list fails a key or call listed twice,
+/// malformed (`tab`, a call that is no `UI.<name>`), with no reason or that no compared render
+/// uses, and an appender left out of its list fails the element it draws as loose.
+#[test]
+fn the_declared_keys_and_appenders_fail_twice_malformed_reasonless_and_unused() {
+    let repo = FakeRepo::new("renders-declared", &mock_html(&body(true)));
+    renders(repo.path(), &LISTS).expect("the production lists are clean on the stand-in");
+    let keys = |k: &[(&'static str, &'static str)]| format!("{:#}", renders(repo.path(), &Lists { non_tab_keys: k, ..LISTS }).expect_err("tab drift"));
+    assert_eq!(keys(&[NON_TAB_KEYS[0], NON_TAB_KEYS[0]]), "tab drift:\n  NON_TAB_KEYS lists PAGES.mailTab twice");
+    let tab = concat!(
+        "tab drift:\n",
+        "  NON_TAB_KEYS lists PAGES.tab, which is the page map's tab\n",
+        "  NON_TAB_KEYS lists PAGES.tab, which no onclick a compared render draws assigns",
+    );
+    assert_eq!(keys(&[NON_TAB_KEYS[0], ("tab", "why")]), tab);
+    assert_eq!(keys(&[("mailTab", " ")]), "tab drift:\n  NON_TAB_KEYS mailTab has no reason");
+    assert_eq!(keys(&[NON_TAB_KEYS[0], ("queueTab", "why")]), "tab drift:\n  NON_TAB_KEYS lists PAGES.queueTab, which no onclick a compared render draws assigns");
+    let e = format!("{:#}", renders(repo.path(), &Lists { non_tab_keys: &[], ..LISTS }).expect_err("mailTab undeclared"));
+    assert!(e.starts_with("mockup onclick failed:\n") && e.contains("assigns PAGES.mailTab, which is neither PAGE_MAP's tab nor a NON_TAB_KEYS key"), "{e}");
+
+    let appends = |a: &[(&'static str, &'static str)]| format!("{:#}", renders(repo.path(), &Lists { excluded_mock_appends: a, ..LISTS }).expect_err("append drift"));
+    let [toast, retry] = [EXCLUDED_MOCK_APPENDS[0], EXCLUDED_MOCK_APPENDS[1]];
+    assert_eq!(appends(&[toast, retry, toast]), "append drift:\n  EXCLUDED_MOCK_APPENDS lists UI.toast twice");
+    let malformed = concat!(
+        "append drift:\n",
+        "  EXCLUDED_MOCK_APPENDS lists \"toast\", which is no UI.<name> call\n",
+        "  EXCLUDED_MOCK_APPENDS lists toast, which drew no element an onclick a compared render draws appended",
+    );
+    assert_eq!(appends(&[toast, retry, ("toast", "why")]), malformed);
+    assert_eq!(appends(&[("UI.toast", " "), retry]), "append drift:\n  EXCLUDED_MOCK_APPENDS UI.toast has no reason");
+    let unused = "append drift:\n  EXCLUDED_MOCK_APPENDS lists UI.copied, which drew no element an onclick a compared render draws appended";
+    assert_eq!(appends(&[toast, retry, ("UI.copied", "why")]), unused);
+    let e = appends(&[]);
+    assert!(e.starts_with("mockup onclick failed:\n") && e.contains("appended <div> under UI.toast, which no recorded opener drew and no EXCLUDED_MOCK_APPENDS entry names"), "{e}");
 }
 
 /// The real mockup, rendered through node: every menu it draws on a compared page is a menu
@@ -448,25 +487,27 @@ fn run_diff_opens_a_menu_of_a_forced_host_on_the_forced_render() {
 
 // ---- the mockup's modal inventory ---------------------------------------------------
 
-/// Stand-in openers: `extraModal` appends a `.scrim` holding a preview-labelled `.modal`, as `UI.confirm` does, `toastOnly` a
-/// `.toast`, `boom` throws and `rerender` re-renders the page through `REG.render()`, which the stand-in registry
+/// Stand-in openers: `extraModal` opens a `.scrim` holding a preview-labelled `.modal` through `UI.modal`, as `UI.confirm` does,
+/// `toastOnly` calls `UI.toast`, `boom` throws and `rerender` re-renders the page through `REG.render()`, which the stand-in registry
 /// gets here as a mount; `armedModal` calls `extraModal` only once `window.armed` is set, and the
-/// global `inlineScrim`, no `PAGES` function, appends a `.scrim` as an inline `UI.modal` call does;
-/// `classListModal` and `wideModal` append one through `classList.add` and as `"scrim wide"`,
+/// global `inlineScrim`, no `PAGES` function, calls `UI.modal` as an inline `UI.modal` call does;
+/// `classListModal`, `wideModal` and `sheetModal` open a `UI.modal` whose element gets its class
+/// through `classList.add`, as `"scrim wide"` and as `"sheet"`,
 /// `deferredModal` opens `extraModal` from a timer and `forever` re-schedules itself without end.
 const OPENERS: &str = concat!(
-    "PAGES.extraModal = function () { const el = document.createElement(\"div\"); el.className = \"scrim\"; el.innerHTML = '<div class=\"modal\"><div class=\"frag\"><span class=\"frag-label\"></span></div></div>'; document.body.appendChild(el); };\n",
-    "PAGES.toastOnly = function () { const el = document.createElement(\"div\"); el.className = \"toast\"; document.body.appendChild(el); };\n",
+    "PAGES.extraModal = function () { UI.modal('<div class=\"modal\"><div class=\"frag\"><span class=\"frag-label\"></span></div></div>'); };\n",
+    "PAGES.toastOnly = function () { UI.toast('x'); };\n",
     "PAGES.boom = function () { throw new Error(\"kaboom\"); };\n",
     "PAGES.testOpener = PAGES.extraModal;\n",
     "REG.render = function () { REG.mount({}, function () { return \"\"; }); };\n",
     "PAGES.rerender = function () { REG.render(); };\n",
     "PAGES.armedModal = function () { if (window.armed) PAGES.extraModal(); };\n",
-    "PAGES.classListModal = function () { const el = document.createElement(\"div\"); el.classList.add(\"scrim\"); document.body.appendChild(el); };\n",
-    "PAGES.wideModal = function () { const el = document.createElement(\"div\"); el.className = \"scrim wide\"; document.body.appendChild(el); };\n",
+    "PAGES.classListModal = function () { UI.modal(\"\", { classList: true }); };\n",
+    "PAGES.wideModal = function () { UI.modal(\"\", { cls: \"scrim wide\" }); };\n",
+    "PAGES.sheetModal = function () { UI.modal(\"\", { cls: \"sheet\" }); };\n",
     "PAGES.deferredModal = function () { setTimeout(function () { PAGES.extraModal(); }, 10); };\n",
     "PAGES.forever = function tick() { setTimeout(tick, 10); };\n",
-    "window.inlineScrim = function () { const el = document.createElement(\"div\"); el.className = \"scrim\"; document.body.appendChild(el); };\n",
+    "window.inlineScrim = function () { UI.modal(\"\"); };\n",
 );
 
 /// The stand-in mockup of the production page map that also draws `drawn`, each body in its own
@@ -580,16 +621,19 @@ fn an_onclick_that_opens_after_a_re_render_or_assigns_the_body_is_seen() {
     assert_eq!(e, "mockup onclick failed:\n  onclick \"document.body.innerHTML = ''\" drawn on index threw in the harness: assigned document.body.innerHTML outside every REG call");
 }
 
-/// A `.scrim` is any element with the `scrim` class: one added through `classList.add` or
-/// written beside another class is a modal, drawn unlisted it fails.
+/// A modal is the element a modal opener draws, whatever its class: one classed through
+/// `classList.add`, beside another class or with no `scrim` class at all is a modal, drawn
+/// unlisted it fails.
 #[test]
-fn a_scrim_by_class_token_is_a_modal() {
-    let repo = opener_repo("modal-class-token", &[("index", "PAGES.classListModal()"), ("index", "PAGES.wideModal()")]);
-    let e = format!("{:#}", renders(repo.path(), &LISTS).expect_err("two modals"));
+fn a_modal_is_what_a_modal_opener_draws_whatever_its_class() {
+    let drawn = [("index", "PAGES.classListModal()"), ("index", "PAGES.wideModal()"), ("index", "PAGES.sheetModal()")];
+    let repo = opener_repo("modal-class-token", &drawn);
+    let e = format!("{:#}", renders(repo.path(), &LISTS).expect_err("three modals"));
     let want = concat!(
         "modal drift:\n",
         "  mockup modal index PAGES.classListModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS\n",
-        "  mockup modal index PAGES.wideModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS",
+        "  mockup modal index PAGES.wideModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS\n",
+        "  mockup modal index PAGES.sheetModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS",
     );
     assert_eq!(e, want);
 }
@@ -718,9 +762,7 @@ fn the_onclick_probe_of_a_forced_page_sees_a_modal_that_opens_only_forced() {
     let ok_only = concat!(
         "PAGES.okOnly = function () {\n",
         "  if (UI.state.force !== \"ok\") return;\n",
-        "  const el = document.createElement(\"div\");\n",
-        "  el.className = \"scrim\";\n",
-        "  document.body.appendChild(el);\n",
+        "  UI.modal(\"\");\n",
         "};\n",
     );
     let forced: Vec<Page> = PAGE_MAP.iter().map(|p| Page { force: p.id() == "index", ..*p }).collect();
@@ -743,9 +785,7 @@ fn the_onclick_probe_of_a_forced_hosts_menu_sees_a_modal_that_opens_only_forced(
     let ok_only = concat!(
         "PAGES.okOnly = function () {\n",
         "  if (UI.state.force !== \"ok\") return;\n",
-        "  const el = document.createElement(\"div\");\n",
-        "  el.className = \"scrim\";\n",
-        "  document.body.appendChild(el);\n",
+        "  UI.modal(\"\");\n",
         "};\n",
     );
     let forced: Vec<Page> = PAGE_MAP.iter().map(|p| Page { force: p.id() == "players", ..*p }).collect();

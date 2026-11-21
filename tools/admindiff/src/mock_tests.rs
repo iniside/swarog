@@ -4,7 +4,10 @@
 use std::path::Path;
 
 use super::render;
-use crate::pages::{validate_menus, MockOpener, Page, Route, EXCLUDED, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS, PAGE_MAP, PALETTE_ONCLICK};
+use crate::pages::{
+    validate_menus, MockOpener, Page, Route, EXCLUDED, EXCLUDED_MOCK_APPENDS, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS, NON_TAB_KEYS, PAGE_MAP,
+    PALETTE_ONCLICK,
+};
 use crate::tests::{write, ScratchDir};
 
 /// A scratch repo whose mockup is a stand-in: every page the two lists name has its html
@@ -20,9 +23,14 @@ use crate::tests::{write, ScratchDir};
 /// `UI.openMenu` appends a `.menu` holding [`MOCK_MENU`] with `{arg}` and `{id}` replaced;
 /// `registry.js` defines, through `UI.defineMenu`, every menu `PAGE_MAP` and
 /// `EXCLUDED_MOCK_MENUS` name, as the real registry defines its menus. Each `PAGE_MAP` modal
-/// entry's opener is a `PAGES.<opener>` that appends a `.scrim` holding [`MOCK_MODAL`] with
-/// `{opener}` and `{args}` (its arguments joined by `,`) replaced, as `UI.confirm` does, and so
-/// is each `EXCLUDED_MOCK_MODALS` `PAGES` opener. Each modal entry's opener is drawn on its host,
+/// entry's opener is a `PAGES.<opener>` whose `UI.modal` call appends a `.scrim` holding
+/// [`MOCK_MODAL`] with `{opener}` and `{args}` (its arguments joined by `,`) replaced, as
+/// `UI.confirm` does, and so is each `EXCLUDED_MOCK_MODALS` `PAGES` opener. The stand-in
+/// `UI.modal(html, o)` appends a `.scrim` holding `html`, its class `o.cls` when given and added
+/// through `classList.add` when `o.classList` is set. Each `EXCLUDED_MOCK_APPENDS` call is a
+/// stand-in `UI` function, set before `UI` is, that appends a `<div>`; the first compared page
+/// or tab entry draws one call of each with `'x'` and, per `NON_TAB_KEYS` key,
+/// `PAGES.<key>='x';REG.render()`, as the real mockup draws them on a compared page. Each modal entry's opener is drawn on its host,
 /// with its arguments, and each `EXCLUDED_MOCK_MODALS` opener on its host, a `PAGES` opener with
 /// none and an `onclick` opener as its body, as the real mockup draws them: on a page or tab host
 /// each in its own `<button class="btn">` after the menu buttons, on a menu target in the
@@ -137,6 +145,10 @@ impl FakeRepo {
                 calls.push(palette);
             }
         }
+        if let Some(host) = page_map.iter().find(|p| p.is_page() && p.is_compared_target()) {
+            calls.extend(NON_TAB_KEYS.iter().map(|(k, _)| (host.id(), format!("PAGES.{k}='x';REG.render()"))));
+            calls.extend(EXCLUDED_MOCK_APPENDS.iter().map(|(name, _)| (host.id(), format!("{name}('x')"))));
+        }
         calls.extend(drawn.iter().map(|(host, call)| (host.to_string(), call.to_string())));
         let mut page_draws: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
         let mut menu_draws: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
@@ -180,20 +192,24 @@ impl FakeRepo {
                 "  const calls = PAGE_DRAWS[key + \"|\" + (new URLSearchParams(location.search).get(\"tab\") || \"\")] || [];\n",
                 "  return calls.map(call => '<button class=\"btn\" onclick=\"' + call + '\"></button>').join(\"\");\n",
                 "}};\n",
-                "var UI = {{ state: {{}}, defineMenu: function () {{}}, openMenu: function (ev, id, arg) {{\n",
+                "const APPENDERS = Object.fromEntries({appenders}.map(n => [n, function () {{ document.body.appendChild(document.createElement(\"div\")); }}]));\n",
+                "var UI = Object.assign({{ state: {{}}, defineMenu: function () {{}}, modal: function (html, o) {{\n",
+                "  o = o || {{}};\n",
+                "  const el = document.createElement(\"div\");\n",
+                "  if (o.classList) el.classList.add(\"scrim\"); else el.className = o.cls || \"scrim\";\n",
+                "  el.innerHTML = html || \"\";\n",
+                "  document.body.appendChild(el);\n",
+                "}}, openMenu: function (ev, id, arg) {{\n",
                 "  ev.stopPropagation();\n",
                 "  const el = document.createElement(\"div\");\n",
                 "  el.className = \"menu\";\n",
                 "  const run = (MENU_DRAWS[id + \"|\" + arg] || []).join(\";\");\n",
                 "  el.innerHTML = {menu}.split(\"{{arg}}\").join(arg).split(\"{{id}}\").join(id).split(\"{{run}}\").join(run);\n",
                 "  document.body.appendChild(el);\n",
-                "}} }};\n",
+                "}} }}, APPENDERS);\n",
                 "for (const id of {defined}) UI.defineMenu(id, function () {{ return []; }});\n",
                 "for (const opener of {openers}) PAGES[opener] = function (...args) {{\n",
-                "  const el = document.createElement(\"div\");\n",
-                "  el.className = \"scrim\";\n",
-                "  el.innerHTML = {modal}.split(\"{{opener}}\").join(opener).split(\"{{args}}\").join(args.join(\",\"));\n",
-                "  document.body.appendChild(el);\n",
+                "  UI.modal({modal}.split(\"{{opener}}\").join(opener).split(\"{{args}}\").join(args.join(\",\")));\n",
                 "}};\n",
                 "for (const key of {keys}) PAGES[key] = {{\n",
                 "  meta: {{ after: function () {{ process.stdout.write({after}); process.exit(0); }} }},\n",
@@ -214,6 +230,7 @@ impl FakeRepo {
             modal = serde_json::to_string(MOCK_MODAL).expect("json"),
             page_draws = serde_json::to_string(&page_draws).expect("json"),
             menu_draws = serde_json::to_string(&menu_draws).expect("json"),
+            appenders = serde_json::to_string(&EXCLUDED_MOCK_APPENDS.iter().map(|(n, _)| n.strip_prefix("UI.").unwrap_or(n)).collect::<Vec<_>>()).expect("json"),
             script = script,
         );
         write(&dir.path().join("UILayout/redesign/assets/registry.js"), &registry);
@@ -233,8 +250,11 @@ fn real_repo() -> std::path::PathBuf {
 fn the_harness_captures_the_body_before_an_after_hook_can_run() {
     let repo = FakeRepo::new("mock-after", r#"<div class="app">search={search}</div>"#);
     let out = render(repo.path(), "index", "?u=aiko.tanaka", false).expect("renders");
-    let want = r#"<div class="app">search=?u=aiko.tanaka</div><button class="btn" onclick="REG.openSearch()"></button>"#;
-    assert_eq!(out, want, "the page with its search and its palette opener, not {AFTER_RAN}");
+    let keys = NON_TAB_KEYS.iter().map(|(k, _)| format!("PAGES.{k}='x';REG.render()"));
+    let calls = keys.chain(EXCLUDED_MOCK_APPENDS.iter().map(|(n, _)| format!("{n}('x')")));
+    let draws: String = calls.map(|c| format!(r#"<button class="btn" onclick="{c}"></button>"#)).collect();
+    let want = format!(r#"<div class="app">search=?u=aiko.tanaka</div><button class="btn" onclick="REG.openSearch()"></button>{draws}"#);
+    assert_eq!(out, want, "the page with its search, its palette opener and its declared draws, not {AFTER_RAN}");
 }
 
 #[test]
@@ -280,15 +300,20 @@ fn index_page() -> &'static Page {
     PAGE_MAP.iter().find(|p| p.page == "index" && p.is_page() && p.tab.is_none()).expect("PAGE_MAP has the index page")
 }
 
-/// Probes every onclick of `html` on the stand-in `index` page.
+/// Probes every onclick of `html` on the stand-in `index` page, nothing declared.
 fn probe_html(repo: &Path, html: &str) -> anyhow::Result<super::Probe> {
-    probe_listed(repo, html, &[])
+    probe_declared(repo, html, &super::Declared::default())
 }
 
-/// [`probe_html`] with `non_tab_keys` the `PAGES` keys a `.tab` that is not a tab may assign.
+/// [`probe_html`] with `non_tab_keys` the `PAGES` keys other than `tab` a body may assign.
 fn probe_listed(repo: &Path, html: &str, non_tab_keys: &[&str]) -> anyhow::Result<super::Probe> {
+    probe_declared(repo, html, &super::Declared { non_tab_keys, appenders: &[] })
+}
+
+/// [`probe_html`] with `declared` the keys and appenders the probe accepts.
+fn probe_declared(repo: &Path, html: &str, declared: &super::Declared) -> anyhow::Result<super::Probe> {
     let doc = crate::html::parse(html).expect("parses");
-    super::probe(repo, "index", "index", index_page(), &doc, super::Onclicks::All, non_tab_keys)
+    super::probe(repo, "index", "index", index_page(), &doc, super::Onclicks::All, declared)
 }
 
 /// The tabs and menus a render draws are what its onclicks do in the harness: each `.tab` whose
@@ -350,9 +375,9 @@ fn a_call_is_seen_whatever_its_spelling() {
 fn a_tab_probe_runs_only_the_tab_onclicks() {
     let repo = FakeRepo::new("mock-probe-tabs", r#"<div class="app"></div>"#);
     let doc = crate::html::parse(r#"<button class="tab on" onclick="PAGES.tab='items'"></button><button onclick="nosuch()"></button>"#).expect("parses");
-    let probe = super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::Tabs, &[]).expect("the tab body only");
+    let probe = super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::Tabs, &super::Declared::default()).expect("the tab body only");
     probe.check_tab("items").expect("selected");
-    let e = format!("{:#}", super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::All, &[]).expect_err("nosuch throws"));
+    let e = format!("{:#}", super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::All, &super::Declared::default()).expect_err("nosuch throws"));
     assert!(e.contains(r#"onclick "nosuch()" drawn on index threw in the harness"#), "{e}");
 }
 
@@ -388,8 +413,8 @@ fn only_the_calls_that_run_are_recorded() {
 /// Each tab is the first value its body assigns to `PAGES.tab`, and the selected tab is the first
 /// `.tab.on` whose body assigns one, not a later one: a `.tab.on` of another page's state
 /// (`PAGES.repoTab`), its key listed, is no tab and selects none, and a body that assigns twice
-/// is the tab of its first assignment. With the key not listed, the same `.tab` fails by host
-/// and onclick.
+/// is the tab of its first assignment. With the key not listed, the same `.tab` fails by host,
+/// key and onclick.
 #[test]
 fn the_selected_tab_is_the_first_on_tab_that_assigns_one() {
     let repo = FakeRepo::new("mock-probe-selected", r#"<div class="app"></div>"#);
@@ -405,7 +430,7 @@ fn the_selected_tab_is_the_first_on_tab_that_assigns_one() {
     assert_eq!(probe.non_tab_keys, ["repoTab"]);
     let e = format!("{:#}", probe_html(repo.path(), html).expect_err("repoTab not listed"));
     let want = r#"mockup onclick failed:
-  onclick "PAGES.repoTab='f'" drawn on index is a .tab that assigns no PAGES.tab and no NON_TAB_KEYS key"#;
+  onclick "PAGES.repoTab='f'" drawn on index assigns PAGES.repoTab, which is neither PAGE_MAP's tab nor a NON_TAB_KEYS key"#;
     assert_eq!(e, want);
 }
 
@@ -430,7 +455,7 @@ fn a_tab_that_assigns_no_tab_fails() {
         r#"  onclick "if (false) PAGES.tab='x'" drawn on index is a .tab that assigns no PAGES.tab and no NON_TAB_KEYS key"#,
     );
     assert_eq!(e, want);
-    let tabs = super::probe(repo.path(), "index", "index", index_page(), &crate::html::parse(html).expect("parses"), super::Onclicks::Tabs, &["repoTab"]);
+    let tabs = super::probe(repo.path(), "index", "index", index_page(), &crate::html::parse(html).expect("parses"), super::Onclicks::Tabs, &super::Declared { non_tab_keys: &["repoTab"], appenders: &[] });
     assert_eq!(format!("{:#}", tabs.expect_err("a tab probe checks too")), want);
 }
 
@@ -444,7 +469,7 @@ fn a_tab_with_no_onclick_fails() {
     let with = concat!(r#"<button class="tab on" onclick="PAGES.tab='a'"></button>"#, r##"<a class="tab" href="#items">Items</a>"##);
     assert_eq!(format!("{:#}", probe_html(repo.path(), with).expect_err("a bare tab")), want);
     let doc = crate::html::parse(with).expect("parses");
-    let tabs = super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::Tabs, &[]);
+    let tabs = super::probe(repo.path(), "index", "index", index_page(), &doc, super::Onclicks::Tabs, &super::Declared::default());
     assert_eq!(format!("{:#}", tabs.expect_err("a tab probe checks too")), want);
     let alone = probe_html(repo.path(), r##"<a class="tab" href="#items">Items</a>"##);
     assert_eq!(format!("{:#}", alone.expect_err("no onclick at all")), want);
@@ -518,13 +543,16 @@ fn a_menu_opened_through_an_alias_is_recorded() {
 }
 
 /// A body that appends a `.menu` outside every `UI.openMenu` call, which no call recorded, fails
-/// naming its host and its text; one appended inside a call is the clean twin.
+/// naming its host, the element and its text; one appended inside a call is the clean twin.
 #[test]
 fn a_menu_appended_outside_every_open_menu_call_is_an_error() {
     let repo = FakeRepo::new("mock-probe-loose", r#"<div class="app"></div>"#);
     let body = "const el = document.createElement('div'); el.className = 'menu'; document.body.appendChild(el)";
     let e = format!("{:#}", probe_html(repo.path(), &format!(r#"<button onclick="{body}"></button>"#)).expect_err("a loose .menu"));
-    assert!(e.contains(&format!("onclick {body:?} drawn on index appended a .menu outside every UI.openMenu call")), "{e}");
+    let want = format!(
+        "mockup onclick failed:\n  onclick {body:?} drawn on index appended <div class=\"menu\"> under no UI call, which no recorded opener drew and no EXCLUDED_MOCK_APPENDS entry names"
+    );
+    assert_eq!(e, want);
     probe_html(repo.path(), r#"<button onclick="UI.openMenu(event,'user','a')"></button>"#).expect("a recorded menu");
 }
 
@@ -634,7 +662,9 @@ fn the_probe_reads_the_real_player_tabs_and_menu() {
     let page = PAGE_MAP.iter().find(|p| p.page == "player" && p.is_page() && p.tab.is_none()).expect("PAGE_MAP has the player page");
     let html = render(&real_repo(), "player", &page.mock_search(), page.force).expect("renders");
     let doc = crate::html::parse(&html).expect("parses");
-    let probe = super::probe(&real_repo(), "player", "player", page, &doc, super::Onclicks::All, &[]).expect("probes");
+    let (keys, appenders) = production_declared();
+    let declared = super::Declared { non_tab_keys: &keys, appenders: &appenders };
+    let probe = super::probe(&real_repo(), "player", "player", page, &doc, super::Onclicks::All, &declared).expect("probes");
     assert_eq!(probe.tabs.selected.as_deref(), Some("profile"));
     assert!(probe.tabs.tabs.len() > 1 && probe.tabs.tabs.iter().any(|t| t == "wallet"), "{:?}", probe.tabs);
     assert_eq!(probe.menu_arg("user").expect("the header menu"), Some("aiko.tanaka"));
@@ -673,17 +703,114 @@ fn the_onclick_probe_mounts_the_page_forced_ok_when_its_render_forces() {
     let script = concat!(
         "PAGES.okOnly = function () {\n",
         "  if (UI.state.force !== \"ok\") return;\n",
-        "  const el = document.createElement(\"div\");\n",
-        "  el.className = \"scrim\";\n",
-        "  document.body.appendChild(el);\n",
+        "  UI.modal(\"\");\n",
         "};\n",
     );
     let repo = FakeRepo::with_openers("mock-probe-forced", r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
     let doc = crate::html::parse(r#"<button onclick="PAGES.okOnly()"></button>"#).expect("parses");
     let forced = Page { force: true, ..*index_page() };
-    let forced = super::probe(repo.path(), "index", "index", &forced, &doc, super::Onclicks::All, &[]).expect("the forced probe").modals;
+    let forced = super::probe(repo.path(), "index", "index", &forced, &doc, super::Onclicks::All, &super::Declared::default()).expect("the forced probe").modals;
     assert_eq!(forced, [MockOpener::Pages("okOnly".to_string())]);
     let designed = Page { force: false, ..*index_page() };
-    let designed = super::probe(repo.path(), "index", "index", &designed, &doc, super::Onclicks::All, &[]).expect("the unforced probe").modals;
+    let designed = super::probe(repo.path(), "index", "index", &designed, &doc, super::Onclicks::All, &super::Declared::default()).expect("the unforced probe").modals;
     assert!(designed.is_empty(), "unforced, the opener appends no .scrim: {designed:?}");
+}
+
+/// The production `NON_TAB_KEYS` keys and `EXCLUDED_MOCK_APPENDS` calls, as a probe declares them.
+fn production_declared() -> (Vec<&'static str>, Vec<&'static str>) {
+    (NON_TAB_KEYS.iter().map(|(k, _)| *k).collect(), EXCLUDED_MOCK_APPENDS.iter().map(|(n, _)| *n).collect())
+}
+
+/// A timer the mount schedules runs in the mount phase, so one that assigns `PAGES.tab` or a
+/// listed key fails as a render's assignment; dropped, it would pass unseen.
+#[test]
+fn a_mount_timer_that_assigns_a_tab_key_fails() {
+    for (key, listed) in [("tab", &[][..]), ("repoTab", &["repoTab"][..])] {
+        let script = format!(
+            "const r0 = PAGES.index.render; PAGES.index.render = function () {{ setTimeout(function () {{ PAGES.{key} = 'x'; }}, 1); return r0.apply(this, arguments); }};\n"
+        );
+        let repo = FakeRepo::with_openers(&format!("mock-probe-mount-timer-{key}"), r#"<div class="app"></div>"#, PAGE_MAP, &[], &script);
+        let e = format!("{:#}", probe_listed(repo.path(), r#"<button class="tab on" onclick="PAGES.tab='a'"></button>"#, listed).expect_err("the mount's timer assigns"));
+        assert_eq!(e, format!("mockup onclick failed:\n  index: a render assigns PAGES.{key}; tab ownership is unattributable"));
+    }
+}
+
+/// A `.menu` a timer appends inside a `UI.openMenu` call is that call's menu: the timer runs in
+/// the context it was scheduled in, so the probe is clean and records the menu.
+#[test]
+fn a_menu_a_timer_appends_inside_open_menu_is_that_menus() {
+    let script = concat!(
+        "UI = Object.assign(UI, { openMenu: function (ev, id) { setTimeout(function () {\n",
+        "  const el = document.createElement(\"div\"); el.className = \"menu\"; document.body.appendChild(el);\n",
+        "}, 5); } });\n",
+    );
+    let repo = FakeRepo::with_openers("mock-probe-deferred-menu", r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
+    let probe = probe_html(repo.path(), r#"<button onclick="UI.openMenu(event,'user','a')"></button>"#).expect("the menu is the call's");
+    assert_eq!(probe.menus, [("user".to_string(), Some("a".to_string()))]);
+}
+
+/// A state switcher is any body that assigns a `PAGES` key, whatever its class: a plain button
+/// writing an undeclared key fails naming its host, the key and the body; declared, it is clean
+/// and the key is recorded.
+#[test]
+fn a_body_that_assigns_an_undeclared_key_fails() {
+    let repo = FakeRepo::new("mock-probe-undeclared-key", r#"<div class="app"></div>"#);
+    let html = r#"<button class="q-count" onclick="PAGES.queue='dead';REG.render()"></button>"#;
+    let e = format!("{:#}", probe_html(repo.path(), html).expect_err("queue undeclared"));
+    let want = r#"mockup onclick failed:
+  onclick "PAGES.queue='dead';REG.render()" drawn on index assigns PAGES.queue, which is neither PAGE_MAP's tab nor a NON_TAB_KEYS key"#;
+    assert_eq!(e, want);
+    let probe = probe_listed(repo.path(), html, &["queue"]).expect("declared");
+    assert_eq!(probe.non_tab_keys, ["queue"]);
+}
+
+/// What `UI.popover` appends is a popover, clean; what another `UI` call appends fails naming
+/// the host, the element and the call, unless the call is a declared appender, which is then
+/// recorded.
+#[test]
+fn an_element_no_recorded_opener_drew_fails_unless_its_call_is_declared() {
+    let script = concat!(
+        "UI = Object.assign(UI, {\n",
+        "  popover: function () { const el = document.createElement(\"div\"); el.className = \"popover\"; document.body.appendChild(el); },\n",
+        "  banner: function () { document.body.appendChild(document.createElement(\"aside\")); },\n",
+        "});\n",
+    );
+    let repo = FakeRepo::with_openers("mock-probe-appenders", r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
+    let probe = probe_html(repo.path(), r#"<button onclick="UI.popover(event,'x')"></button>"#).expect("a popover");
+    assert!(probe.appenders.is_empty(), "{:?}", probe.appenders);
+    let html = r#"<button onclick="UI.banner()"></button>"#;
+    let e = format!("{:#}", probe_html(repo.path(), html).expect_err("an undeclared appender"));
+    let want = r#"mockup onclick failed:
+  onclick "UI.banner()" drawn on index appended <aside> under UI.banner, which no recorded opener drew and no EXCLUDED_MOCK_APPENDS entry names"#;
+    assert_eq!(e, want);
+    let probe = probe_declared(repo.path(), html, &super::Declared { non_tab_keys: &[], appenders: &["UI.banner"] }).expect("declared");
+    assert_eq!(probe.appenders, ["UI.banner"]);
+}
+
+/// A modal is what a modal opener draws: a `.scrim` a body appends outside every `UI.modal`,
+/// `UI.confirm` and `REG.openSearch` call fails as loose, while one a `PAGES` function opens
+/// through `UI.modal`, an inline `UI.modal` of another class and the palette are modals.
+#[test]
+fn a_scrim_no_modal_opener_drew_fails() {
+    let script = concat!(
+        "window.rawScrim = function () { const el = document.createElement(\"div\"); el.className = \"scrim\"; document.body.appendChild(el); };\n",
+        "PAGES.viaModal = function () { UI.modal(\"\"); };\n",
+    );
+    let repo = FakeRepo::with_openers("mock-probe-raw-scrim", r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
+    let e = format!("{:#}", probe_html(repo.path(), r#"<button onclick="rawScrim()"></button>"#).expect_err("a raw .scrim"));
+    let want = r#"mockup onclick failed:
+  onclick "rawScrim()" drawn on index appended <div class="scrim"> under no UI call, which no recorded opener drew and no EXCLUDED_MOCK_APPENDS entry names"#;
+    assert_eq!(e, want);
+    let html = concat!(
+        r#"<button onclick="PAGES.viaModal()"></button>"#,
+        r#"<button onclick="UI.modal('', { cls: 'sheet' })"></button>"#,
+        r#"<button onclick="REG.openSearch()"></button>"#,
+    );
+    let probe = probe_html(repo.path(), html).expect("three modals");
+    let want = [
+        MockOpener::Pages("viaModal".to_string()),
+        MockOpener::Onclick("UI.modal('', { cls: 'sheet' })".to_string()),
+        MockOpener::Onclick("REG.openSearch()".to_string()),
+    ];
+    assert_eq!(probe.modals, want);
 }
