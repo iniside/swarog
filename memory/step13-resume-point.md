@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-21T20:08:26.426Z
+  modified: 2026-11-21T21:08:54.319Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -26,8 +26,8 @@ Menu/modal diffs closed: 84fc8662 (refused item: title only), accept files 05294
 Crawl fix A 56126e2a (verified live). 14a3: 1135d9ab column, 630ffe45 label/kind, 632eed06 purges pending, 43cf3336 accept+docs; monolith + split diff clean on all ported targets. Known limits in docs/todo/admin.md (14a3, 14). Owner open: P1 — purges link copies core.events address; fix in core/controlplane before port 15 (each port copies it). Next: 14 Nt (goldens, test-author opus), then 14b.
 
 ## State 2026-11-21 (Step 14 complete)
-eae03901 Events page address in controlplane (EVENTS_PAGE_MODULE/EVENTS_PAGE), 5eedd976 clippy fix, Nt dcfa7cb9+873426bf (splitproof CH0-CH4; break = remove peer_face("characters") in cmd/admin-svc/src/lib.rs, NOT main.rs with_peer), 14b clean crawls both topologies, plan bb903d85. Next: port 15 (wallet) — owner approved Step 14 only; ask before starting 15.
+eae03901 Events page address in controlplane (renamed EVENT_LOG_PAGE_MODULE/EVENT_LOG_PAGE in 139a2a9b, archcheck rule 11), 5eedd976 clippy fix, Nt dcfa7cb9+873426bf (splitproof CH0-CH4; break = remove peer_face("characters") in cmd/admin-svc/src/lib.rs, NOT main.rs with_peer), 14b clean crawls both topologies, plan bb903d85. Next: port 15 (wallet) — owner approved Step 14 only; ask before starting 15.
 
 ## State 2026-11-21 (Step 15 in progress)
 Checklist docs/plans/2026-11-21-step15-wallet-checklist.md (§7 decisions). Done: 15a3 ledger panel 473062ec + accept 3b2fd5ec, 15t splitproof [LG1]/[LG1m] f74e2b75 (reviews ACCEPT), todo b0832045. Next: 15a4 (create currency, G13), 15a5 (Embers column/tile, Purges pending 62), 15b (view, crawl both).
-Waiting on owner: Q1 Money decoder in controlplane (wallet admin.rs parse_amount duplicates it) a/b; Q2 non-wallet red admindiff targets (players, index, player.wallet, events, mail) diagnose after 15; Q3 archcheck rule 11 EVENTS_ false positive (recommend narrowing to env reads); port 404 wallet splitproof checks (WL3-6, NT4, PH3/6/11, PY7) to panel_grant?
+Owner answered: Q1 done fccafdf8 (controlplane::decode_money, review PASS); Q2 leave; Q3 renamed constants 139a2a9b (archcheck OK); wallet splitproof 404 checks re-pointed only when the whole admin port is complete. Next: 15a4.
