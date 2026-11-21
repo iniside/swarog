@@ -50,8 +50,9 @@ USAGE:
             neither ok nor error, and an EXCLUDED_MENUS entry its page does not draw (unless
             its page lists no row and --allow-empty; an entity page never); a modal target
             whose page draws no opener of its action (unless --allow-empty), a modal action a
-            compared page or tab target draws that is neither a page map modal entry nor in
-            pages::EXCLUDED_MODALS, the first modal of an action any other crawled page draws
+            compared page or tab target draws that is neither a page map modal entry, in
+            pages::EXCLUDED_MODALS nor the action of a pages::EXCLUDED_MOCK_MODALS claim of that
+            host (an Action claim's modal is fetched as an excluded one is), the first modal of an action any other crawled page draws
             and any other fetched modal answering non-2xx, a toast, no .scrim root or a .scrim
             with no .modal, an EXCLUDED_MODALS entry its page does not draw (with or without
             --allow-empty) and an EXCLUDED_MODALS entry that is malformed, listed twice, mapped
@@ -63,7 +64,11 @@ USAGE:
             the same modal rules as a page: each modal action it draws is a page map modal entry
             of that menu target or in pages::EXCLUDED_MODALS, an excluded one is fetched, and an
             exclusion it does not draw is stale; any other fetched menu's modals are fetched for
-            their status. It fails, too, on a fetched page, its slots loaded, whose
+            their status. It fails on an EXCLUDED_MOCK_MODALS claim its fetched host
+            contradicts: an Action claim's action it does not draw, a Disabled claim's action it
+            draws an opener of or whose label no disabled control of it carries, and an Unseeded
+            claim's action it draws an opener of (an Absent claim names no action and is not
+            checked). It fails, too, on a fetched page, its slots loaded, whose
             [data-palette] elements are other than one hidden .scrim (the shell's search
             palette, which admin.js opens) or that draws other than one [data-action=palette]
             opener of it
@@ -90,10 +95,10 @@ USAGE:
             pages::PALETTE_ONCLICK declares once for every host, a page map modal entry of that
             host or in pages::EXCLUDED_MOCK_MODALS (an opener drawn only on pending or excluded
             pages is not checked); PALETTE_ONCLICK no compared render draws fails as stale, and
-            an EXCLUDED_MOCK_MODALS entry naming it as listed twice; a modal entry its host does
-            not draw, an EXCLUDED_MOCK_MODALS entry its host does not draw, listed twice, with
-            no reason, a
-            malformed portal action or mapped too, and an EXCLUDED_MODALS reason its mockup host
+            an EXCLUDED_MOCK_MODALS entry naming it fails as the shell palette PALETTE_ONCLICK
+            declares; a modal entry its host does not draw, an EXCLUDED_MOCK_MODALS entry its
+            host does not draw, listed twice, with no reason, a malformed portal action or
+            mapped too, and an EXCLUDED_MODALS reason its mockup host
             contradicts (a modal opener drawn there that is neither a page map modal entry nor
             an EXCLUDED_MOCK_MODALS entry of another action, or a host with no compared render)
             fail. A .tab a probed render draws whose body assigns no PAGES.tab fails unless it

@@ -775,8 +775,9 @@ fn a_modal_entry_its_host_does_not_draw_fails() {
 }
 
 /// An `EXCLUDED_MODALS` claim that the mockup has no opener of an action fails when its mockup
-/// host draws a modal opener excluded with that same portal action or with no portal side, on a
-/// page and on the page of an excluded menu host; excluded with another action, it passes.
+/// host draws a modal opener excluded with that same portal action (opened, disabled or unseeded)
+/// or with no portal side, on a page and on the page of an excluded menu host; excluded with
+/// another action, it passes.
 #[test]
 fn a_false_no_mock_opener_claim_fails() {
     let repo = opener_repo("modal-claim", &[("mail", "PAGES.extraModal('x')"), ("events", "PAGES.extraModal('y')")]);
@@ -801,6 +802,12 @@ fn a_false_no_mock_opener_claim_fails() {
     assert_eq!(e, want);
     let other = with(PortalModal::Action("mail/other"), PortalModal::Action("core.events/other"));
     renders(repo.path(), &Lists { excluded_mock_modals: &other, ..LISTS }).expect("another action");
+    let disabled = |action| PortalModal::Disabled { action, label: "x" };
+    let same = with(disabled("mail/test-send"), PortalModal::Unseeded("core.events/sub.pause"));
+    let e = format!("{:#}", renders(repo.path(), &Lists { excluded_mock_modals: &same, ..LISTS }).expect_err("same action"));
+    assert_eq!(e, want);
+    let other = with(disabled("mail/other"), PortalModal::Unseeded("core.events/other"));
+    renders(repo.path(), &Lists { excluded_mock_modals: &other, ..LISTS }).expect("another disabled or unseeded action");
 }
 
 /// The inventory a clean [`crate::pages::validate_mock_modals`] call of the production lists sees:

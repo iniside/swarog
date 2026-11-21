@@ -5,18 +5,22 @@
 //! target whose page draws no menu of its kind all fail the crawl. A menu target's output is
 //! the first such menu, the `.menu` popover the portal answers. Every menu kind a compared page
 //! or tab target draws is a menu target of that page or tab or in [`EXCLUDED_MENUS`], whose
-//! menus are fetched once per target and must answer 2xx; an exclusion its page does not draw fails
-//! as stale. A modal
-//! target's output is the modal the portal answers for the first opener of its action its
-//! page draws (an `hx-get` to `/admin/_action/<module>/<action>`, whose `?entity=`/`?item=`
-//! a fleet mints); a page drawing none skips it as EMPTY, a failure unless `--allow-empty`.
-//! A modal target hosted by a menu target opens the first opener of its action in that fetched
-//! menu. Every modal action a compared page or tab target draws, and every one a menu target's
-//! fetched menu or a compared page or tab's excluded kind draws, is a modal target of that
-//! page, tab or menu or in [`EXCLUDED_MODALS`], whose modals are fetched once per target; an exclusion its page or menu
-//! does not draw fails as stale, `--allow-empty` or not: an opener sits in a page head, a panel
-//! tool, a row or a menu, so a page listing no row does not excuse a missing one. Every fetched
-//! modal fails on a non-2xx answer, a toast, or a body that is no `.scrim` around a `.modal`.
+//! menus are fetched once per target and must answer 2xx; an exclusion its page does not draw
+//! fails as stale. A modal target's output is the modal the portal answers for the first opener
+//! of its action its page draws (an `hx-get` to `/admin/_action/<module>/<action>`, whose
+//! `?entity=`/`?item=` a fleet mints); a page drawing none skips it as EMPTY, a failure unless
+//! `--allow-empty`. A modal target hosted by a menu target opens the first opener of its action
+//! in that fetched menu. Every modal action a compared page or tab target draws, and every one a
+//! menu target's fetched menu or a compared page or tab's excluded kind draws, is a modal target
+//! of that page, tab or menu, in [`EXCLUDED_MODALS`] or the action of a
+//! [`crate::pages::EXCLUDED_MOCK_MODALS`] claim of that host ([`PortalModal`]); an excluded
+//! action's modals, and an `Action` claim's, are fetched once per target. An exclusion its page
+//! or menu does not draw fails as stale, `--allow-empty` or not: an opener sits in a page head,
+//! a panel tool, a row or a menu, so a page listing no row does not excuse a missing one. A claim
+//! is held to its fetched host the same way: an `Action` claim's host draws an opener of it, a
+//! `Disabled` claim's a disabled control with its label and no opener of it, an `Unseeded`
+//! claim's no opener of it. Every fetched modal fails on a non-2xx answer, a toast, or a body
+//! that is no `.scrim` around a `.modal`.
 //! Every other crawled page, one only the nav links, has the first menu of each kind and the
 //! first modal of each action it and those menus draw fetched once; the menu must answer 2xx,
 //! the modal as every fetched modal must. Every fetched menu, compared or not, fails
@@ -31,9 +35,11 @@
 //! one `[data-palette]` element, a hidden `.scrim`, and exactly one `[data-action=palette]`
 //! opener: the shell's palette, which `admin.js` opens as the first `[data-palette]` and the
 //! mockup's search opener ([`crate::pages::PALETTE_ONCLICK`]) draws on every host; a page holding
-//! none or several of either, or a `[data-palette]` that is shown or no `.scrim`, fails. Only a crawl with no failure and without `--allow-errors` writes [`CLEAN_MARKER`]:
-//! a run with `--allow-errors` is a preview whose output can be read but never diffed, so a
-//! page drawn while a provider was down can never make an accept file. `--allow-empty` only skips a target, which writes no page to diff.
+//! none or several of either, or a `[data-palette]` that is shown or no `.scrim`, fails. Only a
+//! crawl with no failure and without `--allow-errors` writes [`CLEAN_MARKER`]: a run with
+//! `--allow-errors` is a preview whose output can be read but never diffed, so a page drawn
+//! while a provider was down can never make an accept file. `--allow-empty` only skips a
+//! target, which writes no page to diff.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -44,7 +50,9 @@ use reqwest::{Client, StatusCode};
 
 use crate::assemble::{assemble, pending_slots};
 use crate::html::{self, find_all, find_in, Element, Node};
-use crate::pages::{compared_hosts, excluded_menu_id, validate_excluded_modals, with_tab, Lists, Menu, Modal, Page, Route, LISTS};
+use crate::pages::{
+    compared_hosts, excluded_menu_id, validate_excluded_modals, with_tab, Lists, Menu, MockModalExclusion, Modal, Page, PortalModal, Route, LISTS,
+};
 use crate::skeleton::{MENU_CLASS, MODAL_CLASS, ROOT_CLASS};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -389,6 +397,30 @@ fn first_modal_url(doc: &[Node], action: &str) -> Option<String> {
     modal_actions(doc).into_iter().find(|(a, _)| a == action).map(|(_, url)| url)
 }
 
+/// The label of each disabled control `doc` draws, a `button[disabled]` or a
+/// `.menu-item.disabled`: its text less its `.hint` (`primitives.html.tmpl` `action_button`,
+/// `row_button`, `menu_item`).
+fn disabled_labels(doc: &[Node]) -> Vec<String> {
+    let mut controls = Vec::new();
+    let disabled = |e: &Element| (e.tag == "button" && e.attr("disabled").is_some()) || (e.has_class("menu-item") && e.has_class("disabled"));
+    find_all(doc, &disabled, &mut controls);
+    controls
+        .iter()
+        .map(|e| {
+            let parts: Vec<String> = e
+                .children
+                .iter()
+                .filter_map(|n| match n {
+                    Node::Text(t) => Some(html::decode(t)),
+                    Node::Element(c) if !c.has_class("hint") => Some(c.text()),
+                    Node::Element(_) => None,
+                })
+                .collect();
+            html::collapse(&parts.join(" "))
+        })
+        .collect()
+}
+
 /// Whether `doc` lists a row: a `tr` in a `tbody`. An empty portal table draws an empty
 /// state instead of its body rows.
 fn lists_rows(doc: &[Node]) -> bool {
@@ -488,14 +520,17 @@ async fn check_menu_kinds(
 
 /// The modal inventory of every not pending page and tab entry the crawl reached and of every
 /// compared menu body it fetched (`menus.compared`): each modal action one draws is a modal
-/// entry hosted by it or an `excluded_modals` entry ([`validate_excluded_modals`] keeps it from
-/// being both); an excluded action's first modal is fetched ([`fetch_modal`]). Every other
+/// entry hosted by it, an `excluded_modals` entry ([`validate_excluded_modals`] keeps it from
+/// being both) or the action of an `excluded_mock_modals` claim of that host; an excluded
+/// action's first modal is fetched ([`fetch_modal`]), and so is an [`PortalModal::Action`]
+/// claim's that no modal entry diffs. Every other
 /// crawled page, a page only the nav links, and every status-only menu
 /// (`menus.status`) needs no declaration, but the first modal of each action it draws is
 /// fetched ([`fetch_modal`]) for its status. An exclusion whose host was fetched and does not
 /// draw it fails, `--allow-empty` or not: an opener sits in a page head, a panel tool, a row or
-/// a menu, so a page listing no row does not excuse it, unlike a row menu. A host that was not
-/// fetched (`--allow-empty` skipped it, or it failed) cannot make it stale.
+/// a menu, so a page listing no row does not excuse it, unlike a row menu. Each claim holds on
+/// its fetched host as its [`PortalModal`] variant says. A host that was not fetched
+/// (`--allow-empty` skipped it, or it failed) cannot make an exclusion stale or a claim false.
 async fn check_modal_actions(
     client: &Client,
     cfg: &Config,
@@ -504,7 +539,7 @@ async fn check_modal_actions(
     menus: &MenuBodies,
     failures: &mut Vec<String>,
 ) {
-    let Lists { page_map, excluded_modals, .. } = *lists;
+    let Lists { page_map, excluded_modals, excluded_mock_modals, .. } = *lists;
     let pages = compared_hosts(page_map);
     let (compared, status): (Vec<_>, Vec<_>) = crawled.iter().partition(|(p, _)| pages.contains(p));
     let compared: Vec<&(String, Vec<Node>)> = compared.into_iter().chain(&menus.compared).collect();
@@ -522,14 +557,23 @@ async fn check_modal_actions(
         for (action, url) in modal_actions(doc) {
             let mapped = page_map.iter().any(|p| p.modal.is_some_and(|m| m.action_path() == action) && p.host().id() == *host);
             let excluded = excluded_modals.iter().any(|(h, a, _)| h == host && *a == action);
+            let claims = || excluded_mock_modals.iter().filter(|x| x.host == host && x.portal.action() == Some(action.as_str()));
             if excluded {
                 println!("modal {host} {action}  {url}  (excluded)");
                 let raw = format!("{host}.excluded-modal.{}", action.replace('/', "."));
                 if let Err(e) = fetch_modal(client, cfg, &raw, &url).await {
                     failures.push(format!("{host} excluded {action} modal ({url}): {e:#}"));
                 }
-            } else if !mapped {
-                failures.push(format!("{host} draws a {action} modal, which is in neither PAGE_MAP nor EXCLUDED_MODALS"));
+            } else if !mapped && claims().any(|x| matches!(x.portal, PortalModal::Action(_))) {
+                println!("modal {host} {action}  {url}  (EXCLUDED_MOCK_MODALS)");
+                let raw = format!("{host}.mock-modal.{}", action.replace('/', "."));
+                if let Err(e) = fetch_modal(client, cfg, &raw, &url).await {
+                    failures.push(format!("{host} EXCLUDED_MOCK_MODALS {action} modal ({url}): {e:#}"));
+                }
+            } else if !mapped && claims().next().is_none() {
+                failures.push(format!(
+                    "{host} draws a {action} modal, which is in neither PAGE_MAP nor EXCLUDED_MODALS, and no EXCLUDED_MOCK_MODALS claim names it"
+                ));
             }
             drawn.push((host.clone(), action));
         }
@@ -543,6 +587,31 @@ async fn check_modal_actions(
             continue;
         }
         failures.push(format!("EXCLUDED_MODALS lists {host} modal {action}, which {host} does not draw"));
+    }
+    for MockModalExclusion { host, opener, portal, .. } in excluded_mock_modals {
+        // A host that was not fetched, skipped or failed, has nothing to compare it with.
+        let Some((_, doc)) = compared.iter().copied().find(|(p, _)| p == host) else { continue };
+        let draws = |action: &str| drawn.iter().any(|(h, a)| h == host && a == action);
+        let claim = format!("EXCLUDED_MOCK_MODALS {host} {opener}");
+        match *portal {
+            PortalModal::Action(action) if !draws(action) => {
+                failures.push(format!("{claim} says the portal opens {action}, which {host} does not draw"));
+            }
+            PortalModal::Disabled { action, label } => {
+                if draws(action) {
+                    failures.push(format!("{claim} says the portal draws {action} disabled, but {host} draws an opener of it"));
+                }
+                if label.trim().is_empty() {
+                    failures.push(format!("{claim} names no label of the disabled {action}"));
+                } else if !disabled_labels(doc).iter().any(|l| l == label) {
+                    failures.push(format!("{claim} says the portal draws {action} disabled as {label:?}, but {host} draws no disabled control labelled so"));
+                }
+            }
+            PortalModal::Unseeded(action) if draws(action) => failures.push(format!(
+                "{claim} says the dev fleet seeds nothing that draws {action}, but {host} draws an opener of it: diff it as a PAGE_MAP modal entry"
+            )),
+            _ => {}
+        }
     }
 }
 

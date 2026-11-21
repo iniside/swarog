@@ -10,7 +10,10 @@ use std::sync::{Arc, Mutex};
 
 use super::{run_with, Config, CLEAN_MARKER, MAX_ROUNDS, PANEL_FAIL, PANEL_PASS};
 use crate::mock::mock_tests::FakeRepo;
-use crate::pages::{excluded_menu_id, with_tab, Lists, Modal, ModalWhy, Page, Route, EXCLUDED_MENUS, EXCLUDED_MODALS, LISTS, PAGE_MAP};
+use crate::pages::{
+    excluded_menu_id, with_tab, Lists, MockModalExclusion, MockOpener, Modal, ModalWhy, Page, PortalModal, Route, EXCLUDED_MENUS, EXCLUDED_MODALS,
+    EXCLUDED_MOCK_MODALS, LISTS, PAGE_MAP,
+};
 use crate::tests::{body, mock_html, ScratchDir};
 
 #[derive(Clone, Debug)]
@@ -129,7 +132,8 @@ fn menu_body_in(page_map: &[Page], host: &str) -> String {
 /// The menu golden `golden` drawing only the modal openers `host` declares: the golden's own
 /// `hx-get` openers are drawn as `hx-post` (`Invoke`) buttons, and one opener is added for
 /// each `PAGE_MAP` modal entry and [`EXCLUDED_MODALS`] entry `host` hosts, at the end of the
-/// `.menu` root. A host no entry names, a status-only menu's, gets no opener at all.
+/// `.menu` root, after the disabled item of each [`EXCLUDED_MOCK_MODALS`] `Disabled` claim of
+/// `host` ([`disabled_item`]). A host no entry names, a status-only menu's, gets no opener at all.
 fn declared_menu(golden: &str, host: &str) -> String {
     declared_menu_in(PAGE_MAP, golden, host)
 }
@@ -140,7 +144,30 @@ fn declared_menu_in(page_map: &[Page], golden: &str, host: &str) -> String {
     let mapped = page_map.iter().filter(|p| p.host().id() == host).filter_map(|p| p.modal.map(|m| m.action_path()));
     let excluded = EXCLUDED_MODALS.iter().filter(|(h, _, _)| *h == host).map(|(_, action, _)| action.to_string());
     let openers: String = mapped.chain(excluded).map(|a| modal_button(&modal_url(&a, host))).collect();
-    in_menu(&body, &openers)
+    let disabled: String = disabled_labels(host).map(disabled_item).collect();
+    in_menu(&body, &format!("{disabled}{openers}"))
+}
+
+/// The label of each production [`EXCLUDED_MOCK_MODALS`] `Disabled` claim of `host`.
+fn disabled_labels(host: &str) -> impl Iterator<Item = &'static str> + '_ {
+    EXCLUDED_MOCK_MODALS.iter().filter(move |x| x.host == host).filter_map(|x| match x.portal {
+        PortalModal::Disabled { label, .. } => Some(label),
+        _ => None,
+    })
+}
+
+/// A not implemented row menu action labelled `label`, as the portal's `menu_item` draws it.
+fn disabled_item(label: &str) -> String {
+    format!(
+        r#"<div class="menu-item disabled danger" title="Not implemented yet"><svg class="i " viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 14"/></svg><span>{label}</span><span class="hint">Not implemented yet</span></div>"#
+    )
+}
+
+/// A not implemented page head action labelled `label`, as the portal's `action_button` draws it.
+fn disabled_button(label: &str) -> String {
+    format!(
+        r#"<button type="button" class="btn sm danger-ghost" disabled title="Not implemented yet"><svg class="i " viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 14"/></svg> {label}</button>"#
+    )
 }
 
 /// The menu `body` with `extra` added at the end of its `.menu` root.
@@ -171,7 +198,9 @@ const HEAD_ACTIONS: &[&str] = &["mail/test-send"];
 
 /// The modal openers page or tab `page` draws, as the portal's `hx_action` writes them: one for
 /// each `PAGE_MAP` modal entry and each [`EXCLUDED_MODALS`] entry it hosts whose action is a
-/// page head action ([`HEAD_ACTIONS`]) when `head` holds, a panel's otherwise.
+/// page head action ([`HEAD_ACTIONS`]) when `head` holds, a panel's otherwise; the head draws
+/// the disabled button of each [`EXCLUDED_MOCK_MODALS`] `Disabled` claim of `page` first
+/// ([`disabled_button`]).
 fn modal_buttons(page: &str, head: bool) -> String {
     modal_buttons_in(PAGE_MAP, page, head)
 }
@@ -180,7 +209,10 @@ fn modal_buttons(page: &str, head: bool) -> String {
 fn modal_buttons_in(page_map: &[Page], page: &str, head: bool) -> String {
     let mapped = page_map.iter().filter(|p| p.host().id() == page).filter_map(|p| p.modal.map(|m| m.action_path()));
     let excluded = EXCLUDED_MODALS.iter().filter(|(host, _, _)| *host == page).map(|(_, action, _)| action.to_string());
-    mapped.chain(excluded).filter(|a| HEAD_ACTIONS.contains(&a.as_str()) == head).map(|a| modal_button(&modal_url(&a, page))).collect()
+    let openers: String =
+        mapped.chain(excluded).filter(|a| HEAD_ACTIONS.contains(&a.as_str()) == head).map(|a| modal_button(&modal_url(&a, page))).collect();
+    let disabled: String = if head { disabled_labels(page).map(disabled_button).collect() } else { String::new() };
+    format!("{disabled}{openers}")
 }
 
 /// A modal opener GETting `url`, as the portal's `hx_action` writes a `Form` or `Confirm` button.
@@ -578,6 +610,23 @@ async fn crawl_into(
     allow_errors: bool,
     allow_empty: bool,
 ) -> Crawl {
+    let claims = unmapped_claims(page_map);
+    let lists = Lists { page_map, excluded_menus, excluded_modals, excluded_mock_modals: &claims, ..LISTS };
+    crawl_lists_into(out, site, &lists, allow_errors, allow_empty).await
+}
+
+/// The production [`EXCLUDED_MOCK_MODALS`] less each entry whose opener a modal entry of
+/// `page_map` opens on its host, as a map adding that modal entry drops the exclusion
+/// (`validate_mock_modals` fails an opener listed in both).
+fn unmapped_claims(page_map: &[Page]) -> Vec<MockModalExclusion<'static>> {
+    let mapped = |x: &MockModalExclusion| {
+        page_map.iter().any(|p| p.host().id() == x.host && p.modal.is_some_and(|m| MockOpener::Pages(m.opener) == x.opener))
+    };
+    EXCLUDED_MOCK_MODALS.iter().copied().filter(|x| !mapped(x)).collect()
+}
+
+/// [`crawl_into`] of `lists` as given.
+async fn crawl_lists_into(out: ScratchDir, site: Site, lists: &Lists<'_>, allow_errors: bool, allow_empty: bool) -> Crawl {
     let server = Server::start(site);
     let cfg = Config {
         base_url: server.base_url.clone(),
@@ -587,8 +636,7 @@ async fn crawl_into(
         allow_empty,
         out: out.path().join("run"),
     };
-    let lists = Lists { page_map, excluded_menus, excluded_modals, ..LISTS };
-    let (result, failures, empty) = match run_with(&cfg, &lists).await {
+    let (result, failures, empty) = match run_with(&cfg, lists).await {
         Ok(o) => (Ok(o.failures.is_empty()), o.failures, o.empty),
         Err(e) => (Err(e), Vec::new(), Vec::new()),
     };
@@ -1271,13 +1319,18 @@ fn cancel_map() -> Vec<Page> {
 /// The healthy site whose mail panel draws a cancel opener, as the portal draws a queue row's,
 /// answering [`MODAL_BODY`].
 fn cancel_site() -> Site {
-    let healthy = Site::healthy();
-    let slot_url = panel_url("mail");
-    let url = modal_url("mail/cancel", "mail");
-    let panel = healthy.routes.get(&slot_url).expect("the mail panel").body.clone();
+    drawing(Site::healthy(), "mail", "mail/cancel")
+}
+
+/// `site` whose page `page` draws an opener of `action` (`<module>/<action>`) in its panel, as the
+/// portal draws a queue row's, answering [`MODAL_BODY`].
+fn drawing(site: Site, page: &str, action: &str) -> Site {
+    let slot_url = panel_url(page);
+    let url = modal_url(action, page);
+    let panel = site.routes.get(&slot_url).expect("the page's panel").body.clone();
     assert!(panel.contains("</section>"), "{panel}");
     let drawn = panel.replacen("</section>", &format!("{}</section>", modal_button(&url)), 1);
-    healthy.with(&slot_url, ok(drawn)).with(&url, ok(MODAL_BODY))
+    site.with(&slot_url, ok(drawn)).with(&url, ok(MODAL_BODY))
 }
 
 /// The healthy crawl fetches the modal of each modal target once, with `HX-Request`, and
@@ -1720,4 +1773,78 @@ async fn a_tab_page_menu_target_holds_its_modals_to_the_page_rules() {
     let down = format!("{host} excluded guild/kick modal ({kick}): answered 500");
     let failed = crawl_modals(site.with(&kick, status(500)), &page_map, &excluded, false).await;
     failed.assert_failed_with("the excluded modal in the tab's menu answering 500", &down);
+}
+
+/// Each production `EXCLUDED_MOCK_MODALS` claim holds on the healthy site, which draws the
+/// `Disabled` claims' controls and no opener of the `Unseeded` mail cancel. A `Disabled` claim
+/// fails when its host, a page head or a menu, draws no disabled control with its label, or
+/// draws an opener of its action; the `Unseeded` claim fails when mail draws a cancel opener.
+/// Neither drawn opener fails as undeclared too: the claim names it.
+#[tokio::test]
+async fn each_portal_claim_of_a_mockup_modal_exclusion_holds_on_its_host() {
+    crawl(Site::healthy(), false).await.assert_clean("the healthy site draws what each claim says");
+    let undeclared = "no EXCLUDED_MOCK_MODALS claim names it";
+
+    let healthy = Site::healthy();
+    let head = follower_route("player");
+    let c = crawl(healthy.clone().with(&head, without(&healthy, &head, &disabled_button("Suspend"))), false).await;
+    c.assert_failed_with(
+        "player draws no Suspend",
+        "EXCLUDED_MOCK_MODALS player PAGES.suspend says the portal draws accounts/suspend-header disabled as \"Suspend\", but player draws no disabled control labelled so",
+    );
+
+    let menu = menu_url("player", "players");
+    let c = crawl(healthy.clone().with(&menu, without(&healthy, &menu, &disabled_item("Delete account…"))), false).await;
+    c.assert_failed_with(
+        "the players menu draws no Delete account…",
+        "EXCLUDED_MOCK_MODALS players.menu.user PAGES.deleteAccount says the portal draws accounts/delete-account disabled as \"Delete account…\", but players.menu.user draws no disabled control labelled so",
+    );
+
+    let body = healthy.routes.get(&menu).expect("the players menu").body.clone();
+    let url = modal_url("accounts/suspend", "players.menu.user");
+    let enabled = healthy.clone().with(&menu, ok(in_menu(&body, &modal_button(&url)))).with(&url, ok(MODAL_BODY));
+    let c = crawl(enabled, false).await;
+    c.assert_failed_with(
+        "the players menu draws a suspend opener",
+        "EXCLUDED_MOCK_MODALS players.menu.user PAGES.suspend says the portal draws accounts/suspend disabled, but players.menu.user draws an opener of it",
+    );
+    assert!(!c.failures.iter().any(|f| f.contains(undeclared)), "{:#?}", c.failures);
+
+    let c = crawl(cancel_site(), false).await;
+    c.assert_failed_with(
+        "mail draws a cancel opener",
+        "EXCLUDED_MOCK_MODALS mail PAGES.cancelMail says the dev fleet seeds nothing that draws mail/cancel, but mail draws an opener of it",
+    );
+    assert!(!c.failures.iter().any(|f| f.contains(undeclared)), "{:#?}", c.failures);
+}
+
+/// A disabled control's label is its text less its `.hint`: a menu item whose hint alone
+/// carries the label, or a disabled control whose label only starts with it, holds no claim.
+#[tokio::test]
+async fn a_disabled_claim_matches_the_whole_label_and_not_the_hint() {
+    let healthy = Site::healthy();
+    let menu = menu_url("player", "players");
+    let item = disabled_item("Delete account…");
+    let body = without(&healthy, &menu, &item).body;
+    let hint_only = r#"<div class="menu-item disabled" title="x"><span>Remove</span><span class="hint">Delete account…</span></div>"#;
+    let longer = disabled_item("Delete account… now");
+    for (why, control) in [("the hint", hint_only.to_string()), ("a longer label", longer)] {
+        let c = crawl(healthy.clone().with(&menu, ok(in_menu(&body, &control))), false).await;
+        c.assert_failed_with(why, "says the portal draws accounts/delete-account disabled as \"Delete account…\"");
+    }
+}
+
+/// An `Action` claim declares the action it names on its host: drawn there, it crawls clean
+/// and its modal is fetched once and kept under `raw/`; drawn nowhere, the claim fails.
+#[tokio::test]
+async fn an_action_claim_is_fetched_where_drawn_and_fails_where_not() {
+    let claim = MockModalExclusion { host: "mail", opener: MockOpener::Pages("kick"), portal: PortalModal::Action("guild/kick"), why: "why" };
+    let claims: Vec<_> = unmapped_claims(PAGE_MAP).into_iter().chain([claim]).collect();
+    let lists = Lists { excluded_mock_modals: &claims, ..LISTS };
+    let c = crawl_lists_into(ScratchDir::new("crawl"), drawing(Site::healthy(), "mail", "guild/kick"), &lists, false, false).await;
+    c.assert_clean("mail draws the claimed guild/kick");
+    assert_eq!(fetched(&c, &modal_url("guild/kick", "mail")), 1, "the claimed modal is fetched once");
+    assert!(c.out.path().join("run").join("raw").join("mail.mock-modal.guild.kick.html").is_file(), "the claimed modal's body is kept");
+    let c = crawl_lists_into(ScratchDir::new("crawl"), Site::healthy(), &lists, false, false).await;
+    c.assert_failed_with("mail draws no guild/kick", "EXCLUDED_MOCK_MODALS mail PAGES.kick says the portal opens guild/kick, which mail does not draw");
 }

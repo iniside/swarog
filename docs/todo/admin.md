@@ -1,6 +1,6 @@
 # Admin
 
-Last updated: 2026-11-20
+Last updated: 2026-11-21
 
 ## In progress
 
@@ -48,6 +48,23 @@ _None._
   ADMIN-06. characters, friends, notifications and wallet use priority 0 in their
   src/admin.rs; inventory uses 10. Source:
   docs/plans/2026-09-05-1921-friends-module-plan.md:601 (2026-09-05).
+
+### Known limits (admin-control-plane-redesign step 13d7c)
+
+- [ ] **A `Disabled` claim is checked by its label, not by its action**
+  `PortalModal::Disabled` (`tools/admindiff/src/pages.rs`; accounts' suspend, suspend-header
+  and delete-account): a disabled control carries no action URL
+  (`core/admin/src/templates/primitives.html.tmpl` `action_button`, `menu_item`), so the crawl
+  checks that the host draws a disabled control with the claim's label and no opener of the
+  action, not that the control is that action. Another disabled control with the same label
+  passes.
+- [ ] **An `Unseeded` claim's action is not checked**
+  `PortalModal::Unseeded` (mail's `cancelMail`, `mail/cancel`): the dev fleet seeds no pending
+  mail, so the crawl checks only that `mail` draws no cancel opener. That `mail/cancel` is the
+  portal's action for it stays unchecked until Step 24b3 diffs it.
+- [ ] **An `Absent` claim is not checked against the portal**
+  `PortalModal::Absent` (the Lore `changeRole` and `releaseAll` entries) names no portal
+  action, so the crawl has nothing to look for.
 
 ### Known limits (admin-control-plane-redesign step 13d3b4)
 

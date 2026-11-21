@@ -15,16 +15,17 @@
 //! (`<page>[.<tab>].menu.<menu>.modal.<modal>`, a modal a row menu opens). Modals are
 //! inventoried on every crawled page and tab entry that is not pending, in every menu target's
 //! fetched menu, and in every excluded menu's ([`excluded_menu_id`]): every modal action the
-//! portal draws in them (an `hx-get` to `/admin/_action/…`) has such an entry or is in
-//! [`EXCLUDED_MODALS`] (`crawl`); on the mockup side an entry's opener must append a `.scrim`.
+//! portal draws in them (an `hx-get` to `/admin/_action/…`) has such an entry, is in
+//! [`EXCLUDED_MODALS`] or is the action of an [`EXCLUDED_MOCK_MODALS`] claim of that host
+//! (`crawl`); on the mockup side an entry's opener must append a `.scrim`.
 //! The mockup's modals are inventoried from its renders of every page, tab and menu target that
 //! is not pending: every `onclick` body drawn there runs in the harness, and each `.scrim` it
 //! appends is a modal of the `PAGES` function that appended it, or of the body when no `PAGES`
 //! call did ([`MockOpener`]); each is the shell palette ([`PALETTE_ONCLICK`]), a modal entry of
-//! that host or in [`EXCLUDED_MOCK_MODALS`], which names what the portal opens instead
-//! ([`PortalModal`]), and an `EXCLUDED_MODALS` reason
-//! that the mockup has no opener ([`ModalWhy`]) is held to that inventory
-//! ([`validate_mock_modals`]). A page or tab entry
+//! that host or in [`EXCLUDED_MOCK_MODALS`], which names what the portal draws instead
+//! ([`PortalModal`], a claim the crawl checks), and an `EXCLUDED_MODALS` reason that the
+//! mockup has no opener ([`ModalWhy`]) is held to that inventory ([`validate_mock_modals`]).
+//! A page or tab entry
 //! can force the mockup's ok state on its render ([`Page::force`]), so a panel the mockup draws
 //! only down, stale or denied is compared in its ok shape, and its menu entries open their menu
 //! on that forced render; the portal side draws its real state.
@@ -388,14 +389,37 @@ impl<S: AsRef<str>> fmt::Display for MockOpener<S> {
     }
 }
 
-/// What the portal draws for a mockup modal opener [`EXCLUDED_MOCK_MODALS`] lists.
+/// What the portal draws on its host for a mockup modal opener [`EXCLUDED_MOCK_MODALS`] lists. The
+/// crawl checks each claim on the host it fetched; a host it did not fetch (skipped or failed)
+/// checks none.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortalModal<'a> {
-    /// The portal modal action `<module>/<action>` the opener's modal is, served at
-    /// `/admin/_action/<module>/<action>`.
+    /// The portal modal action `<module>/<action>`, served at `/admin/_action/<module>/<action>`:
+    /// the host draws an opener of it, whose modal the crawl fetches.
     Action(&'a str),
-    /// Nothing: no portal module draws it, as the reason says.
+    /// The portal action `<module>/<action>` drawn disabled, with no modal: the host draws a
+    /// disabled control (`button[disabled]`, `.menu-item.disabled`) labelled `label` and no
+    /// opener of the action. A disabled control carries no action URL (`primitives.html.tmpl`
+    /// `action_button`, `menu_item`), so the crawl checks the label, not that the control is
+    /// this action's.
+    Disabled { action: &'a str, label: &'a str },
+    /// The portal modal action `<module>/<action>`, whose opener the portal draws only on data the
+    /// dev fleet does not seed, as the reason says: the host draws no opener of it. That the
+    /// portal has the action is not checked, as the crawl sees no opener of it.
+    Unseeded(&'a str),
+    /// Nothing: no portal module draws it, as the reason says. Not checked: it names no action
+    /// the crawl could look for.
     Absent,
+}
+
+impl<'a> PortalModal<'a> {
+    /// The portal action `<module>/<action>` the claim names; none for [`PortalModal::Absent`].
+    pub fn action(&self) -> Option<&'a str> {
+        match *self {
+            PortalModal::Action(a) | PortalModal::Disabled { action: a, .. } | PortalModal::Unseeded(a) => Some(a),
+            PortalModal::Absent => None,
+        }
+    }
 }
 
 /// A mockup modal opener drawn on a compared page, tab or menu target that no `PAGE_MAP` modal
@@ -424,28 +448,32 @@ const fn mock_modal(host: &'static str, opener: MockOpener<&'static str>, portal
 /// `PAGE_MAP` modal entry of that host diffs. [`validate_mock_modals`] holds it to the mockup
 /// render.
 pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
-    mock_modal("players.menu.user", MockOpener::Pages("suspend"), PortalModal::Action("accounts/suspend"), NO_SUSPEND),
-    mock_modal("players.menu.user", MockOpener::Pages("deleteAccount"), PortalModal::Action("accounts/delete-account"), NO_DELETE),
+    mock_modal("players.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
+    mock_modal("players.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
     mock_modal("players.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
     mock_modal("players.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent, NO_LORE),
     mock_modal("player", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
-    mock_modal("player", MockOpener::Pages("suspend"), PortalModal::Action("accounts/suspend-header"), NO_SUSPEND),
-    mock_modal("player.menu.user", MockOpener::Pages("suspend"), PortalModal::Action("accounts/suspend"), NO_SUSPEND),
-    mock_modal("player.menu.user", MockOpener::Pages("deleteAccount"), PortalModal::Action("accounts/delete-account"), NO_DELETE),
+    mock_modal("player", MockOpener::Pages("suspend"), PortalModal::Disabled { action: "accounts/suspend-header", label: "Suspend" }, NO_SUSPEND),
+    mock_modal("player.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
+    mock_modal("player.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
     mock_modal("player.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
     mock_modal("player.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent, NO_LORE),
     mock_modal(
         "mail",
         MockOpener::Pages("cancelMail"),
-        PortalModal::Action("mail/cancel"),
+        PortalModal::Unseeded("mail/cancel"),
         "mail.modal.cancel left PAGE_MAP: the dev fleet seeds no pending mail, so the portal draws no cancel opener; Step 24b3 adds it back",
     ),
 ];
 
-const NO_SUSPEND: &str =
-    "no suspension exists: suspend is new domain behaviour the plan excludes, and the portal draws accounts' suspend actions disabled, with no modal";
+/// Accounts' row menu suspend and delete-account actions, as `modules/accounts/src/admin.rs`
+/// labels them.
+const SUSPEND: PortalModal = PortalModal::Disabled { action: "accounts/suspend", label: "Suspend account…" };
+const DELETE_ACCOUNT: PortalModal = PortalModal::Disabled { action: "accounts/delete-account", label: "Delete account…" };
+
+const NO_SUSPEND: &str = "no suspension exists: suspend is new domain behaviour the plan excludes, so the portal has no suspend modal";
 const NO_DELETE: &str =
-    "deletion is the player's own two-step flow with no operator path: the portal draws accounts' delete-account action disabled, with no modal";
+    "deletion is the player's own two-step flow with no operator path, so the portal has no delete-account modal";
 
 /// A page map with the exclusion lists that complete it: what the crawl, the mockup render
 /// checks and the diff read, so a caller that passes its own map passes its own lists too.
@@ -809,7 +837,7 @@ pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: 
         if *opener == palette {
             problems.push(format!("EXCLUDED_MOCK_MODALS lists {host} {opener}, the shell palette PALETTE_ONCLICK declares on every host"));
         }
-        if let PortalModal::Action(action) = portal {
+        if let Some(action) = portal.action() {
             if !is_action_path(action) {
                 problems.push(format!("EXCLUDED_MOCK_MODALS {host} {opener} names portal action {action:?}, which is not a <module>/<action> of [a-z0-9._-]+ ids"));
             }
@@ -826,10 +854,7 @@ pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: 
         };
         for opener in openers.iter().map(MockOpener::as_str).filter(|o| *o != palette) {
             let mapped_other = mapped(mock_host, opener).is_some_and(|p| p.modal.is_some_and(|m| m.action_path() != *action));
-            let excluded_other = excluded(mock_host, opener).is_some_and(|x| match x.portal {
-                PortalModal::Action(other) => other != *action,
-                PortalModal::Absent => false,
-            });
+            let excluded_other = excluded(mock_host, opener).is_some_and(|x| x.portal.action().is_some_and(|other| other != *action));
             if !mapped_other && !excluded_other {
                 problems.push(format!(
                     "EXCLUDED_MODALS {host} modal {action} says the mockup has no opener of it, but {mock_host} draws {opener}, which is neither a PAGE_MAP modal entry nor an EXCLUDED_MOCK_MODALS entry of another action there"
