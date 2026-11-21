@@ -1,6 +1,6 @@
 # Splitproof
 
-Last updated: 2026-11-17
+Last updated: 2026-11-21
 
 ## In progress
 
@@ -31,3 +31,21 @@ _None._
   assertions (`[AD3b]`, `[AD4]` and the later posts, main.rs:5131-5416) target the same
   route. Re-point them with the apikeys step of the admin control-plane redesign
   (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md, step 21).
+
+### Known limits (admin-control-plane-redesign step 15)
+
+- [ ] **The wallet, notification and push checks still post to the retired `/admin/wallet` page**
+  WL3, WL4, WL5, WL6, WL6m, NT4, NT4m, PH3, PH6, PH11 and PY7/PY7m grant through `/admin/wallet`,
+  which now answers 404, so they stay red although G20 gave them real (guest) players.
+  `panel_grant` (`tools/splitproof/src/wallet_ledger_checks.rs`) grants through the panel action;
+  WL6/WL6m also need a revoke path and a new expected refusal text.
+- [ ] **`[LG1]` matches the label loosely and reads the first `data-state`**
+  `player_cell_ok` (`tools/splitproof/src/wallet_ledger_checks.rs`) accepts any cell text ending
+  in the handle, so `XLedger#1812` passes; the panel state is the first `data-state` in the
+  panel, not the panel root's. Its unit test copies the user-cell markup by hand instead of
+  rendering it through core admin, and no live run proves the uuid fallback with accounts-svc down.
+- [ ] **Panel checks import their HTML helpers from the characters checks**
+  `wallet_ledger_checks.rs` uses `attr`, `text`, `table` and `cut` from
+  `characters_admin_checks.rs`; a neutral helper module would keep each panel check
+  independent. The `[PH6]` comment (`tools/splitproof/src/main.rs`) still says the guest is a
+  player "nobody ever authenticated as"; it now holds a session, never a socket.
