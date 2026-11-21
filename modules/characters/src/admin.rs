@@ -1,6 +1,7 @@
 //! The `characters` control-plane provider: the player entity's Characters tab, its
-//! "N characters" summary fact, the tab's count and the players list's Characters column.
-//! Characters is not a writer: it declares no action and `writes: false`.
+//! "N characters" summary fact, the tab's count, the players list's Characters column, and
+//! the `character` entity kind with its label. Characters is not a writer: it declares no
+//! action and `writes: false`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -8,8 +9,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use charactersapi::Character;
 use controlplane::{
-    fake_hash, Align, Cell, CellKind, Column, ContributionDecl, DataTable, InvokeCall, InvokeOutcome,
-    Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit,
+    fake_hash, Align, Cell, CellKind, Column, ContributionDecl, DataTable, EntityKindDecl, InvokeCall,
+    InvokeOutcome, Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit,
     SearchQuery, DEFAULT_PANEL_DEADLINE_MS, MAX_PANEL_REFS,
 };
 use opsapi::Error;
@@ -17,14 +18,17 @@ use opsapi::Error;
 use crate::Service;
 
 const MODULE: &str = "characters";
-/// The entity kind every contribution here attaches to; accounts declares it.
+/// The entity kind every contribution but the label attaches to; accounts declares it.
 const KIND: &str = "player";
+/// The entity kind characters declares and labels.
+const CHARACTER_KIND: &str = "character";
 const TAB: &str = "characters";
 
 const CHARACTERS: &str = "characters";
 const FACT_COUNT: &str = "fact.count";
 const TAB_COUNT: &str = "tab.count";
 const COLUMN_COUNT: &str = "column.count";
+const LABEL: &str = "label.character";
 
 /// What the Last played cell draws: characters stores no last-played time.
 const NO_LAST_PLAYED: &str = "—";
@@ -44,13 +48,17 @@ impl CharactersAdmin {
     /// Each ref's character count, keyed by the ref as given, 0 for a player with none.
     /// More than [`MAX_PANEL_REFS`] refs is refused before any SQL.
     pub(crate) async fn counts(&self, refs: &[String]) -> Result<BTreeMap<String, i64>, Error> {
-        if refs.len() > MAX_PANEL_REFS {
-            return Err(Error::invalid(format!(
-                "{MODULE}: {} refs, over the cap of {MAX_PANEL_REFS}",
-                refs.len()
-            )));
-        }
+        within_cap(refs)?;
         self.svc.store.counts_by_player(refs).await.map_err(read_error)
+    }
+
+    /// The character label for one slot's body: each ref's character name, keyed by the
+    /// ref as given; a ref naming no character, or not a uuid, is left out. More than
+    /// [`MAX_PANEL_REFS`] refs is refused before any SQL.
+    pub(crate) async fn labels(&self, refs: &[String]) -> Result<PanelBody, Error> {
+        within_cap(refs)?;
+        let names = self.svc.store.names_by_id(refs).await.map_err(crate::internal)?;
+        Ok(label_cells(refs, &names))
     }
 
     /// The requested player's character count.
@@ -71,6 +79,17 @@ impl CharactersAdmin {
         let characters = self.svc.store.list_by_player(id).await.map_err(read_error)?;
         Ok(characters_body(&characters))
     }
+}
+
+/// More than [`MAX_PANEL_REFS`] refs is the caller's error.
+fn within_cap(refs: &[String]) -> Result<(), Error> {
+    if refs.len() > MAX_PANEL_REFS {
+        return Err(Error::invalid(format!(
+            "{MODULE}: {} refs, over the cap of {MAX_PANEL_REFS}",
+            refs.len()
+        )));
+    }
+    Ok(())
 }
 
 /// A malformed player id (Postgres 22P02) is the caller's error; anything else is internal.
@@ -146,6 +165,16 @@ pub(crate) fn column_cells(refs: &[String], counts: &BTreeMap<String, i64>) -> P
     let cells = refs
         .iter()
         .map(|r| (r.clone(), count_cell(counts.get(r).copied().unwrap_or(0))))
+        .collect();
+    PanelBody::new(Primitive::ColumnCells(cells))
+}
+
+/// The character label: one text cell per ref the names know, keyed by the ref as the
+/// portal gave it; a ref the names lack draws no cell.
+pub(crate) fn label_cells(refs: &[String], names: &BTreeMap<String, String>) -> PanelBody {
+    let cells = refs
+        .iter()
+        .filter_map(|r| names.get(r).map(|name| (r.clone(), text(CellKind::Text, name.clone()))))
         .collect();
     PanelBody::new(Primitive::ColumnCells(cells))
 }
@@ -228,17 +257,25 @@ pub(crate) fn manifest() -> Manifest {
         label: "Characters".to_string(),
         align: Align::Right,
     };
+    let label = Point::EntityLabel {
+        kind: CHARACTER_KIND.to_string(),
+    };
     Manifest {
         module: MODULE.to_string(),
         sections: Vec::new(),
         entries: Vec::new(),
         pages: Vec::new(),
-        entity_kinds: Vec::new(),
+        entity_kinds: vec![EntityKindDecl {
+            kind: CHARACTER_KIND.to_string(),
+            label: "Character".to_string(),
+            icon: "swords".to_string(),
+        }],
         contributions: vec![
             contribution(CHARACTERS, tab, 20, "Characters", ""),
             contribution(FACT_COUNT, Point::EntitySummary(KIND.to_string()), 30, "Characters", "swords"),
             contribution(TAB_COUNT, tab_count, 0, "Characters", ""),
             contribution(COLUMN_COUNT, list_column, 10, "Characters", ""),
+            contribution(LABEL, label, 0, "Character", ""),
         ],
         actions: Vec::new(),
         search: Vec::new(),
@@ -264,6 +301,7 @@ impl Provider for CharactersAdmin {
                 Ok(PanelBody::new(Primitive::Cell(count_cell(n))))
             }
             COLUMN_COUNT => self.column(&req).await,
+            LABEL => self.labels(&req.refs).await,
             other => Err(Error::not_found(format!(
                 "{MODULE} has no contribution {other:?}"
             ))),

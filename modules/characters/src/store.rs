@@ -31,6 +31,16 @@ fn is_invalid_uuid(e: &sqlx::Error) -> bool {
     matches!(e, sqlx::Error::Database(db) if db.code().as_deref() == Some("22P02"))
 }
 
+/// `true` for the 8-4-4-4-12 hex shape `::uuid` accepts, so a batch read can drop a
+/// malformed ref before the bind: one bad element fails the whole cast with 22P02.
+fn is_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.bytes().enumerate().all(|(i, b)| match i {
+            8 | 13 | 18 | 23 => b == b'-',
+            _ => b.is_ascii_hexdigit(),
+        })
+}
+
 /// Per-player advisory lock key: FNV-1a over a `characters.player/` namespace plus the uuid
 /// normalized to Postgres's uuid-equality form, so every spelling the `$1::uuid` row SQL
 /// treats as one player takes the SAME lock.
@@ -150,6 +160,28 @@ impl Store {
              FROM unnest($1::text[]) AS r(id) \
              LEFT JOIN characters.characters c ON c.player_id = r.id::uuid \
              GROUP BY r.id",
+        )
+        .bind(refs)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    /// Each character ref's name, keyed by the ref exactly as given. A ref that is not a
+    /// uuid, or names no character, is left out rather than failing the batch. The caller
+    /// bounds `refs`.
+    pub(crate) async fn names_by_id(
+        &self,
+        refs: &[String],
+    ) -> Result<BTreeMap<String, String>, sqlx::Error> {
+        let refs: Vec<&str> = refs.iter().map(String::as_str).filter(|r| is_uuid(r)).collect();
+        if refs.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT r.id, c.name \
+             FROM unnest($1::text[]) AS r(id) \
+             JOIN characters.characters c ON c.id = r.id::uuid",
         )
         .bind(refs)
         .fetch_all(&self.pool)

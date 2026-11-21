@@ -1,6 +1,6 @@
 //! The characters control-plane provider: the Characters tab's data mapping, the summary fact,
-//! the tab count and the list column (pure), the refs cap, and the panels against the live
-//! database.
+//! the tab count, the list column and the character label (pure), the refs cap, and the panels
+//! against the live database.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -16,7 +16,8 @@ use sqlx::PgPool;
 use testdb::test_pool;
 
 use super::{
-    characters_body, column_cells, count_cell, fact_text, fake_level, fake_region, manifest, CharactersAdmin,
+    characters_body, column_cells, count_cell, fact_text, fake_level, fake_region, label_cells, manifest,
+    CharactersAdmin,
 };
 use crate::store::Store;
 use crate::tests::{cleanup, unique_player, wired};
@@ -167,6 +168,20 @@ fn list_column_answers_every_input_ref_with_0_for_a_ref_the_counts_lack() {
 }
 
 #[test]
+fn label_answers_only_the_input_refs_the_names_know_keyed_as_given() {
+    let upper = FIRST.to_uppercase();
+    let refs = [upper.clone(), SECOND.to_string()];
+    let names = BTreeMap::from([(upper.clone(), "Alpha".to_string())]);
+    let cells = match label_cells(&refs, &names).primitive {
+        Primitive::ColumnCells(cells) => cells,
+        _ => panic!("a label answers ColumnCells"),
+    };
+    let cells: Vec<(&str, &str, CellKind)> =
+        cells.iter().map(|(r, c)| (r.as_str(), c.value.as_str(), c.kind)).collect();
+    assert_eq!(cells, [(upper.as_str(), "Alpha", CellKind::Text)], "an unknown ref draws no cell");
+}
+
+#[test]
 fn manifest_declares_the_tab_fact_count_and_list_column_and_no_write() {
     let m = manifest();
     assert!(!m.writes && m.actions.is_empty(), "characters is not a writer");
@@ -174,7 +189,13 @@ fn manifest_declares_the_tab_fact_count_and_list_column_and_no_write() {
         m.contributions.iter().map(|c| (c.id.as_str(), c.order, c.icon.as_str())).collect();
     assert_eq!(
         decls,
-        [("characters", 20, ""), ("fact.count", 30, "swords"), ("tab.count", 0, ""), ("column.count", 10, "")]
+        [
+            ("characters", 20, ""),
+            ("fact.count", 30, "swords"),
+            ("tab.count", 0, ""),
+            ("column.count", 10, ""),
+            ("label.character", 0, ""),
+        ]
     );
     assert!(matches!(
         &m.contributions[0].point,
@@ -191,6 +212,10 @@ fn manifest_declares_the_tab_fact_count_and_list_column_and_no_write() {
         Point::EntityListColumn { kind, label, align: Align::Right }
             if kind == "player" && label == "Characters"
     ));
+    assert!(matches!(&m.contributions[4].point, Point::EntityLabel { kind } if kind == "character"));
+    let kinds: Vec<(&str, &str, &str)> =
+        m.entity_kinds.iter().map(|k| (k.kind.as_str(), k.label.as_str(), k.icon.as_str())).collect();
+    assert_eq!(kinds, [("character", "Character", "swords")], "characters owns the kind it labels");
 }
 
 /// Refs over the cap are refused before any SQL: the pool points at a closed port, so a
@@ -213,6 +238,10 @@ async fn counts_refuse_refs_over_the_cap_before_sql() {
     assert_eq!(over.status, Status::Invalid);
     let at = admin.counts(&refs(MAX_PANEL_REFS)).await.unwrap_err();
     assert_eq!(at.status, Status::Internal, "at the cap the read reaches the (closed) pool");
+    let over = admin.labels(&refs(MAX_PANEL_REFS + 1)).await.unwrap_err();
+    assert_eq!(over.status, Status::Invalid);
+    let at = admin.labels(&refs(MAX_PANEL_REFS)).await.unwrap_err();
+    assert_eq!(at.status, Status::Internal, "at the cap the label read reaches the (closed) pool");
 }
 
 async fn plant(pool: &PgPool, player: &str, name: &str, created_at: &str) -> String {
@@ -261,6 +290,16 @@ async fn panels_answer_a_players_characters_fact_and_count() {
         })
         .await;
     let malformed = admin.panel(query("fact.count", "not-a-uuid")).await;
+    // An unknown and a malformed ref are left out; an uppercase spelling answers as given.
+    let unknown = "00000000-0000-4000-8000-0000000000ee".to_string();
+    let late_upper = late.to_uppercase();
+    let label = admin
+        .panel(PanelQuery {
+            entity: None,
+            refs: vec![early.clone(), unknown, "not-a-uuid".to_string(), late_upper.clone()],
+            ..query("label.character", &three)
+        })
+        .await;
     let providers = ctx.contributions(controlplane::PROVIDER_SLOT);
     cleanup(&pool, &[&three, &one]).await;
 
@@ -304,6 +343,20 @@ async fn panels_answer_a_players_characters_fact_and_count() {
         "the column answers every ref by its own spelling, 0 for none"
     );
     assert_eq!(malformed.unwrap_err().status, Status::Invalid, "a malformed player id is the caller's error");
+    let label = match label.unwrap().primitive {
+        Primitive::ColumnCells(cells) => cells,
+        _ => panic!("the label answers ColumnCells"),
+    };
+    let label: BTreeMap<String, (String, CellKind)> =
+        label.into_iter().map(|(r, c)| (r, (c.value, c.kind))).collect();
+    assert_eq!(
+        label,
+        BTreeMap::from([
+            (early.clone(), ("Charlie".to_string(), CellKind::Text)),
+            (late_upper, ("Alpha".to_string(), CellKind::Text)),
+        ]),
+        "names keyed by the input ref; an unknown or malformed ref draws no cell"
+    );
 
     let modules: Vec<String> = providers.iter().map(|p| p.manifest().module).collect();
     assert_eq!(modules, ["characters"], "init contributes the provider to PROVIDER_SLOT");
