@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use axum::http::StatusCode;
 use controlplane::{
-    decode_field, encode_field, ActionDecl, Banner, ConfirmSpec, ControlPlane, EntityRef, Field, FieldKind, FormSpec,
-    InvokeOutcome, Link, Manifest, PanelBody, PrepareCall, Primitive, ReasonReq, SecretReveal, Then,
+    decode_field, encode_field, ActionDecl, ActionPoint, Banner, ConfirmSpec, ControlPlane, EntityRef, Field, FieldKind,
+    FormMode, FormSpec, InvokeOutcome, Link, Manifest, PanelBody, PrepareCall, Primitive, ReasonReq, SecretReveal, Then,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -40,6 +40,8 @@ pub(crate) const FIELD_ITEM: &str = "_item";
 pub(crate) const FIELD_REASON: &str = "_reason";
 pub(crate) const FIELD_CONFIRM: &str = "_confirm";
 pub(crate) const FIELD_RETURN: &str = "_return";
+/// The picked [`FormMode`] of a form that declares modes.
+pub(crate) const FIELD_MODE: &str = "_mode";
 
 /// Upper bound, in bytes, of a bound element id.
 pub(crate) const ITEM_MAX: usize = 256;
@@ -110,6 +112,45 @@ pub(crate) fn admit(operator: &Operator, manifest: &Manifest, decl: &ActionDecl)
         Some(refusal) => Err(Refusal::ReadOnly(refusal.readonly.map(|(_, text)| text))),
         None => Ok(()),
     }
+}
+
+/// Keeps the modes of `spec` whose action `operator` is admitted to, so the portal draws and
+/// the form instance stores only those; the first mode's refusal when it keeps none of a form
+/// that has modes.
+pub(crate) fn admit_modes(operator: &Operator, manifest: &Manifest, spec: &mut FormSpec) -> Result<(), Refusal> {
+    let mut first = None;
+    spec.modes.retain(|mode| {
+        let Some(decl) = manifest.actions.iter().find(|a| a.id == mode.action) else {
+            return false;
+        };
+        let admitted = admit(operator, manifest, decl);
+        let kept = admitted.is_ok();
+        if let Err(refusal) = admitted {
+            first.get_or_insert(refusal);
+        }
+        kept
+    });
+    match first {
+        Some(refusal) if spec.modes.is_empty() => Err(refusal),
+        _ => Ok(()),
+    }
+}
+
+/// The action a submitted `mode` runs, checked by [`controlplane::form_mode_error`] against
+/// the manifest the submit sees, for the form of an action at `point`.
+pub(crate) fn mode_decl<'a>(
+    manifest: &'a Manifest,
+    point: &ActionPoint,
+    mode: &FormMode,
+) -> Result<&'a ActionDecl, String> {
+    if let Some(error) = controlplane::form_mode_error(manifest, point, mode) {
+        return Err(format!("This form is no longer valid; reopen it ({error})"));
+    }
+    manifest
+        .actions
+        .iter()
+        .find(|a| a.id == mode.action)
+        .ok_or_else(|| format!("mode {:?} names no action", mode.id))
 }
 
 pub(crate) fn parse_entity(raw: &str) -> Option<EntityRef> {
@@ -339,22 +380,42 @@ pub(crate) fn check_click_keys(body: &[(String, String)]) -> Result<(), String> 
     check_keys(body, |key| allowed.contains(&key), |_| false)
 }
 
-/// A form instance posts the portal keys, its spec's field keys and each Money field's
-/// currency key; only a Multi field's key repeats.
+/// A form instance posts the portal keys, its spec's field keys, each Money field's currency
+/// key and, when the spec has modes, [`FIELD_MODE`]; only a Multi field's key repeats.
 pub(crate) fn check_form_keys(spec: &StoredSpec, body: &[(String, String)]) -> Result<(), String> {
-    let fields: &[Field] = match spec {
-        StoredSpec::Form { form, .. } => &form.fields,
-        StoredSpec::Confirm(_) | StoredSpec::Click => &[],
+    let (fields, moded): (&[Field], bool) = match spec {
+        StoredSpec::Form { form, .. } => (&form.fields, !form.modes.is_empty()),
+        StoredSpec::Confirm(_) | StoredSpec::Click => (&[], false),
     };
     let portal = [FIELD_CSRF, FIELD_FORM, FIELD_REASON, FIELD_CONFIRM, FIELD_RETURN];
     let allowed = |key: &str| {
         portal.contains(&key)
+            || (moded && key == FIELD_MODE)
             || fields.iter().any(|f| {
                 f.key == key || (matches!(f.kind, FieldKind::Money(_)) && money_currency_key(&f.key) == key)
             })
     };
     let repeats = |key: &str| fields.iter().any(|f| f.key == key && matches!(f.kind, FieldKind::Multi(_)));
     check_keys(body, allowed, repeats)
+}
+
+/// The mode a form instance's body picks among the modes its row holds: `None` for a form
+/// without modes; an error when the body names no mode or one the row does not hold.
+pub(crate) fn posted_mode<'a>(spec: &'a StoredSpec, body: &[(String, String)]) -> Result<Option<&'a FormMode>, String> {
+    let modes: &[FormMode] = match spec {
+        StoredSpec::Form { form, .. } => &form.modes,
+        StoredSpec::Confirm(_) | StoredSpec::Click => &[],
+    };
+    if modes.is_empty() {
+        return Ok(None);
+    }
+    let Some(id) = first(body, FIELD_MODE) else {
+        return Err(format!("{FIELD_MODE} names no mode"));
+    };
+    match modes.iter().find(|m| m.id == id) {
+        Some(mode) => Ok(Some(mode)),
+        None => Err(format!("mode {id:?} is not a mode of this form")),
+    }
 }
 
 fn check_keys(

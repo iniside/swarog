@@ -696,6 +696,11 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         PanelCase { form: true, ..PanelCase::new(PanelState::Ok, Some(body(Primitive::Form(profile_form())))) },
     );
     panel!("panel_form_readonly", PanelCase::new(PanelState::Readonly, Some(body(Primitive::Form(profile_form())))));
+    // The seg above the form, the first mode on and its submit label (pages-platform.js:172).
+    panel!(
+        "panel_form_modes",
+        PanelCase { form: true, ..PanelCase::new(PanelState::Ok, Some(body(Primitive::Form(moded_form())))) },
+    );
     // The module writes, but the viewer may not use the PanelForm action (so the panel is
     // readonly) while a PanelTool of the same panel stays enabled for them.
     let form_manifest = Manifest {
@@ -883,9 +888,13 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         note: Some("Granted items appear in the next sync.".to_string()),
         revision: None,
         title: None,
+        modes: Vec::new(),
     };
     let grant = decl("grant", "Grant item", "gift", Then::Form(grant_spec.clone()));
     push!(plain("modal_form", modal(&grant, ModalSpec::Form(&grant_spec))));
+    let moded_spec = moded_form();
+    let adjust = decl("adjust", "Grant or revoke", "coins", Then::Form(moded_spec.clone()));
+    push!(plain("modal_form_modes", modal(&adjust, ModalSpec::Form(&moded_spec))));
     let rotate_spec = FormSpec {
         fields: vec![
             Field {
@@ -908,6 +917,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         note: None,
         revision: None,
         title: Some("Rotate the signing key".to_string()),
+        modes: Vec::new(),
     };
     let rotate = decl("rotate", "Rotate key", "key", Then::Form(rotate_spec.clone()));
     push!(plain("modal_form_title_mono_placeholder", modal(&rotate, ModalSpec::Form(&rotate_spec))));

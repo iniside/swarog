@@ -5,8 +5,8 @@
 //! each misplaced case asserts the WHOLE finding list equals the one head-action line.
 
 use controlplane::{
-    ActionDecl, ActionPoint, ContributionDecl, EntityKindDecl, Emphasis, Layout, Manifest, PageDecl, Point,
-    Role, Then,
+    ActionDecl, ActionPoint, ContributionDecl, EntityKindDecl, Emphasis, FormMode, FormSpec, Layout, Manifest,
+    PageDecl, Point, Role, Then,
 };
 
 use super::findings;
@@ -265,4 +265,59 @@ fn two_labels_of_its_kind_in_the_owner_manifest_are_refused() {
         findings(&[m]),
         vec![r#"mail: more than one EntityLabel of entity kind "message": label-a, label-b"#.to_string()]
     );
+}
+
+fn mode(id: &str, action: &str) -> FormMode {
+    FormMode { id: id.into(), label: id.into(), action: action.into(), submit_label: id.into() }
+}
+
+/// The clean head-action fixture plus `adjust`, a `PanelTool("queue")` form whose modes are
+/// `modes`, and the `credit` and `debit` actions at its point.
+fn moded(modes: Vec<FormMode>) -> Manifest {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    let spec = FormSpec {
+        fields: Vec::new(),
+        hidden: Default::default(),
+        submit_label: "Apply".into(),
+        note: None,
+        revision: None,
+        title: None,
+        modes,
+    };
+    let tool = ActionPoint::PanelTool("queue".into());
+    m.actions.push(ActionDecl { then: Then::Form(spec), ..action("adjust", tool.clone()) });
+    m.actions.push(action("credit", tool.clone()));
+    m.actions.push(action("debit", tool));
+    m
+}
+
+#[test]
+fn a_forms_modes_at_its_point_and_a_contributions_several_panel_forms_are_clean() {
+    assert_eq!(findings(&[moded(vec![mode("credit", "credit"), mode("debit", "debit")])]), Vec::<String>::new());
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    m.actions.push(action("grant", ActionPoint::PanelForm("queue".into())));
+    m.actions.push(action("revoke", ActionPoint::PanelForm("queue".into())));
+    assert_eq!(findings(&[m]), Vec::<String>::new(), "a panel form's modes sit at one PanelForm point");
+}
+
+#[test]
+fn a_mode_naming_a_missing_misplaced_or_non_invoke_action_or_a_repeated_id_is_refused() {
+    let prefix = r#"mail: action "adjust" form: "#;
+    let ghost = moded(vec![mode("ghost", "ghost")]);
+    let line = r#"mode "ghost" names action "ghost", which is not an action of this module"#;
+    assert_eq!(findings(&[ghost]), vec![format!("{prefix}{line}")]);
+
+    let mut elsewhere = moded(vec![mode("credit", "credit")]);
+    elsewhere.actions[2].point = ActionPoint::PageHead("other-page".into());
+    let line = r#"mode "credit" names action "credit", which sits at PageHead("other-page"), not at the form's point PanelTool("queue")"#;
+    assert_eq!(findings(&[elsewhere]), vec![format!("{prefix}{line}")]);
+
+    let mut prepared = moded(vec![mode("credit", "credit")]);
+    prepared.actions[2].prepare = true;
+    let refused = findings(&[prepared]);
+    let line = r#"mode "credit" names action "credit", which is not a Then::Invoke action without prepare"#;
+    assert!(refused.contains(&format!("{prefix}{line}")), "{refused:?}");
+
+    let twice = moded(vec![mode("credit", "credit"), mode("credit", "debit")]);
+    assert_eq!(findings(&[twice]), vec![format!(r#"{prefix}mode id "credit" is repeated"#)]);
 }

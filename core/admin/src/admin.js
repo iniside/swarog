@@ -135,6 +135,25 @@
     });
   }
 
+  // A form's modes (`FormSpec.modes`): picking a segment sets the posted `_mode` and the
+  // submit button's label on the client, with no request.
+  function pickMode(btn) {
+    var form = btn.closest("form");
+    if (!form || btn.disabled) return;
+    btn.parentNode.querySelectorAll("[data-mode]").forEach(function (b) {
+      b.classList.toggle("on", b === btn);
+    });
+    var mode = form.querySelector("input[name=_mode]");
+    if (mode) mode.value = btn.dataset.mode;
+    var submit = form.querySelector("button[type=submit]");
+    if (submit) submit.textContent = btn.dataset.submitLabel;
+  }
+
+  // A form reset leaves the hidden `_mode` alone too, so the rendered mode is picked again.
+  function resetModes(form) {
+    form.querySelectorAll(".seg [data-mode-default]").forEach(pickMode);
+  }
+
   // ---------- panels ----------
   // Marks the button and refetches its slot. A swap replaces the button; a failed
   // request swaps nothing, and `resetRetries` restores the marked button then.
@@ -339,6 +358,10 @@
       flipToggle(el);
       return;
     }
+    if ((el = t.closest(".seg [data-mode]"))) {
+      pickMode(el);
+      return;
+    }
     if ((el = t.closest("[data-modal-close]"))) {
       if (el.hasAttribute("data-ack-done")) {
         var r = modalRoot();
@@ -388,6 +411,7 @@
 
   document.addEventListener("reset", function (ev) {
     resetToggles(ev.target);
+    resetModes(ev.target);
   });
 
   document.addEventListener("keydown", function (ev) {

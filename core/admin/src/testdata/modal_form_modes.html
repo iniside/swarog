@@ -1,0 +1,65 @@
+<div class="scrim" data-scrim>↵
+<form class="modal" role="dialog" aria-modal="true" hx-post="&#x2f;admin&#x2f;_action&#x2f;golden&#x2f;adjust" hx-target="#modal-root" hx-swap="innerHTML" hx-disabled-elt="find button[type=submit]" data-gate>
+<input type="hidden" name="_csrf" value="csrf-golden">
+<input type="hidden" name="_form" value="form-golden-1">
+<input type="hidden" name="_mode" value="grant">↵
+<div class="modal-head">
+<div class="modal-icon ok">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<ellipse cx="9" cy="7" rx="5.5" ry="2.5"/>
+<path d="M3.5 7v4c0 1.4 2.5 2.5 5.5 2.5"/>
+<path d="M3.5 11v4c0 1.4 2.5 2.5 5.5 2.5"/>
+<ellipse cx="15" cy="13" rx="5.5" ry="2.5"/>
+<path d="M9.5 13v4c0 1.4 2.5 2.5 5.5 2.5s5.5-1.1 5.5-2.5v-4"/>
+</svg>
+</div>
+<div>
+<h2>Grant or revoke</h2>
+<div class="muted" style="font-size:12px">Idempotent per request id.</div>
+</div>
+</div>
+<div class="modal-body">
+<div class="seg" style="margin-bottom:12px">
+<button type="button" class="on" data-mode-default data-mode="grant" data-submit-label="Grant">Grant</button>
+<button type="button" data-mode="revoke" data-submit-label="Revoke">Revoke</button>
+</div>
+<div class="form">
+<label class="fl">Player <span style="color:var(--err)">*</span>
+<span class="type">ref user</span>
+</label>
+<div>
+<span class="input-icon">
+<svg class="i " viewBox="0 0 24 24" aria-hidden="true">
+<circle cx="12" cy="8" r="4"/>
+<path d="M4 21c1-4.2 4.2-6.5 8-6.5s7 2.3 8 6.5"/>
+</svg>
+<input class="input" style="width:260px" name="player" value="" placeholder="user id" required>
+</span>
+</div>
+<label class="fl">Amount<span class="type">money</span>
+</label>
+<div>
+<div class="row">
+<input class="input num" style="width:140px" name="amount" value="" inputmode="decimal">
+<select class="select" style="width:110px" name="amount__currency">
+<option>EMB</option>
+<option>GLD</option>
+</select>
+</div>
+</div>
+<label class="fl">Reason <span style="color:var(--err)">*</span>
+<span class="type">string</span>
+</label>
+<div>
+<input class="input" style="width:100%;max-width:520px" name="reason" value="" required>
+</div>
+</div>
+</div>↵
+<div class="modal-foot">
+<span class="muted" style="margin-right:auto;font-size:12px;align-self:center">
+</span>
+<button type="button" class="btn" data-modal-close>Cancel</button>
+<button type="submit" class="btn primary go">Grant</button>
+</div>↵
+</form>↵
+</div>

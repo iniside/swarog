@@ -386,6 +386,31 @@ pub(super) fn profile_form() -> FormSpec {
         note: Some("Changes apply on next login.".to_string()),
         revision: Some(3),
         title: None,
+        modes: Vec::new(),
+    }
+}
+
+/// The wallet's Grant or revoke form (pages-platform.js:172-176): two modes, each with its
+/// own submit label, over one set of fields.
+pub(super) fn moded_form() -> FormSpec {
+    let mode = |id: &str, label: &str| controlplane::FormMode {
+        id: id.to_string(),
+        label: label.to_string(),
+        action: id.to_string(),
+        submit_label: label.to_string(),
+    };
+    FormSpec {
+        fields: vec![
+            Field { required: true, ..field("player", "Player", FieldKind::Ref("user".to_string()), None) },
+            field("amount", "Amount", FieldKind::Money(strings(&["EMB", "GLD"])), None),
+            Field { required: true, ..field("reason", "Reason", FieldKind::String, None) },
+        ],
+        hidden: BTreeMap::new(),
+        submit_label: "Apply".to_string(),
+        note: Some("Idempotent per request id.".to_string()),
+        revision: None,
+        title: None,
+        modes: vec![mode("grant", "Grant"), mode("revoke", "Revoke")],
     }
 }
 

@@ -246,7 +246,7 @@ fn action_url(module: &str, action: &str) -> String {
 }
 
 /// The `PanelTool`, `QueueRow` and `TableRow` actions of `contribution` in `manifest`,
-/// unbound, by `(order, id)`.
+/// unbound, by `(order, id)`; a form's mode action is not one.
 pub(crate) fn panel_tools(
     operator: &Operator,
     csrf: &str,
@@ -257,7 +257,11 @@ pub(crate) fn panel_tools(
     let mut tools: Vec<&ActionDecl> = manifest
         .actions
         .iter()
-        .filter(|a| a.point.contribution() == Some(contribution) && !matches!(a.point, ActionPoint::PanelForm(_)))
+        .filter(|a| {
+            a.point.contribution() == Some(contribution)
+                && !matches!(a.point, ActionPoint::PanelForm(_))
+                && !manifest.is_mode_action(&a.id)
+        })
         .collect();
     tools.sort_by(|a, b| (a.order, &a.id).cmp(&(b.order, &b.id)));
     tools.into_iter().map(|a| action_item(operator, csrf, module, manifest, a, None)).collect()
@@ -292,7 +296,7 @@ fn action_items(
         .modules
         .iter()
         .flat_map(|(m, r)| r.manifest.actions.iter().map(move |a| (m.as_str(), &r.manifest, a)))
-        .filter(|(_, _, a)| want(&a.point))
+        .filter(|(_, w, a)| want(&a.point) && !w.is_mode_action(&a.id))
         .collect();
     found.sort_by(|a, b| (a.2.order, a.0, &a.2.id).cmp(&(b.2.order, b.0, &b.2.id)));
     found.into_iter().map(|(m, w, a)| action_item(&ctx.operator, &ctx.csrf, m, w, a, entity)).collect()
@@ -501,7 +505,7 @@ async fn page(
         .head_actions
         .iter()
         .filter_map(|id| manifest.actions.iter().find(|a| &a.id == id))
-        .filter(|a| !matches!(a.point, ActionPoint::PanelForm(_)))
+        .filter(|a| !matches!(a.point, ActionPoint::PanelForm(_)) && !manifest.is_mode_action(&a.id))
         .map(|a| action_item(&ctx.operator, &ctx.csrf, &module, manifest, a, None))
         .collect();
     let entry = snapshot.nav.iter().find(|n| n.module == module && n.page == page_id);
@@ -723,10 +727,16 @@ async fn panel(
         (PanelState::Ok, Some(body @ PanelBody { primitive: Primitive::Form(_), .. })) => Some(body.clone()),
         _ => None,
     };
-    if let Some(body) = form_body {
-        match panel_form_instance(&p, &ctx, manifest, &module, decl, entity.as_ref(), &body).await {
-            Ok(Some((post_url, form_id))) => form = Some((post_url, form_id)),
-            Ok(None) => view.state = PanelState::Readonly,
+    if let Some(mut body) = form_body {
+        match panel_form_instance(&p, &ctx, manifest, &module, decl, entity.as_ref(), &mut body).await {
+            Ok(Some((post_url, form_id))) => {
+                form = Some((post_url, form_id));
+                view.body = Some(body);
+            }
+            Ok(None) => {
+                view.state = PanelState::Readonly;
+                view.body = Some(body);
+            }
             Err(msg) => {
                 view.state = PanelState::Error;
                 view.body = None;
@@ -804,9 +814,11 @@ async fn panel(
 }
 
 /// The form instance an `ok` Form panel's `body` posts as, storing the form with its
-/// chrome: `Ok(None)` (readonly) when the contribution has no `PanelForm` action or the
-/// viewer cannot use it, `Err` (an error panel) when the spec cannot be served or the
-/// instance cannot be stored.
+/// chrome: `Ok(None)` (readonly) when the viewer may use no action of the form, `Err` (an
+/// error panel) when the spec cannot be served or the instance cannot be stored. A form
+/// without modes posts as the contribution's one `PanelForm` action. A form with modes keeps
+/// only the modes the viewer is admitted to, in `body` as well, and posts as the first one's
+/// action; the submit runs the action of the mode it names.
 async fn panel_form_instance(
     p: &Portal,
     ctx: &Ctx,
@@ -814,19 +826,44 @@ async fn panel_form_instance(
     module: &str,
     decl: &ContributionDecl,
     entity: Option<&EntityRef>,
-    body: &PanelBody,
+    body: &mut PanelBody,
 ) -> Result<Option<(String, String)>, String> {
-    let Primitive::Form(spec) = &body.primitive else {
+    let point = ActionPoint::PanelForm(decl.id.clone());
+    let Primitive::Form(spec) = &mut body.primitive else {
         return Ok(None);
     };
-    let Some((action, post_url)) = panel_form_save(&ctx.operator, module, manifest, &decl.id) else {
-        return Ok(None);
+    let action = if spec.modes.is_empty() {
+        let saves = manifest.actions.iter().filter(|a| a.point == point).count();
+        if saves > 1 {
+            return Err(format!("Form unavailable: {saves} PanelForm actions and the form names no mode"));
+        }
+        let Some((action, _)) = panel_form_save(&ctx.operator, module, manifest, &decl.id) else {
+            return Ok(None);
+        };
+        let errors = controlplane::form_spec_errors(spec);
+        if !errors.is_empty() {
+            return Err(format!("Form unavailable: {}", errors.join("; ")));
+        }
+        action
+    } else {
+        let mut errors = controlplane::form_spec_errors(spec);
+        errors.extend(controlplane::form_mode_errors(manifest, &point, spec));
+        if !errors.is_empty() {
+            return Err(format!("Form unavailable: {}", errors.join("; ")));
+        }
+        if actions::admit_modes(&ctx.operator, manifest, spec).is_err() {
+            return Ok(None);
+        }
+        let first = spec.modes.first().and_then(|m| manifest.actions.iter().find(|a| a.id == m.action));
+        let Some(action) = first else {
+            return Ok(None);
+        };
+        render::seen::record(&action.point);
+        action
     };
-    let errors = controlplane::form_spec_errors(spec);
-    if !errors.is_empty() {
-        return Err(format!("Form unavailable: {}", errors.join("; ")));
-    }
-    let stored = StoredSpec::Form { form: spec.clone(), chrome: Chrome::of(body) };
+    let post_url = action_url(module, &action.id);
+    let form = spec.clone();
+    let stored = StoredSpec::Form { form, chrome: Chrome::of(body) };
     let mint = forms::Mint {
         login: &ctx.operator.login,
         module,
@@ -945,7 +982,7 @@ async fn action_modal(
     if item.is_some_and(|i| !actions::validate_item(i)) {
         return toast(&p, StatusCode::BAD_REQUEST, "item is empty, too long or has control characters".to_string());
     }
-    let spec = if found.decl.prepare {
+    let mut spec = if found.decl.prepare {
         let req = PrepareCall {
             module: module.clone(),
             action: action.clone(),
@@ -964,6 +1001,18 @@ async fn action_modal(
     } else {
         declared
     };
+    if let StoredSpec::Form { form, .. } = &mut spec {
+        if !form.modes.is_empty() {
+            let errors = controlplane::form_mode_errors(found.manifest, &found.decl.point, form);
+            if !errors.is_empty() {
+                let msg = format!("This action cannot be opened: {}", errors.join("; "));
+                return toast(&p, StatusCode::SERVICE_UNAVAILABLE, msg);
+            }
+            if let Err(refusal) = actions::admit_modes(&ctx.operator, found.manifest, form) {
+                return toast(&p, StatusCode::FORBIDDEN, refusal.hint());
+            }
+        }
+    }
     let Some(shown) = modal_spec(&spec) else {
         return toast(&p, StatusCode::BAD_REQUEST, format!("{module}/{action} has no modal"));
     };
@@ -1117,8 +1166,8 @@ async fn take_click(
     }
 }
 
-/// The form path: claim → allowed keys → `admit` → decode → invoke with a call built only
-/// from the row. Every pre-invoke rejection first releases the claim.
+/// The form path: claim → allowed keys → the action (the picked mode's, for a form with
+/// modes) → `admit` → decode → invoke with a call built only from the row and that action. Every pre-invoke rejection first releases the claim.
 async fn submit_form(s: &Submit<'_>, form_id: &str) -> Response {
     let row = match take_form(s, form_id).await {
         Ok(row) => row,
@@ -1129,7 +1178,21 @@ async fn submit_form(s: &Submit<'_>, form_id: &str) -> Response {
         forms::settle(pool, &row, false).await;
         return toast(s.p, StatusCode::BAD_REQUEST, msg);
     }
-    if let Err(refusal) = actions::admit(s.operator, s.found.manifest, s.found.decl) {
+    // A form with modes runs the action of the mode its body names among the modes the row
+    // holds, never an action the body names; without modes, the action the row was minted for.
+    let decl = match actions::posted_mode(&row.spec, s.body) {
+        Ok(None) => Ok(s.found.decl),
+        Ok(Some(mode)) => actions::mode_decl(s.found.manifest, &s.found.decl.point, mode),
+        Err(msg) => Err(msg),
+    };
+    let decl = match decl {
+        Ok(decl) => decl,
+        Err(msg) => {
+            forms::settle(pool, &row, false).await;
+            return toast(s.p, StatusCode::BAD_REQUEST, msg);
+        }
+    };
+    if let Err(refusal) = actions::admit(s.operator, s.found.manifest, decl) {
         forms::settle(pool, &row, false).await;
         return toast(s.p, StatusCode::FORBIDDEN, refusal.hint());
     }
@@ -1142,7 +1205,7 @@ async fn submit_form(s: &Submit<'_>, form_id: &str) -> Response {
     };
     let req = InvokeCall {
         module: row.module.clone(),
-        action: row.action.clone(),
+        action: decl.id.clone(),
         entity: row.entity.clone(),
         input: submission.input,
         expected_revision: submission.expected_revision,
@@ -1173,7 +1236,8 @@ async fn submit_click(s: &Submit<'_>) -> Response {
         },
     };
     let decl = s.found.decl;
-    if !matches!(decl.then, Then::Invoke) || matches!(decl.point, ActionPoint::PanelForm(_)) {
+    let from_form = matches!(decl.point, ActionPoint::PanelForm(_)) || s.found.manifest.is_mode_action(&decl.id);
+    if !matches!(decl.then, Then::Invoke) || from_form {
         let msg = format!("{}/{} must be submitted from its form", s.who.module, decl.id);
         return toast(s.p, StatusCode::BAD_REQUEST, msg);
     }

@@ -253,8 +253,10 @@ fn head_actions(m: &Manifest, out: &mut Vec<String>) {
     }
 }
 
+/// Several `PanelForm` actions on one contribution are the modes of its form
+/// (`FormSpec::modes`); the portal refuses a form without modes on such a contribution, since
+/// the panel's spec is known only when it answers.
 fn panel_actions(m: &Manifest, out: &mut Vec<String>) {
-    let mut forms: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for a in &m.actions {
         let Some(contribution) = a.point.contribution() else { continue };
         let point = a.point.variant();
@@ -268,15 +270,7 @@ fn panel_actions(m: &Manifest, out: &mut Vec<String>) {
             if !matches!(a.then, Then::Invoke) {
                 out.push(format!("{}: PanelForm action {:?} is not Then::Invoke", m.module, a.id));
             }
-            forms.entry(contribution).or_default().push(a.id.as_str());
         }
-    }
-    for (contribution, actions) in forms.iter().filter(|(_, actions)| actions.len() > 1) {
-        out.push(format!(
-            "{}: contribution {contribution:?} has more than one PanelForm action: {}",
-            m.module,
-            actions.join(", ")
-        ));
     }
 }
 
@@ -328,7 +322,8 @@ fn id_lengths(m: &Manifest, out: &mut Vec<String>) {
 fn form_specs(m: &Manifest, out: &mut Vec<String>) {
     for a in &m.actions {
         if let Then::Form(spec) = &a.then {
-            for error in controlplane::form_spec_errors(spec) {
+            let modes = controlplane::form_mode_errors(m, &a.point, spec);
+            for error in controlplane::form_spec_errors(spec).into_iter().chain(modes) {
                 out.push(format!("{}: action {:?} form: {error}", m.module, a.id));
             }
         }

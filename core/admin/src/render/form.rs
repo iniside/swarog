@@ -31,11 +31,24 @@ pub(crate) struct FieldView {
     pub(crate) error: Option<String>,
 }
 
+/// One segment of a form's `div.seg`; `on` is the picked mode.
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ModeView {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) submit_label: String,
+    pub(crate) on: bool,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct FormView {
     pub(crate) fields: Vec<FieldView>,
+    /// The picked mode's submit label for a form with modes.
     pub(crate) submit_label: String,
     pub(crate) note: Option<String>,
+    pub(crate) modes: Vec<ModeView>,
+    /// The picked mode's id, posted as `_mode`; empty for a form without modes.
+    pub(crate) mode: String,
 }
 
 /// A `Primitive::Form` in a panel; `form_id` and `post_url` are set when it has a form
@@ -119,16 +132,31 @@ fn field(f: &Field, posted: Option<&[(String, String)]>, errors: &BTreeMap<Strin
     }
 }
 
-/// `posted` is the body being shown again, `None` for a fresh form.
+/// `posted` is the body being shown again, `None` for a fresh form. The picked mode is the
+/// one `posted` names, else the first.
 pub(crate) fn form(
     spec: &FormSpec,
     posted: Option<&[(String, String)]>,
     errors: &BTreeMap<String, String>,
 ) -> FormView {
+    let named = posted.and_then(|body| actions::first(body, actions::FIELD_MODE));
+    let picked = spec.modes.iter().find(|m| Some(m.id.as_str()) == named).or(spec.modes.first());
+    let modes = spec
+        .modes
+        .iter()
+        .map(|m| ModeView {
+            id: m.id.clone(),
+            label: m.label.clone(),
+            submit_label: m.submit_label.clone(),
+            on: picked.is_some_and(|p| p.id == m.id),
+        })
+        .collect();
     FormView {
         fields: spec.fields.iter().map(|f| field(f, posted, errors)).collect(),
-        submit_label: spec.submit_label.clone(),
+        submit_label: picked.map_or_else(|| spec.submit_label.clone(), |m| m.submit_label.clone()),
         note: spec.note.clone(),
+        modes,
+        mode: picked.map(|m| m.id.clone()).unwrap_or_default(),
     }
 }
 

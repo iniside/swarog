@@ -515,6 +515,15 @@ impl Manifest {
         let text = self.contributions.iter().find(|c| c.id == on)?.readonly.as_ref()?;
         Some(WriteRefusal { readonly: Some((on.to_string(), text.clone())) })
     }
+
+    /// Whether a `Then::Form` this manifest declares names `action` as one of its
+    /// [`FormSpec::modes`]: the portal then draws the action in no menu and runs it only from
+    /// that form.
+    pub fn is_mode_action(&self, action: &str) -> bool {
+        self.actions
+            .iter()
+            .any(|a| matches!(&a.then, Then::Form(spec) if spec.modes.iter().any(|m| m.action == action)))
+    }
 }
 
 /// Why [`Manifest::write_refusal`] refuses an action.
@@ -735,6 +744,21 @@ pub struct FormSpec {
     pub revision: Option<u64>,
     /// The modal's title; the action's label when absent. A panel form has none.
     pub title: Option<String>,
+    /// The modes the form switches between, drawn as `div.seg` above its fields; empty for a
+    /// form of one action. The submit runs the action of the mode the body names.
+    pub modes: Vec<FormMode>,
+}
+
+/// One mode of a [`FormSpec`]: its segment's label, the submit button's label while it is
+/// picked, and the action the submit runs. That action is a `Then::Invoke` action of the
+/// same module at the point of the form's own action ([`form_mode_errors`]); the portal draws
+/// it in no menu and runs it only from the form.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormMode {
+    pub id: String,
+    pub label: String,
+    pub action: String,
+    pub submit_label: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -884,9 +908,17 @@ fn is_decimal(raw: &str) -> bool {
 }
 
 /// Every reason `spec` cannot be served as a form: a field key that contains `__`, starts
-/// with `_` or equals a `hidden` key, or a `default` that does not decode.
+/// with `_` or equals a `hidden` key, a `default` that does not decode, or a mode with an
+/// empty or repeated id.
 pub fn form_spec_errors(spec: &FormSpec) -> Vec<String> {
     let mut errors = Vec::new();
+    for (i, mode) in spec.modes.iter().enumerate() {
+        if mode.id.is_empty() {
+            errors.push("a mode has an empty id".to_string());
+        } else if spec.modes[..i].iter().any(|m| m.id == mode.id) {
+            errors.push(format!("mode id {:?} is repeated", mode.id));
+        }
+    }
     for field in &spec.fields {
         let key = &field.key;
         if key.contains("__") || key.starts_with('_') {
@@ -902,6 +934,34 @@ pub fn form_spec_errors(spec: &FormSpec) -> Vec<String> {
         }
     }
     errors
+}
+
+/// Every reason the modes of `spec`, the form of an action at `point` in `manifest`, cannot
+/// be served: [`form_mode_error`] of each mode.
+pub fn form_mode_errors(manifest: &Manifest, point: &ActionPoint, spec: &FormSpec) -> Vec<String> {
+    spec.modes.iter().filter_map(|mode| form_mode_error(manifest, point, mode)).collect()
+}
+
+/// Why `mode` of the form of an action at `point` in `manifest` cannot be served: its action
+/// is not an action of `manifest`, is not `Then::Invoke`, sets `prepare` or sits at
+/// another point than `point`; or, off a `PanelForm` point, no `Then::Form` of
+/// `manifest` declares it as a mode ([`Manifest::is_mode_action`]), so it would draw in a
+/// menu.
+pub fn form_mode_error(manifest: &Manifest, point: &ActionPoint, mode: &FormMode) -> Option<String> {
+    let named = format!("mode {:?} names action {:?}", mode.id, mode.action);
+    let Some(action) = manifest.actions.iter().find(|a| a.id == mode.action) else {
+        return Some(format!("{named}, which is not an action of this module"));
+    };
+    if !matches!(action.then, Then::Invoke) || action.prepare {
+        return Some(format!("{named}, which is not a Then::Invoke action without prepare"));
+    }
+    if action.point != *point {
+        return Some(format!("{named}, which sits at {:?}, not at the form's point {point:?}", action.point));
+    }
+    if !matches!(point, ActionPoint::PanelForm(_)) && !manifest.is_mode_action(&action.id) {
+        return Some(format!("{named}, which no declared Then::Form names as a mode"));
+    }
+    None
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
