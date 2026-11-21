@@ -460,9 +460,11 @@ pub enum PortalModal<'a> {
     /// dev fleet does not seed, as the reason says: the host draws no opener of it. That the
     /// portal has the action is not checked, as the crawl sees no opener of it.
     Unseeded(&'a str),
-    /// Nothing: no portal module draws it, as the reason says. Not checked: it names no action
-    /// the crawl could look for.
-    Absent,
+    /// Nothing: no portal module draws it yet, as the reason says; it waits for the portal module
+    /// it names (`[a-z0-9._-]+`, as `lore` is). Not checked by the crawl: it names no action the
+    /// crawl could look for. A no-opener claim of another module's action counts it as that
+    /// action's other opener, one of the module it waits for does not.
+    Absent(&'a str),
 }
 
 impl<'a> PortalModal<'a> {
@@ -470,7 +472,7 @@ impl<'a> PortalModal<'a> {
     pub fn action(&self) -> Option<&'a str> {
         match *self {
             PortalModal::Action(a) | PortalModal::Disabled(a) | PortalModal::Unseeded(a) => Some(a),
-            PortalModal::Absent => None,
+            PortalModal::Absent(_) => None,
         }
     }
 }
@@ -503,26 +505,26 @@ const fn mock_modal(host: &'static str, opener: MockOpener<&'static str>, portal
 pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
     mock_modal("players.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
     mock_modal("players.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
-    mock_modal("players.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
-    mock_modal("players.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent, NO_LORE),
-    mock_modal("player", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
+    mock_modal("players.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
+    mock_modal("players.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent("lore"), NO_LORE),
+    mock_modal("player", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
     mock_modal("player", MockOpener::Pages("suspend"), PortalModal::Disabled("accounts/suspend-header"), NO_SUSPEND),
     mock_modal("player.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
     mock_modal("player.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
-    mock_modal("player.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
-    mock_modal("player.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent, NO_LORE),
-    mock_modal("player.characters", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
+    mock_modal("player.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
+    mock_modal("player.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent("lore"), NO_LORE),
+    mock_modal("player.characters", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
     mock_modal("player.characters", MockOpener::Pages("suspend"), PortalModal::Disabled("accounts/suspend-header"), NO_SUSPEND),
     mock_modal("player.characters.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
     mock_modal("player.characters.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
-    mock_modal("player.characters.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
-    mock_modal("player.characters.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent, NO_LORE),
-    mock_modal("player.wallet", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
+    mock_modal("player.characters.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
+    mock_modal("player.characters.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent("lore"), NO_LORE),
+    mock_modal("player.wallet", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
     mock_modal("player.wallet", MockOpener::Pages("suspend"), PortalModal::Disabled("accounts/suspend-header"), NO_SUSPEND),
     mock_modal("player.wallet.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
     mock_modal("player.wallet.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
-    mock_modal("player.wallet.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
-    mock_modal("player.wallet.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent, NO_LORE),
+    mock_modal("player.wallet.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
+    mock_modal("player.wallet.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent("lore"), NO_LORE),
     mock_modal(
         "mail",
         MockOpener::Pages("cancelMail"),
@@ -934,6 +936,11 @@ pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: 
                 problems.push(format!("EXCLUDED_MOCK_MODALS {host} {opener} names portal action {action:?}, which is not a <module>/<action> of [a-z0-9._-]+ ids"));
             }
         }
+        if let PortalModal::Absent(module) = portal {
+            if !is_action_id(module) {
+                problems.push(format!("EXCLUDED_MOCK_MODALS {host} {opener} waits for portal module {module:?}, which is not a module id of [a-z0-9._-]+"));
+            }
+        }
         if !drawn_on(host).is_some_and(|openers| openers.iter().any(|o| o.as_str() == *opener)) {
             problems.push(format!("EXCLUDED_MOCK_MODALS lists {host} {opener}, which no compared {host} mockup render draws as a modal"));
         }
@@ -946,7 +953,11 @@ pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: 
         };
         for opener in openers.iter().map(MockOpener::as_str).filter(|o| *o != palette) {
             let mapped_other = mapped(mock_host, opener).is_some_and(|p| p.modal.is_some_and(|m| m.action_path() != *action));
-            let excluded_other = excluded(mock_host, opener).is_some_and(|x| x.portal.action().is_some_and(|other| other != *action));
+            let module = action.split_once('/').map_or(*action, |(m, _)| m);
+            let excluded_other = excluded(mock_host, opener).is_some_and(|x| match x.portal {
+                PortalModal::Absent(waits_for) => waits_for != module,
+                portal => portal.action().is_some_and(|other| other != *action),
+            });
             if !mapped_other && !excluded_other {
                 problems.push(format!(
                     "EXCLUDED_MODALS {host} modal {action} says the mockup has no opener of it, but {mock_host} draws {opener}, which is neither a PAGE_MAP modal entry nor an EXCLUDED_MOCK_MODALS entry of another action there"

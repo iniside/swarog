@@ -2089,7 +2089,7 @@ async fn a_claim_on_a_host_that_is_no_crawl_target_fails() {
     let (page, kind, _) = EXCLUDED_MENUS[0];
     for host in ["nowhere".to_string(), excluded_menu_id(page, kind)] {
         let host: &str = &host;
-        let claim = MockModalExclusion { host, opener: MockOpener::Pages("kick"), portal: PortalModal::Absent, why: "why" };
+        let claim = MockModalExclusion { host, opener: MockOpener::Pages("kick"), portal: PortalModal::Absent("lore"), why: "why" };
         let claims: Vec<_> = unmapped_claims(PAGE_MAP).into_iter().chain([claim]).collect();
         let lists = Lists { excluded_mock_modals: &claims, ..LISTS };
         let c = crawl_lists_into(ScratchDir::new("crawl"), Site::healthy(), &lists, false, false).await;

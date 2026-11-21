@@ -516,9 +516,9 @@ fn opener_repo(name: &str, drawn: &[(&str, &str)]) -> FakeRepo {
     FakeRepo::with_openers(name, &mock_html(&body(true)), PAGE_MAP, drawn, OPENERS)
 }
 
-/// An exclusion of `PAGES.<name>` on `host` whose portal side is absent.
+/// An exclusion of `PAGES.<name>` on `host` whose portal side is absent, waiting for `lore`.
 fn pages_modal<'a>(host: &'a str, name: &'a str, why: &'a str) -> MockModalExclusion<'a> {
-    MockModalExclusion { host, opener: MockOpener::Pages(name), portal: PortalModal::Absent, why }
+    MockModalExclusion { host, opener: MockOpener::Pages(name), portal: PortalModal::Absent("lore"), why }
 }
 
 /// `EXCLUDED_MOCK_MODALS` with `more` added.
@@ -813,8 +813,9 @@ fn a_modal_entry_its_host_does_not_draw_fails() {
 
 /// An `EXCLUDED_MODALS` claim that the mockup has no opener of an action fails when its mockup
 /// host draws a modal opener excluded with that same portal action (opened, disabled or unseeded)
-/// or with no portal side, on a page and on the page of an excluded menu host; excluded with
-/// another action, it passes.
+/// or with no portal side waiting for that action's module, on a page and on the page of an
+/// excluded menu host; excluded with another action or waiting for another module, it passes. An
+/// absent side waiting for a malformed module id fails as such.
 #[test]
 fn a_false_no_mock_opener_claim_fails() {
     let repo = opener_repo("modal-claim", &[("mail", "PAGES.extraModal('x')"), ("events", "PAGES.extraModal('y')")]);
@@ -834,9 +835,17 @@ fn a_false_no_mock_opener_claim_fails() {
         "but events draws PAGES.extraModal, which is neither a PAGE_MAP modal entry nor an EXCLUDED_MOCK_MODALS entry of another action there",
     );
     assert_eq!(e, want);
-    let absent = with(PortalModal::Absent, PortalModal::Absent);
-    let e = format!("{:#}", renders(repo.path(), &Lists { excluded_mock_modals: &absent, ..LISTS }).expect_err("absent holds no claim"));
+    let absent = with(PortalModal::Absent("mail"), PortalModal::Absent("core.events"));
+    let e = format!("{:#}", renders(repo.path(), &Lists { excluded_mock_modals: &absent, ..LISTS }).expect_err("absent waiting for the same module"));
     assert_eq!(e, want);
+    let absent = with(PortalModal::Absent("lore"), PortalModal::Absent("lore"));
+    renders(repo.path(), &Lists { excluded_mock_modals: &absent, ..LISTS }).expect("absent waiting for another module");
+    for module in ["", "lore/x"] {
+        let malformed = with(PortalModal::Absent(module), PortalModal::Absent("lore"));
+        let e = format!("{:#}", renders(repo.path(), &Lists { excluded_mock_modals: &malformed, ..LISTS }).expect_err("malformed module"));
+        let want = format!("modal drift:\n  EXCLUDED_MOCK_MODALS mail PAGES.extraModal waits for portal module {module:?}, which is not a module id of [a-z0-9._-]+");
+        assert_eq!(e, want);
+    }
     let other = with(PortalModal::Action("mail/other"), PortalModal::Action("core.events/other"));
     renders(repo.path(), &Lists { excluded_mock_modals: &other, ..LISTS }).expect("another action");
     let disabled = PortalModal::Disabled;
