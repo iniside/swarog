@@ -2823,9 +2823,10 @@ gate.
     A control disabled for any other reason fails the claim naming the host, the action and
     the kind. Review: core-reviewer plus proof-auditor.
   - **13d7d — element and state recorders keyed by effect, not by class** (owner, 2026-11-21,
-    S1, S2 and S3 from the 5dae1963 reviews, S4 and S5 from the b87d8d4e reviews; after 13d7c2). `[opus]` core-implementer,
-    `tools/admindiff/src/{mock.rs,pages.rs,crawl.rs,lib.rs}`, a `core/admin` shell golden and their
-    tests.
+    S1, S2 and S3 from the 5dae1963 reviews, S4 and S5 from the b87d8d4e reviews, S6 from the
+    cc1339d3 reviews; after 13d7c2). `[opus]` core-implementer,
+    `tools/admindiff/src/{mock.rs,pages.rs,crawl.rs,lib.rs}`, a `core/admin` shell golden, the
+    `core/admin` golden tests and their tests.
     - S3 (owner, 2026-11-21; first, the base for S1 and S2): one attribution context in the
       harness — the phase (mount, body or render), the opener and `inMenu` — saved whenever
       a timer is scheduled and restored when it runs, read by every recorder. It replaces the
@@ -2857,6 +2858,22 @@ gate.
       the crawl tests build (owner, 2026-11-21, T4 from the ebb55584 reviews): the hand-copied
       `disabled_item` and `disabled_button` take their markup from `core/admin` goldens
       (`core/admin/src/testdata/menu_row_actions.html` already holds a disabled item).
+      From the cc1339d3 reviews (owner, 2026-11-21): one admindiff test runs `refusals_of` on
+      the real goldens (`economy/grant` is `denied` in `menu_row_actions.html` and
+      `module-down` in the menu-down golden), and the "refused for another reason" case of a
+      `Disabled` claim also runs on a `button[disabled]` control, not only on a menu item.
+    - S6 (owner, 2026-11-21, F1 of the cc1339d3 reviews): no disabled action control without
+      its action and refusal kind. A check over every `core/admin` golden case's render: each
+      disabled `.btn` and `.menu-item.disabled` that draws an `ActionItem` refusal carries
+      `data-refused-action` and `data-refusal`. Which controls are action refusals comes from
+      production output (the `Refusal::hint()` texts and the module-down title), not from a
+      list of macros; a declared `ReadOnly(Some(..))` hint is recognised by another link (for
+      example the case's `enabled == false` items). `panel_form`'s disabled Save button
+      (`title="Read-only"`, a form control with no action id) is an explicit exclusion with its
+      reason, not a todo item. The hand-kept macro list in
+      `a_disabled_action_control_carries_its_action_and_refusal_kind` is deleted once the
+      check covers it. A test proves the check fails on a disabled branch drawn without
+      `refused()`.
 - **Step 13e — contract additions for the ports** (owner, 2026-11-20, on
   `docs/research/2026-11-20-2230-admin-ports-contract-gaps.md`; after 13d7d, before Step 14).
   The owner rulings on that doc's decisions:
