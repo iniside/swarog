@@ -1350,9 +1350,35 @@ impl core::marker::Unpin for controlplane::FilterDef
 impl core::marker::UnsafeUnpin for controlplane::FilterDef
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::FilterDef
 impl core::panic::unwind_safe::UnwindSafe for controlplane::FilterDef
+pub struct controlplane::FormMode
+pub controlplane::FormMode::action: alloc::string::String
+pub controlplane::FormMode::id: alloc::string::String
+pub controlplane::FormMode::label: alloc::string::String
+pub controlplane::FormMode::submit_label: alloc::string::String
+impl core::clone::Clone for controlplane::FormMode
+pub fn controlplane::FormMode::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::FormMode
+impl core::cmp::PartialEq for controlplane::FormMode
+pub fn controlplane::FormMode::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::FormMode
+pub fn controlplane::FormMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for controlplane::FormMode
+impl serde_core::ser::Serialize for controlplane::FormMode
+pub fn controlplane::FormMode::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for controlplane::FormMode
+pub fn controlplane::FormMode::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for controlplane::FormMode
+impl core::marker::Freeze for controlplane::FormMode
+impl core::marker::Send for controlplane::FormMode
+impl core::marker::Sync for controlplane::FormMode
+impl core::marker::Unpin for controlplane::FormMode
+impl core::marker::UnsafeUnpin for controlplane::FormMode
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::FormMode
+impl core::panic::unwind_safe::UnwindSafe for controlplane::FormMode
 pub struct controlplane::FormSpec
 pub controlplane::FormSpec::fields: alloc::vec::Vec<controlplane::Field>
 pub controlplane::FormSpec::hidden: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub controlplane::FormSpec::modes: alloc::vec::Vec<controlplane::FormMode>
 pub controlplane::FormSpec::note: core::option::Option<alloc::string::String>
 pub controlplane::FormSpec::revision: core::option::Option<u64>
 pub controlplane::FormSpec::submit_label: alloc::string::String
@@ -1483,6 +1509,7 @@ pub controlplane::Manifest::search: alloc::vec::Vec<controlplane::SearchDecl>
 pub controlplane::Manifest::sections: alloc::vec::Vec<controlplane::NavSection>
 pub controlplane::Manifest::writes: bool
 impl controlplane::Manifest
+pub fn controlplane::Manifest::is_mode_action(&self, &str) -> bool
 pub fn controlplane::Manifest::write_refusal(&self, &str) -> core::option::Option<controlplane::WriteRefusal>
 impl core::clone::Clone for controlplane::Manifest
 pub fn controlplane::Manifest::clone(&self) -> Self
@@ -2312,5 +2339,7 @@ pub fn controlplane::declared_enums() -> &'static [controlplane::DeclaredEnum]
 pub fn controlplane::decode_field(&controlplane::FieldKind, &str) -> core::result::Result<controlplane::FieldValue, controlplane::FieldError>
 pub fn controlplane::encode_field(&controlplane::FieldKind, &controlplane::FieldValue) -> alloc::string::String
 pub fn controlplane::fake_hash(&str, &str) -> u64
+pub fn controlplane::form_mode_error(&controlplane::Manifest, &controlplane::ActionPoint, &controlplane::FormMode) -> core::option::Option<alloc::string::String>
+pub fn controlplane::form_mode_errors(&controlplane::Manifest, &controlplane::ActionPoint, &controlplane::FormSpec) -> alloc::vec::Vec<alloc::string::String>
 pub fn controlplane::form_spec_errors(&controlplane::FormSpec) -> alloc::vec::Vec<alloc::string::String>
 pub fn controlplane::merge_sections<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a controlplane::Manifest>) -> controlplane::SectionMerge<'a>

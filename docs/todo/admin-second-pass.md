@@ -1,6 +1,6 @@
 # Admin second pass
 
-Last updated: 2026-11-20
+Last updated: 2026-11-21
 
 The admin redesign ships mockup elements the backend cannot back as deterministic fakes
 (`// FAKE: <why>`, plan R1) and not-yet-possible actions as `implemented: false`, rendered
@@ -303,14 +303,6 @@ gaps go to the next iteration.
   carries no action (core/controlplane/src/lib.rs, `TimelineEntry`), so the portal draws no
   link (admin-control-plane-redesign step 13c.1b, K10). Closed by: a per-entry action on
   `TimelineEntry` drawn by the timeline macro; then delete the accept line.
-- [ ] **Wallet Grant/Revoke segmented switch**
-  ADMIN2-40. Accept entry: the `contract gap` line for the Grant or revoke form's
-  `div.seg`, written by the wallet port (Step 15) in its currencies page's accept file,
-  since no accept file maps that page yet. Mockup: pages-platform.js:172. `FormSpec` has no
-  form modes, so the port draws the choice as a `FieldKind::Enum` field
-  (admin-control-plane-redesign step 13c.1b, K16). Closed by: a segmented control in
-  `FormSpec` and the form macro; then delete the accept line. Step 13e4 builds the modes
-  and closes this item (owner, 2026-11-20).
 
 ## Mail nav counter with only parked rows
 

@@ -932,20 +932,22 @@ fn answer(primitive: Primitive) -> Answer {
 }
 
 /// A provider that records every `PanelQuery` it is asked and answers by contribution id; it
-/// answers every search with its set hits, counts invokes and refuses each.
+/// answers every search with its set hits, counts and records invokes and refuses each.
 struct Recording {
     manifest: Manifest,
     answers: Mutex<BTreeMap<String, Answer>>,
     calls: Mutex<Vec<PanelQuery>>,
     hits: Mutex<Vec<SearchHit>>,
     invokes: AtomicU32,
+    invoked: Mutex<Vec<InvokeCall>>,
 }
 
 impl Recording {
     fn new(manifest: Manifest, answers: &[(&str, Answer)]) -> Arc<Recording> {
         let answers = answers.iter().map(|(id, a)| (id.to_string(), a.clone())).collect();
         let (answers, calls, invokes) = (Mutex::new(answers), Mutex::new(Vec::new()), AtomicU32::new(0));
-        Arc::new(Recording { manifest, answers, calls, hits: Mutex::new(Vec::new()), invokes })
+        let (hits, invoked) = (Mutex::new(Vec::new()), Mutex::new(Vec::new()));
+        Arc::new(Recording { manifest, answers, calls, hits, invokes, invoked })
     }
 
     fn hits(&self, hits: Vec<SearchHit>) {
@@ -958,6 +960,11 @@ impl Recording {
 
     fn calls(&self) -> Vec<PanelQuery> {
         self.calls.lock().unwrap().clone()
+    }
+
+    /// The action of every invoke, in order.
+    fn invoked_actions(&self) -> Vec<String> {
+        self.invoked.lock().unwrap().iter().map(|call| call.action.clone()).collect()
     }
 }
 
@@ -980,8 +987,9 @@ impl controlplane::Provider for Recording {
         Ok(self.hits.lock().unwrap().clone())
     }
 
-    async fn invoke(&self, _req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
+    async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, opsapi::Error> {
         self.invokes.fetch_add(1, Ordering::SeqCst);
+        self.invoked.lock().unwrap().push(req);
         Err(opsapi::Error::forbidden("a recording provider writes nothing"))
     }
 }
@@ -2523,6 +2531,103 @@ async fn a_tool_on_a_readonly_contribution_is_disabled_and_its_post_refused() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{raw}");
     assert!(raw.contains(reason), "{raw}");
     assert_eq!(storage.invokes.load(Ordering::SeqCst), 0, "a refused write never reaches the provider");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A form of no fields switching between `modes`.
+fn moded_spec(modes: Vec<controlplane::FormMode>) -> controlplane::FormSpec {
+    controlplane::FormSpec {
+        fields: Vec::new(),
+        hidden: BTreeMap::new(),
+        submit_label: "Apply".to_string(),
+        note: None,
+        revision: None,
+        title: None,
+        modes,
+    }
+}
+
+/// A mode running the action of its own id.
+fn form_mode(id: &str, label: &str) -> controlplane::FormMode {
+    let (id, label) = (id.to_string(), label.to_string());
+    controlplane::FormMode { action: id.clone(), submit_label: label.clone(), id, label }
+}
+
+/// The `_form` instance id a drawn form posts.
+fn form_id_of(raw: &str) -> String {
+    let marker = r#"name="_form" value=""#;
+    let at = raw.find(marker).unwrap_or_else(|| panic!("no form instance: {raw}")) + marker.len();
+    raw[at..].split('"').next().unwrap().to_string()
+}
+
+/// A panel form's modes: an operator's GET draws only the modes it may use, picking the
+/// first; a body naming no mode, or a mode the row does not hold, is refused before the
+/// provider runs; a held mode invokes that mode's action.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panel_form_draws_the_admitted_modes_and_submits_the_posted_one() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-panel-modes");
+    let cookie = operator_cookie(&pool, &user).await;
+    let point = ActionPoint::PanelForm("funds".to_string());
+    let burn = ActionDecl { min_role: Role::Admin, ..action_decl("burn", point.clone(), true) };
+    let actions = vec![action_decl("grant", point.clone(), true), action_decl("revoke", point, true), burn];
+    let manifest = player_owner(module("ledger", vec![player_tab("funds", "funds")], actions, true));
+    let modes = vec![form_mode("grant", "Grant"), form_mode("revoke", "Revoke"), form_mode("burn", "Burn")];
+    let ledger = Recording::new(manifest, &[("funds", answer(Primitive::Form(moded_spec(modes))))]);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let panel = "/admin/_panel/ledger/funds?entity=player:p-1";
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, panel).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains(r#"data-mode="grant""#) && raw.contains(r#"data-mode="revoke""#), "{raw}");
+    assert!(!raw.contains(r#"data-mode="burn""#), "an admin-only mode is not drawn to an operator: {raw}");
+    assert!(raw.contains(r#"name="_mode" value="grant""#), "the first admitted mode is picked: {raw}");
+    for (mode, why) in [("&_mode=burn", "a mode the row does not hold"), ("", "a body naming no mode")] {
+        let (_, raw) = portal_get(&engine, &st, &cookie, panel).await;
+        let body = format!("_csrf=csrf&_form={}{mode}", form_id_of(&raw));
+        let (status, raw) = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/grant", &body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}: {raw}");
+        assert!(ledger.invoked_actions().is_empty(), "{why} never reaches the provider");
+    }
+    let (_, raw) = portal_get(&engine, &st, &cookie, panel).await;
+    let body = format!("_csrf=csrf&_form={}&_mode=revoke", form_id_of(&raw));
+    let _ = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/grant", &body).await;
+    assert_eq!(ledger.invoked_actions(), vec!["revoke".to_string()], "the posted mode's action runs");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A modal `Then::Form`'s mode actions draw in no menu and are refused as a bare click; the
+/// modal's form posted with a mode invokes that mode's action.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_modal_form_s_mode_actions_run_only_from_the_form() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-modal-modes");
+    let cookie = operator_cookie(&pool, &user).await;
+    let row = || ActionPoint::RowAction("player".to_string());
+    let spec = moded_spec(vec![form_mode("credit", "Credit"), form_mode("debit", "Debit")]);
+    let adjust = ActionDecl { then: Then::Form(spec), ..action_decl("adjust", row(), true) };
+    let actions = vec![adjust, action_decl("credit", row(), true), action_decl("debit", row(), true)];
+    let ledger = Recording::new(player_owner(module("ledger", Vec::new(), actions, true)), &[]);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_menu/player/p-1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    assert!(raw.contains("adjust"), "the form's action is in the menu: {raw}");
+    assert!(!raw.contains("credit") && !raw.contains("debit"), "a mode action is in no menu: {raw}");
+    let bare = "_csrf=csrf&_entity=player:p-1";
+    let (status, raw) = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/credit", bare).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{raw}");
+    assert!(ledger.invoked_actions().is_empty(), "a bare click on a mode action never reaches the provider");
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_action/ledger/adjust?entity=player:p-1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let body = format!("_csrf=csrf&_form={}&_mode=debit", form_id_of(&raw));
+    let _ = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/adjust", &body).await;
+    assert_eq!(ledger.invoked_actions(), vec!["debit".to_string()], "the posted mode's action runs");
 
     cleanup_user(&pool, &user).await;
 }

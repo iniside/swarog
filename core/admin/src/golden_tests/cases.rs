@@ -818,6 +818,22 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         "panel_form_rerender_409_locked",
         rerender(&no_errors, Some("Someone else saved this form first."), true),
     ));
+    // A form with modes shown again draws the mode its body posted picked, with that mode's
+    // submit label.
+    let moded_spec = moded_form();
+    let moded_body = posted(&[("_mode", "revoke"), ("player", ""), ("reason", "")]);
+    let moded_errors = BTreeMap::from([("player".to_string(), "is required".to_string())]);
+    let moded = FormInstance {
+        post_url: format!("/admin/_action/{MODULE}/grant"),
+        form_id: FORM_ID.to_string(),
+        posted: Some(&moded_body),
+        errors: &moded_errors,
+        banner: None,
+        locked: false,
+    };
+    let rendered = render::panel_form_result(&frame, &moded_spec, &chrome, moded);
+    let moded_rerender = render::fragment(env, "primitives.html", "panel_fragment", &rendered);
+    push!(plain("panel_form_rerender_mode_revoke", moded_rerender));
 
     // ---- slot placeholders: loading_block and the denied states, by draw mode ----
     for (name, mode, denied) in [

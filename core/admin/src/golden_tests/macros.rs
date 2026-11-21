@@ -104,7 +104,7 @@ pub(super) const MACRO_CASES: &[MacroCase] = &[
         "panel_form",
         "form-actions",
         &[],
-        &["panel_form", "panel_form_readonly", "panel_form_rerender_409_locked"],
+        &["panel_form", "panel_form_readonly", "panel_form_rerender_409_locked", "panel_form_rerender_mode_revoke"],
     ),
     mc("primitives", "queue_counts", "q-counts", &[], &["queue_items_actions", "queue_empty", "queue_search_empty"]),
     mc("primitives", "queue_action", " danger-ghost\"", &["row_button"], &["queue_items_actions"]),
