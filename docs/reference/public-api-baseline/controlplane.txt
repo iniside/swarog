@@ -279,6 +279,7 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::Axis
 pub enum controlplane::CellKind
 pub controlplane::CellKind::Badge
 pub controlplane::CellKind::Bytes
+pub controlplane::CellKind::Dim
 pub controlplane::CellKind::Label
 pub controlplane::CellKind::Mono
 pub controlplane::CellKind::MonoMuted

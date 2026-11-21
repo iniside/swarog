@@ -75,6 +75,7 @@ fn one_cell(c: &controlplane::Cell, labels: Option<&Labels>) -> CellView {
         CellKind::MonoMuted => "mono_muted",
         CellKind::Toggle => "toggle",
         CellKind::Strong => "strong",
+        CellKind::Dim => "dim",
     };
     let tone = match (c.bar, c.tone, c.kind) {
         (Some(_), _, _) => "",

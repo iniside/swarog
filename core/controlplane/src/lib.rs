@@ -992,6 +992,8 @@ variants! {
         Toggle,
         /// Bold plain text.
         Strong,
+        /// Secondary plain text, drawn `span.dim`; not a time.
+        Dim,
     }
 }
 

@@ -669,6 +669,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel!("fact_mono_muted", in_mode("fact", PanelState::Ok, one_cell(cell(CellKind::MonoMuted, "sha-9f3c"))));
     panel!("fact_toggle_on", in_mode("fact", PanelState::Ok, one_cell(cell(CellKind::Toggle, "true"))));
     panel!("fact_toggle_off", in_mode("fact", PanelState::Ok, one_cell(cell(CellKind::Toggle, "false"))));
+    panel!("fact_dim", in_mode("fact", PanelState::Ok, one_cell(cell(CellKind::Dim, "manual grant"))));
     panel!("fact_strong", in_mode("fact", PanelState::Ok, one_cell(cell(CellKind::Strong, "Anna Kowalska"))));
     panel!("fact_tone_accent", in_mode("fact", PanelState::Ok, one_cell(toned(CellKind::Label, "beta", Tone::Accent))));
     let linked_mono = Cell { link: Some(Link::Entity(entity("build", "1.4.2"))), ..cell(CellKind::Mono, "1.4.2") };

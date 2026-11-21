@@ -76,6 +76,7 @@
 {%- elif c.kind == "label" %}<span class="badge plain{{ ' ' ~ c.tone if c.tone }}">{{ c.value }}</span>
 {%- elif c.kind == "muted" %}<span class="muted">{{ c.value }}</span>
 {%- elif c.kind == "mono_muted" %}<span class="mono muted">{{ c.value }}</span>
+{%- elif c.kind == "dim" %}<span class="dim">{{ c.value }}</span>
 {%- elif c.kind == "strong" %}<span style="font-weight:500">{{ c.value }}</span>
 {%- elif c.kind == "toggle" %}<span class="toggle{% if c.value == "true" %} on{% endif %}"></span>
 {%- elif c.kind == "ref" %}<span class="tag">{{ c.value }}</span>
