@@ -1,6 +1,6 @@
 # Processctl
 
-Last updated: 2026-11-10
+Last updated: 2026-11-21
 
 ## In progress
 
@@ -48,3 +48,11 @@ _None._
   "os error 32" (file in use) and still stopped cleanly. Cause not investigated
   (report, don't fix); diagnose the supervisor's Windows shutdown path before fixing.
   Source: mockup-implementer smoke for 01b28403, admin-control-plane-redesign step 8a (2026-11-10).
+
+### Known limits (admin-control-plane-redesign step 15)
+
+- [ ] **The dev database wipe waits on an idle-in-transaction connection**
+  `wipe_dev_database` (`tools/devctl/src/supervisor.rs:430-447`) drops every module schema
+  in one transaction. A leftover connection idle in a transaction holding a lock on one of
+  those schemas makes the DROP wait until the statement times out (60s), and `devctl up`
+  then fails with a `db-wipe` error that does not name the blocking connection.

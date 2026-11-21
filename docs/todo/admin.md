@@ -68,6 +68,15 @@ _None._
   An `EXCLUDED_MOCK_MODALS` `PortalModal::Absent(module)` entry is never reported once that
   module lands, and the portal's down-state wallet group is never compared against the
   mockup's outage drawing.
+- [ ] **Only one user-menu host runs the wallet claims in a unit test**
+  `the_wallet_claims_hold_on_the_drawn_user_menu` (`tools/admindiff/src/tests.rs:874-918`)
+  checks `players.menu.user` only; `player.menu.user`, `player.characters.menu.user` and
+  `player.wallet.menu.user` carry the same lists and rest on the live crawl.
+- [ ] **The stand-in site draws a per-host menu URL on tab entries**
+  `Site::with_map` (`tools/admindiff/src/crawl_tests.rs`, `menu_buttons_in`) draws
+  `/admin/_menu/{kind}/{page}` for tab entries, while the portal opens one
+  `/admin/_menu/{kind}/{entity id}` on every tab (`core/admin/src/routes.rs:627`), so tab
+  tests built from a page map never see two menu targets sharing one URL.
 
 ### Known limits (admin-control-plane-redesign step 14a3)
 

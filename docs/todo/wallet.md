@@ -24,3 +24,7 @@ _None._
   The directory omits a deleted player, so the portal says "No such player." instead of
   "Player has been deleted." until wallet's `player.deleted` tombstone lands. Nothing is
   written either way; wording only.
+- [ ] **The admin key conformance probe covers one call site and one direction**
+  `conformance_admin_key_rejected` (`modules/wallet/src/conformance.rs`) reaches the key
+  check through the grant path only, so it proves the `service.rs:364` check and not the
+  one at `service.rs:276`, and the revoke direction is never probed.
