@@ -1273,7 +1273,15 @@ async fn an_empty_list_page_fails_unless_empty_is_allowed_and_then_the_diff_refu
     assert!(!allowed.server.requests().iter().any(|r| r.path.starts_with("/admin/e/")), "nothing was followed");
     assert_eq!(
         allowed.empty,
-        ["player", "player.characters", "players.menu.user", "player.menu.user", "player.characters.menu.user"]
+        [
+            "player",
+            "player.characters",
+            "player.wallet",
+            "players.menu.user",
+            "player.menu.user",
+            "player.characters.menu.user",
+            "player.wallet.menu.user",
+        ]
     );
     assert!(!run.join("players.menu.user.html").exists() && !run.join("player.menu.user.html").exists());
     let menus: Vec<String> = allowed.server.requests().into_iter().map(|r| r.path).filter(|p| p.contains("/_menu/player/")).collect();
@@ -1299,9 +1307,11 @@ async fn an_empty_or_skipped_page_cannot_make_a_menu_exclusion_stale() {
         [
             "player",
             "player.characters",
+            "player.wallet",
             "players.menu.user",
             "player.menu.user",
             "player.characters.menu.user",
+            "player.wallet.menu.user",
             "players.excluded-menu.guild",
         ]
     );
@@ -1656,9 +1666,11 @@ async fn a_modal_target_on_a_skipped_page_is_empty() {
         [
             "player",
             "player.characters",
+            "player.wallet",
             "players.menu.user",
             "player.menu.user",
             "player.characters.menu.user",
+            "player.wallet.menu.user",
             "player.modal.kick",
         ]
     );
@@ -2042,8 +2054,8 @@ async fn an_action_claim_is_fetched_where_drawn_and_fails_where_not() {
     c.assert_failed_with("mail draws no guild/kick", "EXCLUDED_MOCK_MODALS mail PAGES.kick says the portal opens guild/kick, which mail does not draw");
 }
 
-/// With `--allow-empty` and players listing no row, the player page, its Characters tab and the
-/// three user menus are not fetched: the crawl writes the CLEAN marker, and reports each
+/// With `--allow-empty` and players listing no row, the player page, its Characters and Wallet
+/// tabs and the three user menus are not fetched: the crawl writes the CLEAN marker, and reports each
 /// `EXCLUDED_MOCK_MODALS` claim of those hosts UNCHECKED, in list order; mail's claim, on a
 /// fetched host, is checked.
 #[tokio::test]
@@ -2051,7 +2063,15 @@ async fn a_claim_on_an_unfetched_host_is_reported_unchecked() {
     let empty = Site::healthy().with(&panel_url("players"), ok(fragment(Some("ok"), "players panel", "")));
     let c = crawl_with(empty, false, true).await;
     c.assert_clean("--allow-empty: players lists no row");
-    let skipped = ["player", "player.characters", "players.menu.user", "player.menu.user", "player.characters.menu.user"];
+    let skipped = [
+        "player",
+        "player.characters",
+        "player.wallet",
+        "players.menu.user",
+        "player.menu.user",
+        "player.characters.menu.user",
+        "player.wallet.menu.user",
+    ];
     let want: Vec<String> = EXCLUDED_MOCK_MODALS
         .iter()
         .filter(|x| skipped.contains(&x.host))

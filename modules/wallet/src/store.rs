@@ -465,7 +465,7 @@ impl Store {
             "SELECT seq, id::text, to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), \
                     currency, delta, balance_after, reason \
                FROM wallet.ledger \
-              WHERE player_id = $1::uuid AND ($2::bigint IS NULL OR seq < $2) \
+              WHERE player_id = $1::uuid AND seq < COALESCE($2, 9223372036854775807) \
               ORDER BY seq DESC LIMIT $3",
         )
         .bind(player_id)

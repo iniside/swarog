@@ -1,0 +1,31 @@
+# Accepted differences of the player detail's Wallet tab (portal /admin/p/accounts/players,
+# the first row whose Wallet tab lists a row, else the first row, ?tab=wallet) against
+# UILayout/redesign/player.html?tab=wallet, forced to its ok state. One per line:
+# <difference> | <reason>. An entry that matches no difference fails the diff. A reason names
+# its kind: data difference, not ported yet, template choice, contract gap, or a declared
+# deviation (Dn in the plan).
+frame div.app > aside.sidebar > div.sidebar-foot > div.me: portal-only form#a96e26 | template choice: shell.html.tmpl puts the Sign out form in the sidebar foot; the mockup has no session
+frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item#ecbb9a | not ported yet: the API keys, Scheduler, Config and Audit nav entries arrive with their ports
+frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#1089c4 | not ported yet: the Lore section; no Lore module exists
+frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#5694ed | not ported yet: the Economy section arrives with the wallet port
+frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#ba7b3e | declared deviation D3: no Design-system nav section
+frame div.app > header.topbar: portal-only button.top-btn#255bc4 | template choice: shell.html.tmpl puts the theme toggle in the topbar; the mockup's sits in the devbar, which D3 drops
+frame div.app > main.main > div.page > div.g-tiles.grid: mock-only [tile "Embers (EMB)"] | data difference: the tiles are the wallet catalog's currencies, gold and gems on a dev fleet (WALLET_DEV_SEED), against the mockup's three (checklist G9)
+frame div.app > main.main > div.page > div.g-tiles.grid: mock-only [tile "Gold (GLD)"] | data difference: the tiles are the wallet catalog's currencies, gold and gems on a dev fleet (WALLET_DEV_SEED), against the mockup's three (checklist G9)
+frame div.app > main.main > div.page > div.g-tiles.grid: mock-only [tile "Reroll tokens (TOK)"] | data difference: the tiles are the wallet catalog's currencies, gold and gems on a dev fleet (WALLET_DEV_SEED), against the mockup's three (checklist G9)
+frame div.app > main.main > div.page > div.g-tiles.grid: portal-only [tile "Gems (gems)"] | data difference: the tiles are the wallet catalog's currencies, gold and gems on a dev fleet (WALLET_DEV_SEED), against the mockup's three (checklist G9)
+frame div.app > main.main > div.page > div.g-tiles.grid: portal-only [tile "Gold (gold)"] | data difference: the tiles are the wallet catalog's currencies, gold and gems on a dev fleet (WALLET_DEV_SEED), against the mockup's three (checklist G9)
+mock-only tile "Embers (EMB)" | data difference: the tiles are the wallet catalog's currencies, gold and gems on a dev fleet (WALLET_DEV_SEED), against the mockup's three (checklist G9)
+mock-only tile "Gold (GLD)" | data difference: the tiles are the wallet catalog's currencies, gold and gems on a dev fleet (WALLET_DEV_SEED), against the mockup's three (checklist G9)
+mock-only tile "Reroll tokens (TOK)" | data difference: the tiles are the wallet catalog's currencies, gold and gems on a dev fleet (WALLET_DEV_SEED), against the mockup's three (checklist G9)
+portal-only tile "Gems (gems)" | data difference: the tiles are the wallet catalog's currencies, gold and gems on a dev fleet (WALLET_DEV_SEED), against the mockup's three (checklist G9)
+portal-only tile "Gold (gold)" | data difference: the tiles are the wallet catalog's currencies, gold and gems on a dev fleet (WALLET_DEV_SEED), against the mockup's three (checklist G9)
+panel "#1" section.panel > div.entity-head > div.grow > div.entity-facts: mock-only span#35b730 | not ported yet: no lore module exists for the Lore fact
+panel "#1" section.panel > div.entity-head > div.grow > div.row: mock span.accent.badge.plain portal span.badge.plain | data difference: every account is kind "player", and only the mockup's staff kind is drawn accent (G12)
+panel "#1" section.panel > div.entity-head > div.page-actions: mock-only button.btn#0d6aae | not ported yet: the Notify header action arrives with the notifications port (Step 20); no lore module exists for Change Lore role
+panel "#1" section.panel > div.tabs > button.on.tab: mock-only span.dot.err | data difference: the mockup draws the Wallet tab's wallet-svc-down dot from its demo state (registry.js:69), which the forced ok state does not reach
+panel "#1" section.panel > div.tabs: mock-only button.tab | not ported yet: a tab no port draws yet; each tab and its reason is in pages::EXCLUDED_TABS
+panel "#1" section.panel > div.tabs: mock-only button.tab#e4bdfb | not ported yet: a tab no port draws yet; each tab and its reason is in pages::EXCLUDED_TABS
+panel "#1" section.panel > div.tabs: mock-only button.tab#f729f6 | not ported yet: a tab no port draws yet; each tab and its reason is in pages::EXCLUDED_TABS
+panel "Transactions" section.panel: mock-only div.panel-body | data difference: the mockup designs the Transactions panel only in its error state (pages-core.js:129), which the forced ok state does not reach; the portal draws the ledger table (checklist G7)
+panel "Transactions" section.panel: portal-only div.flush.panel-body#ce99ce | data difference: the mockup designs the Transactions panel only in its error state (pages-core.js:129), which the forced ok state does not reach; the portal draws the ledger table (checklist G7)

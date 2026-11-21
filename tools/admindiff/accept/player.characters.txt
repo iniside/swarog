@@ -9,11 +9,9 @@ frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#1089c4 | not 
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#5694ed | not ported yet: the Economy section arrives with the wallet port
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#ba7b3e | declared deviation D3: no Design-system nav section
 frame div.app > header.topbar: portal-only button.top-btn#255bc4 | template choice: shell.html.tmpl puts the theme toggle in the topbar; the mockup's sits in the devbar, which D3 drops
-panel "#1" section.panel > div.entity-head > div.grow > div.entity-facts: mock-only span#1b4ac0 | not ported yet: the wallet fact arrives with the wallet port (Step 15); no lore module exists for the Lore fact
-panel "#1" section.panel > div.entity-head > div.grow > div.entity-facts: mock-only span#35b730 | not ported yet: the wallet fact arrives with the wallet port (Step 15); no lore module exists for the Lore fact
+panel "#1" section.panel > div.entity-head > div.grow > div.entity-facts: mock-only span#35b730 | not ported yet: no lore module exists for the Lore fact
 panel "#1" section.panel > div.entity-head > div.grow > div.row: mock span.accent.badge.plain portal span.badge.plain | data difference: every account is kind "player", and only the mockup's staff kind is drawn accent (G12)
 panel "#1" section.panel > div.entity-head > div.page-actions: mock-only button.btn#0d6aae | not ported yet: the Notify header action arrives with the notifications port (Step 20); no lore module exists for Change Lore role
-panel "#1" section.panel > div.tabs: mock-only button.tab | not ported yet: a tab no port draws yet; each tab and its reason is in pages::EXCLUDED_TABS
 panel "#1" section.panel > div.tabs: mock-only button.tab#569030 | not ported yet: a tab no port draws yet; each tab and its reason is in pages::EXCLUDED_TABS
 panel "#1" section.panel > div.tabs: mock-only button.tab#e4bdfb | not ported yet: a tab no port draws yet; each tab and its reason is in pages::EXCLUDED_TABS
 panel "#1" section.panel > div.tabs: mock-only button.tab#f729f6 | not ported yet: a tab no port draws yet; each tab and its reason is in pages::EXCLUDED_TABS

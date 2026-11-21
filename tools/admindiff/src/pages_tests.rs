@@ -74,8 +74,8 @@ fn lookup_returns_mapped_first_row_and_pending_pages_and_refuses_excluded_and_un
     assert_eq!(entity.search, "?u=aiko.tanaka", "an entity page carries its fixed entity");
     let excluded = format!("{:#}", lookup(&LISTS, "states").expect_err("excluded"));
     assert!(excluded.contains("page states is excluded: Declared deviation D3"), "{excluded}");
-    let tab = format!("{:#}", lookup(&LISTS, "player.wallet").expect_err("an excluded tab"));
-    assert!(tab.contains("tab player.wallet is excluded: not ported yet"), "{tab}");
+    let tab = format!("{:#}", lookup(&LISTS, "player.inventory").expect_err("an excluded tab"));
+    assert!(tab.contains("tab player.inventory is excluded: not ported yet"), "{tab}");
     let unknown = format!("{:#}", lookup(&LISTS, "nope").expect_err("unknown"));
     assert!(unknown.contains("unknown page nope; pages: index, events"), "{unknown}");
 }
@@ -92,8 +92,8 @@ fn lookup_refuses_by_the_given_exclusion_lists() {
     let tabs = Lists { excluded_tabs: &[("player.zzz", "why tab")], ..LISTS };
     let e = format!("{:#}", lookup(&tabs, "player.zzz").expect_err("excluded by the given list"));
     assert_eq!(e, "tab player.zzz is excluded: why tab");
-    let e = format!("{:#}", lookup(&Lists { excluded_tabs: &[], ..LISTS }, "player.wallet").expect_err("unknown without its exclusion"));
-    assert!(e.starts_with("unknown page player.wallet; pages: "), "{e}");
+    let e = format!("{:#}", lookup(&Lists { excluded_tabs: &[], ..LISTS }, "player.inventory").expect_err("unknown without its exclusion"));
+    assert!(e.starts_with("unknown page player.inventory; pages: "), "{e}");
 }
 
 /// The const lists themselves hold none of the defects `validate_lists` reports for them.
