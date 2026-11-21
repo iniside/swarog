@@ -294,15 +294,20 @@ fn nav(links: &[&str]) -> String {
 /// `.scrim[data-palette]`.
 const PALETTE_SCRIM: &str = r#"<div class="scrim" data-palette hidden><div class="palette"></div></div>"#;
 
-/// A portal page: the nav, the page head with its title `h1` and its `.page-actions` holding
-/// `head`, then `content`, and the shell's [`PALETTE_SCRIM`].
+/// The shell's palette opener, as `shell.html.tmpl` draws it in the topbar on every page.
+const PALETTE_OPENER: &str = r#"<button type="button" class="search-trigger" data-action="palette"></button>"#;
+
+/// A portal page as `shell.html.tmpl` lays it out: inside the `.app` root the nav, the topbar
+/// with the [`PALETTE_OPENER`], and the page head with its title `h1` and its `.page-actions`
+/// holding `head`, then `content`; after the root closes, the shell's [`PALETTE_SCRIM`].
 fn shell(nav_links: &str, h1: &str, head: &str, content: &str) -> String {
     format!(
         concat!(
             r#"<!DOCTYPE html><html><body>{app}<aside class="sidebar"><nav class="nav">{nav_links}</nav></aside>"#,
-            r#"<main class="main"><div class="page"><div class="page-head"><h1>{h1}</h1><div class="page-actions">{head}</div></div>{content}</div></main>"#,
-            r#"{palette}</div></body></html>"#,
+            r#"<header class="topbar">{opener}</header><main class="main"><div class="page"><div class="page-head"><h1>{h1}</h1><div class="page-actions">{head}</div></div>{content}</div></main>"#,
+            r#"</div>{palette}</body></html>"#,
         ),
+        opener = PALETTE_OPENER,
         palette = PALETTE_SCRIM,
         app = root_tag(PAGE_OK),
         nav_links = nav_links,
@@ -1047,42 +1052,61 @@ async fn a_non_2xx_page_fails() {
     crawl(site, false).await.assert_failed("a page only the nav links answering 500");
 }
 
-/// `site`'s page at `route` with its [`PALETTE_SCRIM`] replaced by `palette`.
-fn with_palette(site: &Site, route: &str, palette: &str) -> Response {
+/// `site`'s page at `route` with its `drawn` (its [`PALETTE_SCRIM`] or [`PALETTE_OPENER`])
+/// replaced by `with`.
+fn replace_shell(site: &Site, route: &str, drawn: &str, with: &str) -> Response {
     let html = site.routes.get(route).expect("the site serves the page").body.clone();
-    assert!(html.contains(PALETTE_SCRIM), "the page draws the palette: {html}");
-    ok(html.replacen(PALETTE_SCRIM, palette, 1))
+    assert!(html.contains(drawn), "the page draws {drawn}: {html}");
+    ok(html.replacen(drawn, with, 1))
 }
 
 /// `crawl_page`'s palette check: a mapped page, a page only the nav links or an entity page
-/// whose shell holds no `.scrim[data-palette]`, two, or one not hidden, and a mapped page whose
-/// fragment adds a second, fails naming that page and nothing else; the healthy site, each of
-/// whose pages holds one hidden, crawls clean.
+/// whose `[data-palette]` elements are none, two, one not hidden, one not a `.scrim` (the
+/// element `admin.js` opens) or a hidden `.scrim` behind a stray one, or whose
+/// `[data-action=palette]` openers are none or two, and a mapped page whose fragment adds a
+/// second palette or opener, fails naming that page and nothing else; the healthy site, each
+/// of whose pages holds one hidden `.scrim` palette and one opener, crawls clean.
 #[tokio::test]
 async fn every_fetched_page_holds_one_hidden_palette() {
-    crawl(Site::healthy(), false).await.assert_clean("one hidden palette on every page");
+    crawl(Site::healthy(), false).await.assert_clean("one hidden palette and one opener on every page");
     let mapped = other_mapped();
     let (entity, _) = followers_in(PAGE_MAP).into_iter().next().expect("PAGE_MAP follows a list row");
+    let extra = ("p-extra-things".to_string(), EXTRA_ROUTE.to_string());
+    let mapped_at = (mapped.page.to_string(), mapped.route.to_string());
+    let entity_at = (entity.id(), entry_route(&entity));
     let shown = r#"<div class="scrim" data-palette><div class="palette"></div></div>"#;
+    let unscrimmed = r#"<div class="overlay" data-palette hidden><div class="palette"></div></div>"#;
+    let stray = format!(r#"<div data-palette></div>{PALETTE_SCRIM}"#);
     let twice = format!("{PALETTE_SCRIM}{PALETTE_SCRIM}");
+    let palette_held = |n: usize, scrims: usize| {
+        format!("{n} [data-palette], {scrims} of them a hidden .scrim; the shell draws exactly one, a hidden .scrim")
+    };
+    let opener_held = |n: usize| format!("{n} [data-action=palette] openers; the shell draws exactly one");
+    let opened_twice = format!("{PALETTE_OPENER}{PALETTE_OPENER}");
     let cases = [
-        (mapped.page.to_string(), mapped.route.to_string(), "", "0 .scrim[data-palette], 0 hidden"),
-        ("p-extra-things".to_string(), EXTRA_ROUTE.to_string(), twice.as_str(), "2 .scrim[data-palette], 2 hidden"),
-        (entity.id(), entry_route(&entity), shown, "1 .scrim[data-palette], 0 hidden"),
+        (&mapped_at, PALETTE_SCRIM, "", palette_held(0, 0)),
+        (&extra, PALETTE_SCRIM, twice.as_str(), palette_held(2, 2)),
+        (&entity_at, PALETTE_SCRIM, shown, palette_held(1, 0)),
+        (&mapped_at, PALETTE_SCRIM, unscrimmed, palette_held(1, 0)),
+        (&extra, PALETTE_SCRIM, stray.as_str(), palette_held(2, 1)),
+        (&entity_at, PALETTE_OPENER, "", opener_held(0)),
+        (&mapped_at, PALETTE_OPENER, opened_twice.as_str(), opener_held(2)),
     ];
-    for (page, route, palette, held) in cases {
+    for ((page, route), drawn, with, held) in cases {
         let site = Site::healthy();
-        let site = site.clone().with(&route, with_palette(&site, &route, palette));
+        let site = site.clone().with(route, replace_shell(&site, route, drawn, with));
         let c = crawl(site, false).await;
-        let want = format!("{page}: the page holds {held}; the shell draws exactly one, hidden");
+        let want = format!("{page}: the page holds {held}");
         c.assert_failed_with(&format!("{page} {held}"), &want);
         assert_eq!(c.failures, vec![want], "the palette is the only defect");
     }
-    let site = Site::healthy().with(&mapped.slot, ok(other_fragment(Some("ok"), PALETTE_SCRIM)));
-    let c = crawl(site, false).await;
-    let want = format!("{}: the page holds 2 .scrim[data-palette], 2 hidden; the shell draws exactly one, hidden", mapped.page);
-    c.assert_failed_with("a fragment adds a second palette", &want);
-    assert_eq!(c.failures, vec![want], "the palette is the only defect");
+    for (added, held) in [(PALETTE_SCRIM, palette_held(2, 2)), (PALETTE_OPENER, opener_held(2))] {
+        let site = Site::healthy().with(&mapped.slot, ok(other_fragment(Some("ok"), added)));
+        let c = crawl(site, false).await;
+        let want = format!("{}: the page holds {held}", mapped.page);
+        c.assert_failed_with(&format!("a fragment adds {added}"), &want);
+        assert_eq!(c.failures, vec![want], "the palette is the only defect");
+    }
 }
 
 /// The players page's first `tr.clickable` is followed: its escaped `data-href` is fetched as

@@ -63,7 +63,10 @@ USAGE:
             the same modal rules as a page: each modal action it draws is a page map modal entry
             of that menu target or in pages::EXCLUDED_MODALS, an excluded one is fetched, and an
             exclusion it does not draw is stale; any other fetched menu's modals are fetched for
-            their status
+            their status. It fails, too, on a fetched page, its slots loaded, whose
+            [data-palette] elements are other than one hidden .scrim (the shell's search
+            palette, which admin.js opens) or that draws other than one [data-action=palette]
+            opener of it
   mock      render the mockup target through node into target/admindiff/mock/<target>.html; a
             modal target, hosted by a page, a tab or a menu, is the .scrim its page map opener
             PAGES.<opener>(<args>) appends; a
@@ -83,10 +86,13 @@ USAGE:
             on the mockup's modals too: every onclick body of a compared page, tab or menu
             target's mockup render runs, as written, on its page in node, and one that throws
             fails by name; each .scrim one appends is a modal of the PAGES function whose call
-            appended it, or of the body when no PAGES call did, which must be a page map modal
-            entry of that host or in pages::EXCLUDED_MOCK_MODALS (an opener drawn only on
-            pending or excluded pages is not checked); a modal entry its host does not draw, an
-            EXCLUDED_MOCK_MODALS entry its host does not draw, listed twice, with no reason, a
+            appended it, or of the body when no PAGES call did, which must be the shell palette
+            pages::PALETTE_ONCLICK declares once for every host, a page map modal entry of that
+            host or in pages::EXCLUDED_MOCK_MODALS (an opener drawn only on pending or excluded
+            pages is not checked); PALETTE_ONCLICK no compared render draws fails as stale, and
+            an EXCLUDED_MOCK_MODALS entry naming it as listed twice; a modal entry its host does
+            not draw, an EXCLUDED_MOCK_MODALS entry its host does not draw, listed twice, with
+            no reason, a
             malformed portal action or mapped too, and an EXCLUDED_MODALS reason its mockup host
             contradicts (a modal opener drawn there that is neither a page map modal entry nor
             an EXCLUDED_MOCK_MODALS entry of another action, or a host with no compared render)
