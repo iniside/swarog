@@ -11,8 +11,8 @@ use charactersapi::Character;
 use controlplane::{
     fake_hash, Align, AttentionItem, Cell, CellKind, Column, ContributionDecl, DataTable, EntityKindDecl,
     InvokeCall, InvokeOutcome, Link, Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role,
-    Row, SearchHit, SearchQuery, Severity, DEFAULT_PANEL_DEADLINE_MS, EVENTS_PAGE, EVENTS_PAGE_MODULE, MAX_PANEL_REFS,
-    PAGE_PARAM_SEARCH,
+    Row, SearchHit, SearchQuery, Severity, DEFAULT_PANEL_DEADLINE_MS, EVENT_LOG_PAGE, EVENT_LOG_PAGE_MODULE,
+    MAX_PANEL_REFS, PAGE_PARAM_SEARCH,
 };
 use opsapi::Error;
 
@@ -202,8 +202,8 @@ pub(crate) fn purges_body(pending: i64, oldest: &str) -> PanelBody {
         text: format!("{players} awaiting sweep · oldest {day}"),
         // The sweep is this subscription's handler, so its lag and pause state explain a backlog.
         link: Link::Page {
-            module: EVENTS_PAGE_MODULE.to_string(),
-            page: EVENTS_PAGE.to_string(),
+            module: EVENT_LOG_PAGE_MODULE.to_string(),
+            page: EVENT_LOG_PAGE.to_string(),
             params: BTreeMap::from([(
                 PAGE_PARAM_SEARCH.to_string(),
                 crate::projection::PURGE_SWEEP_SUB.id.to_string(),

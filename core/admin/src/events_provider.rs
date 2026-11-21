@@ -17,8 +17,8 @@ use sqlx::PgPool;
 use crate::fakes;
 use crate::render::{day_and_time, thousands};
 
-pub(crate) const MODULE: &str = controlplane::EVENTS_PAGE_MODULE;
-const PAGE: &str = controlplane::EVENTS_PAGE;
+pub(crate) const MODULE: &str = controlplane::EVENT_LOG_PAGE_MODULE;
+const PAGE: &str = controlplane::EVENT_LOG_PAGE;
 pub(crate) const KIND: &str = "subscription";
 
 pub(crate) const MAX_INPUT_VALUE_BYTES: usize = controlplane::MAX_INPUT_VALUE_BYTES;
