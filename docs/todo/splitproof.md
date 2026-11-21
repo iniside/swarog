@@ -38,7 +38,8 @@ _None._
   WL3, WL4, WL5, WL6, WL6m, NT4, NT4m, PH3, PH6, PH11 and PY7/PY7m grant through `/admin/wallet`,
   which now answers 404, so they stay red although G20 gave them real (guest) players.
   `panel_grant` (`tools/splitproof/src/wallet_ledger_checks.rs`) grants through the panel action;
-  WL6/WL6m also need a revoke path and a new expected refusal text.
+  WL6/WL6m also need a revoke path and a new expected refusal text. Owner 2026-11-21: re-point
+  them once the admin panel port is complete, not per step.
 - [ ] **`[LG1]` matches the label loosely and reads the first `data-state`**
   `player_cell_ok` (`tools/splitproof/src/wallet_ledger_checks.rs`) accepts any cell text ending
   in the handle, so `XLedger#1812` passes; the panel state is the first `data-state` in the
