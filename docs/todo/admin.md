@@ -48,10 +48,6 @@ _None._
   (2026-09-05).
 ### Known limits (admin-control-plane-redesign step 14)
 
-- [ ] **The crawl follows the newest player, who may have no characters**
-  The crawl takes the first players row. On a database with leftover test players that row has
-  0 characters, and `player.characters` diffs 2 lines (the mockup's table, the portal's empty
-  state) that the accept file does not cover. A fresh demoseeded fleet gives every player 1–3.
 - [ ] **`counts_by_player` has no test for duplicate or differently spelled refs**
   `modules/characters/src/admin_tests.rs`: the duplicated ref has 0 characters, so a GROUP BY
   double count would pass, and every ref is a lowercase uuid. The engine dedupes refs today

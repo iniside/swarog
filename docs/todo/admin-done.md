@@ -2,6 +2,9 @@
 
 Last updated: 2026-11-21
 
+- [x] **The crawl follows the newest player, who may have no characters** (2026-11-21, 56126e2a)
+  A tab follower now crawls the first list row whose tab page lists a row; with none, it keeps
+  the first row and says so.
 - [x] **Menu and modal diffs without an accept section stay red** (2026-11-21, admin-control-plane-redesign step 14)
   Accept files for `players.menu.user`, `player.menu.user`, `player.characters.menu.user` and
   `events.modal.skip-poison`; the refused item's `span.hint` went in 84fc8662. Monolith and
