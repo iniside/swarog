@@ -8,8 +8,6 @@ _None._
 
 ## Owner checks
 
-- **admindiff crawl after step 13e6:** on a dev fleet, run `admindiff crawl` and check that
-  `mail` and `players` show no new drift now that their stack-wrapper accept lines are gone.
 - **The popover swap in a browser:** open a row menu on `/admin/players` in a live fleet and
   check that `admin.js` replaces the popover body; no test runs it in a browser.
 

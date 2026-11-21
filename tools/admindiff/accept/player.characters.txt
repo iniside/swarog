@@ -1,5 +1,5 @@
 # Accepted differences of the player detail's Characters tab (portal /admin/p/accounts/players,
-# the first row whose Characters tab lists a row, ?tab=characters) against UILayout/redesign/player.html?tab=characters. One per
+# the first row whose Characters tab lists a row, else the first row, ?tab=characters) against UILayout/redesign/player.html?tab=characters. One per
 # line: <difference> | <reason>. An entry that matches no difference fails the diff. A reason names
 # its kind: data difference, not ported yet, template choice, contract gap, or a declared
 # deviation (Dn in the plan).
