@@ -2632,6 +2632,99 @@ async fn a_modal_form_s_mode_actions_run_only_from_the_form() {
     cleanup_user(&pool, &user).await;
 }
 
+/// A form of one optional `note` field and a request id switching between `modes`.
+fn request_id_spec(modes: Vec<controlplane::FormMode>) -> controlplane::FormSpec {
+    let field = |key: &str, kind: controlplane::FieldKind| controlplane::Field {
+        key: key.to_string(),
+        label: key.to_string(),
+        kind,
+        required: false,
+        help: None,
+        default: None,
+        readonly: false,
+        mono: false,
+        placeholder: None,
+    };
+    let fields = vec![field("note", controlplane::FieldKind::String), field("rid", controlplane::FieldKind::RequestId)];
+    controlplane::FormSpec { fields, ..moded_spec(modes) }
+}
+
+/// The drawn request id field of a form posting as `form_id`: its value is that id, read-only
+/// and with no `name`.
+fn assert_request_id_drawn(raw: &str, form_id: &str) {
+    let drawn = format!(r#"<input class="input mono" style="width:100%;max-width:520px" value="{form_id}" readonly>"#);
+    assert!(raw.contains(&drawn), "the request id field shows the instance id: {raw}");
+    assert!(!raw.contains(r#"name="rid""#), "the request id field posts nothing: {raw}");
+}
+
+/// A panel form's request id field shows the id of the instance it posts as, which the
+/// submit sends as `request_id` whatever mode it picks; the field never enters the input, and
+/// a body posting its key is refused before the provider runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panel_form_s_request_id_is_its_instance_id_and_never_its_input() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-panel-rid");
+    let cookie = operator_cookie(&pool, &user).await;
+    let point = ActionPoint::PanelForm("funds".to_string());
+    let actions = vec![action_decl("grant", point.clone(), true), action_decl("revoke", point, true)];
+    let manifest = player_owner(module("ledger", vec![player_tab("funds", "funds")], actions, true));
+    let spec = request_id_spec(vec![form_mode("grant", "Grant"), form_mode("revoke", "Revoke")]);
+    let ledger = Recording::new(manifest, &[("funds", answer(Primitive::Form(spec)))]);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+    let panel = "/admin/_panel/ledger/funds?entity=player:p-1";
+
+    let (_, raw) = portal_get(&engine, &st, &cookie, panel).await;
+    let hostile = format!("_csrf=csrf&_form={}&_mode=grant&rid=forged", form_id_of(&raw));
+    let (status, raw) = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/grant", &hostile).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{raw}");
+    assert!(ledger.invoked_actions().is_empty(), "a body posting the request id never reaches the provider");
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, panel).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let form_id = form_id_of(&raw);
+    assert_request_id_drawn(&raw, &form_id);
+    let body = format!("_csrf=csrf&_form={form_id}&_mode=revoke&note=hi");
+    let _ = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/grant", &body).await;
+    let calls = ledger.invoked.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1, "one invoke");
+    assert_eq!(calls[0].action, "revoke");
+    assert_eq!(calls[0].request_id.as_deref(), Some(form_id.as_str()), "the drawn id is the one sent");
+    let want = BTreeMap::from([("note".to_string(), "hi".to_string())]);
+    assert_eq!(calls[0].input, want, "the request id never enters the input");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// A modal `Then::Form`'s request id field shows the id of the instance the modal posts as,
+/// which the submit sends as `request_id`, and stays out of the input.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_modal_form_s_request_id_is_its_instance_id_and_never_its_input() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-modal-rid");
+    let cookie = operator_cookie(&pool, &user).await;
+    let row = || ActionPoint::RowAction("player".to_string());
+    let spec = request_id_spec(Vec::new());
+    let adjust = ActionDecl { then: Then::Form(spec), ..action_decl("adjust", row(), true) };
+    let ledger = Recording::new(player_owner(module("ledger", Vec::new(), vec![adjust], true)), &[]);
+    let engine = Arc::new(sourced(vec![ledger.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_action/ledger/adjust?entity=player:p-1").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let form_id = form_id_of(&raw);
+    assert_request_id_drawn(&raw, &form_id);
+    let body = format!("_csrf=csrf&_form={form_id}&note=hi");
+    let _ = portal_post(&engine, &st, &cookie, "/admin/_action/ledger/adjust", &body).await;
+    let calls = ledger.invoked.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1, "one invoke");
+    assert_eq!(calls[0].request_id.as_deref(), Some(form_id.as_str()), "the drawn id is the one sent");
+    let want = BTreeMap::from([("note".to_string(), "hi".to_string())]);
+    assert_eq!(calls[0].input, want, "the request id never enters the input");
+
+    cleanup_user(&pool, &user).await;
+}
+
 /// `LocalFace::invoke` refuses an action on a contribution declaring `readonly` before its
 /// provider runs, as it refuses one of a module that does not write, and refuses a link as
 /// invalid; another action of the same module reaches the provider.

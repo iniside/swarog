@@ -384,6 +384,7 @@ pub controlplane::FieldKind::Json
 pub controlplane::FieldKind::Money(alloc::vec::Vec<alloc::string::String>)
 pub controlplane::FieldKind::Multi(alloc::vec::Vec<alloc::string::String>)
 pub controlplane::FieldKind::Ref(alloc::string::String)
+pub controlplane::FieldKind::RequestId
 pub controlplane::FieldKind::String
 pub controlplane::FieldKind::Text
 impl controlplane::Variants for controlplane::FieldKind

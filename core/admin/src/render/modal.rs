@@ -81,7 +81,7 @@ pub(crate) fn modal(
         ModalSpec::Form(spec) => {
             view.tone = "ok";
             view.go = "primary";
-            view.form = Some(form(spec, posted, errors));
+            view.form = Some(form(spec, Some(&view.form_id), posted, errors));
             if let Some(title) = &spec.title {
                 view.title = title.clone();
             }

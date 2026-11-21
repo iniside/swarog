@@ -13,7 +13,7 @@ pub(crate) struct FieldView {
     pub(crate) key: String,
     pub(crate) label: String,
     pub(crate) type_name: String,
-    /// `input`, `int`, `textarea`, `toggle`, `select`, `checks`, `ref` or `money`.
+    /// `input`, `int`, `textarea`, `toggle`, `select`, `checks`, `ref`, `money` or `request_id`.
     pub(crate) control: &'static str,
     pub(crate) mono: bool,
     pub(crate) placeholder: Option<String>,
@@ -106,6 +106,7 @@ fn field(f: &Field, posted: Option<&[(String, String)]>, errors: &BTreeMap<Strin
         FieldKind::Ref(kind) => ("ref", format!("ref {kind}"), Vec::new(), false),
         FieldKind::Money(c) => ("money", "money".to_string(), c.clone(), false),
         FieldKind::Duration => ("input", "duration".to_string(), Vec::new(), false),
+        FieldKind::RequestId => ("request_id", "idempotency key".to_string(), Vec::new(), true),
     };
     let ref_kind = match &f.kind {
         FieldKind::Ref(kind) => kind.clone(),
@@ -132,10 +133,13 @@ fn field(f: &Field, posted: Option<&[(String, String)]>, errors: &BTreeMap<Strin
     }
 }
 
-/// `posted` is the body being shown again, `None` for a fresh form. The picked mode is the
-/// one `posted` names, else the first.
+/// `instance` is the id of the form instance the form posts as, `None` when it has none;
+/// a request id field shows it, whatever the mode, and is left out without it. `posted` is
+/// the body being shown again, `None` for a fresh form. The picked mode is the one `posted`
+/// names, else the first.
 pub(crate) fn form(
     spec: &FormSpec,
+    instance: Option<&str>,
     posted: Option<&[(String, String)]>,
     errors: &BTreeMap<String, String>,
 ) -> FormView {
@@ -152,7 +156,17 @@ pub(crate) fn form(
         })
         .collect();
     FormView {
-        fields: spec.fields.iter().map(|f| field(f, posted, errors)).collect(),
+        fields: spec
+            .fields
+            .iter()
+            .filter_map(|f| match (&f.kind, instance) {
+                (FieldKind::RequestId, None) => None,
+                (FieldKind::RequestId, Some(id)) => {
+                    Some(FieldView { value: id.to_string(), readonly: true, ..field(f, None, errors) })
+                }
+                _ => Some(field(f, posted, errors)),
+            })
+            .collect(),
         submit_label: picked.map_or_else(|| spec.submit_label.clone(), |m| m.submit_label.clone()),
         note: spec.note.clone(),
         modes,
@@ -164,7 +178,12 @@ pub(super) fn panel_form(spec: &FormSpec, input: &PanelInput<'_>) -> PanelFormVi
     let none = BTreeMap::new();
     let instance = input.form.as_ref();
     PanelFormView {
-        form: form(spec, instance.and_then(|i| i.posted), instance.map_or(&none, |i| i.errors)),
+        form: form(
+            spec,
+            instance.map(|i| i.form_id.as_str()),
+            instance.and_then(|i| i.posted),
+            instance.map_or(&none, |i| i.errors),
+        ),
         post_url: instance.map(|i| i.post_url.clone()),
         csrf: input.csrf.to_string(),
         form_id: instance.map(|i| i.form_id.clone()),

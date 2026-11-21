@@ -789,6 +789,11 @@ variants! {
         Ref(String),
         Money(Vec<String>),
         Duration,
+        /// Declared with no `default`: the portal fills it with the id of the form instance it
+        /// draws, the id the submit sends as `InvokeCall::request_id`, and draws it read-only
+        /// with no `name`. It never enters `InvokeCall::input`; a form drawn without an
+        /// instance leaves it out.
+        RequestId,
     }
 }
 
@@ -878,6 +883,7 @@ pub fn decode_field(kind: &FieldKind, raw: &str) -> Result<FieldValue, FieldErro
             }
             Ok(FieldValue::Money { amount, currency })
         }
+        FieldKind::RequestId => Err(FieldError::new("is filled by the portal and carries no value")),
     }
 }
 
@@ -908,8 +914,8 @@ fn is_decimal(raw: &str) -> bool {
 }
 
 /// Every reason `spec` cannot be served as a form: a field key that contains `__`, starts
-/// with `_` or equals a `hidden` key, a `default` that does not decode, or a mode with an
-/// empty or repeated id.
+/// with `_` or equals a `hidden` key, a `default` that does not decode, a
+/// [`FieldKind::RequestId`] field with a `default`, or a mode with an empty or repeated id.
 pub fn form_spec_errors(spec: &FormSpec) -> Vec<String> {
     let mut errors = Vec::new();
     for (i, mode) in spec.modes.iter().enumerate() {
@@ -927,7 +933,11 @@ pub fn form_spec_errors(spec: &FormSpec) -> Vec<String> {
         if spec.hidden.contains_key(key) {
             errors.push(format!("field key {key:?} is also a hidden key"));
         }
-        if let Some(default) = &field.default {
+        if field.kind == FieldKind::RequestId {
+            if field.default.is_some() {
+                errors.push(format!("field {key:?} is a request id, which the portal fills, and declares a default"));
+            }
+        } else if let Some(default) = &field.default {
             if let Err(e) = decode_field(&field.kind, default) {
                 errors.push(format!("field {key:?} default does not decode: {}", e.reason));
             }

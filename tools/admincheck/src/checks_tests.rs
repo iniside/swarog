@@ -5,8 +5,8 @@
 //! each misplaced case asserts the WHOLE finding list equals the one head-action line.
 
 use controlplane::{
-    ActionDecl, ActionPoint, ContributionDecl, EntityKindDecl, Emphasis, FormMode, FormSpec, Layout, Manifest,
-    PageDecl, Point, Role, Then,
+    ActionDecl, ActionPoint, ContributionDecl, EntityKindDecl, Emphasis, Field, FieldKind, FormMode, FormSpec, Layout,
+    Manifest, PageDecl, Point, Role, Then,
 };
 
 use super::findings;
@@ -320,4 +320,29 @@ fn a_mode_naming_a_missing_misplaced_or_non_invoke_action_or_a_repeated_id_is_re
 
     let twice = moded(vec![mode("credit", "credit"), mode("credit", "debit")]);
     assert_eq!(findings(&[twice]), vec![format!(r#"{prefix}mode id "credit" is repeated"#)]);
+}
+
+/// A request id field the portal fills is clean with no default and refused with one.
+#[test]
+fn a_request_id_field_with_a_default_is_refused() {
+    let with = |default: Option<&str>| {
+        let mut m = moded(Vec::new());
+        let adjust = m.actions.iter_mut().find(|a| a.id == "adjust").unwrap();
+        let Then::Form(spec) = &mut adjust.then else { unreachable!() };
+        spec.fields.push(Field {
+            key: "rid".into(),
+            label: "Request id".into(),
+            kind: FieldKind::RequestId,
+            required: false,
+            help: None,
+            default: default.map(Into::into),
+            readonly: false,
+            mono: false,
+            placeholder: None,
+        });
+        m
+    };
+    assert_eq!(findings(&[with(None)]), Vec::<String>::new());
+    let line = r#"mail: action "adjust" form: field "rid" is a request id, which the portal fills, and declares a default"#;
+    assert_eq!(findings(&[with(Some("grant-7c1e0a"))]), vec![line.to_string()]);
 }

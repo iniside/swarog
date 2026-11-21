@@ -380,8 +380,9 @@ pub(crate) fn check_click_keys(body: &[(String, String)]) -> Result<(), String> 
     check_keys(body, |key| allowed.contains(&key), |_| false)
 }
 
-/// A form instance posts the portal keys, its spec's field keys, each Money field's currency
-/// key and, when the spec has modes, [`FIELD_MODE`]; only a Multi field's key repeats.
+/// A form instance posts the portal keys, its spec's field keys but a request id's (drawn with
+/// no `name`), each Money field's currency key and, when the spec has modes, [`FIELD_MODE`];
+/// only a Multi field's key repeats.
 pub(crate) fn check_form_keys(spec: &StoredSpec, body: &[(String, String)]) -> Result<(), String> {
     let (fields, moded): (&[Field], bool) = match spec {
         StoredSpec::Form { form, .. } => (&form.fields, !form.modes.is_empty()),
@@ -392,7 +393,8 @@ pub(crate) fn check_form_keys(spec: &StoredSpec, body: &[(String, String)]) -> R
         portal.contains(&key)
             || (moded && key == FIELD_MODE)
             || fields.iter().any(|f| {
-                f.key == key || (matches!(f.kind, FieldKind::Money(_)) && money_currency_key(&f.key) == key)
+                (f.key == key && f.kind != FieldKind::RequestId)
+                    || (matches!(f.kind, FieldKind::Money(_)) && money_currency_key(&f.key) == key)
             })
     };
     let repeats = |key: &str| fields.iter().any(|f| f.key == key && matches!(f.kind, FieldKind::Multi(_)));
@@ -464,7 +466,8 @@ pub(crate) struct Submission {
     pub(crate) reason: Option<String>,
 }
 
-/// Decodes the body against the stored spec. A readonly field takes its stored default; a
+/// Decodes the body against the stored spec. A request id field is left out: the instance id
+/// it shows is the call's `request_id`. A readonly field takes its stored default; a
 /// blank optional field is left out; a blank required field, an undecodable value, a
 /// missing required reason and a wrong type-to-confirm are field errors.
 pub(crate) fn build_submission(
@@ -478,6 +481,9 @@ pub(crate) fn build_submission(
     match spec {
         StoredSpec::Form { form, .. } => {
             for field in &form.fields {
+                if field.kind == FieldKind::RequestId {
+                    continue;
+                }
                 let raw = if field.readonly { field.default.clone() } else { posted_raw(field, body) };
                 let Some(raw) = raw else {
                     if field.required && !field.readonly {

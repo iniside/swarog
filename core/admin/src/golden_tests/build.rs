@@ -380,6 +380,7 @@ pub(super) fn profile_form() -> FormSpec {
                 Some(r#"{"amount":"9.99","currency":"EUR"}"#),
             ),
             field("cooldown", "Cooldown", FieldKind::Duration, Some("30m")),
+            field("request_id", "Request id", FieldKind::RequestId, None),
         ],
         hidden: BTreeMap::new(),
         submit_label: "Save profile".to_string(),
@@ -391,7 +392,7 @@ pub(super) fn profile_form() -> FormSpec {
 }
 
 /// The wallet's Grant or revoke form (pages-platform.js:172-176): two modes, each with its
-/// own submit label, over one set of fields.
+/// own submit label, over one set of fields ending in the request id.
 pub(super) fn moded_form() -> FormSpec {
     let mode = |id: &str, label: &str| controlplane::FormMode {
         id: id.to_string(),
@@ -404,6 +405,7 @@ pub(super) fn moded_form() -> FormSpec {
             Field { required: true, ..field("player", "Player", FieldKind::Ref("user".to_string()), None) },
             field("amount", "Amount", FieldKind::Money(strings(&["EMB", "GLD"])), None),
             Field { required: true, ..field("reason", "Reason", FieldKind::String, None) },
+            field("request_id", "Request id", FieldKind::RequestId, None),
         ],
         hidden: BTreeMap::new(),
         submit_label: "Apply".to_string(),
