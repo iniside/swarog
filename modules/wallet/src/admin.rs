@@ -141,7 +141,9 @@ impl WalletAdmin {
     }
 
     /// The players list's balance column for one table page: every ref in `req.refs`, read
-    /// in one statement. More than [`MAX_PANEL_REFS`] refs is refused before any SQL.
+    /// in one statement. More than [`MAX_PANEL_REFS`] refs, or a ref that is not a uuid, is
+    /// refused before any SQL: the join need not cast a ref when no balance row matches, so
+    /// the database alone would draw a malformed ref as 0 on some plans.
     async fn column(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
         if req.refs.len() > MAX_PANEL_REFS {
             return Err(Error::invalid(format!(
@@ -149,14 +151,11 @@ impl WalletAdmin {
                 req.refs.len()
             )));
         }
+        if !req.refs.iter().all(|r| crate::service::is_uuid_text(r)) {
+            return Err(Error::invalid(MALFORMED_PLAYER_ID));
+        }
         let balances =
-            self.svc.store.balances_by_player(&req.refs, &self.headline).await.map_err(|e| {
-                if crate::store::is_invalid_uuid(&e) {
-                    Error::invalid(MALFORMED_PLAYER_ID)
-                } else {
-                    crate::internal(e)
-                }
-            })?;
+            self.svc.store.balances_by_player(&req.refs, &self.headline).await.map_err(crate::internal)?;
         Ok(balance_cells(&req.refs, &balances))
     }
 

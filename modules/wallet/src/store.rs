@@ -261,8 +261,8 @@ impl Store {
     }
 
     /// Each ref's balance of `currency` in one statement, keyed by the ref exactly as given;
-    /// a ref holding no row of it is left out. The caller bounds `refs`; a ref that is not
-    /// a uuid fails the whole batch ([`is_invalid_uuid`]).
+    /// a ref holding no row of it is left out. The caller bounds `refs` and passes uuids only:
+    /// whether a malformed ref fails the batch depends on the plan.
     pub(crate) async fn balances_by_player(
         &self,
         refs: &[String],

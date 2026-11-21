@@ -1119,7 +1119,7 @@ async fn the_column_and_tile_read_the_headline_currency_and_the_attention_the_ba
         .await
         .unwrap();
     }
-    let admin = WalletAdmin::new(svc, code.clone());
+    let admin = WalletAdmin::new(svc.clone(), code.clone());
 
     let mut column = query("column.balance", &held, None);
     column.entity = None;
@@ -1137,8 +1137,13 @@ async fn the_column_and_tile_read_the_headline_currency_and_the_attention_the_ba
     let err = admin.panel(column.clone()).await.unwrap_err();
     assert_eq!(err.status, Status::Invalid);
     assert!(err.msg.contains("over the cap"), "{}", err.msg);
-    column.refs = vec!["nope".to_string()];
-    let err = admin.panel(column).await.unwrap_err();
+    column.refs = vec![held.clone(), "nope".to_string()];
+    let err = admin.panel(column.clone()).await.unwrap_err();
+    assert_eq!((err.status, err.msg.as_str()), (Status::Invalid, MALFORMED_PLAYER_ID));
+    // Refused even when no balance row holds the headline currency, so no join casts a ref.
+    let unheld_code = unique_currency(&pool).await;
+    let unheld = WalletAdmin::new(svc, unheld_code.clone());
+    let err = unheld.panel(column).await.unwrap_err();
     assert_eq!((err.status, err.msg.as_str()), (Status::Invalid, MALFORMED_PLAYER_ID));
 
     let Primitive::KpiTile(tile) = admin.panel(query("tile.spent", &held, None)).await.unwrap().primitive else {
@@ -1160,5 +1165,5 @@ async fn the_column_and_tile_read_the_headline_currency_and_the_attention_the_ba
     assert_eq!(items.len(), 1, "a pending tombstone draws the item");
     assert!(items[0].text.contains("awaiting sweep · oldest "), "{}", items[0].text);
 
-    cleanup(&pool, &[&held, &empty], &[&code, &other]).await;
+    cleanup(&pool, &[&held, &empty], &[&code, &other, &unheld_code]).await;
 }
