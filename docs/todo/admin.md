@@ -47,6 +47,10 @@ _None._
 
 ### Known limits (admin-control-plane-redesign step 15)
 
+- [ ] **The admindiff modal test site draws every exclusion it checks**
+  `tools/admindiff/src/crawl_tests.rs:1497-1499` builds its fake site from `EXCLUDED_MODALS`
+  itself, so an exclusion the real seeded fleet never draws (a `when_empty` tool) passes offline
+  and fails only in the live crawl.
 - [ ] **The Money JSON has one decoder but two encoders**
   `controlplane::decode_money` (`core/controlplane/src/lib.rs`) is the one parser, but both
   `encode_field` there and `posted_raw` (`core/admin/src/engine/actions.rs:452`) build the

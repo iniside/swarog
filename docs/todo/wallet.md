@@ -44,6 +44,14 @@ _None._
   caller's `admin:` key lists as an operator movement. The Starter option matches reason text a
   wire caller can also write. Reserving `admin:` in the contract and filtering starter grants by
   the `starter:` key end it.
+- [ ] **A retried currency create reads "code exists"**
+  `currency.create` (`modules/wallet/src/admin.rs`) has no idempotency key, so a retry after a
+  timeout or failed settle whose insert already landed gets the Code "already exists" error
+  instead of a success. Nothing is written twice; only the message misleads.
+- [ ] **Currency codes and kinds take any text within their byte caps**
+  `parse_new_currency` (`modules/wallet/src/admin.rs`) trims and length-checks Code and Kind
+  only, so inner spaces, mixed case or Unicode pass, and Kind accepts more than the "soft or
+  hard" its help names. Movements apply the same rule (`modules/wallet/src/service.rs:48`).
 - [ ] **No test pins the wallet Money shape error text**
   The unknown-key case in `modules/wallet/src/admin_tests.rs` asserts only `is_err()`, so a
   change to "Amount must name an amount and a currency" in `parse_amount` passes unnoticed.
