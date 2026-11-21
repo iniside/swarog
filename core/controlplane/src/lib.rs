@@ -871,14 +871,8 @@ pub fn decode_field(kind: &FieldKind, raw: &str) -> Result<FieldValue, FieldErro
             }
         }
         FieldKind::Money(currencies) => {
-            #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
-            struct Raw {
-                amount: String,
-                currency: String,
-            }
-            let Raw { amount, currency } = serde_json::from_str(raw)
-                .map_err(|_| FieldError::new("must be a JSON object with amount and currency"))?;
+            let (amount, currency) = decode_money(raw)
+                .map_err(|MoneyShapeError| FieldError::new("must be a JSON object with amount and currency"))?;
             if !is_decimal(&amount) {
                 return Err(FieldError::new("amount must be a decimal number"));
             }
@@ -904,6 +898,25 @@ pub fn encode_field(_kind: &FieldKind, value: &FieldValue) -> String {
             serde_json::json!({ "amount": amount, "currency": currency }).to_string()
         }
     }
+}
+
+/// A raw Money string that is not a JSON object of exactly the string keys `amount` and
+/// `currency`; each caller words its own message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MoneyShapeError;
+
+/// The one parser of a Money field's raw string `{"amount": "<text>", "currency": "<text>"}`
+/// (as [`encode_field`] writes it) into `(amount, currency)`. It checks the shape only: the
+/// amount's number form and the currency's membership are the caller's rules.
+pub fn decode_money(raw: &str) -> Result<(String, String), MoneyShapeError> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Raw {
+        amount: String,
+        currency: String,
+    }
+    let Raw { amount, currency } = serde_json::from_str(raw).map_err(|_| MoneyShapeError)?;
+    Ok((amount, currency))
 }
 
 /// `-?[0-9]+(\.[0-9]+)?`
@@ -1472,6 +1485,23 @@ variants! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decode_money_reads_the_encoded_shape_and_refuses_any_other() {
+        let value = FieldValue::Money { amount: "12.50".to_string(), currency: "gold".to_string() };
+        let raw = encode_field(&FieldKind::Money(vec!["gold".to_string()]), &value);
+        assert_eq!(decode_money(&raw), Ok(("12.50".to_string(), "gold".to_string())));
+        for refused in [
+            r#"{"amount":"1","currency":"gold","note":"x"}"#,
+            r#"{"amount":"1"}"#,
+            r#"{"currency":"gold"}"#,
+            r#"{"amount":1,"currency":"gold"}"#,
+            "not json",
+            "",
+        ] {
+            assert_eq!(decode_money(refused), Err(MoneyShapeError), "{refused:?}");
+        }
+    }
 
     /// No wildcard arm: a new `Point` variant does not compile until it is named here.
     fn written(point: &Point) -> &'static str {

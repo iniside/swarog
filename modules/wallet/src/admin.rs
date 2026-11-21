@@ -249,17 +249,11 @@ fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
 /// is the service's verdict ([`movement_field_error`]), read in the movement's own
 /// transaction rather than from a catalog read here.
 pub(crate) fn parse_amount(raw: &str) -> Result<(i64, String), String> {
-    #[derive(serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct Money {
-        amount: String,
-        currency: String,
-    }
     if raw.is_empty() {
         return Err("Amount is required".to_string());
     }
-    let Money { amount, currency } =
-        serde_json::from_str(raw).map_err(|_| "Amount must name an amount and a currency".to_string())?;
+    let (amount, currency) = controlplane::decode_money(raw)
+        .map_err(|controlplane::MoneyShapeError| "Amount must name an amount and a currency".to_string())?;
     if currency.is_empty() {
         return Err("Amount must name a currency".to_string());
     }
