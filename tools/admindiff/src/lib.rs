@@ -280,8 +280,8 @@ pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
 /// menu's, when its opener is no function or appends no `.scrim`. The modal openers each compared
 /// page, tab and menu target ([`pages::Page::is_compared_target`]) draws (each `.scrim` an `onclick` body its
 /// render draws appends, run in the harness on its page, [`mock::probe`]; one that throws fails) are
-/// checked against the page map's modal entries, `excluded_mock_modals` and the mockup facts of
-/// `excluded_modals` ([`pages::validate_mock_modals`]). A `.tab` a probed render draws whose body
+/// checked against the shell palette (`palette_onclick`), the page map's modal entries,
+/// `excluded_mock_modals` and the mockup facts of `excluded_modals` ([`pages::validate_mock_modals`]). A `.tab` a probed render draws whose body
 /// assigns no `PAGES.tab` fails unless it assigns a `non_tab_keys` key, and a `non_tab_keys` key
 /// that no `.tab` a compared target draws assigns is stale, as is one with no reason. `mockup` is what [`validated_mockup`]
 /// returned for `lists`. The mockup is the side checked: most portal pages are not ported yet.

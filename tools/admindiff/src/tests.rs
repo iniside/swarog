@@ -776,8 +776,7 @@ fn a_modal_entry_its_host_does_not_draw_fails() {
 
 /// An `EXCLUDED_MODALS` claim that the mockup has no opener of an action fails when its mockup
 /// host draws a modal opener excluded with that same portal action or with no portal side, on a
-/// page and on the page of an excluded menu host; excluded with another action or the palette, it
-/// passes.
+/// page and on the page of an excluded menu host; excluded with another action, it passes.
 #[test]
 fn a_false_no_mock_opener_claim_fails() {
     let repo = opener_repo("modal-claim", &[("mail", "PAGES.extraModal('x')"), ("events", "PAGES.extraModal('y')")]);
@@ -800,16 +799,55 @@ fn a_false_no_mock_opener_claim_fails() {
     let absent = with(PortalModal::Absent, PortalModal::Absent);
     let e = format!("{:#}", renders(repo.path(), &Lists { excluded_mock_modals: &absent, ..LISTS }).expect_err("absent holds no claim"));
     assert_eq!(e, want);
-    for (mail, events) in [(PortalModal::Action("mail/other"), PortalModal::Action("core.events/other")), (PortalModal::Palette, PortalModal::Palette)] {
-        renders(repo.path(), &Lists { excluded_mock_modals: &with(mail, events), ..LISTS }).expect("another action");
-    }
+    let other = with(PortalModal::Action("mail/other"), PortalModal::Action("core.events/other"));
+    renders(repo.path(), &Lists { excluded_mock_modals: &other, ..LISTS }).expect("another action");
 }
 
-/// The inventory a clean [`crate::pages::validate_mock_modals`] call of the production lists sees,
-/// without the palette: `mail` draws its excluded `cancelMail`, `events` its mapped `skipPoison`.
+/// The inventory a clean [`crate::pages::validate_mock_modals`] call of the production lists sees:
+/// `mail` draws its excluded `cancelMail`, `events` its mapped `skipPoison`, and each the shell
+/// palette.
 fn claim_inventory() -> Vec<(String, Vec<MockOpener<String>>)> {
-    let pages = |name: &str| vec![MockOpener::Pages(name.to_string())];
-    vec![("mail".to_string(), pages("cancelMail")), ("events".to_string(), pages("skipPoison"))]
+    let drawn = |name: &str| vec![MockOpener::Pages(name.to_string()), MockOpener::Onclick(PALETTE_ONCLICK.to_string())];
+    vec![("mail".to_string(), drawn("cancelMail")), ("events".to_string(), drawn("skipPoison"))]
+}
+
+/// The shell palette is declared once for every host: drawn on `mail` and `events` it passes
+/// with no exclusion, and the no-opener claims on both hosts hold beside it. Undeclared, it fails
+/// on each host and leaves both claims unproven; listed in `EXCLUDED_MOCK_MODALS` as well, it
+/// fails as listed twice; declared but drawn on no host, it fails as stale.
+#[test]
+fn the_shell_palette_is_declared_once_and_checked_both_ways() {
+    let excluded = claim_exclusions();
+    let lists = Lists { excluded_mock_modals: &excluded, ..LISTS };
+    crate::pages::validate_mock_modals(&claim_inventory(), &lists).expect("one declaration covers both hosts");
+    let undeclared = Lists { palette_onclick: "REG.openOther()", ..lists };
+    let e = format!("{:#}", crate::pages::validate_mock_modals(&claim_inventory(), &undeclared).expect_err("undeclared"));
+    let want = format!(
+        concat!(
+            "modal drift:\n",
+            "  PALETTE_ONCLICK declares the shell palette onclick \"REG.openOther()\", which no compared mockup render draws as a modal\n",
+            "  mockup modal mail onclick {p:?} is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS\n",
+            "  mockup modal events onclick {p:?} is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS\n",
+            "  EXCLUDED_MODALS mail modal mail/test-send says the mockup has no opener of it, but mail draws onclick {p:?}, ",
+            "which is neither a PAGE_MAP modal entry nor an EXCLUDED_MOCK_MODALS entry of another action there\n",
+            "  EXCLUDED_MODALS events.excluded-menu.subscription modal core.events/sub.pause says the mockup has no opener of it, ",
+            "but events draws onclick {p:?}, which is neither a PAGE_MAP modal entry nor an EXCLUDED_MOCK_MODALS entry of another action there",
+        ),
+        p = PALETTE_ONCLICK,
+    );
+    assert_eq!(e, want);
+    let listed = MockModalExclusion { opener: MockOpener::Onclick(PALETTE_ONCLICK), ..pages_modal("mail", "", "why") };
+    let twice: Vec<_> = excluded.iter().copied().chain([listed]).collect();
+    let e = format!("{:#}", crate::pages::validate_mock_modals(&claim_inventory(), &Lists { excluded_mock_modals: &twice, ..lists }).expect_err("twice"));
+    let want = format!("modal drift:\n  EXCLUDED_MOCK_MODALS lists mail onclick {PALETTE_ONCLICK:?}, the shell palette PALETTE_ONCLICK declares on every host");
+    assert_eq!(e, want);
+    let unpaletted: Vec<_> = claim_inventory()
+        .into_iter()
+        .map(|(host, drawn)| (host, drawn.into_iter().filter(|o| o.as_str() != MockOpener::Onclick(PALETTE_ONCLICK)).collect()))
+        .collect();
+    let e = format!("{:#}", crate::pages::validate_mock_modals(&unpaletted, &lists).expect_err("stale"));
+    let want = format!("modal drift:\n  PALETTE_ONCLICK declares the shell palette onclick {PALETTE_ONCLICK:?}, which no compared mockup render draws as a modal");
+    assert_eq!(e, want);
 }
 
 /// The production lists with only the `mail` `cancelMail` mockup exclusion, which [`claim_inventory`]
@@ -863,8 +901,10 @@ fn a_malformed_mock_modal_portal_action_fails() {
 }
 
 /// The real mockup, rendered through node: every modal opener it draws on a compared page, tab
-/// or menu is declared; dropping the exclusion of `mail`'s `cancelMail` or of its palette (each
-/// also leaving the `mail/test-send` claim unproven), is caught, and so is the `mail/test-send` claim when `cancelMail` is excluded as that action.
+/// or menu is declared; dropping the exclusion of `mail`'s `cancelMail` (also leaving the
+/// `mail/test-send` claim unproven) or the shell palette's declaration (failing on every compared
+/// page) is caught, and so is the `mail/test-send` claim when `cancelMail` is excluded as that
+/// action.
 #[test]
 fn the_real_mockup_draws_only_declared_modals() {
     let repo = crate::repo_root();
@@ -879,16 +919,13 @@ fn the_real_mockup_draws_only_declared_modals() {
         "which is neither a PAGE_MAP modal entry nor an EXCLUDED_MOCK_MODALS entry of another action there",
     );
     assert_eq!(e, want);
-    let search = ("mail", MockOpener::Onclick(PALETTE_ONCLICK));
-    let fewer: Vec<_> = EXCLUDED_MOCK_MODALS.iter().copied().filter(|x| (x.host, x.opener) != search).collect();
-    assert_eq!(fewer.len() + 1, EXCLUDED_MOCK_MODALS.len(), "EXCLUDED_MOCK_MODALS lists the mail palette");
-    let e = format!("{:#}", renders(&repo, &Lists { excluded_mock_modals: &fewer, ..LISTS }).expect_err("the palette undeclared"));
-    let want = format!(
-        "modal drift:\n  mockup modal mail onclick {PALETTE_ONCLICK:?} is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS\n  {}{PALETTE_ONCLICK:?}, {}",
-        "EXCLUDED_MODALS mail modal mail/test-send says the mockup has no opener of it, but mail draws onclick ",
-        "which is neither a PAGE_MAP modal entry nor an EXCLUDED_MOCK_MODALS entry of another action there",
-    );
-    assert_eq!(e, want);
+    let e = format!("{:#}", renders(&repo, &Lists { palette_onclick: "REG.openOther()", ..LISTS }).expect_err("the palette undeclared"));
+    for host in crate::pages::compared_hosts(PAGE_MAP) {
+        let undeclared = format!("mockup modal {host} onclick {PALETTE_ONCLICK:?} is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS");
+        assert!(e.contains(&undeclared), "{host} draws the palette: {e}");
+    }
+    let claim = format!("EXCLUDED_MODALS mail modal mail/test-send says the mockup has no opener of it, but mail draws onclick {PALETTE_ONCLICK:?}");
+    assert!(e.contains(&claim), "{e}");
     let claimed: Vec<_> = EXCLUDED_MOCK_MODALS
         .iter()
         .map(|x| if (x.host, x.opener) == cancel { MockModalExclusion { portal: PortalModal::Action("mail/test-send"), ..*x } } else { *x })

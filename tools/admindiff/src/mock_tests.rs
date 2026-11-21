@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use super::render;
-use crate::pages::{validate_menus, MockOpener, Page, Route, EXCLUDED, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS, PAGE_MAP};
+use crate::pages::{validate_menus, MockOpener, Page, Route, EXCLUDED, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS, PAGE_MAP, PALETTE_ONCLICK};
 use crate::tests::{write, ScratchDir};
 
 /// A scratch repo whose mockup is a stand-in: every page the two lists name has its html
@@ -29,8 +29,10 @@ use crate::tests::{write, ScratchDir};
 /// `onclick` of the menu's `.menu-item` (`{run}` in [`MOCK_MENU`]), joined by `;`, when the
 /// menu opens with the host's page as its argument.
 /// [`FakeRepo::with_openers`] draws more calls and appends a script defining their openers.
-/// `REG.openSearch` appends an empty `.scrim`, as the real registry's palette does, and
-/// `REG.render` assigns the body, as the real one re-renders the page.
+/// [`PALETTE_ONCLICK`] is drawn as an `onclick` opener on every page or tab entry of the page map,
+/// as the real topbar draws it on every page. `REG.openSearch` appends an empty `.scrim`, as the
+/// real registry's palette does, and `REG.render` assigns the body, as the real one re-renders the
+/// page.
 /// `REG.mount` assigns the body and then runs `meta.after`, as the real registry does; the
 /// stand-in `after` prints [`AFTER_RAN`] and exits 0, so a harness that let it run would
 /// return that instead of the page. [`FakeRepo::with_map`] reads a given page map in place of
@@ -129,6 +131,12 @@ impl FakeRepo {
             };
             (x.host.to_string(), call)
         }));
+        for p in page_map.iter().filter(|p| p.is_page()) {
+            let palette = (p.id(), PALETTE_ONCLICK.to_string());
+            if !calls.contains(&palette) {
+                calls.push(palette);
+            }
+        }
         calls.extend(drawn.iter().map(|(host, call)| (host.to_string(), call.to_string())));
         let mut page_draws: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
         let mut menu_draws: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();

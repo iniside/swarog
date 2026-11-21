@@ -27,10 +27,12 @@
 //! of its modules, fails unless `--allow-errors`, and a root state missing or neither `ok` nor
 //! `error` fails always. A slot fragment's `data-state` must be a panel state: `ok`, `empty`,
 //! `readonly` and `denied` pass, `error` and `stale` (a failed provider call) fail unless
-//! `--allow-errors`, and anything else fails always. Only a crawl with no failure and without
-//! `--allow-errors` writes [`CLEAN_MARKER`]: a run with `--allow-errors` is a preview whose
-//! output can be read but never diffed, so a page drawn while a provider was down can never
-//! make an accept file. `--allow-empty` only skips a target, which writes no page to diff.
+//! `--allow-errors`, and anything else fails always. Every fetched page, assembled, holds exactly
+//! one `.scrim[data-palette]`, hidden: the shell's palette, which the mockup's search opener
+//! ([`crate::pages::PALETTE_ONCLICK`]) is on every host; a page holding none, several or a shown
+//! one fails. Only a crawl with no failure and without `--allow-errors` writes [`CLEAN_MARKER`]:
+//! a run with `--allow-errors` is a preview whose output can be read but never diffed, so a
+//! page drawn while a provider was down can never make an accept file. `--allow-empty` only skips a target, which writes no page to diff.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -644,7 +646,8 @@ fn root_state(cfg: &Config, root: &Element, what: &str) -> Result<()> {
 }
 
 /// Fetches one page and its slots round by round; returns the fragment count and the
-/// assembled page. A page root or fragment state that fails is pushed to `failures`.
+/// assembled page. A page root or fragment state that fails, or an assembled page that holds
+/// other than one hidden `.scrim[data-palette]`, is pushed to `failures`.
 async fn crawl_page(
     client: &Client,
     cfg: &Config,
@@ -710,6 +713,15 @@ async fn crawl_page(
             parsed.push(nodes);
         }
         doc = assemble(doc, parsed).context("assemble")?;
+    }
+    let mut palettes = Vec::new();
+    find_all(&doc, &|e| e.has_class("scrim") && e.attr("data-palette").is_some(), &mut palettes);
+    let hidden = palettes.iter().filter(|e| e.attr("hidden").is_some()).count();
+    if palettes.len() != 1 || hidden != 1 {
+        failures.push(format!(
+            "{page}: the page holds {} .scrim[data-palette], {hidden} hidden; the shell draws exactly one, hidden",
+            palettes.len()
+        ));
     }
     write(&cfg.out.join(format!("{page}.html")), &html::serialize(&doc))?;
     Ok((count, doc))

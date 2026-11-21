@@ -20,8 +20,9 @@
 //! The mockup's modals are inventoried from its renders of every page, tab and menu target that
 //! is not pending: every `onclick` body drawn there runs in the harness, and each `.scrim` it
 //! appends is a modal of the `PAGES` function that appended it, or of the body when no `PAGES`
-//! call did ([`MockOpener`]); each is a modal entry of that host or in [`EXCLUDED_MOCK_MODALS`],
-//! which names what the portal opens instead ([`PortalModal`]), and an `EXCLUDED_MODALS` reason
+//! call did ([`MockOpener`]); each is the shell palette ([`PALETTE_ONCLICK`]), a modal entry of
+//! that host or in [`EXCLUDED_MOCK_MODALS`], which names what the portal opens instead
+//! ([`PortalModal`]), and an `EXCLUDED_MODALS` reason
 //! that the mockup has no opener ([`ModalWhy`]) is held to that inventory
 //! ([`validate_mock_modals`]). A page or tab entry
 //! can force the mockup's ok state on its render ([`Page::force`]), so a panel the mockup draws
@@ -328,8 +329,9 @@ pub const EXCLUDED_MODALS: &[(&str, &str, ModalWhy)] = &[
 
 /// Why an [`EXCLUDED_MODALS`] action is not diffed: the mockup draws no opener of the action on
 /// the host, or, for an [`excluded_menu_id`] host, on its page, a mockup fact checked against the
-/// mockup render: every modal opener the host's mockup render draws is a `PAGE_MAP` modal entry
-/// or an [`EXCLUDED_MOCK_MODALS`] entry of another action there ([`validate_mock_modals`]).
+/// mockup render: every modal opener the host's mockup render draws is the shell palette, a
+/// `PAGE_MAP` modal entry or an [`EXCLUDED_MOCK_MODALS`] entry of another action there
+/// ([`validate_mock_modals`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModalWhy<'a> {
     pub why: &'a str,
@@ -392,9 +394,6 @@ pub enum PortalModal<'a> {
     /// The portal modal action `<module>/<action>` the opener's modal is, served at
     /// `/admin/_action/<module>/<action>`.
     Action(&'a str),
-    /// The shell's Ctrl-K palette (`data-action="palette"`, opened by `admin.js`), which is no
-    /// modal action.
-    Palette,
     /// Nothing: no portal module draws it, as the reason says.
     Absent,
 }
@@ -411,7 +410,10 @@ pub struct MockModalExclusion<'a> {
 }
 
 /// The mockup topbar's search trigger (`registry.js` `REG.openSearch`), drawn on every page: it
-/// opens the Ctrl-K palette, a `.scrim` it appends outside every `PAGES` call.
+/// opens the Ctrl-K palette, a `.scrim` it appends outside every `PAGES` call. It is the shell's
+/// palette on every compared host that draws it, so no host lists it: the portal draws no modal
+/// action for it but one hidden `.scrim[data-palette]` in the shell that `admin.js` opens, which
+/// the crawl requires on every page it fetches.
 pub const PALETTE_ONCLICK: &str = "REG.openSearch()";
 
 const fn mock_modal(host: &'static str, opener: MockOpener<&'static str>, portal: PortalModal<'static>, why: &'static str) -> MockModalExclusion<'static> {
@@ -438,15 +440,7 @@ pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
         PortalModal::Action("mail/cancel"),
         "mail.modal.cancel left PAGE_MAP: the dev fleet seeds no pending mail, so the portal draws no cancel opener; Step 24b3 adds it back",
     ),
-    mock_modal("index", MockOpener::Onclick(PALETTE_ONCLICK), PortalModal::Palette, PALETTE),
-    mock_modal("events", MockOpener::Onclick(PALETTE_ONCLICK), PortalModal::Palette, PALETTE),
-    mock_modal("players", MockOpener::Onclick(PALETTE_ONCLICK), PortalModal::Palette, PALETTE),
-    mock_modal("player", MockOpener::Onclick(PALETTE_ONCLICK), PortalModal::Palette, PALETTE),
-    mock_modal("mail", MockOpener::Onclick(PALETTE_ONCLICK), PortalModal::Palette, PALETTE),
 ];
-
-const PALETTE: &str =
-    "the Ctrl-K palette is no modal action: the portal draws it in the shell as a hidden .scrim[data-palette] that admin.js opens (shell.html.tmpl), and no PAGE_MAP target diffs it";
 
 const NO_SUSPEND: &str =
     "no suspension exists: suspend is new domain behaviour the plan excludes, and the portal draws accounts' suspend actions disabled, with no modal";
@@ -466,6 +460,8 @@ pub struct Lists<'a> {
     pub excluded_mock_menus: &'a [(&'a str, &'a str)],
     pub excluded_mock_modals: &'a [MockModalExclusion<'a>],
     pub non_tab_keys: &'a [(&'a str, &'a str)],
+    /// The `onclick` body of the shell palette's mockup opener, [`PALETTE_ONCLICK`] in production.
+    pub palette_onclick: &'a str,
 }
 
 /// The production lists the CLI runs on.
@@ -478,6 +474,7 @@ pub const LISTS: Lists<'static> = Lists {
     excluded_mock_menus: EXCLUDED_MOCK_MENUS,
     excluded_mock_modals: EXCLUDED_MOCK_MODALS,
     non_tab_keys: NON_TAB_KEYS,
+    palette_onclick: PALETTE_ONCLICK,
 };
 
 /// The tabs a mockup render draws, in order, and the one it draws selected.
@@ -763,13 +760,15 @@ pub fn validate_excluded_modals(lists: &Lists) -> Result<()> {
 /// which its problems name `PAGE_MAP`, `EXCLUDED_MOCK_MODALS` and `EXCLUDED_MODALS`. `drawn` is
 /// each compared page, tab and menu target's id with the modal openers its mockup render draws
 /// ([`crate::mock::probe`]), every such host listed, an empty list when it draws none.
-/// Each opener drawn is a modal entry of that host or an `EXCLUDED_MOCK_MODALS` entry, not both;
+/// The shell palette (`palette_onclick`, which problems name `PALETTE_ONCLICK`) is drawn by some
+/// host and listed by no exclusion. Each other opener drawn is a modal entry of that host or an
+/// `EXCLUDED_MOCK_MODALS` entry, not both;
 /// a modal entry hosted by a listed host names an opener it draws; an exclusion is listed once,
 /// with a reason and, when it names a portal action, a `<module>/<action>` of `[a-z0-9._-]+`
 /// ids, and names an opener its host draws (else it is stale, a pending or unknown host drawing
 /// nothing checked). An `EXCLUDED_MODALS` [`ModalWhy`] claim holds when its mockup host has a
-/// compared render and every modal opener that render draws is a modal entry of another action
-/// there or an exclusion there whose portal side is another action or the palette; one whose
+/// compared render and every modal opener that render draws is the palette, a modal entry of
+/// another action there or an exclusion there whose portal side is another action; one whose
 /// portal side is nothing could be the claimed action's opener, so it does not hold the claim.
 pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: &Lists) -> Result<()> {
     let Lists { page_map, excluded_menus, excluded_modals, excluded_mock_modals, .. } = *lists;
@@ -778,9 +777,13 @@ pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: 
         page_map.iter().find(|p| p.modal.is_some_and(|m| MockOpener::Pages(m.opener) == opener) && p.host().id() == host)
     };
     let excluded = |host: &str, opener: MockOpener<&str>| excluded_mock_modals.iter().find(|x| x.host == host && x.opener == opener);
+    let palette = MockOpener::Onclick(lists.palette_onclick);
     let mut problems = Vec::new();
+    if !drawn.iter().any(|(_, openers)| openers.iter().any(|o| o.as_str() == palette)) {
+        problems.push(format!("PALETTE_ONCLICK declares the shell palette {palette}, which no compared mockup render draws as a modal"));
+    }
     for (host, openers) in drawn {
-        for opener in openers {
+        for opener in openers.iter().filter(|o| o.as_str() != palette) {
             match (mapped(host, opener.as_str()).is_some(), excluded(host, opener.as_str()).is_some()) {
                 (false, false) => problems.push(format!("mockup modal {host} {opener} is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS")),
                 (true, true) => problems.push(format!("mockup modal {host} {opener} is listed in PAGE_MAP and again in EXCLUDED_MOCK_MODALS")),
@@ -803,6 +806,9 @@ pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: 
         if why.trim().is_empty() {
             problems.push(format!("EXCLUDED_MOCK_MODALS {host} {opener} has no reason"));
         }
+        if *opener == palette {
+            problems.push(format!("EXCLUDED_MOCK_MODALS lists {host} {opener}, the shell palette PALETTE_ONCLICK declares on every host"));
+        }
         if let PortalModal::Action(action) = portal {
             if !is_action_path(action) {
                 problems.push(format!("EXCLUDED_MOCK_MODALS {host} {opener} names portal action {action:?}, which is not a <module>/<action> of [a-z0-9._-]+ ids"));
@@ -818,12 +824,10 @@ pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: 
             problems.push(format!("EXCLUDED_MODALS {host} modal {action} says the mockup has no opener of it, but no compared {mock_host} mockup render was checked"));
             continue;
         };
-        for opener in openers {
-            let opener = opener.as_str();
+        for opener in openers.iter().map(MockOpener::as_str).filter(|o| *o != palette) {
             let mapped_other = mapped(mock_host, opener).is_some_and(|p| p.modal.is_some_and(|m| m.action_path() != *action));
             let excluded_other = excluded(mock_host, opener).is_some_and(|x| match x.portal {
                 PortalModal::Action(other) => other != *action,
-                PortalModal::Palette => true,
                 PortalModal::Absent => false,
             });
             if !mapped_other && !excluded_other {
