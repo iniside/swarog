@@ -2874,6 +2874,27 @@ gate.
       `a_disabled_action_control_carries_its_action_and_refusal_kind` is deleted once the
       check covers it. A test proves the check fails on a disabled branch drawn without
       `refused()`.
+    - Part A was S3, S1 and S2 (5b2746c8, 4410f874, b98a1fd3). Its round-2 reviews left two
+      structural holes; the owner (2026-11-21) made each its own part, reviewed afresh (a
+      core-reviewer plus a proof-auditor, at most two rounds), before part B:
+      - A2 (S3's context): the harness context keeps the origin of the work (the mount or a
+        body) in its own field, separate from "inside a REG render". A mount timer that calls
+        `REG.render()` or `REG.openSearch()` is the mount's: what it appends or opens is
+        reported once as the mount's, never counted for a body, and never satisfies a modal
+        or menu claim of a body. A menu or modal the mount opens is reported, not dropped.
+        Tests pin a mount timer calling each.
+      - A3 (S1's classifier): each call of a listed opener has its own id in the context. The
+        first element appended under that id is the menu or modal; any later one is a
+        declared appender's or fails as loose, naming the host, the element and the drawers.
+        One classifier serves the probe and both renders, and the renders take the
+        appenders the probe is given, not the production constant (`production_appenders`
+        goes). The unused `hasClass` goes. The stale message and docs of
+        `EXCLUDED_MOCK_APPENDS` name the mount too.
+    - S7 (owner, 2026-11-21, part B): a state switcher is any inline handler attribute
+      (`onclick`, `onchange`, `oninput`), run with a stub `this.value`; its `PAGES` keys
+      fall under the same PAGE_MAP / `NON_TAB_KEYS` rule both ways (`PAGES.auditTopic`,
+      `UILayout/redesign/assets/pages-platform.js:121`; `PAGES.effUser`/`effRepo`,
+      `pages-lore.js:158`).
 - **Step 13e — contract additions for the ports** (owner, 2026-11-20, on
   `docs/research/2026-11-20-2230-admin-ports-contract-gaps.md`; after 13d7d, before Step 14).
   The owner rulings on that doc's decisions:
