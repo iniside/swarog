@@ -15,6 +15,13 @@ _None._
 
 ### Known limits (admin-control-plane-redesign step 15)
 
+- [ ] **The Economy Currencies panel scans every balance on each render**
+  Supply (`sum(amount)`) and Holders (`count(*)` above zero) group `wallet.balances` by
+  `currency`, and no index leads with `currency` (the PK is `(player_id, currency)`), so
+  `Store::currency_stats` (`modules/wallet/src/store.rs`) reads the whole table each time
+  the page draws. A `balances (currency)` index, or a maintained per-currency total, ends it.
+  A panel deadline drops the answer, not the statement.
+
 - [ ] **No test sends an uppercase or unhyphenated player uuid to the existence check**
   `Service::player_exists` canonicalises the id (`modules/wallet/src/service.rs:165-171`)
   because accounts' batch lookup drops non-canonical spellings. The padded-uuid test is

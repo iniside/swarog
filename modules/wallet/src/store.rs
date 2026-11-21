@@ -107,6 +107,18 @@ pub(crate) struct LedgerEntry {
     pub(crate) reason: String,
 }
 
+/// One catalog currency with its circulation, a row of the Economy page's Currencies panel.
+pub(crate) struct CurrencyStats {
+    pub(crate) code: String,
+    pub(crate) display_name: String,
+    pub(crate) kind: String,
+    /// `sum(amount)` as Postgres's decimal text: the sum of `bigint` is `numeric`, and many
+    /// balances near the per-row ceiling exceed `i64`.
+    pub(crate) supply: String,
+    /// The players holding more than zero of it.
+    pub(crate) holders: i64,
+}
+
 /// One page of [`Store::player_ledger`]. The read decides `next_after` itself — it asks for
 /// one row PAST the page — so no caller can mistake a full page for a whole history.
 pub(crate) struct LedgerPage {
@@ -441,6 +453,35 @@ impl Store {
                 display_name,
                 kind,
                 decimals,
+            })
+            .collect())
+    }
+
+    /// Every catalog currency in code order with its supply (`sum(amount)`) and holders
+    /// (`count(*)` of balances above zero); a currency no one holds reads "0" and 0.
+    ///
+    /// Exact and unindexed: no index on `wallet.balances` leads with `currency` (its PK is
+    /// `(player_id, currency)`), so each call scans every balance row. A
+    /// `balances (currency)` index is the missing piece (`docs/todo/wallet.md`).
+    pub(crate) async fn currency_stats(&self) -> Result<Vec<CurrencyStats>, sqlx::Error> {
+        let rows: Vec<(String, String, String, String, i64)> = sqlx::query_as(
+            "SELECT c.code, c.display_name, c.kind, COALESCE(sum(b.amount), 0)::text, \
+                    count(*) FILTER (WHERE b.amount > 0) \
+               FROM wallet.currencies c \
+               LEFT JOIN wallet.balances b ON b.currency = c.code \
+              GROUP BY c.code \
+              ORDER BY c.code",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(code, display_name, kind, supply, holders)| CurrencyStats {
+                code,
+                display_name,
+                kind,
+                supply,
+                holders,
             })
             .collect())
     }

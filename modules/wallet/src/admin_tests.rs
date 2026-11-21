@@ -14,11 +14,12 @@ use testdb::test_pool;
 use walletapi::{Balance, Currency, MAX_MOVEMENT_AMOUNT, MAX_REASON_BYTES};
 
 use super::{
-    fact_text, grouped, manifest, movement_field_error, panel_form, parse_amount, parse_cursor, parse_reason,
-    row_form, signed, tiles_body, transactions_body, Direction, WalletAdmin, ADMIN_KEY_PREFIX, NO_SUCH_PLAYER,
+    currencies_body, fact_text, group_digits, grouped, manifest, movement_field_error, panel_form, parse_amount,
+    parse_cursor, parse_reason, row_form, signed, tiles_body, transactions_body, Direction, WalletAdmin,
+    ADMIN_KEY_PREFIX, NO_SUCH_PLAYER,
 };
 use crate::service::{IDEMPOTENCY_CONFLICT, MALFORMED_PLAYER_ID, OUT_OF_RANGE, PLAYER_DELETED, UNKNOWN_CURRENCY};
-use crate::store::{LedgerEntry, LedgerPage, LEDGER_PAGE_SIZE};
+use crate::store::{CurrencyStats, LedgerEntry, LedgerPage, LEDGER_PAGE_SIZE};
 use crate::tests::{cleanup, unique_currency, unique_player, wired, with_directory, DB_LOCK};
 use crate::WalletModule;
 
@@ -81,6 +82,55 @@ fn numbers_are_exact_grouped_integers_with_a_plus_on_a_credit() {
     assert_eq!(signed(500), "+500");
     assert_eq!(signed(-1_200), "-1,200");
     assert_eq!(signed(0), "0");
+    assert_eq!(group_digits("0"), "0");
+    assert_eq!(group_digits("12345678901234567890123"), "12,345,678,901,234,567,890,123", "past i64");
+}
+
+fn stats(code: &str, kind: &str, supply: &str, holders: i64) -> CurrencyStats {
+    CurrencyStats {
+        code: code.to_string(),
+        display_name: code.to_uppercase(),
+        kind: kind.to_string(),
+        supply: supply.to_string(),
+        holders,
+    }
+}
+
+#[test]
+fn currencies_draw_code_name_kind_supply_holders_and_a_dash_cap_with_hard_accented() {
+    let body = currencies_body(&[stats("gems", "hard", "41800000", 182_000), stats("gold", "soft", "0", 0)]);
+    let t = table(&body);
+    let cols: Vec<(&str, CellKind, Align)> = t.columns.iter().map(|c| (c.label.as_str(), c.kind, c.align)).collect();
+    assert_eq!(
+        cols,
+        [
+            ("Code", CellKind::Ref, Align::Left),
+            ("Name", CellKind::Text, Align::Left),
+            ("Kind", CellKind::Label, Align::Left),
+            ("Supply", CellKind::Number, Align::Right),
+            ("Holders", CellKind::Number, Align::Right),
+            ("Cap", CellKind::Dim, Align::Left),
+        ]
+    );
+    let drawn: Vec<Vec<(&str, Option<Tone>)>> =
+        t.rows.iter().map(|r| r.cells.iter().map(|c| (c.value.as_str(), c.tone)).collect()).collect();
+    assert_eq!(
+        drawn,
+        [
+            [
+                ("gems", None),
+                ("GEMS", None),
+                ("hard", Some(Tone::Accent)),
+                ("41,800,000", None),
+                ("182,000", None),
+                ("—", None),
+            ],
+            [("gold", None), ("GOLD", None), ("soft", None), ("0", None), ("0", None), ("—", None)],
+        ]
+    );
+    assert!(t.page.next_cursor.is_none() && t.page.total.is_none(), "the catalog has no pager");
+    assert!(t.filters.is_empty() && t.search_placeholder.is_none());
+    assert!(table(&currencies_body(&[])).rows.is_empty(), "an empty catalog is the portal's empty state");
 }
 
 #[test]
@@ -148,7 +198,7 @@ fn cursor_is_a_decimal_seq_and_anything_else_is_the_callers_error() {
 }
 
 #[test]
-fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_grant_form_at_20() {
+fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_panels_at_10_and_20() {
     let m = manifest();
     assert!(m.writes, "grant and revoke write");
     assert!(m.entity_kinds.is_empty());
@@ -160,17 +210,35 @@ fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_grant_form_a
             ("wallet", 30, "Transactions", ""),
             ("wallet.tiles", 0, "Wallet", ""),
             ("fact.balance", 50, "Wallet", "coins"),
+            ("currencies", 10, "Currencies", ""),
             ("grant", 20, "Grant or revoke", ""),
         ]
     );
-    assert!(matches!(&m.contributions[3].point, Point::Page(page) if page == "economy"));
+    for c in &m.contributions[3..] {
+        assert!(matches!(&c.point, Point::Page(page) if page == "economy"), "{}", c.id);
+    }
+    assert!(m.contributions.iter().all(|c| c.cache_ttl_s.is_none()), "no stale copy outlives a grant");
+    assert!(m.sections.is_empty(), "the Economy section is controlplane's fixed one");
+    assert!(controlplane::SECTIONS.contains(&("economy", "Economy", 30)));
+    let nav: Vec<(&str, &str, &str, &str, i32, &str, bool)> = m
+        .entries
+        .iter()
+        .map(|e| {
+            let counted = e.counter.is_some();
+            (e.section.as_str(), e.id.as_str(), e.label.as_str(), e.icon.as_str(), e.order, e.page.as_str(), counted)
+        })
+        .collect();
+    assert_eq!(nav, [("economy", "economy", "Currencies & ledger", "coins", 10, "economy", false)]);
     assert_eq!(m.pages.len(), 1);
     let page = &m.pages[0];
     assert_eq!(
         (page.id.as_str(), page.title.as_str(), page.subtitle.as_str()),
         ("economy", "Currencies & ledger", "wallet module")
     );
-    assert_eq!(page.layout, controlplane::Layout::Stack(vec!["grant".to_string()]));
+    assert_eq!(
+        page.layout,
+        controlplane::Layout::Grid21(vec!["currencies".to_string()], vec!["grant".to_string()])
+    );
     assert!(matches!(
         &m.contributions[0].point,
         Point::EntityTab { kind, tab, tab_label, columns: 1 } if kind == "player" && tab == "wallet" && tab_label == "Wallet"
@@ -362,6 +430,47 @@ async fn panels_read_the_players_balances_and_ledger() {
     assert_eq!(err.status, Status::Invalid);
 
     cleanup(&pool, &[&pid], &[&code]).await;
+}
+
+#[tokio::test]
+async fn currencies_sum_every_balance_and_count_only_positive_holders() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let (a, b, c) = (unique_player(&pool).await, unique_player(&pool).await, unique_player(&pool).await);
+    let held = unique_currency(&pool).await;
+    let unheld = unique_currency(&pool).await;
+    sqlx::query("UPDATE wallet.currencies SET kind = 'hard' WHERE code = $1")
+        .bind(&held)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Two balances at the per-row ceiling and one at zero: a zero balance adds no supply and
+    // is no holder.
+    for (pid, amount) in [(&a, 1_000_000_000_000_000_i64), (&b, 1_000_000_000_000_000), (&c, 0)] {
+        sqlx::query("INSERT INTO wallet.balances (player_id, currency, amount) VALUES ($1::uuid, $2, $3)")
+            .bind(pid)
+            .bind(&held)
+            .bind(amount)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    let admin = WalletAdmin::new(svc, held.clone());
+
+    let mut q = query("currencies", &a, None);
+    q.entity = None;
+    let body = admin.panel(q).await.unwrap();
+    let rows: Vec<Vec<String>> =
+        table(&body).rows.iter().map(|r| r.cells.iter().map(|c| c.value.clone()).collect()).collect();
+    let row = |code: &str| rows.iter().find(|r| r[0] == code).cloned().unwrap_or_else(|| panic!("{code}: {rows:?}"));
+    assert_eq!(row(&held), [held.as_str(), held.as_str(), "hard", "2,000,000,000,000,000", "2", "—"]);
+    assert_eq!(row(&unheld), [unheld.as_str(), unheld.as_str(), "soft", "0", "0", "—"]);
+    let mut codes: Vec<&String> = rows.iter().map(|r| &r[0]).collect();
+    let drawn = codes.clone();
+    codes.sort();
+    assert_eq!(drawn, codes, "the catalog in code order");
+
+    cleanup(&pool, &[&a, &b, &c], &[&held, &unheld]).await;
 }
 
 fn money(amount: i64, currency: &str) -> String {

@@ -1,7 +1,9 @@
 //! The `wallet` control-plane provider: the player entity's Wallet tab (a tile per catalog
 //! currency over the Transactions table), the player's summary fact (the balance of the
 //! headline currency), and the operator's grant and revoke: the player row's "Grant
-//! currency…" / "Revoke currency…" modals and the Economy page's Grant-or-revoke form. Both
+//! currency…" / "Revoke currency…" modals and the Economy page's Grant-or-revoke form. The
+//! Economy page also lists the catalog with each currency's supply and holders (Currencies),
+//! reached from its entry in the fixed Economy nav section. Both grant and revoke
 //! paths are one credit or debit through [`Service`] under the key
 //! [`ADMIN_KEY_PREFIX`] + the form instance's request id, so `writes: true`.
 
@@ -11,9 +13,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use controlplane::{
     ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable, Emphasis, EntityRef, Field,
-    FieldKind, FormMode, FormSpec, InvokeCall, InvokeOutcome, KpiTile, Layout, Manifest, PageDecl, PageInfo, Palette,
-    PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider, Role, Row, SearchHit, SearchQuery, Then, Tone,
-    DEFAULT_PANEL_DEADLINE_MS,
+    FieldKind, FormMode, FormSpec, InvokeCall, InvokeOutcome, KpiTile, Layout, Manifest, NavEntry, PageDecl, PageInfo,
+    Palette, PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider, Role, Row, SearchHit, SearchQuery, Then,
+    Tone, DEFAULT_PANEL_DEADLINE_MS,
 };
 use opsapi::{Error, Status};
 use walletapi::{
@@ -21,7 +23,7 @@ use walletapi::{
 };
 
 use crate::service::{MALFORMED_PLAYER_ID, OUT_OF_RANGE, PLAYER_DELETED, UNKNOWN_CURRENCY};
-use crate::store::{LedgerEntry, LedgerPage, LEDGER_PAGE_SIZE};
+use crate::store::{CurrencyStats, LedgerEntry, LedgerPage, LEDGER_PAGE_SIZE};
 use crate::Service;
 
 const MODULE: &str = "wallet";
@@ -34,6 +36,10 @@ const TILES: &str = "wallet.tiles";
 const FACT_BALANCE: &str = "fact.balance";
 
 const PAGE: &str = "economy";
+/// The fixed `controlplane::SECTIONS` entry the Economy page's nav entry sits in.
+const SECTION: &str = "economy";
+/// The Economy page's catalog table.
+const CURRENCIES_PANEL: &str = "currencies";
 /// The Economy page's Grant-or-revoke form.
 const GRANT_PANEL: &str = "grant";
 
@@ -353,11 +359,18 @@ pub(crate) fn parse_cursor(raw: &str) -> Result<i64, Error> {
 
 /// An exact en-US grouped integer: "91,300", "-1,200".
 pub(crate) fn grouped(n: i64) -> String {
-    let digits = n.unsigned_abs().to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
+    let digits = group_digits(&n.unsigned_abs().to_string());
     if n < 0 {
-        out.push('-');
+        format!("-{digits}")
+    } else {
+        digits
     }
+}
+
+/// A run of decimal digits with a comma before every third from the right: "91300" is
+/// "91,300". The digits of a sum too large for `i64` group the same way.
+pub(crate) fn group_digits(digits: &str) -> String {
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {
         if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
@@ -386,6 +399,11 @@ fn balance_of(balances: &[Balance], code: &str) -> i64 {
 pub(crate) fn fact_text(headline: &str, balances: &[Balance]) -> String {
     format!("{} {headline}", grouped(balance_of(balances, headline)))
 }
+
+/// The currency kind drawn in the accent tone: the premium, paid-for kind.
+const HARD_KIND: &str = "hard";
+/// The Cap column's value: wallet holds no per-currency cap.
+const NO_CAP: &str = "—";
 
 /// The Wallet tab's tiles: one per catalog currency in the catalog's order, labelled
 /// "<display name> (<code>)", the player's balance or "0". No delta, sparkline or link.
@@ -482,6 +500,53 @@ pub(crate) fn transactions_body(page: &LedgerPage) -> PanelBody {
     PanelBody::new(Primitive::DataTable(table))
 }
 
+/// The Currencies panel: every catalog currency (Code, Name, Kind, Supply, Holders, Cap), no
+/// toolbar and no pager, since the operator-curated catalog bounds it. Kind is a plain badge,
+/// accented on [`HARD_KIND`]; Supply and Holders are exact grouped integers in minor units;
+/// Cap is [`NO_CAP`] on every row. An empty catalog draws the portal's empty state.
+pub(crate) fn currencies_body(stats: &[CurrencyStats]) -> PanelBody {
+    let rows: Vec<Row> = stats
+        .iter()
+        .map(|s| Row {
+            entity: None,
+            cells: vec![
+                text(CellKind::Ref, s.code.clone()),
+                text(CellKind::Text, s.display_name.clone()),
+                Cell { tone: (s.kind == HARD_KIND).then_some(Tone::Accent), ..text(CellKind::Label, s.kind.clone()) },
+                text(CellKind::Number, group_digits(&s.supply)),
+                text(CellKind::Number, grouped(s.holders)),
+                text(CellKind::Dim, NO_CAP),
+            ],
+            highlight: false,
+            item: None,
+            actions: Vec::new(),
+        })
+        .collect();
+    let table = DataTable {
+        columns: vec![
+            column("code", "Code", CellKind::Ref, Align::Left),
+            column("name", "Name", CellKind::Text, Align::Left),
+            column("kind", "Kind", CellKind::Label, Align::Left),
+            column("supply", "Supply", CellKind::Number, Align::Right),
+            column("holders", "Holders", CellKind::Number, Align::Right),
+            column("cap", "Cap", CellKind::Dim, Align::Left),
+        ],
+        page: PageInfo {
+            next_cursor: None,
+            size: rows.len() as u32,
+            total: None,
+        },
+        rows,
+        filters: Vec::new(),
+        search_placeholder: None,
+        selectable: false,
+        list_columns_for: None,
+        list_columns_at: 0,
+        item_noun: None,
+    };
+    PanelBody::new(Primitive::DataTable(table))
+}
+
 fn contribution(id: &str, point: Point, order: i32, title: &str, icon: &str) -> ContributionDecl {
     ContributionDecl {
         id: id.to_string(),
@@ -532,15 +597,25 @@ pub(crate) fn manifest() -> Manifest {
     let form = || ActionPoint::PanelForm(GRANT_PANEL.to_string());
     Manifest {
         module: MODULE.to_string(),
+        // The Economy section is a fixed `controlplane::SECTIONS` entry ("Economy", 30); the
+        // shell draws a section only once an entry sits in it, and this is its one entry.
         sections: Vec::new(),
-        entries: Vec::new(),
+        entries: vec![NavEntry {
+            section: SECTION.to_string(),
+            id: PAGE.to_string(),
+            label: "Currencies & ledger".to_string(),
+            icon: "coins".to_string(),
+            order: 10,
+            page: PAGE.to_string(),
+            counter: None,
+        }],
         pages: vec![PageDecl {
             id: PAGE.to_string(),
             title: "Currencies & ledger".to_string(),
             subtitle: "wallet module".to_string(),
             head_actions: Vec::new(),
             tiles: Vec::new(),
-            layout: Layout::Stack(vec![GRANT_PANEL.to_string()]),
+            layout: Layout::Grid21(vec![CURRENCIES_PANEL.to_string()], vec![GRANT_PANEL.to_string()]),
             params: Vec::new(),
         }],
         entity_kinds: Vec::new(),
@@ -548,6 +623,7 @@ pub(crate) fn manifest() -> Manifest {
             contribution(TRANSACTIONS, tab, 30, "Transactions", ""),
             contribution(TILES, tiles, 0, "Wallet", ""),
             contribution(FACT_BALANCE, Point::EntitySummary(KIND.to_string()), 50, "Wallet", "coins"),
+            contribution(CURRENCIES_PANEL, Point::Page(PAGE.to_string()), 10, "Currencies", ""),
             contribution(GRANT_PANEL, Point::Page(PAGE.to_string()), 20, "Grant or revoke", ""),
         ],
         // The row pair is `prepare: true` because a Money field's options are the live
@@ -586,6 +662,10 @@ impl Provider for WalletAdmin {
             TRANSACTIONS => self.transactions(&req).await,
             TILES => self.tiles(&req).await,
             FACT_BALANCE => self.fact(&req).await,
+            CURRENCIES_PANEL => {
+                let stats = self.svc.store.currency_stats().await.map_err(crate::internal)?;
+                Ok(currencies_body(&stats))
+            }
             GRANT_PANEL => Ok(PanelBody::new(Primitive::Form(panel_form(&self.codes().await?)))),
             other => Err(Error::not_found(format!(
                 "{MODULE} has no contribution {other:?}"
