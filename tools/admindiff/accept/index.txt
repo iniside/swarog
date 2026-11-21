@@ -11,10 +11,12 @@ frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#ba7b3e | decl
 frame div.app > header.topbar: portal-only button.top-btn#255bc4 | template choice: shell.html.tmpl puts the theme toggle in the topbar; the mockup's sits in the devbar, which D3 drops
 frame div.app > main.main > div.page > div.g-21.grid: mock-only [panel "Recent operator activity"] | not ported yet: audit's dashboard panel arrives with the audit port
 frame div.app > main.main > div.page > div.g-tiles.grid: mock-only [tile "Cloud saves used"] | not ported yet: storage's tile arrives with the storage port
-frame div.app > main.main > div.page > div.g-tiles.grid: mock-only [tile "Embers spent (24 h)"] | not ported yet: wallet's tile arrives with the wallet port
+frame div.app > main.main > div.page > div.g-tiles.grid: mock-only [tile "Embers spent (24 h)"] | data difference: the headline currency is "gems" (owner G1) while the mockup hard-codes "Embers"; the portal draws its own spent tile
 mock-only panel "Recent operator activity" | not ported yet: audit's dashboard panel arrives with the audit port
 mock-only tile "Cloud saves used" | not ported yet: storage's tile arrives with the storage port
-mock-only tile "Embers spent (24 h)" | not ported yet: wallet's tile arrives with the wallet port
+mock-only tile "Embers spent (24 h)" | data difference: the headline currency is "gems" (owner G1) while the mockup hard-codes "Embers"; the portal draws its own spent tile
 panel "Service health" section.panel > div.flush.panel-body > div.g-2.grid > div > .svc* > div.svc > span.row > span.hide-tablet: mock-only div.uptime#3f0d1e | template choice: the services macro uses span.uptime, since a div inside a span is invalid HTML; .uptime is display:flex, so it renders the same
 panel "Service health" section.panel > div.flush.panel-body > div.g-2.grid > div > .svc* > div.svc > span.row > span.hide-tablet: portal-only span.uptime#17b8fb | template choice: the span.uptime of the div.uptime entry
 tile "Mail queue" a.panel > div.kpi > div.kpi-delta: mock-only span.bad-up | data difference: the tile delta "relay throttled" shows only while a row is retrying (FAKE wording); a fresh fleet has no retrying rows and demoseed cannot produce them through the public API
+frame div.app > main.main > div.page > div.g-tiles.grid: portal-only [tile "Gems spent (24 h)"] | data difference: the headline currency is "gems" (owner G1) while the mockup hard-codes "Embers"
+portal-only tile "Gems spent (24 h)" | data difference: the headline currency is "gems" (owner G1) while the mockup hard-codes "Embers"

@@ -21,3 +21,4 @@ panel "Ledger" section.panel > div.flush.panel-body > div.tbl-toolbar: portal-on
 panel "Ledger" section.panel > div.flush.panel-body: mock-only div.tbl-foot#517cfd | data difference: a fresh fleet has no wallet movements (credit and debit are wire-only; demoseed grants none), so the ledger draws its empty state and no footer
 panel "Ledger" section.panel > div.flush.panel-body: mock-only div.tbl-wrap#c0d43c | data difference: a fresh fleet has no wallet movements (credit and debit are wire-only; demoseed grants none), so the ledger draws no table
 panel "Ledger" section.panel > div.flush.panel-body: portal-only div.state#e37e45 | data difference: the empty state the ledger draws with no wallet movements
+panel "Currencies" section.panel > div.panel-head > div.panel-tools: portal-only button.btn.sm#f5ed26 ("New currency") | declared deviation D6: the create-currency button is an extra element not in the mockup (Q1)
