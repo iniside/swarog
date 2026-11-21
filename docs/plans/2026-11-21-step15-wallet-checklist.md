@@ -203,6 +203,8 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 
 **G19. Embers-spent tile** (15a5). `sum(-delta)` over ledger rows with `delta < 0`, the G1 currency, `at > now() - interval '24 hours'`: exact, unindexed, with a comment; revokes count as spent. No delta, spark or link (the mock designs none).
 
+**G20. Splitproof grants need real players** (15t; from the 3353efda review). The portal now refuses a grant to a uuid that names no player (G5). The splitproof wallet grants post `/admin/wallet` with `SELECT gen_random_uuid()::text` players (`tools/splitproof/src/main.rs:425` WL6m, `:512` NT4m, `:3814` PH6, `:5561` WL3, `:5962` NT4), so once the panel serves them they read "No such player." and the balance and inbox assertions go red for that reason. 15t, and whoever repairs those checks, grants to a registered player (as `party_checks.rs:293` does, e.g. via `register_capture`).
+
 ## 8. Accept-file plan (predicted; the exact text needs a crawl)
 
 - **Every mapped page's file** (`index, players, player, player.characters, events, mail` and the menu files that carry the frame): delete the `mock-only div.nav-section#5694ed` line (Economy section now drawn). Expect instead a pairing line on the nav entry, mock `a.down.nav-item` vs portal `a.nav-item`: kind `data difference`, "the mockup draws wallet-svc down (registry.js:25)".
