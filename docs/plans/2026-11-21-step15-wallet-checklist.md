@@ -13,7 +13,7 @@ Method: targeted reads with line numbers; **[grep]** marks a ripgrep sweep (a lo
 
 Comparison scope: as in the Step 14 checklist (tags, classes and nesting; no attributes, no text). New for this port:
 - The mockup draws wallet **only down or stale**. `Page.force` (`pages:68-73`, plan T4) sets `UI.state.force = "ok"`; `panel()` and `kpi()` honour it for a contributed fragment (`bjs:131,177`). Hard-coded demo markup is out of its reach: the players cell and banner (`pc:92,106`), the fact (`reg:84`), the row-menu group (`reg:101-104`), the nav `down` class (`reg:25,140`), the Grant panel's `o.banner` (drawn in ok, `bjs:140-142`) and its `disabled: true` fields (`pp:173-176`).
-- Forced ok, the Transactions panel (`pc:129`) has no body: `o.body` is undefined (`bjs:137`).
+- Forced ok, the Transactions panel (`pc:129`) has no body: `o.body` is undefined (`bjs:138`).
 
 What wallet holds (verified):
 - `wallet.currencies(code PK ≤32B, display_name ≤64B, kind ≤32B DEFAULT 'soft', decimals 0..18, created_at)` (`wl:54-68`). No cap column.
@@ -166,11 +166,12 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 
 **G5. `request_id` → `idempotency_key`** (15a2, X8).
 - Proposal: key `admin:<request_id>`, refused if over 128 bytes; never under `starter:` (`wa:55-69`).
+- The panel form's id is `<contribution id>:<token>` (`routes.rs:876`, `forms.rs:63-66`), the token 43 base64url chars (`lib.rs:823-828`); the key is 50 bytes plus the contribution id, so it fits for any id up to 78 bytes.
 - A resubmit of one instance with a changed field is a 409 (identity includes reason, `wa:48-52`); it shows as a form error.
 
 **G6. Ledger reason text and the Reason help** (15a2).
 - Proposal: write `admin.grant · <reason> (<operator>)` / `admin.revoke · …` as the mockup shows (`dj:165,169`), refused over `MAX_REASON_BYTES`.
-- Help: "Shown in the ledger." unless the audit row is verified to carry the value (not verified).
+- Help: "Shown in the ledger." The `admin.action` detail carries the outcome and only the portal's own `_reason` (`actions.rs:479,586,609-611`), never form field values, so a Reason form field never reaches the audit log.
 - Alternative: the operator's text verbatim.
 
 **G7. Transactions panel ok shape** (15a1).
@@ -188,7 +189,7 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 
 **G13. Create currency** (15a4; Q1, D6). `currency.create` (§4) with Code (≤32 B), Name (≤64 B), Kind (string ≤32 B, help "soft or hard"), Decimals (0–18). An existing code is a 409: today's `write_currency_tx` either overwrites or silently skips (`ws:85-104,540-563`). Proposal: replace the dead `OnConflict::Overwrite` with a refusing insert. Its modal has no mockup opener: an `EXCLUDED_MODALS` row (`pages:336`) with reason D6.
 
-**G14. Stale and demo states** (15a3). Proposal: `cache_ttl_s: None` everywhere (money reads stay fresh; a cached ledger would hide a grant just made); stale is unreachable and declared (H16). Map `economy` and `player.wallet` with `force: true`. Alternative: `Some(60)` on Currencies only.
+**G14. Stale and demo states** (15a3). Proposal: `cache_ttl_s: None` everywhere; stale is unreachable and declared (H16). Map `economy` and `player.wallet` with `force: true`. Alternative: `Some(60)` on Currencies only. The cache is read only when the live fetch fails (`panels.rs:264-308`) and nothing drops an entry after an invoke (`panel_cache` is touched only at `panels.rs:275,298`), so a ttl shows, during an outage, a stale copy that can predate a grant just made.
 
 **G15. Dead readers** (X4; 15a1, 15a3–15a5). Delete `list_catalog`/`CatalogEntry`; replace `recent_ledger` and its types with the keyset reader (G2/G7); `pending_purges` gets 15a5's caller; `Overwrite` per G13. Adjust their tests in `modules/wallet/src/tests.rs`.
 
@@ -204,7 +205,7 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 
 - **Every mapped page's file** (`index, players, player, player.characters, events, mail` and the menu files that carry the frame): delete the `mock-only div.nav-section#5694ed` line (Economy section now drawn). Expect instead a pairing line on the nav entry, mock `a.down.nav-item` vs portal `a.nav-item`: kind `data difference`, "the mockup draws wallet-svc down (registry.js:25)".
 - **`economy.txt`** (new): the shell-frame copies (§2); Grant `mock-only div.banner.err` → `data difference` (demo, G14); the panel `form` wrapper and hidden inputs → `template choice` (`gd:85`); Ledger search pair → copy `players.txt:11-12`; filter chips vs `Select` → copy `events.txt`'s pair if the same; empty Currencies/Ledger rows on a fresh fleet → `data difference` until 24b1; create tool → `declared deviation D6`.
-- **`player.wallet.txt`** (new tab entry, `force: true`; drop `player.wallet` from `EXCLUDED_TABS`, `pages:309`): shell copies, header lines as `player.characters.txt:12-19`, Transactions body per G7, tiles per G9 (data difference on an empty catalog). Plus `player.wallet.menu.user.txt` if a menu entry is added, as for characters.
+- **`player.wallet.txt`** (new tab entry, `force: true`; drop `player.wallet` from `EXCLUDED_TABS`, `pages:309`): shell copies, header lines as `player.characters.txt:12-19`, Transactions body per G7, tiles per G9 (data difference on an empty catalog). The Wallet tab's `span.dot.err` is drawn from `state: "error"` (`reg:69`, `pc:167`), which `force` does not reach: a mock-only line → `data difference` (demo), on every player page's tab bar. Plus `player.wallet.menu.user.txt` if a menu entry is added, as for characters.
 - **`players.txt`**: delete `:18` and `:21` (Embers header and cell now drawn); the cell becomes a pairing line (mock `span.muted > svg`, `pc:92`) → `data difference` (demo); `:15` banner → reword to `data difference`: drawn only when wallet fails. The `th.num > span` line (G6 of Step 14) should cover both headers; verify.
 - **`player.txt`, `player.characters.txt`**: the wallet fact pairs mock error `span > span > svg` with portal `span > svg` → `data difference` (demo); the Lore fact keeps its line, reason reworded.
 - **Menu files** (`players.menu.user`, `player.menu.user`, `player.characters.menu.user`): the `menu-group#198a5b` line resolves; expect pairing lines for the note badge and disabled items → `data difference` (demo). The row-menu modals have no mockup opener: `EXCLUDED_MODALS` rows per menu host.
@@ -218,9 +219,6 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 ## Not verified
 
 - No cargo, `admindiff mock`, crawl or diff was run; every accept line in §8 is a prediction.
-- How the mock tab bar draws a `state: "error"` tab under `force` (`pc:167` not read).
-- The form-instance id's length and alphabet (G5), and whether the audit row carries a form value (G6).
-- Whether `panels.rs` drops a cached panel after an invoke (G14; `core/admin/src/engine/panels.rs:134` read by name only).
 - How the portal draws a `KpiTile` with an empty `series` (G9, G19).
 - Whether a devctl profile sets `WALLET_DEV_SEED` outside the two folders searched.
 - Whether the purge-race-locks plan is already being executed (G18).
