@@ -2776,8 +2776,9 @@ gate.
     cannot check is named in the variant's doc comment and as a Known limit, never left as
     prose. The `NO_SUSPEND`/`NO_DELETE` reasons and their entries agree.
   - **13d7d — element and state recorders keyed by effect, not by class** (owner, 2026-11-21,
-    S1, S2 and S3 from the 5dae1963 reviews; after 13d7c). `[opus]` core-implementer,
-    `tools/admindiff/src/{mock.rs,pages.rs,lib.rs}` and their tests.
+    S1, S2 and S3 from the 5dae1963 reviews, S4 and S5 from the b87d8d4e reviews; after 13d7c). `[opus]` core-implementer,
+    `tools/admindiff/src/{mock.rs,pages.rs,crawl.rs,lib.rs}`, a `core/admin` shell golden and their
+    tests.
     - S3 (owner, 2026-11-21; first, the base for S1 and S2): one attribution context in the
       harness — the phase (mount, body or render), the opener and `inMenu` — saved whenever
       a timer is scheduled and restored when it runs, read by every recorder. It replaces the
@@ -2797,6 +2798,15 @@ gate.
       (`UILayout/redesign/assets/pages-platform.js:62`) is decided in the step: declared or
       listed with a reason. The `.tab` class stays only as a drawn-shape check.
     - Stale checks run both ways on every new list, as on `EXCLUDED_MOCK_MENUS`.
+    - S4 (owner, 2026-11-21, from the b87d8d4e reviews): the crawl also requires exactly one
+      `[data-palette-input]` and one `[data-palette-list]` inside the page's one
+      `[data-palette]` scrim, the elements `core/admin/src/admin.js:224`, `:237-238` read
+      unguarded.
+    - S5 (owner, 2026-11-21, from the b87d8d4e reviews): one source for the shell in the crawl
+      tests. `core/admin` gains a golden of a whole rendered shell page (`.app`, the
+      `data-action=palette` opener and the palette scrim included), and the healthy fake site
+      in `tools/admindiff/src/crawl_tests.rs` is built from that golden instead of the
+      hand-written `shell()` copy, which is deleted.
 - **Step 13e — contract additions for the ports** (owner, 2026-11-20, on
   `docs/research/2026-11-20-2230-admin-ports-contract-gaps.md`; after 13d7d, before Step 14).
   The owner rulings on that doc's decisions:
