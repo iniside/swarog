@@ -45,6 +45,16 @@ _None._
   NOTIFICATIONS-05. Source: docs/plans/2026-09-05-1921-friends-module-plan.md:596
   (2026-09-05).
 
+### Known limits (admin-control-plane-redesign step 15)
+
+- [ ] **Tiles whose labels differ are never compared inside**
+  `diff_pages` (`tools/admindiff/src/skeleton.rs:415-439`) pairs a mock tile with a portal
+  tile only by kind and key (the `kpi-label` text). A wallet tile named after a portal
+  currency and the mockup's tile under another name come out as one `mock-only tile` and
+  one `portal-only tile` line; their value, sub-line and markup are never diffed, so an
+  interior drift inside such a tile is invisible behind the accept line. Owner, 2026-11-21:
+  accepted as a known limit.
+
 ### Known limits (admin-control-plane-redesign step 14a3)
 
 - [ ] **Declaring the character kind opens an empty entity page**
