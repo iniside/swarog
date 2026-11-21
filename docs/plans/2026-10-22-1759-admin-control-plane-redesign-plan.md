@@ -2167,11 +2167,28 @@ The ports:
     `implemented: false` with todo items.
   - **21a2** (Na2): the key writes with the show-once reveal and its gateway-header hint, the
     probe; a create without an idempotency key is a `request_id` Leftover (template Na2).
+  - Contract gaps from `docs/research/2026-11-21-0848-admin-ports-21-24-contract-gaps.md` (owner, 2026-11-21, every recommendation adopted):
+    - P2-1: the apikey menu's "Requests by this key" is a static link to the unfiltered audit
+      page; a row-bound link (`bind` into a `Link::Page`) is a todo item.
+    - P2-2: a revoked key draws the same menu; revoking it again answers `NoOp`, checked by
+      hand; the per-entity "Already revoked" item is a todo item.
+    - P2-3: the bell's "Key … created" entry stays the portal FAKE
+      (`docs/todo/admin-second-pass.md`, the notification carrier item).
+    - P2-4 and P2-5: the reveal's `extra` line and the role field's help are plain text; an
+      accept line, or a hand-check where admindiff cannot reach the modal.
+    - P2-9 (21a2): the renderer draws the empty footer `span.muted` for a confirm modal only,
+      not a form modal (`core/admin/src/templates/modal.html.tmpl:22`, mockup bundle:315).
+    - The "+ Role" tool, the Roles row menu (kind `apirole`, O-6 pattern) and "Change role…"
+      are in this step; any write the store cannot do is `implemented: false` with a todo item.
+    - Data the module cannot supply (created-by, last used, expiry, requests in 24 h) is FAKE
+      per the research doc's data section.
 - **Step 22 — scheduler.** Scheduler page (`pages-platform.js:74-85`); all writes disabled.
   The portal's `storage.gc` attention fake moves into the scheduler provider at the
   portal's order 50, with its todo item (X6, owner 2026-11-17). One a (Na1 with Na3); its
   files include `core/admin/src/fakes.rs` and `core/admin/src/portal_provider.rs` (the
-  move).
+  move). The schedule row menu is kind `schedule` (O-6 pattern); target, last result,
+  per-schedule enabled and fire history are FAKE, "next fire" is derived as
+  `last_fired + interval` (`docs/research/2026-11-21-0848-admin-ports-21-24-contract-gaps.md`).
 - **Step 23 — config.**
   - Config & flags page (`pages-platform.js:88-109`).
   - Edit via `cp.invoke` with `expected_revision` = the global revision. The edit form is
@@ -2187,7 +2204,17 @@ The ports:
     (`tools/admindiff/src/mock_tests.rs`, `pages_tests.rs`); proof-auditor audits.
   - **23a1** (Na1), after 23a0: the page reads, the FAKE Revisions timeline and the
     ADMIN2-39 accept entry, and the key selection through `PageDecl.params` (K20).
-  - **23a2** (Na2): the PanelForm edit with `expected_revision`, the probe.
+  - **23a2** (Na2): the PanelForm edit with `expected_revision`, the probe. Config has no
+    compare-and-swap write today: the provider checks `expected_revision` itself under the
+    revision row lock, so an edit to any other key since the form loaded is a Conflict.
+  - **23r0** (Na0, owner 2026-11-21, P2-8 (b) of `docs/research/2026-11-21-0848-admin-ports-21-24-contract-gaps.md`; before 23a2): a `FormSpec` reason
+    field the portal sends as `InvokeCall.reason`, so the change note lands in the
+    `admin.action` detail and on the audit page. `[opus]` core-implementer, core-reviewer
+    plus proof-auditor (public surface).
+  - P2-6: the existing ADMIN2-39 restore-link `contract gap` entry also covers the revision
+    meta's `span.mono` value. P2-7: the "Pending change vs rev N" preamble and its diff
+    block are a `contract gap` accept line plus a todo item. The "+ Key" head action is in
+    this step, `implemented: false` with a todo item when the provider has no create.
   - **Owner decision before dispatch (23a0):** research P says "per-key revisions NEW"; the
     plan's decision stays `expected_revision` = the global revision. Whether research P
     means new storage is open; if it does, that storage is its own step before 23a0.
@@ -2202,6 +2229,10 @@ The ports:
   - **24.a1** (Na1): the audit log page, its operator cells per X5 and the actor filter X5
     links to.
   - **24.a2** (Na3): the dashboard "Recent operator activity" `DashboardPanel`.
+  - The Export head action is `implemented: false` with a todo item (St1/O-3 pattern). The
+    actor filter and its total are an unindexed `count(*)` over `audit.log` (only `at` is
+    indexed), with a comment naming the missing index. The mockup's `scheduler` and
+    `apikey:…` actors have no source and are FAKE (`docs/research/2026-11-21-0848-admin-ports-21-24-contract-gaps.md`).
   - **24.a3**: the admincheck peer finding (`tools/admincheck/src/checks.rs`), after every
     port (14–23, 24.a1, 24.a2) has landed. **24.t** (`[opus]` test-author): its fixture in
     `tools/admincheck/src/checks_tests.rs`; proof-auditor audits.
@@ -2756,7 +2787,7 @@ gate.
   It settles the header-shape sentence of §1 (today: hand-check) against G6 (the diff reports
   it, from Step 14a3 on).
 - **Step 13d7 — the harness and the exclusion lists check what they claim** (owner,
-  2026-11-20; after 13d5 and 13d6, before Step 14). Found in the 13d3b4 reviews. Four parts,
+  2026-11-20; after 13d5 and 13d6, before Step 14). Found in the 13d3b4 reviews. Five parts,
   each with its own commit and review (core-reviewer plus proof-auditor).
   - **13d7a — one source for drawn menus and tabs.** `[opus]` core-implementer,
     `tools/admindiff/src/{mock.rs,lib.rs}` and their tests. The harness records each
@@ -2779,8 +2810,20 @@ gate.
     checked against the drawn disabled control if the crawl can see it. A claim the crawl
     cannot check is named in the variant's doc comment and as a Known limit, never left as
     prose. The `NO_SUSPEND`/`NO_DELETE` reasons and their entries agree.
+  - **13d7c2 — a disabled control says which action it is and why** (owner, 2026-11-21, T3 (a)
+    from the ebb55584 reviews; after 13d7c's review-fix, before 13d7d). `[opus]`
+    core-implementer, `core/admin` (the action render data, `primitives.html.tmpl`'s disabled
+    branches of `action_button`, `row_button` and `menu_item` including the module-down one,
+    and the goldens), `tools/admindiff/src/{pages.rs,crawl.rs}` and their tests. Every disabled
+    action control the portal draws carries the action id and the refusal kind (denied,
+    not implemented, read only, module down) from one source, the portal's refusal decision
+    (`core/admin/src/engine/actions.rs:83-90`); attribute names `admin.js` does not select on
+    (`core/admin/src/admin.js:289-304`). `PortalModal::Disabled` is matched by action and
+    refusal kind, holding only for "not implemented"; the label match and its Known limit go.
+    A control disabled for any other reason fails the claim naming the host, the action and
+    the kind. Review: core-reviewer plus proof-auditor.
   - **13d7d — element and state recorders keyed by effect, not by class** (owner, 2026-11-21,
-    S1, S2 and S3 from the 5dae1963 reviews, S4 and S5 from the b87d8d4e reviews; after 13d7c). `[opus]` core-implementer,
+    S1, S2 and S3 from the 5dae1963 reviews, S4 and S5 from the b87d8d4e reviews; after 13d7c2). `[opus]` core-implementer,
     `tools/admindiff/src/{mock.rs,pages.rs,crawl.rs,lib.rs}`, a `core/admin` shell golden and their
     tests.
     - S3 (owner, 2026-11-21; first, the base for S1 and S2): one attribution context in the
@@ -2810,7 +2853,10 @@ gate.
       tests. `core/admin` gains a golden of a whole rendered shell page (`.app`, the
       `data-action=palette` opener and the palette scrim included), and the healthy fake site
       in `tools/admindiff/src/crawl_tests.rs` is built from that golden instead of the
-      hand-written `shell()` copy, which is deleted.
+      hand-written `shell()` copy, which is deleted. The same holds for every portal control
+      the crawl tests build (owner, 2026-11-21, T4 from the ebb55584 reviews): the hand-copied
+      `disabled_item` and `disabled_button` take their markup from `core/admin` goldens
+      (`core/admin/src/testdata/menu_row_actions.html` already holds a disabled item).
 - **Step 13e — contract additions for the ports** (owner, 2026-11-20, on
   `docs/research/2026-11-20-2230-admin-ports-contract-gaps.md`; after 13d7d, before Step 14).
   The owner rulings on that doc's decisions:
