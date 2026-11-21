@@ -10,8 +10,9 @@
 //! the renders too: [`probe`] runs every `onclick` body a render draws ([`onclicks`]), as
 //! written, on its page mounted in a fresh harness mockup, and records what it does: each `.scrim`
 //! it appends, named by the `PAGES` function whose call appended it or by the body, each
-//! `UI.openMenu` call and each `PAGES.tab` assignment; a body that throws fails by name. No
-//! `onclick` text is parsed, so every spelling of a call is seen.
+//! `UI.openMenu` call, each `PAGES` key it assigns and each element it appends that no recorded
+//! opener draws; a body that throws fails by name. No `onclick` text is parsed, so every spelling
+//! of a call is seen.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -45,33 +46,36 @@ const SCRIPTS: &[&str] = &[
 // element it appends to the body is written as `<div class="menu">` around its HTML. With
 // `input.modal` no page mounts either: `PAGES[opener]` is called with the entry's arguments,
 // and the first element it appends to the body with the class `scrim` (`UI.modal`, which
-// `UI.confirm` calls) is written as `<div class="scrim">` around its HTML. The
-// global `UI` is an accessor that wraps the `defineMenu` and `openMenu` of whatever object a
-// script assigns to it, before any script can call or alias them, so every defined menu id is
-// recorded, and so is each `openMenu` call, through `UI` or an alias taken from it; with
-// `input.registry` no page mounts and the ids are written as JSON. With `input.force` the page
-// render sets `UI.state.force = "ok"` before it mounts, after `boot.js` has read `?state=`, so
-// every forceable panel and tile draws ok. With `input.probe`, a list of `onclick` bodies, each
-// body runs verbatim on its own fresh mockup with the page mounted as for a render (`this` a stub
-// element, `event` a click on it), after every function of `PAGES` is wrapped to record its name
-// while a call the body made to it runs, and every function of `REG` is wrapped to return
-// normally from the sentinel, so a body that re-renders the page goes on running; a body
-// assignment outside every `REG` call is an error. Timer callbacks queue, each with the outermost
-// `PAGES` call running when it was scheduled (an interval runs once), and run after the body,
-// for at most `MAX_TIMER_ROUNDS` rounds. From before the page mounts, `PAGES.tab` and each key of
-// `input.listed` are accessors on the `PAGES` object, so a write through any alias of it is seen:
-// one made while the body or a timer it scheduled runs outside every `REG` call records the value
-// (`tab`) or the key (a listed key) as the body's own, and one made by the mount, a `REG` call or
-// a timer scheduled inside one records the key as assigned by a render. A probe of a mockup whose `UI.openMenu` is not the recording wrapper (none,
-// or replaced after `UI` was set) fails. Each body is written as
-// `{scrims, menus, tabs, keys, loose, rendered}`:
-// one `scrims` entry per `.scrim` it appended to the body, the name of the `PAGES` function that
-// appended it or null when it was appended outside every such call; each `UI.openMenu` call as
-// `[id, arg]` (arg null when it has none); each `PAGES.tab` value; `keys` each listed key
-// assigned; `loose` the number of `.menu`
-// elements it appended outside every `UI.openMenu` call, which no call recorded; `rendered` each
-// of `tab` and the listed keys a render assigned, once each; or as `{error, rendered}` when it
-// threw.
+// `UI.confirm` calls) is written as `<div class="scrim">` around its HTML. The global `UI` is an
+// accessor that wraps every function of whatever object a script assigns to it, before any script
+// can call or alias them, so each call through `UI` or an alias taken from it is a drawer of what
+// it appends, every defined menu id is recorded, and so is each `openMenu` call; with
+// `input.registry` no page mounts and the ids are written as JSON. The global `PAGES` is an
+// accessor that hands out a proxy of the object a script assigns to it, so every key written
+// through it or an alias taken from it after the scripts load is recorded. With `input.force` the
+// page render sets `UI.state.force = "ok"` before it mounts, after `boot.js` has read `?state=`,
+// so every forceable panel and tile draws ok. Every recorder reads one attribution context
+// (`at`): the phase (`mount` while the page mounts, `render` inside a `REG` call of a probe,
+// `body` while a probed body runs), the outermost `PAGES` call running and the `UI` calls
+// running. A timer saves the context it was scheduled in and runs in it. With `input.probe`, a list
+// of `onclick` bodies, each body runs verbatim on its own fresh mockup with the page mounted as for
+// a render (`this` a stub element, `event` a click on it), after every function of `PAGES` is
+// wrapped to name itself the opener while a call the body made to it runs, and every function of
+// `REG` is wrapped to return normally from the sentinel, so a body that re-renders the page goes on
+// running; a body assignment outside every `REG` call is an error. The timers the mount scheduled
+// run before the body, the body's after it, for at most `MAX_TIMER_ROUNDS` rounds each. A `PAGES`
+// key written in the body phase is the body's own (`tab` with its value), one written in the mount
+// or render phase is assigned by a render. A probe of a mockup whose `UI.openMenu` is not the
+// recording wrapper (none, or replaced after `UI` was set) fails. Each body is written as
+// `{scrims, menus, tabs, keys, loose, excluded, rendered}`: one `scrims` entry per `.scrim` it
+// appended to the body, the name of the `PAGES` function that appended it or null when it was
+// appended outside every such call; each `UI.openMenu` call as `[id, arg]` (arg null when it has
+// none); each `PAGES.tab` value; `keys` each other `PAGES` key it assigned, once each; `loose`
+// each element appended to the body, the mount's included, that no `UI.openMenu` or `UI.popover`
+// call drew, that is no `.scrim` and whose drawers name none of `input.appenders`, with whether
+// the mount appended it and its drawers; `excluded` each of `input.appenders` that drew an
+// element, the innermost drawer named; `rendered` each of `tab` and the listed keys a render
+// assigned, once each; or as `{error, rendered}` when it threw.
 const HARNESS: &str = r#""use strict";
 const fs = require("fs"), vm = require("vm");
 const input = JSON.parse(process.env.ADMINDIFF_INPUT);
@@ -103,17 +107,23 @@ const hasClass = (el, name) => !!el && typeof el.className === "string" && el.cl
 const MAX_TIMER_ROUNDS = 10;
 // A click on `el`: its target and current target.
 const click = el => ({ stopPropagation: inert, preventDefault: inert, currentTarget: el, target: el });
-// A fresh mockup: `html` is what the body was last assigned, `appended` each element appended to
-// the body with the `PAGES` function running when it was (`opener`, null outside every recorded
-// call, `menu` whether a `UI.openMenu` call was running), `defined` each menu id `UI.defineMenu` was
-// called with, `menus` each `UI.openMenu` call as `[id, arg]`, `ctx` the context the scripts ran in.
+// The attribution context outside every recorded call: the scripts loading, the harness setting up.
+const LOADING = { phase: "load", opener: null, drawers: [] };
+// A fresh mockup: `html` is what the body was last assigned, `at` the attribution context every
+// recorder reads (`phase` load, mount, render or body; `opener` the outermost `PAGES` call running;
+// `drawers` each `UI` call running, as `UI.<name>`, outermost first), `appended` each element
+// appended to the body with the context it was appended in, `defined` each menu id
+// `UI.defineMenu` was called with, `menus` each `UI.openMenu` call as `[id, arg]` with its
+// context, `writes` each key the `PAGES` object was assigned outside the load with its value and
+// context, `pages` the object the scripts assigned to `PAGES`, `ctx` the context the scripts ran
+// in.
 function boot() {
-  const m = { html: null, appended: [], defined: [], menus: [], inMenu: 0, opener: null, ctx: null, timers: [], cleared: new Set(), probing: false, rendering: 0, fromRender: false };
+  const m = { html: null, appended: [], defined: [], menus: [], writes: [], at: LOADING, pages: null, ctx: null, timers: [], cleared: new Set() };
   const body = element();
   Object.defineProperty(body, "innerHTML", {
     get: () => m.html ?? "",
     set: v => {
-      if (m.probing && m.rendering === 0) throw new Error("assigned document.body.innerHTML outside every REG call");
+      if (m.at.phase === "body") throw new Error("assigned document.body.innerHTML outside every REG call");
       m.html = String(v);
       throw CAPTURED;
     },
@@ -121,17 +131,22 @@ function boot() {
   let timerId = 0;
   const schedule = (fn, ...args) => {
     timerId += 1;
-    if (typeof fn === "function") m.timers.push({ id: timerId, fn, args, opener: m.opener, render: m.rendering > 0 || m.fromRender });
+    if (typeof fn === "function") m.timers.push({ id: timerId, fn, args, at: m.at });
     return timerId;
   };
   const clear = id => { m.cleared.add(id); };
-  body.appendChild = el => { m.appended.push({ el, opener: m.opener, menu: m.inMenu > 0 }); };
+  body.appendChild = el => { m.appended.push({ el, at: m.at }); };
+  const createElement = tag => {
+    const el = element();
+    el.tagName = String(tag).toLowerCase();
+    return el;
+  };
   const ctx = {
     console, process, URL, URLSearchParams,
     setTimeout: schedule, clearTimeout: clear, setInterval: schedule, clearInterval: clear,
     document: {
       addEventListener: inert, querySelector: () => null, querySelectorAll: () => [],
-      createElement: element, body, documentElement: { dataset: {} }, title: "",
+      createElement, body, documentElement: { dataset: {} }, title: "",
     },
     localStorage: { getItem: () => null, setItem: inert, removeItem: inert },
     matchMedia: () => ({ matches: false, addEventListener: inert }),
@@ -146,19 +161,41 @@ function boot() {
     get: () => ui,
     set: v => {
       ui = v;
-      const define = v && v.defineMenu;
-      if (typeof define === "function") {
-        v.defineMenu = function (id, ...rest) { m.defined.push(String(id)); return define.call(this, id, ...rest); };
-      }
-      const open = v && v.openMenu;
-      if (typeof open === "function") {
-        v.openMenu = function (ev, id, arg, ...rest) {
-          m.menus.push([String(id), arg === undefined || arg === null ? null : String(arg)]);
-          m.inMenu += 1;
-          try { return open.call(this, ev, id, arg, ...rest); } finally { m.inMenu -= 1; }
+      if (!v || typeof v !== "object") return;
+      for (const name of Object.keys(v)) {
+        const fn = v[name];
+        if (typeof fn !== "function" || fn[RECORDS]) continue;
+        const drawer = "UI." + name;
+        const wrapped = function (...args) {
+          if (name === "defineMenu") m.defined.push(String(args[0]));
+          if (name === "openMenu") {
+            const arg = args[2];
+            m.menus.push({ call: [String(args[1]), arg === undefined || arg === null ? null : String(arg)], at: m.at });
+          }
+          const outer = m.at;
+          m.at = { ...outer, drawers: [...outer.drawers, drawer] };
+          try { return fn.apply(this, args); } finally { m.at = outer; }
         };
-        v.openMenu[RECORDS] = true;
+        wrapped[RECORDS] = true;
+        v[name] = wrapped;
       }
+    },
+  });
+  let pages;
+  Object.defineProperty(ctx, "PAGES", {
+    configurable: true, enumerable: true,
+    get: () => pages,
+    set: v => {
+      if (v === pages) return;
+      if (!v || typeof v !== "object") { pages = v; m.pages = null; return; }
+      m.pages = v;
+      pages = new Proxy(v, {
+        set: (target, k, value) => {
+          if (typeof k === "string" && m.at.phase !== "load") m.writes.push({ k, value, at: m.at });
+          target[k] = value;
+          return true;
+        },
+      });
     },
   });
   vm.createContext(ctx);
@@ -166,6 +203,21 @@ function boot() {
   m.ctx = ctx;
   return m;
 }
+// Runs the queued timers, each in the context it was scheduled in, until none is left; an
+// interval runs once. A render a timer runs that assigns the body returns there.
+function runTimers(m) {
+  for (let round = 0; m.timers.length; round++) {
+    if (round === MAX_TIMER_ROUNDS) throw new Error(`timers still pending after ${MAX_TIMER_ROUNDS} rounds`);
+    for (const timer of m.timers.splice(0)) {
+      if (m.cleared.has(timer.id)) continue;
+      const outer = m.at;
+      m.at = timer.at;
+      try { timer.fn(...timer.args); } catch (e) { if (e !== CAPTURED) throw e; } finally { m.at = outer; }
+    }
+  }
+}
+const message = e => String(e && e.message !== undefined ? e.message : e);
+const describe = el => `<${el.tagName || "element"}${el.className ? ` class="${el.className}"` : ""}>`;
 if (input.registry) {
   process.stdout.write(JSON.stringify(boot().defined));
 } else if (input.menu) {
@@ -195,44 +247,25 @@ if (input.registry) {
   const results = [];
   for (const onclick of input.probe) {
     const m = boot();
-    const pages = m.ctx.PAGES;
-    const tabs = [], keys = [], rendered = [];
-    for (const k of ["tab", ...input.listed]) {
-      let value = pages[k];
-      Object.defineProperty(pages, k, {
-        configurable: true, enumerable: true,
-        get: () => value,
-        set: v => {
-          value = v;
-          if (!m.probing || m.rendering > 0 || m.fromRender) {
-            if (!rendered.includes(k)) rendered.push(k);
-          } else if (k === "tab") {
-            tabs.push(String(v));
-          } else {
-            keys.push(k);
-          }
-        },
-      });
-    }
     mount(m);
-    m.appended.length = 0;
-    m.timers.length = 0;
     const reg = m.ctx.REG;
     for (const name of Object.keys(reg)) {
       const fn = reg[name];
       if (typeof fn !== "function") continue;
       reg[name] = function (...args) {
-        m.rendering += 1;
-        try { return fn.apply(this, args); } catch (e) { if (e !== CAPTURED) throw e; } finally { m.rendering -= 1; }
+        const outer = m.at;
+        m.at = { ...outer, phase: "render" };
+        try { return fn.apply(this, args); } catch (e) { if (e !== CAPTURED) throw e; } finally { m.at = outer; }
       };
     }
-    for (const name of Object.keys(pages)) {
-      const fn = pages[name];
+    for (const name of Object.keys(m.pages)) {
+      const fn = m.pages[name];
       if (typeof fn !== "function") continue;
-      pages[name] = function (...args) {
-        if (m.opener !== null) return fn.apply(this, args);
-        m.opener = name;
-        try { return fn.apply(this, args); } finally { m.opener = null; }
+      m.pages[name] = function (...args) {
+        if (m.at.opener !== null) return fn.apply(this, args);
+        const outer = m.at;
+        m.at = { ...outer, opener: name };
+        try { return fn.apply(this, args); } finally { m.at = outer; }
       };
     }
     const ui = m.ctx.UI;
@@ -240,27 +273,54 @@ if (input.registry) {
       process.stderr.write("the mockup's UI.openMenu is not the harness's recording wrapper: it is missing or was replaced after UI was set\n");
       process.exit(2);
     }
-    m.menus.length = 0;
     let error = null;
-    m.probing = true;
     try {
-      const clicked = element();
-      vm.runInContext(`(function (event) {\n${onclick}\n})`, m.ctx).call(clicked, click(clicked));
-      for (let round = 0; m.timers.length; round++) {
-        if (round === MAX_TIMER_ROUNDS) throw new Error(`timers still pending after ${MAX_TIMER_ROUNDS} rounds`);
-        for (const timer of m.timers.splice(0)) {
-          if (m.cleared.has(timer.id)) continue;
-          m.opener = timer.opener;
-          m.fromRender = timer.render;
-          try { timer.fn(...timer.args); } finally { m.opener = null; m.fromRender = false; }
-        }
-      }
+      runTimers(m);
     } catch (e) {
-      error = String(e && e.message !== undefined ? e.message : e);
+      error = `a timer the mount scheduled threw: ${message(e)}`;
     }
-    const scrims = m.appended.filter(a => hasClass(a.el, "scrim")).map(a => a.opener);
-    const loose = m.appended.filter(a => hasClass(a.el, "menu") && !a.menu).length;
-    results.push(error === null ? { scrims, menus: m.menus, tabs, keys, loose, rendered } : { error, rendered });
+    if (error === null) {
+      m.at = { phase: "body", opener: null, drawers: [] };
+      try {
+        const clicked = element();
+        vm.runInContext(`(function (event) {\n${onclick}\n})`, m.ctx).call(clicked, click(clicked));
+        runTimers(m);
+      } catch (e) {
+        error = message(e);
+      }
+      m.at = LOADING;
+    }
+    const rendered = [], tabs = [], keys = [];
+    for (const w of m.writes) {
+      if (w.at.phase !== "body") {
+        if ((w.k === "tab" || input.listed.includes(w.k)) && !rendered.includes(w.k)) rendered.push(w.k);
+      } else if (w.k === "tab") {
+        tabs.push(String(w.value));
+      } else if (!keys.includes(w.k)) {
+        keys.push(w.k);
+      }
+    }
+    if (error !== null) {
+      results.push({ error, rendered });
+      continue;
+    }
+    const scrims = [], loose = [], excluded = [];
+    for (const a of m.appended) {
+      const drawers = a.at.drawers;
+      if (drawers.includes("UI.openMenu") || drawers.includes("UI.popover")) continue;
+      if (hasClass(a.el, "scrim")) {
+        if (a.at.phase !== "mount") scrims.push(a.at.opener);
+        continue;
+      }
+      const named = [...drawers].reverse().find(d => input.appenders.includes(d));
+      if (named !== undefined) {
+        if (!excluded.includes(named)) excluded.push(named);
+        continue;
+      }
+      loose.push({ element: describe(a.el), mount: a.at.phase === "mount", drawers });
+    }
+    const menus = m.menus.filter(c => c.at.phase !== "mount").map(c => c.call);
+    results.push({ scrims, menus, tabs, keys, loose, excluded, rendered });
   }
   process.stdout.write(JSON.stringify(results));
 } else {
@@ -282,7 +342,8 @@ function mount(m) {
     }
     ui.state.force = "ok";
   }
-  try { m.ctx.REG.mount(page.meta, page.render); } catch (e) { if (e !== CAPTURED) throw e; }
+  m.at = { phase: "mount", opener: null, drawers: [] };
+  try { m.ctx.REG.mount(page.meta, page.render); } catch (e) { if (e !== CAPTURED) throw e; } finally { m.at = LOADING; }
   if (m.html === null) {
     process.stderr.write("REG.mount returned without assigning document.body.innerHTML\n");
     process.exit(2);
@@ -349,9 +410,23 @@ pub struct Probe {
     /// Every `.tab` element whose body assigned `PAGES.tab`, as the first value it assigned, in
     /// order, and the first of them drawn `.on`.
     pub tabs: DrawnTabs,
-    /// Each key of the `non_tab_keys` the probe was given that a `.tab` body assigned itself,
-    /// outside every render, once each, in order.
+    /// Each key of [`Declared::non_tab_keys`] a body assigned itself, outside every render, once
+    /// each, in order.
     pub non_tab_keys: Vec<String>,
+    /// Each of [`Declared::appenders`] that drew an element a body appended to the body, once
+    /// each, in order.
+    pub appenders: Vec<String>,
+}
+
+/// What a probe accepts beside the page map's `PAGES.tab` and the recorded openers: the
+/// `PAGES` keys other than `tab` an `onclick` body may assign (the production list's keys are
+/// [`crate::pages::NON_TAB_KEYS`]), and the `UI.<name>` calls that may append an element to the
+/// body that no recorded opener draws (the production list's names are
+/// [`crate::pages::EXCLUDED_MOCK_APPENDS`]).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Declared<'a> {
+    pub non_tab_keys: &'a [&'a str],
+    pub appenders: &'a [&'a str],
 }
 
 impl Probe {
@@ -383,19 +458,23 @@ impl Probe {
 /// Runs the `onclick` bodies (`scope`) the mockup render `doc` of `P.<key>` draws, each verbatim
 /// on its own fresh `P.<key>` mounted as `page` renders it (its search, forced ok when it
 /// forces; for a menu its host page's), and returns what they did; `host` names the render in
-/// errors. A body that throws fails with its host and its text, and so does one that appends a
-/// `.menu` outside every `UI.openMenu` call, which no call recorded, and so does a `.tab` whose
-/// body assigns no `PAGES.tab` and none of `non_tab_keys` (the production list's keys are
-/// [`crate::pages::NON_TAB_KEYS`]), a guarded assignment that does not run among them; one that
-/// re-renders the page is no error. A `.tab` with no `onclick` fails by host and element, as
-/// does a render (the mount, a re-render, a timer one schedules) that assigns `PAGES.tab` or a
-/// `non_tab_keys` key: only a body's own assignments say which tab it is.
-pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scope: Onclicks, non_tab_keys: &[&str]) -> Result<Probe> {
+/// errors. A body that throws fails with its host and its text; one that re-renders the page is
+/// no error. A body that assigns a `PAGES` key other than `tab` that is not in
+/// `declared.non_tab_keys` fails naming its host, the key and its text. An element appended to
+/// the body that no `UI.openMenu` or `UI.popover` call drew, that is no `.scrim` (a modal of
+/// its opener) and that no `UI` call in `declared.appenders` drew fails naming its host, the
+/// element and the body, or the mount when the mount appended it. A `.tab` whose body assigns no
+/// `PAGES.tab` and no declared key, a guarded assignment that does not run among them, fails, as
+/// does a `.tab` with no `onclick`, by host and element. A render (the mount, a timer it
+/// schedules, a re-render, a timer one schedules) that assigns `PAGES.tab` or a
+/// `declared.non_tab_keys` key fails: only a body's own assignments say which tab it is.
+pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scope: Onclicks, declared: &Declared) -> Result<Probe> {
     let bodies = match scope {
         Onclicks::All => onclicks(doc),
         Onclicks::Tabs => tab_onclicks(doc),
     };
-    let mut probe = Probe { key: key.to_string(), modals: Vec::new(), menus: Vec::new(), tabs: DrawnTabs::default(), non_tab_keys: Vec::new() };
+    let mut probe =
+        Probe { key: key.to_string(), modals: Vec::new(), menus: Vec::new(), tabs: DrawnTabs::default(), non_tab_keys: Vec::new(), appenders: Vec::new() };
     let mut failed = Vec::new();
     let mut bare = Vec::new();
     find_all(doc, &|e| e.has_class("tab") && e.attr("onclick").is_none(), &mut bare);
@@ -409,7 +488,7 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
         }
         return Ok(probe);
     }
-    let input = serde_json::json!({ "key": key, "search": page.mock_search(), "force": page.force, "probe": bodies, "listed": non_tab_keys });
+    let input = serde_json::json!({ "key": key, "search": page.mock_search(), "force": page.force, "probe": bodies, "listed": declared.non_tab_keys, "appenders": declared.appenders });
     let out = run_harness(repo, input, &format!("the onclicks {host} draws"))?;
     let results: Vec<serde_json::Value> = serde_json::from_str(&out).context("the harness's onclick probe is not a JSON list")?;
     if results.len() != bodies.len() {
@@ -465,15 +544,34 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
         let mut keys = Vec::new();
         for k in list("keys")? {
             let k = k.as_str().with_context(|| format!("a PAGES key onclick {body:?} drawn on {host} assigned was recorded as no string"))?;
+            if !declared.non_tab_keys.contains(&k) {
+                failed.push(format!("onclick {body:?} drawn on {host} assigns PAGES.{k}, which is neither PAGE_MAP's tab nor a NON_TAB_KEYS key"));
+            } else if !probe.non_tab_keys.iter().any(|n| n == k) {
+                probe.non_tab_keys.push(k.to_string());
+            }
             keys.push(k.to_string());
         }
         keys_of.push((body.as_str(), keys));
-        let loose = result
-            .get("loose")
-            .and_then(serde_json::Value::as_u64)
-            .with_context(|| format!("the probe of onclick {body:?} drawn on {host} has no loose count"))?;
-        if loose > 0 {
-            failed.push(format!("onclick {body:?} drawn on {host} appended a .menu outside every UI.openMenu call, so no menu id was recorded"));
+        for name in list("excluded")? {
+            let name = name.as_str().with_context(|| format!("an appender onclick {body:?} drawn on {host} used was recorded as no string"))?;
+            if !probe.appenders.iter().any(|a| a == name) {
+                probe.appenders.push(name.to_string());
+            }
+        }
+        for loose in list("loose")? {
+            let element = loose.get("element").and_then(serde_json::Value::as_str);
+            let mount = loose.get("mount").and_then(serde_json::Value::as_bool);
+            let drawers = loose.get("drawers").and_then(serde_json::Value::as_array);
+            let (Some(element), Some(mount), Some(drawers)) = (element, mount, drawers) else {
+                bail!("an element onclick {body:?} drawn on {host} appended was recorded with no element, mount or drawers");
+            };
+            let drawers: Vec<&str> = drawers.iter().filter_map(serde_json::Value::as_str).collect();
+            let calls = if drawers.is_empty() { "no UI call".to_string() } else { drawers.join(" > ") };
+            let by = if mount { format!("{host}: the mount") } else { format!("onclick {body:?} drawn on {host}") };
+            let error = format!("{by} appended {element} under {calls}, which no recorded opener drew and no EXCLUDED_MOCK_APPENDS entry names");
+            if !failed.contains(&error) {
+                failed.push(error);
+            }
         }
     }
     for k in &rendered {
@@ -485,11 +583,6 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
         let body = b.attr("onclick").unwrap_or_default();
         // A body that threw has failed already.
         let Some((_, keys)) = keys_of.iter().find(|(set, _)| *set == body) else { continue };
-        for k in keys {
-            if !probe.non_tab_keys.contains(k) {
-                probe.non_tab_keys.push(k.clone());
-            }
-        }
         let error = format!("onclick {body:?} drawn on {host} is a .tab that assigns no PAGES.tab and no NON_TAB_KEYS key");
         if keys.is_empty() && !tab_of.iter().any(|(set, _)| *set == body) && !failed.contains(&error) {
             failed.push(error);

@@ -104,11 +104,14 @@ USAGE:
             mapped too, and an EXCLUDED_MODALS reason its mockup host
             contradicts (a modal opener drawn there that is neither a page map modal entry nor
             an EXCLUDED_MOCK_MODALS entry of another action, or a host with no compared render)
-            fail. A .tab a probed render draws whose body assigns no PAGES.tab fails unless it
-            assigns a key in pages::NON_TAB_KEYS, and a NON_TAB_KEYS key no .tab of a compared
-            render assigns, or with no reason, is stale. A .tab with no onclick fails, and so
-            does a render (the mount, a re-render, or a timer one schedules) that assigns
-            PAGES.tab or a NON_TAB_KEYS key. A mock-only or portal-only repeat
+            fail. A probed body that assigns a PAGES key other than tab fails unless the key is
+            in pages::NON_TAB_KEYS, and an element appended to the page body that no
+            UI.openMenu or UI.popover call drew, that is no .scrim and that no
+            pages::EXCLUDED_MOCK_APPENDS call drew fails naming its host; an entry of either
+            list no compared render uses, with no reason, listed twice or malformed is stale. A
+            .tab whose body assigns no PAGES.tab and no NON_TAB_KEYS key fails, as does a .tab
+            with no onclick and a render (the mount, a timer it schedules, a re-render, or a
+            timer one schedules) that assigns PAGES.tab or a NON_TAB_KEYS key. A mock-only or portal-only repeat
             item (a table row, list item, ...) ends in (\"<hint>\"): its first badge's text and
             its first cell's, as \"badge · cell\". The hint is not part of the difference: an accept entry
             may keep or drop it and matches either way
@@ -200,11 +203,11 @@ pub fn validated_mockup(repo: &Path, lists: &pages::Lists) -> Result<std::collec
 /// The mockup render of `entry`'s page, parsed: `P.<key>` with the entry's search and tab,
 /// forced ok when the entry forces; a tab entry the render does not select fails, the selected
 /// tab read from what its `.tab` onclicks do in the harness ([`mock::Probe::check_tab`]).
-fn render_page(repo: &Path, non_tab_keys: &[&str], key: &str, entry: &pages::Page) -> Result<(String, Vec<html::Node>)> {
+fn render_page(repo: &Path, declared: &mock::Declared, key: &str, entry: &pages::Page) -> Result<(String, Vec<html::Node>)> {
     let rendered = mock::render(repo, key, &entry.mock_search(), entry.force)?;
     let doc = html::parse(&rendered).with_context(|| format!("parse the P.{key} render"))?;
     if let Some(tab) = entry.tab {
-        mock::probe(repo, &entry.id(), key, entry, &doc, mock::Onclicks::Tabs, non_tab_keys)?.check_tab(tab)?;
+        mock::probe(repo, &entry.id(), key, entry, &doc, mock::Onclicks::Tabs, declared)?.check_tab(tab)?;
     }
     Ok((rendered, doc))
 }
@@ -222,23 +225,25 @@ fn render_mock<'m>(repo: &Path, lists: &pages::Lists<'m>, key: &str, entry: &'m 
         let doc = html::parse(&rendered).with_context(|| format!("parse the PAGES.{} render", modal.opener))?;
         return Ok((rendered, doc, None));
     }
+    let (keys, appenders) = declared_names(lists);
+    let declared = mock::Declared { non_tab_keys: &keys, appenders: &appenders };
     let Some(menu) = entry.menu else {
-        let (rendered, doc) = render_page(repo, &non_tab_keys(lists), key, entry)?;
+        let (rendered, doc) = render_page(repo, &declared, key, entry)?;
         return Ok((rendered, doc, Some(entry)));
     };
     let host = entry.host();
     let host = lists.page_map.iter().find(|q| q.hosts(&host)).ok_or_else(|| anyhow!("PAGE_MAP {} has no host entry", entry.id()))?;
-    let (_, doc) = render_page(repo, &non_tab_keys(lists), key, host)?;
-    let probe = mock::probe(repo, &host.id(), key, host, &doc, mock::Onclicks::All, &non_tab_keys(lists))?;
+    let (_, doc) = render_page(repo, &declared, key, host)?;
+    let probe = mock::probe(repo, &host.id(), key, host, &doc, mock::Onclicks::All, &declared)?;
     let arg = probe.menu_arg(menu.mock)?;
     let rendered = mock::render_menu(repo, menu.mock, arg)?;
     let doc = html::parse(&rendered).with_context(|| format!("parse the {} menu render", menu.mock))?;
     Ok((rendered, doc, Some(host)))
 }
 
-/// The keys of `lists.non_tab_keys`.
-fn non_tab_keys<'a>(lists: &pages::Lists<'a>) -> Vec<&'a str> {
-    lists.non_tab_keys.iter().map(|(k, _)| *k).collect()
+/// The keys of `lists.non_tab_keys` and the calls of `lists.excluded_mock_appends`.
+fn declared_names<'a>(lists: &pages::Lists<'a>) -> (Vec<&'a str>, Vec<&'a str>) {
+    (lists.non_tab_keys.iter().map(|(k, _)| *k).collect(), lists.excluded_mock_appends.iter().map(|(n, _)| *n).collect())
 }
 
 /// The root `entry` is compared from in a mockup render (`mock`) or a crawl output: the
@@ -295,10 +300,13 @@ pub fn run_mock(repo: &Path, page: &str) -> Result<()> {
 /// page, tab and menu target ([`pages::Page::is_compared_target`]) draws (each `.scrim` an `onclick` body its
 /// render draws appends, run in the harness on its page, [`mock::probe`]; one that throws fails) are
 /// checked against the shell palette (`palette_onclick`), the page map's modal entries,
-/// `excluded_mock_modals` and the mockup facts of `excluded_modals` ([`pages::validate_mock_modals`]). A `.tab` a probed render draws whose body
-/// assigns no `PAGES.tab` fails unless it assigns a `non_tab_keys` key, and a `non_tab_keys` key
-/// that no `.tab` a compared target draws assigns is stale, as is one with no reason. `mockup` is what [`validated_mockup`]
-/// returned for `lists`. The mockup is the side checked: most portal pages are not ported yet.
+/// `excluded_mock_modals` and the mockup facts of `excluded_modals` ([`pages::validate_mock_modals`]). A probed body
+/// that assigns a `PAGES` key other than `tab` not in `non_tab_keys` fails, and so does an element
+/// appended to the body that no recorded opener and no `excluded_mock_appends` call drew
+/// ([`mock::probe`]); a `non_tab_keys` key no body of a compared target assigns is stale, as is
+/// an `excluded_mock_appends` call that drew no element such a body appended, and an entry of
+/// either with no reason, listed twice or malformed (`tab`, a call that is no `UI.<name>`).
+/// `mockup` is what [`validated_mockup`] returned for `lists`. The mockup is the side checked: most portal pages are not ported yet.
 fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections::BTreeMap<String, String>) -> Result<()> {
     let page_map = lists.page_map;
     let mut roots = Vec::new();
@@ -306,6 +314,9 @@ fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections
     let mut menus = Vec::new();
     let mut modals = Vec::new();
     let mut assigned: Vec<String> = Vec::new();
+    let mut appended: Vec<String> = Vec::new();
+    let (keys, appenders) = declared_names(lists);
+    let declared = mock::Declared { non_tab_keys: &keys, appenders: &appenders };
     for p in page_map {
         let key = mockup.get(p.page).ok_or_else(|| anyhow!("page {} has no mockup file", p.page))?;
         let (_, doc, page) = render_mock(repo, lists, key, p)?;
@@ -314,8 +325,9 @@ fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections
         // targets are every entry probed. A compared target is no modal, so it has a page; a
         // menu's onclicks run on its host page, rendered as its host entry is.
         if let (true, Some(page)) = (p.is_compared_target(), page) {
-            let probe = mock::probe(repo, &p.id(), key, page, &doc, mock::Onclicks::All, &non_tab_keys(lists))?;
+            let probe = mock::probe(repo, &p.id(), key, page, &doc, mock::Onclicks::All, &declared)?;
             assigned.extend(probe.non_tab_keys.iter().cloned());
+            appended.extend(probe.appenders.iter().cloned());
             if p.is_compared_host() {
                 menus.push((p.id(), probe.menu_ids()));
             }
@@ -330,16 +342,39 @@ fn validate_renders(repo: &Path, lists: &pages::Lists, mockup: &std::collections
     }
     skeleton::validate_repeats(&roots)?;
     let mut stale = Vec::new();
-    for (k, why) in lists.non_tab_keys {
+    for (i, (k, why)) in lists.non_tab_keys.iter().enumerate() {
+        if lists.non_tab_keys[..i].iter().any(|(e, _)| e == k) {
+            stale.push(format!("NON_TAB_KEYS lists PAGES.{k} twice"));
+        }
+        if *k == "tab" {
+            stale.push("NON_TAB_KEYS lists PAGES.tab, which is the page map's tab".to_string());
+        }
         if why.trim().is_empty() {
             stale.push(format!("NON_TAB_KEYS {k} has no reason"));
         }
         if !assigned.iter().any(|a| a == k) {
-            stale.push(format!("NON_TAB_KEYS lists PAGES.{k}, which no .tab a compared render draws assigns"));
+            stale.push(format!("NON_TAB_KEYS lists PAGES.{k}, which no onclick a compared render draws assigns"));
         }
     }
     if !stale.is_empty() {
         bail!("tab drift:\n  {}", stale.join("\n  "));
+    }
+    for (i, (name, why)) in lists.excluded_mock_appends.iter().enumerate() {
+        if lists.excluded_mock_appends[..i].iter().any(|(e, _)| e == name) {
+            stale.push(format!("EXCLUDED_MOCK_APPENDS lists {name} twice"));
+        }
+        if !name.strip_prefix("UI.").is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
+            stale.push(format!("EXCLUDED_MOCK_APPENDS lists {name:?}, which is no UI.<name> call"));
+        }
+        if why.trim().is_empty() {
+            stale.push(format!("EXCLUDED_MOCK_APPENDS {name} has no reason"));
+        }
+        if !appended.iter().any(|a| a == name) {
+            stale.push(format!("EXCLUDED_MOCK_APPENDS lists {name}, which drew no element an onclick a compared render draws appended"));
+        }
+    }
+    if !stale.is_empty() {
+        bail!("append drift:\n  {}", stale.join("\n  "));
     }
     pages::validate_tabs(&drawn, page_map, lists.excluded_tabs)?;
     pages::validate_menus(&menus, &mock::defined_menus(repo)?, page_map, lists.excluded_mock_menus)?;

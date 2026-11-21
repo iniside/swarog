@@ -352,14 +352,25 @@ pub const EXCLUDED_MOCK_MENUS: &[(&str, &str)] = &[
     ("lock", NO_LORE),
 ];
 
-/// The `PAGES` keys other than `tab` that a compared page's `.tab` buttons assign when they
-/// are not tabs of the page: a probed `.tab` whose body assigns no `PAGES.tab` fails unless it
-/// assigns one of these ([`crate::mock::probe`]), and a key no probed `.tab` assigns is stale. A
-/// key is added only when a compared page draws a `.tab` that is not a tab. Lore-repo's
-/// `PAGES.repoTab` (`UILayout/redesign/assets/pages-lore.js`, `P.loreRepo`) joins when the lore
-/// pages are compared; lore-repo is excluded with `NO_LORE`, so no compared page draws one.
-/// Each key comes with the reason its `.tab` is not a tab of the page.
-pub const NON_TAB_KEYS: &[(&str, &str)] = &[];
+/// The `PAGES` keys other than `tab` (the page map's tab, [`Page::tab`]) that an `onclick` body
+/// of a compared page, tab or menu target assigns, whatever element draws it, each with the
+/// reason it is no page map tab: a body that assigns a key not listed here fails
+/// ([`crate::mock::probe`]), and a key no such body assigns is stale, as is one with no reason,
+/// one listed twice and `tab` itself.
+pub const NON_TAB_KEYS: &[(&str, &str)] = &[(
+    "mailTab",
+    "mail's queue counters (.q-count, pages-platform.js P.mail) switch the outbox panel's queue state in place; the portal draws those states as the outbox panel's own tabs (modules/mail/src/admin.rs TABS), not as page tabs, and the compared mail page is the default attention state",
+)];
+
+/// The `UI.<name>` calls that append an element to the body that no recorded opener draws
+/// (`UI.openMenu`, `UI.popover`, a `.scrim` modal), each with the reason the element is not
+/// compared: an element no recorded opener and no listed call drew fails ([`crate::mock::probe`]),
+/// and an entry that drew no element a compared render's body appended is stale, as is one with no
+/// reason, one listed twice and one that is no `UI.<name>`.
+pub const EXCLUDED_MOCK_APPENDS: &[(&str, &str)] = &[(
+    "UI.toast",
+    "a transient status line (bundle.js toast) that reports a mockup action's outcome and removes itself after 2.6 s; it is no page, menu or modal the diff compares",
+)];
 
 /// What opened a `.scrim` an `onclick` body of a mockup render appended in the harness: the
 /// `PAGES` function whose call by the body appended it, or the body itself, verbatim, when it was
@@ -487,6 +498,7 @@ pub struct Lists<'a> {
     pub excluded_mock_menus: &'a [(&'a str, &'a str)],
     pub excluded_mock_modals: &'a [MockModalExclusion<'a>],
     pub non_tab_keys: &'a [(&'a str, &'a str)],
+    pub excluded_mock_appends: &'a [(&'a str, &'a str)],
     /// The `onclick` body of the shell palette's mockup opener, [`PALETTE_ONCLICK`] in production.
     pub palette_onclick: &'a str,
 }
@@ -501,6 +513,7 @@ pub const LISTS: Lists<'static> = Lists {
     excluded_mock_menus: EXCLUDED_MOCK_MENUS,
     excluded_mock_modals: EXCLUDED_MOCK_MODALS,
     non_tab_keys: NON_TAB_KEYS,
+    excluded_mock_appends: EXCLUDED_MOCK_APPENDS,
     palette_onclick: PALETTE_ONCLICK,
 };
 
