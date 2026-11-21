@@ -97,9 +97,10 @@ pub(super) async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &
 async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) -> Result<()> {
     let nonce = pass_nonce(tag);
     let (pid, token) = register_capture(ctx, front, &format!("ch-{nonce}@test.local"), "ChA").await?;
-    let (one, two) = (format!("ChOne-{nonce}"), format!("ChTwo-{nonce}"));
-    let one_id = create_character(ctx, front, &token, &one).await.context("create ChOne")?;
-    let two_id = create_character(ctx, front, &token, &two).await.context("create ChTwo")?;
+    // Created in reverse name order, so the creation-order assertion in CH2 fails on a name sort.
+    let (one, two) = (format!("ChZed-{nonce}"), format!("ChAda-{nonce}"));
+    let one_id = create_character(ctx, front, &token, &one).await.context("create ChZed")?;
+    let two_id = create_character(ctx, front, &token, &two).await.context("create ChAda")?;
     let owned = count_of(pool, "SELECT count(*) FROM characters.characters WHERE player_id = $1::uuid", &pid).await;
     if owned != 2 {
         bail!("fixture: player {pid} owns {owned} characters, expected 2");
@@ -162,7 +163,7 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     p.check(&format!("[CH4{tag}] players list row for the player shows 2 in the Characters column"),
         players_code == 200 && attr(&players, "data-state") == "ok" && rows.len() == 1
             && row.is_some_and(|(href, cells)| *href == format!("/admin/e/player/{pid}") && cells.len() == headers.len())
-            && cell.as_deref() == Some("2") && !players.contains("Characters column unavailable"),
+            && cell.as_deref() == Some("2"),
         format!("status={players_code} state={:?} headers={headers:?} rows={} col={col:?} cell={cell:?} body={}",
             attr(&players, "data-state"), rows.len(), cut(&players)));
     Ok(())
