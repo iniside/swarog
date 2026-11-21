@@ -36,6 +36,7 @@ mod idp;
 mod party_checks;
 mod pushws;
 mod storage_checks;
+mod wallet_ledger_checks;
 
 #[cfg(test)]
 mod tests;
@@ -422,9 +423,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     // `into_ops` -> `Error::invalid(msg)` whose `Display` is the bare message — so parity is
     // a property of two mappings, not of one. Same grant-then-over-revoke pair, same verdict
     // text, same unchanged balance, driven through the monolith's in-process submit closure.
-    let wl6m_player: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
-        .fetch_one(pool)
-        .await?;
+    let wl6m_player = grant_target(ctx, &m).await?;
     let (csrf, idem_grant, _) = wallet_form(&jar, &m).await?;
     let wl6m_grant = jar
         .post(format!("{m}/admin/wallet"))
@@ -509,9 +508,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
         Err(e) => p.check("[NT1m] monolith create_guest for the inbox read", false, format!("{e:#}")),
     }
 
-    let nt4m_player: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
-        .fetch_one(pool)
-        .await?;
+    let nt4m_player = grant_target(ctx, &m).await?;
     let (nt4m_csrf, nt4m_idem, _) = wallet_form(&jar, &m).await?;
     let nt4m = jar
         .post(format!("{m}/admin/wallet"))
@@ -582,6 +579,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     // edge, so the receipt-idempotency replay `[DL2e]` is split-only by construction.
     storage_checks::assertions(ctx, pool, p, &m, "m").await?;
     characters_admin_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
+    wallet_ledger_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
     deletion_assertions(ctx, pool, p, &m, None, "m").await?;
     party_checks::deletion_assertion(ctx, pool, p, &m, "m").await?;
 
@@ -3811,9 +3809,7 @@ async fn push_assertions(
         if let Some(client) = ph5_watcher {
             client.disconnect().await;
         }
-        let ph6_player: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
-            .fetch_one(pool)
-            .await?;
+        let ph6_player = grant_target(ctx, base).await?;
         let (ph6_csrf, ph6_idem, _) = wallet_form(admin, base).await?;
         let ph6_grant = admin
             .post(format!("{base}/admin/wallet"))
@@ -5555,12 +5551,10 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         );
     }
 
-    // The admin money assertions use a SYNTHETIC player id (wallet keys balances by uuid and
-    // holds no FK to accounts): a registered player would ALSO receive [WL7]'s starter grant,
-    // and [WL5]'s event count would then no longer be exactly the grants made here.
-    let wl_player: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
-        .fetch_one(pool)
-        .await?;
+    // The admin money assertions grant to a fresh GUEST: the portal refuses a grant to a uuid
+    // naming no player, and a registered player would ALSO receive [WL7]'s starter grant, so
+    // [WL5]'s event count would no longer be exactly the grants made here.
+    let wl_player = grant_target(ctx, &g).await?;
 
     // [WL3] THE cross-process mutating proof: the grant is applied by wallet-svc, in its own
     // process, from a form rendered and posted by admin-svc.
@@ -5957,11 +5951,9 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     // wallet-svc, which appends `wallet.changed` to the shared log inside its own
     // transaction; notifications-svc — a different OS process, with its own subscription
     // cursor — pulls it and writes the inbox row in the DELIVERY transaction. Neither
-    // process knows the other exists. A synthetic player id keeps this independent of
+    // process knows the other exists. A fresh guest of its own keeps this independent of
     // [WL3]/[WL4]'s balances, and the wait is a bounded poll on the ROW, never a sleep.
-    let nt4_player: String = sqlx::query_scalar("SELECT gen_random_uuid()::text")
-        .fetch_one(pool)
-        .await?;
+    let nt4_player = grant_target(ctx, &g).await?;
     let (nt4_csrf, nt4_idem, _) = wallet_form(&cfg, &g).await?;
     let nt4 = cfg
         .post(format!("{g}/admin/wallet"))
@@ -6145,6 +6137,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
 
     storage_checks::assertions(ctx, pool, p, &g, "").await?;
     characters_admin_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
+    wallet_ledger_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
 
     // --- Parties over the multiplexed socket: every invoke is Remote-dispatched from
     // gateway-svc to party-svc, whose post-commit pushes cross the backplane back to the
@@ -6975,6 +6968,17 @@ async fn federated_status(ctx: &Ctx, base: &str, provider: &str, credential: &st
     )
     .await?;
     Ok(code)
+}
+
+/// A fresh guest's player id, the target of an operator wallet grant: a real player (the portal
+/// refuses a grant to a uuid naming none) that receives no starter grant ([WL8]), so the grants
+/// made to it are its only movements and its only inbox rows.
+async fn grant_target(ctx: &Ctx, base: &str) -> Result<String> {
+    let (code, guest) = create_guest(ctx, base).await?;
+    if code != 201 || guest.player_id.is_empty() {
+        bail!("create a guest to grant to at {base}: status {code}");
+    }
+    Ok(guest.player_id)
 }
 
 async fn create_guest(ctx: &Ctx, base: &str) -> Result<(u16, Guest)> {

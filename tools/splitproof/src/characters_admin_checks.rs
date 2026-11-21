@@ -4,7 +4,7 @@ use sqlx::PgPool;
 use crate::{count_of, create_character, decode_html_attr, pass_nonce, register_capture, Ctx, Proof};
 
 /// Every value of ` {key}="…"` in `html`, decoded as a browser reads it.
-fn attr_values(html: &str, key: &str) -> Vec<String> {
+pub(super) fn attr_values(html: &str, key: &str) -> Vec<String> {
     let pat = format!(" {key}=\"");
     let mut out = Vec::new();
     let mut rest = html;
@@ -18,7 +18,7 @@ fn attr_values(html: &str, key: &str) -> Vec<String> {
 }
 
 /// The first value of ` {key}="…"` in `html`, empty when it has none.
-fn attr(html: &str, key: &str) -> String {
+pub(super) fn attr(html: &str, key: &str) -> String {
     attr_values(html, key).into_iter().next().unwrap_or_default()
 }
 
@@ -49,7 +49,7 @@ fn first_inner<'a>(html: &'a str, tag: &str) -> &'a str {
 }
 
 /// `html` with its tags stripped, entities decoded and whitespace collapsed.
-fn text(html: &str) -> String {
+pub(super) fn text(html: &str) -> String {
     let mut out = String::new();
     let mut in_tag = false;
     for ch in html.chars() {
@@ -64,7 +64,7 @@ fn text(html: &str) -> String {
 }
 
 /// One table's header labels and its body rows' cells (raw inner html), in order.
-fn table(html: &str) -> (Vec<String>, Vec<(String, Vec<String>)>) {
+pub(super) fn table(html: &str) -> (Vec<String>, Vec<(String, Vec<String>)>) {
     let headers = elements(first_inner(html, "thead"), "th").iter().map(|(_, h)| text(h)).collect();
     let rows = elements(first_inner(html, "tbody"), "tr")
         .iter()
@@ -73,11 +73,11 @@ fn table(html: &str) -> (Vec<String>, Vec<(String, Vec<String>)>) {
     (headers, rows)
 }
 
-fn cut(body: &str) -> String {
+pub(super) fn cut(body: &str) -> String {
     body.chars().take(400).collect()
 }
 
-async fn get(admin: &reqwest::Client, url: &str) -> Result<(u16, String)> {
+pub(super) async fn get(admin: &reqwest::Client, url: &str) -> Result<(u16, String)> {
     let r = admin.get(url).send().await.with_context(|| format!("GET {url}"))?;
     Ok((r.status().as_u16(), r.text().await.unwrap_or_default()))
 }

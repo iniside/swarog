@@ -34,3 +34,31 @@ fn stale_listener_probe_bails_when_the_port_is_already_bound() {
     drop(listener);
     super::ensure_no_stale_listener("probe-svc", port).expect("freed port must pass");
 }
+
+/// [LG1]'s once-wrong branch: a Player cell whose label never arrived. The portal then draws
+/// the plain id as the cell text (core admin `ref_cell`); the predicate must refuse it, and
+/// accept the same cell drawing the handle, with the uuid left only in the link. The markup is
+/// the portal's user cell (`primitives.html.tmpl` `cell_one`), `/` escaped in the href as
+/// minijinja draws it.
+#[test]
+fn ledger_player_cell_refuses_an_unlabelled_uuid() {
+    use super::wallet_ledger_checks::player_cell_ok;
+    let pid = "0b6f3c2e-7a41-4d8e-9c55-1f2a3b4c5d6e";
+    let cell = |href: &str, initials: &str, value: &str| {
+        format!(
+            r#"<a href="{href}" style="color:inherit"><span class="user-cell"><span class="avatar" style="background:#6b8afd">{initials}</span><span>{value}</span></span></a>"#
+        )
+    };
+    let link = format!("&#x2f;admin&#x2f;e&#x2f;player&#x2f;{pid}");
+
+    assert!(player_cell_ok(&cell(&link, "L", "Ledger#1812"), pid, "Ledger#1812"));
+    // The unlabelled draw: the uuid as the text.
+    assert!(!player_cell_ok(&cell(&link, "0", pid), pid, "Ledger#1812"));
+    // Another player's label, a link to another player, or no link at all is no pass either.
+    assert!(!player_cell_ok(&cell(&link, "L", "Ledger#0001"), pid, "Ledger#1812"));
+    assert!(!player_cell_ok(&cell("&#x2f;admin&#x2f;e&#x2f;player&#x2f;other", "L", "Ledger#1812"), pid, "Ledger#1812"));
+    assert!(!player_cell_ok(r#"<span class="user-cell"><span>Ledger#1812</span></span>"#, pid, "Ledger#1812"));
+    // The uuid outside the link, even in markup only, is refused.
+    let leaked = cell(&link, "L", "Ledger#1812").replace(r#"class="user-cell""#, &format!(r#"class="user-cell" title="{pid}""#));
+    assert!(!player_cell_ok(&leaked, pid, "Ledger#1812"));
+}
