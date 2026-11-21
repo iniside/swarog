@@ -9,10 +9,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use charactersapi::Character;
 use controlplane::{
-    fake_hash, Align, AttentionItem, Cell, CellKind, Column, ContributionDecl, DataTable, EntityKindDecl,
-    InvokeCall, InvokeOutcome, Link, Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role,
-    Row, SearchHit, SearchQuery, Severity, DEFAULT_PANEL_DEADLINE_MS, EVENT_LOG_PAGE, EVENT_LOG_PAGE_MODULE,
-    MAX_PANEL_REFS, PAGE_PARAM_SEARCH,
+    fake_hash, Align, Cell, CellKind, Column, ContributionDecl, DataTable, EntityKindDecl, InvokeCall, InvokeOutcome,
+    Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery,
+    DEFAULT_PANEL_DEADLINE_MS, MAX_PANEL_REFS,
 };
 use opsapi::Error;
 
@@ -187,31 +186,9 @@ pub(crate) fn label_cells(refs: &[String], names: &BTreeMap<String, String>) -> 
     PanelBody::new(Primitive::ColumnCells(cells))
 }
 
-/// The "Character purges pending" attention item: none at 0 pending, so the dashboard draws
-/// nothing, otherwise one warn item naming the backlog and the oldest tombstone's day.
-/// `oldest` is `pending_purges`' `created_at` text, whose first 10 chars are the date.
+/// The "Character purges pending" attention item over characters' purge sweep backlog.
 pub(crate) fn purges_body(pending: i64, oldest: &str) -> PanelBody {
-    if pending == 0 {
-        return PanelBody::new(Primitive::AttentionItems(Vec::new()));
-    }
-    let players = if pending == 1 { "1 player".to_string() } else { format!("{pending} players") };
-    let day = oldest.get(..10).unwrap_or(oldest);
-    PanelBody::new(Primitive::AttentionItems(vec![AttentionItem {
-        severity: Severity::Warn,
-        title: "Character purges pending".to_string(),
-        text: format!("{players} awaiting sweep · oldest {day}"),
-        // The sweep is this subscription's handler, so its lag and pause state explain a backlog.
-        link: Link::Page {
-            module: EVENT_LOG_PAGE_MODULE.to_string(),
-            page: EVENT_LOG_PAGE.to_string(),
-            params: BTreeMap::from([(
-                PAGE_PARAM_SEARCH.to_string(),
-                crate::projection::PURGE_SWEEP_SUB.id.to_string(),
-            )]),
-        },
-        action_label: "Events".to_string(),
-        since: String::new(),
-    }]))
+    controlplane::purge_backlog_body("Character purges pending", pending, oldest, crate::projection::PURGE_SWEEP_SUB.id)
 }
 
 fn character_row(c: &Character) -> Row {

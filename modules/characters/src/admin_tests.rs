@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use charactersapi::Character;
 use controlplane::{
-    Align, CellKind, EntityRef, Link, PanelBody, PanelQuery, Point, Primitive, Provider as _, Severity,
+    Align, CellKind, EntityRef, Link, PanelBody, PanelQuery, Point, Primitive, Provider as _,
     EVENT_LOG_PAGE, EVENT_LOG_PAGE_MODULE, MAX_PANEL_REFS, PAGE_PARAM_SEARCH,
 };
 use opsapi::Status;
@@ -182,34 +182,20 @@ fn label_answers_only_the_input_refs_the_names_know_keyed_as_given() {
     assert_eq!(cells, [(upper.as_str(), "Alpha", CellKind::Text)], "an unknown ref draws no cell");
 }
 
+/// The drawing is `controlplane::purge_backlog_body`'s; this pins what characters passes it.
 #[test]
-fn purges_draw_nothing_at_0_pending() {
-    let items = match purges_body(0, "").primitive {
+fn purges_name_characters_and_link_its_own_sweep() {
+    let items = match purges_body(3, "2026-11-20 08:15:42.123+00").primitive {
         Primitive::AttentionItems(items) => items,
         _ => panic!("the purges item answers AttentionItems"),
     };
-    assert!(items.is_empty(), "no backlog draws no attention item");
-}
-
-#[test]
-fn purges_draw_one_warn_item_with_the_backlog_and_the_oldest_day() {
-    let body = |n| match purges_body(n, "2026-11-20 08:15:42.123+00").primitive {
-        Primitive::AttentionItems(items) => items,
-        _ => panic!("the purges item answers AttentionItems"),
-    };
-    let items = body(3);
-    assert_eq!(items.len(), 1, "a backlog is one item");
-    let item = &items[0];
-    assert_eq!(item.severity, Severity::Warn);
-    assert_eq!(item.title, "Character purges pending");
-    assert_eq!(item.text, "3 players awaiting sweep · oldest 2026-11-20");
+    assert_eq!(items[0].title, "Character purges pending");
     assert!(matches!(
-        &item.link,
+        &items[0].link,
         Link::Page { module, page, params }
             if module == EVENT_LOG_PAGE_MODULE && page == EVENT_LOG_PAGE
                 && params.get(PAGE_PARAM_SEARCH).map(String::as_str) == Some("characters.purge-on-scheduler.v1")
     ));
-    assert_eq!(body(1)[0].text, "1 player awaiting sweep · oldest 2026-11-20");
 }
 
 #[test]

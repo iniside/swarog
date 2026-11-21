@@ -1,6 +1,6 @@
 # Admin
 
-Last updated: 2026-11-21
+Last updated: 2026-11-22
 
 ## In progress
 
@@ -121,8 +121,8 @@ _None._
 - [ ] **The character kind's icon is unchecked against the mockup**
   `swords` (also the summary fact's icon); nothing draws the kind's icon yet.
 - [ ] **Purges-pending date and count follow the session's formatting**
-  `purges_body` (`modules/characters/src/admin.rs:194-218`) takes the first 10 chars of
-  `min(created_at)::text` (DateStyle and time-zone dependent) and prints the count without
+  `controlplane::purge_backlog_body` (`core/controlplane/src/lib.rs:395`, drawing characters'
+  and wallet's item) takes the first 10 chars of `min(created_at)::text` (DateStyle and time-zone dependent) and prints the count without
   thousands separators.
 - [ ] **No database test reads the purges-pending item back**
   Nothing plants a `characters.purged_players` row and reads the item; such a test must be

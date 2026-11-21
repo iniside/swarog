@@ -1058,26 +1058,19 @@ fn attention(body: PanelBody) -> Vec<controlplane::AttentionItem> {
     }
 }
 
+/// The drawing is `controlplane::purge_backlog_body`'s; this pins what wallet passes it.
 #[test]
-fn purges_draw_nothing_at_zero_and_one_warn_item_linking_the_sweep_otherwise() {
-    assert!(attention(purges_body(0, "")).is_empty());
-    let one = attention(purges_body(1, "2026-11-20 08:00:00.123+00"));
-    assert_eq!(one[0].text, "1 player awaiting sweep · oldest 2026-11-20");
+fn purges_name_wallet_and_link_its_own_sweep() {
     let items = attention(purges_body(3, "2026-11-19 23:59:59+00"));
-    assert_eq!(items.len(), 1);
-    let item = &items[0];
-    assert_eq!(item.severity, controlplane::Severity::Warn);
-    assert_eq!(item.title, "Wallet purges pending");
-    assert_eq!(item.text, "3 players awaiting sweep · oldest 2026-11-19");
-    assert_eq!(item.action_label, "Events");
+    assert_eq!(items[0].title, "Wallet purges pending");
     assert_eq!(
-        item.link,
+        items[0].link,
         Link::Page {
             module: controlplane::EVENT_LOG_PAGE_MODULE.to_string(),
             page: controlplane::EVENT_LOG_PAGE.to_string(),
             params: BTreeMap::from([(
                 controlplane::PAGE_PARAM_SEARCH.to_string(),
-                crate::projection::PURGE_SWEEP_SUB.id.to_string(),
+                "wallet.purge-on-scheduler.v1".to_string(),
             )]),
         }
     );
