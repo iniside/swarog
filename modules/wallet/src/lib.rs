@@ -118,8 +118,9 @@ fn dev_seed_explicitly_on() -> bool {
     )
 }
 
-/// The currency the admin portal headlines for a player (the summary fact) when the
-/// composition root names none: the dev seed's hard currency.
+/// The currency the admin portal headlines (the player summary fact, the players-list
+/// balance column and the dashboard spent tile) when the composition root names none:
+/// the dev seed's hard currency.
 pub const DEFAULT_HEADLINE_CURRENCY: &str = "gems";
 
 pub struct WalletModule {
@@ -142,8 +143,8 @@ impl WalletModule {
         }
     }
 
-    /// Names the catalog currency the admin portal headlines for a player (the summary
-    /// fact's "N <code>"). Config as code: a composition root sets it, every process hosting
+    /// Names the catalog currency the admin portal headlines: the summary fact's
+    /// "N <code>", the players-list column label and the spent tile's title. Config as code: a composition root sets it, every process hosting
     /// wallet must set the same value, and an empty or over-cap code fails `register`. The
     /// code need not be in the catalog: a missing row draws a 0 balance.
     pub fn with_headline_currency(mut self, code: impl Into<String>) -> WalletModule {
