@@ -1,6 +1,6 @@
 //! The characters control-plane provider: the Characters tab's data mapping, the summary fact,
-//! the tab count, the list column and the character label (pure), the refs cap, and the panels
-//! against the live database.
+//! the tab count, the list column, the character label and the purges item (pure), the refs cap,
+//! and the panels against the live database.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use charactersapi::Character;
 use controlplane::{
-    Align, CellKind, EntityRef, PanelBody, PanelQuery, Point, Primitive, Provider as _, MAX_PANEL_REFS,
+    Align, CellKind, EntityRef, Link, PanelBody, PanelQuery, Point, Primitive, Provider as _, Severity,
+    MAX_PANEL_REFS, PAGE_PARAM_SEARCH,
 };
 use opsapi::Status;
 use sqlx::postgres::PgPoolOptions;
@@ -17,7 +18,7 @@ use testdb::test_pool;
 
 use super::{
     characters_body, column_cells, count_cell, fact_text, fake_level, fake_region, label_cells, manifest,
-    CharactersAdmin,
+    purges_body, CharactersAdmin,
 };
 use crate::store::Store;
 use crate::tests::{cleanup, unique_player, wired};
@@ -182,6 +183,36 @@ fn label_answers_only_the_input_refs_the_names_know_keyed_as_given() {
 }
 
 #[test]
+fn purges_draw_nothing_at_0_pending() {
+    let items = match purges_body(0, "").primitive {
+        Primitive::AttentionItems(items) => items,
+        _ => panic!("the purges item answers AttentionItems"),
+    };
+    assert!(items.is_empty(), "no backlog draws no attention item");
+}
+
+#[test]
+fn purges_draw_one_warn_item_with_the_backlog_and_the_oldest_day() {
+    let body = |n| match purges_body(n, "2026-11-20 08:15:42.123+00").primitive {
+        Primitive::AttentionItems(items) => items,
+        _ => panic!("the purges item answers AttentionItems"),
+    };
+    let items = body(3);
+    assert_eq!(items.len(), 1, "a backlog is one item");
+    let item = &items[0];
+    assert_eq!(item.severity, Severity::Warn);
+    assert_eq!(item.title, "Character purges pending");
+    assert_eq!(item.text, "3 players awaiting sweep · oldest 2026-11-20");
+    assert!(matches!(
+        &item.link,
+        Link::Page { module, page, params }
+            if module == "core.events" && page == "events"
+                && params.get(PAGE_PARAM_SEARCH).map(String::as_str) == Some("characters.purge-on-scheduler.v1")
+    ));
+    assert_eq!(body(1)[0].text, "1 player awaiting sweep · oldest 2026-11-20");
+}
+
+#[test]
 fn manifest_declares_the_tab_fact_count_and_list_column_and_no_write() {
     let m = manifest();
     assert!(!m.writes && m.actions.is_empty(), "characters is not a writer");
@@ -195,6 +226,7 @@ fn manifest_declares_the_tab_fact_count_and_list_column_and_no_write() {
             ("tab.count", 0, ""),
             ("column.count", 10, ""),
             ("label.character", 0, ""),
+            ("attention.purges", 61, ""),
         ]
     );
     assert!(matches!(
@@ -213,6 +245,8 @@ fn manifest_declares_the_tab_fact_count_and_list_column_and_no_write() {
             if kind == "player" && label == "Characters"
     ));
     assert!(matches!(&m.contributions[4].point, Point::EntityLabel { kind } if kind == "character"));
+    assert!(matches!(&m.contributions[5].point, Point::DashboardAttention));
+    assert_eq!(m.contributions[5].title, "Character purges pending");
     let kinds: Vec<(&str, &str, &str)> =
         m.entity_kinds.iter().map(|k| (k.kind.as_str(), k.label.as_str(), k.icon.as_str())).collect();
     assert_eq!(kinds, [("character", "Character", "swords")], "characters owns the kind it labels");

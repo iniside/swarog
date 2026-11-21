@@ -1,7 +1,7 @@
 //! The `characters` control-plane provider: the player entity's Characters tab, its
 //! "N characters" summary fact, the tab's count, the players list's Characters column, and
-//! the `character` entity kind with its label. Characters is not a writer: it declares no
-//! action and `writes: false`.
+//! the `character` entity kind with its label, and the dashboard's "Character purges pending"
+//! attention item. Characters is not a writer: it declares no action and `writes: false`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -9,9 +9,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use charactersapi::Character;
 use controlplane::{
-    fake_hash, Align, Cell, CellKind, Column, ContributionDecl, DataTable, EntityKindDecl, InvokeCall,
-    InvokeOutcome, Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit,
-    SearchQuery, DEFAULT_PANEL_DEADLINE_MS, MAX_PANEL_REFS,
+    fake_hash, Align, AttentionItem, Cell, CellKind, Column, ContributionDecl, DataTable, EntityKindDecl,
+    InvokeCall, InvokeOutcome, Link, Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role,
+    Row, SearchHit, SearchQuery, Severity, DEFAULT_PANEL_DEADLINE_MS, MAX_PANEL_REFS, PAGE_PARAM_SEARCH,
 };
 use opsapi::Error;
 
@@ -29,6 +29,12 @@ const FACT_COUNT: &str = "fact.count";
 const TAB_COUNT: &str = "tab.count";
 const COLUMN_COUNT: &str = "column.count";
 const LABEL: &str = "label.character";
+const ATTENTION_PURGES: &str = "attention.purges";
+
+/// The Events page the purges item links to, filtered to the sweep's subscription: the
+/// sweep is that subscription's handler, so its lag and pause state explain a backlog.
+const EVENTS_MODULE: &str = "core.events";
+const EVENTS_PAGE: &str = "events";
 
 /// What the Last played cell draws: characters stores no last-played time.
 const NO_LAST_PLAYED: &str = "—";
@@ -72,6 +78,12 @@ impl CharactersAdmin {
     async fn column(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
         let counts = self.counts(&req.refs).await?;
         Ok(column_cells(&req.refs, &counts))
+    }
+
+    /// The purge backlog as the dashboard's attention item.
+    async fn purges(&self) -> Result<PanelBody, Error> {
+        let (pending, oldest) = self.svc.store.pending_purges().await.map_err(crate::internal)?;
+        Ok(purges_body(pending, &oldest))
     }
 
     async fn characters(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
@@ -179,6 +191,32 @@ pub(crate) fn label_cells(refs: &[String], names: &BTreeMap<String, String>) -> 
     PanelBody::new(Primitive::ColumnCells(cells))
 }
 
+/// The "Character purges pending" attention item: none at 0 pending, so the dashboard draws
+/// nothing, otherwise one warn item naming the backlog and the oldest tombstone's day.
+/// `oldest` is `pending_purges`' `created_at` text, whose first 10 chars are the date.
+pub(crate) fn purges_body(pending: i64, oldest: &str) -> PanelBody {
+    if pending == 0 {
+        return PanelBody::new(Primitive::AttentionItems(Vec::new()));
+    }
+    let players = if pending == 1 { "1 player".to_string() } else { format!("{pending} players") };
+    let day = oldest.get(..10).unwrap_or(oldest);
+    PanelBody::new(Primitive::AttentionItems(vec![AttentionItem {
+        severity: Severity::Warn,
+        title: "Character purges pending".to_string(),
+        text: format!("{players} awaiting sweep · oldest {day}"),
+        link: Link::Page {
+            module: EVENTS_MODULE.to_string(),
+            page: EVENTS_PAGE.to_string(),
+            params: BTreeMap::from([(
+                PAGE_PARAM_SEARCH.to_string(),
+                crate::projection::PURGE_SWEEP_SUB.id.to_string(),
+            )]),
+        },
+        action_label: "Events".to_string(),
+        since: String::new(),
+    }]))
+}
+
 fn character_row(c: &Character) -> Row {
     Row {
         entity: None,
@@ -276,6 +314,7 @@ pub(crate) fn manifest() -> Manifest {
             contribution(TAB_COUNT, tab_count, 0, "Characters", ""),
             contribution(COLUMN_COUNT, list_column, 10, "Characters", ""),
             contribution(LABEL, label, 0, "Character", ""),
+            contribution(ATTENTION_PURGES, Point::DashboardAttention, 61, "Character purges pending", ""),
         ],
         actions: Vec::new(),
         search: Vec::new(),
@@ -302,6 +341,7 @@ impl Provider for CharactersAdmin {
             }
             COLUMN_COUNT => self.column(&req).await,
             LABEL => self.labels(&req.refs).await,
+            ATTENTION_PURGES => self.purges().await,
             other => Err(Error::not_found(format!(
                 "{MODULE} has no contribution {other:?}"
             ))),

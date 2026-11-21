@@ -119,9 +119,10 @@ The operator surface instead is:
   (62), `inventory` (63), `friends` (64), `groups` (65), `storage` (66),
   `notifications` (67) — and shows only while its sweep is behind (rows with
   `swept_at IS NULL`, plus the oldest pending `created_at`). It reports outstanding sweep
-  work, not a paused *subscription*, and there is no cross-schema admin view: `core/*`
-  cannot contribute an `adminapi::Item` and archcheck bans a foreign module reading
-  another schema's tables.
+  work, not a paused *subscription*, and there is no cross-schema admin view: a module
+  contributes it as a `controlplane` contribution at `Point::DashboardAttention`
+  answering `AttentionItems` (none at 0 pending), `core/*` contributes no purges item,
+  and archcheck bans a foreign module reading another schema's tables.
 
 ## Related
 
