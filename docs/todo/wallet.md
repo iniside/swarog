@@ -28,6 +28,11 @@ _None._
   a time window on `at` (the 15a5 Embers-spent tile) has an index. `ledger (seq)` and
   `ledger (at)` indexes end the scans; the count stays exact unless the foot takes an
   estimate. A panel deadline drops the answer, not the statement.
+- [ ] **A deleted player's balances count in the Economy Supply and Holders until the sweep**
+  `Store::currency_stats` (`modules/wallet/src/store.rs:503`) sums every `wallet.balances`
+  row and does not exclude players tombstoned in `wallet.purged_players`, so a deleted
+  player's money stays in Supply and Holders until the five-minute `player-purge` sweep
+  removes the rows.
 
 - [ ] **No test sends an uppercase or unhyphenated player uuid to the existence check**
   `Service::player_exists` canonicalises the id (`modules/wallet/src/service.rs:165-171`)

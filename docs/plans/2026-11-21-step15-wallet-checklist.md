@@ -34,7 +34,7 @@ Carriers already in the contract (verified): `Point::EntityTabTile` (`cp:635`) +
 
 | Element | Mockup line | Carrier | Status |
 |---|---|---|---|
-| Nav section "Economy" (order 30, owner wallet) | `reg:11` | `Manifest.sections` (`cp:492`) | ok (15a3) |
+| Nav section "Economy" (order 30, owner wallet) | `reg:11` | the fixed `controlplane::SECTIONS` entry, filled by the `reg:25` NavEntry | ok (15a3) |
 | Nav entry "Currencies & ledger", icon `coins`, class `down` | `reg:25,140` | `NavEntry` (`cp:549`) | ok; `down` is hard-coded demo state → accept on every page (§8) |
 | Crumbs "Economy › Currencies & ledger", h1 "Currencies & ledger", sub "wallet module" | `pp:166,183` | `PageDecl` (`cp:560`) | ok; text → H9 |
 | Layout: `div.grid.g-21` [Currencies │ Grant], Ledger below | `pp:183` | `Layout::Rows([Grid21([cur],[grant]), Stack([ledger])])` (`cp:577-583`); one-panel cells draw bare (13e6, 5a94f07c) | ok |
