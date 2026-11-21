@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-21: Step 14a3 landed (live crawls clean); next Step 14 Nt goldens, then 14b"
+description: "Admin redesign resume point 2026-11-21: Step 14 (characters) complete incl. Nt + 14b; next port 15 (wallet) awaits owner go"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-21T13:15:19.747Z
+  modified: 2026-11-21T14:41:24.163Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -24,3 +24,6 @@ Menu/modal diffs closed: 84fc8662 (refused item: title only), accept files 05294
 
 ## State 2026-11-21 (14a3 landed)
 Crawl fix A 56126e2a (verified live). 14a3: 1135d9ab column, 630ffe45 label/kind, 632eed06 purges pending, 43cf3336 accept+docs; monolith + split diff clean on all ported targets. Known limits in docs/todo/admin.md (14a3, 14). Owner open: P1 — purges link copies core.events address; fix in core/controlplane before port 15 (each port copies it). Next: 14 Nt (goldens, test-author opus), then 14b.
+
+## State 2026-11-21 (Step 14 complete)
+eae03901 Events page address in controlplane (EVENTS_PAGE_MODULE/EVENTS_PAGE), 5eedd976 clippy fix, Nt dcfa7cb9+873426bf (splitproof CH0-CH4; break = remove peer_face("characters") in cmd/admin-svc/src/lib.rs, NOT main.rs with_peer), 14b clean crawls both topologies, plan bb903d85. Next: port 15 (wallet) — owner approved Step 14 only; ask before starting 15.
