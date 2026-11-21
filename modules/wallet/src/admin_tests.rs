@@ -14,9 +14,10 @@ use testdb::test_pool;
 use walletapi::{Balance, Currency, MAX_CURRENCY_CODE_BYTES, MAX_MOVEMENT_AMOUNT, MAX_REASON_BYTES};
 
 use super::{
-    create_form, currencies_body, fact_text, group_digits, grouped, ledger_body, manifest, movement_field_error, panel_form,
-    parse_amount, parse_cursor, parse_reason, reason_filter, row_form, signed, tiles_body, transactions_body,
-    parse_new_currency, Direction, NewCurrency, WalletAdmin, ADMIN_KEY_PREFIX, CODE_TAKEN, NO_SUCH_PLAYER, REASON_ADMIN,
+    balance_cells, create_form, currencies_body, fact_text, group_digits, grouped, headline_label, ledger_body, manifest,
+    movement_field_error, panel_form, parse_amount, parse_cursor, parse_reason, purges_body, reason_filter, row_form, signed,
+    spent_body, tiles_body, transactions_body, parse_new_currency, Direction, NewCurrency, WalletAdmin, ADMIN_KEY_PREFIX,
+    CODE_TAKEN, NO_SUCH_PLAYER, REASON_ADMIN,
 };
 use crate::service::{
     IDEMPOTENCY_CONFLICT, MALFORMED_PLAYER_ID, MAX_CURRENCY_DISPLAY_NAME_BYTES, MAX_CURRENCY_KIND_BYTES, OUT_OF_RANGE,
@@ -262,7 +263,7 @@ fn cursor_is_a_decimal_seq_and_anything_else_is_the_callers_error() {
 
 #[test]
 fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_panels_at_10_20_and_30() {
-    let m = manifest();
+    let m = manifest("gems");
     assert!(m.writes, "grant and revoke write");
     assert!(m.entity_kinds.is_empty());
     let decls: Vec<(&str, i32, &str, &str)> =
@@ -276,9 +277,12 @@ fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_pane
             ("currencies", 10, "Currencies", ""),
             ("grant", 20, "Grant or revoke", ""),
             ("ledger", 30, "Ledger", ""),
+            ("column.balance", 30, "Gems", ""),
+            ("tile.spent", 70, "Gems spent (24 h)", ""),
+            ("attention.purges", 62, "Wallet purges pending", ""),
         ]
     );
-    for c in &m.contributions[3..] {
+    for c in &m.contributions[3..6] {
         assert!(matches!(&c.point, Point::Page(page) if page == "economy"), "{}", c.id);
     }
     assert!(m.contributions.iter().all(|c| c.cache_ttl_s.is_none()), "no stale copy outlives a grant");
@@ -316,6 +320,14 @@ fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_pane
         Point::EntityTabTile { kind, tab } if kind == "player" && tab == "wallet"
     ));
     assert!(matches!(&m.contributions[2].point, Point::EntitySummary(kind) if kind == "player"));
+    assert!(matches!(
+        &m.contributions[6].point,
+        Point::EntityListColumn { kind, label, align: Align::Right } if kind == "player" && label == "Gems"
+    ));
+    assert_eq!(m.contributions[7].point, Point::DashboardTile);
+    assert_eq!(m.contributions[8].point, Point::DashboardAttention);
+    let other = manifest("gold");
+    assert_eq!((other.contributions[6].title.as_str(), other.contributions[7].title.as_str()), ("Gold", "Gold spent (24 h)"));
 
     let row = ActionPoint::RowAction("player".to_string());
     let form = ActionPoint::PanelForm("grant".to_string());
@@ -1014,4 +1026,139 @@ async fn create_adds_a_currency_and_refuses_an_existing_code() {
     assert_eq!(catalog_row(&pool, &other).await, None, "a refused form writes nothing");
 
     cleanup(&pool, &[], &[&code, &other]).await;
+}
+
+#[test]
+fn the_headline_label_upper_cases_the_codes_first_letter() {
+    assert_eq!(headline_label("gems"), "Gems");
+    assert_eq!(headline_label("Gold"), "Gold");
+    assert_eq!(headline_label(""), "");
+}
+
+#[test]
+fn the_balance_column_draws_every_ref_grouped_and_zero_without_a_row() {
+    let refs = ["a".to_string(), "b".to_string()];
+    let body = balance_cells(&refs, &BTreeMap::from([("a".to_string(), 91_300)]));
+    let Primitive::ColumnCells(cells) = body.primitive else { panic!("the column answers ColumnCells") };
+    let drawn: Vec<(&str, &str, CellKind)> = cells.iter().map(|(r, c)| (r.as_str(), c.value.as_str(), c.kind)).collect();
+    assert_eq!(drawn, [("a", "91,300", CellKind::Number), ("b", "0", CellKind::Number)]);
+}
+
+#[test]
+fn the_spent_tile_is_the_grouped_total_with_no_delta_spark_or_link() {
+    let Primitive::KpiTile(tile) = spent_body("gems", "1940000").primitive else { panic!("the tile answers a KpiTile") };
+    assert_eq!((tile.label.as_str(), tile.value.as_str()), ("Gems spent (24 h)", "1,940,000"));
+    assert!(tile.delta.is_none() && tile.series.is_empty() && tile.link.is_none() && tile.unit.is_none());
+}
+
+fn attention(body: PanelBody) -> Vec<controlplane::AttentionItem> {
+    match body.primitive {
+        Primitive::AttentionItems(items) => items,
+        _ => panic!("the purges item answers AttentionItems"),
+    }
+}
+
+#[test]
+fn purges_draw_nothing_at_zero_and_one_warn_item_linking_the_sweep_otherwise() {
+    assert!(attention(purges_body(0, "")).is_empty());
+    let one = attention(purges_body(1, "2026-11-20 08:00:00.123+00"));
+    assert_eq!(one[0].text, "1 player awaiting sweep · oldest 2026-11-20");
+    let items = attention(purges_body(3, "2026-11-19 23:59:59+00"));
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
+    assert_eq!(item.severity, controlplane::Severity::Warn);
+    assert_eq!(item.title, "Wallet purges pending");
+    assert_eq!(item.text, "3 players awaiting sweep · oldest 2026-11-19");
+    assert_eq!(item.action_label, "Events");
+    assert_eq!(
+        item.link,
+        Link::Page {
+            module: controlplane::EVENT_LOG_PAGE_MODULE.to_string(),
+            page: controlplane::EVENT_LOG_PAGE.to_string(),
+            params: BTreeMap::from([(
+                controlplane::PAGE_PARAM_SEARCH.to_string(),
+                crate::projection::PURGE_SWEEP_SUB.id.to_string(),
+            )]),
+        }
+    );
+}
+
+/// The balance column, the spent tile and the purges item against the live database.
+#[tokio::test]
+async fn the_column_and_tile_read_the_headline_currency_and_the_attention_the_backlog() {
+    let Some(pool) = test_pool().await else { return };
+    let _guard = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool).await;
+    let (held, empty, purged) = (unique_player(&pool).await, unique_player(&pool).await, unique_player(&pool).await);
+    let (code, other) = (unique_currency(&pool).await, unique_currency(&pool).await);
+    for (pid, currency, amount) in [(&held, &code, 91_300_i64), (&held, &other, 5), (&empty, &other, 7)] {
+        sqlx::query("INSERT INTO wallet.balances (player_id, currency, amount) VALUES ($1::uuid, $2, $3)")
+            .bind(pid)
+            .bind(currency)
+            .bind(amount)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    // Spent: the two debits of the headline currency inside the window; not the credit, the
+    // debit 25 hours ago or the other currency's debit.
+    for (i, (currency, delta, hours_ago)) in
+        [(&code, -300, 0), (&code, -200, 1), (&code, 1000, 0), (&code, -50, 25), (&other, -7, 0)].into_iter().enumerate()
+    {
+        sqlx::query(
+            "INSERT INTO wallet.ledger (idempotency_key, player_id, currency, delta, balance_after, reason, at) \
+             VALUES ('admin-tests-spent-' || $1 || '-' || $2, $1::uuid, $3, $4, 0, 'admin.revoke', \
+                     now() - make_interval(hours => $5))",
+        )
+        .bind(&held)
+        .bind(i.to_string())
+        .bind(currency)
+        .bind(delta)
+        .bind(hours_ago)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let admin = WalletAdmin::new(svc, code.clone());
+
+    let mut column = query("column.balance", &held, None);
+    column.entity = None;
+    column.refs = vec![held.clone(), empty.clone()];
+    let Primitive::ColumnCells(cells) = admin.panel(column.clone()).await.unwrap().primitive else {
+        panic!("the column answers ColumnCells")
+    };
+    let drawn: Vec<(&str, &str)> = cells.iter().map(|(r, c)| (r.as_str(), c.value.as_str())).collect();
+    let mut want = [(held.as_str(), "91,300"), (empty.as_str(), "0")];
+    want.sort();
+    assert_eq!(drawn, want, "the headline currency only; a ref with no row of it draws 0");
+
+    // Malformed refs over the cap read the cap's refusal: it is checked before any SQL.
+    column.refs = vec!["nope".to_string(); controlplane::MAX_PANEL_REFS + 1];
+    let err = admin.panel(column.clone()).await.unwrap_err();
+    assert_eq!(err.status, Status::Invalid);
+    assert!(err.msg.contains("over the cap"), "{}", err.msg);
+    column.refs = vec!["nope".to_string()];
+    let err = admin.panel(column).await.unwrap_err();
+    assert_eq!((err.status, err.msg.as_str()), (Status::Invalid, MALFORMED_PLAYER_ID));
+
+    let Primitive::KpiTile(tile) = admin.panel(query("tile.spent", &held, None)).await.unwrap().primitive else {
+        panic!("the tile answers a KpiTile")
+    };
+    assert_eq!((tile.label, tile.value), (format!("{} spent (24 h)", headline_label(&code)), "500".to_string()));
+
+    sqlx::query("INSERT INTO wallet.purged_players (player_id, handle) VALUES ($1::uuid, 'admin-tests')")
+        .bind(&purged)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let items = attention(admin.panel(query("attention.purges", &held, None)).await.unwrap());
+    sqlx::query("DELETE FROM wallet.purged_players WHERE player_id = $1::uuid")
+        .bind(&purged)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(items.len(), 1, "a pending tombstone draws the item");
+    assert!(items[0].text.contains("awaiting sweep · oldest "), "{}", items[0].text);
+
+    cleanup(&pool, &[&held, &empty], &[&code, &other]).await;
 }

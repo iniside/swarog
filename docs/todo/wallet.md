@@ -25,7 +25,8 @@ _None._
   Without a search, `Store::ledger` (`modules/wallet/src/store.rs`) orders every movement
   by `seq` and `Store::ledger_count` runs an exact `count(*)` over `wallet.ledger`; the
   only index is `ledger_player_seq_idx (player_id, seq DESC)`, so neither `ORDER BY seq` nor
-  a time window on `at` (the 15a5 Embers-spent tile) has an index. `ledger (seq)` and
+  a time window on `at` (`Store::spent_last_day`, the dashboard's 24 h spent tile, which
+  scans every ledger row on each dashboard render) has an index. `ledger (seq)` and
   `ledger (at)` indexes end the scans; the count stays exact unless the foot takes an
   estimate. A panel deadline drops the answer, not the statement.
 - [ ] **A deleted player's balances count in the Economy Supply and Holders until the sweep**

@@ -7,17 +7,20 @@
 //! paths are one credit or debit through [`Service`] under the key
 //! [`ADMIN_KEY_PREFIX`] + the form instance's request id, so `writes: true`. An empty
 //! catalog draws the Currencies panel's "New currency" tool, one catalog insert that refuses
-//! a code the catalog already holds.
+//! a code the catalog already holds. The headline currency also names the players list's
+//! balance column and the dashboard's 24 h spent tile; the dashboard's attention list carries
+//! the purge backlog.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use controlplane::{
-    ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable, Emphasis, EntityRef, Field,
-    FieldKind, FieldValue, FilterDef, FilterKind, FormMode, FormSpec, InvokeCall, InvokeOutcome, KpiTile, Layout, Link, Manifest,
-    NavEntry, Noun, PageDecl, PageInfo, Palette, PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider, Role,
-    Row, SearchHit, SearchQuery, Then, Tone, DEFAULT_PANEL_DEADLINE_MS,
+    ActionDecl, ActionPoint, Align, AttentionItem, Cell, CellKind, Column, ContributionDecl, DataTable, Emphasis, EntityRef,
+    Field, FieldKind, FieldValue, FilterDef, FilterKind, FormMode, FormSpec, InvokeCall, InvokeOutcome, KpiTile, Layout, Link,
+    Manifest, NavEntry, Noun, PageDecl, PageInfo, Palette, PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider,
+    Role, Row, SearchHit, SearchQuery, Severity, Then, Tone, DEFAULT_PANEL_DEADLINE_MS, EVENT_LOG_PAGE, EVENT_LOG_PAGE_MODULE,
+    MAX_PANEL_REFS, PAGE_PARAM_SEARCH,
 };
 use opsapi::{Error, Status};
 use walletapi::{
@@ -39,6 +42,11 @@ const TAB: &str = "wallet";
 const TRANSACTIONS: &str = "wallet";
 const TILES: &str = "wallet.tiles";
 const FACT_BALANCE: &str = "fact.balance";
+/// The players list's headline-currency column.
+const COLUMN_BALANCE: &str = "column.balance";
+/// The dashboard's headline-currency-spent tile.
+const TILE_SPENT: &str = "tile.spent";
+const ATTENTION_PURGES: &str = "attention.purges";
 
 const PAGE: &str = "economy";
 /// The fixed `controlplane::SECTIONS` entry the Economy page's nav entry sits in.
@@ -130,6 +138,37 @@ impl WalletAdmin {
             CellKind::Text,
             fact_text(&self.headline, &balances),
         ))))
+    }
+
+    /// The players list's balance column for one table page: every ref in `req.refs`, read
+    /// in one statement. More than [`MAX_PANEL_REFS`] refs is refused before any SQL.
+    async fn column(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
+        if req.refs.len() > MAX_PANEL_REFS {
+            return Err(Error::invalid(format!(
+                "{MODULE}: {} refs, over the cap of {MAX_PANEL_REFS}",
+                req.refs.len()
+            )));
+        }
+        let balances =
+            self.svc.store.balances_by_player(&req.refs, &self.headline).await.map_err(|e| {
+                if crate::store::is_invalid_uuid(&e) {
+                    Error::invalid(MALFORMED_PLAYER_ID)
+                } else {
+                    crate::internal(e)
+                }
+            })?;
+        Ok(balance_cells(&req.refs, &balances))
+    }
+
+    async fn spent(&self) -> Result<PanelBody, Error> {
+        let digits = self.svc.store.spent_last_day(&self.headline).await.map_err(crate::internal)?;
+        Ok(spent_body(&self.headline, &digits))
+    }
+
+    /// The purge backlog as the dashboard's attention item.
+    async fn purges(&self) -> Result<PanelBody, Error> {
+        let (pending, oldest) = self.svc.store.pending_purges().await.map_err(crate::internal)?;
+        Ok(purges_body(pending, &oldest))
     }
 
     async fn tiles(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
@@ -579,6 +618,74 @@ pub(crate) fn tiles_body(currencies: &[Currency], balances: &[Balance]) -> Panel
     PanelBody::new(Primitive::KpiTiles(tiles))
 }
 
+/// The headline currency's display label in a static manifest: its code with the first
+/// letter upper-cased ("gems" is "Gems"). The catalog's display name is operator data a
+/// manifest cannot read.
+pub(crate) fn headline_label(code: &str) -> String {
+    let mut chars = code.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// The dashboard tile's title and label: "Gems spent (24 h)".
+fn spent_title(headline: &str) -> String {
+    format!("{} spent (24 h)", headline_label(headline))
+}
+
+/// The balance list column: one number cell per ref, keyed by the ref as the table gave it,
+/// "0" for a ref holding none of the headline currency, so every row draws a balance.
+pub(crate) fn balance_cells(refs: &[String], balances: &BTreeMap<String, i64>) -> PanelBody {
+    let cells = refs
+        .iter()
+        .map(|r| (r.clone(), text(CellKind::Number, grouped(balances.get(r).copied().unwrap_or(0)))))
+        .collect();
+    PanelBody::new(Primitive::ColumnCells(cells))
+}
+
+/// The dashboard's spent tile: the grouped 24 h total. No delta, sparkline or link (the
+/// mockup designs none).
+pub(crate) fn spent_body(headline: &str, digits: &str) -> PanelBody {
+    PanelBody::new(Primitive::KpiTile(KpiTile {
+        label: spent_title(headline),
+        value: group_digits(digits),
+        unit: None,
+        delta: None,
+        series: Vec::new(),
+        spark: Palette::Chart1,
+        capacity: None,
+        link: None,
+    }))
+}
+
+/// The "Wallet purges pending" attention item: none at 0 pending, so the dashboard draws
+/// nothing, otherwise one warn item naming the backlog and the oldest tombstone's day.
+/// `oldest` is `pending_purges`' `created_at` text, whose first 10 chars are the date.
+pub(crate) fn purges_body(pending: i64, oldest: &str) -> PanelBody {
+    if pending == 0 {
+        return PanelBody::new(Primitive::AttentionItems(Vec::new()));
+    }
+    let players = if pending == 1 { "1 player".to_string() } else { format!("{pending} players") };
+    let day = oldest.get(..10).unwrap_or(oldest);
+    PanelBody::new(Primitive::AttentionItems(vec![AttentionItem {
+        severity: Severity::Warn,
+        title: "Wallet purges pending".to_string(),
+        text: format!("{players} awaiting sweep · oldest {day}"),
+        // The sweep is this subscription's handler, so its lag and pause state explain a backlog.
+        link: Link::Page {
+            module: EVENT_LOG_PAGE_MODULE.to_string(),
+            page: EVENT_LOG_PAGE.to_string(),
+            params: BTreeMap::from([(
+                PAGE_PARAM_SEARCH.to_string(),
+                crate::projection::PURGE_SWEEP_SUB.id.to_string(),
+            )]),
+        },
+        action_label: "Events".to_string(),
+        since: String::new(),
+    }]))
+}
+
 fn text(kind: CellKind, value: impl Into<String>) -> Cell {
     Cell {
         kind,
@@ -787,7 +894,9 @@ fn action(id: &str, point: ActionPoint, label: &str, icon: &str, then: Then) -> 
     }
 }
 
-pub(crate) fn manifest() -> Manifest {
+/// The provider's manifest; `headline` is the catalog code [`WalletAdmin`] headlines, which
+/// names the balance column and the spent tile.
+pub(crate) fn manifest(headline: &str) -> Manifest {
     let tab = Point::EntityTab {
         kind: KIND.to_string(),
         tab: TAB.to_string(),
@@ -797,6 +906,11 @@ pub(crate) fn manifest() -> Manifest {
     let tiles = Point::EntityTabTile {
         kind: KIND.to_string(),
         tab: TAB.to_string(),
+    };
+    let list_column = Point::EntityListColumn {
+        kind: KIND.to_string(),
+        label: headline_label(headline),
+        align: Align::Right,
     };
     let row = || ActionPoint::RowAction(KIND.to_string());
     let form = || ActionPoint::PanelForm(GRANT_PANEL.to_string());
@@ -834,6 +948,9 @@ pub(crate) fn manifest() -> Manifest {
             contribution(CURRENCIES_PANEL, Point::Page(PAGE.to_string()), 10, "Currencies", ""),
             contribution(GRANT_PANEL, Point::Page(PAGE.to_string()), 20, "Grant or revoke", ""),
             contribution(LEDGER_PANEL, Point::Page(PAGE.to_string()), 30, "Ledger", ""),
+            contribution(COLUMN_BALANCE, list_column, 30, &headline_label(headline), ""),
+            contribution(TILE_SPENT, Point::DashboardTile, 70, &spent_title(headline), ""),
+            contribution(ATTENTION_PURGES, Point::DashboardAttention, 62, "Wallet purges pending", ""),
         ],
         // The row pair is `prepare: true` because a Money field's options are the live
         // catalog codes; the declared forms fix only the variant and carry none.
@@ -875,7 +992,7 @@ pub(crate) fn manifest() -> Manifest {
 #[async_trait]
 impl Provider for WalletAdmin {
     fn manifest(&self) -> Manifest {
-        manifest()
+        manifest(&self.headline)
     }
 
     async fn panel(&self, req: PanelQuery) -> Result<PanelBody, Error> {
@@ -883,6 +1000,9 @@ impl Provider for WalletAdmin {
             TRANSACTIONS => self.transactions(&req).await,
             TILES => self.tiles(&req).await,
             FACT_BALANCE => self.fact(&req).await,
+            COLUMN_BALANCE => self.column(&req).await,
+            TILE_SPENT => self.spent().await,
+            ATTENTION_PURGES => self.purges().await,
             CURRENCIES_PANEL => {
                 let stats = self.svc.store.currency_stats().await.map_err(crate::internal)?;
                 Ok(currencies_body(&stats))

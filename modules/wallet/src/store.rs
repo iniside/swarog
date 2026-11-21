@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use sqlx::{PgConnection, PgPool, Postgres, QueryBuilder};
 use walletapi::{Balance, Currency};
 
@@ -256,6 +258,43 @@ impl Store {
         .fetch_one(&self.pool)
         .await?;
         Ok((count, oldest.unwrap_or_default()))
+    }
+
+    /// Each ref's balance of `currency` in one statement, keyed by the ref exactly as given;
+    /// a ref holding no row of it is left out. The caller bounds `refs`; a ref that is not
+    /// a uuid fails the whole batch ([`is_invalid_uuid`]).
+    pub(crate) async fn balances_by_player(
+        &self,
+        refs: &[String],
+        currency: &str,
+    ) -> Result<BTreeMap<String, i64>, sqlx::Error> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT r.id, b.amount \
+             FROM unnest($1::text[]) AS r(id) \
+             JOIN wallet.balances b ON b.player_id = r.id::uuid AND b.currency = $2",
+        )
+        .bind(refs)
+        .bind(currency)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    /// The amount of `currency` debited in the last 24 hours, as decimal digits ("0" when
+    /// none): `sum(-delta)` over movements with `delta < 0`, so an operator's revoke counts
+    /// as spent. Text because the sum of bigints is a numeric that can pass `i64`.
+    ///
+    /// Exact and unindexed: the only ledger index is `ledger_player_seq_idx (player_id, seq
+    /// DESC)`, so each call scans every ledger row. A `ledger (at)` index is the missing
+    /// piece (`docs/todo/wallet.md`).
+    pub(crate) async fn spent_last_day(&self, currency: &str) -> Result<String, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT COALESCE(sum(-delta), 0)::text FROM wallet.ledger \
+             WHERE delta < 0 AND currency = $1 AND at > now() - interval '24 hours'",
+        )
+        .bind(currency)
+        .fetch_one(&self.pool)
+        .await
     }
 
     /// Re-reads the row that won the key, ON THE SAME CONNECTION as the losing INSERT.
