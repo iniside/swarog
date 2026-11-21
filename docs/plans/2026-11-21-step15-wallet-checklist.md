@@ -146,19 +146,19 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 
 ## 7. Gaps and decisions for part `a`
 
-**G1. Which currency is "Embers"** — OWNER DECISION (before 15a5, `plan:2146-2148`; lands in 15a5, also 15a1's fact).
+**G1. Which currency is "Embers"** — DECIDED (owner 2026-11-21): option (b), a typed config value naming the currency, not a hard-coded `gems` (before 15a5, `plan:2146-2148`; lands in 15a5, also 15a1's fact).
 - D4 names `gold/gems` the real vocabulary; the catalog is operator data, but a manifest label is static.
 - Proposal: a wallet constant naming the hard dev-seed currency `gems` (`wl:102-105`); column "Gems", tile "Gems spent (24 h)", fact "N gems"; a missing catalog row or balance draws "0".
 - Alternatives: (b) a typed config value naming the code instead of a hard-coded `gems`; (c) one column per catalog currency (needs a dynamic manifest, Na0).
 
-**G2. The global ledger: FAKE or REAL** — OWNER DECISION (15a3, 15t).
+**G2. The global ledger: FAKE or REAL** — DECIDED (owner 2026-11-21): REAL, unindexed reads with a comment naming the missing index; this overrides plan:2125 "FAKE per R1" (15a3, 15t).
 - `plan:2125` says FAKE per R1; `ds:176` says NEW because it "needs an index on seq/at". R1 forbids new indexes (`plan:82-86`), not unindexed reads.
 - A FAKE ledger has no real player ids, so its Player cells never resolve a label and the 15t splitproof assertion (label answered by accounts-svc) cannot hold.
 - Proposal: REAL, as DERIV under R1: `ORDER BY seq DESC` with a keyset cursor on `seq`, no new index, a comment naming the missing `ledger(seq)` index, and a `docs/todo/wallet.md` item for it. Search by player id uses `ledger_player_seq_idx`; by tx id the PK.
 - Alternatives: (b) FAKE amounts on real player ids taken from `wallet.balances` (misleading money); (c) FAKE with fake ids and 15t dropped.
 - Cost of REAL: each Economy render runs an unindexed `ORDER BY seq DESC` and an exact `count(*)` over the whole ledger, plus the Supply/Holders aggregates (G11); each dashboard render runs G19's 24 h sum. A panel deadline drops the answer, not the server statement, which keeps running.
 
-**G3. Two row-menu items vs one form with modes** — OWNER DECISION (15a2).
+**G3. Two row-menu items vs one form with modes** — DECIDED (owner 2026-11-21): two row-menu items, modes only on the Economy panel form (15a2).
 - The mock draws two items (`reg:102-103`) and no modal (`gd:46`). Mode actions never draw in a menu (`rt:263,299,508`), and a fresh form opens on its first mode (`fr:147`).
 - Proposal: two `Then::Form` row actions without modes (§4); the modes live only on the Economy panel form, the one place the mockup draws `div.seg` (`pp:172`). Both paths share one invoke path.
 - Alternatives: (b) both items carry modes, the Revoke item ordered [Revoke, Grant]; (c) Na0: a picked mode on `Then::Form`.
@@ -171,7 +171,7 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 - The panel form's id is `<contribution id>:<token>` (`core/admin/src/routes.rs:876`), a row-action modal's `<action id>:<token>` (`core/admin/src/routes.rs:1028`), both minted at `core/admin/src/engine/forms.rs:63-66`, the token 43 base64url chars (`core/admin/src/lib.rs:823-828`). The key is 50 bytes plus that id (64 for `admin:currency.grant:<token>`), so it fits while the id is at most `MAX_IDEMPOTENCY_KEY_BYTES` − 50 bytes.
 - A resubmit of one instance with a changed field is a 409 (identity includes reason, `wa:48-52`); it shows as a form error.
 
-**G6. Ledger reason text and the Reason help** — OWNER DECISION (15a2).
+**G6. Ledger reason text and the Reason help** — DECIDED (owner 2026-11-21): option (a), the reason text only (player-visible), operator only in the audit; help "Shown in the ledger and audit log." (15a2).
 - The movement's reason is in `wallet.changed` (`api/wallet/events/src/lib.rs:28`), which audit sinks (`modules/audit/src/lib.rs:56`), and the mockup's audit row shows it (`dj:155`): the help "Shown in the ledger and audit log." (`pp:175`) holds. (The `admin.action` detail carries only the outcome and the portal's own `_reason`, `core/admin/src/engine/actions.rs:479,586,609-611`.)
 - notifications shows the reason to the player in a credit's inbox row (`modules/notifications/src/projection.rs:165-169`).
 - Options: (a) the reason only, player-visible; the operator stays in audit only (`admin.action`); (b) `admin.grant · <reason> (<operator>)` / `admin.revoke · …` as the mockup shows (`dj:165,169`), which puts the operator's login in the player's inbox. Either is refused over `MAX_REASON_BYTES`.
@@ -185,9 +185,9 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 
 **G10. Number format** (15a1, 15a3, 15a5). The mock mixes compact ("41.8 M", "1.94 M") and grouped ("91,300"). Proposal: exact en-US grouped integers everywhere, "+" on a positive Amount, minor units as stored (dev decimals are 0). Alternative: compact for Supply and the tile.
 
-**G11. Currencies data** — OWNER DECISION on Cap (15a3). Supply `sum(amount)` and Holders `count(*) WHERE amount > 0` per currency: exact, unindexed (no index leads with `currency`, `wl:78`), with a comment. Cap: wallet has no cap; proposal "—" (truthful constant) instead of `ds:173`'s FAKE. Kind: `Tone::Accent` on `hard`, the real premium kind; none otherwise.
+**G11. Currencies data** — DECIDED (owner 2026-11-21): Cap shows "—"; Supply/Holders real (15a3). Supply `sum(amount)` and Holders `count(*) WHERE amount > 0` per currency: exact, unindexed (no index leads with `currency`, `wl:78`), with a comment. Cap: wallet has no cap; proposal "—" (truthful constant) instead of `ds:173`'s FAKE. Kind: `Tone::Accent` on `hard`, the real premium kind; none otherwise.
 
-**G12. Ledger toolbar and foot** — OWNER DECISION (15a3). Search: exact player id or tx id. Currency filter: `Select` over catalog codes. Reason filter: `Select` over the reasons wallet mints (`starter-grant` `wp:17`, `admin.grant`, `admin.revoke` per G6), prefix match. Foot: exact `count(*)` with a comment, `Noun::new("transaction", "transactions")`. Alternative: no Reason filter (a contract-gap accept line).
+**G12. Ledger toolbar and foot** — DECIDED (owner 2026-11-21) with G2 (real ledger): proposal as written (15a3). Search: exact player id or tx id. Currency filter: `Select` over catalog codes. Reason filter: `Select` over the reasons wallet mints (`starter-grant` `wp:17`, `admin.grant`, `admin.revoke` per G6), prefix match. Foot: exact `count(*)` with a comment, `Noun::new("transaction", "transactions")`. Alternative: no Reason filter (a contract-gap accept line).
 
 **G13. Create currency** (15a4; Q1, D6). `currency.create` (§4) with Code (≤32 B), Name (≤64 B), Kind (string ≤32 B, help "soft or hard"), Decimals (0–18). An existing code is a 409: today's `write_currency_tx` either overwrites or silently skips (`ws:85-104,540-563`). Proposal: replace the dead `OnConflict::Overwrite` with a refusing insert. Its modal has no mockup opener: an `EXCLUDED_MODALS` row (`pages:336`) with reason D6. Under `when_empty` the tool draws only on an empty catalog, so never on a seeded dev fleet.
 
@@ -199,7 +199,7 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 
 **G17. Embers column reader** (15a5). One batch read for the refs and the G1 currency, refusing more than `MAX_PANEL_REFS` before SQL (as `ca:51-60,93-100`), ids bound as one `text[]`, "0" for every ref without a row.
 
-**G18. Sequencing (X7).** The purge-race-locks plan also edits wallet's store; the owner orders the two rollouts.
+**G18. Sequencing (X7).** The purge-race-locks plan also edits wallet's store. DECIDED (owner 2026-11-21): Step 15 first, the purge-race-locks plan after it.
 
 **G19. Embers-spent tile** (15a5). `sum(-delta)` over ledger rows with `delta < 0`, the G1 currency, `at > now() - interval '24 hours'`: exact, unindexed, with a comment; revokes count as spent. No delta, spark or link (the mock designs none).
 

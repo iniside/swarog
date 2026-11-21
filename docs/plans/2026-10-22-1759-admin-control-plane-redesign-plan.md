@@ -2123,6 +2123,8 @@ The ports:
     - G10: 14a1 deletes the dead readers `count` and `list_all`; `pending_purges` waits for 14a3.
 - **Step 15 — wallet.**
   - Economy page (`pages-platform.js:164-185`; the global ledger is FAKE per R1).
+    Owner 2026-11-21 overrides this: the global ledger is REAL (unindexed reads); the other
+    Step 15 rulings are recorded as DECIDED in `docs/plans/2026-11-21-step15-wallet-checklist.md` §7.
   - Wallet tab; grant/revoke (REAL) as one form with the Grant and Revoke modes of Step 13e4
     and the request-id field of 13e5 (owner O-1, O-2, 2026-11-20). No wallet search provider
     (O-5, `docs/todo/wallet.md`).
