@@ -36,7 +36,7 @@ step.
 
 Execution order once the owner says go: 28 → 13c.1a → 13c.1r → 13c.1b → 13c.1g → 13c.1h →
 13c.2a1 → 13c.2a2a → 13c.2a2b → 13c.2a3 → 13c.2b1 → 13c.2b2 → 13c.3a → 13c.3b → 13c.4 →
-13d1 … 13d7c → 13e1 … 13e6 → 14 … 24 (per port: Na0 when needed, Na1, Na2, Na3, Nt, Nb; port 24 as
+13d1 … 13d7d → 13e1 … 13e6 → 14 … 24 (per port: Na0 when needed, Na1, Na2, Na3, Nt, Nb; port 24 as
 24.a1 … 24.a3, 24.t, 24.a4, 24.b) → 24a → 24b0 … 24b4 → 25a … 25h4 → 26a … 26d → 27.
 X7, the order against `docs/plans/2026-11-17-1900-purge-race-locks-plan.md`, needs no
 answer: that plan finished first (Step 7, 825d5494), so the ports start after it (2026-11-20).
@@ -2752,7 +2752,7 @@ gate.
   It settles the header-shape sentence of §1 (today: hand-check) against G6 (the diff reports
   it, from Step 14a3 on).
 - **Step 13d7 — the harness and the exclusion lists check what they claim** (owner,
-  2026-11-20; after 13d5 and 13d6, before Step 14). Found in the 13d3b4 reviews. Three parts,
+  2026-11-20; after 13d5 and 13d6, before Step 14). Found in the 13d3b4 reviews. Four parts,
   each with its own commit and review (core-reviewer plus proof-auditor).
   - **13d7a — one source for drawn menus and tabs.** `[opus]` core-implementer,
     `tools/admindiff/src/{mock.rs,lib.rs}` and their tests. The harness records each
@@ -2775,8 +2775,23 @@ gate.
     checked against the drawn disabled control if the crawl can see it. A claim the crawl
     cannot check is named in the variant's doc comment and as a Known limit, never left as
     prose. The `NO_SUSPEND`/`NO_DELETE` reasons and their entries agree.
+  - **13d7d — element and state recorders keyed by effect, not by class** (owner, 2026-11-21,
+    S1 and S2 from the 5dae1963 reviews; after 13d7c). `[opus]` core-implementer,
+    `tools/admindiff/src/{mock.rs,pages.rs,lib.rs}` and their tests.
+    - S1: every element the mockup appends to `body` (`.menu`, `.popover`, `.scrim`, any
+      other) is either drawn by a recorded opener (`UI.openMenu`, `UI.popover` and the
+      modal openers) or named in an exclusion list with a reason; anything else fails the
+      probe naming the host and the element. No class list decides what is loose.
+      `UI.popover` (`UILayout/redesign/assets/registry.js:196`, `:200`) is recorded.
+    - S2: a state switcher is any onclick that assigns `PAGES.<key>`, whatever its class.
+      Every such key a compared page writes is declared in PAGE_MAP (as `tab` is) or listed
+      in `NON_TAB_KEYS` with a reason; an undeclared key fails naming the host, the key and
+      the onclick. Mail's `.q-count` writing `PAGES.mailTab`
+      (`UILayout/redesign/assets/pages-platform.js:62`) is decided in the step: declared or
+      listed with a reason. The `.tab` class stays only as a drawn-shape check.
+    - Stale checks run both ways on every new list, as on `EXCLUDED_MOCK_MENUS`.
 - **Step 13e — contract additions for the ports** (owner, 2026-11-20, on
-  `docs/research/2026-11-20-2230-admin-ports-contract-gaps.md`; after 13d7c, before Step 14).
+  `docs/research/2026-11-20-2230-admin-ports-contract-gaps.md`; after 13d7d, before Step 14).
   The owner rulings on that doc's decisions:
   - O-1: build form modes.
   - O-2: a request-id field that the portal fills.
