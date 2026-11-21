@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use charactersapi::Character;
 use sqlx::{PgConnection, PgPool};
 
@@ -136,11 +138,23 @@ impl Store {
         }
     }
 
-    pub(crate) async fn count(&self) -> Result<i64, sqlx::Error> {
-        let (n,): (i64,) = sqlx::query_as("SELECT count(*) FROM characters.characters")
-            .fetch_one(&self.pool)
-            .await?;
-        Ok(n)
+    /// Each player ref's character count, keyed by the ref exactly as given, 0 for a player
+    /// with none. The refs bind as one `text[]` parameter; `characters_player_idx` serves the
+    /// join. A malformed ref fails the whole read with 22P02. The caller bounds `refs`.
+    pub(crate) async fn counts_by_player(
+        &self,
+        refs: &[String],
+    ) -> Result<BTreeMap<String, i64>, sqlx::Error> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT r.id, count(c.id)::bigint \
+             FROM unnest($1::text[]) AS r(id) \
+             LEFT JOIN characters.characters c ON c.player_id = r.id::uuid \
+             GROUP BY r.id",
+        )
+        .bind(refs)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().collect())
     }
 
     /// Counts how many characters a player owns, ON THE GIVEN connection (the create
@@ -219,15 +233,5 @@ impl Store {
         .execute(&mut *conn)
         .await?;
         Ok(())
-    }
-
-    pub(crate) async fn list_all(&self, limit: i64) -> Result<Vec<Character>, sqlx::Error> {
-        let rows: Vec<Row> = sqlx::query_as(&format!(
-            "SELECT {COLS} FROM characters.characters ORDER BY created_at DESC LIMIT $1"
-        ))
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(to_character).collect())
     }
 }

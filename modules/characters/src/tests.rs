@@ -140,7 +140,7 @@ async fn ensure_schema(pool: &PgPool) {
 /// (`ensure_schema`), then the asyncevents `bus::Transport` is injected at `Context`
 /// construction (needed before any `emit_tx`), and characters registers/inits against
 /// the same ctx. Returns the ctx (owns the bus + registry) and the wired service.
-async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
+pub(crate) async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     wired_with_cap(pool, LIST_HARD_LIMIT).await
 }
 
@@ -164,7 +164,7 @@ async fn wired_with_cap(pool: &PgPool, cap: i64) -> (Context, Arc<Service>) {
 }
 
 /// A fresh random player_id (a valid uuid) so parallel test runs never collide.
-async fn unique_player(pool: &PgPool) -> String {
+pub(crate) async fn unique_player(pool: &PgPool) -> String {
     let (id,): (String,) = sqlx::query_as("SELECT gen_random_uuid()::text")
         .fetch_one(pool)
         .await
@@ -172,7 +172,7 @@ async fn unique_player(pool: &PgPool) -> String {
     id
 }
 
-async fn cleanup(pool: &PgPool, players: &[&str]) {
+pub(crate) async fn cleanup(pool: &PgPool, players: &[&str]) {
     for pid in players {
         let _ = sqlx::query("DELETE FROM characters.characters WHERE player_id = $1::uuid")
             .bind(pid)

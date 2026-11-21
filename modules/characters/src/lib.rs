@@ -13,6 +13,7 @@
 
 pub mod conformance;
 
+mod admin;
 mod projection;
 mod service;
 mod store;
@@ -161,7 +162,8 @@ impl Module for Characters {
     /// the opsapi slots so the gateway fronts POST/GET/DELETE /characters, (b) the
     /// generated Ownership + Player RPC faces to the edge slot so a peer can reach
     /// `characters.*` over QUIC when this process serves an internal edge, and
-    /// subscribes (c) to durable `player.deleted`.
+    /// subscribes (c) to durable `player.deleted`. It also contributes (d) the control-plane
+    /// provider.
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         let svc = self.svc();
 
@@ -251,6 +253,11 @@ impl Module for Characters {
             schedulerevents::FIRED.topic(),
             sweeper,
         );
+
+        // (d) The control-plane provider (the player's Characters tab, fact and tab count),
+        // contributed unconditionally: whichever process hosts characters serves it.
+        let provider: Arc<dyn controlplane::Provider> = Arc::new(admin::CharactersAdmin::new(self.svc()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
         Ok(())
     }
 }

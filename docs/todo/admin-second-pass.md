@@ -180,6 +180,23 @@ modules/accounts/src/admin.rs, as committed in admin-control-plane-redesign step
   decision 2026-11-17 (step 13 G6): exact for now. Replaced by: a `pg_class.reltuples`
   estimate past a size threshold, and an index if the keyset paging needs one.
 
+### Fake data of the characters port
+
+modules/characters/src/admin.rs, as committed in admin-control-plane-redesign step 14a1.
+
+- [ ] **Character level**
+  ADMIN2-48. Mockup: the Characters tab's Level column. Fake: modules/characters/src/admin.rs:113
+  (`fake_level`, 1–60 from `controlplane::fake_hash` of the character id): characters stores
+  no level. Replaced by: a level the game server reports for each character.
+- [ ] **Character region**
+  ADMIN2-49. Mockup: the Characters tab's Region column. Fake: modules/characters/src/admin.rs:118
+  (`fake_region`, a pick from the mockup's region shapes): characters stores no region.
+  Replaced by: the region a character last played in.
+- [ ] **Character last played**
+  ADMIN2-50. Mockup: the Characters tab's Last played column ("4 min ago"). The portal draws
+  "—" (modules/characters/src/admin.rs:144, owner 2026-11-20: not faked): characters stores no
+  last-played time. Replaced by: a last-played time the game server reports, drawn as an age.
+
 ### Guard gaps
 
 - [ ] **Unlisted page-head action renders nowhere**

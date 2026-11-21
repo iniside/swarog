@@ -262,6 +262,24 @@ pub const PAGE_MAP: &[Page] = &[
         modal: None,
         force: false,
     },
+    Page {
+        page: "player",
+        route: Route::FirstRow("players"),
+        search: "?u=aiko.tanaka",
+        tab: Some("characters"),
+        menu: None,
+        modal: None,
+        force: false,
+    },
+    Page {
+        page: "player",
+        route: Route::FirstRow("players"),
+        search: "?u=aiko.tanaka",
+        tab: Some("characters"),
+        menu: Some(USER_MENU),
+        modal: None,
+        force: false,
+    },
     Page { page: "apikeys", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
@@ -287,7 +305,6 @@ pub const EXCLUDED: &[(&str, &str)] = &[
 /// Tabs the mockup draws on a `FirstRow` page that no `PAGE_MAP` tab entry diffs, as
 /// `<page>.<tab>` with the reason. [`validate_tabs`] holds it to the mockup render.
 pub const EXCLUDED_TABS: &[(&str, &str)] = &[
-    ("player.characters", "not ported yet: the Characters tab arrives with the characters port (Step 14)"),
     ("player.wallet", "not ported yet: the Wallet tab arrives with the wallet port (Step 15)"),
     ("player.inventory", "not ported yet: the Inventory tab arrives with the inventory port (Step 16)"),
     ("player.friends", "not ported yet: the Friends tab arrives with the friends port (Step 17)"),
@@ -476,6 +493,12 @@ pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
     mock_modal("player.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
     mock_modal("player.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
     mock_modal("player.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent, NO_LORE),
+    mock_modal("player.characters", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
+    mock_modal("player.characters", MockOpener::Pages("suspend"), PortalModal::Disabled("accounts/suspend-header"), NO_SUSPEND),
+    mock_modal("player.characters.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
+    mock_modal("player.characters.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
+    mock_modal("player.characters.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent, NO_LORE),
+    mock_modal("player.characters.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent, NO_LORE),
     mock_modal(
         "mail",
         MockOpener::Pages("cancelMail"),
