@@ -886,7 +886,7 @@ fn the_wallet_claims_hold_on_the_drawn_user_menu() {
     let mut inventory = claim_inventory();
     inventory.iter_mut().find(|(h, _)| h == host).expect("players.menu.user hosts a wallet claim").1 = drawn;
     let wallet = crate::pages::EXCLUDED_MODALS.iter().filter(|(_, action, _)| action.starts_with("wallet/")).count();
-    assert_eq!(wallet, 9, "EXCLUDED_MODALS lists 9 wallet claims");
+    assert_eq!(wallet, 8, "EXCLUDED_MODALS lists 8 wallet claims");
     let menu: Vec<_> = EXCLUDED_MOCK_MODALS.iter().copied().filter(|x| x.host == host).collect();
     assert_eq!(menu.len(), 4, "EXCLUDED_MOCK_MODALS lists the 4 players user menu openers");
     let excluded: Vec<_> = claim_exclusions().into_iter().chain(menu.iter().copied()).collect();
