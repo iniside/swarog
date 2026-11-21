@@ -71,11 +71,21 @@ pub(crate) struct ExistingMovement {
     pub(crate) balance_after: i64,
 }
 
+/// An operator's create naming a code the catalog already holds: the primary key, named
+/// `currencies_pkey` explicitly in the DDL, as 23505.
+pub(crate) fn is_duplicate_currency(e: &sqlx::Error) -> bool {
+    e.as_database_error().is_some_and(|db| {
+        db.code().as_deref() == Some("23505") && db.constraint() == Some("currencies_pkey")
+    })
+}
+
 /// What [`Store::write_currency_tx`] does with a code the catalog already holds. The clause
 /// is a fixed string per variant, never caller data.
 #[derive(Clone, Copy)]
 pub(crate) enum OnConflict {
-    Overwrite,
+    /// An operator's create: the existing row stays as it is and the insert fails with
+    /// [`is_duplicate_currency`]'s 23505, never an overwrite and never a silent skip.
+    Refuse,
     /// The dev seed: guarantee the code EXISTS, leave an operator's edits alone.
     Skip,
 }
@@ -83,12 +93,7 @@ pub(crate) enum OnConflict {
 impl OnConflict {
     fn clause(self) -> &'static str {
         match self {
-            OnConflict::Overwrite => {
-                "ON CONFLICT (code) DO UPDATE \
-                    SET display_name = EXCLUDED.display_name, \
-                        kind = EXCLUDED.kind, \
-                        decimals = EXCLUDED.decimals"
-            }
+            OnConflict::Refuse => "",
             OnConflict::Skip => "ON CONFLICT (code) DO NOTHING",
         }
     }
@@ -598,7 +603,8 @@ impl Store {
     }
 
     /// An over-long `code`/`display_name`/`kind` or an out-of-range `decimals` is one of the
-    /// named `currencies_*` CHECKs as 23514. None can be mistaken for
+    /// named `currencies_*` CHECKs as 23514; an existing `code` under [`OnConflict::Refuse`] is
+    /// [`is_duplicate_currency`]. None can be mistaken for
     /// insufficient funds: `is_out_of_range` is constraint-named to `balances_amount_check`.
     pub(crate) async fn write_currency_tx(
         &self,

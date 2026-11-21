@@ -11,7 +11,7 @@ use walletapi::{
     MAX_IDEMPOTENCY_KEY_BYTES, MAX_MOVEMENT_AMOUNT, MAX_REASON_BYTES,
 };
 
-use crate::{internal, BalanceError, ExistingMovement, Store};
+use crate::{internal, BalanceError, ExistingMovement, OnConflict, Store};
 
 /// The 409 for a duplicate `idempotency_key` describing a DIFFERENT movement.
 pub(crate) const IDEMPOTENCY_CONFLICT: &str =
@@ -23,6 +23,10 @@ pub(crate) const OUT_OF_RANGE: &str =
     "movement rejected: insufficient funds or balance ceiling exceeded";
 
 pub(crate) const UNKNOWN_CURRENCY: &str = "unknown currency";
+
+/// The 409 for an operator's create naming a code the catalog already holds: a refusal,
+/// never an overwrite of the row and never a silent skip.
+pub(crate) const CURRENCY_EXISTS: &str = "currency code already exists";
 
 pub(crate) const MALFORMED_PLAYER_ID: &str = "player_id is not a valid uuid";
 
@@ -241,6 +245,29 @@ impl Service {
             .await
             .map_err(|e| Error::unavailable(format!("player directory unavailable: {}", e.msg)))?;
         Ok(!found.is_empty())
+    }
+
+    /// Adds one row to the catalog; the caller has held its fields to
+    /// [`MAX_CURRENCY_CODE_BYTES`] and the catalog caps above, which the `currencies_*` CHECKs mirror. An
+    /// existing code is [`CURRENCY_EXISTS`]. There is no idempotency key: a retry of a create
+    /// that landed meets the same refusal.
+    pub(crate) async fn create_currency(
+        &self,
+        code: &str,
+        display_name: &str,
+        kind: &str,
+        decimals: i32,
+    ) -> Result<(), Error> {
+        let mut conn = self.store.pool.acquire().await.map_err(internal)?;
+        let written = self
+            .store
+            .write_currency_tx(&mut conn, code, display_name, kind, decimals, OnConflict::Refuse)
+            .await;
+        match written {
+            Ok(()) => Ok(()),
+            Err(e) if crate::is_duplicate_currency(&e) => Err(Error::conflict(CURRENCY_EXISTS)),
+            Err(e) => Err(internal(e)),
+        }
     }
 
     /// **THE movement authority**, on a CALLER-OWNED connection: it NEVER begins, commits

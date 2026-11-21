@@ -11,14 +11,17 @@ use controlplane::{
 use lifecycle::{Context, Module as _};
 use opsapi::{Error, Status};
 use testdb::test_pool;
-use walletapi::{Balance, Currency, MAX_MOVEMENT_AMOUNT, MAX_REASON_BYTES};
+use walletapi::{Balance, Currency, MAX_CURRENCY_CODE_BYTES, MAX_MOVEMENT_AMOUNT, MAX_REASON_BYTES};
 
 use super::{
-    currencies_body, fact_text, group_digits, grouped, ledger_body, manifest, movement_field_error, panel_form,
+    create_form, currencies_body, fact_text, group_digits, grouped, ledger_body, manifest, movement_field_error, panel_form,
     parse_amount, parse_cursor, parse_reason, reason_filter, row_form, signed, tiles_body, transactions_body,
-    Direction, WalletAdmin, ADMIN_KEY_PREFIX, NO_SUCH_PLAYER, REASON_ADMIN,
+    parse_new_currency, Direction, NewCurrency, WalletAdmin, ADMIN_KEY_PREFIX, CODE_TAKEN, NO_SUCH_PLAYER, REASON_ADMIN,
 };
-use crate::service::{IDEMPOTENCY_CONFLICT, MALFORMED_PLAYER_ID, OUT_OF_RANGE, PLAYER_DELETED, UNKNOWN_CURRENCY};
+use crate::service::{
+    IDEMPOTENCY_CONFLICT, MALFORMED_PLAYER_ID, MAX_CURRENCY_DISPLAY_NAME_BYTES, MAX_CURRENCY_KIND_BYTES, OUT_OF_RANGE,
+    PLAYER_DELETED, UNKNOWN_CURRENCY,
+};
 use crate::store::{CurrencyStats, LedgerEntry, LedgerPage, LEDGER_PAGE_SIZE};
 use crate::tests::{cleanup, unique_currency, unique_player, wired, with_directory, DB_LOCK};
 use crate::WalletModule;
@@ -316,6 +319,7 @@ fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_pane
 
     let row = ActionPoint::RowAction("player".to_string());
     let form = ActionPoint::PanelForm("grant".to_string());
+    let tool = ActionPoint::PanelTool("currencies".to_string());
     let actions: Vec<(&str, &ActionPoint, &str, &str, bool)> =
         m.actions.iter().map(|a| (a.id.as_str(), &a.point, a.label.as_str(), a.icon.as_str(), a.prepare)).collect();
     assert_eq!(
@@ -325,15 +329,22 @@ fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_pane
             ("currency.revoke", &row, "Revoke currency…", "coins", true),
             ("ledger.grant", &form, "Grant", "", false),
             ("ledger.revoke", &form, "Revoke", "", false),
+            ("currency.create", &tool, "New currency", "plus", false),
         ]
     );
     for a in &m.actions {
-        assert!(a.implemented && !a.danger && a.order == 40 && a.min_role == Role::Operator, "{}", a.id);
+        assert!(a.implemented && !a.danger && a.min_role == Role::Operator, "{}", a.id);
+        assert_eq!(a.emphasis, controlplane::Emphasis::Default, "{}", a.id);
+        assert_eq!(a.when_empty, a.id == "currency.create", "only the create tool waits for an empty catalog: {}", a.id);
     }
+    assert!(m.actions[..4].iter().all(|a| a.order == 40), "the row menu's wallet group");
+    assert_eq!(m.actions[4].order, 10);
+    assert_eq!(m.actions[4].then, Then::Form(create_form()));
+    assert!(controlplane::form_spec_errors(&create_form()).is_empty());
     for (i, dir) in [Direction::Grant, Direction::Revoke].into_iter().enumerate() {
         assert_eq!(m.actions[i].then, Then::Form(row_form(dir, &[])), "the row pair declares its modal without modes");
     }
-    assert!(m.actions[2..].iter().all(|a| a.then == Then::Invoke));
+    assert!(m.actions[2..4].iter().all(|a| a.then == Then::Invoke));
     let spec = panel_form(&[]);
     assert!(controlplane::form_spec_errors(&spec).is_empty());
     assert!(controlplane::form_mode_errors(&m, &form, &spec).is_empty(), "the panel's modes are its PanelForm actions");
@@ -896,4 +907,111 @@ async fn a_padded_player_uuid_moves_the_same_balance_as_the_bare_one() {
     assert_eq!(held, [(pid.clone(), 50)], "both grants land on the one balance");
 
     cleanup(&pool, &[&pid], &[&code]).await;
+}
+
+fn create_input(code: &str, name: &str, kind: &str, decimals: &str) -> BTreeMap<String, String> {
+    [("code", code), ("name", name), ("kind", kind), ("decimals", decimals)]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+/// The create form trims its text, holds Code, Name and Kind to their byte caps (each at its
+/// cap passes, one byte over is that field's error alone), requires every field, and reads
+/// Decimals with the Int codec as a whole number from 0 to 18.
+#[test]
+fn the_create_form_holds_each_field_to_its_bound() {
+    let parsed = parse_new_currency(&create_input(" ruby ", " Ruby ", " hard ", " 2 ")).unwrap();
+    let want = NewCurrency {
+        code: "ruby".to_string(),
+        display_name: "Ruby".to_string(),
+        kind: "hard".to_string(),
+        decimals: 2,
+    };
+    assert_eq!(parsed, want);
+    let caps = [("code", MAX_CURRENCY_CODE_BYTES), ("name", MAX_CURRENCY_DISPLAY_NAME_BYTES), ("kind", MAX_CURRENCY_KIND_BYTES)];
+    for (key, cap) in caps {
+        let mut input = create_input("ruby", "Ruby", "hard", "0");
+        input.insert(key.to_string(), "a".repeat(cap));
+        assert!(parse_new_currency(&input).is_ok(), "{key} at its cap");
+        input.insert(key.to_string(), "a".repeat(cap + 1));
+        let errors = parse_new_currency(&input).unwrap_err();
+        assert_eq!(errors.keys().map(String::as_str).collect::<Vec<_>>(), [key], "{key} one byte over its cap");
+    }
+    for decimals in ["0", "18"] {
+        assert!(parse_new_currency(&create_input("ruby", "Ruby", "hard", decimals)).is_ok(), "{decimals}");
+    }
+    for decimals in ["-1", "19", "1.5", "two", "4294967296"] {
+        let errors = parse_new_currency(&create_input("ruby", "Ruby", "hard", decimals)).unwrap_err();
+        assert_eq!(errors["decimals"], "Decimals must be a whole number from 0 to 18", "{decimals}");
+        assert_eq!(errors.len(), 1, "{decimals}");
+    }
+    let errors = parse_new_currency(&create_input("  ", "", " ", "")).unwrap_err();
+    let required: BTreeMap<String, String> = [
+        ("code", "Code is required"),
+        ("decimals", "Decimals is required"),
+        ("kind", "Kind is required"),
+        ("name", "Name is required"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
+    assert_eq!(errors, required);
+    assert_eq!(parse_new_currency(&BTreeMap::new()).unwrap_err(), required, "a missing field is an empty one");
+}
+
+/// The create form's conformance probes run through `WalletAdmin::invoke`: at each cap the
+/// create reaches the (dead) store, one byte over it is the field's own refusal.
+#[test]
+fn the_create_probes_refuse_one_byte_over_each_cap() {
+    let probes = [
+        (crate::conformance::conformance_create_code_rejected as fn(usize) -> bool, MAX_CURRENCY_CODE_BYTES),
+        (crate::conformance::conformance_create_name_rejected, crate::conformance::CREATE_NAME_BYTES),
+        (crate::conformance::conformance_create_kind_rejected, crate::conformance::CREATE_KIND_BYTES),
+    ];
+    for (probe, cap) in probes {
+        assert!(!probe(cap), "at the cap {cap}");
+        assert!(probe(cap + 1), "over the cap {cap}");
+    }
+}
+
+/// The catalog row `code` names, as (display name, kind, decimals).
+async fn catalog_row(pool: &sqlx::PgPool, code: &str) -> Option<(String, String, i32)> {
+    sqlx::query_as("SELECT display_name, kind, decimals FROM wallet.currencies WHERE code = $1")
+        .bind(code)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
+/// A create writes one catalog row with the form's fields. The same code again is the Code
+/// field's error and leaves the first row as it was: never an overwrite, never a silent
+/// success. A form refused on its fields writes nothing.
+#[tokio::test]
+async fn create_adds_a_currency_and_refuses_an_existing_code() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let code = format!("n{}", &unique_player(&pool).await[..12]);
+    let other = format!("{code}x");
+    let admin = WalletAdmin::new(svc, code.clone());
+    let create = |code: &str, name: &str, kind: &str, decimals: &str| {
+        call("currency.create", None, None, &[("code", code), ("name", name), ("kind", kind), ("decimals", decimals)])
+    };
+
+    match admin.invoke(create(&code, "Ruby", "hard", "2")).await.unwrap() {
+        InvokeOutcome::Ok { message, .. } => assert_eq!(message, format!("Created currency {code}")),
+        other => panic!("expected Ok, got {other:?}"),
+    }
+    let ruby = Some(("Ruby".to_string(), "hard".to_string(), 2));
+    assert_eq!(catalog_row(&pool, &code).await, ruby);
+
+    let again = admin.invoke(create(&code, "Rubies", "soft", "0")).await.unwrap();
+    assert_eq!(field_errors(again), BTreeMap::from([("code".to_string(), CODE_TAKEN.to_string())]));
+    assert_eq!(catalog_row(&pool, &code).await, ruby, "an existing code is never overwritten");
+
+    let refused = admin.invoke(create(&other, "Other", "soft", "19")).await.unwrap();
+    assert!(field_errors(refused).contains_key("decimals"));
+    assert_eq!(catalog_row(&pool, &other).await, None, "a refused form writes nothing");
+
+    cleanup(&pool, &[], &[&code, &other]).await;
 }

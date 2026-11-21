@@ -5,7 +5,9 @@
 //! Economy page also lists the catalog with each currency's supply and holders (Currencies)
 //! and every movement (Ledger), reached from its entry in the fixed Economy nav section. Both grant and revoke
 //! paths are one credit or debit through [`Service`] under the key
-//! [`ADMIN_KEY_PREFIX`] + the form instance's request id, so `writes: true`.
+//! [`ADMIN_KEY_PREFIX`] + the form instance's request id, so `writes: true`. An empty
+//! catalog draws the Currencies panel's "New currency" tool, one catalog insert that refuses
+//! a code the catalog already holds.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -13,7 +15,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use controlplane::{
     ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable, Emphasis, EntityRef, Field,
-    FieldKind, FilterDef, FilterKind, FormMode, FormSpec, InvokeCall, InvokeOutcome, KpiTile, Layout, Link, Manifest,
+    FieldKind, FieldValue, FilterDef, FilterKind, FormMode, FormSpec, InvokeCall, InvokeOutcome, KpiTile, Layout, Link, Manifest,
     NavEntry, Noun, PageDecl, PageInfo, Palette, PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider, Role,
     Row, SearchHit, SearchQuery, Then, Tone, DEFAULT_PANEL_DEADLINE_MS,
 };
@@ -22,7 +24,10 @@ use walletapi::{
     Balance, Currency, Movement, Wallet as _, MAX_CURRENCY_CODE_BYTES, MAX_MOVEMENT_AMOUNT, MAX_REASON_BYTES,
 };
 
-use crate::service::{MALFORMED_PLAYER_ID, OUT_OF_RANGE, PLAYER_DELETED, UNKNOWN_CURRENCY};
+use crate::service::{
+    CURRENCY_EXISTS, MALFORMED_PLAYER_ID, MAX_CURRENCY_DECIMALS, MAX_CURRENCY_DISPLAY_NAME_BYTES, MAX_CURRENCY_KIND_BYTES,
+    OUT_OF_RANGE, PLAYER_DELETED, UNKNOWN_CURRENCY,
+};
 use crate::store::{CurrencyStats, LedgerEntry, LedgerFilter, LedgerPage, LEDGER_PAGE_SIZE};
 use crate::Service;
 
@@ -57,6 +62,8 @@ const CURRENCY_REVOKE: &str = "currency.revoke";
 /// The modes of the Grant-or-revoke form.
 pub(crate) const LEDGER_GRANT: &str = "ledger.grant";
 const LEDGER_REVOKE: &str = "ledger.revoke";
+/// The Currencies panel's tool (`when_empty`: the portal draws it on an empty catalog only).
+pub(crate) const CURRENCY_CREATE: &str = "currency.create";
 
 /// The namespace of every movement key the portal mints: `admin:<request id>`. Never under
 /// the reserved `starter:` (`walletapi::Movement::idempotency_key`).
@@ -66,6 +73,14 @@ pub(crate) const FIELD_PLAYER: &str = "player";
 pub(crate) const FIELD_AMOUNT: &str = "amount";
 pub(crate) const FIELD_REASON: &str = "reason";
 const FIELD_REQUEST_ID: &str = "request_id";
+pub(crate) const FIELD_CODE: &str = "code";
+pub(crate) const FIELD_NAME: &str = "name";
+pub(crate) const FIELD_KIND: &str = "kind";
+pub(crate) const FIELD_DECIMALS: &str = "decimals";
+
+/// The Code field's refusal of a code the catalog already holds.
+pub(crate) const CODE_TAKEN: &str = "A currency with this code already exists";
+const KIND_HELP: &str = "soft or hard";
 
 /// A grant or revoke naming a uuid no player holds: no ghost balance from a typo.
 pub(crate) const NO_SUCH_PLAYER: &str = "No such player.";
@@ -219,6 +234,26 @@ impl WalletAdmin {
             Err(e) => refusal(e, from_row),
         }
     }
+
+    /// The Currencies panel's create: the four fields checked, then one catalog insert. A code
+    /// the catalog already holds is the Code field's error, never an overwrite or a skip.
+    async fn create_currency(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let new = match parse_new_currency(&req.input) {
+            Ok(new) => new,
+            Err(errors) => return Ok(InvokeOutcome::FieldErrors(errors)),
+        };
+        match self.svc.create_currency(&new.code, &new.display_name, &new.kind, new.decimals).await {
+            Ok(()) => Ok(InvokeOutcome::Ok {
+                message: format!("Created currency {}", new.code),
+                reveal: None,
+                redirect: None,
+            }),
+            Err(e) if e.status == Status::Conflict && e.msg == CURRENCY_EXISTS => {
+                Ok(InvokeOutcome::FieldErrors(BTreeMap::from([(FIELD_CODE.to_string(), CODE_TAKEN.to_string())])))
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// A service refusal as the operator sees it: its field's error, a player refusal on a row
@@ -298,6 +333,68 @@ pub(crate) fn movement_field_error(e: &Error) -> Option<(&'static str, String)> 
     }
 }
 
+/// A catalog row as the create form names it, every field within its cap.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct NewCurrency {
+    pub(crate) code: String,
+    pub(crate) display_name: String,
+    pub(crate) kind: String,
+    pub(crate) decimals: i32,
+}
+
+/// The create form's four fields, or each field's error: Code, Name and Kind trimmed and
+/// non-empty within their byte caps (the `currencies_*` CHECKs mirror them), Decimals a whole
+/// number from 0 to [`MAX_CURRENCY_DECIMALS`].
+pub(crate) fn parse_new_currency(input: &BTreeMap<String, String>) -> Result<NewCurrency, BTreeMap<String, String>> {
+    let raw = |key: &str| input.get(key).map_or("", String::as_str);
+    let code = bounded_text(raw(FIELD_CODE), "Code", MAX_CURRENCY_CODE_BYTES);
+    let display_name = bounded_text(raw(FIELD_NAME), "Name", MAX_CURRENCY_DISPLAY_NAME_BYTES);
+    let kind = bounded_text(raw(FIELD_KIND), "Kind", MAX_CURRENCY_KIND_BYTES);
+    let decimals = parse_decimals(raw(FIELD_DECIMALS));
+    match (code, display_name, kind, decimals) {
+        (Ok(code), Ok(display_name), Ok(kind), Ok(decimals)) => Ok(NewCurrency { code, display_name, kind, decimals }),
+        (code, display_name, kind, decimals) => {
+            let mut errors = BTreeMap::new();
+            for (key, result) in [(FIELD_CODE, code.err()), (FIELD_NAME, display_name.err()), (FIELD_KIND, kind.err())] {
+                if let Some(e) = result {
+                    errors.insert(key.to_string(), e);
+                }
+            }
+            if let Err(e) = decimals {
+                errors.insert(FIELD_DECIMALS.to_string(), e);
+            }
+            Err(errors)
+        }
+    }
+}
+
+/// `raw` trimmed, or the field's error when that is empty or longer than `cap` bytes.
+fn bounded_text(raw: &str, label: &str, cap: usize) -> Result<String, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(format!("{label} is required"));
+    }
+    if value.len() > cap {
+        return Err(format!("{label} is longer than {cap} bytes"));
+    }
+    Ok(value.to_string())
+}
+
+/// The Int field's raw string, decoded by the form codec, as a decimals count.
+fn parse_decimals(raw: &str) -> Result<i32, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("Decimals is required".to_string());
+    }
+    let range = || format!("Decimals must be a whole number from 0 to {MAX_CURRENCY_DECIMALS}");
+    match controlplane::decode_field(&FieldKind::Int, raw) {
+        Ok(FieldValue::Int(n)) => {
+            i32::try_from(n).ok().filter(|d| (0..=MAX_CURRENCY_DECIMALS).contains(d)).ok_or_else(range)
+        }
+        _ => Err(range()),
+    }
+}
+
 fn field(key: &str, label: &str, kind: FieldKind, required: bool) -> Field {
     Field {
         key: key.to_string(),
@@ -364,6 +461,24 @@ pub(crate) fn panel_form(codes: &[String]) -> FormSpec {
         revision: None,
         title: None,
         modes: vec![mode(Direction::Grant, LEDGER_GRANT), mode(Direction::Revoke, LEDGER_REVOKE)],
+    }
+}
+
+/// The Currencies panel's "New currency" modal: Code, Name, Kind and Decimals.
+pub(crate) fn create_form() -> FormSpec {
+    FormSpec {
+        fields: vec![
+            Field { mono: true, ..field(FIELD_CODE, "Code", FieldKind::String, true) },
+            field(FIELD_NAME, "Name", FieldKind::String, true),
+            Field { help: Some(KIND_HELP.to_string()), ..field(FIELD_KIND, "Kind", FieldKind::String, true) },
+            field(FIELD_DECIMALS, "Decimals", FieldKind::Int, true),
+        ],
+        hidden: BTreeMap::new(),
+        submit_label: "Create".to_string(),
+        note: None,
+        revision: None,
+        title: Some("New currency".to_string()),
+        modes: Vec::new(),
     }
 }
 
@@ -651,7 +766,7 @@ fn contribution(id: &str, point: Point, order: i32, title: &str, icon: &str) -> 
     }
 }
 
-/// An operator's write, at order 40 (the player row menu's wallet group).
+/// An operator's write, at order 40 (the player row menu's wallet group) unless it says otherwise.
 fn action(id: &str, point: ActionPoint, label: &str, icon: &str, then: Then) -> ActionDecl {
     ActionDecl {
         id: id.to_string(),
@@ -739,6 +854,18 @@ pub(crate) fn manifest() -> Manifest {
             },
             action(LEDGER_GRANT, form(), "Grant", "", Then::Invoke),
             action(LEDGER_REVOKE, form(), "Revoke", "", Then::Invoke),
+            // NEW (D6): the mockup has no create opener. A seeded catalog never draws it.
+            ActionDecl {
+                order: 10,
+                when_empty: true,
+                ..action(
+                    CURRENCY_CREATE,
+                    ActionPoint::PanelTool(CURRENCIES_PANEL.to_string()),
+                    "New currency",
+                    "plus",
+                    Then::Form(create_form()),
+                )
+            },
         ],
         search: Vec::new(),
         writes: true,
@@ -778,6 +905,9 @@ impl Provider for WalletAdmin {
                 "an input value is longer than {} bytes",
                 controlplane::MAX_INPUT_VALUE_BYTES
             )));
+        }
+        if req.action == CURRENCY_CREATE {
+            return self.create_currency(&req).await;
         }
         let (dir, from_row) = match req.action.as_str() {
             CURRENCY_GRANT => (Direction::Grant, true),

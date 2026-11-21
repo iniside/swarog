@@ -53,7 +53,7 @@ const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS wallet;
 
 CREATE TABLE IF NOT EXISTS wallet.currencies (
-	code         text PRIMARY KEY
+	code         text CONSTRAINT currencies_pkey PRIMARY KEY
 	             CONSTRAINT currencies_code_len_check
 	             CHECK (octet_length(code) <= 32),
 	display_name text        NOT NULL

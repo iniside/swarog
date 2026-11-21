@@ -1218,7 +1218,8 @@ fn wallet() -> Entry {
                 Convention::InputByteCaps,
                 // Covers the three movement fields validate_movement enforces before ledger
                 // SQL (idempotency_key/currency/reason — player_id is Opaque, an unvalidated
-                // UUID).
+                // UUID), the portal writer's input cap and grant key, and the create form's
+                // Code, Name and Kind caps.
                 Stance::Applies(Fixture::InputByteCaps(vec![
                     CapCase {
                         name: "wallet movement idempotency key",
@@ -1244,6 +1245,21 @@ fn wallet() -> Entry {
                         name: "wallet admin grant key",
                         cap: walletapi::MAX_IDEMPOTENCY_KEY_BYTES,
                         probe: Arc::new(wallet::conformance::conformance_admin_key_rejected),
+                    },
+                    CapCase {
+                        name: "wallet admin create code",
+                        cap: walletapi::MAX_CURRENCY_CODE_BYTES,
+                        probe: Arc::new(wallet::conformance::conformance_create_code_rejected),
+                    },
+                    CapCase {
+                        name: "wallet admin create name",
+                        cap: wallet::conformance::CREATE_NAME_BYTES,
+                        probe: Arc::new(wallet::conformance::conformance_create_name_rejected),
+                    },
+                    CapCase {
+                        name: "wallet admin create kind",
+                        cap: wallet::conformance::CREATE_KIND_BYTES,
+                        probe: Arc::new(wallet::conformance::conformance_create_kind_rejected),
                     },
                 ])),
             ),

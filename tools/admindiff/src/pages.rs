@@ -412,6 +412,11 @@ pub const EXCLUDED_MODALS: &[(&str, &str, ModalWhy)] = &[
         "wallet/currency.revoke",
         ModalWhy { why: "the mockup's wallet row-menu items are drawn disabled under an \"unavailable\" note and have no onclick, so the mockup has no modal (registry.js:101-104)" },
     ),
+    (
+        "economy",
+        "wallet/currency.create",
+        ModalWhy { why: "the create tool is an extra element (declared deviation D6): the mockup's Currencies card draws no create opener, so the mockup has no modal" },
+    ),
 ];
 
 /// Why an [`EXCLUDED_MODALS`] action is not diffed: the mockup draws no opener of the action on
