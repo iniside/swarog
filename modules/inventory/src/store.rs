@@ -220,6 +220,21 @@ impl Store {
             .collect())
     }
 
+    /// The ids of a player's live characters, from inventory's own
+    /// `character_owners` record (served by `character_owners_player_idx`), in id
+    /// order. Capped at [`HOLDINGS_HARD_LIMIT`] as a safety belt: characters' per-player
+    /// cap is a config value far below it by default.
+    pub(crate) async fn character_ids_of(&self, player_id: &str) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar(&format!(
+            "SELECT character_id::text FROM inventory.character_owners \
+              WHERE player_id = $1::uuid \
+              ORDER BY character_id LIMIT {HOLDINGS_HARD_LIMIT}"
+        ))
+        .bind(player_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
     /// Removes every holding of an owner — the event-driven cleanup when a character
     /// (or later a player) is deleted. Runs on the sink's tx (`&mut PgConnection`).
     pub(crate) async fn clear_owner_exec(&self, conn: &mut PgConnection, owner: &Owner) -> Result<u64, sqlx::Error> {

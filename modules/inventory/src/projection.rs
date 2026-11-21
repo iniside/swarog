@@ -154,7 +154,33 @@ impl Inner {
             .map_err(bus::Error::transport)
     }
 
-    /// Removes a deleted character's holdings. Same handed-tx contract as
+    /// Records which player owns a new character in `inventory.character_owners`, on the
+    /// handed delivery tx. Same ordering guard as `grant_starter`: under the
+    /// per-character advisory xact-lock, a tombstone means the wipe was delivered first,
+    /// so nothing is recorded. A redelivery is `ON CONFLICT DO NOTHING` (a character's
+    /// player never changes).
+    pub(crate) async fn record_character_owner(
+        &self,
+        conn: &mut PgConnection,
+        character_id: &str,
+        player_id: &str,
+    ) -> Result<(), bus::Error> {
+        lock_character(conn, character_id).await.map_err(bus::Error::transport)?;
+        sqlx::query(
+            "INSERT INTO inventory.character_owners (character_id, player_id) \
+             SELECT $1::uuid, $2::uuid \
+              WHERE NOT EXISTS (SELECT 1 FROM inventory.wiped_characters WHERE character_id = $1::uuid) \
+             ON CONFLICT (character_id) DO NOTHING",
+        )
+        .bind(character_id)
+        .bind(player_id)
+        .execute(&mut *conn)
+        .await
+        .map(|_| ())
+        .map_err(bus::Error::transport)
+    }
+
+    /// Removes a deleted character's holdings and its owner record. Same handed-tx contract as
     /// `grant_starter` — atomic with the subscription checkpoint. Takes the same
     /// per-character advisory xact-lock first, then plants the permanent tombstone
     /// (idempotent — redelivery hits ON CONFLICT DO NOTHING) BEFORE the delete, in
@@ -171,6 +197,11 @@ impl Inner {
         .execute(&mut *conn)
         .await
         .map_err(bus::Error::transport)?;
+        sqlx::query("DELETE FROM inventory.character_owners WHERE character_id = $1::uuid")
+            .bind(character_id)
+            .execute(&mut *conn)
+            .await
+            .map_err(bus::Error::transport)?;
         self.store
             .clear_owner_exec(conn, &Owner::character(character_id))
             .await

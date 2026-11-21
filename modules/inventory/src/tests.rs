@@ -214,6 +214,10 @@ async fn cleanup_owner(pool: &PgPool, owner_id: &str) {
         .bind(owner_id)
         .execute(pool)
         .await;
+    let _ = sqlx::query("DELETE FROM inventory.character_owners WHERE character_id = $1::uuid")
+        .bind(owner_id)
+        .execute(pool)
+        .await;
 }
 
 async fn tombstone_exists(pool: &PgPool, character_id: &str) -> bool {
@@ -253,6 +257,161 @@ async fn grant_starter_then_wipe_on_conn() {
     assert!(holdings.is_empty(), "grant after wipe must be skipped by the tombstone");
 
     cleanup_owner(&pool, &cid).await;
+}
+
+/// The character → player record: `record_character_owner` fills it, a redelivery is a
+/// no-op, `wipe_character` removes it, and a record redelivered after the wipe is
+/// skipped by the tombstone.
+#[tokio::test]
+async fn character_owner_record_then_wipe_on_conn() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let cid = unique_uuid(&pool).await;
+    let pid = unique_uuid(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+
+    let mut conn = pool.acquire().await.unwrap();
+    inner.record_character_owner(&mut conn, &cid, &pid).await.unwrap();
+    assert_eq!(inner.store.character_ids_of(&pid).await.unwrap(), vec![cid.clone()]);
+
+    // A redelivered character.created changes nothing.
+    inner.record_character_owner(&mut conn, &cid, &pid).await.unwrap();
+    assert_eq!(
+        inner.store.character_ids_of(&pid).await.unwrap(),
+        vec![cid.clone()],
+        "a redelivery must not add or change the record"
+    );
+
+    inner.wipe_character(&mut conn, &cid).await.unwrap();
+    assert!(
+        inner.store.character_ids_of(&pid).await.unwrap().is_empty(),
+        "the wipe must remove the owner record"
+    );
+
+    inner.record_character_owner(&mut conn, &cid, &pid).await.unwrap();
+    assert!(
+        inner.store.character_ids_of(&pid).await.unwrap().is_empty(),
+        "a record after the wipe must be skipped by the tombstone"
+    );
+
+    cleanup_owner(&pool, &cid).await;
+}
+
+/// `character.deleted` delivered before `character.created` (independent
+/// subscriptions): the record never appears.
+#[tokio::test]
+async fn character_owner_wipe_before_record_records_nothing() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let cid = unique_uuid(&pool).await;
+    let pid = unique_uuid(&pool).await;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+
+    let mut conn = pool.acquire().await.unwrap();
+    inner.wipe_character(&mut conn, &cid).await.unwrap();
+    inner.record_character_owner(&mut conn, &cid, &pid).await.unwrap();
+    assert!(inner.store.character_ids_of(&pid).await.unwrap().is_empty());
+
+    cleanup_owner(&pool, &cid).await;
+}
+
+/// `character_ids_of` lists only the asked player's characters, in id order.
+#[tokio::test]
+async fn character_ids_of_lists_one_players_characters_in_id_order() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let (pa, pb) = (unique_uuid(&pool).await, unique_uuid(&pool).await);
+    let (c1, c2, c3) = (unique_uuid(&pool).await, unique_uuid(&pool).await, unique_uuid(&pool).await);
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+
+    let mut conn = pool.acquire().await.unwrap();
+    inner.record_character_owner(&mut conn, &c1, &pa).await.unwrap();
+    inner.record_character_owner(&mut conn, &c2, &pa).await.unwrap();
+    inner.record_character_owner(&mut conn, &c3, &pb).await.unwrap();
+
+    let mut want = vec![c1.clone(), c2.clone()];
+    want.sort();
+    assert_eq!(inner.store.character_ids_of(&pa).await.unwrap(), want);
+    assert_eq!(inner.store.character_ids_of(&pb).await.unwrap(), vec![c3.clone()]);
+
+    for c in [&c1, &c2, &c3] {
+        cleanup_owner(&pool, c).await;
+    }
+}
+
+/// The wiring, through the real plane: `inventory.character-owner.v1` records the
+/// owner from a durable `character.created`, and `character.deleted` removes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn character_owner_follows_created_and_deleted_via_on_tx() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+
+    let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
+    let mut plane = asyncevents::Plane::new(pool.clone(), dsn).unwrap();
+    let ctx = Context::with_db_and_transport(pool.clone(), plane.transport());
+    ctx.registry().provide::<dyn Ownership>(
+        key("characters", "ownership"),
+        Arc::new(FakeOwnership::Miss) as Arc<dyn Ownership>,
+    );
+    ctx.registry().provide::<dyn Config>(
+        key("config", "reader"),
+        Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)) as Arc<dyn Config>,
+    );
+    let inv = Inventory::new();
+    inv.register(&ctx).unwrap();
+    inv.init(&ctx).unwrap();
+    plane.start().await.unwrap();
+
+    let cid = unique_uuid(&pool).await;
+    let pid = unique_uuid(&pool).await;
+
+    let mut tx = pool.begin().await.unwrap();
+    let created = charactersevents::Created {
+        character_id: cid.clone(),
+        player_id: pid.clone(),
+        name: "Eowyn".into(),
+        class: "novice".into(),
+    };
+    ctx.bus()
+        .emit_tx(AnyTx::new(&mut *tx), &charactersevents::CREATED, &created)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut recorded = false;
+    for _ in 0..50 {
+        if inv.inner().store.character_ids_of(&pid).await.unwrap() == vec![cid.clone()] {
+            recorded = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(recorded, "character.created did not record the character's player");
+
+    let mut tx = pool.begin().await.unwrap();
+    let deleted = charactersevents::Deleted {
+        character_id: cid.clone(),
+        player_id: pid.clone(),
+    };
+    ctx.bus()
+        .emit_tx(AnyTx::new(&mut *tx), &charactersevents::DELETED, &deleted)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut removed = false;
+    for _ in 0..50 {
+        if inv.inner().store.character_ids_of(&pid).await.unwrap().is_empty() {
+            removed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(removed, "character.deleted did not remove the owner record");
+
+    plane.stop().await;
+    cleanup_owner(&pool, &cid).await;
+    let _ = asyncevents::testing::cleanup_events(&pool, "character_id", &cid).await;
 }
 
 /// (a2) Config-validation guard: an UNKNOWN configured starter item degrades to the

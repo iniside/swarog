@@ -83,6 +83,18 @@ CREATE TABLE IF NOT EXISTS inventory.wiped_characters (
 	wiped_at     timestamptz NOT NULL DEFAULT now()
 );
 
+-- Which player owns each live character, recorded from character.created by its own
+-- subscription and removed by the character.deleted wipe: inventory's own index from a
+-- character-owned holding to its player, so a player's view can list its characters'
+-- holdings without a call into characters. Integrity is the wiped_characters tombstone
+-- (the record handler skips a wiped id), not a cross-module FK.
+CREATE TABLE IF NOT EXISTS inventory.character_owners (
+	character_id uuid PRIMARY KEY,
+	player_id    uuid NOT NULL
+);
+CREATE INDEX IF NOT EXISTS character_owners_player_idx
+	ON inventory.character_owners (player_id);
+
 CREATE TABLE IF NOT EXISTS inventory.purged_players (
 	player_id  uuid PRIMARY KEY,
 	handle     text        NOT NULL DEFAULT '',
@@ -198,8 +210,8 @@ impl Module for Inventory {
     /// Only wires up — no I/O (#8). EXACT order mirrors Go's `Init`, minus the config
     /// inventory-owned config cache Step 8 removed:
     ///   1. resolve `characters` ownership → inject into the shared state,
-    ///   2/3. the two character-lifecycle DURABLE `on_tx` subscriptions (grant-starter/
-    ///        wipe, on the HANDED conn so the effect is atomic with the checkpoint commit
+    ///   2/3. the three character-lifecycle DURABLE `on_tx` subscriptions (grant-starter,
+    ///        character-owner record, wipe; on the HANDED conn so the effect is atomic with the checkpoint commit
     ///        in the delivery tx), then the `player.deleted` purge tombstone on the same
     ///        contract,
     ///   4. resolve `config` (HARD — fail-loud, this is why config is in `requires`);
@@ -217,13 +229,13 @@ impl Module for Inventory {
         let ownership = ctx.registry().require::<dyn Ownership>(&key("characters", "ownership"));
         let _ = inner.ownership.set(ownership);
 
-        // 2/3. React to character lifecycle. Two INDEPENDENT durable subscriptions,
+        // 2/3. React to character lifecycle. INDEPENDENT durable subscriptions,
         // and the plane's contract is per-subscription ordering only ("ordering is
         // per-subscription in XID-allocation order" — asyncevents README): a
         // character's `deleted` can be delivered before its `created`. Integrity is
         // therefore a consumer-side tombstone, not a cross-module FK: the wipe
         // handler plants `inventory.wiped_characters` in its delivery tx and the
-        // grant handler skips tombstoned ids (UUIDs never recur, so the tombstone is
+        // grant and owner-record handlers skip tombstoned ids (UUIDs never recur, so the tombstone is
         // permanent truth); a per-character advisory xact-lock serializes concurrent
         // deliveries. Each effect runs on the HANDED conn so it commits atomically
         // with the subscription checkpoint in BOTH topologies.
@@ -239,6 +251,27 @@ impl Module for Inventory {
                 Box::pin(async move {
                     let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
                     granter.grant_starter(conn, &e.character_id).await
+                })
+            },
+        );
+        // The character → player record, on its OWN subscription rather than inside
+        // the starter grant's handler: a new checkpoint at `Genesis` replays the
+        // retained `character.created` history into the table, where the grant's
+        // checkpoint already sits past it, and the record is a projection the grant
+        // policy should not share a failure (or a poison-pause) with. Same ordering
+        // guard as the grant: the per-character lock and the wipe tombstone.
+        let recorder = inner.clone();
+        ctx.bus().on_tx(
+            bus::SubscriptionSpec {
+                id: "inventory.character-owner.v1",
+                start: bus::StartPosition::Genesis,
+            },
+            &charactersevents::CREATED,
+            move |mut delivery, e: charactersevents::Created| {
+                let recorder = recorder.clone();
+                Box::pin(async move {
+                    let conn = delivery.tx.downcast::<sqlx::PgConnection>()?;
+                    recorder.record_character_owner(conn, &e.character_id, &e.player_id).await
                 })
             },
         );
