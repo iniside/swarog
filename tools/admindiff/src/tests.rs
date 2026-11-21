@@ -907,6 +907,17 @@ fn a_malformed_mock_modal_portal_action_fails() {
     assert_eq!(e, want);
 }
 
+/// A `Disabled` claim with a blank label fails without a fleet, naming the claim and its action.
+#[test]
+fn a_disabled_mock_modal_claim_without_a_label_fails() {
+    let excluded = claim_exclusions();
+    let blank: Vec<_> = excluded.iter().map(|x| MockModalExclusion { portal: PortalModal::Disabled { action: "mail/cancel", label: " " }, ..*x }).collect();
+    let e = format!("{:#}", crate::pages::validate_mock_modals(&claim_inventory(), &Lists { excluded_mock_modals: &blank, ..LISTS }).expect_err("blank"));
+    assert_eq!(e, "modal drift:\n  EXCLUDED_MOCK_MODALS mail PAGES.cancelMail names no label of the disabled mail/cancel");
+    let labelled: Vec<_> = excluded.iter().map(|x| MockModalExclusion { portal: PortalModal::Disabled { action: "mail/cancel", label: "Cancel" }, ..*x }).collect();
+    crate::pages::validate_mock_modals(&claim_inventory(), &Lists { excluded_mock_modals: &labelled, ..LISTS }).expect("labelled");
+}
+
 /// The real mockup, rendered through node: every modal opener it draws on a compared page, tab
 /// or menu is declared; dropping the exclusion of `mail`'s `cancelMail` (also leaving the
 /// `mail/test-send` claim unproven) or the shell palette's declaration (failing on every compared

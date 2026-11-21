@@ -51,18 +51,23 @@ _None._
 
 ### Known limits (admin-control-plane-redesign step 13d7c)
 
-- [ ] **A `Disabled` claim is checked by its label, not by its action**
+- [ ] **Disabled claim matched by label**
   `PortalModal::Disabled` (`tools/admindiff/src/pages.rs`; accounts' suspend, suspend-header
   and delete-account): a disabled control carries no action URL
   (`core/admin/src/templates/primitives.html.tmpl` `action_button`, `menu_item`), so the crawl
   checks that the host draws a disabled control with the claim's label and no opener of the
   action, not that the control is that action. Another disabled control with the same label
   passes.
-- [ ] **An `Unseeded` claim's action is not checked**
+- [ ] **Disabled claim ignores the refusal kind**
+  A control the portal draws disabled because the action is Denied or ReadOnly passes a
+  `PortalModal::Disabled` claim exactly like a not implemented one: the drawn control carries no
+  refusal kind, so the crawl cannot tell them apart. Step 13d7c2 closes it (the action id and
+  refusal kind on every disabled control, the claim holding only for not implemented).
+- [ ] **Unseeded claim action unchecked**
   `PortalModal::Unseeded` (mail's `cancelMail`, `mail/cancel`): the dev fleet seeds no pending
-  mail, so the crawl checks only that `mail` draws no cancel opener. That `mail/cancel` is the
+  or retrying mail, so the crawl checks only that `mail` draws no cancel opener. That `mail/cancel` is the
   portal's action for it stays unchecked until Step 24b3 diffs it.
-- [ ] **An `Absent` claim is not checked against the portal**
+- [ ] **Absent claim unchecked**
   `PortalModal::Absent` (the Lore `changeRole` and `releaseAll` entries) names no portal
   action, so the crawl has nothing to look for.
 

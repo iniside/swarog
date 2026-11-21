@@ -391,7 +391,8 @@ impl<S: AsRef<str>> fmt::Display for MockOpener<S> {
 
 /// What the portal draws on its host for a mockup modal opener [`EXCLUDED_MOCK_MODALS`] lists. The
 /// crawl checks each claim on the host it fetched; a host it did not fetch (skipped or failed)
-/// checks none.
+/// checks none, and the crawl prints the claim UNCHECKED. A claim whose host is no crawl target
+/// ([`is_modal_host`]) fails the crawl.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PortalModal<'a> {
     /// The portal modal action `<module>/<action>`, served at `/admin/_action/<module>/<action>`:
@@ -462,7 +463,7 @@ pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
         "mail",
         MockOpener::Pages("cancelMail"),
         PortalModal::Unseeded("mail/cancel"),
-        "mail.modal.cancel left PAGE_MAP: the dev fleet seeds no pending mail, so the portal draws no cancel opener; Step 24b3 adds it back",
+        "mail.modal.cancel left PAGE_MAP: the portal draws the cancel opener only on pending or retrying mail, which the dev fleet does not seed; Step 24b3 adds it back",
     ),
 ];
 
@@ -746,14 +747,24 @@ pub fn validate_menus(
     Ok(())
 }
 
+/// Whether `host` is a host whose modals the crawl inventories: a compared host
+/// ([`Page::is_compared_host`]), a compared menu target, or an excluded menu of a compared host
+/// ([`excluded_menu_id`]).
+pub fn is_modal_host(page_map: &[Page], excluded_menus: &[(&str, &str, &str)], host: &str) -> bool {
+    let hosts = compared_hosts(page_map);
+    let page = hosts.iter().any(|h| h == host);
+    let menu = page_map.iter().any(|p| p.is_menu() && p.is_compared_target() && p.id() == host);
+    let excluded_menu = excluded_menus.iter().any(|(h, kind, _)| hosts.iter().any(|c| c == h) && excluded_menu_id(h, kind) == host);
+    page || menu || excluded_menu
+}
+
 /// Checks the modal exclusions of `lists` against its page map and menu exclusions, which its
 /// problems name `EXCLUDED_MODALS`, `PAGE_MAP` and `EXCLUDED_MENUS`: each exclusion is listed
-/// once, with a reason, names as its host a compared host ([`Page::is_compared_host`]), a
-/// menu target of one, or an excluded menu of one ([`excluded_menu_id`]), and a
+/// once, with a reason, names as its host one whose modals the crawl inventories
+/// ([`is_modal_host`]), and a
 /// `<module>/<action>` of `[a-z0-9._-]+` ids, and is not a modal entry of that host too.
 pub fn validate_excluded_modals(lists: &Lists) -> Result<()> {
     let Lists { page_map, excluded_menus, excluded_modals, .. } = *lists;
-    let hosts = compared_hosts(page_map);
     let mut problems = Vec::new();
     let mut seen = BTreeSet::new();
     for (host, action, why) in excluded_modals {
@@ -763,10 +774,7 @@ pub fn validate_excluded_modals(lists: &Lists) -> Result<()> {
         if why.why.trim().is_empty() {
             problems.push(format!("EXCLUDED_MODALS {host} modal {action} has no reason"));
         }
-        let page = hosts.iter().any(|h| h == host);
-        let menu = page_map.iter().any(|p| p.is_menu() && p.is_compared_target() && p.id() == *host);
-        let excluded_menu = excluded_menus.iter().any(|(h, kind, _)| hosts.iter().any(|c| c == h) && excluded_menu_id(h, kind) == *host);
-        if !page && !menu && !excluded_menu {
+        if !is_modal_host(page_map, excluded_menus, host) {
             problems.push(format!(
                 "EXCLUDED_MODALS lists {host} modal {action}, and {host} is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu"
             ));
@@ -836,6 +844,11 @@ pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: 
         }
         if *opener == palette {
             problems.push(format!("EXCLUDED_MOCK_MODALS lists {host} {opener}, the shell palette PALETTE_ONCLICK declares on every host"));
+        }
+        if let PortalModal::Disabled { action, label } = portal {
+            if label.trim().is_empty() {
+                problems.push(format!("EXCLUDED_MOCK_MODALS {host} {opener} names no label of the disabled {action}"));
+            }
         }
         if let Some(action) = portal.action() {
             if !is_action_path(action) {

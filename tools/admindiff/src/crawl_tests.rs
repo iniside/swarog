@@ -514,6 +514,8 @@ struct Crawl {
     failures: Vec<String>,
     /// The targets the crawl reported EMPTY.
     empty: Vec<String>,
+    /// The `EXCLUDED_MOCK_MODALS` claims the crawl printed UNCHECKED.
+    unchecked: Vec<String>,
     out: ScratchDir,
     server: Server,
 }
@@ -636,11 +638,11 @@ async fn crawl_lists_into(out: ScratchDir, site: Site, lists: &Lists<'_>, allow_
         allow_empty,
         out: out.path().join("run"),
     };
-    let (result, failures, empty) = match run_with(&cfg, lists).await {
-        Ok(o) => (Ok(o.failures.is_empty()), o.failures, o.empty),
-        Err(e) => (Err(e), Vec::new(), Vec::new()),
+    let (result, failures, empty, unchecked) = match run_with(&cfg, lists).await {
+        Ok(o) => (Ok(o.failures.is_empty()), o.failures, o.empty, o.unchecked),
+        Err(e) => (Err(e), Vec::new(), Vec::new(), Vec::new()),
     };
-    Crawl { result, failures, empty, out, server }
+    Crawl { result, failures, empty, unchecked, out, server }
 }
 
 #[tokio::test]
@@ -1780,9 +1782,15 @@ async fn a_tab_page_menu_target_holds_its_modals_to_the_page_rules() {
 /// fails when its host, a page head or a menu, draws no disabled control with its label, or
 /// draws an opener of its action; the `Unseeded` claim fails when mail draws a cancel opener.
 /// Neither drawn opener fails as undeclared too: the claim names it.
+///
+/// The healthy site draws its disabled controls from the production `EXCLUDED_MOCK_MODALS`
+/// labels ([`disabled_labels`]), so its clean crawl proves the checker, not that the claims
+/// hold on the portal; a live crawl of the dev fleet proves that.
 #[tokio::test]
 async fn each_portal_claim_of_a_mockup_modal_exclusion_holds_on_its_host() {
-    crawl(Site::healthy(), false).await.assert_clean("the healthy site draws what each claim says");
+    let c = crawl(Site::healthy(), false).await;
+    c.assert_clean("the healthy site draws what each claim says");
+    assert!(c.unchecked.is_empty(), "every claim's host was fetched: {:?}", c.unchecked);
     let undeclared = "no EXCLUDED_MOCK_MODALS claim names it";
 
     let healthy = Site::healthy();
@@ -1847,4 +1855,37 @@ async fn an_action_claim_is_fetched_where_drawn_and_fails_where_not() {
     assert!(c.out.path().join("run").join("raw").join("mail.mock-modal.guild.kick.html").is_file(), "the claimed modal's body is kept");
     let c = crawl_lists_into(ScratchDir::new("crawl"), Site::healthy(), &lists, false, false).await;
     c.assert_failed_with("mail draws no guild/kick", "EXCLUDED_MOCK_MODALS mail PAGES.kick says the portal opens guild/kick, which mail does not draw");
+}
+
+/// With `--allow-empty` and players listing no row, the player page and both user menus are not
+/// fetched: the crawl writes the CLEAN marker, and reports each `EXCLUDED_MOCK_MODALS` claim of
+/// those hosts UNCHECKED, in list order; mail's claim, on a fetched host, is checked.
+#[tokio::test]
+async fn a_claim_on_an_unfetched_host_is_reported_unchecked() {
+    let empty = Site::healthy().with(&panel_url("players"), ok(fragment(Some("ok"), "players panel", "")));
+    let c = crawl_with(empty, false, true).await;
+    c.assert_clean("--allow-empty: players lists no row");
+    let skipped = ["player", "players.menu.user", "player.menu.user"];
+    let want: Vec<String> = EXCLUDED_MOCK_MODALS
+        .iter()
+        .filter(|x| skipped.contains(&x.host))
+        .map(|x| format!("EXCLUDED_MOCK_MODALS {} {}", x.host, x.opener))
+        .collect();
+    assert_eq!(want.len() + 1, EXCLUDED_MOCK_MODALS.len(), "every claim but mail's is on a skipped host");
+    assert_eq!(c.unchecked, want);
+}
+
+/// A claim whose host is no crawl target fails, naming the claim and the host, and is not
+/// reported UNCHECKED; the production claims crawl clean.
+#[tokio::test]
+async fn a_claim_on_a_host_that_is_no_crawl_target_fails() {
+    let claim = MockModalExclusion { host: "nowhere", opener: MockOpener::Pages("kick"), portal: PortalModal::Absent, why: "why" };
+    let claims: Vec<_> = unmapped_claims(PAGE_MAP).into_iter().chain([claim]).collect();
+    let lists = Lists { excluded_mock_modals: &claims, ..LISTS };
+    let c = crawl_lists_into(ScratchDir::new("crawl"), Site::healthy(), &lists, false, false).await;
+    c.assert_failed_with(
+        "nowhere is no crawl target",
+        "EXCLUDED_MOCK_MODALS nowhere PAGES.kick names host nowhere, which is no PAGE_MAP page or tab that is not pending, menu target of one or EXCLUDED_MENUS menu",
+    );
+    assert!(c.unchecked.is_empty(), "{:?}", c.unchecked);
 }

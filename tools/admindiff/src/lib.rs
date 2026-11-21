@@ -68,7 +68,8 @@ USAGE:
             contradicts: an Action claim's action it does not draw, a Disabled claim's action it
             draws an opener of or whose label no disabled control of it carries, and an Unseeded
             claim's action it draws an opener of (an Absent claim names no action and is not
-            checked). It fails, too, on a fetched page, its slots loaded, whose
+            checked), and on a claim whose host is no crawl target; a claim whose host it did
+            not fetch is printed as an UNCHECKED EXCLUDED_MOCK_MODALS <host> <opener> line. It fails, too, on a fetched page, its slots loaded, whose
             [data-palette] elements are other than one hidden .scrim (the shell's search
             palette, which admin.js opens) or that draws other than one [data-action=palette]
             opener of it
