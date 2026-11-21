@@ -49,6 +49,22 @@ _None._
   src/admin.rs; inventory uses 10. Source:
   docs/plans/2026-09-05-1921-friends-module-plan.md:601 (2026-09-05).
 
+### Known limits (admin-control-plane-redesign step 13d7d)
+
+- [ ] **One opener call may append more than one element**
+  A3 of step 13d7d, dropped when the owner froze the mock harness (2026-11-21). In
+  `tools/admindiff/src/mock.rs` the menu and modal renders take the first element their
+  opener appends; later elements under the same `UI.openMenu` or modal opener call are
+  neither compared nor failed as loose. The renders also read the production
+  `EXCLUDED_MOCK_APPENDS` (`production_appenders`) while the probe reads the lists it is
+  given, and `hasClass` has no caller. No real mockup opener appends a second element
+  today.
+- [ ] **State switchers in `onchange`/`oninput` are not probed**
+  S7 of step 13d7d, dropped with the harness freeze. The probe runs only `onclick`, so
+  `PAGES.auditTopic` (`UILayout/redesign/assets/pages-platform.js:121`) and
+  `PAGES.effUser`/`effRepo` (`pages-lore.js:158`) fall under no PAGE_MAP /
+  `NON_TAB_KEYS` rule. Matters once the audit page is mapped (it is `Route::Pending`).
+
 ### Known limits (admin-control-plane-redesign step 13d7c)
 
 - [ ] **Unseeded claim action unchecked**
@@ -89,3 +105,12 @@ _None._
   So a service built without its admin provider, or a peer missing from the source
   list, drops its module silently, and `admindiff crawl` passes. Closing it needs a
   per-source declaration of the modules it is expected to serve. Owner, 2026-11-19.
+
+### Deferred
+
+- [ ] **The crawl never runs an action**
+  Owner, 2026-11-21. `admindiff crawl` only GETs pages, menus and modals (its one POST is
+  the login, `tools/admindiff/src/crawl.rs:313`), so it proves a control and its modal are
+  drawn, not that the action reaches its module. Idea: on the dev fleet, submit the safe
+  actions' forms and check the outcome. Today the delivery is covered by the `core/admin`
+  tests and splitproof only.
