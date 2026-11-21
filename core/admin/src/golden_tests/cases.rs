@@ -463,6 +463,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     };
     panel!("labelled_queue_cells", labelled_case("panel", Primitive::WorkQueue(queue)));
     panel!("table_row_actions", table_row_actions_case());
+    panel!("table_row_icon_only", table_row_icon_only_case());
     panel!(
         "table_noun_later_page",
         PanelCase {

@@ -39,6 +39,7 @@ fn action(id: &str, point: ActionPoint) -> ActionDecl {
         implemented: true,
         emphasis: Emphasis::Default,
         trailing_icon: false,
+        icon_only: false,
         when_empty: false,
         prepare: false,
     }
@@ -149,6 +150,28 @@ fn a_readonly_contribution_may_carry_an_unimplemented_action_or_a_link() {
         params: Default::default(),
     });
     assert_eq!(findings(&[readonly_queue(|a| ActionDecl { then: link, ..a })]), Vec::<String>::new());
+}
+
+/// The clean fixture with a `dl` action built by `dl` from an icon-only `TableRow` on `queue`.
+fn icon_only_row(dl: impl FnOnce(ActionDecl) -> ActionDecl) -> Manifest {
+    let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
+    let row = ActionDecl { icon_only: true, ..action("dl", ActionPoint::TableRow("queue".into())) };
+    m.actions.push(dl(row));
+    m
+}
+
+#[test]
+fn icon_only_needs_a_table_row_with_an_icon() {
+    assert_eq!(findings(&[icon_only_row(|a| a)]), Vec::<String>::new());
+    assert_eq!(
+        findings(&[icon_only_row(|a| ActionDecl { icon: String::new(), ..a })]),
+        vec![r#"mail: action "dl" sets icon_only but has no icon"#.to_string()]
+    );
+    let tool = |a| ActionDecl { point: ActionPoint::PanelTool("queue".into()), ..a };
+    assert_eq!(
+        findings(&[icon_only_row(tool)]),
+        vec![r#"mail: action "dl" sets icon_only but is not a TableRow"#.to_string()]
+    );
 }
 
 #[test]

@@ -69,6 +69,7 @@ pub(super) fn decl(id: &str, label: &str, icon: &str, then: Then) -> ActionDecl 
         implemented: true,
         emphasis: Emphasis::Default,
         trailing_icon: false,
+        icon_only: false,
         when_empty: false,
         prepare: false,
     }
@@ -623,6 +624,38 @@ pub(super) fn table_row_actions_case() -> PanelCase {
             action(MODULE, &wipe, Role::Operator, true),
             tool(&decl("export", "Export", "download", Then::Invoke)),
         ],
+        ..PanelCase::new(PanelState::Ok, Some(body(Primitive::DataTable(table))))
+    }
+}
+
+/// A save slot's download as the mockup draws it (pages-core.js:141): an icon-only ghost
+/// `TableRow` action draws its icon alone with its label as the accessible name, enabled on
+/// the first row and refused as not implemented on the second.
+pub(super) fn table_row_icon_only_case() -> PanelCase {
+    let icon_only = |d: ActionDecl| table_row(ActionDecl { emphasis: Emphasis::Ghost, icon_only: true, ..d });
+    let download = icon_only(decl("download", "Download", "download", Then::Invoke));
+    let fetch = icon_only(ActionDecl { implemented: false, ..decl("fetch", "Fetch", "download", Then::Invoke) });
+    let row = |slot: &str, action: &str| Row {
+        entity: None,
+        cells: vec![cell(CellKind::Mono, slot)],
+        highlight: false,
+        item: Some(slot.to_string()),
+        actions: strings(&[action]),
+    };
+    let table = DataTable {
+        columns: vec![column("slot", "Slot", Align::Left)],
+        rows: vec![row("autosave", "download"), row("manual-1", "fetch")],
+        page: PageInfo { next_cursor: None, size: 25, total: None },
+        filters: Vec::new(),
+        search_placeholder: None,
+        selectable: false,
+        list_columns_for: None,
+        list_columns_at: 0,
+        item_noun: None,
+    };
+    PanelCase {
+        entity: Some(entity("player", "p-1001")),
+        actions: vec![tool(&download), tool(&fetch)],
         ..PanelCase::new(PanelState::Ok, Some(body(Primitive::DataTable(table))))
     }
 }

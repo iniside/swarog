@@ -648,6 +648,9 @@ pub struct ActionDecl {
     pub emphasis: Emphasis,
     /// Draws the icon after the label; valid only on a `Then::Link` action.
     pub trailing_icon: bool,
+    /// Draws the icon alone, the label kept as its accessible name; valid only on a
+    /// `TableRow` action with an icon.
+    pub icon_only: bool,
     /// Renders on an empty panel; valid only on a `PanelTool` action.
     pub when_empty: bool,
     /// The modal's spec comes from `Provider::prepare` for the bound item; the declared
@@ -1491,6 +1494,7 @@ mod tests {
             implemented: true,
             emphasis: Emphasis::Default,
             trailing_icon: false,
+            icon_only: false,
             when_empty: false,
             prepare: false,
         };

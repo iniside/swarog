@@ -930,6 +930,7 @@ pub struct controlplane::ActionDecl
 pub controlplane::ActionDecl::danger: bool
 pub controlplane::ActionDecl::emphasis: controlplane::Emphasis
 pub controlplane::ActionDecl::icon: alloc::string::String
+pub controlplane::ActionDecl::icon_only: bool
 pub controlplane::ActionDecl::id: alloc::string::String
 pub controlplane::ActionDecl::implemented: bool
 pub controlplane::ActionDecl::label: alloc::string::String

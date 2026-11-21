@@ -124,12 +124,15 @@
 {%- endmacro %}
 
 {#- A `TableRow` action in its row's trailing cell: a ghost emphasis keeps `ghost` beside a
-    danger's `danger-ghost` (pages-core.js:122,124). -#}
+    danger's `danger-ghost` (pages-core.js:122,124). An icon-only action draws its icon alone
+    and keeps its label as the accessible name (pages-core.js:141). -#}
 {%- macro row_button(a) -%}
 {%- set c = "btn sm" ~ (" ghost" if a.emphasis == "ghost" else "") ~ (" danger-ghost" if a.danger else "") -%}
-{%- if not a.enabled %}<button type="button" class="{{ c }}" disabled title="{{ a.hint }}"{{ refused(a) }}>{{ action_content(a) }}</button>
-{%- elif a.then == "link" %}<a class="{{ c }}" href="{{ a.href }}" style="text-decoration:none">{{ action_content(a) }}</a>
-{%- else %}<button type="button" class="{{ c }}"{{ hx_action(a) }}>{{ action_content(a) }}</button>
+{%- set named %}{% if a.icon_only %} aria-label="{{ a.label }}"{% endif %}{% endset -%}
+{%- set content %}{% if a.icon_only %}{{ icon(a.icon) }}{% else %}{{ action_content(a) }}{% endif %}{% endset -%}
+{%- if not a.enabled %}<button type="button" class="{{ c }}" disabled title="{{ a.hint }}"{{ named }}{{ refused(a) }}>{{ content }}</button>
+{%- elif a.then == "link" %}<a class="{{ c }}" href="{{ a.href }}"{{ named }} style="text-decoration:none">{{ content }}</a>
+{%- else %}<button type="button" class="{{ c }}"{{ named }}{{ hx_action(a) }}>{{ content }}</button>
 {%- endif -%}
 {%- endmacro %}
 

@@ -20,6 +20,8 @@ pub(crate) struct ActionItem {
     pub(crate) emphasis: &'static str,
     /// The icon follows the label.
     pub(crate) trailing_icon: bool,
+    /// The icon alone, the label as its accessible name: only a `TableRow` button draws it.
+    pub(crate) icon_only: bool,
     /// Shown on an empty panel.
     pub(crate) when_empty: bool,
     /// An `ActionPoint::QueueRow` action: drawn on the queue items listing it, never in the

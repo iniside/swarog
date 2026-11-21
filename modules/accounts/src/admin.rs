@@ -340,6 +340,7 @@ fn not_implemented(
         implemented: false,
         emphasis,
         trailing_icon: false,
+        icon_only: false,
         when_empty: false,
         prepare: false,
     }

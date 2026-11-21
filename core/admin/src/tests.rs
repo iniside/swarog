@@ -1023,6 +1023,7 @@ fn action_decl(id: &str, point: ActionPoint, implemented: bool) -> ActionDecl {
         implemented,
         emphasis: Emphasis::Default,
         trailing_icon: false,
+        icon_only: false,
         when_empty: false,
         prepare: false,
     }

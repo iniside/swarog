@@ -223,6 +223,7 @@ pub(crate) fn action_item(
         danger: decl.danger,
         emphasis: render::emphasis_name(decl.emphasis),
         trailing_icon: decl.trailing_icon,
+        icon_only: decl.icon_only,
         when_empty: decl.when_empty,
         queue_row: matches!(decl.point, ActionPoint::QueueRow(_)),
         table_row: matches!(decl.point, ActionPoint::TableRow(_)),
