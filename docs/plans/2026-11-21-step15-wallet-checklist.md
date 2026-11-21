@@ -166,7 +166,7 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 **G4. Which part lands the Grant-or-revoke panel** (15a2 vs 15a3).
 - Proposal: 15a2 declares the `economy` page with the form panel and its mode actions; 15a3 adds Currencies, Ledger, the nav section and the `pages.rs` mapping.
 
-**G5. `request_id` → `idempotency_key`** (15a2, X8).
+**G5. `request_id` → `idempotency_key`** (15a2, X8). Owner (owner 2026-11-21): the Economy form must refuse a player id that names no player (no ghost balances from a typo); this lands in 15a2, not as a Known limit.
 - Proposal: key `admin:<request_id>`, refused if over 128 bytes; never under `starter:` (`wa:55-69`).
 - The panel form's id is `<contribution id>:<token>` (`core/admin/src/routes.rs:876`), a row-action modal's `<action id>:<token>` (`core/admin/src/routes.rs:1028`), both minted at `core/admin/src/engine/forms.rs:63-66`, the token 43 base64url chars (`core/admin/src/lib.rs:823-828`). The key is 50 bytes plus that id (64 for `admin:currency.grant:<token>`), so it fits while the id is at most `MAX_IDEMPOTENCY_KEY_BYTES` − 50 bytes.
 - A resubmit of one instance with a changed field is a 409 (identity includes reason, `wa:48-52`); it shows as a form error.
@@ -187,7 +187,7 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 
 **G11. Currencies data** — DECIDED (owner 2026-11-21): Cap shows "—"; Supply/Holders real (15a3). Supply `sum(amount)` and Holders `count(*) WHERE amount > 0` per currency: exact, unindexed (no index leads with `currency`, `wl:78`), with a comment. Cap: wallet has no cap; proposal "—" (truthful constant) instead of `ds:173`'s FAKE. Kind: `Tone::Accent` on `hard`, the real premium kind; none otherwise.
 
-**G12. Ledger toolbar and foot** — DECIDED (owner 2026-11-21) with G2 (real ledger): proposal as written (15a3). Search: exact player id or tx id. Currency filter: `Select` over catalog codes. Reason filter: `Select` over the reasons wallet mints (`starter-grant` `wp:17`, `admin.grant`, `admin.revoke` per G6), prefix match. Foot: exact `count(*)` with a comment, `Noun::new("transaction", "transactions")`. Alternative: no Reason filter (a contract-gap accept line).
+**G12. Ledger toolbar and foot** — DECIDED (owner 2026-11-21) with G2 (real ledger): proposal as written, except the Reason filter (owner, option a): it selects the system reasons (e.g. starter) and admin movements are recognised by the idempotency key prefix `admin:`, since under G6 (a) an admin reason is free text (15a3). Search: exact player id or tx id. Currency filter: `Select` over catalog codes. Reason filter: `Select` over the reasons wallet mints (`starter-grant` `wp:17`, `admin.grant`, `admin.revoke` per G6), prefix match. Foot: exact `count(*)` with a comment, `Noun::new("transaction", "transactions")`. Alternative: no Reason filter (a contract-gap accept line).
 
 **G13. Create currency** (15a4; Q1, D6). `currency.create` (§4) with Code (≤32 B), Name (≤64 B), Kind (string ≤32 B, help "soft or hard"), Decimals (0–18). An existing code is a 409: today's `write_currency_tx` either overwrites or silently skips (`ws:85-104,540-563`). Proposal: replace the dead `OnConflict::Overwrite` with a refusing insert. Its modal has no mockup opener: an `EXCLUDED_MODALS` row (`pages:336`) with reason D6. Under `when_empty` the tool draws only on an empty catalog, so never on a seeded dev fleet.
 
