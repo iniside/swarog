@@ -2965,7 +2965,7 @@ gate.
     the entity tab body (shell:69's single-panel `stack` branch). The non-last row's 12px
     bottom margin stays on the row element the mockup draws. Accept lines that only covered
     the dropped wrappers are deleted. The panel `form` wrapper and its hidden inputs stay
-    (they carry the submit) and keep a template-choice accept line. (R1.)
+    (they carry the submit) and keep a template-choice accept line. (R1.) Landed as 5a94f07c.
 
 ### Step 24a — Typed `asyncevents::admin` errors
 

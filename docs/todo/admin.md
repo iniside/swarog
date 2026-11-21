@@ -8,6 +8,8 @@ _None._
 
 ## Owner checks
 
+- **admindiff crawl after step 13e6:** on a dev fleet, run `admindiff crawl` and check that
+  `mail` and `players` show no new drift now that their stack-wrapper accept lines are gone.
 - **The popover swap in a browser:** open a row menu on `/admin/players` in a live fleet and
   check that `admin.js` replaces the popover body; no test runs it in a browser.
 
@@ -89,6 +91,19 @@ _None._
 - [ ] **The mockup's unavailable wallet form draws the request id; the portal leaves it out**
   13e5. `pages-platform.js:176` draws the field disabled with an id while wallet-svc is down;
   the portal draws the field only on a minted instance (plan 13e5). Step 15a2 hand-checks it.
+
+- [ ] **The `panels` style argument and the bare-row CSS margin run in no golden**
+  13e6. No golden has a non-last row with two or more panels, so the `style` argument of
+  `panels` (`core/admin/src/templates/primitives.html.tmpl:207-209`) is unpinned. The 12px
+  margin under a bare non-last row panel is a CSS rule (`core/admin/src/portal.css:4`) that no
+  golden or admindiff check sees.
+- [ ] **A bare grid panel no longer gets the mockup's `min-width: 0`**
+  13e6. `.grid > * { min-width: 0 }` (`UILayout/design-system/components/bundle.css:426`)
+  now lands on the `display: contents` `.slot`, not the panel; content in a panel head that
+  cannot wrap could stretch a column on a narrow screen. Fix: `.grid > .slot > * { min-width: 0 }`.
+- [ ] **The dashboard keeps its single-panel `div.stack` wrappers**
+  13e6 covers only layout rows and entity tabs; `tools/admindiff/accept/index.txt:12,15` still
+  accept the dashboard wrappers, which the audit port (Recent operator activity) will inherit.
 
 ### Known limits (admin-control-plane-redesign step 13d7d)
 
