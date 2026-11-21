@@ -41,7 +41,8 @@ pub enum Route {
     /// Ported: the portal route the crawl fetches and the diff compares.
     Mapped(&'static str),
     /// Ported entity page: the crawl follows the first `tr.clickable` `data-href` of the
-    /// named `Mapped` list page, whose entity ids a fleet mints at random.
+    /// named `Mapped` list page, whose entity ids a fleet mints at random; a tab entry follows
+    /// the first row whose tab lists a row (`crawl`), the first row when none does.
     FirstRow(&'static str),
     /// Not ported yet. `crawl` prints it on every run and `diff` refuses it.
     Pending,

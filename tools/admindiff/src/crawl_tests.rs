@@ -362,6 +362,9 @@ fn other_fragment(state: Option<&str>, extra: &str) -> String {
     fragment(state, "Subscriptions", &format!("{extra}{}", modal_buttons(other_mapped().page, false)))
 }
 
+/// The row a healthy tab's panel lists.
+const TAB_ROW: &str = r#"<table><tbody><tr><td>a row</td></tr></tbody></table>"#;
+
 fn slot(url: &str) -> String {
     format!(r#"<div class="slot" hx-get="{url}" hx-trigger="load" hx-swap="outerHTML"><div class="sk"></div></div>"#)
 }
@@ -458,7 +461,9 @@ impl Site {
             let slot_url = panel_url(&page);
             let html = format!("{tab}{}{}{}", content(&slot_url), menu_buttons(&page), excluded_buttons(&page));
             routes.insert(route, ok(shell(&links, &page, &modal_buttons(&page, true), &html)));
-            routes.insert(slot_url, ok(fragment(Some("ok"), &format!("{page} panel"), &modal_buttons(&page, false))));
+            // A tab's panel lists a row, so the crawl follows the first row ([`super::lists_rows`]).
+            let listed = if entry.tab.is_some() { TAB_ROW } else { "" };
+            routes.insert(slot_url, ok(fragment(Some("ok"), &format!("{page} panel"), &format!("{listed}{}", modal_buttons(&page, false)))));
         }
         for (id, host, kind) in menus_in(page_map) {
             routes.insert(menu_url(kind, &host), ok(menu_body_in(page_map, &id)));
@@ -724,8 +729,10 @@ async fn a_healthy_portal_crawls_clean_and_writes_the_assembled_pages() {
         assert!(html.contains(&format!("{page} panel")), "the followed page's slot is replaced: {html}");
     }
     let panels: Vec<Request> = c.server.requests().into_iter().filter(|r| r.path.starts_with("/admin/_panel/")).collect();
-    let want = pages.len() + followers().len() + 1;
-    assert_eq!(panels.len(), want, "one fragment per mapped page, followed page and the nav-only page: {panels:?}");
+    // A tab follower's page is loaded once more by the probe that picks its row.
+    let tabs = followers_in(PAGE_MAP).iter().filter(|(entry, _)| entry.tab.is_some()).count();
+    let want = pages.len() + followers().len() + tabs + 1;
+    assert_eq!(panels.len(), want, "one fragment per mapped page, followed page, tab probe and the nav-only page: {panels:?}");
     assert!(panels.iter().all(|r| r.hx), "fragments are fetched with HX-Request: {panels:?}");
 }
 
@@ -1130,7 +1137,7 @@ async fn the_healthy_site_serves_a_tab_entry_its_menus_and_modals() {
     let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([tab, items_menu(), entry]).collect();
     let c = crawl_modals(Site::with_map(&page_map, &slot), &page_map, EXCLUDED_MODALS, false).await;
     c.assert_clean("the healthy site of a map with a tab entry");
-    assert_eq!(fetched(&c, &panel_url("player.items")), 1, "{:?}", c.server.requests());
+    assert_eq!(fetched(&c, &panel_url("player.items")), 2, "the probe and the crawl: {:?}", c.server.requests());
     let run = c.out.path().join("run");
     for id in ["player.items", "player.items.menu.user", "player.items.modal.test"] {
         assert!(run.join(format!("{id}.html")).is_file(), "{id} is written");
@@ -1331,6 +1338,40 @@ fn selects_tab_needs_the_selected_tab_with_that_id() {
     assert!(!super::selects_tab(&doc(fallback), "items"), "the portal fell back to its first tab");
 }
 
+#[test]
+fn row_hrefs_lists_every_clickable_row_in_order() {
+    let doc = crate::html::parse(&rows("/admin/e/first/row", "")).expect("parses");
+    assert_eq!(super::row_hrefs(&doc), ["/admin/e/first/row", "/admin/e/second/row"], "a plain row is no clickable row");
+    assert!(super::row_hrefs(&[]).is_empty());
+}
+
+/// A tab entry `player.items` follows the first row of `players` whose tab page, its slots
+/// loaded, lists a row: the first row's tab lists none, so the crawl compares the second
+/// row's, which lists one in its slot; when no row's tab lists a row it keeps the first row.
+#[tokio::test]
+async fn a_tab_target_follows_the_first_row_whose_tab_lists_a_row() {
+    let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([items_tab(), items_menu()]).collect();
+    let healthy = Site::with_map(&page_map, &slot);
+    let second = "/admin/e/second/row?tab=items";
+    let first_page = healthy.routes.get(&items_route()).expect("the site serves the first row's tab").body.clone();
+    let listed_slot = "/admin/_panel/second/items";
+    let listed = r#"<table><tbody><tr><td>an item</td></tr></tbody></table>"#;
+    let second_page = first_page.replace(&panel_url("player.items"), listed_slot).replace(&escaped(&items_route()), &escaped(second));
+    // The first row's tab panel lists no row.
+    let empty = ok(fragment(Some("ok"), "player.items panel", ""));
+    let healthy = healthy.with(&panel_url("player.items"), empty);
+    let site = healthy.clone().with(second, ok(second_page)).with(listed_slot, ok(fragment(Some("ok"), "second panel", listed)));
+    let picked = crawl_map(site, &page_map).await;
+    picked.assert_clean("the second row's tab lists a row");
+    let page = std::fs::read_to_string(picked.out.path().join("run").join("player.items.html")).expect("player.items.html");
+    assert!(page.contains("second panel") && page.contains("an item"), "the crawl compares the second row's tab: {page}");
+
+    let kept = crawl_map(healthy, &page_map).await;
+    kept.assert_clean("no row's tab lists a row");
+    let page = std::fs::read_to_string(kept.out.path().join("run").join("player.items.html")).expect("player.items.html");
+    assert!(page.contains("player.items panel"), "the crawl keeps the first row's tab: {page}");
+}
+
 /// A page map with a tab entry `player.items`: the crawl fetches the first row's page with
 /// `?tab=items`; a page that falls back to its first tab fails the crawl, and one that draws
 /// the tab selected crawls clean and writes `player.items.html`.
@@ -1358,12 +1399,12 @@ async fn a_tab_target_fetches_its_tab_and_fails_unless_the_page_selects_it() {
 
     let fallback = crawl_map(healthy.clone().with(&tabbed, with_tabs("profile")), &page_map).await;
     fallback.assert_failed("the page fell back to its first tab");
-    assert_eq!(fetched(&fallback), 1, "the tab target is fetched with ?tab=items: {:?}", fallback.server.requests());
+    assert_eq!(fetched(&fallback), 2, "the tab target is probed and fetched with ?tab=items: {:?}", fallback.server.requests());
 
     let selected = crawl_map(healthy.with(&tabbed, with_tabs("items")), &page_map).await;
     assert!(matches!(selected.result, Ok(true)), "{:?}", selected.result);
     assert!(selected.clean_marker(), "a crawl reaching the tab writes {CLEAN_MARKER}");
-    assert_eq!(fetched(&selected), 1, "{:?}", selected.server.requests());
+    assert_eq!(fetched(&selected), 2, "{:?}", selected.server.requests());
     let page = std::fs::read_to_string(selected.out.path().join("run").join("player.items.html")).expect("player.items.html");
     assert!(page.contains("player panel") && page.contains(r#"class="tab on""#), "{page}");
 }

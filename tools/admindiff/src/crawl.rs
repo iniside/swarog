@@ -1,5 +1,8 @@
 //! `admindiff crawl`: log in, fetch every page the nav links and the page map name, load
 //! each page's slots the way htmx does, and write the responses under the run directory.
+//! A `FirstRow` page follows the first row of its list; a `FirstRow` tab follows the first row
+//! whose tab page, its slots loaded, lists a row, and the first row when none does, so a tab
+//! with an empty state on one entity is compared on another that has rows.
 //! Every declared target must be reached: a mapped page that fails, a `FirstRow` page whose
 //! list has no row (unless `--allow-empty`), a tab the portal does not select and a menu
 //! target whose page draws no menu of its kind all fail the crawl. A menu target's output is
@@ -204,7 +207,8 @@ async fn run_with(cfg: &Config, lists: &Lists<'_>) -> Result<Outcome> {
             failures.push(format!("{page}: its list page {list} was not crawled"));
             continue;
         };
-        let Some(row) = first_row_href(doc) else {
+        let rows = row_hrefs(doc);
+        let Some(first) = rows.first() else {
             println!("EMPTY {page}: {list} lists no row to follow, nothing to crawl");
             if !cfg.allow_empty {
                 failures.push(format!("{page}: {list} lists no row to follow (--allow-empty skips it)"));
@@ -213,10 +217,32 @@ async fn run_with(cfg: &Config, lists: &Lists<'_>) -> Result<Outcome> {
             continue;
         };
         let route = match entry.tab {
-            Some(tab) => with_tab(&row, tab),
-            None => row,
+            None => {
+                println!("page {page}  {first}  (first row of {list})");
+                first.clone()
+            }
+            Some(tab) => {
+                let mut picked = None;
+                for row in &rows {
+                    let route = with_tab(row, tab);
+                    if probe_page(&client, cfg, &route).await.is_some_and(|d| lists_rows(&d)) {
+                        picked = Some(route);
+                        break;
+                    }
+                }
+                match picked {
+                    Some(route) => {
+                        println!("page {page}  {route}  (first row of {list} whose tab {tab} lists a row)");
+                        route
+                    }
+                    None => {
+                        let route = with_tab(first, tab);
+                        println!("page {page}  {route}  (first row of {list}: no row's tab {tab} lists a row)");
+                        route
+                    }
+                }
+            }
         };
-        println!("page {page}  {route}  (first row of {list})");
         pages += 1;
         match crawl_page(&client, cfg, &page, &route, &mut failures).await {
             Ok((n, doc)) => {
@@ -337,11 +363,43 @@ async fn login(client: &Client, cfg: &Config) -> Result<Vec<Node>> {
     Ok(doc)
 }
 
-/// The `data-href` of the first `tr.clickable` in `doc`.
-fn first_row_href(doc: &[Node]) -> Option<String> {
-    find_in(doc, &|e| e.tag == "tr" && e.has_class("clickable") && e.attr("data-href").is_some())
-        .and_then(|tr| tr.attr("data-href"))
-        .map(str::to_string)
+/// The `data-href` of every `tr.clickable` in `doc`, in document order.
+fn row_hrefs(doc: &[Node]) -> Vec<String> {
+    let mut rows = Vec::new();
+    find_all(doc, &|e| e.tag == "tr" && e.has_class("clickable") && e.attr("data-href").is_some(), &mut rows);
+    rows.iter().filter_map(|tr| tr.attr("data-href")).map(str::to_string).collect()
+}
+
+/// `route` with its slots loaded as htmx loads them, or `None` when a request answers non-2xx
+/// or a body does not parse or assemble: a probe for a row to follow, which reports no
+/// failure, counts no fragment and writes nothing.
+async fn probe_page(client: &Client, cfg: &Config, route: &str) -> Option<Vec<Node>> {
+    let mut doc = html::parse(&probe_get(client, cfg, route, false).await?).ok()?;
+    for _ in 0..MAX_ROUNDS {
+        let urls = pending_slots(&doc);
+        if urls.is_empty() {
+            break;
+        }
+        let mut parsed = Vec::with_capacity(urls.len());
+        for url in &urls {
+            parsed.push(html::parse(&probe_get(client, cfg, url, true).await?).ok()?);
+        }
+        doc = assemble(doc, parsed).ok()?;
+    }
+    Some(doc)
+}
+
+/// The body of `url`, sent as an htmx request when `hx`, or `None` unless it answers 2xx.
+async fn probe_get(client: &Client, cfg: &Config, url: &str, hx: bool) -> Option<String> {
+    let mut req = client.get(format!("{}{url}", cfg.base_url));
+    if hx {
+        req = req.header("HX-Request", "true");
+    }
+    let resp = req.send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.text().await.ok()
 }
 
 /// Whether `doc` draws tab `tab` selected: a `.tab.on` whose `data-href` ends in
