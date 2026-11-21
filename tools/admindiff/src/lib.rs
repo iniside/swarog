@@ -102,10 +102,11 @@ USAGE:
             pages is not checked); PALETTE_ONCLICK no compared render draws fails as stale, and
             an EXCLUDED_MOCK_MODALS entry naming it fails as the shell palette PALETTE_ONCLICK
             declares; a modal entry its host does not draw, an EXCLUDED_MOCK_MODALS entry its
-            host does not draw, listed twice, with no reason, a malformed portal action or
-            mapped too, and an EXCLUDED_MODALS reason its mockup host
+            host does not draw, listed twice, with no reason, a malformed portal action, a malformed
+            module id an Absent entry waits for or mapped too, and an EXCLUDED_MODALS reason its mockup host
             contradicts (a modal opener drawn there that is neither a page map modal entry nor
-            an EXCLUDED_MOCK_MODALS entry of another action, or a host with no compared render)
+            an EXCLUDED_MOCK_MODALS entry of another action, an Absent one waiting for a module
+            other than the claimed action's, or a host with no compared render)
             fail. A probed body that assigns a PAGES key other than tab fails unless the key is
             in pages::NON_TAB_KEYS, and an element appended to the page body that no
             recorded opener drew (UI.openMenu or one of those modal openers, the innermost of

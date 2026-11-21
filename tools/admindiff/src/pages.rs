@@ -309,6 +309,9 @@ pub const PAGE_MAP: &[Page] = &[
 
 const NO_LORE: &str = "no Lore module exists yet";
 
+/// The portal module the Lore openers wait for ([`PortalModal::Absent`]).
+const LORE: &str = "lore";
+
 pub const EXCLUDED: &[(&str, &str)] = &[
     ("states", "Declared deviation D3: no states page; the golden render test pins every panel state"),
     ("catalog", "Declared deviation D3: no catalog page; the golden render test pins every primitive"),
@@ -406,7 +409,8 @@ pub const EXCLUDED_MODALS: &[(&str, &str, ModalWhy)] = &[
 /// Why an [`EXCLUDED_MODALS`] action is not diffed: the mockup draws no opener of the action on
 /// the host, or, for an [`excluded_menu_id`] host, on its page, a mockup fact checked against the
 /// mockup render: every modal opener the host's mockup render draws is the shell palette, a
-/// `PAGE_MAP` modal entry or an [`EXCLUDED_MOCK_MODALS`] entry of another action there
+/// `PAGE_MAP` modal entry or an [`EXCLUDED_MOCK_MODALS`] entry of another action there, an
+/// [`PortalModal::Absent`] entry only when it waits for a module other than the claimed action's
 /// ([`validate_mock_modals`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModalWhy<'a> {
@@ -545,26 +549,26 @@ const fn mock_modal(host: &'static str, opener: MockOpener<&'static str>, portal
 pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
     mock_modal("players.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
     mock_modal("players.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
-    mock_modal("players.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
-    mock_modal("players.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent("lore"), NO_LORE),
-    mock_modal("player", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
+    mock_modal("players.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("players.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
     mock_modal("player", MockOpener::Pages("suspend"), PortalModal::Disabled("accounts/suspend-header"), NO_SUSPEND),
     mock_modal("player.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
     mock_modal("player.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
-    mock_modal("player.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
-    mock_modal("player.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent("lore"), NO_LORE),
-    mock_modal("player.characters", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
+    mock_modal("player.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.characters", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
     mock_modal("player.characters", MockOpener::Pages("suspend"), PortalModal::Disabled("accounts/suspend-header"), NO_SUSPEND),
     mock_modal("player.characters.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
     mock_modal("player.characters.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
-    mock_modal("player.characters.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
-    mock_modal("player.characters.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent("lore"), NO_LORE),
-    mock_modal("player.wallet", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
+    mock_modal("player.characters.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.characters.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.wallet", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
     mock_modal("player.wallet", MockOpener::Pages("suspend"), PortalModal::Disabled("accounts/suspend-header"), NO_SUSPEND),
     mock_modal("player.wallet.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
     mock_modal("player.wallet.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
-    mock_modal("player.wallet.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent("lore"), NO_LORE),
-    mock_modal("player.wallet.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent("lore"), NO_LORE),
+    mock_modal("player.wallet.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.wallet.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent(LORE), NO_LORE),
     mock_modal(
         "mail",
         MockOpener::Pages("cancelMail"),
@@ -927,11 +931,12 @@ pub fn validate_mock_modal_hosts(lists: &Lists) -> Result<()> {
 /// `EXCLUDED_MOCK_MODALS` entry, not both;
 /// a modal entry hosted by a listed host names an opener it draws; an exclusion is listed once,
 /// with a reason and, when it names a portal action, a `<module>/<action>` of `[a-z0-9._-]+`
-/// ids, and names an opener its host draws (else it is stale, a pending or unknown host drawing
+/// ids, when it waits for a module, a module id of `[a-z0-9._-]+`, and names an opener its host draws (else it is stale, a pending or unknown host drawing
 /// nothing checked). An `EXCLUDED_MODALS` [`ModalWhy`] claim holds when its mockup host has a
 /// compared render and every modal opener that render draws is the palette, a modal entry of
-/// another action there or an exclusion there whose portal side is another action; one whose
-/// portal side is nothing could be the claimed action's opener, so it does not hold the claim.
+/// another action there or an exclusion there whose portal side is another action. An
+/// [`PortalModal::Absent`] exclusion holds the claim only when it waits for a module other than
+/// the claimed action's module; one waiting for that module could be the claimed action's opener.
 pub fn validate_mock_modals(drawn: &[(String, Vec<MockOpener<String>>)], lists: &Lists) -> Result<()> {
     let Lists { page_map, excluded_menus, excluded_modals, excluded_mock_modals, .. } = *lists;
     let drawn_on = |host: &str| drawn.iter().find(|(h, _)| h == host).map(|(_, o)| o.as_slice());

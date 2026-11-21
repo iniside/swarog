@@ -871,6 +871,52 @@ fn a_false_no_mock_opener_claim_fails() {
     renders(repo.path(), &Lists { excluded_mock_modals: &other, ..LISTS }).expect("another disabled or unseeded action");
 }
 
+/// The production wallet no-opener claims hold on the user menu the mockup really draws on the
+/// players page: `suspend` and `deleteAccount` are other actions, `changeRole` and
+/// `releaseAll` wait for Lore, another module. Waiting for the wallet module instead, those two
+/// could be the claimed actions' openers, and both claims fail on each.
+#[test]
+fn the_wallet_claims_hold_on_the_drawn_user_menu() {
+    let host = "players.menu.user";
+    let drawn: Vec<_> = ["suspend", "deleteAccount", "changeRole", "releaseAll"]
+        .into_iter()
+        .map(|name| MockOpener::Pages(name.to_string()))
+        .chain([MockOpener::Onclick(PALETTE_ONCLICK.to_string())])
+        .collect();
+    let mut inventory = claim_inventory();
+    inventory.iter_mut().find(|(h, _)| h == host).expect("players.menu.user hosts a wallet claim").1 = drawn;
+    let wallet = crate::pages::EXCLUDED_MODALS.iter().filter(|(_, action, _)| action.starts_with("wallet/")).count();
+    assert_eq!(wallet, 8, "EXCLUDED_MODALS lists 8 wallet claims");
+    let menu: Vec<_> = EXCLUDED_MOCK_MODALS.iter().copied().filter(|x| x.host == host).collect();
+    assert_eq!(menu.len(), 4, "EXCLUDED_MOCK_MODALS lists the 4 players user menu openers");
+    let excluded: Vec<_> = claim_exclusions().into_iter().chain(menu.iter().copied()).collect();
+    crate::pages::validate_mock_modals(&inventory, &Lists { excluded_mock_modals: &excluded, ..LISTS }).expect("the wallet claims hold");
+    let waits_for_wallet: Vec<_> = claim_exclusions()
+        .into_iter()
+        .chain(menu.iter().map(|x| match x.portal {
+            PortalModal::Absent(_) => MockModalExclusion { portal: PortalModal::Absent("wallet"), ..*x },
+            _ => *x,
+        }))
+        .collect();
+    let e = format!(
+        "{:#}",
+        crate::pages::validate_mock_modals(&inventory, &Lists { excluded_mock_modals: &waits_for_wallet, ..LISTS }).expect_err("waits for wallet")
+    );
+    let line = |action: &str, opener: &str| {
+        format!(
+            "\n  EXCLUDED_MODALS {host} modal {action} says the mockup has no opener of it, but {host} draws PAGES.{opener}, \
+             which is neither a PAGE_MAP modal entry nor an EXCLUDED_MOCK_MODALS entry of another action there"
+        )
+    };
+    let mut want = "modal drift:".to_string();
+    for action in ["wallet/currency.grant", "wallet/currency.revoke"] {
+        for opener in ["changeRole", "releaseAll"] {
+            want.push_str(&line(action, opener));
+        }
+    }
+    assert_eq!(e, want);
+}
+
 /// The inventory a clean [`crate::pages::validate_mock_modals`] call of the production lists sees:
 /// `mail` draws its excluded `cancelMail`, `events` its mapped `skipPoison`, and each the shell
 /// palette; every other host of an `EXCLUDED_MODALS` claim that is no excluded menu, a menu

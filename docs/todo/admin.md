@@ -55,6 +55,20 @@ _None._
   interior drift inside such a tile is invisible behind the accept line. Owner, 2026-11-21:
   accepted as a known limit.
 
+- [ ] **One accept line covers any number of same-shaped unmatched openers**
+  Accept lines are a set and the skeleton hash is text-blind
+  (`tools/admindiff/src/accept.rs:50-54`, `tools/admindiff/src/skeleton.rs:225`). The single
+  portal-only `button.menu-item#bd58cd` line in each of the 4 user-menu accept files covers
+  any number of same-shaped unmatched openers, so a later port may be accepted silently there.
+- [ ] **The wallet no-opener reason is repeated per user-menu host**
+  `EXCLUDED_MODALS` (`tools/admindiff/src/pages.rs`) repeats the wallet row-menu reason for
+  each user-menu host, and each new player tab needs 2 more rows. The crawl demands them
+  loudly.
+- [ ] **A landed module's `Absent` entries and the wallet outage group go unchecked**
+  An `EXCLUDED_MOCK_MODALS` `PortalModal::Absent(module)` entry is never reported once that
+  module lands, and the portal's down-state wallet group is never compared against the
+  mockup's outage drawing.
+
 ### Known limits (admin-control-plane-redesign step 14a3)
 
 - [ ] **Declaring the character kind opens an empty entity page**
