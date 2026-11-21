@@ -2958,7 +2958,7 @@ gate.
     (routes.rs:833-834, 1146). One instance has one id whatever its mode. The field draws
     read-only and mono with no `name`. It never enters `InvokeCall.input` and needs no
     stored default, so no second key exists. A form drawn without an instance (the operator
-    may not use it, routes.rs:813-817) leaves the field out. (W2; pp:176.)
+    may not use it, routes.rs:813-817) leaves the field out. (W2; pp:176.) Landed as ba9d86a3.
   - **13e6 — the mockup's wrappers.** A layout row, a grid column and an entity tab with
     exactly one panel draw it bare. Two or more panels draw `div.stack`, as the mockup does
     (pp:42, 83, 107, 155; pages-lore.js:264). This covers the layout rows (shell:56-57) and

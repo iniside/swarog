@@ -80,6 +80,16 @@ _None._
   removed between mint and submit is refused, that a form id posted to another mode's URL is
   refused, or the "not `Then::Invoke`" half of `form_mode_error`. The code handles each.
 
+- [ ] **A request-id field accepts `required`, `readonly`, `help` and a duplicate key**
+  13e5. `form_spec_errors` (`core/controlplane/src/lib.rs:936`) refuses only a default on a
+  `FieldKind::RequestId` field. `required: true` draws a meaningless red `*`, `help` and
+  `placeholder` are dropped, and a second field with the same key is not refused (that key
+  would then post through the other field). The `disabled` branch of the field
+  (`primitives.html.tmpl:273`) is drawn by no golden; no read-only panel has an instance.
+- [ ] **The mockup's unavailable wallet form draws the request id; the portal leaves it out**
+  13e5. `pages-platform.js:176` draws the field disabled with an id while wallet-svc is down;
+  the portal draws the field only on a minted instance (plan 13e5). Step 15a2 hand-checks it.
+
 ### Known limits (admin-control-plane-redesign step 13d7d)
 
 - [ ] **One opener call may append more than one element**
