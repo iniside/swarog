@@ -107,9 +107,9 @@ USAGE:
             an EXCLUDED_MOCK_MODALS entry of another action, or a host with no compared render)
             fail. A probed body that assigns a PAGES key other than tab fails unless the key is
             in pages::NON_TAB_KEYS, and an element appended to the page body that no
-            recorded opener drew (UI.openMenu, UI.popover or one of those modal openers),
-            whatever its class, and that no pages::EXCLUDED_MOCK_APPENDS call drew fails naming
-            its host; an entry of either
+            recorded opener drew (UI.openMenu or one of those modal openers, the innermost of
+            them and the pages::EXCLUDED_MOCK_APPENDS calls deciding), whatever its class, and
+            that no pages::EXCLUDED_MOCK_APPENDS call drew fails naming its host; an entry of either
             list no compared render uses, with no reason, listed twice or malformed is stale. A
             .tab whose body assigns no PAGES.tab and no NON_TAB_KEYS key fails, as does a .tab
             with no onclick and a render (the mount, a timer it schedules, a re-render, or a

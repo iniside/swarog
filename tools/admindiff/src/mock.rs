@@ -1,9 +1,9 @@
 //! Renders a mockup page through `node`: the mockup's own scripts run against stub browser
 //! globals, `REG.mount` calls `P.<key>.render()`, and the body HTML it assigns is captured.
-//! A menu is rendered the same way: `UI.openMenu` builds it and the `.menu` element it
-//! appends to the body is captured. A modal is rendered without a page too: the named
-//! `PAGES.<opener>` runs with the page map entry's arguments and the `.scrim` element it
-//! appends to the body is captured. The harness also records every menu id the mockup's
+//! A menu is rendered the same way: `UI.openMenu` builds it and the first element appended to
+//! the body under that call is captured. A modal is rendered without a page too: the named
+//! `PAGES.<opener>` runs with the page map entry's arguments and the first element appended to
+//! the body under a modal opener's call is captured. The harness also records every menu id the mockup's
 //! registry defines through `UI.defineMenu` ([`defined_menus`]). A page render can force the
 //! ok state: the harness sets `UI.state.force = "ok"`, as the mockup's state picker
 //! (`REG.setForce`) does, before `REG.mount`. The modals, menus and tabs a render draws come from
@@ -42,12 +42,15 @@ const SCRIPTS: &[&str] = &[
 // guard on an ancestor or a typed value takes the path a user reaches; `checked` stays falsy, so
 // only one branch of a guard on it runs. Outside a probe timers never fire. `REG.render` assigns
 // `document.body.innerHTML` right after `P.<key>.render()`; the setter throws a sentinel there,
-// so the legend fill-in and the page's `after` hook never run. With
-// `input.menu` no page mounts: `UI.openMenu` runs against a stub event and anchor, and the
-// element it appends to the body is written as `<div class="menu">` around its HTML. With
+// so the legend fill-in and the page's `after` hook never run. An appended element is a menu, a
+// modal or an `input.appenders` call's by its innermost drawer in `MENU_OPENERS`,
+// `MODAL_OPENERS` or `input.appenders` (`kindOf`); with `input.menu`, `input.modal` or
+// `input.probe` each listed opener must be a function of the mockup's `UI` or `REG`. With
+// `input.menu` no page mounts: `UI.openMenu` runs against a stub event and anchor, and the first
+// menu appended to the body is written as `<div class="menu">` around its HTML. With
 // `input.modal` no page mounts either: `PAGES[opener]` is called with the entry's arguments,
-// and the first element it appends to the body with the class `scrim` (`UI.modal`, which
-// `UI.confirm` calls) is written as `<div class="scrim">` around its HTML. The global `UI` is an
+// and the first modal appended to the body is written as `<div class="scrim">` around its HTML.
+// The global `UI` is an
 // accessor that wraps every function of whatever object a script assigns to it, before any script
 // can call or alias them, so each call through `UI` or an alias taken from it is a drawer of what
 // it appends, every defined menu id is recorded, and so is each `openMenu` call; the global `REG`
@@ -60,24 +63,25 @@ const SCRIPTS: &[&str] = &[
 // (`at`): the phase (`mount` while the page mounts, `render` inside a `REG` call of a probe,
 // `body` while a probed body runs), the outermost `PAGES` call running and the `UI` calls
 // running. A timer saves the context it was scheduled in and runs in it. With `input.probe`, a list
-// of `onclick` bodies, each body runs verbatim on its own fresh mockup with the page mounted as for
-// a render (`this` a stub element, `event` a click on it), after every function of `PAGES` is
-// wrapped to name itself the opener while a call the body made to it runs, and every function of
-// `REG` is wrapped to return normally from the sentinel, so a body that re-renders the page goes on
-// running; a body assignment outside every `REG` call is an error. The timers the mount scheduled
-// run before the body, the body's after it, for at most `MAX_TIMER_ROUNDS` rounds each. A `PAGES`
-// key written in the body phase is the body's own (`tab` with its value), one written in the mount
-// or render phase is assigned by a render. A probe of a mockup whose `UI.openMenu` is not the
-// recording wrapper (none, or replaced after `UI` was set) fails. Each body is written as
-// `{scrims, menus, tabs, keys, loose, excluded, rendered}`: one `scrims` entry per element a
-// `MODAL_OPENERS` call drew that it appended to the body, the name of the `PAGES` function that appended it or null when it was
-// appended outside every such call; each `UI.openMenu` call as `[id, arg]` (arg null when it has
-// none); each `PAGES.tab` value; `keys` each other `PAGES` key it assigned, once each; `loose`
-// each element appended to the body, the mount's included, that no `MENU_OPENERS` or
-// `MODAL_OPENERS` call drew and whose drawers name none of `input.appenders`, whatever its class,
-// with whether
-// the mount appended it and its drawers; `excluded` each of `input.appenders` that drew an
-// element, the innermost drawer named; `rendered` each of `tab` and the listed keys a render
+// of `onclick` bodies, the page first mounts on a fresh mockup as for a render and the timers the
+// mount scheduled run, for at most `MAX_TIMER_ROUNDS` rounds; then each body runs verbatim on its
+// own fresh mockup mounted the same way (`this` a stub element, `event` a click on it), and the
+// timers it scheduled after it. Before the timers, every function of `PAGES` is wrapped to name
+// itself the opener while a call to it runs outside every other such call, and every function of
+// `REG` is wrapped to return normally from the sentinel, so a body that re-renders the page goes
+// on running; a body assignment outside every `REG` call is an error. A `PAGES` key written in
+// the body phase is the body's own (`tab` with its value), one written in the mount or render
+// phase is assigned by a render. A probe or menu render of a mockup whose `UI.openMenu` is not the
+// recording wrapper (replaced after `UI` was set) fails. The probe is written as `{mount, bodies}`:
+// `mount` as `{error, loose, excluded, rendered}` for what the scripts and the mount appended and
+// assigned, with no body run when `error` is set; each body as
+// `{scrims, menus, tabs, keys, loose, excluded, rendered}` for what it and the renders it called
+// did: one `scrims` entry per modal appended, the name of the `PAGES` function that appended it
+// or null when it was appended outside every such call; each `UI.openMenu` call as `[id, arg]`
+// (arg null when it has none); each `PAGES.tab` value; `keys` each other `PAGES` key it
+// assigned, once each; `loose` each element appended that is no menu, no modal and no
+// `input.appenders` call's, whatever its class, with its drawers; `excluded` each of
+// `input.appenders` that drew an element; `rendered` each of `tab` and the listed keys a render
 // assigned, once each; or as `{error, rendered}` when it threw.
 const HARNESS: &str = r#""use strict";
 const fs = require("fs"), vm = require("vm");
@@ -108,10 +112,21 @@ const element = () => {
 };
 const hasClass = (el, name) => !!el && typeof el.className === "string" && el.className.split(/\s+/).includes(name);
 const MAX_TIMER_ROUNDS = 10;
-// The calls whose appended element is a menu or a popover, and those whose appended element is a
-// modal (`UI.confirm` calls the bundle's `modal` directly, past the wrapper).
-const MENU_OPENERS = ["UI.openMenu", "UI.popover"];
+// The calls whose appended element is a menu, and those whose appended element is a modal
+// (`UI.confirm` calls the bundle's `modal` directly, past the wrapper).
+const MENU_OPENERS = ["UI.openMenu"];
 const MODAL_OPENERS = ["UI.modal", "UI.confirm", "REG.openSearch"];
+const APPENDERS = input.appenders || [];
+// What an element appended under `drawers` is, by its innermost listed drawer: "menu", "modal",
+// the `APPENDERS` call that drew it, or null when no listed call drew it.
+const kindOf = drawers => {
+  for (const d of [...drawers].reverse()) {
+    if (MENU_OPENERS.includes(d)) return "menu";
+    if (MODAL_OPENERS.includes(d)) return "modal";
+    if (APPENDERS.includes(d)) return d;
+  }
+  return null;
+};
 // A click on `el`: its target and current target.
 const click = el => ({ stopPropagation: inert, preventDefault: inert, currentTarget: el, target: el });
 // The attribution context outside every recorded call: the scripts loading, the harness setting up.
@@ -227,67 +242,122 @@ function runTimers(m) {
 }
 const message = e => String(e && e.message !== undefined ? e.message : e);
 const describe = el => `<${el.tagName || "element"}${el.className ? ` class="${el.className}"` : ""}>`;
+// Each listed opener must be a function of the mockup.
+function checkOpeners(m) {
+  for (const name of [...MENU_OPENERS, ...MODAL_OPENERS]) {
+    const [prefix, fn] = name.split(".");
+    const owner = m.ctx[prefix];
+    if (!owner || typeof owner[fn] !== "function") {
+      process.stderr.write(`${name}, a listed opener, is no function of the mockup\n`);
+      process.exit(2);
+    }
+  }
+}
+function checkRecorded(m) {
+  if (!m.ctx.UI.openMenu[RECORDS]) {
+    process.stderr.write("the mockup's UI.openMenu is not the harness's recording wrapper: it was replaced after UI was set\n");
+    process.exit(2);
+  }
+}
+// The elements of `m` appended in a phase `keep` accepts, sorted: `scrims` the opener of each
+// modal, `loose` each element no listed call drew, `excluded` each `APPENDERS` call that drew one.
+function sort(m, keep) {
+  const scrims = [], loose = [], excluded = [];
+  for (const a of m.appended) {
+    if (!keep(a.at.phase)) continue;
+    const kind = kindOf(a.at.drawers);
+    if (kind === "menu") continue;
+    if (kind === "modal") {
+      scrims.push(a.at.opener);
+    } else if (kind !== null) {
+      if (!excluded.includes(kind)) excluded.push(kind);
+    } else {
+      loose.push({ element: describe(a.el), drawers: a.at.drawers });
+    }
+  }
+  return { scrims, loose, excluded };
+}
+// Each of `tab` and the listed keys a render (any phase but the body's) assigned, once each.
+const renderedOf = m => {
+  const rendered = [];
+  for (const w of m.writes) {
+    if (w.at.phase !== "body" && (w.k === "tab" || input.listed.includes(w.k)) && !rendered.includes(w.k)) rendered.push(w.k);
+  }
+  return rendered;
+};
+// A fresh mockup with the page mounted for a probe, its `REG` and `PAGES` wrapped, and the timers
+// the mount scheduled run; `error` what those timers threw, or null.
+function settle() {
+  const m = boot();
+  checkOpeners(m);
+  mount(m);
+  const reg = m.ctx.REG;
+  for (const name of Object.keys(reg)) {
+    const fn = reg[name];
+    if (typeof fn !== "function") continue;
+    reg[name] = function (...args) {
+      const outer = m.at;
+      m.at = { ...outer, phase: "render" };
+      try { return fn.apply(this, args); } catch (e) { if (e !== CAPTURED) throw e; } finally { m.at = outer; }
+    };
+  }
+  for (const name of Object.keys(m.pages)) {
+    const fn = m.pages[name];
+    if (typeof fn !== "function") continue;
+    m.pages[name] = function (...args) {
+      if (m.at.opener !== null) return fn.apply(this, args);
+      const outer = m.at;
+      m.at = { ...outer, opener: name };
+      try { return fn.apply(this, args); } finally { m.at = outer; }
+    };
+  }
+  checkRecorded(m);
+  try {
+    runTimers(m);
+  } catch (e) {
+    return { m, error: `a timer it scheduled threw: ${message(e)}` };
+  }
+  return { m, error: null };
+}
 if (input.registry) {
   process.stdout.write(JSON.stringify(boot().defined));
 } else if (input.menu) {
   const m = boot();
+  checkOpeners(m);
+  checkRecorded(m);
   m.ctx.UI.openMenu(click(element()), input.menu.id, input.menu.arg ?? undefined);
-  const opened = m.appended.length ? m.appended[m.appended.length - 1].el : null;
-  if (!hasClass(opened, "menu")) {
-    process.stderr.write(`UI.openMenu('${input.menu.id}') appended no .menu element\n`);
+  const opened = m.appended.find(a => kindOf(a.at.drawers) === "menu");
+  if (!opened) {
+    process.stderr.write(`UI.openMenu('${input.menu.id}') appended no element\n`);
     process.exit(2);
   }
-  process.stdout.write(`<div class="menu">${opened.innerHTML ?? ""}</div>`);
+  process.stdout.write(`<div class="menu">${opened.el.innerHTML ?? ""}</div>`);
 } else if (input.modal) {
   const m = boot();
+  checkOpeners(m);
   const open = m.ctx.PAGES[input.modal.opener];
   if (typeof open !== "function") {
     process.stderr.write(`PAGES.${input.modal.opener} is not a function\n`);
     process.exit(2);
   }
   open(...input.modal.args);
-  const scrim = m.appended.map(a => a.el).find(el => hasClass(el, "scrim"));
-  if (!scrim) {
-    process.stderr.write(`PAGES.${input.modal.opener}() appended no .scrim element\n`);
+  const opened = m.appended.find(a => kindOf(a.at.drawers) === "modal");
+  if (!opened) {
+    process.stderr.write(`PAGES.${input.modal.opener}() appended no element under ${MODAL_OPENERS.join(", ")}\n`);
     process.exit(2);
   }
-  process.stdout.write(`<div class="scrim">${scrim.innerHTML ?? ""}</div>`);
+  process.stdout.write(`<div class="scrim">${opened.el.innerHTML ?? ""}</div>`);
 } else if (input.probe) {
-  const results = [];
-  for (const onclick of input.probe) {
-    const m = boot();
-    mount(m);
-    const reg = m.ctx.REG;
-    for (const name of Object.keys(reg)) {
-      const fn = reg[name];
-      if (typeof fn !== "function") continue;
-      reg[name] = function (...args) {
-        const outer = m.at;
-        m.at = { ...outer, phase: "render" };
-        try { return fn.apply(this, args); } catch (e) { if (e !== CAPTURED) throw e; } finally { m.at = outer; }
-      };
-    }
-    for (const name of Object.keys(m.pages)) {
-      const fn = m.pages[name];
-      if (typeof fn !== "function") continue;
-      m.pages[name] = function (...args) {
-        if (m.at.opener !== null) return fn.apply(this, args);
-        const outer = m.at;
-        m.at = { ...outer, opener: name };
-        try { return fn.apply(this, args); } finally { m.at = outer; }
-      };
-    }
-    const ui = m.ctx.UI;
-    if (!ui || typeof ui.openMenu !== "function" || !ui.openMenu[RECORDS]) {
-      process.stderr.write("the mockup's UI.openMenu is not the harness's recording wrapper: it is missing or was replaced after UI was set\n");
-      process.exit(2);
-    }
-    let error = null;
-    try {
-      runTimers(m);
-    } catch (e) {
-      error = `a timer the mount scheduled threw: ${message(e)}`;
-    }
+  const inBody = phase => phase === "body" || phase === "render";
+  const first = settle();
+  const sorted = sort(first.m, () => true);
+  const out = {
+    mount: { error: first.error, loose: sorted.loose, excluded: sorted.excluded, rendered: renderedOf(first.m) },
+    bodies: [],
+  };
+  for (const onclick of first.error === null ? input.probe : []) {
+    const { m, error: settled } = settle();
+    let error = settled === null ? null : `the mount threw on this run: ${settled}`;
     if (error === null) {
       m.at = { phase: "body", opener: null, drawers: [] };
       try {
@@ -299,39 +369,21 @@ if (input.registry) {
       }
       m.at = LOADING;
     }
-    const rendered = [], tabs = [], keys = [];
+    const rendered = renderedOf(m), tabs = [], keys = [];
     for (const w of m.writes) {
-      if (w.at.phase !== "body") {
-        if ((w.k === "tab" || input.listed.includes(w.k)) && !rendered.includes(w.k)) rendered.push(w.k);
-      } else if (w.k === "tab") {
-        tabs.push(String(w.value));
-      } else if (!keys.includes(w.k)) {
-        keys.push(w.k);
-      }
+      if (w.at.phase !== "body") continue;
+      if (w.k === "tab") tabs.push(String(w.value));
+      else if (!keys.includes(w.k)) keys.push(w.k);
     }
     if (error !== null) {
-      results.push({ error, rendered });
+      out.bodies.push({ error, rendered });
       continue;
     }
-    const scrims = [], loose = [], excluded = [];
-    for (const a of m.appended) {
-      const drawers = a.at.drawers;
-      if (drawers.some(d => MENU_OPENERS.includes(d))) continue;
-      if (drawers.some(d => MODAL_OPENERS.includes(d))) {
-        if (a.at.phase !== "mount") scrims.push(a.at.opener);
-        continue;
-      }
-      const named = [...drawers].reverse().find(d => input.appenders.includes(d));
-      if (named !== undefined) {
-        if (!excluded.includes(named)) excluded.push(named);
-        continue;
-      }
-      loose.push({ element: describe(a.el), mount: a.at.phase === "mount", drawers });
-    }
-    const menus = m.menus.filter(c => c.at.phase !== "mount").map(c => c.call);
-    results.push({ scrims, menus, tabs, keys, loose, excluded, rendered });
+    const { scrims, loose, excluded } = sort(m, inBody);
+    const menus = m.menus.filter(c => inBody(c.at.phase)).map(c => c.call);
+    out.bodies.push({ scrims, menus, tabs, keys, loose, excluded, rendered });
   }
-  process.stdout.write(JSON.stringify(results));
+  process.stdout.write(JSON.stringify(out));
 } else {
   const m = boot();
   mount(m);
@@ -367,17 +419,23 @@ pub fn render(repo: &Path, key: &str, search: &str, force: bool) -> Result<Strin
     run_harness(repo, serde_json::json!({ "key": key, "search": search, "force": force }), &what)
 }
 
-/// The `.menu` element `UI.openMenu(event, '<id>', '<arg>')` opens in the mockup; with no `arg`
-/// the call passes none.
+/// The menu `UI.openMenu(event, '<id>', '<arg>')` opens in the mockup (the first element appended
+/// under that call), as `<div class="menu">` around its HTML; with no `arg` the call passes none.
 pub fn render_menu(repo: &Path, id: &str, arg: Option<&str>) -> Result<String> {
-    let input = serde_json::json!({ "search": "", "menu": { "id": id, "arg": arg } });
+    let input = serde_json::json!({ "search": "", "menu": { "id": id, "arg": arg }, "appenders": production_appenders() });
     run_harness(repo, input, &format!("menu {id}"))
 }
 
-/// The `.scrim` element `PAGES.<opener>(<args>)` appends in the mockup, its modal inside.
+/// The modal `PAGES.<opener>(<args>)` opens in the mockup (the first element appended under a
+/// `UI.modal`, `UI.confirm` or `REG.openSearch` call), as `<div class="scrim">` around its HTML.
 pub fn render_modal(repo: &Path, opener: &str, args: &[&str]) -> Result<String> {
-    let input = serde_json::json!({ "search": "", "modal": { "opener": opener, "args": args } });
+    let input = serde_json::json!({ "search": "", "modal": { "opener": opener, "args": args }, "appenders": production_appenders() });
     run_harness(repo, input, &format!("PAGES.{opener}"))
+}
+
+/// The `UI` calls of [`crate::pages::EXCLUDED_MOCK_APPENDS`], whose elements are no menu or modal.
+fn production_appenders() -> Vec<&'static str> {
+    crate::pages::EXCLUDED_MOCK_APPENDS.iter().map(|(name, _)| *name).collect()
 }
 
 /// Every `onclick` body the rendered mockup `doc` draws, verbatim, once each, in order.
@@ -423,7 +481,7 @@ pub struct Probe {
     /// Each key of [`Declared::non_tab_keys`] a body assigned itself, outside every render, once
     /// each, in order.
     pub non_tab_keys: Vec<String>,
-    /// Each of [`Declared::appenders`] that drew an element a body appended to the body, once
+    /// Each of [`Declared::appenders`] that drew an element a body or the mount appended to the body, once
     /// each, in order.
     pub appenders: Vec<String>,
 }
@@ -471,9 +529,11 @@ impl Probe {
 /// errors. A body that throws fails with its host and its text; one that re-renders the page is
 /// no error. A body that assigns a `PAGES` key other than `tab` that is not in
 /// `declared.non_tab_keys` fails naming its host, the key and its text. An element appended to
-/// the body that no recorded opener drew (a menu or popover of `UI.openMenu` or `UI.popover`, a
-/// modal of `UI.modal`, `UI.confirm` or `REG.openSearch`), whatever its class, and that no `UI`
-/// call in `declared.appenders` drew fails naming its host, the element and the body, or the mount when the mount appended it. A `.tab` whose body assigns no
+/// the body whose innermost listed drawer is none of the recorded openers (a menu of
+/// `UI.openMenu`, a modal of `UI.modal`, `UI.confirm` or `REG.openSearch`) and no `UI` call in
+/// `declared.appenders`, whatever its class, fails naming its host, the element and the body, or
+/// the mount when the scripts, the mount or a timer it scheduled appended it; the mount is checked
+/// with no body drawn too, and a timer it scheduled that throws fails once, as the mount's. A `.tab` whose body assigns no
 /// `PAGES.tab` and no declared key, a guarded assignment that does not run among them, fails, as
 /// does a `.tab` with no `onclick`, by host and element. A render (the mount, a timer it
 /// schedules, a re-render, a timer one schedules) that assigns `PAGES.tab` or a
@@ -492,31 +552,39 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
         let attrs: String = e.attrs.iter().map(|(k, v)| format!(" {k}={v:?}")).collect();
         failed.push(format!("<{}{attrs}> ({:?}) drawn on {host} is a .tab with no onclick", e.tag, collapse(&e.text())));
     }
-    if bodies.is_empty() {
-        if !failed.is_empty() {
-            bail!("mockup onclick failed:\n  {}", failed.join("\n  "));
-        }
-        return Ok(probe);
-    }
     let input = serde_json::json!({ "key": key, "search": page.mock_search(), "force": page.force, "probe": bodies, "listed": declared.non_tab_keys, "appenders": declared.appenders });
     let out = run_harness(repo, input, &format!("the onclicks {host} draws"))?;
-    let results: Vec<serde_json::Value> = serde_json::from_str(&out).context("the harness's onclick probe is not a JSON list")?;
-    if results.len() != bodies.len() {
+    let out: serde_json::Value = serde_json::from_str(&out).context("the harness's onclick probe is not JSON")?;
+    let mount = out.get("mount").with_context(|| format!("the harness's probe of {host} has no mount"))?;
+    let results = out.get("bodies").and_then(serde_json::Value::as_array).with_context(|| format!("the harness's probe of {host} has no body list"))?;
+    // Each of `tab` and the listed keys a render assigned.
+    let mut rendered: Vec<String> = Vec::new();
+    let what = format!("the mount of {host}");
+    if let Some(error) = mount.get("error").and_then(serde_json::Value::as_str) {
+        failed.push(format!("{host}: the mount threw in the harness: {error}"));
+    } else if results.len() != bodies.len() {
         bail!("the harness ran {} of the {} onclicks {host} draws", results.len(), bodies.len());
+    }
+    for k in strings(mount, "rendered", &what)? {
+        if !rendered.iter().any(|r| r == k) {
+            rendered.push(k.to_string());
+        }
+    }
+    for name in strings(mount, "excluded", &what)? {
+        if !probe.appenders.iter().any(|a| a == name) {
+            probe.appenders.push(name.to_string());
+        }
+    }
+    for loose in list(mount, "loose", &what)? {
+        failed.push(loose_failure(&format!("{host}: the mount"), loose)?);
     }
     // Each body that assigned `PAGES.tab`, with the first value it assigned.
     let mut tab_of: Vec<(&str, String)> = Vec::new();
     // Each body that did not throw, with the listed keys it assigned.
     let mut keys_of: Vec<(&str, Vec<String>)> = Vec::new();
-    // Each of `tab` and the listed keys a render assigned.
-    let mut rendered: Vec<String> = Vec::new();
-    for (body, result) in bodies.iter().zip(&results) {
-        let by_render = result
-            .get("rendered")
-            .and_then(serde_json::Value::as_array)
-            .with_context(|| format!("the probe of onclick {body:?} drawn on {host} has no rendered list"))?;
-        for k in by_render {
-            let k = k.as_str().with_context(|| format!("a PAGES key a render on {host} assigned was recorded as no string"))?;
+    for (body, result) in bodies.iter().zip(results) {
+        let what = format!("onclick {body:?} drawn on {host}");
+        for k in strings(result, "rendered", &what)? {
             if !rendered.iter().any(|r| r == k) {
                 rendered.push(k.to_string());
             }
@@ -525,10 +593,7 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
             failed.push(format!("onclick {body:?} drawn on {host} threw in the harness: {}", error.as_str().unwrap_or_default()));
             continue;
         }
-        let list = |field: &str| {
-            result.get(field).and_then(serde_json::Value::as_array).with_context(|| format!("the probe of onclick {body:?} drawn on {host} has no {field} list"))
-        };
-        for scrim in list("scrims")? {
+        for scrim in list(result, "scrims", &what)? {
             let opener = match scrim.as_str() {
                 Some(name) => MockOpener::Pages(name.to_string()),
                 None => MockOpener::Onclick(body.clone()),
@@ -537,7 +602,7 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
                 probe.modals.push(opener);
             }
         }
-        for call in list("menus")? {
+        for call in list(result, "menus", &what)? {
             let id = call
                 .get(0)
                 .and_then(serde_json::Value::as_str)
@@ -547,13 +612,12 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
                 probe.menus.push((id.to_string(), arg));
             }
         }
-        if let Some(tab) = list("tabs")?.first() {
+        if let Some(tab) = list(result, "tabs", &what)?.first() {
             let tab = tab.as_str().with_context(|| format!("a PAGES.tab value onclick {body:?} drawn on {host} assigned was recorded as no string"))?;
             tab_of.push((body.as_str(), tab.to_string()));
         }
         let mut keys = Vec::new();
-        for k in list("keys")? {
-            let k = k.as_str().with_context(|| format!("a PAGES key onclick {body:?} drawn on {host} assigned was recorded as no string"))?;
+        for k in strings(result, "keys", &what)? {
             if !declared.non_tab_keys.contains(&k) {
                 failed.push(format!("onclick {body:?} drawn on {host} assigns PAGES.{k}, which is neither PAGE_MAP's tab nor a NON_TAB_KEYS key"));
             } else if !probe.non_tab_keys.iter().any(|n| n == k) {
@@ -562,23 +626,13 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
             keys.push(k.to_string());
         }
         keys_of.push((body.as_str(), keys));
-        for name in list("excluded")? {
-            let name = name.as_str().with_context(|| format!("an appender onclick {body:?} drawn on {host} used was recorded as no string"))?;
+        for name in strings(result, "excluded", &what)? {
             if !probe.appenders.iter().any(|a| a == name) {
                 probe.appenders.push(name.to_string());
             }
         }
-        for loose in list("loose")? {
-            let element = loose.get("element").and_then(serde_json::Value::as_str);
-            let mount = loose.get("mount").and_then(serde_json::Value::as_bool);
-            let drawers = loose.get("drawers").and_then(serde_json::Value::as_array);
-            let (Some(element), Some(mount), Some(drawers)) = (element, mount, drawers) else {
-                bail!("an element onclick {body:?} drawn on {host} appended was recorded with no element, mount or drawers");
-            };
-            let drawers: Vec<&str> = drawers.iter().filter_map(serde_json::Value::as_str).collect();
-            let calls = if drawers.is_empty() { "no UI call".to_string() } else { drawers.join(" > ") };
-            let by = if mount { format!("{host}: the mount") } else { format!("onclick {body:?} drawn on {host}") };
-            let error = format!("{by} appended {element} under {calls}, which no recorded opener drew and no EXCLUDED_MOCK_APPENDS entry names");
+        for loose in list(result, "loose", &what)? {
+            let error = loose_failure(&what, loose)?;
             if !failed.contains(&error) {
                 failed.push(error);
             }
@@ -624,6 +678,32 @@ fn tab_onclicks(doc: &[Node]) -> Vec<String> {
         }
     }
     bodies
+}
+
+/// The list `field` of the harness's record of `what`.
+fn list<'a>(record: &'a serde_json::Value, field: &str, what: &str) -> Result<&'a Vec<serde_json::Value>> {
+    record.get(field).and_then(serde_json::Value::as_array).with_context(|| format!("the harness's record of {what} has no {field} list"))
+}
+
+/// The string list `field` of the harness's record of `what`.
+fn strings<'a>(record: &'a serde_json::Value, field: &str, what: &str) -> Result<Vec<&'a str>> {
+    list(record, field, what)?
+        .iter()
+        .map(|v| v.as_str().with_context(|| format!("the harness's record of {what} has a {field} entry that is no string")))
+        .collect()
+}
+
+/// The failure of an element `by` appended that no recorded opener and no declared appender drew
+/// (`loose`, as the harness recorded it).
+fn loose_failure(by: &str, loose: &serde_json::Value) -> Result<String> {
+    let element = loose.get("element").and_then(serde_json::Value::as_str);
+    let drawers = loose.get("drawers").and_then(serde_json::Value::as_array);
+    let (Some(element), Some(drawers)) = (element, drawers) else {
+        bail!("an element {by} appended was recorded with no element or drawers");
+    };
+    let drawers: Vec<&str> = drawers.iter().filter_map(serde_json::Value::as_str).collect();
+    let calls = if drawers.is_empty() { "no UI call".to_string() } else { drawers.join(" > ") };
+    Ok(format!("{by} appended {element} under {calls}, which no recorded opener drew and no EXCLUDED_MOCK_APPENDS entry names"))
 }
 
 /// Every menu id the mockup's registry defines through `UI.defineMenu`, once each, in order.

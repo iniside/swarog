@@ -363,7 +363,7 @@ pub const NON_TAB_KEYS: &[(&str, &str)] = &[(
 )];
 
 /// The `UI.<name>` calls that append an element to the body that no recorded opener draws
-/// (`UI.openMenu`, `UI.popover`, the modal openers `UI.modal`, `UI.confirm` and `REG.openSearch`), each with the reason the element is not
+/// (`UI.openMenu`, the modal openers `UI.modal`, `UI.confirm` and `REG.openSearch`), each with the reason the element is not
 /// compared: an element no recorded opener and no listed call drew fails ([`crate::mock::probe`]),
 /// and an entry that drew no element a compared render's body appended is stale, as is one with no
 /// reason, one listed twice and one that is no `UI.<name>`.
@@ -373,6 +373,9 @@ pub const EXCLUDED_MOCK_APPENDS: &[(&str, &str)] = &[(
 ), (
     "UI.retry",
     "the module-down banner's Retry button (bundle.js retry, drawn on index's wallet banner) reports its outcome 0.9 s later through the bundle's own toast, a transient status line; it is no page, menu or modal the diff compares",
+), (
+    "UI.popover",
+    "the shell's top-bar health and notifications popovers (registry.js healthPop and notifPop, behind the #health-btn and #notif-btn of every page's top bar); the portal draws both as hidden panels of its shell (core/admin/src/templates/shell.html.tmpl data-popover-panel) that admin.js shows on a click, and neither is a page, menu or modal the diff compares",
 )];
 
 /// What opened a modal (an element a `UI.modal`, `UI.confirm` or `REG.openSearch` call drew) an

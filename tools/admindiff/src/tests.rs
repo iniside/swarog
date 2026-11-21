@@ -305,17 +305,17 @@ fn the_declared_keys_and_appenders_fail_twice_malformed_reasonless_and_unused() 
     assert!(e.starts_with("mockup onclick failed:\n") && e.contains("assigns PAGES.mailTab, which is neither PAGE_MAP's tab nor a NON_TAB_KEYS key"), "{e}");
 
     let appends = |a: &[(&'static str, &'static str)]| format!("{:#}", renders(repo.path(), &Lists { excluded_mock_appends: a, ..LISTS }).expect_err("append drift"));
-    let [toast, retry] = [EXCLUDED_MOCK_APPENDS[0], EXCLUDED_MOCK_APPENDS[1]];
-    assert_eq!(appends(&[toast, retry, toast]), "append drift:\n  EXCLUDED_MOCK_APPENDS lists UI.toast twice");
+    let [toast, retry, popover] = [EXCLUDED_MOCK_APPENDS[0], EXCLUDED_MOCK_APPENDS[1], EXCLUDED_MOCK_APPENDS[2]];
+    assert_eq!(appends(&[toast, retry, popover, toast]), "append drift:\n  EXCLUDED_MOCK_APPENDS lists UI.toast twice");
     let malformed = concat!(
         "append drift:\n",
         "  EXCLUDED_MOCK_APPENDS lists \"toast\", which is no UI.<name> call\n",
         "  EXCLUDED_MOCK_APPENDS lists toast, which drew no element an onclick a compared render draws appended",
     );
-    assert_eq!(appends(&[toast, retry, ("toast", "why")]), malformed);
-    assert_eq!(appends(&[("UI.toast", " "), retry]), "append drift:\n  EXCLUDED_MOCK_APPENDS UI.toast has no reason");
+    assert_eq!(appends(&[toast, retry, popover, ("toast", "why")]), malformed);
+    assert_eq!(appends(&[("UI.toast", " "), retry, popover]), "append drift:\n  EXCLUDED_MOCK_APPENDS UI.toast has no reason");
     let unused = "append drift:\n  EXCLUDED_MOCK_APPENDS lists UI.copied, which drew no element an onclick a compared render draws appended";
-    assert_eq!(appends(&[toast, retry, ("UI.copied", "why")]), unused);
+    assert_eq!(appends(&[toast, retry, popover, ("UI.copied", "why")]), unused);
     let e = appends(&[]);
     assert!(e.starts_with("mockup onclick failed:\n") && e.contains("appended <div> under UI.toast, which no recorded opener drew and no EXCLUDED_MOCK_APPENDS entry names"), "{e}");
 }
@@ -638,11 +638,8 @@ fn a_modal_is_what_a_modal_opener_draws_whatever_its_class() {
     assert_eq!(e, want);
 }
 
-/// A modal or menu target renders the `.scrim` or `.menu` its opener appends whichever way the
-/// element gets its class: through `classList.add` or beside another class. Only the
-/// "beside another class" cases (`wideModal`, menu `wide`) fail an exact-`className` check
-/// (mock.rs modal and menu render paths): the stub's `classList.add` on an empty class writes
-/// exactly `scrim` or `menu`. Keep those two cases.
+/// A modal or menu target renders the element its opener appends whichever way the element gets
+/// its class: through `classList.add` or beside another class.
 #[test]
 fn a_modal_or_menu_target_renders_its_element_by_class_token() {
     let repo = opener_repo("render-class-token", &[]);
@@ -651,9 +648,9 @@ fn a_modal_or_menu_target_renders_its_element_by_class_token() {
         assert_eq!(html, r#"<div class="scrim"></div>"#, "PAGES.{opener}");
     }
     let script = concat!(
-        "UI.openMenu = function (ev, id) { const el = document.createElement(\"div\");",
+        "UI = Object.assign(UI, { openMenu: function (ev, id) { const el = document.createElement(\"div\");",
         " if (id === \"wide\") el.className = \"menu wide\"; else el.classList.add(\"menu\");",
-        " el.innerHTML = '<div class=\"menu-item\"></div>'; document.body.appendChild(el); };\n",
+        " el.innerHTML = '<div class=\"menu-item\"></div>'; document.body.appendChild(el); } });\n",
     );
     let menus = FakeRepo::with_openers("render-menu-class-token", &mock_html(&body(true)), PAGE_MAP, &[], script);
     for id in ["listed", "wide"] {

@@ -193,7 +193,7 @@ impl FakeRepo {
                 "  return calls.map(call => '<button class=\"btn\" onclick=\"' + call + '\"></button>').join(\"\");\n",
                 "}};\n",
                 "const APPENDERS = Object.fromEntries({appenders}.map(n => [n, function () {{ document.body.appendChild(document.createElement(\"div\")); }}]));\n",
-                "var UI = Object.assign({{ state: {{}}, defineMenu: function () {{}}, modal: function (html, o) {{\n",
+                "var UI = Object.assign({{ state: {{}}, defineMenu: function () {{}}, confirm: function () {{ UI.modal(\"\"); }}, modal: function (html, o) {{\n",
                 "  o = o || {{}};\n",
                 "  const el = document.createElement(\"div\");\n",
                 "  if (o.classList) el.classList.add(\"scrim\"); else el.className = o.cls || \"scrim\";\n",
@@ -556,18 +556,20 @@ fn a_menu_appended_outside_every_open_menu_call_is_an_error() {
     probe_html(repo.path(), r#"<button onclick="UI.openMenu(event,'user','a')"></button>"#).expect("a recorded menu");
 }
 
-/// A mockup whose `UI.openMenu` is not the harness's recording wrapper, missing or replaced after
-/// `UI` was set, cannot be probed, so no menu it draws goes unrecorded.
+/// A mockup whose `UI.openMenu` is missing or not the harness's recording wrapper (replaced after
+/// `UI` was set) cannot be probed or opened, so no menu it draws goes unrecorded.
 #[test]
 fn probing_a_mockup_whose_open_menu_is_not_recorded_is_an_error() {
     let cases = [
-        ("mock-probe-no-open-menu", "UI = { state: {}, defineMenu: function () {} };\n"),
-        ("mock-probe-replaced-open-menu", "UI.openMenu = function () {};\n"),
+        ("mock-probe-no-open-menu", "UI = { state: {}, defineMenu: function () {} };\n", "UI.openMenu, a listed opener, is no function of the mockup"),
+        ("mock-probe-replaced-open-menu", "UI.openMenu = function () {};\n", "the mockup's UI.openMenu is not the harness's recording wrapper"),
     ];
-    for (name, script) in cases {
+    for (name, script, want) in cases {
         let repo = FakeRepo::with_openers(name, r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
         let e = format!("{:#}", probe_html(repo.path(), r#"<button onclick="PAGES.tab='a'"></button>"#).expect_err("not recorded"));
-        assert!(e.contains("the mockup's UI.openMenu is not the harness's recording wrapper"), "{name}: {e}");
+        assert!(e.contains(want), "{name}: {e}");
+        let e = format!("{:#}", super::render_menu(repo.path(), "user", None).expect_err("not recorded"));
+        assert!(e.contains(want), "{name}: {e}");
     }
 }
 
@@ -631,15 +633,15 @@ fn the_harness_passes_the_entry_arguments_to_the_real_opener() {
     assert!(e.contains("node failed rendering PAGES.cancelMail"), "{e}");
 }
 
-/// An opener the mockup does not define, and a function that appends no `.scrim` (`P.actor`
+/// An opener the mockup does not define, and a function that appends no modal (`P.actor`
 /// returns a cell's html), each fail beside the clean case.
 #[test]
 fn a_missing_opener_or_one_that_appends_no_scrim_is_an_error() {
     super::render_modal(&real_repo(), "skipPoison", &[]).expect("the clean case");
     let e = format!("{:#}", super::render_modal(&real_repo(), "noSuchOpener", &[]).expect_err("not defined"));
     assert!(e.contains("node failed rendering PAGES.noSuchOpener") && e.contains("PAGES.noSuchOpener is not a function"), "{e}");
-    let e = format!("{:#}", super::render_modal(&real_repo(), "actor", &["x"]).expect_err("no .scrim"));
-    assert!(e.contains("PAGES.actor() appended no .scrim element"), "{e}");
+    let e = format!("{:#}", super::render_modal(&real_repo(), "actor", &["x"]).expect_err("no modal"));
+    assert!(e.contains("PAGES.actor() appended no element under UI.modal, UI.confirm, REG.openSearch"), "{e}");
 }
 
 /// The stand-in opens every `PAGE_MAP` modal entry's opener with its arguments.
@@ -764,8 +766,8 @@ fn a_body_that_assigns_an_undeclared_key_fails() {
     assert_eq!(probe.non_tab_keys, ["queue"]);
 }
 
-/// What `UI.popover` appends is a popover, clean; what another `UI` call appends fails naming
-/// the host, the element and the call, unless the call is a declared appender, which is then
+/// What a `UI` call other than a recorded opener appends, a popover among them, fails naming the
+/// host, the element and the call, unless the call is a declared appender, which is then
 /// recorded.
 #[test]
 fn an_element_no_recorded_opener_drew_fails_unless_its_call_is_declared() {
@@ -776,8 +778,13 @@ fn an_element_no_recorded_opener_drew_fails_unless_its_call_is_declared() {
         "});\n",
     );
     let repo = FakeRepo::with_openers("mock-probe-appenders", r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
-    let probe = probe_html(repo.path(), r#"<button onclick="UI.popover(event,'x')"></button>"#).expect("a popover");
-    assert!(probe.appenders.is_empty(), "{:?}", probe.appenders);
+    let popover = r#"<button onclick="UI.popover(event,'x')"></button>"#;
+    let e = format!("{:#}", probe_html(repo.path(), popover).expect_err("an undeclared popover"));
+    let want = r#"mockup onclick failed:
+  onclick "UI.popover(event,'x')" drawn on index appended <div class="popover"> under UI.popover, which no recorded opener drew and no EXCLUDED_MOCK_APPENDS entry names"#;
+    assert_eq!(e, want);
+    let probe = probe_declared(repo.path(), popover, &super::Declared { non_tab_keys: &[], appenders: &["UI.popover"] }).expect("declared");
+    assert_eq!(probe.appenders, ["UI.popover"]);
     let html = r#"<button onclick="UI.banner()"></button>"#;
     let e = format!("{:#}", probe_html(repo.path(), html).expect_err("an undeclared appender"));
     let want = r#"mockup onclick failed:
@@ -813,4 +820,86 @@ fn a_scrim_no_modal_opener_drew_fails() {
         MockOpener::Onclick("REG.openSearch()".to_string()),
     ];
     assert_eq!(probe.modals, want);
+}
+
+/// A modal is the first element appended under a modal opener's call, and a menu the first under
+/// `UI.openMenu`, whatever their class: a `PAGES` opener whose `UI.modal` draws a `.sheet` after
+/// a declared `UI.toast` renders that sheet, and a menu of class `drop` followed by an `<aside>`
+/// renders the menu.
+#[test]
+fn a_modal_or_menu_is_the_first_element_its_opener_appends_whatever_its_class() {
+    let script = concat!(
+        "PAGES.sheetModal = function () { UI.toast(\"x\"); UI.modal(\"<p>sheet</p>\", { cls: \"sheet\" }); };\n",
+        "UI = Object.assign(UI, { openMenu: function (ev, id) {\n",
+        "  const el = document.createElement(\"div\"); el.className = \"drop\"; el.innerHTML = \"<i>\" + id + \"</i>\";\n",
+        "  document.body.appendChild(el); document.body.appendChild(document.createElement(\"aside\"));\n",
+        "} });\n",
+    );
+    let repo = FakeRepo::with_openers("mock-modal-class", r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
+    assert_eq!(super::render_modal(repo.path(), "sheetModal", &[]).expect("opens"), r#"<div class="scrim"><p>sheet</p></div>"#);
+    assert_eq!(super::render_menu(repo.path(), "user", Some("a")).expect("opens"), r#"<div class="menu"><i>user</i></div>"#);
+}
+
+/// Each listed opener must be a function of the mockup's `UI` or `REG`: one the mockup lost fails
+/// a modal render and a probe by name.
+#[test]
+fn a_listed_opener_the_mockup_lacks_fails_by_name() {
+    for (name, script) in [("UI.confirm", "delete UI.confirm;\n"), ("REG.openSearch", "delete REG.openSearch;\n")] {
+        let repo = FakeRepo::with_openers(&format!("mock-stale-{name}"), r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
+        let want = format!("{name}, a listed opener, is no function of the mockup");
+        let e = format!("{:#}", super::render_modal(repo.path(), PAGE_MAP.iter().find_map(|p| p.modal).expect("a modal").opener, &[]).expect_err("stale"));
+        assert!(e.contains(&want), "{e}");
+        let e = format!("{:#}", probe_html(repo.path(), r#"<button onclick="1"></button>"#).expect_err("stale"));
+        assert!(e.contains(&want), "{e}");
+    }
+}
+
+/// An appended element is what its innermost listed drawer makes it: an `<aside>` `UI.banner`
+/// draws inside `UI.modal` is a modal while `UI.banner` is unlisted and the banner's once it is a
+/// declared appender, and a palette `REG.openSearch` draws inside `UI.openMenu` is a modal.
+#[test]
+fn an_element_is_classed_by_its_innermost_listed_drawer() {
+    let script = concat!(
+        "UI = Object.assign(UI, {\n",
+        "  banner: function () { document.body.appendChild(document.createElement(\"aside\")); },\n",
+        "  modal: function () { UI.banner(); },\n",
+        "  openMenu: function () { REG.openSearch(); },\n",
+        "});\n",
+    );
+    let repo = FakeRepo::with_openers("mock-probe-innermost", r#"<div class="app"></div>"#, PAGE_MAP, &[], script);
+    let html = r#"<button onclick="UI.modal('')"></button>"#;
+    let probe = probe_html(repo.path(), html).expect("the modal's");
+    assert_eq!(probe.modals, [MockOpener::Onclick("UI.modal('')".to_string())]);
+    let probe = probe_declared(repo.path(), html, &super::Declared { non_tab_keys: &[], appenders: &["UI.banner"] }).expect("declared");
+    assert!(probe.modals.is_empty(), "{:?}", probe.modals);
+    assert_eq!(probe.appenders, ["UI.banner"]);
+    let menu = "UI.openMenu(event,'user')";
+    let probe = probe_html(repo.path(), &format!(r#"<button onclick="{menu}"></button>"#)).expect("a palette in a menu");
+    assert_eq!(probe.modals, [MockOpener::Onclick(menu.to_string())]);
+    assert_eq!(probe.menus, [("user".to_string(), None)]);
+}
+
+/// The mount is checked once, by host, whether or not the render draws a body: an element it or
+/// a timer it scheduled appends that no listed call drew fails as the mount's, under `REG.mount`, and a timer it
+/// scheduled that throws fails once, as the mount's, not in every body.
+#[test]
+fn the_mount_is_checked_once_and_with_no_body_drawn() {
+    let wrap = |inner: &str| {
+        format!("const r0 = PAGES.index.render; PAGES.index.render = function () {{ {inner} return r0.apply(this, arguments); }};\n")
+    };
+    let aside = "document.body.appendChild(document.createElement(\"aside\"));";
+    let appended = "mockup onclick failed:\n  index: the mount appended <aside> under REG.mount, which no recorded opener drew and no EXCLUDED_MOCK_APPENDS entry names";
+    let threw = "mockup onclick failed:\n  index: the mount threw in the harness: a timer it scheduled threw: boom";
+    let cases = [
+        ("now", wrap(aside), appended),
+        ("timer", wrap(&format!("setTimeout(function () {{ {aside} }}, 1);")), appended),
+        ("throw", wrap("setTimeout(function () { throw new Error(\"boom\"); }, 1);"), threw),
+    ];
+    for (name, script, want) in cases {
+        let repo = FakeRepo::with_openers(&format!("mock-probe-mount-{name}"), r#"<div class="app"></div>"#, PAGE_MAP, &[], &script);
+        for html in ["<div></div>", r#"<button onclick="1"></button><button onclick="2"></button>"#] {
+            let e = format!("{:#}", probe_html(repo.path(), html).expect_err("the mount fails"));
+            assert_eq!(e, want, "{name}: {html}");
+        }
+    }
 }
