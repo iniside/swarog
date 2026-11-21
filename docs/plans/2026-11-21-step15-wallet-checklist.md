@@ -5,6 +5,7 @@ Read-only extraction per `.agents/skills/mockup-implementation/SKILL.md` §1 (at
 - players: Embers column `pc:76` (header), `pc:92` (cell, hard-coded unavailable), banner `pc:106` (hard-coded).
 - player: `tabRender.wallet` `pc:128-129`.
 - Registry: nav section `reg:11`, nav entry `reg:25` (`down: true`), search `reg:41` (out of scope, O-5), tile `reg:52` (`state: "error"`), attention `reg:58` (FAKE demo item, `ds:44`; not this port), tab `reg:69` (no `count`, `state: "error"`), fact `reg:84` (hard-coded unavailable), row-menu group `reg:101-104` (hard-coded disabled, note "unavailable").
+- Out of scope: `reg:116` (a `notification.source` demo item "wallet-svc is down", `module: "wallet"`): a demo outage the shell's notification source draws, not a wallet contribution; no plan step names `notification.source` **[grep]**; its line is a `data difference` (demo) wherever it is diffed. `pc:23` ("Wallet balance" impact row in the Delete-account confirm): accounts' `ConfirmSpec` (`pc:21`, Step 13), so accounts owns it; the hard-coded "unknown (wallet unavailable)" is a `data difference` (demo) in accounts' accept file for that modal.
 - Rows: `dj:4-17` (`wallet: {EMB, GLD, TOK}`), `dj:163-171` (ledger), `dj:173-176` (currencies).
 
 Abbreviations: `pp` = `UILayout/redesign/assets/pages-platform.js`, `pc` = `…/pages-core.js`, `reg` = `…/registry.js`, `dj` = `…/data.js`, `bjs` = `UILayout/design-system/components/bundle.js`, `cp` = `core/controlplane/src/lib.rs`, `tmpl` = `core/admin/src/templates/primitives.html.tmpl`, `shell` = `core/admin/src/templates/shell.html.tmpl`, `rt` = `core/admin/src/routes.rs`, `fr` = `core/admin/src/render/form.rs`, `pages` = `tools/admindiff/src/pages.rs`, `wl` = `modules/wallet/src/lib.rs`, `ws` = `modules/wallet/src/store.rs`, `wsv` = `modules/wallet/src/service.rs`, `wp` = `modules/wallet/src/projection.rs`, `wa` = `api/wallet/api/src/lib.rs`, `ca` = `modules/characters/src/admin.rs`, `ds` = `docs/research/2026-10-22-1830-admin-redesign-data-sources.md`, `gd` = `docs/research/2026-11-20-2230-admin-ports-contract-gaps.md`, `plan` = `docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md`, `acc` = `tools/admindiff/accept`.
@@ -20,7 +21,7 @@ What wallet holds (verified):
 - `wallet.balances(player_id uuid, currency FK, amount 0..10^15, updated_at, PK (player_id, currency))` (`wl:70-79`). No index leads with `currency`.
 - `wallet.ledger(seq bigserial, id uuid PK, idempotency_key UNIQUE, player_id, currency, delta, balance_after, reason, at clock_timestamp())` (`wl:81-92`); one index `ledger_player_seq_idx (player_id, seq DESC)` (`wl:185-188`). No index on `seq` or `at` alone.
 - `wallet.purged_players` with `purged_players_pending_idx` (`wl:94-99,189-193`).
-- Dev seed `gold`/Gold/soft and `gems`/Gems/hard, decimals 0 (`wl:101-105`), only when `WALLET_DEV_SEED` is truthy (`wl:111-118`). No `WALLET_` hit in `tools/devctl` or `tools/splitproof/src` **[grep]**, so a devctl fleet's catalog is likely empty.
+- Dev seed `gold`/Gold/soft and `gems`/Gems/hard, decimals 0 (`wl:101-105`), only when `WALLET_DEV_SEED` is truthy (`wl:111-118`). Every dev fleet sets it: `tools/processctl/src/fleet.rs:904,911` (development split), `:961` (proof split), `:995` (monolith), `:1024` (proof monolith), built by devctl (`tools/devctl/src/supervisor.rs:350`) and splitproof (`tools/splitproof/src/main.rs:710`); also `compose.dev.yaml:27`, `weles/fleet.monolith.toml:33`, `weles/fleet.split.toml:151`. A dev fleet's catalog is `gold` and `gems`.
 - Contract (`wa`): `Balance`, `Currency` (`decimals` is a display hint, amounts are minor units, `wa:30-41`), `Movement` (`idempotency_key` required, whole-wallet namespace, `starter:` reserved; identity `(player_id, currency, signed delta, reason)`, `wa:43-75`), caps `MAX_IDEMPOTENCY_KEY_BYTES` 128, `MAX_CURRENCY_CODE_BYTES` 32, `MAX_REASON_BYTES` 256, `MAX_MOVEMENT_AMOUNT` 10^12 (`wa:79-97`). `Wallet`: `balances`, `currencies`, `credit`, `debit` (wire-only, `wa:106-136`).
 - Store readers with no non-test caller in `modules/wallet/src` **[grep]**: `pending_purges` (`ws:208`), `list_catalog` + `CatalogEntry` (`ws:74-83,460`), `recent_ledger` + `LedgerEntry`/`LedgerPage`/`MAX_RECENT_LEDGER` (`ws:108-132,495`; no `id`, no cursor), `OnConflict::Overwrite` (`ws:97`; only the seed's `Skip` is used, `wl:208`). Live: `list_balances` (`ws:423`), `list_currencies` (`ws:442`, `ORDER BY code`).
 - No `controlplane` dependency (`modules/wallet/Cargo.toml`), no `admin.rs`.
@@ -49,7 +50,7 @@ Carriers already in the contract (verified): `Point::EntityTabTile` (`cp:635`) +
 | `div.seg > button.on "Grant" + button "Revoke"` | `pp:172` | `FormSpec.modes` (13e4), drawn `tmpl:289/300`; fresh form picks the first mode (`fr:147`) | ok; **G3** |
 | Submit "Grant" (swaps to "Revoke"), note "Idempotent per request id." | `pp:172` | `FormMode.submit_label`, `FormSpec.note` | ok; note true only with **G5** |
 | Field Player (`type: user`, "ref user") | `pp:173` | `FieldKind::Ref("player")` → `span.input-icon` + user icon (`tmpl:277`) | REAL as uuid; handle picker NEW (`ds:175`) |
-| Field Amount (`money`, options EMB/GLD/TOK) | `pp:174` | `FieldKind::Money(codes)` (`tmpl:278`) | REAL; options = catalog codes (D4); empty on an empty catalog |
+| Field Amount (`money`, options EMB/GLD/TOK) | `pp:174` | `FieldKind::Money(codes)` (`tmpl:278`) | REAL; options = catalog codes (D4): `gold`, `gems` on a dev fleet |
 | Field Reason, required, help "Shown in the ledger and audit log." | `pp:175` | `String`, `required`, `help` | REAL; help text **G6** |
 | Field Request id, mono, read-only | `pp:176` | `FieldKind::RequestId` (13e5) | ok; **G5** |
 | Fields `disabled: true` | `pp:173-176` | — | demo state; portal draws them enabled → accept or hand-check (H10) |
@@ -84,12 +85,12 @@ Shell frame on `economy`: copy `acc/index.txt:5, 6, 7, 9, 10` (Sign out, pending
 
 | Panel | ok | empty | readonly | stale | error |
 |---|---|---|---|---|---|
-| Currencies | catalog rows | portal Empty + create tool (`when_empty`, G13); likely on a devctl fleet | n/a (`writes: true`) | mock demo only, **G14** | portal error block |
+| Currencies | catalog rows | portal Empty + create tool (`when_empty`, G13); not on a dev fleet (seeded) | n/a (`writes: true`) | mock demo only, **G14** | portal error block |
 | Grant or revoke | form | n/a | `writes: false` never | none | portal error (the mock's ok+banner is unreachable, `gd:88`) |
 | Ledger | rows, keyset pager | Empty; narrowed to zero keeps the toolbar (golden `table_empty_search`) | — | **G14** | error block |
-| Wallet tab tiles | one per currency | no tiles on an empty catalog | — | none | per-slot error |
+| Wallet tab tiles | one per currency | no tiles on an empty catalog (not a dev fleet) | — | none | per-slot error |
 | Transactions | rows | Empty | — | none | error block (the only state the mock designs) |
-| Embers column / fact / tile | values | "0" (always a Cell) | — | none | failure cell + banner / fact error (`tmpl:390`) / tile error |
+| Embers column / fact / tile | values | "0" (always a Cell) | — | none | failure cell + banner / fact error / tile error |
 | Purges pending | item while backlog | none at 0 | — | — | per point |
 
 URLs: Ledger search, filters and pager must build from `Ctx.query` (skill §1); the Transactions pager carries `tab=wallet`. Part `a` names its golden case or adds the gap.
@@ -140,23 +141,24 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 | H12 | Ledger: time format, Amount sign and colour, grouping, Reason wrap, Tx full uuid, no sort arrow, foot text, search placeholder | live look; golden for the coloured Mono cell |
 | H13 | Embers-spent tile label and value (G19) | live look |
 | H14 | Purges pending item (G16) | golden or live look after deleting a player |
-| H15 | Create-currency tool and modal (D6, G13) | live look |
+| H15 | Create-currency tool and modal (D6, G13) | live look on an empty catalog (a fleet without `WALLET_DEV_SEED`, or the seed rows deleted) |
 | H16 | Demo states declared, not drawn: stale Currencies/Ledger, Grant err banner, nav `down`, error tile, error fact, disabled row group | declared here; cited by the step report |
 
 ## 7. Gaps and decisions for part `a`
 
-**G1. Which currency is "Embers"** (owner decision before 15a5, `plan:2146-2148`; lands in 15a5, also 15a1's fact).
+**G1. Which currency is "Embers"** — OWNER DECISION (before 15a5, `plan:2146-2148`; lands in 15a5, also 15a1's fact).
 - D4 names `gold/gems` the real vocabulary; the catalog is operator data, but a manifest label is static.
 - Proposal: a wallet constant naming the hard dev-seed currency `gems` (`wl:102-105`); column "Gems", tile "Gems spent (24 h)", fact "N gems"; a missing catalog row or balance draws "0".
-- Alternatives: (b) a typed config value naming the code; (c) one column per catalog currency (needs a dynamic manifest, Na0).
+- Alternatives: (b) a typed config value naming the code instead of a hard-coded `gems`; (c) one column per catalog currency (needs a dynamic manifest, Na0).
 
-**G2. The global ledger: FAKE or REAL** (15a3, 15t).
+**G2. The global ledger: FAKE or REAL** — OWNER DECISION (15a3, 15t).
 - `plan:2125` says FAKE per R1; `ds:176` says NEW because it "needs an index on seq/at". R1 forbids new indexes (`plan:82-86`), not unindexed reads.
 - A FAKE ledger has no real player ids, so its Player cells never resolve a label and the 15t splitproof assertion (label answered by accounts-svc) cannot hold.
 - Proposal: REAL, as DERIV under R1: `ORDER BY seq DESC` with a keyset cursor on `seq`, no new index, a comment naming the missing `ledger(seq)` index, and a `docs/todo/wallet.md` item for it. Search by player id uses `ledger_player_seq_idx`; by tx id the PK.
 - Alternatives: (b) FAKE amounts on real player ids taken from `wallet.balances` (misleading money); (c) FAKE with fake ids and 15t dropped.
+- Cost of REAL: each Economy render runs an unindexed `ORDER BY seq DESC` and an exact `count(*)` over the whole ledger, plus the Supply/Holders aggregates (G11); each dashboard render runs G19's 24 h sum. A panel deadline drops the answer, not the server statement, which keeps running.
 
-**G3. Two row-menu items vs one form with modes** (15a2).
+**G3. Two row-menu items vs one form with modes** — OWNER DECISION (15a2).
 - The mock draws two items (`reg:102-103`) and no modal (`gd:46`). Mode actions never draw in a menu (`rt:263,299,508`), and a fresh form opens on its first mode (`fr:147`).
 - Proposal: two `Then::Form` row actions without modes (§4); the modes live only on the Economy panel form, the one place the mockup draws `div.seg` (`pp:172`). Both paths share one invoke path.
 - Alternatives: (b) both items carry modes, the Revoke item ordered [Revoke, Grant]; (c) Na0: a picked mode on `Then::Form`.
@@ -166,30 +168,30 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 
 **G5. `request_id` → `idempotency_key`** (15a2, X8).
 - Proposal: key `admin:<request_id>`, refused if over 128 bytes; never under `starter:` (`wa:55-69`).
-- The panel form's id is `<contribution id>:<token>` (`routes.rs:876`, `forms.rs:63-66`), the token 43 base64url chars (`lib.rs:823-828`); the key is 50 bytes plus the contribution id, so it fits for any id up to 78 bytes.
+- The panel form's id is `<contribution id>:<token>` (`core/admin/src/routes.rs:876`), a row-action modal's `<action id>:<token>` (`core/admin/src/routes.rs:1028`), both minted at `core/admin/src/engine/forms.rs:63-66`, the token 43 base64url chars (`core/admin/src/lib.rs:823-828`). The key is 50 bytes plus that id (64 for `admin:currency.grant:<token>`), so it fits while the id is at most `MAX_IDEMPOTENCY_KEY_BYTES` − 50 bytes.
 - A resubmit of one instance with a changed field is a 409 (identity includes reason, `wa:48-52`); it shows as a form error.
 
-**G6. Ledger reason text and the Reason help** (15a2).
-- Proposal: write `admin.grant · <reason> (<operator>)` / `admin.revoke · …` as the mockup shows (`dj:165,169`), refused over `MAX_REASON_BYTES`.
-- Help: "Shown in the ledger." The `admin.action` detail carries the outcome and only the portal's own `_reason` (`actions.rs:479,586,609-611`), never form field values, so a Reason form field never reaches the audit log.
-- Alternative: the operator's text verbatim.
+**G6. Ledger reason text and the Reason help** — OWNER DECISION (15a2).
+- The movement's reason is in `wallet.changed` (`api/wallet/events/src/lib.rs:28`), which audit sinks (`modules/audit/src/lib.rs:56`), and the mockup's audit row shows it (`dj:155`): the help "Shown in the ledger and audit log." (`pp:175`) holds. (The `admin.action` detail carries only the outcome and the portal's own `_reason`, `core/admin/src/engine/actions.rs:479,586,609-611`.)
+- notifications shows the reason to the player in a credit's inbox row (`modules/notifications/src/projection.rs:165-169`).
+- Options: (a) the reason only, player-visible; the operator stays in audit only (`admin.action`); (b) `admin.grant · <reason> (<operator>)` / `admin.revoke · …` as the mockup shows (`dj:165,169`), which puts the operator's login in the player's inbox. Either is refused over `MAX_REASON_BYTES`.
 
 **G7. Transactions panel ok shape** (15a1).
 - Proposal: the Ledger columns minus Player (Time, Currency, Amount, Balance, Reason, Tx), keyset pager on `ledger_player_seq_idx`, rows shared with the global ledger reader (replaces `recent_ledger`, G15). Forced, the mock draws an empty body: accept kind `template choice` with that reason (owner may prefer a declared deviation).
 
 **G8. Fact ok shape** (15a1). Proposal: icon `coins`, "N gems" (G1 currency; "0 gems" at 0). Alternative: "N currencies held".
 
-**G9. Tab tiles** (15a1). Proposal: one tile per catalog currency in `list_currencies` order (`ws:442`), label `<display_name> (<code>)`, value the balance ("0" when none), no delta, spark or link.
+**G9. Tab tiles** (15a1). Proposal: one tile per catalog currency in `list_currencies` order (`ws:442`; on a dev fleet "Gems (gems)", "Gold (gold)"), label `<display_name> (<code>)`, value the balance ("0" when none), no delta, spark or link.
 
 **G10. Number format** (15a1, 15a3, 15a5). The mock mixes compact ("41.8 M", "1.94 M") and grouped ("91,300"). Proposal: exact en-US grouped integers everywhere, "+" on a positive Amount, minor units as stored (dev decimals are 0). Alternative: compact for Supply and the tile.
 
-**G11. Currencies data** (15a3). Supply `sum(amount)` and Holders `count(*) WHERE amount > 0` per currency: exact, unindexed (no index leads with `currency`, `wl:78`), with a comment. Cap: wallet has no cap; proposal "—" (truthful constant) instead of `ds:173`'s FAKE. Kind: `Tone::Accent` on `hard`, the real premium kind; none otherwise.
+**G11. Currencies data** — OWNER DECISION on Cap (15a3). Supply `sum(amount)` and Holders `count(*) WHERE amount > 0` per currency: exact, unindexed (no index leads with `currency`, `wl:78`), with a comment. Cap: wallet has no cap; proposal "—" (truthful constant) instead of `ds:173`'s FAKE. Kind: `Tone::Accent` on `hard`, the real premium kind; none otherwise.
 
-**G12. Ledger toolbar and foot** (15a3). Search: exact player id or tx id. Currency filter: `Select` over catalog codes. Reason filter: `Select` over the reasons wallet mints (`starter-grant` `wp:17`, `admin.grant`, `admin.revoke` per G6), prefix match. Foot: exact `count(*)` with a comment, `Noun::new("transaction", "transactions")`. Alternative: no Reason filter (a contract-gap accept line).
+**G12. Ledger toolbar and foot** — OWNER DECISION (15a3). Search: exact player id or tx id. Currency filter: `Select` over catalog codes. Reason filter: `Select` over the reasons wallet mints (`starter-grant` `wp:17`, `admin.grant`, `admin.revoke` per G6), prefix match. Foot: exact `count(*)` with a comment, `Noun::new("transaction", "transactions")`. Alternative: no Reason filter (a contract-gap accept line).
 
-**G13. Create currency** (15a4; Q1, D6). `currency.create` (§4) with Code (≤32 B), Name (≤64 B), Kind (string ≤32 B, help "soft or hard"), Decimals (0–18). An existing code is a 409: today's `write_currency_tx` either overwrites or silently skips (`ws:85-104,540-563`). Proposal: replace the dead `OnConflict::Overwrite` with a refusing insert. Its modal has no mockup opener: an `EXCLUDED_MODALS` row (`pages:336`) with reason D6.
+**G13. Create currency** (15a4; Q1, D6). `currency.create` (§4) with Code (≤32 B), Name (≤64 B), Kind (string ≤32 B, help "soft or hard"), Decimals (0–18). An existing code is a 409: today's `write_currency_tx` either overwrites or silently skips (`ws:85-104,540-563`). Proposal: replace the dead `OnConflict::Overwrite` with a refusing insert. Its modal has no mockup opener: an `EXCLUDED_MODALS` row (`pages:336`) with reason D6. Under `when_empty` the tool draws only on an empty catalog, so never on a seeded dev fleet.
 
-**G14. Stale and demo states** (15a3). Proposal: `cache_ttl_s: None` everywhere; stale is unreachable and declared (H16). Map `economy` and `player.wallet` with `force: true`. Alternative: `Some(60)` on Currencies only. The cache is read only when the live fetch fails (`panels.rs:264-308`) and nothing drops an entry after an invoke (`panel_cache` is touched only at `panels.rs:275,298`), so a ttl shows, during an outage, a stale copy that can predate a grant just made.
+**G14. Stale and demo states** (15a3). Proposal: `cache_ttl_s: None` everywhere; stale is unreachable and declared (H16). Map `economy` and `player.wallet` with `force: true`. Alternative: `Some(60)` on Currencies only. The cache is read only when the live fetch fails (`core/admin/src/engine/panels.rs:264-308`) and nothing drops an entry after an invoke (`panel_cache` is touched only at `core/admin/src/engine/panels.rs:275,298`), so a ttl shows, during an outage, a stale copy that can predate a grant just made.
 
 **G15. Dead readers** (X4; 15a1, 15a3–15a5). Delete `list_catalog`/`CatalogEntry`; replace `recent_ledger` and its types with the keyset reader (G2/G7); `pending_purges` gets 15a5's caller; `Overwrite` per G13. Adjust their tests in `modules/wallet/src/tests.rs`.
 
@@ -204,8 +206,8 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 ## 8. Accept-file plan (predicted; the exact text needs a crawl)
 
 - **Every mapped page's file** (`index, players, player, player.characters, events, mail` and the menu files that carry the frame): delete the `mock-only div.nav-section#5694ed` line (Economy section now drawn). Expect instead a pairing line on the nav entry, mock `a.down.nav-item` vs portal `a.nav-item`: kind `data difference`, "the mockup draws wallet-svc down (registry.js:25)".
-- **`economy.txt`** (new): the shell-frame copies (§2); Grant `mock-only div.banner.err` → `data difference` (demo, G14); the panel `form` wrapper and hidden inputs → `template choice` (`gd:85`); Ledger search pair → copy `players.txt:11-12`; filter chips vs `Select` → copy `events.txt`'s pair if the same; empty Currencies/Ledger rows on a fresh fleet → `data difference` until 24b1; create tool → `declared deviation D6`.
-- **`player.wallet.txt`** (new tab entry, `force: true`; drop `player.wallet` from `EXCLUDED_TABS`, `pages:309`): shell copies, header lines as `player.characters.txt:12-19`, Transactions body per G7, tiles per G9 (data difference on an empty catalog). The Wallet tab's `span.dot.err` is drawn from `state: "error"` (`reg:69`, `pc:167`), which `force` does not reach: a mock-only line → `data difference` (demo), on every player page's tab bar. Plus `player.wallet.menu.user.txt` if a menu entry is added, as for characters.
+- **`economy.txt`** (new): the shell-frame copies (§2); Grant `mock-only div.banner.err` → `data difference` (demo, G14); the panel `form` wrapper and hidden inputs → `template choice` (`gd:85`); Ledger search pair → copy `players.txt:11-12`; filter chips vs `Select` → copy `events.txt`'s pair if the same; Currencies rows (two seeded vs the mock's three) and an empty Ledger on a fresh fleet → `data difference` until 24b1; create tool → `declared deviation D6`.
+- **`player.wallet.txt`** (new tab entry, `force: true`; drop `player.wallet` from `EXCLUDED_TABS`, `pages:309`): shell copies, header lines as `player.characters.txt:12-19`, Transactions body per G7, tiles per G9 (the two seeded currencies vs the mock's three: `data difference`). The Wallet tab's `span.dot.err` is drawn from `state: "error"` (`reg:69`, `pc:167`), which `force` does not reach: a mock-only line → `data difference` (demo), on every player page's tab bar. Plus `player.wallet.menu.user.txt` if a menu entry is added, as for characters.
 - **`players.txt`**: delete `:18` and `:21` (Embers header and cell now drawn); the cell becomes a pairing line (mock `span.muted > svg`, `pc:92`) → `data difference` (demo); `:15` banner → reword to `data difference`: drawn only when wallet fails. The `th.num > span` line (G6 of Step 14) should cover both headers; verify.
 - **`player.txt`, `player.characters.txt`**: the wallet fact pairs mock error `span > span > svg` with portal `span > svg` → `data difference` (demo); the Lore fact keeps its line, reason reworded.
 - **Menu files** (`players.menu.user`, `player.menu.user`, `player.characters.menu.user`): the `menu-group#198a5b` line resolves; expect pairing lines for the note badge and disabled items → `data difference` (demo). The row-menu modals have no mockup opener: `EXCLUDED_MODALS` rows per menu host.
@@ -220,5 +222,4 @@ All `min_role: Viewer` except the actions' own roles; `cache_ttl_s` per G14. Wal
 
 - No cargo, `admindiff mock`, crawl or diff was run; every accept line in §8 is a prediction.
 - How the portal draws a `KpiTile` with an empty `series` (G9, G19).
-- Whether a devctl profile sets `WALLET_DEV_SEED` outside the two folders searched.
 - Whether the purge-race-locks plan is already being executed (G18).
