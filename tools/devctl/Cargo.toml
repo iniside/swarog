@@ -12,6 +12,10 @@ serde_json.workspace = true
 rand.workspace = true
 processctl = { path = "../processctl" }
 edgeca = { path = "../edgeca" }
+# The dev-database wipe at `up` (supervisor.rs). Pinned LOCALLY, TLS-free, the same
+# way processctl pins them: the dev cluster is loopback plaintext.
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "time", "io-util"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = [
@@ -26,6 +30,9 @@ windows-sys = { workspace = true, features = [
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+testdb = { workspace = true }
 
 # Supervised-child tests drive processctl's production spawn path, which on unix
 # re-execs `current_exe --__processctl-guardian-v1`; only a `harness = false`

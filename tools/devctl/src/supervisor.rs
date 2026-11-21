@@ -22,6 +22,7 @@ const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWN_TIMEOUT: Duration = Duration::from_secs(130);
 const BUILD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const ADMIN_TIMEOUT: Duration = Duration::from_secs(30);
+const WIPE_TIMEOUT: Duration = Duration::from_secs(60);
 const SHUTDOWN: ShutdownPolicy = ShutdownPolicy {
     graceful_timeout: Duration::from_secs(5),
     force_timeout: Duration::from_secs(5),
@@ -236,6 +237,13 @@ fn supervise(
                 .record_failure("edge-ca", None::<String>)?;
             return Err(anyhow::anyhow!(error.to_string()));
         }
+        if let Err(error) = wipe_dev_database(&db_url) {
+            state
+                .lock()
+                .expect("state mutex poisoned")
+                .record_failure("db-wipe", None::<String>)?;
+            return Err(error);
+        }
         match seed_admin(&layout, &db_url, &environment, &stop) {
             Ok(StepOutcome::Completed) => {}
             Ok(StepOutcome::RequestedStop) => return Ok(()),
@@ -400,6 +408,73 @@ fn build(
         TransientOutcome::Completed => Ok(StepOutcome::Completed),
         TransientOutcome::Cancelled => Ok(StepOutcome::RequestedStop),
     }
+}
+
+/// Every schema except Postgres' own and `public`, quoted for direct use in DDL.
+const WIPE_SCHEMAS_SQL: &str = "SELECT quote_ident(nspname) FROM pg_namespace \
+     WHERE nspname NOT LIKE 'pg\\_%' AND nspname NOT IN ('information_schema', 'public') \
+     ORDER BY 1";
+const PUBLIC_TABLES_SQL: &str =
+    "SELECT format('%I.%I', schemaname, tablename) FROM pg_tables WHERE schemaname = 'public'";
+
+/// Empties the dev database before the fleet boots, so rows the cargo tests leave in
+/// the shared local Postgres never reach the portal or an admindiff crawl. Drops every
+/// schema except Postgres' own (`pg_*`, `information_schema`) and `public`, whose
+/// tables are truncated instead. Nothing is lost that a boot does not rebuild: every
+/// module creates its schema at boot, `adminctl create-user` creates schema `admin`
+/// itself, and demoseed refills the demo data.
+pub(crate) fn wipe_dev_database(db_url: &str) -> Result<()> {
+    use sqlx::Connection as _;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build the database wipe runtime")?;
+    runtime.block_on(async {
+        tokio::time::timeout(WIPE_TIMEOUT, async {
+            let mut connection = sqlx::PgConnection::connect(db_url)
+                .await
+                .context("connect to the dev database")?;
+            let (database,): (String,) = sqlx::query_as("SELECT current_database()")
+                .fetch_one(&mut connection)
+                .await?;
+            println!("devctl: wiping dev database {database}");
+            wipe_schemas(&mut connection).await?;
+            connection.close().await?;
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("dev database wipe did not finish within {WIPE_TIMEOUT:?}"))?
+    })
+    .context("wipe the dev database")
+}
+
+/// The wipe itself, on a connection the caller owns, so a test can run it inside a
+/// transaction it rolls back.
+pub(crate) async fn wipe_schemas(connection: &mut sqlx::PgConnection) -> Result<()> {
+    let schemas: Vec<(String,)> = sqlx::query_as(WIPE_SCHEMAS_SQL)
+        .fetch_all(&mut *connection)
+        .await?;
+    for (schema,) in &schemas {
+        sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+            .execute(&mut *connection)
+            .await
+            .with_context(|| format!("drop schema {schema}"))?;
+    }
+    let tables: Vec<String> = sqlx::query_as::<_, (String,)>(PUBLIC_TABLES_SQL)
+        .fetch_all(&mut *connection)
+        .await?
+        .into_iter()
+        .map(|(table,)| table)
+        .collect();
+    if !tables.is_empty() {
+        let sql = format!("TRUNCATE TABLE {} RESTART IDENTITY CASCADE", tables.join(", "));
+        sqlx::query(&sql)
+            .execute(&mut *connection)
+            .await
+            .context("truncate the public tables")?;
+    }
+    Ok(())
 }
 
 fn seed_admin(

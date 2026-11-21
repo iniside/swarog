@@ -498,3 +498,57 @@ fn retry_control(
     }
     Err(last.expect("at least one attempt"))
 }
+
+/// Runs the wipe inside a transaction it rolls back: the role may not create a
+/// database, and DROP SCHEMA / TRUNCATE are transactional in Postgres, so the shared
+/// database the other tests use comes back untouched.
+#[test]
+fn wipe_schemas_drops_module_schemas_and_empties_public() {
+    use sqlx::Connection as _;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    if runtime.block_on(testdb::test_pool()).is_none() {
+        return;
+    }
+    let suffix = format!("{:016x}", rand::random::<u64>());
+    let schema = format!("devctl_wipe_{suffix}");
+    let quoted = format!("Devctl Wipe {suffix}");
+    let table = format!("devctl_wipe_{suffix}");
+    runtime.block_on(async {
+        let mut connection = sqlx::PgConnection::connect(&testdb::dsn()).await.unwrap();
+        let mut tx = connection.begin().await.unwrap();
+        for sql in [
+            format!("CREATE SCHEMA {schema}"),
+            format!("CREATE TABLE {schema}.currencies (code text PRIMARY KEY)"),
+            format!("INSERT INTO {schema}.currencies VALUES ('leaked')"),
+            format!("CREATE SCHEMA \"{quoted}\""),
+            format!("CREATE TABLE public.{table} (id serial PRIMARY KEY)"),
+            format!("INSERT INTO public.{table} DEFAULT VALUES"),
+        ] {
+            sqlx::query(&sql).execute(&mut *tx).await.unwrap();
+        }
+
+        super::supervisor::wipe_schemas(&mut tx).await.unwrap();
+
+        let schemas: Vec<(String,)> = sqlx::query_as(
+            "SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg\\_%' ORDER BY 1",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+        let (rows,): (i64,) = sqlx::query_as(&format!("SELECT count(*) FROM public.{table}"))
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        connection.close().await.unwrap();
+        assert_eq!(
+            schemas,
+            vec![("information_schema".to_string(),), ("public".to_string(),)]
+        );
+        assert_eq!(rows, 0);
+    });
+}
