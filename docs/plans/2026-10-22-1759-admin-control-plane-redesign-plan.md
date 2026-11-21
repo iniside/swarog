@@ -1929,6 +1929,10 @@ in the port bullets.
   (`core/controlplane/src/lib.rs`, `core/admin/src/render/*.rs`, templates, the public-api
   baseline), with its tests; then **Nt0** (`[opus]` test-author) for its golden. Never folded
   into Na1. Depends on Before a.
+  A contract gap found later, inside Na1–Na3 (owner, 2026-11-21): the implementer stops,
+  commits nothing that works around it, and reports the gap; it becomes this port's Na0
+  (owner decision, review, Nt0) before the part resumes. A gap more than one port needs is
+  one shared contract step, as 13e, not an Na0 per port.
 - **Na1 — read surface.** Depends on Na0 when there is one.
   - New `modules/<m>/src/admin.rs` implementing `controlplane::Provider` with
     `writes: false`: pages, tabs, panels, search and kinds at the X2 orders, with data per
