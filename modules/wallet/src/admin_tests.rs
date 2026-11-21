@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 
 use controlplane::{
-    ActionPoint, Align, CellKind, EntityRef, FieldKind, FormSpec, InvokeCall, InvokeOutcome, PanelBody, PanelQuery,
-    Point, PrepareCall, Primitive, Provider as _, Role, Then, Tone,
+    ActionPoint, Align, CellKind, EntityRef, FieldKind, FilterKind, FormSpec, InvokeCall, InvokeOutcome, Link, PanelBody,
+    PanelQuery, Point, PrepareCall, Primitive, Provider as _, Role, Then, Tone,
 };
 use lifecycle::{Context, Module as _};
 use opsapi::{Error, Status};
@@ -14,9 +14,9 @@ use testdb::test_pool;
 use walletapi::{Balance, Currency, MAX_MOVEMENT_AMOUNT, MAX_REASON_BYTES};
 
 use super::{
-    currencies_body, fact_text, group_digits, grouped, manifest, movement_field_error, panel_form, parse_amount,
-    parse_cursor, parse_reason, row_form, signed, tiles_body, transactions_body, Direction, WalletAdmin,
-    ADMIN_KEY_PREFIX, NO_SUCH_PLAYER,
+    currencies_body, fact_text, group_digits, grouped, ledger_body, manifest, movement_field_error, panel_form,
+    parse_amount, parse_cursor, parse_reason, reason_filter, row_form, signed, tiles_body, transactions_body,
+    Direction, WalletAdmin, ADMIN_KEY_PREFIX, NO_SUCH_PLAYER, REASON_ADMIN,
 };
 use crate::service::{IDEMPOTENCY_CONFLICT, MALFORMED_PLAYER_ID, OUT_OF_RANGE, PLAYER_DELETED, UNKNOWN_CURRENCY};
 use crate::store::{CurrencyStats, LedgerEntry, LedgerPage, LEDGER_PAGE_SIZE};
@@ -35,6 +35,7 @@ fn entry(seq: i64, delta: i64, balance_after: i64) -> LedgerEntry {
     LedgerEntry {
         seq,
         id: format!("00000000-0000-4000-8000-{seq:012}"),
+        player_id: "11111111-1111-4111-8111-111111111111".to_string(),
         at: "2026-11-21 16:45".to_string(),
         currency: "gems".to_string(),
         delta,
@@ -190,6 +191,65 @@ fn transactions_map_each_movement_to_the_six_cells_and_the_cursor_to_the_last_se
 }
 
 #[test]
+fn ledger_adds_a_linked_player_cell_the_selects_the_search_and_the_counted_foot() {
+    let page = LedgerPage { rows: vec![entry(9, -1_200, 91_300), entry(4, 500, 92_500)], next_after: Some(4) };
+    let codes = ["gems".to_string(), "gold".to_string()];
+    let body = ledger_body(&page, 2_400_000, &codes);
+    let t = table(&body);
+    let heads: Vec<(&str, CellKind)> = t.columns.iter().map(|c| (c.label.as_str(), c.kind)).collect();
+    assert_eq!(
+        heads,
+        [
+            ("Time", CellKind::Mono),
+            ("Player", CellKind::User),
+            ("Currency", CellKind::Ref),
+            ("Amount", CellKind::Mono),
+            ("Balance", CellKind::Mono),
+            ("Reason", CellKind::Dim),
+            ("Tx", CellKind::MonoMuted),
+        ]
+    );
+    assert!(t.columns[3].align == Align::Right && t.columns[4].align == Align::Right && t.columns[5].wrap);
+    let player = &t.rows[0].cells[1];
+    let pid = "11111111-1111-4111-8111-111111111111";
+    assert_eq!(player.value, pid, "the value is the id, so the portal draws accounts' label for it");
+    assert_eq!(
+        player.link,
+        Some(Link::Entity(EntityRef { kind: "player".to_string(), id: pid.to_string() }))
+    );
+    assert!(player.label.is_none(), "a cell holds a link or a label, never both");
+    let values: Vec<&str> = t.rows[0].cells.iter().map(|c| c.value.as_str()).collect();
+    assert_eq!(
+        values,
+        ["2026-11-21 16:45", pid, "gems", "-1,200", "91,300", "admin.grant", "00000000-0000-4000-8000-000000000009"]
+    );
+    assert_eq!((t.rows[0].cells[3].tone, t.rows[1].cells[3].tone), (Some(Tone::Err), Some(Tone::Ok)));
+    assert_eq!(t.rows[1].cells[3].value, "+500");
+    let filters: Vec<(&str, &str, &FilterKind)> =
+        t.filters.iter().map(|f| (f.key.as_str(), f.label.as_str(), &f.kind)).collect();
+    let reasons = FilterKind::Select(vec![crate::projection::REASON.to_string(), REASON_ADMIN.to_string()]);
+    assert_eq!(
+        filters,
+        [("currency", "Currency", &FilterKind::Select(codes.to_vec())), ("reason", "Reason", &reasons)]
+    );
+    assert_eq!(t.search_placeholder.as_deref(), Some("Player or tx id"));
+    assert_eq!(t.page.next_cursor.as_deref(), Some("4"));
+    assert_eq!((t.page.size, t.page.total), (LEDGER_PAGE_SIZE as u32, Some(2_400_000)));
+    let noun = t.item_noun.as_ref().expect("the foot counts transactions");
+    assert_eq!((noun.of(1), noun.of(2)), ("transaction", "transactions"));
+}
+
+#[test]
+fn the_reason_select_matches_a_system_reason_or_the_admin_key_prefix() {
+    assert_eq!(reason_filter(None).unwrap(), (None, None));
+    assert_eq!(reason_filter(Some("starter-grant")).unwrap(), (Some("starter-grant"), None));
+    assert_eq!(reason_filter(Some(REASON_ADMIN)).unwrap(), (None, Some(ADMIN_KEY_PREFIX)));
+    for bad in ["admin.grant", "Admin", "starter"] {
+        assert_eq!(reason_filter(Some(bad)).unwrap_err().status, Status::Invalid, "{bad:?}");
+    }
+}
+
+#[test]
 fn cursor_is_a_decimal_seq_and_anything_else_is_the_callers_error() {
     assert_eq!(parse_cursor("42").unwrap(), 42);
     for bad in ["", "-1", "4x", "1.5", "99999999999999999999"] {
@@ -198,7 +258,7 @@ fn cursor_is_a_decimal_seq_and_anything_else_is_the_callers_error() {
 }
 
 #[test]
-fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_panels_at_10_and_20() {
+fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_panels_at_10_20_and_30() {
     let m = manifest();
     assert!(m.writes, "grant and revoke write");
     assert!(m.entity_kinds.is_empty());
@@ -212,6 +272,7 @@ fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_pane
             ("fact.balance", 50, "Wallet", "coins"),
             ("currencies", 10, "Currencies", ""),
             ("grant", 20, "Grant or revoke", ""),
+            ("ledger", 30, "Ledger", ""),
         ]
     );
     for c in &m.contributions[3..] {
@@ -237,8 +298,12 @@ fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_pane
     );
     assert_eq!(
         page.layout,
-        controlplane::Layout::Grid21(vec!["currencies".to_string()], vec!["grant".to_string()])
+        controlplane::Layout::Rows(vec![
+            controlplane::Layout::Grid21(vec!["currencies".to_string()], vec!["grant".to_string()]),
+            controlplane::Layout::Stack(vec!["ledger".to_string()]),
+        ])
     );
+    assert_eq!(page.params, ["currency", "reason"], "the Ledger's selects reach it as params");
     assert!(matches!(
         &m.contributions[0].point,
         Point::EntityTab { kind, tab, tab_label, columns: 1 } if kind == "player" && tab == "wallet" && tab_label == "Wallet"
@@ -430,6 +495,89 @@ async fn panels_read_the_players_balances_and_ledger() {
     assert_eq!(err.status, Status::Invalid);
 
     cleanup(&pool, &[&pid], &[&code]).await;
+}
+
+/// The Ledger reads every player's movements: the search narrows to a player or one tx, the
+/// Reason select to a system reason or to the `admin:` key prefix, the Currency select to one
+/// code, and the foot counts what they select.
+#[tokio::test]
+async fn the_ledger_narrows_by_search_reason_and_currency_and_counts_the_selection() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let (a, b) = (unique_player(&pool).await, unique_player(&pool).await);
+    let (one, two) = (unique_currency(&pool).await, unique_currency(&pool).await);
+    // a: two admin grants in `one`, a starter grant in `two`, a key-less-prefix movement whose
+    // reason merely reads like an admin one; b: one admin grant.
+    let rows = [
+        (&a, format!("{ADMIN_KEY_PREFIX}ledger-{a}-1"), &one, "CS ticket 1"),
+        (&a, format!("{ADMIN_KEY_PREFIX}ledger-{a}-2"), &one, "CS ticket 2"),
+        (&a, format!("starter:{a}"), &two, crate::projection::REASON),
+        (&a, format!("other-{a}"), &one, "admin.grant"),
+        (&b, format!("{ADMIN_KEY_PREFIX}ledger-{b}-1"), &one, "CS ticket 3"),
+    ];
+    for (pid, key, code, reason) in &rows {
+        sqlx::query(
+            "INSERT INTO wallet.ledger (idempotency_key, player_id, currency, delta, balance_after, reason) \
+             VALUES ($1, $2::uuid, $3, 10, 10, $4)",
+        )
+        .bind(key)
+        .bind(pid)
+        .bind(code)
+        .bind(reason)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let admin = WalletAdmin::new(svc, one.clone());
+    let read = |search: Option<&str>, params: &[(&str, &str)]| {
+        let mut q = query("ledger", &a, None);
+        q.entity = None;
+        q.search = search.map(str::to_string);
+        q.params = params.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        admin.panel(q)
+    };
+    let reasons =
+        |body: &PanelBody| -> Vec<String> { table(body).rows.iter().map(|r| r.cells[5].value.clone()).collect() };
+
+    let all = read(Some(&format!("  {a} ")), &[]).await.unwrap();
+    let t = table(&all);
+    assert_eq!(
+        reasons(&all),
+        ["admin.grant", crate::projection::REASON, "CS ticket 2", "CS ticket 1"],
+        "newest first"
+    );
+    assert_eq!(t.page.total, Some(4));
+    assert!(t.rows.iter().all(|r| r.cells[1].value == a), "the search narrows to the player");
+
+    let admins = read(Some(&a), &[("reason", REASON_ADMIN)]).await.unwrap();
+    assert_eq!(reasons(&admins), ["CS ticket 2", "CS ticket 1"], "admin is the key prefix, not the reason text");
+    assert_eq!(table(&admins).page.total, Some(2));
+
+    let starter = read(Some(&a), &[("reason", crate::projection::REASON)]).await.unwrap();
+    assert_eq!(reasons(&starter), [crate::projection::REASON]);
+
+    let in_two = read(Some(&a), &[("currency", two.as_str())]).await.unwrap();
+    assert_eq!(reasons(&in_two), [crate::projection::REASON]);
+    assert_eq!(table(&in_two).page.total, Some(1));
+    let empty_select = read(Some(&a), &[("currency", ""), ("reason", "")]).await.unwrap();
+    assert_eq!(table(&empty_select).page.total, Some(4), "an empty select narrows nothing");
+
+    let tx = t.rows[3].cells[6].value.clone();
+    let by_tx = read(Some(&tx), &[]).await.unwrap();
+    assert_eq!(reasons(&by_tx), ["CS ticket 1"], "a tx id selects its one movement");
+    assert_eq!(table(&by_tx).page.total, Some(1));
+
+    let unknown = read(Some("not-an-id"), &[]).await.unwrap();
+    assert!(table(&unknown).rows.is_empty() && table(&unknown).page.total == Some(0), "a malformed id is a miss");
+
+    let everyone = read(None, &[("currency", one.as_str())]).await.unwrap();
+    let players: Vec<&str> = table(&everyone).rows.iter().map(|r| r.cells[1].value.as_str()).collect();
+    assert_eq!(players, [b.as_str(), a.as_str(), a.as_str(), a.as_str()], "no search reads every player");
+    assert_eq!(table(&everyone).page.total, Some(4));
+
+    assert_eq!(read(None, &[("reason", "bogus")]).await.unwrap_err().status, Status::Invalid);
+
+    cleanup(&pool, &[&a, &b], &[&one, &two]).await;
 }
 
 #[tokio::test]

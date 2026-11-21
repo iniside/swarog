@@ -304,7 +304,15 @@ pub const PAGE_MAP: &[Page] = &[
     Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "config", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "audit", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
-    Page { page: "economy", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
+    Page {
+        page: "economy",
+        route: Route::Mapped("/admin/p/wallet/economy"),
+        search: "",
+        tab: None,
+        menu: None,
+        modal: None,
+        force: true,
+    },
 ];
 
 const NO_LORE: &str = "no Lore module exists yet";

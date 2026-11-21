@@ -5,7 +5,6 @@
 frame div.app > aside.sidebar > div.sidebar-foot > div.me: portal-only form#a96e26 | template choice: shell.html.tmpl puts the Sign out form in the sidebar foot; the mockup has no session
 frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item#ecbb9a | not ported yet: the API keys, Scheduler, Config and Audit nav entries arrive with their ports
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#1089c4 | not ported yet: the Lore section; no Lore module exists
-frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#5694ed | not ported yet: the Economy section arrives with the wallet port
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#ba7b3e | declared deviation D3: no Design-system nav section
 frame div.app > header.topbar: portal-only button.top-btn#255bc4 | template choice: shell.html.tmpl puts the theme toggle in the topbar; the mockup's sits in the devbar, which D3 drops
 panel "Subscriptions" section.panel > div.flush.panel-body > div.tbl-toolbar: mock-only span.input-icon#1fe724 | template choice: the table macro's search box is the form.input-icon of the next entry

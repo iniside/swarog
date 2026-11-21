@@ -21,6 +21,13 @@ _None._
   `Store::currency_stats` (`modules/wallet/src/store.rs`) reads the whole table each time
   the page draws. A `balances (currency)` index, or a maintained per-currency total, ends it.
   A panel deadline drops the answer, not the statement.
+- [ ] **The Economy Ledger scans the whole ledger on each render**
+  Without a search, `Store::ledger` (`modules/wallet/src/store.rs`) orders every movement
+  by `seq` and `Store::ledger_count` runs an exact `count(*)` over `wallet.ledger`; the
+  only index is `ledger_player_seq_idx (player_id, seq DESC)`, so neither `ORDER BY seq` nor
+  a time window on `at` (the 15a5 Embers-spent tile) has an index. `ledger (seq)` and
+  `ledger (at)` indexes end the scans; the count stays exact unless the foot takes an
+  estimate. A panel deadline drops the answer, not the statement.
 
 - [ ] **No test sends an uppercase or unhyphenated player uuid to the existence check**
   `Service::player_exists` canonicalises the id (`modules/wallet/src/service.rs:165-171`)

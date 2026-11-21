@@ -2,8 +2,8 @@
 //! currency over the Transactions table), the player's summary fact (the balance of the
 //! headline currency), and the operator's grant and revoke: the player row's "Grant
 //! currency…" / "Revoke currency…" modals and the Economy page's Grant-or-revoke form. The
-//! Economy page also lists the catalog with each currency's supply and holders (Currencies),
-//! reached from its entry in the fixed Economy nav section. Both grant and revoke
+//! Economy page also lists the catalog with each currency's supply and holders (Currencies)
+//! and every movement (Ledger), reached from its entry in the fixed Economy nav section. Both grant and revoke
 //! paths are one credit or debit through [`Service`] under the key
 //! [`ADMIN_KEY_PREFIX`] + the form instance's request id, so `writes: true`.
 
@@ -13,9 +13,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use controlplane::{
     ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ContributionDecl, DataTable, Emphasis, EntityRef, Field,
-    FieldKind, FormMode, FormSpec, InvokeCall, InvokeOutcome, KpiTile, Layout, Manifest, NavEntry, PageDecl, PageInfo,
-    Palette, PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider, Role, Row, SearchHit, SearchQuery, Then,
-    Tone, DEFAULT_PANEL_DEADLINE_MS,
+    FieldKind, FilterDef, FilterKind, FormMode, FormSpec, InvokeCall, InvokeOutcome, KpiTile, Layout, Link, Manifest,
+    NavEntry, Noun, PageDecl, PageInfo, Palette, PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider, Role,
+    Row, SearchHit, SearchQuery, Then, Tone, DEFAULT_PANEL_DEADLINE_MS,
 };
 use opsapi::{Error, Status};
 use walletapi::{
@@ -23,7 +23,7 @@ use walletapi::{
 };
 
 use crate::service::{MALFORMED_PLAYER_ID, OUT_OF_RANGE, PLAYER_DELETED, UNKNOWN_CURRENCY};
-use crate::store::{CurrencyStats, LedgerEntry, LedgerPage, LEDGER_PAGE_SIZE};
+use crate::store::{CurrencyStats, LedgerEntry, LedgerFilter, LedgerPage, LEDGER_PAGE_SIZE};
 use crate::Service;
 
 const MODULE: &str = "wallet";
@@ -42,6 +42,14 @@ const SECTION: &str = "economy";
 const CURRENCIES_PANEL: &str = "currencies";
 /// The Economy page's Grant-or-revoke form.
 const GRANT_PANEL: &str = "grant";
+/// The Economy page's table of every movement.
+const LEDGER_PANEL: &str = "ledger";
+/// The Ledger's toolbar selects, page URL keys that reach the panel as `PanelQuery::params`.
+const PARAM_CURRENCY: &str = "currency";
+const PARAM_REASON: &str = "reason";
+/// The Reason select's option for an operator's grant or revoke, whose reason is free text:
+/// it matches the movement's idempotency key prefix [`ADMIN_KEY_PREFIX`].
+pub(crate) const REASON_ADMIN: &str = "admin";
 
 /// The player row's modals (`Then::Form`, prepared with the live catalog codes).
 const CURRENCY_GRANT: &str = "currency.grant";
@@ -120,8 +128,30 @@ impl WalletAdmin {
     async fn transactions(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
         let id = player_id(req)?;
         let after = req.cursor.as_deref().map(parse_cursor).transpose()?;
-        let page = self.svc.store.player_ledger(id, after).await.map_err(crate::internal)?;
+        let filter = LedgerFilter { player: Some(id), ..LedgerFilter::default() };
+        let page = self.svc.store.ledger(&filter, after).await.map_err(crate::internal)?;
         Ok(transactions_body(&page))
+    }
+
+    /// The Economy Ledger: every player's movements, narrowed by the search (a player or tx
+    /// id) and the Currency and Reason selects, counted for the foot.
+    async fn ledger(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
+        let after = req.cursor.as_deref().map(parse_cursor).transpose()?;
+        let param = |key: &str| req.params.get(key).map(String::as_str).filter(|v| !v.is_empty());
+        let (reason, key_prefix) = reason_filter(param(PARAM_REASON))?;
+        let filter = LedgerFilter {
+            player: None,
+            player_or_tx: req.search.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+            currency: param(PARAM_CURRENCY),
+            reason,
+            key_prefix,
+        };
+        let store = &self.svc.store;
+        let (page, total, currencies) =
+            tokio::try_join!(store.ledger(&filter, after), store.ledger_count(&filter), store.list_currencies())
+                .map_err(crate::internal)?;
+        let codes: Vec<String> = currencies.into_iter().map(|c| c.code).collect();
+        Ok(ledger_body(&page, total, &codes))
     }
 
     /// The catalog's codes, the options of every Money field.
@@ -343,6 +373,22 @@ pub(crate) fn panel_form(codes: &[String]) -> FormSpec {
     }
 }
 
+/// The Reason select's options: the reason the starter grant mints, and [`REASON_ADMIN`].
+pub(crate) fn reason_options() -> Vec<String> {
+    vec![crate::projection::REASON.to_string(), REASON_ADMIN.to_string()]
+}
+
+/// The Reason select's value as `(reason, idempotency key prefix)`: a system reason matches
+/// the reason, [`REASON_ADMIN`] the key prefix; no value narrows nothing.
+pub(crate) fn reason_filter(value: Option<&str>) -> Result<(Option<&str>, Option<&str>), Error> {
+    match value {
+        None => Ok((None, None)),
+        Some(REASON_ADMIN) => Ok((None, Some(ADMIN_KEY_PREFIX))),
+        Some(r) if r == crate::projection::REASON => Ok((Some(crate::projection::REASON), None)),
+        Some(other) => Err(Error::invalid(format!("wallet: no ledger reason {other:?}"))),
+    }
+}
+
 /// The entity id of a player panel's request.
 fn player_id(req: &PanelQuery) -> Result<&str, Error> {
     row_player(req.entity.as_ref())
@@ -449,26 +495,37 @@ fn column(key: &str, label: &str, kind: CellKind, align: Align) -> Column {
     }
 }
 
-fn ledger_row(e: &LedgerEntry) -> Row {
+/// A movement's Time, Currency, Amount, Balance, Reason and Tx cells.
+fn movement_cells(e: &LedgerEntry) -> Vec<Cell> {
     let tone = match e.delta {
         d if d < 0 => Some(Tone::Err),
         d if d > 0 => Some(Tone::Ok),
         _ => None,
     };
-    Row {
-        entity: None,
-        cells: vec![
-            text(CellKind::Mono, e.at.clone()),
-            text(CellKind::Ref, e.currency.clone()),
-            Cell { tone, ..text(CellKind::Mono, signed(e.delta)) },
-            text(CellKind::Mono, grouped(e.balance_after)),
-            text(CellKind::Dim, e.reason.clone()),
-            text(CellKind::MonoMuted, e.id.clone()),
-        ],
-        highlight: false,
-        item: None,
-        actions: Vec::new(),
-    }
+    vec![
+        text(CellKind::Mono, e.at.clone()),
+        text(CellKind::Ref, e.currency.clone()),
+        Cell { tone, ..text(CellKind::Mono, signed(e.delta)) },
+        text(CellKind::Mono, grouped(e.balance_after)),
+        text(CellKind::Dim, e.reason.clone()),
+        text(CellKind::MonoMuted, e.id.clone()),
+    ]
+}
+
+fn row(cells: Vec<Cell>) -> Row {
+    Row { entity: None, cells, highlight: false, item: None, actions: Vec::new() }
+}
+
+/// The movement columns of [`movement_cells`], in its order.
+fn movement_columns() -> Vec<Column> {
+    vec![
+        column("at", "Time", CellKind::Mono, Align::Left),
+        column("currency", "Currency", CellKind::Ref, Align::Left),
+        column("amount", "Amount", CellKind::Mono, Align::Right),
+        column("balance", "Balance", CellKind::Mono, Align::Right),
+        Column { wrap: true, ..column("reason", "Reason", CellKind::Dim, Align::Left) },
+        column("tx", "Tx", CellKind::MonoMuted, Align::Left),
+    ]
 }
 
 /// The Transactions panel: one page of the player's movements newest first (Time, Currency,
@@ -476,15 +533,8 @@ fn ledger_row(e: &LedgerEntry) -> Row {
 /// row's `seq`. Zero rows draws the portal's empty state.
 pub(crate) fn transactions_body(page: &LedgerPage) -> PanelBody {
     let table = DataTable {
-        columns: vec![
-            column("at", "Time", CellKind::Mono, Align::Left),
-            column("currency", "Currency", CellKind::Ref, Align::Left),
-            column("amount", "Amount", CellKind::Mono, Align::Right),
-            column("balance", "Balance", CellKind::Mono, Align::Right),
-            Column { wrap: true, ..column("reason", "Reason", CellKind::Dim, Align::Left) },
-            column("tx", "Tx", CellKind::MonoMuted, Align::Left),
-        ],
-        rows: page.rows.iter().map(ledger_row).collect(),
+        columns: movement_columns(),
+        rows: page.rows.iter().map(|e| row(movement_cells(e))).collect(),
         page: PageInfo {
             next_cursor: page.next_after.map(|seq| seq.to_string()),
             size: LEDGER_PAGE_SIZE as u32,
@@ -496,6 +546,52 @@ pub(crate) fn transactions_body(page: &LedgerPage) -> PanelBody {
         list_columns_for: None,
         list_columns_at: 0,
         item_noun: None,
+    };
+    PanelBody::new(Primitive::DataTable(table))
+}
+
+/// The Ledger panel: one page of every player's movements newest first (Time, Player,
+/// Currency, Amount, Balance, Reason, Tx), a keyset pager on `seq` as on Transactions, the
+/// search box and the Currency (`codes`) and Reason selects, and a foot counting `total`
+/// transactions. The Player cell links the player and draws accounts' label for the id.
+pub(crate) fn ledger_body(page: &LedgerPage, total: i64, codes: &[String]) -> PanelBody {
+    let mut columns = movement_columns();
+    columns.insert(1, column("player", "Player", CellKind::User, Align::Left));
+    let rows = page
+        .rows
+        .iter()
+        .map(|e| {
+            let player = EntityRef { kind: KIND.to_string(), id: e.player_id.clone() };
+            let mut cells = movement_cells(e);
+            cells.insert(1, Cell { link: Some(Link::Entity(player)), ..text(CellKind::User, e.player_id.clone()) });
+            row(cells)
+        })
+        .collect();
+    let table = DataTable {
+        columns,
+        rows,
+        page: PageInfo {
+            next_cursor: page.next_after.map(|seq| seq.to_string()),
+            size: LEDGER_PAGE_SIZE as u32,
+            total: Some(total.max(0) as u64),
+        },
+        filters: vec![
+            FilterDef {
+                key: PARAM_CURRENCY.to_string(),
+                label: "Currency".to_string(),
+                kind: FilterKind::Select(codes.to_vec()),
+            },
+            FilterDef {
+                key: PARAM_REASON.to_string(),
+                label: "Reason".to_string(),
+                kind: FilterKind::Select(reason_options()),
+            },
+        ],
+        search_placeholder: Some("Player or tx id".to_string()),
+        selectable: false,
+        list_columns_for: None,
+        list_columns_at: 0,
+        item_noun: Some(Noun::new("transaction", "transactions")),
     };
     PanelBody::new(Primitive::DataTable(table))
 }
@@ -615,8 +711,11 @@ pub(crate) fn manifest() -> Manifest {
             subtitle: "wallet module".to_string(),
             head_actions: Vec::new(),
             tiles: Vec::new(),
-            layout: Layout::Grid21(vec![CURRENCIES_PANEL.to_string()], vec![GRANT_PANEL.to_string()]),
-            params: Vec::new(),
+            layout: Layout::Rows(vec![
+                Layout::Grid21(vec![CURRENCIES_PANEL.to_string()], vec![GRANT_PANEL.to_string()]),
+                Layout::Stack(vec![LEDGER_PANEL.to_string()]),
+            ]),
+            params: vec![PARAM_CURRENCY.to_string(), PARAM_REASON.to_string()],
         }],
         entity_kinds: Vec::new(),
         contributions: vec![
@@ -625,6 +724,7 @@ pub(crate) fn manifest() -> Manifest {
             contribution(FACT_BALANCE, Point::EntitySummary(KIND.to_string()), 50, "Wallet", "coins"),
             contribution(CURRENCIES_PANEL, Point::Page(PAGE.to_string()), 10, "Currencies", ""),
             contribution(GRANT_PANEL, Point::Page(PAGE.to_string()), 20, "Grant or revoke", ""),
+            contribution(LEDGER_PANEL, Point::Page(PAGE.to_string()), 30, "Ledger", ""),
         ],
         // The row pair is `prepare: true` because a Money field's options are the live
         // catalog codes; the declared forms fix only the variant and carry none.
@@ -667,6 +767,7 @@ impl Provider for WalletAdmin {
                 Ok(currencies_body(&stats))
             }
             GRANT_PANEL => Ok(PanelBody::new(Primitive::Form(panel_form(&self.codes().await?)))),
+            LEDGER_PANEL => self.ledger(&req).await,
             other => Err(Error::not_found(format!(
                 "{MODULE} has no contribution {other:?}"
             ))),

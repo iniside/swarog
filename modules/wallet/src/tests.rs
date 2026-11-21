@@ -2002,7 +2002,7 @@ async fn the_starter_key_is_shared_across_both_subscriptions() {
 // ---- 12: the ledger pages and the catalog seed -----------------
 
 /// Seeds `n` ledger rows for one player in ONE statement — the code under test is
-/// [`Store::player_ledger`]'s window, never the writer, and a single INSERT ... SELECT
+/// [`Store::ledger`]'s window, never the writer, and a single INSERT ... SELECT
 /// draws the `bigserial` default in `generate_series` order, so row `g = 1` is
 /// unambiguously the OLDEST.
 async fn seed_ledger(pool: &PgPool, pid: &str, prefix: &str, n: i64) {
@@ -2020,7 +2020,11 @@ async fn seed_ledger(pool: &PgPool, pid: &str, prefix: &str, n: i64) {
     .unwrap();
 }
 
-/// Exactly one page of rows: the arm that must NOT offer a next page. `player_ledger` asks
+fn one_player(pid: &str) -> crate::store::LedgerFilter<'_> {
+    crate::store::LedgerFilter { player: Some(pid), ..Default::default() }
+}
+
+/// Exactly one page of rows: the arm that must NOT offer a next page. `ledger` asks
 /// for one row more and gets none, so the page is whole — binding the page size instead of
 /// one more, or comparing `>=` instead of `>`, reports a complete history as partial and
 /// only this assertion notices.
@@ -2031,7 +2035,7 @@ async fn ledger_page_of_exactly_the_page_size_has_no_next_page() {
     let pid = unique_player(&pool).await;
     seed_ledger(&pool, &pid, &unique_key("page-exact"), LEDGER_PAGE_SIZE).await;
 
-    let page = svc.store.player_ledger(&pid, None).await.unwrap();
+    let page = svc.store.ledger(&one_player(&pid), None).await.unwrap();
     assert_eq!(page.rows.len(), LEDGER_PAGE_SIZE as usize);
     assert_eq!(
         page.next_after, None,
@@ -2058,14 +2062,14 @@ async fn ledger_keyset_pages_cover_the_history_once_newest_first() {
         .await
         .unwrap();
 
-    let first = svc.store.player_ledger(&pid, None).await.unwrap();
+    let first = svc.store.ledger(&one_player(&pid), None).await.unwrap();
     assert_eq!(first.rows.len(), LEDGER_PAGE_SIZE as usize, "the surplus row must be dropped");
     let last_seq = first.rows[LEDGER_PAGE_SIZE as usize - 1].seq;
     assert!(first.rows[0].seq > last_seq, "newest first");
     assert_eq!(first.next_after, Some(last_seq), "the cursor is the last drawn row");
     assert!(!first.rows.iter().any(|r| r.seq == oldest), "the first page drops the OLDEST row");
 
-    let second = svc.store.player_ledger(&pid, first.next_after).await.unwrap();
+    let second = svc.store.ledger(&one_player(&pid), first.next_after).await.unwrap();
     let seqs: Vec<i64> = second.rows.iter().map(|r| r.seq).collect();
     assert_eq!(seqs, [oldest], "the next page is exactly the one row left");
     assert_eq!(second.next_after, None);
@@ -2081,7 +2085,7 @@ async fn ledger_keyset_pages_cover_the_history_once_newest_first() {
 async fn ledger_page_of_a_malformed_player_id_is_empty() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
-    let page = svc.store.player_ledger("not-a-uuid", None).await.unwrap();
+    let page = svc.store.ledger(&one_player("not-a-uuid"), None).await.unwrap();
     assert!(page.rows.is_empty() && page.next_after.is_none());
 }
 

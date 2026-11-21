@@ -1,4 +1,4 @@
-use sqlx::{PgConnection, PgPool};
+use sqlx::{PgConnection, PgPool, Postgres, QueryBuilder};
 use walletapi::{Balance, Currency};
 
 /// The balance CHECK firing on a row a movement actually UPDATEs: one constraint carries
@@ -100,6 +100,7 @@ impl OnConflict {
 pub(crate) struct LedgerEntry {
     pub(crate) seq: i64,
     pub(crate) id: String,
+    pub(crate) player_id: String,
     pub(crate) at: String,
     pub(crate) currency: String,
     pub(crate) delta: i64,
@@ -119,7 +120,44 @@ pub(crate) struct CurrencyStats {
     pub(crate) holders: i64,
 }
 
-/// One page of [`Store::player_ledger`]. The read decides `next_after` itself — it asks for
+/// What [`Store::ledger`] narrows the ledger to; `None` narrows nothing. Every id is the
+/// caller's text, cast to `uuid` in the statement.
+#[derive(Default)]
+pub(crate) struct LedgerFilter<'a> {
+    /// One player's movements.
+    pub(crate) player: Option<&'a str>,
+    /// The movements of a player with this id, or the one movement with this tx id.
+    pub(crate) player_or_tx: Option<&'a str>,
+    pub(crate) currency: Option<&'a str>,
+    /// Movements with exactly this reason.
+    pub(crate) reason: Option<&'a str>,
+    /// Movements whose idempotency key starts with this prefix.
+    pub(crate) key_prefix: Option<&'a str>,
+}
+
+impl LedgerFilter<'_> {
+    fn push_where(&self, qb: &mut QueryBuilder<'_, Postgres>) {
+        qb.push(" WHERE true");
+        if let Some(p) = self.player {
+            qb.push(" AND player_id = ").push_bind(p.to_string()).push("::uuid");
+        }
+        if let Some(s) = self.player_or_tx {
+            qb.push(" AND (player_id = ").push_bind(s.to_string()).push("::uuid OR id = ");
+            qb.push_bind(s.to_string()).push("::uuid)");
+        }
+        if let Some(c) = self.currency {
+            qb.push(" AND currency = ").push_bind(c.to_string());
+        }
+        if let Some(r) = self.reason {
+            qb.push(" AND reason = ").push_bind(r.to_string());
+        }
+        if let Some(k) = self.key_prefix {
+            qb.push(" AND starts_with(idempotency_key, ").push_bind(k.to_string()).push(")");
+        }
+    }
+}
+
+/// One page of [`Store::ledger`]. The read decides `next_after` itself — it asks for
 /// one row PAST the page — so no caller can mistake a full page for a whole history.
 pub(crate) struct LedgerPage {
     pub(crate) rows: Vec<LedgerEntry>,
@@ -127,9 +165,8 @@ pub(crate) struct LedgerPage {
     pub(crate) next_after: Option<i64>,
 }
 
-/// The rows of one [`Store::player_ledger`] page. A player's ledger grows with every
-/// movement, so the bound lives HERE, in the statement, and not in a caller that could
-/// forget it.
+/// The rows of one [`Store::ledger`] page. The ledger grows with every movement, so the
+/// bound lives HERE, in the statement, and not in a caller that could forget it.
 pub(crate) const LEDGER_PAGE_SIZE: i64 = 25;
 
 /// Every write takes `&mut PgConnection`, never the pool, so the one movement authority
@@ -486,43 +523,49 @@ impl Store {
             .collect())
     }
 
-    /// One page of a player's movements, newest first by `seq` — drawn under the balance row
-    /// lock of each movement's own `(player, currency)`, so it is the exact order money moved
-    /// for one pair and statement-execution order across currencies; `at` is descriptive only
-    /// (`clock_timestamp()` of the INSERT, a round trip before that lock). `seq` is monotonic
-    /// but GAPPED, so the keyset is "below `after`", never an offset.
+    /// One page of the movements `filter` selects, newest first by `seq` — drawn under the
+    /// balance row lock of each movement's own `(player, currency)`, so it is the exact order
+    /// money moved for one pair and statement-execution order across currencies; `at` is
+    /// descriptive only (`clock_timestamp()` of the INSERT, a round trip before that lock).
+    /// `seq` is monotonic but GAPPED, so the keyset is "below `after`", never an offset.
     ///
-    /// The page is [`LEDGER_PAGE_SIZE`] rows on `ledger_player_seq_idx`. The statement asks
-    /// for one row more and drops it, so the page carries whether older movements exist.
+    /// The page is [`LEDGER_PAGE_SIZE`] rows. The statement asks for one row more and drops
+    /// it, so the page carries whether older movements exist. A one-player page reads
+    /// `ledger_player_seq_idx`; without a player it scans: no index leads with `seq`
+    /// (`docs/todo/wallet.md`).
     ///
     /// A malformed id is a miss (an empty page), the same answer [`Store::list_balances`]
     /// gives, so a tab on a bad uuid renders empty instead of a 500.
-    pub(crate) async fn player_ledger(
+    pub(crate) async fn ledger(
         &self,
-        player_id: &str,
+        filter: &LedgerFilter<'_>,
         after: Option<i64>,
     ) -> Result<LedgerPage, sqlx::Error> {
-        let res = sqlx::query_as::<_, (i64, String, String, String, i64, i64, String)>(
-            "SELECT seq, id::text, to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), \
+        let mut qb = QueryBuilder::<Postgres>::new(
+            "SELECT seq, id::text, player_id::text, \
+                    to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), \
                     currency, delta, balance_after, reason \
-               FROM wallet.ledger \
-              WHERE player_id = $1::uuid AND seq < COALESCE($2, 9223372036854775807) \
-              ORDER BY seq DESC LIMIT $3",
-        )
-        .bind(player_id)
-        .bind(after)
-        .bind(LEDGER_PAGE_SIZE + 1)
-        .fetch_all(&self.pool)
-        .await;
+               FROM wallet.ledger",
+        );
+        filter.push_where(&mut qb);
+        if let Some(after) = after {
+            qb.push(" AND seq < ").push_bind(after);
+        }
+        qb.push(" ORDER BY seq DESC LIMIT ").push_bind(LEDGER_PAGE_SIZE + 1);
+        let res = qb
+            .build_query_as::<(i64, String, String, String, String, i64, i64, String)>()
+            .fetch_all(&self.pool)
+            .await;
         match res {
             Ok(mut rows) => {
                 let more = rows.len() as i64 > LEDGER_PAGE_SIZE;
                 rows.truncate(LEDGER_PAGE_SIZE as usize);
                 let rows: Vec<LedgerEntry> = rows
                     .into_iter()
-                    .map(|(seq, id, at, currency, delta, balance_after, reason)| LedgerEntry {
+                    .map(|(seq, id, player_id, at, currency, delta, balance_after, reason)| LedgerEntry {
                         seq,
                         id,
+                        player_id,
                         at,
                         currency,
                         delta,
@@ -537,6 +580,19 @@ impl Store {
                 rows: Vec::new(),
                 next_after: None,
             }),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// How many movements `filter` selects, all pages: an exact `count(*)`, which without a
+    /// player or tx id scans the whole ledger. A malformed id counts 0, as [`Store::ledger`]
+    /// reads it empty.
+    pub(crate) async fn ledger_count(&self, filter: &LedgerFilter<'_>) -> Result<i64, sqlx::Error> {
+        let mut qb = QueryBuilder::<Postgres>::new("SELECT count(*) FROM wallet.ledger");
+        filter.push_where(&mut qb);
+        match qb.build_query_scalar::<i64>().fetch_one(&self.pool).await {
+            Ok(n) => Ok(n),
+            Err(e) if is_invalid_uuid(&e) => Ok(0),
             Err(e) => Err(e),
         }
     }
