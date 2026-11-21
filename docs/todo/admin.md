@@ -101,8 +101,10 @@ _None._
 - [ ] **The `panels` style argument and the bare-row CSS margin run in no golden**
   13e6. No golden has a non-last row with two or more panels, so the `style` argument of
   `panels` (`core/admin/src/templates/primitives.html.tmpl:207-209`) is unpinned. The 12px
-  margin under a bare non-last row panel is a CSS rule (`core/admin/src/portal.css:4`) that no
-  golden or admindiff check sees.
+  margin under a bare non-last row panel (`core/admin/src/portal.css:4`) and the `min-width: 0` of a
+  grid slot's child (`portal.css:5`) are CSS rules that no golden or admindiff check sees. No
+  golden draws the dashboard's no-attention branch (`shell.html.tmpl:49-50`) or a `#health` with
+  two or more wide panels.
 
 ### Known limits (admin-control-plane-redesign step 13d7d)
 

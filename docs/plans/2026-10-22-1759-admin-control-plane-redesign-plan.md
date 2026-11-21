@@ -2104,6 +2104,16 @@ The ports:
     choice` accept line to `tools/admindiff/accept/players.txt` (checklist line 220), copied
     from the difference its column first produces.
   - **Owner decision before dispatch:** X7 (port template).
+  - **Decisions (2026-11-21, owner: "mozemy sprobowac zrobic punkt14"; the checklist's
+    proposals, taken as written):** G1 is closed by 13c (`CellKind::MonoMuted`), G4 by 13c
+    (`MAX_PANEL_REFS`), G5 by 13d T1 (a `player` page entry with `tab: Some("characters")` and
+    its own accept file, added in 14a1), G9 by X1 (14a3), G11 by X7.
+    - G2: the Id cell shows the full uuid, `MonoMuted`; its width is a hand-check deviation (H8).
+    - G3: Level and Region are FAKE from `controlplane::fake_hash`; Last played draws "—".
+    - G7: "1 character" for one, "N characters" otherwise (H9).
+    - G8: rows in `list_by_player` order (`created_at, id`); zero characters draws the portal's
+      empty state (H10).
+    - G10: 14a1 deletes the dead readers `count` and `list_all`; `pending_purges` waits for 14a3.
 - **Step 15 — wallet.**
   - Economy page (`pages-platform.js:164-185`; the global ledger is FAKE per R1).
   - Wallet tab; grant/revoke (REAL) as one form with the Grant and Revoke modes of Step 13e4
