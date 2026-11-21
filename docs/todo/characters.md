@@ -16,7 +16,7 @@ _None._
 
 ### Known limits (admin-control-plane-redesign step 15)
 
-- [ ] **`counts_by_player` may refuse a malformed ref only depending on the query plan**
+- [ ] **Malformed-ref refusal in `counts_by_player`**
   `counts_by_player` (`modules/characters/src/store.rs:158-162`) may refuse a
   malformed ref only depending on the query plan (unconfirmed). Wallet's
   `balances_by_player` checks before SQL (a7b922ec).
