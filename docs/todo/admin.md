@@ -46,6 +46,24 @@ _None._
   which breaks the page slug on a DB blip. Companion to AUDIT-02 and
   NOTIFICATIONS-05. Source: docs/plans/2026-09-05-1921-friends-module-plan.md:596
   (2026-09-05).
+### Known limits (admin-control-plane-redesign step 14a3)
+
+- [ ] **Declaring the character kind opens an empty entity page**
+  `EntityKindDecl{character}` (630ffe45) makes `/admin/.../character/<any id>` render an entity
+  page with no header, summary or tabs instead of the "Unknown entity kind" 404
+  (`core/admin/src/routes.rs:542`). Nothing links there today (`character_row` has
+  `entity: None`). One declaration both makes a module the label owner and creates a page;
+  the plan decides whether the kind gets a header or "owns labels" splits from "has a page".
+- [ ] **Character labels drop uuid spellings Postgres accepts**
+  `is_uuid` (`modules/characters/src/store.rs:36-42`) rejects braced or unhyphenated ids, so
+  they draw the plain id. The portal sends only canonical ids.
+- [ ] **The batch-reader uuid check is written twice**
+  `is_uuid` in characters equals accounts' `is_canonical_uuid`
+  (`modules/accounts/src/store.rs:98-104`), whose name is wrong (it accepts uppercase). With
+  more batch label readers it becomes one helper in a foundation crate.
+- [ ] **The character kind's icon is unchecked against the mockup**
+  `swords` (also the summary fact's icon); nothing draws the kind's icon yet.
+
 ### Known limits (admin-control-plane-redesign step 14)
 
 - [ ] **`counts_by_player` has no test for duplicate or differently spelled refs**
