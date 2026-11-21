@@ -49,6 +49,37 @@ _None._
   src/admin.rs; inventory uses 10. Source:
   docs/plans/2026-09-05-1921-friends-module-plan.md:601 (2026-09-05).
 
+### Known limits (admin-control-plane-redesign step 13e)
+
+- [ ] **The icon-only Link row button has no golden**
+  13e1. The icon-only branch for a `Then::Link` row action
+  (`core/admin/src/templates/primitives.html.tmpl:134`) is drawn by no golden, and admincheck
+  requires an icon on an icon-only action but not `Emphasis::Ghost`.
+- [ ] **Confirm-modal impact cells skip the link+label refusal**
+  13e3. The `Cell.label` doc says the portal refuses a cell with both `link` and `label`, but
+  the confirm modal's impact cells (`render/modal.rs:102`, ADMIN2-43) are not checked.
+- [ ] **List-column cells draw a label as its raw value**
+  13e3. `render/table.rs:185` does not run the Refs pass on `Cell.label`, so a labelled
+  list-column cell shows the raw id.
+- [ ] **Panel-form modes are checked only at draw time**
+  13e4. The admincheck rule that refused more than one `PanelForm` action per contribution was
+  replaced by the mode rule, which only sees modal `Then::Form` specs. A contribution with two
+  `PanelForm` actions and no modes passes admincheck and draws an error panel
+  (`core/admin/src/routes.rs:836-839`). A `head_actions` entry naming a mode action is also
+  dropped from the page silently (`routes.rs:508`).
+- [ ] **No admitted mode: opener enabled, read-only panel without seg**
+  13e4. An operator admitted to a modal's opener but to none of its modes sees the item enabled
+  and gets a 403 toast (`routes.rs:1011-1013`). A read-only panel form whose viewer has no
+  admitted mode draws no `div.seg` and labels its button with `FormSpec.submit_label`.
+- [ ] **Empty mode labels are not refused; a locked modal's seg stays clickable**
+  13e4. Nothing refuses an empty mode `label` or `submit_label` (`core/controlplane/src/lib.rs:913-921`).
+  After a 409 the modal's seg buttons stay enabled (`templates/modal.html.tmpl:15`); its
+  submit is disabled, so nothing is sent.
+- [ ] **Mode submit paths proven by reading only**
+  13e4. No test asserts that the `admin.action` audit names the chosen mode, that a role
+  removed between mint and submit is refused, that a form id posted to another mode's URL is
+  refused, or the "not `Then::Invoke`" half of `form_mode_error`. The code handles each.
+
 ### Known limits (admin-control-plane-redesign step 13d7d)
 
 - [ ] **One opener call may append more than one element**

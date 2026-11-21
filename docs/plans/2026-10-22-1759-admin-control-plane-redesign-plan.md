@@ -2924,16 +2924,16 @@ gate.
     the mockup's icon button (`td > button.btn.sm.ghost > svg`, pc:141), and its label stays
     as the accessible name. No enabled-item hint: its only consumer (reg:111) is the
     download action, which O-3 keeps disabled, and the disabled branch already draws
-    `span.hint`. (St3; St2 closes with O-3.)
+    `span.hint`. (St3; St2 closes with O-3.) Landed as 9967d754.
   - **13e2 — dim cell.** A `CellKind` that draws `span.dim`. `Time` keeps its own meaning
-    and is not used to carry dim text. (S1; pp:169, 181.)
+    and is not used to carry dim text. (S1; pp:169, 181.) Landed as 1b8ac059.
   - **13e3 — label on an unlinked cell.** `Cell.label: Option<EntityRef>` is labelled by
     the same Refs pass as a linked cell (labels.rs:15-20), under the same rule: only when the
     cell value equals the ref's id. It draws the label text with no link and keeps the cell
     kind's tag. A label that does not resolve falls back to the raw value, as a linked cell
     does. Provider-response validation refuses a cell with both `link` and `label`. The
     mockup's `character:` prefix (pc:132) is a text-only difference that the port
-    hand-checks. (I2.)
+    hand-checks. (I2.) Landed as ad1d1ba7.
   - **13e4 — form modes.** `FormSpec` can declare modes, each with an id, a label and its
     own action. The modes apply wherever a `FormSpec` is drawn, as a panel form or a modal
     `Then::Form`. The portal draws them as `div.seg` above the form (pp:172), and
@@ -2948,6 +2948,10 @@ gate.
       invoked and sits at the form's point. Mode actions stay out of the menus. The portal
       draws only the modes `admit` lets the operator use. Submit admits and claims against
       the chosen mode's action, and `InvokeCall.action` and the audit carry it.
+    - Landed as 95d603e4 and f79301df. The form row stays claimed by the action it was
+      minted for (the post URL; for a panel form the first admitted mode), bound to the
+      login; the submit admits the posted mode's action and invokes it. Review leftovers are
+      in `docs/todo/admin.md` (Known limits, step 13e).
   - **13e5 — request-id field.** After 13e4. A `FieldKind` that the provider declares
     with no value. On every drawn form instance (panel or modal) the portal fills it with
     the instance id it mints, which is the same id the submit sends as `request_id`
