@@ -11,7 +11,8 @@ use charactersapi::Character;
 use controlplane::{
     fake_hash, Align, AttentionItem, Cell, CellKind, Column, ContributionDecl, DataTable, EntityKindDecl,
     InvokeCall, InvokeOutcome, Link, Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role,
-    Row, SearchHit, SearchQuery, Severity, DEFAULT_PANEL_DEADLINE_MS, MAX_PANEL_REFS, PAGE_PARAM_SEARCH,
+    Row, SearchHit, SearchQuery, Severity, DEFAULT_PANEL_DEADLINE_MS, EVENTS_PAGE, EVENTS_PAGE_MODULE, MAX_PANEL_REFS,
+    PAGE_PARAM_SEARCH,
 };
 use opsapi::Error;
 
@@ -30,11 +31,6 @@ const TAB_COUNT: &str = "tab.count";
 const COLUMN_COUNT: &str = "column.count";
 const LABEL: &str = "label.character";
 const ATTENTION_PURGES: &str = "attention.purges";
-
-/// The Events page the purges item links to, filtered to the sweep's subscription: the
-/// sweep is that subscription's handler, so its lag and pause state explain a backlog.
-const EVENTS_MODULE: &str = "core.events";
-const EVENTS_PAGE: &str = "events";
 
 /// What the Last played cell draws: characters stores no last-played time.
 const NO_LAST_PLAYED: &str = "—";
@@ -204,8 +200,9 @@ pub(crate) fn purges_body(pending: i64, oldest: &str) -> PanelBody {
         severity: Severity::Warn,
         title: "Character purges pending".to_string(),
         text: format!("{players} awaiting sweep · oldest {day}"),
+        // The sweep is this subscription's handler, so its lag and pause state explain a backlog.
         link: Link::Page {
-            module: EVENTS_MODULE.to_string(),
+            module: EVENTS_PAGE_MODULE.to_string(),
             page: EVENTS_PAGE.to_string(),
             params: BTreeMap::from([(
                 PAGE_PARAM_SEARCH.to_string(),

@@ -381,6 +381,10 @@ pub const PAGE_PARAM_SEARCH: &str = "q";
 /// The `Link::Page` param the portal passes to each of the page's panels as
 /// `PanelQuery::queue_state`.
 pub const PAGE_PARAM_QUEUE_STATE: &str = "state";
+/// The module of core admin's Events page, the `Link::Page` target for event-plane state.
+pub const EVENTS_PAGE_MODULE: &str = "core.events";
+/// The page id of core admin's Events page within `EVENTS_PAGE_MODULE`.
+pub const EVENTS_PAGE: &str = "events";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PanelQuery {

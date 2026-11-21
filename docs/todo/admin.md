@@ -62,11 +62,6 @@ _None._
   more batch label readers it becomes one helper in a foundation crate.
 - [ ] **The character kind's icon is unchecked against the mockup**
   `swords` (also the summary fact's icon); nothing draws the kind's icon yet.
-- [ ] **Every purges-pending link copies core admin's Events page address**
-  `modules/characters/src/admin.rs:36-37` repeats `"core.events"`/`"events"`, private to
-  `core/admin/src/events_provider.rs:20-21`; a rename there sends every link to the "Unknown page"
-  404 and the test (`admin_tests.rs:193-213`) repeats the same strings. Ports 15-24 add six more
-  copies. Fix: the address in `core/controlplane` beside `PAGE_PARAM_SEARCH`, used by both sides.
 - [ ] **Purges-pending date and count follow the session's formatting**
   `purges_body` (`modules/characters/src/admin.rs:194-218`) takes the first 10 chars of
   `min(created_at)::text` (DateStyle and time-zone dependent) and prints the count without

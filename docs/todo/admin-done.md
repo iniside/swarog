@@ -2,6 +2,9 @@
 
 Last updated: 2026-11-21
 
+- [x] **Every purges-pending link copies core admin's Events page address** (2026-11-21, admin-control-plane-redesign step 14a3)
+  `controlplane::EVENTS_PAGE_MODULE`/`EVENTS_PAGE` name the address; core admin's Events
+  provider and the characters purges item and its test use them.
 - [x] **The crawl follows the newest player, who may have no characters** (2026-11-21, 56126e2a)
   A tab follower now crawls the first list row whose tab page lists a row; with none, it keeps
   the first row and says so.

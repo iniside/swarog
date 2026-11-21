@@ -9,7 +9,7 @@ use std::time::Duration;
 use charactersapi::Character;
 use controlplane::{
     Align, CellKind, EntityRef, Link, PanelBody, PanelQuery, Point, Primitive, Provider as _, Severity,
-    MAX_PANEL_REFS, PAGE_PARAM_SEARCH,
+    EVENTS_PAGE, EVENTS_PAGE_MODULE, MAX_PANEL_REFS, PAGE_PARAM_SEARCH,
 };
 use opsapi::Status;
 use sqlx::postgres::PgPoolOptions;
@@ -206,7 +206,7 @@ fn purges_draw_one_warn_item_with_the_backlog_and_the_oldest_day() {
     assert!(matches!(
         &item.link,
         Link::Page { module, page, params }
-            if module == "core.events" && page == "events"
+            if module == EVENTS_PAGE_MODULE && page == EVENTS_PAGE
                 && params.get(PAGE_PARAM_SEARCH).map(String::as_str) == Some("characters.purge-on-scheduler.v1")
     ));
     assert_eq!(body(1)[0].text, "1 player awaiting sweep · oldest 2026-11-20");
