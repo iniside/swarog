@@ -1394,6 +1394,8 @@ async fn a_tab_target_fetches_its_tab_and_fails_unless_the_page_selects_it() {
     let tabbed = format!("{route}?tab=items");
     let healthy = Site::healthy();
     let untabbed = healthy.routes.get(&route).expect("the healthy site serves player").body.clone();
+    let healthy = with_items_menu(healthy, &tabbed, &untabbed);
+    let tab_page = healthy.routes.get(&tabbed).expect("the items tab page").body.clone();
     let slot_start = r#"<div class="slot""#;
     assert!(untabbed.contains(slot_start), "the player page holds the slot the tabs go before");
     // The player page drawing its Profile and Items tabs, `selected` drawn `.on`.
@@ -1403,7 +1405,7 @@ async fn a_tab_target_fetches_its_tab_and_fails_unless_the_page_selects_it() {
             format!(r#"<button class="tab{on}" data-href="{}">{id}</button>"#, escaped(&format!("{route}?tab={id}")))
         };
         let tabs = format!(r#"<div class="tabs">{}{}</div>{slot_start}"#, tab("profile"), tab("items"));
-        ok(untabbed.replacen(slot_start, &tabs, 1))
+        ok(tab_page.replacen(slot_start, &tabs, 1))
     };
     let fetched = |c: &Crawl| c.server.requests().iter().filter(|r| r.method == "GET" && r.path == tabbed).count();
 
@@ -1822,11 +1824,24 @@ fn items_route() -> String {
 }
 
 /// The healthy site answering [`items_route`] with the player page, its `items` tab drawn
-/// selected and `extra` after it.
+/// selected and `extra` after it, and serving its user menu ([`with_items_menu`]).
 fn items_site(extra: &str) -> Site {
     let healthy = Site::healthy();
     let tab = format!(r#"<button class="tab on" data-href="{}">items</button>{extra}"#, escaped(&items_route()));
-    healthy.clone().with(&items_route(), add_to_page(&healthy, &follower_route("player"), &tab))
+    let page = add_to_page(&healthy, &follower_route("player"), &tab).body;
+    with_items_menu(healthy, &items_route(), &page)
+}
+
+/// `site` answering `route` with `html`, a copy of the untabbed player page, opening the
+/// [`items_menu`] at its own URL instead of the player page's, and serving that menu: the
+/// portal opens a tab's user menu at the tab's id, so the menu draws the openers only
+/// [`items_menu`] hosts, not those `EXCLUDED_MODALS` lists for `player.menu.user`.
+fn with_items_menu(site: Site, route: &str, html: &str) -> Site {
+    let menu = items_menu();
+    let kind = menu.menu.expect("a menu entry").kind;
+    let (own, at) = (escaped(&menu_url(kind, "player")), menu_url(kind, &menu.id()));
+    assert!(html.contains(&own), "the player page draws the user menu: {html}");
+    site.with(route, ok(html.replace(&own, &escaped(&at)))).with(&at, ok(menu_body(&menu.id())))
 }
 
 /// A modal entry hosted by the `player.items` tab entry, `player.items.modal.test`, opens from
@@ -1894,12 +1909,11 @@ async fn a_tab_page_menu_target_holds_its_modals_to_the_page_rules() {
     let (own, at) = (menu_url(kind, "player"), menu_url(kind, &host));
     let kick = modal_url("guild/kick", &host);
     // The tab page opens its own menu, so the untabbed player.menu.user keeps the healthy one.
-    let page = items_site("").routes.get(&items_route()).expect("the items tab page").body.clone();
-    assert!(page.contains(&escaped(&own)), "the tab page draws the user menu: {page}");
-    let site = Site::healthy()
-        .with(&items_route(), ok(page.replace(&escaped(&own), &escaped(&at))))
-        .with(&at, ok(in_menu(&menu_body(&host), &modal_button(&kick))))
-        .with(&kick, ok(MODAL_BODY));
+    let items = items_site("");
+    let page = &items.routes.get(&items_route()).expect("the items tab page").body;
+    let own_opener = format!("{}\"", escaped(&own));
+    assert!(page.contains(&escaped(&at)) && !page.contains(&own_opener), "the tab page opens its own user menu: {page}");
+    let site = items.clone().with(&at, ok(in_menu(&menu_body(&host), &modal_button(&kick)))).with(&kick, ok(MODAL_BODY));
     let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([tab, menu]).collect();
     let undeclared = "player.items.menu.user draws a guild/kick modal, which is in neither PAGE_MAP nor EXCLUDED_MODALS";
     crawl_map(site.clone(), &page_map).await.assert_failed_with("an undeclared guild/kick modal in the tab's menu", undeclared);
@@ -1991,6 +2005,10 @@ async fn a_disabled_claim_holds_on_a_not_implemented_control_of_its_action() {
     crawl(healthy.with(&menu, ok(moved)), false).await.assert_clean("delete-account drawn not implemented at the menu head");
 }
 
+/// A drawer of a disabled control of an action refused with a kind: [`disabled_item`] or
+/// [`disabled_button`].
+type DisabledControl = fn(&str, &str) -> String;
+
 /// A `Disabled` claim holds only for a control refused as not implemented: the players menu
 /// drawing delete-account, a `.menu-item.disabled`, and the player page head drawing
 /// suspend-header, a `button[disabled]`, disabled for any other reason, or with no refusal
@@ -1999,7 +2017,7 @@ async fn a_disabled_claim_holds_on_a_not_implemented_control_of_its_action() {
 #[tokio::test]
 async fn a_disabled_claim_fails_on_a_control_refused_for_another_reason() {
     let healthy = Site::healthy();
-    let hosts: [(String, &str, &str, fn(&str, &str) -> String); 2] = [
+    let hosts: [(String, &str, &str, DisabledControl); 2] = [
         (menu_url("player", "players"), "players.menu.user", "deleteAccount", disabled_item),
         (follower_route("player"), "player", "suspend", disabled_button),
     ];

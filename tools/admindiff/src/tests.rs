@@ -539,7 +539,7 @@ fn an_unlisted_mockup_modal_fails_and_a_listed_one_passes() {
         "  mockup modal index PAGES.extraModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS\n",
         "  mockup modal players.menu.user PAGES.extraModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS",
     );
-    assert_eq!(e, want);
+    assert_eq!(e, format!("{want}{}", unproven_claims("players.menu.user", "PAGES.extraModal")));
     let both = mock_modals(&[pages_modal("index", "extraModal", "why"), pages_modal("players.menu.user", "extraModal", "why"), pages_modal("index", "extraModal", " ")]);
     let e = format!("{:#}", renders(repo.path(), &Lists { excluded_mock_modals: &both, ..LISTS }).expect_err("twice"));
     let want = concat!(
@@ -556,7 +556,21 @@ fn an_unlisted_mockup_modal_fails_and_a_listed_one_passes() {
         "  mockup modal events PAGES.skipPoison is listed in PAGE_MAP and again in EXCLUDED_MOCK_MODALS\n",
         "  mockup modal players.menu.user PAGES.extraModal is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS",
     );
-    assert_eq!(e, want);
+    assert_eq!(e, format!("{want}{}", unproven_claims("players.menu.user", "PAGES.extraModal")));
+}
+
+/// The drift line of each production `EXCLUDED_MODALS` no-opener claim hosted by `host`, each
+/// after a newline, that an undeclared mockup modal `opener` drawn there leaves unproven.
+fn unproven_claims(host: &str, opener: &str) -> String {
+    let claims = crate::pages::EXCLUDED_MODALS.iter().filter(|(h, _, _)| *h == host);
+    claims
+        .map(|(_, action, _)| {
+            format!(
+                "\n  EXCLUDED_MODALS {host} modal {action} says the mockup has no opener of it, but {host} draws {opener}, \
+                 which is neither a PAGE_MAP modal entry nor an EXCLUDED_MOCK_MODALS entry of another action there"
+            )
+        })
+        .collect()
 }
 
 /// An `EXCLUDED_MOCK_MODALS` entry its host does not draw is stale, as is one hosted by a
@@ -792,7 +806,8 @@ fn the_onclick_probe_of_a_forced_hosts_menu_sees_a_modal_that_opens_only_forced(
     let drawn = [("players.menu.user", "PAGES.okOnly()")];
     let repo = FakeRepo::with_openers("modal-forced-menu", &mock_html(&body(true)), &forced, &drawn, ok_only);
     let e = format!("{:#}", renders(repo.path(), &Lists { page_map: &forced, ..LISTS }).expect_err("forced host, okOnly opens"));
-    assert_eq!(e, "modal drift:\n  mockup modal players.menu.user PAGES.okOnly is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS");
+    let want = "modal drift:\n  mockup modal players.menu.user PAGES.okOnly is in neither PAGE_MAP nor EXCLUDED_MOCK_MODALS";
+    assert_eq!(e, format!("{want}{}", unproven_claims("players.menu.user", "PAGES.okOnly")));
     let listed = mock_modals(&[pages_modal("players.menu.user", "okOnly", "why")]);
     renders(repo.path(), &Lists { page_map: &forced, excluded_mock_modals: &listed, ..LISTS }).expect("forced and listed");
 }
@@ -858,10 +873,17 @@ fn a_false_no_mock_opener_claim_fails() {
 
 /// The inventory a clean [`crate::pages::validate_mock_modals`] call of the production lists sees:
 /// `mail` draws its excluded `cancelMail`, `events` its mapped `skipPoison`, and each the shell
-/// palette.
+/// palette; every other host of an `EXCLUDED_MODALS` claim that is no excluded menu, a menu
+/// target, draws no opener.
 fn claim_inventory() -> Vec<(String, Vec<MockOpener<String>>)> {
     let drawn = |name: &str| vec![MockOpener::Pages(name.to_string()), MockOpener::Onclick(PALETTE_ONCLICK.to_string())];
-    vec![("mail".to_string(), drawn("cancelMail")), ("events".to_string(), drawn("skipPoison"))]
+    let mut inventory = vec![("mail".to_string(), drawn("cancelMail")), ("events".to_string(), drawn("skipPoison"))];
+    for (host, _, _) in crate::pages::EXCLUDED_MODALS {
+        if !host.contains(".excluded-menu.") && !inventory.iter().any(|(h, _)| h == host) {
+            inventory.push((host.to_string(), Vec::new()));
+        }
+    }
+    inventory
 }
 
 /// The shell palette is declared once for every host: drawn on `mail` and `events` it passes
@@ -916,8 +938,8 @@ fn a_no_mock_opener_claim_on_an_unrendered_host_fails() {
     let excluded = claim_exclusions();
     let lists = Lists { excluded_mock_modals: &excluded, ..LISTS };
     crate::pages::validate_mock_modals(&claim_inventory(), &lists).expect("both hosts rendered");
-    let mail_only: Vec<_> = claim_inventory().into_iter().filter(|(h, _)| h == "mail").collect();
-    let e = format!("{:#}", crate::pages::validate_mock_modals(&mail_only, &lists).expect_err("events unrendered"));
+    let no_events: Vec<_> = claim_inventory().into_iter().filter(|(h, _)| h != "events").collect();
+    let e = format!("{:#}", crate::pages::validate_mock_modals(&no_events, &lists).expect_err("events unrendered"));
     let want = concat!(
         "modal drift:\n  EXCLUDED_MODALS events.excluded-menu.subscription modal core.events/sub.pause says the mockup has no opener of it, ",
         "but no compared events mockup render was checked",
