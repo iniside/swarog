@@ -140,7 +140,7 @@
 {#- `down`: the item's module is down; the item is drawn disabled with that reason. -#}
 {%- macro menu_item(a, down="") -%}
 {%- if down %}<div class="menu-item disabled{% if a.danger %} danger{% endif %}" title="{{ down }}"{{ refused(a) }}>{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></div>
-{%- elif not a.enabled %}<div class="menu-item disabled{% if a.danger %} danger{% endif %}" title="{{ a.hint }}"{{ refused(a) }}>{{ icon(a.icon or "right") }}<span>{{ a.label }}</span><span class="hint">{{ a.hint }}</span></div>
+{%- elif not a.enabled %}<div class="menu-item disabled{% if a.danger %} danger{% endif %}" title="{{ a.hint }}"{{ refused(a) }}>{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></div>
 {%- elif a.then == "link" %}<a class="menu-item{% if a.danger %} danger{% endif %}" href="{{ a.href }}" style="text-decoration:none">{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></a>
 {%- else %}<button type="button" class="menu-item{% if a.danger %} danger{% endif %}"{{ hx_action(a) }}>{{ icon(a.icon or "right") }}<span>{{ a.label }}</span></button>
 {%- endif -%}
