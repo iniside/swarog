@@ -285,7 +285,10 @@ fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_pane
     for c in &m.contributions[3..6] {
         assert!(matches!(&c.point, Point::Page(page) if page == "economy"), "{}", c.id);
     }
-    assert!(m.contributions.iter().all(|c| c.cache_ttl_s.is_none()), "no stale copy outlives a grant");
+    for c in &m.contributions {
+        let want = (c.id == "tile.spent").then_some(60);
+        assert_eq!(c.cache_ttl_s, want, "{}: only the 24 h spent tile may be stale; no copy else outlives a grant", c.id);
+    }
     assert!(m.sections.is_empty(), "the Economy section is controlplane's fixed one");
     assert!(controlplane::SECTIONS.contains(&("economy", "Economy", 30)));
     let nav: Vec<(&str, &str, &str, &str, i32, &str, bool)> = m

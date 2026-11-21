@@ -925,7 +925,11 @@ pub(crate) fn manifest(headline: &str) -> Manifest {
             contribution(GRANT_PANEL, Point::Page(PAGE.to_string()), 20, "Grant or revoke", ""),
             contribution(LEDGER_PANEL, Point::Page(PAGE.to_string()), 30, "Ledger", ""),
             contribution(COLUMN_BALANCE, list_column, 30, &headline_label(headline), ""),
-            contribution(TILE_SPENT, Point::DashboardTile, 70, &spent_title(headline), ""),
+            // A 24 h total tolerates a minute of staleness, as accounts' and mail's tiles.
+            ContributionDecl {
+                cache_ttl_s: Some(60),
+                ..contribution(TILE_SPENT, Point::DashboardTile, 70, &spent_title(headline), "")
+            },
             contribution(ATTENTION_PURGES, Point::DashboardAttention, 62, "Wallet purges pending", ""),
         ],
         // The row pair is `prepare: true` because a Money field's options are the live
