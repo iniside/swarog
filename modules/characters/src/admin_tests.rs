@@ -1,5 +1,6 @@
-//! The characters control-plane provider: the Characters tab's data mapping, the summary fact
-//! and the tab count (pure), the refs cap, and the panels against the live database.
+//! The characters control-plane provider: the Characters tab's data mapping, the summary fact,
+//! the tab count and the list column (pure), the refs cap, and the panels against the live
+//! database.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
@@ -14,7 +15,9 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use testdb::test_pool;
 
-use super::{characters_body, count_cell, fact_text, fake_level, fake_region, manifest, CharactersAdmin};
+use super::{
+    characters_body, column_cells, count_cell, fact_text, fake_level, fake_region, manifest, CharactersAdmin,
+};
 use crate::store::Store;
 use crate::tests::{cleanup, unique_player, wired};
 use crate::Service;
@@ -151,12 +154,28 @@ fn tab_count_is_a_number_cell_at_zero() {
 }
 
 #[test]
-fn manifest_declares_the_tab_fact_and_count_and_no_write() {
+fn list_column_answers_every_input_ref_with_0_for_a_ref_the_counts_lack() {
+    let refs = [FIRST.to_string(), SECOND.to_string()];
+    let counts = BTreeMap::from([(FIRST.to_string(), 2)]);
+    let cells = match column_cells(&refs, &counts).primitive {
+        Primitive::ColumnCells(cells) => cells,
+        _ => panic!("a list column answers ColumnCells"),
+    };
+    let cells: Vec<(&str, &str, CellKind)> =
+        cells.iter().map(|(r, c)| (r.as_str(), c.value.as_str(), c.kind)).collect();
+    assert_eq!(cells, [(FIRST, "2", CellKind::Number), (SECOND, "0", CellKind::Number)]);
+}
+
+#[test]
+fn manifest_declares_the_tab_fact_count_and_list_column_and_no_write() {
     let m = manifest();
     assert!(!m.writes && m.actions.is_empty(), "characters is not a writer");
     let decls: Vec<(&str, i32, &str)> =
         m.contributions.iter().map(|c| (c.id.as_str(), c.order, c.icon.as_str())).collect();
-    assert_eq!(decls, [("characters", 20, ""), ("fact.count", 30, "swords"), ("tab.count", 0, "")]);
+    assert_eq!(
+        decls,
+        [("characters", 20, ""), ("fact.count", 30, "swords"), ("tab.count", 0, ""), ("column.count", 10, "")]
+    );
     assert!(matches!(
         &m.contributions[0].point,
         Point::EntityTab { kind, tab, tab_label, columns: 1 }
@@ -166,6 +185,11 @@ fn manifest_declares_the_tab_fact_and_count_and_no_write() {
     assert!(matches!(
         &m.contributions[2].point,
         Point::EntityTabCount { kind, tab } if kind == "player" && tab == "characters"
+    ));
+    assert!(matches!(
+        &m.contributions[3].point,
+        Point::EntityListColumn { kind, label, align: Align::Right }
+            if kind == "player" && label == "Characters"
     ));
 }
 
@@ -229,6 +253,13 @@ async fn panels_answer_a_players_characters_fact_and_count() {
         admin.panel(query("tab.count", &none)).await,
     ];
     let by_ref = admin.counts(&[none.clone(), three.clone(), none.clone()]).await;
+    let column = admin
+        .panel(PanelQuery {
+            entity: None,
+            refs: vec![three.clone(), none.clone(), one.clone()],
+            ..query("column.count", &three)
+        })
+        .await;
     let malformed = admin.panel(query("fact.count", "not-a-uuid")).await;
     let providers = ctx.contributions(controlplane::PROVIDER_SLOT);
     cleanup(&pool, &[&three, &one]).await;
@@ -256,6 +287,21 @@ async fn panels_answer_a_players_characters_fact_and_count() {
         by_ref.unwrap(),
         BTreeMap::from([(none.clone(), 0), (three.clone(), 3)]),
         "every ref answered by its own spelling, 0 for none"
+    );
+    let column = match column.unwrap().primitive {
+        Primitive::ColumnCells(cells) => cells,
+        _ => panic!("the list column answers ColumnCells"),
+    };
+    let column: BTreeMap<String, (String, CellKind)> =
+        column.into_iter().map(|(r, c)| (r, (c.value, c.kind))).collect();
+    assert_eq!(
+        column,
+        BTreeMap::from([
+            (three.clone(), ("3".to_string(), CellKind::Number)),
+            (none.clone(), ("0".to_string(), CellKind::Number)),
+            (one.clone(), ("1".to_string(), CellKind::Number)),
+        ]),
+        "the column answers every ref by its own spelling, 0 for none"
     );
     assert_eq!(malformed.unwrap_err().status, Status::Invalid, "a malformed player id is the caller's error");
 

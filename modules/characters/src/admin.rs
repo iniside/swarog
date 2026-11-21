@@ -1,6 +1,6 @@
 //! The `characters` control-plane provider: the player entity's Characters tab, its
-//! "N characters" summary fact and the tab's count. Characters is not a writer: it declares
-//! no action and `writes: false`.
+//! "N characters" summary fact, the tab's count and the players list's Characters column.
+//! Characters is not a writer: it declares no action and `writes: false`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -24,6 +24,7 @@ const TAB: &str = "characters";
 const CHARACTERS: &str = "characters";
 const FACT_COUNT: &str = "fact.count";
 const TAB_COUNT: &str = "tab.count";
+const COLUMN_COUNT: &str = "column.count";
 
 /// What the Last played cell draws: characters stores no last-played time.
 const NO_LAST_PLAYED: &str = "—";
@@ -57,6 +58,12 @@ impl CharactersAdmin {
         let id = player_id(req)?;
         let counts = self.counts(&[id.to_string()]).await?;
         Ok(counts.get(id).copied().unwrap_or(0))
+    }
+
+    /// The players list's Characters column for one table page: every ref in `req.refs`.
+    async fn column(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
+        let counts = self.counts(&req.refs).await?;
+        Ok(column_cells(&req.refs, &counts))
     }
 
     async fn characters(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
@@ -133,6 +140,16 @@ pub(crate) fn count_cell(n: i64) -> Cell {
     text(CellKind::Number, n.to_string())
 }
 
+/// The Characters list column: one number cell per ref, keyed by the ref as the table gave
+/// it, "0" for a ref the counts lack, so every row draws a count.
+pub(crate) fn column_cells(refs: &[String], counts: &BTreeMap<String, i64>) -> PanelBody {
+    let cells = refs
+        .iter()
+        .map(|r| (r.clone(), count_cell(counts.get(r).copied().unwrap_or(0))))
+        .collect();
+    PanelBody::new(Primitive::ColumnCells(cells))
+}
+
 fn character_row(c: &Character) -> Row {
     Row {
         entity: None,
@@ -206,6 +223,11 @@ pub(crate) fn manifest() -> Manifest {
         kind: KIND.to_string(),
         tab: TAB.to_string(),
     };
+    let list_column = Point::EntityListColumn {
+        kind: KIND.to_string(),
+        label: "Characters".to_string(),
+        align: Align::Right,
+    };
     Manifest {
         module: MODULE.to_string(),
         sections: Vec::new(),
@@ -216,6 +238,7 @@ pub(crate) fn manifest() -> Manifest {
             contribution(CHARACTERS, tab, 20, "Characters", ""),
             contribution(FACT_COUNT, Point::EntitySummary(KIND.to_string()), 30, "Characters", "swords"),
             contribution(TAB_COUNT, tab_count, 0, "Characters", ""),
+            contribution(COLUMN_COUNT, list_column, 10, "Characters", ""),
         ],
         actions: Vec::new(),
         search: Vec::new(),
@@ -240,6 +263,7 @@ impl Provider for CharactersAdmin {
                 let n = self.count(&req).await?;
                 Ok(PanelBody::new(Primitive::Cell(count_cell(n))))
             }
+            COLUMN_COUNT => self.column(&req).await,
             other => Err(Error::not_found(format!(
                 "{MODULE} has no contribution {other:?}"
             ))),
