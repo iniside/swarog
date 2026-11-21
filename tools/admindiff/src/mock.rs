@@ -417,7 +417,7 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
     }
     // Each body that assigned `PAGES.tab`, with the first value it assigned.
     let mut tab_of: Vec<(&str, String)> = Vec::new();
-    // Each body that did not throw, with the other `PAGES` keys it assigned.
+    // Each body that did not throw, with the listed keys it assigned.
     let mut keys_of: Vec<(&str, Vec<String>)> = Vec::new();
     // Each of `tab` and the listed keys a render assigned.
     let mut rendered: Vec<String> = Vec::new();
@@ -485,14 +485,13 @@ pub fn probe(repo: &Path, host: &str, key: &str, page: &Page, doc: &[Node], scop
         let body = b.attr("onclick").unwrap_or_default();
         // A body that threw has failed already.
         let Some((_, keys)) = keys_of.iter().find(|(set, _)| *set == body) else { continue };
-        let listed: Vec<&String> = keys.iter().filter(|k| non_tab_keys.contains(&k.as_str())).collect();
-        for k in &listed {
-            if !probe.non_tab_keys.contains(*k) {
-                probe.non_tab_keys.push((*k).clone());
+        for k in keys {
+            if !probe.non_tab_keys.contains(k) {
+                probe.non_tab_keys.push(k.clone());
             }
         }
         let error = format!("onclick {body:?} drawn on {host} is a .tab that assigns no PAGES.tab and no NON_TAB_KEYS key");
-        if listed.is_empty() && !tab_of.iter().any(|(set, _)| *set == body) && !failed.contains(&error) {
+        if keys.is_empty() && !tab_of.iter().any(|(set, _)| *set == body) && !failed.contains(&error) {
             failed.push(error);
         }
     }

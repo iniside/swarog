@@ -443,16 +443,18 @@ fn a_tab_with_no_onclick_fails() {
 }
 
 /// Only a body's own assignments say which tab it is: one the mount makes, or a re-render the body
-/// calls, or a timer that re-render schedules, fails the probe by host, for `PAGES.tab` and for a
-/// listed key alike, assigned through an alias of `PAGES`; the twin with no assigning render is
-/// clean, a listed key a `PAGES` function assigns through an alias the scripts took while
-/// loading recorded as the body's. Without the check the `.tab` whose body only re-renders would pass as the render's tab.
+/// calls, or a timer that re-render schedules or a timer such a timer schedules, fails the probe by
+/// host, for `PAGES.tab` and for a listed key alike, assigned through an alias of `PAGES`; the
+/// twin with no assigning render is clean, a listed key a `PAGES` function assigns through an
+/// alias the scripts took while loading recorded as the body's. Without the check the `.tab` whose
+/// body only re-renders would pass as the render's tab.
 #[test]
 fn a_render_that_assigns_a_tab_key_fails() {
     let html = r#"<button class="tab on" onclick="PAGES.tab='a'"></button><button class="tab" onclick="REG.render()"></button>"#;
     let rerender = concat!(
         "REG.render = function () { const P = window.PAGES; P.tab = P.tab || 'profile'; ",
-        "setTimeout(function () { P.repoTab = 'f'; }, 1); document.body.innerHTML = ''; };\n",
+        "setTimeout(function () { setTimeout(function () { P.repoTab = 'f'; }, 1); }, 1); ",
+        "document.body.innerHTML = ''; };\n",
     );
     let repo = FakeRepo::with_openers("mock-probe-render-tab", r#"<div class="app"></div>"#, PAGE_MAP, &[], rerender);
     let e = format!("{:#}", probe_listed(repo.path(), html, &["repoTab"]).expect_err("a re-render assigns"));
