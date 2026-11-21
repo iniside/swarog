@@ -41,16 +41,16 @@ const GRANT_PANEL: &str = "grant";
 const CURRENCY_GRANT: &str = "currency.grant";
 const CURRENCY_REVOKE: &str = "currency.revoke";
 /// The modes of the Grant-or-revoke form.
-const LEDGER_GRANT: &str = "ledger.grant";
+pub(crate) const LEDGER_GRANT: &str = "ledger.grant";
 const LEDGER_REVOKE: &str = "ledger.revoke";
 
 /// The namespace of every movement key the portal mints: `admin:<request id>`. Never under
 /// the reserved `starter:` (`walletapi::Movement::idempotency_key`).
 pub(crate) const ADMIN_KEY_PREFIX: &str = "admin:";
 
-const FIELD_PLAYER: &str = "player";
-const FIELD_AMOUNT: &str = "amount";
-const FIELD_REASON: &str = "reason";
+pub(crate) const FIELD_PLAYER: &str = "player";
+pub(crate) const FIELD_AMOUNT: &str = "amount";
+pub(crate) const FIELD_REASON: &str = "reason";
 const FIELD_REQUEST_ID: &str = "request_id";
 
 /// A grant or revoke naming a uuid no player holds: no ghost balance from a typo.
