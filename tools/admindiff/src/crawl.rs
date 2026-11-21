@@ -84,6 +84,9 @@ pub async fn run(cfg: &Config) -> Result<bool> {
     if !outcome.empty.is_empty() {
         println!("empty, nothing crawled: {}", outcome.empty.join(", "));
     }
+    if !outcome.unchecked.is_empty() {
+        println!("unchecked, host not fetched: {}", outcome.unchecked.join(", "));
+    }
     if outcome.failures.is_empty() {
         return Ok(true);
     }
