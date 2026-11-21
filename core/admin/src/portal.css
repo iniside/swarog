@@ -2,6 +2,7 @@
 [hidden] { display: none !important; }
 .slot { display: contents; }
 .page > .slot:not(:last-child) > .panel { margin-bottom: 12px; }
+.grid > .slot > * { min-width: 0; }
 .modal-icon.info { background: var(--info-soft); color: var(--info); }
 .banner.ok { background: var(--ok-soft); color: var(--ok); }
 .q-count.ok .n { color: var(--ok); }

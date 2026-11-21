@@ -2,6 +2,13 @@
 
 Last updated: 2026-11-21
 
+- [x] **A bare grid panel keeps the mockup's `min-width: 0`** (2026-11-21, admin-control-plane-redesign step 13e6)
+  `core/admin/src/portal.css` gives every child of a `.grid > .slot` `min-width: 0`, as the
+  mockup's `.grid > *` rule does for a panel drawn straight in the grid.
+- [x] **The dashboard draws its single panels bare** (2026-11-21, admin-control-plane-redesign step 13e6)
+  The g-21 row and `#health` no longer wrap their panels in `div.stack`
+  (`core/admin/src/templates/shell.html.tmpl`); the two accept lines in
+  `tools/admindiff/accept/index.txt` are gone.
 - [x] **Disabled claim ignores the refusal kind** (2026-11-21, admin-control-plane-redesign step 13d7c2)
   Every disabled action control the portal draws carries `data-refusal` (`denied`,
   `not-implemented`, `read-only`, `module-down`) from the action's `ActionItem`; a

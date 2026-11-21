@@ -9,10 +9,8 @@ frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#5694ed | not 
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#ba7b3e | declared deviation D3: no Design-system nav section
 frame div.app > header.topbar: portal-only button.top-btn#255bc4 | template choice: shell.html.tmpl puts the theme toggle in the topbar; the mockup's sits in the devbar, which D3 drops
 frame div.app > main.main > div.page > div.g-21.grid: mock-only [panel "Recent operator activity"] | not ported yet: audit's dashboard panel arrives with the audit port
-frame div.app > main.main > div.page > div.g-21.grid: portal-only div.stack | template choice: shell.html.tmpl wraps v.panels in a .stack beside the attention host; it is empty until a module contributes a dashboard panel
 frame div.app > main.main > div.page > div.g-tiles.grid: mock-only [tile "Cloud saves used"] | not ported yet: storage's tile arrives with the storage port
 frame div.app > main.main > div.page > div.g-tiles.grid: mock-only [tile "Embers spent (24 h)"] | not ported yet: wallet's tile arrives with the wallet port
-frame div.app > main.main > div.page: mock div portal div.stack | template choice: shell.html.tmpl's #health row is a .stack holding every DashboardWide contribution; the mockup's is a plain div holding one
 mock-only panel "Recent operator activity" | not ported yet: audit's dashboard panel arrives with the audit port
 mock-only tile "Cloud saves used" | not ported yet: storage's tile arrives with the storage port
 mock-only tile "Embers spent (24 h)" | not ported yet: wallet's tile arrives with the wallet port

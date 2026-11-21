@@ -77,6 +77,12 @@ _None._
   13e4. Nothing refuses an empty mode `label` or `submit_label` (`core/controlplane/src/lib.rs:913-921`).
   After a 409 the modal's seg buttons stay enabled (`templates/modal.html.tmpl:15`); its
   submit is disabled, so nothing is sent.
+- [ ] **A moded form's claim stays on the action it was minted for**
+  13e4. The plan's "Mode authority" says the submit claims against the chosen mode's action.
+  The portal claims the form row by the action in the post URL (the one it was minted for; for
+  a panel form the first admitted mode), bound to the login, then admits and invokes the posted
+  mode's action (`core/admin/src/routes.rs` `submit_form`). Both 13e4 reviews found nothing
+  bypassable; the plan text and the code still differ. Owner, 2026-11-21: recorded, not changed.
 - [ ] **Mode submit paths proven by reading only**
   13e4. No test asserts that the `admin.action` audit names the chosen mode, that a role
   removed between mint and submit is refused, that a form id posted to another mode's URL is
@@ -97,13 +103,6 @@ _None._
   `panels` (`core/admin/src/templates/primitives.html.tmpl:207-209`) is unpinned. The 12px
   margin under a bare non-last row panel is a CSS rule (`core/admin/src/portal.css:4`) that no
   golden or admindiff check sees.
-- [ ] **A bare grid panel no longer gets the mockup's `min-width: 0`**
-  13e6. `.grid > * { min-width: 0 }` (`UILayout/design-system/components/bundle.css:426`)
-  now lands on the `display: contents` `.slot`, not the panel; content in a panel head that
-  cannot wrap could stretch a column on a narrow screen. Fix: `.grid > .slot > * { min-width: 0 }`.
-- [ ] **The dashboard keeps its single-panel `div.stack` wrappers**
-  13e6 covers only layout rows and entity tabs; `tools/admindiff/accept/index.txt:12,15` still
-  accept the dashboard wrappers, which the audit port (Recent operator activity) will inherit.
 
 ### Known limits (admin-control-plane-redesign step 13d7d)
 

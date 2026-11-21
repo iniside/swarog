@@ -71,7 +71,7 @@ pub(super) const MACRO_CASES: &[MacroCase] = &[
         "primitives",
         "panels",
         "<div class=\"stack\"",
-        &["shell.html"],
+        &[],
         &["screen_page_stack", "screen_page_grid21", "screen_entity_tab_tiles"],
     ),
     mc(

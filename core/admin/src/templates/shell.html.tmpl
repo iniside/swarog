@@ -45,9 +45,9 @@
 {#- pages-core.js:45-69. The attention host's meta is counted in admin.js. -#}
 <div class="page-head"><div><h1>Dashboard</h1>{% if v.subtitle %}<div class="sub">{{ v.subtitle }}</div>{% endif %}</div><div class="page-actions"><div class="seg">{% for r in v.ranges %}<button type="button"{% if r.on %} class="on"{% endif %} data-href="{{ r.href }}">{{ r.label }}</button>{% endfor %}</div><button type="button" class="btn" data-action="refresh">{{ ui.icon("refresh") }} Refresh</button></div></div>
 {%- if v.tiles %}<div class="grid g-tiles" style="margin-bottom:12px">{% for s in v.tiles %}{{ ui.slot(s) }}{% endfor %}</div>{% endif -%}
-{%- if v.attention %}<div class="grid g-21" style="margin-bottom:12px"><section class="panel"><div class="panel-head"><span class="panel-title">Needs attention</span><span class="panel-meta" data-attention-meta></span><div class="panel-tools"></div></div><div class="panel-body flush">{% for s in v.attention %}{{ ui.slot(s) }}{% endfor %}</div></section><div class="stack">{% for s in v.panels %}{{ ui.slot(s) }}{% endfor %}</div></div>
-{%- elif v.panels %}<div class="stack" style="margin-bottom:12px">{% for s in v.panels %}{{ ui.slot(s) }}{% endfor %}</div>{% endif -%}
-{%- if v.wide %}<div id="health" class="stack">{% for s in v.wide %}{{ ui.slot(s) }}{% endfor %}</div>{% endif -%}
+{%- if v.attention %}<div class="grid g-21" style="margin-bottom:12px"><section class="panel"><div class="panel-head"><span class="panel-title">Needs attention</span><span class="panel-meta" data-attention-meta></span><div class="panel-tools"></div></div><div class="panel-body flush">{% for s in v.attention %}{{ ui.slot(s) }}{% endfor %}</div></section>{% if v.panels %}{{ ui.panels(v.panels) }}{% endif %}</div>
+{%- elif v.panels %}{{ ui.panels(v.panels, "margin-bottom:12px") }}{% endif -%}
+{%- if v.wide %}<div id="health">{{ ui.panels(v.wide) }}</div>{% endif -%}
 {%- if not v.tiles and not v.attention and not v.panels and not v.wide %}<section class="panel"><div class="panel-body">{{ ui.state_block("empty", "Nothing here yet", "No module contributes to the dashboard yet.") }}</div></section>{% endif -%}
 {%- elif screen == "page" -%}
 <div class="page-head"><div><h1>{{ v.title }}</h1>{% if v.subtitle %}<div class="sub">{{ v.subtitle }}</div>{% endif %}</div><div class="page-actions">{% for a in v.head_actions %}{{ ui.action_button(a) }}{% endfor %}</div></div>
