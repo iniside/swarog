@@ -237,8 +237,9 @@ cargo run -p devctl -- status
 cargo run -p devctl -- down
 ```
 
-`devctl up` builds the selected topology, mints the development edge CA, seeds the
-development admin account (`admin` / `admin`), enables the development
+`devctl up` builds the selected topology, mints the development edge CA, **wipes the
+database at `DATABASE_URL`** (drops every non-system schema and empties `public`, so
+never point it at data you want to keep), seeds the development admin account (`admin` / `admin`), enables the development
 conveniences, starts each process with a typed environment, health-checks it, and
 keeps ownership in the foreground until shutdown. While it runs, inspect or stop
 the fleet with the already-built `target/debug/devctl` binary instead of starting
