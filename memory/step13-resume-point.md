@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-22: Step 15 (wallet) complete incl. 15c/15d; next Step 16 (inventory) after owner says go"
+description: "Admin redesign resume point 2026-11-22: Step 16 (inventory) 16a1 landed ccf29df3, review not run; owner said stop"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-21T23:20:17.113Z
+  modified: 2026-11-21T23:47:21.998Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -38,3 +38,6 @@ Owner open: purge-backlog helper in core/controlplane before Step 16 (copied per
 
 ## State 2026-11-22 (15c/15d done)
 Owner: 1 tak, 2 dodaj, 3 usun, 4 ok. 15c 28552db9 controlplane::purge_backlog_body (ports 16-24 call it; review ACCEPT). 15d da950074 spent tile cache 60s, vacuous count removed, characters Known limit (review ACCEPT). Next: Step 16 inventory — ask owner.
+
+## State 2026-11-22 (Step 16 in progress)
+Checklist docs/plans/2026-11-22-step16-inventory-checklist.md §8 decisions (G1 b owner table, G4 a disabled Revoke, G5 disabled Grant, G3 "—"), plan parts 16a1/16a2/16b (ca685c8d). 16a1 ccf29df3: inventory.character_owners + sub inventory.character-owner.v1 (Genesis), reader character_ids_of; core-reviewer NOT run yet. Clippy red on unused store methods until 16a2. Owner said stop after 16a1; next: core-reviewer on ccf29df3, then 16a2 when owner says go.
