@@ -5,7 +5,9 @@
 # deviation (Dn in the plan).
 frame div.app > aside.sidebar > div.sidebar-foot > div.me: portal-only form#a96e26 | template choice: shell.html.tmpl puts the Sign out form in the sidebar foot; the mockup has no session
 frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item#ecbb9a | not ported yet: the API keys, Scheduler, Config and Audit nav entries arrive with their ports
-frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#1089c4 | not ported yet: the Lore section; no Lore module exists
+frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item#3056ab | not ported yet: no Lore module exists; the diff pairs the mockup's Lore section with the portal's Economy section, so the Lore Repositories entry is left over
+frame div.app > aside.sidebar > nav.nav > div.nav-section: mock-only a.nav-item#848c49 | not ported yet: no Lore module exists; the diff pairs the mockup's Lore section with the portal's Economy section, so the Lore Locks entry is left over
+frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#5694ed | not ported yet: no Lore module exists; the diff pairs the mockup's Lore section with the portal's Economy section, so the mockup's Economy section is left over
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#ba7b3e | declared deviation D3: no Design-system nav section
 frame div.app > header.topbar: portal-only button.top-btn#255bc4 | template choice: shell.html.tmpl puts the theme toggle in the topbar; the mockup's sits in the devbar, which D3 drops
 panel "#1" section.panel > div.entity-head > div.grow > div.entity-facts: mock-only span#35b730 | data difference: the mockup draws its wallet fact only as the demo "wallet unavailable" error (registry.js:84); the diff pairs the portal's wallet balance fact with the mockup's Lore fact by shape, so this unpaired span is the wallet's error fact, which the portal never draws
