@@ -2776,8 +2776,15 @@ gate.
     cannot check is named in the variant's doc comment and as a Known limit, never left as
     prose. The `NO_SUSPEND`/`NO_DELETE` reasons and their entries agree.
   - **13d7d — element and state recorders keyed by effect, not by class** (owner, 2026-11-21,
-    S1 and S2 from the 5dae1963 reviews; after 13d7c). `[opus]` core-implementer,
+    S1, S2 and S3 from the 5dae1963 reviews; after 13d7c). `[opus]` core-implementer,
     `tools/admindiff/src/{mock.rs,pages.rs,lib.rs}` and their tests.
+    - S3 (owner, 2026-11-21; first, the base for S1 and S2): one attribution context in the
+      harness — the phase (mount, body or render), the opener and `inMenu` — saved whenever
+      a timer is scheduled and restored when it runs, read by every recorder. It replaces the
+      per-path flags (`opener` on timers, `rendering`, `fromRender`, `probing`). Timers the
+      mount schedules run under the mount phase instead of being dropped (`mock.rs:219`), so
+      a mount timer that assigns `PAGES.tab` or a listed key fails the probe, and a `.menu`
+      a timer appends inside `UI.openMenu` counts as that menu's. Tests pin both cases.
     - S1: every element the mockup appends to `body` (`.menu`, `.popover`, `.scrim`, any
       other) is either drawn by a recorded opener (`UI.openMenu`, `UI.popover` and the
       modal openers) or named in an exclusion list with a reason; anything else fails the
