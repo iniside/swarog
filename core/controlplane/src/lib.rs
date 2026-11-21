@@ -1011,6 +1011,10 @@ pub struct Cell {
     pub more: Vec<Cell>,
     /// This value and its `more` sit on one aligned line.
     pub row: bool,
+    /// An entity whose label the cell draws without linking it, when `value` is its id; a
+    /// label that does not resolve draws `value`. A cell holds a `link` or a `label`, never
+    /// both: the portal refuses a provider answer carrying both.
+    pub label: Option<EntityRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

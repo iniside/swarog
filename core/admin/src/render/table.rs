@@ -177,6 +177,7 @@ fn list_column_cell(kind: &str, column: &ListColumn, id: Option<&str>, in_list: 
         bar: None,
         more: Vec::new(),
         row: false,
+        label: None,
     };
     match &column.outcome {
         ColumnOutcome::Cells(cells) => {

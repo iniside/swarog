@@ -8,6 +8,7 @@ use controlplane::{
     DEFAULT_PANEL_DEADLINE_MS,
 };
 
+use super::labels;
 use super::manifests::Snapshot;
 use super::roles::{self, Operator};
 use super::Engine;
@@ -222,6 +223,15 @@ pub(crate) fn is_empty(primitive: &Primitive) -> bool {
     }
 }
 
+/// Why a panel's answer `body` cannot be drawn: `ColumnCells`, which only a table's list
+/// column draws (`engine::columns`), or a cell `labels::body_error` refuses.
+fn refusal(body: &Primitive) -> Option<String> {
+    if matches!(body, Primitive::ColumnCells(_)) {
+        return Some("answered ColumnCells, which only a table's list column draws".to_string());
+    }
+    labels::body_error(body)
+}
+
 /// Resolves `decl` of `module` for `operator`: denied without a call below `min_role`,
 /// otherwise one call bounded by the contribution's deadline.
 pub(crate) async fn resolve(
@@ -252,31 +262,30 @@ pub(crate) async fn resolve(
     };
     let key = cache_key(&req);
     let failure = match tokio::time::timeout(deadline(decl), face.panel(req)).await {
-        // A list column's cells draw only inside its table (`engine::columns`).
-        Ok(Ok(body)) if matches!(body.primitive, Primitive::ColumnCells(_)) => {
-            "answered ColumnCells, which only a table's list column draws".to_string()
-        }
-        Ok(Ok(body)) => {
-            if is_empty(&body.primitive) {
-                view.state = PanelState::Empty;
+        Ok(Ok(body)) => match refusal(&body.primitive) {
+            Some(why) => why,
+            None => {
+                if is_empty(&body.primitive) {
+                    view.state = PanelState::Empty;
+                    view.body = Some(body);
+                    return view;
+                }
+                if let Some(ttl) = decl.cache_ttl_s {
+                    engine
+                        .panel_cache
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .put(key, body.clone(), Duration::from_secs(u64::from(ttl)));
+                }
+                view.state = if is_readonly(manifest, decl, &body.primitive) {
+                    PanelState::Readonly
+                } else {
+                    PanelState::Ok
+                };
                 view.body = Some(body);
                 return view;
             }
-            if let Some(ttl) = decl.cache_ttl_s {
-                engine
-                    .panel_cache
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .put(key, body.clone(), Duration::from_secs(u64::from(ttl)));
-            }
-            view.state = if is_readonly(manifest, decl, &body.primitive) {
-                PanelState::Readonly
-            } else {
-                PanelState::Ok
-            };
-            view.body = Some(body);
-            return view;
-        }
+        },
         Ok(Err(error)) if error.status == opsapi::Status::NotFound => {
             view.state = PanelState::Empty;
             return view;

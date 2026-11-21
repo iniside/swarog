@@ -132,7 +132,7 @@ fn events_page() -> Link {
 }
 
 fn text(kind: CellKind, value: impl Into<String>, tone: Option<Tone>) -> Cell {
-    Cell { kind, value: value.into(), tone, link: None, bar: None, more: Vec::new(), row: false }
+    Cell { kind, value: value.into(), tone, link: None, bar: None, more: Vec::new(), row: false, label: None }
 }
 
 /// The mockup's lag bar fill (`pages-platform.js:129`): a third of the lag, between 3 and

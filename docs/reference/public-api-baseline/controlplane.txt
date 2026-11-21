@@ -1016,6 +1016,7 @@ impl core::panic::unwind_safe::UnwindSafe for controlplane::Banner
 pub struct controlplane::Cell
 pub controlplane::Cell::bar: core::option::Option<u8>
 pub controlplane::Cell::kind: controlplane::CellKind
+pub controlplane::Cell::label: core::option::Option<controlplane::EntityRef>
 pub controlplane::Cell::link: core::option::Option<controlplane::Link>
 pub controlplane::Cell::more: alloc::vec::Vec<controlplane::Cell>
 pub controlplane::Cell::row: bool

@@ -1030,7 +1030,7 @@ fn action_decl(id: &str, point: ActionPoint, implemented: bool) -> ActionDecl {
 }
 
 fn text(value: &str) -> Cell {
-    Cell { kind: CellKind::Text, value: value.to_string(), tone: None, link: None, bar: None, more: Vec::new(), row: false }
+    Cell { kind: CellKind::Text, value: value.to_string(), tone: None, link: None, bar: None, more: Vec::new(), row: false, label: None }
 }
 
 fn table_row(entity: Option<(&str, &str)>, name: &str) -> Row {
@@ -1784,6 +1784,40 @@ async fn an_entry_carrying_an_actor_and_a_target_of_one_kind_labels_both() {
     assert_eq!(owner.calls(), [["p-1", "p-2"]]);
 }
 
+/// An unlinked cell labelled with a player whose id is its text is asked as a linked one is;
+/// a labelled cell whose text is not the ref's id is not.
+#[tokio::test(start_paused = true)]
+async fn an_unlinked_labelled_cell_is_asked_when_its_text_is_the_id() {
+    let owner = Chunked::serving(label_owner(player_label(Role::Viewer)), &[]);
+    let engine = sourced(vec![owner.clone()]).await;
+    let tagged = |id: &str, value: &str| Cell { label: Some(player_ref(id)), ..text(value) };
+    let body = Primitive::PropertyList(PropertyList {
+        items: vec![("Owner".to_string(), tagged("p-1", "p-1")), ("Friend".to_string(), tagged("p-2", "Bjorn"))],
+        columns: 1,
+        item: None,
+        code: None,
+    });
+
+    let got = label_pass(&engine, Role::Viewer, &body).await;
+    assert_eq!(got, labelled(&[("p-1", "p-1")]));
+    assert_eq!(owner.calls(), [["p-1"]]);
+}
+
+/// A label answer holding a cell with both a link and a label is refused whole: the pass
+/// labels nothing of the kind.
+#[tokio::test(start_paused = true)]
+async fn a_label_answer_with_a_linked_and_labelled_cell_labels_nothing() {
+    let both = Cell { label: Some(player_ref("p-1")), ..player_link("p-1", "Anna#1") };
+    let owner = Recording::new(
+        label_owner(player_label(Role::Viewer)),
+        &[("handle", answer(Primitive::ColumnCells(BTreeMap::from([("p-1".to_string(), both)]))))],
+    );
+    let engine = sourced(vec![owner.clone()]).await;
+
+    assert!(label_pass(&engine, Role::Viewer, &players_table(drawn_rows())).await.is_empty());
+    assert_eq!(owner.calls().len(), 1);
+}
+
 /// A label that errors, answers another primitive, times out, sits above the operator's role
 /// or leaves an id out labels nothing of it, and the pass has no failure to report: the ref
 /// draws its plain id with no banner. A denied label makes no call.
@@ -2034,6 +2068,29 @@ async fn a_page_panel_answering_column_cells_is_an_error_or_stale_on_its_cache()
     assert_eq!(view.state, PanelState::Stale);
     assert_eq!(view.body.map(|b| b.primitive), Some(props), "the cached copy, never the cells");
     assert!(view.error.as_deref().is_some_and(|e| e.contains("answered ColumnCells")), "{:?}", view.error);
+}
+
+/// A panel answering a cell that holds both a link and a label, at the top or inside another
+/// cell's `more`, is an error with no body.
+#[tokio::test]
+async fn a_panel_answering_a_linked_and_labelled_cell_is_an_error() {
+    let decl = contribution("summary", Point::Page("players".to_string()), Role::Viewer);
+    let both = Cell { label: Some(player_ref("p-1")), ..player_link("p-1", "p-1") };
+    let nested = Cell { more: vec![both.clone()], ..text("Level 12") };
+    for (c, at) in [(both, "top"), (nested, "more")] {
+        let props = Primitive::PropertyList(PropertyList {
+            items: vec![("Owner".to_string(), c)],
+            columns: 1,
+            item: None,
+            code: None,
+        });
+        let (engine, _) = single(decl.clone(), Vec::new(), true, answer(props)).await;
+        let view = resolve(&engine, &decl).await;
+        assert_eq!(view.state, PanelState::Error, "{at}");
+        assert!(view.body.is_none(), "{at}");
+        let error = view.error.as_deref();
+        assert!(error.is_some_and(|e| e.contains("both a link and a label")), "{at}: {error:?}");
+    }
 }
 
 /// Queries that differ only in `refs` never share a cached copy: with `["a", "b"]` cached, a

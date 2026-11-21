@@ -213,6 +213,7 @@ fn text(kind: CellKind, value: impl Into<String>) -> Cell {
         bar: None,
         more: Vec::new(),
         row: false,
+        label: None,
     }
 }
 

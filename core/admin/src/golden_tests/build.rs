@@ -3,7 +3,7 @@ use super::*;
 // ---- view-model builders -----------------------------------------------------------
 
 pub(super) fn cell(kind: CellKind, value: &str) -> Cell {
-    Cell { kind, value: value.to_string(), tone: None, link: None, bar: None, more: Vec::new(), row: false }
+    Cell { kind, value: value.to_string(), tone: None, link: None, bar: None, more: Vec::new(), row: false, label: None }
 }
 
 pub(super) fn toned(kind: CellKind, value: &str, tone: Tone) -> Cell {

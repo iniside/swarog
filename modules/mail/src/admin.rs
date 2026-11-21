@@ -165,7 +165,7 @@ fn row_actions(shown: &str) -> Vec<String> {
 }
 
 fn text(kind: CellKind, value: impl Into<String>) -> Cell {
-    Cell { kind, value: value.into(), tone: None, link: None, bar: None, more: Vec::new(), row: false }
+    Cell { kind, value: value.into(), tone: None, link: None, bar: None, more: Vec::new(), row: false, label: None }
 }
 
 fn outbox_page(params: BTreeMap<String, String>) -> Link {

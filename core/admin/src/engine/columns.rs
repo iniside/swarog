@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use controlplane::{Align, Cell, ContributionDecl, DataTable, PanelQuery, Point, Primitive, MAX_PANEL_REFS};
 
+use super::labels;
 use super::manifests::Snapshot;
 use super::panels;
 use super::roles::{self, Operator};
@@ -20,8 +21,8 @@ pub(crate) struct ListColumn {
 #[derive(Clone, Debug)]
 pub(crate) enum ColumnOutcome {
     Cells(BTreeMap<String, Cell>),
-    /// An error, a deadline or an answer that is not `ColumnCells`; drawn as a marker in
-    /// every cell and one warn banner.
+    /// An error, a deadline, an answer that is not `ColumnCells` or a refused cell; drawn
+    /// as a marker in every cell and one warn banner.
     Failed(String),
 }
 
@@ -69,7 +70,8 @@ pub(crate) async fn fan_out(
 
 /// `refs` asked of contribution `decl` of `module` in `PanelQuery::refs` chunks of at most
 /// `MAX_PANEL_REFS`, every chunk concurrently under the decl's one deadline: the merged cells,
-/// or why a chunk failed, the deadline elapsed or a chunk answered other than `ColumnCells`.
+/// or why a chunk failed, the deadline elapsed, a chunk answered other than `ColumnCells` or
+/// a cell `labels::body_error` refuses.
 pub(crate) async fn cells(
     snapshot: &Snapshot,
     module: &str,
@@ -96,9 +98,10 @@ pub(crate) async fn cells(
         let face = face.clone();
         async move {
             match face.panel(req).await {
-                Ok(body) => match body.primitive {
-                    Primitive::ColumnCells(cells) => Ok(cells),
-                    _ => Err("answered a primitive other than ColumnCells".to_string()),
+                Ok(body) => match (labels::body_error(&body.primitive), body.primitive) {
+                    (Some(why), _) => Err(why),
+                    (None, Primitive::ColumnCells(cells)) => Ok(cells),
+                    (None, _) => Err("answered a primitive other than ColumnCells".to_string()),
                 },
                 Err(error) => Err(error.to_string()),
             }

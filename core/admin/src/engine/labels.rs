@@ -11,40 +11,43 @@ use super::roles::{self, Operator};
 /// Each labelled ref's text by `(kind, id)`; a drawn ref without one draws its plain id.
 pub(crate) type Labels = BTreeMap<(String, String), String>;
 
-/// The ref `c` draws as its raw id: its link names an entity whose id is its text.
+/// The ref `c` draws as its raw id: its link or its label names an entity whose id is its
+/// text.
 pub(crate) fn drawn_ref(c: &Cell) -> Option<&EntityRef> {
-    match &c.link {
-        Some(Link::Entity(e)) if c.value == e.id => Some(e),
-        _ => None,
-    }
+    let e = match (&c.link, &c.label) {
+        (Some(Link::Entity(e)), _) | (None, Some(e)) => e,
+        _ => return None,
+    };
+    (c.value == e.id).then_some(e)
 }
 
-/// The distinct refs `body` draws, by kind, in first-drawn order: each cell, at any depth
-/// of its `more`, that draws an entity as its raw id, each timeline target and each queue
-/// item's entity.
-pub(crate) fn refs(body: &Primitive) -> BTreeMap<String, Vec<String>> {
-    let mut drawn: Vec<&EntityRef> = Vec::new();
+/// One thing `body` draws, in drawn order: a cell (without flattening its `more`) or a bare
+/// entity ref.
+enum Drawn<'a> {
+    Cell(&'a Cell),
+    Ref(&'a EntityRef),
+}
+
+/// Every cell and bare entity ref `body` draws, in drawn order; a column answer is no body.
+fn drawn(body: &Primitive) -> Vec<Drawn<'_>> {
+    let mut out = Vec::new();
     match body {
-        Primitive::DataTable(table) => {
-            table.rows.iter().flat_map(|r| &r.cells).for_each(|c| cell_refs(c, &mut drawn));
-        }
-        Primitive::PropertyList(list) => list.items.iter().for_each(|(_, c)| cell_refs(c, &mut drawn)),
+        Primitive::DataTable(table) => out.extend(table.rows.iter().flat_map(|r| &r.cells).map(Drawn::Cell)),
+        Primitive::PropertyList(list) => out.extend(list.items.iter().map(|(_, c)| Drawn::Cell(c))),
         Primitive::Timeline(timeline) => {
             for entry in &timeline.entries {
-                entry.actor.iter().chain(&entry.badges).for_each(|c| cell_refs(c, &mut drawn));
-                drawn.extend(entry.target.as_ref());
+                out.extend(entry.actor.iter().chain(&entry.badges).map(Drawn::Cell));
+                out.extend(entry.target.iter().map(Drawn::Ref));
             }
         }
         Primitive::WorkQueue(queue) => {
             for item in &queue.items {
-                item.cells.iter().for_each(|c| cell_refs(c, &mut drawn));
-                drawn.extend(item.entity.as_ref());
+                out.extend(item.cells.iter().map(Drawn::Cell));
+                out.extend(item.entity.iter().map(Drawn::Ref));
             }
         }
-        Primitive::Cell(c) => cell_refs(c, &mut drawn),
-        Primitive::EntityHeader(header) => {
-            header.status.iter().chain(&header.badges).for_each(|c| cell_refs(c, &mut drawn));
-        }
+        Primitive::Cell(c) => out.push(Drawn::Cell(c)),
+        Primitive::EntityHeader(header) => out.extend(header.status.iter().chain(&header.badges).map(Drawn::Cell)),
         Primitive::KpiTile(_)
         | Primitive::KpiTiles(_)
         | Primitive::Form(_)
@@ -54,9 +57,37 @@ pub(crate) fn refs(body: &Primitive) -> BTreeMap<String, Vec<String>> {
         | Primitive::ColumnCells(_)
         | Primitive::Empty { .. } => {}
     }
+    out
+}
+
+/// Whether `c`, or a cell at any depth of its `more`, holds both a `link` and a `label`.
+pub(crate) fn links_and_labels(c: &Cell) -> bool {
+    (c.link.is_some() && c.label.is_some()) || c.more.iter().any(links_and_labels)
+}
+
+/// Why a provider's answer `body`, a panel's or a list column's, cannot be drawn: a cell
+/// holding both a `link` and a `label`.
+pub(crate) fn body_error(body: &Primitive) -> Option<String> {
+    let refused = match body {
+        Primitive::ColumnCells(cells) => cells.values().any(links_and_labels),
+        _ => drawn(body).into_iter().any(|d| matches!(d, Drawn::Cell(c) if links_and_labels(c))),
+    };
+    refused.then(|| "answered a cell with both a link and a label".to_string())}
+
+/// The distinct refs `body` draws, by kind, in first-drawn order: each cell, at any depth
+/// of its `more`, that draws an entity as its raw id, each timeline target and each queue
+/// item's entity.
+pub(crate) fn refs(body: &Primitive) -> BTreeMap<String, Vec<String>> {
+    let mut refs: Vec<&EntityRef> = Vec::new();
+    for d in drawn(body) {
+        match d {
+            Drawn::Cell(c) => cell_refs(c, &mut refs),
+            Drawn::Ref(e) => refs.push(e),
+        }
+    }
     let mut seen = BTreeSet::new();
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for e in drawn.into_iter().filter(|e| seen.insert((e.kind.as_str(), e.id.as_str()))) {
+    for e in refs.into_iter().filter(|e| seen.insert((e.kind.as_str(), e.id.as_str()))) {
         out.entry(e.kind.clone()).or_default().push(e.id.clone());
     }
     out

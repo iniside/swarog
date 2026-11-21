@@ -674,6 +674,15 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     panel!("fact_tone_accent", in_mode("fact", PanelState::Ok, one_cell(toned(CellKind::Label, "beta", Tone::Accent))));
     let linked_mono = Cell { link: Some(Link::Entity(entity("build", "1.4.2"))), ..cell(CellKind::Mono, "1.4.2") };
     panel!("fact_linked_mono", in_mode("fact", PanelState::Ok, one_cell(linked_mono)));
+    // Another kind's label on an unlinked cell keeps the cell's tag (pages-core.js:132); one
+    // that does not resolve draws the raw id.
+    let labelled_mono = || Cell { label: Some(entity("character", "c-7")), ..cell(CellKind::Mono, "c-7") };
+    let yuki = Labels::from([(("character".to_string(), "c-7".to_string()), "Yuki".to_string())]);
+    panel!(
+        "fact_labelled_mono",
+        PanelCase { labels: yuki, ..in_mode("fact", PanelState::Ok, one_cell(labelled_mono())) },
+    );
+    panel!("fact_labelled_mono_unresolved", in_mode("fact", PanelState::Ok, one_cell(labelled_mono())));
     let row_cell = Cell {
         row: true,
         more: vec![cell(CellKind::Muted, "since 2024")],

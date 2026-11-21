@@ -56,7 +56,8 @@ pub(super) fn label_of<'a>(labels: &'a Labels, e: &EntityRef) -> Option<&'a str>
     Some(text)
 }
 
-/// `c` without its `more`; a cell drawing an entity as its raw id draws the entity's label.
+/// `c` without its `more`; a cell drawing an entity as its raw id, linked or labelled, draws
+/// the entity's label.
 fn one_cell(c: &controlplane::Cell, labels: Option<&Labels>) -> CellView {
     seen::record(&c.kind);
     let label = labels.zip(labels::drawn_ref(c)).and_then(|(labels, e)| label_of(labels, e));
