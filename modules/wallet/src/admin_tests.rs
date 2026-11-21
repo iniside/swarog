@@ -1,16 +1,23 @@
 //! The wallet control-plane provider: the fact, the tiles and the Transactions table (pure),
-//! the cursor and the number format, the headline-currency config, and the panels against the
-//! live database.
+//! the cursor and the number format, the headline-currency config, the grant and revoke forms
+//! and their field checks, and the panels and the moves against the live database.
 
 use std::collections::BTreeMap;
 
-use controlplane::{Align, CellKind, EntityRef, PanelBody, PanelQuery, Point, Primitive, Provider as _, Tone};
+use controlplane::{
+    ActionPoint, Align, CellKind, EntityRef, FieldKind, FormSpec, InvokeCall, InvokeOutcome, PanelBody, PanelQuery,
+    Point, PrepareCall, Primitive, Provider as _, Role, Then, Tone,
+};
 use lifecycle::{Context, Module as _};
-use opsapi::Status;
+use opsapi::{Error, Status};
 use testdb::test_pool;
-use walletapi::{Balance, Currency};
+use walletapi::{Balance, Currency, MAX_MOVEMENT_AMOUNT, MAX_REASON_BYTES};
 
-use super::{fact_text, grouped, manifest, parse_cursor, signed, tiles_body, transactions_body, WalletAdmin};
+use super::{
+    fact_text, grouped, manifest, movement_field_error, panel_form, parse_amount, parse_cursor, parse_reason,
+    row_form, signed, tiles_body, transactions_body, Direction, WalletAdmin, ADMIN_KEY_PREFIX,
+};
+use crate::service::{IDEMPOTENCY_CONFLICT, MALFORMED_PLAYER_ID, OUT_OF_RANGE, UNKNOWN_CURRENCY};
 use crate::store::{LedgerEntry, LedgerPage, LEDGER_PAGE_SIZE};
 use crate::tests::{cleanup, unique_currency, unique_player, wired};
 use crate::WalletModule;
@@ -141,15 +148,29 @@ fn cursor_is_a_decimal_seq_and_anything_else_is_the_callers_error() {
 }
 
 #[test]
-fn manifest_declares_the_tab_at_30_its_tiles_and_the_fact_at_50() {
+fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_grant_form_at_20() {
     let m = manifest();
-    assert!(!m.writes && m.actions.is_empty() && m.entity_kinds.is_empty());
+    assert!(m.writes, "grant and revoke write");
+    assert!(m.entity_kinds.is_empty());
     let decls: Vec<(&str, i32, &str, &str)> =
         m.contributions.iter().map(|c| (c.id.as_str(), c.order, c.title.as_str(), c.icon.as_str())).collect();
     assert_eq!(
         decls,
-        [("wallet", 30, "Transactions", ""), ("wallet.tiles", 0, "Wallet", ""), ("fact.balance", 50, "Wallet", "coins")]
+        [
+            ("wallet", 30, "Transactions", ""),
+            ("wallet.tiles", 0, "Wallet", ""),
+            ("fact.balance", 50, "Wallet", "coins"),
+            ("grant", 20, "Grant or revoke", ""),
+        ]
     );
+    assert!(matches!(&m.contributions[3].point, Point::Page(page) if page == "economy"));
+    assert_eq!(m.pages.len(), 1);
+    let page = &m.pages[0];
+    assert_eq!(
+        (page.id.as_str(), page.title.as_str(), page.subtitle.as_str()),
+        ("economy", "Currencies & ledger", "wallet module")
+    );
+    assert_eq!(page.layout, controlplane::Layout::Stack(vec!["grant".to_string()]));
     assert!(matches!(
         &m.contributions[0].point,
         Point::EntityTab { kind, tab, tab_label, columns: 1 } if kind == "player" && tab == "wallet" && tab_label == "Wallet"
@@ -159,6 +180,127 @@ fn manifest_declares_the_tab_at_30_its_tiles_and_the_fact_at_50() {
         Point::EntityTabTile { kind, tab } if kind == "player" && tab == "wallet"
     ));
     assert!(matches!(&m.contributions[2].point, Point::EntitySummary(kind) if kind == "player"));
+
+    let row = ActionPoint::RowAction("player".to_string());
+    let form = ActionPoint::PanelForm("grant".to_string());
+    let actions: Vec<(&str, &ActionPoint, &str, &str, bool)> =
+        m.actions.iter().map(|a| (a.id.as_str(), &a.point, a.label.as_str(), a.icon.as_str(), a.prepare)).collect();
+    assert_eq!(
+        actions,
+        [
+            ("currency.grant", &row, "Grant currency…", "gift", true),
+            ("currency.revoke", &row, "Revoke currency…", "coins", true),
+            ("ledger.grant", &form, "Grant", "", false),
+            ("ledger.revoke", &form, "Revoke", "", false),
+        ]
+    );
+    for a in &m.actions {
+        assert!(a.implemented && !a.danger && a.order == 40 && a.min_role == Role::Operator, "{}", a.id);
+    }
+    for (i, dir) in [Direction::Grant, Direction::Revoke].into_iter().enumerate() {
+        assert_eq!(m.actions[i].then, Then::Form(row_form(dir, &[])), "the row pair declares its modal without modes");
+    }
+    assert!(m.actions[2..].iter().all(|a| a.then == Then::Invoke));
+    let spec = panel_form(&[]);
+    assert!(controlplane::form_spec_errors(&spec).is_empty());
+    assert!(controlplane::form_mode_errors(&m, &form, &spec).is_empty(), "the panel's modes are its PanelForm actions");
+    assert!(!m.is_mode_action("currency.grant") && !m.is_mode_action("currency.revoke"));
+}
+
+fn form_of(then: Then) -> FormSpec {
+    match then {
+        Then::Form(spec) => spec,
+        other => panic!("expected a form, got {other:?}"),
+    }
+}
+
+/// (key, label, kind, required, mono, has help) of each field.
+fn shape(spec: &FormSpec) -> Vec<(&str, &str, FieldKind, bool, bool, bool)> {
+    spec.fields
+        .iter()
+        .map(|f| (f.key.as_str(), f.label.as_str(), f.kind.clone(), f.required, f.mono, f.help.is_some()))
+        .collect()
+}
+
+#[test]
+fn row_forms_ask_amount_reason_and_request_id_with_no_modes() {
+    let codes = ["gems".to_string(), "gold".to_string()];
+    for (dir, title, submit) in
+        [(Direction::Grant, "Grant currency", "Grant"), (Direction::Revoke, "Revoke currency", "Revoke")]
+    {
+        let spec = row_form(dir, &codes);
+        assert_eq!(
+            shape(&spec),
+            [
+                ("amount", "Amount", FieldKind::Money(codes.to_vec()), true, false, false),
+                ("reason", "Reason", FieldKind::String, true, false, true),
+                ("request_id", "Request id", FieldKind::RequestId, false, true, false),
+            ]
+        );
+        assert_eq!(spec.fields[1].help.as_deref(), Some("Shown in the ledger and audit log."));
+        assert!(spec.fields.iter().all(|f| f.default.is_none()), "the portal fills the request id");
+        assert_eq!((spec.title.as_deref(), spec.submit_label.as_str()), (Some(title), submit));
+        assert_eq!(spec.note.as_deref(), Some("Idempotent per request id."));
+        assert!(spec.modes.is_empty());
+        assert!(controlplane::form_spec_errors(&spec).is_empty());
+    }
+}
+
+#[test]
+fn the_panel_form_asks_the_player_first_and_switches_grant_and_revoke() {
+    let codes = ["gems".to_string()];
+    let spec = panel_form(&codes);
+    let fields = shape(&spec);
+    assert_eq!(fields[0], ("player", "Player", FieldKind::Ref("player".to_string()), true, false, false));
+    assert_eq!(fields[1..], shape(&row_form(Direction::Grant, &codes))[..]);
+    assert!(spec.title.is_none(), "a panel form has no title");
+    assert_eq!(spec.note.as_deref(), Some("Idempotent per request id."));
+    let modes: Vec<(&str, &str, &str, &str)> = spec
+        .modes
+        .iter()
+        .map(|m| (m.id.as_str(), m.label.as_str(), m.action.as_str(), m.submit_label.as_str()))
+        .collect();
+    assert_eq!(
+        modes,
+        [("grant", "Grant", "ledger.grant", "Grant"), ("revoke", "Revoke", "ledger.revoke", "Revoke")]
+    );
+}
+
+#[test]
+fn the_amount_is_a_whole_positive_number_within_the_movement_cap() {
+    let money =
+        |amount: &str, currency: &str| serde_json::json!({ "amount": amount, "currency": currency }).to_string();
+    assert_eq!(parse_amount(&money("500", "gems")), Ok((500, "gems".to_string())));
+    assert_eq!(parse_amount(&money(&MAX_MOVEMENT_AMOUNT.to_string(), "gems")).unwrap().0, MAX_MOVEMENT_AMOUNT);
+    for bad in ["0", "-5", "1.5", "", "1e3", &(MAX_MOVEMENT_AMOUNT + 1).to_string(), "99999999999999999999"] {
+        let err = parse_amount(&money(bad, "gems")).unwrap_err();
+        assert!(err.starts_with("Amount must be a whole number"), "{bad:?}: {err}");
+    }
+    assert_eq!(parse_amount("").unwrap_err(), "Amount is required");
+    assert!(parse_amount("500").is_err() && parse_amount(r#"{"amount":"5"}"#).is_err());
+    assert!(parse_amount(r#"{"amount":"5","currency":"gems","x":1}"#).is_err(), "unknown keys are refused");
+    assert_eq!(parse_amount(&money("5", "")).unwrap_err(), "Amount must name a currency");
+    let long = "c".repeat(walletapi::MAX_CURRENCY_CODE_BYTES + 1);
+    assert_eq!(parse_amount(&money("5", &long)).unwrap_err(), "Currency is not in the catalog");
+}
+
+#[test]
+fn the_reason_is_the_trimmed_text_within_the_reason_cap() {
+    assert_eq!(parse_reason("  Compensation for outage  "), Ok("Compensation for outage".to_string()));
+    assert_eq!(parse_reason(" \t ").unwrap_err(), "Reason is required");
+    assert!(parse_reason(&"r".repeat(MAX_REASON_BYTES)).is_ok());
+    assert!(parse_reason(&"r".repeat(MAX_REASON_BYTES + 1)).is_err());
+}
+
+#[test]
+fn service_refusals_map_to_their_field_and_the_rest_pass_through() {
+    let amount = |e: Error| movement_field_error(&e).map(|(k, _)| k);
+    assert_eq!(amount(Error::conflict(OUT_OF_RANGE)), Some("amount"));
+    assert_eq!(amount(Error::invalid(UNKNOWN_CURRENCY)), Some("amount"));
+    assert_eq!(amount(Error::invalid(MALFORMED_PLAYER_ID)), Some("player"));
+    assert_eq!(amount(Error::conflict(IDEMPOTENCY_CONFLICT)), None, "the portal redraws the form locked");
+    assert_eq!(amount(Error::conflict(crate::service::PLAYER_DELETED)), None);
+    assert_eq!(amount(Error::invalid(OUT_OF_RANGE)), None, "the status is part of the match");
 }
 
 #[test]
@@ -218,6 +360,184 @@ async fn panels_read_the_players_balances_and_ledger() {
 
     let err = admin.panel(query("wallet", &pid, Some("nope"))).await.unwrap_err();
     assert_eq!(err.status, Status::Invalid);
+
+    cleanup(&pool, &[&pid], &[&code]).await;
+}
+
+fn money(amount: i64, currency: &str) -> String {
+    serde_json::json!({ "amount": amount.to_string(), "currency": currency }).to_string()
+}
+
+fn call(action: &str, entity: Option<&str>, rid: Option<&str>, input: &[(&str, &str)]) -> InvokeCall {
+    InvokeCall {
+        module: "wallet".to_string(),
+        action: action.to_string(),
+        entity: entity.map(|id| EntityRef { kind: "player".to_string(), id: id.to_string() }),
+        input: input.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        expected_revision: None,
+        reason: None,
+        operator: "ops-tester".to_string(),
+        item: None,
+        request_id: rid.map(str::to_string),
+    }
+}
+
+fn field_errors(outcome: InvokeOutcome) -> BTreeMap<String, String> {
+    match outcome {
+        InvokeOutcome::FieldErrors(errors) => errors,
+        other => panic!("expected field errors, got {other:?}"),
+    }
+}
+
+/// The player's ledger as (idempotency key, delta, reason), oldest first.
+async fn ledger_of(pool: &sqlx::PgPool, pid: &str) -> Vec<(String, i64, String)> {
+    sqlx::query_as("SELECT idempotency_key, delta, reason FROM wallet.ledger WHERE player_id = $1::uuid ORDER BY seq")
+        .bind(pid)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+/// A row grant credits under `admin:<request id>` with the operator's text alone as the
+/// ledger reason; a repeat of the submit applies nothing, the same request id with a changed
+/// reason is the service's 409, and a revoke past the balance is the Amount field's error.
+#[tokio::test]
+async fn row_grant_and_revoke_move_currency_once_per_request_id() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+    let code = unique_currency(&pool).await;
+    let rid = format!("currency.grant:{}", unique_player(&pool).await);
+    let admin = WalletAdmin::new(svc, code.clone());
+    let amount = money(1_500, &code);
+    let grant = call("currency.grant", Some(&pid), Some(&rid), &[("amount", &amount), ("reason", "  Outage refund  ")]);
+
+    match admin.invoke(grant.clone()).await.unwrap() {
+        InvokeOutcome::Ok { message, .. } => assert_eq!(message, format!("Granted 1,500 {code}; balance 1,500")),
+        other => panic!("expected Ok, got {other:?}"),
+    }
+    let key = format!("{ADMIN_KEY_PREFIX}{rid}");
+    assert_eq!(ledger_of(&pool, &pid).await, [(key.clone(), 1_500, "Outage refund".to_string())]);
+
+    assert!(matches!(admin.invoke(grant.clone()).await.unwrap(), InvokeOutcome::Ok { .. }));
+    assert_eq!(ledger_of(&pool, &pid).await.len(), 1, "a repeat of one submit is not applied twice");
+
+    let changed = call("currency.grant", Some(&pid), Some(&rid), &[("amount", &amount), ("reason", "Other")]);
+    let err = admin.invoke(changed).await.unwrap_err();
+    assert_eq!((err.status, err.msg.as_str()), (Status::Conflict, IDEMPOTENCY_CONFLICT));
+
+    let rid2 = format!("currency.revoke:{}", unique_player(&pool).await);
+    let too_much = money(1_501, &code);
+    let revoke = call("currency.revoke", Some(&pid), Some(&rid2), &[("amount", &too_much), ("reason", "Chargeback")]);
+    assert!(field_errors(admin.invoke(revoke).await.unwrap()).contains_key("amount"));
+    let rid3 = format!("currency.revoke:{}", unique_player(&pool).await);
+    let some = money(500, &code);
+    let revoke = call("currency.revoke", Some(&pid), Some(&rid3), &[("amount", &some), ("reason", "Chargeback")]);
+    match admin.invoke(revoke).await.unwrap() {
+        InvokeOutcome::Ok { message, .. } => assert_eq!(message, format!("Revoked 500 {code}; balance 1,000")),
+        other => panic!("expected Ok, got {other:?}"),
+    }
+    assert_eq!(ledger_of(&pool, &pid).await[1], (format!("{ADMIN_KEY_PREFIX}{rid3}"), -500, "Chargeback".to_string()));
+
+    cleanup(&pool, &[&pid], &[&code]).await;
+}
+
+/// The refusals that come before a write: an unknown currency and a bad amount are Amount
+/// errors, a missing request id or reason refuses, an over-cap input value is Invalid, and
+/// a row action needs its player entity. None writes a ledger row.
+#[tokio::test]
+async fn grant_refusals_write_nothing() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+    let code = unique_currency(&pool).await;
+    let admin = WalletAdmin::new(svc, code.clone());
+    let rid = |tag: &str| format!("currency.grant:{tag}:{pid}");
+    let ok = money(10, &code);
+    let reason = ("reason", "Gift");
+
+    let unknown = money(10, "no-such-currency");
+    let outcome = admin.invoke(call("currency.grant", Some(&pid), Some(&rid("unk")), &[("amount", &unknown), reason]));
+    assert_eq!(field_errors(outcome.await.unwrap())["amount"], "Currency is not in the catalog");
+
+    let zero = money(0, &code);
+    let outcome = admin.invoke(call("currency.grant", Some(&pid), Some(&rid("zero")), &[("amount", &zero)]));
+    let errors = field_errors(outcome.await.unwrap());
+    assert!(errors.contains_key("amount") && errors.contains_key("reason"), "{errors:?}");
+
+    let err = admin.invoke(call("currency.grant", Some(&pid), None, &[("amount", &ok), reason])).await.unwrap_err();
+    assert_eq!(err.status, Status::Invalid, "a submit without a request id");
+
+    let long = "x".repeat(controlplane::MAX_INPUT_VALUE_BYTES + 1);
+    let input = [("amount", ok.as_str()), ("reason", long.as_str())];
+    let outcome = admin.invoke(call("currency.grant", Some(&pid), Some(&rid("long")), &input));
+    assert_eq!(outcome.await.unwrap_err().status, Status::Invalid, "an input value over the portal's cap");
+
+    let outcome = admin.invoke(call("currency.grant", None, Some(&rid("none")), &[("amount", &ok), reason]));
+    let err = outcome.await.unwrap_err();
+    assert_eq!(err.status, Status::Invalid, "a row action needs its player");
+
+    let err = admin.invoke(call("currency.burn", Some(&pid), Some(&rid("x")), &[])).await.unwrap_err();
+    assert_eq!(err.status, Status::NotFound);
+
+    assert!(ledger_of(&pool, &pid).await.is_empty());
+    cleanup(&pool, &[&pid], &[&code]).await;
+}
+
+/// The Economy form names its player in the input, its mode picks the direction, and its
+/// Money options are the live catalog; the row modal is prepared with the same options.
+#[tokio::test]
+async fn the_panel_form_takes_its_player_from_the_input_and_lists_the_catalog() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+    let code = unique_currency(&pool).await;
+    let admin = WalletAdmin::new(svc, code.clone());
+    let amount = money(40, &code);
+
+    let rid = format!("grant:{pid}");
+    let input = [("player", pid.as_str()), ("amount", amount.as_str()), ("reason", "Event prize")];
+    let outcome = admin.invoke(call("ledger.grant", None, Some(&rid), &input)).await.unwrap();
+    assert!(matches!(outcome, InvokeOutcome::Ok { .. }), "{outcome:?}");
+    assert_eq!(ledger_of(&pool, &pid).await, [(format!("{ADMIN_KEY_PREFIX}{rid}"), 40, "Event prize".to_string())]);
+
+    let rid2 = format!("grant:revoke:{pid}");
+    let outcome = admin
+        .invoke(call("ledger.revoke", None, Some(&rid2), &[("player", &pid), ("amount", &amount), ("reason", "Undo")]))
+        .await
+        .unwrap();
+    assert!(matches!(outcome, InvokeOutcome::Ok { .. }), "{outcome:?}");
+    assert_eq!(ledger_of(&pool, &pid).await[1].1, -40);
+
+    let rid3 = format!("grant:bad:{pid}");
+    let outcome = admin.invoke(call("ledger.grant", None, Some(&rid3), &[("amount", &amount), ("reason", "x")]));
+    assert_eq!(field_errors(outcome.await.unwrap())["player"], "Player is required");
+    let input = [("player", "not-a-uuid"), ("amount", amount.as_str()), ("reason", "x")];
+    let outcome = admin.invoke(call("ledger.grant", None, Some(&rid3), &input));
+    assert_eq!(field_errors(outcome.await.unwrap())["player"], "Player is not a valid player id");
+
+    let mut q = query("grant", &pid, None);
+    q.entity = None;
+    let panel = admin.panel(q).await.unwrap();
+    let Primitive::Form(spec) = panel.primitive else { panic!("the grant panel answers a Form") };
+    let FieldKind::Money(options) = &spec.fields[1].kind else { panic!("Amount is Money") };
+    assert!(options.contains(&code), "{options:?}");
+    assert_eq!(spec.modes.len(), 2);
+
+    let prepare = |action: &str, entity: Option<EntityRef>| PrepareCall {
+        module: "wallet".to_string(),
+        action: action.to_string(),
+        entity,
+        item: None,
+        operator: "ops-tester".to_string(),
+    };
+    let player = || Some(EntityRef { kind: "player".to_string(), id: pid.clone() });
+    let spec = form_of(admin.prepare(prepare("currency.revoke", player())).await.unwrap());
+    assert_eq!(spec.title.as_deref(), Some("Revoke currency"));
+    let FieldKind::Money(options) = &spec.fields[0].kind else { panic!("Amount is Money") };
+    assert!(options.contains(&code), "{options:?}");
+    assert_eq!(admin.prepare(prepare("currency.grant", None)).await.unwrap_err().status, Status::Invalid);
+    assert_eq!(admin.prepare(prepare("ledger.grant", player())).await.unwrap_err().status, Status::NotFound);
 
     cleanup(&pool, &[&pid], &[&code]).await;
 }
