@@ -10,6 +10,7 @@
 
 pub mod conformance;
 
+mod admin;
 mod projection;
 mod service;
 mod store;
@@ -117,8 +118,14 @@ fn dev_seed_explicitly_on() -> bool {
     )
 }
 
+/// The currency the admin portal headlines for a player (the summary fact) when the
+/// composition root names none: the dev seed's hard currency.
+pub const DEFAULT_HEADLINE_CURRENCY: &str = "gems";
+
 pub struct WalletModule {
     svc: OnceLock<Arc<Service>>,
+    /// The catalog code the admin portal headlines; see [`WalletModule::with_headline_currency`].
+    headline_currency: String,
 }
 
 impl Default for WalletModule {
@@ -131,7 +138,17 @@ impl WalletModule {
     pub fn new() -> WalletModule {
         WalletModule {
             svc: OnceLock::new(),
+            headline_currency: DEFAULT_HEADLINE_CURRENCY.to_string(),
         }
+    }
+
+    /// Names the catalog currency the admin portal headlines for a player (the summary
+    /// fact's "N <code>"). Config as code: a composition root sets it, every process hosting
+    /// wallet must set the same value, and an empty or over-cap code fails `register`. The
+    /// code need not be in the catalog: a missing row draws a 0 balance.
+    pub fn with_headline_currency(mut self, code: impl Into<String>) -> WalletModule {
+        self.headline_currency = code.into();
+        self
     }
 
     fn svc(&self) -> Arc<Service> {
@@ -156,6 +173,13 @@ impl Module for WalletModule {
     }
 
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
+        let headline = &self.headline_currency;
+        if headline.is_empty() || headline.len() > walletapi::MAX_CURRENCY_CODE_BYTES {
+            anyhow::bail!(
+                "wallet: the headline currency {headline:?} must be 1..={} bytes",
+                walletapi::MAX_CURRENCY_CODE_BYTES
+            );
+        }
         let pool = ctx
             .db()
             .ok_or_else(|| anyhow::anyhow!("wallet requires a DB pool"))?
@@ -342,6 +366,12 @@ impl Module for WalletModule {
                 walletrpc::wallet_rpc::describe(),
             ]),
         );
+
+        // The control-plane provider (the player's Wallet tab, its tiles and the summary
+        // fact), contributed unconditionally: whichever process hosts wallet serves it.
+        let provider: Arc<dyn controlplane::Provider> =
+            Arc::new(admin::WalletAdmin::new(self.svc(), self.headline_currency.clone()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
         Ok(())
     }
 }

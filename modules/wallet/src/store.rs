@@ -71,17 +71,6 @@ pub(crate) struct ExistingMovement {
     pub(crate) balance_after: i64,
 }
 
-/// One catalog row as the ADMIN page shows it. The contract read ([`Store::list_currencies`])
-/// returns `walletapi::Currency`, which carries no `created_at`; this projection adds it for
-/// the operator table and is never on the wire.
-pub(crate) struct CatalogEntry {
-    pub(crate) code: String,
-    pub(crate) display_name: String,
-    pub(crate) kind: String,
-    pub(crate) decimals: i32,
-    pub(crate) created_at: String,
-}
-
 /// What [`Store::write_currency_tx`] does with a code the catalog already holds. The clause
 /// is a fixed string per variant, never caller data.
 #[derive(Clone, Copy)]
@@ -105,11 +94,12 @@ impl OnConflict {
     }
 }
 
-/// One ledger row as the ADMIN drill-down shows it. `seq` rides along because it is the
-/// ORDER the table is sorted by; `at` can disagree with it under concurrency, and an
-/// operator auditing money needs the value the sort actually used.
+/// One ledger row as the admin ledger tables show it. `seq` is the keyset the pages are
+/// cut on (`at` can disagree with it under concurrency); `id` is the movement's tx id; `at`
+/// is UTC, to the minute.
 pub(crate) struct LedgerEntry {
     pub(crate) seq: i64,
+    pub(crate) id: String,
     pub(crate) at: String,
     pub(crate) currency: String,
     pub(crate) delta: i64,
@@ -117,19 +107,18 @@ pub(crate) struct LedgerEntry {
     pub(crate) reason: String,
 }
 
-/// One page of [`Store::recent_ledger`]. The read decides `truncated` itself — it asks for
-/// one row PAST the limit — so no caller can mistake a full page for a whole history, which
-/// is what re-counting rows against a clamp it does not own would invite.
+/// One page of [`Store::player_ledger`]. The read decides `next_after` itself — it asks for
+/// one row PAST the page — so no caller can mistake a full page for a whole history.
 pub(crate) struct LedgerPage {
     pub(crate) rows: Vec<LedgerEntry>,
-    pub(crate) truncated: bool,
+    /// The `seq` the next page starts below; `None` when no older row exists.
+    pub(crate) next_after: Option<i64>,
 }
 
-/// The hard ceiling on a [`Store::recent_ledger`] page. Unlike the balance and catalog
-/// reads — bounded by the operator-curated currency list — a player's ledger grows with
-/// every movement, so the bound lives HERE, in the statement, and not in a caller that
-/// could forget it.
-pub(crate) const MAX_RECENT_LEDGER: i64 = 200;
+/// The rows of one [`Store::player_ledger`] page. A player's ledger grows with every
+/// movement, so the bound lives HERE, in the statement, and not in a caller that could
+/// forget it.
+pub(crate) const LEDGER_PAGE_SIZE: i64 = 25;
 
 /// Every write takes `&mut PgConnection`, never the pool, so the one movement authority
 /// runs identically under a pool-owned transaction and under the event plane's HANDED
@@ -456,79 +445,56 @@ impl Store {
             .collect())
     }
 
-    /// The admin catalog projection (see [`CatalogEntry`]).
-    pub(crate) async fn list_catalog(&self) -> Result<Vec<CatalogEntry>, sqlx::Error> {
-        let rows: Vec<(String, String, String, i32, String)> = sqlx::query_as(
-            "SELECT code, display_name, kind, decimals, created_at::text \
-               FROM wallet.currencies ORDER BY code",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(
-                |(code, display_name, kind, decimals, created_at)| CatalogEntry {
-                    code,
-                    display_name,
-                    kind,
-                    decimals,
-                    created_at,
-                },
-            )
-            .collect())
-    }
-
-    /// The newest movements for one player, in `seq` order — drawn under the balance row lock
-    /// of each movement's own `(player, currency)`, so it is the exact order money moved for
-    /// one pair and statement-execution order across currencies; `at` is descriptive only
+    /// One page of a player's movements, newest first by `seq` — drawn under the balance row
+    /// lock of each movement's own `(player, currency)`, so it is the exact order money moved
+    /// for one pair and statement-execution order across currencies; `at` is descriptive only
     /// (`clock_timestamp()` of the INSERT, a round trip before that lock). `seq` is monotonic
-    /// but GAPPED: the INSERT's `bigserial` default and any rolled-back movement burn values.
+    /// but GAPPED, so the keyset is "below `after`", never an offset.
     ///
-    /// `limit` is CLAMPED to `1 ..= MAX_RECENT_LEDGER` rather than trusted: this is the one
-    /// wallet read whose size a caller influences. The statement asks for `limit + 1` and
-    /// the surplus row is dropped, so the page carries whether older movements exist —
-    /// there is no cursor, and a page that cannot say it is partial reads as complete.
+    /// The page is [`LEDGER_PAGE_SIZE`] rows on `ledger_player_seq_idx`. The statement asks
+    /// for one row more and drops it, so the page carries whether older movements exist.
     ///
-    /// A malformed id is a miss (an empty, non-truncated page), the same answer
-    /// [`Store::list_balances`] gives, so a drill-down on a bad uuid renders empty instead
-    /// of a 500.
-    pub(crate) async fn recent_ledger(
+    /// A malformed id is a miss (an empty page), the same answer [`Store::list_balances`]
+    /// gives, so a tab on a bad uuid renders empty instead of a 500.
+    pub(crate) async fn player_ledger(
         &self,
         player_id: &str,
-        limit: i64,
+        after: Option<i64>,
     ) -> Result<LedgerPage, sqlx::Error> {
-        let limit = limit.clamp(1, MAX_RECENT_LEDGER);
-        let res = sqlx::query_as::<_, (i64, String, String, i64, i64, String)>(
-            "SELECT seq, at::text, currency, delta, balance_after, reason \
-               FROM wallet.ledger WHERE player_id = $1::uuid \
-              ORDER BY seq DESC LIMIT $2",
+        let res = sqlx::query_as::<_, (i64, String, String, String, i64, i64, String)>(
+            "SELECT seq, id::text, to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'), \
+                    currency, delta, balance_after, reason \
+               FROM wallet.ledger \
+              WHERE player_id = $1::uuid AND ($2::bigint IS NULL OR seq < $2) \
+              ORDER BY seq DESC LIMIT $3",
         )
         .bind(player_id)
-        .bind(limit + 1)
+        .bind(after)
+        .bind(LEDGER_PAGE_SIZE + 1)
         .fetch_all(&self.pool)
         .await;
         match res {
             Ok(mut rows) => {
-                let truncated = rows.len() as i64 > limit;
-                rows.truncate(limit as usize);
-                Ok(LedgerPage {
-                    rows: rows
-                        .into_iter()
-                        .map(|(seq, at, currency, delta, balance_after, reason)| LedgerEntry {
-                            seq,
-                            at,
-                            currency,
-                            delta,
-                            balance_after,
-                            reason,
-                        })
-                        .collect(),
-                    truncated,
-                })
+                let more = rows.len() as i64 > LEDGER_PAGE_SIZE;
+                rows.truncate(LEDGER_PAGE_SIZE as usize);
+                let rows: Vec<LedgerEntry> = rows
+                    .into_iter()
+                    .map(|(seq, id, at, currency, delta, balance_after, reason)| LedgerEntry {
+                        seq,
+                        id,
+                        at,
+                        currency,
+                        delta,
+                        balance_after,
+                        reason,
+                    })
+                    .collect();
+                let next_after = if more { rows.last().map(|e| e.seq) } else { None };
+                Ok(LedgerPage { rows, next_after })
             }
             Err(e) if is_invalid_uuid(&e) => Ok(LedgerPage {
                 rows: Vec::new(),
-                truncated: false,
+                next_after: None,
             }),
             Err(e) => Err(e),
         }

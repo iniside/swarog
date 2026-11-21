@@ -45,7 +45,7 @@ async fn ensure_schema(pool: &PgPool) {
 /// no-op. Returns the ctx (kept alive; owns the bus) and the concrete `Service`
 /// fetched through the module's own `register()`, never hand-assembled from private
 /// fields.
-async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
+pub(crate) async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     ensure_schema(pool).await;
     let transport = asyncevents::testing::transport(pool.clone());
     let ctx = Context::with_db_and_transport(pool.clone(), transport.handle());
@@ -56,7 +56,7 @@ async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
 }
 
 /// A fresh random player_id (a valid uuid) so parallel test runs never collide.
-async fn unique_player(pool: &PgPool) -> String {
+pub(crate) async fn unique_player(pool: &PgPool) -> String {
     let (id,): (String,) = sqlx::query_as("SELECT gen_random_uuid()::text")
         .fetch_one(pool)
         .await
@@ -66,7 +66,7 @@ async fn unique_player(pool: &PgPool) -> String {
 
 /// A fresh currency row (code well under the 32-byte cap) — most movement tests
 /// need one to satisfy `balances_currency_fkey`.
-async fn unique_currency(pool: &PgPool) -> String {
+pub(crate) async fn unique_currency(pool: &PgPool) -> String {
     let (suffix,): (String,) = sqlx::query_as("SELECT substr(gen_random_uuid()::text, 1, 12)")
         .fetch_one(pool)
         .await
@@ -91,7 +91,7 @@ fn unique_key(prefix: &str) -> String {
     format!("{prefix}-{n}-{}", std::process::id())
 }
 
-async fn cleanup(pool: &PgPool, players: &[&str], currencies: &[&str]) {
+pub(crate) async fn cleanup(pool: &PgPool, players: &[&str], currencies: &[&str]) {
     for pid in players {
         let _ = sqlx::query("DELETE FROM wallet.ledger WHERE player_id = $1::uuid")
             .bind(pid)
@@ -1955,14 +1955,10 @@ async fn the_starter_key_is_shared_across_both_subscriptions() {
     cleanup(&pool, &[&pid], &[&currency]).await;
 }
 
-// ---- 12: the ledger drill-down window and the catalog seed -----------------
-
-/// The page size the drill-down asks for. `recent_ledger`'s window arithmetic is
-/// limit-agnostic (`limit + 1`, then truncate), so the tests pass it explicitly.
-const PAGE: i64 = 50;
+// ---- 12: the ledger pages and the catalog seed -----------------
 
 /// Seeds `n` ledger rows for one player in ONE statement — the code under test is
-/// [`Store::recent_ledger`]'s window, never the writer, and a single INSERT ... SELECT
+/// [`Store::player_ledger`]'s window, never the writer, and a single INSERT ... SELECT
 /// draws the `bigserial` default in `generate_series` order, so row `g = 1` is
 /// unambiguously the OLDEST.
 async fn seed_ledger(pool: &PgPool, pid: &str, prefix: &str, n: i64) {
@@ -1980,38 +1976,37 @@ async fn seed_ledger(pool: &PgPool, pid: &str, prefix: &str, n: i64) {
     .unwrap();
 }
 
-/// Exactly `limit` rows: the arm that must NOT claim truncation. `recent_ledger` asks for
-/// `limit + 1` and gets `limit`, so the surplus row is absent and the page is whole —
-/// binding `limit` instead of `limit + 1`, or comparing `>=` instead of `>`, reports a
-/// complete history as partial and only this assertion notices.
+/// Exactly one page of rows: the arm that must NOT offer a next page. `player_ledger` asks
+/// for one row more and gets none, so the page is whole — binding the page size instead of
+/// one more, or comparing `>=` instead of `>`, reports a complete history as partial and
+/// only this assertion notices.
 #[tokio::test]
-async fn ledger_page_of_exactly_the_limit_is_not_truncated() {
+async fn ledger_page_of_exactly_the_page_size_has_no_next_page() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let pid = unique_player(&pool).await;
-    seed_ledger(&pool, &pid, &unique_key("page-exact"), PAGE).await;
+    seed_ledger(&pool, &pid, &unique_key("page-exact"), LEDGER_PAGE_SIZE).await;
 
-    let page = svc.store.recent_ledger(&pid, PAGE).await.unwrap();
-    assert_eq!(page.rows.len(), PAGE as usize);
-    assert!(
-        !page.truncated,
-        "a page holding the WHOLE history must not report older rows"
+    let page = svc.store.player_ledger(&pid, None).await.unwrap();
+    assert_eq!(page.rows.len(), LEDGER_PAGE_SIZE as usize);
+    assert_eq!(
+        page.next_after, None,
+        "a page holding the WHOLE history must not offer older rows"
     );
 
     cleanup(&pool, &[&pid], &[]).await;
 }
 
-/// One row past the limit: truncation is reported, the page still carries exactly `limit`
-/// rows, the window is the NEWEST (`seq` descending), and the row dropped is the OLDEST.
-/// Together these kill both the off-by-one and a `LIMIT` that kept the wrong end of the
-/// history — a page that silently showed the oldest 50 of 51 movements reads as a complete
-/// audit trail while hiding the newest one.
+/// One row past a page: the first page is the NEWEST rows (`seq` descending) and offers a
+/// next page cut at its last row; that page holds exactly the one row left, the OLDEST, and
+/// offers none. A keyset that skipped or repeated the boundary row, or a `LIMIT` that kept
+/// the wrong end of the history, fails here.
 #[tokio::test]
-async fn ledger_page_past_the_limit_truncates_the_oldest_row() {
+async fn ledger_keyset_pages_cover_the_history_once_newest_first() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
     let pid = unique_player(&pool).await;
-    seed_ledger(&pool, &pid, &unique_key("page-over"), PAGE + 1).await;
+    seed_ledger(&pool, &pid, &unique_key("page-over"), LEDGER_PAGE_SIZE + 1).await;
 
     let (oldest,): (i64,) = sqlx::query_as("SELECT min(seq) FROM wallet.ledger WHERE player_id = $1::uuid")
         .bind(&pid)
@@ -2019,47 +2014,31 @@ async fn ledger_page_past_the_limit_truncates_the_oldest_row() {
         .await
         .unwrap();
 
-    let page = svc.store.recent_ledger(&pid, PAGE).await.unwrap();
-    assert_eq!(page.rows.len(), PAGE as usize, "the surplus row must be dropped");
-    assert!(page.truncated, "a partial page MUST say it is partial");
-    assert!(
-        page.rows[0].seq > page.rows[PAGE as usize - 1].seq,
-        "the window is newest-first: {} .. {}",
-        page.rows[0].seq,
-        page.rows[PAGE as usize - 1].seq
-    );
-    assert!(
-        !page.rows.iter().any(|r| r.seq == oldest),
-        "the dropped row must be the OLDEST (seq {oldest}), never the newest"
-    );
+    let first = svc.store.player_ledger(&pid, None).await.unwrap();
+    assert_eq!(first.rows.len(), LEDGER_PAGE_SIZE as usize, "the surplus row must be dropped");
+    let last_seq = first.rows[LEDGER_PAGE_SIZE as usize - 1].seq;
+    assert!(first.rows[0].seq > last_seq, "newest first");
+    assert_eq!(first.next_after, Some(last_seq), "the cursor is the last drawn row");
+    assert!(!first.rows.iter().any(|r| r.seq == oldest), "the first page drops the OLDEST row");
+
+    let second = svc.store.player_ledger(&pid, first.next_after).await.unwrap();
+    let seqs: Vec<i64> = second.rows.iter().map(|r| r.seq).collect();
+    assert_eq!(seqs, [oldest], "the next page is exactly the one row left");
+    assert_eq!(second.next_after, None);
+    let row = &second.rows[0];
+    assert_eq!((row.delta, row.balance_after, row.reason.as_str()), (1, 1, "seed"));
+    assert_eq!(row.at.len(), "2026-11-21 16:45".len(), "UTC to the minute: {}", row.at);
 
     cleanup(&pool, &[&pid], &[]).await;
 }
 
-/// A caller asking for far MORE than the hard ceiling, against exactly `MAX_RECENT_LEDGER`
-/// rows. The clamp lowers the request to the ceiling, and the ceiling is met exactly — so
-/// the page is whole. A clamp applied to `limit + 1` (or a `truncated` derived from the
-/// caller's original limit) would manufacture truncation out of its own bound and report a
-/// complete history as partial.
+/// A malformed player id is a miss, never a 500.
 #[tokio::test]
-async fn recent_ledger_clamp_does_not_manufacture_truncation() {
+async fn ledger_page_of_a_malformed_player_id_is_empty() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, svc) = wired(&pool).await;
-    let pid = unique_player(&pool).await;
-    seed_ledger(&pool, &pid, &unique_key("page-clamp"), MAX_RECENT_LEDGER).await;
-
-    let page = svc
-        .store
-        .recent_ledger(&pid, MAX_RECENT_LEDGER + 500)
-        .await
-        .unwrap();
-    assert_eq!(page.rows.len(), MAX_RECENT_LEDGER as usize);
-    assert!(
-        !page.truncated,
-        "meeting the hard ceiling exactly is a WHOLE history, not a truncated one"
-    );
-
-    cleanup(&pool, &[&pid], &[]).await;
+    let page = svc.store.player_ledger("not-a-uuid", None).await.unwrap();
+    assert!(page.rows.is_empty() && page.next_after.is_none());
 }
 
 /// The dev seed is insert-if-absent, and this drives the REAL `migrate` seed loop (a

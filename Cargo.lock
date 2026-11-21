@@ -5255,6 +5255,7 @@ dependencies = [
  "asyncevents",
  "bus",
  "configapi",
+ "controlplane",
  "edge",
  "futures",
  "lifecycle",
