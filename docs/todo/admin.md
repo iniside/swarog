@@ -46,10 +46,23 @@ _None._
   which breaks the page slug on a DB blip. Companion to AUDIT-02 and
   NOTIFICATIONS-05. Source: docs/plans/2026-09-05-1921-friends-module-plan.md:596
   (2026-09-05).
-- [ ] **Pin `PLAYERS_ROW_MENU` ordering across topologies**
-  ADMIN-06. characters, friends, notifications and wallet use priority 0 in their
-  src/admin.rs; inventory uses 10. Source:
-  docs/plans/2026-09-05-1921-friends-module-plan.md:601 (2026-09-05).
+### Known limits (admin-control-plane-redesign step 14)
+
+- [ ] **Menu and modal diffs without an accept section stay red**
+  14a1's live diff: `players.menu.user`, `player.menu.user`, `player.characters.menu.user` (11
+  lines each, the same user menu) and `events.modal.skip-poison` (3 lines) fail, as no accept
+  file covers them. They predate 14a1 except the characters copy of the player menu.
+- [ ] **The crawl follows the newest player, who may have no characters**
+  The crawl takes the first players row. On a database with leftover test players that row has
+  0 characters, and `player.characters` diffs 2 lines (the mockup's table, the portal's empty
+  state) that the accept file does not cover. A fresh demoseeded fleet gives every player 1–3.
+- [ ] **`counts_by_player` has no test for duplicate or differently spelled refs**
+  `modules/characters/src/admin_tests.rs`: the duplicated ref has 0 characters, so a GROUP BY
+  double count would pass, and every ref is a lowercase uuid. The engine dedupes refs today
+  (`core/admin/src/engine/columns.rs:30-34`). One malformed ref fails the whole batch as Invalid.
+- [ ] **The characters provider's titles and refusal paths are unpinned by unit tests**
+  The manifest test does not pin the contribution titles, and no unit test covers the wrong
+  entity kind or unknown contribution paths (`modules/characters/src/admin.rs:83,243`).
 
 ### Known limits (admin-control-plane-redesign step 13e)
 

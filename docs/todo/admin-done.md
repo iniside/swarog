@@ -2,6 +2,11 @@
 
 Last updated: 2026-11-21
 
+- [x] **Pin `PLAYERS_ROW_MENU` ordering across topologies** (2026-11-21, b8435c9a)
+  ADMIN-06. characters, friends, notifications and wallet use priority 0 in their
+  src/admin.rs; inventory uses 10. Source:
+  docs/plans/2026-09-05-1921-friends-module-plan.md:601 (2026-09-05).
+  Obsolete: Step 1 razed the per-module admin pages and `PLAYERS_ROW_MENU`; no port declares it.
 - [x] **A bare grid panel keeps the mockup's `min-width: 0`** (2026-11-21, admin-control-plane-redesign step 13e6)
   `core/admin/src/portal.css` gives every child of a `.grid > .slot` `min-width: 0`, as the
   mockup's `.grid > *` rule does for a panel drawn straight in the grid.

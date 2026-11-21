@@ -2098,7 +2098,7 @@ The ports:
   14a3's (moved back from 13d1, 2026-11-19).
   Contributes `EntityLabel{character}` (Step 13c Refs seam). Not a writer: no 14a2.
   - **14a1** (Na1): the Characters tab (order 20), the summary fact (30) and the tab count;
-    data decisions G2, G3, G7, G8, G10, G11.
+    data decisions G2, G3, G7, G8, G10, G11. Landed as 6ce76a3f.
   - **14a3** (Na3): the players list column (order 10), `EntityLabel{character}` (Refs seam
     **Producers**), Purges pending at 61. Depends on 14a1. It also adds the G6 `template
     choice` accept line to `tools/admindiff/accept/players.txt` (checklist line 220), copied
