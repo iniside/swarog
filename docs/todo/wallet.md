@@ -29,10 +29,21 @@ _None._
   `ledger (at)` indexes end the scans; the count stays exact unless the foot takes an
   estimate. A panel deadline drops the answer, not the statement.
 - [ ] **A deleted player's balances count in the Economy Supply and Holders until the sweep**
-  `Store::currency_stats` (`modules/wallet/src/store.rs:503`) sums every `wallet.balances`
+  `Store::currency_stats` (`modules/wallet/src/store.rs`) sums every `wallet.balances`
   row and does not exclude players tombstoned in `wallet.purged_players`, so a deleted
   player's money stays in Supply and Holders until the five-minute `player-purge` sweep
   removes the rows.
+- [ ] **No test proves the Ledger count or paging across pages**
+  `the_ledger_narrows_by_search_reason_and_currency_and_counts_the_selection`
+  (`modules/wallet/src/admin_tests.rs`) checks totals below `LEDGER_PAGE_SIZE` only, so a count
+  that equals the page size, or one that also applies the cursor, would pass; keyset paging is
+  proven only for one player's filter, never on the global ledger.
+- [ ] **The Ledger Reason filter trusts keys and reasons the contract does not reserve**
+  The Admin option selects every movement whose idempotency key starts with `admin:`, but the
+  walletapi contract reserves only `starter:` (`api/wallet/api/src/lib.rs:62-67`), so a wire
+  caller's `admin:` key lists as an operator movement. The Starter option matches reason text a
+  wire caller can also write. Reserving `admin:` in the contract and filtering starter grants by
+  the `starter:` key end it.
 
 - [ ] **No test sends an uppercase or unhyphenated player uuid to the existence check**
   `Service::player_exists` canonicalises the id (`modules/wallet/src/service.rs:165-171`)

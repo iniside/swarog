@@ -77,6 +77,21 @@ _None._
   `/admin/_menu/{kind}/{page}` for tab entries, while the portal opens one
   `/admin/_menu/{kind}/{entity id}` on every tab (`core/admin/src/routes.rs:627`), so tab
   tests built from a page map never see two menu targets sharing one URL.
+- [ ] **The sidebar diff pairs nav sections by shape, so one nav accept line hides Lore entries**
+  `diff_pages` pairs leftover nav sections by similarity (`tools/admindiff/src/skeleton.rs:469-579`).
+  The mockup's Economy entry is `down: true` (`UILayout/redesign/assets/registry.js:25`), so it
+  never matches exactly and the mockup's Lore section pairs with the portal's Economy section
+  (on the economy page only by position). The Lore lines in the 8 sidebar accept files blame
+  "no Lore module", not the `.down` demo state. The shared `mock-only a.nav-item#ecbb9a` line
+  now also covers the unpaired Lore entries while its reason names only API keys, Scheduler,
+  Config and Audit, so a lost plain nav entry passes silently. A per-line element count or
+  keying nav entries by their text hint (`skeleton.rs:365`) ends it.
+- [ ] **The Economy Ledger table is never compared with the mockup**
+  A fresh fleet has no wallet movements (the starter grant is off and demoseed grants none), so
+  `tools/admindiff/accept/economy.txt` accepts the empty-state body and the diff never sees the
+  Ledger header or cells; a query that always returns no rows also passes. The columns rest on
+  the hand-typed list in `modules/wallet/src/admin_tests.rs`. Enabling `wallet/starter_currency`
+  and `wallet/starter_amount` in the dev fleet config fills the table and drops those entries.
 
 ### Known limits (admin-control-plane-redesign step 14a3)
 
