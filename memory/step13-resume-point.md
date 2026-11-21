@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-21: Step 14 (characters) complete incl. Nt + 14b; next port 15 (wallet) awaits owner go"
+description: "Admin redesign resume point 2026-11-21: Step 15 (wallet) 15a1-15a3 + 15t done; next 15a4 after owner answers Q1-Q3"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-21T14:41:24.163Z
+  modified: 2026-11-21T20:08:26.426Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -27,3 +27,7 @@ Crawl fix A 56126e2a (verified live). 14a3: 1135d9ab column, 630ffe45 label/kind
 
 ## State 2026-11-21 (Step 14 complete)
 eae03901 Events page address in controlplane (EVENTS_PAGE_MODULE/EVENTS_PAGE), 5eedd976 clippy fix, Nt dcfa7cb9+873426bf (splitproof CH0-CH4; break = remove peer_face("characters") in cmd/admin-svc/src/lib.rs, NOT main.rs with_peer), 14b clean crawls both topologies, plan bb903d85. Next: port 15 (wallet) — owner approved Step 14 only; ask before starting 15.
+
+## State 2026-11-21 (Step 15 in progress)
+Checklist docs/plans/2026-11-21-step15-wallet-checklist.md (§7 decisions). Done: 15a3 ledger panel 473062ec + accept 3b2fd5ec, 15t splitproof [LG1]/[LG1m] f74e2b75 (reviews ACCEPT), todo b0832045. Next: 15a4 (create currency, G13), 15a5 (Embers column/tile, Purges pending 62), 15b (view, crawl both).
+Waiting on owner: Q1 Money decoder in controlplane (wallet admin.rs parse_amount duplicates it) a/b; Q2 non-wallet red admindiff targets (players, index, player.wallet, events, mail) diagnose after 15; Q3 archcheck rule 11 EVENTS_ false positive (recommend narrowing to env reads); port 404 wallet splitproof checks (WL3-6, NT4, PH3/6/11, PY7) to panel_grant?
