@@ -31,6 +31,7 @@ use splitproof::{fleet_liveness, Running};
 use crate::idp::Idp;
 use crate::pushws::{Frame, PushClient};
 
+mod characters_admin_checks;
 mod idp;
 mod party_checks;
 mod pushws;
@@ -580,6 +581,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     // topology is the only difference. `edge` is `None` because the monolith hosts no internal
     // edge, so the receipt-idempotency replay `[DL2e]` is split-only by construction.
     storage_checks::assertions(ctx, pool, p, &m, "m").await?;
+    characters_admin_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
     deletion_assertions(ctx, pool, p, &m, None, "m").await?;
     party_checks::deletion_assertion(ctx, pool, p, &m, "m").await?;
 
@@ -6142,6 +6144,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     .await?;
 
     storage_checks::assertions(ctx, pool, p, &g, "").await?;
+    characters_admin_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
 
     // --- Parties over the multiplexed socket: every invoke is Remote-dispatched from
     // gateway-svc to party-svc, whose post-commit pushes cross the backplane back to the
