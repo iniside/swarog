@@ -2147,6 +2147,9 @@ The ports:
     - **15t** (`[opus]` test-author, after 15a3): the splitproof assertion that the ledger
       draws a player label answered by accounts-svc (`tools/splitproof/src/main.rs`);
       proof-auditor audits.
+    - **15b** (Nb): the monolith and split crawls, the accept files of checklist §8
+      (`economy.txt`, `player.wallet.txt` and the updated shared pages), and view fixes only
+      where a crawl shows the portal drawing differently from the mockup.
   - **Owner decision before dispatch (15a5):** which currency is "Embers". D4 names
     `gold/gems` as the real vocabulary; the audit points at research P's list and gives no
     recommendation.
