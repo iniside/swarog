@@ -1,6 +1,7 @@
 /* Portal rules the design system has no class for; token values come from tokens.css */
 [hidden] { display: none !important; }
 .slot { display: contents; }
+.page > .slot:not(:last-child) > .panel { margin-bottom: 12px; }
 .modal-icon.info { background: var(--info-soft); color: var(--info); }
 .banner.ok { background: var(--ok-soft); color: var(--ok); }
 .q-count.ok .n { color: var(--ok); }

@@ -203,6 +203,12 @@ Requires role <span class="tag">{{ role }}</span>. Ask a deployment owner to gra
 {%- endif -%}
 {%- endmacro %}
 
+{#- One layout cell's panels: one draws bare, more in a .stack (pages-platform.js:107); a bare row's margin is portal.css's. -#}
+{%- macro panels(slots, style="") -%}
+{%- if slots|length == 1 %}{{ slot(slots[0]) }}
+{%- else %}<div class="stack"{% if style %} style="{{ style }}"{% endif %}>{% for s in slots %}{{ slot(s) }}{% endfor %}</div>{% endif -%}
+{%- endmacro %}
+
 {# ---------------------------------------------------------------- primitives #}
 
 {%- macro table_toolbar(t) -%}

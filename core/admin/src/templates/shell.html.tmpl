@@ -53,8 +53,8 @@
 <div class="page-head"><div><h1>{{ v.title }}</h1>{% if v.subtitle %}<div class="sub">{{ v.subtitle }}</div>{% endif %}</div><div class="page-actions">{% for a in v.head_actions %}{{ ui.action_button(a) }}{% endfor %}</div></div>
 {%- if v.tiles %}<div class="grid g-tiles" style="margin-bottom:12px">{% for s in v.tiles %}{{ ui.slot(s) }}{% endfor %}</div>{% endif -%}
 {%- for row in v.rows %}
-{%- if row.layout == "stack" %}<div class="stack"{% if not loop.last %} style="margin-bottom:12px"{% endif %}>{% for col in row.columns %}{% for s in col %}{{ ui.slot(s) }}{% endfor %}{% endfor %}</div>
-{%- else %}<div class="grid {{ row.layout }}"{% if not loop.last %} style="margin-bottom:12px"{% endif %}>{% for col in row.columns %}<div class="stack">{% for s in col %}{{ ui.slot(s) }}{% endfor %}</div>{% endfor %}</div>
+{%- if row.layout == "stack" %}{{ ui.panels(row.columns[0], "" if loop.last else "margin-bottom:12px") }}
+{%- else %}<div class="grid {{ row.layout }}"{% if not loop.last %} style="margin-bottom:12px"{% endif %}>{% for col in row.columns %}{{ ui.panels(col) }}{% endfor %}</div>
 {%- endif -%}
 {%- endfor -%}
 {%- for id in v.missing %}<section class="panel" style="margin-top:12px"><div class="panel-body">{{ ui.state_block("error", "No contribution " ~ id, v.module ~ " lays out a contribution it does not declare.", compact=true) }}</div></section>{% endfor -%}
@@ -66,7 +66,7 @@
 {%- if v.tabs %}<div class="tabs">{% for t in v.tabs %}<button type="button" class="tab{% if t.id == v.selected_tab %} on{% endif %}" data-href="{{ t.url }}">{{ t.label }}{% for c in t.counts %}{{ ui.slot(c) }}{% endfor %}{% if t.down %}<span class="dot err" title="module unavailable"></span>{% endif %}{% if t.readonly %}<span class="muted" title="read-only">{{ ui.icon("lock") }}</span>{% endif %}</button>{% endfor %}</div>{% endif -%}
 </section>
 {%- if v.tab_tiles %}<div class="grid g-tiles" style="margin-bottom:12px">{% for s in v.tab_tiles %}{{ ui.slot(s) }}{% endfor %}</div>{% endif %}
-<div class="{{ 'grid g-2' if v.tab_grid else 'stack' }}">{% for s in v.tab_panels %}{{ ui.slot(s) }}{% endfor %}</div>
+{% if v.tab_grid %}<div class="grid g-2">{% for s in v.tab_panels %}{{ ui.slot(s) }}{% endfor %}</div>{% else %}{{ ui.panels(v.tab_panels) }}{% endif %}
 {%- elif screen == "missing" -%}
 <section class="panel"><div class="panel-body">{{ ui.state_block("error", v.title, v.detail, back=true) }}</div></section>
 {%- endif -%}

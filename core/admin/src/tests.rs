@@ -2477,9 +2477,9 @@ async fn only_the_selected_tabs_tiles_draw_above_its_panels() {
 
     let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/e/player/p-1?tab=items").await;
     assert_eq!(status, StatusCode::OK, "{raw}");
-    let at = raw.find(r#"<div class="grid g-tiles""#).unwrap_or_else(|| panic!("a tiles row in {raw}"));
-    let row = &raw[at..at + raw[at..].find(r#"<div class="stack">"#).expect("the tab's panels follow its tiles")];
     let url = |id: &str| format!("&#x2f;admin&#x2f;_panel&#x2f;inventory&#x2f;{id}?");
+    let at = raw.find(r#"<div class="grid g-tiles""#).unwrap_or_else(|| panic!("a tiles row in {raw}"));
+    let row = &raw[at..at + raw[at..].find(&url("items")).expect("the tab's panel follows its tiles")];
     assert!(row.contains(&url("items-tile")), "{row}");
     for other in ["history-tile", "guild-tile"] {
         assert!(!raw.contains(&url(other)), "{other} draws on the items tab: {raw}");

@@ -1154,7 +1154,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
     let page_point = || Point::Page("overview".to_string());
     for (name, layout) in [
         ("screen_page_stack", Layout::Stack(strings(&["a", "b"]))),
-        ("screen_page_grid21", Layout::Grid21(strings(&["a"]), strings(&["b"]))),
+        ("screen_page_grid21", Layout::Grid21(strings(&["a"]), strings(&["b", "c"]))),
         ("screen_page_grid2", Layout::Grid2(strings(&["a"]), strings(&["b"]))),
         (
             "screen_page_rows",
@@ -1257,7 +1257,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
             selected_tab: Some("items".to_string()),
             tab_grid: false,
             tab_tiles: vec![at("stock", tab_tile()), at("value", tab_tile())],
-            tab_panels: vec![at("items", tab())],
+            tab_panels: vec![at("items", tab()), at("ledger", tab())],
         };
         screen(env, "entity", &view)
     }));

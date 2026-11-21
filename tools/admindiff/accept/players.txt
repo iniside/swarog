@@ -8,8 +8,6 @@ frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#1089c4 | not 
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#5694ed | not ported yet: the Economy section arrives with the wallet port
 frame div.app > aside.sidebar > nav.nav: mock-only div.nav-section#ba7b3e | declared deviation D3: no Design-system nav section
 frame div.app > header.topbar: portal-only button.top-btn#255bc4 | template choice: shell.html.tmpl puts the theme toggle in the topbar; the mockup's sits in the devbar, which D3 drops
-frame div.app > main.main > div.page: mock-only [panel "#1"] | template choice: the portal wraps the panel in div.stack (see the div.stack entry), so at the frame level the panel placeholder is mock-only; the panel itself matches inside the wrapper
-frame div.app > main.main > div.page: portal-only div.stack#e693e4 | template choice: shell.html.tmpl wraps a Layout::Stack page in a .stack; the mockup puts the panel directly in .page
 panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-toolbar: mock-only span.input-icon#1fe724 | template choice: the table macro's search box is the form.input-icon of the next entry
 panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-toolbar: portal-only form.input-icon#958dce | template choice: the table macro's search box is an hx-get form; .input-icon is display:inline-flex, so it renders as the span does
 panel "#1" section.panel.players-table > div.flush.panel-body > div.tbl-toolbar: mock-only span.muted | contract gap: no carrier for the toolbar's right-hand "Columns:" label and its "9 of 12" column chooser (G5)

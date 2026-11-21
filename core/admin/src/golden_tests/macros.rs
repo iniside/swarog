@@ -69,6 +69,13 @@ pub(super) const MACRO_CASES: &[MacroCase] = &[
     ),
     mc(
         "primitives",
+        "panels",
+        "<div class=\"stack\"",
+        &["shell.html"],
+        &["screen_page_stack", "screen_page_grid21", "screen_entity_tab_tiles"],
+    ),
+    mc(
+        "primitives",
         "table_toolbar",
         "tbl-toolbar",
         &[],
@@ -110,7 +117,7 @@ pub(super) const MACRO_CASES: &[MacroCase] = &[
     mc("primitives", "queue_action", " danger-ghost\"", &["row_button"], &["queue_items_actions"]),
     mc("primitives", "queue", "class=\"attempts\"", &[], &["queue_items_actions"]),
     mc("primitives", "services", "class=\"svc\"", &[], &["services_one_column", "services_two_columns"]),
-    mc("primitives", "services_body", "class=\"grid g-2\"", &[], &["services_two_columns"]),
+    mc("primitives", "services_body", "class=\"grid g-2\"", &["shell.html"], &["services_two_columns"]),
     mc("primitives", "chart", "<svg class=\"chart\"", &[], &["chart_two_axes"]),
     mc("primitives", "chart_legend", "<div class=\"legend\">", &[], &["chart_two_axes"]),
     mc("primitives", "attention_rows", "<a class=\"btn sm\" href=\"", &[], &["attention_ok"]),
