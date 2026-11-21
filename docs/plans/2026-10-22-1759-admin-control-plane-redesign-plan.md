@@ -2166,6 +2166,15 @@ The ports:
   pending at 63. Rows are a module-owned row kind with `RowAction`s and no `EntityHeader`
   (O-6); the Owner column uses `Cell.label` (13e3, O-7). Before dispatch, check that
   admincheck accepts such a kind.
+  Checklist: `docs/plans/2026-11-22-step16-inventory-checklist.md` (owner decisions §8).
+    - **16a1** (G1 b): inventory's own character → player table, filled from
+      `character.created` and cleared on `character.deleted`, with its tests.
+    - **16a2**: the Inventory tab (order 40) per the checklist: keyset reader and exact
+      count, Owner/Type selects and search, `Cell.label` owner cell, disabled "Grant item"
+      tool and "Revoke item…" row action with their todo item, Purges pending at 63 via
+      `purge_backlog_body`, dead readers deleted.
+    - **16b**: the monolith and split crawls, the accept files of checklist §7, and view
+      fixes only where a crawl shows the portal drawing differently from the mockup.
 - **Step 17 — friends.** Friends tab. One a (Na1 with Na3): the tab (order 50), Purges
   pending at 64. Rows are a module-owned row kind (O-6); the user cell links
   `Link::Entity(player)` itself.

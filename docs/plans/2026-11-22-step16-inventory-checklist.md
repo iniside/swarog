@@ -118,7 +118,7 @@ Entity kind `holding` declared (`EntityKindDecl{holding, "Holding", "box"}`), no
 
 **G4. The `holding` row kind and its menu.** O-6 needs at least one `RowAction("holding")` or no `td.act` is drawn (`tbl:229-234,258`). The mock's row button has no handler (`pc:133`), so it names no item. Entity id: `<owner_type>:<owner_id>:<item_id>` (the PK, `il:72`).
 - Options: (a) one `implemented: false` item, "Revoke item…" (`trash`, danger), with a todo item; the mockup has no such item (its button has no handler, `pc:133`), so this invents a menu entry; the menu is not diffed: add `("player.inventory", "holding", "the mockup's inventory row button has no handler (pages-core.js:133)")` to `EXCLUDED_MENUS` (`pages:350-354` precedent). (b) no row action and a `contract gap` accept line for the missing `td.act`.
-- **Recommendation: (b)**, the more faithful: it adds nothing the mockup lacks. Whether O-6's wording requires a row action here is a plan-wording question for the owner.
+- ~~**Recommendation: (b)**, the more faithful: it adds nothing the mockup lacks. Whether O-6's wording requires a row action here is a plan-wording question for the owner.~~ Owner chose (a), §8.
 
 **G5. The tab's "Grant item" tool** (`pc:130`) is not named in the plan's Step 16 text (`plan:2164-2168`). **Recommendation:** draw it as a disabled `PanelTool` (copy the mockup), sharing the row item's todo entry.
 
@@ -141,6 +141,14 @@ Entity kind `holding` declared (`EntityKindDecl{holding, "Holding", "box"}`), no
 - **`player.txt`, `player.characters.txt`, `player.wallet.txt`**: one `mock-only button.tab … EXCLUDED_TABS` line (`player.characters.txt:17-18`) now pairs; expect a count-`span` difference or none.
 - **Menu files** (`players.menu.user`, `player.menu.user`, `player.characters.menu.user`, `player.wallet.menu.user`): the `menu-group#6c5cf7` line (`player.menu.user.txt:9`) is reworded to drop inventory; the "Grant item…" pair, mock enabled vs portal `div.disabled.menu-item` → `contract gap` (`implemented: false`).
 - **`index.txt`**: no line for Purges pending on a fresh fleet.
+
+## 8. Owner decisions (2026-11-22)
+
+- **G1: (b).** Inventory records character → player in its own table from `character.created` (rows removed on `character.deleted`); the tab lists player-owned and character-owned holdings. A later admin grant/revoke stays inside inventory: the row id names the owner, and the grant form takes the player's characters from this table.
+- **G4: (a).** One disabled "Revoke item…" `RowAction("holding")` plus the `EXCLUDED_MENUS` row.
+- **G5:** the disabled "Grant item" tool in the tab. G4 and G5 share one `docs/todo/inventory.md` item: an admin grant/revoke operation in `api/inventory` (none exists; only the identity-bound `grant`, `api/inventory/api/src/lib.rs:80`).
+- **G3:** "—" in Source and Acquired.
+- **G2, G6–G11:** as recommended.
 
 ## Not verified
 
