@@ -2102,7 +2102,8 @@ The ports:
   - **14a3** (Na3): the players list column (order 10), `EntityLabel{character}` (Refs seam
     **Producers**), Purges pending at 61. Depends on 14a1. It also adds the G6 `template
     choice` accept line to `tools/admindiff/accept/players.txt` (checklist line 220), copied
-    from the difference its column first produces.
+    from the difference its column first produces. Landed as 1135d9ab, 630ffe45 and 632eed06;
+    the accept line went in with the live monolith and split crawls (both clean).
   - **Owner decision before dispatch:** X7 (port template).
   - **Decisions (2026-11-21, owner: "mozemy sprobowac zrobic punkt14"; the checklist's
     proposals, taken as written):** G1 is closed by 13c (`CellKind::MonoMuted`), G4 by 13c

@@ -46,6 +46,7 @@ _None._
   which breaks the page slug on a DB blip. Companion to AUDIT-02 and
   NOTIFICATIONS-05. Source: docs/plans/2026-09-05-1921-friends-module-plan.md:596
   (2026-09-05).
+
 ### Known limits (admin-control-plane-redesign step 14a3)
 
 - [ ] **Declaring the character kind opens an empty entity page**
@@ -63,9 +64,29 @@ _None._
   more batch label readers it becomes one helper in a foundation crate.
 - [ ] **The character kind's icon is unchecked against the mockup**
   `swords` (also the summary fact's icon); nothing draws the kind's icon yet.
+- [ ] **Every purges-pending link copies core admin's Events page address**
+  `modules/characters/src/admin.rs:36-37` repeats `"core.events"`/`"events"`, private to
+  `core/admin/src/events_provider.rs:20-21`; a rename there sends every link to the "Unknown page"
+  404 and the test (`admin_tests.rs:193-213`) repeats the same strings. Ports 15-24 add six more
+  copies. Fix: the address in `core/controlplane` beside `PAGE_PARAM_SEARCH`, used by both sides.
+- [ ] **Purges-pending date and count follow the session's formatting**
+  `purges_body` (`modules/characters/src/admin.rs:194-218`) takes the first 10 chars of
+  `min(created_at)::text` (DateStyle and time-zone dependent) and prints the count without
+  thousands separators.
+- [ ] **No database test reads the purges-pending item back**
+  Nothing plants a `characters.purged_players` row and reads the item; such a test must be
+  serialised with the purge tests sharing that table.
 
 ### Known limits (admin-control-plane-redesign step 14)
 
+- [ ] **An admindiff tab-follower probe error is silent**
+  `probe_page` (`tools/admindiff/src/crawl.rs:228`) drops a failed probe without printing it, and
+  no test covers a probe error.
+- [ ] **The tab follower checks the whole page for rows, not the tab panel**
+  `lists_rows` (`tools/admindiff/src/crawl.rs:489`).
+- [ ] **Two crawl comments still say a FirstRow host always lists a row**
+  `tools/admindiff/src/crawl.rs:274` and `:569`; with the fallback (no row's tab lists a row)
+  the followed tab can be empty.
 - [ ] **`counts_by_player` has no test for duplicate or differently spelled refs**
   `modules/characters/src/admin_tests.rs`: the duplicated ref has 0 characters, so a GROUP BY
   double count would pass, and every ref is a lowercase uuid. The engine dedupes refs today

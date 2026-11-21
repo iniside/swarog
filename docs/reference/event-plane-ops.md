@@ -114,10 +114,10 @@ The operator surface instead is:
   `asyncevents_subscriptions_paused` (`core/asyncevents/src/plane_metrics.rs`),
   scoped to the process's own subscription ids;
 - `cargo run -p eventctl -- list`, which prints `paused_since` for a paused row;
-- **Purges pending**, a conditional `DashboardAttention` item (not a KPI tile) that each
-  purging module contributes from its own schema — `characters` (order 61), `wallet`
+- **Purges pending**, a conditional `DashboardAttention` item (not a KPI tile) that a
+  purging module contributes from its own schema — `characters` (order 61) does today; `wallet`
   (62), `inventory` (63), `friends` (64), `groups` (65), `storage` (66),
-  `notifications` (67) — and shows only while its sweep is behind (rows with
+  `notifications` (67) take their orders with their admin ports — and shows only while its sweep is behind (rows with
   `swept_at IS NULL`, plus the oldest pending `created_at`). It reports outstanding sweep
   work, not a paused *subscription*, and there is no cross-schema admin view: a module
   contributes it as a `controlplane` contribution at `Point::DashboardAttention`
