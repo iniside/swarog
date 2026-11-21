@@ -432,14 +432,30 @@ fn a_portal_only_row_is_hinted_from_the_portal_side() {
 }
 
 #[test]
-fn a_positional_line_has_no_hint_and_shown_adds_one_only_when_present() {
+fn a_non_repeat_unpaired_element_is_hinted_by_its_own_text_and_the_key_is_unchanged() {
+    let o = outcome(r#"<div class="x"><span>Lore</span></div>"#, r#"<div class="x"></div>"#);
+    let (line, hint) = only(&o);
+    assert!(line.ends_with(": mock-only span"), "{line}");
+    assert!(!line.contains("Lore"), "the hint is not in the key: {line}");
+    assert_eq!(hint.as_deref(), Some("Lore"));
+    assert!(o.shown(&line).ends_with(" (\"Lore\")"));
+    let (plain, _) = only(&outcome(r#"<div class="x"><span>Other</span></div>"#, r#"<div class="x"></div>"#));
+    assert_eq!(plain, line, "the key does not depend on the text");
+}
+
+#[test]
+fn shown_adds_a_hint_only_when_the_unpaired_element_has_text() {
     let note = r#"<p class="note"><span class="badge">new</span><b>Text</b></p>"#;
     let o = outcome(&format!(r#"<div class="x"><span></span>{note}</div>"#), r#"<div class="x"><span></span></div>"#);
     let (line, hint) = only(&o);
     assert_eq!(line, format!("frame div.app > div.x: mock-only {}", label_of(note)));
-    assert_eq!(hint, None, "only a repeat item is hinted");
-    assert!(o.hints.is_empty());
-    assert_eq!(o.shown(&line), line);
+    assert_eq!(hint.as_deref(), Some("new"), "every unpaired element is hinted");
+    assert_eq!(o.shown(&line), format!("{line} (\"new\")"));
+
+    let bare = outcome(r#"<div class="x"><span></span><i></i></div>"#, r#"<div class="x"><span></span></div>"#);
+    let (line, hint) = only(&bare);
+    assert_eq!(hint, None, "an element with no text has no hint");
+    assert_eq!(bare.shown(&line), line);
 
     let hinted = outcome(&tbody(&format!("{ROW}{RUN_ROW}")), &tbody(ROW));
     let (line, _) = only(&hinted);

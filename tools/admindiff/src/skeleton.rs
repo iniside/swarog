@@ -184,8 +184,8 @@ pub struct Skel {
     pub children: Vec<Skel>,
     /// The head and children in one string: equal canons are equal skeletons.
     pub canon: String,
-    /// A repeat item's [`hint`]; never part of `canon`, so it names a shape without
-    /// splitting it.
+    /// An element's [`hint`]; never part of `canon`, so it names a shape without
+    /// splitting it. Only a diff line naming the element as unpaired prints it.
     pub hint: Option<String>,
 }
 
@@ -326,7 +326,7 @@ fn build(e: &Element, text: bool, mut cut: Option<&mut Cutter>) -> Skel {
             Node::Element(c) => match repeat_of(e, c) {
                 Some(r) => {
                     let shape = match REPEAT[r].shape {
-                        Shape::Full => Skel { hint: hint(c), ..build(c, text, cut.as_deref_mut()) },
+                        Shape::Full => build(c, text, cut.as_deref_mut()),
                         Shape::Tag => Skel::new(c.tag.clone(), Vec::new()),
                     };
                     let slot = match groups.get(&r) {
@@ -352,14 +352,15 @@ fn build(e: &Element, text: bool, mut cut: Option<&mut Cutter>) -> Skel {
     for (r, (slot, shapes)) in groups {
         children[slot] = Skel::group(REPEAT[r].item, shapes);
     }
-    Skel::new(head(e), children)
+    Skel { hint: hint(e), ..Skel::new(head(e), children) }
 }
 
 /// The longest [`hint`], in characters.
 const HINT_CHARS: usize = 40;
 
-/// What tells one repeat item from its siblings to a reader: the text of its first
-/// `.badge`, then of its first child element with text, as `badge · cell`. A `"` becomes
+/// What tells one element from its siblings to a reader: the text of its first
+/// `.badge`, then of its first child element with text, as `badge · cell`; an element
+/// with neither, its own text. A `"` becomes
 /// `'`, so the printed ` ("…")` suffix never holds one.
 fn hint(e: &Element) -> Option<String> {
     let badge = e.find(&|x| x.has_class("badge")).map(Element::text).filter(|t| !t.is_empty());
@@ -370,7 +371,7 @@ fn hint(e: &Element) -> Option<String> {
     let text = match (badge, cell) {
         (Some(badge), Some(cell)) if badge != cell => format!("{badge} · {cell}"),
         (Some(text), _) | (None, Some(text)) => text,
-        (None, None) => return None,
+        (None, None) => Some(e.text()).filter(|t| !t.is_empty())?,
     };
     let mut hint: String = text.replace('"', "'").chars().take(HINT_CHARS).collect();
     if text.chars().count() > HINT_CHARS {
@@ -379,7 +380,7 @@ fn hint(e: &Element) -> Option<String> {
     Some(hint)
 }
 
-/// The differences found so far, and the hint of each line naming a repeat item.
+/// The differences found so far, and the hint of each line naming an unpaired element.
 #[derive(Default)]
 struct Lines {
     lines: BTreeSet<String>,
@@ -396,7 +397,7 @@ impl Lines {
 pub struct Outcome {
     /// The difference keys an accept file matches.
     pub lines: BTreeSet<String>,
-    /// Line → the [`hint`] of the repeat item it names as mock-only or portal-only.
+    /// Line → the [`hint`] of the unpaired element it names as mock-only or portal-only.
     pub hints: BTreeMap<String, String>,
     pub matched_panels: usize,
     pub matched_tiles: usize,

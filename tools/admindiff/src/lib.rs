@@ -114,9 +114,9 @@ USAGE:
             list no compared render uses, with no reason, listed twice or malformed is stale. A
             .tab whose body assigns no PAGES.tab and no NON_TAB_KEYS key fails, as does a .tab
             with no onclick and a render (the mount, a timer it schedules, a re-render, or a
-            timer one schedules) that assigns PAGES.tab or a NON_TAB_KEYS key. A mock-only or portal-only repeat
-            item (a table row, list item, ...) ends in (\"<hint>\"): its first badge's text and
-            its first cell's, as \"badge · cell\". The hint is not part of the difference: an accept entry
+            timer one schedules) that assigns PAGES.tab or a NON_TAB_KEYS key. A mock-only or portal-only
+            element (a table row, list item, a span, ...) ends in (\"<hint>\"): its first badge's text and
+            its first cell's, as \"badge · cell\", else its own text. The hint is not part of the difference: an accept entry
             may keep or drop it and matches either way
 
   --base-url <url>   portal origin (default http://localhost:8080; split: http://localhost:8085)
