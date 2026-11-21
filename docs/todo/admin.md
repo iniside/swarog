@@ -47,6 +47,12 @@ _None._
 
 ### Known limits (admin-control-plane-redesign step 15)
 
+- [ ] **The Money JSON has one decoder but two encoders**
+  `controlplane::decode_money` (`core/controlplane/src/lib.rs`) is the one parser, but both
+  `encode_field` there and `posted_raw` (`core/admin/src/engine/actions.rs:452`) build the
+  `{"amount","currency"}` object with their own `json!`; the round-trip test covers only
+  `encode_field`, so a Money shape change can leave `posted_raw` behind. `posted_raw` calling
+  `encode_field` with `FieldValue::Money` ends it.
 - [ ] **Tiles whose labels differ are never compared inside**
   `diff_pages` (`tools/admindiff/src/skeleton.rs:415-439`) pairs a mock tile with a portal
   tile only by kind and key (the `kpi-label` text). A wallet tile named after a portal

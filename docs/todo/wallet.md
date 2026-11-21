@@ -44,6 +44,9 @@ _None._
   caller's `admin:` key lists as an operator movement. The Starter option matches reason text a
   wire caller can also write. Reserving `admin:` in the contract and filtering starter grants by
   the `starter:` key end it.
+- [ ] **No test pins the wallet Money shape error text**
+  The unknown-key case in `modules/wallet/src/admin_tests.rs` asserts only `is_err()`, so a
+  change to "Amount must name an amount and a currency" in `parse_amount` passes unnoticed.
 
 - [ ] **No test sends an uppercase or unhyphenated player uuid to the existence check**
   `Service::player_exists` canonicalises the id (`modules/wallet/src/service.rs:165-171`)
