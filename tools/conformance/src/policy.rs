@@ -75,7 +75,7 @@ const CONTROL_PLANE_INVOKE_ITEM_RATIONALE: &str =
     concat!(control_plane_invoke_rationale!(), control_plane_item_bound!());
 const CONTROL_PLANE_INVOKE_REQUEST_ID_RATIONALE: &str = concat!(
     control_plane_invoke_rationale!(),
-    "; mail persists it as the suffix of a test-send idempotency key, which service::is_test_key bounds at the key column's cap before any statement (the \"mail admin send-test key\" CapCase)"
+    "; mail persists it as the suffix of a test-send idempotency key, which service::is_test_key bounds at the key column's cap before any statement (the \"mail admin send-test key\" CapCase); wallet persists it as the suffix of its admin:<request id> ledger key, which validate_movement bounds at walletapi::MAX_IDEMPOTENCY_KEY_BYTES before any statement (the \"wallet admin grant key\" CapCase)"
 );
 const CONTROL_PLANE_READ_RATIONALE: &str = control_plane_read_rationale!();
 const CONTROL_PLANE_PANEL_REFS_RATIONALE: &str = concat!(
