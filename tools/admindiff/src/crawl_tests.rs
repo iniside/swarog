@@ -156,20 +156,65 @@ fn disabled_actions(host: &str) -> impl Iterator<Item = &'static str> + '_ {
     })
 }
 
-/// Row menu action `action` (`<module>/<action>`) drawn disabled with refusal `kind`, as the
-/// portal's `menu_item` draws it.
+/// Row menu action `action` (`<module>/<action>`) drawn disabled with refusal `kind`: the
+/// portal's disabled `menu_item` in [`MENU_BODY`] (`economy/grant`, `denied`) refused as that.
 fn disabled_item(action: &str, kind: &str) -> String {
-    format!(
-        r#"<div class="menu-item disabled danger" title="x" data-refused-action="{action}" data-refusal="{kind}"><svg class="i " viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 14"/></svg><span>{action}</span><span class="hint">x</span></div>"#
-    )
+    refused_as(golden_element(MENU_BODY, r#"data-refused-action="economy/grant""#), ("economy/grant", "denied"), action, kind)
 }
 
-/// Page head action `action` (`<module>/<action>`) drawn disabled with refusal `kind`, as the
-/// portal's `action_button` draws it.
+/// Page head action `action` (`<module>/<action>`) drawn disabled with refusal `kind`: the
+/// portal's disabled `action_button` in [`TOOL_BODY`] (`golden/pause`, `not-implemented`)
+/// refused as that.
 fn disabled_button(action: &str, kind: &str) -> String {
-    format!(
-        r#"<button type="button" class="btn sm danger-ghost" disabled title="x" data-refused-action="{action}" data-refusal="{kind}"><svg class="i " viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 14"/></svg> {action}</button>"#
-    )
+    let from = ("golden/pause", "not-implemented");
+    refused_as(golden_element(TOOL_BODY, r#"data-refused-action="golden/pause""#), from, action, kind)
+}
+
+/// The disabled `control`, drawn refusing `from` (its action and refusal kind), refusing
+/// `action` as `kind` instead.
+fn refused_as(control: &str, from: (&str, &str), action: &str, kind: &str) -> String {
+    let (was_action, was_kind) = (format!(r#"data-refused-action="{}""#, from.0), format!(r#"data-refusal="{}""#, from.1));
+    assert!(control.contains(&was_action) && control.contains(&was_kind), "the control refuses {from:?}: {control}");
+    control
+        .replacen(&was_action, &format!(r#"data-refused-action="{action}""#), 1)
+        .replacen(&was_kind, &format!(r#"data-refusal="{kind}""#), 1)
+}
+
+/// The element of `html` whose opening tag holds `marker`, the first if several do, to its
+/// matching close tag.
+fn golden_element<'a>(html: &'a str, marker: &str) -> &'a str {
+    let at = html.find(marker).unwrap_or_else(|| panic!("the golden draws {marker}"));
+    let start = html[..=at].rfind('<').expect("the marker is inside a tag");
+    let tag: String = html[start + 1..].chars().take_while(char::is_ascii_alphanumeric).collect();
+    let (open, close) = (format!("<{tag}"), format!("</{tag}>"));
+    let opens_here = |i: usize| html[i + open.len()..].starts_with(|c: char| c == '>' || c.is_whitespace());
+    let (mut depth, mut from) = (0usize, start);
+    loop {
+        let next_close = from + html[from..].find(&close).unwrap_or_else(|| panic!("<{tag}> closes"));
+        let next_open = html[from..next_close].match_indices(&open).map(|(i, _)| from + i).find(|i| opens_here(*i));
+        match next_open {
+            Some(o) => {
+                depth += 1;
+                from = o + open.len();
+            }
+            None => {
+                depth -= 1;
+                from = next_close + close.len();
+                if depth == 0 {
+                    return &html[start..from];
+                }
+            }
+        }
+    }
+}
+
+/// `html` with the content of the element `golden_element` finds by `marker` replaced by
+/// `inner`.
+fn with_inner(html: &str, marker: &str, inner: &str) -> String {
+    let element = golden_element(html, marker);
+    let open = &element[..=element.find('>').expect("the element opens")];
+    let close = &element[element.rfind("</").expect("the element closes")..];
+    html.replacen(element, &format!("{open}{inner}{close}"), 1)
 }
 
 /// The menu `body` with `extra` added at the end of its `.menu` root.
@@ -226,6 +271,10 @@ fn modal_button(url: &str) -> String {
 /// The portal's answer to an action that needs no modal: its result toast golden.
 const MODAL_TOAST: &str = include_str!("../../../core/admin/src/testdata/modal_result_toast.html");
 
+/// A panel golden whose head draws a not implemented tool disabled: the source of
+/// [`disabled_button`].
+const TOOL_BODY: &str = include_str!("../../../core/admin/src/testdata/queue_panel_tool.html");
+
 /// The menu body the healthy site serves at every [`menu_url`]: the portal's own row menu
 /// golden, each module up.
 const MENU_BODY: &str = include_str!("../../../core/admin/src/testdata/menu_row_actions.html");
@@ -236,9 +285,12 @@ const MENU_DOWN: &str = include_str!("../../../core/admin/src/testdata/menu_row_
 /// The same row menu golden while a manifest source has never answered.
 const MENU_INCOMPLETE: &str = include_str!("../../../core/admin/src/testdata/menu_row_actions_incomplete.html");
 
-/// A dashboard golden whose fleet is complete, and the same while a manifest source has never
-/// answered: the healthy site's pages carry the former's `.app` root.
-const PAGE_OK: &str = include_str!("../../../core/admin/src/testdata/screen_dashboard_ranges.html");
+/// The portal's whole page golden, document head, popovers and palette included: every page of
+/// the healthy site is built from it ([`shell`]).
+const SHELL_PAGE: &str = include_str!("../../../core/admin/src/testdata/screen_shell_page.html");
+
+/// A dashboard golden while a manifest source has never answered: its `.app` root is the
+/// error-state root.
 const PAGE_INCOMPLETE: &str = include_str!("../../../core/admin/src/testdata/screen_dashboard_incomplete.html");
 
 /// The opening tag of the root element `golden` starts with.
@@ -325,31 +377,25 @@ fn nav(links: &[&str]) -> String {
     links.iter().map(|href| format!(r#"<a class="nav-item" href="{href}">n</a>"#)).collect()
 }
 
-/// The shell's search palette, as `shell.html.tmpl` draws it on every page: one hidden
-/// `.scrim[data-palette]`.
-const PALETTE_SCRIM: &str = r#"<div class="scrim" data-palette hidden><div class="palette"></div></div>"#;
+/// The shell's search palette in [`SHELL_PAGE`]: the one hidden `.scrim[data-palette]`, its
+/// input and its list.
+fn palette_scrim() -> &'static str {
+    golden_element(SHELL_PAGE, r#"class="scrim" data-palette hidden"#)
+}
 
-/// The shell's palette opener, as `shell.html.tmpl` draws it in the topbar on every page.
-const PALETTE_OPENER: &str = r#"<button type="button" class="search-trigger" data-action="palette"></button>"#;
+/// The shell's palette opener in [`SHELL_PAGE`]'s topbar.
+fn palette_opener() -> &'static str {
+    golden_element(SHELL_PAGE, r#"data-action="palette""#)
+}
 
-/// A portal page as `shell.html.tmpl` lays it out: inside the `.app` root the nav, the topbar
-/// with the [`PALETTE_OPENER`], and the page head with its title `h1` and its `.page-actions`
-/// holding `head`, then `content`; after the root closes, the shell's [`PALETTE_SCRIM`].
+/// A portal page: [`SHELL_PAGE`] with `nav_links` in its nav, `h1` as its title, `head` in its
+/// `.page-actions` and `content` after its page head.
 fn shell(nav_links: &str, h1: &str, head: &str, content: &str) -> String {
-    format!(
-        concat!(
-            r#"<!DOCTYPE html><html><body>{app}<aside class="sidebar"><nav class="nav">{nav_links}</nav></aside>"#,
-            r#"<header class="topbar">{opener}</header><main class="main"><div class="page"><div class="page-head"><h1>{h1}</h1><div class="page-actions">{head}</div></div>{content}</div></main>"#,
-            r#"</div>{palette}</body></html>"#,
-        ),
-        opener = PALETTE_OPENER,
-        palette = PALETTE_SCRIM,
-        app = root_tag(PAGE_OK),
-        nav_links = nav_links,
-        h1 = h1,
-        head = head,
-        content = content
-    )
+    let page = with_inner(SHELL_PAGE, r#"<nav class="nav">"#, nav_links);
+    let page = with_inner(&page, "<h1>", h1);
+    let page = with_inner(&page, r#"<div class="page-actions">"#, head);
+    let page_head = golden_element(&page, r#"<div class="page-head">"#);
+    page.replacen(page_head, &format!("{page_head}{content}"), 1)
 }
 
 impl Site {
@@ -955,8 +1001,8 @@ async fn an_error_state_page_root_fails_unless_errors_are_allowed() {
     let target = other_mapped();
     let healthy = Site::healthy();
     let html = healthy.routes.get(target.route).expect("the healthy site serves the page").body.clone();
-    let root = root_tag(PAGE_OK);
-    assert_eq!(root, r#"<div class="app" data-state="ok">"#, "the ok golden's root");
+    let root = root_tag(golden_element(SHELL_PAGE, r#"<div class="app""#));
+    assert_eq!(root, r#"<div class="app" data-state="ok">"#, "the shell golden's root");
     assert_eq!(root_tag(PAGE_INCOMPLETE), r#"<div class="app" data-state="error">"#, "the incomplete golden's root");
     assert!(html.contains(root), "the healthy page carries the ok root: {html}");
     let with_root = |r: &str| healthy.clone().with(target.route, ok(html.replacen(root, r, 1)));
@@ -1105,7 +1151,7 @@ async fn a_non_2xx_page_fails() {
     crawl(site, false).await.assert_failed("a page only the nav links answering 500");
 }
 
-/// `site`'s page at `route` with its `drawn` (its [`PALETTE_SCRIM`] or [`PALETTE_OPENER`])
+/// `site`'s page at `route` with its `drawn` (its [`palette_scrim`] or [`palette_opener`])
 /// replaced by `with`.
 fn replace_shell(site: &Site, route: &str, drawn: &str, with: &str) -> Response {
     let html = site.routes.get(route).expect("the site serves the page").body.clone();
@@ -1113,12 +1159,20 @@ fn replace_shell(site: &Site, route: &str, drawn: &str, with: &str) -> Response 
     ok(html.replacen(drawn, with, 1))
 }
 
+/// `text` with its one `from` replaced by `to`.
+fn swapped(text: &str, from: &str, to: &str) -> String {
+    assert_eq!(text.matches(from).count(), 1, "{text} holds one {from}");
+    text.replacen(from, to, 1)
+}
+
 /// `crawl_page`'s palette check: a mapped page, a page only the nav links or an entity page
 /// whose `[data-palette]` elements are none, two, one not hidden, one not a `.scrim` (the
-/// element `admin.js` opens) or a hidden `.scrim` behind a stray one, or whose
-/// `[data-action=palette]` openers are none or two, and a mapped page whose fragment adds a
-/// second palette or opener, fails naming that page and nothing else; the healthy site, each
-/// of whose pages holds one hidden `.scrim` palette and one opener, crawls clean.
+/// element `admin.js` opens) or a hidden `.scrim` behind a stray one, whose palette holds no
+/// `[data-palette-input]`, two, or no `[data-palette-list]` or two (`admin.js` reads one of
+/// each), or whose `[data-action=palette]` openers are none or two, and a mapped page whose
+/// fragment adds a second palette or opener, fails naming that page and nothing else; the
+/// healthy site, each of whose pages holds the portal's own palette and opener, crawls clean,
+/// and so does a page drawing a palette input and list outside the palette.
 #[tokio::test]
 async fn every_fetched_page_holds_one_hidden_palette() {
     crawl(Site::healthy(), false).await.assert_clean("one hidden palette and one opener on every page");
@@ -1127,39 +1181,55 @@ async fn every_fetched_page_holds_one_hidden_palette() {
     let extra = ("p-extra-things".to_string(), EXTRA_ROUTE.to_string());
     let mapped_at = (mapped.page.to_string(), mapped.route.to_string());
     let entity_at = (entity.id(), entry_route(&entity));
-    let shown = r#"<div class="scrim" data-palette><div class="palette"></div></div>"#;
-    let unscrimmed = r#"<div class="overlay" data-palette hidden><div class="palette"></div></div>"#;
-    let stray = format!(r#"<div data-palette></div>{PALETTE_SCRIM}"#);
-    let twice = format!("{PALETTE_SCRIM}{PALETTE_SCRIM}");
+    let (scrim, opener) = (palette_scrim(), palette_opener());
+    let shown = swapped(scrim, "data-palette hidden", "data-palette");
+    let unscrimmed = swapped(scrim, r#"class="scrim""#, r#"class="overlay""#);
+    let stray = format!(r#"<div data-palette></div>{scrim}"#);
+    let twice = format!("{scrim}{scrim}");
+    let (input, list) = (" data-palette-input", " data-palette-list");
+    let no_input = swapped(scrim, input, "");
+    let two_inputs = swapped(scrim, list, &format!("{list}{input}"));
+    let no_list = swapped(scrim, list, "");
+    let two_lists = swapped(scrim, input, &format!("{input}{list}"));
     let palette_held = |n: usize, scrims: usize| {
         format!("{n} [data-palette], {scrims} of them a hidden .scrim; the shell draws exactly one, a hidden .scrim")
     };
-    let opener_held = |n: usize| format!("{n} [data-action=palette] openers; the shell draws exactly one");
-    let opened_twice = format!("{PALETTE_OPENER}{PALETTE_OPENER}");
+    let palette_holds = |inputs: usize, lists: usize| {
+        format!("palette holds {inputs} [data-palette-input] and {lists} [data-palette-list]; admin.js reads exactly one of each")
+    };
+    let opener_held = |n: usize| format!("page holds {n} [data-action=palette] openers; the shell draws exactly one");
+    let opened_twice = format!("{opener}{opener}");
     let cases = [
-        (&mapped_at, PALETTE_SCRIM, "", palette_held(0, 0)),
-        (&extra, PALETTE_SCRIM, twice.as_str(), palette_held(2, 2)),
-        (&entity_at, PALETTE_SCRIM, shown, palette_held(1, 0)),
-        (&mapped_at, PALETTE_SCRIM, unscrimmed, palette_held(1, 0)),
-        (&extra, PALETTE_SCRIM, stray.as_str(), palette_held(2, 1)),
-        (&entity_at, PALETTE_OPENER, "", opener_held(0)),
-        (&mapped_at, PALETTE_OPENER, opened_twice.as_str(), opener_held(2)),
+        (&mapped_at, scrim, "", format!("page holds {}", palette_held(0, 0))),
+        (&extra, scrim, twice.as_str(), format!("page holds {}", palette_held(2, 2))),
+        (&entity_at, scrim, shown.as_str(), format!("page holds {}", palette_held(1, 0))),
+        (&mapped_at, scrim, unscrimmed.as_str(), format!("page holds {}", palette_held(1, 0))),
+        (&extra, scrim, stray.as_str(), format!("page holds {}", palette_held(2, 1))),
+        (&mapped_at, scrim, no_input.as_str(), palette_holds(0, 1)),
+        (&entity_at, scrim, two_inputs.as_str(), palette_holds(2, 1)),
+        (&extra, scrim, no_list.as_str(), palette_holds(1, 0)),
+        (&mapped_at, scrim, two_lists.as_str(), palette_holds(1, 2)),
+        (&entity_at, opener, "", opener_held(0)),
+        (&mapped_at, opener, opened_twice.as_str(), opener_held(2)),
     ];
     for ((page, route), drawn, with, held) in cases {
         let site = Site::healthy();
         let site = site.clone().with(route, replace_shell(&site, route, drawn, with));
         let c = crawl(site, false).await;
-        let want = format!("{page}: the page holds {held}");
+        let want = format!("{page}: the {held}");
         c.assert_failed_with(&format!("{page} {held}"), &want);
         assert_eq!(c.failures, vec![want], "the palette is the only defect");
     }
-    for (added, held) in [(PALETTE_SCRIM, palette_held(2, 2)), (PALETTE_OPENER, opener_held(2))] {
+    for (added, held) in [(scrim, format!("page holds {}", palette_held(2, 2))), (opener, opener_held(2))] {
         let site = Site::healthy().with(&mapped.slot, ok(other_fragment(Some("ok"), added)));
         let c = crawl(site, false).await;
-        let want = format!("{}: the page holds {held}", mapped.page);
+        let want = format!("{}: the {held}", mapped.page);
         c.assert_failed_with(&format!("a fragment adds {added}"), &want);
         assert_eq!(c.failures, vec![want], "the palette is the only defect");
     }
+    let outside = r#"<input data-palette-input><div data-palette-list></div>"#;
+    let site = Site::healthy().with(&mapped.slot, ok(other_fragment(Some("ok"), outside)));
+    crawl(site, false).await.assert_clean("a palette input and list outside the palette count for nothing");
 }
 
 /// The players page's first `tr.clickable` is followed: its escaped `data-href` is fetched as
@@ -1846,31 +1916,51 @@ async fn a_disabled_claim_holds_on_a_not_implemented_control_of_its_action() {
 }
 
 /// A `Disabled` claim holds only for a control refused as not implemented: the players menu
-/// drawing delete-account disabled for any other reason, or with no refusal kind, fails the
-/// claim naming the host, the action and the kind, alone or beside a not implemented control of
-/// it; a not implemented control of another action holds no claim.
+/// drawing delete-account, a `.menu-item.disabled`, and the player page head drawing
+/// suspend-header, a `button[disabled]`, disabled for any other reason, or with no refusal
+/// kind, fail the claim naming the host, the action and the kind, alone or beside a not
+/// implemented control of it; a not implemented control of another action holds no claim.
 #[tokio::test]
 async fn a_disabled_claim_fails_on_a_control_refused_for_another_reason() {
     let healthy = Site::healthy();
-    let menu = menu_url("player", "players");
-    let action = "accounts/delete-account";
-    let item = disabled_item(action, "not-implemented");
-    let body = without(&healthy, &menu, &item).body;
-    let claim = "EXCLUDED_MOCK_MODALS players.menu.user PAGES.deleteAccount says the portal draws accounts/delete-account disabled as not-implemented";
-    let missing = format!("{claim}, but players.menu.user draws no disabled control of it refused so");
-    for kind in ["denied", "read-only", "module-down", ""] {
-        let other = format!("{claim}, but players.menu.user draws it disabled as {kind:?}");
-        let c = crawl(healthy.clone().with(&menu, ok(in_menu(&body, &disabled_item(action, kind)))), false).await;
-        c.assert_failed_with(kind, &other);
-        assert!(c.failures.iter().any(|f| f == &missing), "{kind}: {:#?}", c.failures);
-        let both = in_menu(&body, &format!("{item}{}", disabled_item(action, kind)));
-        let c = crawl(healthy.clone().with(&menu, ok(both)), false).await;
-        c.assert_failed_with(&format!("{kind} beside not-implemented"), &other);
-        assert!(!c.failures.iter().any(|f| f == &missing), "{kind}: {:#?}", c.failures);
+    let hosts: [(String, &str, &str, fn(&str, &str) -> String); 2] = [
+        (menu_url("player", "players"), "players.menu.user", "deleteAccount", disabled_item),
+        (follower_route("player"), "player", "suspend", disabled_button),
+    ];
+    for (route, host, opener, control) in hosts {
+        let action = if host == "player" { "accounts/suspend-header" } else { "accounts/delete-account" };
+        let refused = control(action, "not-implemented");
+        let html = healthy.routes.get(&route).expect("the site serves the host").body.clone();
+        assert_eq!(html.matches(&refused).count(), 1, "{host} draws {action} not implemented once: {html}");
+        let drawn = |with: &str| healthy.clone().with(&route, ok(html.replacen(&refused, with, 1)));
+        let claim = format!("EXCLUDED_MOCK_MODALS {host} PAGES.{opener} says the portal draws {action} disabled as not-implemented");
+        let missing = format!("{claim}, but {host} draws no disabled control of it refused so");
+        for kind in ["denied", "read-only", "module-down", ""] {
+            let other = format!("{claim}, but {host} draws it disabled as {kind:?}");
+            let c = crawl(drawn(&control(action, kind)), false).await;
+            c.assert_failed_with(&format!("{host} {kind}"), &other);
+            assert!(c.failures.iter().any(|f| f == &missing), "{host} {kind}: {:#?}", c.failures);
+            let c = crawl(drawn(&format!("{refused}{}", control(action, kind))), false).await;
+            c.assert_failed_with(&format!("{host} {kind} beside not-implemented"), &other);
+            assert!(!c.failures.iter().any(|f| f == &missing), "{host} {kind}: {:#?}", c.failures);
+        }
+        let elsewhere = control("accounts/delete-other", "not-implemented");
+        crawl(drawn(&elsewhere), false).await.assert_failed_with(&format!("{host}: another action's control"), &missing);
     }
-    let elsewhere = disabled_item("accounts/delete-other", "not-implemented");
-    let c = crawl(healthy.clone().with(&menu, ok(in_menu(&body, &elsewhere))), false).await;
-    c.assert_failed_with("another action's control", &missing);
+}
+
+/// `refusals_of` on the portal's own goldens: the row menu's `economy/grant` refused to the
+/// role, the same menu with economy down refusing both its grant items as `module-down`, and
+/// a panel tool `button[disabled]` refused as not implemented; an action drawn enabled, or not
+/// drawn, has no refusal.
+#[test]
+fn refusals_of_reads_the_portals_disabled_controls() {
+    let doc = |golden: &str| crate::html::parse(golden).expect("the golden parses");
+    assert_eq!(super::refusals_of(&doc(MENU_BODY), "economy/grant"), ["denied"]);
+    assert_eq!(super::refusals_of(&doc(MENU_DOWN), "economy/grant"), ["module-down", "module-down"]);
+    assert_eq!(super::refusals_of(&doc(TOOL_BODY), "golden/pause"), ["not-implemented"]);
+    assert!(super::refusals_of(&doc(MENU_BODY), "players/kick").is_empty(), "kick is drawn enabled");
+    assert!(super::refusals_of(&doc(MENU_BODY), "golden/pause").is_empty(), "the menu draws no pause");
 }
 
 /// An `Action` claim declares the action it names on its host: drawn there, it crawls clean

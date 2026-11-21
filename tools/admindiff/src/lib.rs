@@ -73,8 +73,9 @@ USAGE:
             page, tab or menu target; a claim whose host it did
             not fetch is printed as an UNCHECKED EXCLUDED_MOCK_MODALS <host> <opener> line. It fails, too, on a fetched page, its slots loaded, whose
             [data-palette] elements are other than one hidden .scrim (the shell's search
-            palette, which admin.js opens) or that draws other than one [data-action=palette]
-            opener of it
+            palette, which admin.js opens), whose palette holds other than one
+            [data-palette-input] and one [data-palette-list], or that draws other than one
+            [data-action=palette] opener of it
   mock      render the mockup target through node into target/admindiff/mock/<target>.html; a
             modal target, hosted by a page, a tab or a menu, is the .scrim its page map opener
             PAGES.<opener>(<args>) appends; a

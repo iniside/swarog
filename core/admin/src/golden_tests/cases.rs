@@ -24,6 +24,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
                     seen: render::seen::Record::new(),
                     refs: case.body.as_ref().map(|b| collected(&b.primitive)).unwrap_or_default(),
                     asked: render::asked::Asked::new(),
+                    refused: render::refused::Refused::new(),
                 }
             })
         };
@@ -1097,6 +1098,22 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         };
         screen(env, "dashboard", &dashboard)
     }));
+    // The whole page, uncut: the document head, the topbar's palette opener, the popovers and
+    // the palette scrim. `tools/admindiff`'s crawl tests build every page of their fake portal
+    // from it.
+    push!(plain("screen_shell_page", {
+        let page = PageView {
+            shell: shell_view("Golden page"),
+            module: MODULE.to_string(),
+            title: "Golden page".to_string(),
+            subtitle: String::new(),
+            head_actions: Vec::new(),
+            tiles: Vec::new(),
+            rows: Vec::new(),
+            missing: Vec::new(),
+        };
+        render::screen_page(env, "page", &page)
+    }));
     let page_point = || Point::Page("overview".to_string());
     for (name, layout) in [
         ("screen_page_stack", Layout::Stack(strings(&["a", "b"]))),
@@ -1213,13 +1230,14 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
             let raw = r.result.unwrap_or_else(|e| panic!("golden case {} failed to render: {e:#}", r.name));
             Case {
                 name: r.name,
-                golden: golden_form(r.name, &raw),
+                golden: golden_form(&raw),
                 raw,
                 primitive: r.primitive,
                 state: r.state,
                 seen: r.seen,
                 refs: r.refs,
                 asked: r.asked,
+                refused: r.refused,
             }
         })
         .collect()

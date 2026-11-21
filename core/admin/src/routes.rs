@@ -204,7 +204,11 @@ pub(crate) fn action_item(
     let url = action_url(module, &decl.id);
     let (enabled, hint, refusal) = match actions::admit(operator, manifest, decl) {
         Ok(()) => (true, None, None),
-        Err(refusal) => (false, Some(refusal.hint()), Some(refusal.kind())),
+        Err(refusal) => {
+            let hint = refusal.hint();
+            render::refused::record(&hint);
+            (false, Some(hint), Some(refusal.kind()))
+        }
     };
     let mut vals = BTreeMap::new();
     if !csrf.is_empty() {

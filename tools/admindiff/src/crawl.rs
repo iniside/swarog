@@ -34,10 +34,12 @@
 //! `error` fails always. A slot fragment's `data-state` must be a panel state: `ok`, `empty`,
 //! `readonly` and `denied` pass, `error` and `stale` (a failed provider call) fail unless
 //! `--allow-errors`, and anything else fails always. Every fetched page, assembled, holds exactly
-//! one `[data-palette]` element, a hidden `.scrim`, and exactly one `[data-action=palette]`
-//! opener: the shell's palette, which `admin.js` opens as the first `[data-palette]` and the
-//! mockup's search opener ([`crate::pages::PALETTE_ONCLICK`]) draws on every host; a page holding
-//! none or several of either, or a `[data-palette]` that is shown or no `.scrim`, fails. Only a
+//! one `[data-palette]` element, a hidden `.scrim` holding exactly one `[data-palette-input]` and
+//! one `[data-palette-list]`, and exactly one `[data-action=palette]` opener: the shell's
+//! palette, which `admin.js` opens as the first `[data-palette]` and reads both of unguarded,
+//! and the mockup's search opener ([`crate::pages::PALETTE_ONCLICK`]) draws on every host; a page
+//! holding none or several of either, a `[data-palette]` that is shown or no `.scrim`, or a
+//! palette without its one input and one list, fails. Only a
 //! crawl with no failure and without `--allow-errors` writes [`CLEAN_MARKER`]: a run with
 //! `--allow-errors` is a preview whose output can be read but never diffed, so a page drawn
 //! while a provider was down can never make an accept file. `--allow-empty` only skips a
@@ -730,7 +732,8 @@ fn root_state(cfg: &Config, root: &Element, what: &str) -> Result<()> {
 
 /// Fetches one page and its slots round by round; returns the fragment count and the
 /// assembled page. A page root or fragment state that fails, or an assembled page whose
-/// `[data-palette]` elements are other than one hidden `.scrim` or that holds other than one
+/// `[data-palette]` elements are other than one hidden `.scrim`, whose palette holds other than
+/// one `[data-palette-input]` and one `[data-palette-list]`, or that holds other than one
 /// `[data-action=palette]` opener, is pushed to `failures`.
 async fn crawl_page(
     client: &Client,
@@ -806,6 +809,19 @@ async fn crawl_page(
             "{page}: the page holds {} [data-palette], {scrims} of them a hidden .scrim; the shell draws exactly one, a hidden .scrim",
             palettes.len()
         ));
+    } else {
+        // admin.js reads both unguarded once it has the palette (`openPalette`, `runSearch`).
+        let held = |attr: &str| {
+            let mut found = Vec::new();
+            find_all(&palettes[0].children, &|e| e.attr(attr).is_some(), &mut found);
+            found.len()
+        };
+        let (inputs, lists) = (held("data-palette-input"), held("data-palette-list"));
+        if inputs != 1 || lists != 1 {
+            failures.push(format!(
+                "{page}: the palette holds {inputs} [data-palette-input] and {lists} [data-palette-list]; admin.js reads exactly one of each"
+            ));
+        }
     }
     let mut openers = Vec::new();
     find_all(&doc, &|e| e.attr("data-action") == Some("palette"), &mut openers);

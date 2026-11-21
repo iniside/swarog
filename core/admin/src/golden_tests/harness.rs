@@ -12,9 +12,10 @@ fn blessing() -> bool {
 
 /// The golden form of a render: a line break between two tags that touch, so a change diffs
 /// as the lines it touches. A newline the render holds itself becomes [`RAW_NEWLINE`] plus a
-/// break, so two renders that differ only there still differ here.
-pub(super) fn golden_form(name: &str, raw: &str) -> String {
-    assert!(!raw.contains(RAW_NEWLINE), "golden case {name}: the render holds {RAW_NEWLINE:?}, the newline marker");
+/// break, so two renders that differ only there still differ here. The form stays one to one
+/// when the render holds [`RAW_NEWLINE`] itself (the palette draws it as the Enter key): an
+/// added break follows a `>`, a render's own newline its marker, so each break says which it is.
+pub(super) fn golden_form(raw: &str) -> String {
     let mut out = raw.replace('\n', &format!("{RAW_NEWLINE}\n")).replace("><", ">\n<");
     out.push('\n');
     out
@@ -192,8 +193,12 @@ fn golden_gate_fails_on_diff_missing_orphan_and_bless() {
 
 #[test]
 fn golden_form_is_injective_over_render_newlines() {
-    assert_ne!(golden_form("t", "<a><b>"), golden_form("t", "<a>\n<b>"));
-    assert_eq!(golden_form("t", "<a><b>x</b>"), "<a>\n<b>x</b>\n");
+    assert_ne!(golden_form("<a><b>"), golden_form("<a>\n<b>"));
+    assert_eq!(golden_form("<a><b>x</b>"), "<a>\n<b>x</b>\n");
+    // A render that holds the marker itself still maps one to one.
+    let marked = [format!("<a>{RAW_NEWLINE}\n<b>"), format!("<a>{RAW_NEWLINE}<b>"), format!("<a>\n<b>"), "<a><b>".to_string()];
+    let forms: BTreeSet<String> = marked.iter().map(|raw| golden_form(raw)).collect();
+    assert_eq!(forms.len(), marked.len(), "{forms:#?}");
 }
 
 #[test]

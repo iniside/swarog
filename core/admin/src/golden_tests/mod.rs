@@ -70,6 +70,7 @@ mod variant_coverage;
 mod macros;
 mod declared;
 mod selftests;
+mod refusals;
 
 use self::harness::*;
 use self::build::*;
@@ -105,6 +106,8 @@ struct Case {
     refs: render::asked::Asked,
     /// The refs the draw looked a label up for while this case alone was built and rendered.
     asked: render::asked::Asked,
+    /// The hints of the actions refused while this case alone was built and rendered.
+    refused: render::refused::Refused,
 }
 
 struct Rendered {
@@ -115,19 +118,22 @@ struct Rendered {
     seen: render::seen::Record,
     refs: render::asked::Asked,
     asked: render::asked::Asked,
+    refused: render::refused::Refused,
 }
 
 fn plain(name: &'static str, result: Result<String, minijinja::Error>) -> Rendered {
     let none = render::asked::Asked::new;
     let seen = render::seen::Record::new();
-    Rendered { name, result, primitive: None, state: None, seen, refs: none(), asked: none() }
+    let refused = render::refused::Refused::new();
+    Rendered { name, result, primitive: None, state: None, seen, refs: none(), asked: none(), refused }
 }
 
-/// `f`'s case with what the render path converted, and the refs it looked a label up for,
-/// while `f` ran.
+/// `f`'s case with what the render path converted, the refs it looked a label up for and the
+/// hints of the actions it refused, while `f` ran.
 fn scoped(f: impl FnOnce() -> Rendered) -> Rendered {
-    let ((rendered, asked), seen) = render::seen::collect(|| render::asked::collect(f));
-    Rendered { seen, asked, ..rendered }
+    let (((rendered, asked), refused), seen) =
+        render::seen::collect(|| render::refused::collect(|| render::asked::collect(f)));
+    Rendered { seen, asked, refused, ..rendered }
 }
 
 /// Each ref `labels::refs` collects from `body`, as `(kind, id)`.

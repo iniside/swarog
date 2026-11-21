@@ -131,6 +131,52 @@ pub(crate) mod asked {
     pub(crate) fn record(_: &controlplane::EntityRef) {}
 }
 
+/// The hints of the actions `routes::action_item` refuses, each the title of the disabled
+/// control drawn for it; recorded only in test builds.
+#[cfg(test)]
+pub(crate) mod refused {
+    use std::cell::RefCell;
+    use std::collections::BTreeSet;
+
+    /// Each refused action's hint.
+    pub(crate) type Refused = BTreeSet<String>;
+
+    thread_local! {
+        static REFUSED: RefCell<Option<Refused>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn record(hint: &str) {
+        REFUSED.with_borrow_mut(|refused| {
+            if let Some(refused) = refused {
+                refused.insert(hint.to_string());
+            }
+        });
+    }
+
+    struct Collecting;
+
+    impl Drop for Collecting {
+        fn drop(&mut self) {
+            REFUSED.set(None);
+        }
+    }
+
+    /// Runs `f` and returns the hints of the actions refused on this thread while it ran.
+    pub(crate) fn collect<R>(f: impl FnOnce() -> R) -> (R, Refused) {
+        assert!(REFUSED.with_borrow(Option::is_none), "refused::collect does not nest");
+        REFUSED.set(Some(Refused::new()));
+        let _collecting = Collecting;
+        let out = f();
+        (out, REFUSED.take().unwrap_or_default())
+    }
+}
+
+#[cfg(not(test))]
+pub(crate) mod refused {
+    #[inline(always)]
+    pub(crate) fn record(_: &str) {}
+}
+
 mod url;
 mod style;
 mod cell;

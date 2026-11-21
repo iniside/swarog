@@ -413,38 +413,3 @@ fn header_crumb_replaces_the_last_breadcrumb_else_the_title_does() {
     assert!(render(Some("anna.k")).contains(&oob("anna.k")), "{}", render(Some("anna.k")));
     assert!(render(None).contains(&oob("Anna Kowalska")), "{}", render(None));
 }
-
-/// Every disabled action control names its action and why it is disabled, from the
-/// `ActionItem` `routes::action_item` builds: `action_button`, `row_button`, `queue_action` and
-/// `menu_item` for each admission refusal, and a `menu_item` of a group whose module is down as
-/// `module-down`, whatever its own admission says.
-#[test]
-fn a_disabled_action_control_carries_its_action_and_refusal_kind() {
-    let env = render::env().expect("templates compile");
-    let denied = ActionDecl { min_role: Role::Admin, ..decl("wipe", "Wipe", "trash", Then::Invoke) };
-    let unimplemented = ActionDecl { implemented: false, ..decl("export", "Export", "download", Then::Invoke) };
-    let readonly = decl("edit", "Edit", "edit", Then::Invoke);
-    let refused = [
-        (action(MODULE, &denied, Role::Operator, true), "wipe", "denied"),
-        (action(MODULE, &unimplemented, Role::Admin, true), "export", "not-implemented"),
-        (action(MODULE, &readonly, Role::Admin, false), "edit", "read-only"),
-    ];
-    let attrs = |id: &str, kind: &str| format!(r#" data-refused-action="{MODULE}/{id}" data-refusal="{kind}""#);
-    for (item, id, kind) in &refused {
-        assert!(!item.enabled, "{id} is refused");
-        for m in ["action_button", "row_button", "queue_action", "menu_item"] {
-            let raw = render::fragment(&env, "primitives.html", m, item).expect(m);
-            assert!(raw.contains(&attrs(id, kind)), "{m} draws {id} disabled as {kind}: {raw}");
-        }
-    }
-    let enabled = action(MODULE, &decl("kick", "Kick", "x", Then::Invoke), Role::Admin, true);
-    let raw = render::fragment(&env, "primitives.html", "action_button", &enabled).expect("action_button");
-    assert!(!raw.contains("data-refus"), "an enabled control carries no refusal: {raw}");
-
-    let items = vec![enabled, refused[0].0.clone()];
-    let menu = MenuView { entity: entity("player", "p-1"), groups: render::menu_groups(items, |_| true), complete: true };
-    let raw = render::fragment(&env, "primitives.html", "menu", &menu).expect("menu");
-    for id in ["kick", "wipe"] {
-        assert!(raw.contains(&attrs(id, "module-down")), "a down module's {id} is module-down: {raw}");
-    }
-}

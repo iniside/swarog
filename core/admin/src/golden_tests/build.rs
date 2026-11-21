@@ -277,9 +277,9 @@ pub(super) fn shell_view(crumb: &str) -> ShellView {
     }
 }
 
-/// `view` drawn as screen `name` through `render::screen_page`, cut from the sidebar, which
-/// holds the operator chip, to the end of `<main>`: the search palette after it holds the
-/// literal [`RAW_NEWLINE`].
+/// `view` drawn as screen `name` through `render::screen_page`, cut from the `.app` root to the
+/// end of `<main>`: what follows, the popovers and the search palette, and the document head
+/// before it are the same on every screen, pinned once by the uncut `screen_shell_page` case.
 pub(super) fn screen(env: &Environment<'_>, name: &str, view: &impl serde::Serialize) -> Result<String, minijinja::Error> {
     let raw = render::screen_page(env, name, view)?;
     let (open, close) = ("<div class=\"app\"", "</main>");
@@ -691,11 +691,18 @@ fn drop_decl() -> ActionDecl {
     ActionDecl { danger: true, ..decl("drop", "Drop", "trash", Then::Confirm(confirm("Drop job?", ConfirmTone::Danger))) }
 }
 
-/// `QueueRow` actions on each item: the first non-danger one labelled, the rest ghost icons.
+/// `QueueRow` actions on each item: the first non-danger one labelled, the rest ghost icons;
+/// `purge`, refused to the operator's role, drawn disabled as a ghost icon.
 pub(super) fn queue_items_actions_case() -> PanelCase {
     let park = decl("park", "Park", "park", Then::Invoke);
+    let purge = ActionDecl { min_role: Role::Admin, ..decl("purge", "Purge", "trash", Then::Invoke) };
     PanelCase {
-        actions: vec![tool(&queue_row(retry_decl())), tool(&queue_row(drop_decl())), tool(&queue_row(park))],
+        actions: vec![
+            tool(&queue_row(retry_decl())),
+            tool(&queue_row(drop_decl())),
+            tool(&queue_row(park)),
+            action(MODULE, &queue_row(purge), Role::Operator, true),
+        ],
         ..PanelCase::new(
             PanelState::Ok,
             Some(body(Primitive::WorkQueue(work_queue(
@@ -709,7 +716,7 @@ pub(super) fn queue_items_actions_case() -> PanelCase {
                     },
                     QueueItem {
                         next_attempt_at: Some("2026-10-21 10:00".to_string()),
-                        ..queue_item("job-82", "sent", 2, 5, &["park", "retry"])
+                        ..queue_item("job-82", "sent", 2, 5, &["park", "retry", "purge"])
                     },
                 ],
             )))),
