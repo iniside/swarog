@@ -2,6 +2,10 @@
 
 Last updated: 2026-11-21
 
+- [x] **Menu and modal diffs without an accept section stay red** (2026-11-21, admin-control-plane-redesign step 14)
+  Accept files for `players.menu.user`, `player.menu.user`, `player.characters.menu.user` and
+  `events.modal.skip-poison`; the refused item's `span.hint` went in 84fc8662. Monolith and
+  split crawls diff clean on all four.
 - [x] **Pin `PLAYERS_ROW_MENU` ordering across topologies** (2026-11-21, b8435c9a)
   ADMIN-06. characters, friends, notifications and wallet use priority 0 in their
   src/admin.rs; inventory uses 10. Source:

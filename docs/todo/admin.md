@@ -48,10 +48,6 @@ _None._
   (2026-09-05).
 ### Known limits (admin-control-plane-redesign step 14)
 
-- [ ] **Menu and modal diffs without an accept section stay red**
-  14a1's live diff: `players.menu.user`, `player.menu.user`, `player.characters.menu.user` (11
-  lines each, the same user menu) and `events.modal.skip-poison` (3 lines) fail, as no accept
-  file covers them. They predate 14a1 except the characters copy of the player menu.
 - [ ] **The crawl follows the newest player, who may have no characters**
   The crawl takes the first players row. On a database with leftover test players that row has
   0 characters, and `player.characters` diffs 2 lines (the mockup's table, the portal's empty
