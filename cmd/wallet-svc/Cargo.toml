@@ -12,8 +12,9 @@ publish = false
 # the durable-events plane (app-owned, DB ⇒ plane). It fills wallet's `config`
 # dependency with a `remote::Stub` that dials config-svc, so it imports the `configrpc`
 # glue (passed into the stub) but NEVER the config IMPL crate — the characters-svc
-# shape. It hosts NO gateway (FrontDoor) — the single public front door lives only in
-# gateway-svc + the monolith, so no accounts stub is needed.
+# shape. It fills wallet's `accounts` dependency (`accountsapi::Directory`, the portal
+# grant's player check) the same way, with `accountsrpc` glue. It hosts NO gateway
+# (FrontDoor) — the single public front door lives only in gateway-svc + the monolith.
 [[bin]]
 name = "wallet-svc"
 path = "src/main.rs"
@@ -29,6 +30,8 @@ remote = { workspace = true }
 # `remote::Stub`. rule 5 sanctions cmd/* importing the glue; it still never names the
 # config IMPL crate.
 configrpc = { workspace = true }
+# The accounts glue, passed into the accounts `remote::Stub` the same way.
+accountsrpc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }

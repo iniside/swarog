@@ -117,7 +117,7 @@ fn proof_fleet_matches_the_canonical_service_snapshot() {
         ("config-svc", "config-svc", 8083, Some(9002), None, vec![]),
         ("characters-svc", "characters-svc", 8080, Some(9000), None, vec!["config-svc"]),
         ("inventory-svc", "inventory-svc", 8081, Some(9001), None, vec!["characters-svc", "config-svc"]),
-        ("wallet-svc", "wallet-svc", 8092, Some(9010), None, vec!["config-svc"]),
+        ("wallet-svc", "wallet-svc", 8092, Some(9010), None, vec!["config-svc", "accounts-svc"]),
         ("notifications-svc", "notifications-svc", 8093, Some(9011), None, vec![]),
         ("mail-svc", "mail-svc", 8094, Some(9012), None, vec![]),
         ("friends-svc", "friends-svc", 8095, Some(9014), None, vec!["accounts-svc"]),

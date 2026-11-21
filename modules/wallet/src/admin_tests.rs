@@ -15,11 +15,11 @@ use walletapi::{Balance, Currency, MAX_MOVEMENT_AMOUNT, MAX_REASON_BYTES};
 
 use super::{
     fact_text, grouped, manifest, movement_field_error, panel_form, parse_amount, parse_cursor, parse_reason,
-    row_form, signed, tiles_body, transactions_body, Direction, WalletAdmin, ADMIN_KEY_PREFIX,
+    row_form, signed, tiles_body, transactions_body, Direction, WalletAdmin, ADMIN_KEY_PREFIX, NO_SUCH_PLAYER,
 };
-use crate::service::{IDEMPOTENCY_CONFLICT, MALFORMED_PLAYER_ID, OUT_OF_RANGE, UNKNOWN_CURRENCY};
+use crate::service::{IDEMPOTENCY_CONFLICT, MALFORMED_PLAYER_ID, OUT_OF_RANGE, PLAYER_DELETED, UNKNOWN_CURRENCY};
 use crate::store::{LedgerEntry, LedgerPage, LEDGER_PAGE_SIZE};
-use crate::tests::{cleanup, unique_currency, unique_player, wired};
+use crate::tests::{cleanup, unique_currency, unique_player, wired, with_directory, DB_LOCK};
 use crate::WalletModule;
 
 fn balance(currency: &str, amount: i64) -> Balance {
@@ -299,7 +299,7 @@ fn service_refusals_map_to_their_field_and_the_rest_pass_through() {
     assert_eq!(amount(Error::invalid(UNKNOWN_CURRENCY)), Some("amount"));
     assert_eq!(amount(Error::invalid(MALFORMED_PLAYER_ID)), Some("player"));
     assert_eq!(amount(Error::conflict(IDEMPOTENCY_CONFLICT)), None, "the portal redraws the form locked");
-    assert_eq!(amount(Error::conflict(crate::service::PLAYER_DELETED)), None);
+    assert_eq!(amount(Error::conflict(PLAYER_DELETED)), Some("player"), "not the changed-since banner");
     assert_eq!(amount(Error::invalid(OUT_OF_RANGE)), None, "the status is part of the match");
 }
 
@@ -408,6 +408,7 @@ async fn row_grant_and_revoke_move_currency_once_per_request_id() {
     let pid = unique_player(&pool).await;
     let code = unique_currency(&pool).await;
     let rid = format!("currency.grant:{}", unique_player(&pool).await);
+    with_directory(&svc, Some(&[pid.as_str()]));
     let admin = WalletAdmin::new(svc, code.clone());
     let amount = money(1_500, &code);
     let grant = call("currency.grant", Some(&pid), Some(&rid), &[("amount", &amount), ("reason", "  Outage refund  ")]);
@@ -430,14 +431,20 @@ async fn row_grant_and_revoke_move_currency_once_per_request_id() {
     let too_much = money(1_501, &code);
     let revoke = call("currency.revoke", Some(&pid), Some(&rid2), &[("amount", &too_much), ("reason", "Chargeback")]);
     assert!(field_errors(admin.invoke(revoke).await.unwrap()).contains_key("amount"));
+    // The refused debit released its key: the same request id with a fundable amount applies.
+    let fundable = money(500, &code);
+    let revoke = call("currency.revoke", Some(&pid), Some(&rid2), &[("amount", &fundable), ("reason", "Chargeback")]);
+    assert!(matches!(admin.invoke(revoke).await.unwrap(), InvokeOutcome::Ok { .. }));
+    let rid2_key = format!("{ADMIN_KEY_PREFIX}{rid2}");
+    assert_eq!(ledger_of(&pool, &pid).await.iter().filter(|(k, _, _)| *k == rid2_key).count(), 1);
     let rid3 = format!("currency.revoke:{}", unique_player(&pool).await);
     let some = money(500, &code);
     let revoke = call("currency.revoke", Some(&pid), Some(&rid3), &[("amount", &some), ("reason", "Chargeback")]);
     match admin.invoke(revoke).await.unwrap() {
-        InvokeOutcome::Ok { message, .. } => assert_eq!(message, format!("Revoked 500 {code}; balance 1,000")),
+        InvokeOutcome::Ok { message, .. } => assert_eq!(message, format!("Revoked 500 {code}; balance 500")),
         other => panic!("expected Ok, got {other:?}"),
     }
-    assert_eq!(ledger_of(&pool, &pid).await[1], (format!("{ADMIN_KEY_PREFIX}{rid3}"), -500, "Chargeback".to_string()));
+    assert_eq!(ledger_of(&pool, &pid).await[2], (format!("{ADMIN_KEY_PREFIX}{rid3}"), -500, "Chargeback".to_string()));
 
     cleanup(&pool, &[&pid], &[&code]).await;
 }
@@ -451,6 +458,7 @@ async fn grant_refusals_write_nothing() {
     let (_ctx, svc) = wired(&pool).await;
     let pid = unique_player(&pool).await;
     let code = unique_currency(&pool).await;
+    with_directory(&svc, Some(&[pid.as_str()]));
     let admin = WalletAdmin::new(svc, code.clone());
     let rid = |tag: &str| format!("currency.grant:{tag}:{pid}");
     let ok = money(10, &code);
@@ -492,6 +500,7 @@ async fn the_panel_form_takes_its_player_from_the_input_and_lists_the_catalog() 
     let (_ctx, svc) = wired(&pool).await;
     let pid = unique_player(&pool).await;
     let code = unique_currency(&pool).await;
+    with_directory(&svc, Some(&[pid.as_str()]));
     let admin = WalletAdmin::new(svc, code.clone());
     let amount = money(40, &code);
 
@@ -538,6 +547,96 @@ async fn the_panel_form_takes_its_player_from_the_input_and_lists_the_catalog() 
     assert!(options.contains(&code), "{options:?}");
     assert_eq!(admin.prepare(prepare("currency.grant", None)).await.unwrap_err().status, Status::Invalid);
     assert_eq!(admin.prepare(prepare("ledger.grant", player())).await.unwrap_err().status, Status::NotFound);
+
+    cleanup(&pool, &[&pid], &[&code]).await;
+}
+
+/// The owner's ruling: a grant or revoke to a uuid no player holds is refused before the
+/// write — the Player field's error on the panel form, `NotFound` on a row action — and an
+/// accounts outage is `Unavailable`, never "no such player". None writes a ledger row.
+#[tokio::test]
+async fn a_move_to_a_player_that_does_not_exist_writes_nothing() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let ghost = unique_player(&pool).await;
+    let code = unique_currency(&pool).await;
+    with_directory(&svc, Some(&[]));
+    let admin = WalletAdmin::new(svc, code.clone());
+    let amount = money(10, &code);
+
+    let input = [("player", ghost.as_str()), ("amount", amount.as_str()), ("reason", "Typo")];
+    let outcome = admin.invoke(call("ledger.grant", None, Some(&format!("grant:{ghost}")), &input));
+    assert_eq!(field_errors(outcome.await.unwrap())["player"], NO_SUCH_PLAYER);
+
+    let row = call("currency.grant", Some(&ghost), Some(&format!("row:{ghost}")), &[("amount", &amount), ("reason", "Typo")]);
+    let err = admin.invoke(row).await.unwrap_err();
+    assert_eq!((err.status, err.msg.as_str()), (Status::NotFound, NO_SUCH_PLAYER));
+
+    let (_ctx, down) = wired(&pool).await;
+    with_directory(&down, None);
+    let down = WalletAdmin::new(down, code.clone());
+    let outcome = down.invoke(call("ledger.grant", None, Some(&format!("down:{ghost}")), &input));
+    assert_eq!(outcome.await.unwrap_err().status, Status::Unavailable, "an outage is not a missing player");
+
+    assert!(ledger_of(&pool, &ghost).await.is_empty());
+    cleanup(&pool, &[&ghost], &[&code]).await;
+}
+
+/// A player deleted between the directory check and the write is refused as that player:
+/// the Player field's error on the panel form, `NotFound` on a row action — never the 409 the
+/// portal draws as "changed since you opened it".
+#[tokio::test]
+async fn a_move_to_a_deleted_player_is_the_players_refusal() {
+    let Some(pool) = test_pool().await else { return };
+    let _lock = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+    let code = unique_currency(&pool).await;
+    with_directory(&svc, Some(&[pid.as_str()]));
+    let admin = WalletAdmin::new(svc, code.clone());
+    sqlx::query("INSERT INTO wallet.purged_players (player_id) VALUES ($1::uuid)")
+        .bind(&pid)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let amount = money(10, &code);
+
+    let input = [("player", pid.as_str()), ("amount", amount.as_str()), ("reason", "Gift")];
+    let outcome = admin.invoke(call("ledger.grant", None, Some(&format!("grant:{pid}")), &input));
+    assert_eq!(field_errors(outcome.await.unwrap())["player"], "Player has been deleted.");
+    let row = call("currency.grant", Some(&pid), Some(&format!("row:{pid}")), &[("amount", &amount), ("reason", "Gift")]);
+    let err = admin.invoke(row).await.unwrap_err();
+    assert_eq!((err.status, err.msg.as_str()), (Status::NotFound, "Player has been deleted."));
+
+    assert!(ledger_of(&pool, &pid).await.is_empty());
+    let _ = sqlx::query("DELETE FROM wallet.purged_players WHERE player_id = $1::uuid").bind(&pid).execute(&pool).await;
+    cleanup(&pool, &[&pid], &[&code]).await;
+}
+
+/// The panel form trims its Player input: a padded uuid moves the same balance as the bare one.
+#[tokio::test]
+async fn a_padded_player_uuid_moves_the_same_balance_as_the_bare_one() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool).await;
+    let pid = unique_player(&pool).await;
+    let code = unique_currency(&pool).await;
+    with_directory(&svc, Some(&[pid.as_str()]));
+    let admin = WalletAdmin::new(svc.clone(), code.clone());
+    let amount = money(25, &code);
+
+    let padded = format!("  {pid}\t");
+    for (tag, player) in [("bare", pid.as_str()), ("padded", padded.as_str())] {
+        let input = [("player", player), ("amount", amount.as_str()), ("reason", "Gift")];
+        let outcome = admin.invoke(call("ledger.grant", None, Some(&format!("{tag}:{pid}")), &input)).await.unwrap();
+        assert!(matches!(outcome, InvokeOutcome::Ok { .. }), "{tag}: {outcome:?}");
+    }
+    let held: Vec<(String, i64)> =
+        sqlx::query_as("SELECT player_id::text, amount FROM wallet.balances WHERE currency = $1")
+            .bind(&code)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(held, [(pid.clone(), 50)], "both grants land on the one balance");
 
     cleanup(&pool, &[&pid], &[&code]).await;
 }

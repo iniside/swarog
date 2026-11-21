@@ -13,6 +13,10 @@
 //! so this process cannot come up before config-svc — which is why the fleet declares
 //! `config-svc` as a hard dependency.
 //!
+//! It dials accounts-svc for wallet's `dyn Directory` capability: a portal grant or revoke
+//! refuses a player id that names no player. The fleet declares `accounts-svc` as a
+//! dependency too.
+//!
 //! It hosts NO gateway (FrontDoor) module: the single public front door lives only in
 //! gateway-svc and the monolith (`cmd/server`). It serves its ops ONLY over the internal
 //! mTLS edge; HTTP here is just the infra surface (`/healthz`, `/readyz`, `/metrics`),
@@ -43,11 +47,12 @@ async fn main() -> anyhow::Result<()> {
     // legitimate topology knowledge — the modules never see it.
     let edge_server = Arc::new(Mutex::new(edge::Server::new()));
 
-    // Dials config-svc for wallet's `dyn Config` capability (the starter-grant knobs).
-    // No accounts stub: without a gateway there is no bearer verifier to feed, so this
-    // process never dials accounts-svc; it still hosts no gateway (FrontDoor).
-    let wiring =
-        ProcessWiring::new().with_peer("config", env_addr("CONFIG_EDGE_ADDR", "127.0.0.1:9002"));
+    // Dials config-svc for wallet's `dyn Config` capability (the starter-grant knobs) and
+    // accounts-svc for its `dyn Directory` (the portal grant's player check). It hosts no
+    // gateway (FrontDoor), so no bearer verifier is fed.
+    let wiring = ProcessWiring::new()
+        .with_peer("config", env_addr("CONFIG_EDGE_ADDR", "127.0.0.1:9002"))
+        .with_peer("accounts", env_addr("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"));
     let mods = wallet_svc::modules(&wiring);
 
     // No player front: wallet-svc is fronted by gateway-svc, never directly by players.

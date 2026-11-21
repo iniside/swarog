@@ -20,7 +20,7 @@ use walletapi::{
     Balance, Currency, Movement, Wallet as _, MAX_CURRENCY_CODE_BYTES, MAX_MOVEMENT_AMOUNT, MAX_REASON_BYTES,
 };
 
-use crate::service::{MALFORMED_PLAYER_ID, OUT_OF_RANGE, UNKNOWN_CURRENCY};
+use crate::service::{MALFORMED_PLAYER_ID, OUT_OF_RANGE, PLAYER_DELETED, UNKNOWN_CURRENCY};
 use crate::store::{LedgerEntry, LedgerPage, LEDGER_PAGE_SIZE};
 use crate::Service;
 
@@ -52,6 +52,9 @@ const FIELD_PLAYER: &str = "player";
 const FIELD_AMOUNT: &str = "amount";
 const FIELD_REASON: &str = "reason";
 const FIELD_REQUEST_ID: &str = "request_id";
+
+/// A grant or revoke naming a uuid no player holds: no ghost balance from a typo.
+pub(crate) const NO_SUCH_PLAYER: &str = "No such player.";
 
 const FORM_NOTE: &str = "Idempotent per request id.";
 /// The reason is the ledger row's text and rides `wallet.changed`, which audit sinks; the
@@ -122,9 +125,17 @@ impl WalletAdmin {
     }
 
     /// The one move path of both the row modals and the panel form: validate the fields,
-    /// then credit or debit under `admin:<request id>`, so a repeat of one submit finds
+    /// check with the accounts directory that the player exists, then credit or debit under `admin:<request id>`, so a repeat of one submit finds
     /// its own ledger row and a resubmit of it with a changed field is the service's 409.
-    async fn move_currency(&self, dir: Direction, player: &str, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+    /// `from_row` is a row action, whose modal has no Player field: a refusal of its player
+    /// is `NotFound` rather than a field error.
+    async fn move_currency(
+        &self,
+        dir: Direction,
+        player: &str,
+        from_row: bool,
+        req: &InvokeCall,
+    ) -> Result<InvokeOutcome, Error> {
         let request_id = req
             .request_id
             .as_deref()
@@ -145,6 +156,13 @@ impl WalletAdmin {
                 return Ok(InvokeOutcome::FieldErrors(errors));
             }
         };
+        // Asked BEFORE the write, so a uuid naming no player writes nothing. A directory
+        // outage is the service's `Unavailable`, passed through, never "no such player".
+        match self.svc.player_exists(player).await {
+            Ok(true) => {}
+            Ok(false) => return player_refusal(from_row, NO_SUCH_PLAYER.to_string()),
+            Err(e) => return refusal(e, from_row),
+        }
         let movement = Movement {
             idempotency_key: format!("{ADMIN_KEY_PREFIX}{request_id}"),
             player_id: player.to_string(),
@@ -162,11 +180,26 @@ impl WalletAdmin {
                 reveal: None,
                 redirect: None,
             }),
-            Err(e) => match movement_field_error(&e) {
-                Some((key, msg)) => Ok(InvokeOutcome::FieldErrors(BTreeMap::from([(key.to_string(), msg)]))),
-                None => Err(e),
-            },
+            Err(e) => refusal(e, from_row),
         }
+    }
+}
+
+/// A service refusal as the operator sees it: its field's error, a player refusal on a row
+/// action as `NotFound`, and anything else passed through.
+fn refusal(e: Error, from_row: bool) -> Result<InvokeOutcome, Error> {
+    match movement_field_error(&e) {
+        Some((FIELD_PLAYER, msg)) => player_refusal(from_row, msg),
+        Some((key, msg)) => Ok(InvokeOutcome::FieldErrors(BTreeMap::from([(key.to_string(), msg)]))),
+        None => Err(e),
+    }
+}
+
+fn player_refusal(from_row: bool, msg: String) -> Result<InvokeOutcome, Error> {
+    if from_row {
+        Err(Error::not_found(msg))
+    } else {
+        Ok(InvokeOutcome::FieldErrors(BTreeMap::from([(FIELD_PLAYER.to_string(), msg)])))
     }
 }
 
@@ -228,6 +261,9 @@ pub(crate) fn movement_field_error(e: &Error) -> Option<(&'static str, String)> 
         }
         (Status::Invalid, UNKNOWN_CURRENCY) => Some((FIELD_AMOUNT, "Currency is not in the catalog".to_string())),
         (Status::Invalid, MALFORMED_PLAYER_ID) => Some((FIELD_PLAYER, "Player is not a valid player id".to_string())),
+        // The tombstone landed between the directory check and the write: the player's own
+        // refusal, not the portal's "changed since you opened it" banner a 409 draws.
+        (Status::Conflict, PLAYER_DELETED) => Some((FIELD_PLAYER, "Player has been deleted.".to_string())),
         _ => None,
     }
 }
@@ -577,10 +613,10 @@ impl Provider for WalletAdmin {
         };
         if from_row {
             let player = row_player(req.entity.as_ref())?.to_string();
-            return self.move_currency(dir, &player, &req).await;
+            return self.move_currency(dir, &player, true, &req).await;
         }
         match req.input.get(FIELD_PLAYER).map(|p| p.trim()).filter(|p| !p.is_empty()) {
-            Some(player) => self.move_currency(dir, player, &req).await,
+            Some(player) => self.move_currency(dir, player, false, &req).await,
             None => Ok(InvokeOutcome::FieldErrors(BTreeMap::from([(
                 FIELD_PLAYER.to_string(),
                 "Player is required".to_string(),

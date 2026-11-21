@@ -219,6 +219,7 @@ fn full_fleet_env_goldens() {
                 ("EDGE_CA_CERT", CA_CERT),
                 ("EDGE_CA_KEY", CA_KEY),
                 ("CONFIG_EDGE_ADDR", "127.0.0.1:9002"),
+                ("ACCOUNTS_EDGE_ADDR", "127.0.0.1:9003"),
                 ("WALLET_DEV_SEED", "1"),
             ],
         ),

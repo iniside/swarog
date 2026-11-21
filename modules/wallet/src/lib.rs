@@ -165,11 +165,11 @@ impl Module for WalletModule {
         "wallet"
     }
 
-    /// `config` is wallet's one domain dependency (the starter grant's currency/amount
-    /// knobs); process infrastructure — the DB, the event plane, metrics, HTTP — is never
-    /// declared.
+    /// `config` (the starter grant's currency/amount knobs) and `accounts` (the directory a
+    /// portal grant or revoke checks its player against) are wallet's domain dependencies;
+    /// process infrastructure — the DB, the event plane, metrics, HTTP — is never declared.
     fn requires(&self) -> Vec<String> {
-        vec!["config".into()]
+        vec!["config".into(), "accounts".into()]
     }
 
     fn register(&self, ctx: &Context) -> anyhow::Result<()> {
@@ -250,6 +250,13 @@ impl Module for WalletModule {
         // + `init` only, so a later resolution makes `requires(["config"])` unverifiable.
         let cfg = ctx.registry().require::<dyn Config>(&key("config", "reader"));
         let _ = svc.config.set(cfg);
+
+        // Same phase-2 rule: in the split a `remote::Stub` swaps an edge-backed client under
+        // the SAME key, so this line is topology-blind.
+        let directory = ctx
+            .registry()
+            .require::<dyn accountsapi::Directory>(&key("accounts", "directory"));
+        let _ = svc.directory.set(directory);
 
         // The optional starter grant, on the HANDED delivery conn so the credit, its ledger
         // row, the `wallet.changed` append and the checkpoint commit as one unit in BOTH

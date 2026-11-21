@@ -29,6 +29,10 @@ configapi = { workspace = true }
 # The accounts EVENT contract only (an events crate is importable by any module): the
 # optional starter grant reacts to durable `player.registered`.
 accountsevents = { workspace = true }
+# The accounts CONTRACT trait only (never `accountsrpc` glue): a portal grant or revoke asks
+# `Directory` whether its player exists. In the split a `remote::Stub` provides an
+# edge-backed client under the same registry key.
+accountsapi = { workspace = true }
 # The scheduler EVENT contract only: the purge sweep is a raw sink on `scheduler.fired`,
 # guarding on `schedule_names::PLAYER_PURGE`.
 schedulerevents = { workspace = true }

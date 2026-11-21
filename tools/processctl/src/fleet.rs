@@ -798,9 +798,11 @@ pub fn game_backend_fleet_with_environment(
     peer(&mut inventory.env, "CONFIG", 9002);
     // The `config-svc` dependency is real, not cosmetic: wallet's starter grant reads its
     // knobs through the injected `dyn Config`, and the split's `CachedConfig` is
-    // boot-fill-or-fail-startup — wallet-svc cannot come up before config-svc.
-    let mut wallet = service("wallet-svc", 8092, Some(9010), vec!["config-svc"]);
+    // boot-fill-or-fail-startup — wallet-svc cannot come up before config-svc. accounts-svc
+    // serves the `Directory` a portal grant checks its player against.
+    let mut wallet = service("wallet-svc", 8092, Some(9010), vec!["config-svc", "accounts-svc"]);
     peer(&mut wallet.env, "CONFIG", 9002);
+    peer(&mut wallet.env, "ACCOUNTS", 9003);
     let mut notifications = service("notifications-svc", 8093, Some(9011), vec![]);
     // The push backplane's one address: notifications-svc fans `ctx.push()` out to the
     // front's `push.deliver`. NOT a fleet dependency — gateway-svc already depends on

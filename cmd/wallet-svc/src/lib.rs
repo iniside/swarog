@@ -18,7 +18,10 @@ use lifecycle::{Module, ProcessWiring};
 /// `require::<dyn Config>` resolves REMOTELY — the registry swap, with wallet's code
 /// unchanged. The `config` peer address comes from `wiring` (env in `main.rs`, never in
 /// this lib). It hosts NO gateway (FrontDoor) — the single public front door lives only
-/// in gateway-svc + the monolith — so no accounts stub is needed.
+/// in gateway-svc + the monolith. It DOES fill wallet's `accounts` dependency the same
+/// way: `WalletModule::requires` declares `accounts` and its `init` resolves
+/// `require::<dyn Directory>(key("accounts","directory"))` (a portal grant or revoke checks
+/// its player exists), so an `accounts` stub dialing accounts-svc provides it remotely.
 pub fn modules(wiring: &ProcessWiring) -> Vec<Box<dyn Module>> {
     vec![
         Box::new(metrics::Metrics::new()), // core-infra: mounts GET /metrics + contributes the record layer
@@ -30,6 +33,13 @@ pub fn modules(wiring: &ProcessWiring) -> Vec<Box<dyn Module>> {
             "config",
             wiring.peer_or("config", "127.0.0.1:9002"),
             configrpc::remote_factories(),
+        )),
+        // Likewise for accounts: `accountsrpc::remote_factories()` swaps an edge-backed
+        // `Directory` under `accounts.directory`; this crate never imports the accounts IMPL.
+        Box::new(remote::Stub::new(
+            "accounts",
+            wiring.peer_or("accounts", "127.0.0.1:9003"),
+            accountsrpc::remote_factories(),
         )),
     ]
 }

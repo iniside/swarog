@@ -1,5 +1,6 @@
 use std::sync::{Arc, OnceLock};
 
+use accountsapi::Directory;
 use async_trait::async_trait;
 use bus::{AnyTx, Bus};
 use configapi::Config;
@@ -159,6 +160,16 @@ pub(crate) fn is_uuid_text(id: &str) -> bool {
     true
 }
 
+/// The hyphenated lowercase spelling of an id [`is_uuid_text`] accepts — the one form the
+/// directory's lookup takes, since every other spelling `$n::uuid` parses is omitted there.
+fn canonical_uuid(id: &str) -> Option<String> {
+    if !is_uuid_text(id) {
+        return None;
+    }
+    let hex = String::from_utf8(hex32(id)?).ok()?;
+    Some(format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..]))
+}
+
 fn player_id_eq(a: &str, b: &str) -> bool {
     match (hex32(a), hex32(b)) {
         (Some(x), Some(y)) => x == y,
@@ -195,6 +206,9 @@ pub struct Service {
     /// The reader is itself a replica-local cache kept fresh by the invalidation plane, so
     /// wallet reads it directly and owns no second cache.
     pub(crate) config: OnceLock<Arc<dyn Config>>,
+    /// Resolved in `init` (phase 2); in a split process a `remote::Stub` swaps an
+    /// edge-backed client under the same key.
+    pub(crate) directory: OnceLock<Arc<dyn Directory>>,
     /// `WALLET_DEV_SEED`, read ONCE in `register`.
     pub(crate) dev_seed: bool,
 }
@@ -205,8 +219,28 @@ impl Service {
             store: Store { pool },
             bus,
             config: OnceLock::new(),
+            directory: OnceLock::new(),
             dev_seed,
         }
+    }
+
+    /// Whether `player_id` names a player, asked of the accounts [`Directory`], which omits
+    /// an id naming no player from its answer. An id `$n::uuid` would not parse is
+    /// [`MALFORMED_PLAYER_ID`] without a call. A directory failure is `Unavailable`, never
+    /// `Ok(false)`: an outage must not read as "no such player".
+    pub(crate) async fn player_exists(&self, player_id: &str) -> Result<bool, Error> {
+        let Some(id) = canonical_uuid(player_id) else {
+            return Err(Error::invalid(MALFORMED_PLAYER_ID));
+        };
+        let directory = self
+            .directory
+            .get()
+            .expect("wallet.init must resolve the accounts directory before any op");
+        let found = directory
+            .players_by_id(vec![id])
+            .await
+            .map_err(|e| Error::unavailable(format!("player directory unavailable: {}", e.msg)))?;
+        Ok(!found.is_empty())
     }
 
     /// **THE movement authority**, on a CALLER-OWNED connection: it NEVER begins, commits

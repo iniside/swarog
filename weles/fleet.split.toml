@@ -155,6 +155,11 @@ env = { WALLET_DEV_SEED = "1", DATABASE_POOL_MAX_CONNECTIONS = "3", EDGE_CA_CERT
   provider = "config"
   kind = "edge"
 
+  [[service.peer]]
+  env_key = "ACCOUNTS_EDGE_ADDR"
+  provider = "accounts"
+  kind = "edge"
+
 # GATEWAY_EDGE_ADDR is a LITERAL, not a `[[service.peer]]`: an Edge peer's provider must
 # appear strictly earlier in this file (fleet_toml::validate) and boot is readyz-gated,
 # but gateway-svc's own `/readyz` covers its notifications stub — so the peer form would

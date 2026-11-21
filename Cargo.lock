@@ -5249,6 +5249,7 @@ dependencies = [
 name = "wallet"
 version = "0.1.0"
 dependencies = [
+ "accountsapi",
  "accountsevents",
  "anyhow",
  "async-trait",
@@ -5277,6 +5278,7 @@ dependencies = [
 name = "wallet-svc"
 version = "0.1.0"
 dependencies = [
+ "accountsrpc",
  "anyhow",
  "app",
  "configrpc",

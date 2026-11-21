@@ -1,7 +1,7 @@
 use super::*;
 use crate::projection::{REASON, STARTER_AMOUNT, STARTER_CURRENCY};
 use bus::{AnyTx, Delivery, TxHandler};
-use opsapi::Status;
+use opsapi::{Error, Status};
 use sqlx::PgPool;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -24,7 +24,7 @@ use testdb::test_pool;
 /// The delivery tests take it too, after `STARTER_SUB_LOCK`: their delivery (hand-driven or
 /// plane) runs the real tombstone and sweep subscriptions over the shared log, where any
 /// running scheduler appends `player-purge` fires.
-static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn ensure_schema(pool: &PgPool) {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
@@ -53,6 +53,34 @@ pub(crate) async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     w.register(&ctx).unwrap();
     let svc = w.svc();
     (ctx, svc)
+}
+
+/// The accounts `Directory` stand-in: it knows exactly `known` (canonical spellings), and
+/// `None` fails every call the way an unreachable accounts peer does.
+pub(crate) struct FakeDirectory(pub(crate) Option<Vec<String>>);
+
+#[async_trait]
+impl accountsapi::Directory for FakeDirectory {
+    async fn players_by_id(&self, ids: Vec<String>) -> Result<Vec<accountsapi::PlayerSummary>, Error> {
+        let known = self.0.as_ref().ok_or_else(|| Error::internal("directory offline"))?;
+        Ok(ids
+            .into_iter()
+            .filter(|id| known.contains(id))
+            .map(|player_id| accountsapi::PlayerSummary { player_id, ..Default::default() })
+            .collect())
+    }
+
+    async fn find_by_handle(&self, _handle: String) -> Result<Option<accountsapi::PlayerSummary>, Error> {
+        self.0.as_ref().map(|_| None).ok_or_else(|| Error::internal("directory offline"))
+    }
+}
+
+/// Sets `svc`'s directory to a [`FakeDirectory`] (as `init` would from the registry).
+pub(crate) fn with_directory(svc: &Service, known: Option<&[&str]>) {
+    let fake = FakeDirectory(known.map(|ids| ids.iter().map(|id| id.to_string()).collect()));
+    svc.directory
+        .set(Arc::new(fake) as Arc<dyn accountsapi::Directory>)
+        .unwrap_or_else(|_| panic!("directory OnceLock set once"));
 }
 
 /// A fresh random player_id (a valid uuid) so parallel test runs never collide.
@@ -1065,6 +1093,10 @@ async fn wired_for_delivery(
     ctx.registry().provide::<dyn Config>(key("config", "reader"), cfg);
     let w = WalletModule::new();
     w.register(&ctx).unwrap();
+    ctx.registry().provide::<dyn accountsapi::Directory>(
+        key("accounts", "directory"),
+        Arc::new(FakeDirectory(Some(Vec::new()))),
+    );
     w.init(&ctx).unwrap();
     transport.deliver_all().await.unwrap();
     (ctx, w.svc(), transport)
@@ -1086,6 +1118,10 @@ async fn wired_for_dual_delivery(
     ctx.registry().provide::<dyn Config>(key("config", "reader"), cfg);
     let w = WalletModule::new();
     w.register(&ctx).unwrap();
+    ctx.registry().provide::<dyn accountsapi::Directory>(
+        key("accounts", "directory"),
+        Arc::new(FakeDirectory(Some(Vec::new()))),
+    );
     w.init(&ctx).unwrap();
     transport.deliver_all().await.unwrap();
     (ctx, w.svc(), transport)
@@ -1333,6 +1369,10 @@ async fn starter_grant_credits_a_new_player() {
     );
     let w = WalletModule::new();
     w.register(&ctx).unwrap();
+    ctx.registry().provide::<dyn accountsapi::Directory>(
+        key("accounts", "directory"),
+        Arc::new(FakeDirectory(Some(Vec::new()))),
+    );
     w.init(&ctx).unwrap();
 
     // start() reconciles the AfterRegistration checkpoint; the emit must follow it.
@@ -1646,6 +1686,10 @@ async fn a_faulting_handler_does_not_advance_its_checkpoint_and_backs_off() {
     );
     let w = WalletModule::new();
     w.register(&ctx).unwrap();
+    ctx.registry().provide::<dyn accountsapi::Directory>(
+        key("accounts", "directory"),
+        Arc::new(FakeDirectory(Some(Vec::new()))),
+    );
     w.init(&ctx).unwrap();
     ctx.bus().on_tx(
         bus::SubscriptionSpec {
