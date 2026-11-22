@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-22: Step 19 storage — monolith done, split crawl blocked on groups Promote; owner decisions pending"
+description: "Admin redesign resume point 2026-11-22: Step 19 storage complete (both crawls clean); next Step 20 notifications — ask owner first"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-22T21:07:15.844Z
+  modified: 2026-11-22T21:31:18.571Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -56,3 +56,6 @@ Done since Step 16: 16c-16h, Step 17 (friends), 13f, 13f2, mail dead-code fix. S
 
 ## State 2026-11-22 (Step 19 nearly done)
 Checklist docs/plans/2026-11-22-step19-storage-checklist.md (owner: all §6 as recommended). Landed: 19a1 9c406c7f, 19a2 c16ae73f, 19a3 e596a80d, 19t 360cb180 + 619dd0ec + review-fix b3daae06 (splitproof SA1-SA3 both topologies, break = remove peer_face("storage") cmd/admin-svc/src/lib.rs:38), 19b 8834bb39 accept files (monolith crawl+diff clean). All reviews ACCEPT. OPEN: split crawl fails "EXCLUDED_MODALS lists player.groups groups/membership.promote, which player.groups does not draw" (crawled player's group row requested/admin, data-dependent = 18b leftover) -> no split diff ran. Owner decisions asked: crawl row choice for groups, paired-mismatch lines uncounted in skeleton.rs (disabled menu-item line now hides inventory Grant), span.hint has no carrier (13e1 premise false), pending_purges day in session TZ in 7 modules, splitproof main-thread stack overflow (main.rs:701). Next after owner: close split for 19b, then ask before Step 20.
+
+## State 2026-11-22 (Step 19 complete)
+Owner chose option a: crawl fix 7e4462fd (tab follower picks a row that draws its EXCLUDED_MODALS claims; review ACCEPT). Split crawl clean, all 20 targets diff clean except index/mail (Q2). Owner: stop hardening admindiff ([[stop-polishing-admindiff]]). Open owner questions: pending_purges day in session TZ (7 modules), splitproof stack (main.rs:701), "now" vs "s ago", meta cost. Next: Step 20 notifications (20a2 needs the owner's Notify form fields) — ask first.
