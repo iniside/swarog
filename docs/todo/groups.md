@@ -51,3 +51,11 @@ _None._
   `Unavailable`. Party's equivalent is unit-proven by `invite_target_rules`
   (docs/plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md:689,
   2026-10-05).
+
+### Known limits (admin-control-plane-redesign step 18)
+
+- [ ] **Promote can time out after its write commits**
+  The portal's `membership.promote` invoke (`modules/groups/src/admin.rs`) looks up the
+  player's label through the accounts directory after the role change commits. In the split
+  a hung lookup gives the operator a timeout although the promote landed; a retry answers
+  NoOp ("was already an admin of"). Owner 2026-11-22: keep as a known limit.

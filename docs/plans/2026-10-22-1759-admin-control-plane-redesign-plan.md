@@ -3273,7 +3273,8 @@ for owner**. Each step runs its own crates' tests, one rollout at a time.
   - **25h3 — cross-process money and inbox:** WL3–WL6, NT2/NT2b/NT2c, NT4, PH3, PH6, PH11,
     PY7 (`party_checks.rs`), `inbox_form`.
   - **25h4 — remaining groups and writers:** FR8, GR5, the config CAS edit, one real invoke
-    per writing provider.
+    per writing provider except groups, whose `membership.promote` invoke Step 18t already
+    drives in both topologies (GA2, `tools/splitproof/src/groups_admin_checks.rs`).
 
 (a) Unit tests:
 - `core/controlplane/src/tests.rs`:
