@@ -116,7 +116,7 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
         pl_code == 200 && attr(&pl, "data-state") == "ok" && pl_rows == [player_row.clone()] && text(&pl).contains(&meta(1, &pid)),
         format!("status={pl_code} state={:?} rows={pl_rows:?} body={}", attr(&pl, "data-state"), cut(&pl)));
 
-    // [IV4] the tab count counts both holdings, whatever the panel's filter.
+    // [IV4] the unfiltered tab count counts both holdings.
     let (count_code, count) = get(admin, &format!("{front}{}", want("tab.count"))).await?;
     p.check(&format!("[IV4{tag}] Inventory tab count is 2 (player and character holdings)"),
         count_code == 200 && attr(&count, "data-state") == "ok" && count.contains(r#"<span class="count">2</span>"#),
