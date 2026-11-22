@@ -2188,6 +2188,30 @@ The ports:
       the rows (16a0 params reach inventory-svc's panel query), each with a recorded break run.
     - **16b**: the monolith and split crawls, the accept files of checklist §7, and view
       fixes only where a crawl shows the portal drawing differently from the mockup.
+    - **16c** `[opus]` core-implementer (owner, 2026-11-22, proof audit of 722fff78):
+      admindiff counts merged lines. `report_unpaired` and the `moved` loop in
+      `tools/admindiff/src/skeleton.rs` group leftover children by label and emit
+      `mock-only ×N <label>` / `portal-only ×N` / `moved ×N` for N > 1, with no suffix at
+      N = 1. `Lines` keeps the largest N per line, never a sum, so row-shape lines under
+      `tr*` stay data-independent. The REPEAT row collapse, `order`, head-mismatch and
+      unit lines are unchanged. Tests in `skeleton_tests.rs` and `accept_tests.rs` (a ×N
+      key keeps its hint). Accept keys that gain a ×N are re-keyed against the existing
+      monolith and split crawls (offline `diff`, no fleet). Every mapped target diffs as it
+      did before the change: clean stays clean, and index/mail/events keep only their Q2
+      lines. Invariant: losing one of N merged elements turns its entry NEW plus STALE.
+    - **16d** `[opus]` core-implementer: the inventory tab draws one `FilterKind::Select`
+      per declared param. An inventory unit test asserts that the panel's filter keys equal
+      the manifest's `params`, in order, each a Select. The core golden case
+      `table_filter_kinds` gains a second Select and is re-blessed.
+    - **16e** `[opus]` test-author: splitproof leftovers of 16t.
+      - `inventory_admin_checks.rs`: the holding read takes every row and bails unless
+        there is exactly one.
+      - The check doc headers record each break run (what was broken, which checks went
+        red, in which topology), in the `characters_admin_checks.rs` style.
+      - A committed `tools/splitproof/expected-red.txt` (id | reason). splitproof sorts
+        its failures into expected, new and stale. It exits non-zero on new or stale.
+      - One break run of the characters label peer (`cmd/admin-svc/src/lib.rs:26`), then
+        one full green run against the baseline. That is about 12 min per run.
 - **Step 17 — friends.** Friends tab. One a (Na1 with Na3): the tab (order 50), Purges
   pending at 64. Rows are a module-owned row kind (O-6); the user cell links
   `Link::Entity(player)` itself.
