@@ -40,3 +40,12 @@ _None._
   disabled (`implemented: false`, `modules/friends/src/admin.rs:243-257`): `api/friends`
   has no admin write, only the identity-bound `Player::remove`. Needs an operator removal
   of an edge by its id inside friends that emits `friend.removed` as the player path does.
+
+### Known limits (admin-control-plane-redesign step 17)
+
+- [ ] **The Friends tab pager's cursor filters rows instead of bounding the index range**
+  Within one state the cursor predicate (`modules/friends/src/store.rs:483-484`, in
+  `admin_page`) is a row filter, so a later page scans that state's earlier rows. Each side
+  branch keeps its own `LIMIT` (`store.rs:569-579`), so the merge sort stays bounded at
+  2 x limit. A true range bound needs four branches (two states x two sides). Owner
+  deferred it, 2026-11-22.

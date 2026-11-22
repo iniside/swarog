@@ -2,6 +2,19 @@
 
 Last updated: 2026-11-22
 
+- [x] **Local-render pages run `block_in_place` that the request timeout does not cancel** (2026-11-22, admin-control-plane-redesign step 17)
+  ADMIN-02. Obsolete: the pages it named are control-plane providers now. Friends'
+  provider (`modules/friends/src/admin.rs`, ad923bfd) and the wallet and mail providers
+  (`modules/wallet/src/admin.rs`, `modules/mail/src/admin.rs`) hold no `block_in_place`;
+  apikeys, groups and notifications have no `admin.rs` (Grep in each module's `src`, lower bound).
+- [x] **Seed the avatar palette from the canonical lowercase id** (2026-11-22, admin-control-plane-redesign step 17)
+  ADMIN-03. Obsolete: no module's `src` holds an avatar seed (Grep in apikeys, friends,
+  groups, mail, notifications, storage and wallet, lower bound); friends' tab renders
+  the other player as a link cell (`modules/friends/src/admin.rs:146`, `user_cell`).
+- [x] **Derive `PARAM_PLAYER` and `PLAYER_REF_PREFIX` instead of redeclaring them** (2026-11-22, admin-control-plane-redesign step 17)
+  ADMIN-04. Obsolete: neither name, nor `PLAYERS_ROW_MENU`, appears in `modules/{apikeys,friends,groups,mail,notifications,storage,wallet}/src`
+  or `core/admin/src` (Grep, lower bound); the providers read the player from the panel
+  query (`modules/friends/src/admin.rs:76`, `player_id`).
 - [x] **admindiff tests name a real excluded tab and hand-list crawled hosts** (2026-11-22, admin-control-plane-redesign step 17)
   The tests take their example tab from the first player tab in `EXCLUDED_TABS`
   (`tests::excluded_player_tab`) and read the crawled player hosts from `PAGE_MAP`
