@@ -521,7 +521,8 @@ async fn promote_refuses_a_malformed_bound_element_and_an_over_cap_input() {
         let calls = [
             promote_call(&me[..35], &g, BTreeMap::new()),
             promote_call(&me, &format!("{g}0"), BTreeMap::new()),
-            promote_call(&me.to_uppercase().replace('-', "_"), &g, BTreeMap::new()),
+            promote_call(&me, &g[..35], BTreeMap::new()),
+            promote_call(&me.replace('-', "_"), &g, BTreeMap::new()),
             group_entity,
             no_item,
             promote_call(&me, &g, over),

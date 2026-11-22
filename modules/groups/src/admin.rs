@@ -180,7 +180,8 @@ fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
 }
 
 /// A promote's bound element: the entity is `player:<uuid>` and the item the group's
-/// uuid, both in the canonical spelling, or the call is invalid before any statement.
+/// uuid, both uuid-shaped (shape only; case is not checked, since the lock key and the
+/// `::uuid` cast fold case), or the call is invalid before any statement.
 fn bound<'a>(entity: Option<&'a EntityRef>, item: Option<&'a str>) -> Result<(&'a str, &'a str), Error> {
     let player = match entity {
         Some(e) if e.kind == KIND && is_uuid_text(&e.id) => e.id.as_str(),
