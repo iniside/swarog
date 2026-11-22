@@ -390,7 +390,7 @@ async fn http(ctx: &Ctx, front: &str, who: &FriendPlayer, path: &str, body: Valu
 /// `deletion_assertions` reason: the parity pass runs before `[W2]`).
 pub(super) async fn deletion_assertion(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, tag: &str) -> Result<()> {
     if let Err(e) = deletion_check(ctx, pool, p, front, tag).await {
-        p.check(&format!("[DL14{tag}] the party purge pass ran to completion"), false, format!("{e:#}"));
+        p.check(&format!("[DL14a{tag}] the party purge pass ran to completion"), false, format!("{e:#}"));
     }
     Ok(())
 }

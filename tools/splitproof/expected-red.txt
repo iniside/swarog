@@ -1,9 +1,15 @@
 # Splitproof checks known to be red, one `id | signature | reason` per line: id is the check's
 # leading [..] text, signature is text the failure detail must contain, reason says why it is red.
+# A signature may hold several fragments joined by `&&` (spaces around each are trimmed); the
+# detail must contain every fragment, in any order. Use one fragment per independent field the
+# check reports, so a field that changes on its own is caught:
+#   PH6 | grant=404 && subscription=Some(("active", 0)) | ...
+# A signature cannot contain `|` and a fragment cannot contain `&&`.
 # A failed check listed here whose detail carries the signature is expected; one whose detail
-# lacks it is changed (red for another reason); one not listed is new; a listed id whose check
-# passed is stale. Changed, new or stale fails the run, so remove an entry in the commit that
-# turns its check green and re-derive a signature when its check fails differently.
+# lacks a fragment is changed (red for another reason); one not listed is new; a listed id whose
+# check passed is stale. Changed, new or stale fails the run, so remove an entry in the commit that
+# turns its check green and re-derive a signature when its check fails differently. Every id names
+# one check: two checks with one id fail the run, even when one of them passes.
 # Plan: docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md
 
 # monolith
@@ -13,12 +19,12 @@ WL6m | grant=404 revoke=404 | revokes through the retired /admin/wallet page, wh
 NT4m | grant=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 ML3m | code=404 | reads the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
 ML4m | submit=404 | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
-ML4bm | submit=404 | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+ML4bm | submit=404 && parked_before=1 && state=Some("parked") | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
 PH3m | guest=201 ack=true grant=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 PH11m | guest=201 ack=true grant=404 inbox_row=false result=Ok(Object {"err": String("no such object"), "status": String("NotFound"), "value": Null}) nudge_hub=None | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
-FR8m | code=404 | reads the retired /admin/friends page; re-pointed with the friends tab (plan step 17)
+FR8m | code=404 | reads the retired /admin/friends page; re-pointed in plan step 25h4
 GR5m | code=404 | reads the retired /admin/groups page; re-pointed with the groups tab (plan step 18)
-PY7m | grant=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+PY7m | quiesced=true && grant=404 && create={"status":"Ok" && state=Some(("party", && cleanup=Ok | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 
 # split
 AD3a | code=404 | reads the retired /admin/characters page; re-pointed once the admin panel port is complete (owner 2026-11-21)
@@ -46,10 +52,10 @@ NT3 | list=200 items=0 | reads the inbox row NT2 posts through the retired /admi
 NT4 | grant=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 ML3 | code=404 | reads the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
 ML4 | submit=404 | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
-ML4b | submit=404 | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+ML4b | submit=404 && parked_before=1 && state=Some("parked") | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
 PH3 | guest=201 ack=true grant=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
-PH6 | grant=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+PH6 | grant=404 && subscription=Some(("active", 0)) | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 PH11 | guest=201 ack=true grant=404 inbox_row=false result=Ok(Object {"err": String("no such object"), "status": String("NotFound"), "value": Null}) nudge_hub=None | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
-FR8 | code=404 | reads the retired /admin/friends page; re-pointed with the friends tab (plan step 17)
+FR8 | code=404 | reads the retired /admin/friends page; re-pointed in plan step 25h4
 GR5 | code=404 | reads the retired /admin/groups page; re-pointed with the groups tab (plan step 18)
-PY7 | grant=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+PY7 | quiesced=true && grant=404 && create={"status":"Ok" && state=Some(("party", && cleanup=Ok | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)

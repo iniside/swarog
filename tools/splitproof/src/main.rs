@@ -144,17 +144,20 @@ fn ensure_no_stale_listener(svc_name: &str, port: u16) -> Result<()> {
     Ok(())
 }
 
-/// Tiny assertion recorder: prints PASS/FAIL per check and keeps each failure's name and detail;
-/// the process exits non-zero iff a failed check is not listed in `expected-red.txt`, a listed
-/// one failed without its signature in the detail, or a listed one passed (`expected_red::sort`).
+/// Tiny assertion recorder: prints PASS/FAIL per check, records every check name under its id
+/// and keeps each failure's name and detail; the process exits non-zero iff two different checks
+/// share an id, a failed check is not listed in `expected-red.txt`, a listed one failed without
+/// its whole signature in the detail, or a listed one passed (`expected_red::sort`).
 #[derive(Default)]
 struct Proof {
     pass: u32,
+    names: expected_red::Names,
     fail: Vec<expected_red::Failure>,
 }
 
 impl Proof {
     fn check(&mut self, name: &str, ok: bool, detail: impl std::fmt::Display) {
+        expected_red::record(&mut self.names, name);
         if ok {
             self.pass += 1;
             println!("  PASS  {name} — {detail}");
@@ -495,7 +498,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
                 format!("pid={pid}"),
             );
         }
-        Err(e) => p.check("[WL7m] monolith register for the starter grant", false, format!("{e:#}")),
+        Err(e) => p.check("[WL7am] monolith register for the starter grant", false, format!("{e:#}")),
     }
 
     // --- Notifications parity: the player read and the wallet fan-in, all Local. The split
@@ -511,7 +514,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
                 format!("guest={code} code={list_code} items={}", items.len()),
             );
         }
-        Err(e) => p.check("[NT1m] monolith create_guest for the inbox read", false, format!("{e:#}")),
+        Err(e) => p.check("[NT1am] monolith create_guest for the inbox read", false, format!("{e:#}")),
     }
 
     let nt4m_player = grant_target(ctx, &m).await?;
@@ -817,7 +820,7 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     let phase = proof_phase(&ctx, &pool, &idp, fleet, &mut p).await;
     clear_wallet_starter_config(&pool).await;
 
-    let sorted = match expected_red::sort(&expected_red, &p.fail) {
+    let sorted = match expected_red::sort(&expected_red, &p.names, &p.fail) {
         Ok(sorted) => sorted,
         Err(e) => {
             println!("\n[splitproof] {} passed, {} failed; cannot sort them: {e:#}", p.pass, p.fail.len());
@@ -840,7 +843,7 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     }
     println!("  changed, listed but red without its signature ({}):", sorted.changed.len());
     for c in &sorted.changed {
-        println!("  - CHANGED: {} — detail {:?} lacks {:?} (listed: {})", c.name, c.detail, c.signature, c.reason);
+        println!("  - CHANGED: {} — detail {:?} lacks {:?} (listed: {})", c.name, c.detail, c.missing, c.reason);
     }
     println!("  new red ({}):", sorted.new.len());
     for (name, detail) in &sorted.new {
@@ -4627,18 +4630,18 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
             p.check("[5b] post-delete inventory -> 404", w2 == 404, format!("code={w2}"));
         }
 
-        // [4c] delete via a NON-canonical (uppercased) id spelling and prove the durable
+        // [4c] (its steps [4ca]-[4cc]) delete via a NON-canonical (uppercased) id spelling and prove the durable
         // character.deleted event carries the DB-CANONICAL id — the split path (G -> A ->
         // emit) canonicalizes regardless of how the client spelled the URL id.
         let canon_cid = create_character(ctx, &g, &tok, "Canon").await;
-        p.check("[4c] Canon character created", canon_cid.is_some(), format!("cid={canon_cid:?}"));
+        p.check("[4ca] Canon character created", canon_cid.is_some(), format!("cid={canon_cid:?}"));
         if let Some(cidc) = canon_cid {
             let upper = cidc.to_uppercase();
             let delc = ctx.http.delete(format!("{g}/characters/{upper}"))
                 .header("X-Api-Key", "dev-key-client")
                 .header("Authorization", format!("Bearer {tok}"))
                 .send().await?;
-            p.check("[4c] delete via uppercased id -> 204", delc.status().as_u16() == 204, delc.status());
+            p.check("[4cb] delete via uppercased id -> 204", delc.status().as_u16() == 204, delc.status());
             // canonical (lowercase) event present ...
             let canon_present = poll_count(
                 pool,
@@ -4653,7 +4656,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
                 let upper_count: Option<i64> = sqlx::query_scalar(
                     "SELECT count(*) FROM asyncevents.events WHERE topic='character.deleted' AND payload->>'character_id'=$1",
                 ).bind(&upper).fetch_optional(pool).await.ok().flatten();
-                p.check("[4c] no non-canonical id emitted", upper_count == Some(0), format!("rows={upper_count:?}"));
+                p.check("[4cc] no non-canonical id emitted", upper_count == Some(0), format!("rows={upper_count:?}"));
             }
         }
 
@@ -4688,13 +4691,13 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
             "",
         );
 
-        // [6] configurable per-player cap enforced through G -> A, cap value resolved via the
+        // [6a]/[6b] configurable per-player cap enforced through G -> A, cap value resolved via the
         // split's REMOTE CachedConfig (the at-risk path the unit tests can't cover).
         let c6 = sqlx::query(
             "INSERT INTO config.settings (namespace,key,value) VALUES ('characters','max_per_player','2') \
              ON CONFLICT (namespace,key) DO UPDATE SET value=excluded.value",
         ).execute(pool).await;
-        p.check("[6] set characters/max_per_player=2", c6.is_ok(), "");
+        p.check("[6a] set characters/max_per_player=2", c6.is_ok(), "");
         // The cap propagates to A via CachedConfig invalidation (revision-gated, eventually
         // consistent). Each attempt uses a fresh player (0 chars) and creates 2 (allowed) then
         // probes a 3rd: a 409 can occur ONLY once the cap propagated to <= 2, so a 409 within
@@ -4711,7 +4714,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
             }
             ok
         };
-        p.check("[6] create past remote-resolved cap -> 409", cap_enforced, "");
+        p.check("[6b] create past remote-resolved cap -> 409", cap_enforced, "");
         // NOTE: the shared `poll_fresh_grant` helper creates one live character per iteration
         // on the passed player, so against the DEFAULT cap (10) a very slow grant propagation
         // could accumulate chars toward the cap — flagged as a known consideration for the live
@@ -5738,7 +5741,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
                 format!("pid={wl7_pid} credited={credited} keyed={keyed}"),
             );
         }
-        Err(e) => p.check("[WL7] register a player for the starter grant", false, format!("{e:#}")),
+        Err(e) => p.check("[WL7a] register a player for the starter grant", false, format!("{e:#}")),
     }
 
     // --- Notifications inbox ---------------------------------------------------------
@@ -6335,7 +6338,8 @@ async fn i_gate(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()
     Ok(())
 }
 
-/// `[RDY-DEAD]` — proves the /readyz amplification fix (commits f5eea2d/1262d51/7f3e631)
+/// `[RDY-DEAD]` (its steps `[RDY-BASE]`, `[RDY-ALIVE]` and `[RDY-BACK]`) — proves the /readyz
+/// amplification fix (commits f5eea2d/1262d51/7f3e631)
 /// on the at-risk topology (split, where stubs exist; the monolith holds none). gateway-svc
 /// holds a `remote::Stub` per fronted domain provider (see cmd/gateway-svc/src/lib.rs), and
 /// each stub's `/readyz` check reads a CACHED reachability verdict stamped by a BACKGROUND
@@ -6376,7 +6380,7 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     p.check(
-        "[RDY-DEAD] baseline gateway /readyz 200",
+        "[RDY-BASE] baseline gateway /readyz 200",
         base_ok,
         format!("last_code={last:?}"),
     );
@@ -6392,7 +6396,7 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
     // "healed" by our respawn below and hidden from the later [LV2] liveness sweep.
     let alive_before = matches!(fleet[idx].child.try_wait(), Ok(None));
     p.check(
-        "[RDY-DEAD] characters-svc alive before intentional kill",
+        "[RDY-ALIVE] characters-svc alive before intentional kill",
         alive_before,
         format!("alive={alive_before}"),
     );
@@ -6549,7 +6553,7 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
     p.check(
-        "[RDY-DEAD] gateway /readyz recovers to 200 after peer returns",
+        "[RDY-BACK] gateway /readyz recovers to 200 after peer returns",
         recovered,
         format!("last_code={last:?}"),
     );

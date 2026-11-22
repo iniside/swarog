@@ -73,3 +73,20 @@ fn inventory_holding_read_takes_exactly_one_row() {
     assert!(two.to_string().contains("2 player holding rows"), "{two}");
     assert!(only(Vec::<&str>::new(), "character holding").is_err());
 }
+
+/// `Proof::check` records the name of a PASSING check too, so a red check cannot hide behind
+/// an id it shares with a green one: the sort refuses the pair although only one failed.
+#[test]
+fn proof_records_passing_names_so_the_sort_refuses_a_shared_id() {
+    let mut p = super::Proof::default();
+    p.check("[NT1m] monolith create_guest for the inbox read", true, "guest=201");
+    p.check("[NT1m] monolith POST /notifications/list", false, "code=500");
+    p.check("unnamed", true, "");
+    assert_eq!(p.pass, 2);
+    assert_eq!(p.fail.len(), 1);
+    assert_eq!(p.names["NT1m"].len(), 2, "{:?}", p.names);
+    let err = super::expected_red::sort(&super::expected_red::ExpectedRed::new(), &p.names, &p.fail)
+        .expect_err("one id under two names must be refused")
+        .to_string();
+    assert!(err.contains("NT1m") && err.contains("create_guest") && err.contains("/notifications/list"), "{err}");
+}

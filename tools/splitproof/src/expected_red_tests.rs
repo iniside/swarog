@@ -2,17 +2,31 @@
 
 use super::*;
 
+/// Entries whose signature is one fragment.
 fn list(lines: &[(&str, &str, &str)]) -> ExpectedRed {
     lines
         .iter()
         .map(|(id, signature, reason)| {
-            (id.to_string(), Entry { signature: signature.to_string(), reason: reason.to_string() })
+            (id.to_string(), Entry { fragments: vec![signature.to_string()], reason: reason.to_string() })
         })
         .collect()
 }
 
 fn failures(failed: &[(&str, &str)]) -> Vec<Failure> {
     failed.iter().map(|(name, detail)| (name.to_string(), detail.to_string())).collect()
+}
+
+/// Sort with only the failed checks' names recorded, as a run in which every check failed.
+fn sort(expected: &ExpectedRed, failed: &[Failure]) -> Result<Sorted> {
+    super::sort(expected, &Names::new(), failed)
+}
+
+fn names(seen: &[&str]) -> Names {
+    let mut out = Names::new();
+    for name in seen {
+        record(&mut out, name);
+    }
+    out
 }
 
 #[test]
@@ -65,7 +79,7 @@ fn a_listed_check_red_for_another_reason_is_changed_and_blocks() {
         vec![Changed {
             name: "[AD3a] characters page".to_string(),
             detail: "code=500".to_string(),
-            signature: "code=404".to_string(),
+            missing: vec!["code=404".to_string()],
             reason: "retired characters page".to_string(),
         }]
     );
@@ -93,9 +107,68 @@ fn sort_refuses_two_different_checks_under_one_listed_id() {
     // The same check failing twice is one check, not two.
     let twice = failures(&[("[M3b] create-role", "role_rows=None"), ("[M3b] create-role", "role_rows=None")]);
     assert_eq!(sort(&expected, &twice).unwrap().expected.len(), 2);
-    // Unlisted ids are new either way; the refusal is about what one entry can describe.
+    // An unlisted id is refused too: listing it later must not find two checks behind it.
     let unlisted = failures(&[("[X1] one", "a"), ("[X1] two", "b")]);
-    assert_eq!(sort(&expected, &unlisted).unwrap().new.len(), 2);
+    let err = sort(&expected, &unlisted).unwrap_err().to_string();
+    assert!(err.contains("X1") && err.contains("one") && err.contains("two"), "{err}");
+}
+
+#[test]
+fn sort_refuses_an_id_whose_twin_passed() {
+    // [WL7] used to name both the grant check and its register precondition. With the
+    // precondition passing and the grant red, only the failed name reaches the failure list,
+    // so the refusal must come from the names recorded for passing checks.
+    let expected = list(&[("WL7", "credited=false", "starter grant off")]);
+    let failed = failures(&[("[WL7] a new registration receives the starter grant", "credited=false")]);
+    let seen = names(&["[WL7] register a player for the starter grant", "[WL7] a new registration receives the starter grant"]);
+    let err = super::sort(&expected, &seen, &failed).unwrap_err().to_string();
+    assert!(err.contains("WL7") && err.contains("register a player") && err.contains("receives the starter grant"), "{err}");
+    // Without the passing twin the same failure is expected: the refusal is the twin's doing.
+    let alone = names(&["[WL7] a new registration receives the starter grant"]);
+    assert_eq!(super::sort(&expected, &alone, &failed).unwrap().expected.len(), 1);
+    // Two passing twins under an unlisted id are refused as well, with nothing failed.
+    let passing = names(&["[6] set the cap", "[6] create past the cap -> 409"]);
+    let err = super::sort(&ExpectedRed::new(), &passing, &[]).unwrap_err().to_string();
+    assert!(err.contains("[6] set the cap") && err.contains("create past the cap"), "{err}");
+}
+
+#[test]
+fn record_files_each_name_under_its_id_once_and_skips_names_without_one() {
+    let seen = names(&["[PY7] socket", "[PY7] socket", "[PY7m] socket", "no id here"]);
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen["PY7"].len(), 1);
+    assert_eq!(seen["PY7m"].len(), 1);
+}
+
+#[test]
+fn every_fragment_of_a_signature_must_be_in_the_detail() {
+    // PH6 pins the grant AND the subscription state, an independent field: a run where the
+    // grant still 404s but the subscription went stale is red for another reason too.
+    let expected = parse("PH6 | grant=404 && subscription=Some((\"active\", 0)) | retired wallet page\n").unwrap();
+    let name = "[PH6] nobody connected";
+    let ok = failures(&[(name, "subscription=Some((\"active\", 0)) grant=404 inbox_row=false")]);
+    let sorted = sort(&expected, &ok).unwrap();
+    assert_eq!(sorted.expected.len(), 1, "fragments match in any order: {sorted:?}");
+    assert_eq!(sorted.blocking(), 0);
+    let drifted = failures(&[(name, "grant=404 inbox_row=false subscription=Some((\"stalled\", 3))")]);
+    let sorted = sort(&expected, &drifted).unwrap();
+    assert!(sorted.expected.is_empty(), "{sorted:?}");
+    assert_eq!(sorted.changed.len(), 1, "{sorted:?}");
+    assert_eq!(sorted.changed[0].missing, vec!["subscription=Some((\"active\", 0))".to_string()]);
+    assert_eq!(sorted.blocking(), 1);
+    // Every lacking fragment is reported, not only the first.
+    let both = failures(&[(name, "grant=303")]);
+    assert_eq!(sort(&expected, &both).unwrap().changed[0].missing.len(), 2);
+}
+
+#[test]
+fn parse_splits_a_signature_into_trimmed_fragments() {
+    let parsed = parse("PY7 |quiesced=true&&  grant=404 && state=Some((\"party\",| retired wallet page\n").unwrap();
+    assert_eq!(
+        parsed["PY7"].fragments,
+        vec!["quiesced=true".to_string(), "grant=404".to_string(), "state=Some((\"party\",".to_string()]
+    );
+    assert_eq!(parse("ML3 | code=404 | retired mail page").unwrap()["ML3"].fragments, vec!["code=404".to_string()]);
 }
 
 #[test]
@@ -153,6 +226,10 @@ fn parse_refuses_a_malformed_line() {
         "[AD4] | 404 | a reason",
         "AD 4 | 404 | a reason",
         "AD4 | 404 | one\nAD4 | 404 | two",
+        "AD4 | 404 && | a reason",
+        "AD4 | && 404 | a reason",
+        "AD4 | 404 && && 405 | a reason",
+        "AD4 | && | a reason",
     ] {
         assert!(parse(bad).is_err(), "{bad:?} parsed");
     }
@@ -162,4 +239,8 @@ fn parse_refuses_a_malformed_line() {
 fn the_committed_list_parses_and_is_not_empty() {
     let list = load(std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))).unwrap();
     assert!(!list.is_empty());
+    // The entries that pin independent fields keep more than one fragment.
+    for id in ["PY7", "PY7m", "PH6", "ML4b", "ML4bm"] {
+        assert!(list[id].fragments.len() > 1, "{id}: {:?}", list[id].fragments);
+    }
 }
