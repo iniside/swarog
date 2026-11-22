@@ -173,6 +173,7 @@ fn purges_body_is_empty_at_zero_and_one_item_otherwise() {
 #[tokio::test]
 async fn groups_tab_lists_every_state_with_member_counts_and_joined_day() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
     let me = unique_uuid(&pool).await;
     let big = insert_group(&pool, "Big", JOIN_OPEN, "2026-01-01T00:00:00Z").await;
@@ -249,6 +250,7 @@ async fn groups_tab_lists_every_state_with_member_counts_and_joined_day() {
 #[tokio::test]
 async fn groups_tab_keyset_pages_every_row_once_in_order() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
     let me = unique_uuid(&pool).await;
     let mut groups = Vec::new();
@@ -293,6 +295,7 @@ async fn groups_tab_keyset_pages_every_row_once_in_order() {
 #[tokio::test]
 async fn groups_tab_exactly_one_full_page_has_no_cursor() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
     let me = unique_uuid(&pool).await;
     let mut groups = Vec::new();
@@ -311,7 +314,7 @@ async fn groups_tab_exactly_one_full_page_has_no_cursor() {
         let body = admin.panel(query(admin::GROUPS, "player", &me, None)).await.unwrap();
         let t = table(&body);
         assert_eq!(item_ids(t).len(), ADMIN_PAGE_SIZE);
-        assert_eq!(body.meta.as_deref(), Some("25"));
+        assert_eq!(body.meta.as_deref(), Some(ADMIN_PAGE_SIZE.to_string().as_str()));
         assert!(t.page.next_cursor.is_none(), "a full only page has no cursor");
     })
     .await;
@@ -322,6 +325,7 @@ async fn groups_tab_exactly_one_full_page_has_no_cursor() {
 #[tokio::test]
 async fn group_header_draws_a_group_and_refuses_a_missing_or_malformed_id() {
     let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
     let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
     let g = insert_group(&pool, "Wolves", JOIN_INVITE, "2026-05-06T07:08:09Z").await;
     let p = pool.clone();
