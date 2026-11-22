@@ -2330,7 +2330,7 @@ The ports:
   pending at 66. Downloads are `implemented:false` (O-3, `docs/todo/storage.md`); the
   per-row download is the icon-only row button of 13e1.
 - **Step 20 — notifications.** Inbox tab, Notify header action, Send notification row action. Writer.
-  - **20a1** (Na1 with Na3): the Inbox tab (order 80), Purges pending at 67.
+  - **20a1** (Na1 with Na3): the Inbox tab (order 80), Purges pending at 67. The 20a1 port decides whether `notifications::Store::player_stats` (`modules/notifications/src/store.rs`) is reused or deleted.
   - **20a2** (Na2): the Notify header action (20), the Send notification row action (row-menu
     group 60), the probe.
   - **Owner decision before dispatch (20a2):** the Notify form's fields; the audit calls it

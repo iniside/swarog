@@ -319,7 +319,8 @@ impl Store {
     /// disagree about whether the player exists.
     #[expect(
         dead_code,
-        reason = "Step 20: no step names it; the Step 20 port decides keep or delete"
+        reason = "Step 20a1: the port reuses or deletes it \
+                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2333)"
     )]
     pub(crate) async fn player_stats(&self, player_id: &str) -> Result<(i64, i64), sqlx::Error> {
         let res = sqlx::query_as::<_, (i64, i64)>(

@@ -44,9 +44,10 @@ pub(crate) struct GroupCounts {
     pub(crate) admins: i64,
 }
 
-/// One group as the ADMIN page lists it: the group's own row plus its live counts. The
-/// counts ride the SAME statement as the row (a lateral aggregate), so a group can never
-/// be listed with a member count taken at a different instant than its name.
+/// One group as [`Store::admin_group`] reads it for the Step 18 group entity header: the
+/// group's own row plus its live counts. The counts ride the SAME statement as the row (a
+/// lateral aggregate), so a group is never shown with a member count taken at a different
+/// instant than its name.
 #[expect(
     dead_code,
     reason = "Step 18 G7 (b): the group EntityHeader reads it \
@@ -123,8 +124,8 @@ impl Store {
     /// outstanding work rather than the permanent row per deleted player.
     #[expect(
         dead_code,
-        reason = "Step 18 G9: the purges tile reads it \
-                  (docs/plans/2026-11-22-step18-groups-checklist.md:288)"
+        reason = "Step 18 G9: the Purges pending item at 65 reads it \
+                  (docs/plans/2026-11-22-step18-groups-checklist.md:166)"
     )]
     pub(crate) async fn pending_purges(&self) -> Result<(i64, String), sqlx::Error> {
         let (count, oldest) = sqlx::query_as::<_, (i64, Option<String>)>(
