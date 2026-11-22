@@ -391,18 +391,17 @@ pub const EVENT_LOG_PAGE: &str = "events";
 /// players and drains them with a sweep subscription: no item at 0 pending, so the dashboard
 /// draws nothing, otherwise one warn item naming the backlog and the oldest tombstone's day,
 /// linking the Events page filtered to `sweep_sub`, whose lag and pause state explain a
-/// backlog. `oldest` is the oldest tombstone's `created_at` text, whose first 10 chars are
-/// the date. Each purging module's admin provider calls this rather than drawing its own.
+/// backlog. `oldest` is the oldest tombstone's UTC day, `YYYY-MM-DD`, drawn as given. Each
+/// purging module's admin provider calls this rather than drawing its own.
 pub fn purge_backlog_body(title: &str, pending: i64, oldest: &str, sweep_sub: &str) -> PanelBody {
     if pending == 0 {
         return PanelBody::new(Primitive::AttentionItems(Vec::new()));
     }
     let players = if pending == 1 { "1 player".to_string() } else { format!("{pending} players") };
-    let day = oldest.get(..10).unwrap_or(oldest);
     PanelBody::new(Primitive::AttentionItems(vec![AttentionItem {
         severity: Severity::Warn,
         title: title.to_string(),
-        text: format!("{players} awaiting sweep · oldest {day}"),
+        text: format!("{players} awaiting sweep · oldest {oldest}"),
         link: Link::Page {
             module: EVENT_LOG_PAGE_MODULE.to_string(),
             page: EVENT_LOG_PAGE.to_string(),
@@ -1526,9 +1525,9 @@ mod tests {
     #[test]
     fn purge_backlog_draws_nothing_at_zero_and_one_warn_item_linking_the_sweep_otherwise() {
         assert!(attention(purge_backlog_body("X purges pending", 0, "", "x.sweep.v1")).is_empty());
-        let one = attention(purge_backlog_body("X purges pending", 1, "2026-11-20 08:00:00.123+00", "x.sweep.v1"));
+        let one = attention(purge_backlog_body("X purges pending", 1, "2026-11-20", "x.sweep.v1"));
         assert_eq!(one[0].text, "1 player awaiting sweep · oldest 2026-11-20");
-        let items = attention(purge_backlog_body("X purges pending", 3, "2026-11-19 23:59:59+00", "x.sweep.v1"));
+        let items = attention(purge_backlog_body("X purges pending", 3, "2026-11-19", "x.sweep.v1"));
         assert_eq!(items.len(), 1, "a backlog is one item");
         assert_eq!(
             items[0],
@@ -1545,8 +1544,6 @@ mod tests {
                 since: String::new(),
             }
         );
-        // An oldest text shorter than a date is drawn whole rather than panicking.
-        assert_eq!(attention(purge_backlog_body("X", 2, "2026", "s"))[0].text, "2 players awaiting sweep · oldest 2026");
     }
 
     #[test]

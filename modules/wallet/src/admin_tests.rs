@@ -1065,7 +1065,7 @@ fn attention(body: PanelBody) -> Vec<controlplane::AttentionItem> {
 /// The drawing is `controlplane::purge_backlog_body`'s; this pins what wallet passes it.
 #[test]
 fn purges_name_wallet_and_link_its_own_sweep() {
-    let items = attention(purges_body(3, "2026-11-19 23:59:59+00"));
+    let items = attention(purges_body(3, "2026-11-19"));
     assert_eq!(items[0].title, "Wallet purges pending");
     assert_eq!(
         items[0].link,

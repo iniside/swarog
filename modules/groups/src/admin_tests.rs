@@ -167,7 +167,7 @@ fn groups_body_maps_columns_cells_link_labels_and_meta() {
 fn purges_body_is_empty_at_zero_and_one_item_otherwise() {
     let empty = admin::purges_body(0, "");
     assert!(matches!(&empty.primitive, Primitive::AttentionItems(items) if items.is_empty()));
-    let some = admin::purges_body(2, "2026-01-02T03:04:05Z");
+    let some = admin::purges_body(2, "2026-01-02");
     match &some.primitive {
         Primitive::AttentionItems(items) => {
             assert_eq!(items.len(), 1);

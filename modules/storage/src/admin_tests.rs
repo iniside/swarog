@@ -144,7 +144,7 @@ fn tile_draws_the_byte_sum_the_cap_delta_and_a_stable_chart2_spark() {
 fn purges_body_is_empty_at_zero_and_one_item_otherwise() {
     let empty = admin::purges_body(0, "");
     assert!(matches!(&empty.primitive, Primitive::AttentionItems(items) if items.is_empty()));
-    let some = admin::purges_body(2, "2026-01-02T03:04:05Z");
+    let some = admin::purges_body(2, "2026-01-02");
     match &some.primitive {
         Primitive::AttentionItems(items) => {
             assert_eq!(items.len(), 1);
@@ -288,14 +288,14 @@ async fn tile_and_purges_item_read_the_live_tables() {
 }
 
 /// The purge item's text names the backlog, singular at one, and the day of the oldest
-/// tombstone as `Store::pending_purges` reads it (`min(created_at)::text`).
+/// tombstone as `Store::pending_purges` reads it (its UTC day).
 #[test]
 fn purges_body_text_names_the_backlog_and_the_oldest_day() {
     for (pending, want) in [
         (1, "1 player awaiting sweep · oldest 2026-01-02"),
         (3, "3 players awaiting sweep · oldest 2026-01-02"),
     ] {
-        match &admin::purges_body(pending, "2026-01-02 03:04:05.123456+00").primitive {
+        match &admin::purges_body(pending, "2026-01-02").primitive {
             Primitive::AttentionItems(items) => {
                 assert_eq!(items.len(), 1);
                 assert_eq!(items[0].text, want);
@@ -305,14 +305,26 @@ fn purges_body_text_names_the_backlog_and_the_oldest_day() {
     }
 }
 
-/// The live purge item carries the unswept backlog's count and its oldest tombstone's day: a
-/// tombstone planted older than any other must name its own day, and a swept one stops
-/// counting.
+/// The live purge item carries the unswept backlog's count and its oldest tombstone's UTC day:
+/// a tombstone planted older than any other must name its own day, a swept one stops
+/// counting, and a session zone at UTC+14 (where 12:00 UTC is already the next day) does not
+/// move the day.
 #[tokio::test]
 async fn purges_item_names_the_oldest_unswept_tombstone_over_the_live_table() {
     let _lock = DB_LOCK.lock().await;
     let f = Fixture::new().await;
-    let provider = admin::StorageAdmin::new(Arc::new(Service::new(f.pool().clone())));
+    let zoned = sqlx::postgres::PgPoolOptions::new()
+        .after_connect(|conn, _| {
+            Box::pin(async move {
+                sqlx::query("SET TimeZone = 'Pacific/Kiritimati'").execute(&mut *conn).await?;
+                Ok(())
+            })
+        })
+        .connect_lazy(&testdb::dsn())
+        .unwrap();
+    let zone: String = sqlx::query_scalar("SELECT current_setting('TimeZone')").fetch_one(&zoned).await.unwrap();
+    assert_eq!(zone, "Pacific/Kiritimati");
+    let provider = admin::StorageAdmin::new(Arc::new(Service::new(zoned)));
     sqlx::query(
         "INSERT INTO storage.purged_players (player_id, handle, created_at) \
          VALUES ($1::uuid, 'Old#0001', '2001-02-03 12:00:00+00'), ($2::uuid, 'Swept#0002', '2000-01-01 12:00:00+00')",

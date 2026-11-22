@@ -185,7 +185,7 @@ fn label_answers_only_the_input_refs_the_names_know_keyed_as_given() {
 /// The drawing is `controlplane::purge_backlog_body`'s; this pins what characters passes it.
 #[test]
 fn purges_name_characters_and_link_its_own_sweep() {
-    let items = match purges_body(3, "2026-11-20 08:15:42.123+00").primitive {
+    let items = match purges_body(3, "2026-11-20").primitive {
         Primitive::AttentionItems(items) => items,
         _ => panic!("the purges item answers AttentionItems"),
     };

@@ -247,12 +247,12 @@ impl Store {
     }
 
     /// The purge backlog: tombstones the sweep still owes work
-    /// on, and the oldest one's `created_at` (`""` when nothing is outstanding).
+    /// on, and the oldest one's UTC day `YYYY-MM-DD` (`""` when nothing is outstanding).
     /// `purged_players_pending_idx` serves the predicate, so the cost tracks
     /// outstanding work rather than the permanent row per deleted player.
     pub(crate) async fn pending_purges(&self) -> Result<(i64, String), sqlx::Error> {
         let (count, oldest) = sqlx::query_as::<_, (i64, Option<String>)>(
-            "SELECT count(*)::bigint, min(created_at)::text \
+            "SELECT count(*)::bigint, to_char(min(created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD') \
              FROM wallet.purged_players WHERE swept_at IS NULL",
         )
         .fetch_one(&self.pool)
