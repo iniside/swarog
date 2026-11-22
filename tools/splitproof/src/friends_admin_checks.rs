@@ -61,7 +61,7 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     // [FA1] A's entity page slots the Friends tab panel and its count; the panel draws the
     // accepted row (B) before the pending one (C), each user cell labelled with the other
     // player's handle and linked to its entity page, the uuid nowhere in the drawn text.
-    let want = |pid: &str, c: &str| format!("/admin/_panel/friends/{c}?entity=player%3A{pid}");
+    let want = |pid: &str, kind: &str| format!("/admin/_panel/friends/{kind}?entity=player%3A{pid}");
     let (page_code, page) = get(admin, &format!("{front}/admin/e/player/{}?tab=friends", a.player_id)).await?;
     let hx = attr_values(&page, "hx-get");
     let slot = hx.iter().any(|u| *u == want(&a.player_id, "friends"));
@@ -87,19 +87,22 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
 
     // [FA2] the badge reads the relation as the viewed player sees it: "pending (outgoing)" on
     // the requester's tab, "pending (incoming)" on the addressee's, where the user cell names
-    // the requester.
+    // the requester and the meta counts the one incoming edge as pending.
     let (c_code, c_body, c_rows) = panel(admin, &format!("{front}{}", want(&c.player_id, "friends"))).await?;
     let a_badges: Vec<&str> = a_rows.iter().map(|r| r.2.as_str()).collect();
     let c_badges: Vec<&str> = c_rows.iter().map(|r| r.2.as_str()).collect();
+    let c_meta = meta(&c_body);
     p.check(
         &format!("[FA2{tag}] pending row reads pending (outgoing) on the requester's tab and pending (incoming) on the addressee's"),
         a_badges == ["accepted", "pending (outgoing)"]
             && c_code == 200
             && attr(&c_body, "data-state") == "ok"
             && c_badges == ["pending (incoming)"]
-            && c_rows.first().is_some_and(|r| player_cell_ok(&r.0, &a.player_id, &a.handle)),
+            && c_rows.first().is_some_and(|r| player_cell_ok(&r.0, &a.player_id, &a.handle))
+            && c_meta.as_deref() == Some("1 · 1 pending"),
         format!(
-            "requester_badges={a_badges:?} addressee_status={c_code} addressee_state={:?} addressee_rows={:?} want_user={} body={}",
+            "requester_badges={a_badges:?} addressee_status={c_code} addressee_state={:?} addressee_rows={:?} \
+             addressee_meta={c_meta:?} want_user={} body={}",
             attr(&c_body, "data-state"),
             shown(&c_rows),
             a.handle,
@@ -109,14 +112,14 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
 
     // [FA3] the tab count counts both relations and the meta names the pending one.
     let (count_code, count) = get(admin, &format!("{front}{}", want(&a.player_id, "tab.count"))).await?;
-    let meta = text(&a_body).contains("2 · 1 pending");
+    let a_meta = meta(&a_body);
     p.check(
         &format!("[FA3{tag}] Friends tab count is 2 and the meta reads 2 · 1 pending"),
         count_code == 200
             && attr(&count, "data-state") == "ok"
             && count.contains(r#"<span class="count">2</span>"#)
-            && meta,
-        format!("count_status={count_code} count_body={:?} meta_ok={meta} panel_text={:?}", cut(&count), cut(&text(&a_body))),
+            && a_meta.as_deref() == Some("2 · 1 pending"),
+        format!("count_status={count_code} count_body={:?} meta={a_meta:?} panel_text={:?}", cut(&count), cut(&text(&a_body))),
     );
     Ok(())
 }
@@ -136,6 +139,14 @@ async fn request(ctx: &Ctx, front: &str, from: &FriendPlayer, to: &FriendPlayer)
         Some(edge) if code == 201 => Ok(edge.to_string()),
         _ => bail!("fixture: {} asking {} -> {code} {body}", from.handle, to.handle),
     }
+}
+
+/// The panel head's meta text (`<span class="panel-meta">`), none when the panel draws no meta.
+fn meta(html: &str) -> Option<String> {
+    let open = r#"<span class="panel-meta">"#;
+    let start = html.find(open)? + open.len();
+    let len = html[start..].find("</span>")?;
+    Some(text(&html[start..start + len]))
 }
 
 /// The drawn rows without their raw html, for a failure detail: (user text, href, badge).
