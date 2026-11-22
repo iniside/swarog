@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-22: Step 19 storage complete (both crawls clean); next Step 20 notifications — ask owner first"
+description: "Admin redesign resume point 2026-11-22: Step 19 + owner follow-ups done; next Step 20 notifications — ask owner first"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-22T21:31:18.571Z
+  modified: 2026-11-22T22:25:46.525Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -59,3 +59,6 @@ Checklist docs/plans/2026-11-22-step19-storage-checklist.md (owner: all §6 as r
 
 ## State 2026-11-22 (Step 19 complete)
 Owner chose option a: crawl fix 7e4462fd (tab follower picks a row that draws its EXCLUDED_MODALS claims; review ACCEPT). Split crawl clean, all 20 targets diff clean except index/mail (Q2). Owner: stop hardening admindiff ([[stop-polishing-admindiff]]). Open owner questions: pending_purges day in session TZ (7 modules), splitproof stack (main.rs:701), "now" vs "s ago", meta cost. Next: Step 20 notifications (20a2 needs the owner's Notify form fields) — ask first.
+
+## State 2026-11-22 (post-19 owner answers)
+Owner: 1 fix, 2 todo, 3 yes, 4 todo. Done: 70aac810 pending_purges UTC day (7 modules), ab74dacf controlplane::ago ("now" <60 s), todo 4a8a1c87 (splitproof stack, storage meta). core-reviewer PASS. Open to report: flaky notifications/groups timing tests; mockup "yesterday" vs "1 d ago". Next: Step 20 — still awaiting owner go + Notify fields.
