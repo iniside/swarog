@@ -1913,25 +1913,15 @@ in the port bullets.
     after the a-part that lands what it covers, never the a-part's own;
   - no seed data (Step 10b item 5, **Ports**, as superseded): missing data is a
     `data difference` accept entry until Step 24b;
-  - `order` values follow the mockup's order, around the ones Step 9 took:
-    - dashboard tiles: accounts 10, storage 40, mail 50, wallet 70 (portal holds 20,
-      30, 80; core.events holds 60);
-    - attention: mail 40 (core.events 20; portal 10, 30, 50);
-    - platform nav entries: 10–50 (Event plane is 60);
+  - `order` values of a point several modules share are the named constants in
+    `core/controlplane/src/order.rs`, one module per point and one constant per contributor;
+    a new contribution to a shared point adds its constant there (Step 13f).
     - audit's "Recent operator activity" is a `DashboardPanel`.
-    - (owner, 2026-11-17, research doc X2) entity tabs: characters 20, wallet 30,
-      inventory 40, friends 50, groups 60, storage 70, notifications 80 (accounts' Profile
-      tab 10); facts: characters 30, Lore 40 reserved, wallet 50 (accounts 10, 20); list
-      columns on players: characters 10, Lore 20 reserved, wallet 30; header actions:
-      notifications Notify 20 (accounts Suspend 30); row-menu groups: wallet 40,
-      inventory 50, notifications 60, storage 80 (accounts 20, 30); Purges-pending attention
-      items: characters 61, wallet 62, inventory 63, friends 64, groups 65, storage 66,
-      notifications 67.
   - Cross-cutting rules (owner, 2026-11-17, research doc X); X1 is Na3's, X4 Na1's, X8
     Na2's, X9 Step 24.a4's:
     - X1: each purging module (characters, wallet, inventory, friends, groups, storage,
       notifications) contributes "Purges pending" as a `DashboardAttention` item shown
-      only while its sweep is behind (at the order above); it replaces the Q1 KPI wording.
+      only while its sweep is behind (at its `order::dashboard_attention` constant); it replaces the Q1 KPI wording.
     - X4: each port reuses or deletes its own dead admin readers.
     - X5: an operator is a user cell linked to the audit page filtered by actor;
       `system`, `scheduler` and `apikey:<name>` are plain tags.

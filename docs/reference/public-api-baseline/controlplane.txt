@@ -186,6 +186,69 @@ impl core::marker::UnsafeUnpin for controlplane::events::AdminAction
 impl core::panic::unwind_safe::RefUnwindSafe for controlplane::events::AdminAction
 impl core::panic::unwind_safe::UnwindSafe for controlplane::events::AdminAction
 pub static controlplane::events::ACTION: std::sync::lazy_lock::LazyLock<bus::EventType<controlplane::events::AdminAction>>
+pub mod controlplane::order
+pub mod controlplane::order::dashboard_attention
+pub const controlplane::order::dashboard_attention::CHARACTERS_PURGES: i32
+pub const controlplane::order::dashboard_attention::EVENTS: i32
+pub const controlplane::order::dashboard_attention::FRIENDS_PURGES: i32
+pub const controlplane::order::dashboard_attention::GROUPS_PURGES: i32
+pub const controlplane::order::dashboard_attention::INVENTORY_PURGES: i32
+pub const controlplane::order::dashboard_attention::MAIL: i32
+pub const controlplane::order::dashboard_attention::NOTIFICATIONS_PURGES: i32
+pub const controlplane::order::dashboard_attention::PORTAL_LORE: i32
+pub const controlplane::order::dashboard_attention::PORTAL_SCHEDULER: i32
+pub const controlplane::order::dashboard_attention::PORTAL_SERVICES: i32
+pub const controlplane::order::dashboard_attention::STORAGE_PURGES: i32
+pub const controlplane::order::dashboard_attention::WALLET_PURGES: i32
+pub mod controlplane::order::dashboard_tile
+pub const controlplane::order::dashboard_tile::ACCOUNTS: i32
+pub const controlplane::order::dashboard_tile::EVENTS: i32
+pub const controlplane::order::dashboard_tile::MAIL: i32
+pub const controlplane::order::dashboard_tile::PORTAL_LORE_SEATS: i32
+pub const controlplane::order::dashboard_tile::PORTAL_LORE_STORE: i32
+pub const controlplane::order::dashboard_tile::PORTAL_MATCHES: i32
+pub const controlplane::order::dashboard_tile::STORAGE: i32
+pub const controlplane::order::dashboard_tile::WALLET: i32
+pub mod controlplane::order::dashboard_wide
+pub const controlplane::order::dashboard_wide::PORTAL_HEALTH: i32
+pub mod controlplane::order::platform_nav
+pub const controlplane::order::platform_nav::APIKEYS: i32
+pub const controlplane::order::platform_nav::AUDIT: i32
+pub const controlplane::order::platform_nav::CONFIG: i32
+pub const controlplane::order::platform_nav::EVENTS: i32
+pub const controlplane::order::platform_nav::MAIL: i32
+pub const controlplane::order::platform_nav::SCHEDULER: i32
+pub mod controlplane::order::player_column
+pub const controlplane::order::player_column::CHARACTERS: i32
+pub const controlplane::order::player_column::LORE: i32
+pub const controlplane::order::player_column::WALLET: i32
+pub mod controlplane::order::player_fact
+pub const controlplane::order::player_fact::ACCOUNTS_ID: i32
+pub const controlplane::order::player_fact::ACCOUNTS_JOINED: i32
+pub const controlplane::order::player_fact::CHARACTERS: i32
+pub const controlplane::order::player_fact::LORE: i32
+pub const controlplane::order::player_fact::WALLET: i32
+pub mod controlplane::order::player_header_action
+pub const controlplane::order::player_header_action::ACCOUNTS_SUSPEND: i32
+pub const controlplane::order::player_header_action::NOTIFICATIONS_NOTIFY: i32
+pub mod controlplane::order::player_row_action
+pub const controlplane::order::player_row_action::ACCOUNTS_DELETE: i32
+pub const controlplane::order::player_row_action::ACCOUNTS_SUSPEND: i32
+pub const controlplane::order::player_row_action::INVENTORY: i32
+pub const controlplane::order::player_row_action::NOTIFICATIONS: i32
+pub const controlplane::order::player_row_action::STORAGE: i32
+pub const controlplane::order::player_row_action::WALLET: i32
+pub mod controlplane::order::player_tab
+pub const controlplane::order::player_tab::ACCOUNTS_IDENTITIES: i32
+pub const controlplane::order::player_tab::ACCOUNTS_PROFILE: i32
+pub const controlplane::order::player_tab::ACCOUNTS_SESSIONS: i32
+pub const controlplane::order::player_tab::CHARACTERS: i32
+pub const controlplane::order::player_tab::FRIENDS: i32
+pub const controlplane::order::player_tab::GROUPS: i32
+pub const controlplane::order::player_tab::INVENTORY: i32
+pub const controlplane::order::player_tab::NOTIFICATIONS: i32
+pub const controlplane::order::player_tab::STORAGE: i32
+pub const controlplane::order::player_tab::WALLET: i32
 pub enum controlplane::ActionPoint
 pub controlplane::ActionPoint::HeaderAction(alloc::string::String)
 pub controlplane::ActionPoint::PageHead(alloc::string::String)
@@ -1554,6 +1617,24 @@ impl<'a> core::marker::Unpin for controlplane::MergedSection<'a>
 impl<'a> core::marker::UnsafeUnpin for controlplane::MergedSection<'a>
 impl<'a> core::panic::unwind_safe::RefUnwindSafe for controlplane::MergedSection<'a>
 impl<'a> core::panic::unwind_safe::UnwindSafe for controlplane::MergedSection<'a>
+pub struct controlplane::MoneyShapeError
+impl core::clone::Clone for controlplane::MoneyShapeError
+pub fn controlplane::MoneyShapeError::clone(&self) -> Self
+impl core::cmp::Eq for controlplane::MoneyShapeError
+impl core::cmp::PartialEq for controlplane::MoneyShapeError
+pub fn controlplane::MoneyShapeError::eq(&self, &Self) -> bool
+impl core::fmt::Debug for controlplane::MoneyShapeError
+pub fn controlplane::MoneyShapeError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for controlplane::MoneyShapeError
+impl core::marker::StructuralPartialEq for controlplane::MoneyShapeError
+impl core::marker::Forget for controlplane::MoneyShapeError
+impl core::marker::Freeze for controlplane::MoneyShapeError
+impl core::marker::Send for controlplane::MoneyShapeError
+impl core::marker::Sync for controlplane::MoneyShapeError
+impl core::marker::Unpin for controlplane::MoneyShapeError
+impl core::marker::UnsafeUnpin for controlplane::MoneyShapeError
+impl core::panic::unwind_safe::RefUnwindSafe for controlplane::MoneyShapeError
+impl core::panic::unwind_safe::UnwindSafe for controlplane::MoneyShapeError
 pub struct controlplane::NavEntry
 pub controlplane::NavEntry::counter: core::option::Option<alloc::string::String>
 pub controlplane::NavEntry::icon: alloc::string::String
@@ -2216,6 +2297,8 @@ impl core::panic::unwind_safe::RefUnwindSafe for controlplane::WriteRefusal
 impl core::panic::unwind_safe::UnwindSafe for controlplane::WriteRefusal
 pub const controlplane::DEFAULT_PANEL_DEADLINE_MS: u32
 pub const controlplane::DEFAULT_SEARCH_DEADLINE_MS: u32
+pub const controlplane::EVENT_LOG_PAGE: &str
+pub const controlplane::EVENT_LOG_PAGE_MODULE: &str
 pub const controlplane::MAX_INPUT_VALUE_BYTES: usize
 pub const controlplane::MAX_PANEL_REFS: usize
 pub const controlplane::PAGE_PARAM_QUEUE_STATE: &str
@@ -2339,9 +2422,11 @@ pub const controlplane::Tone::VARIANTS: &'static [&'static str]
 pub fn controlplane::Tone::variant(&self) -> &'static str
 pub fn controlplane::declared_enums() -> &'static [controlplane::DeclaredEnum]
 pub fn controlplane::decode_field(&controlplane::FieldKind, &str) -> core::result::Result<controlplane::FieldValue, controlplane::FieldError>
+pub fn controlplane::decode_money(&str) -> core::result::Result<(alloc::string::String, alloc::string::String), controlplane::MoneyShapeError>
 pub fn controlplane::encode_field(&controlplane::FieldKind, &controlplane::FieldValue) -> alloc::string::String
 pub fn controlplane::fake_hash(&str, &str) -> u64
 pub fn controlplane::form_mode_error(&controlplane::Manifest, &controlplane::ActionPoint, &controlplane::FormMode) -> core::option::Option<alloc::string::String>
 pub fn controlplane::form_mode_errors(&controlplane::Manifest, &controlplane::ActionPoint, &controlplane::FormSpec) -> alloc::vec::Vec<alloc::string::String>
 pub fn controlplane::form_spec_errors(&controlplane::FormSpec) -> alloc::vec::Vec<alloc::string::String>
 pub fn controlplane::merge_sections<'a>(impl core::iter::traits::collect::IntoIterator<Item = &'a controlplane::Manifest>) -> controlplane::SectionMerge<'a>
+pub fn controlplane::purge_backlog_body(&str, i64, &str, &str) -> controlplane::PanelBody

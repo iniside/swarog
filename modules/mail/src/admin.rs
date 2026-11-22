@@ -12,6 +12,7 @@ use controlplane::{
     Point, PrepareCall, Primitive, Provider, QueueItem, QueueState, ReasonReq, Role, SearchHit, SearchQuery,
     Severity, Then, Tone, WorkQueue, DEFAULT_PANEL_DEADLINE_MS, PAGE_PARAM_QUEUE_STATE, PAGE_PARAM_SEARCH,
 };
+use controlplane::order;
 use opsapi::Error;
 
 use crate::address::parse_address;
@@ -281,7 +282,7 @@ fn manifest() -> Manifest {
             id: PAGE.to_string(),
             label: "Mail outbox".to_string(),
             icon: "mail".to_string(),
-            order: 20,
+            order: order::platform_nav::MAIL,
             page: PAGE.to_string(),
             counter: Some(NAV_QUEUE.to_string()),
         }],
@@ -297,8 +298,14 @@ fn manifest() -> Manifest {
         entity_kinds: Vec::new(),
         contributions: vec![
             contribution(NAV_QUEUE, Point::NavCounter, 0, "Mail queue", "mail"),
-            contribution(TILE_QUEUE, Point::DashboardTile, 50, "Mail queue", ""),
-            contribution(ATTENTION_QUEUE, Point::DashboardAttention, 40, "Mail relay throttling", "mail"),
+            contribution(TILE_QUEUE, Point::DashboardTile, order::dashboard_tile::MAIL, "Mail queue", ""),
+            contribution(
+                ATTENTION_QUEUE,
+                Point::DashboardAttention,
+                order::dashboard_attention::MAIL,
+                "Mail relay throttling",
+                "mail",
+            ),
             contribution(OUTBOX, Point::Page(PAGE.to_string()), 10, "Outbox", ""),
         ],
         actions: vec![

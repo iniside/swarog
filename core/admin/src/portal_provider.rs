@@ -6,6 +6,7 @@ use controlplane::{
     ContributionDecl, InvokeCall, InvokeOutcome, Manifest, PanelBody, PanelQuery, Point, Primitive, Provider, Role,
     SearchHit, SearchQuery, ServiceState, ServiceStatus, DEFAULT_PANEL_DEADLINE_MS,
 };
+use controlplane::order;
 
 use crate::fakes;
 
@@ -55,13 +56,49 @@ impl Provider for PortalProvider {
         Manifest {
             module: MODULE.to_string(),
             contributions: vec![
-                contribution(TILE_LORE_SEATS, Point::DashboardTile, 20, "Lore seats", ""),
-                contribution(TILE_LORE_STORE, Point::DashboardTile, 30, "Lore store used", ""),
-                contribution(TILE_MATCHES, Point::DashboardTile, 80, "Matches in progress", ""),
-                contribution(ATTENTION_SERVICES, Point::DashboardAttention, 10, "Service health", "alert"),
-                contribution(ATTENTION_LORE, Point::DashboardAttention, 30, "Lore locks", "lock"),
-                contribution(ATTENTION_SCHEDULER, Point::DashboardAttention, 50, "Scheduler runs", "clock"),
-                contribution(HEALTH, Point::DashboardWide, 100, "Service health", ""),
+                contribution(
+                    TILE_LORE_SEATS,
+                    Point::DashboardTile,
+                    order::dashboard_tile::PORTAL_LORE_SEATS,
+                    "Lore seats",
+                    "",
+                ),
+                contribution(
+                    TILE_LORE_STORE,
+                    Point::DashboardTile,
+                    order::dashboard_tile::PORTAL_LORE_STORE,
+                    "Lore store used",
+                    "",
+                ),
+                contribution(
+                    TILE_MATCHES,
+                    Point::DashboardTile,
+                    order::dashboard_tile::PORTAL_MATCHES,
+                    "Matches in progress",
+                    "",
+                ),
+                contribution(
+                    ATTENTION_SERVICES,
+                    Point::DashboardAttention,
+                    order::dashboard_attention::PORTAL_SERVICES,
+                    "Service health",
+                    "alert",
+                ),
+                contribution(
+                    ATTENTION_LORE,
+                    Point::DashboardAttention,
+                    order::dashboard_attention::PORTAL_LORE,
+                    "Lore locks",
+                    "lock",
+                ),
+                contribution(
+                    ATTENTION_SCHEDULER,
+                    Point::DashboardAttention,
+                    order::dashboard_attention::PORTAL_SCHEDULER,
+                    "Scheduler runs",
+                    "clock",
+                ),
+                contribution(HEALTH, Point::DashboardWide, order::dashboard_wide::PORTAL_HEALTH, "Service health", ""),
             ],
             writes: false,
             ..Manifest::default()

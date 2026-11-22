@@ -9,6 +9,7 @@ use controlplane::{
     EntityRef, InvokeCall, InvokeOutcome, Link, Manifest, Noun, PageInfo, PanelBody, PanelQuery, Point, Primitive,
     Provider, Role, Row, SearchHit, SearchQuery, Then, Tone, DEFAULT_PANEL_DEADLINE_MS,
 };
+use controlplane::order;
 use friendsapi::{DIRECTION_INCOMING, DIRECTION_OUTGOING, STATE_ACCEPTED, STATE_PENDING};
 use opsapi::Error;
 use std::sync::Arc;
@@ -235,9 +236,14 @@ pub(crate) fn manifest() -> Manifest {
             icon: "users".to_string(),
         }],
         contributions: vec![
-            contribution(FRIENDS, tab, 50, "Friends"),
+            contribution(FRIENDS, tab, order::player_tab::FRIENDS, "Friends"),
             contribution(TAB_COUNT, tab_count, 0, "Friends"),
-            contribution(ATTENTION_PURGES, Point::DashboardAttention, 64, "Friends purges pending"),
+            contribution(
+                ATTENTION_PURGES,
+                Point::DashboardAttention,
+                order::dashboard_attention::FRIENDS_PURGES,
+                "Friends purges pending",
+            ),
         ],
         // No admin removal exists yet: drawn disabled, never invoked.
         actions: vec![ActionDecl {

@@ -21,6 +21,7 @@ use controlplane::{
     Manifest, NavEntry, Noun, PageDecl, PageInfo, Palette, PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider,
     Role, Row, SearchHit, SearchQuery, Then, Tone, DEFAULT_PANEL_DEADLINE_MS, MAX_PANEL_REFS,
 };
+use controlplane::order;
 use opsapi::{Error, Status};
 use walletapi::{
     Balance, Currency, Movement, Wallet as _, MAX_CURRENCY_CODE_BYTES, MAX_MOVEMENT_AMOUNT, MAX_REASON_BYTES,
@@ -849,14 +850,14 @@ fn contribution(id: &str, point: Point, order: i32, title: &str, icon: &str) -> 
     }
 }
 
-/// An operator's write, at order 40 (the player row menu's wallet group) unless it says otherwise.
+/// An operator's write, in the player row menu's wallet group unless it says otherwise.
 fn action(id: &str, point: ActionPoint, label: &str, icon: &str, then: Then) -> ActionDecl {
     ActionDecl {
         id: id.to_string(),
         point,
         label: label.to_string(),
         icon: icon.to_string(),
-        order: 40,
+        order: order::player_row_action::WALLET,
         danger: false,
         multi: false,
         min_role: Role::Operator,
@@ -919,19 +920,37 @@ pub(crate) fn manifest(headline: &str) -> Manifest {
         }],
         entity_kinds: Vec::new(),
         contributions: vec![
-            contribution(TRANSACTIONS, tab, 30, "Transactions", ""),
+            contribution(TRANSACTIONS, tab, order::player_tab::WALLET, "Transactions", ""),
             contribution(TILES, tiles, 0, "Wallet", ""),
-            contribution(FACT_BALANCE, Point::EntitySummary(KIND.to_string()), 50, "Wallet", "coins"),
+            contribution(
+                FACT_BALANCE,
+                Point::EntitySummary(KIND.to_string()),
+                order::player_fact::WALLET,
+                "Wallet",
+                "coins",
+            ),
             contribution(CURRENCIES_PANEL, Point::Page(PAGE.to_string()), 10, "Currencies", ""),
             contribution(GRANT_PANEL, Point::Page(PAGE.to_string()), 20, "Grant or revoke", ""),
             contribution(LEDGER_PANEL, Point::Page(PAGE.to_string()), 30, "Ledger", ""),
-            contribution(COLUMN_BALANCE, list_column, 30, &headline_label(headline), ""),
+            contribution(COLUMN_BALANCE, list_column, order::player_column::WALLET, &headline_label(headline), ""),
             // A 24 h total tolerates a minute of staleness, as accounts' and mail's tiles.
             ContributionDecl {
                 cache_ttl_s: Some(60),
-                ..contribution(TILE_SPENT, Point::DashboardTile, 70, &spent_title(headline), "")
+                ..contribution(
+                    TILE_SPENT,
+                    Point::DashboardTile,
+                    order::dashboard_tile::WALLET,
+                    &spent_title(headline),
+                    "",
+                )
             },
-            contribution(ATTENTION_PURGES, Point::DashboardAttention, 62, "Wallet purges pending", ""),
+            contribution(
+                ATTENTION_PURGES,
+                Point::DashboardAttention,
+                order::dashboard_attention::WALLET_PURGES,
+                "Wallet purges pending",
+                "",
+            ),
         ],
         // The row pair is `prepare: true` because a Money field's options are the live
         // catalog codes; the declared forms fix only the variant and carry none.

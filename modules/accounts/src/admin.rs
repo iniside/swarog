@@ -14,6 +14,7 @@ use controlplane::{
     SearchHit, SearchQuery, SortDir, Then, Tone, DEFAULT_PANEL_DEADLINE_MS,
     DEFAULT_SEARCH_DEADLINE_MS,
 };
+use controlplane::order;
 use opsapi::Error;
 
 use crate::providers::{DEV, EPIC, GOOGLE, GUEST};
@@ -384,15 +385,36 @@ fn manifest() -> Manifest {
         }],
         contributions: vec![
             contribution(NAV_PLAYERS, Point::NavCounter, 0, "Users & players", "users", Some(60)),
-            contribution(TILE_ACTIVE, Point::DashboardTile, 10, "Active players (24 h)", "", Some(60)),
+            contribution(
+                TILE_ACTIVE,
+                Point::DashboardTile,
+                order::dashboard_tile::ACCOUNTS,
+                "Active players (24 h)",
+                "",
+                Some(60),
+            ),
             // Untitled: the mockup's players table has no panel head.
             contribution(PLAYERS, Point::Page(PAGE.to_string()), 10, "", "", None),
             contribution(HEADER, Point::EntityHeader(KIND.to_string()), 0, "Player", "user", None),
-            contribution(FACT_ID, Point::EntitySummary(KIND.to_string()), 10, "User id", "hash", None),
-            contribution(FACT_JOINED, Point::EntitySummary(KIND.to_string()), 20, "Joined", "clock", None),
-            tab(PROFILE, 10, "Profile"),
-            tab(IDENTITIES, 30, "Linked identities"),
-            tab(SESSIONS, 40, "Active sessions"),
+            contribution(
+                FACT_ID,
+                Point::EntitySummary(KIND.to_string()),
+                order::player_fact::ACCOUNTS_ID,
+                "User id",
+                "hash",
+                None,
+            ),
+            contribution(
+                FACT_JOINED,
+                Point::EntitySummary(KIND.to_string()),
+                order::player_fact::ACCOUNTS_JOINED,
+                "Joined",
+                "clock",
+                None,
+            ),
+            tab(PROFILE, order::player_tab::ACCOUNTS_PROFILE, "Profile"),
+            tab(IDENTITIES, order::player_tab::ACCOUNTS_IDENTITIES, "Linked identities"),
+            tab(SESSIONS, order::player_tab::ACCOUNTS_SESSIONS, "Active sessions"),
             contribution(LABEL, Point::EntityLabel { kind: KIND.to_string() }, 0, "Player", "", None),
         ],
         actions: vec![
@@ -401,15 +423,31 @@ fn manifest() -> Manifest {
             // NEW: accounts are created only by a player's own registration.
             not_implemented(CREATE_ACCOUNT, page(), "Create account", "plus", 20, false, primary),
             // NEW: no suspension exists.
-            not_implemented(SUSPEND, row(), "Suspend account…", "ban", 20, false, plain),
+            not_implemented(
+                SUSPEND,
+                row(),
+                "Suspend account…",
+                "ban",
+                order::player_row_action::ACCOUNTS_SUSPEND,
+                false,
+                plain,
+            ),
             // NEW: deletion is the player's own two-step flow, with no operator path.
-            not_implemented(DELETE_ACCOUNT, row(), "Delete account…", "trash", 30, true, plain),
+            not_implemented(
+                DELETE_ACCOUNT,
+                row(),
+                "Delete account…",
+                "trash",
+                order::player_row_action::ACCOUNTS_DELETE,
+                true,
+                plain,
+            ),
             not_implemented(
                 SUSPEND_HEADER,
                 ActionPoint::HeaderAction(KIND.to_string()),
                 "Suspend",
                 "ban",
-                30,
+                order::player_header_action::ACCOUNTS_SUSPEND,
                 true,
                 plain,
             ),

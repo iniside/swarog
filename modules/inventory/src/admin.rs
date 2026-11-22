@@ -10,6 +10,7 @@ use controlplane::{
     EntityRef, FilterDef, FilterKind, InvokeCall, InvokeOutcome, Manifest, Noun, PageInfo, PanelBody, PanelQuery,
     Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery, Then, DEFAULT_PANEL_DEADLINE_MS,
 };
+use controlplane::order;
 use opsapi::Error;
 use std::sync::Arc;
 
@@ -322,12 +323,24 @@ pub(crate) fn manifest() -> Manifest {
             icon: "box".to_string(),
         }],
         contributions: vec![
-            contribution(INVENTORY, tab, 40, "Inventory"),
+            contribution(INVENTORY, tab, order::player_tab::INVENTORY, "Inventory"),
             contribution(TAB_COUNT, tab_count, 0, "Inventory"),
-            contribution(ATTENTION_PURGES, Point::DashboardAttention, 63, "Inventory purges pending"),
+            contribution(
+                ATTENTION_PURGES,
+                Point::DashboardAttention,
+                order::dashboard_attention::INVENTORY_PURGES,
+                "Inventory purges pending",
+            ),
         ],
         actions: vec![
-            not_implemented(ITEM_GRANT, ActionPoint::RowAction(KIND.to_string()), "Grant item…", "box", 50, false),
+            not_implemented(
+                ITEM_GRANT,
+                ActionPoint::RowAction(KIND.to_string()),
+                "Grant item…",
+                "box",
+                order::player_row_action::INVENTORY,
+                false,
+            ),
             not_implemented(ITEM_GRANT_TOOL, ActionPoint::PanelTool(INVENTORY.to_string()), "Grant item", "gift", 0, false),
             not_implemented(
                 HOLDING_REVOKE,

@@ -90,6 +90,7 @@ macro_rules! variants {
 }
 
 pub mod events;
+pub mod order;
 
 /// What a module writes: one static manifest plus the panel, search, invoke and prepare
 /// handlers.

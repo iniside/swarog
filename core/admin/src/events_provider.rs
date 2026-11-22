@@ -12,6 +12,7 @@ use controlplane::{
     PanelQuery, Point, PrepareCall, Primitive, PropertyList, Provider, ReasonReq, Role, Row, SearchHit, SearchQuery,
     Severity, Then, Tone, DEFAULT_PANEL_DEADLINE_MS,
 };
+use controlplane::order;
 use sqlx::PgPool;
 
 use crate::fakes;
@@ -266,7 +267,7 @@ fn manifest() -> Manifest {
             id: PAGE.to_string(),
             label: "Event plane".to_string(),
             icon: "zap".to_string(),
-            order: 60,
+            order: order::platform_nav::EVENTS,
             page: PAGE.to_string(),
             counter: Some(NAV_PAUSED.to_string()),
         }],
@@ -286,8 +287,14 @@ fn manifest() -> Manifest {
         }],
         contributions: vec![
             contribution(NAV_PAUSED, Point::NavCounter, 0, "Paused subscriptions", "zap"),
-            contribution(TILE_PAUSED, Point::DashboardTile, 60, "Paused subscriptions", ""),
-            contribution(ATTENTION_PAUSED, Point::DashboardAttention, 20, "Paused subscriptions", "zap"),
+            contribution(TILE_PAUSED, Point::DashboardTile, order::dashboard_tile::EVENTS, "Paused subscriptions", ""),
+            contribution(
+                ATTENTION_PAUSED,
+                Point::DashboardAttention,
+                order::dashboard_attention::EVENTS,
+                "Paused subscriptions",
+                "zap",
+            ),
             contribution(KPI_HEAD, page(), 10, "Head sequence", ""),
             contribution(KPI_SUBSCRIPTIONS, page(), 20, "Subscriptions", ""),
             contribution(KPI_MAX_LAG, page(), 30, "Max lag", ""),

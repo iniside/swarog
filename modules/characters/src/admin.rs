@@ -13,6 +13,7 @@ use controlplane::{
     Manifest, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row, SearchHit, SearchQuery,
     DEFAULT_PANEL_DEADLINE_MS, MAX_PANEL_REFS,
 };
+use controlplane::order;
 use opsapi::Error;
 
 use crate::Service;
@@ -284,12 +285,24 @@ pub(crate) fn manifest() -> Manifest {
             icon: "swords".to_string(),
         }],
         contributions: vec![
-            contribution(CHARACTERS, tab, 20, "Characters", ""),
-            contribution(FACT_COUNT, Point::EntitySummary(KIND.to_string()), 30, "Characters", "swords"),
+            contribution(CHARACTERS, tab, order::player_tab::CHARACTERS, "Characters", ""),
+            contribution(
+                FACT_COUNT,
+                Point::EntitySummary(KIND.to_string()),
+                order::player_fact::CHARACTERS,
+                "Characters",
+                "swords",
+            ),
             contribution(TAB_COUNT, tab_count, 0, "Characters", ""),
-            contribution(COLUMN_COUNT, list_column, 10, "Characters", ""),
+            contribution(COLUMN_COUNT, list_column, order::player_column::CHARACTERS, "Characters", ""),
             contribution(LABEL, label, 0, "Character", ""),
-            contribution(ATTENTION_PURGES, Point::DashboardAttention, 61, "Character purges pending", ""),
+            contribution(
+                ATTENTION_PURGES,
+                Point::DashboardAttention,
+                order::dashboard_attention::CHARACTERS_PURGES,
+                "Character purges pending",
+                "",
+            ),
         ],
         actions: Vec::new(),
         search: Vec::new(),
