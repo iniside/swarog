@@ -28,7 +28,7 @@
 - ["Didn't-forget" tooling must self-check](didnt-forget-scripts-must-self-check.md) — hand lists diff against the real source and fail early
 - [Historical docs are archives](historical-docs-are-archives.md) — never rewrite dated plans/reviews to match HEAD
 - [Config-as-code, anti-magic](config-as-code-anti-magic.md) — typed Rust config; strict data config only
-- [Follow UILayout mockup faithfully](follow-uilayout-mockup-faithfully.md) — 1:1 incl. data shape; deviations only as admindiff accept entries
+- [Follow UILayout mockup faithfully](follow-uilayout-mockup-faithfully.md) — layout + data must match, not pixel-exact (2026-11-22); no invented or dropped elements
 - [Timing-sensitive tests doctrine](timing-sensitive-tests-doctrine.md) — never race a real clock in tests
 - [Verify the session model before claims](verify-session-model-before-claims.md) — don't infer the model from catalogs or context size
 - [Work on master, no branches](work-on-master-no-branches.md) — commit on master; push only when asked
@@ -67,3 +67,4 @@
 - [Admin refactor: red gates expected](admin-refactor-red-gates-expected.md) — /admin splitproof 404s expected until the panel lands
 - [demoseed is the one seeder](demoseed-is-the-one-seeder.md) — public-API seeding only, no per-module seeders
 - [Step 13 resume point](step13-resume-point.md) — admin redesign Step 13 state and next action
+- [Demoseed client simulator decisions](demoseed-client-simulator-decisions.md) — replaces Step 24b; parallel, every public op, report errors at end, monolith only

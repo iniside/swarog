@@ -1,16 +1,26 @@
 ---
 name: follow-uilayout-mockup-faithfully
-description: "When building UI that has a UILayout/ mockup, translate it verbatim — never improvise visuals; lane per the UI rule in the implementation-dispatch skill"
+description: "UI with a UILayout/ mockup: match its layout and data, never improvise visuals; not pixel-exact (owner 2026-11-22); lane per the UI rule in the implementation-dispatch skill"
 metadata: 
   node_type: memory
   type: feedback
   originSessionId: 88cdd953-b406-40a0-8ab2-6c7eb07acece
-  modified: 2026-11-18T15:29:21.437Z
+  modified: 2026-11-22T14:02:26.044Z
 ---
 
 When reproducing any admin/UI screen, the visual source of truth is the repo's mockup
 (`UILayout/redesign/`, built on the design system in `UILayout/design-system/`). Do NOT
 invent layout/colours/fonts.
+
+**Fidelity bar (owner, 2026-11-22, admin control-plane redesign, from the step after the one in flight):**
+"zgodność z mockupem była zbyt dosłowna. Ma się zgadzać layout i dane, a nie co do pixela."
+The mockup fixes which elements a page has, where they sit and what data they show. It does
+not fix per-pixel styling. My reading of what follows: no new contract variant or field
+(`CellKind`, `Column`, `ActionDecl` flags…) for a purely visual nuance — use the nearest
+existing primitive; no further admindiff feature work (owner agreed to freeze admindiff and
+the primitive vocabulary for the remaining ports); visual differences are accept entries for
+the second pass. Still binding: no invented layout, no dropped element, no own filler data.
+Where points 5–7 below say "1:1" or "element-by-element", read them at this bar.
 
 **Why:** caught improvising a whole GameOps theme (own palette/fonts/layout) for the
 jvm-kotlin-sketch admin panel while the exact spec sat in `UILayout/GameOps Admin.dc.html`.
