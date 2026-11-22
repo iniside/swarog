@@ -62,3 +62,14 @@ fn ledger_player_cell_refuses_an_unlabelled_uuid() {
     let leaked = cell(&link, "L", "Ledger#1812").replace(r#"class="user-cell""#, &format!(r#"class="user-cell" title="{pid}""#));
     assert!(!player_cell_ok(&leaked, pid, "Ledger#1812"));
 }
+
+#[test]
+fn inventory_holding_read_takes_exactly_one_row() {
+    use super::inventory_admin_checks::only;
+    assert_eq!(only(vec!["coin"], "player holding").unwrap(), "coin");
+    // A second holding fails the fixture instead of letting the first row pass (a fetch_one
+    // would take it), and so does none.
+    let two = only(vec!["coin", "sword"], "player holding").unwrap_err();
+    assert!(two.to_string().contains("2 player holding rows"), "{two}");
+    assert!(only(Vec::<&str>::new(), "character holding").is_err());
+}

@@ -19,6 +19,15 @@ type Drawn = (String, String, String, String);
 /// characters-svc to inventory-svc and filled `inventory.character_owners`; and the Owner select
 /// narrows the rows only when the tab's params survive the internal edge to inventory-svc's
 /// panel query.
+///
+/// Break runs (each a full splitproof run, then reverted):
+/// - admin-svc without its `inventory` peer (`cmd/admin-svc/src/lib.rs`): IV1-IV4 red in the
+///   split, the monolith green (2026-11-22, a2510cf3).
+/// - `#[serde(skip)]` on `PanelQuery::params`: IV2 and IV3 red in the split, the monolith green
+///   (2026-11-22, a2510cf3).
+/// - admin-svc without its `characters` peer: IV1 and IV2 red in the split (the character
+///   row's owner cell draws the character id, not its name), IV3 and IV4 green, the monolith
+///   green (2026-11-22, step 16e).
 pub(super) async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) -> Result<()> {
     if let Err(e) = checks(ctx, pool, p, front, admin, tag).await {
         p.check(&format!("[IV0{tag}] inventory admin pass completes"), false, format!("{e:#}"));
@@ -61,24 +70,27 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
         bail!("fixture: player {pid} holds {mine} items directly, expected 1");
     }
     // The rows as the DB holds them, drawn by name; the starter item is asserted by owner only,
-    // since [C2] can retarget it.
+    // since [C2] can retarget it. Each read takes every row of its owner and `only` bails unless
+    // there is exactly one, so a second holding cannot pass for the one the tab must draw.
     let item_of = |sql: &'static str, id: String| async move {
-        sqlx::query_as::<_, (String, String, i64)>(sql).bind(id).fetch_one(pool).await
+        sqlx::query_as::<_, (String, String, i64)>(sql).bind(id).fetch_all(pool).await
     };
-    let (p_name, p_kind, p_qty) = item_of(
+    let player_rows = item_of(
         "SELECT i.name, i.kind, h.quantity::bigint FROM inventory.holdings h JOIN inventory.items i ON i.id = h.item_id \
           WHERE h.owner_type = 'player' AND h.owner_id::text = $1",
         pid.clone(),
     )
     .await
     .context("read the player holding")?;
-    let (c_name, c_kind, c_qty) = item_of(
+    let character_rows = item_of(
         "SELECT i.name, i.kind, h.quantity::bigint FROM inventory.holdings h JOIN inventory.items i ON i.id = h.item_id \
           WHERE h.owner_type = 'character' AND h.owner_id::text = $1",
         cid.clone(),
     )
     .await
     .context("read the character holding")?;
+    let (p_name, p_kind, p_qty) = only(player_rows, "player holding")?;
+    let (c_name, c_kind, c_qty) = only(character_rows, "character holding")?;
     if p_qty != PLAYER_QTY {
         bail!("fixture: player holding qty {p_qty}, expected {PLAYER_QTY}");
     }
@@ -122,6 +134,16 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
         count_code == 200 && attr(&count, "data-state") == "ok" && count.contains(r#"<span class="count">2</span>"#),
         format!("status={count_code} body={:?}", cut(&count)));
     Ok(())
+}
+
+/// The one row of `rows`; any other count fails the fixture.
+pub(super) fn only<T>(rows: Vec<T>, what: &str) -> Result<T> {
+    let n = rows.len();
+    let mut rows = rows.into_iter();
+    match (rows.next(), rows.next()) {
+        (Some(row), None) => Ok(row),
+        _ => bail!("fixture: {n} {what} rows, expected exactly 1"),
+    }
 }
 
 /// The panel meta the tab draws over `n` holdings of player `pid`.

@@ -1,0 +1,53 @@
+# Splitproof checks known to be red, one `id | reason` per line (id = the check's leading
+# [..] text, monolith ids end in m). A failed check listed here is expected; one not listed
+# is new; a listed id whose checks all passed is stale. New or stale fails the run, so remove
+# an entry in the commit that turns its check green.
+# Plan: docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md
+
+# monolith
+M3 | monolith login then GET /admin/characters, a page the admin control-plane redesign retired; re-pointed once the admin panel port is complete (owner 2026-11-21)
+M3b | posts create_role to the razed /admin/api-keys page (SPLITPROOF-06, plan step 21)
+WL6m | revokes through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+NT4m | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+ML3m | reads the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+ML4m | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+ML4bm | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+PH3m | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+PH11m | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+FR8m | reads the retired /admin/friends page; re-pointed with the friends tab (plan step 17)
+GR5m | reads the retired /admin/groups page; re-pointed with the groups tab (plan step 18)
+PY7m | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+
+# split
+AD3a | reads the retired /admin/characters page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+ADX1 | reads the retired /admin/players row-menu extensions; re-pointed once the admin panel port is complete (owner 2026-11-21)
+ADX2 | reads the retired /admin/characters?owner= page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+ADX3 | reads the retired admin modal fragment; re-pointed once the admin panel port is complete (owner 2026-11-21)
+ADX3b | reads the retired admin modal page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+AD3b | reads the razed /admin/api-keys page (SPLITPROOF-06, plan step 21)
+AD4 | posts to the razed /admin/api-keys page, which answers 404 not 403 (SPLITPROOF-06, plan step 21)
+AD6b | posts to the razed /admin/api-keys page (SPLITPROOF-06, plan step 21)
+AD6c | posts to the razed /admin/api-keys page (SPLITPROOF-06, plan step 21)
+AD6d | reads the key AD6c creates through the razed /admin/api-keys page (SPLITPROOF-06, plan step 21)
+AD6e | uses the key AD6c creates through the razed /admin/api-keys page (SPLITPROOF-06, plan step 21)
+AD6f | posts to the razed /admin/api-keys page (SPLITPROOF-06, plan step 21)
+AD6g | counts the form-submit audit rows of the razed /admin/api-keys posts (SPLITPROOF-06, plan step 21)
+AU3 | reads the retired /admin/audit-log page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+WL3 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+WL4 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+WL5 | counts the wallet.changed rows of the WL3/WL4 grants through the retired /admin/wallet page (owner 2026-11-21)
+WL6 | revokes through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+NT2 | posts operator mail to the retired /admin/inbox page; re-pointed with the notifications step (plan step 20)
+NT2b | resubmits to the retired /admin/inbox page; re-pointed with the notifications step (plan step 20)
+NT2c | submits to the retired /admin/inbox page; re-pointed with the notifications step (plan step 20)
+NT3 | reads the inbox row NT2 posts through the retired /admin/inbox page (plan step 20)
+NT4 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+ML3 | reads the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+ML4 | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+ML4b | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+PH3 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+PH6 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+PH11 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
+FR8 | reads the retired /admin/friends page; re-pointed with the friends tab (plan step 17)
+GR5 | reads the retired /admin/groups page; re-pointed with the groups tab (plan step 18)
+PY7 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)

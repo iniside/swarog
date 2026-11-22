@@ -32,6 +32,7 @@ use crate::idp::Idp;
 use crate::pushws::{Frame, PushClient};
 
 mod characters_admin_checks;
+mod expected_red;
 mod idp;
 mod inventory_admin_checks;
 mod party_checks;
@@ -142,8 +143,9 @@ fn ensure_no_stale_listener(svc_name: &str, port: u16) -> Result<()> {
     Ok(())
 }
 
-/// Tiny assertion recorder: prints PASS/FAIL per check, keeps a failure list, and the
-/// process exits non-zero iff any check failed.
+/// Tiny assertion recorder: prints PASS/FAIL per check and keeps a failure list; the process
+/// exits non-zero iff a failed check is not listed in `expected-red.txt` or a listed one passed
+/// (`expected_red::sort`).
 #[derive(Default)]
 struct Proof {
     pass: u32,
@@ -691,7 +693,7 @@ fn main() -> std::process::ExitCode {
     match result {
         Ok(0) => std::process::ExitCode::SUCCESS,
         Ok(n) => {
-            eprintln!("splitproof: {n} assertion(s) failed");
+            eprintln!("splitproof: {n} new or stale red check(s)");
             std::process::ExitCode::FAILURE
         }
         Err(e) => {
@@ -733,6 +735,9 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
         fleet,
         environment,
     };
+
+    // The known-red list, read before anything boots so a malformed line fails in seconds.
+    let expected_red = expected_red::load(&root)?;
 
     // Fleet-drift tripwire: the centralized processctl fleet must equal
     // cmd/*-svc on disk.
@@ -808,16 +813,29 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     let phase = proof_phase(&ctx, &pool, &idp, fleet, &mut p).await;
     clear_wallet_starter_config(&pool).await;
 
+    let sorted = expected_red::sort(&expected_red, &p.fail);
     println!(
-        "\n[splitproof] {} passed, {} failed",
+        "\n[splitproof] {} passed, {} failed: {} expected, {} new; {} stale",
         p.pass,
-        p.fail.len()
+        p.fail.len(),
+        sorted.expected.len(),
+        sorted.new.len(),
+        sorted.stale.len()
     );
-    for f in &p.fail {
-        println!("  - FAILED: {f}");
+    println!("  expected red ({}):", sorted.expected.len());
+    for (name, reason) in &sorted.expected {
+        println!("  - EXPECTED: {name} ({reason})");
+    }
+    println!("  new red ({}):", sorted.new.len());
+    for name in &sorted.new {
+        println!("  - NEW: {name}");
+    }
+    println!("  stale, listed in {} but not red ({}):", expected_red::EXPECTED_RED_PATH, sorted.stale.len());
+    for (id, reason) in &sorted.stale {
+        println!("  - STALE: {id} | {reason}");
     }
     phase?;
-    Ok(p.fail.len() as u32)
+    Ok(sorted.blocking() as u32)
 }
 
 /// Every assertion phase, split + monolith parity, with the fleet's ownership moved in so it

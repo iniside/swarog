@@ -87,6 +87,10 @@ pub(super) async fn get(admin: &reqwest::Client, url: &str) -> Result<(u16, Stri
 /// `admin` holds a session on. In the split that portal is admin-svc, which reaches characters
 /// only through its `characters` peer, so every panel here crosses the internal edge; a missing
 /// or broken peer turns the slots to `error` and fails CH1-CH4.
+///
+/// Break run (a full splitproof run, then reverted): admin-svc without its `characters` peer
+/// (`cmd/admin-svc/src/lib.rs`) turned CH1-CH4 red in the split, the monolith green
+/// (2026-11-22, admin-control-plane-redesign step 16e).
 pub(super) async fn assertions(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &reqwest::Client, tag: &str) -> Result<()> {
     if let Err(e) = checks(ctx, pool, p, front, admin, tag).await {
         p.check(&format!("[CH0{tag}] characters admin pass completes"), false, format!("{e:#}"));
