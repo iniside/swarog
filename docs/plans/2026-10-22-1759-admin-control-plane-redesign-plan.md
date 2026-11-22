@@ -2179,6 +2179,13 @@ The ports:
       count, Owner/Type selects and search, `Cell.label` owner cell, disabled "Grant item"
       tool and "Revoke item…" row action with their todo item, Purges pending at 63 via
       `purge_backlog_body`, dead readers deleted.
+    - **16a2f** (proof audit of b5fff581): the three missing inventory tests: search halves
+      and `_` escaping, panel paging past `ADMIN_PAGE_SIZE` with the cursor fed back, and the
+      keyset across two characters then player rows.
+    - **16t** (test-author, owner 2026-11-22): splitproof `inventory_admin_checks.rs` on the
+      `characters_admin_checks.rs` pattern, both topologies: a character-owned row reaches the
+      Inventory tab (`character.created` crosses to inventory-svc) and `owner=character` narrows
+      the rows (16a0 params reach inventory-svc's panel query), each with a recorded break run.
     - **16b**: the monolith and split crawls, the accept files of checklist §7, and view
       fixes only where a crawl shows the portal drawing differently from the mockup.
 - **Step 17 — friends.** Friends tab. One a (Na1 with Na3): the tab (order 50), Purges
