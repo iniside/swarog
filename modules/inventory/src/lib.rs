@@ -13,6 +13,7 @@
 //! to the service with the verified caller identity threaded in — never a
 //! client-supplied one. An impl crate: no other module imports it.
 
+mod admin;
 mod owner;
 mod projection;
 mod service;
@@ -359,6 +360,10 @@ impl Module for Inventory {
             ctx.contribute(opsapi::BINDING_SLOT, op.binding);
             ctx.contribute(opsapi::LOCAL_SLOT, op.local);
         }
+
+        // Contributed unconditionally: whichever process hosts inventory serves its admin panels.
+        let provider: Arc<dyn controlplane::Provider> = Arc::new(admin::InventoryAdmin::new(inner.clone()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
 
         // Edge exposure, contributed UNCONDITIONALLY — topology-blind: `app::run`
         // applies this iff the entrypoint stood up an internal edge server (then a

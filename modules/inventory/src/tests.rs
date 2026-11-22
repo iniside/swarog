@@ -205,6 +205,17 @@ async fn unique_uuid(pool: &PgPool) -> String {
     id
 }
 
+/// The ids of `player_id`'s characters in inventory's `character_owners` record, in id order.
+async fn recorded_characters(pool: &PgPool, player_id: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT character_id::text FROM inventory.character_owners WHERE player_id = $1::uuid ORDER BY character_id",
+    )
+    .bind(player_id)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
 async fn cleanup_owner(pool: &PgPool, owner_id: &str) {
     let _ = sqlx::query("DELETE FROM inventory.holdings WHERE owner_id = $1::uuid")
         .bind(owner_id)
@@ -272,25 +283,25 @@ async fn character_owner_record_then_wipe_on_conn() {
 
     let mut conn = pool.acquire().await.unwrap();
     inner.record_character_owner(&mut conn, &cid, &pid).await.unwrap();
-    assert_eq!(inner.store.character_ids_of(&pid).await.unwrap(), vec![cid.clone()]);
+    assert_eq!(recorded_characters(&pool, &pid).await, vec![cid.clone()]);
 
     // A redelivered character.created changes nothing.
     inner.record_character_owner(&mut conn, &cid, &pid).await.unwrap();
     assert_eq!(
-        inner.store.character_ids_of(&pid).await.unwrap(),
+        recorded_characters(&pool, &pid).await,
         vec![cid.clone()],
         "a redelivery must not add or change the record"
     );
 
     inner.wipe_character(&mut conn, &cid).await.unwrap();
     assert!(
-        inner.store.character_ids_of(&pid).await.unwrap().is_empty(),
+        recorded_characters(&pool, &pid).await.is_empty(),
         "the wipe must remove the owner record"
     );
 
     inner.record_character_owner(&mut conn, &cid, &pid).await.unwrap();
     assert!(
-        inner.store.character_ids_of(&pid).await.unwrap().is_empty(),
+        recorded_characters(&pool, &pid).await.is_empty(),
         "a record after the wipe must be skipped by the tombstone"
     );
 
@@ -310,33 +321,9 @@ async fn character_owner_wipe_before_record_records_nothing() {
     let mut conn = pool.acquire().await.unwrap();
     inner.wipe_character(&mut conn, &cid).await.unwrap();
     inner.record_character_owner(&mut conn, &cid, &pid).await.unwrap();
-    assert!(inner.store.character_ids_of(&pid).await.unwrap().is_empty());
+    assert!(recorded_characters(&pool, &pid).await.is_empty());
 
     cleanup_owner(&pool, &cid).await;
-}
-
-/// `character_ids_of` lists only the asked player's characters, in id order.
-#[tokio::test]
-async fn character_ids_of_lists_one_players_characters_in_id_order() {
-    let Some(pool) = test_pool().await else { return };
-    ensure_schema(&pool).await;
-    let (pa, pb) = (unique_uuid(&pool).await, unique_uuid(&pool).await);
-    let (c1, c2, c3) = (unique_uuid(&pool).await, unique_uuid(&pool).await, unique_uuid(&pool).await);
-    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
-
-    let mut conn = pool.acquire().await.unwrap();
-    inner.record_character_owner(&mut conn, &c1, &pa).await.unwrap();
-    inner.record_character_owner(&mut conn, &c2, &pa).await.unwrap();
-    inner.record_character_owner(&mut conn, &c3, &pb).await.unwrap();
-
-    let mut want = vec![c1.clone(), c2.clone()];
-    want.sort();
-    assert_eq!(inner.store.character_ids_of(&pa).await.unwrap(), want);
-    assert_eq!(inner.store.character_ids_of(&pb).await.unwrap(), vec![c3.clone()]);
-
-    for c in [&c1, &c2, &c3] {
-        cleanup_owner(&pool, c).await;
-    }
 }
 
 /// The wiring, through the real plane: `inventory.character-owner.v1` records the
@@ -380,7 +367,7 @@ async fn character_owner_follows_created_and_deleted_via_on_tx() {
 
     let mut recorded = false;
     for _ in 0..50 {
-        if inv.inner().store.character_ids_of(&pid).await.unwrap() == vec![cid.clone()] {
+        if recorded_characters(&pool, &pid).await == vec![cid.clone()] {
             recorded = true;
             break;
         }
@@ -401,7 +388,7 @@ async fn character_owner_follows_created_and_deleted_via_on_tx() {
 
     let mut removed = false;
     for _ in 0..50 {
-        if inv.inner().store.character_ids_of(&pid).await.unwrap().is_empty() {
+        if recorded_characters(&pool, &pid).await.is_empty() {
             removed = true;
             break;
         }
@@ -1875,4 +1862,196 @@ async fn grant_releases_the_lock_before_it_answers_a_refusal() {
     let Err(e) = granted else { panic!("a grant to a purged player must be refused") };
     assert_eq!((e.status, e.msg.as_str()), (Status::Conflict, crate::service::PLAYER_DELETED));
     assert!(!held, "a refused grant must not leave its transaction's lock held");
+}
+
+// ---- Admin: the player's Inventory tab ----------------------------------
+
+use controlplane::{ActionPoint, DataTable, EntityRef, PanelBody, PanelQuery, Point, Primitive, Provider};
+
+fn admin_query(contribution: &str, pid: &str, params: &[(&str, &str)], search: Option<&str>, cursor: Option<&str>) -> PanelQuery {
+    PanelQuery {
+        module: "inventory".into(),
+        contribution: contribution.into(),
+        entity: Some(EntityRef { kind: "player".into(), id: pid.into() }),
+        search: search.map(String::from),
+        cursor: cursor.map(String::from),
+        before: None,
+        queue_state: None,
+        range: None,
+        params: params.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+        refs: Vec::new(),
+    }
+}
+
+fn admin_table(body: &PanelBody) -> &DataTable {
+    match &body.primitive {
+        Primitive::DataTable(t) => t,
+        other => panic!("the Inventory tab is a DataTable, got {other:?}"),
+    }
+}
+
+/// Each row as (item name, owner cell value), in drawn order.
+fn admin_rows(t: &DataTable) -> Vec<(String, String)> {
+    t.rows.iter().map(|r| (r.cells[0].value.clone(), r.cells[3].value.clone())).collect()
+}
+
+/// The manifest: the tab at 40 declaring its `owner`/`type` select keys, its count, Purges
+/// pending at 63, the `holding` row kind, and three actions all drawn disabled.
+#[test]
+fn admin_manifest_declares_the_tab_its_keys_and_disabled_actions() {
+    let m = admin::manifest();
+    assert!(!m.writes);
+    let tab = m.contributions.iter().find(|c| c.id == admin::INVENTORY).expect("the tab");
+    assert_eq!(tab.order, 40);
+    match &tab.point {
+        Point::EntityTab { kind, tab, params, .. } => {
+            assert_eq!((kind.as_str(), tab.as_str()), ("player", "inventory"));
+            assert_eq!(params, &[admin::PARAM_OWNER, admin::PARAM_TYPE]);
+        }
+        other => panic!("the tab is an EntityTab, got {other:?}"),
+    }
+    let purges = m.contributions.iter().find(|c| c.id == admin::ATTENTION_PURGES).expect("purges");
+    assert_eq!((purges.order, &purges.point), (63, &Point::DashboardAttention));
+    assert!(m.contributions.iter().any(|c| c.id == admin::TAB_COUNT));
+    assert_eq!(m.entity_kinds.iter().map(|k| k.kind.as_str()).collect::<Vec<_>>(), [admin::HOLDING_KIND]);
+    assert_eq!(m.actions.len(), 3);
+    assert!(m.actions.iter().all(|a| !a.implemented), "no inventory admin write exists yet");
+    let revoke = m.actions.iter().find(|a| a.point == ActionPoint::RowAction(admin::HOLDING_KIND.into())).expect("revoke");
+    assert!(revoke.danger);
+    let grant = m.actions.iter().find(|a| a.point == ActionPoint::RowAction("player".into())).expect("grant");
+    assert_eq!(grant.order, 50);
+}
+
+/// The cursor is a holding's row id and parses back; a malformed one, or an unknown owner
+/// select, is the caller's error.
+#[test]
+fn admin_cursor_and_owner_select_are_checked() {
+    let key = HoldingKey { owner_type: "character".into(), owner_id: "c-1".into(), item_id: "starter_sword".into() };
+    assert_eq!(admin::parse_cursor(&admin::holding_id(&key)).unwrap(), key);
+    for bad in ["", "player", "player:x", "guild:x:coin", "player::coin", "player:x:"] {
+        assert_eq!(admin::parse_cursor(bad).unwrap_err().status, Status::Invalid, "{bad:?}");
+    }
+    assert_eq!(admin::owner_filter(Some("")).unwrap(), None, "the empty option narrows nothing");
+    assert_eq!(admin::owner_filter(Some("character")).unwrap(), Some("character"));
+    assert_eq!(admin::owner_filter(Some("guild")).unwrap_err().status, Status::Invalid);
+}
+
+/// The Inventory tab lists the player's own holdings and its characters' (not another
+/// player's character's), labels a character owner, and the Owner and Type selects and the
+/// search each narrow the rows AND the exact count; the tab count stays unfiltered.
+#[tokio::test]
+async fn admin_inventory_tab_lists_and_filters_narrow_rows_and_count() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let (pid, other) = (unique_uuid(&pool).await, unique_uuid(&pool).await);
+    let (mine, theirs) = (unique_uuid(&pool).await, unique_uuid(&pool).await);
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+    let mut conn = pool.acquire().await.unwrap();
+    inner.record_character_owner(&mut conn, &mine, &pid).await.unwrap();
+    inner.record_character_owner(&mut conn, &theirs, &other).await.unwrap();
+    let grants = [
+        (Owner::player(&pid), "coin", 5),
+        (Owner::player(&pid), "health_potion", 2),
+        (Owner::character(&mine), "starter_sword", 1),
+        (Owner::character(&mine), "health_potion", 3),
+        (Owner::character(&theirs), "coin", 7),
+        (Owner::player(&other), "coin", 9),
+    ];
+    for (owner, item, qty) in &grants {
+        inner.store.grant_exec(&mut conn, owner, item, *qty).await.unwrap();
+    }
+    let admin = admin::InventoryAdmin::new(inner.clone());
+    let tab = |params: &'static [(&'static str, &'static str)], search: Option<&'static str>| {
+        let q = admin_query(admin::INVENTORY, &pid, params, search, None);
+        let admin = &admin;
+        async move { admin.panel(q).await }
+    };
+
+    let all = tab(&[], None).await.unwrap();
+    let t = admin_table(&all);
+    // Primary-key order: 'character' sorts before 'player'.
+    let want = vec![
+        ("Health Potion".to_string(), mine.clone()),
+        ("Starter Sword".to_string(), mine.clone()),
+        ("Coin".to_string(), "player".to_string()),
+        ("Health Potion".to_string(), "player".to_string()),
+    ];
+    assert_eq!(admin_rows(t), want);
+    assert_eq!(t.page.total, Some(4));
+    assert_eq!(all.meta.as_deref(), Some(format!("4 items · owner player:{pid}").as_str()));
+    let label = t.rows[0].cells[3].label.as_ref().expect("a character owner is labelled");
+    assert_eq!((label.kind.as_str(), label.id.as_str()), ("character", mine.as_str()));
+    assert!(t.rows[2].cells[3].label.is_none());
+    let row = t.rows[0].entity.as_ref().expect("a holding row");
+    assert_eq!((row.kind.as_str(), row.id.clone()), ("holding", format!("character:{mine}:health_potion")));
+
+    type Case = (&'static [(&'static str, &'static str)], Option<&'static str>, Vec<&'static str>);
+    let narrowed: [Case; 6] = [
+        (&[("owner", "character")], None, vec!["Health Potion", "Starter Sword"]),
+        (&[("owner", "player")], None, vec!["Coin", "Health Potion"]),
+        (&[("type", "consumable")], None, vec!["Health Potion", "Health Potion"]),
+        (&[("owner", "player"), ("type", "consumable")], None, vec!["Health Potion"]),
+        (&[], Some("SWORD"), vec!["Starter Sword"]),
+        (&[], Some("%"), vec![]),
+    ];
+    for (params, search, names) in narrowed {
+        let body = tab(params, search).await.unwrap();
+        let t = admin_table(&body);
+        let got: Vec<String> = t.rows.iter().map(|r| r.cells[0].value.clone()).collect();
+        assert_eq!(got, names, "{params:?} {search:?}");
+        assert_eq!(t.page.total, Some(names.len() as u64), "the count narrows too: {params:?} {search:?}");
+        assert!(t.page.next_cursor.is_none());
+    }
+
+    let count = admin.panel(admin_query(admin::TAB_COUNT, &pid, &[("owner", "player")], None, None)).await.unwrap();
+    match count.primitive {
+        Primitive::Cell(c) => assert_eq!(c.value, "4", "the tab count is every holding"),
+        other => panic!("the tab count is a Cell, got {other:?}"),
+    }
+    for params in [&[("owner", "guild")][..], &[("type", "cosmetic")][..]] {
+        assert_eq!(tab(params, None).await.unwrap_err().status, Status::Invalid, "{params:?}");
+    }
+    let bad = admin_query(admin::INVENTORY, &pid, &[], None, Some("player:not-a-uuid:coin"));
+    assert_eq!(admin.panel(bad).await.unwrap_err().status, Status::Invalid);
+
+    for id in [&pid, &other, &mine, &theirs] {
+        cleanup_owner(&pool, id).await;
+    }
+}
+
+/// The keyset reader pages in primary-key order after the cursor and answers the exact
+/// count on every page, a page past the end included.
+#[tokio::test]
+async fn admin_holdings_page_keysets_and_counts_every_page() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let (pid, cid) = (unique_uuid(&pool).await, unique_uuid(&pool).await);
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+    let mut conn = pool.acquire().await.unwrap();
+    inner.record_character_owner(&mut conn, &cid, &pid).await.unwrap();
+    for (owner, item) in [
+        (Owner::player(&pid), "coin"),
+        (Owner::player(&pid), "starter_sword"),
+        (Owner::character(&cid), "coin"),
+    ] {
+        inner.store.grant_exec(&mut conn, &owner, item, 1).await.unwrap();
+    }
+    let all = HoldingsFilter { owner_type: None, kind: None, needle: None };
+    let ids = |p: &HoldingsPage| p.rows.iter().map(|h| admin::holding_id(&h.key)).collect::<Vec<_>>();
+
+    let first = inner.store.player_holdings_page(&pid, &all, None, 2).await.unwrap();
+    assert_eq!(ids(&first), [format!("character:{cid}:coin"), format!("player:{pid}:coin")]);
+    assert_eq!(first.total, 3);
+    let after = first.rows.last().map(|h| h.key.clone());
+    let second = inner.store.player_holdings_page(&pid, &all, after.as_ref(), 2).await.unwrap();
+    assert_eq!(ids(&second), [format!("player:{pid}:starter_sword")]);
+    assert_eq!(second.total, 3);
+    let after = second.rows.last().map(|h| h.key.clone());
+    let past = inner.store.player_holdings_page(&pid, &all, after.as_ref(), 2).await.unwrap();
+    assert!(past.rows.is_empty());
+    assert_eq!(past.total, 3, "a page past the end still answers the count");
+
+    for id in [&pid, &cid] {
+        cleanup_owner(&pool, id).await;
+    }
 }

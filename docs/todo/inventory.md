@@ -22,6 +22,15 @@ _None._
   INVENTORY-04. An owner with more than 1000 distinct items has the surplus
   dropped from list views, with no cursor or `has_more`
   (`modules/inventory/src/store.rs:6-11`, 2026-07-14; docs/reference/module-reference.md:156).
+- [ ] **Admin grant and revoke of items**
+  INVENTORY-05. The player's Inventory tab draws its "Grant item" tool, the player
+  row-menu "Grant item…" and the holding row-menu "Revoke item…" disabled
+  (`implemented: false`, `modules/inventory/src/admin.rs:330-339`): `api/inventory` has
+  no admin write, only the identity-bound `Holdings::grant`
+  (`api/inventory/api/src/lib.rs:80`). Needs an admin grant/revoke operation inside
+  inventory: the holding row id names the owner, and the grant form takes the player's
+  characters from `inventory.character_owners` (checklist G4/G5,
+  docs/plans/2026-11-22-step16-inventory-checklist.md §8, 2026-11-22).
 
 ### Known limits (admin-control-plane-redesign step 16)
 

@@ -76,23 +76,56 @@ pub(crate) struct Store {
     pub(crate) pool: PgPool,
 }
 
-/// One row of the admin owners list: an owner with its holding count + total qty.
-pub(crate) struct OwnerStat {
-    pub(crate) owner_type: String,
-    pub(crate) owner_id: String,
-    pub(crate) items: i64,
-    pub(crate) qty: i64,
+/// The admin Inventory tab's page size, as wallet's, mail's and accounts' tables.
+pub(crate) const ADMIN_PAGE_SIZE: usize = 25;
+
+/// The narrowing of a player's admin holdings page; `None` narrows nothing.
+pub(crate) struct HoldingsFilter<'a> {
+    /// `"player"` or `"character"`.
+    pub(crate) owner_type: Option<&'a str>,
+    /// An `items.kind`.
+    pub(crate) kind: Option<&'a str>,
+    /// A case-insensitive substring of the item id or name.
+    pub(crate) needle: Option<&'a str>,
 }
 
-/// One holdings row enriched for the admin item-detail view: the item's REAL `kind`
-/// (from the in-module `items` join) alongside id/name/quantity. Admin-only — the
-/// player-facing `inventoryapi::Holding` contract stays unchanged (`kind` is a
-/// presentation concern for the admin table, not a wire field).
-pub(crate) struct HoldingDetail {
+/// A holding's primary key, the admin page's keyset position.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HoldingKey {
+    pub(crate) owner_type: String,
+    pub(crate) owner_id: String,
     pub(crate) item_id: String,
+}
+
+/// One holding of the admin Inventory tab: the key, the item's name and its REAL `kind`
+/// (the in-module `items` join). Admin-only; the player-facing `inventoryapi::Holding`
+/// carries no `kind`.
+pub(crate) struct AdminHolding {
+    pub(crate) key: HoldingKey,
     pub(crate) item_name: String,
     pub(crate) kind: String,
     pub(crate) quantity: i64,
+}
+
+/// One page of a player's admin holdings and the exact count of every holding the filter
+/// keeps, cursor aside.
+pub(crate) struct HoldingsPage {
+    pub(crate) rows: Vec<AdminHolding>,
+    pub(crate) total: i64,
+}
+
+/// `needle` as an `ILIKE ... ESCAPE '\'` substring pattern: `%`, `_` and `\` match literally.
+fn substring_pattern(needle: &str) -> String {
+    let mut out = String::with_capacity(needle.len() + 2);
+    out.push('%');
+    for c in needle.chars() {
+        if matches!(c, '%' | '_' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('%');
+    out
 }
 
 impl Store {
@@ -193,46 +226,70 @@ impl Store {
             .collect())
     }
 
-    /// The admin item-detail list: every holding of an owner enriched with the item's
-    /// REAL `kind` (the in-module `items` join), for the ITEM/TYPE/RARITY/QTY table.
-    /// Same shape/ordering/limit as [`Store::list`] — a distinct method so the
-    /// player-facing `Holding` contract needn't grow a `kind` field.
-    pub(crate) async fn list_detail(&self, owner: &Owner) -> Result<Vec<HoldingDetail>, sqlx::Error> {
-        let rows: Vec<(String, String, String, i64)> = sqlx::query_as(&format!(
-            "SELECT h.item_id, i.name, i.kind, h.quantity::bigint \
-               FROM inventory.holdings h \
-               JOIN inventory.items i ON i.id = h.item_id \
-              WHERE h.owner_type = $1 AND h.owner_id = $2::uuid \
-              ORDER BY h.item_id LIMIT {HOLDINGS_HARD_LIMIT}"
-        ))
-        .bind(&owner.otype)
-        .bind(&owner.id)
+    /// One keyset page, in primary-key order after `after`, of the holdings a player owns
+    /// directly and through its `character_owners` characters, with the exact count of every
+    /// holding `filter` keeps. The count rides a one-row join, so a page past the end still
+    /// answers it; it is a `count(*)` because no index covers `kind` or the name.
+    pub(crate) async fn player_holdings_page(
+        &self,
+        player_id: &str,
+        filter: &HoldingsFilter<'_>,
+        after: Option<&HoldingKey>,
+        limit: i64,
+    ) -> Result<HoldingsPage, sqlx::Error> {
+        type PageRow = (i64, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>);
+        let rows: Vec<PageRow> = sqlx::query_as(
+            "WITH mine AS ( \
+               SELECT h.owner_type, h.owner_id, h.item_id, i.name, i.kind, h.quantity \
+                 FROM inventory.holdings h \
+                 JOIN inventory.items i ON i.id = h.item_id \
+                WHERE ((h.owner_type = 'player' AND h.owner_id = $1::uuid) \
+                    OR (h.owner_type = 'character' AND h.owner_id IN \
+                          (SELECT character_id FROM inventory.character_owners WHERE player_id = $1::uuid))) \
+                  AND ($2::text IS NULL OR h.owner_type = $2::text) \
+                  AND ($3::text IS NULL OR i.kind = $3::text) \
+                  AND ($4::text IS NULL OR h.item_id ILIKE $4::text ESCAPE '\\' OR i.name ILIKE $4::text ESCAPE '\\') \
+             ) \
+             SELECT t.total, p.owner_type, p.owner_id::text, p.item_id, p.name, p.kind, p.quantity::bigint \
+               FROM (SELECT count(*)::bigint AS total FROM mine) t \
+               LEFT JOIN LATERAL ( \
+                 SELECT * FROM mine \
+                  WHERE $5::text IS NULL OR (owner_type, owner_id, item_id) > ($5::text, $6::uuid, $7::text) \
+                  ORDER BY owner_type, owner_id, item_id \
+                  LIMIT $8 \
+               ) p ON true \
+              ORDER BY p.owner_type, p.owner_id, p.item_id",
+        )
+        .bind(player_id)
+        .bind(filter.owner_type)
+        .bind(filter.kind)
+        .bind(filter.needle.map(substring_pattern))
+        .bind(after.map(|k| k.owner_type.as_str()))
+        .bind(after.map(|k| k.owner_id.as_str()))
+        .bind(after.map(|k| k.item_id.as_str()))
+        .bind(limit)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows
+        let total = rows.first().map_or(0, |r| r.0);
+        let rows = rows
             .into_iter()
-            .map(|(item_id, item_name, kind, quantity)| HoldingDetail {
-                item_id,
-                item_name,
-                kind,
-                quantity,
+            .filter_map(|(_, owner_type, owner_id, item_id, item_name, kind, quantity)| {
+                Some(AdminHolding {
+                    key: HoldingKey { owner_type: owner_type?, owner_id: owner_id?, item_id: item_id? },
+                    item_name: item_name?,
+                    kind: kind?,
+                    quantity: quantity?,
+                })
             })
-            .collect())
+            .collect();
+        Ok(HoldingsPage { rows, total })
     }
 
-    /// The ids of a player's live characters, from inventory's own
-    /// `character_owners` record (served by `character_owners_player_idx`), in id
-    /// order. Capped at [`HOLDINGS_HARD_LIMIT`] as a safety belt: characters' per-player
-    /// cap is a config value far below it by default.
-    pub(crate) async fn character_ids_of(&self, player_id: &str) -> Result<Vec<String>, sqlx::Error> {
-        sqlx::query_scalar(&format!(
-            "SELECT character_id::text FROM inventory.character_owners \
-              WHERE player_id = $1::uuid \
-              ORDER BY character_id LIMIT {HOLDINGS_HARD_LIMIT}"
-        ))
-        .bind(player_id)
-        .fetch_all(&self.pool)
-        .await
+    /// The catalog's item kinds, in order.
+    pub(crate) async fn item_kinds(&self) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar("SELECT DISTINCT kind FROM inventory.items ORDER BY kind")
+            .fetch_all(&self.pool)
+            .await
     }
 
     /// Removes every holding of an owner — the event-driven cleanup when a character
@@ -257,31 +314,5 @@ impl Store {
             .fetch_optional(&mut *conn)
             .await?;
         Ok(row.is_some())
-    }
-    pub(crate) async fn stats(&self) -> Result<(i64, i64), sqlx::Error> {
-        let row: (i64, i64) = sqlx::query_as(
-            "SELECT (SELECT count(*) FROM inventory.holdings), \
-                    (SELECT count(*) FROM (SELECT DISTINCT owner_type, owner_id FROM inventory.holdings) t)",
-        )
-        .fetch_one(&self.pool)
-        .await?;
-        Ok(row)
-    }
-
-    pub(crate) async fn list_owners(&self, limit: i64) -> Result<Vec<OwnerStat>, sqlx::Error> {
-        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
-            "SELECT owner_type, owner_id::text, count(*), coalesce(sum(quantity),0)::bigint \
-               FROM inventory.holdings \
-              GROUP BY owner_type, owner_id \
-              ORDER BY owner_type, owner_id \
-              LIMIT $1",
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows
-            .into_iter()
-            .map(|(owner_type, owner_id, items, qty)| OwnerStat { owner_type, owner_id, items, qty })
-            .collect())
     }
 }

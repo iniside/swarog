@@ -40,6 +40,8 @@ async-trait = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The control-plane contract: `admin.rs` provides the player's Inventory tab.
+controlplane = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }

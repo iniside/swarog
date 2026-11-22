@@ -255,9 +255,9 @@ fn renders(repo: &Path, lists: &Lists) -> anyhow::Result<()> {
 fn the_real_mockup_draws_only_declared_tabs() {
     let repo = crate::repo_root();
     renders(&repo, &LISTS).expect("every real mockup tab is declared");
-    let fewer: Vec<(&str, &str)> = EXCLUDED_TABS.iter().copied().filter(|(id, _)| *id != "player.inventory").collect();
-    let e = format!("{:#}", renders(&repo, &Lists { excluded_tabs: &fewer, ..LISTS }).expect_err("inventory undeclared"));
-    assert_eq!(e, "tab drift:\n  mockup tab player.inventory is in neither PAGE_MAP nor EXCLUDED_TABS");
+    let fewer: Vec<(&str, &str)> = EXCLUDED_TABS.iter().copied().filter(|(id, _)| *id != "player.friends").collect();
+    let e = format!("{:#}", renders(&repo, &Lists { excluded_tabs: &fewer, ..LISTS }).expect_err("friends undeclared"));
+    assert_eq!(e, "tab drift:\n  mockup tab player.friends is in neither PAGE_MAP nor EXCLUDED_TABS");
 }
 
 /// The real mockup, rendered through node: a `NON_TAB_KEYS` key no onclick a compared render
@@ -353,31 +353,31 @@ fn the_real_mockup_defines_only_declared_menus() {
 }
 
 /// Menus are inventoried on every compared page and tab: the real player page draws its user
-/// menu on every tab, so a tab entry for the inventory tab fails without a
-/// `player.inventory.menu.user` entry and passes with one. The player page's and its user menu's
-/// `EXCLUDED_MOCK_MODALS` entries are hosted by the inventory tab and its menu too, as those draw
+/// menu on every tab, so a tab entry for the friends tab fails without a
+/// `player.friends.menu.user` entry and passes with one. The player page's and its user menu's
+/// `EXCLUDED_MOCK_MODALS` entries are hosted by the friends tab and its menu too, as those draw
 /// the same openers.
 #[test]
 fn a_real_mockup_tab_entry_needs_its_menu_entries() {
     let repo = crate::repo_root();
     let player = PAGE_MAP.iter().find(|p| p.page == "player" && p.tab.is_none() && p.is_page()).expect("PAGE_MAP lists player");
     let user = PAGE_MAP.iter().find(|p| p.id() == "player.menu.user").expect("PAGE_MAP lists player.menu.user");
-    let inventory = crate::pages::Page { tab: Some("inventory"), ..*player };
-    let inventory_user = crate::pages::Page { tab: Some("inventory"), ..*user };
-    let tabs: Vec<(&str, &str)> = EXCLUDED_TABS.iter().copied().filter(|(id, _)| *id != "player.inventory").collect();
+    let friends = crate::pages::Page { tab: Some("friends"), ..*player };
+    let friends_user = crate::pages::Page { tab: Some("friends"), ..*user };
+    let tabs: Vec<(&str, &str)> = EXCLUDED_TABS.iter().copied().filter(|(id, _)| *id != "player.friends").collect();
     let rehost = |host: &str| match host {
-        "player" => Some("player.inventory"),
-        "player.menu.user" => Some("player.inventory.menu.user"),
+        "player" => Some("player.friends"),
+        "player.menu.user" => Some("player.friends.menu.user"),
         _ => None,
     };
     let on_tab: Vec<MockModalExclusion> = EXCLUDED_MOCK_MODALS.iter().filter_map(|x| rehost(x.host).map(|host| MockModalExclusion { host, ..*x })).collect();
     let mock_modals = mock_modals(&on_tab);
-    let bare: Vec<Page> = PAGE_MAP.iter().copied().chain([inventory]).collect();
+    let bare: Vec<Page> = PAGE_MAP.iter().copied().chain([friends]).collect();
     let lists = Lists { page_map: &bare, excluded_tabs: &tabs, excluded_mock_modals: &mock_modals, ..LISTS };
-    let e = format!("{:#}", renders(&repo, &lists).expect_err("the inventory tab draws the user menu undeclared"));
-    assert_eq!(e, "menu drift:\n  mockup menu player.inventory.menu.user is not a PAGE_MAP menu entry");
-    let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([inventory, inventory_user]).collect();
-    renders(&repo, &Lists { page_map: &page_map, ..lists }).expect("the inventory tab's user menu is a menu entry");
+    let e = format!("{:#}", renders(&repo, &lists).expect_err("the friends tab draws the user menu undeclared"));
+    assert_eq!(e, "menu drift:\n  mockup menu player.friends.menu.user is not a PAGE_MAP menu entry");
+    let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([friends, friends_user]).collect();
+    renders(&repo, &Lists { page_map: &page_map, ..lists }).expect("the friends tab's user menu is a menu entry");
 }
 
 /// The portal side of the stand-in's `players.menu.user`: the same menu body, unlabelled, in the

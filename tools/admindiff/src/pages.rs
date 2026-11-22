@@ -299,6 +299,24 @@ pub const PAGE_MAP: &[Page] = &[
         modal: None,
         force: false,
     },
+    Page {
+        page: "player",
+        route: Route::FirstRow("players"),
+        search: "?u=aiko.tanaka",
+        tab: Some("inventory"),
+        menu: None,
+        modal: None,
+        force: false,
+    },
+    Page {
+        page: "player",
+        route: Route::FirstRow("players"),
+        search: "?u=aiko.tanaka",
+        tab: Some("inventory"),
+        menu: Some(USER_MENU),
+        modal: None,
+        force: false,
+    },
     Page { page: "apikeys", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
@@ -335,7 +353,6 @@ pub const EXCLUDED: &[(&str, &str)] = &[
 /// Tabs the mockup draws on a `FirstRow` page that no `PAGE_MAP` tab entry diffs, as
 /// `<page>.<tab>` with the reason. [`validate_tabs`] holds it to the mockup render.
 pub const EXCLUDED_TABS: &[(&str, &str)] = &[
-    ("player.inventory", "not ported yet: the Inventory tab arrives with the inventory port (Step 16)"),
     ("player.friends", "not ported yet: the Friends tab arrives with the friends port (Step 17)"),
     ("player.groups", "not ported yet: the Groups tab arrives with the groups port (Step 18)"),
     ("player.saves", "not ported yet: the Cloud saves tab arrives with the storage port (Step 19)"),
@@ -347,11 +364,14 @@ pub const EXCLUDED_TABS: &[(&str, &str)] = &[
 /// `PAGE_MAP` menu entry diffs, as `(<host id>, <kind>, <reason>)`, the host a page or tab
 /// entry's id (`<page>`, `<page>.<tab>`). The crawl still fetches the first of each and fails on
 /// a non-2xx answer, and fails on an entry whose host does not draw it (a stale entry).
-pub const EXCLUDED_MENUS: &[(&str, &str, &str)] = &[(
-    "events",
-    "subscription",
-    "the mockup draws no subscription menu: its events row button only toasts (pages-platform.js P.events)",
-)];
+pub const EXCLUDED_MENUS: &[(&str, &str, &str)] = &[
+    (
+        "events",
+        "subscription",
+        "the mockup draws no subscription menu: its events row button only toasts (pages-platform.js P.events)",
+    ),
+    ("player.inventory", "holding", "the mockup's inventory row button has no handler (pages-core.js:133)"),
+];
 
 /// Modal actions the portal draws on a compared page or tab, or in a menu target's or excluded
 /// menu's body, that no `PAGE_MAP` modal entry diffs, as `(<host id>, <module>/<action>, <why>)`:
@@ -409,6 +429,16 @@ pub const EXCLUDED_MODALS: &[(&str, &str, ModalWhy)] = &[
     ),
     (
         "player.wallet.menu.user",
+        "wallet/currency.revoke",
+        ModalWhy { why: "the mockup's wallet row-menu items are drawn disabled under an \"unavailable\" note and have no onclick, so the mockup has no modal (registry.js:101-104)" },
+    ),
+    (
+        "player.inventory.menu.user",
+        "wallet/currency.grant",
+        ModalWhy { why: "the mockup's wallet row-menu items are drawn disabled under an \"unavailable\" note and have no onclick, so the mockup has no modal (registry.js:101-104)" },
+    ),
+    (
+        "player.inventory.menu.user",
         "wallet/currency.revoke",
         ModalWhy { why: "the mockup's wallet row-menu items are drawn disabled under an \"unavailable\" note and have no onclick, so the mockup has no modal (registry.js:101-104)" },
     ),
@@ -582,6 +612,12 @@ pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
     mock_modal("player.wallet.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
     mock_modal("player.wallet.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
     mock_modal("player.wallet.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.inventory", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.inventory", MockOpener::Pages("suspend"), PortalModal::Disabled("accounts/suspend-header"), NO_SUSPEND),
+    mock_modal("player.inventory.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
+    mock_modal("player.inventory.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
+    mock_modal("player.inventory.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.inventory.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent(LORE), NO_LORE),
     mock_modal(
         "mail",
         MockOpener::Pages("cancelMail"),

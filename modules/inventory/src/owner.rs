@@ -16,7 +16,4 @@ impl Owner {
     pub(crate) fn character(id: impl Into<String>) -> Owner {
         Owner { otype: "character".into(), id: id.into() }
     }
-    pub(crate) fn new(otype: &str, id: &str) -> Owner {
-        Owner { otype: otype.into(), id: id.into() }
-    }
 }
