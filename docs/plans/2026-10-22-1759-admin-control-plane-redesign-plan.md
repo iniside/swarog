@@ -2329,6 +2329,19 @@ The ports:
   One a (Na1 with Na3): the tab (order 70), the row-menu group (80), the tile (40), Purges
   pending at 66. Downloads are `implemented:false` (O-3, `docs/todo/storage.md`); the
   per-row download is the icon-only row button of 13e1.
+  - Checklist `docs/plans/2026-11-22-step19-storage-checklist.md`, owner decisions in its §11
+    (2026-11-22, all as recommended). Parts:
+  - **19a1** `[opus]` core-implementer: the store side (checklist §6 S1, S3-S6, S9): the
+    owner-scoped keyset reader, the size, relative-time and sha256 columns, the exact used-bytes
+    sum, and the unused helpers removed.
+  - **19a2** `[opus]` core-implementer: `modules/storage/src/admin.rs` (manifest, the tab, the
+    row-menu group, the tile, Purges pending, every download and Delete `implemented:false`), its
+    wiring and unit tests, the `admin-second-pass.md` and `docs/todo/storage.md` items.
+  - **19a3** `[opus]` core-implementer: `tools/admindiff/src/pages.rs` (checklist §7).
+  - **19t** `[opus]` test-author: `storage_admin_checks.rs` SA1-SA4 in both topologies, each
+    with a recorded break run.
+  - **19b** `[sonnet]` mockup-implementer: the monolith and split crawls and the accept files
+    of checklist §7.
 - **Step 20 — notifications.** Inbox tab, Notify header action, Send notification row action. Writer.
   - **20a1** (Na1 with Na3): the Inbox tab (order 80), Purges pending at 67. The 20a1 port decides whether `notifications::Store::player_stats` (`modules/notifications/src/store.rs`) is reused or deleted.
   - **20a2** (Na2): the Notify header action (20), the Send notification row action (row-menu
