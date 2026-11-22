@@ -35,6 +35,7 @@
 - [LinkedIn posts: edit facts, not style](linkedin-posts-edit-facts-not-style.md) — fact-check his draft, minimal swaps
 - [Split files by design, not size](split-files-by-design-not-size.md) — big files split only inside a purposeful refactor
 - [Small implementer tasks](split-implementer-tasks-small.md) — short briefs, steps cut into small tasks so no subagent runs out of context
+- [Stop polishing admindiff](stop-polishing-admindiff.md) — change it only when a crawl is blocked; no gate-hardening loops
 - [Team = solo + agents](team-is-solo-plus-agents-forever.md) — scaling means more agents; speak as we/our
 
 ## Project / architecture / decisions
