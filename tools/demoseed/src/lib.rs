@@ -1,27 +1,41 @@
 //! `demoseed` — fills a running fleet with deterministic demo data (players, characters,
 //! inventory, matches, friends, groups, cloud saves) through the gateway's public HTTP API.
 //!
-//!   demoseed [--base-url <url>] [--players <n>] [--matches <n>]
+//!   demoseed [--base-url <url>] [--players <n>] [--matches <n>] [--concurrency <n>]
+//!
+//! Every call names its `opscatalog` op; the run ends with a report of every call that
+//! answered an unexpected status, every op of the catalog no call covered, and exits 1 on either.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
-use reqwest::Method;
-use serde_json::{json, Value};
+use anyhow::{anyhow, bail, Result};
+use serde::Deserialize;
+use serde_json::json;
+use tokio::task::JoinSet;
+
+pub mod client;
+pub mod ops;
+pub mod report;
+
+use client::{Caller, Gateway};
+pub use report::{Outcome, Report, Summary, Tally};
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8080";
 pub const DEFAULT_PLAYERS: usize = 30;
 pub const DEFAULT_MATCHES: usize = 100;
+// Below the accounts module's 32 concurrent login slots, so a seed run never draws a 503 from them.
+pub const DEFAULT_CONCURRENCY: usize = 16;
 pub const SPLIT_ADMIN_URL: &str = "http://127.0.0.1:8085/admin";
 
 const PASSWORD: &str = "demo-password-1";
-const CLIENT_KEY: &str = "dev-key-client";
+pub(crate) const CLIENT_KEY: &str = "dev-key-client";
 // `match.report` is absent from the dev-client key's policy; only the full dev-server key may call it.
-const SERVER_KEY: &str = "dev-key-server";
+pub(crate) const SERVER_KEY: &str = "dev-key-server";
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const MAX_ATTEMPTS: u32 = 20;
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const MAX_ATTEMPTS: u32 = 20;
 const MAX_PAGES: usize = 100;
 const PAGE_LIMIT: i64 = 100;
 
@@ -56,6 +70,7 @@ pub struct Config {
     pub base_url: String,
     pub players: usize,
     pub matches: usize,
+    pub concurrency: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,32 +83,36 @@ pub const USAGE: &str = "\
 demoseed — seed deterministic demo data into a running fleet through the gateway API
 
 USAGE:
-  demoseed [--base-url <url>] [--players <n>] [--matches <n>]
+  demoseed [--base-url <url>] [--players <n>] [--matches <n>] [--concurrency <n>]
 
   --base-url <url>   gateway front door (default http://127.0.0.1:8080; split: http://127.0.0.1:8082)
   --players <n>      demo players to create (default 30)
   --matches <n>      match reports to send (default 100)
+  --concurrency <n>  requests in flight at once (default 16, at least 1)
 
 Requires a fleet started with the dev flags (devctl up sets APIKEYS_DEV_SEED, ACCOUNTS_DEV_AUTH,
-INVENTORY_DEV_GRANT). Re-running converges: only missing rows are created.";
+INVENTORY_DEV_GRANT). Re-running converges: only missing rows are created. Exits 1 when any call
+answered an unexpected status or an op of the catalog was never called.";
 
 pub fn parse_args(args: &[String]) -> Result<Command> {
     let mut config = Config {
         base_url: DEFAULT_BASE_URL.to_string(),
         players: DEFAULT_PLAYERS,
         matches: DEFAULT_MATCHES,
+        concurrency: DEFAULT_CONCURRENCY,
     };
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "-h" | "--help" | "help" => return Ok(Command::Help),
-            "--base-url" | "--players" | "--matches" => {
+            "--base-url" | "--players" | "--matches" | "--concurrency" => {
                 let value = iter
                     .next()
                     .ok_or_else(|| anyhow!("demoseed: {flag} requires a value\n\n{USAGE}"))?;
                 match flag.as_str() {
                     "--base-url" => config.base_url = value.trim_end_matches('/').to_string(),
                     "--players" => config.players = parse_count(flag, value)?,
+                    "--concurrency" => config.concurrency = parse_positive(flag, value)?,
                     _ => config.matches = parse_count(flag, value)?,
                 }
             }
@@ -110,6 +129,13 @@ fn parse_count(flag: &str, value: &str) -> Result<usize> {
     value
         .parse::<usize>()
         .map_err(|_| anyhow!("demoseed: {flag} expects a non-negative integer, got {value:?}"))
+}
+
+fn parse_positive(flag: &str, value: &str) -> Result<usize> {
+    match value.parse::<usize>() {
+        Ok(n) if n > 0 => Ok(n),
+        _ => bail!("demoseed: {flag} expects a positive integer, got {value:?}"),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -297,27 +323,6 @@ fn plan_player(index: usize) -> PlayerPlan {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Outcome {
-    Created,
-    AlreadyExists,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Rejection {
-    Retry,
-    Fail(u16),
-}
-
-pub fn classify(status: u16) -> Result<Outcome, Rejection> {
-    match status {
-        200..=299 => Ok(Outcome::Created),
-        409 => Ok(Outcome::AlreadyExists),
-        429 => Err(Rejection::Retry),
-        other => Err(Rejection::Fail(other)),
-    }
-}
-
 pub fn inventory_shortfall(target: i64, held: i64) -> i64 {
     (target - held).max(0)
 }
@@ -342,119 +347,47 @@ pub fn invite_needs_respond(my_state: &str) -> Result<bool> {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Tally {
-    pub created: usize,
-    pub existing: usize,
+// Local shapes of the success bodies this seed reads (I4): only the fields it uses, so an
+// added field is no error but a renamed or missing one is a shape error for that op.
+#[derive(Deserialize)]
+struct SessionBody {
+    player_id: String,
+    token: String,
 }
 
-impl Tally {
-    fn record(&mut self, outcome: Outcome) {
-        match outcome {
-            Outcome::Created => self.created += 1,
-            Outcome::AlreadyExists => self.existing += 1,
-        }
-    }
+#[derive(Deserialize)]
+struct MeBody {
+    handle: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Summary {
-    pub players: Tally,
-    pub characters: Tally,
-    pub grants: Tally,
-    pub saves: Tally,
-    pub matches: Tally,
-    pub friendships: Tally,
-    pub groups: Tally,
-    pub memberships: Tally,
+#[derive(Deserialize)]
+struct CharacterRow {
+    name: String,
 }
 
-impl Summary {
-    pub fn render(&self, base_url: &str) -> String {
-        let row = |kind: &str, tally: &Tally, created: &str, existing: &str| {
-            format!("  {kind:<12} {:>4} {created:<10} {:>4} {existing}\n", tally.created, tally.existing)
-        };
-        let mut out = String::from("demoseed summary\n");
-        out += &row("players", &self.players, "created", "already registered");
-        out += &row("characters", &self.characters, "created", "already present");
-        out += &row("inventory", &self.grants, "granted", "already at target");
-        out += &row("saves", &self.saves, "created", "already saved");
-        out += &row("matches", &self.matches, "sent", "bound to another result (409)");
-        out += "  (an identical match re-send is a 202 no-op, so re-runs still count it as sent)\n";
-        out += &row("friendships", &self.friendships, "accepted", "already friends");
-        out += &row("groups", &self.groups, "created", "already present");
-        out += &row("memberships", &self.memberships, "added", "already held");
-        out += "\nAdmin panel (admin/admin):\n";
-        out += &format!("  monolith  {base_url}/admin\n");
-        out += &format!("  split     {SPLIT_ADMIN_URL}\n");
-        out
-    }
+#[derive(Deserialize)]
+struct HoldingRow {
+    item_id: String,
+    quantity: i64,
 }
 
-#[derive(Clone, Copy)]
-enum Caller<'a> {
-    Anonymous,
-    Player(&'a str),
-    Server,
+#[derive(Deserialize)]
+struct FriendBody {
+    edge_id: String,
+    state: String,
 }
 
-struct Gateway {
-    http: reqwest::Client,
-    base: String,
+#[derive(Clone, Deserialize)]
+struct GroupRow {
+    id: String,
+    name: String,
+    my_state: String,
 }
 
-impl Gateway {
-    async fn call(&self, method: Method, path: &str, caller: Caller<'_>, body: Option<&Value>) -> Result<(Outcome, Value)> {
-        let url = format!("{}{path}", self.base);
-        for attempt in 0..MAX_ATTEMPTS {
-            let key = match caller {
-                Caller::Server => SERVER_KEY,
-                Caller::Anonymous | Caller::Player(_) => CLIENT_KEY,
-            };
-            let mut request = self.http.request(method.clone(), &url).header("X-Api-Key", key);
-            if let Caller::Player(token) = caller {
-                request = request.header("Authorization", format!("Bearer {token}"));
-            }
-            if let Some(body) = body {
-                request = request.json(body);
-            }
-            let response = request.send().await.with_context(|| {
-                format!("{method} {url}: no response (is a fleet running at {}?)", self.base)
-            })?;
-            let status = response.status().as_u16();
-            match classify(status) {
-                Ok(Outcome::Created) => {
-                    let text = response
-                        .text()
-                        .await
-                        .with_context(|| format!("{method} {url}: read response body"))?;
-                    let value = if text.is_empty() {
-                        Value::Null
-                    } else {
-                        serde_json::from_str(&text)
-                            .with_context(|| format!("{method} {url}: response is not JSON: {text}"))?
-                    };
-                    return Ok((Outcome::Created, value));
-                }
-                Ok(Outcome::AlreadyExists) => return Ok((Outcome::AlreadyExists, Value::Null)),
-                Err(Rejection::Retry) => {
-                    tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt + 1).min(8))).await;
-                }
-                Err(Rejection::Fail(code)) => {
-                    let text = response.text().await.unwrap_or_default();
-                    bail!("{method} {url}: HTTP {code}: {}", text.chars().take(400).collect::<String>());
-                }
-            }
-        }
-        bail!("{method} {url}: still rate-limited (429) after {MAX_ATTEMPTS} attempts")
-    }
-
-    async fn read(&self, method: Method, path: &str, caller: Caller<'_>, body: Option<&Value>) -> Result<Value> {
-        match self.call(method.clone(), path, caller, body).await? {
-            (Outcome::Created, value) => Ok(value),
-            (Outcome::AlreadyExists, _) => bail!("{method} {path}: unexpected 409 on a read"),
-        }
-    }
+#[derive(Deserialize)]
+struct GroupPageBody {
+    items: Vec<GroupRow>,
+    next_cursor: String,
 }
 
 struct Session {
@@ -463,228 +396,351 @@ struct Session {
     handle: String,
 }
 
-fn str_field<'a>(value: &'a Value, field: &str, what: &str) -> Result<&'a str> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("{what}: response has no string field {field:?}: {value}"))
-}
+type Sessions = Arc<Vec<Option<Session>>>;
 
-fn array<'a>(value: &'a Value, what: &str) -> Result<&'a Vec<Value>> {
-    value.as_array().ok_or_else(|| anyhow!("{what}: expected a JSON array, got {value}"))
-}
+/// Seeds the plan through the gateway and returns the report. The only error is a base URL that
+/// does not answer the startup probe; every failed call after that is recorded in the report.
+/// Phases run in order (players, per-player rows, matches, friendships, groups), each one's items
+/// as parallel tasks; a later phase skips, with a recorded cause, the items whose players failed.
+pub async fn run(config: &Config) -> Result<Report> {
+    let gateway = Gateway::new(&config.base_url, config.concurrency)?;
+    gateway.probe().await?;
+    let seed = Arc::new(plan(config.players, config.matches));
 
-pub async fn run(config: &Config) -> Result<Summary> {
-    let gateway = Gateway {
-        http: reqwest::Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .build()
-            .context("build HTTP client")?,
-        base: config.base_url.clone(),
-    };
-    let seed = plan(config.players, config.matches);
-    let mut summary = Summary::default();
-
-    let mut sessions = Vec::with_capacity(seed.players.len());
-    for player in &seed.players {
-        sessions.push(seed_player(&gateway, player, &mut summary).await?);
+    let mut tasks = JoinSet::new();
+    for index in 0..seed.players.len() {
+        let gateway = gateway.scenario(format!("player {}", seed.players[index].email));
+        let seed = Arc::clone(&seed);
+        tasks.spawn(async move { (index, seed_player(&gateway, &seed.players[index]).await) });
     }
-    for (player, session) in seed.players.iter().zip(&sessions) {
-        seed_characters(&gateway, player, session, &mut summary).await?;
-        seed_inventory(&gateway, player, session, &mut summary).await?;
-        seed_save(&gateway, player, session, &mut summary).await?;
+    let mut sessions: Vec<Option<Session>> = (0..seed.players.len()).map(|_| None).collect();
+    for (index, session) in join_all(tasks).await {
+        sessions[index] = session;
     }
-    for planned in &seed.matches {
-        let body = json!({
-            "ReportId": planned.report_id,
-            "Winner": sessions[planned.winner].player_id,
-            "Loser": sessions[planned.loser].player_id,
+    let sessions: Sessions = Arc::new(sessions);
+
+    let mut tasks = JoinSet::new();
+    for index in 0..seed.players.len() {
+        let gateway = gateway.scenario(format!("player {}", seed.players[index].email));
+        if !players_seeded(&gateway, &seed, &sessions, &[index], "characters, inventory and save") {
+            continue;
+        }
+        let (seed, sessions) = (Arc::clone(&seed), Arc::clone(&sessions));
+        tasks.spawn(async move {
+            let (player, session) = (&seed.players[index], sessions[index].as_ref().expect("checked above"));
+            seed_characters(&gateway, player, session).await;
+            seed_inventory(&gateway, player, session).await;
+            seed_save(&gateway, player, session).await;
         });
-        let (outcome, _) = gateway.call(Method::POST, "/match/report", Caller::Server, Some(&body)).await?;
-        summary.matches.record(outcome);
     }
-    for friendship in &seed.friendships {
-        seed_friendship(&gateway, &sessions[friendship.requester], &sessions[friendship.target], &mut summary).await?;
+    join_all(tasks).await;
+
+    let mut tasks = JoinSet::new();
+    for index in 0..seed.matches.len() {
+        let planned = &seed.matches[index];
+        let gateway = gateway.scenario(format!("match {}", planned.report_id));
+        if !players_seeded(&gateway, &seed, &sessions, &[planned.winner, planned.loser], "the report") {
+            continue;
+        }
+        let (seed, sessions) = (Arc::clone(&seed), Arc::clone(&sessions));
+        tasks.spawn(async move { seed_match(&gateway, &seed.matches[index], &sessions).await });
     }
-    for group in &seed.groups {
-        seed_group(&gateway, group, &sessions, &mut summary).await?;
+    join_all(tasks).await;
+
+    let mut tasks = JoinSet::new();
+    for index in 0..seed.friendships.len() {
+        let friendship = &seed.friendships[index];
+        let gateway = gateway.scenario(format!(
+            "friendship {} -> {}",
+            seed.players[friendship.requester].email, seed.players[friendship.target].email
+        ));
+        if !players_seeded(&gateway, &seed, &sessions, &[friendship.requester, friendship.target], "the friendship") {
+            continue;
+        }
+        let (seed, sessions) = (Arc::clone(&seed), Arc::clone(&sessions));
+        tasks.spawn(async move {
+            let friendship = &seed.friendships[index];
+            let requester = sessions[friendship.requester].as_ref().expect("checked above");
+            let target = sessions[friendship.target].as_ref().expect("checked above");
+            seed_friendship(&gateway, requester, target).await;
+        });
     }
-    Ok(summary)
+    join_all(tasks).await;
+
+    let mut tasks = JoinSet::new();
+    for index in 0..seed.groups.len() {
+        let group = &seed.groups[index];
+        let gateway = gateway.scenario(format!("group {}", group.name));
+        if !players_seeded(&gateway, &seed, &sessions, &[group.owner], "the group and its members") {
+            continue;
+        }
+        let (seed, sessions) = (Arc::clone(&seed), Arc::clone(&sessions));
+        tasks.spawn(async move { seed_group(&gateway, &seed, &seed.groups[index], &sessions).await });
+    }
+    join_all(tasks).await;
+
+    Ok(gateway.take_report())
 }
 
-async fn seed_player(gateway: &Gateway, player: &PlayerPlan, summary: &mut Summary) -> Result<Session> {
+/// Joins every task of a phase, so the next phase starts only after this one ended. A task that
+/// panicked (a programming error such as a missing path param) panics the run.
+async fn join_all<T: 'static>(mut tasks: JoinSet<T>) -> Vec<T> {
+    let mut out = Vec::with_capacity(tasks.len());
+    while let Some(joined) = tasks.join_next().await {
+        match joined {
+            Ok(value) => out.push(value),
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(err) => panic!("demoseed: a seed task was cancelled: {err}"),
+        }
+    }
+    out
+}
+
+/// True when every named player holds a session; otherwise records the skip of what on the
+/// scenario, naming the players whose seed failed.
+fn players_seeded(gateway: &Gateway, seed: &SeedPlan, sessions: &[Option<Session>], players: &[usize], what: &str) -> bool {
+    let failed: Vec<&str> =
+        players.iter().filter(|&&p| sessions[p].is_none()).map(|&p| seed.players[p].email.as_str()).collect();
+    if failed.is_empty() {
+        return true;
+    }
+    gateway.skip(format!("{what} skipped: the account seed failed for {}", failed.join(", ")));
+    false
+}
+
+async fn seed_player(gateway: &Gateway, player: &PlayerPlan) -> Option<Session> {
     let register = json!({"email": player.email, "password": PASSWORD, "displayName": player.display_name});
-    let (outcome, _) = gateway
-        .call(Method::POST, "/accounts/register", Caller::Anonymous, Some(&register))
+    let (status, _) = gateway
+        .call(ops::ACCOUNTS_REGISTER, &[], Caller::Anonymous, Some(&register), &[201, 409])
         .await
-        .with_context(|| format!("register {} (a 404 means the fleet runs without ACCOUNTS_DEV_AUTH)", player.email))?;
-    summary.players.record(outcome);
+        .ok()?;
+    gateway.tally(|s| s.players.record(Outcome::from_status(status)));
     let login = json!({"email": player.email, "password": PASSWORD});
-    let session = gateway.read(Method::POST, "/accounts/login", Caller::Anonymous, Some(&login)).await?;
-    let token = str_field(&session, "token", "accounts.login")?.to_string();
-    let player_id = str_field(&session, "player_id", "accounts.login")?.to_string();
-    let me = gateway.read(Method::GET, "/accounts/me", Caller::Player(&token), None).await?;
-    let handle = str_field(&me, "handle", "accounts.me")?.to_string();
-    Ok(Session { player_id, token, handle })
+    let (_, body) = gateway.call(ops::ACCOUNTS_LOGIN, &[], Caller::Anonymous, Some(&login), &[200]).await.ok()?;
+    let session: SessionBody = gateway.typed(ops::ACCOUNTS_LOGIN, body)?;
+    let (_, body) = gateway
+        .call(ops::ACCOUNTS_ME, &[], Caller::Player(&session.token), None, &[200])
+        .await
+        .ok()?;
+    let me: MeBody = gateway.typed(ops::ACCOUNTS_ME, body)?;
+    Some(Session { player_id: session.player_id, token: session.token, handle: me.handle })
 }
 
-async fn seed_characters(gateway: &Gateway, player: &PlayerPlan, session: &Session, summary: &mut Summary) -> Result<()> {
-    let listed = gateway.read(Method::GET, "/characters", Caller::Player(&session.token), None).await?;
-    let existing = array(&listed, "characters.list")?
-        .iter()
-        .map(|c| str_field(c, "name", "characters.list").map(str::to_string))
-        .collect::<Result<Vec<_>>>()?;
+async fn seed_characters(gateway: &Gateway, player: &PlayerPlan, session: &Session) -> Option<()> {
+    let caller = Caller::Player(&session.token);
+    let (_, body) = gateway.call(ops::CHARACTERS_LIST, &[], caller, None, &[200]).await.ok()?;
+    let listed: Vec<CharacterRow> = gateway.typed(ops::CHARACTERS_LIST, body)?;
+    let existing: Vec<String> = listed.into_iter().map(|c| c.name).collect();
     let missing = missing_characters(&player.characters, &existing);
-    summary.characters.existing += player.characters.len() - missing.len();
+    gateway.tally(|s| s.characters.existing += player.characters.len() - missing.len());
     for character in missing {
         let body = json!({"name": character.name, "class": character.class});
-        let (outcome, _) = gateway.call(Method::POST, "/characters", Caller::Player(&session.token), Some(&body)).await?;
-        summary.characters.record(outcome);
+        if let Some((status, _)) =
+            gateway.call(ops::CHARACTERS_CREATE, &[], caller, Some(&body), &[201, 409]).await.ok()
+        {
+            gateway.tally(|s| s.characters.record(Outcome::from_status(status)));
+        }
     }
-    Ok(())
+    Some(())
 }
 
-async fn seed_inventory(gateway: &Gateway, player: &PlayerPlan, session: &Session, summary: &mut Summary) -> Result<()> {
-    let listed = gateway.read(Method::GET, "/inventory/me", Caller::Player(&session.token), None).await?;
+async fn seed_inventory(gateway: &Gateway, player: &PlayerPlan, session: &Session) -> Option<()> {
+    let caller = Caller::Player(&session.token);
+    let (_, body) = gateway.call(ops::INVENTORY_LIST_MINE, &[], caller, None, &[200]).await.ok()?;
+    let listed: Vec<HoldingRow> = gateway.typed(ops::INVENTORY_LIST_MINE, body)?;
     let mut held: HashMap<String, i64> = HashMap::new();
-    for holding in array(&listed, "inventory.listMine")? {
-        let item_id = str_field(holding, "item_id", "inventory.listMine")?;
-        let quantity = holding
-            .get("quantity")
-            .and_then(Value::as_i64)
-            .ok_or_else(|| anyhow!("inventory.listMine: holding has no integer quantity: {holding}"))?;
-        *held.entry(item_id.to_string()).or_default() += quantity;
+    for holding in listed {
+        *held.entry(holding.item_id).or_default() += holding.quantity;
     }
     for target in &player.items {
         let shortfall = inventory_shortfall(target.qty, held.get(&target.item_id).copied().unwrap_or(0));
         if shortfall == 0 {
-            summary.grants.existing += 1;
+            gateway.tally(|s| s.grants.existing += 1);
             continue;
         }
         let body = json!({"item_id": target.item_id, "qty": shortfall});
-        let (outcome, _) = gateway
-            .call(Method::POST, "/inventory/me/grant", Caller::Player(&session.token), Some(&body))
-            .await
-            .with_context(|| format!("grant {} (a 404 means the fleet runs without INVENTORY_DEV_GRANT)", target.item_id))?;
-        summary.grants.record(outcome);
+        if let Some((status, _)) =
+            gateway.call(ops::INVENTORY_GRANT, &[], caller, Some(&body), &[200, 409]).await.ok()
+        {
+            gateway.tally(|s| s.grants.record(Outcome::from_status(status)));
+        }
     }
-    Ok(())
+    Some(())
 }
 
-async fn seed_save(gateway: &Gateway, player: &PlayerPlan, session: &Session, summary: &mut Summary) -> Result<()> {
-    let path = format!("/storage/{}/{}", player.save.collection, player.save.key);
+async fn seed_save(gateway: &Gateway, player: &PlayerPlan, session: &Session) -> Option<()> {
+    let params = [("collection", player.save.collection.as_str()), ("key", player.save.key.as_str())];
     let body = json!({"value": player.save.value, "expected_version": 0, "acl": "private"});
-    let (outcome, _) = gateway.call(Method::POST, &path, Caller::Player(&session.token), Some(&body)).await?;
-    summary.saves.record(outcome);
-    Ok(())
+    let (status, _) = gateway
+        .call(ops::STORAGE_PUT, &params, Caller::Player(&session.token), Some(&body), &[200, 409])
+        .await
+        .ok()?;
+    gateway.tally(|s| s.saves.record(Outcome::from_status(status)));
+    Some(())
 }
 
-async fn seed_friendship(gateway: &Gateway, requester: &Session, target: &Session, summary: &mut Summary) -> Result<()> {
+async fn seed_match(gateway: &Gateway, planned: &MatchPlan, sessions: &[Option<Session>]) -> Option<()> {
+    let winner = sessions[planned.winner].as_ref()?;
+    let loser = sessions[planned.loser].as_ref()?;
+    let body = json!({"ReportId": planned.report_id, "Winner": winner.player_id, "Loser": loser.player_id});
+    let (status, _) = gateway.call(ops::MATCH_REPORT, &[], Caller::Server, Some(&body), &[202, 409]).await.ok()?;
+    gateway.tally(|s| s.matches.record(Outcome::from_status(status)));
+    Some(())
+}
+
+async fn seed_friendship(gateway: &Gateway, requester: &Session, target: &Session) -> Option<()> {
     let body = json!({"target_handle": target.handle});
     let (_, friend) = gateway
-        .call(Method::POST, "/friends/requests", Caller::Player(&requester.token), Some(&body))
-        .await?;
-    let state = str_field(&friend, "state", "friends.request")?;
-    if !friend_needs_accept(state)? {
-        summary.friendships.existing += 1;
-        return Ok(());
+        .call(ops::FRIENDS_REQUEST, &[], Caller::Player(&requester.token), Some(&body), &[201])
+        .await
+        .ok()?;
+    let friend: FriendBody = gateway.typed(ops::FRIENDS_REQUEST, friend)?;
+    match friend_needs_accept(&friend.state) {
+        Ok(true) => {}
+        Ok(false) => {
+            gateway.tally(|s| s.friendships.existing += 1);
+            return Some(());
+        }
+        Err(err) => {
+            gateway.shape_error(ops::FRIENDS_REQUEST, format!("{err:#}"));
+            return None;
+        }
     }
-    let edge_id = str_field(&friend, "edge_id", "friends.request")?;
-    let (outcome, _) = gateway
-        .call(Method::POST, &format!("/friends/requests/{edge_id}/accept"), Caller::Player(&target.token), None)
-        .await?;
-    summary.friendships.record(outcome);
-    Ok(())
+    let (status, _) = gateway
+        .call(ops::FRIENDS_ACCEPT, &[("id", &friend.edge_id)], Caller::Player(&target.token), None, &[204, 409])
+        .await
+        .ok()?;
+    gateway.tally(|s| s.friendships.record(Outcome::from_status(status)));
+    Some(())
 }
 
-async fn seed_group(gateway: &Gateway, group: &GroupPlan, sessions: &[Session], summary: &mut Summary) -> Result<()> {
-    let owner = &sessions[group.owner];
-    let group_id = match find_group(gateway, owner, &group.name).await? {
-        Some(id) => {
-            summary.groups.existing += 1;
-            id
+async fn seed_group(gateway: &Gateway, seed: &SeedPlan, group: &GroupPlan, sessions: &[Option<Session>]) -> Option<()> {
+    let owner = sessions[group.owner].as_ref()?;
+    let found = find_mine(gateway, owner, |row| row.name == group.name).await;
+    let group_id = match found {
+        Some(Some(row)) => {
+            gateway.tally(|s| s.groups.existing += 1);
+            row.id
+        }
+        Some(None) => {
+            let body = json!({"name": group.name, "join_policy": group.join_policy});
+            let created = gateway
+                .call(ops::GROUPS_CREATE, &[], Caller::Player(&owner.token), Some(&body), &[201])
+                .await
+                .ok()
+                .and_then(|(_, body)| gateway.typed::<GroupRow>(ops::GROUPS_CREATE, body));
+            match created {
+                Some(row) => {
+                    gateway.tally(|s| s.groups.created += 1);
+                    row.id
+                }
+                None => {
+                    gateway.skip("memberships skipped: the group was not created");
+                    return None;
+                }
+            }
         }
         None => {
-            let body = json!({"name": group.name, "join_policy": group.join_policy});
-            let created = gateway.read(Method::POST, "/groups", Caller::Player(&owner.token), Some(&body)).await?;
-            summary.groups.created += 1;
-            str_field(&created, "id", "groups.create")?.to_string()
+            gateway.skip("group and memberships skipped: the owner's group list failed");
+            return None;
         }
     };
     for &member in &group.members {
-        let member = &sessions[member];
-        let outcome = match group.join_policy.as_str() {
-            "open" => join(gateway, &group_id, member).await?,
-            "request" => {
-                join(gateway, &group_id, member).await?;
-                let body = json!({"subject_id": member.player_id, "decision": "accept"});
-                let (decided, _) = gateway
-                    .call(Method::POST, &format!("/groups/{group_id}/decide"), Caller::Player(&owner.token), Some(&body))
-                    .await?;
-                decided
-            }
-            "invite" => {
-                let body = json!({"target_handle": member.handle});
-                gateway
-                    .call(Method::POST, &format!("/groups/{group_id}/invites"), Caller::Player(&owner.token), Some(&body))
-                    .await?;
-                let mine = find_mine(gateway, member, |item| Ok(str_field(item, "id", "groups.listMine")? == group_id))
-                    .await?
-                    .ok_or_else(|| anyhow!("group {:?}: invitee {} holds no row after the invite", group.name, member.handle))?;
-                if invite_needs_respond(str_field(&mine, "my_state", "groups.listMine")?)? {
+        let Some(session) = sessions[member].as_ref() else {
+            gateway.skip(format!("membership skipped: the account seed failed for {}", seed.players[member].email));
+            continue;
+        };
+        if let Some(outcome) = seed_membership(gateway, group, &group_id, owner, session).await {
+            gateway.tally(|s| s.memberships.record(outcome));
+        }
+    }
+    Some(())
+}
+
+async fn seed_membership(
+    gateway: &Gateway,
+    group: &GroupPlan,
+    group_id: &str,
+    owner: &Session,
+    member: &Session,
+) -> Option<Outcome> {
+    let id = [("id", group_id)];
+    match group.join_policy.as_str() {
+        "open" => join(gateway, group_id, member).await,
+        "request" => {
+            join(gateway, group_id, member).await?;
+            let body = json!({"subject_id": member.player_id, "decision": "accept"});
+            let (status, _) = gateway
+                .call(ops::GROUPS_DECIDE, &id, Caller::Player(&owner.token), Some(&body), &[204, 409])
+                .await
+                .ok()?;
+            Some(Outcome::from_status(status))
+        }
+        "invite" => {
+            let body = json!({"target_handle": member.handle});
+            gateway
+                .call(ops::GROUPS_INVITE, &id, Caller::Player(&owner.token), Some(&body), &[201, 409])
+                .await
+                .ok()?;
+            let Some(row) = find_mine(gateway, member, |row| row.id == group_id).await? else {
+                gateway.shape_error(
+                    ops::GROUPS_LIST_MINE,
+                    format!("invitee {} holds no row for the group after the invite", member.handle),
+                );
+                return None;
+            };
+            match invite_needs_respond(&row.my_state) {
+                Ok(true) => {
                     let body = json!({"decision": "accept"});
-                    let (responded, _) = gateway
-                        .call(Method::POST, &format!("/groups/{group_id}/respond"), Caller::Player(&member.token), Some(&body))
-                        .await?;
-                    responded
-                } else {
-                    Outcome::AlreadyExists
+                    let (status, _) = gateway
+                        .call(ops::GROUPS_RESPOND, &id, Caller::Player(&member.token), Some(&body), &[204, 409])
+                        .await
+                        .ok()?;
+                    Some(Outcome::from_status(status))
+                }
+                Ok(false) => Some(Outcome::AlreadyExists),
+                Err(err) => {
+                    gateway.shape_error(ops::GROUPS_LIST_MINE, format!("{err:#}"));
+                    None
                 }
             }
-            other => bail!("group {:?}: unknown join policy {other:?}", group.name),
-        };
-        summary.memberships.record(outcome);
-    }
-    Ok(())
-}
-
-async fn join(gateway: &Gateway, group_id: &str, member: &Session) -> Result<Outcome> {
-    let (outcome, _) = gateway
-        .call(Method::POST, &format!("/groups/{group_id}/join"), Caller::Player(&member.token), Some(&json!({})))
-        .await?;
-    Ok(outcome)
-}
-
-async fn find_group(gateway: &Gateway, owner: &Session, name: &str) -> Result<Option<String>> {
-    match find_mine(gateway, owner, |item| Ok(str_field(item, "name", "groups.listMine")? == name)).await? {
-        Some(item) => Ok(Some(str_field(&item, "id", "groups.listMine")?.to_string())),
-        None => Ok(None),
+        }
+        other => {
+            gateway.shape_error(ops::GROUPS_CREATE, format!("plan names unknown join policy {other:?}"));
+            None
+        }
     }
 }
 
-async fn find_mine(
-    gateway: &Gateway,
-    session: &Session,
-    matches: impl Fn(&Value) -> Result<bool>,
-) -> Result<Option<Value>> {
+async fn join(gateway: &Gateway, group_id: &str, member: &Session) -> Option<Outcome> {
+    let (status, _) = gateway
+        .call(ops::GROUPS_JOIN, &[("id", group_id)], Caller::Player(&member.token), Some(&json!({})), &[200, 409])
+        .await
+        .ok()?;
+    Some(Outcome::from_status(status))
+}
+
+/// Pages the caller's groups for the first row matching; the outer `None` means a page failed
+/// (already recorded), the inner one that no row matched.
+async fn find_mine(gateway: &Gateway, session: &Session, matches: impl Fn(&GroupRow) -> bool) -> Option<Option<GroupRow>> {
     let mut cursor = String::new();
     for _ in 0..MAX_PAGES {
         let body = json!({"cursor": cursor, "limit": PAGE_LIMIT});
-        let page = gateway.read(Method::POST, "/groups/list", Caller::Player(&session.token), Some(&body)).await?;
-        let items = page
-            .get("items")
-            .ok_or_else(|| anyhow!("groups.listMine: response has no items: {page}"))?;
-        for item in array(items, "groups.listMine")? {
-            if matches(item)? {
-                return Ok(Some(item.clone()));
-            }
+        let (_, page) = gateway
+            .call(ops::GROUPS_LIST_MINE, &[], Caller::Player(&session.token), Some(&body), &[200])
+            .await
+            .ok()?;
+        let page: GroupPageBody = gateway.typed(ops::GROUPS_LIST_MINE, page)?;
+        if let Some(row) = page.items.iter().find(|row| matches(row)) {
+            return Some(Some(row.clone()));
         }
-        cursor = str_field(&page, "next_cursor", "groups.listMine")?.to_string();
-        if cursor.is_empty() {
-            return Ok(None);
+        if page.next_cursor.is_empty() {
+            return Some(None);
         }
+        cursor = page.next_cursor;
     }
-    bail!("groups.listMine: more than {MAX_PAGES} pages for one player")
+    gateway.shape_error(ops::GROUPS_LIST_MINE, format!("more than {MAX_PAGES} pages for one player"));
+    None
 }
 
 #[cfg(test)]

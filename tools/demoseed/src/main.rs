@@ -17,16 +17,21 @@ async fn main() -> ExitCode {
         }
     };
     println!(
-        "demoseed: seeding {} players and {} matches through {}",
-        config.players, config.matches, config.base_url
+        "demoseed: seeding {} players and {} matches through {} ({} requests in flight at most)",
+        config.players, config.matches, config.base_url, config.concurrency
     );
     match run(&config).await {
-        Ok(summary) => {
-            print!("{}", summary.render(&config.base_url));
-            ExitCode::SUCCESS
+        Ok(report) => {
+            let rendered = report.render(&config.base_url, opscatalog::OPERATIONS);
+            print!("{}", rendered.text);
+            if rendered.failed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
         }
         Err(err) => {
-            eprintln!("demoseed: {err:#}");
+            eprintln!("{err:#}");
             ExitCode::FAILURE
         }
     }

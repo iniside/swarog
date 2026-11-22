@@ -1199,7 +1199,9 @@ name = "demoseed"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "opscatalog",
  "reqwest",
+ "serde",
  "serde_json",
  "tokio",
 ]

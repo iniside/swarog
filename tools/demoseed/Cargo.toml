@@ -7,13 +7,17 @@ publish = false
 
 # Seeds deterministic demo data into an already-running fleet through the gateway's
 # public HTTP API only, so every row is written by its owning module. A client of the
-# fleet, not a rollout: no database access, no workspace-crate dependencies.
+# fleet, not a rollout: no database access. Its one workspace-crate dependency is the
+# dependency-free `opscatalog` table, the authority for each call's route and for the
+# end-of-run coverage check.
 [[bin]]
 name = "demoseed"
 path = "src/main.rs"
 
 [dependencies]
 reqwest = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+serde = { workspace = true }
 serde_json = { workspace = true }
+opscatalog = { workspace = true }
 anyhow = { workspace = true }

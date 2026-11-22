@@ -170,30 +170,6 @@ fn two_players_pair_only_each_other() {
 }
 
 #[test]
-fn classify_success_range_is_created() {
-    for status in [200, 201, 202, 204, 299] {
-        assert_eq!(classify(status), Ok(Outcome::Created), "{status}");
-    }
-}
-
-#[test]
-fn classify_409_is_already_exists() {
-    assert_eq!(classify(409), Ok(Outcome::AlreadyExists));
-}
-
-#[test]
-fn classify_429_is_retry() {
-    assert_eq!(classify(429), Err(Rejection::Retry));
-}
-
-#[test]
-fn classify_other_statuses_fail_with_code() {
-    for status in [199, 300, 400, 401, 404, 500, 503] {
-        assert_eq!(classify(status), Err(Rejection::Fail(status)), "{status}");
-    }
-}
-
-#[test]
 fn inventory_shortfall_is_target_minus_held_never_negative() {
     assert_eq!(inventory_shortfall(100, 0), 100);
     assert_eq!(inventory_shortfall(100, 40), 60);
@@ -247,6 +223,7 @@ fn parse_args_defaults() {
             base_url: DEFAULT_BASE_URL.to_string(),
             players: DEFAULT_PLAYERS,
             matches: DEFAULT_MATCHES,
+            concurrency: DEFAULT_CONCURRENCY,
         })
     );
 }
@@ -283,7 +260,7 @@ fn parse_args_rejects_unknown_flag() {
 
 #[test]
 fn parse_args_rejects_missing_value() {
-    for flag in ["--base-url", "--players", "--matches"] {
+    for flag in ["--base-url", "--players", "--matches", "--concurrency"] {
         let err = parse_args(&args(&[flag])).unwrap_err().to_string();
         assert!(err.contains("requires a value"), "{flag}: {err}");
     }
@@ -315,4 +292,23 @@ fn invite_rerun_rejects_any_other_state() {
         let err = invite_needs_respond(state).unwrap_err().to_string();
         assert!(err.contains("unexpected state"), "{state:?}: {err}");
     }
+}
+
+#[test]
+fn parse_args_concurrency_sets_the_bound() {
+    assert_eq!(seed_config(&["--concurrency", "4"]).concurrency, 4);
+    assert_eq!(seed_config(&[]).concurrency, 16);
+}
+
+#[test]
+fn parse_args_rejects_zero_and_non_number_concurrency() {
+    for value in ["0", "abc", "-1", "1.5", ""] {
+        let err = parse_args(&args(&["--concurrency", value])).unwrap_err().to_string();
+        assert!(err.contains("positive integer"), "{value:?}: {err}");
+    }
+}
+
+#[test]
+fn usage_names_concurrency() {
+    assert!(USAGE.contains("--concurrency <n>"));
 }
