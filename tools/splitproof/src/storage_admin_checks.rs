@@ -140,7 +140,8 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     );
 
     // [SA3] the dashboard slots the "Cloud saves used" tile, whose body draws the label and a
-    // non-zero byte sum (B's object is stored, so the sum is at least its size).
+    // value with a non-zero leading digit (B's object is stored, so the sum is non-zero). The
+    // tile sums every owner and is cached 300 s, so no exact value or lower bound is asserted.
     let (d_code, dash) = get(admin, &format!("{front}/admin")).await?;
     let tile_url = attr_values(&dash, "hx-get").into_iter().find(|u| u.starts_with("/admin/_panel/storage/tile.used"));
     let (t_code, tile) = match &tile_url {

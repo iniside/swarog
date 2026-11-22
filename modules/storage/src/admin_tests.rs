@@ -315,7 +315,7 @@ async fn purges_item_names_the_oldest_unswept_tombstone_over_the_live_table() {
     let provider = admin::StorageAdmin::new(Arc::new(Service::new(f.pool().clone())));
     sqlx::query(
         "INSERT INTO storage.purged_players (player_id, handle, created_at) \
-         VALUES ($1::uuid, 'Old#0001', '2001-02-03 04:05:06+00'), ($2::uuid, 'Swept#0002', '2000-01-01 00:00:00+00')",
+         VALUES ($1::uuid, 'Old#0001', '2001-02-03 12:00:00+00'), ($2::uuid, 'Swept#0002', '2000-01-01 12:00:00+00')",
     )
     .bind(&f.owners[0])
     .bind(&f.owners[1])
