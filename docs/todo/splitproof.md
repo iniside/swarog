@@ -33,6 +33,15 @@ _None._
   admin control-plane redesign (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md,
   step 21).
 
+### Known limits (admin-control-plane-redesign step 16)
+
+- [ ] **A check id shared by two names is refused only when both run**
+  `Proof::check` records the name of every id it sees and the expected-red `sort` refuses
+  an id used under two names, but only for checks that ran in that run: twin checks on an
+  Ok and an Err branch, or a monolith-only and split-only pair, never meet, so a reused id
+  passes. A static scan of the `.check(` call sites would catch it; owner 2026-11-22:
+  deferred.
+
 ### Known limits (admin-control-plane-redesign step 15)
 
 - [ ] **The wallet, notification and push checks still post to the retired `/admin/wallet` page**

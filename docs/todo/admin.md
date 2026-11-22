@@ -24,6 +24,19 @@ _None._
   (`primitives.html.tmpl:416`, `hx-swap-oob`), so the first-render colour can differ from the
   swapped one, and a mixed-case id gives another colour (review of 2fdcfd93).
 
+### Known limits (admin-control-plane-redesign step 13f)
+
+- [ ] **Nothing refuses a literal `order` on a shared point**
+  Step 13f moved every shared-point order into `core/controlplane/src/order.rs`, but no
+  gate fails when a module's `admin.rs` writes a number instead of the constant; the 13f2
+  snapshot catches a wrong value, not a literal of the right value. Owner 2026-11-22: each
+  port's review checks it; a source scan or a typed order argument is deferred.
+- [ ] **Two player tab orders tie across modules**
+  `player_tab::ACCOUNTS_IDENTITIES` = `WALLET` = 30 and `ACCOUNTS_SESSIONS` = `INVENTORY` =
+  40, so the order between them comes from the module-name tie-break, not a decision.
+  Distinct values move goldens and accept files; owner 2026-11-22: do it in a port that
+  already moves them.
+
 ### Known limits (admin-control-plane-redesign step 16)
 
 - [ ] **A tab or page can declare a typed key as a param and never receive it**

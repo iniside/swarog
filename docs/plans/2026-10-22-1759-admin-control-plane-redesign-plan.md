@@ -2295,6 +2295,20 @@ The ports:
     every contributor depend on the host's api crate.
   - Gate: the public-api baseline for the touched crate is re-blessed; `admincheck` stays
     green.
+- **Step 13f2 — pin the shared orders in one snapshot** (owner, 2026-11-22, after the 13f
+  proof audit). `[opus]` core-implementer, one `[review]` round plus proof-auditor; runs
+  before 18a1. Why: after 13f only the characters, wallet, inventory and friends unit tests
+  pin their orders; the accounts, mail, `core.events` and `portal` orders and every
+  pre-declared constant can change with every gate green, and admindiff cannot see a
+  reorder of same-shape elements.
+  - Invariant: one blessed snapshot lists, per shared point, the contributions of every real
+    provider in the order the portal draws them, built through core/admin's own merge and
+    sort (not a copy of it); changing any `controlplane::order` constant, or a provider
+    dropping one, moves that file and fails the test until re-blessed. It lives where the
+    real manifests are already gathered (`admincheck` reads all of them), so no module
+    imports another.
+  - Not in scope: a gate against a literal `order` in a module (owner: Known limit, the
+    review checks it per port) and the tied player tab orders (Known limit).
 - **Step 18 — groups.**
   - Groups tab (DERIV via `page_mine`); promote member to admin (REAL, Q1).
   - Declares the `group` entity kind and links the group name to its entity page (O-4).
