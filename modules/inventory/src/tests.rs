@@ -2055,3 +2055,139 @@ async fn admin_holdings_page_keysets_and_counts_every_page() {
         cleanup_owner(&pool, id).await;
     }
 }
+
+/// The search matches the item id OR the name, and `_` is a literal: `r_s` reaches Starter
+/// Sword only through its id, `r S` only through its name, and `_` keeps every
+/// underscored id and drops Coin (an unescaped `_` would match every row).
+#[tokio::test]
+async fn admin_inventory_search_matches_id_or_name_and_underscore_is_literal() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let (pid, cid) = (unique_uuid(&pool).await, unique_uuid(&pool).await);
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+    let mut conn = pool.acquire().await.unwrap();
+    inner.record_character_owner(&mut conn, &cid, &pid).await.unwrap();
+    for (owner, item) in [
+        (Owner::player(&pid), "coin"),
+        (Owner::player(&pid), "health_potion"),
+        (Owner::character(&cid), "health_potion"),
+        (Owner::character(&cid), "starter_sword"),
+    ] {
+        inner.store.grant_exec(&mut conn, &owner, item, 1).await.unwrap();
+    }
+    let admin = admin::InventoryAdmin::new(inner.clone());
+    let (character, player) = (cid.clone(), "player".to_string());
+    let cases = [
+        ("r_s", vec![("Starter Sword", &character)]),
+        ("r S", vec![("Starter Sword", &character)]),
+        ("h P", vec![("Health Potion", &character), ("Health Potion", &player)]),
+        ("_", vec![("Health Potion", &character), ("Starter Sword", &character), ("Health Potion", &player)]),
+    ];
+    for (search, want) in cases {
+        let body = admin.panel(admin_query(admin::INVENTORY, &pid, &[], Some(search), None)).await.unwrap();
+        let t = admin_table(&body);
+        let want: Vec<(String, String)> = want.iter().map(|(n, o)| (n.to_string(), o.to_string())).collect();
+        assert_eq!(admin_rows(t), want, "{search:?}");
+        assert_eq!(t.page.total, Some(want.len() as u64), "{search:?}");
+        assert!(t.page.next_cursor.is_none(), "{search:?}");
+    }
+
+    for id in [&pid, &cid] {
+        cleanup_owner(&pool, id).await;
+    }
+}
+
+/// Past `ADMIN_PAGE_SIZE` the tab draws a full page with the exact total and the last drawn
+/// row's id as the cursor; fed back, the cursor draws exactly the rest and no cursor.
+#[tokio::test]
+async fn admin_inventory_tab_pages_past_the_page_size_with_the_cursor_fed_back() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let pid = unique_uuid(&pool).await;
+    let mut chars = Vec::new();
+    for _ in 0..8 {
+        chars.push(unique_uuid(&pool).await);
+    }
+    chars.sort();
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+    let mut conn = pool.acquire().await.unwrap();
+    let items = ["coin", "health_potion", "starter_sword"];
+    let mut want = Vec::new();
+    for cid in &chars {
+        inner.record_character_owner(&mut conn, cid, &pid).await.unwrap();
+        for item in items {
+            inner.store.grant_exec(&mut conn, &Owner::character(cid), item, 1).await.unwrap();
+            want.push(format!("character:{cid}:{item}"));
+        }
+    }
+    for item in items {
+        inner.store.grant_exec(&mut conn, &Owner::player(&pid), item, 1).await.unwrap();
+        want.push(format!("player:{pid}:{item}"));
+    }
+    assert_eq!(want.len(), 27);
+    let admin = admin::InventoryAdmin::new(inner.clone());
+    let ids = |t: &DataTable| {
+        t.rows.iter().map(|r| r.entity.as_ref().expect("a holding row").id.clone()).collect::<Vec<_>>()
+    };
+
+    let first = admin.panel(admin_query(admin::INVENTORY, &pid, &[], None, None)).await.unwrap();
+    let t = admin_table(&first);
+    let page1 = ids(t);
+    assert_eq!(page1.len(), crate::store::ADMIN_PAGE_SIZE);
+    assert_eq!(t.page.total, Some(27));
+    let cursor = t.page.next_cursor.clone().expect("a full page has a cursor");
+    assert_eq!(cursor, page1[crate::store::ADMIN_PAGE_SIZE - 1], "the cursor is the last drawn row");
+
+    let second = admin.panel(admin_query(admin::INVENTORY, &pid, &[], None, Some(&cursor))).await.unwrap();
+    let t = admin_table(&second);
+    let page2 = ids(t);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(t.page.total, Some(27));
+    assert!(t.page.next_cursor.is_none(), "the last page has no cursor");
+    assert_eq!([page1, page2].concat(), want, "the pages concatenate to every row once, in order");
+
+    for id in chars.iter().chain([&pid]) {
+        cleanup_owner(&pool, id).await;
+    }
+}
+
+/// The keyset compares the whole row key: after the first character's last holding the next
+/// page starts at the second character's first one (a per-column predicate would skip its
+/// `coin`, which sorts below the cursor's item), then the player's.
+#[tokio::test]
+async fn admin_holdings_page_keyset_crosses_characters_then_the_player() {
+    let Some(pool) = test_pool().await else { return };
+    ensure_schema(&pool).await;
+    let pid = unique_uuid(&pool).await;
+    let mut chars = [unique_uuid(&pool).await, unique_uuid(&pool).await];
+    chars.sort();
+    let [a, b] = chars;
+    let inner = inner_with(pool.clone(), Arc::new(FakeConfig::new(STARTER_ITEM, STARTER_QTY)));
+    let mut conn = pool.acquire().await.unwrap();
+    for cid in [&a, &b] {
+        inner.record_character_owner(&mut conn, cid, &pid).await.unwrap();
+        for item in ["coin", "health_potion"] {
+            inner.store.grant_exec(&mut conn, &Owner::character(cid), item, 1).await.unwrap();
+        }
+    }
+    inner.store.grant_exec(&mut conn, &Owner::player(&pid), "coin", 1).await.unwrap();
+    let all = HoldingsFilter { owner_type: None, kind: None, needle: None };
+    let ids = |p: &HoldingsPage| p.rows.iter().map(|h| admin::holding_id(&h.key)).collect::<Vec<_>>();
+
+    let mut after: Option<HoldingKey> = None;
+    let want = [
+        vec![format!("character:{a}:coin"), format!("character:{a}:health_potion")],
+        vec![format!("character:{b}:coin"), format!("character:{b}:health_potion")],
+        vec![format!("player:{pid}:coin")],
+    ];
+    for (n, page_want) in want.iter().enumerate() {
+        let page = inner.store.player_holdings_page(&pid, &all, after.as_ref(), 2).await.unwrap();
+        assert_eq!(&ids(&page), page_want, "page {}", n + 1);
+        assert_eq!(page.total, 5, "page {}", n + 1);
+        after = page.rows.last().map(|h| h.key.clone());
+    }
+
+    for id in [&pid, &a, &b] {
+        cleanup_owner(&pool, id).await;
+    }
+}
