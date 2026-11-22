@@ -12,3 +12,7 @@ path = "src/main.rs"
 [dependencies]
 checkmodules = { workspace = true }
 controlplane = { workspace = true }
+
+[dev-dependencies]
+# `drawn_orders` only: the portal's own merge and sort over the real manifests.
+admin = { workspace = true }

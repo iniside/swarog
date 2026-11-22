@@ -266,10 +266,8 @@ fn panel_actions(m: &Manifest, out: &mut Vec<String>) {
                 m.module, a.id
             ));
         }
-        if matches!(a.point, ActionPoint::PanelForm(_)) {
-            if !matches!(a.then, Then::Invoke) {
-                out.push(format!("{}: PanelForm action {:?} is not Then::Invoke", m.module, a.id));
-            }
+        if matches!(a.point, ActionPoint::PanelForm(_)) && !matches!(a.then, Then::Invoke) {
+            out.push(format!("{}: PanelForm action {:?} is not Then::Invoke", m.module, a.id));
         }
     }
 }

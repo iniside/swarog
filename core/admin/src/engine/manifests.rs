@@ -5,7 +5,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
-use controlplane::{ContributionDecl, ControlPlane, EntityKindDecl, Manifest, NavSection, Point, Source};
+use controlplane::{
+    ActionDecl, ActionPoint, ContributionDecl, ControlPlane, EntityKindDecl, Manifest, NavSection, Point, Source,
+};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
@@ -151,6 +153,19 @@ impl Snapshot {
             .filter(|(_, c)| want(&c.point))
             .collect();
         found.sort_by(|a, b| (a.1.order, a.0, &a.1.id).cmp(&(b.1.order, b.0, &b.1.id)));
+        found
+    }
+
+    /// Every `(module, manifest, decl)` across all manifests whose action point matches
+    /// `want`, a form's mode action excepted, sorted by `(order, module, id)`.
+    pub(crate) fn actions(&self, want: impl Fn(&ActionPoint) -> bool) -> Vec<(&str, &Manifest, &ActionDecl)> {
+        let mut found: Vec<(&str, &Manifest, &ActionDecl)> = self
+            .modules
+            .iter()
+            .flat_map(|(m, r)| r.manifest.actions.iter().map(move |a| (m.as_str(), &r.manifest, a)))
+            .filter(|(_, w, a)| want(&a.point) && !w.is_mode_action(&a.id))
+            .collect();
+        found.sort_by(|a, b| (a.2.order, a.0, &a.2.id).cmp(&(b.2.order, b.0, &b.2.id)));
         found
     }
 }

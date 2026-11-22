@@ -1,6 +1,8 @@
 //! `admincheck` — validates the control-plane manifests the monolith and every split process serve.
 
 mod checks;
+#[cfg(test)]
+mod drawn_orders;
 
 const USAGE: &str = "usage: admincheck [--strict]";
 

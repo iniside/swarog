@@ -292,14 +292,11 @@ fn action_items(
     entity: Option<&EntityRef>,
     want: impl Fn(&ActionPoint) -> bool,
 ) -> Vec<ActionItem> {
-    let mut found: Vec<(&str, &Manifest, &ActionDecl)> = snapshot
-        .modules
-        .iter()
-        .flat_map(|(m, r)| r.manifest.actions.iter().map(move |a| (m.as_str(), &r.manifest, a)))
-        .filter(|(_, w, a)| want(&a.point) && !w.is_mode_action(&a.id))
-        .collect();
-    found.sort_by(|a, b| (a.2.order, a.0, &a.2.id).cmp(&(b.2.order, b.0, &b.2.id)));
-    found.into_iter().map(|(m, w, a)| action_item(&ctx.operator, &ctx.csrf, m, w, a, entity)).collect()
+    snapshot
+        .actions(want)
+        .into_iter()
+        .map(|(m, w, a)| action_item(&ctx.operator, &ctx.csrf, m, w, a, entity))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

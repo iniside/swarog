@@ -1,0 +1,54 @@
+# point | module | id | order, in drawn order; ADMIN_BLESS=1 cargo test -p admincheck drawn_orders
+nav players | accounts | players | 10
+nav economy | wallet | economy | 10
+nav platform | mail | outbox | 20
+nav platform | core.events | events | 60
+dashboard_attention | portal | attention.services | 10
+dashboard_attention | core.events | attention.paused | 20
+dashboard_attention | portal | attention.lore | 30
+dashboard_attention | mail | attention.queue | 40
+dashboard_attention | portal | attention.scheduler | 50
+dashboard_attention | characters | attention.purges | 61
+dashboard_attention | wallet | attention.purges | 62
+dashboard_attention | inventory | attention.purges | 63
+dashboard_attention | friends | attention.purges | 64
+dashboard_tile | accounts | tile.active | 10
+dashboard_tile | portal | tile.lore-seats | 20
+dashboard_tile | portal | tile.lore-store | 30
+dashboard_tile | mail | tile.queue | 50
+dashboard_tile | core.events | tile.paused | 60
+dashboard_tile | wallet | tile.spent | 70
+dashboard_tile | portal | tile.matches | 80
+dashboard_wide | portal | health | 100
+entity_header player | accounts | header | 0
+entity_header subscription | core.events | subscription.header | 0
+entity_list_column player | characters | column.count | 10
+entity_list_column player | wallet | column.balance | 30
+entity_summary player | accounts | fact.id | 10
+entity_summary player | accounts | fact.joined | 20
+entity_summary player | characters | fact.count | 30
+entity_summary player | wallet | fact.balance | 50
+entity_tab player | accounts | profile | 10
+entity_tab player | characters | characters | 20
+entity_tab player | accounts | identities | 30
+entity_tab player | wallet | wallet | 30
+entity_tab player | accounts | sessions | 40
+entity_tab player | inventory | inventory | 40
+entity_tab player | friends | friends | 50
+entity_tab subscription | core.events | subscription.details | 0
+entity_tab_count player/characters | characters | tab.count | 0
+entity_tab_count player/friends | friends | tab.count | 0
+entity_tab_count player/inventory | inventory | tab.count | 0
+entity_tab_tile player/wallet | wallet | wallet.tiles | 0
+header_action player | accounts | suspend-header | 30
+row_action friendship | friends | friendship.remove | 0
+row_action holding | inventory | holding.revoke | 0
+row_action player | accounts | suspend | 20
+row_action player | accounts | delete-account | 30
+row_action player | wallet | currency.grant | 40
+row_action player | wallet | currency.revoke | 40
+row_action player | inventory | item.grant | 50
+row_action subscription | core.events | sub.pause | 10
+row_action subscription | core.events | sub.resume | 20
+row_action subscription | core.events | sub.retry | 30
+row_action subscription | core.events | sub.rewind | 40

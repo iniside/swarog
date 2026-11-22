@@ -56,6 +56,7 @@ use sqlx::PgPool;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub mod conformance;
+mod drawn_orders;
 mod engine;
 mod events_provider;
 mod fakes;
@@ -63,6 +64,7 @@ mod password;
 mod portal_provider;
 mod render;
 mod routes;
+pub use drawn_orders::drawn_orders;
 pub use password::{hash_password, verify_password};
 
 const TOKENS_CSS: &str = include_str!("../../../UILayout/design-system/tokens.css");
