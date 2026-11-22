@@ -66,5 +66,5 @@
 - [Cheap-tier ports: fix workflow, not model](cheap-tier-ports-fix-workflow-not-model.md) — view parts stay sonnet
 - [Admin refactor: red gates expected](admin-refactor-red-gates-expected.md) — /admin splitproof 404s expected until the panel lands
 - [demoseed is the one seeder](demoseed-is-the-one-seeder.md) — public-API seeding only, no per-module seeders
-- [Step 13 resume point](step13-resume-point.md) — admin redesign state; Step 18 done, next 19 (ask owner)
+- [Step 13 resume point](step13-resume-point.md) — admin redesign state; Step 19 monolith done, split crawl blocked (owner)
 - [Demoseed client simulator decisions](demoseed-client-simulator-decisions.md) — replaces Step 24b; parallel, every public op, report errors at end, monolith only
