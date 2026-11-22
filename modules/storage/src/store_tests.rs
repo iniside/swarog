@@ -1,8 +1,9 @@
 use opsapi::Status;
 use storageapi::{Player, ACL_PRIVATE, MAX_OBJECTS_PER_OWNER};
 
+use crate::service::{decode_admin_cursor, encode_admin_cursor};
 use crate::service_tests::{rejected, Fixture, DB_LOCK};
-use crate::store::{write_error, COLUMN_CAPS};
+use crate::store::{age_secs_sql, ago_text_sql, write_error, AdminObjectRow, COLUMN_CAPS};
 
 #[tokio::test]
 async fn column_caps_match_live_checks_and_reverse_mapping_excludes_normalized_value() {
@@ -121,4 +122,150 @@ async fn concurrent_cas_rechecks_version_after_waiting_on_the_row_lock() {
     let actual = f.get(0, "race", "").await.unwrap();
     assert_eq!((actual.version, actual.value.as_str()), (2, winner));
     f.cleanup().await;
+}
+
+/// Plants `(collection, key, updated_at)` rows for owner `n` with a fixed `updated_at`,
+/// so the order under test never depends on when the statement ran.
+async fn plant(f: &Fixture, n: usize, rows: &[(&str, &str, &str)]) {
+    for (collection, key, at) in rows {
+        sqlx::query(
+            "INSERT INTO storage.objects (owner_id, collection, key, value, updated_at) \
+             VALUES ($1::uuid, $2, $3, '{}'::jsonb, $4::timestamptz)",
+        )
+        .bind(&f.owners[n]).bind(collection).bind(key).bind(at)
+        .execute(f.pool()).await.unwrap();
+    }
+}
+
+/// Walks every page through the opaque cursor, as the tab will.
+async fn walk(f: &Fixture, owner: &str, limit: usize) -> (Vec<AdminObjectRow>, usize) {
+    let (mut all, mut pages, mut cursor) = (Vec::new(), 0, String::new());
+    loop {
+        let after = decode_admin_cursor(&cursor).unwrap();
+        let after = after.as_ref().map(|(u, c, k)| (u.as_str(), c.as_str(), k.as_str()));
+        let page = f.svc.store.admin_page(owner, after, limit).await.unwrap();
+        assert!(page.rows.len() <= limit);
+        pages += 1;
+        all.extend(page.rows);
+        match page.next_cursor {
+            Some(next) => cursor = next,
+            None => return (all, pages),
+        }
+    }
+}
+
+#[tokio::test]
+async fn admin_page_walks_keyset_pages_through_ties_and_never_shows_another_owner() {
+    let _lock = DB_LOCK.lock().await;
+    let f = Fixture::new().await;
+    let tie = "2020-01-03 00:00:00.000001+00";
+    plant(&f, 0, &[
+        ("b", "k1", tie), ("a", "k2", tie), ("a", "k1", tie), ("b", "k0", tie),
+        ("a", "old", "2020-01-01 00:00:00+00"), ("c", "new", "2020-01-04 00:00:00+00"),
+        ("a", "mid", "2020-01-02 12:00:00.5+00"),
+    ]).await;
+    // Another owner's rows sit newest and between the first owner's, sharing the tie.
+    plant(&f, 1, &[("a", "k0", tie), ("a", "zz", "2020-01-05 00:00:00+00")]).await;
+    let expected = [
+        ("c", "new"), ("a", "k1"), ("a", "k2"), ("b", "k0"), ("b", "k1"), ("a", "mid"), ("a", "old"),
+    ];
+    let keys = |rows: &[AdminObjectRow]| -> Vec<(String, String)> {
+        rows.iter().map(|r| (r.collection.clone(), r.key.clone())).collect()
+    };
+    let want: Vec<(String, String)> = expected.iter().map(|(c, k)| (c.to_string(), k.to_string())).collect();
+    // 7 rows by 3: two full pages and a partial one, the tie cut across the first boundary.
+    let (rows, pages) = walk(&f, &f.owners[0], 3).await;
+    assert_eq!(keys(&rows), want);
+    assert_eq!(pages, 3);
+    assert_eq!(rows[1].updated_at, "2020-01-03T00:00:00.000001Z");
+    assert!(rows.iter().all(|r| r.version == 1 && r.updated_ago.ends_with(" d ago")));
+    // A full last page hands out no cursor: 7 rows by 7 is one page.
+    let (rows, pages) = walk(&f, &f.owners[0], 7).await;
+    assert_eq!((keys(&rows), pages), (want, 1));
+    // The other owner sees only its own two rows, newest first.
+    let (rows, _) = walk(&f, &f.owners[1], 25).await;
+    assert_eq!(keys(&rows), vec![("a".to_string(), "zz".to_string()), ("a".to_string(), "k0".to_string())]);
+    let empty = f.svc.store.admin_page("not-a-uuid", None, 25).await.unwrap();
+    assert!(empty.rows.is_empty() && empty.next_cursor.is_none());
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn admin_page_checksum_and_size_describe_the_read_back_text_and_used_bytes_sums_them() {
+    use sha2::{Digest, Sha256};
+    let _lock = DB_LOCK.lock().await;
+    let f = Fixture::new().await;
+    let before = f.svc.store.admin_used_bytes().await.unwrap();
+    let sent = r#"{"b": [1, 2.50],   "a": "zażółć \/ x"}"#;
+    f.put(0, "one", sent, 0, "").await.unwrap();
+    f.put(0, "two", "[true, null, 1e3]", 0, "").await.unwrap();
+    let page = f.svc.store.admin_page(&f.owners[0], None, 25).await.unwrap();
+    assert_eq!(page.rows.len(), 2);
+    let mut total = 0;
+    for row in &page.rows {
+        let text = f.get(0, &row.key, &f.owners[0]).await.unwrap().value;
+        let hex: String = Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(row.checksum, format!("sha256:{hex}"), "{text}");
+        assert_eq!(row.bytes, text.len() as i64, "{text}");
+        assert_eq!(row.collection, "saves");
+        assert!(row.updated_ago.ends_with(" s ago") || row.updated_ago.ends_with(" min ago"));
+        total += row.bytes;
+    }
+    // The normalized text differs from what was sent, so the size is not the caller's.
+    assert_ne!(page.rows.iter().find(|r| r.key == "one").unwrap().bytes, sent.len() as i64);
+    assert_eq!(f.svc.store.admin_used_bytes().await.unwrap() - before, total);
+    f.cleanup().await;
+}
+
+#[tokio::test]
+async fn ago_text_buckets_fixed_instants_and_clamps_the_future() {
+    let _lock = DB_LOCK.lock().await;
+    let f = Fixture::new().await;
+    let sql = format!(
+        "SELECT {} FROM (SELECT {} AS s) a",
+        ago_text_sql("a.s"),
+        age_secs_sql("$2::timestamptz", "$1::timestamptz"),
+    );
+    let now = "2026-01-10 12:00:00+00";
+    for (at, want) in [
+        ("2026-01-10 12:00:00+00", "0 s ago"),
+        ("2026-01-10 11:59:00.1+00", "59 s ago"),
+        ("2026-01-10 11:59:00+00", "1 min ago"),
+        ("2026-01-10 11:00:01+00", "59 min ago"),
+        ("2026-01-10 11:00:00+00", "1 h ago"),
+        ("2026-01-09 12:00:01+00", "23 h ago"),
+        ("2026-01-09 12:00:00+00", "1 d ago"),
+        ("2026-01-07 11:59:55+00", "3 d ago"),
+        ("2026-01-10 12:00:10+00", "0 s ago"),
+    ] {
+        let got: String = sqlx::query_scalar(&sql).bind(now).bind(at).fetch_one(f.pool()).await.unwrap();
+        assert_eq!(got, want, "{at}");
+    }
+    f.cleanup().await;
+}
+
+#[test]
+fn admin_cursor_round_trips_and_rejects_what_cannot_reach_a_bind() {
+    let at = "2026-01-10T12:00:00.000001Z";
+    let enc = encode_admin_cursor(at, "saves", "slot-1");
+    assert_eq!(
+        decode_admin_cursor(&enc).unwrap(),
+        Some((at.to_string(), "saves".to_string(), "slot-1".to_string())),
+    );
+    assert_eq!(decode_admin_cursor("").unwrap(), None);
+    let b64 = |s: &str| {
+        use base64::Engine;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s)
+    };
+    for bad in [
+        "!!!".to_string(),
+        b64(&format!("{at}|saves")),
+        b64("2026-02-30T12:00:00.000001Z|saves|k"),
+        b64(&format!("{at}|sa/ves|k")),
+        b64(&format!("{at}|saves|k|extra")),
+        b64(&format!("{at}|{}|k", "c".repeat(65))),
+        b64(&format!("{at}|saves|")),
+    ] {
+        assert_eq!(decode_admin_cursor(&bad).unwrap_err().status, Status::Invalid, "{bad}");
+    }
 }

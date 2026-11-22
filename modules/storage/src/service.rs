@@ -184,6 +184,46 @@ pub(crate) fn decode_cursor(cursor: &str) -> Result<Option<(String, String)>, Er
     Ok(Some((created_at.to_string(), key.to_string())))
 }
 
+/// base64url-no-pad over `"{updated_at}|{collection}|{key}"`: the admin Cloud saves tab's
+/// keyset ([`crate::store::Store::admin_page`]) in [`encode_cursor`]'s codec, one segment
+/// longer. `|` is outside [`is_legal_segment`]'s alphabet, so the three-way split is
+/// unambiguous. The owner is never encoded: the page binds it from the entity it draws.
+pub(crate) fn encode_admin_cursor(updated_at: &str, collection: &str, key: &str) -> String {
+    B64.encode(format!("{updated_at}|{collection}|{key}"))
+}
+
+/// [`decode_cursor`]'s rules for [`encode_admin_cursor`]'s keyset: empty is the first
+/// page, anything malformed is REJECTED, and only a real calendar instant and two legal,
+/// capped segments reach the page's binds, so none of them can raise a cast error.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Step 19a2: the Cloud saves tab decodes its cursor \
+                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2337)"
+    )
+)]
+pub(crate) fn decode_admin_cursor(cursor: &str) -> Result<Option<(String, String, String)>, Error> {
+    if cursor.is_empty() {
+        return Ok(None);
+    }
+    cursor_within_cap(cursor)?;
+    let raw = B64
+        .decode(cursor)
+        .map_err(|_| Error::invalid(MALFORMED_CURSOR))?;
+    let text = String::from_utf8(raw).map_err(|_| Error::invalid(MALFORMED_CURSOR))?;
+    let mut parts = text.splitn(3, '|');
+    let (Some(updated_at), Some(collection), Some(key)) = (parts.next(), parts.next(), parts.next())
+    else {
+        return Err(Error::invalid(MALFORMED_CURSOR));
+    };
+    let legal = |seg: &str, cap: &ColumnCap| is_legal_segment(seg) && seg.len() <= cap.max_bytes;
+    if !is_cursor_time(updated_at) || !legal(collection, &COLLECTION_CAP) || !legal(key, &KEY_CAP) {
+        return Err(Error::invalid(MALFORMED_CURSOR));
+    }
+    Ok(Some((updated_at.to_string(), collection.to_string(), key.to_string())))
+}
+
 /// The canonical hyphenated spelling, hex case-insensitive — what `accounts` mints and the
 /// only shape `storage.objects`' `uuid` owner column can hold.
 pub(crate) fn is_uuid_text(s: &str) -> bool {

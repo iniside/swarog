@@ -37,3 +37,5 @@ serde = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }
+# The admin checksum test recomputes the SQL `sha256` in Rust.
+sha2 = { workspace = true }

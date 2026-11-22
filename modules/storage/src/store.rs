@@ -4,6 +4,8 @@ use storageapi::{
     ObjectSummary, StorageObject, ACL_PUBLIC_READ, MAX_COLLECTION_BYTES, MAX_KEY_BYTES,
 };
 
+use crate::service::encode_admin_cursor;
+
 /// The DDL below writes [`MAX_COLLECTION_BYTES`]/[`MAX_KEY_BYTES`] a second time, in SQL,
 /// and `write_error` words a `23514` with the RUST cap: a const raised past its CHECK would
 /// answer an over-cap input with a limit it never had.
@@ -513,132 +515,196 @@ impl Store {
         Ok(())
     }
 
-    /// The page's four aggregates, in ONE statement and for both scopes: totals a KPI row
-    /// states side by side must agree with each other, which two statements taken apart
-    /// cannot promise.
+    /// Every stored byte across every owner, exact: the Cloud saves used tile's value.
     ///
-    /// An `owner_id` reaches this only once [`crate::service::is_uuid_text`] has accepted
-    /// it, so the `$2::uuid` cast has no malformed spelling left to raise `22P02` over.
-    #[expect(
-        dead_code,
-        reason = "Step 19: the cloud saves used tile reads it \
-                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2328)"
+    /// The cost is a full sequential scan of `storage.objects` that detoasts EVERY value
+    /// on every call — no index or counter holds a byte total. That is why the tile caches
+    /// it for 300 s rather than reading it on each dashboard load. The bytes are normalized
+    /// jsonb text (see [`SCHEMA_DDL`]), not the bytes the clients sent.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Step 19a2: the Cloud saves used tile reads it \
+                      (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2337)"
+        )
     )]
-    pub(crate) async fn admin_counts(
-        &self,
-        owner_id: Option<&str>,
-    ) -> Result<AdminCounts, sqlx::Error> {
-        let sql = format!(
-            "SELECT count(*), count(DISTINCT owner_id), count(DISTINCT collection), \
-                    count(*) FILTER (WHERE acl = $1) \
-               FROM storage.objects{}",
-            match owner_id {
-                Some(_) => " WHERE owner_id = $2::uuid",
-                None => "",
-            }
-        );
-        let q = sqlx::query_as::<_, (i64, i64, i64, i64)>(&sql).bind(ACL_PUBLIC_READ);
-        let row = match owner_id {
-            Some(id) => q.bind(id).fetch_one(&self.pool).await?,
-            None => q.fetch_one(&self.pool).await?,
-        };
-        Ok(AdminCounts {
-            objects: row.0,
-            owners: row.1,
-            collections: row.2,
-            public: row.3,
-        })
+    pub(crate) async fn admin_used_bytes(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT coalesce(sum(octet_length(value::text)), 0)::bigint FROM storage.objects",
+        )
+        .fetch_one(&self.pool)
+        .await
     }
 
-    /// The newest objects, across every owner or scoped to one. The ordering carries the
-    /// whole primary key behind `updated_at`, which rows written by one statement share, so
-    /// a truncated page cuts at the same row on every request rather than at a fresh one.
+    /// One keyset page of `owner_id`'s objects for the admin Cloud saves tab, most recently
+    /// written first, plus the cursor of the next page (`None` on the last one).
     ///
-    /// The projection sits ABOVE an ordered subquery, not beside the `ORDER BY`: flattened,
-    /// the planner puts `octet_length(value::text)` on the scan below the top-N sort, so the
-    /// whole table is detoasted to produce `limit` numbers. Nested, the sort carries `value`
-    /// as a toast pointer and only the rows that survive the `LIMIT` are detoasted.
+    /// Owner-scoped only: `after` carries the keyset `(updated_at, collection, key)` and
+    /// nothing else, so no cursor can move the `owner_id` predicate. The keyset is the
+    /// whole order, so rows sharing an `updated_at` (one statement's writes) are cut at the
+    /// same row on every request. `updated_at` descends while `collection, key` ascend, so
+    /// the cut is spelled out rather than a tuple comparison.
     ///
-    /// The inner `ORDER BY` names table columns: bound instead to an `owner_id::text` output
-    /// column, the sort key is a text collation that no `(updated_at DESC, owner_id, ...)`
-    /// index can serve.
-    #[expect(
-        dead_code,
-        reason = "Step 19: the Cloud saves tab lists it \
-                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2328)"
+    /// No index has `updated_at`: the `owner_id` equality is served by the primary key's
+    /// prefix and the planner then top-N sorts all that owner's rows, at most
+    /// `storageapi::MAX_OBJECTS_PER_OWNER` (10,000). An `(owner_id, updated_at)` index
+    /// would remove that sort; it is not added while the bound holds.
+    ///
+    /// The derived columns sit ABOVE the ordered subquery, not beside its `ORDER BY`:
+    /// flattened, the planner computes `value::text` on the scan below the top-N sort and
+    /// detoasts every row of the owner. Nested, the sort carries `value` as a toast pointer
+    /// and only the rows that survive the `LIMIT` are detoasted.
+    ///
+    /// Asks for one row past `limit`: its presence IS the next cursor, so a full last page
+    /// never hands out a cursor that would answer empty. An `owner_id` that is not a uuid
+    /// holds no objects, so it is an empty page.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Step 19a2: the Cloud saves tab lists it \
+                      (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2337)"
+        )
     )]
-    pub(crate) async fn admin_recent(
+    pub(crate) async fn admin_page(
         &self,
-        owner_id: Option<&str>,
-        limit: i64,
-    ) -> Result<Vec<AdminObjectRow>, sqlx::Error> {
-        let sql = admin_recent_sql(owner_id.is_some());
-        let q = sqlx::query_as::<_, AdminRow>(&sql).bind(limit);
-        let rows = match owner_id {
-            Some(id) => q.bind(id).fetch_all(&self.pool).await?,
-            None => q.fetch_all(&self.pool).await?,
+        owner_id: &str,
+        after: Option<(&str, &str, &str)>,
+        limit: usize,
+    ) -> Result<AdminPage, sqlx::Error> {
+        let fetch = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
+        let res = match after {
+            Some((updated_at, collection, key)) => {
+                sqlx::query_as::<_, AdminRow>(&admin_page_sql(
+                    "AND (updated_at < $2::timestamptz \
+                          OR (updated_at = $2::timestamptz AND (collection, key) > ($3, $4)))",
+                    "$5",
+                ))
+                .bind(owner_id)
+                .bind(updated_at)
+                .bind(collection)
+                .bind(key)
+                .bind(fetch)
+                .fetch_all(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query_as::<_, AdminRow>(&admin_page_sql("", "$2"))
+                    .bind(owner_id)
+                    .bind(fetch)
+                    .fetch_all(&self.pool)
+                    .await
+            }
         };
-        Ok(rows.into_iter().map(to_admin_row).collect())
+        let mut rows = match res {
+            Ok(rows) => rows,
+            Err(e) if is_invalid_uuid(&e) => Vec::new(),
+            Err(e) => return Err(e),
+        };
+        let has_more = rows.len() > limit;
+        rows.truncate(limit);
+        let next_cursor = match rows.last() {
+            Some(last) if has_more => Some(encode_admin_cursor(&last.4, &last.0, &last.1)),
+            _ => None,
+        };
+        Ok(AdminPage {
+            rows: rows.into_iter().map(to_admin_row).collect(),
+            next_cursor,
+        })
     }
 }
 
-/// `$1` is the limit and `$2` the owner, both bound inside the subquery, so the scoped and
-/// unscoped spellings number their binds alike.
-pub(crate) fn admin_recent_sql(scoped: bool) -> String {
+/// `$1` is the owner; the keyed variant adds the cursor at `$2`-`$4`, which is why `limit`
+/// moves. The outer `ORDER BY` repeats the inner one, because a subquery's order is not
+/// promised to survive the join above it; it sorts at most `limit` rows.
+pub(crate) fn admin_page_sql(cut: &str, limit: &str) -> String {
+    let age = age_secs_sql("t.updated_at", "now()");
+    let ago = ago_text_sql("a.secs");
     format!(
-        "SELECT owner_id::text, collection, key, version, acl, \
-                octet_length(value::text)::bigint, \
-                to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') \
-           FROM (SELECT owner_id, collection, key, version, acl, value, updated_at \
-                   FROM storage.objects{} \
-                  ORDER BY updated_at DESC, owner_id, collection, key LIMIT $1) t",
-        if scoped { " WHERE owner_id = $2::uuid" } else { "" }
+        "SELECT t.collection, t.key, t.version, octet_length(t.value::text)::bigint, \
+                to_char(t.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'), \
+                {ago}, \
+                'sha256:' || encode(sha256(convert_to(t.value::text, 'UTF8')), 'hex') \
+           FROM (SELECT collection, key, version, value, updated_at \
+                   FROM storage.objects \
+                  WHERE owner_id = $1::uuid {cut} \
+                  ORDER BY updated_at DESC, collection, key LIMIT {limit}) t \
+          CROSS JOIN LATERAL (SELECT {age} AS secs) a \
+          ORDER BY t.updated_at DESC, t.collection, t.key"
     )
 }
 
-/// The admin page's aggregates, every one of them counted in the scope that was asked.
-/// `owners` is therefore 1 on a drill-down, which is why the page states it only in the
-/// unscoped view and states `collections` in the scoped one.
-#[expect(
-    dead_code,
-    reason = "Step 19: the cloud saves used tile reads its fields \
-              (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2328)"
-)]
-pub(crate) struct AdminCounts {
-    pub(crate) objects: i64,
-    pub(crate) owners: i64,
-    pub(crate) collections: i64,
-    pub(crate) public: i64,
+/// Whole seconds from `at` to `now`, both SQL expressions; a future `at` (clock skew
+/// between writers) reads as 0, never a negative age.
+pub(crate) fn age_secs_sql(at: &str, now: &str) -> String {
+    format!("greatest(0, floor(extract(epoch FROM ({now}) - ({at}))))::bigint")
 }
 
-/// One listed object as the admin sees it: the owner included, which
-/// [`storageapi::ObjectSummary`] omits because a player's own listing already knows it.
-/// The value itself is never carried — only its size.
-#[expect(
-    dead_code,
-    reason = "Step 19: the Cloud saves tab draws its fields \
-              (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2328)"
+/// The Updated cell's relative text from a whole-seconds SQL expression, truncated to the
+/// largest unit that fits: under a minute "N s ago", under an hour "N min ago", under a
+/// day "N h ago", else "N d ago". Computed in SQL so the age is the database's clock, the
+/// one that wrote `updated_at`, not the reading process's.
+pub(crate) fn ago_text_sql(secs: &str) -> String {
+    format!(
+        "CASE WHEN {secs} < 60 THEN ({secs})::text || ' s ago' \
+              WHEN {secs} < 3600 THEN ({secs} / 60)::text || ' min ago' \
+              WHEN {secs} < 86400 THEN ({secs} / 3600)::text || ' h ago' \
+              ELSE ({secs} / 86400)::text || ' d ago' END"
+    )
+}
+
+/// One page of the Cloud saves tab and the opaque cursor of the page after it.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Step 19a2: the Cloud saves tab draws it \
+                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2337)"
+    )
+)]
+pub(crate) struct AdminPage {
+    pub(crate) rows: Vec<AdminObjectRow>,
+    pub(crate) next_cursor: Option<String>,
+}
+
+/// One listed object as the Cloud saves tab draws it. The value itself is never carried,
+/// only what is derived from it: its size and its checksum.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "Step 19a2: the Cloud saves tab draws its fields \
+                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2337)"
+    )
 )]
 pub(crate) struct AdminObjectRow {
-    pub(crate) owner_id: String,
     pub(crate) collection: String,
     pub(crate) key: String,
     pub(crate) version: i64,
-    pub(crate) acl: String,
+    /// `octet_length(value::text)`: the NORMALIZED jsonb text's bytes (see [`SCHEMA_DDL`]),
+    /// not the bytes the client sent.
     pub(crate) bytes: i64,
+    /// The keyset half, in the cursor codec's `YYYY-MM-DDTHH:MI:SS.USZ` shape.
     pub(crate) updated_at: String,
+    /// [`ago_text_sql`] over the database's `now()`.
+    pub(crate) updated_ago: String,
+    /// `sha256:<64 hex>` of the normalized jsonb text, so it is not a hash of the client's
+    /// bytes either.
+    pub(crate) checksum: String,
 }
 
-type AdminRow = (String, String, String, i64, String, i64, String);
+type AdminRow = (String, String, i64, i64, String, String, String);
 
 fn to_admin_row(row: AdminRow) -> AdminObjectRow {
+    let (collection, key, version, bytes, updated_at, updated_ago, checksum) = row;
     AdminObjectRow {
-        owner_id: row.0,
-        collection: row.1,
-        key: row.2,
-        version: row.3,
-        acl: row.4,
-        bytes: row.5,
-        updated_at: row.6,
+        collection,
+        key,
+        version,
+        bytes,
+        updated_at,
+        updated_ago,
+        checksum,
     }
 }

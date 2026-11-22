@@ -4584,6 +4584,7 @@ dependencies = [
  "schedulerevents",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "storageapi",
  "storagerpc",
