@@ -2,6 +2,10 @@
 
 Last updated: 2026-11-22
 
+- [x] **admindiff tests name a real excluded tab and hand-list crawled hosts** (2026-11-22, admin-control-plane-redesign step 17)
+  The tests take their example tab from the first player tab in `EXCLUDED_TABS`
+  (`tests::excluded_player_tab`) and read the crawled player hosts from `PAGE_MAP`
+  (`crawl_tests::player_hosts`), so a tab port edits only `pages.rs`.
 - [x] **One accept line covers any number of same-shaped unmatched openers** (2026-11-22, admin-control-plane-redesign step 16)
   Same-label leftovers under one parent are one counted line, `portal-only ×2
   button.menu-item#bd58cd` in the 5 user-menu accept files; one more opener is NEW plus STALE.

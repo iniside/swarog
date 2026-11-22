@@ -5,7 +5,7 @@ use super::{
     with_tab,
     DrawnTabs, Lists, Menu, Modal, ModalWhy, Page, Route, EXCLUDED, EXCLUDED_TABS, LISTS, PAGE_MAP,
 };
-use crate::tests::ScratchDir;
+use crate::tests::{excluded_player_tab, ScratchDir};
 
 /// Every page the two lists name, as a mockup map would hold it.
 fn listed() -> BTreeMap<String, String> {
@@ -74,8 +74,9 @@ fn lookup_returns_mapped_first_row_and_pending_pages_and_refuses_excluded_and_un
     assert_eq!(entity.search, "?u=aiko.tanaka", "an entity page carries its fixed entity");
     let excluded = format!("{:#}", lookup(&LISTS, "states").expect_err("excluded"));
     assert!(excluded.contains("page states is excluded: Declared deviation D3"), "{excluded}");
-    let tab = format!("{:#}", lookup(&LISTS, "player.friends").expect_err("an excluded tab"));
-    assert!(tab.contains("tab player.friends is excluded: not ported yet"), "{tab}");
+    let (id, _, why) = excluded_player_tab();
+    let tab = format!("{:#}", lookup(&LISTS, id).expect_err("an excluded tab"));
+    assert_eq!(tab, format!("tab {id} is excluded: {why}"));
     let unknown = format!("{:#}", lookup(&LISTS, "nope").expect_err("unknown"));
     assert!(unknown.contains("unknown page nope; pages: index, events"), "{unknown}");
 }
@@ -92,8 +93,9 @@ fn lookup_refuses_by_the_given_exclusion_lists() {
     let tabs = Lists { excluded_tabs: &[("player.zzz", "why tab")], ..LISTS };
     let e = format!("{:#}", lookup(&tabs, "player.zzz").expect_err("excluded by the given list"));
     assert_eq!(e, "tab player.zzz is excluded: why tab");
-    let e = format!("{:#}", lookup(&Lists { excluded_tabs: &[], ..LISTS }, "player.friends").expect_err("unknown without its exclusion"));
-    assert!(e.starts_with("unknown page player.friends; pages: "), "{e}");
+    let (id, _, _) = excluded_player_tab();
+    let e = format!("{:#}", lookup(&Lists { excluded_tabs: &[], ..LISTS }, id).expect_err("unknown without its exclusion"));
+    assert!(e.starts_with(&format!("unknown page {id}; pages: ")), "{e}");
 }
 
 /// The const lists themselves hold none of the defects `validate_lists` reports for them.

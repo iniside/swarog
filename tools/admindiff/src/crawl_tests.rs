@@ -1272,20 +1272,8 @@ async fn an_empty_list_page_fails_unless_empty_is_allowed_and_then_the_diff_refu
     let run = allowed.out.path().join("run");
     assert!(run.join("players.html").is_file() && !run.join("player.html").exists());
     assert!(!allowed.server.requests().iter().any(|r| r.path.starts_with("/admin/e/")), "nothing was followed");
-    assert_eq!(
-        allowed.empty,
-        [
-            "player",
-            "player.characters",
-            "player.wallet",
-            "player.inventory",
-            "players.menu.user",
-            "player.menu.user",
-            "player.characters.menu.user",
-            "player.wallet.menu.user",
-            "player.inventory.menu.user",
-        ]
-    );
+    let skipped: Vec<String> = player_hosts(PAGE_MAP).into_iter().chain(player_modals(PAGE_MAP)).collect();
+    assert_eq!(allowed.empty, skipped);
     assert!(!run.join("players.menu.user.html").exists() && !run.join("player.menu.user.html").exists());
     let menus: Vec<String> = allowed.server.requests().into_iter().map(|r| r.path).filter(|p| p.contains("/_menu/player/")).collect();
     assert!(menus.is_empty(), "no player menu was fetched: {menus:?}");
@@ -1305,21 +1293,9 @@ async fn an_empty_or_skipped_page_cannot_make_a_menu_exclusion_stale() {
     excluded.push(("player", "guild", "drawn on the player page"));
     let allowed = crawl_lists(empty.clone(), PAGE_MAP, &excluded, true).await;
     assert!(matches!(allowed.result, Ok(true)), "{:?}", allowed.result);
-    assert_eq!(
-        allowed.empty,
-        [
-            "player",
-            "player.characters",
-            "player.wallet",
-            "player.inventory",
-            "players.menu.user",
-            "player.menu.user",
-            "player.characters.menu.user",
-            "player.wallet.menu.user",
-            "player.inventory.menu.user",
-            "players.excluded-menu.guild",
-        ]
-    );
+    let guild = excluded_menu_id("players", "guild");
+    let skipped: Vec<String> = player_hosts(PAGE_MAP).into_iter().chain([guild]).chain(player_modals(PAGE_MAP)).collect();
+    assert_eq!(allowed.empty, skipped);
     let players_only: Vec<_> = excluded.iter().copied().filter(|e| e.0 != "player" || e.1 != "guild").collect();
     let healthy = crawl_lists(Site::healthy(), PAGE_MAP, &players_only, true).await;
     healthy.assert_failed("players lists rows and draws no guild menu");
@@ -1668,21 +1644,10 @@ async fn a_modal_target_on_a_skipped_page_is_empty() {
     let empty = drawn.with(&panel_url("players"), ok(fragment(Some("ok"), "players panel", "")));
     let allowed = crawl_modals(empty.clone(), &page_map, EXCLUDED_MODALS, true).await;
     allowed.assert_clean("--allow-empty: players lists no row");
-    assert_eq!(
-        allowed.empty,
-        [
-            "player",
-            "player.characters",
-            "player.wallet",
-            "player.inventory",
-            "players.menu.user",
-            "player.menu.user",
-            "player.characters.menu.user",
-            "player.wallet.menu.user",
-            "player.inventory.menu.user",
-            "player.modal.kick",
-        ]
-    );
+    let kick_id = page_map.last().expect("the kick entry").id();
+    assert_eq!(kick_id, "player.modal.kick");
+    let skipped: Vec<String> = player_hosts(PAGE_MAP).into_iter().chain(player_modals(PAGE_MAP)).chain([kick_id]).collect();
+    assert_eq!(allowed.empty, skipped);
     assert_eq!(fetched(&allowed, &url), 0);
     crawl_modals(empty, &page_map, EXCLUDED_MODALS, false).await.assert_failed("players lists no row");
 }
@@ -1811,6 +1776,23 @@ async fn a_menu_modal_exclusion_is_fetched_and_fails_stale_or_down() {
 }
 
 // ---- modals on tab pages -------------------------------------------------------------
+
+/// The ids of `page_map`'s page and tab entries of the player page, then of its menu targets
+/// on those and on the players rows, in map order: what players listing no row skips under
+/// `--allow-empty`, read from the page list by name rather than through the crawl's hosts.
+fn player_hosts(page_map: &[Page]) -> Vec<String> {
+    let pages = page_map.iter().filter(|p| p.page == "player" && p.is_page());
+    let menus = page_map.iter().filter(|p| p.is_menu() && (p.page == "player" || p.page == "players"));
+    let hosts: Vec<String> = pages.chain(menus).map(Page::id).collect();
+    assert!(hosts.iter().any(|h| h == "player") && hosts.iter().any(|h| h == "players.menu.user"), "{hosts:?}");
+    hosts
+}
+
+/// The ids of `page_map`'s modal entries a [`player_hosts`] host opens, in map order.
+fn player_modals(page_map: &[Page]) -> Vec<String> {
+    let hosts = player_hosts(page_map);
+    page_map.iter().filter(|p| p.modal.is_some() && hosts.contains(&p.host().id())).map(Page::id).collect()
+}
 
 /// The `items` tab entry of the `FirstRow` player page, which [`PAGE_MAP`] does not list.
 fn items_tab() -> Page {
@@ -2083,8 +2065,9 @@ async fn an_action_claim_is_fetched_where_drawn_and_fails_where_not() {
     c.assert_failed_with("mail draws no guild/kick", "EXCLUDED_MOCK_MODALS mail PAGES.kick says the portal opens guild/kick, which mail does not draw");
 }
 
-/// With `--allow-empty` and players listing no row, the player page, its Characters, Wallet and
-/// Inventory tabs and the four user menus are not fetched: the crawl writes the CLEAN marker, and reports each
+/// With `--allow-empty` and players listing no row, the player page, its tabs and the user
+/// menus on them and on the players rows ([`player_hosts`]) are not fetched: the crawl writes
+/// the CLEAN marker, and reports each
 /// `EXCLUDED_MOCK_MODALS` claim of those hosts UNCHECKED, in list order; mail's claim, on a
 /// fetched host, is checked.
 #[tokio::test]
@@ -2092,20 +2075,10 @@ async fn a_claim_on_an_unfetched_host_is_reported_unchecked() {
     let empty = Site::healthy().with(&panel_url("players"), ok(fragment(Some("ok"), "players panel", "")));
     let c = crawl_with(empty, false, true).await;
     c.assert_clean("--allow-empty: players lists no row");
-    let skipped = [
-        "player",
-        "player.characters",
-        "player.wallet",
-        "player.inventory",
-        "players.menu.user",
-        "player.menu.user",
-        "player.characters.menu.user",
-        "player.wallet.menu.user",
-        "player.inventory.menu.user",
-    ];
+    let skipped = player_hosts(PAGE_MAP);
     let want: Vec<String> = EXCLUDED_MOCK_MODALS
         .iter()
-        .filter(|x| skipped.contains(&x.host))
+        .filter(|x| skipped.iter().any(|h| h == x.host))
         .map(|x| format!("EXCLUDED_MOCK_MODALS {} {}", x.host, x.opener))
         .collect();
     assert_eq!(want.len() + 1, EXCLUDED_MOCK_MODALS.len(), "every claim but mail's is on a skipped host");

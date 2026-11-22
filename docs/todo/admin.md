@@ -56,11 +56,6 @@ _None._
   The entity-page links built at `core/admin/src/routes.rs:179-181,600` carry the entity and
   tab but not the tab's declared filter keys, so a link to a filtered tab opens unfiltered
   (review of c88143c0).
-- [ ] **admindiff tests name a real excluded tab and hand-list crawled hosts**
-  `tools/admindiff/src/pages_tests.rs` and `tests.rs` hard-code `player.friends` as the
-  excluded example, and four `crawl_tests.rs` tests copy the player-host subset of
-  `PAGE_MAP`; every tab port has to edit them. Picking the example from `EXCLUDED_TABS` and
-  deriving the hosts from `PAGE_MAP` ends it (proof audit of b5fff581).
 
 ### Known limits (admin-control-plane-redesign step 15)
 
