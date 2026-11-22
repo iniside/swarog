@@ -38,7 +38,7 @@
 # Regenerate intentionally via cargo run -p verifyctl -- --bless-contract-golden.
 
 event topic=admin.action version=1 history=min-retention:30d
-event topic=character.created version=1 history=min-retention:7d
+event topic=character.created version=1 history=keep-forever
 event topic=character.deleted version=1 history=min-retention:7d
 event topic=config.changed version=1 history=min-retention:7d
 event topic=friend.accepted version=1 history=min-retention:30d

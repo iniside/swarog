@@ -256,8 +256,9 @@ impl Module for Inventory {
         );
         // The character → player record, on its OWN subscription rather than inside
         // the starter grant's handler: a new checkpoint at `Genesis` replays the
-        // retained `character.created` history into the table, where the grant's
-        // checkpoint already sits past it, and the record is a projection the grant
+        // whole `character.created` history (the topic is `KeepForever`) into the
+        // table, where the grant's checkpoint already sits past it, and the record is
+        // a projection the grant
         // policy should not share a failure (or a poison-pause) with. Same ordering
         // guard as the grant: the per-character lock and the wipe tombstone.
         let recorder = inner.clone();

@@ -36,11 +36,15 @@ pub struct Deleted {
 /// The `character.created` topic. Emitted via `bus::emit_tx` inside the domain tx
 /// that inserts the character row, so the event is durable iff the character is.
 ///
+/// Kept forever: a `StartPosition::Genesis` consumer added later (inventory's
+/// `inventory.character-owner.v1` character → player record) must replay every
+/// character ever created, and only `KeepForever` promises that history.
+///
 /// `bus::define` is not `const`, so the descriptor is a `LazyLock` static; callers
 /// pass it as `&*charactersevents::CREATED` (or just `&charactersevents::CREATED`,
 /// which auto-derefs).
 pub static CREATED: LazyLock<EventType<Created>> =
-    LazyLock::new(|| define("character.created", 1, HistoryPolicy::MinRetention { days: 7 }));
+    LazyLock::new(|| define("character.created", 1, HistoryPolicy::KeepForever));
 
 /// The `character.deleted` topic. Emitted (in the same tx as the delete) only when a
 /// row was actually removed — a delete of a non-owned/absent character emits nothing.
