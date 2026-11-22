@@ -1,10 +1,13 @@
 //! The control-plane provider over a live Postgres: the Groups tab's reader and body, its
-//! count, the purge attention item, the group header and the manifest.
+//! count, the purge attention item, the group header, the manifest, and the promote write
+//! with its prepared modal.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use controlplane::{
-    order, Align, CellKind, DataTable, EntityRef, Link, PanelBody, PanelQuery, Point, Primitive, Provider, Role,
+    order, ActionPoint, Align, CellKind, ConfirmTone, DataTable, Emphasis, EntityRef, InvokeCall, InvokeOutcome, Link,
+    PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider, ReasonReq, Role, Then,
 };
 use groupsapi::{JOIN_INVITE, JOIN_OPEN, ROLE_ADMIN, ROLE_MEMBER, STATE_INVITED, STATE_MEMBER, STATE_REQUESTED};
 use opsapi::Status;
@@ -88,8 +91,16 @@ fn membership(group_id: &str, name: &str, state: &str, role: &str, members: i64)
 #[test]
 fn manifest_declares_the_group_kind_its_header_and_the_shared_orders() {
     let m = admin::manifest();
-    assert!(!m.writes);
-    assert!(m.actions.is_empty());
+    assert!(m.writes);
+    assert_eq!(m.actions.len(), 1);
+    let a = &m.actions[0];
+    assert_eq!(a.id, admin::PROMOTE);
+    assert_eq!(a.point, ActionPoint::TableRow(admin::GROUPS.to_string()));
+    assert_eq!((a.label.as_str(), a.emphasis, a.danger, a.min_role), ("Promote", Emphasis::Ghost, false, Role::Operator));
+    assert!(a.implemented && a.prepare && !a.multi && !a.icon_only);
+    let Then::Confirm(spec) = &a.then else { panic!("the promote is a Confirm, got {:?}", a.then) };
+    assert_eq!((spec.tone, spec.reason, spec.confirm_label.as_str()), (ConfirmTone::Warn, ReasonReq::Optional, "Promote"));
+    assert!(spec.type_to_confirm.is_none() && spec.impact.is_empty());
     assert_eq!(m.entity_kinds.len(), 1);
     assert_eq!(m.entity_kinds[0].kind, admin::GROUP_KIND);
     let find = |id: &str| m.contributions.iter().find(|c| c.id == id).expect(id);
@@ -143,6 +154,9 @@ fn groups_body_maps_columns_cells_link_labels_and_meta() {
     let members: Vec<_> = t.rows.iter().map(|r| r.cells[2].value.as_str()).collect();
     assert_eq!(members, vec!["3", "1", "2", "5"]);
     assert_eq!(first.cells[3].value, "2026-03-04");
+    // The promote is listed only on the member row whose role is member.
+    let actions: Vec<_> = t.rows.iter().map(|r| r.actions.clone()).collect();
+    assert_eq!(actions, vec![vec![], vec![admin::PROMOTE.to_string()], vec![], vec![]]);
 
     let next = admin::groups_body(&rows, 30, Some("c".into()));
     assert_eq!(table(&next).page.next_cursor.as_deref(), Some("c"));
@@ -373,4 +387,192 @@ async fn purges_item_shows_a_live_unswept_tombstone() {
         .await;
     let body = body.unwrap();
     assert!(matches!(&body.primitive, Primitive::AttentionItems(items) if items.len() == 1));
+}
+
+fn promote_call(player: &str, group: &str, input: BTreeMap<String, String>) -> InvokeCall {
+    InvokeCall {
+        module: "groups".into(),
+        action: admin::PROMOTE.into(),
+        entity: Some(EntityRef { kind: "player".into(), id: player.into() }),
+        input,
+        expected_revision: None,
+        reason: None,
+        operator: "op".into(),
+        item: Some(group.into()),
+        request_id: Some("form-1".into()),
+    }
+}
+
+fn prepare_call(player: &str, group: &str) -> PrepareCall {
+    PrepareCall {
+        module: "groups".into(),
+        action: admin::PROMOTE.into(),
+        entity: Some(EntityRef { kind: "player".into(), id: player.into() }),
+        item: Some(group.into()),
+        operator: "op".into(),
+    }
+}
+
+async fn role_of(pool: &PgPool, group_id: &str, player_id: &str) -> String {
+    let (role,): (String,) = sqlx::query_as(
+        "SELECT role FROM groups.memberships WHERE group_id = $1::uuid AND player_id = $2::uuid",
+    )
+    .bind(group_id)
+    .bind(player_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    role
+}
+
+/// Every `group.role_changed` payload the durable log holds for the group.
+async fn role_changed(pool: &PgPool, group_id: &str) -> Vec<serde_json::Value> {
+    let rows: Vec<(serde_json::Value,)> = sqlx::query_as(
+        "SELECT payload FROM asyncevents.events WHERE topic = $1 AND payload->>'group_id' = $2",
+    )
+    .bind(groupsevents::ROLE_CHANGED.topic())
+    .bind(group_id)
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    rows.into_iter().map(|(p,)| p).collect()
+}
+
+/// The promote makes the member an admin and logs one `group.role_changed` with the
+/// operator as the actor; a repeat finds the admin role, answers NoOp and logs nothing.
+#[tokio::test]
+async fn promote_makes_a_member_admin_once_and_logs_one_role_change() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let directory = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, directory.clone()).await;
+    let g = insert_group(&pool, "Ravens", JOIN_OPEN, "2026-01-01T00:00:00Z").await;
+    let p = pool.clone();
+    with_cleanup(&pool, vec![g.clone()], async move {
+        let me = unique_uuid(&p).await;
+        directory.insert(&me, "Odin#0001");
+        insert_row(&p, &g, &me, STATE_MEMBER, ROLE_MEMBER, "2026-01-02T00:00:00Z").await;
+        let admin = admin::GroupsAdmin::new(svc.clone());
+
+        let out = admin.invoke(promote_call(&me, &g, BTreeMap::new())).await.unwrap();
+        let InvokeOutcome::Ok { message, .. } = out else { panic!("an Ok, got {out:?}") };
+        assert_eq!(message, "Odin#0001 is now an admin of Ravens");
+        assert_eq!(role_of(&p, &g, &me).await, ROLE_ADMIN);
+        let events = role_changed(&p, &g).await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0]["player_id"], me.as_str());
+        assert_eq!(events[0]["role"], ROLE_ADMIN);
+        assert_eq!(events[0]["actor_kind"], groupsevents::ACTOR_OPERATOR);
+        assert_eq!(events[0]["actor_id"], "");
+
+        let again = admin.invoke(promote_call(&me, &g, BTreeMap::new())).await.unwrap();
+        assert_eq!(again, InvokeOutcome::NoOp { message: "Odin#0001 was already an admin of Ravens".into() });
+        assert_eq!(role_changed(&p, &g).await.len(), 1, "a repeat logs no second change");
+    })
+    .await;
+}
+
+/// A pending row and a player with no row are invalid, a missing group is not found, and
+/// none of them writes or logs anything.
+#[tokio::test]
+async fn promote_refuses_a_pending_row_a_non_member_and_a_missing_group() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    let g = insert_group(&pool, "Crows", JOIN_OPEN, "2026-01-01T00:00:00Z").await;
+    let p = pool.clone();
+    with_cleanup(&pool, vec![g.clone()], async move {
+        let pending = unique_uuid(&p).await;
+        insert_row(&p, &g, &pending, STATE_REQUESTED, "", "2026-01-02T00:00:00Z").await;
+        let stranger = unique_uuid(&p).await;
+        let admin = admin::GroupsAdmin::new(svc.clone());
+
+        let err = admin.invoke(promote_call(&pending, &g, BTreeMap::new())).await.unwrap_err();
+        assert_eq!(err.status, Status::Invalid, "{}", err.msg);
+        assert_eq!(role_of(&p, &g, &pending).await, "");
+        let err = admin.invoke(promote_call(&stranger, &g, BTreeMap::new())).await.unwrap_err();
+        assert_eq!(err.status, Status::Invalid, "{}", err.msg);
+        let missing = unique_uuid(&p).await;
+        let err = admin.invoke(promote_call(&pending, &missing, BTreeMap::new())).await.unwrap_err();
+        assert_eq!(err.status, Status::NotFound, "{}", err.msg);
+        assert!(role_changed(&p, &g).await.is_empty());
+    })
+    .await;
+}
+
+/// A malformed player or group, a non-player entity and an over-cap input value are
+/// invalid before any statement: the member row stays a member and nothing is logged.
+#[tokio::test]
+async fn promote_refuses_a_malformed_bound_element_and_an_over_cap_input() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    let g = insert_group(&pool, "Hawks", JOIN_OPEN, "2026-01-01T00:00:00Z").await;
+    let p = pool.clone();
+    with_cleanup(&pool, vec![g.clone()], async move {
+        let me = unique_uuid(&p).await;
+        insert_row(&p, &g, &me, STATE_MEMBER, ROLE_MEMBER, "2026-01-02T00:00:00Z").await;
+        let admin = admin::GroupsAdmin::new(svc.clone());
+        let over = BTreeMap::from([("value".to_string(), "a".repeat(controlplane::MAX_INPUT_VALUE_BYTES + 1))]);
+        let mut group_entity = promote_call(&me, &g, BTreeMap::new());
+        group_entity.entity = Some(EntityRef { kind: "group".into(), id: g.clone() });
+        let mut no_item = promote_call(&me, &g, BTreeMap::new());
+        no_item.item = None;
+        let calls = [
+            promote_call(&me[..35], &g, BTreeMap::new()),
+            promote_call(&me, &format!("{g}0"), BTreeMap::new()),
+            promote_call(&me.to_uppercase().replace('-', "_"), &g, BTreeMap::new()),
+            group_entity,
+            no_item,
+            promote_call(&me, &g, over),
+        ];
+        for call in calls {
+            let err = admin.invoke(call.clone()).await.unwrap_err();
+            assert_eq!(err.status, Status::Invalid, "{call:?}: {}", err.msg);
+        }
+        assert_eq!(role_of(&p, &g, &me).await, ROLE_MEMBER);
+        assert!(role_changed(&p, &g).await.is_empty());
+    })
+    .await;
+}
+
+/// The prepared modal is the Warn confirm naming the player's handle and the group; with
+/// no directory row, or the directory down, it names the player id instead of failing.
+#[tokio::test]
+async fn prepare_names_player_and_group_and_falls_back_to_the_id() {
+    let Some(pool) = test_pool().await else { return };
+    let _serialized = DB_LOCK.lock().await;
+    let directory = Arc::new(FakeDirectory::new());
+    let (_ctx, svc) = wired(&pool, directory.clone()).await;
+    let g = insert_group(&pool, "Owls", JOIN_OPEN, "2026-01-01T00:00:00Z").await;
+    let p = pool.clone();
+    with_cleanup(&pool, vec![g.clone()], async move {
+        let known = unique_uuid(&p).await;
+        directory.insert(&known, "Freya#0002");
+        let unknown = unique_uuid(&p).await;
+        let admin = admin::GroupsAdmin::new(svc.clone());
+        let body = |then: Then| match then {
+            Then::Confirm(spec) => {
+                assert_eq!((spec.tone, spec.reason), (ConfirmTone::Warn, ReasonReq::Optional));
+                assert_eq!(spec.confirm_label, "Promote");
+                assert!(spec.type_to_confirm.is_none() && spec.impact.is_empty());
+                spec.body
+            }
+            other => panic!("a Confirm, got {other:?}"),
+        };
+        let then = admin.prepare(prepare_call(&known, &g)).await.unwrap();
+        assert_eq!(body(then), "Promote Freya#0002 to admin of Owls?");
+        let then = admin.prepare(prepare_call(&unknown, &g)).await.unwrap();
+        assert_eq!(body(then), format!("Promote {unknown} to admin of Owls?"));
+        directory.fail_lookups();
+        let then = admin.prepare(prepare_call(&known, &g)).await.unwrap();
+        assert_eq!(body(then), format!("Promote {known} to admin of Owls?"));
+
+        let missing = unique_uuid(&p).await;
+        let err = admin.prepare(prepare_call(&known, &missing)).await.unwrap_err();
+        assert_eq!(err.status, Status::NotFound);
+        let err = admin.prepare(prepare_call(&known, "not-a-uuid")).await.unwrap_err();
+        assert_eq!(err.status, Status::Invalid);
+    })
+    .await;
 }

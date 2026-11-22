@@ -1,17 +1,20 @@
 //! The `groups` control-plane provider: the player entity's Groups tab (every membership row
 //! the player holds, all states), the tab's count, the dashboard's "Groups purges pending"
-//! attention item, and the `group` entity kind with its header. Read-only for now:
-//! `writes` is false.
+//! attention item, the `group` entity kind with its header, and one operator write:
+//! `membership.promote` makes a member row an admin (`writes` is true).
 
 use async_trait::async_trait;
 use controlplane::order;
 use controlplane::{
-    Align, Cell, CellKind, Column, ContributionDecl, DataTable, EntityHeader, EntityKindDecl, EntityRef, InvokeCall,
-    InvokeOutcome, Link, Manifest, Noun, PageInfo, PanelBody, PanelQuery, Point, Primitive, Provider, Role, Row,
-    SearchHit, SearchQuery, DEFAULT_PANEL_DEADLINE_MS,
+    ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ConfirmSpec, ConfirmTone, ContributionDecl, DataTable,
+    Emphasis, EntityHeader, EntityKindDecl, EntityRef, InvokeCall, InvokeOutcome, Link, Manifest, Noun, PageInfo,
+    PanelBody, PanelQuery, Point, PrepareCall, Primitive, Provider, ReasonReq, Role, Row, SearchHit, SearchQuery, Then,
+    DEFAULT_PANEL_DEADLINE_MS,
 };
-use groupsapi::STATE_MEMBER;
+use bus::AnyTx;
+use groupsapi::{ROLE_ADMIN, ROLE_MEMBER, STATE_MEMBER};
 use opsapi::Error;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::internal;
@@ -30,6 +33,8 @@ pub(crate) const GROUPS: &str = "groups";
 pub(crate) const TAB_COUNT: &str = "tab.count";
 pub(crate) const ATTENTION_PURGES: &str = "attention.purges";
 pub(crate) const GROUP_HEADER: &str = "group.header";
+/// The operator's promote of a member row to admin, on the Groups tab's rows.
+pub(crate) const PROMOTE: &str = "membership.promote";
 
 pub(crate) struct GroupsAdmin {
     svc: Arc<Service>,
@@ -82,6 +87,123 @@ impl GroupsAdmin {
         let group = self.svc.store.admin_group(STATE_MEMBER, id).await.map_err(internal)?;
         let group = group.ok_or_else(|| Error::not_found(format!("{MODULE}: no group {id:?}")))?;
         Ok(PanelBody::new(Primitive::EntityHeader(group_header(&group))))
+    }
+
+    /// The player's handle for a message or a modal; the id itself when the directory is
+    /// not wired, fails or has no row, so a label never fails the write or the modal.
+    async fn player_label(&self, player_id: &str) -> String {
+        let Some(directory) = self.svc.directory.get() else {
+            return player_id.to_string();
+        };
+        match directory.players_by_id(vec![player_id.to_string()]).await {
+            Ok(rows) => rows
+                .into_iter()
+                .find(|s| s.player_id.eq_ignore_ascii_case(player_id) && !s.handle.is_empty())
+                .map(|s| s.handle)
+                .unwrap_or_else(|| player_id.to_string()),
+            Err(_) => player_id.to_string(),
+        }
+    }
+
+    /// The promote modal's spec, naming the player and the group. A missing group is not
+    /// found; the player label falls back to the id (`player_label`).
+    async fn prepare_promote(&self, req: &PrepareCall) -> Result<Then, Error> {
+        let (player, group) = bound(req.entity.as_ref(), req.item.as_deref())?;
+        let name = {
+            let mut conn = self.svc.store.pool.acquire().await.map_err(internal)?;
+            let row = self.svc.store.group_name_tx(&mut conn, group).await.map_err(internal)?;
+            row.ok_or_else(|| Error::not_found(format!("{MODULE}: no group {group}")))?.0
+        };
+        let player = self.player_label(player).await;
+        Ok(Then::Confirm(promote_spec(format!("Promote {player} to admin of {name}?"))))
+    }
+
+    /// Makes the player's member row in the group an admin row, in one transaction under
+    /// the group lock, and emits `group.role_changed` with the operator as the actor. A
+    /// repeat finds the admin role and answers NoOp, so no request id is kept.
+    async fn promote(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let (player, group) = bound(req.entity.as_ref(), req.item.as_deref())?;
+        let store = &self.svc.store;
+        let mut tx = store.pool.begin().await.map_err(internal)?;
+        store.lock_group_tx(&mut tx, group).await.map_err(internal)?;
+        let Some((name, group_id)) = store.group_name_tx(&mut tx, group).await.map_err(internal)? else {
+            return Err(Error::not_found(format!("{MODULE}: no group {group}")));
+        };
+        let Some((state, role, player_id)) =
+            store.membership_tx(&mut tx, &group_id, player).await.map_err(internal)?
+        else {
+            return Err(Error::invalid(format!("{MODULE}: {player} holds no row in {name}")));
+        };
+        if state != STATE_MEMBER {
+            return Err(Error::invalid(format!(
+                "{MODULE}: {player} holds a {state} row in {name}, not a member row"
+            )));
+        }
+        if role == ROLE_ADMIN {
+            tx.rollback().await.map_err(internal)?;
+            let player = self.player_label(&player_id).await;
+            return Ok(InvokeOutcome::NoOp { message: format!("{player} was already an admin of {name}") });
+        }
+        // A role change: the predicate's state is written back unchanged, with the role in
+        // the same statement (`memberships_role_check`).
+        let updated = store
+            .promote_tx(&mut tx, &group_id, &player_id, STATE_MEMBER, STATE_MEMBER, ROLE_ADMIN)
+            .await
+            .map_err(internal)?;
+        if updated.is_none() {
+            return Err(Error::conflict(format!("{MODULE}: {player}'s row in {name} changed; refresh")));
+        }
+        self.svc
+            .bus
+            .emit_tx(
+                AnyTx::new(&mut *tx),
+                &groupsevents::ROLE_CHANGED,
+                &groupsevents::RoleChanged {
+                    group_id: group_id.clone(),
+                    player_id: player_id.clone(),
+                    role: ROLE_ADMIN.to_string(),
+                    actor_kind: groupsevents::ACTOR_OPERATOR.to_string(),
+                    actor_id: String::new(),
+                },
+            )
+            .await
+            .map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        let player = self.player_label(&player_id).await;
+        Ok(InvokeOutcome::Ok { message: format!("{player} is now an admin of {name}"), reveal: None, redirect: None })
+    }
+}
+
+/// Every input value is at most [`controlplane::MAX_INPUT_VALUE_BYTES`].
+fn input_within_cap(input: &BTreeMap<String, String>) -> bool {
+    input.values().all(|v| v.len() <= controlplane::MAX_INPUT_VALUE_BYTES)
+}
+
+/// A promote's bound element: the entity is `player:<uuid>` and the item the group's
+/// uuid, both in the canonical spelling, or the call is invalid before any statement.
+fn bound<'a>(entity: Option<&'a EntityRef>, item: Option<&'a str>) -> Result<(&'a str, &'a str), Error> {
+    let player = match entity {
+        Some(e) if e.kind == KIND && is_uuid_text(&e.id) => e.id.as_str(),
+        _ => return Err(Error::invalid(format!("{MODULE}: the action needs a player"))),
+    };
+    match item {
+        Some(group) if is_uuid_text(group) => Ok((player, group)),
+        _ => Err(Error::invalid(format!("{MODULE}: the action needs a group"))),
+    }
+}
+
+/// The promote modal: a Warn confirm (a promote cannot be undone from the portal), an
+/// optional reason, no type-to-confirm and no impact lines.
+fn promote_spec(body: String) -> ConfirmSpec {
+    ConfirmSpec {
+        title: "Promote to admin".to_string(),
+        body,
+        tone: ConfirmTone::Warn,
+        impact: Vec::new(),
+        reason: ReasonReq::Optional,
+        reason_hint: None,
+        type_to_confirm: None,
+        confirm_label: "Promote".to_string(),
     }
 }
 
@@ -140,7 +262,10 @@ pub(crate) fn role_cell(state: &str, role: &str) -> Cell {
 }
 
 /// A tab row: not clickable (no `entity`), so only the name cell links; `item` is the group.
+/// Only a member row whose role is member lists the promote.
 fn membership_row(m: &AdminMembershipRow) -> Row {
+    let promotable = m.state == STATE_MEMBER && m.role == ROLE_MEMBER;
+    let actions = if promotable { vec![PROMOTE.to_string()] } else { Vec::new() };
     Row {
         entity: None,
         cells: vec![
@@ -151,7 +276,7 @@ fn membership_row(m: &AdminMembershipRow) -> Row {
         ],
         highlight: false,
         item: Some(m.group_id.clone()),
-        actions: Vec::new(),
+        actions,
     }
 }
 
@@ -221,6 +346,27 @@ fn contribution(id: &str, point: Point, order: i32, title: &str) -> Contribution
     }
 }
 
+/// `membership.promote` on the Groups tab's rows; the modal's text comes from `prepare`.
+fn promote_decl() -> ActionDecl {
+    ActionDecl {
+        id: PROMOTE.to_string(),
+        point: ActionPoint::TableRow(GROUPS.to_string()),
+        label: "Promote".to_string(),
+        icon: "shield".to_string(),
+        order: 0,
+        danger: false,
+        multi: false,
+        min_role: Role::Operator,
+        then: Then::Confirm(promote_spec("Promote this player to admin of this group?".to_string())),
+        implemented: true,
+        emphasis: Emphasis::Ghost,
+        trailing_icon: false,
+        icon_only: false,
+        when_empty: false,
+        prepare: true,
+    }
+}
+
 pub(crate) fn manifest() -> Manifest {
     let tab = Point::EntityTab {
         kind: KIND.to_string(),
@@ -254,9 +400,9 @@ pub(crate) fn manifest() -> Manifest {
             ),
             contribution(GROUP_HEADER, Point::EntityHeader(GROUP_KIND.to_string()), 0, "Group"),
         ],
-        actions: Vec::new(),
+        actions: vec![promote_decl()],
         search: Vec::new(),
-        writes: false,
+        writes: true,
     }
 }
 
@@ -284,6 +430,22 @@ impl Provider for GroupsAdmin {
     }
 
     async fn invoke(&self, req: InvokeCall) -> Result<InvokeOutcome, Error> {
-        Err(Error::not_found(format!("{MODULE} has no action {:?}", req.action)))
+        if !input_within_cap(&req.input) {
+            return Err(Error::invalid(format!(
+                "an input value is longer than {} bytes",
+                controlplane::MAX_INPUT_VALUE_BYTES
+            )));
+        }
+        match req.action.as_str() {
+            PROMOTE => self.promote(&req).await,
+            other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
+        }
+    }
+
+    async fn prepare(&self, req: PrepareCall) -> Result<Then, Error> {
+        match req.action.as_str() {
+            PROMOTE => self.prepare_promote(&req).await,
+            other => Err(Error::not_found(format!("{MODULE} prepares no action {other:?}"))),
+        }
     }
 }

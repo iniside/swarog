@@ -4,21 +4,27 @@
 //! production code real requests traverse — `Player::create`/`list_mine`/`invite`
 //! themselves, never a re-stated arithmetic check.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use accountsapi::{Directory, PlayerSummary};
 use async_trait::async_trait;
 use bus::Bus;
+use controlplane::{EntityRef, InvokeCall, Provider as _};
 use groupsapi::{Player as _, JOIN_OPEN};
 use opsapi::{Error, Identity};
 use sqlx::PgPool;
 
+use crate::admin::{GroupsAdmin, PROMOTE};
 use crate::service::MALFORMED_CURSOR;
 use crate::store::MemberRow;
 use crate::Service;
 
 /// The one length `service::is_uuid_text` admits.
 pub const UUID_SHAPE_BYTES: usize = 36;
+
+/// The cap `GroupsAdmin::invoke` applies to every input value before anything else.
+pub const CP_INVOKE_INPUT_VALUE_BYTES: usize = controlplane::MAX_INPUT_VALUE_BYTES;
 
 const DEAD_DSN: &str = "postgres://gamebackend:gamebackend@127.0.0.1:1/gamebackend?sslmode=disable";
 
@@ -132,6 +138,54 @@ pub fn conformance_target_handle_rejected(len: usize) -> bool {
         "a".repeat(len),
     ));
     matches!(outcome, Err(e) if e.status == opsapi::Status::Invalid)
+}
+
+/// The provider's own first check on every `cp.invoke`, executed through
+/// `GroupsAdmin::invoke` against a store that cannot connect. The promote reads no input, so
+/// with a well-formed player and group an at-cap value reaches the store and answers
+/// `Internal`; one byte over, the cap's `Invalid` is the only refusal it can meet. Deleting
+/// the guard sends the long value to the pool too, and the case goes red.
+#[doc(hidden)]
+pub fn conformance_cp_invoke_input_rejected(len: usize) -> bool {
+    let input = BTreeMap::from([("value".to_string(), "a".repeat(len))]);
+    promote_refused(input, uuid_shaped(UUID_SHAPE_BYTES), uuid_shaped(UUID_SHAPE_BYTES))
+}
+
+/// The bound group id's shape, on the same authority: at the admitted length the item
+/// reaches the store and answers `Internal`, any other length is `admin::bound`'s own
+/// `Invalid` ahead of the checkout.
+#[doc(hidden)]
+pub fn conformance_admin_group_rejected(len: usize) -> bool {
+    promote_refused(BTreeMap::new(), uuid_shaped(UUID_SHAPE_BYTES), uuid_shaped(len))
+}
+
+/// The promoted player's id shape (the bound entity's id), on the same authority and the
+/// same reasoning as the group's.
+#[doc(hidden)]
+pub fn conformance_admin_player_rejected(len: usize) -> bool {
+    promote_refused(BTreeMap::new(), uuid_shaped(len), uuid_shaped(UUID_SHAPE_BYTES))
+}
+
+/// Drives `membership.promote` through `GroupsAdmin::invoke` over the dead pool; `true` when
+/// the call is refused as `Invalid`.
+fn promote_refused(input: BTreeMap<String, String>, player: String, group: String) -> bool {
+    let rt = runtime();
+    let admin = {
+        let _guard = rt.enter();
+        GroupsAdmin::new(Arc::new(service()))
+    };
+    let call = InvokeCall {
+        module: "groups".to_string(),
+        action: PROMOTE.to_string(),
+        entity: Some(EntityRef { kind: "player".to_string(), id: player }),
+        input,
+        expected_revision: None,
+        reason: None,
+        operator: "conformance".to_string(),
+        item: Some(group),
+        request_id: None,
+    };
+    matches!(rt.block_on(admin.invoke(call)), Err(e) if e.status == opsapi::Status::Invalid)
 }
 
 /// The directory-outage story: the paged reads' `hydrate` — the ONE call the member and

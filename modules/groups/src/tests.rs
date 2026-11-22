@@ -153,6 +153,10 @@ impl FakeDirectory {
         );
     }
 
+    /// Every later `players_by_id` fails, as an unreachable accounts capability does.
+    pub(crate) fn fail_lookups(&self) {
+        self.fail_lookup.store(true, Ordering::SeqCst);
+    }
 }
 
 #[async_trait]

@@ -318,11 +318,6 @@ impl Store {
     ///
     /// Binds ONLY the group id, so a `22P02` folds to "no such group" for the reason in
     /// [`Store::join_policy_tx`].
-    #[expect(
-        dead_code,
-        reason = "Step 18 G6 (a): the operator promote names the group \
-                  (docs/plans/2026-11-22-step18-groups-checklist.md:285)"
-    )]
     pub(crate) async fn group_name_tx(
         &self,
         conn: &mut PgConnection,
