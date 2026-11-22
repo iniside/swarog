@@ -1,6 +1,13 @@
 # Admin second pass — done
 
-Last updated: 2026-11-21
+Last updated: 2026-11-22
+
+- [x] **A filter on an undeclared key draws but does nothing** (2026-11-22, admin-control-plane-redesign step 16)
+  ADMIN2-45. `panels::resolve` (core/admin/src/engine/panels.rs) refuses a `DataTable` or
+  `WorkQueue` answer whose filter key `declared_params` lacks: the panel shows the error
+  state naming the key instead of a filter the route would drop. It runs where the portal
+  holds the answer and the manifest, so a co-hosted and a remote provider take the same
+  path. Covered by `a_panel_filter_on_an_undeclared_key_is_an_error`.
 
 - [x] **Wallet Grant/Revoke segmented switch** (2026-11-21, admin-control-plane-redesign step 13e4)
   ADMIN2-40. `FormSpec.modes` (`FormMode`: id, label, action, submit label) draws as the

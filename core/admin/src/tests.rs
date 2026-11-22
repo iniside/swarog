@@ -2078,6 +2078,54 @@ async fn a_page_panel_answering_column_cells_is_an_error_or_stale_on_its_cache()
     assert!(view.error.as_deref().is_some_and(|e| e.contains("answered ColumnCells")), "{:?}", view.error);
 }
 
+/// A table or queue filter on a key its tab declares draws; one on a key it does not declare
+/// is an error naming the key, since the panel route drops that key and the filter could
+/// never narrow.
+#[tokio::test]
+async fn a_panel_filter_on_an_undeclared_key_is_an_error() {
+    let filter = |key: &str| controlplane::FilterDef {
+        key: key.to_string(),
+        label: key.to_string(),
+        kind: controlplane::FilterKind::Text,
+    };
+    let table = |keys: &[&str]| {
+        let mut table = players_table(vec![table_row(None, "Anna")]);
+        if let Primitive::DataTable(t) = &mut table {
+            t.filters = keys.iter().map(|k| filter(k)).collect();
+        }
+        answer(table)
+    };
+    let queue = |keys: &[&str]| {
+        answer(Primitive::WorkQueue(controlplane::WorkQueue {
+            states: Vec::new(),
+            selected: String::new(),
+            items: Vec::new(),
+            item_label: "Id".to_string(),
+            item_noun: controlplane::Noun { one: "item".to_string(), many: "items".to_string() },
+            columns: Vec::new(),
+            page: PageInfo { next_cursor: None, size: 25, total: None },
+            filters: keys.iter().map(|k| filter(k)).collect(),
+            search_placeholder: None,
+            selectable: false,
+        }))
+    };
+    let (kind, tab, tab_label) = ("player".to_string(), "items".to_string(), "Items".to_string());
+    let point = Point::EntityTab { kind, tab, tab_label, columns: 1, params: vec!["owner".to_string()] };
+    let decl = contribution("items", point, Role::Viewer);
+    let (engine, rec) = single(decl.clone(), Vec::new(), false, table(&["owner"])).await;
+    let view = resolve(&engine, &decl).await;
+    assert_eq!(view.state, PanelState::Ok, "a declared filter key draws: {:?}", view.error);
+
+    for (what, body) in [("table", table(&["owner", "type"])), ("queue", queue(&["type"]))] {
+        rec.answer("items", body);
+        let view = resolve(&engine, &decl).await;
+        assert_eq!(view.state, PanelState::Error, "{what}");
+        assert!(view.body.is_none(), "{what}");
+        let named = view.error.as_deref().is_some_and(|e| e.contains("filter \"type\" is not a param"));
+        assert!(named, "{what}: {:?}", view.error);
+    }
+}
+
 /// A panel answering a cell that holds both a link and a label, at the top or inside another
 /// cell's `more`, is an error with no body.
 #[tokio::test]

@@ -230,14 +230,6 @@ modules/characters/src/admin.rs, as committed in admin-control-plane-redesign st
 
 ### Known limits (admin-control-plane-redesign step 13c.2b2)
 
-- [ ] **A filter on an undeclared key draws but does nothing** (owner, 2026-11-19)
-  ADMIN2-45. `PageDecl.params` (core/controlplane/src/lib.rs) is fixed in the manifest, while
-  `FilterDef.key` arrives in each response, and nothing binds them. A filter whose key no
-  placing page declares (for example a filtered table on an entity tab or a dashboard
-  panel, which no `PageDecl` places) draws its chip or select, but the panel route drops
-  the chosen value, so the table never filters. No such filter exists today. Closed by:
-  not drawing a filter control whose key the slot does not forward, or a check that binds
-  the two. Source: 13c.2b2 review.
 - [ ] **A page can declare a key the portal owns** (owner, 2026-11-19)
   ADMIN2-46. Nothing stops a `PageDecl.params` entry naming `q`, `state`, `cursor`,
   `before`, `range` or `entity`; the route routes or drops it silently. No page does

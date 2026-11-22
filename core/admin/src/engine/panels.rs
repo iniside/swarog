@@ -1,6 +1,6 @@
 //! Panel resolution: one provider call under its deadline, mapped to a panel state.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use controlplane::{
@@ -223,11 +223,39 @@ pub(crate) fn is_empty(primitive: &Primitive) -> bool {
     }
 }
 
+/// The URL keys `decl` receives as `PanelQuery::params`: the `PageDecl::params` of every
+/// page of `manifest` that places it, and the `params` it declares as an `EntityTab`.
+pub(crate) fn declared_params<'m>(manifest: &'m Manifest, decl: &'m ContributionDecl) -> BTreeSet<&'m str> {
+    let tab: &[String] = match &decl.point {
+        Point::EntityTab { params, .. } => params,
+        _ => &[],
+    };
+    manifest
+        .pages
+        .iter()
+        .filter(|pg| pg.tiles.iter().chain(pg.layout.ids()).any(|id| *id == decl.id))
+        .flat_map(|pg| pg.params.iter())
+        .chain(tab)
+        .map(String::as_str)
+        .collect()
+}
+
 /// Why a panel's answer `body` cannot be drawn: `ColumnCells`, which only a table's list
-/// column draws (`engine::columns`), or a cell `labels::body_error` refuses.
-fn refusal(body: &Primitive) -> Option<String> {
+/// column draws (`engine::columns`), a filter on a key `declared_params` lacks (the panel
+/// route drops that key, so the filter could never narrow), or a cell `labels::body_error`
+/// refuses.
+fn refusal(manifest: &Manifest, decl: &ContributionDecl, body: &Primitive) -> Option<String> {
     if matches!(body, Primitive::ColumnCells(_)) {
         return Some("answered ColumnCells, which only a table's list column draws".to_string());
+    }
+    let filters = match body {
+        Primitive::DataTable(table) => table.filters.as_slice(),
+        Primitive::WorkQueue(queue) => queue.filters.as_slice(),
+        _ => &[],
+    };
+    let declared = declared_params(manifest, decl);
+    if let Some(filter) = filters.iter().find(|f| !declared.contains(f.key.as_str())) {
+        return Some(format!("filter {:?} is not a param its page or tab declares", filter.key));
     }
     labels::body_error(body)
 }
@@ -262,7 +290,7 @@ pub(crate) async fn resolve(
     };
     let key = cache_key(&req);
     let failure = match tokio::time::timeout(deadline(decl), face.panel(req)).await {
-        Ok(Ok(body)) => match refusal(&body.primitive) {
+        Ok(Ok(body)) => match refusal(manifest, decl, &body.primitive) {
             Some(why) => why,
             None => {
                 if is_empty(&body.primitive) {
