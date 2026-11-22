@@ -17,5 +17,5 @@ panel "#1" section.panel > div.entity-head > div.page-actions: mock-only ×2 but
 panel "#1" section.panel > div.tabs > button.tab: mock-only span.dot.err | data difference: the mockup draws the Wallet tab with its wallet-svc-down dot from its demo state "error" (registry.js:69, pages-core.js:167); the portal draws it plain, so the dot is mock-only
 panel "#1" section.panel > div.tabs: mock-only button.tab | not ported yet: no lore module exists, so the Lore tab is not drawn
 panel "#1" section.panel > div.tabs: mock-only button.tab#f729f6 | not ported yet: the Cloud saves tab arrives with the storage port (Step 19); see pages::EXCLUDED_TABS
-panel "#1" section.panel > div.tabs: mock-only ×2 button.tab#e4bdfb | not ported yet: tabs no port draws yet (Groups, Step 18; Inbox, Step 20); each tab and its reason is in pages::EXCLUDED_TABS
+panel "#1" section.panel > div.tabs: mock-only button.tab#e4bdfb | not ported yet: the Inbox tab arrives with the notifications port (Step 20); see pages::EXCLUDED_TABS
 panel "Friends" section.panel > div.flush.panel-body > div.tbl-wrap > table.tbl > tbody > tr*: mock-only tr#dd6dc9 | data difference: the mockup draws five friends (one pending outgoing); the dev fleet seeds only accepted friendships until the Step 24b seed resolves it (24b4), so the mockup's pending row is unpaired

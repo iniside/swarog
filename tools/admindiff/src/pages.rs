@@ -335,6 +335,24 @@ pub const PAGE_MAP: &[Page] = &[
         modal: None,
         force: false,
     },
+    Page {
+        page: "player",
+        route: Route::FirstRow("players"),
+        search: "?u=aiko.tanaka",
+        tab: Some("groups"),
+        menu: None,
+        modal: None,
+        force: false,
+    },
+    Page {
+        page: "player",
+        route: Route::FirstRow("players"),
+        search: "?u=aiko.tanaka",
+        tab: Some("groups"),
+        menu: Some(USER_MENU),
+        modal: None,
+        force: false,
+    },
     Page { page: "apikeys", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
@@ -371,7 +389,6 @@ pub const EXCLUDED: &[(&str, &str)] = &[
 /// Tabs the mockup draws on a `FirstRow` page that no `PAGE_MAP` tab entry diffs, as
 /// `<page>.<tab>` with the reason. [`validate_tabs`] holds it to the mockup render.
 pub const EXCLUDED_TABS: &[(&str, &str)] = &[
-    ("player.groups", "not ported yet: the Groups tab arrives with the groups port (Step 18)"),
     ("player.saves", "not ported yet: the Cloud saves tab arrives with the storage port (Step 19)"),
     ("player.inbox", "not ported yet: the Inbox tab arrives with the notifications port (Step 20)"),
     ("player.lore", NO_LORE),
@@ -469,6 +486,21 @@ pub const EXCLUDED_MODALS: &[(&str, &str, ModalWhy)] = &[
         "player.friends.menu.user",
         "wallet/currency.revoke",
         ModalWhy { why: "the mockup's wallet row-menu items are drawn disabled under an \"unavailable\" note and have no onclick, so the mockup has no modal (registry.js:101-104)" },
+    ),
+    (
+        "player.groups.menu.user",
+        "wallet/currency.grant",
+        ModalWhy { why: "the mockup's wallet row-menu items are drawn disabled under an \"unavailable\" note and have no onclick, so the mockup has no modal (registry.js:101-104)" },
+    ),
+    (
+        "player.groups.menu.user",
+        "wallet/currency.revoke",
+        ModalWhy { why: "the mockup's wallet row-menu items are drawn disabled under an \"unavailable\" note and have no onclick, so the mockup has no modal (registry.js:101-104)" },
+    ),
+    (
+        "player.groups",
+        "groups/membership.promote",
+        ModalWhy { why: "Q1 extra (D6): the mockup's Groups tab draws no promote element, so the mockup has no modal" },
     ),
     (
         "economy",
@@ -652,6 +684,12 @@ pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
     mock_modal("player.friends.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
     mock_modal("player.friends.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
     mock_modal("player.friends.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.groups", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.groups", MockOpener::Pages("suspend"), PortalModal::Disabled("accounts/suspend-header"), NO_SUSPEND),
+    mock_modal("player.groups.menu.user", MockOpener::Pages("suspend"), SUSPEND, NO_SUSPEND),
+    mock_modal("player.groups.menu.user", MockOpener::Pages("deleteAccount"), DELETE_ACCOUNT, NO_DELETE),
+    mock_modal("player.groups.menu.user", MockOpener::Pages("changeRole"), PortalModal::Absent(LORE), NO_LORE),
+    mock_modal("player.groups.menu.user", MockOpener::Pages("releaseAll"), PortalModal::Absent(LORE), NO_LORE),
     mock_modal(
         "mail",
         MockOpener::Pages("cancelMail"),
