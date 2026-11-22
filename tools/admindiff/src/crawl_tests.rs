@@ -1363,6 +1363,33 @@ async fn a_tab_target_follows_the_first_row_whose_tab_lists_a_row() {
     assert!(page.contains("player.items panel"), "the crawl keeps the first row's tab: {page}");
 }
 
+/// A tab entry `player.items` with an `EXCLUDED_MODALS` claim `guild/kick` skips a row whose
+/// tab lists a row but draws no opener of the claim: the first row's tab lists one and draws
+/// none, so the crawl compares the second row's, which draws it beside its listed row.
+#[tokio::test]
+async fn a_tab_target_skips_a_row_whose_tab_lacks_an_excluded_modal() {
+    let page_map: Vec<Page> = PAGE_MAP.iter().copied().chain([items_tab(), items_menu()]).collect();
+    let excluded: Vec<_> = EXCLUDED_MODALS.iter().copied().chain([("player.items", "guild/kick", ModalWhy { why: "a member row only" })]).collect();
+    let healthy = Site::with_map(&page_map, &slot);
+    let second = "/admin/e/second/row?tab=items";
+    let first_page = healthy.routes.get(&items_route()).expect("the site serves the first row's tab").body.clone();
+    let listed_slot = "/admin/_panel/second/items";
+    let listed = r#"<table><tbody><tr><td>an item</td></tr></tbody></table>"#;
+    let second_page = first_page.replace(&panel_url("player.items"), listed_slot).replace(&escaped(&items_route()), &escaped(second));
+    let kick = modal_url("guild/kick", "player.items");
+    let second_slot = format!("{listed}{}", modal_button(&kick));
+    // Both rows' tab panels list a row; only the second draws the claimed opener.
+    let site = healthy
+        .with(&panel_url("player.items"), ok(fragment(Some("ok"), "player.items panel", listed)))
+        .with(second, ok(second_page))
+        .with(listed_slot, ok(fragment(Some("ok"), "second panel", &second_slot)))
+        .with(&kick, ok(MODAL_BODY));
+    let picked = crawl_modals(site, &page_map, &excluded, false).await;
+    picked.assert_clean("the second row's tab draws the excluded modal");
+    let page = std::fs::read_to_string(picked.out.path().join("run").join("player.items.html")).expect("player.items.html");
+    assert!(page.contains("second panel"), "the crawl compares the second row's tab: {page}");
+}
+
 /// A page map with a tab entry `player.items`: the crawl fetches the first row's page with
 /// `?tab=items`; a page that falls back to its first tab fails the crawl, and one that draws
 /// the tab selected crawls clean and writes `player.items.html`.

@@ -1,8 +1,9 @@
 //! `admindiff crawl`: log in, fetch every page the nav links and the page map name, load
 //! each page's slots the way htmx does, and write the responses under the run directory.
 //! A `FirstRow` page follows the first row of its list; a `FirstRow` tab follows the first row
-//! whose tab page, its slots loaded, lists a row, and the first row when none does, so a tab
-//! with an empty state on one entity is compared on another that has rows.
+//! whose tab page, its slots loaded, lists a row and draws every modal action
+//! [`EXCLUDED_MODALS`] lists for the tab, and the first row when none does, so a tab with an
+//! empty state on one entity, or whose data hides an excluded action, is compared on another.
 //! Every declared target must be reached: a mapped page that fails, a `FirstRow` page whose
 //! list has no row (unless `--allow-empty`), a tab the portal does not select and a menu
 //! target whose page draws no menu of its kind all fail the crawl. A menu target's output is
@@ -222,22 +223,29 @@ async fn run_with(cfg: &Config, lists: &Lists<'_>) -> Result<Outcome> {
                 first.clone()
             }
             Some(tab) => {
+                // An exclusion the followed tab does not draw fails as stale, so a row whose
+                // data hides one (a group row with no member to promote) is no row to compare.
+                let claimed: Vec<&str> = lists.excluded_modals.iter().filter(|(h, _, _)| *h == page).map(|(_, a, _)| *a).collect();
+                let qualifies = |d: &[Node]| {
+                    let drawn = modal_actions(d);
+                    lists_rows(d) && claimed.iter().all(|a| drawn.iter().any(|(x, _)| x == a))
+                };
                 let mut picked = None;
                 for row in &rows {
                     let route = with_tab(row, tab);
-                    if probe_page(&client, cfg, &route).await.is_some_and(|d| lists_rows(&d)) {
+                    if probe_page(&client, cfg, &route).await.is_some_and(|d| qualifies(&d)) {
                         picked = Some(route);
                         break;
                     }
                 }
                 match picked {
                     Some(route) => {
-                        println!("page {page}  {route}  (first row of {list} whose tab {tab} lists a row)");
+                        println!("page {page}  {route}  (first row of {list} whose tab {tab} lists a row and draws its excluded modals)");
                         route
                     }
                     None => {
                         let route = with_tab(first, tab);
-                        println!("page {page}  {route}  (first row of {list}: no row's tab {tab} lists a row)");
+                        println!("page {page}  {route}  (first row of {list}: no row's tab {tab} lists a row and draws its excluded modals)");
                         route
                     }
                 }
