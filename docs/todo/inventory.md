@@ -1,6 +1,6 @@
 # Inventory
 
-Last updated: 2026-10-23
+Last updated: 2026-11-22
 
 ## In progress
 
@@ -22,6 +22,14 @@ _None._
   INVENTORY-04. An owner with more than 1000 distinct items has the surplus
   dropped from list views, with no cursor or `has_more`
   (`modules/inventory/src/store.rs:6-11`, 2026-07-14; docs/reference/module-reference.md:156).
+
+### Known limits (admin-control-plane-redesign step 16)
+
+- [ ] **Plane test replays the shared test database's history**
+  `character_owner_follows_created_and_deleted_via_on_tx` (`modules/inventory/src/tests.rs`)
+  registers the real `inventory.character-owner.v1` from `Genesis`, so it writes
+  `character_owners` rows for other tests' retained events and cleans only its own.
+  Assertions filter by a unique player id, so results are unaffected (review of ccf29df3).
 
 ### Known limits (push-routing-ordering-and-liveness step 9)
 

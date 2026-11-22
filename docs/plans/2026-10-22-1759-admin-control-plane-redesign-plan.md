@@ -2169,6 +2169,12 @@ The ports:
   Checklist: `docs/plans/2026-11-22-step16-inventory-checklist.md` (owner decisions §8).
     - **16a1** (G1 b): inventory's own character → player table, filled from
       `character.created` and cleared on `character.deleted`, with its tests.
+    - **16a0** (owner, 2026-11-22): an `EntityTab` declares its filter keys and the portal
+      passes them to the panel query, as a page's `params` do (`core/admin/src/routes.rs:642-649`);
+      today a tab's select values are dropped (`routes.rs:692`).
+    - **16a1b** (owner, 2026-11-22, review S1): `character.created` is kept forever
+      (`HistoryPolicy::KeepForever`), as `core/bus/src/lib.rs:628-631` requires before a
+      replay-from-genesis consumer (16a1's `inventory.character-owner.v1`).
     - **16a2**: the Inventory tab (order 40) per the checklist: keyset reader and exact
       count, Owner/Type selects and search, `Cell.label` owner cell, disabled "Grant item"
       tool and "Revoke item…" row action with their todo item, Purges pending at 63 via
