@@ -1,6 +1,6 @@
 # Admin second pass
 
-Last updated: 2026-11-21
+Last updated: 2026-11-22
 
 The admin redesign ships mockup elements the backend cannot back as deterministic fakes
 (`// FAKE: <why>`, plan R1) and not-yet-possible actions as `implemented: false`, rendered
@@ -110,6 +110,9 @@ modules/mail/src/admin.rs landed in 544dd4e5; the line numbers are its committed
 
 ### Not-implemented actions
 
+- [ ] **Inventory grant and revoke**
+  The player's Inventory tab "Grant item" tool, the row-menu "Grant item…" and the holding
+  "Revoke item…" are `implemented: false`; tracked as INVENTORY-05 in `docs/todo/inventory.md`.
 - [ ] **Copy payload**
   ADMIN2-16. Mockup: the poison-event "Copy payload" tool. Action `POISON_COPY`,
   `implemented: false`: core/admin/src/events_provider.rs:315-316; copying to the

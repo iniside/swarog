@@ -124,6 +124,19 @@ The operator surface instead is:
   answering `AttentionItems` (none at 0 pending), `core/*` contributes no purges item,
   and archcheck bans a foreign module reading another schema's tables.
 
+## Changing a topic's history policy fails an old database at startup
+
+A topic's history policy is fixed per `(topic, contract_version)` in
+`asyncevents.history_contracts`. `asyncevents.ensure_history_contract`
+(`core/asyncevents/src/store.rs:153`) inserts the row once and then raises on any drift. It
+runs when a typed subscription is reconciled at boot (`core/asyncevents/src/catalog.rs:43`)
+and on every emit (`core/asyncevents/src/transport.rs:107`). So after a policy change in the
+code (for example `character.created` going from `MinRetention{7}` to `KeepForever`), a
+database seeded under the old policy makes every process that subscribes to the topic fail
+startup, and the producer fail its emit. The rollout is the usual one for a contract break:
+drop and boot fresh. Events the old policy already let the retention sweep delete do not come
+back, so a new `Genesis` consumer on such a database sees a partial history.
+
 ## Related
 
 - `cargo run -p eventctl -- list` — lag/retry/pause/resume/skip/retire per

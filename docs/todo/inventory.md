@@ -39,6 +39,13 @@ _None._
   registers the real `inventory.character-owner.v1` from `Genesis`, so it writes
   `character_owners` rows for other tests' retained events and cleans only its own.
   Assertions filter by a unique player id, so results are unaffected (review of ccf29df3).
+- [ ] **An unknown Type in the Inventory tab draws an error block**
+  A `type` value outside the item catalog is `Invalid` (`modules/inventory/src/admin.rs`),
+  so a stale or hand-edited URL draws the panel's error block instead of an empty list
+  (review of b5fff581).
+- [ ] **The Inventory tab runs two extra queries per load**
+  Each panel load also reads the distinct item kinds (Type select) and the unfiltered tab
+  count, besides the page and its filtered count (review of b5fff581).
 
 ### Known limits (push-routing-ordering-and-liveness step 9)
 
