@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-22: Step 16a (16a0/16a1/16a1b/16a2) landed + reviewed; awaiting owner on leftovers before 16b"
+description: "Admin redesign resume point 2026-11-22: Step 16 (inventory) complete incl. 16b; next ask owner before Step 17"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-22T08:39:46.675Z
+  modified: 2026-11-22T10:08:26.255Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -44,3 +44,6 @@ Checklist docs/plans/2026-11-22-step16-inventory-checklist.md §8 decisions (G1 
 
 ## State 2026-11-22 (Step 16a complete)
 16a0 c88143c0 (EntityTab params), 16a1b 9e21e950 (character.created KeepForever; local PG history_contracts row deleted), 16a2 b5fff581 (Inventory tab, disabled grant/revoke, INVENTORY-05). core-reviewer ACCEPT on all; proof-auditor on 16a2: local test gaps (search id/name vacuous, panel paging >25 never run, keyset char->player boundary untested) + structural: 16b split crawl accepting "data difference" would hide missing character rows -> need a never-accepted check / splitproof for a character-owned row. Reported to owner; next: owner decisions, then test fixes + 16b (wipe DB first).
+
+## State 2026-11-22 (Step 16 complete)
+16a2f + 16t (681fdb75 unit tests, a2510cf3 splitproof IV1-IV4, 78972735), 16b 722fff78 accept files + e9d5cc6e wording fix. Monolith + split crawls clean on all 10 player targets; index/mail/events red as before (Q2). Proof-auditor on 16b: admindiff merges identical lines (a set, tools/admindiff/src/skeleton.rs Lines BTreeSet), so dropping the Owner/Type select, the Characters tab or every row of one owner kind stays green. Structural, so it goes to the owner: put counts in the lines. Local option: assert select[name=owner]/[name=type] in a test. Next: report to the owner, ask before Step 17 (friends).
