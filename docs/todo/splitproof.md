@@ -1,6 +1,6 @@
 # Splitproof
 
-Last updated: 2026-11-21
+Last updated: 2026-11-22
 
 ## In progress
 
@@ -27,10 +27,11 @@ _None._
   GETs `/admin/api-keys` for a `_csrf` field and POSTs `_action=create_role` with
   `role_name` and `role_policy`, then checks the `apikeys.roles` row. The admin that served
   that route was razed by b8435c9a and no code outside splitproof references the path, so the
-  block can only report "no _csrf field on apikeys page". The other `/admin/api-keys`
-  assertions (`[AD3b]`, `[AD4]` and the later posts, main.rs:5131-5416) target the same
-  route. Re-point them with the apikeys step of the admin control-plane redesign
-  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md, step 21).
+  block can only fail `[M3a]` ("no _csrf field on apikeys page") and never reaches `[M3b]`.
+  The other `/admin/api-keys` assertions (`[AD3b]`, `[AD4]` and the later posts,
+  main.rs:5131-5416) target the same route. Re-point them with the apikeys step of the
+  admin control-plane redesign (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md,
+  step 21).
 
 ### Known limits (admin-control-plane-redesign step 15)
 

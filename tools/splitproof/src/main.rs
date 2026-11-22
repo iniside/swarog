@@ -143,13 +143,13 @@ fn ensure_no_stale_listener(svc_name: &str, port: u16) -> Result<()> {
     Ok(())
 }
 
-/// Tiny assertion recorder: prints PASS/FAIL per check and keeps a failure list; the process
-/// exits non-zero iff a failed check is not listed in `expected-red.txt` or a listed one passed
-/// (`expected_red::sort`).
+/// Tiny assertion recorder: prints PASS/FAIL per check and keeps each failure's name and detail;
+/// the process exits non-zero iff a failed check is not listed in `expected-red.txt`, a listed
+/// one failed without its signature in the detail, or a listed one passed (`expected_red::sort`).
 #[derive(Default)]
 struct Proof {
     pass: u32,
-    fail: Vec<String>,
+    fail: Vec<expected_red::Failure>,
 }
 
 impl Proof {
@@ -158,8 +158,9 @@ impl Proof {
             self.pass += 1;
             println!("  PASS  {name} — {detail}");
         } else {
-            self.fail.push(name.to_string());
+            let detail = detail.to_string();
             println!("  FAIL  {name} — {detail}");
+            self.fail.push((name.to_string(), detail));
         }
     }
 }
@@ -320,6 +321,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
         format!("login={} chars={m3c}", m3l.status().as_u16()),
     );
 
+    // [M3a] the LOCAL apikeys page carries the form's _csrf field; without it [M3b] cannot run.
     // [M3b] LOCAL apikeys RICH-form submit WITH _csrf -> a NEW admin.action{form-submit}
     // event + the created role row. The rich configurator requires an explicit `_action`
     // (a blind resubmit of the rendered fields is a deliberate no-op — a half-filled row is
@@ -386,7 +388,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
             format!("post={post_status} before={before} after={after:?} role_rows={role_rows:?}"),
         );
     } else {
-        p.check("[M3b] local form-submit form present (_csrf)", false, "no _csrf field on apikeys page");
+        p.check("[M3a] local apikeys form-submit form present (_csrf)", false, "no _csrf field on apikeys page");
     }
 
     // --- Wallet parity: the player reads and the durable starter grant, all Local. In the
@@ -813,12 +815,20 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     let phase = proof_phase(&ctx, &pool, &idp, fleet, &mut p).await;
     clear_wallet_starter_config(&pool).await;
 
-    let sorted = expected_red::sort(&expected_red, &p.fail);
+    let sorted = match expected_red::sort(&expected_red, &p.fail) {
+        Ok(sorted) => sorted,
+        Err(e) => {
+            println!("\n[splitproof] {} passed, {} failed; cannot sort them: {e:#}", p.pass, p.fail.len());
+            phase?;
+            return Err(e);
+        }
+    };
     println!(
-        "\n[splitproof] {} passed, {} failed: {} expected, {} new; {} stale",
+        "\n[splitproof] {} passed, {} failed: {} expected, {} changed, {} new; {} stale",
         p.pass,
         p.fail.len(),
         sorted.expected.len(),
+        sorted.changed.len(),
         sorted.new.len(),
         sorted.stale.len()
     );
@@ -826,9 +836,13 @@ async fn run(root: PathBuf, run_dir: PathBuf) -> Result<u32> {
     for (name, reason) in &sorted.expected {
         println!("  - EXPECTED: {name} ({reason})");
     }
+    println!("  changed, listed but red without its signature ({}):", sorted.changed.len());
+    for c in &sorted.changed {
+        println!("  - CHANGED: {} — detail {:?} lacks {:?} (listed: {})", c.name, c.detail, c.signature, c.reason);
+    }
     println!("  new red ({}):", sorted.new.len());
-    for name in &sorted.new {
-        println!("  - NEW: {name}");
+    for (name, detail) in &sorted.new {
+        println!("  - NEW: {name} — {detail}");
     }
     println!("  stale, listed in {} but not red ({}):", expected_red::EXPECTED_RED_PATH, sorted.stale.len());
     for (id, reason) in &sorted.stale {
@@ -5467,7 +5481,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     p.check(
         "[AD6g] remote form-submit audited: >=2 new admin.action{form-submit} rows",
         audit_after >= audit_before + 2,
-        format!("before={audit_before} after={audit_after}"),
+        format!("before={audit_before} after={audit_after} new={}", audit_after - audit_before),
     );
 
     // --- Audit ledger (F pulls six subscriptions from the shared log). ---
@@ -5646,7 +5660,14 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
         2,
     )
     .await;
-    p.check("[WL5] wallet.changed reaches audit.log (2 movements)", wl5, "");
+    let wl5_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit.log WHERE topic='wallet.changed' AND payload->>'player_id'=$1",
+    )
+    .bind(&wl_player)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(-1);
+    p.check("[WL5] wallet.changed reaches audit.log (2 movements)", wl5, format!("rows={wl5_rows} want=2"));
 
     // [WL6] a revoke past the balance. The portal answers 200 WITH THE VERDICT RENDERED —
     // `render_conflict` hard-codes a "reload the page" remedy and drops the domain text, so
