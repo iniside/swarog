@@ -5,8 +5,8 @@
 use std::sync::Arc;
 
 use controlplane::{
-    order, ActionPoint, Align, CellKind, DataTable, Emphasis, EntityRef, Palette, PanelBody, PanelQuery, Point,
-    Primitive, Provider, Role, Then,
+    order, ActionPoint, Align, CellKind, DataTable, Emphasis, EntityRef, InvokeCall, Palette, PanelBody, PanelQuery,
+    Point, Primitive, Provider, Role, Then,
 };
 use opsapi::Status;
 use storageapi::ACL_PRIVATE;
@@ -284,5 +284,94 @@ async fn tile_and_purges_item_read_the_live_tables() {
     let item = provider.panel(query(admin::ATTENTION_PURGES, "player", &f.owners[0], None)).await.unwrap();
     assert!(matches!(&item.primitive, Primitive::AttentionItems(items) if items.len() == 1));
     rejected(provider.panel(query("nope", "player", &f.owners[0], None)).await, Status::NotFound);
+    f.cleanup().await;
+}
+
+/// The purge item's text names the backlog, singular at one, and the day of the oldest
+/// tombstone as `Store::pending_purges` reads it (`min(created_at)::text`).
+#[test]
+fn purges_body_text_names_the_backlog_and_the_oldest_day() {
+    for (pending, want) in [
+        (1, "1 player awaiting sweep · oldest 2026-01-02"),
+        (3, "3 players awaiting sweep · oldest 2026-01-02"),
+    ] {
+        match &admin::purges_body(pending, "2026-01-02 03:04:05.123456+00").primitive {
+            Primitive::AttentionItems(items) => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].text, want);
+            }
+            other => panic!("an attention list, got {other:?}"),
+        }
+    }
+}
+
+/// The live purge item carries the unswept backlog's count and its oldest tombstone's day: a
+/// tombstone planted older than any other must name its own day, and a swept one stops
+/// counting.
+#[tokio::test]
+async fn purges_item_names_the_oldest_unswept_tombstone_over_the_live_table() {
+    let _lock = DB_LOCK.lock().await;
+    let f = Fixture::new().await;
+    let provider = admin::StorageAdmin::new(Arc::new(Service::new(f.pool().clone())));
+    sqlx::query(
+        "INSERT INTO storage.purged_players (player_id, handle, created_at) \
+         VALUES ($1::uuid, 'Old#0001', '2001-02-03 04:05:06+00'), ($2::uuid, 'Swept#0002', '2000-01-01 00:00:00+00')",
+    )
+    .bind(&f.owners[0])
+    .bind(&f.owners[1])
+    .execute(f.pool())
+    .await
+    .unwrap();
+    sqlx::query("UPDATE storage.purged_players SET swept_at = now() WHERE player_id = $1::uuid")
+        .bind(&f.owners[1])
+        .execute(f.pool())
+        .await
+        .unwrap();
+    let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM storage.purged_players WHERE swept_at IS NULL")
+        .fetch_one(f.pool())
+        .await
+        .unwrap();
+    let players = if pending == 1 { "1 player".to_string() } else { format!("{pending} players") };
+    let item = provider.panel(query(admin::ATTENTION_PURGES, "player", &f.owners[0], None)).await.unwrap();
+    match &item.primitive {
+        Primitive::AttentionItems(items) => {
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].title, "Storage purges pending");
+            assert_eq!(items[0].text, format!("{players} awaiting sweep · oldest 2001-02-03"));
+        }
+        other => panic!("an attention list, got {other:?}"),
+    }
+    f.cleanup().await;
+}
+
+/// `Provider::invoke` refuses every declared action, each with its id in the error, and
+/// writes nothing: the object the row download and Delete bind keeps its version.
+#[tokio::test]
+async fn invoke_refuses_every_declared_action_and_leaves_the_object() {
+    let _lock = DB_LOCK.lock().await;
+    let f = Fixture::new().await;
+    f.put(0, "slot-1", "{\"a\": 1}", 0, ACL_PRIVATE).await.unwrap();
+    let provider = admin::StorageAdmin::new(Arc::new(Service::new(f.pool().clone())));
+    for action in [admin::DOWNLOAD_ALL, admin::DELETE, admin::DOWNLOAD, admin::DOWNLOAD_PLAYER] {
+        let call = InvokeCall {
+            module: "storage".into(),
+            action: action.into(),
+            entity: Some(EntityRef { kind: "player".into(), id: f.owners[0].clone() }),
+            input: Default::default(),
+            expected_revision: None,
+            reason: None,
+            operator: "ops".into(),
+            item: Some("saves/slot-1".into()),
+            request_id: None,
+        };
+        let err = rejected(provider.invoke(call).await, Status::NotFound);
+        assert!(err.msg.contains(action), "{action}: {}", err.msg);
+    }
+    let versions: Vec<i64> = sqlx::query_scalar("SELECT version FROM storage.objects WHERE owner_id = $1::uuid")
+        .bind(&f.owners[0])
+        .fetch_all(f.pool())
+        .await
+        .unwrap();
+    assert_eq!(versions, [1]);
     f.cleanup().await;
 }
