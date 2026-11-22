@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-22: Step 16 (inventory) complete incl. 16b; next ask owner before Step 17"
+description: "Admin redesign resume point 2026-11-22: Step 18 through 18t landed+reviewed; next 18b (crawls + accept files)"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-22T10:08:26.255Z
+  modified: 2026-11-22T18:09:27.699Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -47,3 +47,6 @@ Checklist docs/plans/2026-11-22-step16-inventory-checklist.md §8 decisions (G1 
 
 ## State 2026-11-22 (Step 16 complete)
 16a2f + 16t (681fdb75 unit tests, a2510cf3 splitproof IV1-IV4, 78972735), 16b 722fff78 accept files + e9d5cc6e wording fix. Monolith + split crawls clean on all 10 player targets; index/mail/events red as before (Q2). Proof-auditor on 16b: admindiff merges identical lines (a set, tools/admindiff/src/skeleton.rs Lines BTreeSet), so dropping the Owner/Type select, the Characters tab or every row of one owner kind stays green. Structural, so it goes to the owner: put counts in the lines. Local option: assert select[name=owner]/[name=type] in a test. Next: report to the owner, ask before Step 17 (friends).
+
+## State 2026-11-22 (Step 18 through 18t)
+Done since Step 16: 16c-16h, Step 17 (friends), 13f, 13f2, mail dead-code fix. Step 18 (groups, checklist docs/plans/2026-11-22-step18-groups-checklist.md): 18a1 0cebe481, f10e0f22, 7941f936; 18a2 1a049939 + review-fix 9b1d216e; 18t splitproof GA0-GA4 5e2d6e21 + review-fix 4ea08a6c (247 passed, 44 expected). Next: 18b [sonnet] mockup-implementer — monolith + split crawls, checklist §7 accept files, §12 admindiff rows (drop player.groups from EXCLUDED_TABS, PAGE_MAP tab, EXCLUDED_MODALS row for groups/membership.promote). Crawls need a fleet: send cargo START/DONE to swarog-8a. Port 8190 can be held by the owner's flux2 Python server — check before splitproof/fleet.
