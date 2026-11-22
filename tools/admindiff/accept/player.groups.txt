@@ -1,4 +1,4 @@
-# Accepted differences of the player detail's Friends tab (portal /admin/p/accounts/players,
+# Accepted differences of the player detail's Groups tab (portal /admin/p/accounts/players,
 # the first row whose Groups tab lists a row, else the first row, ?tab=groups) against
 # UILayout/redesign/player.html?tab=groups, forced to its ok state. One per line:
 # <difference> | <reason>. An entry that matches no difference fails the diff. A reason names
