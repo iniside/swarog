@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 7420721d-9d24-4215-a860-f8978a9d6d23
-  modified: 2026-11-22T11:28:41.113Z
+  modified: 2026-11-22T16:32:14.553Z
 ---
 
 Owner decisions (2026-11-22) for widening demoseed into a client simulator that both seeds and tests the backend through the gateway's public API:
@@ -16,6 +16,7 @@ Owner decisions (2026-11-22) for widening demoseed into a client simulator that 
 4. Modules with no public route (mail, config, apikeys, rating, scheduler, audit) fill only through events; no new public routes in this plan.
 5. Monolith only for now; manual run, not wired into verifyctl or devctl.
 6. Many clients in parallel, as far as the gateway allows.
+7. (2026-11-22, Step 1b) Coverage counts only the op's declared success status (`OpInfo.success`, generated from `#[http(success)]`); a 409 or other expected refusal never covers an op. Re-run-sensitive ops (register, storage.put, match.report, inventory.grant, characters.create, groups create/join/invite/decide/respond, friends.accept) are called unconditionally in the throwaway scenarios so every run covers them.
 
 **Why:** owner: "zeby demo seed byl w stanie robic takie requesty do kazdego modulu tak jak robiloby to klient, dzieki temu bedziemy mogli caly backend przetestowac i jednoczesnie zaseedowac".
 **How to apply:** keep public-API-only ([[demoseed-is-the-one-seeder]]); do not add split runs or a verify stage without asking.
