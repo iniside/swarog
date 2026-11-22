@@ -175,16 +175,17 @@ module must boot as its own `cmd/<name>-svc` and ship in both topologies.
 ## Commands
 
 ```
+cargo build -p demoseed               # build before the fleet boots
 cargo run -p devctl -- up monolith    # or: up split; then status / down
 cargo run -p verifyctl -- --fast      # blocking tiers; --all, --all --strict, --slow for more
-cargo build -p demoseed               # before the run below, with the monolith up
-target/debug/demoseed                 # monolith only, run by hand; `--help` lists the flags
+target/debug/demoseed                 # with the monolith up, run by hand; `--help` lists the flags
 ```
 
 `demoseed` seeds through the gateway's public API, reads every seeded kind back, then runs
 throwaway client scenarios. Flags: `--base-url`, `--players` (default 30, at least 2),
-`--matches` (100), `--concurrency` (16), `--clients` (8, at least 1), `--event-timeout <secs>`
-(10). Exit 1 when any call answered an unexpected status or an op of `opscatalog::OPERATIONS`
+`--matches` (100, 0 allowed), `--concurrency` (16, at least 1), `--clients` (8, at least 1),
+`--event-timeout <secs>` (10, at least 1). Exit 1 when any call failed (unexpected status,
+transport, shape or timeout) or an op of `opscatalog::OPERATIONS`
 never answered its declared success; otherwise 0. It is not a `verifyctl` stage.
 
 Stages and flags: read `tools/verifyctl` and `tools/devctl`. For `weles` see

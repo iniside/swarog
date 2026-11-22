@@ -253,8 +253,9 @@ Mockup: `UILayout/design-system/components/bundle.js:130-149`. Portal:
 There are no per-module seed tools. `demoseed` is the one seeder and writes only
 through the public API (`docs/plans/2026-11-22-1642-demoseed-client-simulator-plan.md`,
 which replaced Step 24b). A port adds no seed. A designed state that a fresh fleet lacks is a
-`data difference` accept entry. Step 5 of that plan removes the entries the seeding resolves. A state no public API can produce, such as a retrying or parked
-mail, stays an entry for good. `eventctl seed-mockup` stays as the Event plane's dev
+`data difference` accept entry. Step 5 of that plan removes the entries the seeding
+resolves. A state no public API can produce, such as a retrying or parked mail, stays an
+entry for good. `eventctl seed-mockup` stays as the Event plane's dev
 fixture. Do not chase a mockup gap beyond the checklist's decisions; it goes to the next
 iteration.
 
