@@ -32,6 +32,7 @@ const RECEIPT_A: &str = r#"{"player_id":"pa","handle":"ga#1","deleted_at":"t"}"#
 const RECEIPT_B: &str = r#"{"player_id":"pb","handle":"gb#1","deleted_at":"t"}"#;
 const RECEIPT_C: &str = r#"{"player_id":"pc","handle":"gc#1","deleted_at":"t"}"#;
 const RECEIPT_D: &str = r#"{"player_id":"pd","handle":"Sim 0#1","deleted_at":"t"}"#;
+const PENDING_E1: &str = r#"{"items":[{"player_id":"pa","edge_id":"e1","direction":"incoming"}],"next_cursor":""}"#;
 
 /// Every answer of one scenario that loses nothing, in call order.
 fn happy_answers() -> Vec<(u16, &'static str)> {
@@ -63,6 +64,7 @@ fn happy_answers() -> Vec<(u16, &'static str)> {
         (404, "not found"),
         // Friends.
         (201, r#"{"edge_id":"e1","state":"pending"}"#),
+        (200, PENDING_E1),
         (204, ""),
         (201, r#"{"edge_id":"e2","state":"pending"}"#),
         (204, ""),
@@ -147,7 +149,6 @@ async fn a_scenario_that_loses_nothing_covers_every_op_the_seed_can_skip_and_del
         coverage.uncovered,
         [
             "friends.list",
-            "friends.pending",
             "groups.listMine",
             "groups.members",
             "groups.pending",
@@ -160,10 +161,10 @@ async fn a_scenario_that_loses_nothing_covers_every_op_the_seed_can_skip_and_del
     );
 }
 
-#[tokio::test]
-async fn a_lost_guest_skips_the_steps_that_need_it_and_still_deletes_the_others() {
+/// The answers after guest A's creation when A is lost: B and C, D, then their deletions.
+fn without_guest_a(first: (u16, &'static str)) -> Vec<(u16, &'static str)> {
     let mut answers = vec![
-        (500, "boom"),
+        first,
         guest(GUEST_B),
         guest(GUEST_C),
         (200, r#"{"handle":"gb#1"}"#),
@@ -175,6 +176,62 @@ async fn a_lost_guest_skips_the_steps_that_need_it_and_still_deletes_the_others(
     for receipt in [RECEIPT_B, RECEIPT_C, RECEIPT_D] {
         answers.extend(deletion(receipt));
     }
+    answers
+}
+
+#[tokio::test]
+async fn a_guest_created_with_an_unreadable_answer_is_named_as_undeletable() {
+    let answers = without_guest_a(guest(r#"{"player_id":"pa"}"#));
+    let total = answers.len();
+    let (base, lines) = canned(answers);
+    let gateway = gateway_on(&base);
+    run_client(&gateway, &client()).await;
+    let report = gateway.take_report();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].op, "accounts.createGuest");
+    let skipped: Vec<&str> = report.skipped.iter().map(|s| s.cause.as_str()).collect();
+    assert_eq!(
+        skipped[0],
+        "guest A skipped: the account was created but its response could not be read, so it cannot be deleted"
+    );
+    assert_eq!(received(&lines).len(), total);
+}
+
+#[tokio::test]
+async fn b_must_find_the_request_in_its_pending_list_before_it_declines() {
+    let (base, lines) = canned(vec![
+        (201, r#"{"edge_id":"e1","state":"pending"}"#),
+        (200, r#"{"items":[],"next_cursor":""}"#),
+        (201, r#"{"edge_id":"e2","state":"pending"}"#),
+        (204, ""),
+        (200, r#"{"items":[{"id":"n1","kind":"friend.accepted","created_at":"t","read_at":""}],"next_cursor":""}"#),
+        (204, ""),
+        (200, r#"{"items":[{"id":"n2","kind":"friend.requested","created_at":"t","read_at":""}],"next_cursor":""}"#),
+        (204, ""),
+        (204, ""),
+    ]);
+    let gateway = gateway_on(&base);
+    let session = |id: &str, handle: &str| Session {
+        player_id: id.to_string(),
+        token: format!("t{id}"),
+        handle: handle.to_string(),
+    };
+    let (a, b, c) = (session("pa", "ga#1"), session("pb", "gb#1"), session("pc", "gc#1"));
+    friends(&gateway, &client(), &a, &b, &c).await;
+    let report = gateway.take_report();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].op, "friends.pending");
+    let skipped: Vec<&str> = report.skipped.iter().map(|s| s.cause.as_str()).collect();
+    assert_eq!(skipped, ["decline skipped: B's pending list does not show the request"]);
+    let lines = received(&lines);
+    assert_eq!(lines[1], "POST /friends/requests/list HTTP/1.1", "{lines:#?}");
+    // Nothing past the nine answers: the decline was never called.
+    assert_eq!(lines.len(), 9, "{lines:#?}");
+}
+
+#[tokio::test]
+async fn a_lost_guest_skips_the_steps_that_need_it_and_still_deletes_the_others() {
+    let answers = without_guest_a((500, "boom"));
     let total = answers.len();
     let (base, lines) = canned(answers);
     let gateway = gateway_on(&base);
@@ -186,7 +243,7 @@ async fn a_lost_guest_skips_the_steps_that_need_it_and_still_deletes_the_others(
     assert_eq!(
         skipped,
         [
-            "guest A skipped: its creation failed",
+            "guest A skipped: the account creation failed",
             "characters and storage skipped: guest A has no session",
             "friends, groups, match and party skipped: guests A, B and C do not all have a session",
         ]

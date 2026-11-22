@@ -6,8 +6,9 @@
 
 use std::time::Duration;
 
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::client::{Caller, Gateway};
 use crate::readback::{self, Deadline, NotificationRow, KIND_FRIEND_ACCEPTED};
@@ -160,12 +161,12 @@ async fn guests(gateway: &Gateway) -> (Vec<Held>, [Option<Session>; 3]) {
     const LABELS: [&str; 3] = ["A", "B", "C"];
     let mut made = Vec::with_capacity(LABELS.len());
     for label in LABELS {
-        let guest = gateway
+        let answered = gateway
             .call(ops::ACCOUNTS_CREATE_GUEST, &[], Caller::Anonymous, None, expect::ACCOUNTS_CREATE_GUEST)
             .await
             .ok()
-            .and_then(|(_, body)| gateway.typed::<GuestBody>(ops::ACCOUNTS_CREATE_GUEST, body));
-        made.push(or_skip(gateway, guest, &format!("guest {label} skipped: its creation failed")));
+            .map(|(_, body)| body);
+        made.push(created::<GuestBody>(gateway, ops::ACCOUNTS_CREATE_GUEST, answered, &format!("guest {label}")));
     }
     let a_token = match &made[0] {
         Some(a) => Some(sign_in_again(gateway, a).await),
@@ -185,6 +186,23 @@ async fn guests(gateway: &Gateway) -> (Vec<Held>, [Option<Session>; 3]) {
         held.push(Held { label: LABELS[slot], player_id: guest.player_id, token });
     }
     (held, sessions)
+}
+
+/// The body of a call that creates an account, typed. `None` (with a skip of `subject`) when the
+/// call failed, or when it succeeded but its body does not deserialize (recorded): that account
+/// exists, but no bearer for it was read, so it cannot be deleted.
+fn created<T: DeserializeOwned>(gateway: &Gateway, op: &'static str, answered: Option<Value>, subject: &str) -> Option<T> {
+    let Some(body) = answered else {
+        gateway.skip(format!("{subject} skipped: the account creation failed"));
+        return None;
+    };
+    let typed = gateway.typed::<T>(op, body);
+    if typed.is_none() {
+        gateway.skip(format!(
+            "{subject} skipped: the account was created but its response could not be read, so it cannot be deleted"
+        ));
+    }
+    typed
 }
 
 /// The guest's federated sign-in with its device secret, one refresh of that sign-in's refresh
@@ -243,12 +261,12 @@ async fn me(gateway: &Gateway, token: &str) -> Option<String> {
 async fn registered(gateway: &Gateway, client: &Client) -> Option<Held> {
     let email = client.email();
     let register = json!({"email": email, "password": PASSWORD, "displayName": format!("Sim {}", client.index)});
-    let session = gateway
+    let answered = gateway
         .call(ops::ACCOUNTS_REGISTER, &[], Caller::Anonymous, Some(&register), expect::ACCOUNTS_REGISTER_FRESH)
         .await
         .ok()
-        .and_then(|(_, body)| gateway.typed::<SessionBody>(ops::ACCOUNTS_REGISTER, body));
-    let session = or_skip(gateway, session, "login, profile read and deletion of D skipped: the registration failed")?;
+        .map(|(_, body)| body);
+    let session = created::<SessionBody>(gateway, ops::ACCOUNTS_REGISTER, answered, "login, profile read and deletion of D")?;
     let mut held = Held { label: "D", player_id: session.player_id, token: session.token };
     let login = json!({"email": email, "password": PASSWORD});
     let logged_in = gateway
@@ -322,16 +340,21 @@ async fn storage(gateway: &Gateway, a: &Session) {
     }
 }
 
-/// A's request B declines; A's request C accepts, A's inbox shows `friend.accepted` and A
+/// A's request B finds in its pending list and declines; A's request C accepts, A's inbox shows `friend.accepted` and A
 /// unfriends C; B's inbox shows A's `friend.requested`, which B marks read and deletes.
 async fn friends(gateway: &Gateway, client: &Client, a: &Session, b: &Session, c: &Session) {
     let to_b = request(gateway, a, b).await;
     match &to_b {
         Some(edge) => {
-            let id = [("id", edge.as_str())];
-            gateway.call(ops::FRIENDS_DECLINE, &id, Caller::Player(&b.token), None, expect::FRIENDS_DECLINE).await;
+            // Called on every run, since the seed lists pending requests only on an edge its
+            // own request answered pending, which a re-run never does (I3).
+            let listed = readback::incoming_request(gateway, b, edge).await;
+            if or_skip(gateway, listed, "decline skipped: B's pending list does not show the request").is_some() {
+                let id = [("id", edge.as_str())];
+                gateway.call(ops::FRIENDS_DECLINE, &id, Caller::Player(&b.token), None, expect::FRIENDS_DECLINE).await;
+            }
         }
-        None => gateway.skip("decline skipped: the request to B failed"),
+        None => gateway.skip("pending list and decline skipped: the request to B failed"),
     }
     match request(gateway, a, c).await {
         Some(edge) => {
