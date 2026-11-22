@@ -33,6 +33,7 @@ use crate::pushws::{Frame, PushClient};
 
 mod characters_admin_checks;
 mod expected_red;
+mod friends_admin_checks;
 mod idp;
 mod inventory_admin_checks;
 mod party_checks;
@@ -585,6 +586,7 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     storage_checks::assertions(ctx, pool, p, &m, "m").await?;
     characters_admin_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
     inventory_admin_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
+    friends_admin_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
     wallet_ledger_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
     deletion_assertions(ctx, pool, p, &m, None, "m").await?;
     party_checks::deletion_assertion(ctx, pool, p, &m, "m").await?;
@@ -6179,6 +6181,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     storage_checks::assertions(ctx, pool, p, &g, "").await?;
     characters_admin_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
     inventory_admin_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
+    friends_admin_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
     wallet_ledger_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
 
     // --- Parties over the multiplexed socket: every invoke is Remote-dispatched from
