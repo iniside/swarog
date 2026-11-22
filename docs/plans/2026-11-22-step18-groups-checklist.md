@@ -289,3 +289,98 @@ Proposal, both topologies, each with a recorded break run (admin-svc without its
 - **G11:** 18t writes `groups_admin_checks.rs` (GA1-GA4); GR5's rewrite stays in 25h4.
 - **GA2:** the real portal promote runs in 18t, both topologies.
 - Before 18a2: a short research of `Then::Confirm` on a `TableRow` (variant names, validation, how the portal posts it and whether it sends `request_id`) and the admindiff modal rows a portal-only Confirm needs.
+
+- **Promote modal (2026-11-22, after §12):** `Then::Confirm` with tone Warn (a portal promote cannot be undone, there is no demote), `prepare: true` so the body names the player and the group ("Promote <player> to admin of <group>?", built by the provider as mail's `cancel` does), confirm label "Promote", reason Optional, no type-to-confirm, no impact lines.
+
+## 12. Research before 18a2: `Then::Confirm` on a `TableRow` (2026-11-22, read-only)
+
+I found what 18a2 needs. `Then::Confirm` on a `TableRow` is allowed by every check I read, and the portal posts it through the modal-form path, which sends a `request_id`. No production module has a working Confirm on a `TableRow` yet. I did not run cargo, splitproof or any build. Grep counts below are lower bounds.
+
+**1. Confirm shape and validation**
+- `Then` has four variants, `{ Invoke, Form(FormSpec), Confirm(ConfirmSpec), Link(Link) }` (`G:\Projects\swarog\core\controlplane\src\lib.rs:753-758`). `invokes()` is true for Confirm (`:762-768`).
+- `ConfirmSpec` has these fields: `title`, `body`, `tone: ConfirmTone`, `impact: Vec<(String, Cell)>`, `reason: ReasonReq`, `reason_hint: Option<String>`, `type_to_confirm: Option<String>`, `confirm_label: String` (`:1024-1034`).
+- `ConfirmTone` is `{ Danger, Warn, Info }` (`:1039-1043`). `ReasonReq` is `{ Required, Optional, None }` (`:1049-1053`).
+- How the tone renders (`G:\Projects\swarog\core\admin\src\render\modal.rs:89-111`):
+  - Danger draws a danger button and the alert icon.
+  - Warn and Info draw a primary button and the info icon.
+- No rule ties Confirm to a point kind. `G:\Projects\swarog\tools\admincheck\src\checks.rs` has three related rules:
+  - `PanelForm` must be `Then::Invoke` (`:269-273`).
+  - `prepare` requires Confirm or Form and is not allowed on `PanelForm` (`:277-286`).
+  - `icon_only` requires `TableRow` (`:296`).
+- `controlplane`'s own mode check only covers form modes (`lib.rs:1002-1018`).
+- A golden fixture already draws a `TableRow` with `Then::Confirm` (Danger), which suggests the template path is exercised: `G:\Projects\swarog\core\admin\src\golden_tests\build.rs:606-618`.
+
+**2. How the portal renders and posts it**
+- `hx_action`:
+  - **Invoke:** `hx-post="{{a.url}}" hx-vals="{{a.vals}}"`.
+  - **Anything else, Confirm included:** `hx-get="{{a.url}}"` into `#modal-root` (`G:\Projects\swarog\core\admin\src\templates\primitives.html.tmpl:98-100`).
+  - The row cell is drawn at `:232,238`. `bind` puts `?entity=&item=` on the URL for the modal and `_entity`/`_item` in `vals` for a plain invoke (`G:\Projects\swarog\core\admin\src\render\action.rs:70-80`).
+- **Opening the Confirm:** `GET /admin/_action/{module}/{action}?entity=kind:id&item=` goes to `action_modal` (`G:\Projects\swarog\core\admin\src\routes.rs:932-1000`):
+  - It runs `admit` and validates entity and item.
+  - If `prepare` is set, it fetches the spec from the provider (`:975-991`); otherwise it uses the declared `StoredSpec::Confirm` (`:955-960`).
+  - It creates a form row that stores the entity and item.
+- **Submitting the modal:** the modal form posts `_csrf`, `_form`, and `_reason` / `_confirm` where the spec asks for them (`G:\Projects\swarog\core\admin\src\templates\modal.html.tmpl:8-20`). It does not send `_return`, entity, item or `request_id`. For a Confirm only `_csrf|_form|_reason|_confirm|_return` are accepted (`G:\Projects\swarog\core\admin\src\engine\actions.rs:386-402`).
+- `action_submit` checks CSRF before anything else, then routes by `_form`: present goes to `submit_form`, absent goes to `submit_click` (`routes.rs:1048-1086`).
+- **Confirm path (`submit_form`)**, `InvokeCall` built at `routes.rs:1196-1206`:
+  - `module` and `entity` come from the stored row, `action` is `decl.id`, `item` is `row.item`.
+  - `input` comes from the submission (empty for a Confirm), plus `expected_revision`, `reason` and `operator`.
+  - `request_id` is `Some(row.id)`, the form id. **So yes, a Confirm sends a `request_id`, and it is the form instance id.**
+  - The submission check enforces a required reason and the type-to-confirm text (`actions.rs:506-512`).
+- **Invoke path (`submit_click`, `routes.rs:1215-1267`):**
+  - It refuses anything that is not `Then::Invoke` with "must be submitted from its form" (`:1228-1232`).
+  - The entity and item come from the posted `_entity`/`_item`.
+  - `request_id` is `click_request_id(&row)` from the click row (`:1257`).
+- After either path, the redirect target is the outcome's link, else `_return`, else the entity (`actions.rs:715-721`).
+
+**3. Is there a working `TableRow` + Confirm already?**
+- Not in any module I grepped. I searched `mail`, `wallet`, `groups`, `accounts`, `friends`, `notifications` and `core/admin`:
+  - accounts' `TableRow` actions are `not_implemented`: Unlink and Revoke at `G:\Projects\swarog\modules\accounts\src\admin.rs:421,424`.
+  - wallet has no Confirm.
+- Closest precedents:
+  - **mail `cancel`:** `Then::Confirm`, `prepare: true`, implemented, but it sits on `ActionPoint::QueueRow`, not `TableRow` (`G:\Projects\swarog\modules\mail\src\admin.rs:245,325-328`, prepare at `:499-510`). Same modal and form path, so it is the best runtime precedent.
+  - **events `SUB_PAUSE`:** a Warn Confirm without `prepare`, implemented, on `RowAction` (`G:\Projects\swarog\core\admin\src\events_provider.rs:237,249-259,322`). This is the closest to a static, non-danger Confirm.
+  - **golden `table_row_actions_case`:** the only `TableRow` + Confirm I found (`build.rs:612-620`).
+
+**4. admindiff rows (`G:\Projects\swarog\tools\admindiff\src\pages.rs`)**
+- A portal modal action with no mockup opener goes in `EXCLUDED_MODALS` as `(host, "<module>/<action>", ModalWhy{why})` (`:384-450`). Example: mail `test-send` at `:386-389`.
+- What `validate_excluded_modals` (`:926-951`) requires of an entry:
+  - It is listed once and has a reason.
+  - Its host is a modal host (`is_modal_host`), meaning a `PAGE_MAP` page or tab that is not pending, a menu target of one, or an excluded menu.
+  - The action is a valid `module/action` id.
+  - It is not also a `PAGE_MAP` modal entry for that host.
+- `validate_mock_modals` (`:1042-1060`) holds the "the mockup has no opener" claim against the mockup: every opener the mockup draws on that host must be a `PAGE_MAP` modal entry or a `mock_modal` row of another action.
+  - `changeRole` and `suspend` count as "another action": `Absent(LORE)` waits for lore, not groups, and `Disabled("accounts/suspend-header")` names an accounts action.
+- `mock_modal(host, MockOpener, PortalModal, why)` is the other direction: a mockup opener the portal does not diff (`:585-631`). `PortalModal::{Action, Disabled, Unseeded, Absent}` is defined at `:535-565`.
+- `player.groups` is currently in `EXCLUDED_TABS` (`:357`).
+- **Rows 18b would need:**
+  - Remove the `player.groups` line from `EXCLUDED_TABS`.
+  - Add a `PAGE_MAP` tab entry `player.groups` and a menu entry `player.groups.menu.user` (`menu: Some(USER_MENU)`), copying the wallet entries around `:290-299`.
+  - Copy the per-tab `mock_modal` rows from wallet (`:609-614`) to `player.groups` and `player.groups.menu.user` (changeRole/LORE, suspend-header on the tab; suspend, deleteAccount, changeRole, releaseAll on the menu).
+  - Copy the `EXCLUDED_MODALS` rows for `wallet/currency.grant` and `wallet/currency.revoke` to host `player.groups.menu.user`, following `:426-433`.
+  - Add one new `EXCLUDED_MODALS` row: `("player.groups", "groups/<promote id>", ModalWhy{why: "Q1 extra (D6): the mockup's Groups tab draws no promote element, so the mockup has no modal"})`.
+  - No promote row is needed on `player.groups.menu.user`. A `TableRow` action draws only on table rows (`G:\Projects\swarog\core\admin\src\golden_tests\view_tests.rs:369-384`), not in the user menu. This holds as long as groups adds no `RowAction` on `player`.
+  - The exact list depends on what the mockup's Groups tab render actually draws, which only the crawl can show.
+
+**Brief for 18a2**
+- Declare `membership.promote` as `ActionPoint::TableRow("groups")` with `Then::Confirm(ConfirmSpec{ tone: Warn or Info (not Danger, matching the checklist's non-danger choice), reason: Optional, type_to_confirm: None, confirm_label: "Promote", impact: vec![] })`.
+  - Set `danger: false` and `emphasis: Ghost`.
+- `prepare: false` is enough unless the body should name the group or player. In that case set `prepare: true` and add a `prepare` arm, as mail does (`G:\Projects\swarog\modules\mail\src\admin.rs:499-510,596-599`).
+- No `controlplane` or `admincheck` change is needed.
+- The invoke handler receives:
+  - `req.entity = player:<id>` and `req.item = group_id` from the stored form row;
+  - `req.reason` when one is given;
+  - `req.request_id = Some(form id)`, which is stable for one modal instance.
+  - Make it idempotent the way checklist §8 says: a repeat after the role is already `admin` answers NoOp, and zero rows from `promote_tx` is Stale.
+- For splitproof GA2 (18t), the post must be the two-step form path: GET `/admin/_action/groups/membership.promote?entity=player:B&item=G`, read `_form` and `_csrf` from the HTML, then POST `_csrf` + `_form`. A bare POST with `_entity`/`_item` is refused as "must be submitted from its form" (`routes.rs:1228-1232`).
+- Nothing in 18a2 touches admindiff. The rows listed in §4 belong to 18b.
+
+**Open**
+- Tone (Warn vs Info), whether `prepare` is wanted for a body that names the group, and the label are the owner's or the plan's call.
+- Whether the mockup's Groups tab render draws any other opener is unchecked; only a crawl settles it.
+
+**Not checked**
+- `admin.js` modal handling.
+- The modal-instance `classify_form`/`settle` semantics on a NoOp outcome.
+- The `PAGE_MAP` wallet entry lines `:286-299`, read by line number only.
+- The uncommitted `tools/splitproof/src/friends_admin_checks.rs`.
+
