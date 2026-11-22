@@ -54,7 +54,7 @@ fn days_in_month(year: u32, month: u32) -> u32 {
 /// checked HERE: a digit-SHAPED but impossible instant (`2026-13-45`, hour 25, year 0000)
 /// would otherwise raise 22008 and answer 500, contradicting `Player::list`'s promise of a
 /// 400 for a malformed cursor.
-fn is_cursor_time(s: &str) -> bool {
+pub(crate) fn is_cursor_time(s: &str) -> bool {
     let shaped = s.len() == CURSOR_TIME_SHAPE.len()
         && s.bytes()
             .zip(CURSOR_TIME_SHAPE.bytes())

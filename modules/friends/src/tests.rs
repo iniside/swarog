@@ -2091,3 +2091,283 @@ async fn unstamped_tombstones(pool: &PgPool, ids: &[String]) -> Vec<String> {
     .await
     .unwrap()
 }
+
+// ---- Admin: the player's Friends tab ------------------------------------
+
+use controlplane::{ActionPoint, DataTable, EntityRef, Link, PanelBody, PanelQuery, Point, Primitive, Provider, Tone};
+
+fn admin_query(contribution: &str, pid: &str, cursor: Option<&str>) -> PanelQuery {
+    PanelQuery {
+        module: "friends".into(),
+        contribution: contribution.into(),
+        entity: Some(EntityRef { kind: "player".into(), id: pid.into() }),
+        search: None,
+        cursor: cursor.map(String::from),
+        before: None,
+        queue_state: None,
+        range: None,
+        params: Default::default(),
+        refs: Vec::new(),
+    }
+}
+
+fn admin_table(body: &PanelBody) -> &DataTable {
+    match &body.primitive {
+        Primitive::DataTable(t) => t,
+        other => panic!("the Friends tab is a DataTable, got {other:?}"),
+    }
+}
+
+fn admin_row_ids(t: &DataTable) -> Vec<String> {
+    t.rows.iter().map(|r| r.entity.as_ref().expect("a friendship row").id.clone()).collect()
+}
+
+/// Pins an edge's `created_at` (and `accepted_at`) to exact instants.
+async fn set_edge_times(pool: &PgPool, edge_id: &str, created: &str, accepted: Option<&str>) {
+    sqlx::query(
+        "UPDATE friends.edges SET created_at = $2::timestamptz, accepted_at = $3::timestamptz \
+         WHERE id = $1::uuid",
+    )
+    .bind(edge_id)
+    .bind(created)
+    .bind(accepted)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// The manifest: the tab at 50 with no params, its count, Purges pending at 64, the
+/// `friendship` row kind and its one disabled, danger "Remove friend…".
+#[test]
+fn admin_manifest_declares_the_tab_count_purges_and_a_disabled_remove() {
+    let m = admin::manifest();
+    assert!(!m.writes);
+    let tab = m.contributions.iter().find(|c| c.id == admin::FRIENDS).expect("the tab");
+    assert_eq!(tab.order, 50);
+    match &tab.point {
+        Point::EntityTab { kind, tab, tab_label, params, .. } => {
+            assert_eq!((kind.as_str(), tab.as_str(), tab_label.as_str()), ("player", "friends", "Friends"));
+            assert!(params.is_empty());
+        }
+        other => panic!("the tab is an EntityTab, got {other:?}"),
+    }
+    let purges = m.contributions.iter().find(|c| c.id == admin::ATTENTION_PURGES).expect("purges");
+    assert_eq!((purges.order, &purges.point), (64, &Point::DashboardAttention));
+    assert!(m.contributions.iter().any(|c| c.id == admin::TAB_COUNT));
+    assert!(m.contributions.iter().all(|c| c.min_role == controlplane::Role::Viewer));
+    assert_eq!(m.entity_kinds.iter().map(|k| k.kind.as_str()).collect::<Vec<_>>(), [admin::FRIENDSHIP_KIND]);
+    assert_eq!(m.actions.len(), 1);
+    let remove = &m.actions[0];
+    assert_eq!(remove.point, ActionPoint::RowAction(admin::FRIENDSHIP_KIND.into()));
+    assert_eq!((remove.label.as_str(), remove.icon.as_str()), ("Remove friend…", "trash"));
+    assert!(remove.danger && !remove.implemented);
+}
+
+/// No toolbar: no filters and no search.
+#[test]
+fn admin_friends_tab_draws_no_toolbar_and_counts_friends() {
+    let body = admin::friends_body(&[], 0, 0, None);
+    let t = admin_table(&body);
+    assert!(t.filters.is_empty());
+    assert_eq!(t.search_placeholder, None);
+    assert_eq!(t.columns.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(), ["User", "State", "Since"]);
+    assert_eq!(body.meta.as_deref(), Some("0 · 0 pending"));
+    assert_eq!(t.item_noun.as_ref().map(|n| n.of(2)), Some("friends"));
+}
+
+/// The State badge carries its tone explicitly and names a pending relation's direction.
+#[test]
+fn admin_state_cell_names_the_pending_direction_with_explicit_tones() {
+    let cells = [
+        admin::state_cell(STATE_ACCEPTED, true),
+        admin::state_cell(STATE_ACCEPTED, false),
+        admin::state_cell(STATE_PENDING, true),
+        admin::state_cell(STATE_PENDING, false),
+    ];
+    let drawn: Vec<(&str, Option<Tone>)> = cells.iter().map(|c| (c.value.as_str(), c.tone)).collect();
+    assert_eq!(
+        drawn,
+        [
+            ("accepted", Some(Tone::Ok)),
+            ("accepted", Some(Tone::Ok)),
+            ("pending (outgoing)", Some(Tone::Info)),
+            ("pending (incoming)", Some(Tone::Info)),
+        ]
+    );
+}
+
+/// The cursor is a row's key and parses back; a malformed one is the caller's error.
+#[test]
+fn admin_cursor_round_trips_and_rejects_malformed() {
+    let key = crate::store::AdminCursor {
+        state: STATE_PENDING.into(),
+        created_at: "2026-01-02T03:04:05.000006Z".into(),
+        edge_id: "01234567-89ab-4def-8123-456789abcdef".into(),
+    };
+    assert_eq!(admin::parse_cursor(&admin::cursor(&key)).unwrap(), key);
+    for bad in [
+        "",
+        "pending",
+        "pending|2026-01-02T03:04:05.000006Z",
+        "blocked|2026-01-02T03:04:05.000006Z|01234567-89ab-4def-8123-456789abcdef",
+        "pending|2026-13-02T03:04:05.000006Z|01234567-89ab-4def-8123-456789abcdef",
+        "pending|2026-01-02T03:04:05.000006Z|not-a-uuid",
+    ] {
+        assert_eq!(admin::parse_cursor(bad).unwrap_err().status, Status::Invalid, "{bad:?}");
+    }
+}
+
+/// The tab lists every relation of the player on both sides of the pair: accepted first,
+/// then pending, newest first within each; a user cell links the OTHER player; a pending row
+/// names its direction as the viewed player sees it; Since is the accept day for an accepted
+/// relation and the request day for a pending one; the meta, the pager total and the tab
+/// count all count every relation. Another player's relation is not listed.
+#[tokio::test]
+async fn admin_friends_tab_orders_both_states_and_sides_with_direction_since_and_counts() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    let me = fixed_uuid(0x80);
+    let (lo1, lo2, hi1, hi2, stranger) =
+        (fixed_uuid(0x10), fixed_uuid(0x20), fixed_uuid(0xe0), fixed_uuid(0xf0), fixed_uuid(0x30));
+    let ids = vec![me.clone(), lo1.clone(), lo2.clone(), hi1.clone(), hi2.clone(), stranger.clone()];
+    let p = pool.clone();
+    with_cleanup(&pool, ids, async move {
+        // me is the high side of lo1/lo2 and the low side of hi1/hi2.
+        let acc_old = insert_edge_raw(&p, &me, &lo1, &lo1, STATE_ACCEPTED).await;
+        let acc_new = insert_edge_raw(&p, &me, &hi1, &me, STATE_ACCEPTED).await;
+        let out = insert_edge_raw(&p, &me, &hi2, &me, STATE_PENDING).await;
+        let inc = insert_edge_raw(&p, &me, &lo2, &lo2, STATE_PENDING).await;
+        insert_edge_raw(&p, &lo1, &stranger, &stranger, STATE_ACCEPTED).await;
+        // acc_old was requested last but accepted first: Since is its accept day, the order its
+        // request time.
+        set_edge_times(&p, &acc_old, "2026-03-10T12:00:00Z", Some("2026-03-11T12:00:00Z")).await;
+        set_edge_times(&p, &acc_new, "2026-03-01T12:00:00Z", Some("2026-03-20T23:30:00Z")).await;
+        set_edge_times(&p, &out, "2026-02-05T12:00:00Z", None).await;
+        set_edge_times(&p, &inc, "2026-02-07T12:00:00Z", None).await;
+
+        let admin = admin::FriendsAdmin::new(svc.clone());
+        let body = admin.panel(admin_query(admin::FRIENDS, &me, None)).await.unwrap();
+        let t = admin_table(&body);
+        assert_eq!(admin_row_ids(t), [acc_old.clone(), acc_new.clone(), inc.clone(), out.clone()]);
+        let drawn: Vec<(&str, &str, &str)> = t
+            .rows
+            .iter()
+            .map(|r| (r.cells[0].value.as_str(), r.cells[1].value.as_str(), r.cells[2].value.as_str()))
+            .collect();
+        assert_eq!(
+            drawn,
+            [
+                (lo1.as_str(), "accepted", "2026-03-11"),
+                (hi1.as_str(), "accepted", "2026-03-20"),
+                (lo2.as_str(), "pending (incoming)", "2026-02-07"),
+                (hi2.as_str(), "pending (outgoing)", "2026-02-05"),
+            ]
+        );
+        for r in &t.rows {
+            let user = &r.cells[0];
+            assert_eq!(user.link, Some(Link::Entity(EntityRef { kind: "player".into(), id: user.value.clone() })));
+            assert_eq!(user.label, None, "a cell holds a link or a label, never both");
+            assert_eq!(r.entity.as_ref().unwrap().kind, admin::FRIENDSHIP_KIND);
+        }
+        assert_eq!(body.meta.as_deref(), Some("4 · 2 pending"));
+        assert_eq!(t.page.total, Some(4));
+        assert!(t.page.next_cursor.is_none());
+
+        let count = admin.panel(admin_query(admin::TAB_COUNT, &me, None)).await.unwrap();
+        match count.primitive {
+            Primitive::Cell(c) => assert_eq!(c.value, "4"),
+            other => panic!("the tab count is a Cell, got {other:?}"),
+        }
+        let bad = admin.panel(admin_query(admin::FRIENDS, "not-a-uuid", None)).await.unwrap_err();
+        assert_eq!(bad.status, Status::Invalid);
+    })
+    .await;
+}
+
+/// 27 relations, 20 accepted and 7 pending, alternating sides of the pair: the first page
+/// draws 25 (every accepted one, then 5 pending), its cursor is its last row, and the second
+/// page draws the remaining 2 with no cursor; the pages concatenate to every row once in
+/// order.
+#[tokio::test]
+async fn admin_friends_tab_pages_past_the_page_size_across_the_state_boundary() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    let me = fixed_uuid(0x80);
+    let others: Vec<String> = (0..27).map(|i| fixed_uuid(if i % 2 == 0 { 0x10 } else { 0xf0 })).collect();
+    let ids: Vec<String> = others.iter().cloned().chain([me.clone()]).collect();
+    let p = pool.clone();
+    with_cleanup(&pool, ids, async move {
+        let (mut accepted, mut pending) = (Vec::new(), Vec::new());
+        for (i, other) in others.iter().enumerate() {
+            let state = if i < 20 { STATE_ACCEPTED } else { STATE_PENDING };
+            let edge = insert_edge_raw(&p, &me, other, &me, state).await;
+            let created = format!("2026-01-01T00:{:02}:00Z", i);
+            let accepted_at = (state == STATE_ACCEPTED).then_some("2026-06-01T00:00:00Z");
+            set_edge_times(&p, &edge, &created, accepted_at).await;
+            if state == STATE_ACCEPTED { accepted.push(edge) } else { pending.push(edge) }
+        }
+        accepted.reverse();
+        pending.reverse();
+        let want = [accepted, pending].concat();
+
+        let admin = admin::FriendsAdmin::new(svc.clone());
+        let first = admin.panel(admin_query(admin::FRIENDS, &me, None)).await.unwrap();
+        let t = admin_table(&first);
+        let page1 = admin_row_ids(t);
+        assert_eq!(page1.len(), crate::store::ADMIN_PAGE_SIZE);
+        assert_eq!(t.page.total, Some(27));
+        let cursor = t.page.next_cursor.clone().expect("a full page has a cursor");
+        assert!(cursor.ends_with(&page1[crate::store::ADMIN_PAGE_SIZE - 1]), "the cursor is the last drawn row");
+
+        let second = admin.panel(admin_query(admin::FRIENDS, &me, Some(&cursor))).await.unwrap();
+        let t = admin_table(&second);
+        let page2 = admin_row_ids(t);
+        assert_eq!(page2.len(), 2);
+        assert!(t.page.next_cursor.is_none(), "the last page has no cursor");
+        assert_eq!([page1, page2].concat(), want, "the pages concatenate to every row once, in order");
+        assert_eq!(second.meta.as_deref(), Some("27 · 7 pending"));
+    })
+    .await;
+}
+
+/// Six relations sharing ONE `created_at`, three per state, on both sides of the pair, read
+/// two at a time: within a state the tie breaks on id descending, and a cursor on the last
+/// accepted row continues into the pending rows, not past them or back into accepted.
+#[tokio::test]
+async fn admin_page_keyset_breaks_ties_on_id_and_crosses_the_state_boundary() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    let me = fixed_uuid(0x80);
+    let others: Vec<String> = [0x10, 0xf0, 0x20, 0xe0, 0x30, 0xd0].into_iter().map(fixed_uuid).collect();
+    let ids: Vec<String> = others.iter().cloned().chain([me.clone()]).collect();
+    let p = pool.clone();
+    with_cleanup(&pool, ids, async move {
+        let (mut accepted, mut pending) = (Vec::new(), Vec::new());
+        for (i, other) in others.iter().enumerate() {
+            let state = if i % 2 == 0 { STATE_ACCEPTED } else { STATE_PENDING };
+            let requester = if i < 3 { &me } else { other };
+            let edge = insert_edge_raw(&p, &me, other, requester, state).await;
+            set_edge_times(&p, &edge, "2026-01-01T00:00:00Z", (state == STATE_ACCEPTED).then_some("2026-01-02T00:00:00Z"))
+                .await;
+            if state == STATE_ACCEPTED { accepted.push(edge) } else { pending.push(edge) }
+        }
+        accepted.sort();
+        accepted.reverse();
+        pending.sort();
+        pending.reverse();
+        let want = [accepted, pending].concat();
+
+        let mut after: Option<crate::store::AdminCursor> = None;
+        let mut observed = Vec::new();
+        for _ in 0..4 {
+            let rows = svc.store.admin_page(&me, after.as_ref(), 2).await.unwrap();
+            if rows.is_empty() {
+                break;
+            }
+            observed.extend(rows.iter().map(|r| r.key.edge_id.clone()));
+            after = rows.last().map(|r| r.key.clone());
+        }
+        assert_eq!(observed, want);
+    })
+    .await;
+}

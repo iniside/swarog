@@ -23,14 +23,25 @@ pub(crate) struct EdgeRow {
     pub(crate) requester_is_caller: bool,
 }
 
-/// One relation as the ADMIN sees it: the pair spelled requester-then-addressee, with no
-/// caller to be relative to.
-pub(crate) struct AdminEdgeRow {
-    pub(crate) edge_id: String,
-    pub(crate) requester_id: String,
-    pub(crate) addressee_id: String,
+/// The admin Friends tab's page size, as inventory's.
+pub(crate) const ADMIN_PAGE_SIZE: usize = 25;
+
+/// A relation's position in the Friends tab's order, and its keyset cursor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AdminCursor {
     pub(crate) state: String,
     pub(crate) created_at: String,
+    pub(crate) edge_id: String,
+}
+
+/// One relation as the admin's Friends tab lists it for the viewed player: `other_id` and
+/// `requester_is_player` are decided in SQL against that player.
+pub(crate) struct AdminEdge {
+    pub(crate) key: AdminCursor,
+    pub(crate) other_id: String,
+    pub(crate) requester_is_player: bool,
+    /// `YYYY-MM-DD`.
+    pub(crate) since: String,
 }
 
 pub(crate) struct PairRow {
@@ -430,30 +441,25 @@ impl Store {
         }
     }
 
-    /// The admin page's three counts in ONE statement: three separate `count(*)`s would
-    /// report a total no single instant of the table ever had. `player_id` scopes every
-    /// count to the relations that player is party to.
+    /// The Friends tab's counts in ONE statement: separate `count(*)`s would report a total
+    /// no single instant of the table ever had.
     pub(crate) async fn admin_counts(
         &self,
-        player_id: Option<&str>,
+        player_id: &str,
         pending: &str,
         accepted: &str,
     ) -> Result<(i64, i64, i64), sqlx::Error> {
-        let sql = format!(
+        let res = sqlx::query_as::<_, (i64, i64, i64)>(
             "SELECT count(*), \
                     count(*) FILTER (WHERE state = $1), \
                     count(*) FILTER (WHERE state = $2) \
-               FROM friends.edges{}",
-            match player_id {
-                Some(_) => " WHERE $3::uuid IN (low_id, high_id)",
-                None => "",
-            }
-        );
-        let q = sqlx::query_as::<_, (i64, i64, i64)>(&sql).bind(pending).bind(accepted);
-        let res = match player_id {
-            Some(id) => q.bind(id).fetch_one(&self.pool).await,
-            None => q.fetch_one(&self.pool).await,
-        };
+               FROM friends.edges WHERE $3::uuid IN (low_id, high_id)",
+        )
+        .bind(pending)
+        .bind(accepted)
+        .bind(player_id)
+        .fetch_one(&self.pool)
+        .await;
         match res {
             Ok(counts) => Ok(counts),
             Err(e) if is_invalid_uuid(&e) => Ok((0, 0, 0)),
@@ -461,30 +467,37 @@ impl Store {
         }
     }
 
-    /// The newest relations, either across the table or scoped to one player. Unlike
-    /// [`Store::page`] this is NOT caller-relative: the admin sees the pair as the database
-    /// holds it, requester first, so a row means the same thing whichever player it lists.
-    pub(crate) async fn admin_recent(
+    /// One keyset page of every relation `player_id` is party to, both states: accepted
+    /// before pending, newest first within a state. Two side branches, each with its own
+    /// `LIMIT`, for the reason [`Store::page`] gives; the side indexes lead with `state`,
+    /// so each branch reads in index order.
+    pub(crate) async fn admin_page(
         &self,
-        player_id: Option<&str>,
+        player_id: &str,
+        after: Option<&AdminCursor>,
         limit: i64,
-    ) -> Result<Vec<AdminEdgeRow>, sqlx::Error> {
-        let sql = format!(
-            "SELECT id::text, requester_id::text, \
-                    CASE WHEN low_id = requester_id THEN high_id ELSE low_id END::text, \
-                    state, {CREATED_TEXT} \
-               FROM friends.edges{} \
-              ORDER BY created_at DESC, id DESC LIMIT $1",
-            match player_id {
-                Some(_) => " WHERE $2::uuid IN (low_id, high_id)",
-                None => "",
+    ) -> Result<Vec<AdminEdge>, sqlx::Error> {
+        let res = match after {
+            Some(c) => {
+                // State ascends while time descends, so the cut is not one row comparison.
+                let cut = "AND state >= $2 \
+                           AND (state > $2 OR (created_at, id) < ($3::timestamptz, $4::uuid))";
+                sqlx::query_as::<_, AdminEdgeTuple>(&admin_page_sql(cut, "$5"))
+                    .bind(player_id)
+                    .bind(&c.state)
+                    .bind(&c.created_at)
+                    .bind(&c.edge_id)
+                    .bind(limit)
+                    .fetch_all(&self.pool)
+                    .await
             }
-        );
-        let q =
-            sqlx::query_as::<_, (String, String, String, String, String)>(&sql).bind(limit);
-        let res = match player_id {
-            Some(id) => q.bind(id).fetch_all(&self.pool).await,
-            None => q.fetch_all(&self.pool).await,
+            None => {
+                sqlx::query_as::<_, AdminEdgeTuple>(&admin_page_sql("", "$2"))
+                    .bind(player_id)
+                    .bind(limit)
+                    .fetch_all(&self.pool)
+                    .await
+            }
         };
         match res {
             Ok(rows) => Ok(rows.into_iter().map(row_to_admin_edge).collect()),
@@ -494,14 +507,15 @@ impl Store {
     }
 }
 
-fn row_to_admin_edge(row: (String, String, String, String, String)) -> AdminEdgeRow {
-    let (edge_id, requester_id, addressee_id, state, created_at) = row;
-    AdminEdgeRow {
-        edge_id,
-        requester_id,
-        addressee_id,
-        state,
-        created_at,
+type AdminEdgeTuple = (String, String, String, String, bool, Option<String>);
+
+fn row_to_admin_edge(row: AdminEdgeTuple) -> AdminEdge {
+    let (edge_id, other_id, state, created_at, requester_is_player, since) = row;
+    AdminEdge {
+        key: AdminCursor { state, created_at, edge_id },
+        other_id,
+        requester_is_player,
+        since: since.unwrap_or_default(),
     }
 }
 
@@ -537,5 +551,30 @@ fn side_sql(me_col: &str, other_col: &str, cut: &str, state: &str, limit: &str) 
             FROM friends.edges \
            WHERE {me_col} = $1::uuid AND state = {state} {cut} \
            ORDER BY created_at DESC, id DESC LIMIT {limit})"
+    )
+}
+
+/// The outer ORDER BY reads the raw `created_at`/`id`, as [`page_sql`] does.
+fn admin_page_sql(cut: &str, limit: &str) -> String {
+    let low = admin_side_sql("low_id", "high_id", cut, limit);
+    let high = admin_side_sql("high_id", "low_id", cut, limit);
+    format!(
+        "SELECT edge_id, other_id, state, created_text, mine, since FROM ( \
+           {low} UNION ALL {high} \
+         ) t ORDER BY state, sort_at DESC, sort_id DESC LIMIT {limit}"
+    )
+}
+
+/// Since is the day the relation was accepted, or requested while it is pending, in UTC.
+fn admin_side_sql(me_col: &str, other_col: &str, cut: &str, limit: &str) -> String {
+    format!(
+        "(SELECT id::text AS edge_id, {other_col}::text AS other_id, state, \
+                 {CREATED_TEXT} AS created_text, (requester_id = $1::uuid) AS mine, \
+                 to_char(CASE WHEN state = 'accepted' THEN accepted_at ELSE created_at END \
+                         AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS since, \
+                 created_at AS sort_at, id AS sort_id \
+            FROM friends.edges \
+           WHERE {me_col} = $1::uuid {cut} \
+           ORDER BY state, created_at DESC, id DESC LIMIT {limit})"
     )
 }

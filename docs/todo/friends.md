@@ -1,18 +1,10 @@
 # Friends
 
-Last updated: 2026-11-17
+Last updated: 2026-11-22
 
 ## In progress
 
 _None._
-
-## Owner checks
-
-- [ ] **Friends admin page against a live render**
-  FRIENDS-04. Boot a monolith (`devctl up monolith`) and compare `/admin/friends`
-  with the mockup; the templates are `include_str!` embedded and no fleet was
-  booted while the page was written
-  (docs/plans/2026-09-05-1921-friends-module-plan.md:609, 2026-09-05).
 
 ## Open
 
@@ -38,13 +30,13 @@ _None._
   (`api/party/api/src/lib.rs:134-139`, `modules/party/src/service.rs:175-181`), a known
   one 201. Closing it changes the player-API contract of both modules and needs its
   own plan; closing friends alone buys nothing.
-- [ ] **admin_recent ordering on the text-cast id**
-  FRIENDS-06. The select list projects `id::text`, so the unqualified
-  `ORDER BY created_at DESC, id DESC` tie-break resolves to the output column
-  and sorts as text (`modules/friends/src/store.rs:461`, 2026-09-05; read at
-  HEAD; docs/roadmap/feature-tracker.md:258 @ fd797b3a).
 - [ ] **Test for the raced retry branch of request**
   FRIENDS-07. The branch needs two concurrent sessions interleaved between
   `insert_pending_tx` and `find_pair_tx`, and production exposes no hook to do
   that (`modules/friends/src/tests.rs:1066-1074`, 2026-09-05; comment read at
   HEAD).
+- [ ] **Admin removal of a friendship**
+  FRIENDS-08. The player's Friends tab draws the friendship row-menu "Remove friend…"
+  disabled (`implemented: false`, `modules/friends/src/admin.rs:243-257`): `api/friends`
+  has no admin write, only the identity-bound `Player::remove`. Needs an operator removal
+  of an edge by its id inside friends that emits `friend.removed` as the player path does.

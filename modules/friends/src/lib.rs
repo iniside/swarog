@@ -11,6 +11,7 @@
 //! The domain write and its durable event append commit in ONE transaction — the event is
 //! durable iff the relation change is.
 
+mod admin;
 pub mod conformance;
 mod projection;
 mod service;
@@ -169,6 +170,10 @@ impl Module for Friends {
         );
 
         ctx.contribute(opsapi::DESCRIBE_SLOT, friendsrpc::player_rpc::describe());
+
+        // Contributed unconditionally: whichever process hosts friends serves its admin panels.
+        let provider: Arc<dyn controlplane::Provider> = Arc::new(admin::FriendsAdmin::new(self.svc()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
 
         // The purge tombstone, planted on the HANDED delivery conn so it commits with the
         // subscription checkpoint, and does no other work: nothing bounds a player's

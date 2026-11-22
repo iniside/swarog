@@ -40,6 +40,8 @@ tracing = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The control-plane contract: `admin.rs` provides the player's Friends tab.
+controlplane = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }
