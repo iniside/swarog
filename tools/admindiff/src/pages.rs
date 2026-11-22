@@ -388,7 +388,7 @@ pub const EXCLUDED_MENUS: &[(&str, &str, &str)] = &[
         "the mockup draws no subscription menu: its events row button only toasts (pages-platform.js P.events)",
     ),
     ("player.inventory", "holding", "the mockup's inventory row button has no handler (pages-core.js:133)"),
-    ("player.friends", "friendship", "the mockup's friends row button has no handler (pages-core.js)"),
+    ("player.friends", "friendship", "the mockup's friends row button has no handler (pages-core.js:135)"),
 ];
 
 /// Modal actions the portal draws on a compared page or tab, or in a menu target's or excluded
