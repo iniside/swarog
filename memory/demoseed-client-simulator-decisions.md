@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 7420721d-9d24-4215-a860-f8978a9d6d23
-  modified: 2026-11-22T17:18:48.753Z
+  modified: 2026-11-22T18:32:48.070Z
 ---
 
 Owner decisions (2026-11-22) for widening demoseed into a client simulator that both seeds and tests the backend through the gateway's public API:
@@ -21,5 +21,5 @@ Owner decisions (2026-11-22) for widening demoseed into a client simulator that 
 **Why:** owner: "zeby demo seed byl w stanie robic takie requesty do kazdego modulu tak jak robiloby to klient, dzieki temu bedziemy mogli caly backend przetestowac i jednoczesnie zaseedowac".
 **How to apply:** keep public-API-only ([[demoseed-is-the-one-seeder]]); do not add split runs or a verify stage without asking.
 
-## State 2026-11-22
-Steps 1-4 landed and reviewed (last 83a1362d). Open: owner decision on split crawl seeding (Step 4 review finding 2: SKILL.md split crawl lost its demoseed line); then Step 5 owner live run twice (monolith).
+## State 2026-11-22 (plan done)
+All steps landed; owner live run: 2 plain runs + --matches 0, all exit 0. Owner deferred accept-entry cleanup and split seeding (docs/todo/demoseed.md Known limits, 2a317610). Owner's goal for the run was just filling the DB.
