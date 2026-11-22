@@ -33,6 +33,16 @@ _None._
   admin control-plane redesign (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md,
   step 21).
 
+### Known limits (admin-control-plane-redesign step 19)
+
+- [ ] **The harness can overflow the main thread's stack**
+  `runtime.block_on(run(root, run_dir))` (`tools/splitproof/src/main.rs:701`) polls the
+  whole check future on the main thread (1 MB on Windows); in one Step 19 run it failed
+  with "thread 'main' has overflowed its stack". 360cb180 boxed the storage admin call
+  sites as a workaround; the next group of inline checks can hit it again. A fix runs
+  `run` on a thread with a larger stack or boxes the check groups. Owner 2026-11-22:
+  deferred.
+
 ### Known limits (admin-control-plane-redesign step 16)
 
 - [ ] **A check id shared by two names is refused only when both run**

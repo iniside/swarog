@@ -22,3 +22,12 @@ _None._
   insert (`modules/storage/src/service.rs:265-272`, comment states it);
   positive-version updates stay available
   (docs/roadmap/feature-tracker.md:320 @ fd797b3a, 2026-09-17; read at HEAD).
+
+### Known limits (admin-control-plane-redesign step 19)
+
+- [ ] **The Cloud saves tab meta re-sums the owner's objects on every open**
+  `Store::admin_owner_totals` (`modules/storage/src/store.rs:533`) counts and sums
+  `octet_length(value::text)` over every object the owner holds, up to
+  `storageapi::MAX_OBJECTS_PER_OWNER` (10,000), detoasting each value, on each tab load
+  (`modules/storage/src/admin.rs:62`); nothing caches it and no counter holds a per-owner
+  total. Owner 2026-11-22: deferred.
