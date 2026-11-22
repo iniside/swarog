@@ -106,14 +106,15 @@ _None._
   (on the economy page only by position). The Lore lines in the 9 sidebar accept files blame
   "no Lore module", not the `.down` demo state. Which section a leftover entry counts in
   depends on that pairing. A counted line keeps each section's count (`mock-only ×{4,3}
-  a.nav-item#ecbb9a` on the economy page), so it changes when a section's count changes, except
-  when the counts before and after the change are both still given by other sections: a section
-  going from c to c+1 while the others already give c and c+1, e.g. (4,3,3) to (4,4,3), keeps
-  the line and the new leftover stays hidden (it needs three or more parents; the limit is
-  stated in the `admindiff` usage text). The `mock-only a.nav-item#848c49` line has two
-  parents on every page but mail, so it is not that case: Lore's Locks and Platform's Mail
-  outbox each leave one, and if either goes the line loses a parent and its accept entry
-  turns stale.
+  a.nav-item#ecbb9a` on the economy page) as the set of distinct per-parent counts
+  (`tools/admindiff/src/skeleton.rs:416-422`), so it changes only when that set changes. A
+  change that leaves the set as it was is hidden and its accept entry does not see it: with two
+  parents (1,1) to (1,0) and (2,2) to (2,1), (4,3,3) to (4,4,3), and a parent dropping out,
+  (4,3,3) to (4,3). The `mock-only a.nav-item#848c49` line has two parents on every page but
+  mail, each giving 1 (Lore's Locks, Platform's Mail outbox), so it is a live instance of the
+  limit: with parents (1,1), losing Locks or Mail outbox leaves the set {1} and the line
+  byte-identical, and its accept entry stays green. The limit is stated in the `admindiff`
+  usage text.
 - [ ] **The Economy Ledger table is never compared with the mockup**
   A fresh fleet has no wallet movements (the starter grant is off and demoseed grants none), so
   `tools/admindiff/accept/economy.txt` accepts the empty-state body and the diff never sees the
