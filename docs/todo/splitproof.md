@@ -46,6 +46,9 @@ _None._
   in the handle, so `XLedger#1812` passes; the panel state is the first `data-state` in the
   panel, not the panel root's. Its unit test copies the user-cell markup by hand instead of
   rendering it through core admin, and no live run proves the uuid fallback with accounts-svc down.
+  The friends tab checks `[FA1]`/`[FA2]` (`tools/splitproof/src/friends_admin_checks.rs`) share
+  this gap: their recorded break removed admin-svc's `friends` peer, never its `accounts` peer
+  (owner 2026-11-22: deferred, one extra full run).
 - [ ] **Panel checks import their HTML helpers from the characters checks**
   `wallet_ledger_checks.rs` uses `attr`, `text`, `table` and `cut` from
   `characters_admin_checks.rs`; a neutral helper module would keep each panel check
