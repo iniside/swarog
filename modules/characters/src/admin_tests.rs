@@ -217,8 +217,8 @@ fn manifest_declares_the_tab_fact_count_and_list_column_and_no_write() {
     );
     assert!(matches!(
         &m.contributions[0].point,
-        Point::EntityTab { kind, tab, tab_label, columns: 1 }
-            if kind == "player" && tab == "characters" && tab_label == "Characters"
+        Point::EntityTab { kind, tab, tab_label, columns: 1, params }
+            if kind == "player" && tab == "characters" && tab_label == "Characters" && params.is_empty()
     ));
     assert!(matches!(&m.contributions[1].point, Point::EntitySummary(kind) if kind == "player"));
     assert!(matches!(

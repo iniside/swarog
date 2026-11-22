@@ -2173,8 +2173,8 @@ async fn a_two_column_entity_tab_draws_a_grid() {
     let user = uniq("t-tab-grid");
     let cookie = operator_cookie(&pool, &user).await;
     let tab = |id: &str, columns: u8| {
-        let point =
-            Point::EntityTab { kind: "player".to_string(), tab: id.to_string(), tab_label: id.to_string(), columns };
+        let (kind, tab, tab_label, params) = ("player".to_string(), id.to_string(), id.to_string(), Vec::new());
+        let point = Point::EntityTab { kind, tab, tab_label, columns, params };
         contribution(id, point, Role::Viewer)
     };
     let kind = EntityKindDecl { kind: "player".to_string(), label: "Player".to_string(), icon: String::new() };
@@ -2367,7 +2367,7 @@ fn flaky(modules: Vec<Arc<Recording>>) -> Arc<Flaky> {
 
 fn player_tab(id: &str, tab: &str) -> ContributionDecl {
     let (kind, tab, tab_label) = ("player".to_string(), tab.to_string(), tab.to_string());
-    contribution(id, Point::EntityTab { kind, tab, tab_label, columns: 1 }, Role::Viewer)
+    contribution(id, Point::EntityTab { kind, tab, tab_label, columns: 1, params: Vec::new() }, Role::Viewer)
 }
 
 /// `module` declaring the `player` entity kind.
@@ -2887,6 +2887,47 @@ async fn only_declared_page_params_reach_the_panel_query() {
     let shard = BTreeMap::from([("shard".to_string(), "s1".to_string())]);
     assert_eq!(req.params, shard, "a tile gets its own page's keys and not another page's");
     assert_eq!(req.range, Some(controlplane::TimeRange::D7), "the range reaches the typed field");
+
+    cleanup_user(&pool, &user).await;
+}
+
+/// An entity tab sits on no page, so the keys its `Point::EntityTab::params` declare are the
+/// only ones its panel route forwards; another tab's declared key does not reach it.
+#[tokio::test(flavor = "multi_thread")]
+async fn only_an_entity_tabs_declared_params_reach_its_panel_query() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-tab-params");
+    let cookie = operator_cookie(&pool, &user).await;
+    let tab = |id: &str, params: &[&str]| {
+        let (kind, tab, tab_label) = ("player".to_string(), id.to_string(), id.to_string());
+        let params = params.iter().map(|k| k.to_string()).collect();
+        contribution(id, Point::EntityTab { kind, tab, tab_label, columns: 1, params }, Role::Viewer)
+    };
+    let contributions = vec![tab("items", &["owner"]), tab("plain", &[])];
+    let manifest = module("inventory", contributions, Vec::new(), false);
+    let table = || answer(players_table(vec![table_row(None, "Anna")]));
+    let recording = Recording::new(manifest, &[("items", table()), ("plain", table())]);
+    let engine = Arc::new(sourced(vec![recording.clone() as Arc<dyn controlplane::Provider>]).await);
+
+    let uri = "/admin/_panel/inventory/items?entity=player%3Ap1&owner=c1&type=sword&q=ann";
+    let (status, raw) = portal_get(&engine, &st, &cookie, uri).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let calls = recording.calls();
+    let req = calls.last().expect("the tab panel reaches its provider");
+    assert_eq!(req.contribution, "items");
+    let owner = BTreeMap::from([("owner".to_string(), "c1".to_string())]);
+    assert_eq!(req.params, owner, "the tab's declared key reaches PanelQuery.params, an undeclared one does not");
+    assert_eq!(req.search.as_deref(), Some("ann"), "the typed keys keep their fields");
+    assert!(!raw.contains("sword"), "an undeclared key stays out of the panel's URLs: {raw}");
+
+    let uri = "/admin/_panel/inventory/plain?entity=player%3Ap1&owner=c1";
+    let (status, raw) = portal_get(&engine, &st, &cookie, uri).await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let calls = recording.calls();
+    let req = calls.last().expect("the tab panel reaches its provider");
+    assert_eq!(req.contribution, "plain");
+    assert!(req.params.is_empty(), "another tab's declared key does not reach this tab: {:?}", req.params);
 
     cleanup_user(&pool, &user).await;
 }

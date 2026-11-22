@@ -610,6 +610,7 @@ pub controlplane::Point::EntitySummary(alloc::string::String)
 pub controlplane::Point::EntityTab
 pub controlplane::Point::EntityTab::columns: u8
 pub controlplane::Point::EntityTab::kind: alloc::string::String
+pub controlplane::Point::EntityTab::params: alloc::vec::Vec<alloc::string::String>
 pub controlplane::Point::EntityTab::tab: alloc::string::String
 pub controlplane::Point::EntityTab::tab_label: alloc::string::String
 pub controlplane::Point::EntityTabCount

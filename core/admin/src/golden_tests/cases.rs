@@ -1085,6 +1085,7 @@ pub(super) fn cases(env: &Environment<'_>) -> Vec<Case> {
         tab: "items".to_string(),
         tab_label: "Items".to_string(),
         columns: 1,
+        params: Vec::new(),
     };
     push!(plain("slot_every_point", {
         let points = [

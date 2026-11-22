@@ -316,7 +316,8 @@ fn manifest_declares_the_tab_at_30_its_tiles_the_fact_at_50_and_the_economy_pane
     assert_eq!(page.params, ["currency", "reason"], "the Ledger's selects reach it as params");
     assert!(matches!(
         &m.contributions[0].point,
-        Point::EntityTab { kind, tab, tab_label, columns: 1 } if kind == "player" && tab == "wallet" && tab_label == "Wallet"
+        Point::EntityTab { kind, tab, tab_label, columns: 1, params }
+            if kind == "player" && tab == "wallet" && tab_label == "Wallet" && params.is_empty()
     ));
     assert!(matches!(
         &m.contributions[1].point,

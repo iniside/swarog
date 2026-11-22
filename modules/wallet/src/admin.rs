@@ -878,6 +878,7 @@ pub(crate) fn manifest(headline: &str) -> Manifest {
         tab: TAB.to_string(),
         tab_label: "Wallet".to_string(),
         columns: 1,
+        params: Vec::new(),
     };
     let tiles = Point::EntityTabTile {
         kind: KIND.to_string(),

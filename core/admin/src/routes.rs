@@ -638,13 +638,20 @@ async fn entity(
     screen(&p, "entity", &view)
 }
 
-/// The `PageDecl::params` of every page of `manifest` that places `contribution`.
-fn page_params<'m>(manifest: &'m Manifest, contribution: &str) -> BTreeSet<&'m str> {
+/// The URL keys `decl` receives as `PanelQuery::params`: the `PageDecl::params` of every
+/// page of `manifest` that places it, and the `params` it declares as an `EntityTab`.
+fn declared_params<'m>(manifest: &'m Manifest, decl: &'m ContributionDecl) -> BTreeSet<&'m str> {
+    let tab: &[String] = match &decl.point {
+        Point::EntityTab { params, .. } => params,
+        _ => &[],
+    };
     manifest
         .pages
         .iter()
-        .filter(|pg| pg.tiles.iter().chain(pg.layout.ids()).any(|id| id == contribution))
-        .flat_map(|pg| pg.params.iter().map(String::as_str))
+        .filter(|pg| pg.tiles.iter().chain(pg.layout.ids()).any(|id| *id == decl.id))
+        .flat_map(|pg| pg.params.iter())
+        .chain(tab)
+        .map(String::as_str)
         .collect()
 }
 
@@ -688,7 +695,7 @@ async fn panel(
     let cursor = query.remove(render::QUERY_CURSOR);
     let before = query.remove(render::QUERY_BEFORE);
     let queue_state = query.remove(render::QUERY_STATE);
-    let declared = page_params(manifest, &contribution);
+    let declared = declared_params(manifest, decl);
     query.retain(|key, _| declared.contains(key.as_str()));
     let mut kept = query.clone();
     let typed = [

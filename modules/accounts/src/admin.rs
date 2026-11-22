@@ -314,6 +314,7 @@ fn tab(id: &str, order: i32, title: &str) -> ContributionDecl {
         tab: TAB.to_string(),
         tab_label: "Profile & identities".to_string(),
         columns: 2,
+        params: Vec::new(),
     };
     contribution(id, point, order, title, "", None)
 }

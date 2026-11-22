@@ -592,7 +592,8 @@ pub struct PageDecl {
     pub tiles: Vec<String>,
     pub layout: Layout,
     /// The page URL keys the portal forwards to the page's panels as `PanelQuery::params`;
-    /// a key no page laying out the contribution names never reaches its provider.
+    /// a key neither a page laying out the contribution nor its `Point::EntityTab::params`
+    /// names never reaches its provider.
     pub params: Vec<String>,
 }
 
@@ -654,8 +655,10 @@ variants! {
         DashboardWide,
         EntityHeader(String),
         /// `columns` 2 lays the tab's panels out in two columns; the portal reads it from the
-        /// tab's first contribution by `order`.
-        EntityTab { kind: String, tab: String, tab_label: String, columns: u8 },
+        /// tab's first contribution by `order`. `params` are the URL keys the portal forwards
+        /// to this contribution as `PanelQuery::params`, as a page's `PageDecl::params` do
+        /// for the panels it lays out; any other key is dropped.
+        EntityTab { kind: String, tab: String, tab_label: String, columns: u8, params: Vec<String> },
         EntityTabCount { kind: String, tab: String },
         /// A KPI tile in one row above the tab's panels.
         EntityTabTile { kind: String, tab: String },
@@ -1591,7 +1594,7 @@ mod tests {
             Point::DashboardPanel,
             Point::DashboardWide,
             Point::EntityHeader(s()),
-            Point::EntityTab { kind: s(), tab: s(), tab_label: s(), columns: 2 },
+            Point::EntityTab { kind: s(), tab: s(), tab_label: s(), columns: 2, params: Vec::new() },
             Point::EntityTabCount { kind: s(), tab: s() },
             Point::EntityTabTile { kind: s(), tab: s() },
             Point::EntitySummary(s()),
@@ -1700,5 +1703,37 @@ mod tests {
             assert_eq!(m.write_refusal(id), Some(WriteRefusal { readonly: None }), "{id}");
         }
         assert_eq!(m.write_refusal("open"), None);
+    }
+
+    /// A remote module's manifest crosses the wire as JSON, so a tab's declared keys must
+    /// arrive with it for the portal to forward them.
+    #[test]
+    fn an_entity_tabs_params_survive_the_manifest_wire() {
+        let point = Point::EntityTab {
+            kind: "player".into(),
+            tab: "inventory".into(),
+            tab_label: "Inventory".into(),
+            columns: 1,
+            params: vec!["owner".into(), "type".into()],
+        };
+        let tab = ContributionDecl {
+            id: "items".into(),
+            point,
+            order: 40,
+            title: String::new(),
+            icon: String::new(),
+            min_role: Role::Viewer,
+            cache_ttl_s: None,
+            deadline_ms: 0,
+            readonly: None,
+        };
+        let m = Manifest { module: "inventory".into(), contributions: vec![tab], ..Manifest::default() };
+        let wire = serde_json::to_string(&m).expect("a manifest encodes");
+        let back: Manifest = serde_json::from_str(&wire).expect("a manifest decodes");
+        assert_eq!(back, m);
+        assert!(matches!(
+            &back.contributions[0].point,
+            Point::EntityTab { params, .. } if params == &["owner", "type"]
+        ));
     }
 }

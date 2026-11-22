@@ -259,6 +259,7 @@ pub(crate) fn manifest() -> Manifest {
         tab: TAB.to_string(),
         tab_label: "Characters".to_string(),
         columns: 1,
+        params: Vec::new(),
     };
     let tab_count = Point::EntityTabCount {
         kind: KIND.to_string(),

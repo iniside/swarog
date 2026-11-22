@@ -185,7 +185,10 @@ fn an_id_in_the_tiles_and_in_a_nested_row_is_refused() {
 
 #[test]
 fn a_tab_count_or_tile_must_name_a_declared_tab_of_its_kind() {
-    let tab = |id: &str| Point::EntityTab { kind: "message".into(), tab: id.into(), tab_label: id.into(), columns: 1 };
+    let tab = |id: &str| {
+        let (kind, tab, tab_label) = ("message".into(), id.into(), id.into());
+        Point::EntityTab { kind, tab, tab_label, columns: 1, params: Vec::new() }
+    };
     let mut m = manifest(ActionPoint::PageHead(PAGE.into()));
     m.contributions.extend([
         contribution("body", tab("body")),

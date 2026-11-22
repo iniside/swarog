@@ -302,6 +302,7 @@ fn manifest() -> Manifest {
                     tab: "details".to_string(),
                     tab_label: "Details".to_string(),
                     columns: 1,
+                    params: Vec::new(),
                 },
                 0,
                 "Delivery state",
