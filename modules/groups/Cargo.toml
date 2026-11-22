@@ -38,6 +38,8 @@ serde_json = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+# The control-plane contract: `admin.rs` provides the player's Groups tab and the group page.
+controlplane = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }

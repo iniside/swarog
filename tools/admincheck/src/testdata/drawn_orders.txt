@@ -12,6 +12,7 @@ dashboard_attention | characters | attention.purges | 61
 dashboard_attention | wallet | attention.purges | 62
 dashboard_attention | inventory | attention.purges | 63
 dashboard_attention | friends | attention.purges | 64
+dashboard_attention | groups | attention.purges | 65
 dashboard_tile | accounts | tile.active | 10
 dashboard_tile | portal | tile.lore-seats | 20
 dashboard_tile | portal | tile.lore-store | 30
@@ -20,6 +21,7 @@ dashboard_tile | core.events | tile.paused | 60
 dashboard_tile | wallet | tile.spent | 70
 dashboard_tile | portal | tile.matches | 80
 dashboard_wide | portal | health | 100
+entity_header group | groups | group.header | 0
 entity_header player | accounts | header | 0
 entity_header subscription | core.events | subscription.header | 0
 entity_list_column player | characters | column.count | 10
@@ -35,9 +37,11 @@ entity_tab player | wallet | wallet | 30
 entity_tab player | accounts | sessions | 40
 entity_tab player | inventory | inventory | 40
 entity_tab player | friends | friends | 50
+entity_tab player | groups | groups | 60
 entity_tab subscription | core.events | subscription.details | 0
 entity_tab_count player/characters | characters | tab.count | 0
 entity_tab_count player/friends | friends | tab.count | 0
+entity_tab_count player/groups | groups | tab.count | 0
 entity_tab_count player/inventory | inventory | tab.count | 0
 entity_tab_tile player/wallet | wallet | wallet.tiles | 0
 header_action player | accounts | suspend-header | 30

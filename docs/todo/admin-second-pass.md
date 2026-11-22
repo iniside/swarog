@@ -203,6 +203,14 @@ modules/characters/src/admin.rs, as committed in admin-control-plane-redesign st
   "—" (modules/characters/src/admin.rs:144, owner 2026-11-20: not faked): characters stores no
   last-played time. Replaced by: a last-played time the game server reports, drawn as an age.
 
+### Pages without a mockup
+
+- [ ] **Group entity page**
+  ADMIN2-51. `/admin/e/group/{id}` (the Groups tab's name link) draws only groups'
+  `EntityHeader` (name, join policy and day, member and pending counts) and no tab; no
+  mockup page exists for it (checklist docs/plans/2026-11-22-step18-groups-checklist.md
+  G7 b). Closed by: a mockup for the group page and its port.
+
 ### Guard gaps
 
 - [ ] **Unlisted page-head action renders nowhere**

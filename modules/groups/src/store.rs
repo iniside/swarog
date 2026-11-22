@@ -48,11 +48,6 @@ pub(crate) struct GroupCounts {
 /// group's own row plus its live counts. The counts ride the SAME statement as the row (a
 /// lateral aggregate), so a group is never shown with a member count taken at a different
 /// instant than its name.
-#[expect(
-    dead_code,
-    reason = "Step 18 G7 (b): the group EntityHeader reads it \
-              (docs/plans/2026-11-22-step18-groups-checklist.md:286)"
-)]
 pub(crate) struct AdminGroupRow {
     pub(crate) group_id: String,
     pub(crate) name: String,
@@ -60,6 +55,28 @@ pub(crate) struct AdminGroupRow {
     pub(crate) created_at: String,
     pub(crate) members: i64,
     pub(crate) pending: i64,
+}
+
+/// The admin Groups tab's page size, as the friends and inventory tabs.
+pub(crate) const ADMIN_PAGE_SIZE: usize = 25;
+
+/// One row of a player's admin Groups tab, as [`Store::admin_page`] reads it: the
+/// player's membership row in one group, in any state, with the group's name and its
+/// live member count taken in the SAME statement as the row.
+pub(crate) struct AdminMembershipRow {
+    pub(crate) group_id: String,
+    pub(crate) name: String,
+    pub(crate) state: String,
+    /// Empty while `state` is pending (`invited`/`requested`).
+    pub(crate) role: String,
+    /// The group's `member` rows; pending rows are not members.
+    pub(crate) members: i64,
+    /// The UTC day (`YYYY-MM-DD`) the player's row in the group was CREATED: the join, the
+    /// invite or the request, whichever came first. Accepting an invite or a request does
+    /// not move it, since no column records that instant.
+    pub(crate) joined: String,
+    /// The row's `created_at` in the cursor codec's shape: the keyset's first half.
+    pub(crate) sort_at: String,
 }
 
 /// Per-GROUP lock key: `MAX_MEMBERS` cannot be enforced by one statement, because
@@ -122,11 +139,6 @@ impl Store {
     /// on, and the oldest one's `created_at` (`""` when nothing is outstanding).
     /// `purged_players_claim_idx` serves the predicate, so the cost tracks
     /// outstanding work rather than the permanent row per deleted player.
-    #[expect(
-        dead_code,
-        reason = "Step 18 G9: the Purges pending item at 65 reads it \
-                  (docs/plans/2026-11-22-step18-groups-checklist.md:166)"
-    )]
     pub(crate) async fn pending_purges(&self) -> Result<(i64, String), sqlx::Error> {
         let (count, oldest) = sqlx::query_as::<_, (i64, Option<String>)>(
             "SELECT count(*)::bigint, min(created_at)::text \
@@ -597,11 +609,6 @@ impl Store {
 
     /// One group by id, counts included. A group id that is not a uuid is `None`, not a
     /// 500 — the page renders it as "no such group" (see [`is_invalid_uuid`]).
-    #[expect(
-        dead_code,
-        reason = "Step 18 G7 (b): the group EntityHeader reads it \
-                  (docs/plans/2026-11-22-step18-groups-checklist.md:286)"
-    )]
     pub(crate) async fn admin_group(
         &self,
         member: &str,
@@ -621,6 +628,64 @@ impl Store {
         match res {
             Ok(row) => Ok(row.map(row_to_admin_group)),
             Err(e) if is_invalid_uuid(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// One keyset page of EVERY row `player_id` holds, all states, newest row first:
+    /// `page_mine`'s order and keyset `(m.created_at, m.group_id)`, plus each group's live
+    /// member count. `member` is the member state (`COUNTS_LATERAL`'s `$1`). A
+    /// `player_id` that is not a uuid is an empty page.
+    pub(crate) async fn admin_page(
+        &self,
+        member: &str,
+        player_id: &str,
+        after: Option<(&str, &str)>,
+        limit: i64,
+    ) -> Result<Vec<AdminMembershipRow>, sqlx::Error> {
+        type Raw = (String, String, String, String, i64, String, String);
+        let res = match after {
+            Some((created_at, id)) => {
+                sqlx::query_as::<_, Raw>(&admin_page_sql(
+                    "AND (m.created_at, m.group_id) < ($3::timestamptz, $4::uuid)",
+                    "$5",
+                ))
+                .bind(member)
+                .bind(player_id)
+                .bind(created_at)
+                .bind(id)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query_as::<_, Raw>(&admin_page_sql("", "$3"))
+                    .bind(member)
+                    .bind(player_id)
+                    .bind(limit)
+                    .fetch_all(&self.pool)
+                    .await
+            }
+        };
+        match res {
+            Ok(rows) => Ok(rows.into_iter().map(row_to_admin_membership).collect()),
+            Err(e) if is_invalid_uuid(&e) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Every row `player_id` holds, all states: the Groups tab's count and meta. A
+    /// `player_id` that is not a uuid holds none.
+    pub(crate) async fn admin_count(&self, player_id: &str) -> Result<i64, sqlx::Error> {
+        let res = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM groups.memberships WHERE player_id = $1::uuid",
+        )
+        .bind(player_id)
+        .fetch_one(&self.pool)
+        .await;
+        match res {
+            Ok(n) => Ok(n),
+            Err(e) if is_invalid_uuid(&e) => Ok(0),
             Err(e) => Err(e),
         }
     }
@@ -662,6 +727,33 @@ fn group_page_sql(state_clause: &str, cut: &str, limit: &str) -> String {
     )
 }
 
+/// `$1` is the member state (for `COUNTS_LATERAL`), `$2` the player; the keyed variant
+/// adds the cursor at `$3`/`$4`, which is why `limit` moves.
+fn admin_page_sql(cut: &str, limit: &str) -> String {
+    let sort_at = created_text("m.created_at");
+    format!(
+        "SELECT g.id::text, g.name, m.state, m.role, c.members, \
+                to_char(m.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), {sort_at} \
+           FROM groups.memberships m JOIN groups.groups g ON g.id = m.group_id \
+           JOIN LATERAL ({COUNTS_LATERAL}) c ON true \
+          WHERE m.player_id = $2::uuid {cut} \
+          ORDER BY m.created_at DESC, m.group_id DESC LIMIT {limit}"
+    )
+}
+
+fn row_to_admin_membership(row: (String, String, String, String, i64, String, String)) -> AdminMembershipRow {
+    let (group_id, name, state, role, members, joined, sort_at) = row;
+    AdminMembershipRow {
+        group_id,
+        name,
+        state,
+        role,
+        members,
+        joined,
+        sort_at,
+    }
+}
+
 fn row_to_my_group(
     row: (String, String, String, String, String, String, String),
 ) -> MyGroupRow {
@@ -690,20 +782,10 @@ fn row_to_member(row: (String, String, String, String)) -> MemberRow {
 /// The per-group live counts the admin reads share, correlated on `g.id`. `$1` is the
 /// `member` state; a group with no rows at all still yields one row of zeros, which is why
 /// the join is a plain `LATERAL ... ON true`.
-#[expect(
-    dead_code,
-    reason = "Step 18 G8: kept for admin_group and the Groups tab counts \
-              (docs/plans/2026-11-22-step18-groups-checklist.md:287)"
-)]
 const COUNTS_LATERAL: &str = "SELECT count(*) FILTER (WHERE state = $1) AS members, \
                                      count(*) FILTER (WHERE state <> $1) AS pending \
                                 FROM groups.memberships WHERE group_id = g.id";
 
-#[expect(
-    dead_code,
-    reason = "Step 18 G7 (b): admin_group maps its row through it \
-              (docs/plans/2026-11-22-step18-groups-checklist.md:286)"
-)]
 fn row_to_admin_group(row: (String, String, String, String, i64, i64)) -> AdminGroupRow {
     let (group_id, name, join_policy, created_at, members, pending) = row;
     AdminGroupRow {

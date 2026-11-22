@@ -15,6 +15,7 @@
 //! The domain write and its durable event append commit in ONE transaction — the event is
 //! durable iff the membership change is.
 
+mod admin;
 pub mod conformance;
 mod projection;
 mod service;
@@ -24,6 +25,8 @@ pub use service::Service;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod admin_tests;
 #[cfg(test)]
 mod service_tests;
 #[cfg(test)]
@@ -212,6 +215,10 @@ impl Module for Groups {
             .registry()
             .require::<dyn Directory>(&key("accounts", "directory"));
         let _ = svc.directory.set(directory);
+
+        // Contributed unconditionally: whichever process hosts groups serves its admin panels.
+        let provider: Arc<dyn controlplane::Provider> = Arc::new(admin::GroupsAdmin::new(svc.clone()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
 
         for op in groupsapi::player_rpc::operations(svc.clone()) {
             ctx.contribute(opsapi::SLOT, op.operation);
