@@ -82,11 +82,6 @@ _None._
   interior drift inside such a tile is invisible behind the accept line. Owner, 2026-11-21:
   accepted as a known limit.
 
-- [ ] **One accept line covers any number of same-shaped unmatched openers**
-  Accept lines are a set and the skeleton hash is text-blind
-  (`tools/admindiff/src/accept.rs:50-54`, `tools/admindiff/src/skeleton.rs:225`). The single
-  portal-only `button.menu-item#bd58cd` line in each of the 4 user-menu accept files covers
-  any number of same-shaped unmatched openers, so a later port may be accepted silently there.
 - [ ] **The wallet no-opener reason is repeated per user-menu host**
   `EXCLUDED_MODALS` (`tools/admindiff/src/pages.rs`) repeats the wallet row-menu reason for
   each user-menu host, and each new player tab needs 2 more rows. The crawl demands them
@@ -109,10 +104,9 @@ _None._
   The mockup's Economy entry is `down: true` (`UILayout/redesign/assets/registry.js:25`), so it
   never matches exactly and the mockup's Lore section pairs with the portal's Economy section
   (on the economy page only by position). The Lore lines in the 8 sidebar accept files blame
-  "no Lore module", not the `.down` demo state. The shared `mock-only a.nav-item#ecbb9a` line
-  now also covers the unpaired Lore entries while its reason names only API keys, Scheduler,
-  Config and Audit, so a lost plain nav entry passes silently. A per-line element count or
-  keying nav entries by their text hint (`skeleton.rs:365`) ends it.
+  "no Lore module", not the `.down` demo state. The counted `mock-only ×N a.nav-item#ecbb9a`
+  line catches a lost plain nav entry, but which section its count comes from still depends on
+  that pairing.
 - [ ] **The Economy Ledger table is never compared with the mockup**
   A fresh fleet has no wallet movements (the starter grant is off and demoseed grants none), so
   `tools/admindiff/accept/economy.txt` accepts the empty-state body and the diff never sees the

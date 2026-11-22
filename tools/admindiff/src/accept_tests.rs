@@ -94,3 +94,15 @@ fn a_hinted_entry_matches_its_difference_whatever_the_hint_reads_now() {
     assert_eq!(v.accepted, ["x: mock-only tr#ab"]);
     assert!(v.unaccepted.is_empty() && v.stale.is_empty());
 }
+
+#[test]
+fn a_counted_entry_keeps_its_count_and_drops_its_hint() {
+    let accept = parse(r#"x: mock-only ×2 span#ab ("two") | why"#).expect("parses");
+    assert_eq!(accept.keys().collect::<Vec<_>>(), ["x: mock-only ×2 span#ab"]);
+    let v = judge(&BTreeSet::from(["x: mock-only ×2 span#ab".to_string()]), &accept);
+    assert!(v.unaccepted.is_empty() && v.stale.is_empty());
+    // One element fewer is another key: the difference is new and the entry stale.
+    let v = judge(&BTreeSet::from(["x: mock-only span#ab".to_string()]), &accept);
+    assert_eq!(v.unaccepted, ["x: mock-only span#ab"]);
+    assert_eq!(v.stale, ["x: mock-only ×2 span#ab"]);
+}

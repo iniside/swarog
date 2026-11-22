@@ -380,17 +380,66 @@ fn hint(e: &Element) -> Option<String> {
     Some(hint)
 }
 
-/// The differences found so far, and the hint of each line naming an unpaired element.
+/// The differences found so far. A line naming unpaired or moved elements is counted
+/// instead: same-label siblings under one parent make one line, and a line two parents give
+/// keeps the larger count, never the sum, so a row shape's lines under `tr*` do not depend
+/// on how many rows hold it.
 #[derive(Default)]
 struct Lines {
     lines: BTreeSet<String>,
-    hints: BTreeMap<String, String>,
+    /// (`<path>: <side>`, label) → its largest count and the hint shown with it.
+    counted: BTreeMap<(String, String), (usize, Option<String>)>,
 }
 
 impl Lines {
     fn insert(&mut self, line: String) {
         self.lines.insert(line);
     }
+
+    /// Records `n` same-label elements under one parent; at an equal count the later hint
+    /// wins.
+    fn count(&mut self, at: String, label: String, n: usize, hint: Option<String>) {
+        let entry = self.counted.entry((at, label)).or_insert((0, None));
+        if n >= entry.0 {
+            entry.0 = n;
+            if hint.is_some() {
+                entry.1 = hint;
+            }
+        }
+    }
+
+    /// The lines, a counted one as `<path>: <side> ×N <label>` when N > 1, and the hint of
+    /// each line that has one.
+    fn finish(self) -> (BTreeSet<String>, BTreeMap<String, String>) {
+        let (mut lines, mut hints) = (self.lines, BTreeMap::new());
+        for ((at, label), (n, hint)) in self.counted {
+            let line = if n > 1 { format!("{at} ×{n} {label}") } else { format!("{at} {label}") };
+            if let Some(hint) = hint {
+                hints.insert(line.clone(), hint);
+            }
+            lines.insert(line);
+        }
+        (lines, hints)
+    }
+}
+
+/// `skels` grouped by label in first-seen order: each label, how many share it and the
+/// first hint among them.
+fn by_label(skels: &[&Skel]) -> Vec<(String, usize, Option<String>)> {
+    let mut groups: Vec<(String, usize, Option<String>)> = Vec::new();
+    for s in skels {
+        let label = s.label();
+        match groups.iter_mut().find(|g| g.0 == label) {
+            Some(g) => {
+                g.1 += 1;
+                if g.2.is_none() {
+                    g.2 = s.hint.clone();
+                }
+            }
+            None => groups.push((label, 1, s.hint.clone())),
+        }
+    }
+    groups
 }
 
 /// The differences of two pages, one line each, and how many units matched.
@@ -436,7 +485,8 @@ pub fn diff_pages(mock: &Page, portal: &Page) -> Outcome {
     for p in portal_left {
         lines.insert(format!("portal-only {}", p.label()));
     }
-    Outcome { lines: lines.lines, hints: lines.hints, matched_panels, matched_tiles }
+    let (lines, hints) = lines.finish();
+    Outcome { lines, hints, matched_panels, matched_tiles }
 }
 
 fn diff_root(scope: &str, m: &Skel, p: &Skel, out: &mut Lines) {
@@ -506,15 +556,18 @@ fn sequence(path: &str, m: &Skel, p: &Skel, out: &mut Lines) {
     }
     gap(path, &gap_a, &gap_b, out, &mut m_un, &mut p_un);
     let mut p_rest: Vec<&Skel> = p_un;
-    let mut m_rest = Vec::new();
+    let (mut m_rest, mut moved) = (Vec::new(), Vec::new());
     for x in m_un {
         match p_rest.iter().position(|y| y.canon == x.canon) {
             Some(at) => {
                 p_rest.remove(at);
-                out.insert(format!("{path}: moved {}", x.label()));
+                moved.push(x);
             }
             None => m_rest.push(x),
         }
+    }
+    for (label, n, _) in by_label(&moved) {
+        out.count(format!("{path}: moved"), label, n, None);
     }
     report_unpaired(path, &m_rest, &p_rest, out);
 }
@@ -577,13 +630,10 @@ fn pair_kin<'a>(path: &str, m: &[&'a Skel], p: &[&'a Skel], out: &mut Lines) -> 
 }
 
 fn report_unpaired(path: &str, m: &[&Skel], p: &[&Skel], out: &mut Lines) {
-    let sides = m.iter().map(|s| ("mock-only", s)).chain(p.iter().map(|s| ("portal-only", s)));
-    for (side, s) in sides {
-        let line = format!("{path}: {side} {}", s.label());
-        if let Some(hint) = &s.hint {
-            out.hints.insert(line.clone(), hint.clone());
+    for (side, skels) in [("mock-only", m), ("portal-only", p)] {
+        for (label, n, hint) in by_label(skels) {
+            out.count(format!("{path}: {side}"), label, n, hint);
         }
-        out.insert(line);
     }
 }
 

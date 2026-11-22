@@ -150,6 +150,23 @@ fn duplicated_identical_siblings_outside_a_repeat_compare_by_count() {
     assert_eq!(more, set(&["frame div.app > div.x: portal-only span"]));
 }
 
+#[test]
+fn same_label_leftovers_under_one_parent_are_one_counted_line() {
+    let spans = |n: usize| format!(r#"<div class="x">{}</div>"#, "<span></span>".repeat(n));
+    assert_eq!(diff(&spans(4), &spans(1)), set(&["frame div.app > div.x: mock-only ×3 span"]));
+    assert_eq!(diff(&spans(1), &spans(3)), set(&["frame div.app > div.x: portal-only ×2 span"]));
+    // Losing one of N merged elements changes the line, so its accept entry goes stale.
+    assert_eq!(diff(&spans(3), &spans(1)), set(&["frame div.app > div.x: mock-only ×2 span"]));
+}
+
+#[test]
+fn a_counted_line_two_parents_give_keeps_the_larger_count_not_the_sum() {
+    let spans = |n: usize| format!(r#"<div class="x">{}</div>"#, "<span></span>".repeat(n));
+    let mock = format!("{}{}", spans(3), spans(2));
+    let portal = format!("{}{}", spans(1), spans(1));
+    assert_eq!(diff(&mock, &portal), set(&["frame div.app > div.x: mock-only ×2 span"]));
+}
+
 // ---- sequence ------------------------------------------------------------------------
 
 #[test]
@@ -185,6 +202,11 @@ fn a_child_that_moves_across_a_gap_is_moved() {
     let (a, b, c) = (r#"<p class="a"></p>"#, r#"<p class="b"></p>"#, r#"<p class="c"></p>"#);
     let lines = diff(&format!("<section></section>{a}{b}{c}<footer></footer>"), &format!("{a}{b}{c}<section></section>"));
     assert_eq!(lines, set(&["frame div.app: moved section", "frame div.app: mock-only footer"]));
+    let lines = diff(
+        &format!("<section></section><section></section>{a}{b}{c}<footer></footer>"),
+        &format!("{a}{b}{c}<section></section><section></section>"),
+    );
+    assert_eq!(lines, set(&["frame div.app: moved ×2 section", "frame div.app: mock-only footer"]));
 }
 
 #[test]
@@ -409,6 +431,16 @@ fn a_long_hint_is_cut_and_a_quote_becomes_an_apostrophe() {
     let (line, hint) = only(&o);
     assert_eq!(hint.as_deref(), Some("say 'hi'"));
     // So the printed line, kept in an accept file, parses back to its key.
+    let accepted = crate::accept::parse(&format!("{} | reason", o.shown(&line))).expect("parses");
+    assert_eq!(accepted.keys().collect::<Vec<_>>(), [&line]);
+}
+
+#[test]
+fn a_counted_line_keeps_the_first_hint_and_parses_back_to_its_key() {
+    let o = outcome(r#"<p><b>one</b><b>two</b><b>three</b></p>"#, r#"<p><b>z</b></p>"#);
+    let (line, hint) = only(&o);
+    assert_eq!(line, "frame div.app > p: mock-only ×2 b");
+    assert_eq!(hint.as_deref(), Some("two"));
     let accepted = crate::accept::parse(&format!("{} | reason", o.shown(&line))).expect("parses");
     assert_eq!(accepted.keys().collect::<Vec<_>>(), [&line]);
 }

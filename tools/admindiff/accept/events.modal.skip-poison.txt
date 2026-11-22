@@ -3,5 +3,5 @@
 # matches no difference fails the diff. A reason names its kind: data difference, not
 # ported yet, template choice, contract gap, or a declared deviation (Dn in the plan).
 frame div.modal > div.modal-body > div.impact: mock-only div#adda0a | declared deviation: no "Goes to: dead-letter list" impact row; the plane keeps no dead-letter list, a skipped event is only stepped past (plan Step 9a, skip impact)
-frame div.modal: portal-only input | template choice: the confirm form carries its hidden _csrf/_form inputs
+frame div.modal: portal-only ×2 input | template choice: the confirm form carries its hidden _csrf/_form inputs
 frame: root mock div.modal portal form.modal | template choice: the portal's modal is the confirm form itself, so it posts without script
