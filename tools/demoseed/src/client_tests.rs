@@ -11,6 +11,15 @@ use super::*;
 /// Serves the canned (status, body) answers in order, one per connection, and sends back each
 /// request line it read ("GET /characters HTTP/1.1").
 pub(crate) fn canned(answers: Vec<(u16, &'static str)>) -> (String, mpsc::Receiver<String>) {
+    serve(answers, false)
+}
+
+/// As [`canned`], each request line followed by a space and the request body.
+pub(crate) fn canned_with_bodies(answers: Vec<(u16, &'static str)>) -> (String, mpsc::Receiver<String>) {
+    serve(answers, true)
+}
+
+fn serve(answers: Vec<(u16, &'static str)>, with_bodies: bool) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let base = format!("http://{}", listener.local_addr().expect("addr"));
     let (lines, received) = mpsc::channel();
@@ -40,7 +49,11 @@ pub(crate) fn canned(answers: Vec<(u16, &'static str)>) -> (String, mpsc::Receiv
                 body.len()
             );
             reader.get_mut().write_all(response.as_bytes()).expect("write");
-            lines.send(request_line.trim_end().to_string()).expect("send");
+            let mut line = request_line.trim_end().to_string();
+            if with_bodies {
+                line = format!("{line} {}", String::from_utf8_lossy(&request_body));
+            }
+            lines.send(line).expect("send");
         }
     });
     (base, received)

@@ -233,6 +233,7 @@ fn parse_args_defaults() {
             matches: DEFAULT_MATCHES,
             concurrency: DEFAULT_CONCURRENCY,
             event_timeout: DEFAULT_EVENT_TIMEOUT,
+            clients: DEFAULT_CLIENTS,
         })
     );
 }
@@ -399,6 +400,20 @@ async fn failed_friend_request_records_the_skipped_accept() {
     assert_eq!(skipped, ["friend accept skipped: the friend request failed"]);
 }
 
+#[tokio::test]
+async fn friend_accept_409_on_a_request_answered_pending_is_an_error() {
+    let (gateway, _lines) = fake_gateway(vec![
+        (201, r#"{"edge_id":"e1","state":"pending"}"#),
+        (200, r#"{"items":[{"player_id":"p-1","edge_id":"e1","direction":"incoming"}],"next_cursor":""}"#),
+        (409, "already friends"),
+    ]);
+    seed_friendship(&gateway, &session(), &target(), true).await;
+    let report = gateway.take_report();
+    assert_eq!(report.summary.friendships, Tally::default());
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!((report.errors[0].op, &report.errors[0].got), ("friends.accept", &Got::Status(409)));
+}
+
 #[test]
 fn pending_friendships_are_disjoint_from_accepted_ones_as_unordered_pairs() {
     for players in [2, 3, 5, 30, 75] {
@@ -484,6 +499,14 @@ fn every_expect_list_holds_its_ops_declared_success() {
     for (op, list) in expect::ALL {
         crate::client::check_expect(op, crate::client::route(op), list);
     }
+}
+
+#[test]
+fn parse_args_clients_sets_the_scenario_count() {
+    assert_eq!(seed_config(&["--clients", "3"]).clients, 3);
+    assert!(parse_args(&args(&["--clients", "0"])).is_err());
+    assert!(parse_args(&args(&["--clients", "many"])).is_err());
+    assert!(USAGE.contains("--clients"));
 }
 
 #[test]

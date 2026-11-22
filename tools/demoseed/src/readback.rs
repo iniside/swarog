@@ -14,7 +14,7 @@ use crate::{expect, ops, SavePlan, Session, MAX_PAGES, PAGE_LIMIT};
 pub(crate) const POLL_INTERVAL: Duration = Duration::from_millis(250);
 // Seeded by `WALLET_DEV_SEED` (`modules/wallet`); without it the catalog is empty.
 const DEV_CURRENCIES: &[&str] = &["gold", "gems"];
-const KIND_FRIEND_ACCEPTED: &str = "friend.accepted";
+pub(crate) const KIND_FRIEND_ACCEPTED: &str = "friend.accepted";
 const DIRECTION_INCOMING: &str = "incoming";
 const STATE_REQUESTED: &str = "requested";
 
@@ -86,15 +86,15 @@ struct ObjectSummary {
 }
 
 /// The deadline of one poll (I7).
-struct Deadline(Instant);
+pub(crate) struct Deadline(Instant);
 
 impl Deadline {
-    fn after(timeout: Duration) -> Self {
+    pub(crate) fn after(timeout: Duration) -> Self {
         Deadline(Instant::now() + timeout)
     }
 
     /// Sleeps one poll interval and answers true, or answers false once the deadline passed.
-    async fn wait(&self) -> bool {
+    pub(crate) async fn wait(&self) -> bool {
         if Instant::now() >= self.0 {
             return false;
         }
@@ -111,7 +111,7 @@ pub(crate) fn first_unread(rows: &[NotificationRow]) -> Option<&NotificationRow>
 
 /// Every row of a `{items, next_cursor}` list op, `body` carrying the op's other keys. `None`
 /// when a page failed (already recorded).
-async fn all_pages<T: DeserializeOwned>(
+pub(crate) async fn all_pages<T: DeserializeOwned>(
     gateway: &Gateway,
     op: &'static str,
     path_params: &[(&str, &str)],
@@ -335,6 +335,10 @@ pub(crate) async fn accepted_rows(gateway: &Gateway, session: &Session) -> Optio
 /// on the player's request; a row carries nothing naming its run, so only the count over the
 /// baseline tells a new row from an old one), then marks the first unread row read. With
 /// `fresh` 0 nothing is owed and the first list is enough.
+///
+/// Known limit: the check is `count >= baseline + fresh`, so an unplanned `friend.accepted` row
+/// this run adds (a reverse pending request left by an earlier run with another `--players`,
+/// which this run's request auto-accepts) can stand in for an owed row that never arrived.
 pub(crate) async fn inbox(gateway: &Gateway, session: &Session, baseline: usize, fresh: usize, timeout: Duration) {
     let caller = Caller::Player(&session.token);
     let deadline = Deadline::after(timeout);

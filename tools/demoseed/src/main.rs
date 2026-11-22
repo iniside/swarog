@@ -17,8 +17,8 @@ async fn main() -> ExitCode {
         }
     };
     println!(
-        "demoseed: seeding {} players and {} matches through {} ({} requests in flight at most)",
-        config.players, config.matches, config.base_url, config.concurrency
+        "demoseed: seeding {} players and {} matches, then {} client scenarios, through {} ({} requests in flight at most)",
+        config.players, config.matches, config.clients, config.base_url, config.concurrency
     );
     match run(&config).await {
         Ok(report) => {

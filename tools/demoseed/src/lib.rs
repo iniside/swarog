@@ -1,8 +1,9 @@
 //! `demoseed` — fills a running fleet with deterministic demo data (players, characters,
-//! inventory, matches, friends, groups, cloud saves) through the gateway's public HTTP API.
+//! inventory, matches, friends, groups, cloud saves) through the gateway's public HTTP API, then
+//! runs throwaway client scenarios over the session, party and destructive ops.
 //!
 //!   demoseed [--base-url <url>] [--players <n>] [--matches <n>] [--concurrency <n>]
-//!            [--event-timeout <secs>]
+//!            [--event-timeout <secs>] [--clients <n>]
 //!
 //! Every call names its `opscatalog` op; the run ends with a report of every call that
 //! answered an unexpected status, every op of the catalog no call covered, and exits 1 on either.
@@ -21,6 +22,7 @@ pub mod expect;
 pub mod ops;
 mod readback;
 pub mod report;
+mod scenarios;
 
 use client::{Caller, Gateway};
 pub use report::{Outcome, Report, Summary, Tally};
@@ -31,6 +33,7 @@ pub const MIN_PLAYERS: usize = 2;
 pub const DEFAULT_MATCHES: usize = 100;
 // Below the accounts module's 32 concurrent login slots, so a seed run never draws a 503 from them.
 pub const DEFAULT_CONCURRENCY: usize = 16;
+pub const DEFAULT_CLIENTS: usize = 8;
 // How long an event-fed read (starter item, leaderboard, notifications) polls before it is an error.
 pub const DEFAULT_EVENT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const SPLIT_ADMIN_URL: &str = "http://127.0.0.1:8085/admin";
@@ -86,6 +89,7 @@ pub struct Config {
     pub matches: usize,
     pub concurrency: usize,
     pub event_timeout: Duration,
+    pub clients: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,7 +103,7 @@ demoseed — seed deterministic demo data into a running fleet through the gatew
 
 USAGE:
   demoseed [--base-url <url>] [--players <n>] [--matches <n>] [--concurrency <n>]
-           [--event-timeout <secs>]
+           [--event-timeout <secs>] [--clients <n>]
 
   --base-url <url>   gateway front door (default http://127.0.0.1:8080; split: http://127.0.0.1:8082)
   --players <n>      demo players to create (default 30, at least 2)
@@ -107,10 +111,13 @@ USAGE:
   --concurrency <n>  requests in flight at once (default 16, at least 1)
   --event-timeout <secs>
                      how long an event-fed read polls before it is an error (default 10)
+  --clients <n>      throwaway client scenarios to run after the seed (default 8, at least 1)
 
 Requires a fleet started with the dev flags (devctl up sets APIKEYS_DEV_SEED, ACCOUNTS_DEV_AUTH,
 INVENTORY_DEV_GRANT, WALLET_DEV_SEED). Re-running converges: only missing rows are created, and
-every seeded kind is read back. Exits 1 when any call
+every seeded kind is read back. Then each client scenario creates its own guest players and a
+registered account, drives the session, party and destructive ops on them, and deletes them.
+Exits 1 when any call
 answered an unexpected status or an op of the catalog was never called.";
 
 pub fn parse_args(args: &[String]) -> Result<Command> {
@@ -120,12 +127,13 @@ pub fn parse_args(args: &[String]) -> Result<Command> {
         matches: DEFAULT_MATCHES,
         concurrency: DEFAULT_CONCURRENCY,
         event_timeout: DEFAULT_EVENT_TIMEOUT,
+        clients: DEFAULT_CLIENTS,
     };
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "-h" | "--help" | "help" => return Ok(Command::Help),
-            "--base-url" | "--players" | "--matches" | "--concurrency" | "--event-timeout" => {
+            "--base-url" | "--players" | "--matches" | "--concurrency" | "--event-timeout" | "--clients" => {
                 let value = iter
                     .next()
                     .ok_or_else(|| anyhow!("demoseed: {flag} requires a value\n\n{USAGE}"))?;
@@ -133,6 +141,7 @@ pub fn parse_args(args: &[String]) -> Result<Command> {
                     "--base-url" => config.base_url = value.trim_end_matches('/').to_string(),
                     "--players" => config.players = parse_players(flag, value)?,
                     "--concurrency" => config.concurrency = parse_positive(flag, value)?,
+                    "--clients" => config.clients = parse_positive(flag, value)?,
                     "--event-timeout" => {
                         config.event_timeout = Duration::from_secs(parse_positive(flag, value)? as u64)
                     }
@@ -491,7 +500,8 @@ type Sessions = Arc<Vec<Option<Session>>>;
 /// does not answer the startup probe; every failed call after that is recorded in the report.
 /// Phases run in order (players, per-player rows, matches and the leaderboard, friendships,
 /// groups, inboxes and public saves), each one's items as parallel tasks; a later phase skips,
-/// with a recorded cause, the items whose players failed. Every seeded kind is read back.
+/// with a recorded cause, the items whose players failed. Every seeded kind is read back. Last,
+/// `config.clients` throwaway client scenarios run as parallel tasks (`scenarios.rs`).
 pub async fn run(config: &Config) -> Result<Report> {
     let gateway = Gateway::new(&config.base_url, config.concurrency)?;
     gateway.probe().await?;
@@ -661,7 +671,26 @@ pub async fn run(config: &Config) -> Result<Report> {
     }
     join_all(tasks).await;
 
+    let nonce = run_nonce();
+    let mut tasks = JoinSet::new();
+    for index in 0..config.clients {
+        let client = scenarios::Client { nonce: nonce.clone(), index, timeout };
+        let gateway = gateway.scenario(client.name());
+        tasks.spawn(async move { scenarios::run_client(&gateway, &client).await });
+    }
+    join_all(tasks).await;
+
     Ok(gateway.take_report())
+}
+
+/// Names this run's throwaway rows (emails, group names, report ids) apart from every earlier
+/// run's: the wall clock in nanoseconds and the process id, in hex.
+fn run_nonce() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos() as u64)
+        .unwrap_or_default();
+    format!("{nanos:x}{:x}", std::process::id())
 }
 
 /// Joins every task of a phase, so the next phase starts only after this one ended. A task that
