@@ -1,6 +1,7 @@
 # Memory Index
 
 ## Process / discipline / behavior
+- [Research before every step](research-before-every-step.md) — verify every assumption path:line before dispatch; brief names at-risk test boundaries
 - [pgrep check must GATE](pgrep-check-must-gate-not-decorate.md) — check live cargo in its own call first; diff baselines after --bless
 - [Always fix at the source](always-fix-at-the-source.md) — no test-side workarounds; leftovers fixed unless owner defers
 - [Adversarial subagent review](adversarial-subagent-review.md) — subagent, adversarial vs diff and plan; structural → owner; no prose review
