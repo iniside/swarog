@@ -195,14 +195,6 @@ pub(crate) fn encode_admin_cursor(updated_at: &str, collection: &str, key: &str)
 /// [`decode_cursor`]'s rules for [`encode_admin_cursor`]'s keyset: empty is the first
 /// page, anything malformed is REJECTED, and only a real calendar instant and two legal,
 /// capped segments reach the page's binds, so none of them can raise a cast error.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Step 19a2: the Cloud saves tab decodes its cursor \
-                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2337)"
-    )
-)]
 pub(crate) fn decode_admin_cursor(cursor: &str) -> Result<Option<(String, String, String)>, Error> {
     if cursor.is_empty() {
         return Ok(None);

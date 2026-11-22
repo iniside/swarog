@@ -4,12 +4,18 @@
 //! The value is opaque to the server, so nothing downstream can project it and this
 //! module publishes no durable event. It consumes no other module's capability either:
 //! the owner id is the caller's own identity, resolved at the front door.
+//!
+//! `admin` is its control-plane provider: the player's read-only Cloud saves tab, the
+//! dashboard's "Cloud saves used" tile and the purge backlog item.
 
+mod admin;
 pub mod conformance;
 mod projection;
 mod service;
 mod store;
 
+#[cfg(test)]
+mod admin_tests;
 #[cfg(test)]
 mod service_tests;
 #[cfg(test)]
@@ -100,6 +106,10 @@ impl Module for Storage {
             opsapi::DESCRIBE_SLOT,
             storagerpc::player_rpc::describe(),
         );
+
+        // Contributed unconditionally: whichever process hosts storage serves its admin panels.
+        let provider: Arc<dyn controlplane::Provider> = Arc::new(admin::StorageAdmin::new(self.svc()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
 
         // The tombstone, planted on the HANDED delivery conn so it commits with the
         // subscription checkpoint, and doing no other work: an owner holds up to

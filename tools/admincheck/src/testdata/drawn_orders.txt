@@ -13,9 +13,11 @@ dashboard_attention | wallet | attention.purges | 62
 dashboard_attention | inventory | attention.purges | 63
 dashboard_attention | friends | attention.purges | 64
 dashboard_attention | groups | attention.purges | 65
+dashboard_attention | storage | attention.purges | 66
 dashboard_tile | accounts | tile.active | 10
 dashboard_tile | portal | tile.lore-seats | 20
 dashboard_tile | portal | tile.lore-store | 30
+dashboard_tile | storage | tile.used | 40
 dashboard_tile | mail | tile.queue | 50
 dashboard_tile | core.events | tile.paused | 60
 dashboard_tile | wallet | tile.spent | 70
@@ -38,6 +40,7 @@ entity_tab player | accounts | sessions | 40
 entity_tab player | inventory | inventory | 40
 entity_tab player | friends | friends | 50
 entity_tab player | groups | groups | 60
+entity_tab player | storage | saves | 70
 entity_tab subscription | core.events | subscription.details | 0
 entity_tab_count player/characters | characters | tab.count | 0
 entity_tab_count player/friends | friends | tab.count | 0
@@ -52,6 +55,7 @@ row_action player | accounts | delete-account | 30
 row_action player | wallet | currency.grant | 40
 row_action player | wallet | currency.revoke | 40
 row_action player | inventory | item.grant | 50
+row_action player | storage | player.download-saves | 80
 row_action subscription | core.events | sub.pause | 10
 row_action subscription | core.events | sub.resume | 20
 row_action subscription | core.events | sub.retry | 30

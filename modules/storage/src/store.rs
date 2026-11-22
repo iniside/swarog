@@ -467,11 +467,6 @@ impl Store {
     /// the oldest one's `created_at` (`""` when nothing is outstanding).
     /// `purged_players_pending_idx` serves the predicate, so the cost tracks outstanding work
     /// rather than the permanent row per deleted player.
-    #[expect(
-        dead_code,
-        reason = "Step 19: the Purges pending item at 66 reads it \
-                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2329)"
-    )]
     pub(crate) async fn pending_purges(&self) -> Result<(i64, String), sqlx::Error> {
         let (count, oldest) = sqlx::query_as::<_, (i64, Option<String>)>(
             "SELECT count(*)::bigint, min(created_at)::text \
@@ -521,20 +516,33 @@ impl Store {
     /// on every call — no index or counter holds a byte total. That is why the tile caches
     /// it for 300 s rather than reading it on each dashboard load. The bytes are normalized
     /// jsonb text (see [`SCHEMA_DDL`]), not the bytes the clients sent.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Step 19a2: the Cloud saves used tile reads it \
-                      (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2337)"
-        )
-    )]
     pub(crate) async fn admin_used_bytes(&self) -> Result<i64, sqlx::Error> {
         sqlx::query_scalar::<_, i64>(
             "SELECT coalesce(sum(octet_length(value::text)), 0)::bigint FROM storage.objects",
         )
         .fetch_one(&self.pool)
         .await
+    }
+
+    /// The count and the stored bytes of every object `owner_id` holds: the Cloud saves
+    /// tab's meta. The primary key's `owner_id` prefix serves the predicate; the byte sum
+    /// detoasts each of the owner's values, at most `storageapi::MAX_OBJECTS_PER_OWNER`
+    /// (10,000) on each tab load, since no counter holds a per-owner total. The bytes are
+    /// normalized jsonb text, as in [`Self::admin_used_bytes`]. An `owner_id` that is not a
+    /// uuid holds nothing: `(0, 0)`.
+    pub(crate) async fn admin_owner_totals(&self, owner_id: &str) -> Result<(i64, i64), sqlx::Error> {
+        let res = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT count(*)::bigint, coalesce(sum(octet_length(value::text)), 0)::bigint \
+             FROM storage.objects WHERE owner_id = $1::uuid",
+        )
+        .bind(owner_id)
+        .fetch_one(&self.pool)
+        .await;
+        match res {
+            Ok(totals) => Ok(totals),
+            Err(e) if is_invalid_uuid(&e) => Ok((0, 0)),
+            Err(e) => Err(e),
+        }
     }
 
     /// One keyset page of `owner_id`'s objects for the admin Cloud saves tab, most recently
@@ -559,14 +567,6 @@ impl Store {
     /// Asks for one row past `limit`: its presence IS the next cursor, so a full last page
     /// never hands out a cursor that would answer empty. An `owner_id` that is not a uuid
     /// holds no objects, so it is an empty page.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Step 19a2: the Cloud saves tab lists it \
-                      (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2337)"
-        )
-    )]
     pub(crate) async fn admin_page(
         &self,
         owner_id: &str,
@@ -604,14 +604,12 @@ impl Store {
         };
         let has_more = rows.len() > limit;
         rows.truncate(limit);
+        let rows: Vec<AdminObjectRow> = rows.into_iter().map(to_admin_row).collect();
         let next_cursor = match rows.last() {
-            Some(last) if has_more => Some(encode_admin_cursor(&last.4, &last.0, &last.1)),
+            Some(last) if has_more => Some(encode_admin_cursor(&last.updated_at, &last.collection, &last.key)),
             _ => None,
         };
-        Ok(AdminPage {
-            rows: rows.into_iter().map(to_admin_row).collect(),
-            next_cursor,
-        })
+        Ok(AdminPage { rows, next_cursor })
     }
 }
 
@@ -655,14 +653,6 @@ pub(crate) fn ago_text_sql(secs: &str) -> String {
 }
 
 /// One page of the Cloud saves tab and the opaque cursor of the page after it.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Step 19a2: the Cloud saves tab draws it \
-                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2337)"
-    )
-)]
 pub(crate) struct AdminPage {
     pub(crate) rows: Vec<AdminObjectRow>,
     pub(crate) next_cursor: Option<String>,
@@ -670,14 +660,6 @@ pub(crate) struct AdminPage {
 
 /// One listed object as the Cloud saves tab draws it. The value itself is never carried,
 /// only what is derived from it: its size and its checksum.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Step 19a2: the Cloud saves tab draws its fields \
-                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2337)"
-    )
-)]
 pub(crate) struct AdminObjectRow {
     pub(crate) collection: String,
     pub(crate) key: String,

@@ -34,6 +34,8 @@ tracing = { workspace = true }
 # `bus::TxHandler` returns a `futures::future::BoxFuture`, which `bus` does not re-export.
 futures = { workspace = true }
 serde = { workspace = true }
+# The control-plane contract: `admin.rs` provides the player's Cloud saves tab and the dashboard tile.
+controlplane = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }
