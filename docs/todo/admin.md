@@ -100,13 +100,17 @@ _None._
   `/admin/_menu/{kind}/{entity id}` on every tab (`core/admin/src/routes.rs:627`), so tab
   tests built from a page map never see two menu targets sharing one URL.
 - [ ] **The sidebar diff pairs nav sections by shape, so one nav accept line hides Lore entries**
-  `diff_pages` pairs leftover nav sections by similarity (`tools/admindiff/src/skeleton.rs:469-579`).
+  `diff_pages` pairs leftover nav sections by similarity (`tools/admindiff/src/skeleton.rs:471-644`).
   The mockup's Economy entry is `down: true` (`UILayout/redesign/assets/registry.js:25`), so it
   never matches exactly and the mockup's Lore section pairs with the portal's Economy section
   (on the economy page only by position). The Lore lines in the 8 sidebar accept files blame
-  "no Lore module", not the `.down` demo state. The counted `mock-only ×N a.nav-item#ecbb9a`
-  line catches a lost plain nav entry, but which section its count comes from still depends on
-  that pairing.
+  "no Lore module", not the `.down` demo state. Which section a leftover entry counts in
+  depends on that pairing. A counted line keeps each section's count (`mock-only ×{4,3}
+  a.nav-item#ecbb9a` on the economy page), so it changes when a section loses an entry, except
+  when the counts before and after the loss are both still given by some section: with two
+  sections, one that loses its only leftover while the other also leaves one. The
+  `mock-only a.nav-item#848c49` line is that case on every page but mail: Lore's Locks and
+  Platform's Mail outbox each leave one, and losing either keeps the line.
 - [ ] **The Economy Ledger table is never compared with the mockup**
   A fresh fleet has no wallet movements (the starter grant is off and demoseed grants none), so
   `tools/admindiff/accept/economy.txt` accepts the empty-state body and the diff never sees the

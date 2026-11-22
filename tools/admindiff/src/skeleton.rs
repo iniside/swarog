@@ -381,14 +381,15 @@ fn hint(e: &Element) -> Option<String> {
 }
 
 /// The differences found so far. A line naming unpaired or moved elements is counted
-/// instead: same-label siblings under one parent make one line, and a line two parents give
-/// keeps the larger count, never the sum, so a row shape's lines under `tr*` do not depend
-/// on how many rows hold it.
+/// instead: same-label siblings under one parent make one line. Siblings with the same head
+/// share a path, so several parents can give one line; it keeps each parent's count, never
+/// the sum, so a row shape's lines under `tr*` do not depend on how many rows hold it.
 #[derive(Default)]
 struct Lines {
     lines: BTreeSet<String>,
-    /// (`<path>: <side>`, label) → its largest count and the hint shown with it.
-    counted: BTreeMap<(String, String), (usize, Option<String>)>,
+    /// (`<path>: <side>`, label) → the distinct count each parent gave and the hint shown
+    /// with the line.
+    counted: BTreeMap<(String, String), (BTreeSet<usize>, Option<String>)>,
 }
 
 impl Lines {
@@ -396,24 +397,29 @@ impl Lines {
         self.lines.insert(line);
     }
 
-    /// Records `n` same-label elements under one parent; at an equal count the later hint
-    /// wins.
+    /// Records `n` same-label elements under one parent; the line keeps the first hint
+    /// given.
     fn count(&mut self, at: String, label: String, n: usize, hint: Option<String>) {
-        let entry = self.counted.entry((at, label)).or_insert((0, None));
-        if n >= entry.0 {
-            entry.0 = n;
-            if hint.is_some() {
-                entry.1 = hint;
-            }
+        let entry = self.counted.entry((at, label)).or_insert((BTreeSet::new(), None));
+        entry.0.insert(n);
+        if entry.1.is_none() {
+            entry.1 = hint;
         }
     }
 
-    /// The lines, a counted one as `<path>: <side> ×N <label>` when N > 1, and the hint of
-    /// each line that has one.
+    /// The lines and the hint of each line that has one. A counted line is
+    /// `<path>: <side> <label>` when every parent gave 1, `<path>: <side> ×N <label>` when
+    /// every parent gave the same N > 1, and `<path>: <side> ×{3,1} <label>` (descending)
+    /// when parents gave different counts.
     fn finish(self) -> (BTreeSet<String>, BTreeMap<String, String>) {
         let (mut lines, mut hints) = (self.lines, BTreeMap::new());
-        for ((at, label), (n, hint)) in self.counted {
-            let line = if n > 1 { format!("{at} ×{n} {label}") } else { format!("{at} {label}") };
+        for ((at, label), (counts, hint)) in self.counted {
+            let counts: Vec<String> = counts.iter().rev().map(usize::to_string).collect();
+            let line = match counts.as_slice() {
+                [one] if one == "1" => format!("{at} {label}"),
+                [n] => format!("{at} ×{n} {label}"),
+                _ => format!("{at} ×{{{}}} {label}", counts.join(",")),
+            };
             if let Some(hint) = hint {
                 hints.insert(line.clone(), hint);
             }

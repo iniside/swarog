@@ -160,11 +160,28 @@ fn same_label_leftovers_under_one_parent_are_one_counted_line() {
 }
 
 #[test]
-fn a_counted_line_two_parents_give_keeps_the_larger_count_not_the_sum() {
+fn a_counted_line_two_parents_give_keeps_each_parents_count_not_the_sum() {
     let spans = |n: usize| format!(r#"<div class="x">{}</div>"#, "<span></span>".repeat(n));
-    let mock = format!("{}{}", spans(3), spans(2));
-    let portal = format!("{}{}", spans(1), spans(1));
-    assert_eq!(diff(&mock, &portal), set(&["frame div.app > div.x: mock-only ×2 span"]));
+    let two = |a: usize, b: usize| format!("{}{}", spans(a), spans(b));
+    // Leftovers (2, 1): the parent left with one span is not hidden behind the larger count.
+    assert_eq!(diff(&two(3, 2), &two(1, 1)), set(&["frame div.app > div.x: mock-only ×{2,1} span"]));
+    // Leftovers (2, 2): every parent gives the same count.
+    assert_eq!(diff(&two(3, 2), &two(1, 0)), set(&["frame div.app > div.x: mock-only ×2 span"]));
+    // The counts print descending whatever the parent order.
+    assert_eq!(diff(&two(2, 3), &two(1, 1)), set(&["frame div.app > div.x: mock-only ×{2,1} span"]));
+    // Leftovers (1, 3): the second parent pairs with the portal's non-empty one.
+    assert_eq!(diff(&two(2, 3), &two(1, 0)), set(&["frame div.app > div.x: mock-only ×{3,1} span"]));
+    // Leftovers (1, 1): every parent gives 1, so no count.
+    assert_eq!(diff(&two(2, 2), &two(1, 1)), set(&["frame div.app > div.x: mock-only span"]));
+}
+
+#[test]
+fn a_line_several_parents_give_keeps_the_first_hint() {
+    let p = |texts: &[&str]| format!("<p>{}</p>", texts.iter().map(|t| format!("<b>{t}</b>")).collect::<String>());
+    let o = outcome(&format!("{}{}", p(&["z", "one"]), p(&["z", "two"])), &format!("{}{}", p(&["z"]), p(&["z"])));
+    let (line, hint) = only(&o);
+    assert_eq!(line, "frame div.app > p: mock-only b");
+    assert_eq!(hint.as_deref(), Some("one"));
 }
 
 // ---- sequence ------------------------------------------------------------------------

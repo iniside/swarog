@@ -119,8 +119,9 @@ USAGE:
             element (a table row, list item, a span, ...) ends in (\"<hint>\"): its first badge's text and
             its first cell's, as \"badge · cell\", else its own text. The hint is not part of the difference: an accept entry
             may keep or drop it and matches either way. Same-label mock-only, portal-only or moved
-            siblings of one parent are one line, with ×N before the label when N > 1 (the largest
-            N any parent gives that line, never a sum)
+            siblings of one parent are one line, with ×N before the label when N > 1; parents
+            whose siblings share a path give one line, ×N when all give the same N and ×{3,1}
+            (descending, never a sum) when their counts differ
 
   --base-url <url>   portal origin (default http://localhost:8080; split: http://localhost:8085)
   --user <name>      admin login (default admin); the password is $ADMINDIFF_PASSWORD (default admin)
