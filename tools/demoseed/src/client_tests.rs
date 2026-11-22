@@ -10,7 +10,7 @@ use super::*;
 
 /// Serves the canned (status, body) answers in order, one per connection, and sends back each
 /// request line it read ("GET /characters HTTP/1.1").
-fn canned(answers: Vec<(u16, &'static str)>) -> (String, mpsc::Receiver<String>) {
+pub(crate) fn canned(answers: Vec<(u16, &'static str)>) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let base = format!("http://{}", listener.local_addr().expect("addr"));
     let (lines, received) = mpsc::channel();

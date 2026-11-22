@@ -272,4 +272,4 @@ impl Gateway {
 
 #[cfg(test)]
 #[path = "client_tests.rs"]
-mod tests;
+pub(crate) mod tests;

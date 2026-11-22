@@ -508,16 +508,33 @@ fn players_seeded(gateway: &Gateway, seed: &SeedPlan, sessions: &[Option<Session
     false
 }
 
+/// The value, or `None` after recording that the dependent step was skipped; the failure that
+/// produced the `None` is already in the report.
+fn or_skip<T>(gateway: &Gateway, value: Option<T>, skipped: &str) -> Option<T> {
+    if value.is_none() {
+        gateway.skip(skipped);
+    }
+    value
+}
+
+/// A create or grant runs only after the list showed the row missing or the quantity short, so
+/// a 409 there is a cap, ceiling or tombstone refusal, not "already exists", and is an error.
+const CHARACTERS_CREATE_EXPECT: &[u16] = &[201];
+const INVENTORY_GRANT_EXPECT: &[u16] = &[200];
+
 async fn seed_player(gateway: &Gateway, player: &PlayerPlan) -> Option<Session> {
     let register = json!({"email": player.email, "password": PASSWORD, "displayName": player.display_name});
-    let (status, _) = gateway
-        .call(ops::ACCOUNTS_REGISTER, &[], Caller::Anonymous, Some(&register), &[201, 409])
-        .await
-        .ok()?;
+    let registered =
+        gateway.call(ops::ACCOUNTS_REGISTER, &[], Caller::Anonymous, Some(&register), &[201, 409]).await.ok();
+    let (status, _) = or_skip(gateway, registered, "login and profile read skipped: the registration failed")?;
     gateway.tally(|s| s.players.record(Outcome::from_status(status)));
     let login = json!({"email": player.email, "password": PASSWORD});
-    let (_, body) = gateway.call(ops::ACCOUNTS_LOGIN, &[], Caller::Anonymous, Some(&login), &[200]).await.ok()?;
-    let session: SessionBody = gateway.typed(ops::ACCOUNTS_LOGIN, body)?;
+    let session = gateway
+        .call(ops::ACCOUNTS_LOGIN, &[], Caller::Anonymous, Some(&login), &[200])
+        .await
+        .ok()
+        .and_then(|(_, body)| gateway.typed::<SessionBody>(ops::ACCOUNTS_LOGIN, body));
+    let session = or_skip(gateway, session, "profile read skipped: the login failed")?;
     let (_, body) = gateway
         .call(ops::ACCOUNTS_ME, &[], Caller::Player(&session.token), None, &[200])
         .await
@@ -528,15 +545,19 @@ async fn seed_player(gateway: &Gateway, player: &PlayerPlan) -> Option<Session> 
 
 async fn seed_characters(gateway: &Gateway, player: &PlayerPlan, session: &Session) -> Option<()> {
     let caller = Caller::Player(&session.token);
-    let (_, body) = gateway.call(ops::CHARACTERS_LIST, &[], caller, None, &[200]).await.ok()?;
-    let listed: Vec<CharacterRow> = gateway.typed(ops::CHARACTERS_LIST, body)?;
+    let listed = gateway
+        .call(ops::CHARACTERS_LIST, &[], caller, None, &[200])
+        .await
+        .ok()
+        .and_then(|(_, body)| gateway.typed::<Vec<CharacterRow>>(ops::CHARACTERS_LIST, body));
+    let listed = or_skip(gateway, listed, "character creation skipped: the character list failed")?;
     let existing: Vec<String> = listed.into_iter().map(|c| c.name).collect();
     let missing = missing_characters(&player.characters, &existing);
     gateway.tally(|s| s.characters.existing += player.characters.len() - missing.len());
     for character in missing {
         let body = json!({"name": character.name, "class": character.class});
         if let Some((status, _)) =
-            gateway.call(ops::CHARACTERS_CREATE, &[], caller, Some(&body), &[201, 409]).await.ok()
+            gateway.call(ops::CHARACTERS_CREATE, &[], caller, Some(&body), CHARACTERS_CREATE_EXPECT).await.ok()
         {
             gateway.tally(|s| s.characters.record(Outcome::from_status(status)));
         }
@@ -546,8 +567,12 @@ async fn seed_characters(gateway: &Gateway, player: &PlayerPlan, session: &Sessi
 
 async fn seed_inventory(gateway: &Gateway, player: &PlayerPlan, session: &Session) -> Option<()> {
     let caller = Caller::Player(&session.token);
-    let (_, body) = gateway.call(ops::INVENTORY_LIST_MINE, &[], caller, None, &[200]).await.ok()?;
-    let listed: Vec<HoldingRow> = gateway.typed(ops::INVENTORY_LIST_MINE, body)?;
+    let listed = gateway
+        .call(ops::INVENTORY_LIST_MINE, &[], caller, None, &[200])
+        .await
+        .ok()
+        .and_then(|(_, body)| gateway.typed::<Vec<HoldingRow>>(ops::INVENTORY_LIST_MINE, body));
+    let listed = or_skip(gateway, listed, "inventory grants skipped: the inventory list failed")?;
     let mut held: HashMap<String, i64> = HashMap::new();
     for holding in listed {
         *held.entry(holding.item_id).or_default() += holding.quantity;
@@ -560,7 +585,7 @@ async fn seed_inventory(gateway: &Gateway, player: &PlayerPlan, session: &Sessio
         }
         let body = json!({"item_id": target.item_id, "qty": shortfall});
         if let Some((status, _)) =
-            gateway.call(ops::INVENTORY_GRANT, &[], caller, Some(&body), &[200, 409]).await.ok()
+            gateway.call(ops::INVENTORY_GRANT, &[], caller, Some(&body), INVENTORY_GRANT_EXPECT).await.ok()
         {
             gateway.tally(|s| s.grants.record(Outcome::from_status(status)));
         }
@@ -590,11 +615,12 @@ async fn seed_match(gateway: &Gateway, planned: &MatchPlan, sessions: &[Option<S
 
 async fn seed_friendship(gateway: &Gateway, requester: &Session, target: &Session) -> Option<()> {
     let body = json!({"target_handle": target.handle});
-    let (_, friend) = gateway
+    let friend = gateway
         .call(ops::FRIENDS_REQUEST, &[], Caller::Player(&requester.token), Some(&body), &[201])
         .await
-        .ok()?;
-    let friend: FriendBody = gateway.typed(ops::FRIENDS_REQUEST, friend)?;
+        .ok()
+        .and_then(|(_, friend)| gateway.typed::<FriendBody>(ops::FRIENDS_REQUEST, friend));
+    let friend = or_skip(gateway, friend, "friend accept skipped: the friend request failed")?;
     match friend_needs_accept(&friend.state) {
         Ok(true) => {}
         Ok(false) => {
@@ -603,6 +629,7 @@ async fn seed_friendship(gateway: &Gateway, requester: &Session, target: &Sessio
         }
         Err(err) => {
             gateway.shape_error(ops::FRIENDS_REQUEST, format!("{err:#}"));
+            gateway.skip("friend accept skipped: the friend request answered an unknown state");
             return None;
         }
     }
@@ -668,7 +695,7 @@ async fn seed_membership(
     match group.join_policy.as_str() {
         "open" => join(gateway, group_id, member).await,
         "request" => {
-            join(gateway, group_id, member).await?;
+            or_skip(gateway, join(gateway, group_id, member).await, "join decision skipped: the join request failed")?;
             let body = json!({"subject_id": member.player_id, "decision": "accept"});
             let (status, _) = gateway
                 .call(ops::GROUPS_DECIDE, &id, Caller::Player(&owner.token), Some(&body), &[204, 409])
@@ -678,15 +705,18 @@ async fn seed_membership(
         }
         "invite" => {
             let body = json!({"target_handle": member.handle});
-            gateway
+            let invited = gateway
                 .call(ops::GROUPS_INVITE, &id, Caller::Player(&owner.token), Some(&body), &[201, 409])
                 .await
-                .ok()?;
-            let Some(row) = find_mine(gateway, member, |row| row.id == group_id).await? else {
+                .ok();
+            or_skip(gateway, invited, "invite response skipped: the invite failed")?;
+            let found = find_mine(gateway, member, |row| row.id == group_id).await;
+            let Some(row) = or_skip(gateway, found, "invite response skipped: the invitee's group list failed")? else {
                 gateway.shape_error(
                     ops::GROUPS_LIST_MINE,
                     format!("invitee {} holds no row for the group after the invite", member.handle),
                 );
+                gateway.skip("invite response skipped: the invitee holds no row for the group");
                 return None;
             };
             match invite_needs_respond(&row.my_state) {
@@ -701,6 +731,7 @@ async fn seed_membership(
                 Ok(false) => Some(Outcome::AlreadyExists),
                 Err(err) => {
                     gateway.shape_error(ops::GROUPS_LIST_MINE, format!("{err:#}"));
+                    gateway.skip("invite response skipped: the invitee's row is in an unknown state");
                     None
                 }
             }

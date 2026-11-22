@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
+use std::sync::mpsc;
 
 use super::*;
+use crate::report::Got;
 
 fn args(list: &[&str]) -> Vec<String> {
     list.iter().map(|s| s.to_string()).collect()
@@ -311,4 +313,67 @@ fn parse_args_rejects_zero_and_non_number_concurrency() {
 #[test]
 fn usage_names_concurrency() {
     assert!(USAGE.contains("--concurrency <n>"));
+}
+
+fn seeded_player(characters: &[&str], items: &[(&str, i64)]) -> PlayerPlan {
+    PlayerPlan {
+        email: "demo-01@demo.local".to_string(),
+        display_name: "Demo 01".to_string(),
+        characters: characters.iter().map(|name| character(name)).collect(),
+        items: items.iter().map(|&(item_id, qty)| ItemTarget { item_id: item_id.to_string(), qty }).collect(),
+        save: SavePlan { collection: "saves".to_string(), key: "slot1".to_string(), value: "{}".to_string() },
+    }
+}
+
+fn session() -> Session {
+    Session { player_id: "p-1".to_string(), token: "t".to_string(), handle: "demo01".to_string() }
+}
+
+/// A gateway on the canned fake server; keep the receiver alive so the server thread can report.
+fn fake_gateway(answers: Vec<(u16, &'static str)>) -> (Gateway, mpsc::Receiver<String>) {
+    let (base, lines) = crate::client::tests::canned(answers);
+    (Gateway::new(&base, 4).expect("client").scenario("player demo-01@demo.local"), lines)
+}
+
+#[tokio::test]
+async fn character_create_409_after_the_list_showed_it_missing_is_an_error() {
+    let (gateway, _lines) = fake_gateway(vec![(200, "[]"), (409, "character cap reached")]);
+    seed_characters(&gateway, &seeded_player(&["Kestrel"], &[]), &session()).await;
+    let report = gateway.take_report();
+    assert_eq!(report.summary.characters, Tally::default());
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!((report.errors[0].op, &report.errors[0].got), ("characters.create", &Got::Status(409)));
+}
+
+#[tokio::test]
+async fn inventory_grant_409_after_the_list_showed_a_shortfall_is_an_error() {
+    let (gateway, _lines) = fake_gateway(vec![(200, "[]"), (409, "quantity ceiling")]);
+    seed_inventory(&gateway, &seeded_player(&[], &[("sword", 2)]), &session()).await;
+    let report = gateway.take_report();
+    assert_eq!(report.summary.grants, Tally::default());
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!((report.errors[0].op, &report.errors[0].got), ("inventory.grant", &Got::Status(409)));
+}
+
+#[tokio::test]
+async fn failed_character_list_records_the_skipped_creates() {
+    let (gateway, _lines) = fake_gateway(vec![(500, "boom")]);
+    seed_characters(&gateway, &seeded_player(&["Kestrel"], &[]), &session()).await;
+    let report = gateway.take_report();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].op, "characters.list");
+    let skipped: Vec<&str> = report.skipped.iter().map(|s| s.cause.as_str()).collect();
+    assert_eq!(skipped, ["character creation skipped: the character list failed"]);
+    assert_eq!(report.skipped[0].scenario, "player demo-01@demo.local");
+}
+
+#[tokio::test]
+async fn failed_friend_request_records_the_skipped_accept() {
+    let (gateway, _lines) = fake_gateway(vec![(500, "boom")]);
+    let target = Session { player_id: "p-2".to_string(), token: "t2".to_string(), handle: "demo02".to_string() };
+    seed_friendship(&gateway, &session(), &target).await;
+    let report = gateway.take_report();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    let skipped: Vec<&str> = report.skipped.iter().map(|s| s.cause.as_str()).collect();
+    assert_eq!(skipped, ["friend accept skipped: the friend request failed"]);
 }
