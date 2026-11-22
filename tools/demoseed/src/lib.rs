@@ -2,6 +2,7 @@
 //! inventory, matches, friends, groups, cloud saves) through the gateway's public HTTP API.
 //!
 //!   demoseed [--base-url <url>] [--players <n>] [--matches <n>] [--concurrency <n>]
+//!            [--event-timeout <secs>]
 //!
 //! Every call names its `opscatalog` op; the run ends with a report of every call that
 //! answered an unexpected status, every op of the catalog no call covered, and exits 1 on either.
@@ -16,7 +17,9 @@ use serde_json::json;
 use tokio::task::JoinSet;
 
 pub mod client;
+pub mod expect;
 pub mod ops;
+mod readback;
 pub mod report;
 
 use client::{Caller, Gateway};
@@ -27,6 +30,8 @@ pub const DEFAULT_PLAYERS: usize = 30;
 pub const DEFAULT_MATCHES: usize = 100;
 // Below the accounts module's 32 concurrent login slots, so a seed run never draws a 503 from them.
 pub const DEFAULT_CONCURRENCY: usize = 16;
+// How long an event-fed read (starter item, leaderboard, notifications) polls before it is an error.
+pub const DEFAULT_EVENT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const SPLIT_ADMIN_URL: &str = "http://127.0.0.1:8085/admin";
 
 const PASSWORD: &str = "demo-password-1";
@@ -44,6 +49,10 @@ const STREAM_PLAYER: u64 = 1;
 const STREAM_MATCH: u64 = 2;
 const STREAM_FRIEND: u64 = 3;
 const STREAM_GROUP: u64 = 4;
+const STREAM_PENDING_FRIEND: u64 = 5;
+
+// Friend requests the seed sends and never accepts, so the admin view shows pending edges.
+pub const PENDING_FRIEND_REQUESTS: usize = 4;
 
 const DISPLAY_NAMES: &[&str] = &[
     "Aldric", "Brynja", "Cassian", "Dagny", "Eirik", "Freya", "Gunnar", "Hilda", "Ivar",
@@ -58,11 +67,15 @@ const CHARACTER_NAMES: &[&str] = &[
 ];
 const CLASSES: &[&str] = &["warrior", "mage", "rogue", "cleric", "ranger", "paladin"];
 const ZONES: &[&str] = &["Emberfields", "Frostvale", "Sunken Keep", "Whispering Wood", "Ashen Pass"];
-const GROUPS: &[(&str, &str)] = &[
-    ("Iron Vanguard", "open"),
-    ("Silver Circle", "request"),
-    ("Shadow Pact", "invite"),
-    ("Dawn Riders", "open"),
+// (name, join policy, join requests left undecided). The undecided ones keep a pending row in
+// the admin view; they draw from the group's stream after its members, so adding them left
+// every earlier draw unchanged.
+const GROUPS: &[(&str, &str, usize)] = &[
+    ("Iron Vanguard", "open", 0),
+    ("Silver Circle", "request", 0),
+    ("Shadow Pact", "invite", 0),
+    ("Dawn Riders", "open", 0),
+    ("Ember Wardens", "request", 1),
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +84,7 @@ pub struct Config {
     pub players: usize,
     pub matches: usize,
     pub concurrency: usize,
+    pub event_timeout: Duration,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -84,14 +98,18 @@ demoseed — seed deterministic demo data into a running fleet through the gatew
 
 USAGE:
   demoseed [--base-url <url>] [--players <n>] [--matches <n>] [--concurrency <n>]
+           [--event-timeout <secs>]
 
   --base-url <url>   gateway front door (default http://127.0.0.1:8080; split: http://127.0.0.1:8082)
   --players <n>      demo players to create (default 30)
   --matches <n>      match reports to send (default 100)
   --concurrency <n>  requests in flight at once (default 16, at least 1)
+  --event-timeout <secs>
+                     how long an event-fed read polls before it is an error (default 10)
 
 Requires a fleet started with the dev flags (devctl up sets APIKEYS_DEV_SEED, ACCOUNTS_DEV_AUTH,
-INVENTORY_DEV_GRANT). Re-running converges: only missing rows are created. Exits 1 when any call
+INVENTORY_DEV_GRANT, WALLET_DEV_SEED). Re-running converges: only missing rows are created, and
+every seeded kind is read back. Exits 1 when any call
 answered an unexpected status or an op of the catalog was never called.";
 
 pub fn parse_args(args: &[String]) -> Result<Command> {
@@ -100,12 +118,13 @@ pub fn parse_args(args: &[String]) -> Result<Command> {
         players: DEFAULT_PLAYERS,
         matches: DEFAULT_MATCHES,
         concurrency: DEFAULT_CONCURRENCY,
+        event_timeout: DEFAULT_EVENT_TIMEOUT,
     };
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
             "-h" | "--help" | "help" => return Ok(Command::Help),
-            "--base-url" | "--players" | "--matches" | "--concurrency" => {
+            "--base-url" | "--players" | "--matches" | "--concurrency" | "--event-timeout" => {
                 let value = iter
                     .next()
                     .ok_or_else(|| anyhow!("demoseed: {flag} requires a value\n\n{USAGE}"))?;
@@ -113,6 +132,9 @@ pub fn parse_args(args: &[String]) -> Result<Command> {
                     "--base-url" => config.base_url = value.trim_end_matches('/').to_string(),
                     "--players" => config.players = parse_count(flag, value)?,
                     "--concurrency" => config.concurrency = parse_positive(flag, value)?,
+                    "--event-timeout" => {
+                        config.event_timeout = Duration::from_secs(parse_positive(flag, value)? as u64)
+                    }
                     _ => config.matches = parse_count(flag, value)?,
                 }
             }
@@ -143,6 +165,9 @@ pub struct SeedPlan {
     pub players: Vec<PlayerPlan>,
     pub matches: Vec<MatchPlan>,
     pub friendships: Vec<FriendPlan>,
+    /// Requested and never accepted; disjoint from `friendships` as unordered pairs, since a
+    /// request against an existing reverse request accepts it.
+    pub pending_friendships: Vec<FriendPlan>,
     pub groups: Vec<GroupPlan>,
 }
 
@@ -153,6 +178,8 @@ pub struct PlayerPlan {
     pub characters: Vec<CharacterPlan>,
     pub items: Vec<ItemTarget>,
     pub save: SavePlan,
+    /// Readable by every player; `public_save_reader` names the one that reads it.
+    pub public_save: SavePlan,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -172,6 +199,7 @@ pub struct SavePlan {
     pub collection: String,
     pub key: String,
     pub value: String,
+    pub acl: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -193,6 +221,8 @@ pub struct GroupPlan {
     pub join_policy: String,
     pub owner: usize,
     pub members: Vec<usize>,
+    /// Players whose join request stays undecided; disjoint from the owner and the members.
+    pub pending: Vec<usize>,
 }
 
 struct SplitMix64(u64);
@@ -238,6 +268,7 @@ pub fn plan(players: usize, matches: usize) -> SeedPlan {
         players: players_plan,
         matches: Vec::new(),
         friendships: Vec::new(),
+        pending_friendships: Vec::new(),
         groups: Vec::new(),
     };
     if players == 0 {
@@ -269,17 +300,33 @@ pub fn plan(players: usize, matches: usize) -> SeedPlan {
                 }
             }
         }
+        let mut rng = SplitMix64::stream(STREAM_PENDING_FRIEND, 0);
+        for _ in 0..PENDING_FRIEND_REQUESTS * 16 {
+            if seed_plan.pending_friendships.len() == PENDING_FRIEND_REQUESTS {
+                break;
+            }
+            let requester = rng.below(players);
+            let mut target = rng.below(players - 1);
+            if target >= requester {
+                target += 1;
+            }
+            if seen.insert((requester.min(target), requester.max(target))) {
+                seed_plan.pending_friendships.push(FriendPlan { requester, target });
+            }
+        }
     }
     seed_plan.groups = GROUPS
         .iter()
         .enumerate()
-        .map(|(g, (name, policy))| {
+        .map(|(g, (name, policy, undecided))| {
             let mut rng = SplitMix64::stream(STREAM_GROUP, g);
             let owner = (g * 7) % players;
             let others: Vec<usize> = (0..players).filter(|&p| p != owner).collect();
             let size = 3 + rng.below(5);
-            let members = rng.distinct(others.len(), size).into_iter().map(|i| others[i]).collect();
-            GroupPlan { name: name.to_string(), join_policy: policy.to_string(), owner, members }
+            let members: Vec<usize> = rng.distinct(others.len(), size).into_iter().map(|i| others[i]).collect();
+            let rest: Vec<usize> = others.into_iter().filter(|p| !members.contains(p)).collect();
+            let pending = rng.distinct(rest.len(), *undecided).into_iter().map(|i| rest[i]).collect();
+            GroupPlan { name: name.to_string(), join_policy: policy.to_string(), owner, members, pending }
         })
         .collect();
     seed_plan
@@ -314,13 +361,42 @@ fn plan_player(index: usize) -> PlayerPlan {
         "playtime_secs": rng.range(600, 360_000),
     })
     .to_string();
+    // Drawn last, so every earlier draw (and the pinned golden) is unchanged by it.
+    let public_value = json!({"display_name": display_name, "favorite_zone": ZONES[rng.below(ZONES.len())]}).to_string();
     PlayerPlan {
         email: format!("demo-{index:02}@demo.local"),
         display_name,
         characters,
         items,
-        save: SavePlan { collection: "saves".to_string(), key: "slot1".to_string(), value: save_value },
+        save: SavePlan {
+            collection: "saves".to_string(),
+            key: "slot1".to_string(),
+            value: save_value,
+            acl: "private".to_string(),
+        },
+        public_save: SavePlan {
+            collection: "saves".to_string(),
+            key: "public".to_string(),
+            value: public_value,
+            acl: "public_read".to_string(),
+        },
     }
+}
+
+/// The player that reads `owner`'s public save by `owner_id`: the next one round the ring, never
+/// the owner itself. `None` with fewer than two players.
+pub fn public_save_reader(owner: usize, players: usize) -> Option<usize> {
+    (players >= 2).then(|| (owner + 1) % players)
+}
+
+/// The planned player with the most wins, the lowest index on a tie; `None` without matches.
+pub fn top_winner(seed: &SeedPlan) -> Option<usize> {
+    let mut wins = vec![0usize; seed.players.len()];
+    for planned in &seed.matches {
+        wins[planned.winner] += 1;
+    }
+    let (index, &most) = wins.iter().enumerate().max_by_key(|&(index, &w)| (w, std::cmp::Reverse(index)))?;
+    (most > 0).then_some(index)
 }
 
 pub fn inventory_shortfall(target: i64, held: i64) -> i64 {
@@ -360,8 +436,9 @@ struct MeBody {
     handle: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct CharacterRow {
+    id: String,
     name: String,
 }
 
@@ -400,12 +477,14 @@ type Sessions = Arc<Vec<Option<Session>>>;
 
 /// Seeds the plan through the gateway and returns the report. The only error is a base URL that
 /// does not answer the startup probe; every failed call after that is recorded in the report.
-/// Phases run in order (players, per-player rows, matches, friendships, groups), each one's items
-/// as parallel tasks; a later phase skips, with a recorded cause, the items whose players failed.
+/// Phases run in order (players, per-player rows, matches and the leaderboard, friendships,
+/// groups, inboxes and public saves), each one's items as parallel tasks; a later phase skips,
+/// with a recorded cause, the items whose players failed. Every seeded kind is read back.
 pub async fn run(config: &Config) -> Result<Report> {
     let gateway = Gateway::new(&config.base_url, config.concurrency)?;
     gateway.probe().await?;
     let seed = Arc::new(plan(config.players, config.matches));
+    let timeout = config.event_timeout;
 
     let mut tasks = JoinSet::new();
     for index in 0..seed.players.len() {
@@ -422,50 +501,82 @@ pub async fn run(config: &Config) -> Result<Report> {
     let mut tasks = JoinSet::new();
     for index in 0..seed.players.len() {
         let gateway = gateway.scenario(format!("player {}", seed.players[index].email));
-        if !players_seeded(&gateway, &seed, &sessions, &[index], "characters, inventory and save") {
+        if !players_seeded(&gateway, &seed, &sessions, &[index], "characters, inventory, saves and wallet") {
             continue;
         }
         let (seed, sessions) = (Arc::clone(&seed), Arc::clone(&sessions));
         tasks.spawn(async move {
             let (player, session) = (&seed.players[index], sessions[index].as_ref().expect("checked above"));
-            seed_characters(&gateway, player, session).await;
+            let characters = seed_characters(&gateway, player, session).await;
             seed_inventory(&gateway, player, session).await;
-            seed_save(&gateway, player, session).await;
+            seed_save(&gateway, &player.save, session).await;
+            let public_saved = seed_save(&gateway, &player.public_save, session).await.is_some();
+            match characters {
+                Some(characters) => readback::starter_items(&gateway, session, &characters, timeout).await,
+                None => gateway.skip("starter item reads skipped: the character list failed"),
+            }
+            readback::wallet(&gateway, session).await;
+            readback::own_saves(&gateway, player, session).await;
+            (index, public_saved)
         });
     }
-    join_all(tasks).await;
+    let mut public_saved = vec![false; seed.players.len()];
+    for (index, saved) in join_all(tasks).await {
+        public_saved[index] = saved;
+    }
 
     let mut tasks = JoinSet::new();
     for index in 0..seed.matches.len() {
         let planned = &seed.matches[index];
         let gateway = gateway.scenario(format!("match {}", planned.report_id));
         if !players_seeded(&gateway, &seed, &sessions, &[planned.winner, planned.loser], "the report") {
+            tasks.spawn(async move { (index, false) });
             continue;
         }
         let (seed, sessions) = (Arc::clone(&seed), Arc::clone(&sessions));
-        tasks.spawn(async move { seed_match(&gateway, &seed.matches[index], &sessions).await });
+        tasks.spawn(async move { (index, seed_match(&gateway, &seed.matches[index], &sessions).await.is_some()) });
     }
-    join_all(tasks).await;
+    let reported: Vec<(usize, bool)> = join_all(tasks).await;
+    if let Some(top) = top_winner(&seed) {
+        let gateway = gateway.scenario("leaderboard");
+        let lost: Vec<&str> = reported
+            .iter()
+            .filter(|&&(index, ok)| !ok && seed.matches[index].winner == top)
+            .map(|&(index, _)| seed.matches[index].report_id.as_str())
+            .collect();
+        if !lost.is_empty() {
+            gateway.skip(format!("leaderboard read skipped: the top winner's reports failed: {}", lost.join(", ")));
+        } else if let Some(winner) = sessions[top].as_ref() {
+            readback::leaderboard(&gateway, &winner.player_id, timeout).await;
+        }
+    }
 
     let mut tasks = JoinSet::new();
-    for index in 0..seed.friendships.len() {
-        let friendship = &seed.friendships[index];
+    let planned_pairs =
+        seed.friendships.iter().map(|f| (f, true)).chain(seed.pending_friendships.iter().map(|f| (f, false)));
+    for (friendship, accept) in planned_pairs {
+        let kind = if accept { "friendship" } else { "pending friendship" };
         let gateway = gateway.scenario(format!(
-            "friendship {} -> {}",
+            "{kind} {} -> {}",
             seed.players[friendship.requester].email, seed.players[friendship.target].email
         ));
         if !players_seeded(&gateway, &seed, &sessions, &[friendship.requester, friendship.target], "the friendship") {
             continue;
         }
-        let (seed, sessions) = (Arc::clone(&seed), Arc::clone(&sessions));
+        let (friendship, sessions) = (friendship.clone(), Arc::clone(&sessions));
         tasks.spawn(async move {
-            let friendship = &seed.friendships[index];
             let requester = sessions[friendship.requester].as_ref().expect("checked above");
             let target = sessions[friendship.target].as_ref().expect("checked above");
-            seed_friendship(&gateway, requester, target).await;
+            let accepted_now = seed_friendship(&gateway, requester, target, accept).await == Some(true);
+            (friendship.requester, accepted_now)
         });
     }
-    join_all(tasks).await;
+    // Per player, the friendships this run accepted on its request: each owes it a fresh
+    // `friend.accepted` inbox row.
+    let mut accepted_now = vec![0usize; seed.players.len()];
+    for (requester, accepted) in join_all(tasks).await {
+        accepted_now[requester] += usize::from(accepted);
+    }
 
     let mut tasks = JoinSet::new();
     for index in 0..seed.groups.len() {
@@ -476,6 +587,32 @@ pub async fn run(config: &Config) -> Result<Report> {
         }
         let (seed, sessions) = (Arc::clone(&seed), Arc::clone(&sessions));
         tasks.spawn(async move { seed_group(&gateway, &seed, &seed.groups[index], &sessions).await });
+    }
+    join_all(tasks).await;
+
+    let mut tasks = JoinSet::new();
+    for index in 0..seed.players.len() {
+        let gateway = gateway.scenario(format!("player {}", seed.players[index].email));
+        if !players_seeded(&gateway, &seed, &sessions, &[index], "the inbox and public save reads") {
+            continue;
+        }
+        let (seed, sessions) = (Arc::clone(&seed), Arc::clone(&sessions));
+        let (fresh, public_saved) = (accepted_now[index], public_saved[index]);
+        tasks.spawn(async move {
+            let session = sessions[index].as_ref().expect("checked above");
+            readback::inbox(&gateway, session, fresh, timeout).await;
+            let Some(reader) = public_save_reader(index, seed.players.len()) else { return };
+            match sessions[reader].as_ref() {
+                Some(reader) if public_saved => {
+                    readback::public_save(&gateway, &seed.players[index].public_save, session, reader).await;
+                }
+                Some(_) => gateway.skip("public save read skipped: the public save was not written"),
+                None => gateway.skip(format!(
+                    "public save read skipped: the account seed failed for the reader {}",
+                    seed.players[reader].email
+                )),
+            }
+        });
     }
     join_all(tasks).await;
 
@@ -517,58 +654,57 @@ fn or_skip<T>(gateway: &Gateway, value: Option<T>, skipped: &str) -> Option<T> {
     value
 }
 
-/// A create or grant runs only after the list showed the row missing or the quantity short, so
-/// a 409 there is a cap, ceiling or tombstone refusal, not "already exists", and is an error.
-const CHARACTERS_CREATE_EXPECT: &[u16] = &[201];
-const INVENTORY_GRANT_EXPECT: &[u16] = &[200];
-
 async fn seed_player(gateway: &Gateway, player: &PlayerPlan) -> Option<Session> {
     let register = json!({"email": player.email, "password": PASSWORD, "displayName": player.display_name});
     let registered =
-        gateway.call(ops::ACCOUNTS_REGISTER, &[], Caller::Anonymous, Some(&register), &[201, 409]).await.ok();
+        gateway.call(ops::ACCOUNTS_REGISTER, &[], Caller::Anonymous, Some(&register), expect::ACCOUNTS_REGISTER).await.ok();
     let (status, _) = or_skip(gateway, registered, "login and profile read skipped: the registration failed")?;
     gateway.tally(|s| s.players.record(Outcome::from_status(status)));
     let login = json!({"email": player.email, "password": PASSWORD});
     let session = gateway
-        .call(ops::ACCOUNTS_LOGIN, &[], Caller::Anonymous, Some(&login), &[200])
+        .call(ops::ACCOUNTS_LOGIN, &[], Caller::Anonymous, Some(&login), expect::ACCOUNTS_LOGIN)
         .await
         .ok()
         .and_then(|(_, body)| gateway.typed::<SessionBody>(ops::ACCOUNTS_LOGIN, body));
     let session = or_skip(gateway, session, "profile read skipped: the login failed")?;
     let (_, body) = gateway
-        .call(ops::ACCOUNTS_ME, &[], Caller::Player(&session.token), None, &[200])
+        .call(ops::ACCOUNTS_ME, &[], Caller::Player(&session.token), None, expect::ACCOUNTS_ME)
         .await
         .ok()?;
     let me: MeBody = gateway.typed(ops::ACCOUNTS_ME, body)?;
     Some(Session { player_id: session.player_id, token: session.token, handle: me.handle })
 }
 
-async fn seed_characters(gateway: &Gateway, player: &PlayerPlan, session: &Session) -> Option<()> {
+/// Creates the planned characters the list does not show and returns every planned one that
+/// exists afterwards (listed or created), for the starter item read.
+async fn seed_characters(gateway: &Gateway, player: &PlayerPlan, session: &Session) -> Option<Vec<CharacterRow>> {
     let caller = Caller::Player(&session.token);
     let listed = gateway
-        .call(ops::CHARACTERS_LIST, &[], caller, None, &[200])
+        .call(ops::CHARACTERS_LIST, &[], caller, None, expect::CHARACTERS_LIST)
         .await
         .ok()
         .and_then(|(_, body)| gateway.typed::<Vec<CharacterRow>>(ops::CHARACTERS_LIST, body));
     let listed = or_skip(gateway, listed, "character creation skipped: the character list failed")?;
-    let existing: Vec<String> = listed.into_iter().map(|c| c.name).collect();
+    let existing: Vec<String> = listed.iter().map(|c| c.name.clone()).collect();
     let missing = missing_characters(&player.characters, &existing);
     gateway.tally(|s| s.characters.existing += player.characters.len() - missing.len());
+    let mut present: Vec<CharacterRow> =
+        listed.into_iter().filter(|c| player.characters.iter().any(|p| p.name == c.name)).collect();
     for character in missing {
         let body = json!({"name": character.name, "class": character.class});
-        if let Some((status, _)) =
-            gateway.call(ops::CHARACTERS_CREATE, &[], caller, Some(&body), CHARACTERS_CREATE_EXPECT).await.ok()
-        {
+        let created = gateway.call(ops::CHARACTERS_CREATE, &[], caller, Some(&body), expect::CHARACTERS_CREATE).await.ok();
+        if let Some((status, body)) = created {
             gateway.tally(|s| s.characters.record(Outcome::from_status(status)));
+            present.extend(gateway.typed::<CharacterRow>(ops::CHARACTERS_CREATE, body));
         }
     }
-    Some(())
+    Some(present)
 }
 
 async fn seed_inventory(gateway: &Gateway, player: &PlayerPlan, session: &Session) -> Option<()> {
     let caller = Caller::Player(&session.token);
     let listed = gateway
-        .call(ops::INVENTORY_LIST_MINE, &[], caller, None, &[200])
+        .call(ops::INVENTORY_LIST_MINE, &[], caller, None, expect::INVENTORY_LIST_MINE)
         .await
         .ok()
         .and_then(|(_, body)| gateway.typed::<Vec<HoldingRow>>(ops::INVENTORY_LIST_MINE, body));
@@ -585,7 +721,7 @@ async fn seed_inventory(gateway: &Gateway, player: &PlayerPlan, session: &Sessio
         }
         let body = json!({"item_id": target.item_id, "qty": shortfall});
         if let Some((status, _)) =
-            gateway.call(ops::INVENTORY_GRANT, &[], caller, Some(&body), INVENTORY_GRANT_EXPECT).await.ok()
+            gateway.call(ops::INVENTORY_GRANT, &[], caller, Some(&body), expect::INVENTORY_GRANT).await.ok()
         {
             gateway.tally(|s| s.grants.record(Outcome::from_status(status)));
         }
@@ -593,11 +729,11 @@ async fn seed_inventory(gateway: &Gateway, player: &PlayerPlan, session: &Sessio
     Some(())
 }
 
-async fn seed_save(gateway: &Gateway, player: &PlayerPlan, session: &Session) -> Option<()> {
-    let params = [("collection", player.save.collection.as_str()), ("key", player.save.key.as_str())];
-    let body = json!({"value": player.save.value, "expected_version": 0, "acl": "private"});
+async fn seed_save(gateway: &Gateway, save: &SavePlan, session: &Session) -> Option<()> {
+    let params = [("collection", save.collection.as_str()), ("key", save.key.as_str())];
+    let body = json!({"value": save.value, "expected_version": 0, "acl": save.acl});
     let (status, _) = gateway
-        .call(ops::STORAGE_PUT, &params, Caller::Player(&session.token), Some(&body), &[200, 409])
+        .call(ops::STORAGE_PUT, &params, Caller::Player(&session.token), Some(&body), expect::STORAGE_PUT)
         .await
         .ok()?;
     gateway.tally(|s| s.saves.record(Outcome::from_status(status)));
@@ -608,37 +744,54 @@ async fn seed_match(gateway: &Gateway, planned: &MatchPlan, sessions: &[Option<S
     let winner = sessions[planned.winner].as_ref()?;
     let loser = sessions[planned.loser].as_ref()?;
     let body = json!({"ReportId": planned.report_id, "Winner": winner.player_id, "Loser": loser.player_id});
-    let (status, _) = gateway.call(ops::MATCH_REPORT, &[], Caller::Server, Some(&body), &[202, 409]).await.ok()?;
+    let (status, _) = gateway.call(ops::MATCH_REPORT, &[], Caller::Server, Some(&body), expect::MATCH_REPORT).await.ok()?;
     gateway.tally(|s| s.matches.record(Outcome::from_status(status)));
     Some(())
 }
 
-async fn seed_friendship(gateway: &Gateway, requester: &Session, target: &Session) -> Option<()> {
+/// Requests the friendship and, when `accept`, has the target accept it, then reads both
+/// friend lists. `Some(true)` when this run accepted the edge, so the requester's inbox owes a
+/// fresh `friend.accepted` row; a pending edge must show in the target's pending list first.
+async fn seed_friendship(gateway: &Gateway, requester: &Session, target: &Session, accept: bool) -> Option<bool> {
     let body = json!({"target_handle": target.handle});
     let friend = gateway
-        .call(ops::FRIENDS_REQUEST, &[], Caller::Player(&requester.token), Some(&body), &[201])
+        .call(ops::FRIENDS_REQUEST, &[], Caller::Player(&requester.token), Some(&body), expect::FRIENDS_REQUEST)
         .await
         .ok()
         .and_then(|(_, friend)| gateway.typed::<FriendBody>(ops::FRIENDS_REQUEST, friend));
     let friend = or_skip(gateway, friend, "friend accept skipped: the friend request failed")?;
-    match friend_needs_accept(&friend.state) {
-        Ok(true) => {}
-        Ok(false) => {
-            gateway.tally(|s| s.friendships.existing += 1);
-            return Some(());
-        }
+    let pending = match friend_needs_accept(&friend.state) {
+        Ok(pending) => pending,
         Err(err) => {
             gateway.shape_error(ops::FRIENDS_REQUEST, format!("{err:#}"));
             gateway.skip("friend accept skipped: the friend request answered an unknown state");
             return None;
         }
+    };
+    if pending {
+        // A re-run finds an accepted edge, which no pending list shows, so only an edge this
+        // run saw pending is looked for.
+        let listed = readback::incoming_request(gateway, target, &friend.edge_id).await;
+        or_skip(gateway, listed, "friend accept skipped: the pending request is not in the target's list")?;
     }
-    let (status, _) = gateway
-        .call(ops::FRIENDS_ACCEPT, &[("id", &friend.edge_id)], Caller::Player(&target.token), None, &[204, 409])
-        .await
-        .ok()?;
-    gateway.tally(|s| s.friendships.record(Outcome::from_status(status)));
-    Some(())
+    if !accept {
+        return Some(false);
+    }
+    let accepted_now = if pending {
+        let id = [("id", friend.edge_id.as_str())];
+        let (status, _) = gateway
+            .call(ops::FRIENDS_ACCEPT, &id, Caller::Player(&target.token), None, expect::FRIENDS_ACCEPT)
+            .await
+            .ok()?;
+        gateway.tally(|s| s.friendships.record(Outcome::from_status(status)));
+        status != 409
+    } else {
+        gateway.tally(|s| s.friendships.existing += 1);
+        false
+    };
+    readback::friend_listed(gateway, requester, target).await;
+    readback::friend_listed(gateway, target, requester).await;
+    Some(accepted_now)
 }
 
 async fn seed_group(gateway: &Gateway, seed: &SeedPlan, group: &GroupPlan, sessions: &[Option<Session>]) -> Option<()> {
@@ -652,7 +805,7 @@ async fn seed_group(gateway: &Gateway, seed: &SeedPlan, group: &GroupPlan, sessi
         Some(None) => {
             let body = json!({"name": group.name, "join_policy": group.join_policy});
             let created = gateway
-                .call(ops::GROUPS_CREATE, &[], Caller::Player(&owner.token), Some(&body), &[201])
+                .call(ops::GROUPS_CREATE, &[], Caller::Player(&owner.token), Some(&body), expect::GROUPS_CREATE)
                 .await
                 .ok()
                 .and_then(|(_, body)| gateway.typed::<GroupRow>(ops::GROUPS_CREATE, body));
@@ -672,6 +825,7 @@ async fn seed_group(gateway: &Gateway, seed: &SeedPlan, group: &GroupPlan, sessi
             return None;
         }
     };
+    let mut joined = vec![owner];
     for &member in &group.members {
         let Some(session) = sessions[member].as_ref() else {
             gateway.skip(format!("membership skipped: the account seed failed for {}", seed.players[member].email));
@@ -679,8 +833,20 @@ async fn seed_group(gateway: &Gateway, seed: &SeedPlan, group: &GroupPlan, sessi
         };
         if let Some(outcome) = seed_membership(gateway, group, &group_id, owner, session).await {
             gateway.tally(|s| s.memberships.record(outcome));
+            joined.push(session);
         }
     }
+    let mut requested = Vec::new();
+    for &asker in &group.pending {
+        let Some(session) = sessions[asker].as_ref() else {
+            gateway.skip(format!("join request skipped: the account seed failed for {}", seed.players[asker].email));
+            continue;
+        };
+        if join(gateway, &group_id, session).await.is_some() {
+            requested.push(session);
+        }
+    }
+    readback::group_rows(gateway, &group_id, owner, &joined, &requested).await;
     Some(())
 }
 
@@ -698,7 +864,7 @@ async fn seed_membership(
             or_skip(gateway, join(gateway, group_id, member).await, "join decision skipped: the join request failed")?;
             let body = json!({"subject_id": member.player_id, "decision": "accept"});
             let (status, _) = gateway
-                .call(ops::GROUPS_DECIDE, &id, Caller::Player(&owner.token), Some(&body), &[204, 409])
+                .call(ops::GROUPS_DECIDE, &id, Caller::Player(&owner.token), Some(&body), expect::GROUPS_DECIDE)
                 .await
                 .ok()?;
             Some(Outcome::from_status(status))
@@ -706,7 +872,7 @@ async fn seed_membership(
         "invite" => {
             let body = json!({"target_handle": member.handle});
             let invited = gateway
-                .call(ops::GROUPS_INVITE, &id, Caller::Player(&owner.token), Some(&body), &[201, 409])
+                .call(ops::GROUPS_INVITE, &id, Caller::Player(&owner.token), Some(&body), expect::GROUPS_INVITE)
                 .await
                 .ok();
             or_skip(gateway, invited, "invite response skipped: the invite failed")?;
@@ -723,7 +889,7 @@ async fn seed_membership(
                 Ok(true) => {
                     let body = json!({"decision": "accept"});
                     let (status, _) = gateway
-                        .call(ops::GROUPS_RESPOND, &id, Caller::Player(&member.token), Some(&body), &[204, 409])
+                        .call(ops::GROUPS_RESPOND, &id, Caller::Player(&member.token), Some(&body), expect::GROUPS_RESPOND)
                         .await
                         .ok()?;
                     Some(Outcome::from_status(status))
@@ -745,7 +911,7 @@ async fn seed_membership(
 
 async fn join(gateway: &Gateway, group_id: &str, member: &Session) -> Option<Outcome> {
     let (status, _) = gateway
-        .call(ops::GROUPS_JOIN, &[("id", group_id)], Caller::Player(&member.token), Some(&json!({})), &[200, 409])
+        .call(ops::GROUPS_JOIN, &[("id", group_id)], Caller::Player(&member.token), Some(&json!({})), expect::GROUPS_JOIN)
         .await
         .ok()?;
     Some(Outcome::from_status(status))
@@ -758,7 +924,7 @@ async fn find_mine(gateway: &Gateway, session: &Session, matches: impl Fn(&Group
     for _ in 0..MAX_PAGES {
         let body = json!({"cursor": cursor, "limit": PAGE_LIMIT});
         let (_, page) = gateway
-            .call(ops::GROUPS_LIST_MINE, &[], Caller::Player(&session.token), Some(&body), &[200])
+            .call(ops::GROUPS_LIST_MINE, &[], Caller::Player(&session.token), Some(&body), expect::GROUPS_LIST_MINE)
             .await
             .ok()?;
         let page: GroupPageBody = gateway.typed(ops::GROUPS_LIST_MINE, page)?;

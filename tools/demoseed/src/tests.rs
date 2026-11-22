@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::sync::mpsc;
 
 use super::*;
+use crate::readback::{self, first_unread, NotificationRow};
 use crate::report::Got;
 
 fn args(list: &[&str]) -> Vec<String> {
@@ -102,7 +103,7 @@ fn group_names_unique_and_membership_consistent() {
         assert_eq!(seed.groups.len(), GROUPS.len());
         let names: BTreeSet<&str> = seed.groups.iter().map(|g| g.name.as_str()).collect();
         assert_eq!(names.len(), seed.groups.len());
-        for (group, (name, policy)) in seed.groups.iter().zip(GROUPS) {
+        for (group, (name, policy, undecided)) in seed.groups.iter().zip(GROUPS) {
             assert_eq!(group.name, *name);
             assert_eq!(group.join_policy, *policy);
             assert!(["open", "request", "invite"].contains(&group.join_policy.as_str()));
@@ -113,6 +114,11 @@ fn group_names_unique_and_membership_consistent() {
             assert!(group.members.iter().all(|&m| m < players));
             assert!(group.members.len() >= 3.min(players - 1), "{} players={players}", group.name);
             assert!(group.members.len() <= 7.min(players - 1), "{} players={players}", group.name);
+            let pending: BTreeSet<usize> = group.pending.iter().copied().collect();
+            assert_eq!(pending.len(), group.pending.len(), "duplicate pending joiner in {}", group.name);
+            assert!(!pending.contains(&group.owner), "owner pending in {}", group.name);
+            assert!(pending.is_disjoint(&members), "member pending in {}", group.name);
+            assert_eq!(group.pending.len(), (*undecided).min(players - 1 - members.len()), "{} players={players}", group.name);
         }
     }
 }
@@ -226,6 +232,7 @@ fn parse_args_defaults() {
             players: DEFAULT_PLAYERS,
             matches: DEFAULT_MATCHES,
             concurrency: DEFAULT_CONCURRENCY,
+            event_timeout: DEFAULT_EVENT_TIMEOUT,
         })
     );
 }
@@ -321,8 +328,13 @@ fn seeded_player(characters: &[&str], items: &[(&str, i64)]) -> PlayerPlan {
         display_name: "Demo 01".to_string(),
         characters: characters.iter().map(|name| character(name)).collect(),
         items: items.iter().map(|&(item_id, qty)| ItemTarget { item_id: item_id.to_string(), qty }).collect(),
-        save: SavePlan { collection: "saves".to_string(), key: "slot1".to_string(), value: "{}".to_string() },
+        save: save("slot1", "private"),
+        public_save: save("public", "public_read"),
     }
+}
+
+fn save(key: &str, acl: &str) -> SavePlan {
+    SavePlan { collection: "saves".to_string(), key: key.to_string(), value: "{}".to_string(), acl: acl.to_string() }
 }
 
 fn session() -> Session {
@@ -371,9 +383,250 @@ async fn failed_character_list_records_the_skipped_creates() {
 async fn failed_friend_request_records_the_skipped_accept() {
     let (gateway, _lines) = fake_gateway(vec![(500, "boom")]);
     let target = Session { player_id: "p-2".to_string(), token: "t2".to_string(), handle: "demo02".to_string() };
-    seed_friendship(&gateway, &session(), &target).await;
+    seed_friendship(&gateway, &session(), &target, true).await;
     let report = gateway.take_report();
     assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
     let skipped: Vec<&str> = report.skipped.iter().map(|s| s.cause.as_str()).collect();
     assert_eq!(skipped, ["friend accept skipped: the friend request failed"]);
+}
+
+#[test]
+fn pending_friendships_are_disjoint_from_accepted_ones_as_unordered_pairs() {
+    for players in [2, 3, 5, 30, 75] {
+        let seed = plan(players, 0);
+        let accepted: BTreeSet<(usize, usize)> =
+            seed.friendships.iter().map(|f| (f.requester.min(f.target), f.requester.max(f.target))).collect();
+        let mut pending = BTreeSet::new();
+        for f in &seed.pending_friendships {
+            assert_ne!(f.requester, f.target, "players={players}");
+            assert!(f.requester < players && f.target < players);
+            let pair = (f.requester.min(f.target), f.requester.max(f.target));
+            assert!(!accepted.contains(&pair), "pending {f:?} is an accepted pair, players={players}");
+            assert!(pending.insert(pair), "pending {f:?} repeats or reverses another, players={players}");
+        }
+    }
+    assert_eq!(plan(30, 0).pending_friendships.len(), PENDING_FRIEND_REQUESTS);
+    assert!(plan(2, 0).pending_friendships.is_empty(), "the only pair of two players is an accepted one");
+}
+
+#[test]
+fn new_plan_parts_are_deterministic_and_present() {
+    let (first, second) = (plan(30, 100), plan(30, 100));
+    assert_eq!(first.pending_friendships, second.pending_friendships);
+    assert_eq!(first.groups, second.groups);
+    let undecided: Vec<&GroupPlan> = first.groups.iter().filter(|g| !g.pending.is_empty()).collect();
+    assert_eq!(undecided.len(), 1);
+    assert_eq!((undecided[0].join_policy.as_str(), undecided[0].pending.len()), ("request", 1));
+    for player in &first.players {
+        assert_eq!((player.save.acl.as_str(), player.public_save.acl.as_str()), ("private", "public_read"));
+        assert_ne!(player.save.key, player.public_save.key, "{}", player.email);
+    }
+}
+
+#[test]
+fn the_public_save_reader_is_never_the_owner() {
+    assert_eq!(public_save_reader(0, 0), None);
+    assert_eq!(public_save_reader(0, 1), None);
+    for players in 2..40 {
+        for owner in 0..players {
+            let reader = public_save_reader(owner, players).expect("two or more players have a reader");
+            assert_ne!(reader, owner, "players={players}");
+            assert!(reader < players);
+        }
+    }
+}
+
+#[test]
+fn top_winner_takes_the_most_wins_and_the_lowest_index_on_a_tie() {
+    let mut seed = plan(4, 0);
+    assert_eq!(top_winner(&seed), None);
+    let won = |winner, loser| MatchPlan { report_id: String::new(), winner, loser };
+    seed.matches = vec![won(3, 0), won(2, 0), won(3, 1), won(2, 1)];
+    assert_eq!(top_winner(&seed), Some(2));
+    seed.matches.push(won(3, 2));
+    assert_eq!(top_winner(&seed), Some(3));
+}
+
+fn notification(id: &str, kind: &str, created_at: &str, read_at: &str) -> NotificationRow {
+    NotificationRow { id: id.to_string(), kind: kind.to_string(), created_at: created_at.to_string(), read_at: read_at.to_string() }
+}
+
+#[test]
+fn mark_read_selection_is_the_oldest_unread_row_whatever_the_order() {
+    let rows = vec![
+        notification("n3", "friend.accepted", "2026-11-22T10:00:03Z", ""),
+        notification("n1", "friend.requested", "2026-11-22T10:00:01Z", "2026-11-22T11:00:00Z"),
+        notification("n2b", "friend.accepted", "2026-11-22T10:00:02Z", ""),
+        notification("n2a", "wallet.credit", "2026-11-22T10:00:02Z", ""),
+    ];
+    let mut reversed = rows.clone();
+    reversed.reverse();
+    assert_eq!(first_unread(&rows).map(|r| r.id.as_str()), Some("n2a"));
+    assert_eq!(first_unread(&reversed).map(|r| r.id.as_str()), Some("n2a"));
+    assert_eq!(first_unread(&rows[1..2]), None, "a read row is never picked");
+    assert_eq!(first_unread(&[]), None);
+}
+
+#[test]
+fn every_expect_list_holds_its_ops_declared_success() {
+    let source = include_str!("expect.rs");
+    let consts = source.lines().filter(|line| line.starts_with("pub const ") && line.contains(": &[u16] = ")).count();
+    assert_eq!(consts, expect::ALL.len(), "expect.rs: ALL must pair every const with its op");
+    for (op, list) in expect::ALL {
+        crate::client::check_expect(op, crate::client::route(op), list);
+    }
+}
+
+#[test]
+fn parse_args_event_timeout_sets_the_poll_deadline() {
+    assert_eq!(seed_config(&["--event-timeout", "3"]).event_timeout, Duration::from_secs(3));
+    assert!(parse_args(&args(&["--event-timeout", "0"])).is_err());
+    assert!(parse_args(&args(&["--event-timeout", "soon"])).is_err());
+    assert!(USAGE.contains("--event-timeout"));
+}
+
+fn target() -> Session {
+    Session { player_id: "p-2".to_string(), token: "t2".to_string(), handle: "demo02".to_string() }
+}
+
+fn requests(lines: &mpsc::Receiver<String>) -> Vec<String> {
+    lines.try_iter().collect()
+}
+
+#[tokio::test]
+async fn a_pending_request_missing_from_the_targets_list_is_an_error_and_skips_the_accept() {
+    let (gateway, lines) = fake_gateway(vec![
+        (201, r#"{"edge_id":"e1","state":"pending"}"#),
+        (200, r#"{"items":[],"next_cursor":""}"#),
+    ]);
+    assert_eq!(seed_friendship(&gateway, &session(), &target(), true).await, None);
+    let report = gateway.take_report();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].op, "friends.pending");
+    let skipped: Vec<&str> = report.skipped.iter().map(|s| s.cause.as_str()).collect();
+    assert_eq!(skipped, ["friend accept skipped: the pending request is not in the target's list"]);
+    assert_eq!(requests(&lines), ["POST /friends/requests HTTP/1.1", "POST /friends/requests/list HTTP/1.1"]);
+}
+
+#[tokio::test]
+async fn an_accepted_request_lists_both_sides_and_owes_the_requester_an_inbox_row() {
+    let (gateway, lines) = fake_gateway(vec![
+        (201, r#"{"edge_id":"e1","state":"pending"}"#),
+        (200, r#"{"items":[{"player_id":"p-1","edge_id":"e1","direction":"incoming"}],"next_cursor":""}"#),
+        (204, ""),
+        (200, r#"{"items":[{"player_id":"p-2","edge_id":"e1","direction":"outgoing"}],"next_cursor":""}"#),
+        (200, r#"{"items":[{"player_id":"p-1","edge_id":"e1","direction":"incoming"}],"next_cursor":""}"#),
+    ]);
+    assert_eq!(seed_friendship(&gateway, &session(), &target(), true).await, Some(true));
+    let report = gateway.take_report();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(
+        requests(&lines),
+        [
+            "POST /friends/requests HTTP/1.1",
+            "POST /friends/requests/list HTTP/1.1",
+            "POST /friends/requests/e1/accept HTTP/1.1",
+            "POST /friends/list HTTP/1.1",
+            "POST /friends/list HTTP/1.1",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_planned_pending_request_is_checked_and_never_accepted() {
+    let (gateway, lines) = fake_gateway(vec![
+        (201, r#"{"edge_id":"e1","state":"pending"}"#),
+        (200, r#"{"items":[{"player_id":"p-1","edge_id":"e1","direction":"incoming"}],"next_cursor":""}"#),
+    ]);
+    assert_eq!(seed_friendship(&gateway, &session(), &target(), false).await, Some(false));
+    assert!(gateway.take_report().errors.is_empty());
+    assert_eq!(requests(&lines).len(), 2, "no accept and no friend list for a pending pair");
+}
+
+#[tokio::test]
+async fn a_rerun_on_an_accepted_edge_skips_the_pending_check_and_lists_both_sides() {
+    let (gateway, lines) = fake_gateway(vec![
+        (201, r#"{"edge_id":"e1","state":"accepted"}"#),
+        (200, r#"{"items":[{"player_id":"p-2","edge_id":"e1","direction":"outgoing"}],"next_cursor":""}"#),
+        (200, r#"{"items":[],"next_cursor":""}"#),
+    ]);
+    assert_eq!(seed_friendship(&gateway, &session(), &target(), true).await, Some(false));
+    let report = gateway.take_report();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].op, "friends.list", "the target's list lacks the requester");
+    assert_eq!(
+        requests(&lines),
+        ["POST /friends/requests HTTP/1.1", "POST /friends/list HTTP/1.1", "POST /friends/list HTTP/1.1"]
+    );
+}
+
+#[tokio::test]
+async fn the_inbox_polls_for_the_owed_row_then_marks_the_oldest_unread_read() {
+    let (gateway, lines) = fake_gateway(vec![
+        (200, r#"{"items":[],"next_cursor":""}"#),
+        (
+            200,
+            r#"{"items":[{"id":"n2","kind":"friend.accepted","created_at":"2026-11-22T10:00:02Z","read_at":""},{"id":"n1","kind":"friend.requested","created_at":"2026-11-22T10:00:01Z","read_at":""}],"next_cursor":""}"#,
+        ),
+        (204, ""),
+    ]);
+    readback::inbox(&gateway, &session(), 1, Duration::from_secs(10)).await;
+    assert!(gateway.take_report().errors.is_empty());
+    assert_eq!(
+        requests(&lines),
+        ["POST /notifications/list HTTP/1.1", "POST /notifications/list HTTP/1.1", "POST /notifications/n1/read HTTP/1.1"]
+    );
+}
+
+#[tokio::test]
+async fn an_owed_inbox_row_that_never_shows_is_a_timeout_naming_the_op() {
+    let (gateway, _lines) = fake_gateway(vec![(200, r#"{"items":[],"next_cursor":""}"#)]);
+    readback::inbox(&gateway, &session(), 1, Duration::ZERO).await;
+    let report = gateway.take_report();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].op, "notifications.list");
+    assert!(matches!(&report.errors[0].got, Got::Timeout(what) if what.contains("friend.accepted")));
+}
+
+#[tokio::test]
+async fn a_leaderboard_without_the_top_winner_is_a_timeout() {
+    let (gateway, _lines) = fake_gateway(vec![(200, r#"[{"player":"p-9","wins":3}]"#)]);
+    readback::leaderboard(&gateway, "p-1", Duration::ZERO).await;
+    let report = gateway.take_report();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].op, "leaderboard.topScores");
+    assert!(matches!(&report.errors[0].got, Got::Timeout(what) if what.contains("p-1")));
+}
+
+#[tokio::test]
+async fn the_starter_item_is_polled_until_it_shows() {
+    let (gateway, lines) = fake_gateway(vec![(200, "[]"), (200, r#"[{"item_id":"starter_sword"}]"#)]);
+    let characters = [CharacterRow { id: "c1".to_string(), name: "Kestrel".to_string() }];
+    readback::starter_items(&gateway, &session(), &characters, Duration::from_secs(10)).await;
+    assert!(gateway.take_report().errors.is_empty());
+    assert_eq!(requests(&lines), ["GET /inventory/character/c1 HTTP/1.1", "GET /inventory/character/c1 HTTP/1.1"]);
+}
+
+#[tokio::test]
+async fn an_empty_currency_catalog_names_the_dev_flag() {
+    let (gateway, _lines) = fake_gateway(vec![(200, "[]"), (200, "[]")]);
+    readback::wallet(&gateway, &session()).await;
+    let report = gateway.take_report();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].op, "wallet.listCurrencies");
+    assert!(matches!(&report.errors[0].got, Got::Shape(what) if what.contains("WALLET_DEV_SEED")));
+}
+
+#[tokio::test]
+async fn the_owner_reads_a_pending_join_request_in_the_groups_pending_list() {
+    let (gateway, _lines) = fake_gateway(vec![
+        (200, r#"{"items":[{"player_id":"p-1","state":"member"}],"next_cursor":""}"#),
+        (200, r#"{"items":[{"player_id":"p-3","state":"invited"}],"next_cursor":""}"#),
+    ]);
+    let asker = Session { player_id: "p-2".to_string(), token: "t2".to_string(), handle: "demo02".to_string() };
+    let owner = session();
+    readback::group_rows(&gateway, "g1", &owner, &[&owner], &[&asker]).await;
+    let report = gateway.take_report();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].op, "groups.pending");
 }

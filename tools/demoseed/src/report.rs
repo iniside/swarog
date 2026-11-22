@@ -90,6 +90,8 @@ pub enum Got {
     Transport(String),
     /// An expected status whose body is not the shape the flow needs.
     Shape(String),
+    /// An event-fed read that never showed what it waited for before the deadline (I7).
+    Timeout(String),
 }
 
 impl std::fmt::Display for Got {
@@ -98,6 +100,7 @@ impl std::fmt::Display for Got {
             Got::Status(status) => write!(f, "HTTP {status}"),
             Got::Transport(cause) => write!(f, "transport error: {cause}"),
             Got::Shape(cause) => write!(f, "shape error: {cause}"),
+            Got::Timeout(cause) => write!(f, "timed out: {cause}"),
         }
     }
 }

@@ -206,8 +206,8 @@ fn every_catalog_op_declares_a_2xx_success() {
 fn check_expect_accepts_the_declared_success_and_a_refusal_list() {
     check_expect("accounts.register", route("accounts.register"), &[201, 409]);
     check_expect("accounts.me", route("accounts.me"), &[401]);
-    check_expect("characters.create", route("characters.create"), crate::CHARACTERS_CREATE_EXPECT);
-    check_expect("inventory.grant", route("inventory.grant"), crate::INVENTORY_GRANT_EXPECT);
+    check_expect("characters.create", route("characters.create"), crate::expect::CHARACTERS_CREATE);
+    check_expect("inventory.grant", route("inventory.grant"), crate::expect::INVENTORY_GRANT);
 }
 
 #[test]

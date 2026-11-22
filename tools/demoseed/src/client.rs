@@ -239,6 +239,12 @@ impl Gateway {
         self.shape_error_with(op, message, "");
     }
 
+    /// Records that a poll of `op` passed its deadline without showing `waited_for`.
+    pub fn timed_out(&self, op: &'static str, waited_for: String) {
+        let row = route(op);
+        self.push_error(op, row, row.path.to_string(), &[], Got::Timeout(waited_for), String::new());
+    }
+
     fn shape_error_with(&self, op: &'static str, message: String, text: &str) {
         let row = route(op);
         self.push_error(op, row, row.path.to_string(), &[], Got::Shape(message), excerpt(text));
