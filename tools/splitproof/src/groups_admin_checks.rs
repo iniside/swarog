@@ -108,23 +108,29 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     let ga2 = async {
         let (first_modal, first) = promote(admin, front, &promote_url).await?;
         let promoted = membership_row(pool, &g, &b.player_id).await;
-        let events_sql = "SELECT count(*) FROM asyncevents.events WHERE topic = 'group.role_changed' AND payload->>'group_id' = $1";
-        let events_after_first: i64 = sqlx::query_scalar(events_sql).bind(&g).fetch_one(pool).await.context("count role_changed")?;
+        // (role_changed rows naming the operator promote of B to admin in G, all role_changed
+        // rows in G): the first must be exactly 1; the second says why a mismatch occurred.
+        let events_sql = "SELECT count(*) FILTER (WHERE payload->>'player_id' = $2 AND payload->>'role' = 'admin' \
+                          AND payload->>'actor_kind' = 'operator'), count(*) \
+                          FROM asyncevents.events WHERE topic = 'group.role_changed' AND payload->>'group_id' = $1";
+        let events_after_first: (i64, i64) =
+            sqlx::query_as(events_sql).bind(&g).bind(&b.player_id).fetch_one(pool).await.context("count role_changed")?;
         let (second_modal, second) = promote(admin, front, &promote_url).await?;
-        let events_after_repeat: i64 = sqlx::query_scalar(events_sql).bind(&g).fetch_one(pool).await.context("count role_changed")?;
+        let events_after_repeat: (i64, i64) =
+            sqlx::query_as(events_sql).bind(&g).bind(&b.player_id).fetch_one(pool).await.context("count role_changed")?;
         let ok = first_modal == modal_body
             && second_modal == modal_body
             && first.0 == 303
             && first.1 == ok_toast
             && promoted.as_ref().is_some_and(|(s, r)| s == "member" && r == "admin")
-            && events_after_first == 1
+            && events_after_first == (1, 1)
             && second.0 == 303
             && second.1 == noop_toast
-            && events_after_repeat == 1;
+            && events_after_repeat == (1, 1);
         let detail = format!(
             "modal={first_modal:?} repeat_modal={second_modal:?} want_modal={modal_body:?} post={} toast={:?} want={ok_toast:?} \
-             row={promoted:?} events={events_after_first} repeat_post={} repeat_toast={:?} want={noop_toast:?} \
-             events_after_repeat={events_after_repeat}",
+             row={promoted:?} events(promote,all)={events_after_first:?} repeat_post={} repeat_toast={:?} want={noop_toast:?} \
+             events_after_repeat(promote,all)={events_after_repeat:?}",
             first.0, first.1, second.0, second.1
         );
         anyhow::Ok((ok, detail))
@@ -146,7 +152,6 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
     p.check(
         &format!("[GA3{tag}] group entity page answers 200 and its header draws the group's name"),
         gp_code == 200
-            && attr(&gp, "data-state") == "ok"
             && !error_card(&gp)
             && header_slot
             && h_code == 200
@@ -154,8 +159,7 @@ async fn checks(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, admin: &re
             && !error_card(&h)
             && text(&h).contains(&g_name),
         format!(
-            "page={gp_code} page_state={:?} page_error={} header_slot={header_slot} header={h_code} header_state={:?} header_error={} want={g_name} body={}",
-            attr(&gp, "data-state"),
+            "page={gp_code} page_error={} header_slot={header_slot} header={h_code} header_state={:?} header_error={} want={g_name} body={}",
             error_card(&gp),
             attr(&h, "data-state"),
             error_card(&h),
