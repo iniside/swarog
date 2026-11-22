@@ -52,6 +52,11 @@ fn row_to_notification(row: Row) -> Notification {
 /// One row of the OPERATOR's cross-player view: a message plus the player it addresses.
 /// `player_id` is not part of [`COLS`] because a player's own inbox never needs to be told
 /// whose it is.
+#[expect(
+    dead_code,
+    reason = "Step 20a1: the Inbox tab lists it \
+              (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2333)"
+)]
 pub(crate) struct InboxRow {
     pub(crate) player_id: String,
     pub(crate) message: Notification,
@@ -246,6 +251,11 @@ impl Store {
     /// on, and the oldest one's `created_at` (`""` when nothing is outstanding).
     /// `purged_players_pending_idx` serves the predicate, so the cost tracks
     /// outstanding work rather than the permanent row per deleted player.
+    #[expect(
+        dead_code,
+        reason = "Step 20a1: the Purges pending item at 67 reads it \
+                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2333)"
+    )]
     pub(crate) async fn pending_purges(&self) -> Result<(i64, String), sqlx::Error> {
         let (count, oldest) = sqlx::query_as::<_, (i64, Option<String>)>(
             "SELECT count(*)::bigint, min(created_at)::text \
@@ -276,6 +286,11 @@ impl Store {
     /// The newest messages across every player, for the operator overview. Ordered like the
     /// per-player page so the two views agree on what "newest" means, and unpaged: the
     /// operator drills into one player rather than walking the whole table.
+    #[expect(
+        dead_code,
+        reason = "Step 20a1: the Inbox tab lists it \
+                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2333)"
+    )]
     pub(crate) async fn recent(&self, limit: i64) -> Result<Vec<InboxRow>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String, String, String, String, String, String, String)>(
             &format!(
@@ -302,6 +317,10 @@ impl Store {
     /// A `player_id` the cast rejects is an EMPTY inbox,
     /// matching [`Store::page_by_player`] — the two halves of the drill-down must not
     /// disagree about whether the player exists.
+    #[expect(
+        dead_code,
+        reason = "Step 20: no step names it; the Step 20 port decides keep or delete"
+    )]
     pub(crate) async fn player_stats(&self, player_id: &str) -> Result<(i64, i64), sqlx::Error> {
         let res = sqlx::query_as::<_, (i64, i64)>(
             "SELECT count(*), count(*) FILTER (WHERE read_at IS NULL) \

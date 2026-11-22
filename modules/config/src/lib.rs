@@ -320,6 +320,11 @@ impl Service {
     /// `(namespace, key)` for a stable render. Revision and map are copied while
     /// holding the same read guard, so the hidden concurrency token always names the
     /// visible fields beside it.
+    #[expect(
+        dead_code,
+        reason = "Step 23: the Config & flags page renders it \
+                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2371)"
+    )]
     fn cached_snapshot(&self) -> (i64, Vec<Setting>) {
         let (revision, mut out): (i64, Vec<Setting>) = {
             let guard = self.cache.read().unwrap();
@@ -340,6 +345,11 @@ impl Service {
         (revision, out)
     }
 
+    #[expect(
+        dead_code,
+        reason = "Step 23: the Config & flags page lists it \
+                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2371)"
+    )]
     fn all(&self) -> Vec<Setting> {
         self.cached_snapshot().1
     }

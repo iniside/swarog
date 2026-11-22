@@ -1,6 +1,6 @@
 # Groups
 
-Last updated: 2026-11-20
+Last updated: 2026-11-22
 
 ## In progress
 
@@ -49,8 +49,3 @@ _None._
   `Unavailable`. Party's equivalent is unit-proven by `invite_target_rules`
   (docs/plans/2026-09-28-2212-push-multiplex-invoke-and-party-plan.md:689,
   2026-10-05).
-- [ ] **admin_recent_groups counts per row before the LIMIT**
-  GROUPS-09. `JOIN LATERAL (COUNTS_LATERAL) ON true` then
-  `ORDER BY g.created_at DESC, g.id DESC LIMIT $2`
-  (`modules/groups/src/store.rs:564-574`, 2026-09-10; read at HEAD;
-  docs/roadmap/feature-tracker.md:266 @ fd797b3a).

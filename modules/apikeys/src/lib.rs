@@ -156,6 +156,11 @@ impl apikeysapi::Keys for Service {
 // Async CRUD wrappers over the store. Each preserves the store's [`WriteError`]
 // classification (Conflict vs Invalid vs Db) so a caller can map a domain conflict to 409
 // and NEVER to NotFound (finding #2).
+#[expect(
+    dead_code,
+    reason = "Step 21a1/21a2: the API keys page reads and writes through them \
+              (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2346)"
+)]
 impl Service {
     pub(crate) async fn list_roles(&self) -> Result<Vec<RoleSummary>, sqlx::Error> {
         self.store.list_roles().await

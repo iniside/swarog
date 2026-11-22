@@ -47,6 +47,11 @@ pub(crate) struct GroupCounts {
 /// One group as the ADMIN page lists it: the group's own row plus its live counts. The
 /// counts ride the SAME statement as the row (a lateral aggregate), so a group can never
 /// be listed with a member count taken at a different instant than its name.
+#[expect(
+    dead_code,
+    reason = "Step 18 G7 (b): the group EntityHeader reads it \
+              (docs/plans/2026-11-22-step18-groups-checklist.md:286)"
+)]
 pub(crate) struct AdminGroupRow {
     pub(crate) group_id: String,
     pub(crate) name: String,
@@ -116,6 +121,11 @@ impl Store {
     /// on, and the oldest one's `created_at` (`""` when nothing is outstanding).
     /// `purged_players_claim_idx` serves the predicate, so the cost tracks
     /// outstanding work rather than the permanent row per deleted player.
+    #[expect(
+        dead_code,
+        reason = "Step 18 G9: the purges tile reads it \
+                  (docs/plans/2026-11-22-step18-groups-checklist.md:288)"
+    )]
     pub(crate) async fn pending_purges(&self) -> Result<(i64, String), sqlx::Error> {
         let (count, oldest) = sqlx::query_as::<_, (i64, Option<String>)>(
             "SELECT count(*)::bigint, min(created_at)::text \
@@ -295,6 +305,11 @@ impl Store {
     ///
     /// Binds ONLY the group id, so a `22P02` folds to "no such group" for the reason in
     /// [`Store::join_policy_tx`].
+    #[expect(
+        dead_code,
+        reason = "Step 18 G6 (a): the operator promote names the group \
+                  (docs/plans/2026-11-22-step18-groups-checklist.md:285)"
+    )]
     pub(crate) async fn group_name_tx(
         &self,
         conn: &mut PgConnection,
@@ -534,7 +549,7 @@ impl Store {
     }
 
     /// One page of a group's rows. `state_clause` is a compile-time literal
-    /// ([`MEMBER_ROWS`], [`PENDING_ROWS`] or [`ALL_ROWS`]) — never caller input, and
+    /// ([`MEMBER_ROWS`] or [`PENDING_ROWS`]) — never caller input, and
     /// PARENTHESIZED at the interpolation site so respelling one of them with an `OR`
     /// cannot bind looser than the `group_id` term and page another group's rows. Authorization is
     /// NOT in this statement: it is decided by [`Store::visible_role`] first, because an
@@ -579,42 +594,13 @@ impl Store {
         }
     }
 
-    /// The three totals the admin overview reports, in ONE statement: three separate
-    /// round-trips would report a total no single instant of the table ever had.
-    pub(crate) async fn admin_totals(&self, member: &str) -> Result<(i64, i64, i64), sqlx::Error> {
-        sqlx::query_as::<_, (i64, i64, i64)>(
-            "SELECT (SELECT count(*) FROM groups.groups), \
-                    (SELECT count(*) FROM groups.memberships WHERE state = $1), \
-                    (SELECT count(*) FROM groups.memberships WHERE state <> $1)",
-        )
-        .bind(member)
-        .fetch_one(&self.pool)
-        .await
-    }
-
-    /// The newest groups with their live counts. Unpaged by design — the operator narrows
-    /// by drilling into one group, not by walking the table.
-    pub(crate) async fn admin_recent_groups(
-        &self,
-        member: &str,
-        limit: i64,
-    ) -> Result<Vec<AdminGroupRow>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, i64, i64)>(&format!(
-            "SELECT g.id::text, g.name, g.join_policy, {}, c.members, c.pending \
-               FROM groups.groups g JOIN LATERAL ({}) c ON true \
-              ORDER BY g.created_at DESC, g.id DESC LIMIT $2",
-            created_text("g.created_at"),
-            COUNTS_LATERAL
-        ))
-        .bind(member)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
-        Ok(rows.into_iter().map(row_to_admin_group).collect())
-    }
-
     /// One group by id, counts included. A group id that is not a uuid is `None`, not a
     /// 500 — the page renders it as "no such group" (see [`is_invalid_uuid`]).
+    #[expect(
+        dead_code,
+        reason = "Step 18 G7 (b): the group EntityHeader reads it \
+                  (docs/plans/2026-11-22-step18-groups-checklist.md:286)"
+    )]
     pub(crate) async fn admin_group(
         &self,
         member: &str,
@@ -651,10 +637,6 @@ const VISIBLE_ROLE_SQL: &str = "SELECT role, player_id::text FROM groups.members
 
 pub(crate) const MEMBER_ROWS: &str = "state = 'member'";
 pub(crate) const PENDING_ROWS: &str = "state <> 'member'";
-/// Every row of a group, whatever state it holds — the admin page's list, which shows
-/// members and pending rows in ONE table with the state as a column.
-pub(crate) const ALL_ROWS: &str = "true";
-
 /// Placeholder numbering is per-VARIANT: Postgres rejects a bind for a parameter the
 /// statement does not reference, so the keyed page's `$4` becomes `$2` when the cursor
 /// clause is absent.
@@ -704,13 +686,23 @@ fn row_to_member(row: (String, String, String, String)) -> MemberRow {
     }
 }
 
-/// The per-group live counts both admin reads share, correlated on `g.id`. `$1` is the
+/// The per-group live counts the admin reads share, correlated on `g.id`. `$1` is the
 /// `member` state; a group with no rows at all still yields one row of zeros, which is why
 /// the join is a plain `LATERAL ... ON true`.
+#[expect(
+    dead_code,
+    reason = "Step 18 G8: kept for admin_group and the Groups tab counts \
+              (docs/plans/2026-11-22-step18-groups-checklist.md:287)"
+)]
 const COUNTS_LATERAL: &str = "SELECT count(*) FILTER (WHERE state = $1) AS members, \
                                      count(*) FILTER (WHERE state <> $1) AS pending \
                                 FROM groups.memberships WHERE group_id = g.id";
 
+#[expect(
+    dead_code,
+    reason = "Step 18 G7 (b): admin_group maps its row through it \
+              (docs/plans/2026-11-22-step18-groups-checklist.md:286)"
+)]
 fn row_to_admin_group(row: (String, String, String, String, i64, i64)) -> AdminGroupRow {
     let (group_id, name, join_policy, created_at, members, pending) = row;
     AdminGroupRow {

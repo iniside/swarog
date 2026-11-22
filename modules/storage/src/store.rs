@@ -465,6 +465,11 @@ impl Store {
     /// the oldest one's `created_at` (`""` when nothing is outstanding).
     /// `purged_players_pending_idx` serves the predicate, so the cost tracks outstanding work
     /// rather than the permanent row per deleted player.
+    #[expect(
+        dead_code,
+        reason = "Step 19: the Purges pending item at 66 reads it \
+                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2329)"
+    )]
     pub(crate) async fn pending_purges(&self) -> Result<(i64, String), sqlx::Error> {
         let (count, oldest) = sqlx::query_as::<_, (i64, Option<String>)>(
             "SELECT count(*)::bigint, min(created_at)::text \
@@ -514,6 +519,11 @@ impl Store {
     ///
     /// An `owner_id` reaches this only once [`crate::service::is_uuid_text`] has accepted
     /// it, so the `$2::uuid` cast has no malformed spelling left to raise `22P02` over.
+    #[expect(
+        dead_code,
+        reason = "Step 19: the cloud saves used tile reads it \
+                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2328)"
+    )]
     pub(crate) async fn admin_counts(
         &self,
         owner_id: Option<&str>,
@@ -552,6 +562,11 @@ impl Store {
     /// The inner `ORDER BY` names table columns: bound instead to an `owner_id::text` output
     /// column, the sort key is a text collation that no `(updated_at DESC, owner_id, ...)`
     /// index can serve.
+    #[expect(
+        dead_code,
+        reason = "Step 19: the Cloud saves tab lists it \
+                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2328)"
+    )]
     pub(crate) async fn admin_recent(
         &self,
         owner_id: Option<&str>,
@@ -584,6 +599,11 @@ pub(crate) fn admin_recent_sql(scoped: bool) -> String {
 /// The admin page's aggregates, every one of them counted in the scope that was asked.
 /// `owners` is therefore 1 on a drill-down, which is why the page states it only in the
 /// unscoped view and states `collections` in the scoped one.
+#[expect(
+    dead_code,
+    reason = "Step 19: the cloud saves used tile reads its fields \
+              (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2328)"
+)]
 pub(crate) struct AdminCounts {
     pub(crate) objects: i64,
     pub(crate) owners: i64,
@@ -594,6 +614,11 @@ pub(crate) struct AdminCounts {
 /// One listed object as the admin sees it: the owner included, which
 /// [`storageapi::ObjectSummary`] omits because a player's own listing already knows it.
 /// The value itself is never carried — only its size.
+#[expect(
+    dead_code,
+    reason = "Step 19: the Cloud saves tab draws its fields \
+              (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2328)"
+)]
 pub(crate) struct AdminObjectRow {
     pub(crate) owner_id: String,
     pub(crate) collection: String,
