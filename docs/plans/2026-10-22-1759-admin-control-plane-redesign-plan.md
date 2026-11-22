@@ -2211,6 +2211,15 @@ The ports:
       only leftover while another parent has the same count), the economy Ledger chip and
       select reasons name both chips, the four user-menu `menu-group#6c5cf7` reasons name the
       headers the crawl shows, and a line's hint comes from the first element that has one.
+    - **16c2** `[sonnet]` core-implementer, wording review-fix of 71d6f4fe (owner,
+      2026-11-22): the remaining-limit example in `docs/todo/admin.md` names the regression
+      direction (a section gaining a leftover while other sections already give both
+      counts; needs three or more parents) and the limit is stated once in the
+      `tools/admindiff/src/lib.rs` usage text for every multi-parent line; the
+      `#848c49` reasons call the Mail outbox part a data difference (an empty queue);
+      the `mail.txt:8` wording; the `two(2,3)` test comment in `skeleton_tests.rs`; the
+      stale `skeleton.rs` anchor and file counts in `docs/todo/admin.md` and
+      `admin-done.md`. No key changes.
     - **16d** `[opus]` core-implementer: the inventory tab draws one `FilterKind::Select`
       per declared param. An inventory unit test asserts that the panel's filter keys equal
       the manifest's `params`, in order, each a Select. The core golden case
@@ -2224,6 +2233,19 @@ The ports:
         its failures into expected, new and stale. It exits non-zero on new or stale.
       - One break run of the characters label peer (`cmd/admin-svc/src/lib.rs:26`), then
         one full green run against the baseline. That is about 12 min per run.
+    - **16f** `[opus]` test-author, review-fix of f96053a5 (owner, 2026-11-22): an
+      expected-red entry names a failure signature (`id | signature | reason`). splitproof
+      keeps each failure's detail; a listed check whose detail lacks its signature is a
+      blocking "changed" group beside new and stale. Every check has its own id (the two
+      M3b sites split) and `sort` refuses two check names under one listed id. WL5 prints
+      its count; the M3b reason matches the branch that fails; the list header no longer
+      says every monolith id ends in m. Unit tests for changed and duplicate ids; one
+      full green run (about 12 min).
+    - **16g** `[opus]` core-implementer (owner, 2026-11-22): core checks once that every
+      drawn panel filter key is a declared param of the page (`declared_params`), so an
+      undeclared filter fails visibly instead of being dropped by the query filter in
+      `core/admin/src/routes.rs`; one core unit test, both topologies through the same
+      path. The 16d inventory test stays.
 - **Step 17 — friends.** Friends tab. One a (Na1 with Na3): the tab (order 50), Purges
   pending at 64. Rows are a module-owned row kind (O-6); the user cell links
   `Link::Entity(player)` itself. Checklist `docs/plans/2026-11-22-step17-friends-checklist.md`,
