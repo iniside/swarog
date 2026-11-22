@@ -44,7 +44,9 @@ the one in flight on 2026-11-22; landed steps and their accept files keep their 
   frozen for the remaining ports. A new variant or field lands only when an element's data
   or its place on the page cannot be shown without it; a visual-only mismatch takes the
   nearest existing carrier and a `template choice` accept entry, with one item in
-  `docs/todo/admin-second-pass.md`. admindiff gets bug fixes only.
+  `docs/todo/admin-second-pass.md`. admindiff code and vocabulary get bug fixes only; a
+  port's page, tab, menu and modal rows in `tools/admindiff/src/pages.rs` (and the tests that
+  enumerate them) are data and land with the port (owner, 2026-11-22).
 - **Orders in code.** Step 13f moves the cross-module `order` values out of this plan's
   prose into named constants.
 
@@ -2295,7 +2297,7 @@ The ports:
   - What dies: the literals in the landed providers (accounts, characters, wallet,
     inventory, friends, groups if landed, mail, `core/admin`'s `portal` and `core.events`);
     once landed, the X2 order bullet above is replaced by a pointer to the constants.
-  - **Owner decision before dispatch:** where the table lives. (a) `core/controlplane`,
+  - **Owner decision (2026-11-22): (a).** Where the table lives. (a) `core/controlplane`,
     one `order` module whose constants name the contributing modules (recommended: one
     place to read; the cost is that core names domain modules, as `SECTIONS` already names
     `players` and `economy`); (b) the api crate of the module that owns the host
