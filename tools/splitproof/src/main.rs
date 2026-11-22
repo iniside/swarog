@@ -695,7 +695,7 @@ fn main() -> std::process::ExitCode {
     match result {
         Ok(0) => std::process::ExitCode::SUCCESS,
         Ok(n) => {
-            eprintln!("splitproof: {n} new or stale red check(s)");
+            eprintln!("splitproof: {n} changed, new or stale red check(s)");
             std::process::ExitCode::FAILURE
         }
         Err(e) => {
