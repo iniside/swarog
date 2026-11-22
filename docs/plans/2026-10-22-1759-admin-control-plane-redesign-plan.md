@@ -2199,6 +2199,18 @@ The ports:
       monolith and split crawls (offline `diff`, no fleet). Every mapped target diffs as it
       did before the change: clean stays clean, and index/mail/events keep only their Q2
       lines. Invariant: losing one of N merged elements turns its entry NEW plus STALE.
+    - **16c1** `[opus]` core-implementer, review-fix of ccfd014c (owner, 2026-11-22: separate
+      counts). Several parents share one path (siblings with the same head, e.g. the nav
+      sections), so the largest-N rule hides a loss in a parent that is not the largest.
+      A line now carries the sorted distinct per-parent counts: `×N` when every parent gives
+      the same N > 1, no suffix when that N is 1, and `×{3,1}` (descending) when parents
+      differ. Rows under `tr*` stay data-independent (each row gives 1). Test: mock (3, 2)
+      against portal (1, 1) and against portal (1, 0) give different lines; plus the
+      swapped parent order. Re-key the accept files against both crawls offline. Also: the
+      `docs/todo/admin.md` nav wording states the remaining limit (a parent that loses its
+      only leftover while another parent has the same count), the economy Ledger chip and
+      select reasons name both chips, the four user-menu `menu-group#6c5cf7` reasons name the
+      headers the crawl shows, and a line's hint comes from the first element that has one.
     - **16d** `[opus]` core-implementer: the inventory tab draws one `FilterKind::Select`
       per declared param. An inventory unit test asserts that the panel's filter keys equal
       the manifest's `params`, in order, each a Select. The core golden case
