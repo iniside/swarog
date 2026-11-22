@@ -125,16 +125,6 @@ fn filter_value<'a>(req: &'a PanelQuery, key: &str) -> Option<&'a str> {
         .filter(|v| !v.is_empty() && *v != "any")
 }
 
-/// `"now"`, `"4 min ago"`, `"3 h ago"` or `"2 d ago"`.
-fn ago(secs: i64) -> String {
-    match secs.max(0) {
-        s if s < 60 => "now".to_string(),
-        s if s < 3_600 => format!("{} min ago", s / 60),
-        s if s < 86_400 => format!("{} h ago", s / 3_600),
-        s => format!("{} d ago", s / 86_400),
-    }
-}
-
 /// `"in 40 min"`, `"in 6 h"` or `"in 29 d"`.
 fn expires_in(secs: i64) -> String {
     match secs.max(0) {
@@ -246,7 +236,7 @@ fn providers_cell(providers: &[String]) -> Cell {
 }
 
 fn last_seen(row: &PlayerListRow) -> String {
-    row.last_seen_secs.map_or_else(|| "—".to_string(), ago)
+    row.last_seen_secs.map_or_else(|| "—".to_string(), controlplane::ago)
 }
 
 fn column(key: &str, label: &str, kind: CellKind) -> Column {

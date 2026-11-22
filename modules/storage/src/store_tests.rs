@@ -3,7 +3,7 @@ use storageapi::{Player, ACL_PRIVATE, MAX_OBJECTS_PER_OWNER};
 
 use crate::service::{decode_admin_cursor, encode_admin_cursor};
 use crate::service_tests::{rejected, Fixture, DB_LOCK};
-use crate::store::{age_secs_sql, ago_text_sql, write_error, AdminObjectRow, COLUMN_CAPS};
+use crate::store::{age_secs_sql, write_error, AdminObjectRow, COLUMN_CAPS};
 
 #[tokio::test]
 async fn column_caps_match_live_checks_and_reverse_mapping_excludes_normalized_value() {
@@ -208,7 +208,7 @@ async fn admin_page_checksum_and_size_describe_the_read_back_text_and_used_bytes
         assert_eq!(row.checksum, format!("sha256:{hex}"), "{text}");
         assert_eq!(row.bytes, text.len() as i64, "{text}");
         assert_eq!(row.collection, "saves");
-        assert!(row.updated_ago.ends_with(" s ago") || row.updated_ago.ends_with(" min ago"));
+        assert!(row.updated_ago == "now" || row.updated_ago.ends_with(" min ago"), "{}", row.updated_ago);
         total += row.bytes;
     }
     // The normalized text differs from what was sent, so the size is not the caller's.
@@ -218,28 +218,24 @@ async fn admin_page_checksum_and_size_describe_the_read_back_text_and_used_bytes
 }
 
 #[tokio::test]
-async fn ago_text_buckets_fixed_instants_and_clamps_the_future() {
+async fn age_secs_buckets_fixed_instants_and_clamps_the_future() {
     let _lock = DB_LOCK.lock().await;
     let f = Fixture::new().await;
-    let sql = format!(
-        "SELECT {} FROM (SELECT {} AS s) a",
-        ago_text_sql("a.s"),
-        age_secs_sql("$2::timestamptz", "$1::timestamptz"),
-    );
+    let sql = format!("SELECT {}", age_secs_sql("$2::timestamptz", "$1::timestamptz"));
     let now = "2026-01-10 12:00:00+00";
     for (at, want) in [
-        ("2026-01-10 12:00:00+00", "0 s ago"),
-        ("2026-01-10 11:59:00.1+00", "59 s ago"),
+        ("2026-01-10 12:00:00+00", "now"),
+        ("2026-01-10 11:59:00.1+00", "now"),
         ("2026-01-10 11:59:00+00", "1 min ago"),
         ("2026-01-10 11:00:01+00", "59 min ago"),
         ("2026-01-10 11:00:00+00", "1 h ago"),
         ("2026-01-09 12:00:01+00", "23 h ago"),
         ("2026-01-09 12:00:00+00", "1 d ago"),
         ("2026-01-07 11:59:55+00", "3 d ago"),
-        ("2026-01-10 12:00:10+00", "0 s ago"),
+        ("2026-01-10 12:00:10+00", "now"),
     ] {
-        let got: String = sqlx::query_scalar(&sql).bind(now).bind(at).fetch_one(f.pool()).await.unwrap();
-        assert_eq!(got, want, "{at}");
+        let secs: i64 = sqlx::query_scalar(&sql).bind(now).bind(at).fetch_one(f.pool()).await.unwrap();
+        assert_eq!(controlplane::ago(secs), want, "{at}");
     }
     f.cleanup().await;
 }

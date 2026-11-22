@@ -618,11 +618,10 @@ impl Store {
 /// promised to survive the join above it; it sorts at most `limit` rows.
 pub(crate) fn admin_page_sql(cut: &str, limit: &str) -> String {
     let age = age_secs_sql("t.updated_at", "now()");
-    let ago = ago_text_sql("a.secs");
     format!(
         "SELECT t.collection, t.key, t.version, octet_length(t.value::text)::bigint, \
                 to_char(t.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'), \
-                {ago}, \
+                a.secs, \
                 'sha256:' || encode(sha256(convert_to(t.value::text, 'UTF8')), 'hex') \
            FROM (SELECT collection, key, version, value, updated_at \
                    FROM storage.objects \
@@ -634,22 +633,10 @@ pub(crate) fn admin_page_sql(cut: &str, limit: &str) -> String {
 }
 
 /// Whole seconds from `at` to `now`, both SQL expressions; a future `at` (clock skew
-/// between writers) reads as 0, never a negative age.
+/// between writers) reads as 0, never a negative age. Computed in SQL so the age is the
+/// database's clock, the one that wrote `updated_at`, not the reading process's.
 pub(crate) fn age_secs_sql(at: &str, now: &str) -> String {
     format!("greatest(0, floor(extract(epoch FROM ({now}) - ({at}))))::bigint")
-}
-
-/// The Updated cell's relative text from a whole-seconds SQL expression, truncated to the
-/// largest unit that fits: under a minute "N s ago", under an hour "N min ago", under a
-/// day "N h ago", else "N d ago". Computed in SQL so the age is the database's clock, the
-/// one that wrote `updated_at`, not the reading process's.
-pub(crate) fn ago_text_sql(secs: &str) -> String {
-    format!(
-        "CASE WHEN {secs} < 60 THEN ({secs})::text || ' s ago' \
-              WHEN {secs} < 3600 THEN ({secs} / 60)::text || ' min ago' \
-              WHEN {secs} < 86400 THEN ({secs} / 3600)::text || ' h ago' \
-              ELSE ({secs} / 86400)::text || ' d ago' END"
-    )
 }
 
 /// One page of the Cloud saves tab and the opaque cursor of the page after it.
@@ -669,24 +656,24 @@ pub(crate) struct AdminObjectRow {
     pub(crate) bytes: i64,
     /// The keyset half, in the cursor codec's `YYYY-MM-DDTHH:MI:SS.USZ` shape.
     pub(crate) updated_at: String,
-    /// [`ago_text_sql`] over the database's `now()`.
+    /// `controlplane::ago` of [`age_secs_sql`] over the database's `now()`.
     pub(crate) updated_ago: String,
     /// `sha256:<64 hex>` of the normalized jsonb text, so it is not a hash of the client's
     /// bytes either.
     pub(crate) checksum: String,
 }
 
-type AdminRow = (String, String, i64, i64, String, String, String);
+type AdminRow = (String, String, i64, i64, String, i64, String);
 
 fn to_admin_row(row: AdminRow) -> AdminObjectRow {
-    let (collection, key, version, bytes, updated_at, updated_ago, checksum) = row;
+    let (collection, key, version, bytes, updated_at, age_secs, checksum) = row;
     AdminObjectRow {
         collection,
         key,
         version,
         bytes,
         updated_at,
-        updated_ago,
+        updated_ago: controlplane::ago(age_secs),
         checksum,
     }
 }

@@ -238,7 +238,7 @@ async fn saves_tab_pages_one_owner_newest_first_with_the_owner_totals() {
     let t = table(&first);
     assert_eq!(t.rows.len(), 25);
     assert_eq!(t.rows[0].item.as_deref(), Some("saves/slot-00"));
-    assert!(t.rows[0].cells[2].value.ends_with(" s ago"), "{}", t.rows[0].cells[2].value);
+    assert_eq!(t.rows[0].cells[2].value, "now");
     assert_eq!(t.rows[1].cells[2].value, "1 min ago");
     assert_eq!(t.rows[0].cells[3].value, "v1");
     let cursor = t.page.next_cursor.clone().expect("a second page");

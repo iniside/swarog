@@ -412,6 +412,18 @@ pub fn purge_backlog_body(title: &str, pending: i64, oldest: &str, sweep_sub: &s
     }]))
 }
 
+/// A portal row's relative age from whole seconds, truncated to the largest unit that fits:
+/// `"now"` under a minute, then `"N min ago"`, `"N h ago"`, `"N d ago"`. A negative age
+/// (a writer's clock ahead of the reader's) reads as `"now"`.
+pub fn ago(secs: i64) -> String {
+    match secs.max(0) {
+        s if s < 60 => "now".to_string(),
+        s if s < 3_600 => format!("{} min ago", s / 60),
+        s if s < 86_400 => format!("{} h ago", s / 3_600),
+        s => format!("{} d ago", s / 86_400),
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PanelQuery {
     pub module: String,
@@ -1544,6 +1556,23 @@ mod tests {
                 since: String::new(),
             }
         );
+    }
+
+    #[test]
+    fn ago_truncates_to_the_largest_unit_and_clamps_a_negative_age() {
+        for (secs, want) in [
+            (-5, "now"),
+            (0, "now"),
+            (59, "now"),
+            (60, "1 min ago"),
+            (3_599, "59 min ago"),
+            (3_600, "1 h ago"),
+            (86_399, "23 h ago"),
+            (86_400, "1 d ago"),
+            (12 * 86_400 + 5, "12 d ago"),
+        ] {
+            assert_eq!(ago(secs), want, "{secs}");
+        }
     }
 
     #[test]
