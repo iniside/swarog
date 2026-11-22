@@ -26,11 +26,13 @@ _None._
   `group.member_left` events with a dissolution reason; the comment at
   `api/groups/events/src/lib.rs:35` states there is no `group.deleted` topic
   (docs/roadmap/feature-tracker.md:201 @ fd797b3a and :145, 2026-09-10).
-- [ ] **memberships_player_idx does not serve list_mine**
+- [ ] **memberships_player_idx does not serve list_mine or the admin Groups tab**
   GROUPS-05. The index is `(player_id, state, created_at DESC, group_id DESC)`
-  (`modules/groups/src/lib.rs:80-81`) but `mine_sql` filters only on `player_id`
-  and orders by `created_at DESC, group_id DESC` (`store.rs:628-637`), so the
-  `state` column in the middle breaks the ordered scan
+  (`modules/groups/src/lib.rs:156-158`) but `mine_sql` (`list_mine`,
+  `store.rs:709-719`) and `admin_page_sql` (`Store::admin_page`,
+  `store.rs:732-742`) both filter only on `player_id` and order by
+  `created_at DESC, group_id DESC`, so the `state` column in the middle breaks
+  the ordered scan for both readers
   (docs/roadmap/feature-tracker.md:201 @ fd797b3a, 2026-09-10; read at HEAD).
 - [ ] **accept and reject as exported consts in groupsapi**
   GROUPS-06. `DECISION_ACCEPT`/`DECISION_REJECT` are `pub(crate)` in

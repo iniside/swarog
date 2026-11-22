@@ -11,7 +11,7 @@ use opsapi::Status;
 use sqlx::PgPool;
 
 use crate::admin;
-use crate::store::{AdminMembershipRow, ADMIN_PAGE_SIZE};
+use crate::store::{AdminMembershipRow, Store, ADMIN_PAGE_SIZE};
 use crate::tests::{test_pool, unique_uuid, wired, with_cleanup, FakeDirectory, DB_LOCK};
 
 async fn insert_group(pool: &PgPool, name: &str, policy: &str, created: &str) -> String {
@@ -167,7 +167,9 @@ fn purges_body_is_empty_at_zero_and_one_item_otherwise() {
 
 /// Four rows in four states and two group sizes: every state listed with its role or
 /// state word, each group's own member count (pending rows excluded), the joined day in
-/// UTC, and the tab count equal to the rows.
+/// UTC, and the tab count equal to the rows. The UTC day is read again on a connection
+/// whose session zone is UTC+14, where the 23:30Z row is already the next day: sqlx pins
+/// `TimeZone=UTC` at connect, so the pool's own sessions cannot tell the two apart.
 #[tokio::test]
 async fn groups_tab_lists_every_state_with_member_counts_and_joined_day() {
     let Some(pool) = test_pool().await else { return };
@@ -211,13 +213,39 @@ async fn groups_tab_lists_every_state_with_member_counts_and_joined_day() {
 
         let count = admin.panel(query(admin::TAB_COUNT, "player", &me, None)).await.unwrap();
         assert!(matches!(&count.primitive, Primitive::Cell(c) if c.value == "4"));
+
+        let opts = (*p.connect_options()).clone();
+        let kiritimati = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    sqlx::query("SET TIME ZONE 'Pacific/Kiritimati'").execute(conn).await?;
+                    Ok(())
+                })
+            })
+            .connect_with(opts)
+            .await
+            .unwrap();
+        let (local,): (String,) =
+            sqlx::query_as("SELECT to_char('2026-03-04T23:30:00Z'::timestamptz, 'YYYY-MM-DD')")
+                .fetch_one(&kiritimati)
+                .await
+                .unwrap();
+        assert_eq!(local, "2026-03-05", "the session zone is UTC+14");
+        let store = Store { pool: kiritimati.clone() };
+        let rows = store.admin_page(STATE_MEMBER, &me, None, 10).await.unwrap();
+        let days: Vec<&str> = rows.iter().map(|r| r.joined.as_str()).collect();
+        assert_eq!(days, vec!["2026-03-04", "2026-03-03", "2026-03-02", "2026-03-01"]);
+        kiritimati.close().await;
     })
     .await;
 }
 
-/// 28 rows, three to a timestamp so the id breaks ties, read as two pages: 25 then 3,
-/// together every row once in (created_at, group_id) DESC order, the cursor only past the
-/// first page.
+/// 28 rows, four to a timestamp, read as two pages: 25 then 3. The first page holds the
+/// six newest minutes (24 rows) and ONE of the oldest minute's four, so the cut falls
+/// inside a timestamp and only the cursor's group_id half reaches the other three.
+/// Together the pages hold every row once in (created_at, group_id) DESC order, the
+/// cursor only past the first page.
 #[tokio::test]
 async fn groups_tab_keyset_pages_every_row_once_in_order() {
     let Some(pool) = test_pool().await else { return };
@@ -225,7 +253,7 @@ async fn groups_tab_keyset_pages_every_row_once_in_order() {
     let me = unique_uuid(&pool).await;
     let mut groups = Vec::new();
     for i in 0..28 {
-        let created = format!("2026-02-01T00:{:02}:00Z", i / 3);
+        let created = format!("2026-02-01T00:{:02}:00Z", i / 4);
         let g = insert_group(&pool, &format!("G{i}"), JOIN_OPEN, "2026-01-01T00:00:00Z").await;
         groups.push((created, g));
     }
@@ -256,6 +284,35 @@ async fn groups_tab_keyset_pages_every_row_once_in_order() {
 
         let count = svc.store.admin_count(&me).await.unwrap();
         assert_eq!(count, 28);
+    })
+    .await;
+}
+
+/// Exactly a page of rows is one page with no cursor: the reader fetches one row past the
+/// page to know whether another follows, so a full last page does not point at an empty one.
+#[tokio::test]
+async fn groups_tab_exactly_one_full_page_has_no_cursor() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, svc) = wired(&pool, Arc::new(FakeDirectory::new())).await;
+    let me = unique_uuid(&pool).await;
+    let mut groups = Vec::new();
+    for i in 0..ADMIN_PAGE_SIZE {
+        let created = format!("2026-02-01T00:{i:02}:00Z");
+        let g = insert_group(&pool, &format!("G{i}"), JOIN_OPEN, "2026-01-01T00:00:00Z").await;
+        groups.push((created, g));
+    }
+    let ids: Vec<String> = groups.iter().map(|(_, g)| g.clone()).collect();
+    let p = pool.clone();
+    with_cleanup(&pool, ids, async move {
+        for (created, g) in &groups {
+            insert_row(&p, g, &me, STATE_MEMBER, ROLE_MEMBER, created).await;
+        }
+        let admin = admin::GroupsAdmin::new(svc.clone());
+        let body = admin.panel(query(admin::GROUPS, "player", &me, None)).await.unwrap();
+        let t = table(&body);
+        assert_eq!(item_ids(t).len(), ADMIN_PAGE_SIZE);
+        assert_eq!(body.meta.as_deref(), Some("25"));
+        assert!(t.page.next_cursor.is_none(), "a full only page has no cursor");
     })
     .await;
 }
