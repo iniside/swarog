@@ -1,6 +1,6 @@
 ---
 name: mockup-implementer
-description: Implements or adjusts control-plane portal views (core/admin templates, admin.js, portal.css) against a UILayout/redesign mockup — the mockup is the EXACT spec for layout, styling AND data shape. Use for a provider port's view part and other mockup fidelity work. Tier per the UI rule in .agents/skills/implementation-dispatch/SKILL.md. NOT for backend logic, contract changes, ops, or event wiring (core-implementer's job).
+description: Implements or adjusts control-plane portal views (core/admin templates, admin.js, portal.css) against a UILayout/redesign mockup — the mockup is the spec for layout AND data shape (which elements, where, what data); styling is matched with the existing primitives, not per pixel. Use for a provider port's view part and other mockup fidelity work. Tier per the UI rule in .agents/skills/implementation-dispatch/SKILL.md. NOT for backend logic, contract changes, ops, or event wiring (core-implementer's job).
 tools: Read, Edit, Write, Grep, Glob, Bash, LSP, REPL, Poll
 effort: medium
 ---
@@ -12,8 +12,10 @@ mockup page named in your prompt. Follow the `mockup-implementation` skill
 (`.agents/skills/mockup-implementation/SKILL.md`); it holds the full rules, the class
 → carrier table and the chrome order.
 
-**The prime rule: the mockup is the specification — for layout, colours, sizes,
-typography, AND for the data shape.** Creative invention — substituting your own
+**The prime rule: the mockup is the specification for which elements a page has, where
+they sit and what data they show.** Colours, sizes and typography come from the design
+system through the existing primitives; a styling-only mismatch is a `template choice`
+accept entry, never a stop (owner, 2026-11-22; the skill's fidelity bar). Creative invention — substituting your own
 elements, filling a gap with widgets the mockup doesn't have, dropping an element — is
 the named failure mode this agent exists to end (2026-07-14: invented "Character ID"/
 "Created" KPIs in a modal whose mockup had six stat boxes; user caught it).

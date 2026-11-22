@@ -34,6 +34,20 @@ invariants, owner answers, X-rules and K-items moved into the sub-step that impl
 An audit point the plan had not decided is an **Owner decision before dispatch** line in its
 step.
 
+Revision 2026-11-22 (fidelity bar; owner: "zgodność z mockupem była zbyt dosłowna. Ma się
+zgadzać layout i dane, a nie co do pixela"). It applies from the first step dispatched after
+the one in flight on 2026-11-22; landed steps and their accept files keep their text.
+- **Fidelity.** The mockup fixes which elements a page has, where they sit and what data
+  they show. Styling below that (a muted or strong variant, an icon's side, wrapping,
+  spacing) is not part of the bar. R3 and the port template's Na0 rule are amended below.
+- **Freeze.** The primitive vocabulary of `core/controlplane` and `tools/admindiff/src` are
+  frozen for the remaining ports. A new variant or field lands only when an element's data
+  or its place on the page cannot be shown without it; a visual-only mismatch takes the
+  nearest existing carrier and a `template choice` accept entry, with one item in
+  `docs/todo/admin-second-pass.md`. admindiff gets bug fixes only.
+- **Orders in code.** Step 13f moves the cross-module `order` values out of this plan's
+  prose into named constants.
+
 Execution order once the owner says go: 28 → 13c.1a → 13c.1r → 13c.1b → 13c.1g → 13c.1h →
 13c.2a1 → 13c.2a2a → 13c.2a2b → 13c.2a3 → 13c.2b1 → 13c.2b2 → 13c.3a → 13c.3b → 13c.4 →
 13d1 … 13d7d → 13e1 … 13e6 → 14 … 24 (per port: Na0 when needed, Na1, Na2, Na3, Nt, Nb; port 24 as
@@ -86,8 +100,9 @@ answer: that plan finished first (Step 7, 825d5494), so the ports start after it
   tables or indexes other than `admin.users.role` (Step 5).
 - **R2 — actions.** REAL actions are wired. NEW actions are declared with `implemented: false`
   and render disabled with the hint "Not implemented yet". The portal never posts them.
-- **R3 — fidelity.** Every element of the mockup page is present. Every difference is a
-  declared deviation in the step's report.
+- **R3 — fidelity.** Every element of the mockup page is present, in its place, with its
+  data. Every difference is a declared deviation in the step's report. A styling-only
+  difference is declared and does not block the step (revision 2026-11-22).
 
 ### Exclusions
 
@@ -1929,6 +1944,9 @@ in the port bullets.
   (`core/controlplane/src/lib.rs`, `core/admin/src/render/*.rs`, templates, the public-api
   baseline), with its tests; then **Nt0** (`[opus]` test-author) for its golden. Never folded
   into Na1. Depends on Before a.
+  A gap is contract work only when an element's data or its place on the page cannot be
+  shown with the existing contract (revision 2026-11-22); a styling-only mismatch is a
+  `template choice` accept entry and never an Na0.
   A contract gap found later, inside Na1–Na3 (owner, 2026-11-21): the implementer stops,
   commits nothing that works around it, and reports the gap; it becomes this port's Na0
   (owner decision, review, Nt0) before the part resumes. A gap more than one port needs is
@@ -2257,6 +2275,25 @@ The ports:
     with a recorded break run (G10).
   - **17b** `[sonnet]` mockup-implementer: the monolith and split crawls and the accept files of
     checklist §7.
+- **Step 13f — cross-module orders as named constants** (owner, 2026-11-22). `[opus]`
+  core-implementer, one `[review]` round; runs before the next port part that adds an
+  `order`. Why: the X2 order table above lives in plan prose and each module copies its
+  numbers by hand, so a new module must read every other module's.
+  - Invariant: every `order` of a point several modules share (entity tabs, facts, list
+    columns, header actions, row-menu groups, dashboard tiles, attention items, platform nav
+    entries) is one named constant, and no module's `admin.rs` or portal provider holds a
+    literal for it. Values do not change: no golden and no accept file moves.
+  - What dies: the literals in the landed providers (accounts, characters, wallet,
+    inventory, friends, groups if landed, mail, `core/admin`'s `portal` and `core.events`);
+    once landed, the X2 order bullet above is replaced by a pointer to the constants.
+  - **Owner decision before dispatch:** where the table lives. (a) `core/controlplane`,
+    one `order` module whose constants name the contributing modules (recommended: one
+    place to read; the cost is that core names domain modules, as `SECTIONS` already names
+    `players` and `economy`); (b) the api crate of the module that owns the host
+    (`api/accounts` for the player page), which keeps core free of module names but makes
+    every contributor depend on the host's api crate.
+  - Gate: the public-api baseline for the touched crate is re-blessed; `admincheck` stays
+    green.
 - **Step 18 — groups.**
   - Groups tab (DERIV via `page_mine`); promote member to admin (REAL, Q1).
   - Declares the `group` entity kind and links the group name to its entity page (O-4).

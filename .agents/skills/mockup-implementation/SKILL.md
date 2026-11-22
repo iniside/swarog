@@ -5,13 +5,21 @@ description: Port an admin page to the control-plane portal (core/admin) from it
 
 # Mockup Implementation
 
-The mockup is the exact spec for layout, styling and data shape:
+The mockup is the spec for which elements a page has, where they sit and what data
+they show (owner, 2026-11-22: layout and data must match, not every pixel):
 `UILayout/redesign/<page>.html`, built by `P.<key>` in
 `UILayout/redesign/assets/pages-*.js` from the design-system primitives
 (`UILayout/design-system/components/bundle.js`, `bundle.css`, `tokens.json`), with
 fake rows in `assets/data.js`. The portal that renders it is `core/admin`.
 
 ## Standing decisions (owner-settled; do not re-ask)
+
+- Fidelity bar (owner, 2026-11-22). A styling-only mismatch (a muted or strong variant,
+  an icon's side, wrapping, spacing) is not a contract gap and stops nothing: it takes
+  the nearest existing carrier, a `template choice` accept entry and one item in
+  `docs/todo/admin-second-pass.md`. `contract gap` is kept for an element whose data or
+  place on the page the contract cannot carry. The primitive vocabulary of
+  `core/controlplane` and `tools/admindiff/src` are frozen for the remaining ports.
 
 - Copy the mockup. No element is dropped, substituted or invented. Every difference
   is fixed, is an accept entry with a reason (below), or, for a difference `admindiff`
