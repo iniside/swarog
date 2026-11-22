@@ -3198,6 +3198,9 @@ round.
 - **Step 24b4 — resolve the accept entries.** `[inline]`, after 24b3: under
   `safe-verification`, a fleet `admindiff crawl` and `diff`, then delete the `data
   difference` entries in `tools/admindiff/accept/` the seed resolved.
+- **Errata (2026-11-22).** `docs/plans/2026-11-22-1642-demoseed-client-simulator-plan.md`
+  replaces Steps 24b0–24b4. The 24b3 pending mail is dropped (mail has no public route; owner
+  decision 4 there). The accept-entry cleanup of 24b4 moves to Step 5 of that plan.
 
 ### Step 25 — Tests
 

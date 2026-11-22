@@ -1,12 +1,14 @@
 //! `demoseed` — fills a running fleet with deterministic demo data (players, characters,
-//! inventory, matches, friends, groups, cloud saves) through the gateway's public HTTP API, then
-//! runs throwaway client scenarios over the session, party and destructive ops.
+//! inventory, matches, friends, groups, cloud saves) through the gateway's public HTTP API, reads
+//! every seeded kind back, then runs throwaway client scenarios over the session, party and
+//! destructive ops on guest players it creates and deletes.
 //!
 //!   demoseed [--base-url <url>] [--players <n>] [--matches <n>] [--concurrency <n>]
 //!            [--event-timeout <secs>] [--clients <n>]
 //!
-//! Every call names its `opscatalog` op; the run ends with a report of every call that
-//! answered an unexpected status, every op of the catalog no call covered, and exits 1 on either.
+//! Every call names its `opscatalog` op. The run ends with a report of every call that answered an
+//! unexpected status and every catalog op no call answered with its declared success, and exits 1
+//! on either.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -117,8 +119,8 @@ Requires a fleet started with the dev flags (devctl up sets APIKEYS_DEV_SEED, AC
 INVENTORY_DEV_GRANT, WALLET_DEV_SEED). Re-running converges: only missing rows are created, and
 every seeded kind is read back. Then each client scenario creates its own guest players and a
 registered account, drives the session, party and destructive ops on them, and deletes them.
-Exits 1 when any call
-answered an unexpected status or an op of the catalog was never called.";
+Exits 1 when any call answered an unexpected status or an op of the catalog never answered its
+declared success.";
 
 pub fn parse_args(args: &[String]) -> Result<Command> {
     let mut config = Config {

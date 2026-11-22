@@ -251,9 +251,9 @@ Mockup: `UILayout/design-system/components/bundle.js:130-149`. Portal:
 ## 5. Seed rule
 
 There are no per-module seed tools. `demoseed` is the one seeder and writes only
-through the public API (plan Step 24b). A port adds no seed. A designed state that a
-fresh fleet lacks is a `data difference` accept entry. Step 24b removes the entries its
-API seeding resolves. A state no public API can produce, such as a retrying or parked
+through the public API (`docs/plans/2026-11-22-1642-demoseed-client-simulator-plan.md`,
+which replaced Step 24b). A port adds no seed. A designed state that a fresh fleet lacks is a
+`data difference` accept entry. Step 5 of that plan removes the entries the seeding resolves. A state no public API can produce, such as a retrying or parked
 mail, stays an entry for good. `eventctl seed-mockup` stays as the Event plane's dev
 fixture. Do not chase a mockup gap beyond the checklist's decisions; it goes to the next
 iteration.
@@ -335,8 +335,7 @@ target/debug/devctl down
     least one matched panel.
 - `NEW` and `STALE` lines go back to part `b` as a fix round.
 - The split is the at-risk topology and is crawled too: `devctl up split`, then
-  `demoseed --base-url http://127.0.0.1:8082` (the split's gateway; its 8080 is
-  characters-svc, where `/accounts/register` is a 404), `eventctl seed-mockup`,
+  `eventctl seed-mockup` (`demoseed` is monolith only for now: the simulator plan has no split run),
   `crawl --base-url http://localhost:8085` and `diff` for every non-`Pending` target.
 
 ## 8. Post-mortem
