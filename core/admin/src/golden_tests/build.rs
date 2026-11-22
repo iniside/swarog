@@ -524,8 +524,8 @@ pub(super) fn table_list_columns_case() -> PanelCase {
     }
 }
 
-/// A players table filtered by a Select with `us` chosen, a Bool set to `true`, and a Range
-/// and a Ref left unset.
+/// A players table filtered by a Select with `us` chosen, a Bool set to `true`, and a Range,
+/// a Ref and a second Select left unset.
 pub(super) fn table_filter_kinds_case() -> PanelCase {
     let filter = |key: &str, label: &str, kind: FilterKind| FilterDef { key: key.to_string(), label: label.to_string(), kind };
     let table = DataTable {
@@ -534,6 +534,7 @@ pub(super) fn table_filter_kinds_case() -> PanelCase {
             filter("level", "Level", FilterKind::Range),
             filter("online", "Online", FilterKind::Bool),
             filter("guild", "Guild", FilterKind::Ref("guild".to_string())),
+            filter("status", "Status", FilterKind::Select(strings(&["active", "banned"]))),
         ],
         ..match players_table(vec![player_row("p-1001", "12", "active", false)], Some(1), None) {
             Primitive::DataTable(t) => t,

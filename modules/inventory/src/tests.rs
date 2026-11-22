@@ -1866,7 +1866,7 @@ async fn grant_releases_the_lock_before_it_answers_a_refusal() {
 
 // ---- Admin: the player's Inventory tab ----------------------------------
 
-use controlplane::{ActionPoint, DataTable, EntityRef, PanelBody, PanelQuery, Point, Primitive, Provider};
+use controlplane::{ActionPoint, DataTable, EntityRef, FilterKind, PanelBody, PanelQuery, Point, Primitive, Provider};
 
 fn admin_query(contribution: &str, pid: &str, params: &[(&str, &str)], search: Option<&str>, cursor: Option<&str>) -> PanelQuery {
     PanelQuery {
@@ -1920,6 +1920,26 @@ fn admin_manifest_declares_the_tab_its_keys_and_disabled_actions() {
     assert!(revoke.danger);
     let grant = m.actions.iter().find(|a| a.point == ActionPoint::RowAction("player".into())).expect("grant");
     assert_eq!(grant.order, 50);
+}
+
+/// The tab draws one Select per param its manifest declares, keyed by that param and in the
+/// declared order: the Owner select offers the owner types, the Type select the given kinds.
+#[test]
+fn admin_inventory_tab_draws_a_select_per_manifest_param_in_order() {
+    let m = admin::manifest();
+    let tab = m.contributions.iter().find(|c| c.id == admin::INVENTORY).expect("the tab");
+    let Point::EntityTab { params, .. } = &tab.point else { panic!("the tab is an EntityTab, got {:?}", tab.point) };
+    let body = admin::inventory_body("p-1", &[], 0, None, vec!["consumable".into(), "weapon".into()]);
+    let filters = &admin_table(&body).filters;
+    assert_eq!(filters.iter().map(|f| f.key.as_str()).collect::<Vec<_>>(), *params);
+    let options: Vec<&[String]> = filters
+        .iter()
+        .map(|f| match &f.kind {
+            FilterKind::Select(options) => options.as_slice(),
+            other => panic!("the {:?} filter is a Select, got {other:?}", f.key),
+        })
+        .collect();
+    assert_eq!(options, [&["player", "character"][..], &["consumable", "weapon"][..]]);
 }
 
 /// The cursor is a holding's row id and parses back; a malformed one, or an unknown owner
