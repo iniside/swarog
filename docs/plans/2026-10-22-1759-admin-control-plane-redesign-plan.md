@@ -2264,6 +2264,15 @@ The ports:
       undeclared filter fails visibly instead of being dropped by the query filter in
       `core/admin/src/routes.rs`; one core unit test, both topologies through the same
       path. The 16d inventory test stays.
+    - **16h** `[opus]` test-author, the owner-approved structural follow-ups of the 16f
+      review (owner, 2026-11-22): a signature may hold several fragments, each of which the
+      failure detail must contain (used for PY7/PY7m, PH6 and ML4b/ML4bm so they pin their
+      independent fields); `Proof::check` records the check name for every id it sees,
+      passing or failing, so `sort` refuses one id under two names even when one of them
+      passes; the multi-name ids WL7, WL7m, NT1m, `[6]`, `[4c]` and `DL14{tag}` each split
+      into one id per check, as M3a/M3b did, with their expected-red lines renamed. The
+      FR8/FR8m reasons name step 25h4, where they are re-pointed. Unit tests for the
+      fragments and the passing-name rule; one full green run (about 12 min), exit 0.
 - **Step 17 — friends.** Friends tab. One a (Na1 with Na3): the tab (order 50), Purges
   pending at 64. Rows are a module-owned row kind (O-6); the user cell links
   `Link::Entity(player)` itself. Checklist `docs/plans/2026-11-22-step17-friends-checklist.md`,
