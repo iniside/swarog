@@ -1,5 +1,7 @@
 # Plan: demoseed as a concurrent client simulator over every public operation
 
+Status: done
+
 ## Context
 
 **Requested outcome (owner, 2026-11-22):** "zrobic tak, aby demoseed dzialal przez api, ktore jest wystawione publicznie przez gateway, czyli to bedzie taki troche symulator klientow, ktorzy robia requesty [...] do kazdego modulu tak jak robiloby to klient, dzieki temu bedziemy mogli caly backend przetestowac i jednoczesnie zaseedowac jakies przykladowe dane."
@@ -132,6 +134,8 @@ Commit: `feat(demoseed): drive throwaway client scenarios over the remaining pub
 ### Step 5 — Owner live run and accept-entry cleanup `[inline]`
 
 Owner runs, in order: `cargo build -p demoseed` → `cargo run -p devctl -- up monolith` → `target/debug/demoseed` twice (the second run must create no new seeded data and still report full coverage). Failures are reported, not fix-looped (`memory/live-acceptance-report-dont-fix.md`). If register/login time out under `--concurrency 16` (2 argon2 permits, 30 s request timeout `tools/demoseed/src/lib.rs:23`), that is reported with the measured time, not patched in place. Then, under `safe-verification`, on the same fleet: `admindiff crawl` + `diff`, and delete only the `data difference` entries in `tools/admindiff/accept/*.txt` that the crawl no longer produces (the former 24b4). Rows that vary per run because of the throwaway guests (deletion receipts, audit rows, tombstones until the 5-minute purge sweep) are reported to the owner, never accepted as new entries; that commit gets a `proof-auditor` (accept files are a gate). The uncommitted `tools/admindiff` changes in the working tree today belong to other work and are not touched.
+
+- Errata 2026-11-22: the owner ran `demoseed` on the monolith twice plus once with `--matches 0`; every run exited 0. The accept-entry cleanup and seeding the split were deferred by the owner and are tracked in `docs/todo/demoseed.md` under Known limits (demoseed-client-simulator step 5).
 
 ## Not checked / open for implementers
 
