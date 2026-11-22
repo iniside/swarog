@@ -121,7 +121,10 @@ USAGE:
             may keep or drop it and matches either way. Same-label mock-only, portal-only or moved
             siblings of one parent are one line, with ×N before the label when N > 1; parents
             whose siblings share a path give one line, ×N when all give the same N and ×{3,1}
-            (descending, never a sum) when their counts differ
+            (descending, never a sum) when their counts differ. The line hides one change: a parent's count
+            moving while the other parents already give both counts of the line (three or more
+            parents, e.g. (4,3,3) to (4,4,3)) keeps the line, so an accept entry for a counted
+            multi-parent line does not see it
 
   --base-url <url>   portal origin (default http://localhost:8080; split: http://localhost:8085)
   --user <name>      admin login (default admin); the password is $ADMINDIFF_PASSWORD (default admin)

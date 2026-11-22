@@ -4,7 +4,7 @@ Last updated: 2026-11-22
 
 - [x] **One accept line covers any number of same-shaped unmatched openers** (2026-11-22, admin-control-plane-redesign step 16)
   Same-label leftovers under one parent are one counted line, `portal-only ×2
-  button.menu-item#bd58cd` in the 4 user-menu accept files; one more opener is NEW plus STALE.
+  button.menu-item#bd58cd` in the 5 user-menu accept files; one more opener is NEW plus STALE.
 - [x] **Every purges-pending link copies core admin's Events page address** (2026-11-21, admin-control-plane-redesign step 14a3)
   `controlplane::EVENTS_PAGE_MODULE`/`EVENTS_PAGE` name the address; core admin's Events
   provider and the characters purges item and its test use them.

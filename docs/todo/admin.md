@@ -75,7 +75,7 @@ _None._
   `encode_field`, so a Money shape change can leave `posted_raw` behind. `posted_raw` calling
   `encode_field` with `FieldValue::Money` ends it.
 - [ ] **Tiles whose labels differ are never compared inside**
-  `diff_pages` (`tools/admindiff/src/skeleton.rs:415-439`) pairs a mock tile with a portal
+  `diff_pages` (`tools/admindiff/src/skeleton.rs:471`) pairs a mock tile with a portal
   tile only by kind and key (the `kpi-label` text). A wallet tile named after a portal
   currency and the mockup's tile under another name come out as one `mock-only tile` and
   one `portal-only tile` line; their value, sub-line and markup are never diffed, so an
@@ -103,14 +103,17 @@ _None._
   `diff_pages` pairs leftover nav sections by similarity (`tools/admindiff/src/skeleton.rs:471-644`).
   The mockup's Economy entry is `down: true` (`UILayout/redesign/assets/registry.js:25`), so it
   never matches exactly and the mockup's Lore section pairs with the portal's Economy section
-  (on the economy page only by position). The Lore lines in the 8 sidebar accept files blame
+  (on the economy page only by position). The Lore lines in the 9 sidebar accept files blame
   "no Lore module", not the `.down` demo state. Which section a leftover entry counts in
   depends on that pairing. A counted line keeps each section's count (`mock-only ×{4,3}
-  a.nav-item#ecbb9a` on the economy page), so it changes when a section loses an entry, except
-  when the counts before and after the loss are both still given by some section: with two
-  sections, one that loses its only leftover while the other also leaves one. The
-  `mock-only a.nav-item#848c49` line is that case on every page but mail: Lore's Locks and
-  Platform's Mail outbox each leave one, and losing either keeps the line.
+  a.nav-item#ecbb9a` on the economy page), so it changes when a section's count changes, except
+  when the counts before and after the change are both still given by other sections: a section
+  going from c to c+1 while the others already give c and c+1, e.g. (4,3,3) to (4,4,3), keeps
+  the line and the new leftover stays hidden (it needs three or more parents; the limit is
+  stated in the `admindiff` usage text). The `mock-only a.nav-item#848c49` line has two
+  parents on every page but mail, so it is not that case: Lore's Locks and Platform's Mail
+  outbox each leave one, and if either goes the line loses a parent and its accept entry
+  turns stale.
 - [ ] **The Economy Ledger table is never compared with the mockup**
   A fresh fleet has no wallet movements (the starter grant is off and demoseed grants none), so
   `tools/admindiff/accept/economy.txt` accepts the empty-state body and the diff never sees the

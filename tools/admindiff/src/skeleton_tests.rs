@@ -169,7 +169,7 @@ fn a_counted_line_two_parents_give_keeps_each_parents_count_not_the_sum() {
     assert_eq!(diff(&two(3, 2), &two(1, 0)), set(&["frame div.app > div.x: mock-only ×2 span"]));
     // The counts print descending whatever the parent order.
     assert_eq!(diff(&two(2, 3), &two(1, 1)), set(&["frame div.app > div.x: mock-only ×{2,1} span"]));
-    // Leftovers (1, 3): the second parent pairs with the portal's non-empty one.
+    // Leftovers (1, 3): the first parent pairs with the portal's non-empty one.
     assert_eq!(diff(&two(2, 3), &two(1, 0)), set(&["frame div.app > div.x: mock-only ×{3,1} span"]));
     // Leftovers (1, 1): every parent gives 1, so no count.
     assert_eq!(diff(&two(2, 2), &two(1, 1)), set(&["frame div.app > div.x: mock-only span"]));
