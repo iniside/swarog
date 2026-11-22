@@ -13,8 +13,9 @@ pub const ACCOUNTS_REGISTER: &[u16] = &[201, 409];
 // a 409 there is a cap, ceiling or tombstone refusal, not "already exists", and is an error.
 pub const CHARACTERS_CREATE: &[u16] = &[201];
 pub const CHARACTERS_LIST: &[u16] = &[200];
-// 409: the edge was accepted between the request and this accept.
-pub const FRIENDS_ACCEPT: &[u16] = &[204, 409];
+// Called only on an edge the request answered pending, so a re-run never accepts again; an edge
+// no longer pending answers 404 (`modules/friends/src/service.rs` `accept`), never 409.
+pub const FRIENDS_ACCEPT: &[u16] = &[204];
 pub const FRIENDS_LIST: &[u16] = &[200];
 pub const FRIENDS_PENDING: &[u16] = &[200];
 // A repeat request on an existing edge answers 201 with that edge (`modules/friends/src/service.rs`

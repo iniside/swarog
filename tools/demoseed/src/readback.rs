@@ -241,16 +241,26 @@ pub(crate) async fn public_save(gateway: &Gateway, save: &SavePlan, owner: &Sess
     }
 }
 
+/// One `topScores` read; `None` when it failed (recorded).
+async fn top_scores(gateway: &Gateway) -> Option<Vec<ScoreRow>> {
+    gateway
+        .call(ops::LEADERBOARD_TOP_SCORES, &[], Caller::Anonymous, None, expect::LEADERBOARD_TOP_SCORES)
+        .await
+        .ok()
+        .and_then(|(_, body)| gateway.typed::<Vec<ScoreRow>>(ops::LEADERBOARD_TOP_SCORES, body))
+}
+
+/// A shape-only `topScores` read, for a run that planned no match and so has no winner to
+/// look for.
+pub(crate) async fn leaderboard_shape(gateway: &Gateway) {
+    top_scores(gateway).await;
+}
+
 /// Polls the leaderboard until `player_id` ranks (it is fed by `match.finished`).
 pub(crate) async fn leaderboard(gateway: &Gateway, player_id: &str, timeout: Duration) {
     let deadline = Deadline::after(timeout);
     loop {
-        let scores = gateway
-            .call(ops::LEADERBOARD_TOP_SCORES, &[], Caller::Anonymous, None, expect::LEADERBOARD_TOP_SCORES)
-            .await
-            .ok()
-            .and_then(|(_, body)| gateway.typed::<Vec<ScoreRow>>(ops::LEADERBOARD_TOP_SCORES, body));
-        let Some(scores) = scores else { return };
+        let Some(scores) = top_scores(gateway).await else { return };
         if scores.iter().any(|score| score.player == player_id) {
             return;
         }
@@ -309,12 +319,26 @@ pub(crate) async fn group_rows(gateway: &Gateway, group_id: &str, owner: &Sessio
     }
 }
 
-/// Polls the inbox until it holds at least `fresh` `friend.accepted` rows (the friendships this
-/// run accepted on the player's request; an older row may have expired, so none is owed for
-/// those), then marks the first unread row read.
-pub(crate) async fn inbox(gateway: &Gateway, session: &Session, fresh: usize, timeout: Duration) {
+/// The `friend.accepted` rows the inbox holds now, read before this run accepts any
+/// friendship so `inbox` can tell this run's rows from older ones. `None` when the list
+/// failed (recorded).
+pub(crate) async fn accepted_rows(gateway: &Gateway, session: &Session) -> Option<usize> {
+    let caller = Caller::Player(&session.token);
+    let rows =
+        all_pages::<NotificationRow>(gateway, ops::NOTIFICATIONS_LIST, &[], caller, json!({}), expect::NOTIFICATIONS_LIST)
+            .await?;
+    Some(rows.iter().filter(|row| row.kind == KIND_FRIEND_ACCEPTED).count())
+}
+
+/// Polls the inbox until it holds `fresh` `friend.accepted` rows over the `baseline` that
+/// `accepted_rows` read before the friendships (`fresh` is the friendships this run accepted
+/// on the player's request; a row carries nothing naming its run, so only the count over the
+/// baseline tells a new row from an old one), then marks the first unread row read. With
+/// `fresh` 0 nothing is owed and the first list is enough.
+pub(crate) async fn inbox(gateway: &Gateway, session: &Session, baseline: usize, fresh: usize, timeout: Duration) {
     let caller = Caller::Player(&session.token);
     let deadline = Deadline::after(timeout);
+    let owed = baseline + fresh;
     let rows = loop {
         let Some(rows) =
             all_pages::<NotificationRow>(gateway, ops::NOTIFICATIONS_LIST, &[], caller, json!({}), expect::NOTIFICATIONS_LIST)
@@ -322,13 +346,16 @@ pub(crate) async fn inbox(gateway: &Gateway, session: &Session, fresh: usize, ti
         else {
             return;
         };
-        if rows.iter().filter(|row| row.kind == KIND_FRIEND_ACCEPTED).count() >= fresh {
+        if fresh == 0 || rows.iter().filter(|row| row.kind == KIND_FRIEND_ACCEPTED).count() >= owed {
             break rows;
         }
         if !deadline.wait().await {
             gateway.timed_out(
                 ops::NOTIFICATIONS_LIST,
-                format!("{fresh} {KIND_FRIEND_ACCEPTED} rows for {} after {timeout:?}", session.handle),
+                format!(
+                    "{fresh} new {KIND_FRIEND_ACCEPTED} rows over {baseline} for {} after {timeout:?}",
+                    session.handle
+                ),
             );
             break rows;
         }

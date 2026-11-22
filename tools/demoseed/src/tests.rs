@@ -243,8 +243,8 @@ fn parse_args_each_flag() {
     assert_eq!(config.base_url, "http://10.0.0.1:8082");
     assert_eq!(config.players, 5);
     assert_eq!(config.matches, 9);
-    let only_players = seed_config(&["--players", "0"]);
-    assert_eq!(only_players.players, 0);
+    let only_players = seed_config(&["--players", "2"]);
+    assert_eq!(only_players.players, 2);
     assert_eq!(only_players.matches, DEFAULT_MATCHES);
 }
 
@@ -273,6 +273,15 @@ fn parse_args_rejects_missing_value() {
         let err = parse_args(&args(&[flag])).unwrap_err().to_string();
         assert!(err.contains("requires a value"), "{flag}: {err}");
     }
+}
+
+#[test]
+fn parse_args_rejects_fewer_than_two_players() {
+    for value in ["0", "1"] {
+        let err = parse_args(&args(&["--players", value])).unwrap_err().to_string();
+        assert!(err.contains("at least 2"), "players {value}: {err}");
+    }
+    assert_eq!(seed_config(&["--players", "2"]).players, 2);
 }
 
 #[test]
@@ -570,7 +579,7 @@ async fn the_inbox_polls_for_the_owed_row_then_marks_the_oldest_unread_read() {
         ),
         (204, ""),
     ]);
-    readback::inbox(&gateway, &session(), 1, Duration::from_secs(10)).await;
+    readback::inbox(&gateway, &session(), 0, 1, Duration::from_secs(10)).await;
     assert!(gateway.take_report().errors.is_empty());
     assert_eq!(
         requests(&lines),
@@ -581,11 +590,24 @@ async fn the_inbox_polls_for_the_owed_row_then_marks_the_oldest_unread_read() {
 #[tokio::test]
 async fn an_owed_inbox_row_that_never_shows_is_a_timeout_naming_the_op() {
     let (gateway, _lines) = fake_gateway(vec![(200, r#"{"items":[],"next_cursor":""}"#)]);
-    readback::inbox(&gateway, &session(), 1, Duration::ZERO).await;
+    readback::inbox(&gateway, &session(), 0, 1, Duration::ZERO).await;
     let report = gateway.take_report();
     assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
     assert_eq!(report.errors[0].op, "notifications.list");
     assert!(matches!(&report.errors[0].got, Got::Timeout(what) if what.contains("friend.accepted")));
+}
+
+#[tokio::test]
+async fn an_old_accepted_row_does_not_stand_in_for_the_owed_one() {
+    let old = r#"{"items":[{"id":"n1","kind":"friend.accepted","created_at":"2026-11-20T10:00:00Z","read_at":""},{"id":"n0","kind":"wallet.credit","created_at":"2026-11-20T09:00:00Z","read_at":""}],"next_cursor":""}"#;
+    let (gateway, _lines) = fake_gateway(vec![(200, old), (200, old), (204, "")]);
+    let baseline = readback::accepted_rows(&gateway, &session()).await;
+    assert_eq!(baseline, Some(1), "only friend.accepted rows count");
+    readback::inbox(&gateway, &session(), 1, 1, Duration::ZERO).await;
+    let report = gateway.take_report();
+    assert_eq!(report.errors.len(), 1, "{:?}", report.errors);
+    assert_eq!(report.errors[0].op, "notifications.list");
+    assert!(matches!(&report.errors[0].got, Got::Timeout(what) if what.contains("over 1")));
 }
 
 #[tokio::test]

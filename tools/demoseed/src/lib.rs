@@ -27,6 +27,7 @@ pub use report::{Outcome, Report, Summary, Tally};
 
 pub const DEFAULT_BASE_URL: &str = "http://127.0.0.1:8080";
 pub const DEFAULT_PLAYERS: usize = 30;
+pub const MIN_PLAYERS: usize = 2;
 pub const DEFAULT_MATCHES: usize = 100;
 // Below the accounts module's 32 concurrent login slots, so a seed run never draws a 503 from them.
 pub const DEFAULT_CONCURRENCY: usize = 16;
@@ -101,7 +102,7 @@ USAGE:
            [--event-timeout <secs>]
 
   --base-url <url>   gateway front door (default http://127.0.0.1:8080; split: http://127.0.0.1:8082)
-  --players <n>      demo players to create (default 30)
+  --players <n>      demo players to create (default 30, at least 2)
   --matches <n>      match reports to send (default 100)
   --concurrency <n>  requests in flight at once (default 16, at least 1)
   --event-timeout <secs>
@@ -130,7 +131,7 @@ pub fn parse_args(args: &[String]) -> Result<Command> {
                     .ok_or_else(|| anyhow!("demoseed: {flag} requires a value\n\n{USAGE}"))?;
                 match flag.as_str() {
                     "--base-url" => config.base_url = value.trim_end_matches('/').to_string(),
-                    "--players" => config.players = parse_count(flag, value)?,
+                    "--players" => config.players = parse_players(flag, value)?,
                     "--concurrency" => config.concurrency = parse_positive(flag, value)?,
                     "--event-timeout" => {
                         config.event_timeout = Duration::from_secs(parse_positive(flag, value)? as u64)
@@ -151,6 +152,17 @@ fn parse_count(flag: &str, value: &str) -> Result<usize> {
     value
         .parse::<usize>()
         .map_err(|_| anyhow!("demoseed: {flag} expects a non-negative integer, got {value:?}"))
+}
+
+// Friendships, group members and public save reads each need a second player; with fewer the
+// ops behind them are never called and the run could only end "not covered".
+fn parse_players(flag: &str, value: &str) -> Result<usize> {
+    match parse_count(flag, value)? {
+        n if n >= MIN_PLAYERS => Ok(n),
+        n => bail!(
+            "demoseed: {flag} must be at least {MIN_PLAYERS} (friendships, groups and public saves need two players), got {n}"
+        ),
+    }
 }
 
 fn parse_positive(flag: &str, value: &str) -> Result<usize> {
@@ -537,7 +549,12 @@ pub async fn run(config: &Config) -> Result<Report> {
         tasks.spawn(async move { (index, seed_match(&gateway, &seed.matches[index], &sessions).await.is_some()) });
     }
     let reported: Vec<(usize, bool)> = join_all(tasks).await;
-    if let Some(top) = top_winner(&seed) {
+    let top = top_winner(&seed);
+    if top.is_none() {
+        // No match planned: one read still covers `topScores`.
+        readback::leaderboard_shape(&gateway.scenario("leaderboard")).await;
+    }
+    if let Some(top) = top {
         let gateway = gateway.scenario("leaderboard");
         let lost: Vec<&str> = reported
             .iter()
@@ -549,6 +566,26 @@ pub async fn run(config: &Config) -> Result<Report> {
         } else if let Some(winner) = sessions[top].as_ref() {
             readback::leaderboard(&gateway, &winner.player_id, timeout).await;
         }
+    }
+
+    // Before any accept: each requester's `friend.accepted` count, so the inbox read counts
+    // only the rows this run adds. `None` for a player owed none or whose read failed.
+    let mut tasks = JoinSet::new();
+    let requesters: BTreeSet<usize> = seed.friendships.iter().map(|f| f.requester).collect();
+    for index in requesters {
+        if sessions[index].is_none() {
+            continue;
+        }
+        let gateway = gateway.scenario(format!("player {}", seed.players[index].email));
+        let sessions = Arc::clone(&sessions);
+        tasks.spawn(async move {
+            let session = sessions[index].as_ref().expect("checked above");
+            (index, readback::accepted_rows(&gateway, session).await)
+        });
+    }
+    let mut baselines: Vec<Option<usize>> = vec![None; seed.players.len()];
+    for (index, baseline) in join_all(tasks).await {
+        baselines[index] = baseline;
     }
 
     let mut tasks = JoinSet::new();
@@ -598,9 +635,17 @@ pub async fn run(config: &Config) -> Result<Report> {
         }
         let (seed, sessions) = (Arc::clone(&seed), Arc::clone(&sessions));
         let (fresh, public_saved) = (accepted_now[index], public_saved[index]);
+        let (baseline, fresh) = match baselines[index] {
+            Some(baseline) => (baseline, fresh),
+            None if fresh > 0 => {
+                gateway.skip("inbox row check skipped: the inbox read before the friendships failed");
+                (0, 0)
+            }
+            None => (0, 0),
+        };
         tasks.spawn(async move {
             let session = sessions[index].as_ref().expect("checked above");
-            readback::inbox(&gateway, session, fresh, timeout).await;
+            readback::inbox(&gateway, session, baseline, fresh, timeout).await;
             let Some(reader) = public_save_reader(index, seed.players.len()) else { return };
             match sessions[reader].as_ref() {
                 Some(reader) if public_saved => {
@@ -784,7 +829,7 @@ async fn seed_friendship(gateway: &Gateway, requester: &Session, target: &Sessio
             .await
             .ok()?;
         gateway.tally(|s| s.friendships.record(Outcome::from_status(status)));
-        status != 409
+        true
     } else {
         gateway.tally(|s| s.friendships.existing += 1);
         false
