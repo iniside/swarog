@@ -1,9 +1,9 @@
 use super::*;
 
 const CATALOG: &[OpInfo] = &[
-    OpInfo { method: "a.one", verb: "GET", path: "/one", auth: "none" },
-    OpInfo { method: "a.two", verb: "POST", path: "/two", auth: "player" },
-    OpInfo { method: "a.three", verb: "GET", path: "/three", auth: "player" },
+    OpInfo { method: "a.one", verb: "GET", path: "/one", auth: "none", success: 200 },
+    OpInfo { method: "a.two", verb: "POST", path: "/two", auth: "player", success: 200 },
+    OpInfo { method: "a.three", verb: "GET", path: "/three", auth: "player", success: 200 },
 ];
 
 fn error(op: &'static str, got: Got) -> CallError {
@@ -22,27 +22,27 @@ fn error(op: &'static str, got: Got) -> CallError {
 fn coverage_is_full_when_every_op_matched_once() {
     let mut report = Report::default();
     for row in CATALOG {
-        report.record_call(row.method, true);
+        report.record_call(row.method, Answer::Success);
     }
-    report.record_call("a.two", false);
+    report.record_call("a.two", Answer::Failed);
     assert_eq!(report.coverage(CATALOG), Coverage::default());
 }
 
 #[test]
 fn coverage_names_an_op_never_called() {
     let mut report = Report::default();
-    report.record_call("a.one", true);
-    report.record_call("a.three", true);
+    report.record_call("a.one", Answer::Success);
+    report.record_call("a.three", Answer::Success);
     assert_eq!(report.coverage(CATALOG), Coverage { failed_only: vec![], uncovered: vec!["a.two"] });
 }
 
 #[test]
 fn coverage_reports_an_op_called_but_only_failed_as_failed_not_uncovered() {
     let mut report = Report::default();
-    report.record_call("a.one", true);
-    report.record_call("a.two", false);
-    report.record_call("a.two", false);
-    report.record_call("a.three", true);
+    report.record_call("a.one", Answer::Success);
+    report.record_call("a.two", Answer::Failed);
+    report.record_call("a.two", Answer::Failed);
+    report.record_call("a.three", Answer::Success);
     assert_eq!(report.coverage(CATALOG), Coverage { failed_only: vec!["a.two"], uncovered: vec![] });
 }
 
@@ -50,7 +50,7 @@ fn coverage_reports_an_op_called_but_only_failed_as_failed_not_uncovered() {
 fn render_passes_with_no_errors_and_full_coverage() {
     let mut report = Report::default();
     for row in CATALOG {
-        report.record_call(row.method, true);
+        report.record_call(row.method, Answer::Success);
     }
     let rendered = report.render("http://h:1", CATALOG);
     assert!(!rendered.failed, "{}", rendered.text);
@@ -61,7 +61,7 @@ fn render_passes_with_no_errors_and_full_coverage() {
 fn render_lists_errors_by_op_and_fails() {
     let mut report = Report::default();
     for row in CATALOG {
-        report.record_call(row.method, true);
+        report.record_call(row.method, Answer::Success);
     }
     report.errors.push(error("a.two", Got::Status(500)));
     report.errors.push(error("a.one", Got::Transport("refused".to_string())));
@@ -83,11 +83,11 @@ fn render_lists_errors_by_op_and_fails() {
 #[test]
 fn render_fails_on_an_uncovered_op_without_errors() {
     let mut report = Report::default();
-    report.record_call("a.one", true);
-    report.record_call("a.two", true);
+    report.record_call("a.one", Answer::Success);
+    report.record_call("a.two", Answer::Success);
     let rendered = report.render("http://h:1", CATALOG);
     assert!(rendered.failed);
-    assert!(rendered.text.contains("ops not covered (never called in this run): a.three"), "{}", rendered.text);
+    assert!(rendered.text.contains("ops not covered (no call answered the declared success): a.three"), "{}", rendered.text);
 }
 
 #[test]
@@ -110,4 +110,29 @@ fn outcome_409_is_already_exists() {
     for status in [200, 201, 202, 204] {
         assert_eq!(Outcome::from_status(status), Outcome::Created);
     }
+}
+
+#[test]
+fn coverage_counts_only_the_declared_success_not_an_expected_409() {
+    let mut report = Report::default();
+    report.record_call("a.one", Answer::Success);
+    report.record_call("a.two", Answer::Expected);
+    report.record_call("a.two", Answer::Expected);
+    report.record_call("a.three", Answer::Expected);
+    report.record_call("a.three", Answer::Failed);
+    assert_eq!(report.coverage(CATALOG), Coverage { failed_only: vec!["a.three"], uncovered: vec!["a.two"] });
+    let rendered = report.render("http://gw", CATALOG);
+    assert!(rendered.failed, "{}", rendered.text);
+    assert!(rendered.text.contains("ops not covered (no call answered the declared success): a.two"), "{}", rendered.text);
+}
+
+#[test]
+fn a_declared_success_covers_even_beside_an_expected_409() {
+    let mut report = Report::default();
+    for row in CATALOG {
+        report.record_call(row.method, Answer::Expected);
+        report.record_call(row.method, Answer::Success);
+    }
+    assert_eq!(report.coverage(CATALOG), Coverage::default());
+    assert!(!report.render("http://gw", CATALOG).failed);
 }

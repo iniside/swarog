@@ -1,4 +1,7 @@
-use super::{rpc_modules, rpc_modules_from_fs_at, self_check_rpc_list, self_check_rpc_list_at};
+use super::{
+    collect_rows, render_rows, rpc_modules, rpc_modules_from_fs_at, self_check_rpc_list,
+    self_check_rpc_list_at, Row,
+};
 use std::path::{Path, PathBuf};
 
 /// The retarget must not weaken the didn't-forget check for a SERVED domain: dropping one
@@ -103,4 +106,34 @@ fn a_contract_only_domain_lands_in_unserved_not_demanded_as_missing() {
     );
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+/// A row renders its declared success status next to the route, so `OpInfo::success` is the
+/// gateway's `#[http(success = …)]` and not a hand copy.
+#[test]
+fn a_row_renders_its_declared_success_status() {
+    let rows = [Row {
+        method: "demo.create".to_string(),
+        verb: "POST".to_string(),
+        path: "/demo/{id}".to_string(),
+        auth: "player",
+        success: 201,
+    }];
+    let rendered = render_rows(&rows);
+    let expected = concat!(
+        "    OpInfo { method: \"demo.create\", verb: \"POST\", path: \"/demo/{id}\", ",
+        "auth: \"player\", success: 201 },\n",
+    );
+    assert!(rendered.contains(expected), "{rendered}");
+}
+
+/// Every served op carries a real 2xx success status (none left at 0), the one a demoseed call
+/// must answer to count the op covered.
+#[test]
+fn every_collected_row_has_a_2xx_success_status() {
+    let rows = collect_rows().expect("collect the served ops");
+    assert!(!rows.is_empty());
+    for row in &rows {
+        assert!((200..300).contains(&row.success), "{} has success {}", row.method, row.success);
+    }
 }

@@ -133,7 +133,7 @@ async fn call_returns_the_body_and_counts_the_op_covered() {
     assert_eq!(lines.recv().unwrap(), "GET /characters HTTP/1.1");
     let report = gateway.take_report();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
-    assert_eq!(report.calls["characters.list"], crate::report::OpCalls { matched: 1, failed: 0 });
+    assert_eq!(report.calls["characters.list"], crate::report::OpCalls { succeeded: 1, expected: 0, failed: 0 });
 }
 
 #[tokio::test]
@@ -158,7 +158,7 @@ async fn call_records_an_unexpected_status_and_does_not_abort() {
             excerpt: "boom".to_string(),
         }]
     );
-    assert_eq!(report.calls["characters.delete"], crate::report::OpCalls { matched: 1, failed: 1 });
+    assert_eq!(report.calls["characters.delete"], crate::report::OpCalls { succeeded: 1, expected: 0, failed: 1 });
 }
 
 #[tokio::test]
@@ -169,7 +169,7 @@ async fn call_retries_a_429_then_accepts() {
     assert_eq!(result, CallResult::Ok { status: 202, body: Value::Null });
     let report = gateway.take_report();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
-    assert_eq!(report.calls["match.report"], crate::report::OpCalls { matched: 1, failed: 0 });
+    assert_eq!(report.calls["match.report"], crate::report::OpCalls { succeeded: 1, expected: 0, failed: 0 });
 }
 
 #[tokio::test]
@@ -178,7 +178,42 @@ async fn call_accepts_a_listed_409_with_its_text_body() {
     let gateway = gateway(&base);
     let result = gateway.call("accounts.register", &[], Caller::Anonymous, Some(&json!({})), &[201, 409]).await;
     assert_eq!(result, CallResult::Ok { status: 409, body: Value::String("already registered".to_string()) });
-    assert!(gateway.take_report().errors.is_empty());
+    let report = gateway.take_report();
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.calls["accounts.register"], crate::report::OpCalls { succeeded: 0, expected: 1, failed: 0 });
+    assert_eq!(report.coverage(&[*route("accounts.register")]).uncovered, vec!["accounts.register"]);
+}
+
+#[tokio::test]
+async fn call_counts_the_declared_success_as_coverage() {
+    let (base, _lines) = canned(vec![(201, r#"{"player_id":"p"}"#)]);
+    let gateway = gateway(&base);
+    let result = gateway.call("accounts.register", &[], Caller::Anonymous, Some(&json!({})), &[201, 409]).await;
+    assert_eq!(result, CallResult::Ok { status: 201, body: json!({"player_id": "p"}) });
+    let report = gateway.take_report();
+    assert_eq!(report.calls["accounts.register"], crate::report::OpCalls { succeeded: 1, expected: 0, failed: 0 });
+    assert_eq!(report.coverage(&[*route("accounts.register")]), crate::report::Coverage::default());
+}
+
+#[test]
+fn every_catalog_op_declares_a_2xx_success() {
+    for row in OPERATIONS {
+        assert!((200..300).contains(&row.success), "{} has success {}", row.method, row.success);
+    }
+}
+
+#[test]
+fn check_expect_accepts_the_declared_success_and_a_refusal_list() {
+    check_expect("accounts.register", route("accounts.register"), &[201, 409]);
+    check_expect("accounts.me", route("accounts.me"), &[401]);
+    check_expect("characters.create", route("characters.create"), crate::CHARACTERS_CREATE_EXPECT);
+    check_expect("inventory.grant", route("inventory.grant"), crate::INVENTORY_GRANT_EXPECT);
+}
+
+#[test]
+#[should_panic(expected = "accounts.register expects 200, but its declared success is 201")]
+fn check_expect_rejects_a_2xx_that_is_not_the_declared_success() {
+    check_expect("accounts.register", route("accounts.register"), &[200, 409]);
 }
 
 #[tokio::test]
@@ -192,7 +227,7 @@ async fn call_records_a_refused_connection_as_a_transport_error() {
     let report = gateway.take_report();
     assert_eq!(report.errors.len(), 1);
     assert!(matches!(report.errors[0].got, Got::Transport(_)), "{:?}", report.errors[0].got);
-    assert_eq!(report.calls["accounts.me"], crate::report::OpCalls { matched: 0, failed: 1 });
+    assert_eq!(report.calls["accounts.me"], crate::report::OpCalls { succeeded: 0, expected: 0, failed: 1 });
 }
 
 #[tokio::test]

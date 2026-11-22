@@ -1,7 +1,9 @@
 //! The one call path to the gateway. A call names its `opscatalog` op; the verb and the path
 //! template come from that op's `OPERATIONS` row, so the name and the route cannot disagree.
-//! Every outcome is recorded into the shared [`Report`]: a status in the caller's expect list
-//! counts the op as covered, anything else (after 429 retries) is an error, never an abort.
+//! Every outcome is recorded into the shared [`Report`]: only the op's declared
+//! `OpInfo::success` counts it as covered, another status in the caller's expect list (a
+//! convergent 409, a deliberate refusal) is neither coverage nor an error, and anything else
+//! (after 429 retries) is an error, never an abort.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -13,7 +15,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tokio::sync::Semaphore;
 
-use crate::report::{excerpt, CallError, Got, Report, Summary};
+use crate::report::{excerpt, Answer, CallError, Got, Report, Summary};
 use crate::{CLIENT_KEY, MAX_ATTEMPTS, REQUEST_TIMEOUT, SERVER_KEY};
 
 /// The identity a call presents: every call sends an API key, a player call adds its bearer.
@@ -68,6 +70,15 @@ pub fn route(op: &str) -> &'static OpInfo {
         .iter()
         .find(|row| row.method == op)
         .unwrap_or_else(|| panic!("demoseed: op {op:?} is not in opscatalog::OPERATIONS"))
+}
+
+/// Checks an expect list against the op's declared success: a list that accepts a 2xx accepts
+/// exactly the declared one, so a hand copy of `#[http(success = …)]` cannot drift. A list with
+/// no 2xx expects a refusal on purpose. A mismatch is a programming error.
+pub fn check_expect(op: &str, row: &OpInfo, expect: &[u16]) {
+    if let Some(other) = expect.iter().find(|s| (200..300).contains(*s) && **s != row.success) {
+        panic!("demoseed: {op} expects {other}, but its declared success is {}", row.success);
+    }
 }
 
 /// Fills every `{name}` segment of `template` from `params`. A missing or an extra param is a
@@ -147,6 +158,7 @@ impl Gateway {
         expect: &[u16],
     ) -> CallResult {
         let row = route(op);
+        check_expect(op, row, expect);
         let path = fill_path(op, row.path, path_params);
         let method = Method::from_bytes(row.verb.as_bytes())
             .unwrap_or_else(|_| panic!("demoseed: {op} has an invalid verb {:?}", row.verb));
@@ -166,7 +178,8 @@ impl Gateway {
             };
             match decide(status, expect, attempt) {
                 Decision::Accept => {
-                    self.with_report(|report| report.record_call(op, true));
+                    let answer = if status == row.success { Answer::Success } else { Answer::Expected };
+                    self.with_report(|report| report.record_call(op, answer));
                     if !(200..300).contains(&status) {
                         return CallResult::Ok { status, body: Value::String(text) };
                     }
@@ -232,7 +245,7 @@ impl Gateway {
     }
 
     fn record_failure(&self, op: &'static str, row: &'static OpInfo, path: String, expect: &[u16], got: Got, text: String) {
-        self.with_report(|report| report.record_call(op, false));
+        self.with_report(|report| report.record_call(op, Answer::Failed));
         self.push_error(op, row, path, expect, got, text);
     }
 

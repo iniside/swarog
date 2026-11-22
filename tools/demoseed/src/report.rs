@@ -1,5 +1,6 @@
-//! The run's record: per-kind seed tallies, every call per op (matched or failed), every error
-//! and skip, and the catalog coverage computed from them at the end (I3). Rendering it decides
+//! The run's record: per-kind seed tallies, every call per op (declared success, other expected
+//! status, or failed), every error and skip, and the catalog coverage computed from them at the
+//! end (I3): only an answer equal to the op's `OpInfo::success` covers it. Rendering it decides
 //! the exit code (I8): any error or any uncovered op fails the run.
 
 use std::collections::BTreeMap;
@@ -119,9 +120,20 @@ pub struct Skipped {
     pub cause: String,
 }
 
+/// How one call of an op counts: `Success` answered the op's declared `OpInfo::success` and
+/// covers it; `Expected` answered another status the caller listed (a convergent 409, a
+/// deliberate refusal) and is neither an error nor coverage; `Failed` is in the errors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Answer {
+    Success,
+    Expected,
+    Failed,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OpCalls {
-    pub matched: usize,
+    pub succeeded: usize,
+    pub expected: usize,
     pub failed: usize,
 }
 
@@ -133,8 +145,9 @@ pub struct Report {
     pub skipped: Vec<Skipped>,
 }
 
-/// The catalog ops no call of this run covered: `failed_only` were called but never answered an
-/// expected status (their errors are in the report), `uncovered` were never called.
+/// The catalog ops no call of this run covered: `failed_only` were called but never answered
+/// their declared success and failed at least once (their errors are in the report);
+/// `uncovered` were never called or only answered another expected status (e.g. a 409).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Coverage {
     pub failed_only: Vec<&'static str>,
@@ -147,12 +160,12 @@ pub struct Rendered {
 }
 
 impl Report {
-    pub fn record_call(&mut self, op: &'static str, matched: bool) {
+    pub fn record_call(&mut self, op: &'static str, answer: Answer) {
         let calls = self.calls.entry(op).or_default();
-        if matched {
-            calls.matched += 1;
-        } else {
-            calls.failed += 1;
+        match answer {
+            Answer::Success => calls.succeeded += 1,
+            Answer::Expected => calls.expected += 1,
+            Answer::Failed => calls.failed += 1,
         }
     }
 
@@ -164,16 +177,16 @@ impl Report {
         let mut coverage = Coverage::default();
         for row in catalog {
             match self.calls.get(row.method) {
-                Some(calls) if calls.matched > 0 => {}
-                Some(_) => coverage.failed_only.push(row.method),
-                None => coverage.uncovered.push(row.method),
+                Some(calls) if calls.succeeded > 0 => {}
+                Some(calls) if calls.failed > 0 => coverage.failed_only.push(row.method),
+                _ => coverage.uncovered.push(row.method),
             }
         }
         coverage
     }
 
     /// The seed tallies, then the errors grouped by op, the skips, and the ops the run did not
-    /// cover; `failed` when there is any error or any op without a matched call.
+    /// cover; `failed` when there is any error or any op without a call answering its success.
     pub fn render(&self, base_url: &str, catalog: &[OpInfo]) -> Rendered {
         let coverage = self.coverage(catalog);
         let mut text = self.summary.render(base_url);
@@ -208,10 +221,10 @@ impl Report {
             }
         }
         if !coverage.failed_only.is_empty() {
-            text += &format!("\nops called but never answering an expected status: {}\n", coverage.failed_only.join(", "));
+            text += &format!("\nops called but never answering their declared success: {}\n", coverage.failed_only.join(", "));
         }
         if !coverage.uncovered.is_empty() {
-            text += &format!("\nops not covered (never called in this run): {}\n", coverage.uncovered.join(", "));
+            text += &format!("\nops not covered (no call answered the declared success): {}\n", coverage.uncovered.join(", "));
         }
         let failed = !self.errors.is_empty() || !coverage.failed_only.is_empty() || !coverage.uncovered.is_empty();
         text += &if failed {

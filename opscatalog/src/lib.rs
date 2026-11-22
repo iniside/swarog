@@ -21,7 +21,7 @@
 //! deliberately absent — they are not part of the player/operator-facing op vocabulary.
 
 /// One gateway-dispatched operation, as a static row in [`OPERATIONS`]. Mirrors the
-/// diffable fields of `opsapi::Operation` (method/verb/path/auth), flattened to
+/// diffable fields of `opsapi::Operation` (method/verb/path/auth/success), flattened to
 /// `&'static str` so this crate depends on nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpInfo {
@@ -33,6 +33,9 @@ pub struct OpInfo {
     pub path: &'static str,
     /// Identity the gateway establishes before dispatch: `"none"` or `"player"`.
     pub auth: &'static str,
+    /// HTTP status the gateway writes when the op succeeds (`opsapi::Operation::success`,
+    /// from the method's `#[http(success = …)]`), e.g. `201`.
+    pub success: u16,
 }
 
 // The generated `pub const OPERATIONS: &[OpInfo]` table. `OpInfo` is in scope here, so the
