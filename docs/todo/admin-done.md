@@ -2,6 +2,18 @@
 
 Last updated: 2026-11-22
 
+- [x] **Keep `?player=` after a successful wallet grant** (2026-11-22, admin-control-plane-redesign step 17)
+  WALLET-06. Obsolete: `modules/admin` is gone; every portal POST carries the current page as
+  `_return` (`core/admin/src/admin.js:456-460`) and a settled submit redirects there
+  (`core/admin/src/engine/actions.rs:717-725`), so the query survives.
+- [x] **Fetch remote `admin_data` once and concurrently** (2026-11-22, admin-control-plane-redesign step 17)
+  ADMIN-01. Obsolete: `resolve_items` is gone; remote manifests are fetched by a background wave,
+  every source concurrently under `SOURCE_TIMEOUT` (`core/admin/src/engine/manifests.rs:166-203`),
+  not in sequence per request.
+- [x] **A remote-fetch error collapses an item's section and label to its id** (2026-11-22, admin-control-plane-redesign step 17)
+  ADMIN-05. Obsolete: a source that misses a wave keeps its last-good manifest
+  (`core/admin/src/engine/manifests.rs:204-211`), and an unknown section falls back to
+  `FALLBACK_SECTION` (`manifests.rs:158-164`), never the item id.
 - [x] **Local-render pages run `block_in_place` that the request timeout does not cancel** (2026-11-22, admin-control-plane-redesign step 17)
   ADMIN-02. Obsolete: the pages it named are control-plane providers now. Friends'
   provider (`modules/friends/src/admin.rs`, ad923bfd) and the wallet and mail providers

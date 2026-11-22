@@ -13,24 +13,16 @@ _None._
 
 ## Open
 
-- [ ] **Keep `?player=` after a successful wallet grant**
-  WALLET-06. `render_after_submit` redirects to the bare `/admin/{slug}`
-  (modules/admin/src/lib.rs:1401,1411), dropping the drill-down query. Source:
-  docs/plans/2026-07-28-2125-wallet-module-plan.md:1055 (2026-07-30).
 - [ ] **Operator attribution on portal money movements**
   WALLET-07. `admin.action` records the actor and field names only, and
   `adminSubmit` carries no operator identity across the edge to the wallet. Source:
   docs/plans/2026-07-28-2125-wallet-module-plan.md:1060 (2026-07-30).
-- [ ] **Fetch remote `admin_data` once and concurrently**
-  ADMIN-01. `resolve_items` (modules/admin/src/lib.rs:1495) awaits every remote
-  `admin_data` in sequence on every `/admin` request. Source:
-  docs/roadmap/feature-tracker.md:257 @ fd797b3a (2026-09-17); also
-  docs/research/2026-10-22-1707-admin-redesign-gap-analysis.md:38-43.
-- [ ] **A remote-fetch error collapses an item's section and label to its id**
-  ADMIN-05. modules/admin/src/lib.rs:1504-1509 sets section and label to `it.id`,
-  which breaks the page slug on a DB blip. Companion to AUDIT-02 and
-  NOTIFICATIONS-05. Source: docs/plans/2026-09-05-1921-friends-module-plan.md:596
-  (2026-09-05).
+- [ ] **The entity page seeds the header avatar from the raw path id**
+  `core/admin/src/routes.rs:534` takes `id` from the URL path unchanged and
+  `routes.rs:625-626` seeds `render::avatar_color(&id)`; the accounts header provider seeds
+  from the handle (`modules/accounts/src/admin.rs:560`) and swaps the header in place
+  (`primitives.html.tmpl:416`, `hx-swap-oob`), so the first-render colour can differ from the
+  swapped one, and a mixed-case id gives another colour (review of 2fdcfd93).
 
 ### Known limits (admin-control-plane-redesign step 16)
 
