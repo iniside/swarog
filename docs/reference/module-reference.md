@@ -194,14 +194,14 @@ Split-proof assertions (`tools/splitproof/src/main.rs`):
 
 | Scenario | Anchor |
 |---|---|
-| `[2]` starter-grant via cross-process event | `:4555-4557` |
-| `[3]` cross-wire 403 (owner_of over QUIC gates) | `:4558-4561` |
-| `[5]` DB-verified wipe via `character.deleted` | `:4572-4580` |
-| `[5t]` tombstone planted in the delivery tx | `:4581-4590` |
-| `[4c]` canonical-id emitted despite non-canonical URL spelling | `:4596-4622` |
-| `[P1-P3]` player-QUIC create/list/authz | `:4872-4883` |
-| `[RDY-DEAD]` characters-svc kill → `/readyz` flip → recover | `:6283-6502` |
-| `[I-GATE]` dev-grant guard survives a restart WITHOUT the env | `:6201-6281` |
+| `[2]` starter-grant via cross-process event | `:4593-4595` |
+| `[3]` cross-wire 403 (owner_of over QUIC gates) | `:4596-4600` |
+| `[5]` DB-verified wipe via `character.deleted` | `:4610-4618` |
+| `[5t]` tombstone planted in the delivery tx | `:4619-4628` |
+| `[4ca]`-`[4cc]` and `[4c]` canonical-id emitted despite non-canonical URL spelling | `:4634-4662` |
+| `[P1-P3]` player-QUIC create/list/authz | `:4912-4921` |
+| `[RDY-BASE]`/`[RDY-ALIVE]`/`[RDY-DEAD]`/`[RDY-BACK]` characters-svc kill → `/readyz` flip → recover | `:6342-6562` |
+| `[I-GATE]` dev-grant guard survives a restart WITHOUT the env | `:6260-6340` |
 
 Fleet wiring (`tools/processctl/src/fleet.rs:789-798`): characters-svc
 :8080/:9000 depends on config-svc; inventory-svc :8081/:9001 depends on

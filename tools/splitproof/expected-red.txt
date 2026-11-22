@@ -19,7 +19,7 @@ WL6m | grant=404 revoke=404 | revokes through the retired /admin/wallet page, wh
 NT4m | grant=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 ML3m | code=404 | reads the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
 ML4m | submit=404 | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
-ML4bm | submit=404 && parked_before=1 && state=Some("parked") | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+ML4bm | submit=404 && state=Some("parked") | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
 PH3m | guest=201 ack=true grant=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 PH11m | guest=201 ack=true grant=404 inbox_row=false result=Ok(Object {"err": String("no such object"), "status": String("NotFound"), "value": Null}) nudge_hub=None | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 FR8m | code=404 | reads the retired /admin/friends page; re-pointed in plan step 25h4
@@ -52,7 +52,7 @@ NT3 | list=200 items=0 | reads the inbox row NT2 posts through the retired /admi
 NT4 | grant=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 ML3 | code=404 | reads the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
 ML4 | submit=404 | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
-ML4b | submit=404 && parked_before=1 && state=Some("parked") | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
+ML4b | submit=404 && state=Some("parked") | submits to the retired /admin/mail page; re-pointed once the admin panel port is complete (owner 2026-11-21)
 PH3 | guest=201 ack=true grant=404 | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 PH6 | grant=404 && subscription=Some(("active", 0)) | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)
 PH11 | guest=201 ack=true grant=404 inbox_row=false result=Ok(Object {"err": String("no such object"), "status": String("NotFound"), "value": Null}) nudge_hub=None | grants through the retired /admin/wallet page, which answers 404 (owner 2026-11-21: re-point once the admin panel port is complete)

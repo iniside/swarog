@@ -884,11 +884,12 @@ async fn proof_phase(
     // 404s through the front door.
     i_gate(ctx, &mut fleet, p).await?;
 
-    // [RDY-DEAD] readiness-accuracy proof for the /readyz amplification fix: gateway-svc
-    // holds a `remote::Stub` per fronted peer whose `/readyz` check reads a CACHED verdict
-    // stamped by a BACKGROUND probe. Kill one peer (characters-svc), assert gateway
-    // /readyz flips to 503 naming the dead stub from the probe alone, then respawn and
-    // assert recovery — restoring the fleet before [LV2]/parity run.
+    // [RDY-BASE]/[RDY-ALIVE]/[RDY-DEAD]/[RDY-BACK] readiness-accuracy proof for the /readyz
+    // amplification fix: gateway-svc holds a `remote::Stub` per fronted peer whose `/readyz`
+    // check reads a CACHED verdict stamped by a BACKGROUND probe. Kill one peer
+    // (characters-svc), assert gateway /readyz flips to 503 naming the dead stub from the
+    // probe alone, then respawn and assert recovery — restoring the fleet before [LV2]/parity
+    // run.
     rdy_dead(ctx, &mut fleet, p).await?;
 
     // [REPLICAS] durable-plane replica belt: boot a SECOND leaderboard-svc against the same
@@ -4630,7 +4631,7 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
             p.check("[5b] post-delete inventory -> 404", w2 == 404, format!("code={w2}"));
         }
 
-        // [4c] (its steps [4ca]-[4cc]) delete via a NON-canonical (uppercased) id spelling and prove the durable
+        // [4ca]-[4cc] and [4c]: delete via a NON-canonical (uppercased) id spelling and prove the durable
         // character.deleted event carries the DB-CANONICAL id — the split path (G -> A ->
         // emit) canonicalizes regardless of how the client spelled the URL id.
         let canon_cid = create_character(ctx, &g, &tok, "Canon").await;
@@ -6338,7 +6339,7 @@ async fn i_gate(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<()
     Ok(())
 }
 
-/// `[RDY-DEAD]` (its steps `[RDY-BASE]`, `[RDY-ALIVE]` and `[RDY-BACK]`) — proves the /readyz
+/// `[RDY-BASE]`, `[RDY-ALIVE]`, `[RDY-DEAD]` and `[RDY-BACK]` — prove the /readyz
 /// amplification fix (commits f5eea2d/1262d51/7f3e631)
 /// on the at-risk topology (split, where stubs exist; the monolith holds none). gateway-svc
 /// holds a `remote::Stub` per fronted domain provider (see cmd/gateway-svc/src/lib.rs), and
@@ -6440,7 +6441,7 @@ async fn rdy_dead(ctx: &Ctx, fleet: &mut Vec<Running>, p: &mut Proof) -> Result<
         format!("last_code={last:?} names_stub={names_stub}"),
     );
 
-    // NOTE: [RDY-DEAD] makes NO behavioral fixed-vs-unfixed assertion on purpose. A killed svc
+    // NOTE: [RDY-BASE]-[RDY-BACK] make NO behavioral fixed-vs-unfixed assertion on purpose. A killed svc
     // leaves a CLOSED loopback port, and a QUIC dial to it fast-fails (see
     // `probe_unreachable_peer_errs_fast` in core/remote) rather than consuming the 1s timeout —
     // so even the OLD in-request-dial /readyz would return quickly here. A latency threshold

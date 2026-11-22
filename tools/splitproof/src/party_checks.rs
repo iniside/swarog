@@ -386,7 +386,7 @@ async fn http(ctx: &Ctx, front: &str, who: &FriendPlayer, path: &str, body: Valu
     friends_call(ctx, front, &who.token, Method::POST, path, Some(body)).await
 }
 
-/// `[DL14]`, with its transport errors converted into ONE named failing check (the
+/// `[DL14]`, with its transport errors converted into ONE named failing check, `[DL14a]` (the
 /// `deletion_assertions` reason: the parity pass runs before `[W2]`).
 pub(super) async fn deletion_assertion(ctx: &Ctx, pool: &PgPool, p: &mut Proof, front: &str, tag: &str) -> Result<()> {
     if let Err(e) = deletion_check(ctx, pool, p, front, tag).await {
