@@ -12,12 +12,9 @@ use crate::service::NewMail;
 pub(crate) const STATE_SENT: &str = "sent";
 pub(crate) const STATE_PENDING: &str = "pending";
 pub(crate) const STATE_PARKED: &str = "parked";
+/// Production writes `cancelled` inline in `cancel_pending_tx`'s SQL; only tests name it.
+#[cfg(test)]
 pub(crate) const STATE_CANCELLED: &str = "cancelled";
-
-/// The `mail_outbox_state_check` vocabulary as data, for the operator page's state filter:
-/// a value outside this list is refused before it reaches a statement, so a filter can
-/// never widen what the column admits.
-pub(crate) const STATES: &[&str] = &[STATE_PENDING, STATE_SENT, STATE_PARKED, STATE_CANCELLED];
 
 /// Ceiling on the operator-visible `last_error`. A relay's response or an error chain is
 /// unbounded; the column is not indexed and nobody reads past the first line.
@@ -598,6 +595,11 @@ impl Store {
     /// transaction, AFTER the update, so it sees this statement's own effect — `moved`
     /// alone answers nothing, since `SKIP LOCKED` and a concurrent submit can leave rows
     /// parked well below `limit`.
+    #[expect(
+        dead_code,
+        reason = "G11 (a): requeue-all has no mockup element; kept as the mass-park recovery path, \
+                  docs/plans/2026-11-17-step11-mail-checklist.md:375"
+    )]
     pub(crate) async fn requeue_all_parked_tx(
         &self,
         conn: &mut PgConnection,

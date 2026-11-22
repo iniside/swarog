@@ -193,6 +193,11 @@ impl Service {
 
     /// `(moved, still_parked)` — both read in the one transaction, so the operator is
     /// never shown a pair from two different moments.
+    #[expect(
+        dead_code,
+        reason = "G11 (a): requeue-all has no mockup element; kept as the mass-park recovery path, \
+                  docs/plans/2026-11-17-step11-mail-checklist.md:375"
+    )]
     pub(crate) async fn requeue_all_parked(&self, limit: i64) -> Result<(i64, i64), Error> {
         let mut tx = bounded_tx(&self.pool, ADMIN_BUDGET)
             .await
