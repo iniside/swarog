@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-22: Step 16 (inventory) 16a1 landed ccf29df3, review not run; owner said stop"
+description: "Admin redesign resume point 2026-11-22: Step 16a (16a0/16a1/16a1b/16a2) landed + reviewed; awaiting owner on leftovers before 16b"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-21T23:47:21.998Z
+  modified: 2026-11-22T08:39:46.675Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -41,3 +41,6 @@ Owner: 1 tak, 2 dodaj, 3 usun, 4 ok. 15c 28552db9 controlplane::purge_backlog_bo
 
 ## State 2026-11-22 (Step 16 in progress)
 Checklist docs/plans/2026-11-22-step16-inventory-checklist.md §8 decisions (G1 b owner table, G4 a disabled Revoke, G5 disabled Grant, G3 "—"), plan parts 16a1/16a2/16b (ca685c8d). 16a1 ccf29df3: inventory.character_owners + sub inventory.character-owner.v1 (Genesis), reader character_ids_of; core-reviewer NOT run yet. Clippy red on unused store methods until 16a2. Owner said stop after 16a1; next: core-reviewer on ccf29df3, then 16a2 when owner says go.
+
+## State 2026-11-22 (Step 16a complete)
+16a0 c88143c0 (EntityTab params), 16a1b 9e21e950 (character.created KeepForever; local PG history_contracts row deleted), 16a2 b5fff581 (Inventory tab, disabled grant/revoke, INVENTORY-05). core-reviewer ACCEPT on all; proof-auditor on 16a2: local test gaps (search id/name vacuous, panel paging >25 never run, keyset char->player boundary untested) + structural: 16b split crawl accepting "data difference" would hide missing character rows -> need a never-accepted check / splitproof for a character-owned row. Reported to owner; next: owner decisions, then test fixes + 16b (wipe DB first).
