@@ -154,6 +154,19 @@ Pattern: `siv:14-21` (doc of what crosses), `siv:22-24` (IV0 completion check), 
 - **FA2** the pending row reads "pending (outgoing)" on the requester's tab and "pending (incoming)" on the addressee's (G2).
 - **FA3** the tab count and meta read 2 · 1 pending (G4).
 
+## 10. Owner decisions (2026-11-22)
+
+"zrob zgodnie z rekomendacja": every gap as recommended.
+- **G1:** both states, both directions, accepted first, then newest; a new keyset reader on the `page` pattern.
+- **G2:** "accepted" (`Tone::Ok`), "pending (outgoing)" / "pending (incoming)" (`Tone::Info`), set explicitly.
+- **G3:** `accepted_at` for accepted, `created_at` for pending, `YYYY-MM-DD` from SQL.
+- **G4:** N = every edge in both states; it is the tab count, `PageInfo.total` and the foot. Meta "N · M pending", read through `admin_counts`.
+- **G5: (a).** One disabled "Remove friend…" `RowAction("friendship")` plus the `EXCLUDED_MENUS` row, with a `docs/todo/friends.md` item.
+- **G6, G7, G8:** as written.
+- **G9:** delete `admin_recent`, `AdminEdgeRow` and `row_to_admin_edge`; move FRIENDS-06 to done; close FRIENDS-04 as obsolete.
+- **G10:** 17t writes `friends_admin_checks.rs` (FA1-FA3, §9) with recorded break runs. FR8's rewrite stays in 25h4, pointed at the Friends tab.
+- **G11: (b).** A separate part 17a0 before 17a: admindiff tests take their example from `EXCLUDED_TABS` and derive the player hosts from `PAGE_MAP` (closes `docs/todo/admin.md:59-63`).
+
 ## Not verified
 
 - No cargo, `admindiff mock`, crawl or diff was run; every accept line in §7 is a prediction.

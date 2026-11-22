@@ -2214,7 +2214,15 @@ The ports:
         one full green run against the baseline. That is about 12 min per run.
 - **Step 17 — friends.** Friends tab. One a (Na1 with Na3): the tab (order 50), Purges
   pending at 64. Rows are a module-owned row kind (O-6); the user cell links
-  `Link::Entity(player)` itself.
+  `Link::Entity(player)` itself. Checklist `docs/plans/2026-11-22-step17-friends-checklist.md`,
+  owner decisions in its §10 (2026-11-22, all as recommended). Parts, in order:
+  - **17a0** `[opus]` core-implementer: admindiff tests take their example tab from
+    `EXCLUDED_TABS` and derive the player hosts from `PAGE_MAP` (G11 b; tools only).
+  - **17a** `[opus]` core-implementer (Na1 with Na3): the checklist's §1-§4 and G1-G9.
+  - **17t** `[opus]` test-author: `friends_admin_checks.rs` FA1-FA3 in both topologies, each
+    with a recorded break run (G10).
+  - **17b** `[sonnet]` mockup-implementer: the monolith and split crawls and the accept files of
+    checklist §7.
 - **Step 18 — groups.**
   - Groups tab (DERIV via `page_mine`); promote member to admin (REAL, Q1).
   - Declares the `group` entity kind and links the group name to its entity page (O-4).
