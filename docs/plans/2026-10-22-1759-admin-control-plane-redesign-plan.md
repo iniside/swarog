@@ -2265,6 +2265,14 @@ The ports:
   - **18a2** (Na2): promote member to admin and the probe, restored from
     `b8435c9a^:modules/groups/src/conformance.rs` (as mail's G12), with its `cp.invoke`
     CapCase.
+  - Checklist `docs/plans/2026-11-22-step18-groups-checklist.md`, owner decisions in its §11
+    (2026-11-22, all as recommended). 18a1 also carries the group entity kind and its
+    `EntityHeader` (G7 b) and the new keyset reader (G1); 18a2 waits for the short research
+    of `Then::Confirm` on a `TableRow` (§11). Then:
+  - **18t** `[opus]` test-author: `groups_admin_checks.rs` GA1-GA4 in both topologies, GA2 a
+    real portal promote, each with a recorded break run (G11).
+  - **18b** `[sonnet]` mockup-implementer: the monolith and split crawls and the accept files
+    of checklist §7.
 - **Step 19 — storage.** Cloud saves tab (`writes: false`); tile cloud saves used (DERIV).
   One a (Na1 with Na3): the tab (order 70), the row-menu group (80), the tile (40), Purges
   pending at 66. Downloads are `implemented:false` (O-3, `docs/todo/storage.md`); the
