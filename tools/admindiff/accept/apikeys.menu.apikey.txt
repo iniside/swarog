@@ -1,0 +1,12 @@
+# Accepted differences of the API keys row menu (kind apikey) against
+# UILayout/redesign/apikeys.html. One per line: <difference> | <reason>. An entry that
+# matches no difference fails the diff. A reason names its kind: data difference, not
+# ported yet, template choice, contract gap, or a declared deviation (Dn in the plan).
+frame div.menu: mock div.menu-item portal div.disabled.menu-item | contract gap: Rotate secret… is drawn disabled; no key rotation exists (key.rotate is implemented: false, a todo item)
+frame div.menu: mock-only ×2 div.menu-item#211ef0 | template choice: the portal draws action items as button.menu-item (a form post), the mockup as div.menu-item with an onclick
+frame div.menu: portal-only button.menu-item#bd58cd | template choice: the portal draws action items as button.menu-item (a form post), the mockup as div.menu-item with an onclick
+frame div.menu: mock-only div.danger.menu-item#f9285d | template choice: the portal draws Revoke… as button.danger.menu-item (a form post), the mockup as div.menu-item with an onclick
+frame div.menu: portal-only button.danger.menu-item#5527e2 | template choice: the portal draws Revoke… as button.danger.menu-item (a form post), the mockup as div.menu-item with an onclick
+frame div.menu: mock-only div.menu-group#6c5cf7 | declared deviation D2: apikeys draws "Requests by this key" itself in its own group until Step 24 moves it to audit, so there is no audit group or separator
+frame div.menu: mock-only div.menu-sep | declared deviation D2: apikeys draws "Requests by this key" itself in its own group until Step 24 moves it to audit, so there is no audit group or separator
+frame div.menu: portal-only a.menu-item#082e7c | declared deviation D2: apikeys draws "Requests by this key" as a static link to the audit page until Step 24 moves it to audit

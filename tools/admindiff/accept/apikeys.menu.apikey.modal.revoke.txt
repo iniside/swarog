@@ -1,0 +1,9 @@
+# Accepted differences of the API keys revoke confirm modal against
+# UILayout/redesign/apikeys.html (revoke modal). One per line: <difference> | <reason>. An entry that
+# matches no difference fails the diff. A reason names its kind: data difference, not
+# ported yet, template choice, contract gap, or a declared deviation (Dn in the plan).
+frame div.modal > div.modal-body > div.impact > div > b: mock-only span.mono | template choice: the Key impact is a row cell (mono "{prefix}…" then "· {role}") where the mockup draws span.mono with the full key id (ak_9f2c) and text " · role"; the portal keeps only the key prefix, so the mockup's id span has no counterpart
+frame div.modal > div.modal-body > div.impact > div > b: portal-only span.dim | template choice: the Last used impact is drawn as a dim time cell where the mockup writes plain text; data difference: its value is FAKE (fake_last_used), as the keys record no last use
+frame div.modal > div.modal-body > div.impact > div > b: portal-only span.row#32ad58 | template choice: the Key impact is a row cell (mono "{prefix}…" then "· {role}") where the mockup draws span.mono with the full key id (ak_9f2c) and text " · role"
+frame div.modal: portal-only ×2 input | template choice: the confirm form carries its hidden _csrf/_form inputs
+frame: root mock div.modal portal form.modal | template choice: the portal's modal is the confirm form itself, so it posts without script

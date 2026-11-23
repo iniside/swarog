@@ -1,0 +1,9 @@
+# Accepted differences of the API keys create-key modal against
+# UILayout/redesign/apikeys.html (createKey modal). One per line: <difference> | <reason>. An entry that
+# matches no difference fails the diff. A reason names its kind: data difference, not
+# ported yet, template choice, contract gap, or a declared deviation (Dn in the plan).
+frame div.modal > div.modal-body > div.form > div > div.help: mock-only ×3 span.tag | contract gap: the role help is the role's policy as plain text (P2-5); the field has no tag-list help
+frame div.modal > div.modal-body > div.form > label.fl: portal-only span | template choice: a required field draws the "*" span in its label
+frame div.modal > div.modal-foot: mock button.btn.primary portal button.btn.go.primary | template choice: the submit button is btn.go (posts the form)
+frame div.modal: portal-only ×2 input | template choice: the form carries its hidden _csrf/_form inputs
+frame: root mock div.modal portal form.modal | template choice: the portal's modal is the form itself, so it posts without script
