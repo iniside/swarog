@@ -1,7 +1,7 @@
 //! The `apikeys` control-plane provider: the API keys page (the Keys table with its status and
 //! role filters, search and keyset pager, and the Roles table with each policy's methods and
-//! key count), the key actions (create with a show-once secret, change role, revoke) and the
-//! `apikey` search scope.
+//! key count), the key actions (create with a show-once secret, change role, revoke), the role
+//! actions (create, edit the policy, delete) and the `apikey` search scope.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -9,15 +9,18 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use controlplane::order;
 use controlplane::{
-    ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ConfirmSpec, ConfirmTone, ContributionDecl, DataTable,
-    Emphasis, EntityKindDecl, EntityRef, Field, FieldKind, FilterDef, FilterKind, FormSpec, InvokeCall, InvokeOutcome,
+    encode_field, ActionDecl, ActionPoint, Align, Cell, CellKind, Column, ConfirmSpec, ConfirmTone, ContributionDecl,
+    DataTable, Emphasis, EntityKindDecl, EntityRef, Field, FieldKind, FieldValue, FilterDef, FilterKind, FormSpec,
+    InvokeCall, InvokeOutcome,
     Layout, Link, Manifest, NavEntry, Noun, PageDecl, PageInfo, PanelBody, PanelQuery, Point, PrepareCall, Primitive,
     Provider, ReasonReq, Role, Row, SearchDecl, SearchHit, SearchQuery, SecretReveal, Then, Tone,
     DEFAULT_PANEL_DEADLINE_MS, DEFAULT_SEARCH_DEADLINE_MS,
 };
 use opsapi::Error;
 
-use crate::store::{validate_name, KeyRow, KeyStatus, Revoke, RoleRow, WriteError, KEY_NAME, MAX_NAME_BYTES};
+use crate::store::{
+    validate_name, validate_policy, KeyRow, KeyStatus, Revoke, RoleRow, WriteError, KEY_NAME, MAX_NAME_BYTES, ROLE_NAME,
+};
 use crate::{internal, Service};
 
 const MODULE: &str = "apikeys";
@@ -33,10 +36,15 @@ pub(crate) const KEY_ROTATE: &str = "key.rotate";
 pub(crate) const KEY_CHANGE_ROLE: &str = "key.change-role";
 pub(crate) const KEY_REVOKE: &str = "key.revoke";
 pub(crate) const KEY_REQUESTS: &str = "key.requests";
+pub(crate) const ROLE_CREATE: &str = "role.create";
+pub(crate) const ROLE_EDIT: &str = "role.edit";
+pub(crate) const ROLE_DELETE: &str = "role.delete";
 
 pub(crate) const FIELD_NAME: &str = "name";
 pub(crate) const FIELD_ROLE: &str = "role";
 pub(crate) const FIELD_EXPIRES: &str = "expires";
+pub(crate) const FIELD_METHODS: &str = "methods";
+pub(crate) const FIELD_EXTRA_METHODS: &str = "extra_methods";
 /// The one expiry a key can have: the store records none.
 pub(crate) const NEVER: &str = "Never";
 
@@ -65,6 +73,7 @@ pub(crate) const FAKE_LAST_USED: [&str; 4] = ["4 min ago", "2 h ago", "9 h ago",
 pub(crate) const FAKE_REQUESTS_CAP: u64 = 50_000;
 
 pub(crate) const REVOKE_BODY: &str = "Requests signed with this key fail immediately on every process.";
+pub(crate) const ROLE_DELETE_BODY: &str = "A role still used by a key, revoked keys included, cannot be deleted.";
 
 pub(crate) struct ApiKeysAdmin {
     svc: Arc<Service>,
@@ -125,6 +134,9 @@ impl ApiKeysAdmin {
             return Ok(field_error(FIELD_EXPIRES, format!("must be {NEVER}")));
         }
         let role = req.input.get(FIELD_ROLE).map(String::as_str).unwrap_or_default();
+        if role.is_empty() {
+            return Ok(field_error(FIELD_ROLE, "required".to_string()));
+        }
         match self.svc.create_key(name, role).await {
             Ok((secret, _prefix)) => Ok(InvokeOutcome::Ok {
                 message: String::new(),
@@ -148,15 +160,13 @@ impl ApiKeysAdmin {
     /// a gone key is `NotFound`, a moved revision a `Conflict`, and an unmoved one means the
     /// role was the conflict.
     async fn change_role(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
-        let key = self.bound_key(req.entity.as_ref()).await?;
+        key_name(req.entity.as_ref())?;
         let role = req.input.get(FIELD_ROLE).map(String::as_str).unwrap_or_default();
         if role.is_empty() {
             return Ok(field_error(FIELD_ROLE, "required".to_string()));
         }
-        let expected = req
-            .expected_revision
-            .and_then(|r| i64::try_from(r).ok())
-            .ok_or_else(|| Error::invalid(format!("{MODULE}: changing a role needs the form's revision")))?;
+        let expected = form_revision(req, "changing a role")?;
+        let key = self.bound_key(req.entity.as_ref()).await?;
         if key.role == role {
             return Ok(InvokeOutcome::NoOp { message: format!("Key {} already has role {role}", key.name) });
         }
@@ -181,6 +191,66 @@ impl ApiKeysAdmin {
             Revoke::Absent => Err(Error::not_found(format!("{MODULE}: key {name:?} does not exist"))),
         }
     }
+
+    /// The bound role as it is now, or `NotFound`.
+    async fn bound_role(&self, entity: Option<&EntityRef>) -> Result<RoleRow, Error> {
+        let name = role_name(entity)?;
+        let role = self.svc.role(name).await.map_err(internal)?;
+        role.ok_or_else(|| Error::not_found(format!("{MODULE}: role {name:?} does not exist")))
+    }
+
+    async fn create_role(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let name = req.input.get(FIELD_NAME).map(String::as_str).unwrap_or_default();
+        if let Err(e) = validate_name(&ROLE_NAME, name) {
+            return Ok(field_error(FIELD_NAME, e.to_string()));
+        }
+        let policy = match compose_policy(&req.input) {
+            Ok(policy) => policy,
+            Err(msg) => return Ok(field_error(FIELD_METHODS, msg)),
+        };
+        match self.svc.create_role(name, &policy).await {
+            Ok(()) => Ok(InvokeOutcome::Ok { message: "Role created".to_string(), reveal: None, redirect: None }),
+            Err(WriteError::Taken) => Ok(field_error(FIELD_NAME, "a role with this name exists".to_string())),
+            Err(e) => Err(write_error(e)),
+        }
+    }
+
+    /// A CAS on the revision the form was prepared with, told apart by a re-read as in
+    /// `change_role`. A policy naming the same methods as the stored one is a `NoOp`.
+    async fn edit_role(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        role_name(req.entity.as_ref())?;
+        let policy = match compose_policy(&req.input) {
+            Ok(policy) => policy,
+            Err(msg) => return Ok(field_error(FIELD_METHODS, msg)),
+        };
+        let expected = form_revision(req, "editing a policy")?;
+        let role = self.bound_role(req.entity.as_ref()).await?;
+        if same_methods(&role.policy, &policy) {
+            return Ok(InvokeOutcome::NoOp { message: format!("Role {} already has this policy", role.name) });
+        }
+        match self.svc.set_role_policy(&role.name, expected, &policy).await {
+            Ok(()) => Ok(InvokeOutcome::Ok { message: "Policy saved".to_string(), reveal: None, redirect: None }),
+            Err(WriteError::Conflict(msg)) => {
+                let now = self.bound_role(req.entity.as_ref()).await?;
+                if now.revision == expected {
+                    return Err(Error::conflict(msg));
+                }
+                Ok(InvokeOutcome::Conflict { current_revision: now.revision.max(0) as u64 })
+            }
+            Err(e) => Err(write_error(e)),
+        }
+    }
+
+    /// No revision check (D1): a role still used by a key, revoked or not, is a 409 naming
+    /// how many (K9, K10).
+    async fn delete_role(&self, req: &InvokeCall) -> Result<InvokeOutcome, Error> {
+        let name = role_name(req.entity.as_ref())?;
+        if self.svc.delete_role(name).await.map_err(write_error)? {
+            Ok(InvokeOutcome::Ok { message: "Role deleted".to_string(), reveal: None, redirect: None })
+        } else {
+            Ok(InvokeOutcome::NoOp { message: format!("Role {name} does not exist") })
+        }
+    }
 }
 
 /// The key a row action is bound to.
@@ -189,6 +259,60 @@ fn key_name(entity: Option<&EntityRef>) -> Result<&str, Error> {
         Some(entity) if entity.kind == KEY_KIND => Ok(&entity.id),
         _ => Err(Error::invalid(format!("{MODULE}: this needs an API key"))),
     }
+}
+
+/// The role a row action is bound to.
+fn role_name(entity: Option<&EntityRef>) -> Result<&str, Error> {
+    match entity {
+        Some(entity) if entity.kind == ROLE_KIND => Ok(&entity.id),
+        _ => Err(Error::invalid(format!("{MODULE}: this needs an API role"))),
+    }
+}
+
+/// The revision a CAS form was prepared with; `what` words the refusal.
+fn form_revision(req: &InvokeCall, what: &str) -> Result<i64, Error> {
+    req.expected_revision
+        .and_then(|r| i64::try_from(r).ok())
+        .ok_or_else(|| Error::invalid(format!("{MODULE}: {what} needs the form's revision")))
+}
+
+/// The methods of a stored policy, trimmed, blanks dropped; `full` is the one entry `full`.
+fn policy_methods(policy: &str) -> Vec<&str> {
+    policy.split(',').map(str::trim).filter(|m| !m.is_empty()).collect()
+}
+
+/// Whether two policies admit the same methods, whatever their order.
+fn same_methods(a: &str, b: &str) -> bool {
+    let a: std::collections::BTreeSet<&str> = policy_methods(a).into_iter().collect();
+    let b: std::collections::BTreeSet<&str> = policy_methods(b).into_iter().collect();
+    a == b
+}
+
+/// The policy a role form submits: `full` when it is picked or typed, else the de-duplicated
+/// union of the picked and the typed methods, in that order. Nothing picked or typed, an
+/// undecodable pick and a policy over the byte cap are the methods field's error.
+pub(crate) fn compose_policy(input: &BTreeMap<String, String>) -> Result<String, String> {
+    let picked: Vec<String> = match input.get(FIELD_METHODS).map(String::as_str) {
+        None | Some("") => Vec::new(),
+        Some(raw) => serde_json::from_str(raw).map_err(|_| "must be a JSON array of strings".to_string())?,
+    };
+    let typed = input.get(FIELD_EXTRA_METHODS).map(String::as_str).unwrap_or_default();
+    let mut methods: Vec<&str> = Vec::new();
+    for m in picked.iter().map(String::as_str).chain(typed.split(',')) {
+        let m = m.trim();
+        if m == FULL {
+            return Ok(FULL.to_string());
+        }
+        if !m.is_empty() && !methods.contains(&m) {
+            methods.push(m);
+        }
+    }
+    if methods.is_empty() {
+        return Err(format!("pick {FULL} or at least one method"));
+    }
+    let policy = methods.join(",");
+    validate_policy(&policy).map_err(|e| e.to_string())?;
+    Ok(policy)
 }
 
 fn field_error(key: &str, msg: String) -> InvokeOutcome {
@@ -590,6 +714,84 @@ pub(crate) fn revoke_confirm_for(key: &KeyRow) -> ConfirmSpec {
     }
 }
 
+/// The methods a role form offers: `full`, every served op method, then the methods some
+/// stored policy names that the catalog lacks, sorted; so every stored policy can be
+/// pre-checked.
+pub(crate) fn method_options(roles: &[RoleRow]) -> Vec<String> {
+    let mut options = vec![FULL.to_string()];
+    options.extend(opscatalog::OPERATIONS.iter().map(|op| op.method.to_string()));
+    let mut in_use: Vec<&str> = roles
+        .iter()
+        .flat_map(|r| policy_methods(&r.policy))
+        .filter(|m| !options.iter().any(|o| o == m))
+        .collect();
+    in_use.sort_unstable();
+    in_use.dedup();
+    options.extend(in_use.into_iter().map(String::from));
+    options
+}
+
+/// The role form over the stored roles' methods. Bound to `role` it edits that role: the
+/// name is read-only, its methods are pre-checked and the CAS revision is its revision.
+pub(crate) fn role_form(roles: &[RoleRow], role: Option<&RoleRow>) -> FormSpec {
+    let kind = FieldKind::Multi(method_options(roles));
+    let name = Field {
+        mono: true,
+        readonly: role.is_some(),
+        default: role.map(|r| r.name.clone()),
+        ..field(FIELD_NAME, "Name", FieldKind::String)
+    };
+    let picked = role.map(|r| policy_methods(&r.policy).into_iter().map(String::from).collect::<Vec<_>>());
+    let methods = Field {
+        default: picked.map(|p| encode_field(&kind, &FieldValue::Multi(p))),
+        ..field(FIELD_METHODS, "Allowed methods", kind)
+    };
+    let extra = Field {
+        required: false,
+        mono: true,
+        help: Some("Comma-separated; for methods no process serves yet.".to_string()),
+        ..field(FIELD_EXTRA_METHODS, "Additional methods", FieldKind::String)
+    };
+    FormSpec {
+        fields: vec![name, methods, extra],
+        hidden: BTreeMap::new(),
+        submit_label: if role.is_some() { "Save policy" } else { "Create role" }.to_string(),
+        note: None,
+        revision: role.map(|r| r.revision.max(0) as u64),
+        title: role.is_none().then(|| "Create role".to_string()),
+        modes: Vec::new(),
+    }
+}
+
+fn role_delete_confirm() -> ConfirmSpec {
+    ConfirmSpec {
+        title: "Delete role?".to_string(),
+        body: ROLE_DELETE_BODY.to_string(),
+        tone: ConfirmTone::Danger,
+        impact: Vec::new(),
+        reason: ReasonReq::None,
+        reason_hint: None,
+        type_to_confirm: None,
+        confirm_label: "Delete role".to_string(),
+    }
+}
+
+/// The delete confirm bound to `role`.
+pub(crate) fn role_delete_confirm_for(role: &RoleRow) -> ConfirmSpec {
+    ConfirmSpec {
+        title: format!("Delete role {}?", role.name),
+        ..role_delete_confirm()
+    }
+}
+
+fn role_action(id: &str, label: &str, icon: &str, order: i32, then: Then) -> ActionDecl {
+    ActionDecl {
+        point: ActionPoint::RowAction(ROLE_KIND.to_string()),
+        prepare: true,
+        ..key_action(id, label, icon, order, Role::Operator, then, true)
+    }
+}
+
 pub(crate) fn manifest() -> Manifest {
     let requests = Link::Page {
         module: "audit".to_string(),
@@ -659,6 +861,17 @@ pub(crate) fn manifest() -> Manifest {
                 ..key_action(KEY_REVOKE, "Revoke…", "ban", 30, Role::Operator, Then::Confirm(revoke_confirm()), true)
             },
             key_action(KEY_REQUESTS, "Requests by this key", "list", 40, Role::Viewer, Then::Link(requests), true),
+            ActionDecl {
+                point: ActionPoint::PanelTool(ROLES.to_string()),
+                when_empty: true,
+                prepare: true,
+                ..key_action(ROLE_CREATE, "Role", "plus", 10, Role::Operator, Then::Form(role_form(&[], None)), true)
+            },
+            role_action(ROLE_EDIT, "Edit policy…", "edit", 10, Then::Form(role_form(&[], None))),
+            ActionDecl {
+                danger: true,
+                ..role_action(ROLE_DELETE, "Delete role…", "trash", 20, Then::Confirm(role_delete_confirm()))
+            },
         ],
         search: vec![SearchDecl {
             kind: KEY_KIND.to_string(),
@@ -706,6 +919,9 @@ impl Provider for ApiKeysAdmin {
             KEY_ROTATE => Err(Error::forbidden("not implemented yet")),
             KEY_CHANGE_ROLE => self.change_role(&req).await,
             KEY_REVOKE => self.revoke(&req).await,
+            ROLE_CREATE => self.create_role(&req).await,
+            ROLE_EDIT => self.edit_role(&req).await,
+            ROLE_DELETE => self.delete_role(&req).await,
             other => Err(Error::not_found(format!("{MODULE} has no action {other:?}"))),
         }
     }
@@ -725,6 +941,20 @@ impl Provider for ApiKeysAdmin {
                 Ok(Then::Form(change_role_form(&roles, Some(&key))))
             }
             KEY_REVOKE => Ok(Then::Confirm(revoke_confirm_for(&self.bound_key(req.entity.as_ref()).await?))),
+            ROLE_CREATE => {
+                let roles = self.svc.store.roles_with_counts().await.map_err(internal)?;
+                Ok(Then::Form(role_form(&roles, None)))
+            }
+            ROLE_EDIT => {
+                let name = role_name(req.entity.as_ref())?;
+                let roles = self.svc.store.roles_with_counts().await.map_err(internal)?;
+                let role = roles
+                    .iter()
+                    .find(|r| r.name == name)
+                    .ok_or_else(|| Error::not_found(format!("{MODULE}: role {name:?} does not exist")))?;
+                Ok(Then::Form(role_form(&roles, Some(role))))
+            }
+            ROLE_DELETE => Ok(Then::Confirm(role_delete_confirm_for(&self.bound_role(req.entity.as_ref()).await?))),
             other => Err(Error::not_found(format!("{MODULE} prepares no action {other:?}"))),
         }
     }

@@ -338,7 +338,7 @@ impl Store {
             .bind(policy)
             .execute(&self.pool)
             .await
-            .map_err(|e| WriteError::from_db(e, format!("apikeys: role {name:?} already exists")))?;
+            .map_err(|e| WriteError::from_db(e, format!("apikeys: role {name:?} could not be created")))?;
         Ok(())
     }
 

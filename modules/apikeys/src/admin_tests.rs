@@ -175,7 +175,28 @@ fn manifest_declares_the_page_its_two_panels_kinds_search_and_row_actions() {
     for a in [create, change, revoke] {
         assert_eq!(a.min_role, Role::Operator, "{}", a.id);
     }
-    assert_eq!(m.actions.len(), 5);
+
+    let role_create = m.actions.iter().find(|a| a.id == "role.create").expect("role.create");
+    assert_eq!(role_create.point, ActionPoint::PanelTool("roles".into()));
+    assert_eq!((role_create.label.as_str(), role_create.icon.as_str(), role_create.order), ("Role", "plus", 10));
+    assert_eq!(role_create.emphasis, Emphasis::Default);
+    assert!(role_create.prepare && role_create.implemented && role_create.when_empty && !role_create.danger);
+    assert!(matches!(role_create.then, Then::Form(_)));
+    let role_edit = m.actions.iter().find(|a| a.id == "role.edit").expect("role.edit");
+    assert_eq!(role_edit.point, ActionPoint::RowAction("apirole".into()));
+    assert_eq!((role_edit.label.as_str(), role_edit.icon.as_str(), role_edit.order), ("Edit policy…", "edit", 10));
+    assert!(role_edit.prepare && role_edit.implemented && !role_edit.danger);
+    assert!(matches!(role_edit.then, Then::Form(_)));
+    let role_delete = m.actions.iter().find(|a| a.id == "role.delete").expect("role.delete");
+    assert_eq!(role_delete.point, ActionPoint::RowAction("apirole".into()));
+    assert_eq!((role_delete.label.as_str(), role_delete.icon.as_str(), role_delete.order), ("Delete role…", "trash", 20));
+    assert!(role_delete.prepare && role_delete.implemented && role_delete.danger);
+    assert!(matches!(role_delete.then, Then::Confirm(_)));
+    for a in [role_create, role_edit, role_delete] {
+        assert_eq!(a.min_role, Role::Operator, "{}", a.id);
+        assert_eq!(a.emphasis, Emphasis::Default, "{}", a.id);
+    }
+    assert_eq!(m.actions.len(), 8);
 }
 
 fn role_row(name: &str, policy: &str) -> RoleRow {
@@ -238,6 +259,80 @@ fn the_revoke_confirm_names_the_key_its_impact_and_asks_for_its_name() {
     assert_eq!((id.more[0].kind, id.more[0].value.as_str()), (CellKind::Text, "· ops"));
     assert_eq!(c.impact[1].1, fake_last_used("key-03", false));
     assert_eq!((c.impact[2].1.kind, c.impact[2].1.value.clone()), (CellKind::Number, fake_requests("key-03")));
+}
+
+#[test]
+fn the_role_form_offers_full_the_catalog_and_in_use_methods_and_creates_by_name() {
+    let form = role_form(&[role_row("ci", "match.report, zz.custom"), role_row("ops", "full")], None);
+    let keys: Vec<_> = form.fields.iter().map(|f| f.key.as_str()).collect();
+    assert_eq!(keys, vec!["name", "methods", "extra_methods"]);
+    let FieldKind::Multi(options) = &form.fields[1].kind else { panic!("a Multi") };
+    let mut want = vec!["full".to_string()];
+    want.extend(opscatalog::OPERATIONS.iter().map(|op| op.method.to_string()));
+    want.push("zz.custom".to_string());
+    assert_eq!(options, &want, "full, the catalog, then the in-use methods it lacks, once each");
+    assert_eq!(form.fields[1].label, "Allowed methods");
+    assert!(form.fields[0].required && form.fields[1].required && !form.fields[2].required);
+    assert!(!form.fields[0].readonly && form.fields[0].default.is_none() && form.fields[1].default.is_none());
+    assert_eq!(form.fields[2].label, "Additional methods");
+    assert_eq!(form.fields[2].kind, FieldKind::String);
+    assert_eq!((form.submit_label.as_str(), form.title.as_deref()), ("Create role", Some("Create role")));
+    assert_eq!(form.revision, None);
+}
+
+#[test]
+fn the_edit_form_pre_checks_the_stored_methods_at_the_role_revision() {
+    let ci = RoleRow { name: "ci".into(), policy: "match.report, zz.custom".into(), revision: 7, keys: 2 };
+    let form = role_form(std::slice::from_ref(&ci), Some(&ci));
+    assert!(form.fields[0].readonly);
+    assert_eq!(form.fields[0].default.as_deref(), Some("ci"));
+    let picked = controlplane::decode_field(&form.fields[1].kind, form.fields[1].default.as_deref().unwrap());
+    assert_eq!(picked, Ok(controlplane::FieldValue::Multi(vec!["match.report".into(), "zz.custom".into()])));
+    assert_eq!(form.fields[2].default, None);
+    assert_eq!(form.revision, Some(7));
+    assert_eq!((form.submit_label.as_str(), form.title), ("Save policy", None));
+    let full = role_row("ops", "full");
+    let form = role_form(std::slice::from_ref(&full), Some(&full));
+    assert_eq!(form.fields[1].default.as_deref(), Some(r#"["full"]"#));
+}
+
+fn policy_input(picked: &[&str], typed: Option<&str>) -> BTreeMap<String, String> {
+    let mut input = BTreeMap::new();
+    if !picked.is_empty() {
+        input.insert("methods".to_string(), serde_json::to_string(picked).unwrap());
+    }
+    if let Some(typed) = typed {
+        input.insert("extra_methods".to_string(), typed.to_string());
+    }
+    input
+}
+
+#[test]
+fn a_role_policy_is_full_or_the_union_of_picked_and_typed_methods() {
+    let ok = |picked: &[&str], typed| compose_policy(&policy_input(picked, typed)).unwrap();
+    assert_eq!(ok(&["full", "match.report"], None), "full");
+    assert_eq!(ok(&["match.report"], Some(" full ")), "full");
+    assert_eq!(ok(&["match.report", "accounts.login"], Some("x.y, match.report,, x.y ")), "match.report,accounts.login,x.y");
+    assert_eq!(ok(&[], Some("x.y")), "x.y");
+    for (input, why) in [
+        (policy_input(&[], None), "nothing"),
+        (policy_input(&[], Some(" , ")), "only blanks"),
+        (BTreeMap::from([("methods".to_string(), "match.report".to_string())]), "not a JSON array"),
+        (policy_input(&[], Some(&"m".repeat(crate::store::MAX_POLICY_BYTES + 1))), "over the cap"),
+    ] {
+        assert!(compose_policy(&input).is_err(), "{why}");
+    }
+}
+
+#[test]
+fn the_delete_role_confirm_is_a_danger_with_no_reason_and_names_the_role() {
+    let confirm = role_delete_confirm_for(&role_row("ci", "full"));
+    assert_eq!(confirm.title, "Delete role ci?");
+    assert_eq!(confirm.body, ROLE_DELETE_BODY);
+    assert_eq!(confirm.tone, ConfirmTone::Danger);
+    assert_eq!(confirm.reason, ReasonReq::None);
+    assert_eq!(confirm.confirm_label, "Delete role");
+    assert_eq!((confirm.type_to_confirm, confirm.impact.len()), (None, 0));
 }
 
 #[test]
@@ -424,8 +519,37 @@ async fn refusals_are_decided_before_the_store() {
     let e = p.invoke(InvokeCall { entity: None, ..call("key.revoke", BTreeMap::new()) }).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid);
     let role_entity = Some(EntityRef { kind: ROLE_KIND.into(), id: "k".into() });
-    let e = p.invoke(InvokeCall { entity: role_entity, ..call("key.change-role", BTreeMap::new()) }).await.unwrap_err();
+    let e = p.invoke(InvokeCall { entity: role_entity.clone(), ..call("key.change-role", BTreeMap::new()) }).await.unwrap_err();
     assert_eq!(e.status, Status::Invalid);
+    let no_role = p.invoke(key_call("key.change-role", "k", BTreeMap::new(), Some(1))).await.unwrap();
+    assert_eq!(no_role, InvokeOutcome::FieldErrors(BTreeMap::from([("role".into(), "required".into())])));
+    let to_ops = BTreeMap::from([("role".to_string(), "ops".to_string())]);
+    let e = p.invoke(key_call("key.change-role", "k", to_ops, None)).await.unwrap_err();
+    assert_eq!(e.status, Status::Invalid, "no revision is refused before the key is read: {e:?}");
+    let no_role = p.invoke(call("key.create", create_input("fine", "", Some("Never")))).await.unwrap();
+    assert_eq!(no_role, InvokeOutcome::FieldErrors(BTreeMap::from([("role".into(), "required".into())])));
+
+    let role_call = |action: &str, input| InvokeCall { entity: role_entity.clone(), ..call(action, input) };
+    for action in ["role.edit", "role.delete"] {
+        let e = p.invoke(call(action, policy_input(&["full"], None))).await.unwrap_err();
+        assert_eq!(e.status, Status::Invalid, "{action} bound to a key");
+        let e = p.prepare(prepare_call(action, Some("k"))).await.unwrap_err();
+        assert_eq!(e.status, Status::Invalid, "{action} prepared for a key");
+    }
+    let e = p.invoke(role_call("role.edit", policy_input(&["full"], None))).await.unwrap_err();
+    assert_eq!(e.status, Status::Invalid, "an edit with no revision: {e:?}");
+    match p.invoke(InvokeCall { expected_revision: Some(1), ..role_call("role.edit", BTreeMap::new()) }).await {
+        Ok(InvokeOutcome::FieldErrors(errors)) => assert!(errors.contains_key("methods"), "{errors:?}"),
+        other => panic!("an edit picking nothing: FieldErrors on methods, got {other:?}"),
+    }
+    let mut bad_name = policy_input(&["full"], None);
+    bad_name.insert("name".into(), " padded".into());
+    for (input, field) in [(bad_name, "name"), (BTreeMap::from([("name".to_string(), "ok".to_string())]), "methods")] {
+        match p.invoke(call("role.create", input)).await {
+            Ok(InvokeOutcome::FieldErrors(errors)) => assert!(errors.contains_key(field), "{errors:?}"),
+            other => panic!("FieldErrors on {field}, got {other:?}"),
+        }
+    }
     let e = p.prepare(prepare_call("key.nope", None)).await.unwrap_err();
     assert_eq!(e.status, Status::NotFound);
     let e = p.prepare(prepare_call("key.revoke", None)).await.unwrap_err();
@@ -618,6 +742,94 @@ async fn create_change_role_and_revoke_a_key_through_the_provider() {
     assert_eq!(e.status, Status::NotFound);
     let e = p.prepare(prepare_call("key.revoke", Some(&missing))).await.unwrap_err();
     assert_eq!(e.status, Status::NotFound);
+
+    cleanup(&pool, &base).await;
+}
+
+fn role_prepare(action: &str, role: &str) -> PrepareCall {
+    PrepareCall { entity: Some(EntityRef { kind: ROLE_KIND.into(), id: role.into() }), ..prepare_call(action, None) }
+}
+
+/// A call bound to the role `name`.
+fn role_call(action: &str, name: &str, input: BTreeMap<String, String>, revision: Option<i64>) -> InvokeCall {
+    InvokeCall {
+        entity: Some(EntityRef { kind: ROLE_KIND.into(), id: name.into() }),
+        ..key_call(action, name, input, revision)
+    }
+}
+
+#[tokio::test]
+async fn create_edit_and_delete_roles_through_the_provider() {
+    let _guard = db_test_lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let base = unique_name(&pool).await;
+    let store = Store { pool: pool.clone() };
+    let p = provider(pool.clone());
+    let custom = format!("{base}.custom");
+    let in_use = format!("{base}-in-use");
+    store.create_role(&in_use, &format!("match.report,{custom}")).await.unwrap();
+
+    let Then::Form(form) = p.prepare(prepare_call("role.create", None)).await.unwrap() else { panic!("a form") };
+    let FieldKind::Multi(options) = &form.fields[1].kind else { panic!("a Multi") };
+    assert_eq!(options[0], "full");
+    assert!(options.contains(&"match.report".to_string()) && options.contains(&custom), "{options:?}");
+
+    let name = format!("{base}-r");
+    let mut input = policy_input(&["match.report"], Some(&custom));
+    input.insert("name".into(), name.clone());
+    let created = p.invoke(call("role.create", input.clone())).await.unwrap();
+    assert_eq!(created, InvokeOutcome::Ok { message: "Role created".into(), reveal: None, redirect: None });
+    let role = store.role(&name).await.unwrap().expect("the role is stored");
+    assert_eq!(role.policy, format!("match.report,{custom}"));
+    let again = p.invoke(call("role.create", input)).await.unwrap();
+    assert_eq!(again, InvokeOutcome::FieldErrors(BTreeMap::from([("name".into(), "a role with this name exists".into())])));
+
+    let Then::Form(form) = p.prepare(role_prepare("role.edit", &name)).await.unwrap() else { panic!("a form") };
+    assert_eq!(form.revision, Some(role.revision as u64));
+    assert_eq!((form.fields[0].readonly, form.fields[0].default.as_deref()), (true, Some(name.as_str())));
+    let picked = controlplane::decode_field(&form.fields[1].kind, form.fields[1].default.as_deref().unwrap());
+    assert_eq!(picked, Ok(controlplane::FieldValue::Multi(vec!["match.report".into(), custom.clone()])));
+
+    let same = p.invoke(role_call("role.edit", &name, policy_input(&[&custom, "match.report"], None), Some(role.revision)));
+    assert_eq!(same.await.unwrap(), InvokeOutcome::NoOp { message: format!("Role {name} already has this policy") });
+    assert_eq!(store.role(&name).await.unwrap().unwrap().revision, role.revision, "a NoOp writes nothing");
+    let to_full = || policy_input(&["full"], None);
+    let saved = p.invoke(role_call("role.edit", &name, to_full(), Some(role.revision))).await.unwrap();
+    assert_eq!(saved, InvokeOutcome::Ok { message: "Policy saved".into(), reveal: None, redirect: None });
+    let now = store.role(&name).await.unwrap().unwrap();
+    assert_eq!(now.policy, "full");
+    assert!(now.revision > role.revision);
+    let to_report = || policy_input(&["match.report"], None);
+    let stale = p.invoke(role_call("role.edit", &name, to_report(), Some(role.revision))).await.unwrap();
+    assert_eq!(stale, InvokeOutcome::Conflict { current_revision: now.revision as u64 });
+    assert_eq!(store.role(&name).await.unwrap().unwrap().policy, "full", "a stale form writes nothing");
+    let missing = format!("{base}-missing");
+    let e = p.invoke(role_call("role.edit", &missing, to_report(), Some(1))).await.unwrap_err();
+    assert_eq!(e.status, Status::NotFound);
+    let e = p.prepare(role_prepare("role.edit", &missing)).await.unwrap_err();
+    assert_eq!(e.status, Status::NotFound);
+
+    let Then::Confirm(confirm) = p.prepare(role_prepare("role.delete", &name)).await.unwrap() else {
+        panic!("a confirm")
+    };
+    assert_eq!(confirm.title, format!("Delete role {name}?"));
+    let e = p.prepare(role_prepare("role.delete", &missing)).await.unwrap_err();
+    assert_eq!(e.status, Status::NotFound);
+
+    let key = format!("{base}-k");
+    store.create_key(&key, &name).await.unwrap();
+    assert_eq!(store.revoke_key(&key).await.unwrap(), Revoke::Revoked);
+    let e = p.invoke(role_call("role.delete", &name, BTreeMap::new(), None)).await.unwrap_err();
+    assert_eq!(e.status, Status::Conflict, "a revoked key still holds its role: {e:?}");
+    assert_eq!(e.msg, format!("role {name} is still used by 1 key(s), revoked keys included"));
+    assert!(store.role(&name).await.unwrap().is_some(), "a refused delete keeps the role");
+
+    sqlx::query("DELETE FROM apikeys.keys WHERE name = $1").bind(&key).execute(&pool).await.unwrap();
+    let deleted = p.invoke(role_call("role.delete", &name, BTreeMap::new(), None)).await.unwrap();
+    assert_eq!(deleted, InvokeOutcome::Ok { message: "Role deleted".into(), reveal: None, redirect: None });
+    assert!(store.role(&name).await.unwrap().is_none());
+    let repeat = p.invoke(role_call("role.delete", &name, BTreeMap::new(), None)).await.unwrap();
+    assert_eq!(repeat, InvokeOutcome::NoOp { message: format!("Role {name} does not exist") });
 
     cleanup(&pool, &base).await;
 }

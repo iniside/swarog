@@ -158,11 +158,6 @@ impl apikeysapi::Keys for Service {
 // classification (Taken vs Conflict vs Invalid vs Db) so a caller can map a domain conflict to 409;
 // a WriteError never maps to NotFound (finding #2). A missing row is an outcome, not an
 // error: revoke_key answers Revoke::Absent and delete_role Ok(false).
-#[expect(
-    dead_code,
-    reason = "Step 21a2 part 3: the role actions write through create_role, set_role_policy, \
-              delete_role and role (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2363)"
-)]
 impl Service {
     pub(crate) async fn create_role(&self, name: &str, policy: &str) -> Result<(), WriteError> {
         self.store.create_role(name, policy).await
