@@ -14,50 +14,6 @@
     .ref { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
     .small { font-size: 12px; }
 
-    .refpicker { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-family: var(--font-mono); font-size: 12px; color: var(--text); }
-    .refpicker .k { font-family: var(--font-sans); color: var(--text-3); font-size: 11px; }
-    .dfile { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
-    .dfile-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
-    .dfile-head .path { font-family: var(--font-mono); font-weight: 500; }
-    .dv { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; line-height: 19px; }
-    .dv td { padding: 0; vertical-align: top; }
-    .dv .o, .dv .n { width: 42px; text-align: right; padding-right: 8px; color: var(--text-3); user-select: none; }
-    .dv .s { width: 16px; text-align: center; color: var(--text-3); }
-    .dv .c { white-space: pre; color: var(--text); padding-right: 12px; }
-    .dv tr.add td { background: var(--ok-soft); }
-    .dv tr.add .s, .dv tr.add .c { color: var(--text); }
-    .dv tr.add .n { color: var(--ok); }
-    .dv tr.del td { background: var(--err-soft); }
-    .dv tr.del .o { color: var(--err); }
-    .dv tr.hunk td { background: var(--info-soft); color: var(--text-3); padding: 2px 8px; }
-    .dv tr.thr > td { background: var(--bg-sunken); padding: 8px 12px 8px 108px; font-family: var(--font-sans); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-    .thread { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); max-width: 760px; }
-    .cmt { display: grid; grid-template-columns: 24px 1fr; gap: 0 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.45; }
-    .cmt .h { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
-    .cmt .h b { color: var(--text); font-weight: 600; }
-    .thread-foot { padding: 8px 12px; display: flex; gap: 8px; align-items: center; }
-    .thread.resolved { opacity: .75; }
-    .adiff { display: grid; grid-template-columns: 1fr 1fr; }
-    .adiff > div { padding: 12px 14px; }
-    .adiff > div + div { border-left: 1px solid var(--border); }
-    .adiff .thumb { height: 110px; border-radius: 6px; margin-bottom: 10px; background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 45%, #d9b98a 46%, #f2e3c8 70%, #a88a64 100%); }
-    .adiff .thumb.after { background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 40%, #d9b98a 41%, #f2e3c8 62%, #c46b2c 63%, #a88a64 100%); }
-    .adiff .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin-bottom: 6px; }
-    .adiff dl.props { font-size: 12px; }
-    .chg { font-variant-numeric: tabular-nums; }
-    .chg .a { color: var(--ok); } .chg .d { color: var(--err); }
-    .rs { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
-    .rs .dot { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; }
-    .rs .dot svg { width: 10px; height: 10px; }
-    .rs.approved .dot { background: var(--ok-soft); color: var(--ok); }
-    .rs.changes .dot { background: var(--err-soft); color: var(--err); }
-    .rs.commented .dot { background: var(--info-soft); color: var(--info); }
-    .rs.pending .dot { background: var(--muted-soft); color: var(--text-3); }
-    .fl-row { display: grid; grid-template-columns: 18px 1fr auto auto; gap: 8px; align-items: center; padding: 5px 12px; font-size: 12.5px; }
-    .fl-row .p { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .fl-row.on { background: var(--selected); }
-    .st { font-family: var(--font-mono); font-size: 11px; font-weight: 600; width: 16px; text-align: center; }
-    .st.M { color: var(--warn); } .st.A { color: var(--ok); } .st.D { color: var(--err); } .st.R { color: var(--info); }
 
     .avs { display: inline-flex; }
     .avs .avatar { border: 2px solid var(--panel); margin-left: -6px; }
@@ -66,27 +22,6 @@
     .mr-sub { font-size: 11.5px; color: var(--text-3); margin-top: 1px; }
     .tbl td.mr { padding-top: 6px; padding-bottom: 6px; height: auto; white-space: normal; }
     .lbl-chip { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 9px; font-size: 11px; font-weight: 500; border: 1px solid var(--border); color: var(--text-2); background: var(--panel-2); }
-    .mbox { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
-    .mbox-head { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; }
-    .mbox-ico { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; flex: none; }
-    .mbox-ico svg.i { width: 16px; height: 16px; }
-    .mbox-ico.ok { background: var(--ok-soft); color: var(--ok); }
-    .mbox-ico.warn { background: var(--warn-soft); color: var(--warn); }
-    .mbox-ico.err { background: var(--err-soft); color: var(--err); }
-    .mbox-ico.merged { background: var(--accent-soft); color: var(--accent-fg); }
-    .mbox-ico.muted { background: var(--muted-soft); color: var(--text-3); }
-    .mbox-title { font-weight: 600; }
-    .mbox-detail { font-size: 12px; color: var(--text-3); margin-top: 2px; }
-    .mbox-checks { border-top: 1px solid var(--border); }
-    .mbox-check { display: flex; gap: 10px; align-items: center; padding: 7px 14px; font-size: 12.5px; border-bottom: 1px solid var(--border); }
-    .mbox-check:last-child { border-bottom: 0; }
-    .mbox-check svg.i { width: 14px; height: 14px; flex: none; }
-    .mbox-check.ok svg { color: var(--ok); } .mbox-check.warn svg { color: var(--warn); } .mbox-check.err svg { color: var(--err); } .mbox-check.muted svg { color: var(--text-3); }
-    .mbox-files { margin: 0; padding: 0 14px 8px 38px; list-style: none; font-size: 12px; }
-    .mbox-files li { display: flex; gap: 10px; align-items: center; padding: 3px 0; }
-    .mbox-files .mono { flex: 1; }
-    .mbox-foot { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--border); background: var(--panel-2); flex-wrap: wrap; }
-    .mbox-foot label { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--text-2); }
     .mr-head h1 { font-size: 18px; letter-spacing: -.01em; }
     .side-sec { padding: 12px 14px; border-bottom: 1px solid var(--border); }
     .side-sec:last-child { border-bottom: 0; }
@@ -102,10 +37,6 @@
     .md h3 { font-size: 13px; margin: 10px 0 4px; }
     .md ul { margin: 4px 0; padding-left: 18px; }
     .md code { font-family: var(--font-mono); font-size: 12px; background: var(--muted-soft); padding: 0 4px; border-radius: 3px; }
-    .ftree { font-size: 12.5px; }
-    .ftree .fl-row { grid-template-columns: 18px 1fr auto; cursor: pointer; }
-    .ftree .dir { padding: 6px 12px 2px; font-size: 11.5px; color: var(--text-3); font-family: var(--font-mono); }
-    .ftree .vw { width: 12px; height: 12px; color: var(--ok); }
     .sizechg { font-size: 12px; font-variant-numeric: tabular-nums; }
     .bin-strip { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--border); }
     .bin-strip > div { padding: 10px 14px; border-right: 1px solid var(--border); font-size: 12px; }
@@ -179,7 +110,7 @@
             <textarea class="textarea" style="min-height: 80px; font-family: var(--font-sans)" aria-label="Review summary">Looks right in the editor. Two notes on the post-process volume.</textarea>
             <div class="stack" style="gap: 6px; font-size: 12.5px">
               <label class="row"><input type="radio" name="rv" checked> <span><b>Comment</b><span class="dim"> · feedback without approval</span></span></label>
-              <label class="row"><input type="radio" name="rv"> <span><b>Approve</b><span class="dim"> · counts toward the 2 required</span></span></label>
+              <label class="row"><input type="radio" name="rv"> <span><b>Approve</b><span class="dim"> · counts toward the 2 expected</span></span></label>
               <label class="row"><input type="radio" name="rv"> <span><b>Request changes</b><span class="dim"> · blocks merge until you re-review</span></span></label>
             </div>
           </div>
@@ -209,13 +140,16 @@
               <div class="row"><span class="dim small">Markdown supported</span><span class="grow"></span><button class="btn" type="button">Close merge request</button><button class="btn primary" type="button">Comment</button></div>
             </div>
           </div>
-          <div class="mbox"><div class="mbox-head"><span class="mbox-ico warn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg></span><div class="grow"><div class="mbox-title">Blocked by a lock</div><div class="mbox-detail">One changed file is locked by someone else. Ask them to release it, then merge.</div></div></div><div class=mbox-checks><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">No conflicts with <span class=ref>main</span></span></div><div class="mbox-check warn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 17h.01"></path><path d="M10.3 3.9L2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path></svg><span class="grow">Approvals: 1 of 2 required</span><span class="rs approved"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg></span>jonas.l</span> <span class="rs pending"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle></svg></span>diego.r</span></div><div class="mbox-check err"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M15 9l-6 6M9 9l6 6"></path></svg><span class="grow">1 file locked by others</span><button class="btn sm" type="button">Ask to release</button></div></div><div class="mbox-foot"><span class="dim small">Merge is available once every check passes.</span><span class="grow"></span><button class="btn primary" type="button" disabled>Merge into main</button></div></div>
+          <div class="mbox"><div class="mbox-head"><span class="mbox-ico warn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg></span><div class="grow"><div class="mbox-title">Files are locked by others</div><div class="mbox-detail">diego.r holds a lock on a changed file. Ask them to release it; the merge push may wait on the lock.</div></div></div><div class=mbox-checks><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">No conflicts with <span class=ref>main</span></span></div><div class="mbox-check warn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 17h.01"></path><path d="M10.3 3.9L2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path></svg><span class="grow">Approvals: 1 of 2 expected</span><span class="rs approved"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg></span>jonas.l</span> <span class="rs pending"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle></svg></span>diego.r</span></div><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">No changes requested</span></div><div class="mbox-check warn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 17h.01"></path><path d="M10.3 3.9L2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path></svg><span class="grow"><span class="mono">Frostreach_P.umap</span> locked by diego.r · 6 h</span><button class="btn sm" type="button">Ask to release</button></div></div><div class="mbox-cmd"><div class="mbox-cmd-head"><span class="badge warn">Waiting for 1 more approval</span><span class="grow"></span><button class="btn sm" type="button">Copy merge commands</button></div><pre>lore branch switch main
+lore sync
+lore branch merge feature/frostreach-lighting --message "Merge !42"
+lore push</pre></div></div>
         </div>
         <div class="panel" style="align-self: start">
           <div class="side-sec"><div class="k">Reviewers<button class="btn sm ghost" type="button">Edit</button></div>
             <div class="rv-row"><span class="avatar" style="background: #0f9488; width: 20px; height: 20px; font-size: 9px">JL</span><span class="grow">jonas.l</span><span class="rs approved"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg></span>Approved</span></div>
             <div class="rv-row"><span class="avatar" style="background: #c2630f; width: 20px; height: 20px; font-size: 9px">DR</span><span class="grow">diego.r</span><span class="rs pending"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle></svg></span>Pending</span></div>
-            <div class="small dim" style="margin-top: 6px">2 approvals required by the main branch rule</div>
+            <div class="small dim" style="margin-top: 6px">2 approvals expected</div>
           </div>
           <div class="side-sec"><div class="k">Labels</div><div class="row"><span class="lbl-chip">lighting</span> <span class="lbl-chip">needs-bake</span></div></div>
           <div class="side-sec"><div class="k">Locks in this merge request</div>

@@ -42,7 +42,7 @@ switches it and the choice is saved; the first visit follows the OS setting.
 | New merge request | `new-merge-request.html` |
 | Merge request, conversation | `merge-request.html` |
 | Merge request, files | `merge-request-files.html` |
-| Merge box states | `merge-box-states.html` |
+| Merge box states (MergeBox: the portal shows merge status and Lore client commands and never merges) | `merge-box-states.html` |
 | My locks | `my-locks.html` |
 | Notifications | `notifications.html` |
 | Profile | `profile.html` |

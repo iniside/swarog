@@ -14,50 +14,6 @@
     .ref { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
     .small { font-size: 12px; }
 
-    .refpicker { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-family: var(--font-mono); font-size: 12px; color: var(--text); }
-    .refpicker .k { font-family: var(--font-sans); color: var(--text-3); font-size: 11px; }
-    .dfile { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
-    .dfile-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
-    .dfile-head .path { font-family: var(--font-mono); font-weight: 500; }
-    .dv { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; line-height: 19px; }
-    .dv td { padding: 0; vertical-align: top; }
-    .dv .o, .dv .n { width: 42px; text-align: right; padding-right: 8px; color: var(--text-3); user-select: none; }
-    .dv .s { width: 16px; text-align: center; color: var(--text-3); }
-    .dv .c { white-space: pre; color: var(--text); padding-right: 12px; }
-    .dv tr.add td { background: var(--ok-soft); }
-    .dv tr.add .s, .dv tr.add .c { color: var(--text); }
-    .dv tr.add .n { color: var(--ok); }
-    .dv tr.del td { background: var(--err-soft); }
-    .dv tr.del .o { color: var(--err); }
-    .dv tr.hunk td { background: var(--info-soft); color: var(--text-3); padding: 2px 8px; }
-    .dv tr.thr > td { background: var(--bg-sunken); padding: 8px 12px 8px 108px; font-family: var(--font-sans); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
-    .thread { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); max-width: 760px; }
-    .cmt { display: grid; grid-template-columns: 24px 1fr; gap: 0 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.45; }
-    .cmt .h { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
-    .cmt .h b { color: var(--text); font-weight: 600; }
-    .thread-foot { padding: 8px 12px; display: flex; gap: 8px; align-items: center; }
-    .thread.resolved { opacity: .75; }
-    .adiff { display: grid; grid-template-columns: 1fr 1fr; }
-    .adiff > div { padding: 12px 14px; }
-    .adiff > div + div { border-left: 1px solid var(--border); }
-    .adiff .thumb { height: 110px; border-radius: 6px; margin-bottom: 10px; background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 45%, #d9b98a 46%, #f2e3c8 70%, #a88a64 100%); }
-    .adiff .thumb.after { background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 40%, #d9b98a 41%, #f2e3c8 62%, #c46b2c 63%, #a88a64 100%); }
-    .adiff .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin-bottom: 6px; }
-    .adiff dl.props { font-size: 12px; }
-    .chg { font-variant-numeric: tabular-nums; }
-    .chg .a { color: var(--ok); } .chg .d { color: var(--err); }
-    .rs { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
-    .rs .dot { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; }
-    .rs .dot svg { width: 10px; height: 10px; }
-    .rs.approved .dot { background: var(--ok-soft); color: var(--ok); }
-    .rs.changes .dot { background: var(--err-soft); color: var(--err); }
-    .rs.commented .dot { background: var(--info-soft); color: var(--info); }
-    .rs.pending .dot { background: var(--muted-soft); color: var(--text-3); }
-    .fl-row { display: grid; grid-template-columns: 18px 1fr auto auto; gap: 8px; align-items: center; padding: 5px 12px; font-size: 12.5px; }
-    .fl-row .p { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .fl-row.on { background: var(--selected); }
-    .st { font-family: var(--font-mono); font-size: 11px; font-weight: 600; width: 16px; text-align: center; }
-    .st.M { color: var(--warn); } .st.A { color: var(--ok); } .st.D { color: var(--err); } .st.R { color: var(--info); }
 
     .stale-row td { background: color-mix(in srgb, var(--warn) 6%, transparent); }
     .n-row { display: grid; grid-template-columns: 10px 26px 1fr auto; gap: 10px; align-items: start; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
@@ -172,8 +128,8 @@
           <table class="tbl">
             <thead><tr><th>File</th><th>Held by</th><th>Your merge request</th><th>Locked</th><th class="act"></th></tr></thead>
             <tbody>
-              <tr><td><span class="mono">Content/Maps/Frostreach/Frostreach_P.umap</span><div class="dim small mono">ashfall-game · lock:L-2291</div></td><td><span class="user-cell"><span class="avatar" style="background: #c2630f; width: 20px; height: 20px; font-size: 9px">DR</span>diego.r</span></td><td><span class="mr-id">!42</span> <a href="merge-request.html">Frostreach lighting pass v3</a><div class="dim small">Blocks the merge</div></td><td>6 h ago</td><td class="act"><button class="btn sm" type="button">Ask to release</button></td></tr>
-              <tr class="stale-row"><td><span class="mono">Content/Maps/Hub/Hub_Ashgate.umap</span> <span class="badge warn">stale</span><div class="dim small mono">ashfall-game · lock:L-2238</div></td><td><span class="user-cell"><span class="avatar" style="background: #65a30d; width: 20px; height: 20px; font-size: 9px">SO</span>sam.o</span></td><td><span class="mr-id">!42</span> <a href="merge-request.html">Frostreach lighting pass v3</a><div class="dim small">Touched, not blocking yet</div></td><td>22 d ago</td><td class="act"><span class="dim small">Release request sent 1 d ago</span></td></tr>
+              <tr><td><span class="mono">Content/Maps/Frostreach/Frostreach_P.umap</span><div class="dim small mono">ashfall-game · lock:L-2291</div></td><td><span class="user-cell"><span class="avatar" style="background: #c2630f; width: 20px; height: 20px; font-size: 9px">DR</span>diego.r</span></td><td><span class="mr-id">!42</span> <a href="merge-request.html">Frostreach lighting pass v3</a><div class="dim small">Needed for the merge</div></td><td>6 h ago</td><td class="act"><button class="btn sm" type="button">Ask to release</button></td></tr>
+              <tr class="stale-row"><td><span class="mono">Content/Maps/Hub/Hub_Ashgate.umap</span> <span class="badge warn">stale</span><div class="dim small mono">ashfall-game · lock:L-2238</div></td><td><span class="user-cell"><span class="avatar" style="background: #65a30d; width: 20px; height: 20px; font-size: 9px">SO</span>sam.o</span></td><td><span class="mr-id">!42</span> <a href="merge-request.html">Frostreach lighting pass v3</a><div class="dim small">Touched</div></td><td>22 d ago</td><td class="act"><span class="dim small">Release request sent 1 d ago</span></td></tr>
             </tbody>
           </table>
         </div>
