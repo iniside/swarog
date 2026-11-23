@@ -338,6 +338,7 @@ async fn panels_compute_next_and_last_fire_in_sql() {
     let recent = test_name(&pool).await;
     let older = test_name(&pool).await;
     let legacy = test_name(&pool).await;
+    let far = test_name(&pool).await;
 
     // Panic residual as in `due_scan_survives_legacy_huge_interval_row`: a failed assert
     // before the restore below leaves the CHECK NOT VALID and the rows behind.
@@ -358,10 +359,12 @@ async fn panels_compute_next_and_last_fire_in_sql() {
     .execute(&pool)
     .await
     .expect("re-add CHECK as NOT VALID (does not re-validate the legacy row)");
+    // Valid under the CHECK, yet `last_fired + interval` lies past the largest timestamp.
+    insert(&pool, &far, INTERVAL_SECONDS_CEILING, "now()").await;
 
-    let body = p.panel(query(SCHEDULES)).await.expect("a legacy row must not error the panel");
+    let body = p.panel(query(SCHEDULES)).await.expect("a legacy or far row must not error the panel");
     let count: u64 = body.meta.as_deref().unwrap().parse().unwrap();
-    assert!(count >= 6, "meta counts every schedule: {count}");
+    assert!(count >= 7, "meta counts every schedule: {count}");
     assert!(body.banner.is_none());
     let t = table(&body);
     let row = find(t, &overdue);
@@ -373,6 +376,7 @@ async fn panels_compute_next_and_last_fire_in_sql() {
     assert_eq!((row.cells[3].value.as_str(), row.cells[4].value.as_str()), ("due", NEVER));
     assert_eq!(row.cells[4].kind, CellKind::Muted);
     assert_eq!(find(t, &legacy).cells[3].value, NEVER);
+    assert_eq!(find(t, &far).cells[3].value, NEVER, "a next fire past the largest timestamp");
 
     let fires = p.panel(query(FIRES)).await.unwrap();
     let names: Vec<&str> = timeline(&fires).entries.iter().map(|e| e.verb.as_str()).collect();
@@ -384,7 +388,7 @@ async fn panels_compute_next_and_last_fire_in_sql() {
     let entry = &timeline(&fires).entries[at(&recent).unwrap()];
     assert!(entry.at.ends_with('Z') && entry.at.len() == 20, "RFC 3339 UTC: {}", entry.at);
 
-    for n in [&overdue, &upcoming, &never, &recent, &older, &legacy] {
+    for n in [&overdue, &upcoming, &never, &recent, &older, &legacy, &far] {
         cleanup(&pool, n).await;
     }
     sqlx::query("ALTER TABLE scheduler.schedules VALIDATE CONSTRAINT schedules_interval_bounds")

@@ -134,6 +134,12 @@ const TICK_STALL_MAX: Duration = Duration::from_secs(60);
 /// the anti-drift test pins its value in all three strings.
 const INTERVAL_SECONDS_CEILING: i64 = 9_223_372_036_854;
 
+/// The epoch seconds of PostgreSQL's largest `timestamptz`, 294276-12-31 23:59:59 UTC
+/// (verified against PG18). A valid `interval_seconds` near [`INTERVAL_SECONDS_CEILING`]
+/// added to a recent `last_fired` passes it, and that addition errors the whole SELECT
+/// ("timestamp out of range"), so a read that adds the interval checks this bound first.
+const TIMESTAMP_MAX_EPOCH_SECONDS: i64 = 9_224_318_015_999;
+
 /// Creates this module's OWN schema and seeds the bootstrap rows — full logical
 /// isolation (#10). Idempotent. Verbatim from Go's `schemaDDL` (with `interval_seconds`
 /// widened to `bigint`). `last_fired` defaults to the epoch so a fresh schedule is

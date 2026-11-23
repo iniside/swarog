@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 use sqlx::PgPool;
 
-use crate::INTERVAL_SECONDS_CEILING;
+use crate::{INTERVAL_SECONDS_CEILING, TIMESTAMP_MAX_EPOCH_SECONDS};
 
 /// One schedule as the Schedules table draws it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -14,7 +14,8 @@ pub(crate) struct ScheduleRow {
     pub(crate) name: String,
     pub(crate) interval_seconds: i64,
     /// `due` once `last_fired + interval` has passed, else that time as UTC
-    /// `YYYY-MM-DD HH24:MI`; `None` for a legacy row whose interval is out of range.
+    /// `YYYY-MM-DD HH24:MI`; `None` for a legacy row whose interval is out of range, or
+    /// when that time lies past PostgreSQL's largest timestamp.
     pub(crate) next_fire: Option<String>,
     /// `last_fired` as UTC `HH24:MI`; `None` when the schedule never fired.
     pub(crate) last_at: Option<String>,
@@ -28,16 +29,19 @@ pub(crate) struct FireRow {
     pub(crate) at: String,
 }
 
-/// The schedules page: the first `$1` by name and the count of all rows. The next-fire
-/// arithmetic sits inside a `CASE` on the same bounds as `DUE_SQL`, so a legacy
-/// out-of-range interval still lists instead of erroring the whole SELECT in
-/// `make_interval`.
+/// The schedules page: the first `$1` by name and the count of all rows. One row's
+/// arithmetic error fails the whole SELECT, so each step is guarded: the outer `CASE`
+/// holds `DUE_SQL`'s bounds, so `make_interval` never sees a legacy out-of-range
+/// interval; "due" is `DUE_SQL`'s interval comparison, which adds nothing to a
+/// timestamp; and `last_fired + interval` is computed only when its epoch seconds fit
+/// under [`TIMESTAMP_MAX_EPOCH_SECONDS`], else the next fire is `NULL`.
 pub(crate) static SCHEDULES_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         r#"SELECT name, interval_seconds,
        CASE WHEN interval_seconds BETWEEN 1 AND {INTERVAL_SECONDS_CEILING} THEN
-           CASE WHEN last_fired + make_interval(secs => interval_seconds) <= now() THEN 'due'
-                ELSE to_char((last_fired + make_interval(secs => interval_seconds)) AT TIME ZONE 'UTC',
+           CASE WHEN now() - last_fired >= make_interval(secs => interval_seconds) THEN 'due'
+                WHEN extract(epoch FROM last_fired) + interval_seconds <= {TIMESTAMP_MAX_EPOCH_SECONDS} THEN
+                     to_char((last_fired + make_interval(secs => interval_seconds)) AT TIME ZONE 'UTC',
                              'YYYY-MM-DD HH24:MI')
            END
        END AS next_fire,
