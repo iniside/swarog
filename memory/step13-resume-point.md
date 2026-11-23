@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-23T12:12:11.841Z
+  modified: 2026-11-23T13:19:06.816Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -74,3 +74,6 @@ Checklist docs/plans/2026-11-23-step21-apikeys-checklist.md committed a95748c8 (
 
 ## State 2026-11-23 (21a1f done)
 Owner: "1a, 2 tez popraw". ccf270e3 core/admin filter_views draws an undeclared Select value selected; dbaf8764 revoked key never "now"; review-fix 25a0fb4d (review ACCEPT). Open for owner: "any" = no-filter rule duplicated (apikeys filter_value admin.rs:100, core events_provider.rs:444, template :329) vs core filter_views empty-only -> ?role=any shows option "any" selected. Next: owner answer, then 21a2.
+
+## State 2026-11-23 (21a2 part 1 done, part 2 running)
+a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "any" decided in 6 places, wallet treats it as a value -> owner asked a) strip empty/"any" in the core/admin panel route (recommended), b) "any" means nothing, c) revert + todo. 21a2 part 1: 587af4de store D1 + review-fix 7e9ab020 (one-snapshot revoke, delete_role retries when count is 0) — review ACCEPT. Owner open: shared KeyRow column list (key() vs keys_page), set_key_role allows a revoked key. 21a2 part 2 (key.create/change-role/revoke + K17 probe) dispatched; then part 3 (roles), part 4 (P2-9, goldens, pages.rs), 21t, 21b.
