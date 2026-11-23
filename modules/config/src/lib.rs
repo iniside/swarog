@@ -84,11 +84,17 @@ const NOTIFY_CHANNEL: &str = "config_changed";
 /// trigger; an `INSERT … ON CONFLICT DO NOTHING` on an existing key bumps once and
 /// writes and emits nothing.
 ///
-/// Lock order: the BEFORE bump takes the `config.revision` row lock at the FIRST row a
-/// statement writes and holds it to commit, while the statement still has rows (and,
-/// for an UPDATE, their row locks) to take. Two concurrent multi-row statements that
-/// write overlapping existing rows can therefore deadlock (Postgres aborts one), as two
-/// multi-statement `set_tx` batches already could.
+/// Lock order: a single-row write takes the `config.settings` row lock BEFORE the
+/// `config.revision` row lock. A plain UPDATE or DELETE locks the row before its triggers
+/// run. An INSERT runs BEFORE INSERT ahead of the conflict check, so an `ON CONFLICT DO
+/// UPDATE` would lock the conflicting row only after the bump; the stamp trigger
+/// therefore locks an existing row with the same key (`FOR UPDATE`) before it bumps.
+/// Without that, an upsert of an existing key and a concurrent UPDATE or DELETE of it
+/// each hold the lock the other waits for. The revision lock is held to commit, so a
+/// statement or transaction that already wrote one row takes the next row's lock AFTER
+/// the revision lock: two concurrent multi-row statements, or multi-statement `set_tx`
+/// batches, that write overlapping existing rows can still deadlock (Postgres aborts
+/// one).
 ///
 /// Rollout of a column change here is `DROP SCHEMA config CASCADE` and a fresh boot:
 /// `CREATE TABLE IF NOT EXISTS` keeps an existing older table as it is (one without the
@@ -115,6 +121,13 @@ CREATE OR REPLACE FUNCTION config.stamp_revision() RETURNS trigger
 DECLARE
 	_rev bigint;
 BEGIN
+	-- Row lock before revision lock (the lock order above): an INSERT locks an existing
+	-- row with its key first, since ON CONFLICT DO UPDATE locks it only after this bump.
+	IF TG_OP = 'INSERT' THEN
+		PERFORM 1 FROM config.settings
+			WHERE namespace = NEW.namespace AND key = NEW.key
+			FOR UPDATE;
+	END IF;
 	-- One lock + increment of the monotonic revision PER ROW (serialises writers).
 	UPDATE config.revision SET revision = revision + 1 WHERE singleton
 		RETURNING revision INTO _rev;

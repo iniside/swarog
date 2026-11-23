@@ -611,14 +611,6 @@ async fn row_revision(pool: &PgPool, ns: &str, key: &str) -> i64 {
         .unwrap()
 }
 
-/// The global `config.revision` value.
-async fn global_revision(pool: &PgPool) -> i64 {
-    sqlx::query_scalar("SELECT revision FROM config.revision WHERE singleton")
-        .fetch_one(pool)
-        .await
-        .unwrap()
-}
-
 /// The row's stamp IS the event's revision, for the insert and for an upsert that hits
 /// ON CONFLICT DO UPDATE (`Service::set` on an existing key): that path fires BEFORE
 /// INSERT and BEFORE UPDATE, yet emits exactly one event, carrying the UPDATE's stamp,
@@ -647,11 +639,10 @@ async fn stamp_equals_event_revision_and_upsert_conflict_emits_once() {
     cleanup(&pool, &ns).await;
 }
 
-/// `INSERT … ON CONFLICT DO NOTHING` on an existing key fires BEFORE INSERT (one global
-/// bump: an allowed gap) but writes nothing, so the row keeps its value and stamp and no
-/// event is emitted.
+/// `INSERT … ON CONFLICT DO NOTHING` on an existing key writes nothing, so the row keeps
+/// its value and stamp and no event is emitted.
 #[tokio::test]
-async fn insert_do_nothing_on_existing_key_bumps_global_and_emits_nothing() {
+async fn insert_do_nothing_on_existing_key_leaves_row_and_emits_nothing() {
     let _guard = CONFIG_DB_TEST_GUARD.lock().await;
     let Some(pool) = test_pool().await else { return };
     let ns = unique_ns(&pool).await;
@@ -662,7 +653,6 @@ async fn insert_do_nothing_on_existing_key_bumps_global_and_emits_nothing() {
         .await
         .unwrap();
     let stamp = row_revision(&pool, &ns, "k").await;
-    let before = global_revision(&pool).await;
 
     let affected = sqlx::query(
         "INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'k', 'other') \
@@ -675,10 +665,6 @@ async fn insert_do_nothing_on_existing_key_bumps_global_and_emits_nothing() {
     .rows_affected();
     assert_eq!(affected, 0, "DO NOTHING on an existing key writes no row");
 
-    assert!(
-        global_revision(&pool).await > before,
-        "the BEFORE INSERT stamp still moves config.revision (a gap)"
-    );
     let (value, revision): (String, i64) = sqlx::query_as(
         "SELECT value, revision FROM config.settings WHERE namespace = $1 AND key = 'k'",
     )
@@ -817,6 +803,100 @@ async fn delete_emits_once_with_its_own_bump() {
     assert_eq!(events[0], ("k".into(), "insert".into(), stamp));
     assert_eq!((events[1].0.as_str(), events[1].1.as_str()), ("k", "delete"));
     assert!(events[1].2 > stamp, "the delete's revision is its own bump: {events:?}");
+
+    cleanup(&pool, &ns).await;
+}
+
+/// Lock order: `Service::set_tx`'s upsert of an EXISTING key (`INSERT … ON CONFLICT DO
+/// UPDATE`) takes the row lock before the `config.revision` lock, as a plain UPDATE does.
+/// Sequenced by locks, never a clock: `holder` takes the row lock (the first half of an
+/// UPDATE, which locks the row before its BEFORE trigger bumps), the upsert is observed
+/// waiting on a lock, then `holder` runs its UPDATE, whose stamp needs `config.revision`.
+/// Were the upsert to bump before locking the row, it would hold `config.revision` while
+/// waiting on `holder`, and Postgres would abort one side with 40P01 (deadlock); with
+/// the row lock first the upsert holds nothing `holder` needs, so both commit.
+#[tokio::test]
+async fn upsert_takes_the_row_lock_before_the_revision_lock() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+
+    sqlx::query("INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'k', 'orig')")
+        .bind(&ns)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let mut holder = pool.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM config.settings WHERE namespace = $1 AND key = 'k' FOR UPDATE")
+        .bind(&ns)
+        .execute(&mut *holder)
+        .await
+        .unwrap();
+
+    let mut upserter = pool.acquire().await.unwrap();
+    let upserter_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *upserter)
+        .await
+        .unwrap();
+    let svc = Service::new(pool.clone());
+    let upsert_ns = ns.clone();
+    let upsert = tokio::spawn(async move {
+        svc.set_tx(&mut upserter, &upsert_ns, "k", "upserted")
+            .await
+            .map_err(|e| format!("{e:#}"))
+    });
+
+    // Wait until the upsert is blocked on a lock (the row `holder` holds).
+    let mut blocked = false;
+    for _ in 0..500 {
+        blocked = sqlx::query_scalar(
+            "SELECT COALESCE(bool_or(wait_event_type = 'Lock'), false) \
+             FROM pg_stat_activity WHERE pid = $1",
+        )
+        .bind(upserter_pid)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        if blocked || upsert.is_finished() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(blocked, "the upsert waits on the row lock holder holds");
+
+    let update = sqlx::query(
+        "UPDATE config.settings SET value = 'held' WHERE namespace = $1 AND key = 'k'",
+    )
+    .bind(&ns)
+    .execute(&mut *holder)
+    .await
+    .map_err(|e| format!("{e:#}"));
+    if update.is_ok() {
+        holder.commit().await.unwrap();
+    } else {
+        drop(holder);
+    }
+    let upserted = tokio::time::timeout(Duration::from_secs(30), upsert)
+        .await
+        .expect("the upsert finishes once holder commits")
+        .unwrap();
+    assert!(update.is_ok(), "holder's UPDATE commits (no deadlock): {update:?}");
+    assert!(upserted.is_ok(), "the upsert commits (no deadlock): {upserted:?}");
+
+    let value: String =
+        sqlx::query_scalar("SELECT value FROM config.settings WHERE namespace = $1 AND key = 'k'")
+            .bind(&ns)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(value, "upserted", "the upsert ran after holder's UPDATE");
+    let ops: Vec<String> = changed_events(&pool, &ns)
+        .await
+        .into_iter()
+        .map(|e| e.1)
+        .collect();
+    assert_eq!(ops, ["insert", "update", "update"], "one event per committed write");
 
     cleanup(&pool, &ns).await;
 }

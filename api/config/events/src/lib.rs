@@ -2,11 +2,13 @@
 //! `api/config/configevents`): the `config.changed` event appended after a setting
 //! write. It is the ONLY surface other modules share with config (payload + descriptor).
 //!
-//! As of Step 7 the SOLE producer is config's `config.settings` write trigger, which
-//! (in the writing transaction) bumps the monotonic `config.revision`, fires the
-//! `config_changed` NOTIFY, and calls the plane-owned `asyncevents.append_event`. There
-//! is no Rust `emit_tx` producer any more (a psql/admin write and a service write emit
-//! identically — the trigger is the single path). Durable consumers subscribe with a
+//! As of Step 7 the SOLE producer is config's `config.settings` triggers, in the writing
+//! transaction: the BEFORE INSERT/UPDATE stamp trigger bumps the monotonic
+//! `config.revision` and stamps the row, and the AFTER write trigger (which bumps itself
+//! for a DELETE) fires the `config_changed` NOTIFY and calls the plane-owned
+//! `asyncevents.append_event`. There is no Rust `emit_tx` producer any more (a
+//! psql/admin write and a service write emit identically — the triggers are the single
+//! path). Durable consumers subscribe with a
 //! stable id (`audit.config-changed.v1`); replica-local cache freshness moved off the
 //! durable plane onto the broadcast invalidation plane (the `config_changed` channel).
 
