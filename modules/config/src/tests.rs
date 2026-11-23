@@ -124,8 +124,10 @@ async fn register_provides_reader_capability() {
 
 // ---- Live Postgres integration (the local DB is the test DB) ----------
 
-/// Config's optimistic token is the one global revision, so DB-writing tests must not
-/// invalidate each other's freshly rendered forms inside this test binary.
+/// Serializes this binary's DB-writing tests so their writes do not contend on the one
+/// `config.revision` row every write locks. Each test reads only its own namespace's rows
+/// and events and asserts only strict revision increase, so the guard is not what keeps
+/// the checks race-free.
 static CONFIG_DB_TEST_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn ensure_asyncevents_schema(pool: &PgPool) {
@@ -580,4 +582,241 @@ async fn migrate_seeds_config_changed_history_contract() {
     // Idempotent: migrating again must not error (ON CONFLICT DO NOTHING + a matching
     // read-back never drifts against its own contract).
     m.migrate(&ctx).await.unwrap();
+}
+
+
+// ---- Per-key revision stamp (D1) ---------------------------------------
+
+/// The `(key, operation, revision)` of every `config.changed` event for a namespace, in
+/// log order.
+async fn changed_events(pool: &PgPool, ns: &str) -> Vec<(String, String, i64)> {
+    sqlx::query_as(
+        "SELECT payload->>'key', payload->>'operation', (payload->>'revision')::bigint \
+         FROM asyncevents.events WHERE topic = 'config.changed' AND payload->>'namespace' = $1 \
+         ORDER BY generation, producer_xid, tie_breaker",
+    )
+    .bind(ns)
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// A row's stamped `revision`.
+async fn row_revision(pool: &PgPool, ns: &str, key: &str) -> i64 {
+    sqlx::query_scalar("SELECT revision FROM config.settings WHERE namespace = $1 AND key = $2")
+        .bind(ns)
+        .bind(key)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// The global `config.revision` value.
+async fn global_revision(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT revision FROM config.revision WHERE singleton")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// The row's stamp IS the event's revision, for the insert and for an upsert that hits
+/// ON CONFLICT DO UPDATE (`Service::set` on an existing key): that path fires BEFORE
+/// INSERT and BEFORE UPDATE, yet emits exactly one event, carrying the UPDATE's stamp,
+/// strictly greater than the row's previous one.
+#[tokio::test]
+async fn stamp_equals_event_revision_and_upsert_conflict_emits_once() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Arc::new(Service::new(pool.clone()));
+
+    svc.set(&ns, "k", "1").await.unwrap(); // insert
+    let rev1 = row_revision(&pool, &ns, "k").await;
+    assert!(rev1 >= 1, "a stamped revision is >= 1: {rev1}");
+    assert_eq!(changed_events(&pool, &ns).await, vec![("k".into(), "insert".into(), rev1)]);
+
+    svc.set(&ns, "k", "2").await.unwrap(); // upsert hitting ON CONFLICT DO UPDATE
+    let rev2 = row_revision(&pool, &ns, "k").await;
+    assert!(rev2 > rev1, "the conflict path must stamp a greater revision: {rev2} !> {rev1}");
+    assert_eq!(
+        changed_events(&pool, &ns).await,
+        vec![("k".into(), "insert".into(), rev1), ("k".into(), "update".into(), rev2)],
+        "the upsert-on-conflict emits exactly one event, with the row's new stamp"
+    );
+
+    cleanup(&pool, &ns).await;
+}
+
+/// `INSERT … ON CONFLICT DO NOTHING` on an existing key fires BEFORE INSERT (one global
+/// bump: an allowed gap) but writes nothing, so the row keeps its value and stamp and no
+/// event is emitted.
+#[tokio::test]
+async fn insert_do_nothing_on_existing_key_bumps_global_and_emits_nothing() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+
+    sqlx::query("INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'k', 'orig')")
+        .bind(&ns)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let stamp = row_revision(&pool, &ns, "k").await;
+    let before = global_revision(&pool).await;
+
+    let affected = sqlx::query(
+        "INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'k', 'other') \
+         ON CONFLICT (namespace, key) DO NOTHING",
+    )
+    .bind(&ns)
+    .execute(&pool)
+    .await
+    .unwrap()
+    .rows_affected();
+    assert_eq!(affected, 0, "DO NOTHING on an existing key writes no row");
+
+    assert!(
+        global_revision(&pool).await > before,
+        "the BEFORE INSERT stamp still moves config.revision (a gap)"
+    );
+    let (value, revision): (String, i64) = sqlx::query_as(
+        "SELECT value, revision FROM config.settings WHERE namespace = $1 AND key = 'k'",
+    )
+    .bind(&ns)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((value.as_str(), revision), ("orig", stamp), "the row is untouched");
+    assert_eq!(
+        changed_events(&pool, &ns).await,
+        vec![("k".into(), "insert".into(), stamp)],
+        "DO NOTHING emits no event"
+    );
+
+    cleanup(&pool, &ns).await;
+}
+
+/// ONE multi-row statement (the splitproof raw-SQL shape) stamps every row with its own
+/// revision, increasing in row order, and each row's event carries that row's stamp. A
+/// "bump once" scheme would give all three rows the same revision.
+#[tokio::test]
+async fn multi_row_insert_stamps_distinct_increasing_revisions() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+
+    sqlx::query(
+        "INSERT INTO config.settings (namespace, key, value) VALUES \
+         ($1, 'a', '1'), ($1, 'b', '2'), ($1, 'c', '3')",
+    )
+    .bind(&ns)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let a = row_revision(&pool, &ns, "a").await;
+    let b = row_revision(&pool, &ns, "b").await;
+    let c = row_revision(&pool, &ns, "c").await;
+    assert!(a < b && b < c, "distinct, increasing stamps in row order: {a} {b} {c}");
+    assert_eq!(
+        changed_events(&pool, &ns).await,
+        vec![
+            ("a".into(), "insert".into(), a),
+            ("b".into(), "insert".into(), b),
+            ("c".into(), "insert".into(), c),
+        ],
+        "one event per row, each with its row's stamp"
+    );
+
+    cleanup(&pool, &ns).await;
+}
+
+/// The trigger owns `revision` and `updated_at` (C7): a raw INSERT naming neither gets
+/// both, and a raw write that supplies them has both overwritten — on INSERT and on an
+/// UPDATE that sets no `updated_at` of its own.
+#[tokio::test]
+async fn raw_writes_get_revision_and_updated_at_from_the_trigger() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+
+    // Neither column named: the NOT NULL `revision` is filled by the stamp.
+    sqlx::query("INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'plain', 'x')")
+        .bind(&ns)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let plain = row_revision(&pool, &ns, "plain").await;
+    assert!(plain >= 1);
+
+    // Both columns supplied: the stamp overwrites them.
+    sqlx::query(
+        "INSERT INTO config.settings (namespace, key, value, revision, updated_at) \
+         VALUES ($1, 'forged', 'y', 1, '2000-01-01T00:00:00Z')",
+    )
+    .bind(&ns)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (rev, fresh): (i64, bool) = sqlx::query_as(
+        "SELECT revision, updated_at > '2001-01-01T00:00:00Z' FROM config.settings \
+         WHERE namespace = $1 AND key = 'forged'",
+    )
+    .bind(&ns)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(rev > plain, "a supplied revision is overwritten by the stamp: {rev}");
+    assert!(fresh, "a supplied updated_at is overwritten with now()");
+
+    // A raw UPDATE that tries to set an old updated_at still gets now() and a new stamp.
+    sqlx::query(
+        "UPDATE config.settings SET value = 'z', updated_at = '2000-01-01T00:00:00Z' \
+         WHERE namespace = $1 AND key = 'plain'",
+    )
+    .bind(&ns)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (rev2, fresh2): (i64, bool) = sqlx::query_as(
+        "SELECT revision, updated_at > '2001-01-01T00:00:00Z' FROM config.settings \
+         WHERE namespace = $1 AND key = 'plain'",
+    )
+    .bind(&ns)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(rev2 > rev, "the UPDATE stamps a newer revision: {rev2} !> {rev}");
+    assert!(fresh2, "a raw UPDATE's updated_at is set by the trigger");
+
+    cleanup(&pool, &ns).await;
+}
+
+/// A DELETE has no BEFORE stamp, so the AFTER trigger bumps the global revision itself:
+/// exactly one `delete` event, with a revision greater than the row's last stamp.
+#[tokio::test]
+async fn delete_emits_once_with_its_own_bump() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+
+    sqlx::query("INSERT INTO config.settings (namespace, key, value) VALUES ($1, 'k', 'v')")
+        .bind(&ns)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let stamp = row_revision(&pool, &ns, "k").await;
+    sqlx::query("DELETE FROM config.settings WHERE namespace = $1 AND key = 'k'")
+        .bind(&ns)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let events = changed_events(&pool, &ns).await;
+    assert_eq!(events.len(), 2, "one insert and one delete event: {events:?}");
+    assert_eq!(events[0], ("k".into(), "insert".into(), stamp));
+    assert_eq!((events[1].0.as_str(), events[1].1.as_str()), ("k", "delete"));
+    assert!(events[1].2 > stamp, "the delete's revision is its own bump: {events:?}");
+
+    cleanup(&pool, &ns).await;
 }

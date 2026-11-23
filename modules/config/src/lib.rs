@@ -6,14 +6,19 @@
 //! `config.settings` write trigger. Secrets stay in env; only non-secret operational
 //! knobs go here.
 //!
-//! ## Step 7 — one trigger, two planes, monotonic revision
-//! Every INSERT/UPDATE/DELETE on `config.settings` fires ONE trigger that, in the
-//! writing transaction and in this order: (a) bumps the monotonic `config.revision`
-//! singleton, (b) `pg_notify`s the `config_changed` channel, (c) appends a durable
-//! `config.changed` event via the plane-owned `asyncevents.append_event` (config DDL
-//! NEVER touches the plane's tables — only that function). A raw `psql` write and a
-//! service `set` therefore audit and invalidate identically — the trigger is the
-//! single emission path, so there is no producer-side double-emit to dedup.
+//! ## Two triggers, two planes, monotonic revision
+//! Every INSERT/UPDATE on `config.settings` first fires a BEFORE ROW trigger that bumps
+//! the monotonic `config.revision` singleton and stamps the new value into the row's own
+//! `revision` column (and sets `updated_at = now()`), so each row records the global
+//! revision of the write that last wrote it; writers never supply either column. Every
+//! INSERT/UPDATE/DELETE then fires ONE AFTER ROW trigger that, in the writing
+//! transaction and in this order: (a) takes the revision (the row's stamp; a DELETE
+//! bumps `config.revision` itself), (b) `pg_notify`s the `config_changed` channel,
+//! (c) appends a durable `config.changed` event via the plane-owned
+//! `asyncevents.append_event` (config DDL NEVER touches the plane's tables — only that
+//! function). A raw `psql` write and a service `set` therefore stamp, audit and
+//! invalidate identically — the AFTER trigger is the single emission path, so there is
+//! no producer-side double-emit to dedup.
 //!
 //! Cache freshness rides the BROADCAST invalidation plane, not the durable event:
 //! the local [`Service`] (and, in a split, the remote `configrpc::CachedConfig`)
@@ -44,28 +49,58 @@ const DEFAULT_DSN: &str =
 /// and every config cache LISTENs on for its authoritative refresh.
 const NOTIFY_CHANNEL: &str = "config_changed";
 
-/// This module's OWN schema, tables, revision seed and trigger function, nothing else —
-/// full logical isolation (#10). Idempotent; [`SETTINGS_NOTIFY_TRIGGER_DDL`] attaches the
-/// function to `config.settings`.
+/// This module's OWN schema, tables, revision seed and trigger functions, nothing else —
+/// full logical isolation (#10). Idempotent; [`SETTINGS_STAMP_TRIGGER_DDL`] and
+/// [`SETTINGS_NOTIFY_TRIGGER_DDL`] attach the functions to `config.settings`.
 ///
-/// `config.revision` is a monotonic singleton (one row, `revision` bigint). The
-/// `AFTER INSERT OR UPDATE OR DELETE` trigger is the single source of change
-/// propagation: for ANY writer — this service's `set`, another service's, or a raw
-/// `psql` write — it branches on `TG_OP` (a DELETE reads `OLD`, not `NEW`) and, in the
-/// writing transaction, IN ORDER (a) locks + increments `config.revision`, (b)
-/// `pg_notify`s `config_changed` with the operation/namespace/key/revision payload, and
-/// (c) appends the durable `config.changed` event via the plane-owned
-/// `asyncevents.append_event` — the ONLY `asyncevents` object config's DDL references
-/// (it never touches the plane's tables). `RETURN NULL` is correct for an AFTER trigger.
-/// `value` is `null` on a DELETE. `config.revision` seeds at 0; the first mutation
-/// yields revision 1 (real revisions are ≥ 1, so a cache initialised to -1 always
-/// applies its first load).
+/// `config.revision` is a monotonic singleton (one row, `revision` bigint). It seeds at
+/// 0; the first mutation yields revision 1 (real revisions are ≥ 1, so a cache
+/// initialised to -1 always applies its first load).
+///
+/// `config.settings.revision` is the global revision of the write that last wrote the
+/// row. The `BEFORE INSERT OR UPDATE` trigger (`config.stamp_revision`) locks and
+/// increments `config.revision` once PER ROW and writes the result into
+/// `NEW.revision`, and sets `NEW.updated_at = now()`; a writer never supplies either
+/// (a value it does supply is overwritten). It must be a BEFORE trigger: an AFTER
+/// trigger cannot change the row, and AFTER ROW triggers run at the end of the
+/// statement, so a "bump once in AFTER" scheme would give every row of a multi-row
+/// statement the same revision.
+///
+/// The `AFTER INSERT OR UPDATE OR DELETE` trigger (`config.notify_changed`) is the
+/// single source of change propagation: for ANY writer — this service's `set`, another
+/// service's, or a raw `psql` write — it branches on `TG_OP` (a DELETE reads `OLD`, not
+/// `NEW`) and, in the writing transaction, IN ORDER (a) takes the revision —
+/// `NEW.revision` for an INSERT/UPDATE, its own lock + increment of `config.revision`
+/// for a DELETE (no BEFORE stamp runs on a DELETE), (b) `pg_notify`s `config_changed`
+/// with the operation/namespace/key/revision payload, and (c) appends the durable
+/// `config.changed` event via the plane-owned `asyncevents.append_event` — the ONLY
+/// `asyncevents` object config's DDL references (it never touches the plane's tables).
+/// `RETURN NULL` is correct for an AFTER trigger. `value` is `null` on a DELETE. Each
+/// row mutation emits exactly once, with the revision the row carries.
+///
+/// Gaps in the global sequence are expected; readers rely only on strict increase. An
+/// `INSERT … ON CONFLICT DO UPDATE` that hits the conflict fires BEFORE INSERT (one
+/// bump, discarded) and then BEFORE UPDATE (the stamped bump) but only the AFTER UPDATE
+/// trigger; an `INSERT … ON CONFLICT DO NOTHING` on an existing key bumps once and
+/// writes and emits nothing.
+///
+/// Lock order: the BEFORE bump takes the `config.revision` row lock at the FIRST row a
+/// statement writes and holds it to commit, while the statement still has rows (and,
+/// for an UPDATE, their row locks) to take. Two concurrent multi-row statements that
+/// write overlapping existing rows can therefore deadlock (Postgres aborts one), as two
+/// multi-statement `set_tx` batches already could.
+///
+/// Rollout of a column change here is `DROP SCHEMA config CASCADE` and a fresh boot:
+/// `CREATE TABLE IF NOT EXISTS` keeps an existing older table as it is (one without the
+/// `revision` column then fails its first write in the stamp trigger). No migration
+/// bridge.
 const SCHEMA_DDL: &str = r#"
 CREATE SCHEMA IF NOT EXISTS config;
 CREATE TABLE IF NOT EXISTS config.settings (
 	namespace  text NOT NULL,
 	key        text NOT NULL,
 	value      text NOT NULL,
+	revision   bigint NOT NULL,
 	updated_at timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (namespace, key)
 );
@@ -75,6 +110,19 @@ CREATE TABLE IF NOT EXISTS config.revision (
 );
 INSERT INTO config.revision (singleton, revision) VALUES (true, 0)
 	ON CONFLICT (singleton) DO NOTHING;
+CREATE OR REPLACE FUNCTION config.stamp_revision() RETURNS trigger
+	LANGUAGE plpgsql AS $$
+DECLARE
+	_rev bigint;
+BEGIN
+	-- One lock + increment of the monotonic revision PER ROW (serialises writers).
+	UPDATE config.revision SET revision = revision + 1 WHERE singleton
+		RETURNING revision INTO _rev;
+	NEW.revision := _rev;
+	NEW.updated_at := now();
+	RETURN NEW;
+END;
+$$;
 CREATE OR REPLACE FUNCTION config.notify_changed() RETURNS trigger
 	LANGUAGE plpgsql AS $$
 DECLARE
@@ -87,15 +135,16 @@ DECLARE
 BEGIN
 	IF TG_OP = 'DELETE' THEN
 		_ns := OLD.namespace; _key := OLD.key; _value := NULL; _op := 'delete';
+		-- (a) a DELETE has no BEFORE stamp: lock + increment the revision here.
+		UPDATE config.revision SET revision = revision + 1 WHERE singleton
+			RETURNING revision INTO _rev;
 	ELSIF TG_OP = 'UPDATE' THEN
 		_ns := NEW.namespace; _key := NEW.key; _value := NEW.value; _op := 'update';
+		_rev := NEW.revision; -- (a) the BEFORE trigger's stamp
 	ELSE
 		_ns := NEW.namespace; _key := NEW.key; _value := NEW.value; _op := 'insert';
+		_rev := NEW.revision; -- (a) the BEFORE trigger's stamp
 	END IF;
-
-	-- (a) lock + increment the monotonic revision (serialises concurrent writers).
-	UPDATE config.revision SET revision = revision + 1 WHERE singleton
-		RETURNING revision INTO _rev;
 
 	_payload := jsonb_build_object(
 		'namespace', _ns,
@@ -121,7 +170,13 @@ BEGIN
 END;
 $$;"#;
 
-/// The write trigger [`SCHEMA_DDL`] describes.
+/// The per-row revision stamp trigger [`SCHEMA_DDL`] describes.
+const SETTINGS_STAMP_TRIGGER_DDL: &str = r#"
+CREATE TRIGGER settings_stamp
+	BEFORE INSERT OR UPDATE ON config.settings
+	FOR EACH ROW EXECUTE FUNCTION config.stamp_revision();"#;
+
+/// The emitting write trigger [`SCHEMA_DDL`] describes.
 const SETTINGS_NOTIFY_TRIGGER_DDL: &str = r#"
 CREATE TRIGGER settings_notify
 	AFTER INSERT OR UPDATE OR DELETE ON config.settings
@@ -238,15 +293,16 @@ impl Service {
     }
 
     /// Validates the ids, then upserts the row in a single autocommit statement. The
-    /// `config.settings` AFTER-write trigger runs on commit — bumping the revision,
-    /// `pg_notify`ing `config_changed`, and appending the durable event. `set` does NOT
+    /// `config.settings` triggers stamp the row's `revision` and `updated_at`, then
+    /// `pg_notify` `config_changed` and append the durable event, in the statement's
+    /// transaction. `set` does NOT
     /// touch the cache: the invalidation callback is the single refresh path, so a
     /// service write and an external `psql` edit are handled identically.
     pub async fn set(&self, ns: &str, key: &str, value: &str) -> anyhow::Result<()> {
         validate_ident(ns, key)?;
         sqlx::query(
             "INSERT INTO config.settings (namespace, key, value) VALUES ($1, $2, $3) \
-             ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value, updated_at = now()",
+             ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value",
         )
         .bind(ns)
         .bind(key)
@@ -259,9 +315,9 @@ impl Service {
     /// The transactional twin of [`Service::set`]: validates the ids (defense in depth)
     /// and runs the SAME upsert over a caller-supplied connection, so a caller can batch
     /// several settings into ONE transaction that commits (or rolls back) as a unit. The
-    /// `config.settings` AFTER-write trigger is FOR EACH ROW,
-    /// so each upsert still bumps the revision + `pg_notify`s + appends its own durable
-    /// `config.changed` event — all made visible atomically at commit.
+    /// `config.settings` triggers are FOR EACH ROW, so each upsert still stamps its own
+    /// revision + `pg_notify`s + appends its own durable `config.changed` event — all
+    /// made visible atomically at commit.
     pub async fn set_tx(
         &self,
         conn: &mut PgConnection,
@@ -272,7 +328,7 @@ impl Service {
         validate_ident(ns, key)?;
         sqlx::query(
             "INSERT INTO config.settings (namespace, key, value) VALUES ($1, $2, $3) \
-             ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value, updated_at = now()",
+             ON CONFLICT (namespace, key) DO UPDATE SET value = excluded.value",
         )
         .bind(ns)
         .bind(key)
@@ -514,6 +570,7 @@ impl Module for Config {
             .ok_or_else(|| anyhow::anyhow!("config requires a DB pool"))?;
         Ddl::new(pool)
             .sql(SCHEMA_DDL)
+            .trigger("config.settings", "settings_stamp", SETTINGS_STAMP_TRIGGER_DDL)
             .trigger("config.settings", "settings_notify", SETTINGS_NOTIFY_TRIGGER_DDL)
             .run()
             .await?;
