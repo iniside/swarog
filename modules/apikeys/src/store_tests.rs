@@ -548,12 +548,6 @@ async fn seed_upsert_roles_and_keys_self_heal() {
     cleanup(&pool, &base).await;
 }
 
-// ---------------------------------------------------------------------------
-// The cap table vs the DDL — pure, no Postgres.
-// ---------------------------------------------------------------------------
-
-/// The one whitespace-normalized `CONSTRAINT <name> CHECK (...)` clause `SCHEMA_DDL`
-/// declares, or a panic naming the missing constraint.
 /// Every key of a test, walked page by page through the keyset cursor.
 async fn walk_pages(store: &Store, needle: &str, page: i64) -> Vec<crate::store::KeyRow> {
     let mut all = Vec::new();
@@ -583,10 +577,10 @@ async fn keys_page_keyset_walks_every_key_once_newest_first() {
     for i in 0..27 {
         store.create_key(&format!("{base}-k{i:02}"), &role).await.unwrap();
     }
-    // Two keys sharing one created_at exercise the name half of the cursor.
+    // k16 shares k17's created_at, so k17 ends page 1 and k16 starts page 2 only via the name half of the cursor.
     sqlx::query("UPDATE apikeys.keys SET created_at = (SELECT created_at FROM apikeys.keys WHERE name = $1) WHERE name = $2")
-        .bind(format!("{base}-k10"))
-        .bind(format!("{base}-k11"))
+        .bind(format!("{base}-k17"))
+        .bind(format!("{base}-k16"))
         .execute(&pool)
         .await
         .unwrap();
@@ -698,6 +692,12 @@ async fn role_counts_include_revoked_keys_and_key_counts_split_active() {
     cleanup(&pool, &base).await;
 }
 
+// ---------------------------------------------------------------------------
+// The cap table vs the DDL — pure, no Postgres.
+// ---------------------------------------------------------------------------
+
+/// The one whitespace-normalized `CONSTRAINT <name> CHECK (...)` clause `SCHEMA_DDL`
+/// declares, or a panic naming the missing constraint.
 fn ddl_clause(constraint: &str) -> String {
     let flat = SCHEMA_DDL.split_whitespace().collect::<Vec<_>>().join(" ");
     let needle = format!("CONSTRAINT {constraint} ");
