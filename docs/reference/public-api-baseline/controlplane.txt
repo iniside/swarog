@@ -196,8 +196,8 @@ pub const controlplane::order::dashboard_attention::INVENTORY_PURGES: i32
 pub const controlplane::order::dashboard_attention::MAIL: i32
 pub const controlplane::order::dashboard_attention::NOTIFICATIONS_PURGES: i32
 pub const controlplane::order::dashboard_attention::PORTAL_LORE: i32
-pub const controlplane::order::dashboard_attention::PORTAL_SCHEDULER: i32
 pub const controlplane::order::dashboard_attention::PORTAL_SERVICES: i32
+pub const controlplane::order::dashboard_attention::SCHEDULER: i32
 pub const controlplane::order::dashboard_attention::STORAGE_PURGES: i32
 pub const controlplane::order::dashboard_attention::WALLET_PURGES: i32
 pub mod controlplane::order::dashboard_tile
