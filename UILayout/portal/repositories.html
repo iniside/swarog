@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lore Portal: Repositories</title>
+  <link rel="stylesheet" href="../design-system/tokens.css">
+  <link rel="stylesheet" href="../design-system/components/bundle.css">
+  <style>
+    html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
+    .app { height: auto; min-height: 100vh; background: var(--bg); color: var(--text); }
+    .nav-item.sub { padding-left: 32px; }
+    .mr-id { font-family: var(--font-mono); color: var(--text-3); font-size: 12px; }
+    .ref { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+    .small { font-size: 12px; }
+
+    .repo-name { font-family: var(--font-mono); font-weight: 600; color: var(--text); text-decoration: none; }
+  </style>
+  <script src="assets/boot.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div><div class="brand-name">Lore Portal</div><div class="brand-sub">emberline-prod</div></div>
+    </div>
+    <nav class="nav" aria-label="Main">
+      <div class="nav-section">
+        <a class="nav-item" href="index.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"></path></svg>Home</a>
+        <a class="nav-item active" href="repositories.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2z"></path><path d="M5 19a2 2 0 0 1 2-2h12"></path></svg>Repositories</a>
+        <a class="nav-item sub" href="repo-files.html"><span class="mono">ashfall-game</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">ashfall-art</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">tools-pipeline</span></a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Merge requests</div>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="M6 8v8"></path><path d="M18 16V9a3 3 0 0 0-3-3h-4"></path></svg>Review requested<span class="count alert">2</span></a>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>Mine<span class="count">2</span></a>
+      </div>
+      <div class="nav-section">
+        <a class="nav-item" href="my-locks.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>My locks<span class="count warn">3</span></a>
+        <a class="nav-item" href="notifications.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg>Notifications<span class="count alert">4</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="me">
+        <span class="avatar" style="background: #d9488a">AT</span>
+        <div class="grow"><div>Aiko Tanaka</div><div class="dim mono" style="font-size: 11px">aiko.tanaka</div></div>
+      </div>
+    </div>
+  </aside>
+  <header class="topbar">
+    <nav class="crumbs" aria-label="Breadcrumbs"><span class="cur">Repositories</span></nav>
+    <button class="search-trigger" type="button"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><span class="grow">Search repositories, files, merge requests, people</span><span class="kbd">Ctrl K</span></button>
+    <button class="top-btn" type="button" aria-label="Notifications, 4 unread"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg><span class="pip"></span></button>
+    <button class="top-btn" type="button" aria-label="Account menu"><span class="avatar" style="background: #d9488a">AT</span></button>
+  </header>
+  <main class="main">
+    <div class="page">
+<div class="page-head">
+        <div class="grow">
+          <h1>Repositories</h1>
+          <div class="muted">6 repositories you can access in emberline-prod. Access is set by a lead in Swarog Admin.</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="tbl-toolbar">
+          <input class="input" style="width: 280px" placeholder="Filter by name or description" aria-label="Filter repositories">
+          <span class="filter-chip">Access: any</span>
+          <span class="filter-chip">Has my locks</span>
+          <span class="grow"></span>
+          <span class="dim small">Sorted by last push</span>
+        </div>
+        <div class="panel-body flush">
+          <table class="tbl">
+            <thead><tr><th>Name</th><th>Description</th><th>Default branch</th><th>Last push</th><th>Access</th><th style="text-align: right">Open merge requests</th><th style="text-align: right">Locks</th></tr></thead>
+            <tbody>
+              <tr><td><a class="repo-name" href="repo-files.html">ashfall-game</a></td><td class="wrap muted">Ashfall game project: maps, blueprints, code, config</td><td><span class="ref">main</span></td><td>6 min ago <span class="dim">· diego.r</span></td><td><span class="badge accent">write</span></td><td style="text-align: right">4</td><td style="text-align: right">14 <span class="dim small">(2 mine)</span></td></tr>
+              <tr><td><a class="repo-name" href="#">ashfall-art</a></td><td class="wrap muted">Source art: Blender scenes, Photoshop and Substance files</td><td><span class="ref">main</span></td><td>41 min ago <span class="dim">· aiko.tanaka</span></td><td><span class="badge accent">write</span></td><td style="text-align: right">1</td><td style="text-align: right">9 <span class="dim small">(1 mine)</span></td></tr>
+              <tr><td><a class="repo-name" href="#">ashfall-audio</a></td><td class="wrap muted">Wwise project and source audio</td><td><span class="ref">main</span></td><td>3 h ago <span class="dim">· tomasz.w</span></td><td><span class="badge plain">read</span></td><td style="text-align: right">0</td><td style="text-align: right">2</td></tr>
+              <tr><td><a class="repo-name" href="#">engine-fork</a></td><td class="wrap muted">Emberline engine fork with studio patches</td><td><span class="ref">ember/5.6</span></td><td>yesterday <span class="dim">· jonas.l</span></td><td><span class="badge plain">read</span></td><td style="text-align: right">2</td><td style="text-align: right">0</td></tr>
+              <tr><td><a class="repo-name" href="#">tools-pipeline</a></td><td class="wrap muted">Build, import and export scripts for the content pipeline</td><td><span class="ref">main</span></td><td>2 d ago <span class="dim">· priya.n</span></td><td><span class="badge ok">maintain</span></td><td style="text-align: right">1</td><td style="text-align: right">1</td></tr>
+              <tr><td><a class="repo-name" href="#">marketing-capture</a></td><td class="wrap muted">Capture levels and camera rigs for trailers</td><td><span class="ref">main</span></td><td>12 d ago <span class="dim">· elena.p</span></td><td><span class="badge plain">read</span></td><td style="text-align: right">0</td><td style="text-align: right">0</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="panel-foot"><span class="dim small">Repositories you have no access to are not listed. Ask a lead to add you.</span></div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

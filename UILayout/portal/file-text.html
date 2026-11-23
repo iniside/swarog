@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lore Portal: BTTask_WardenPatrol.cpp</title>
+  <link rel="stylesheet" href="../design-system/tokens.css">
+  <link rel="stylesheet" href="../design-system/components/bundle.css">
+  <style>
+    html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
+    .app { height: auto; min-height: 100vh; background: var(--bg); color: var(--text); }
+    .nav-item.sub { padding-left: 32px; }
+    .mr-id { font-family: var(--font-mono); color: var(--text-3); font-size: 12px; }
+    .ref { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+    .small { font-size: 12px; }
+
+    .refpicker { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+    .refpicker .k { font-family: var(--font-sans); color: var(--text-3); font-size: 11px; }
+    .cv { font-family: var(--font-mono); font-size: 12.5px; line-height: 20px; width: 100%; border-collapse: collapse; }
+    .cv td { padding: 0; vertical-align: top; }
+    .cv .ln { width: 44px; text-align: right; padding-right: 12px; color: var(--text-3); user-select: none; }
+    .cv .src { white-space: pre; color: var(--text); padding-left: 12px; }
+    .cv .att { width: 250px; padding: 0 10px; border-right: 1px solid var(--border); background: var(--bg-sunken); font-family: var(--font-sans); font-size: 11.5px; color: var(--text-2); white-space: nowrap; overflow: hidden; }
+    .cv tr.blk td { border-top: 1px solid var(--border); }
+    .cv .att .mono { color: var(--accent); font-size: 11px; }
+    .cv .att .d { color: var(--text-3); float: right; }
+    .cv tr.hl td.src, .cv tr.hl td.ln { background: color-mix(in srgb, var(--warn) 12%, transparent); }
+    .tk-k { color: var(--accent); }
+    .tk-s { color: var(--ok); }
+    .tk-c { color: var(--text-3); font-style: italic; }
+    .tk-t { color: var(--info); }
+    .file-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+  </style>
+  <script src="assets/boot.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div><div class="brand-name">Lore Portal</div><div class="brand-sub">emberline-prod</div></div>
+    </div>
+    <nav class="nav" aria-label="Main">
+      <div class="nav-section">
+        <a class="nav-item" href="index.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"></path></svg>Home</a>
+        <a class="nav-item" href="repositories.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2z"></path><path d="M5 19a2 2 0 0 1 2-2h12"></path></svg>Repositories</a>
+        <a class="nav-item sub active" href="repo-files.html"><span class="mono">ashfall-game</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">ashfall-art</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">tools-pipeline</span></a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Merge requests</div>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="M6 8v8"></path><path d="M18 16V9a3 3 0 0 0-3-3h-4"></path></svg>Review requested<span class="count alert">2</span></a>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>Mine<span class="count">2</span></a>
+      </div>
+      <div class="nav-section">
+        <a class="nav-item" href="my-locks.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>My locks<span class="count warn">3</span></a>
+        <a class="nav-item" href="notifications.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg>Notifications<span class="count alert">4</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="me">
+        <span class="avatar" style="background: #d9488a">AT</span>
+        <div class="grow"><div>Aiko Tanaka</div><div class="dim mono" style="font-size: 11px">aiko.tanaka</div></div>
+      </div>
+    </div>
+  </aside>
+  <header class="topbar">
+    <nav class="crumbs" aria-label="Breadcrumbs"><a href="repositories.html">Repositories</a><span class="sep">/</span><a class="mono" href="repo-files.html">ashfall-game</a><span class="sep">/</span><span class="mono">main</span><span class="sep">/</span><span class="cur mono">Source/Ashfall/AI/BTTask_WardenPatrol.cpp</span></nav>
+    <button class="search-trigger" type="button"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><span class="grow">Search repositories, files, merge requests, people</span><span class="kbd">Ctrl K</span></button>
+    <button class="top-btn" type="button" aria-label="Notifications, 4 unread"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg><span class="pip"></span></button>
+    <button class="top-btn" type="button" aria-label="Account menu"><span class="avatar" style="background: #d9488a">AT</span></button>
+  </header>
+  <main class="main">
+    <div class="page">
+<div class="page-head">
+        <div class="grow">
+          <h1 class="row" style="gap: 10px"><span class="mono">ashfall-game</span><span class="badge accent">write</span></h1>
+          <div class="muted">Ashfall game project: maps, blueprints, code, config</div>
+        </div>
+        <a class="btn" href="branches.html">23 branches</a>
+        <a class="btn primary" href="compare.html">New merge request</a>
+      </div>
+      <div class="tabs"><a class="tab on" href="repo-files.html">Files</a><a class="tab" href="history.html">History</a><a class="tab" href="branches.html">Branches <span class="count">23</span></a><a class="tab" href="merge-requests.html">Merge requests <span class="count">4</span></a><a class="tab" href="my-locks.html">Locks <span class="count">14</span></a></div>
+      <div class="row" style="gap: 10px">
+        <button class="refpicker" type="button" aria-label="Branch or revision"><span class="k">Branch</span>main<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px"><path d="M6 9l6 6 6-6"></path></svg></button>
+        <span class="ref" style="font-size: 13px"><a href="repo-files.html" style="color: var(--accent)">ashfall-game</a> / Source / Ashfall / AI / <b style="color: var(--text)">BTTask_WardenPatrol.cpp</b></span>
+        <span class="grow"></span>
+        <a class="btn sm" href="history.html">History</a>
+      </div>
+
+      <div class="panel">
+        <div class="file-head">
+          <span class="avatar" style="background: #7c3aed; width: 20px; height: 20px; font-size: 9px">PN</span>
+          <span>priya.n</span>
+          <span class="muted grow">Warden: clamp patrol wait to the blackboard range</span>
+          <a class="mono" href="revision.html" style="color: var(--text-2)">rev:6c90b13</a>
+          <span class="dim">3 d ago</span>
+        </div>
+        <div class="file-head" style="background: var(--bg-sunken)">
+          <span class="mono">BTTask_WardenPatrol.cpp</span>
+          <span class="dim">·</span><span class="dim">C++ · 142 lines · 4.6 KB</span>
+          <span class="grow"></span>
+          <label class="row" style="gap: 8px; font-size: 12px"><span class="toggle on" role="switch" aria-checked="true"></span>Show attribution</label>
+          <div class="seg"><button class="on" type="button">Code</button><button type="button">Raw</button></div>
+          <button class="btn sm" type="button">Copy path</button>
+          <button class="btn sm" type="button">Download</button>
+        </div>
+        <div class="panel-body flush" style="overflow: hidden">
+          <table class="cv" aria-label="File contents with attribution">
+            <tbody>
+              <tr class="blk"><td class="att" rowspan="6"><span class="mono">rev:2be6d41</span> priya.n<span class="d">12 d ago</span><br><span class="dim">Warden: first patrol task</span></td><td class="ln">1</td><td class="src"><span class="tk-c">// Copyright Emberline. All rights reserved.</span></td></tr>
+              <tr><td class="ln">2</td><td class="src"></td></tr>
+              <tr><td class="ln">3</td><td class="src"><span class="tk-k">#include</span> <span class="tk-s">"AI/BTTask_WardenPatrol.h"</span></td></tr>
+              <tr><td class="ln">4</td><td class="src"><span class="tk-k">#include</span> <span class="tk-s">"AI/WardenController.h"</span></td></tr>
+              <tr><td class="ln">5</td><td class="src"><span class="tk-k">#include</span> <span class="tk-s">"BehaviorTree/BlackboardComponent.h"</span></td></tr>
+              <tr><td class="ln">6</td><td class="src"></td></tr>
+              <tr class="blk"><td class="att" rowspan="4"><span class="mono">rev:8a02d7b</span> jonas.l<span class="d">2 d ago</span><br><span class="dim">Release 0.9: rename patrol keys</span></td><td class="ln">7</td><td class="src"><span class="tk-k">static const</span> <span class="tk-t">FName</span> PatrolIndexKey(<span class="tk-s">"PatrolIndex"</span>);</td></tr>
+              <tr><td class="ln">8</td><td class="src"><span class="tk-k">static const</span> <span class="tk-t">FName</span> PatrolWaitKey(<span class="tk-s">"PatrolWaitSeconds"</span>);</td></tr>
+              <tr><td class="ln">9</td><td class="src"></td></tr>
+              <tr><td class="ln">10</td><td class="src"><span class="tk-t">UBTTask_WardenPatrol</span>::UBTTask_WardenPatrol()</td></tr>
+              <tr class="blk"><td class="att" rowspan="5"><span class="mono">rev:2be6d41</span> priya.n<span class="d">12 d ago</span><br><span class="dim">Warden: first patrol task</span></td><td class="ln">11</td><td class="src">{</td></tr>
+              <tr><td class="ln">12</td><td class="src">    NodeName = <span class="tk-s">TEXT("Warden patrol")</span>;</td></tr>
+              <tr><td class="ln">13</td><td class="src">    bNotifyTick = <span class="tk-k">true</span>;</td></tr>
+              <tr><td class="ln">14</td><td class="src">}</td></tr>
+              <tr><td class="ln">15</td><td class="src"></td></tr>
+              <tr class="blk"><td class="att" rowspan="3"><span class="mono">rev:2be6d41</span> priya.n<span class="d">12 d ago</span><br><span class="dim">Warden: first patrol task</span></td><td class="ln">16</td><td class="src"><span class="tk-t">EBTNodeResult</span>::Type <span class="tk-t">UBTTask_WardenPatrol</span>::ExecuteTask(<span class="tk-t">UBehaviorTreeComponent</span>&amp; Owner, <span class="tk-t">uint8</span>* Memory)</td></tr>
+              <tr><td class="ln">17</td><td class="src">{</td></tr>
+              <tr><td class="ln">18</td><td class="src">    <span class="tk-t">UBlackboardComponent</span>* Board = Owner.GetBlackboardComponent();</td></tr>
+              <tr class="blk hl"><td class="att" rowspan="3" style="background: color-mix(in srgb, var(--warn) 10%, var(--bg-sunken))"><span class="mono">rev:6c90b13</span> priya.n<span class="d">3 d ago</span><br><span class="dim">Warden: clamp patrol wait to the blackboard range</span></td><td class="ln">19</td><td class="src">    <span class="tk-k">const float</span> Wait = <span class="tk-t">FMath</span>::Clamp(Board-&gt;GetValueAsFloat(PatrolWaitKey), MinWait, MaxWait);</td></tr>
+              <tr class="hl"><td class="ln">20</td><td class="src">    <span class="tk-k">if</span> (Wait &lt;= <span class="tk-s">0.f</span>)</td></tr>
+              <tr class="hl"><td class="ln">21</td><td class="src">    {    <span class="tk-k">return</span> <span class="tk-t">EBTNodeResult</span>::Succeeded;    }</td></tr>
+              <tr class="blk"><td class="att" rowspan="6"><span class="mono">rev:2be6d41</span> priya.n<span class="d">12 d ago</span><br><span class="dim">Warden: first patrol task</span></td><td class="ln">22</td><td class="src"></td></tr>
+              <tr><td class="ln">23</td><td class="src">    <span class="tk-t">AWardenController</span>* Warden = Cast&lt;<span class="tk-t">AWardenController</span>&gt;(Owner.GetAIOwner());</td></tr>
+              <tr><td class="ln">24</td><td class="src">    <span class="tk-k">if</span> (!Warden)</td></tr>
+              <tr><td class="ln">25</td><td class="src">    {    <span class="tk-k">return</span> <span class="tk-t">EBTNodeResult</span>::Failed;    }</td></tr>
+              <tr><td class="ln">26</td><td class="src"></td></tr>
+              <tr><td class="ln">27</td><td class="src">    Warden-&gt;MoveToPatrolPoint(Board-&gt;GetValueAsInt(PatrolIndexKey));</td></tr>
+              <tr class="blk"><td class="att" rowspan="2"><span class="mono">rev:8a02d7b</span> jonas.l<span class="d">2 d ago</span><br><span class="dim">Release 0.9: rename patrol keys</span></td><td class="ln">28</td><td class="src">    <span class="tk-k">return</span> <span class="tk-t">EBTNodeResult</span>::InProgress;</td></tr>
+              <tr><td class="ln">29</td><td class="src">}</td></tr>
+            </tbody>
+          </table>
+          <div style="padding: 10px 14px; border-top: 1px solid var(--border)" class="dim small">Lines 30 to 142 are below. Highlighted lines changed in the latest revision for this file.</div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

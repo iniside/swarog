@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lore Portal: rev:9b31e07</title>
+  <link rel="stylesheet" href="../design-system/tokens.css">
+  <link rel="stylesheet" href="../design-system/components/bundle.css">
+  <style>
+    html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
+    .app { height: auto; min-height: 100vh; background: var(--bg); color: var(--text); }
+    .nav-item.sub { padding-left: 32px; }
+    .mr-id { font-family: var(--font-mono); color: var(--text-3); font-size: 12px; }
+    .ref { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+    .small { font-size: 12px; }
+
+    .refpicker { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+    .refpicker .k { font-family: var(--font-sans); color: var(--text-3); font-size: 11px; }
+    .dfile { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
+    .dfile-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
+    .dfile-head .path { font-family: var(--font-mono); font-weight: 500; }
+    .dv { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; line-height: 19px; }
+    .dv td { padding: 0; vertical-align: top; }
+    .dv .o, .dv .n { width: 42px; text-align: right; padding-right: 8px; color: var(--text-3); user-select: none; }
+    .dv .s { width: 16px; text-align: center; color: var(--text-3); }
+    .dv .c { white-space: pre; color: var(--text); padding-right: 12px; }
+    .dv tr.add td { background: var(--ok-soft); }
+    .dv tr.add .s, .dv tr.add .c { color: var(--text); }
+    .dv tr.add .n { color: var(--ok); }
+    .dv tr.del td { background: var(--err-soft); }
+    .dv tr.del .o { color: var(--err); }
+    .dv tr.hunk td { background: var(--info-soft); color: var(--text-3); padding: 2px 8px; }
+    .dv tr.thr > td { background: var(--bg-sunken); padding: 8px 12px 8px 108px; font-family: var(--font-sans); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .thread { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); max-width: 760px; }
+    .cmt { display: grid; grid-template-columns: 24px 1fr; gap: 0 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.45; }
+    .cmt .h { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
+    .cmt .h b { color: var(--text); font-weight: 600; }
+    .thread-foot { padding: 8px 12px; display: flex; gap: 8px; align-items: center; }
+    .thread.resolved { opacity: .75; }
+    .adiff { display: grid; grid-template-columns: 1fr 1fr; }
+    .adiff > div { padding: 12px 14px; }
+    .adiff > div + div { border-left: 1px solid var(--border); }
+    .adiff .thumb { height: 110px; border-radius: 6px; margin-bottom: 10px; background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 45%, #d9b98a 46%, #f2e3c8 70%, #a88a64 100%); }
+    .adiff .thumb.after { background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 40%, #d9b98a 41%, #f2e3c8 62%, #c46b2c 63%, #a88a64 100%); }
+    .adiff .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin-bottom: 6px; }
+    .adiff dl.props { font-size: 12px; }
+    .chg { font-variant-numeric: tabular-nums; }
+    .chg .a { color: var(--ok); } .chg .d { color: var(--err); }
+    .rs { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+    .rs .dot { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; }
+    .rs .dot svg { width: 10px; height: 10px; }
+    .rs.approved .dot { background: var(--ok-soft); color: var(--ok); }
+    .rs.changes .dot { background: var(--err-soft); color: var(--err); }
+    .rs.commented .dot { background: var(--info-soft); color: var(--info); }
+    .rs.pending .dot { background: var(--muted-soft); color: var(--text-3); }
+    .fl-row { display: grid; grid-template-columns: 18px 1fr auto auto; gap: 8px; align-items: center; padding: 5px 12px; font-size: 12.5px; }
+    .fl-row .p { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fl-row.on { background: var(--selected); }
+    .st { font-family: var(--font-mono); font-size: 11px; font-weight: 600; width: 16px; text-align: center; }
+    .st.M { color: var(--warn); } .st.A { color: var(--ok); } .st.D { color: var(--err); } .st.R { color: var(--info); }
+
+    .rev-head { display: grid; grid-template-columns: 1fr auto; gap: 14px; }
+  </style>
+  <script src="assets/boot.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div><div class="brand-name">Lore Portal</div><div class="brand-sub">emberline-prod</div></div>
+    </div>
+    <nav class="nav" aria-label="Main">
+      <div class="nav-section">
+        <a class="nav-item" href="index.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"></path></svg>Home</a>
+        <a class="nav-item" href="repositories.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2z"></path><path d="M5 19a2 2 0 0 1 2-2h12"></path></svg>Repositories</a>
+        <a class="nav-item sub active" href="repo-files.html"><span class="mono">ashfall-game</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">ashfall-art</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">tools-pipeline</span></a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Merge requests</div>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="M6 8v8"></path><path d="M18 16V9a3 3 0 0 0-3-3h-4"></path></svg>Review requested<span class="count alert">2</span></a>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>Mine<span class="count">2</span></a>
+      </div>
+      <div class="nav-section">
+        <a class="nav-item" href="my-locks.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>My locks<span class="count warn">3</span></a>
+        <a class="nav-item" href="notifications.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg>Notifications<span class="count alert">4</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="me">
+        <span class="avatar" style="background: #d9488a">AT</span>
+        <div class="grow"><div>Aiko Tanaka</div><div class="dim mono" style="font-size: 11px">aiko.tanaka</div></div>
+      </div>
+    </div>
+  </aside>
+  <header class="topbar">
+    <nav class="crumbs" aria-label="Breadcrumbs"><a href="repositories.html">Repositories</a><span class="sep">/</span><a class="mono" href="repo-files.html">ashfall-game</a><span class="sep">/</span><a href="history.html">History</a><span class="sep">/</span><span class="cur mono">rev:9b31e07</span></nav>
+    <button class="search-trigger" type="button"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><span class="grow">Search repositories, files, merge requests, people</span><span class="kbd">Ctrl K</span></button>
+    <button class="top-btn" type="button" aria-label="Notifications, 4 unread"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg><span class="pip"></span></button>
+    <button class="top-btn" type="button" aria-label="Account menu"><span class="avatar" style="background: #d9488a">AT</span></button>
+  </header>
+  <main class="main">
+    <div class="page">
+<div class="page-head">
+        <div class="grow">
+          <div class="dim small mono">rev:9b31e07</div>
+          <h1>Hub Ashgate: vendor stalls</h1>
+          <div class="row muted" style="gap: 8px; font-size: 13px"><span class="user-cell"><span class="avatar" style="background: #4f5bd5; width: 20px; height: 20px; font-size: 9px">MK</span>marta.k</span><span>committed yesterday at 16:04</span><span class="dim">·</span>
+            <span>merge of <span class="mr-id">!38</span> into <span class="ref">main</span></span></div>
+        </div>
+        <button class="btn" type="button">Browse files at this revision</button>
+        <button class="btn" type="button">Copy id</button>
+      </div>
+      <div class="panel">
+        <div class="panel-body">
+          <p style="margin: 0 0 10px; font-size: 13px; line-height: 1.5">Adds six vendor stalls to the Hub Ashgate market square. Restock timing now comes from the game rules asset, and higher-tier stalls restock 8 items per cycle instead of 5. Removes the old market tent mesh.</p>
+          <dl class="props">
+            <dt>Parents</dt><dd><a class="mono" href="#">rev:d38e2b0</a> <span class="dim">(main)</span> · <a class="mono" href="#">rev:4c7a19f</a> <span class="dim">(feature/hub-stalls)</span></dd>
+            <dt>Changes</dt><dd>41 files · <span class="chg"><span class="a">+188 MB</span> <span class="d">−12.4 MB</span></span> · <span class="chg"><span class="a">+41 lines</span> <span class="d">−10 lines</span></span></dd>
+            <dt>Contained in</dt><dd><span class="ref">main</span> · not in <span class="ref">release/0.9</span></dd>
+          </dl>
+        </div>
+      </div>
+      <div class="grid" style="grid-template-columns: 340px 1fr; gap: 16px; align-items: start">
+        <div class="panel">
+          <div class="panel-head"><div class="panel-title">Changed files</div><div class="panel-meta">41 files</div></div>
+          <div class="panel-body flush" style="padding: 4px 0"><div class="fl-row"><span class="st M">M</span><span class="p">Content/Maps/Hub/Hub_Ashgate.umap</span><span class="chg"><span class="a">+4.1 MB</span> <span class="d"></span></span><span></span></div><div class="fl-row"><span class="st A">A</span><span class="p">Content/Props/Stalls/SM_Stall_Awning.uasset</span><span class="chg"><span class="a">+2.6 MB</span> <span class="d"></span></span><span></span></div><div class="fl-row"><span class="st A">A</span><span class="p">Content/Props/Stalls/SM_Stall_Crate.uasset</span><span class="chg"><span class="a">+1.9 MB</span> <span class="d"></span></span><span></span></div><div class="fl-row on"><span class="st M">M</span><span class="p">Source/Ashfall/Economy/VendorComponent.cpp</span><span class="chg"><span class="a">+38</span> <span class="d">−9</span></span><span></span></div><div class="fl-row"><span class="st M">M</span><span class="p">Config/DefaultGame.ini</span><span class="chg"><span class="a">+3</span> <span class="d">−1</span></span><span></span></div><div class="fl-row"><span class="st D">D</span><span class="p">Content/Props/Old/SM_Market_Tent.uasset</span><span class="chg"><span class="a"></span> <span class="d">−12.4 MB</span></span><span></span></div>
+            <div class="dim small" style="padding: 6px 12px">35 more files in Content/Props/Stalls</div></div>
+        </div>
+        <div class="stack" style="gap: 14px">
+          <div class="dfile"><div class="dfile-head"><span class="st M">M</span><span class="path grow">Source/Ashfall/Economy/VendorComponent.cpp</span><span class="chg"><span class="a">+38</span> <span class="d">−9</span></span><div class="seg"><button class="on" type="button">Unified</button><button type="button">Split</button></div></div><table class="dv">
+<tr class="hunk"><td colspan="4">@@ -44,9 +44,12 @@ void UVendorComponent::BeginPlay()</td></tr>
+<tr><td class="o">44</td><td class="n">44</td><td class="s"></td><td class="c">    Super::BeginPlay();</td></tr>
+<tr><td class="o">45</td><td class="n">45</td><td class="s"></td><td class="c">    Stock = InitialStock;</td></tr>
+<tr class="del"><td class="o">46</td><td class="n"></td><td class="s">-</td><td class="c">    RestockSeconds = 120.f;</td></tr>
+<tr class="add"><td class="o"></td><td class="n">46</td><td class="s">+</td><td class="c">    const UGameRules* Rules = UGameRules::Get(this);</td></tr>
+<tr class="add"><td class="o"></td><td class="n">47</td><td class="s">+</td><td class="c">    RestockSeconds = Rules-&gt;VendorRestockSeconds;</td></tr>
+<tr class="add"><td class="o"></td><td class="n">48</td><td class="s">+</td><td class="c">    StallTier = Rules-&gt;StallTierFor(GetOwner());</td></tr>
+<tr class="thr"><td colspan="4"><div class="thread resolved"><div class="thread-foot dim small" style="border-bottom: 1px solid var(--border)">Line comment on line 48 · <span class="badge ok">resolved</span></div><div class="cmt"><span class="avatar" style="background: #0f9488; width: 24px; height: 24px; font-size: 11px">JL</span><div><div class="h"><b>jonas.l</b> · yesterday 15:40</div><div>Should the restock timer read from <span class="mono">DA_GameRules</span> instead of a constant?</div></div></div><div class="cmt"><span class="avatar" style="background: #4f5bd5; width: 24px; height: 24px; font-size: 11px">MK</span><div><div class="h"><b>marta.k</b> · yesterday 15:52</div><div>Yes. Moved it in the next hunk, line 61.</div></div></div></div></td></tr>
+<tr><td class="o">47</td><td class="n">49</td><td class="s"></td><td class="c"></td></tr>
+<tr><td class="o">48</td><td class="n">50</td><td class="s"></td><td class="c">    GetWorld()-&gt;GetTimerManager().SetTimer(</td></tr>
+<tr><td class="o">49</td><td class="n">51</td><td class="s"></td><td class="c">        RestockHandle, this, &amp;UVendorComponent::Restock,</td></tr>
+<tr class="hunk"><td colspan="4">@@ -58,6 +61,9 @@ void UVendorComponent::Restock()</td></tr>
+<tr><td class="o">58</td><td class="n">61</td><td class="s"></td><td class="c">{</td></tr>
+<tr class="del"><td class="o">59</td><td class="n"></td><td class="s">-</td><td class="c">    Stock = FMath::Min(Stock + 5, MaxStock);</td></tr>
+<tr class="add"><td class="o"></td><td class="n">62</td><td class="s">+</td><td class="c">    const int32 Step = StallTier &gt;= 2 ? 8 : 5;</td></tr>
+<tr class="add"><td class="o"></td><td class="n">63</td><td class="s">+</td><td class="c">    Stock = FMath::Min(Stock + Step, MaxStock);</td></tr>
+<tr class="thr"><td colspan="4"><div class="thread"><div class="thread-foot dim small" style="border-bottom: 1px solid var(--border)">Line comment on line 63 · 1 comment</div><div class="cmt"><span class="avatar" style="background: #7c3aed; width: 24px; height: 24px; font-size: 11px">PN</span><div><div class="h"><b>priya.n</b> · today 09:12</div><div>Clamp <span class="mono">RestockSeconds</span> here too; a zero value spins every tick.</div></div></div><div class="thread-foot"><input class="input grow" placeholder="Reply" aria-label="Reply"><button class="btn sm" type="button">Resolve thread</button></div></div></td></tr>
+<tr class="add"><td class="o"></td><td class="n">64</td><td class="s">+</td><td class="c">    OnStockChanged.Broadcast(Stock);</td></tr>
+<tr><td class="o">60</td><td class="n">65</td><td class="s"></td><td class="c">}</td></tr>
+</table></div>
+          <div class="dfile"><div class="dfile-head"><span class="st M">M</span><span class="path grow">Content/Maps/Hub/Hub_Ashgate.umap</span><span class="chg"><span class="a">+4.1 MB</span> <span class="d"></span></span></div><div class="adiff"><div><div class="lbl">Before</div><div class="thumb "></div><dl class="props"><dt>Size</dt><dd>93.2 MB</dd><dt>Actors</dt><dd>4 812</dd><dt>Sublevels</dt><dd>6</dd><dt>Content hash</dt><dd><span class="mono">blake3:51c9…0e7d</span></dd></dl></div><div><div class="lbl">After</div><div class="thumb after"></div><dl class="props"><dt>Size</dt><dd>97.3 MB <span class="chg"><span class="a">+4.1 MB</span></span></dd><dt>Actors</dt><dd>5 077 <span class="chg"><span class="a">+265</span></span></dd><dt>Sublevels</dt><dd>6</dd><dt>Content hash</dt><dd><span class="mono">blake3:a20f…93b1</span></dd></dl></div></div><div style="padding: 8px 14px; border-top: 1px solid var(--border)" class="dim small">Binary file. Lore compares size and engine metadata, not contents.</div></div>
+          <div class="thread"><div class="thread-foot dim small" style="border-bottom: 1px solid var(--border)">File comment on Hub_Ashgate.umap</div><div class="cmt"><span class="avatar" style="background: #c2630f; width: 24px; height: 24px; font-size: 11px">DR</span><div><div class="h"><b>diego.r</b> · yesterday 16:20</div><div>Stall lights are baked at the hub's old exposure. Rebake them when the Frostreach lighting lands.</div></div></div><div class="thread-foot"><input class="input grow" placeholder="Reply" aria-label="Reply"><button class="btn sm" type="button">Resolve thread</button></div></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

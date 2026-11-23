@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lore Portal: Device login approval</title>
+  <link rel="stylesheet" href="../design-system/tokens.css">
+  <link rel="stylesheet" href="../design-system/components/bundle.css">
+  <style>
+    html, body { margin: 0; background: var(--bg-sunken); color: var(--text); font-family: var(--font-sans); }
+    .auth-card { width: 420px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-xl); padding: 28px; display: flex; flex-direction: column; gap: 18px; box-sizing: border-box; }
+    .auth-card h1 { font-size: 17px; margin: 0 0 6px; }
+    .state-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin-bottom: 10px; }
+    .code-in { display: flex; gap: 8px; align-items: center; }
+    .code-in .input { width: 44px; height: 44px; text-align: center; font-family: var(--font-mono); font-size: 18px; padding: 0; }
+  </style>
+  <script src="assets/boot.js" defer></script>
+</head>
+<body>
+<div style="min-height: 900px; padding: 40px 48px; box-sizing: border-box; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px 48px; justify-items: center; align-content: center">
+
+  <div>
+    <div class="state-label">1. Enter code</div>
+    <div class="auth-card">
+      <div class="row" style="gap: 10px"><div class="brand-mark">L</div><div><div style="font-weight: 600">Lore Portal</div><div class="mono dim" style="font-size: 11px">emberline-prod</div></div></div>
+      <div>
+        <h1>Connect a device</h1>
+        <div class="muted" style="font-size: 13px">Enter the code shown in your terminal after <span class="mono">lore login</span>.</div>
+      </div>
+      <div class="code-in" role="group" aria-label="Device code">
+        <input class="input" aria-label="Character 1" value="A">
+        <input class="input" aria-label="Character 2" value="B">
+        <input class="input" aria-label="Character 3" value="C">
+        <input class="input" aria-label="Character 4" value="D">
+        <span class="dim mono">-</span>
+        <input class="input" aria-label="Character 5" value="E">
+        <input class="input" aria-label="Character 6" value="F">
+        <input class="input" aria-label="Character 7" value="G">
+        <input class="input" aria-label="Character 8" value="H">
+      </div>
+      <div class="row"><span class="grow dim" style="font-size: 12px">The code expires in 9 min 40 s.</span><button class="btn primary" type="button">Continue</button></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="state-label">2. Confirm</div>
+    <div class="auth-card">
+      <div class="modal-icon warn" style="position: static"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"></rect><path d="M8 20h8M12 16v4"></path></svg></div>
+      <div>
+        <h1>Allow <span class="mono">lore</span> CLI on WS-AIKO-01 to act as aiko.tanaka?</h1>
+        <div class="muted" style="font-size: 13px">It will be able to clone, push, lock and release files in every repository you can access.</div>
+      </div>
+      <div class="impact">
+        <div><b>Code</b><span class="mono">ABCD-EFGH</span></div>
+        <div><b>Device</b><span class="mono">WS-AIKO-01</span> · Windows 11 · lore 0.14.0</div>
+        <div><b>Requested from</b><span class="mono">10.20.4.31</span> · 1 min ago</div>
+        <div><b>Session lasts</b>90 d, revoke any time in Profile</div>
+      </div>
+      <div class="row" style="justify-content: flex-end; gap: 8px"><button class="btn" type="button">Deny</button><button class="btn primary" type="button">Allow device</button></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="state-label">3a. Approved</div>
+    <div class="auth-card">
+      <div class="state compact">
+        <div class="state-icon" style="color: var(--ok)"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 12l3 3 5-6"></path></svg></div>
+        <div class="state-title">WS-AIKO-01 is connected</div>
+        <div class="state-detail">Return to your terminal. <span class="mono">lore</span> is signed in as aiko.tanaka.</div>
+        <div class="row"><a class="btn" href="profile.html">View devices</a></div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="state-label">3b. Denied</div>
+    <div class="auth-card">
+      <div class="state compact err">
+        <div class="state-icon"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M9 9l6 6M15 9l-6 6"></path></svg></div>
+        <div class="state-title">Device not connected</div>
+        <div class="state-detail">You denied code <span class="mono">ABCD-EFGH</span>. The terminal shows the login as refused. Run <span class="mono">lore login</span> again to get a new code.</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

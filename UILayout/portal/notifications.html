@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lore Portal: Notifications</title>
+  <link rel="stylesheet" href="../design-system/tokens.css">
+  <link rel="stylesheet" href="../design-system/components/bundle.css">
+  <style>
+    html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
+    .app { height: auto; min-height: 100vh; background: var(--bg); color: var(--text); }
+    .nav-item.sub { padding-left: 32px; }
+    .mr-id { font-family: var(--font-mono); color: var(--text-3); font-size: 12px; }
+    .ref { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+    .small { font-size: 12px; }
+
+    .refpicker { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+    .refpicker .k { font-family: var(--font-sans); color: var(--text-3); font-size: 11px; }
+    .dfile { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
+    .dfile-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
+    .dfile-head .path { font-family: var(--font-mono); font-weight: 500; }
+    .dv { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; line-height: 19px; }
+    .dv td { padding: 0; vertical-align: top; }
+    .dv .o, .dv .n { width: 42px; text-align: right; padding-right: 8px; color: var(--text-3); user-select: none; }
+    .dv .s { width: 16px; text-align: center; color: var(--text-3); }
+    .dv .c { white-space: pre; color: var(--text); padding-right: 12px; }
+    .dv tr.add td { background: var(--ok-soft); }
+    .dv tr.add .s, .dv tr.add .c { color: var(--text); }
+    .dv tr.add .n { color: var(--ok); }
+    .dv tr.del td { background: var(--err-soft); }
+    .dv tr.del .o { color: var(--err); }
+    .dv tr.hunk td { background: var(--info-soft); color: var(--text-3); padding: 2px 8px; }
+    .dv tr.thr > td { background: var(--bg-sunken); padding: 8px 12px 8px 108px; font-family: var(--font-sans); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .thread { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); max-width: 760px; }
+    .cmt { display: grid; grid-template-columns: 24px 1fr; gap: 0 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.45; }
+    .cmt .h { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
+    .cmt .h b { color: var(--text); font-weight: 600; }
+    .thread-foot { padding: 8px 12px; display: flex; gap: 8px; align-items: center; }
+    .thread.resolved { opacity: .75; }
+    .adiff { display: grid; grid-template-columns: 1fr 1fr; }
+    .adiff > div { padding: 12px 14px; }
+    .adiff > div + div { border-left: 1px solid var(--border); }
+    .adiff .thumb { height: 110px; border-radius: 6px; margin-bottom: 10px; background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 45%, #d9b98a 46%, #f2e3c8 70%, #a88a64 100%); }
+    .adiff .thumb.after { background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 40%, #d9b98a 41%, #f2e3c8 62%, #c46b2c 63%, #a88a64 100%); }
+    .adiff .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin-bottom: 6px; }
+    .adiff dl.props { font-size: 12px; }
+    .chg { font-variant-numeric: tabular-nums; }
+    .chg .a { color: var(--ok); } .chg .d { color: var(--err); }
+    .rs { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+    .rs .dot { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; }
+    .rs .dot svg { width: 10px; height: 10px; }
+    .rs.approved .dot { background: var(--ok-soft); color: var(--ok); }
+    .rs.changes .dot { background: var(--err-soft); color: var(--err); }
+    .rs.commented .dot { background: var(--info-soft); color: var(--info); }
+    .rs.pending .dot { background: var(--muted-soft); color: var(--text-3); }
+    .fl-row { display: grid; grid-template-columns: 18px 1fr auto auto; gap: 8px; align-items: center; padding: 5px 12px; font-size: 12.5px; }
+    .fl-row .p { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fl-row.on { background: var(--selected); }
+    .st { font-family: var(--font-mono); font-size: 11px; font-weight: 600; width: 16px; text-align: center; }
+    .st.M { color: var(--warn); } .st.A { color: var(--ok); } .st.D { color: var(--err); } .st.R { color: var(--info); }
+
+    .stale-row td { background: color-mix(in srgb, var(--warn) 6%, transparent); }
+    .n-row { display: grid; grid-template-columns: 10px 26px 1fr auto; gap: 10px; align-items: start; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .n-row:last-child { border-bottom: 0; }
+    .n-row .u { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-top: 8px; }
+    .n-row.read .u { background: transparent; }
+    .n-row.read { color: var(--text-2); }
+    .n-row .t { line-height: 1.45; }
+    .n-row .meta { font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
+    .n-row .acts { display: flex; gap: 6px; align-items: center; }
+    .n-ico { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--muted-soft); color: var(--text-3); }
+    .n-ico svg.i { width: 13px; height: 13px; }
+    .n-ico.warn { background: var(--warn-soft); color: var(--warn); }
+    .n-ico.ok { background: var(--ok-soft); color: var(--ok); }
+    .n-ico.info { background: var(--info-soft); color: var(--info); }
+    .n-ico.accent { background: var(--accent-soft); color: var(--accent-fg); }
+    .n-quote { margin-top: 6px; padding: 6px 10px; border-left: 2px solid var(--border); color: var(--text-2); font-size: 12.5px; }
+    .prof { display: flex; gap: 16px; align-items: center; }
+    .ps-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .ps-cell .state-label { margin-bottom: 6px; }
+    .ps-cell .panel { height: 230px; display: flex; flex-direction: column; }
+    .ps-cell .panel-body { flex: 1; }
+    .ps-dark { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-top: 16px; }
+    .mini-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+    .mini-row:last-child { border-bottom: 0; }
+    .sk { display: block; height: 10px; border-radius: 4px; }
+  </style>
+  <script src="assets/boot.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div><div class="brand-name">Lore Portal</div><div class="brand-sub">emberline-prod</div></div>
+    </div>
+    <nav class="nav" aria-label="Main">
+      <div class="nav-section">
+        <a class="nav-item" href="index.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"></path></svg>Home</a>
+        <a class="nav-item" href="repositories.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2z"></path><path d="M5 19a2 2 0 0 1 2-2h12"></path></svg>Repositories</a>
+        <a class="nav-item sub" href="repo-files.html"><span class="mono">ashfall-game</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">ashfall-art</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">tools-pipeline</span></a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Merge requests</div>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="M6 8v8"></path><path d="M18 16V9a3 3 0 0 0-3-3h-4"></path></svg>Review requested<span class="count alert">2</span></a>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>Mine<span class="count">2</span></a>
+      </div>
+      <div class="nav-section">
+        <a class="nav-item" href="my-locks.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>My locks<span class="count warn">3</span></a>
+        <a class="nav-item active" href="notifications.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg>Notifications<span class="count alert">4</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="me">
+        <span class="avatar" style="background: #d9488a">AT</span>
+        <div class="grow"><div>Aiko Tanaka</div><div class="dim mono" style="font-size: 11px">aiko.tanaka</div></div>
+      </div>
+    </div>
+  </aside>
+  <header class="topbar">
+    <nav class="crumbs" aria-label="Breadcrumbs"><span class="cur">Notifications</span></nav>
+    <button class="search-trigger" type="button"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><span class="grow">Search repositories, files, merge requests, people</span><span class="kbd">Ctrl K</span></button>
+    <button class="top-btn" type="button" aria-label="Notifications, 4 unread"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg><span class="pip"></span></button>
+    <button class="top-btn" type="button" aria-label="Account menu"><span class="avatar" style="background: #d9488a">AT</span></button>
+  </header>
+  <main class="main">
+    <div class="page">
+<div class="page-head">
+        <div class="grow">
+          <h1>Notifications</h1>
+          <div class="sub">Activity on your merge requests, reviews and locks. Kept for 90 d.</div>
+        </div>
+        <button class="btn" type="button">Mark all as read</button>
+      </div>
+      <div class="grid g-21">
+        <div class="panel">
+          <div class="tabs">
+            <a class="tab on" href="#">Unread <span class="count">4</span></a>
+            <a class="tab" href="#">All <span class="count">31</span></a>
+          </div>
+          <div class="tbl-toolbar">
+            <span class="filter-chip add">Repository</span>
+            <span class="filter-chip add">Reason</span>
+            <span class="grow"></span>
+            <span class="dim small">Newest first</span>
+          </div>
+          <div class="panel-body flush">
+            <div class="tl-day" style="padding: 8px 14px 0">Today</div>
+            <div class="n-row"><span class="u"></span><span class="n-ico warn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg></span><div><div class="t"><b>diego.r</b> asked you to release <span class="mono">Frostreach_Lighting.umap</span></div><div class="n-quote">I need to rebake the probes on the persistent level before the 0.9 cut. Can you push and release?</div><div class="meta"><span class="mono">ashfall-game</span> · lock:L-2290 · 14 min ago</div></div><div class="acts"><button class="btn sm" type="button">Release lock</button><button class="btn sm ghost" type="button">Mark as read</button></div></div>
+            <div class="n-row"><span class="u"></span><span class="n-ico info"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="M6 8v8"></path><path d="M18 16V9a3 3 0 0 0-3-3h-4"></path></svg></span><div><div class="t"><b>priya.n</b> requested your review on <span class="mr-id">!41</span> <a href="#">Warden behaviour tree: patrol and alert states</a></div><div class="meta"><span class="mono">ashfall-game</span> · 3 h ago</div></div><div class="acts"><a class="btn sm primary" href="merge-request-files.html">Start review</a><button class="btn sm ghost" type="button">Mark as read</button></div></div>
+            <div class="n-row"><span class="u"></span><span class="n-ico accent"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"></path></svg></span><div><div class="t"><b>jonas.l</b> mentioned you in <span class="mr-id">!40</span> <a href="#">Inventory grid: drag and stack</a></div><div class="n-quote">@aiko does the stack limit come from the item catalog or is it hard-coded here?</div><div class="meta"><span class="mono">ashfall-game</span> · <span class="mono">Source/Ashfall/UI/InventoryGrid.cpp</span> line 88 · 4 h ago</div></div><div class="acts"><button class="btn sm ghost" type="button">Mark as read</button></div></div>
+            <div class="n-row"><span class="u"></span><span class="n-ico "><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6h14v9H9l-4 4z"></path></svg></span><div><div class="t"><b>jonas.l</b> commented on your merge request <span class="mr-id">!42</span> <a href="merge-request.html">Frostreach lighting pass v3</a></div><div class="n-quote">Bake time went from 41 min to 58 min on the build agent. Is that expected with the night settings?</div><div class="meta"><span class="mono">ashfall-game</span> · 2 h ago</div></div><div class="acts"><button class="btn sm ghost" type="button">Mark as read</button></div></div>
+            <div class="tl-day" style="padding: 8px 14px 0">Yesterday</div>
+            <div class="n-row read"><span class="u"></span><span class="n-ico ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="12" r="2"></circle><path d="M6 8v8"></path><path d="M6 8c0 4 4 4 10 4"></path></svg></span><div><div class="t"><b>marta.k</b> merged <span class="mr-id">!38</span> <a href="#">Hub Ashgate: vendor stalls</a> into <span class="ref">main</span></div><div class="meta">as <a class="mono" href="revision.html">rev:9b31e07</a> · 16:04</div></div><div class="acts"></div></div>
+            <div class="n-row read"><span class="u"></span><span class="n-ico "><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 7.5-1.5"></path></svg></span><div><div class="t"><b>tomasz.w</b> released the lock on <span class="mono">WBP_HUD.uasset</span>. You asked for it 2 d ago.</div><div class="meta"><span class="mono">ashfall-game</span> · lock:L-2266 · 11:20</div></div><div class="acts"><button class="btn sm" type="button">Lock it now</button></div></div>
+            <div class="n-row read"><span class="u"></span><span class="n-ico ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg></span><div><div class="t"><b>jonas.l</b> approved your merge request <span class="mr-id">!42</span></div><div class="meta"><span class="mono">ashfall-game</span> · 09:42</div></div><div class="acts"></div></div>
+          </div>
+          <div class="tbl-foot">4 unread · 31 in the last 90 d<div class="pager"><button class="btn sm" type="button">Show older</button></div></div>
+        </div>
+
+        <div class="stack">
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title">Bell menu</div><div class="panel-meta">Opens from the topbar</div></div>
+            <div class="panel-body" style="padding: 12px">
+              <div class="popover" style="position: static; width: 100%; box-sizing: border-box">
+                <div class="popover-head"><b class="grow">Notifications</b><span class="dim small">4 unread</span></div>
+                <div class="pop-row"><span class="n-ico warn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg></span><div class="grow small"><b>diego.r</b> asked you to release <span class="mono">Frostreach_Lighting.umap</span><div class="dim">14 min ago</div></div></div>
+                <div class="pop-row"><span class="n-ico info"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="M6 8v8"></path><path d="M18 16V9a3 3 0 0 0-3-3h-4"></path></svg></span><div class="grow small"><b>priya.n</b> requested your review on <span class="mono">!41</span><div class="dim">3 h ago</div></div></div>
+                <div class="pop-row"><span class="n-ico"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6h14v9H9l-4 4z"></path></svg></span><div class="grow small"><b>jonas.l</b> commented on <span class="mono">!42</span><div class="dim">2 h ago</div></div></div>
+                <div class="pop-row"><span class="n-ico accent"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"></circle><path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"></path></svg></span><div class="grow small"><b>jonas.l</b> mentioned you in <span class="mono">!40</span><div class="dim">4 h ago</div></div></div>
+                <div class="pop-row" style="justify-content: space-between"><button class="btn sm ghost" type="button">Mark all as read</button><a class="btn sm" href="notifications.html">See all</a></div>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div class="panel-title">Notify me about</div></div>
+            <div class="panel-body stack" style="gap: 10px; font-size: 13px">
+              <label class="row"><span class="toggle on" role="switch" aria-checked="true"></span><span class="grow">Review requested</span></label>
+              <label class="row"><span class="toggle on" role="switch" aria-checked="true"></span><span class="grow">Mentions</span></label>
+              <label class="row"><span class="toggle on" role="switch" aria-checked="true"></span><span class="grow">Comments on my merge requests</span></label>
+              <label class="row"><span class="toggle on" role="switch" aria-checked="true"></span><span class="grow">My merge request merged or closed</span></label>
+              <label class="row"><span class="toggle on" role="switch" aria-checked="true"></span><span class="grow">Release requests for my locks</span></label>
+              <label class="row"><span class="toggle" role="switch" aria-checked="false"></span><span class="grow">Locks released that I asked for</span></label>
+              <div class="dim small">Email is sent only for release requests and review requests.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

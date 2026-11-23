@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lore Portal: Merge request !42</title>
+  <link rel="stylesheet" href="../design-system/tokens.css">
+  <link rel="stylesheet" href="../design-system/components/bundle.css">
+  <style>
+    html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
+    .app { height: auto; min-height: 100vh; background: var(--bg); color: var(--text); }
+    .nav-item.sub { padding-left: 32px; }
+    .mr-id { font-family: var(--font-mono); color: var(--text-3); font-size: 12px; }
+    .ref { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+    .small { font-size: 12px; }
+
+    .refpicker { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+    .refpicker .k { font-family: var(--font-sans); color: var(--text-3); font-size: 11px; }
+    .dfile { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
+    .dfile-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
+    .dfile-head .path { font-family: var(--font-mono); font-weight: 500; }
+    .dv { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; line-height: 19px; }
+    .dv td { padding: 0; vertical-align: top; }
+    .dv .o, .dv .n { width: 42px; text-align: right; padding-right: 8px; color: var(--text-3); user-select: none; }
+    .dv .s { width: 16px; text-align: center; color: var(--text-3); }
+    .dv .c { white-space: pre; color: var(--text); padding-right: 12px; }
+    .dv tr.add td { background: var(--ok-soft); }
+    .dv tr.add .s, .dv tr.add .c { color: var(--text); }
+    .dv tr.add .n { color: var(--ok); }
+    .dv tr.del td { background: var(--err-soft); }
+    .dv tr.del .o { color: var(--err); }
+    .dv tr.hunk td { background: var(--info-soft); color: var(--text-3); padding: 2px 8px; }
+    .dv tr.thr > td { background: var(--bg-sunken); padding: 8px 12px 8px 108px; font-family: var(--font-sans); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .thread { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); max-width: 760px; }
+    .cmt { display: grid; grid-template-columns: 24px 1fr; gap: 0 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.45; }
+    .cmt .h { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
+    .cmt .h b { color: var(--text); font-weight: 600; }
+    .thread-foot { padding: 8px 12px; display: flex; gap: 8px; align-items: center; }
+    .thread.resolved { opacity: .75; }
+    .adiff { display: grid; grid-template-columns: 1fr 1fr; }
+    .adiff > div { padding: 12px 14px; }
+    .adiff > div + div { border-left: 1px solid var(--border); }
+    .adiff .thumb { height: 110px; border-radius: 6px; margin-bottom: 10px; background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 45%, #d9b98a 46%, #f2e3c8 70%, #a88a64 100%); }
+    .adiff .thumb.after { background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 40%, #d9b98a 41%, #f2e3c8 62%, #c46b2c 63%, #a88a64 100%); }
+    .adiff .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin-bottom: 6px; }
+    .adiff dl.props { font-size: 12px; }
+    .chg { font-variant-numeric: tabular-nums; }
+    .chg .a { color: var(--ok); } .chg .d { color: var(--err); }
+    .rs { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+    .rs .dot { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; }
+    .rs .dot svg { width: 10px; height: 10px; }
+    .rs.approved .dot { background: var(--ok-soft); color: var(--ok); }
+    .rs.changes .dot { background: var(--err-soft); color: var(--err); }
+    .rs.commented .dot { background: var(--info-soft); color: var(--info); }
+    .rs.pending .dot { background: var(--muted-soft); color: var(--text-3); }
+    .fl-row { display: grid; grid-template-columns: 18px 1fr auto auto; gap: 8px; align-items: center; padding: 5px 12px; font-size: 12.5px; }
+    .fl-row .p { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fl-row.on { background: var(--selected); }
+    .st { font-family: var(--font-mono); font-size: 11px; font-weight: 600; width: 16px; text-align: center; }
+    .st.M { color: var(--warn); } .st.A { color: var(--ok); } .st.D { color: var(--err); } .st.R { color: var(--info); }
+
+    .avs { display: inline-flex; }
+    .avs .avatar { border: 2px solid var(--panel); margin-left: -6px; }
+    .avs .avatar:first-child { margin-left: 0; }
+    .mr-title { font-weight: 500; color: var(--text); }
+    .mr-sub { font-size: 11.5px; color: var(--text-3); margin-top: 1px; }
+    .tbl td.mr { padding-top: 6px; padding-bottom: 6px; height: auto; white-space: normal; }
+    .lbl-chip { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 9px; font-size: 11px; font-weight: 500; border: 1px solid var(--border); color: var(--text-2); background: var(--panel-2); }
+    .mbox { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
+    .mbox-head { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; }
+    .mbox-ico { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+    .mbox-ico svg.i { width: 16px; height: 16px; }
+    .mbox-ico.ok { background: var(--ok-soft); color: var(--ok); }
+    .mbox-ico.warn { background: var(--warn-soft); color: var(--warn); }
+    .mbox-ico.err { background: var(--err-soft); color: var(--err); }
+    .mbox-ico.merged { background: var(--accent-soft); color: var(--accent-fg); }
+    .mbox-ico.muted { background: var(--muted-soft); color: var(--text-3); }
+    .mbox-title { font-weight: 600; }
+    .mbox-detail { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+    .mbox-checks { border-top: 1px solid var(--border); }
+    .mbox-check { display: flex; gap: 10px; align-items: center; padding: 7px 14px; font-size: 12.5px; border-bottom: 1px solid var(--border); }
+    .mbox-check:last-child { border-bottom: 0; }
+    .mbox-check svg.i { width: 14px; height: 14px; flex: none; }
+    .mbox-check.ok svg { color: var(--ok); } .mbox-check.warn svg { color: var(--warn); } .mbox-check.err svg { color: var(--err); } .mbox-check.muted svg { color: var(--text-3); }
+    .mbox-files { margin: 0; padding: 0 14px 8px 38px; list-style: none; font-size: 12px; }
+    .mbox-files li { display: flex; gap: 10px; align-items: center; padding: 3px 0; }
+    .mbox-files .mono { flex: 1; }
+    .mbox-foot { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--border); background: var(--panel-2); flex-wrap: wrap; }
+    .mbox-foot label { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--text-2); }
+    .mr-head h1 { font-size: 18px; letter-spacing: -.01em; }
+    .side-sec { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+    .side-sec:last-child { border-bottom: 0; }
+    .side-sec .k { font-size: 11.5px; color: var(--text-3); font-weight: 500; margin-bottom: 6px; display: flex; }
+    .side-sec .k .btn { margin-left: auto; }
+    .rv-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12.5px; }
+    .rv-row .grow { min-width: 0; }
+    .ev { display: flex; gap: 10px; align-items: center; font-size: 12.5px; color: var(--text-2); padding: 2px 0 2px 6px; }
+    .ev .ico { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--muted-soft); color: var(--text-3); flex: none; }
+    .ev .ico svg.i { width: 12px; height: 12px; }
+    .ev .ico.ok { background: var(--ok-soft); color: var(--ok); } .ev .ico.err { background: var(--err-soft); color: var(--err); }
+    .md { font-size: 13px; line-height: 1.55; }
+    .md h3 { font-size: 13px; margin: 10px 0 4px; }
+    .md ul { margin: 4px 0; padding-left: 18px; }
+    .md code { font-family: var(--font-mono); font-size: 12px; background: var(--muted-soft); padding: 0 4px; border-radius: 3px; }
+    .ftree { font-size: 12.5px; }
+    .ftree .fl-row { grid-template-columns: 18px 1fr auto; cursor: pointer; }
+    .ftree .dir { padding: 6px 12px 2px; font-size: 11.5px; color: var(--text-3); font-family: var(--font-mono); }
+    .ftree .vw { width: 12px; height: 12px; color: var(--ok); }
+    .sizechg { font-size: 12px; font-variant-numeric: tabular-nums; }
+    .bin-strip { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--border); }
+    .bin-strip > div { padding: 10px 14px; border-right: 1px solid var(--border); font-size: 12px; }
+    .bin-strip > div:last-child { border-right: 0; }
+    .bin-strip .v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .textarea { width: 100%; min-height: 160px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5; padding: 8px 10px; border: 1px solid var(--control-border); border-radius: var(--radius); background: var(--panel); color: var(--text); resize: vertical; box-sizing: border-box; }
+    .state-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin: 0 0 6px; display: flex; gap: 8px; }
+
+    .pop-anchor { position: relative; }
+    .review-pop { position: absolute !important; right: 0; top: 40px; width: 380px; z-index: 5; }
+  </style>
+  <script src="assets/boot.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div><div class="brand-name">Lore Portal</div><div class="brand-sub">emberline-prod</div></div>
+    </div>
+    <nav class="nav" aria-label="Main">
+      <div class="nav-section">
+        <a class="nav-item" href="index.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"></path></svg>Home</a>
+        <a class="nav-item" href="repositories.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2z"></path><path d="M5 19a2 2 0 0 1 2-2h12"></path></svg>Repositories</a>
+        <a class="nav-item sub" href="repo-files.html"><span class="mono">ashfall-game</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">ashfall-art</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">tools-pipeline</span></a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Merge requests</div>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="M6 8v8"></path><path d="M18 16V9a3 3 0 0 0-3-3h-4"></path></svg>Review requested<span class="count alert">2</span></a>
+        <a class="nav-item active" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>Mine<span class="count">2</span></a>
+      </div>
+      <div class="nav-section">
+        <a class="nav-item" href="my-locks.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>My locks<span class="count warn">3</span></a>
+        <a class="nav-item" href="notifications.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg>Notifications<span class="count alert">4</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="me">
+        <span class="avatar" style="background: #d9488a">AT</span>
+        <div class="grow"><div>Aiko Tanaka</div><div class="dim mono" style="font-size: 11px">aiko.tanaka</div></div>
+      </div>
+    </div>
+  </aside>
+  <header class="topbar">
+    <nav class="crumbs" aria-label="Breadcrumbs"><a href="merge-requests.html">Merge requests</a><span class="sep">/</span><a class="mono" href="repo-files.html">ashfall-game</a><span class="sep">/</span><span class="cur mono">!42</span></nav>
+    <button class="search-trigger" type="button"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><span class="grow">Search repositories, files, merge requests, people</span><span class="kbd">Ctrl K</span></button>
+    <button class="top-btn" type="button" aria-label="Notifications, 4 unread"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg><span class="pip"></span></button>
+    <button class="top-btn" type="button" aria-label="Account menu"><span class="avatar" style="background: #d9488a">AT</span></button>
+  </header>
+  <main class="main">
+    <div class="page">
+<div class="pop-anchor">
+      <div class="page-head mr-head">
+        <div class="grow">
+          <h1>Frostreach lighting pass v3 <span class="mr-id" style="font-size: 16px">!42</span></h1>
+          <div class="row" style="margin-top: 6px; gap: 10px; font-size: 12.5px; color: var(--text-2)">
+            <span class="badge info">open</span>
+            <span class="user-cell"><span class="avatar" style="background: #d9488a; width: 20px; height: 20px; font-size: 9px">AT</span>aiko</span> wants to merge 18 revisions from <span class="ref">feature/frostreach-lighting</span> into <span class="ref">main</span>
+            <span class="dim">· opened 2 d ago</span>
+          </div>
+        </div>
+        <button class="btn" type="button">Edit</button>
+        <button class="btn primary" type="button">Review<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px"><path d="M6 9l6 6 6-6"></path></svg></button>
+      </div>
+      <div class="tabs" style="margin-bottom: 14px"><a class="tab on" href="merge-request.html">Conversation <span class="count">12</span></a><a class="tab" href="merge-request-files.html">Files changed <span class="count">9</span></a><a class="tab" href="#">Revisions <span class="count">18</span></a></div>
+        <div class="popover review-pop" role="dialog" aria-label="Finish your review">
+          <div class="popover-head">Finish your review<span class="grow"></span><span class="dim small" style="font-weight: 400">3 pending comments</span></div>
+          <div style="padding: 10px 12px" class="stack">
+            <textarea class="textarea" style="min-height: 80px; font-family: var(--font-sans)" aria-label="Review summary">Looks right in the editor. Two notes on the post-process volume.</textarea>
+            <div class="stack" style="gap: 6px; font-size: 12.5px">
+              <label class="row"><input type="radio" name="rv" checked> <span><b>Comment</b><span class="dim"> · feedback without approval</span></span></label>
+              <label class="row"><input type="radio" name="rv"> <span><b>Approve</b><span class="dim"> · counts toward the 2 required</span></span></label>
+              <label class="row"><input type="radio" name="rv"> <span><b>Request changes</b><span class="dim"> · blocks merge until you re-review</span></span></label>
+            </div>
+          </div>
+          <div class="modal-foot" style="border-radius: 0 0 8px 8px"><button class="btn" type="button">Cancel</button><button class="btn primary" type="button">Submit review</button></div>
+        </div>
+      </div>
+      <div class="grid g-21">
+        <div class="stack">
+          <div class="thread" style="max-width: none">
+            <div class="cmt"><span class="avatar" style="background: #d9488a; width: 24px; height: 24px; font-size: 11px">AT</span><div><div class="h"><b>aiko</b> · opened 2 d ago</div>
+              <div class="md">Third pass on Frostreach night lighting. Replaces the baked sky light with a stationary one and rebalances the fog.
+                <h3>Asset changes</h3>
+                <ul><li><code>Frostreach_Lighting.umap</code> 93.3 → 96.4 MB</li><li>New <code>PP_Frostreach_Night.uasset</code></li></ul>
+                <h3>Before merge</h3>
+                <ul><li>Needs a rebake on the build farm, about 40 min.</li></ul>
+              </div></div></div>
+          </div>
+          <div class="ev"><span class="ico"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg></span><span>aiko requested reviews from <b>jonas.l</b> and <b>diego.r</b> · 2 d ago</span></div>
+          <div class="ev"><span class="ico"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="12" r="2"></circle><path d="M6 8v8"></path><path d="M6 8c0 4 4 4 10 4"></path></svg></span><span>aiko pushed 3 revisions · <a class="mono" href="revision.html">rev:3fe88a1</a> and 2 more · 1 d ago</span></div>
+          <div class="thread resolved"><div class="thread-foot dim small" style="border-bottom: 1px solid var(--border)">Resolved by jonas.l · <span class="mono">Config/DefaultEngine.ini</span></div><div class="cmt"><span class="avatar" style="background: #0f9488; width: 24px; height: 24px; font-size: 11px">JL</span><div><div class="h"><b>jonas.l</b> · 1 d ago · on <span class="mono">Config/DefaultEngine.ini</span> line 214</div><div>Fog density jumps at the ridge. Is that the new height falloff?</div></div></div><div class="cmt"><span class="avatar" style="background: #d9488a; width: 24px; height: 24px; font-size: 11px">AT</span><div><div class="h"><b>aiko</b> · 1 d ago</div><div>Yes. I lowered it to 0.18; the ridge looks right in the night variant now.</div></div></div></div>
+          <div class="ev"><span class="ico ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg></span><span><b>jonas.l</b> approved · today 13:52</span></div>
+          <div class="thread" style="max-width: none"><div class="cmt"><span class="avatar" style="background: #0f9488; width: 24px; height: 24px; font-size: 11px">JL</span><div><div class="h"><b>jonas.l</b> · today 13:52</div><div>Approving. The sky light change is clean and the rebake estimate is fine.</div></div></div></div>
+          <div class="thread"><div class="cmt"><span class="avatar" style="background: #c2630f; width: 24px; height: 24px; font-size: 11px">DR</span><div><div class="h"><b>diego.r</b> · today 14:10</div><div>@aiko I still hold the lock on <span class=mono>Frostreach_P.umap</span> for the audio pass. I'll release it tonight.</div></div></div><div class="thread-foot"><input class="input grow" placeholder="Reply" aria-label="Reply"><button class="btn sm" type="button">Resolve thread</button></div></div>
+          <div class="thread" style="max-width: none">
+            <div style="padding: 10px 12px" class="stack">
+              <textarea class="textarea" style="min-height: 70px; font-family: var(--font-sans)" placeholder="Leave a comment" aria-label="Leave a comment"></textarea>
+              <div class="row"><span class="dim small">Markdown supported</span><span class="grow"></span><button class="btn" type="button">Close merge request</button><button class="btn primary" type="button">Comment</button></div>
+            </div>
+          </div>
+          <div class="mbox"><div class="mbox-head"><span class="mbox-ico warn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg></span><div class="grow"><div class="mbox-title">Blocked by a lock</div><div class="mbox-detail">One changed file is locked by someone else. Ask them to release it, then merge.</div></div></div><div class=mbox-checks><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">No conflicts with <span class=ref>main</span></span></div><div class="mbox-check warn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 17h.01"></path><path d="M10.3 3.9L2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path></svg><span class="grow">Approvals: 1 of 2 required</span><span class="rs approved"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg></span>jonas.l</span> <span class="rs pending"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle></svg></span>diego.r</span></div><div class="mbox-check err"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M15 9l-6 6M9 9l6 6"></path></svg><span class="grow">1 file locked by others</span><button class="btn sm" type="button">Ask to release</button></div></div><div class="mbox-foot"><span class="dim small">Merge is available once every check passes.</span><span class="grow"></span><button class="btn primary" type="button" disabled>Merge into main</button></div></div>
+        </div>
+        <div class="panel" style="align-self: start">
+          <div class="side-sec"><div class="k">Reviewers<button class="btn sm ghost" type="button">Edit</button></div>
+            <div class="rv-row"><span class="avatar" style="background: #0f9488; width: 20px; height: 20px; font-size: 9px">JL</span><span class="grow">jonas.l</span><span class="rs approved"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg></span>Approved</span></div>
+            <div class="rv-row"><span class="avatar" style="background: #c2630f; width: 20px; height: 20px; font-size: 9px">DR</span><span class="grow">diego.r</span><span class="rs pending"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle></svg></span>Pending</span></div>
+            <div class="small dim" style="margin-top: 6px">2 approvals required by the main branch rule</div>
+          </div>
+          <div class="side-sec"><div class="k">Labels</div><div class="row"><span class="lbl-chip">lighting</span> <span class="lbl-chip">needs-bake</span></div></div>
+          <div class="side-sec"><div class="k">Locks in this merge request</div>
+            <div class="rv-row"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; color: var(--accent)"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg><span class="grow mono small">Frostreach_Lighting.umap</span><span class="dim small">you</span></div>
+            <div class="rv-row"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; color: var(--warn)"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg><span class="grow mono small">Frostreach_P.umap</span><span class="dim small">diego.r · 6 h</span></div>
+          </div>
+          <div class="side-sec"><div class="k">Details</div>
+            <dl class="props">
+              <dt>Id</dt><dd class="mono">mr:42</dd>
+              <dt>Revisions</dt><dd>18</dd>
+              <dt>Binary</dt><dd class="chg"><span class="a">+212 MB</span> <span class="d">−4.7 MB</span></dd>
+              <dt>Participants</dt><dd><span class="avs"><span class="avatar" style="background: #d9488a; width: 20px; height: 20px; font-size: 9px">AT</span><span class="avatar" style="background: #0f9488; width: 20px; height: 20px; font-size: 9px">JL</span><span class="avatar" style="background: #c2630f; width: 20px; height: 20px; font-size: 9px">DR</span></span></dd>
+            </dl>
+          </div>
+          <div class="side-sec"><button class="btn sm" type="button" style="width: 100%">Unsubscribe</button></div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

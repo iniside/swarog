@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lore Portal: MergeBox states</title>
+  <link rel="stylesheet" href="../design-system/tokens.css">
+  <link rel="stylesheet" href="../design-system/components/bundle.css">
+  <style>
+    html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
+    .app { height: auto; min-height: 100vh; background: var(--bg); color: var(--text); }
+    .nav-item.sub { padding-left: 32px; }
+    .mr-id { font-family: var(--font-mono); color: var(--text-3); font-size: 12px; }
+    .ref { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+    .small { font-size: 12px; }
+
+    .refpicker { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+    .refpicker .k { font-family: var(--font-sans); color: var(--text-3); font-size: 11px; }
+    .dfile { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
+    .dfile-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
+    .dfile-head .path { font-family: var(--font-mono); font-weight: 500; }
+    .dv { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; line-height: 19px; }
+    .dv td { padding: 0; vertical-align: top; }
+    .dv .o, .dv .n { width: 42px; text-align: right; padding-right: 8px; color: var(--text-3); user-select: none; }
+    .dv .s { width: 16px; text-align: center; color: var(--text-3); }
+    .dv .c { white-space: pre; color: var(--text); padding-right: 12px; }
+    .dv tr.add td { background: var(--ok-soft); }
+    .dv tr.add .s, .dv tr.add .c { color: var(--text); }
+    .dv tr.add .n { color: var(--ok); }
+    .dv tr.del td { background: var(--err-soft); }
+    .dv tr.del .o { color: var(--err); }
+    .dv tr.hunk td { background: var(--info-soft); color: var(--text-3); padding: 2px 8px; }
+    .dv tr.thr > td { background: var(--bg-sunken); padding: 8px 12px 8px 108px; font-family: var(--font-sans); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .thread { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); max-width: 760px; }
+    .cmt { display: grid; grid-template-columns: 24px 1fr; gap: 0 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.45; }
+    .cmt .h { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
+    .cmt .h b { color: var(--text); font-weight: 600; }
+    .thread-foot { padding: 8px 12px; display: flex; gap: 8px; align-items: center; }
+    .thread.resolved { opacity: .75; }
+    .adiff { display: grid; grid-template-columns: 1fr 1fr; }
+    .adiff > div { padding: 12px 14px; }
+    .adiff > div + div { border-left: 1px solid var(--border); }
+    .adiff .thumb { height: 110px; border-radius: 6px; margin-bottom: 10px; background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 45%, #d9b98a 46%, #f2e3c8 70%, #a88a64 100%); }
+    .adiff .thumb.after { background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 40%, #d9b98a 41%, #f2e3c8 62%, #c46b2c 63%, #a88a64 100%); }
+    .adiff .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin-bottom: 6px; }
+    .adiff dl.props { font-size: 12px; }
+    .chg { font-variant-numeric: tabular-nums; }
+    .chg .a { color: var(--ok); } .chg .d { color: var(--err); }
+    .rs { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+    .rs .dot { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; }
+    .rs .dot svg { width: 10px; height: 10px; }
+    .rs.approved .dot { background: var(--ok-soft); color: var(--ok); }
+    .rs.changes .dot { background: var(--err-soft); color: var(--err); }
+    .rs.commented .dot { background: var(--info-soft); color: var(--info); }
+    .rs.pending .dot { background: var(--muted-soft); color: var(--text-3); }
+    .fl-row { display: grid; grid-template-columns: 18px 1fr auto auto; gap: 8px; align-items: center; padding: 5px 12px; font-size: 12.5px; }
+    .fl-row .p { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fl-row.on { background: var(--selected); }
+    .st { font-family: var(--font-mono); font-size: 11px; font-weight: 600; width: 16px; text-align: center; }
+    .st.M { color: var(--warn); } .st.A { color: var(--ok); } .st.D { color: var(--err); } .st.R { color: var(--info); }
+
+    .avs { display: inline-flex; }
+    .avs .avatar { border: 2px solid var(--panel); margin-left: -6px; }
+    .avs .avatar:first-child { margin-left: 0; }
+    .mr-title { font-weight: 500; color: var(--text); }
+    .mr-sub { font-size: 11.5px; color: var(--text-3); margin-top: 1px; }
+    .tbl td.mr { padding-top: 6px; padding-bottom: 6px; height: auto; white-space: normal; }
+    .lbl-chip { display: inline-flex; align-items: center; height: 18px; padding: 0 7px; border-radius: 9px; font-size: 11px; font-weight: 500; border: 1px solid var(--border); color: var(--text-2); background: var(--panel-2); }
+    .mbox { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
+    .mbox-head { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; }
+    .mbox-ico { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; flex: none; }
+    .mbox-ico svg.i { width: 16px; height: 16px; }
+    .mbox-ico.ok { background: var(--ok-soft); color: var(--ok); }
+    .mbox-ico.warn { background: var(--warn-soft); color: var(--warn); }
+    .mbox-ico.err { background: var(--err-soft); color: var(--err); }
+    .mbox-ico.merged { background: var(--accent-soft); color: var(--accent-fg); }
+    .mbox-ico.muted { background: var(--muted-soft); color: var(--text-3); }
+    .mbox-title { font-weight: 600; }
+    .mbox-detail { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+    .mbox-checks { border-top: 1px solid var(--border); }
+    .mbox-check { display: flex; gap: 10px; align-items: center; padding: 7px 14px; font-size: 12.5px; border-bottom: 1px solid var(--border); }
+    .mbox-check:last-child { border-bottom: 0; }
+    .mbox-check svg.i { width: 14px; height: 14px; flex: none; }
+    .mbox-check.ok svg { color: var(--ok); } .mbox-check.warn svg { color: var(--warn); } .mbox-check.err svg { color: var(--err); } .mbox-check.muted svg { color: var(--text-3); }
+    .mbox-files { margin: 0; padding: 0 14px 8px 38px; list-style: none; font-size: 12px; }
+    .mbox-files li { display: flex; gap: 10px; align-items: center; padding: 3px 0; }
+    .mbox-files .mono { flex: 1; }
+    .mbox-foot { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--border); background: var(--panel-2); flex-wrap: wrap; }
+    .mbox-foot label { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--text-2); }
+    .mr-head h1 { font-size: 18px; letter-spacing: -.01em; }
+    .side-sec { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+    .side-sec:last-child { border-bottom: 0; }
+    .side-sec .k { font-size: 11.5px; color: var(--text-3); font-weight: 500; margin-bottom: 6px; display: flex; }
+    .side-sec .k .btn { margin-left: auto; }
+    .rv-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12.5px; }
+    .rv-row .grow { min-width: 0; }
+    .ev { display: flex; gap: 10px; align-items: center; font-size: 12.5px; color: var(--text-2); padding: 2px 0 2px 6px; }
+    .ev .ico { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--muted-soft); color: var(--text-3); flex: none; }
+    .ev .ico svg.i { width: 12px; height: 12px; }
+    .ev .ico.ok { background: var(--ok-soft); color: var(--ok); } .ev .ico.err { background: var(--err-soft); color: var(--err); }
+    .md { font-size: 13px; line-height: 1.55; }
+    .md h3 { font-size: 13px; margin: 10px 0 4px; }
+    .md ul { margin: 4px 0; padding-left: 18px; }
+    .md code { font-family: var(--font-mono); font-size: 12px; background: var(--muted-soft); padding: 0 4px; border-radius: 3px; }
+    .ftree { font-size: 12.5px; }
+    .ftree .fl-row { grid-template-columns: 18px 1fr auto; cursor: pointer; }
+    .ftree .dir { padding: 6px 12px 2px; font-size: 11.5px; color: var(--text-3); font-family: var(--font-mono); }
+    .ftree .vw { width: 12px; height: 12px; color: var(--ok); }
+    .sizechg { font-size: 12px; font-variant-numeric: tabular-nums; }
+    .bin-strip { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--border); }
+    .bin-strip > div { padding: 10px 14px; border-right: 1px solid var(--border); font-size: 12px; }
+    .bin-strip > div:last-child { border-right: 0; }
+    .bin-strip .v { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .textarea { width: 100%; min-height: 160px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5; padding: 8px 10px; border: 1px solid var(--control-border); border-radius: var(--radius); background: var(--panel); color: var(--text); resize: vertical; box-sizing: border-box; }
+    .state-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin: 0 0 6px; display: flex; gap: 8px; }
+  </style>
+  <script src="assets/boot.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div><div class="brand-name">Lore Portal</div><div class="brand-sub">emberline-prod</div></div>
+    </div>
+    <nav class="nav" aria-label="Main">
+      <div class="nav-section">
+        <a class="nav-item" href="index.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"></path></svg>Home</a>
+        <a class="nav-item" href="repositories.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2z"></path><path d="M5 19a2 2 0 0 1 2-2h12"></path></svg>Repositories</a>
+        <a class="nav-item sub" href="repo-files.html"><span class="mono">ashfall-game</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">ashfall-art</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">tools-pipeline</span></a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Merge requests</div>
+        <a class="nav-item active" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="M6 8v8"></path><path d="M18 16V9a3 3 0 0 0-3-3h-4"></path></svg>Review requested<span class="count alert">2</span></a>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>Mine<span class="count">2</span></a>
+      </div>
+      <div class="nav-section">
+        <a class="nav-item" href="my-locks.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>My locks<span class="count warn">3</span></a>
+        <a class="nav-item" href="notifications.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg>Notifications<span class="count alert">4</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="me">
+        <span class="avatar" style="background: #d9488a">AT</span>
+        <div class="grow"><div>Aiko Tanaka</div><div class="dim mono" style="font-size: 11px">aiko.tanaka</div></div>
+      </div>
+    </div>
+  </aside>
+  <header class="topbar">
+    <nav class="crumbs" aria-label="Breadcrumbs"><a href="merge-requests.html">Merge requests</a><span class="sep">/</span><span class="cur">MergeBox states</span></nav>
+    <button class="search-trigger" type="button"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><span class="grow">Search repositories, files, merge requests, people</span><span class="kbd">Ctrl K</span></button>
+    <button class="top-btn" type="button" aria-label="Notifications, 4 unread"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg><span class="pip"></span></button>
+    <button class="top-btn" type="button" aria-label="Account menu"><span class="avatar" style="background: #d9488a">AT</span></button>
+  </header>
+  <main class="main">
+    <div class="page">
+<div class="page-head">
+        <div class="grow">
+          <h1>MergeBox states</h1>
+          <div class="sub">The box at the bottom of a merge request's Conversation tab. Checks run in this order: conflicts, approvals, locks, merge right.</div>
+        </div>
+      </div>
+      <div class="grid g-2" style="gap: 16px">
+        <div><div class="state-label">Ready<span class="dim" style="text-transform: none; letter-spacing: 0">!12 in ashfall-art</span></div><div class="mbox"><div class="mbox-head"><span class="mbox-ico ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg></span><div class="grow"><div class="mbox-title">Ready to merge</div><div class="mbox-detail">All checks passed. The merge creates 1 revision on <span class=ref>main</span>.</div></div></div><div class=mbox-checks><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">No conflicts with <span class=ref>main</span></span></div><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">Approvals: 1 of 1 required</span><span class="rs approved"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg></span>diego.r</span></div><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">No files locked by others</span></div></div><div class="mbox-foot"><div class="seg"><button type="button" class="on">Merge revision</button><button type="button">Squash into 1 revision</button></div><label><input type="checkbox" checked> Delete <span class="mono">fix/warden-rig</span> after merge</label><span class="grow"></span><button class="btn primary" type="button">Merge into main</button></div></div></div><div><div class="state-label">Missing approvals<span class="dim" style="text-transform: none; letter-spacing: 0">!42</span></div><div class="mbox"><div class="mbox-head"><span class="mbox-ico warn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 17h.01"></path><path d="M10.3 3.9L2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path></svg></span><div class="grow"><div class="mbox-title">Waiting for approvals</div><div class="mbox-detail">Main needs 2 approvals. 1 more is required.</div></div></div><div class=mbox-checks><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">No conflicts with <span class=ref>main</span></span></div><div class="mbox-check warn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8v5M12 17h.01"></path><path d="M10.3 3.9L2 18a2 2 0 0 0 1.7 3h16.6a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path></svg><span class="grow">Approvals: 1 of 2 required</span><span class="rs approved"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg></span>jonas.l</span> <span class="rs pending"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle></svg></span>diego.r</span></div><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">No files locked by others</span></div></div><div class="mbox-foot"><span class="dim small">Merge is available after 1 more approval.</span><span class="grow"></span><button class="btn primary" type="button" disabled>Merge into main</button></div></div></div><div><div class="state-label">Changes requested<span class="dim" style="text-transform: none; letter-spacing: 0">!41</span></div><div class="mbox"><div class="mbox-head"><span class="mbox-ico err"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M15 9l-6 6M9 9l6 6"></path></svg></span><div class="grow"><div class="mbox-title">Changes requested</div><div class="mbox-detail">jonas.l asked for changes: “Alert state never times out back to patrol.”</div></div></div><div class=mbox-checks><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">No conflicts with <span class=ref>main</span></span></div><div class="mbox-check err"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M15 9l-6 6M9 9l6 6"></path></svg><span class="grow">Approvals: 0 of 2 required</span><span class="rs changes"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v6M12 17h.01"></path></svg></span>jonas.l</span> <span class="rs pending"><span class="dot"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle></svg></span>aiko</span></div></div><div class="mbox-foot"><span class="dim small">Push a fix and ask jonas.l to review again.</span><span class="grow"></span><button class="btn primary" type="button" disabled>Merge into main</button></div></div></div><div><div class="state-label">Conflicts<span class="dim" style="text-transform: none; letter-spacing: 0">!40</span></div><div class="mbox"><div class="mbox-head"><span class="mbox-ico err"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M15 9l-6 6M9 9l6 6"></path></svg></span><div class="grow"><div class="mbox-title">Conflicts with main</div><div class="mbox-detail">2 files changed on both sides. Resolve them locally with <span class=mono>lore merge main</span> and push.</div></div></div><div class=mbox-checks><div class="mbox-check err"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M15 9l-6 6M9 9l6 6"></path></svg><span class="grow">2 files have conflicts</span></div><ul class="mbox-files"><li><span class="mono">Source/Ashfall/AI/WardenController.cpp</span><span class="dim">text · 2 hunks</span></li><li><span class="mono">Content/AI/BT_Warden.uasset</span><span class="dim">binary · both sides changed</span></li></ul><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">Approvals: 2 of 2 required</span></div></div><div class="mbox-foot"><span class="dim small">Binary conflicts cannot be resolved in the browser.</span><span class="grow"></span><button class="btn primary" type="button" disabled>Merge into main</button></div></div></div><div><div class="state-label">Locked by others<span class="dim" style="text-transform: none; letter-spacing: 0">!42 variant</span></div><div class="mbox"><div class="mbox-head"><span class="mbox-ico warn"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg></span><div class="grow"><div class="mbox-title">Files are locked</div><div class="mbox-detail">Lore will not merge changes to files someone else has locked.</div></div></div><div class=mbox-checks><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">No conflicts with <span class=ref>main</span></span></div><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">Approvals: 2 of 2 required</span></div><div class="mbox-check err"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M15 9l-6 6M9 9l6 6"></path></svg><span class="grow">1 file locked by others, 1 by you</span></div><ul class="mbox-files"><li><span class="mono">Content/Maps/Frostreach/Frostreach_P.umap</span><span class="user-cell"><span class="avatar" style="background: #c2630f; width: 20px; height: 20px; font-size: 9px">DR</span>diego.r</span><span class="dim">6 h</span><button class="btn sm" type="button">Ask to release</button></li><li><span class="mono">Content/Audio/Frostreach_Audio.umap</span><span class="user-cell"><span class="avatar" style="background: #d9488a; width: 20px; height: 20px; font-size: 9px">AT</span>aiko</span><span class="dim">16 d</span><span class="badge warn">stale</span><button class="btn sm" type="button" disabled>Your lock</button></li></ul></div><div class="mbox-foot"><span class="dim small">Merge is available when diego.r releases the lock. Your own lock is released by the merge.</span><span class="grow"></span><button class="btn primary" type="button" disabled>Merge into main</button></div></div></div><div><div class="state-label">Protected branch, no right<span class="dim" style="text-transform: none; letter-spacing: 0">release/0.9</span></div><div class="mbox"><div class="mbox-head"><span class="mbox-ico muted"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg></span><div class="grow"><div class="mbox-title">You cannot merge into release/0.9</div><div class="mbox-detail"><span class=ref>release/0.9</span> is protected. Only the release-leads group can merge into it.</div></div></div><div class=mbox-checks><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">No conflicts</span></div><div class="mbox-check ok"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l5 5 9-10"></path></svg><span class="grow">Approvals: 2 of 2 required</span></div><div class="mbox-check muted"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle></svg><span class="grow">Merge right: you are not in release-leads</span></div></div><div class="mbox-foot"><span class="dim small">Ask jonas.l or marta.k to merge.</span><span class="grow"></span><button class="btn primary" type="button" disabled>Merge into release/0.9</button></div></div></div><div><div class="state-label">Merged<span class="dim" style="text-transform: none; letter-spacing: 0">!38</span></div><div class="mbox"><div class="mbox-head"><span class="mbox-ico merged"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="12" r="2"></circle><path d="M6 8v8"></path><path d="M6 8c0 4 4 4 10 4"></path></svg></span><div class="grow"><div class="mbox-title">Merged by marta.k yesterday 16:04</div><div class="mbox-detail">Merge revision <a class="mono" href="revision.html">rev:9b31e07</a> on <span class="ref">main</span>. Source branch <span class="ref">feature/hub-stalls</span> was deleted.</div></div></div><div class="mbox-foot"><span class="grow"></span><a class="btn sm" href="revision.html">View merge revision</a><button class="btn sm" type="button">Restore branch</button></div></div></div><div><div class="state-label">Closed<span class="dim" style="text-transform: none; letter-spacing: 0">!35</span></div><div class="mbox"><div class="mbox-head"><span class="mbox-ico muted"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8 12h8"></path></svg></span><div class="grow"><div class="mbox-title">Closed without merging</div><div class="mbox-detail">Closed by diego.r 9 d ago. The source branch <span class=ref>spike/foliage-old</span> still exists.</div></div></div><div class="mbox-foot"><span class="grow"></span><button class="btn sm" type="button">Reopen merge request</button></div></div></div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>

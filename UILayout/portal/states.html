@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lore Portal: Panel states</title>
+  <link rel="stylesheet" href="../design-system/tokens.css">
+  <link rel="stylesheet" href="../design-system/components/bundle.css">
+  <style>
+    html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
+    .app { height: auto; min-height: 100vh; background: var(--bg); color: var(--text); }
+    .nav-item.sub { padding-left: 32px; }
+    .mr-id { font-family: var(--font-mono); color: var(--text-3); font-size: 12px; }
+    .ref { font-family: var(--font-mono); font-size: 12px; color: var(--text-2); }
+    .small { font-size: 12px; }
+
+    .refpicker { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+    .refpicker .k { font-family: var(--font-sans); color: var(--text-3); font-size: 11px; }
+    .dfile { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
+    .dfile-head { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: var(--panel-2); border-bottom: 1px solid var(--border); font-size: 12.5px; }
+    .dfile-head .path { font-family: var(--font-mono); font-weight: 500; }
+    .dv { width: 100%; border-collapse: collapse; font-family: var(--font-mono); font-size: 12px; line-height: 19px; }
+    .dv td { padding: 0; vertical-align: top; }
+    .dv .o, .dv .n { width: 42px; text-align: right; padding-right: 8px; color: var(--text-3); user-select: none; }
+    .dv .s { width: 16px; text-align: center; color: var(--text-3); }
+    .dv .c { white-space: pre; color: var(--text); padding-right: 12px; }
+    .dv tr.add td { background: var(--ok-soft); }
+    .dv tr.add .s, .dv tr.add .c { color: var(--text); }
+    .dv tr.add .n { color: var(--ok); }
+    .dv tr.del td { background: var(--err-soft); }
+    .dv tr.del .o { color: var(--err); }
+    .dv tr.hunk td { background: var(--info-soft); color: var(--text-3); padding: 2px 8px; }
+    .dv tr.thr > td { background: var(--bg-sunken); padding: 8px 12px 8px 108px; font-family: var(--font-sans); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+    .thread { border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel); max-width: 760px; }
+    .cmt { display: grid; grid-template-columns: 24px 1fr; gap: 0 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px; line-height: 1.45; }
+    .cmt .h { font-size: 12px; color: var(--text-3); margin-bottom: 2px; }
+    .cmt .h b { color: var(--text); font-weight: 600; }
+    .thread-foot { padding: 8px 12px; display: flex; gap: 8px; align-items: center; }
+    .thread.resolved { opacity: .75; }
+    .adiff { display: grid; grid-template-columns: 1fr 1fr; }
+    .adiff > div { padding: 12px 14px; }
+    .adiff > div + div { border-left: 1px solid var(--border); }
+    .adiff .thumb { height: 110px; border-radius: 6px; margin-bottom: 10px; background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 45%, #d9b98a 46%, #f2e3c8 70%, #a88a64 100%); }
+    .adiff .thumb.after { background: linear-gradient(160deg, #3a2a1c 0%, #6b4a2c 40%, #d9b98a 41%, #f2e3c8 62%, #c46b2c 63%, #a88a64 100%); }
+    .adiff .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-3); margin-bottom: 6px; }
+    .adiff dl.props { font-size: 12px; }
+    .chg { font-variant-numeric: tabular-nums; }
+    .chg .a { color: var(--ok); } .chg .d { color: var(--err); }
+    .rs { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
+    .rs .dot { width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; }
+    .rs .dot svg { width: 10px; height: 10px; }
+    .rs.approved .dot { background: var(--ok-soft); color: var(--ok); }
+    .rs.changes .dot { background: var(--err-soft); color: var(--err); }
+    .rs.commented .dot { background: var(--info-soft); color: var(--info); }
+    .rs.pending .dot { background: var(--muted-soft); color: var(--text-3); }
+    .fl-row { display: grid; grid-template-columns: 18px 1fr auto auto; gap: 8px; align-items: center; padding: 5px 12px; font-size: 12.5px; }
+    .fl-row .p { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fl-row.on { background: var(--selected); }
+    .st { font-family: var(--font-mono); font-size: 11px; font-weight: 600; width: 16px; text-align: center; }
+    .st.M { color: var(--warn); } .st.A { color: var(--ok); } .st.D { color: var(--err); } .st.R { color: var(--info); }
+
+    .stale-row td { background: color-mix(in srgb, var(--warn) 6%, transparent); }
+    .n-row { display: grid; grid-template-columns: 10px 26px 1fr auto; gap: 10px; align-items: start; padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .n-row:last-child { border-bottom: 0; }
+    .n-row .u { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-top: 8px; }
+    .n-row.read .u { background: transparent; }
+    .n-row.read { color: var(--text-2); }
+    .n-row .t { line-height: 1.45; }
+    .n-row .meta { font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
+    .n-row .acts { display: flex; gap: 6px; align-items: center; }
+    .n-ico { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--muted-soft); color: var(--text-3); }
+    .n-ico svg.i { width: 13px; height: 13px; }
+    .n-ico.warn { background: var(--warn-soft); color: var(--warn); }
+    .n-ico.ok { background: var(--ok-soft); color: var(--ok); }
+    .n-ico.info { background: var(--info-soft); color: var(--info); }
+    .n-ico.accent { background: var(--accent-soft); color: var(--accent-fg); }
+    .n-quote { margin-top: 6px; padding: 6px 10px; border-left: 2px solid var(--border); color: var(--text-2); font-size: 12.5px; }
+    .prof { display: flex; gap: 16px; align-items: center; }
+    .ps-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .ps-cell .state-label { margin-bottom: 6px; }
+    .ps-cell .panel { height: 230px; display: flex; flex-direction: column; }
+    .ps-cell .panel-body { flex: 1; }
+    .ps-dark { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; margin-top: 16px; }
+    .mini-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+    .mini-row:last-child { border-bottom: 0; }
+    .sk { display: block; height: 10px; border-radius: 4px; }
+  </style>
+  <script src="assets/boot.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">L</div>
+      <div><div class="brand-name">Lore Portal</div><div class="brand-sub">emberline-prod</div></div>
+    </div>
+    <nav class="nav" aria-label="Main">
+      <div class="nav-section">
+        <a class="nav-item active" href="index.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"></path></svg>Home</a>
+        <a class="nav-item" href="repositories.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h12a2 2 0 0 1 2 2v16H7a2 2 0 0 1-2-2z"></path><path d="M5 19a2 2 0 0 1 2-2h12"></path></svg>Repositories</a>
+        <a class="nav-item sub" href="repo-files.html"><span class="mono">ashfall-game</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">ashfall-art</span></a>
+        <a class="nav-item sub" href="#"><span class="mono">tools-pipeline</span></a>
+      </div>
+      <div class="nav-section">
+        <div class="nav-title">Merge requests</div>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><circle cx="18" cy="18" r="2"></circle><path d="M6 8v8"></path><path d="M18 16V9a3 3 0 0 0-3-3h-4"></path></svg>Review requested<span class="count alert">2</span></a>
+        <a class="nav-item" href="merge-requests.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"></circle><path d="M4 21a8 8 0 0 1 16 0"></path></svg>Mine<span class="count">2</span></a>
+      </div>
+      <div class="nav-section">
+        <a class="nav-item" href="my-locks.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg>My locks<span class="count warn">3</span></a>
+        <a class="nav-item" href="notifications.html"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg>Notifications<span class="count alert">4</span></a>
+      </div>
+    </nav>
+    <div class="sidebar-foot">
+      <div class="me">
+        <span class="avatar" style="background: #d9488a">AT</span>
+        <div class="grow"><div>Aiko Tanaka</div><div class="dim mono" style="font-size: 11px">aiko.tanaka</div></div>
+      </div>
+    </div>
+  </aside>
+  <header class="topbar">
+    <nav class="crumbs" aria-label="Breadcrumbs"><span class="cur">Panel states</span></nav>
+    <button class="search-trigger" type="button"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg><span class="grow">Search repositories, files, merge requests, people</span><span class="kbd">Ctrl K</span></button>
+    <button class="top-btn" type="button" aria-label="Notifications, 4 unread"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 8 3 8H3s3-1 3-8"></path><path d="M10 20a2 2 0 0 0 4 0"></path></svg><span class="pip"></span></button>
+    <button class="top-btn" type="button" aria-label="Account menu"><span class="avatar" style="background: #d9488a">AT</span></button>
+  </header>
+  <main class="main">
+    <div class="page">
+<div class="page-head">
+        <div class="grow">
+          <h1>Panel states</h1>
+          <div class="sub">Every panel in Lore Portal renders one of these seven states. <span class="mono">denied</span> means you have no access to the repository.</div>
+        </div>
+        <div class="row" style="gap: 8px"><span class="dim small">Topbar state switcher</span>
+          <div class="seg"><button type="button" class="on">ok</button><button type="button">loading</button><button type="button">empty</button><button type="button">stale</button><button type="button">error</button><button type="button">readonly</button><button type="button">denied</button></div>
+          <div class="seg"><button type="button" class="on">Light</button><button type="button">Dark</button></div>
+        </div>
+      </div>
+      <div class="ps-grid">
+        <div class="ps-cell"><div class="state-label">ok</div><div class="panel"><div class="panel-head"><div class="panel-title">Open merge requests</div><div class="panel-meta mono">ashfall-game</div></div><div class="panel-body flush"><div class="mini-row"><span><span class="mr-id">!42</span> Frostreach lighting pass v3</span><span class="dim">2 h ago</span></div><div class="mini-row"><span><span class="mr-id">!41</span> Warden behaviour tree</span><span class="dim">3 h ago</span></div><div class="mini-row"><span><span class="mr-id">!40</span> Inventory grid: drag and stack</span><span class="dim">yesterday</span></div><div class="mini-row"><span><span class="mr-id">!39</span> Nanite foliage spike</span><span class="dim">2 d ago</span></div></div><div class="panel-foot"><span class="dim small">4 open</span></div></div></div><div class="ps-cell"><div class="state-label">loading</div><div class="panel"><div class="panel-head"><div class="panel-title">Open merge requests</div><div class="panel-meta mono">ashfall-game</div></div><div class="panel-body flush"><div class="mini-row"><span class="sk" style="width: 70%"></span><span class="sk" style="width: 48px"></span></div><div class="mini-row"><span class="sk" style="width: 55%"></span><span class="sk" style="width: 48px"></span></div><div class="mini-row"><span class="sk" style="width: 80%"></span><span class="sk" style="width: 48px"></span></div><div class="mini-row"><span class="sk" style="width: 45%"></span><span class="sk" style="width: 48px"></span></div></div></div></div><div class="ps-cell"><div class="state-label">empty</div><div class="panel"><div class="panel-head"><div class="panel-title">Open merge requests</div><div class="panel-meta mono">ashfall-game</div></div><div class="panel-body flush"><div class="state compact " style="height: 100%; box-sizing: border-box"><div class="state-icon"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13l3-8h12l3 8v6H3z"></path><path d="M3 13h5l1 2h6l1-2h5"></path></svg></div><div class="state-title">No open merge requests</div><div class="state-detail">Nothing is waiting in <span class=mono>ashfall-game</span>.</div><div style="margin-top: 10px"><a class="btn sm" href="new-merge-request.html">New merge request</a></div></div></div></div></div><div class="ps-cell"><div class="state-label">stale</div><div class="panel"><div class="panel-head"><div class="panel-title">Open merge requests</div><div class="panel-meta mono">ashfall-game</div></div><div class="panel-body flush"><div class="banner warn" style="margin: 0; border-radius: 0"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path></svg><div class="grow small">Showing data from 6 min ago. The Lore server is not answering.</div><button class="btn sm" type="button">Retry</button></div><div class="mini-row"><span><span class="mr-id">!42</span> Frostreach lighting pass v3</span><span class="dim">2 h ago</span></div><div class="mini-row"><span><span class="mr-id">!41</span> Warden behaviour tree</span><span class="dim">3 h ago</span></div></div></div></div><div class="ps-cell"><div class="state-label">error</div><div class="panel"><div class="panel-head"><div class="panel-title">Open merge requests</div><div class="panel-meta mono">ashfall-game</div></div><div class="panel-body flush"><div class="state compact err" style="height: 100%; box-sizing: border-box"><div class="state-icon"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M9 9l6 6M15 9l-6 6"></path></svg></div><div class="state-title">Could not load merge requests</div><div class="state-detail">The request failed with <span class="mono">502</span> from <span class="mono">lore-api</span>. Request id <span class="mono">req:9f2c41</span>.</div><div style="margin-top: 10px"><button class="btn sm" type="button">Retry</button></div></div></div></div></div><div class="ps-cell"><div class="state-label">readonly</div><div class="panel"><div class="panel-head"><div class="panel-title">Open merge requests</div><div class="panel-meta mono">ashfall-game</div></div><div class="panel-body flush"><div class="row" style="padding: 8px 12px; border-bottom: 1px solid var(--border)"><span class="ro-chip">Read only</span><span class="dim small grow">You have read access</span></div><div class="mini-row"><span><span class="mr-id">!42</span> Frostreach lighting pass v3</span><span class="dim">2 h ago</span></div><div class="mini-row"><span><span class="mr-id">!41</span> Warden behaviour tree</span><span class="dim">3 h ago</span></div></div><div class="panel-foot"><button class="btn sm primary" type="button" disabled>New merge request</button><span class="dim small">Needs write access</span></div></div></div><div class="ps-cell"><div class="state-label">denied</div><div class="panel"><div class="panel-head"><div class="panel-title">Open merge requests</div><div class="panel-meta mono">ashfall-game</div></div><div class="panel-body flush"><div class="state compact denied" style="height: 100%; box-sizing: border-box"><div class="state-icon"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg></div><div class="state-title">You have no access to this repository</div><div class="state-detail">Your account is not a member of <span class="mono">ashfall-game</span>. A maintainer can add you in Swarog Admin.</div><div style="margin-top: 10px"><span class="dim small">Maintainers: jonas.l, marta.k</span></div></div></div></div></div>
+        <div class="ps-cell"><div class="state-label">Rules</div><div class="panel"><div class="panel-body small" style="line-height: 1.5">Stale keeps the last data and says how old it is. Error names the status code and request id. Read only shows the data and disables write actions with the reason. Denied never shows the repository's contents or its counts.</div></div></div>
+      </div>
+      <div class="ps-dark" data-theme="dark">
+        <div class="state-label">Dark theme</div>
+        <div class="ps-grid" style="grid-template-columns: repeat(3, 1fr)"><div class="ps-cell"><div class="state-label">ok</div><div class="panel"><div class="panel-head"><div class="panel-title">Open merge requests</div><div class="panel-meta mono">ashfall-game</div></div><div class="panel-body flush"><div class="mini-row"><span><span class="mr-id">!42</span> Frostreach lighting pass v3</span><span class="dim">2 h ago</span></div><div class="mini-row"><span><span class="mr-id">!41</span> Warden behaviour tree</span><span class="dim">3 h ago</span></div><div class="mini-row"><span><span class="mr-id">!40</span> Inventory grid: drag and stack</span><span class="dim">yesterday</span></div><div class="mini-row"><span><span class="mr-id">!39</span> Nanite foliage spike</span><span class="dim">2 d ago</span></div></div><div class="panel-foot"><span class="dim small">4 open</span></div></div></div><div class="ps-cell"><div class="state-label">error</div><div class="panel"><div class="panel-head"><div class="panel-title">Open merge requests</div><div class="panel-meta mono">ashfall-game</div></div><div class="panel-body flush"><div class="state compact err" style="height: 100%; box-sizing: border-box"><div class="state-icon"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M9 9l6 6M15 9l-6 6"></path></svg></div><div class="state-title">Could not load merge requests</div><div class="state-detail">The request failed with <span class="mono">502</span> from <span class="mono">lore-api</span>. Request id <span class="mono">req:9f2c41</span>.</div><div style="margin-top: 10px"><button class="btn sm" type="button">Retry</button></div></div></div></div></div><div class="ps-cell"><div class="state-label">denied</div><div class="panel"><div class="panel-head"><div class="panel-title">Open merge requests</div><div class="panel-meta mono">ashfall-game</div></div><div class="panel-body flush"><div class="state compact denied" style="height: 100%; box-sizing: border-box"><div class="state-icon"><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="10" rx="2"></rect><path d="M8 11V7a4 4 0 0 1 8 0v4"></path></svg></div><div class="state-title">You have no access to this repository</div><div class="state-detail">Your account is not a member of <span class="mono">ashfall-game</span>. A maintainer can add you in Swarog Admin.</div><div style="margin-top: 10px"><span class="dim small">Maintainers: jonas.l, marta.k</span></div></div></div></div></div></div>
+      </div>
+    </div>
+  </main>
+</div>
+</body>
+</html>
