@@ -1,6 +1,6 @@
 # Admin second pass
 
-Last updated: 2026-11-23
+Last updated: 2026-11-24
 
 The admin redesign ships mockup elements the backend cannot back as deterministic fakes
 (`// FAKE: <why>`, plan R1) and not-yet-possible actions as `implemented: false`, rendered
@@ -79,6 +79,24 @@ _None._
   core/admin/src/fakes.rs:195 (`consumer`, first dotted segment of the id), :200
   (`handler`, hash-picked): neither is stored. Replaced by: the subscription registry
   recording its module and handler.
+
+### Fake data of the config port
+
+modules/config/src/admin.rs landed in b0e8e377; the line numbers are its committed ones.
+
+- [ ] **Config revision writers**
+  ADMIN2-65. Mockup: the "by <user>" actor of each Revisions entry. Fake:
+  modules/config/src/admin.rs:183 (`fake_by`): config.settings stores no writer.
+  Replaced by: the writer recorded with each revision.
+- [ ] **Config prior revisions**
+  ADMIN2-66. Mockup: the Revisions entries before the current one (rev N-1, N-2 and
+  their old values). Fake: modules/config/src/admin.rs:191 (`fake_prior`), :351
+  (`revisions_body`): no history is kept, only each key's current value. Replaced by:
+  a stored per-key revision history.
+- [ ] **Config Edit heading mono key**
+  ADMIN2-67. Mockup: the Edit panel title's mono key span (pages-platform.js:96). The
+  portal draws "Edit: ns.key" with a separator and no mono span (step 23 checklist H5).
+  Closed by: a heading carrier that can mark a code span, drawn by the panel template.
 
 ### Fake data and actions of the mail port
 
@@ -420,8 +438,16 @@ gaps go to the next iteration.
   "restore" link, written by the config port (Step 23) in its page's accept file, since no
   accept file maps the config page yet. Mockup: pages-platform.js:104-105. A `TimelineEntry`
   carries no action (core/controlplane/src/lib.rs, `TimelineEntry`), so the portal draws no
-  link (admin-control-plane-redesign step 13c.1b, K10). Closed by: a per-entry action on
+  link (admin-control-plane-redesign step 13c.1b, K10). It also covers the entries'
+  `span.mono` value meta (pages-platform.js:103-105): `TimelineEntry.detail` is plain
+  text (step 23 checklist P2-6). Closed by: a per-entry action and a code-marked detail on
   `TimelineEntry` drawn by the timeline macro; then delete the accept line.
+- [ ] **Config pending-change preview**
+  ADMIN2-68. Accept entry: the `contract gap` line for the Edit panel's muted "Pending
+  change vs rev N" preamble and its `div.code` diff block, written by the config port
+  (Step 23) in its page's accept file. Mockup: pages-platform.js:101-102. No carrier
+  draws an unsaved change against the stored revision (step 23 checklist D6). Closed by:
+  a diff-preview carrier on the form or timeline; then delete the accept line.
 
 ## Mail nav counter with only parked rows
 

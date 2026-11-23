@@ -1,6 +1,6 @@
 # Config
 
-Last updated: 2026-11-23
+Last updated: 2026-11-24
 
 ## In progress
 
@@ -20,12 +20,6 @@ _None._
   it; the survey's "clean some namespaces only" is narrower than it was
   (docs/research/2026-07-14-2058-timing-sensitive-tests-survey.md:105,
   2026-07-14). Low severity.
-- [ ] **AdminSubmit for the config admin page**
-  CONFIG-04. The remote admin fan-out returns the read-only `admin_content_ro`
-  because a remote form cannot marshal its `submit` closure
-  (`modules/config/src/lib.rs:522-524`); no `AdminSubmit` exists in
-  `modules/config` outside a test name, so the page is read-only in the split
-  (docs/research/2026-10-22-1830-admin-redesign-data-sources.md:152, 2026-10-22).
 
 ### Known limits (admin-control-plane-redesign step 23)
 
