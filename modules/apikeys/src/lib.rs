@@ -26,6 +26,7 @@
 //! local harness has a working client + trusted-server key. The upserts are self-healing
 //! (`ON CONFLICT (name) DO UPDATE`), so a stray edit on a shared dev DB can't poison it.
 
+mod admin;
 pub mod conformance;
 mod store;
 
@@ -158,7 +159,7 @@ impl apikeysapi::Keys for Service {
 // and NEVER to NotFound (finding #2).
 #[expect(
     dead_code,
-    reason = "Step 21a1/21a2: the API keys page reads and writes through them \
+    reason = "Step 21a2: the API keys page writes through them \
               (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2346)"
 )]
 impl Service {
@@ -297,6 +298,9 @@ impl Module for ApiKeys {
                 apikeysrpc::keys_rpc::register_server(server, svc.clone());
             }),
         );
+        // Contributed unconditionally: whichever process hosts apikeys serves its admin page.
+        let provider: Arc<dyn controlplane::Provider> = Arc::new(admin::ApiKeysAdmin::new(self.svc()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
         Ok(())
     }
 }

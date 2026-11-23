@@ -194,6 +194,7 @@ dependencies = [
  "apikeysrpc",
  "async-trait",
  "base64 0.22.1",
+ "controlplane",
  "edge",
  "lifecycle",
  "opsapi",

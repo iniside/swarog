@@ -32,6 +32,8 @@ serde_json = { workspace = true }
 rand = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
+# The API keys admin page: the control-plane provider contract.
+controlplane = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }

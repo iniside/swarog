@@ -213,7 +213,6 @@ impl WriteError {
 }
 
 /// One role with the number of keys referencing it, revoked keys included.
-#[cfg_attr(not(test), expect(dead_code, reason = "admin.rs reads them in the next part of step 21a1"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RoleRow {
     pub name: String,
@@ -223,7 +222,6 @@ pub(crate) struct RoleRow {
 }
 
 /// One key as the admin table renders it: never the secret or its hash.
-#[cfg_attr(not(test), expect(dead_code, reason = "admin.rs reads them in the next part of step 21a1"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct KeyRow {
     pub name: String,
@@ -237,7 +235,6 @@ pub(crate) struct KeyRow {
     pub created_us: i64,
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "admin.rs reads them in the next part of step 21a1"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum KeyStatus {
     Active,
@@ -272,7 +269,6 @@ impl Store {
     // --- Roles --------------------------------------------------------------
 
     /// Every role, name-ordered, with its key count (revoked keys included).
-    #[cfg_attr(not(test), expect(dead_code, reason = "admin.rs reads them in the next part of step 21a1"))]
     pub async fn roles_with_counts(&self) -> Result<Vec<RoleRow>, sqlx::Error> {
         let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
             "SELECT r.name, r.policy, r.revision, count(k.name) \
@@ -368,7 +364,6 @@ impl Store {
     /// last row's `(created_us, name)`. The needle matches name or prefix as a
     /// case-insensitive substring; `strpos` takes it literally, so `%` and `_` need no
     /// escaping.
-    #[cfg_attr(not(test), expect(dead_code, reason = "admin.rs reads them in the next part of step 21a1"))]
     pub async fn keys_page(
         &self,
         needle: Option<&str>,
@@ -416,7 +411,6 @@ impl Store {
 
     /// `(total, active)` over every key. Exact `count(*)`: there is no index on
     /// `created_at` or `role`.
-    #[cfg_attr(not(test), expect(dead_code, reason = "admin.rs reads them in the next part of step 21a1"))]
     pub async fn key_counts(&self) -> Result<(i64, i64), sqlx::Error> {
         sqlx::query_as(
             "SELECT count(*), count(*) FILTER (WHERE revoked_at IS NULL) FROM apikeys.keys",
