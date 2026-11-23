@@ -131,7 +131,7 @@ fn manifest_declares_the_page_its_two_panels_kinds_search_and_row_actions() {
 
 #[test]
 fn a_key_row_draws_name_prefix_role_created_last_used_and_status() {
-    let body = keys_body(vec![key(1, false), key(2, true)], vec!["ops".into()], Some(2), 1);
+    let body = keys_body(vec![key(1, false), key(4, true)], vec!["ops".into()], Some(2), 1);
     let t = table(&body);
     let labels: Vec<_> = t.columns.iter().map(|c| c.label.as_str()).collect();
     assert_eq!(labels, vec!["Name", "Key", "Role", "Created", "Last used", "Status"]);
@@ -146,7 +146,9 @@ fn a_key_row_draws_name_prefix_role_created_last_used_and_status() {
     assert_eq!((c[3].more[0].kind, c[3].more[0].value.as_str()), (CellKind::User, fake_creator("key-01")));
     assert_eq!(c[4], fake_last_used("key-01", false));
     assert_eq!((c[5].kind, c[5].value.as_str(), c[5].tone), (CellKind::Badge, "active", None));
-    assert_eq!(t.rows[1].cells[4], fake_last_used("key-02", true));
+    assert_eq!(fake_last_used("key-04", false).value, "now", "key-04's hash picks the now badge");
+    let last = &t.rows[1].cells[4];
+    assert_eq!((last.kind, last.value.as_str(), last.tone), (CellKind::Dim, "1 d ago", None));
     assert_eq!(t.rows[1].cells[5].value, "revoked");
     assert_eq!(body.meta.as_deref(), Some("1 active"));
     assert_eq!(t.search_placeholder.as_deref(), Some("Name or key prefix"));
