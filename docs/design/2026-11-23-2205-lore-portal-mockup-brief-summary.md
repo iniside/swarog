@@ -47,7 +47,7 @@ One deployment means one studio and one Lore server. There is no tenant or organ
    - Binary assets: `AssetCard` with a preview where one exists, size, type, lock state (held by whom and since when, and Lock / Release for me) and this file's history.
 7. **Repository: History.** Revisions as a timeline grouped by day: id in mono, message, author, size of the change (files and bytes), and filters by branch, path and author.
 8. **Revision detail.** Message, parents and changed files, with a `DiffView` for text and before/after metadata (size, and a preview where one exists) for binaries. Readers can comment on lines and on whole files.
-9. **Repository: Merge requests and Locks.** The repository tab bar (Files, History, Branches, Merge requests, Locks) stays inside the repository: Merge requests lists all of this repository's requests (same tabs, filters and rows as screen 11); Locks lists every lock in the repository, held by anyone, with "Release lock" on mine and "Ask to release" on others'. The sidebar entries stay personal.
+9. **Repository: Merge requests and Locks.** The repository tab bar (Files, History, Branches, Merge requests, Locks) stays inside the repository: Merge requests lists all of this repository's requests (same tabs, filters and rows as screen 12); Locks lists every lock in the repository, held by anyone, with "Release lock" on mine and "Ask to release" on others'. The sidebar entries stay personal.
 10. **Repository: Branches.** Name, head, updated, ahead/behind against the default branch, a protected badge, open merge request, and "New merge request" from a branch row.
 11. **Compare.** Base … head `RefPicker`s, the summary, revisions and the diff. Ends in "Create merge request".
 12. **Merge requests list.**
@@ -69,9 +69,10 @@ One deployment means one studio and one Lore server. There is no tenant or organ
       - warning that files in this request are locked by someone else, naming the files and owners, with "Ask to release";
       - target branch protected and you lack the right;
       - merged, with the revision id and who pushed it;
-      - closed.14. **My locks.** My held locks across repositories, marking stale ones, with bulk release. A second tab shows locks others hold on files I touch in open merge requests.
-15. **Notifications.** Review requested, mentioned, comment on my merge request, merged, lock released, and a "release request" for a lock I hold. Mark as read.
-16. **Profile and devices.** Name, handle, avatar initials, signed-in devices and CLI sessions with Revoke, and personal access tokens for CI with Create (secret shown once) and Revoke.
+      - closed.
+15. **My locks.** My held locks across repositories, marking stale ones, with bulk release. A second tab shows locks others hold on files I touch in open merge requests.
+16. **Notifications.** Review requested, mentioned, comment on my merge request, merged, lock released, and a "release request" for a lock I hold. Mark as read.
+17. **Profile and devices.** Name, handle, avatar initials, signed-in devices and CLI sessions with Revoke, and personal access tokens for CI with Create (secret shown once) and Revoke.
 
 ## Out of scope
 
