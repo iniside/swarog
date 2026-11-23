@@ -4,6 +4,7 @@ nav economy | wallet | economy | 10
 nav platform | apikeys | apikeys | 10
 nav platform | mail | outbox | 20
 nav platform | scheduler | scheduler | 30
+nav platform | config | config | 40
 nav platform | core.events | events | 60
 dashboard_attention | portal | attention.services | 10
 dashboard_attention | core.events | attention.paused | 20

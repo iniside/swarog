@@ -128,7 +128,7 @@ async fn register_provides_reader_capability() {
 /// `config.revision` row every write locks. Each test reads only its own namespace's rows
 /// and events and asserts only strict revision increase, so the guard is not what keeps
 /// the checks race-free.
-static CONFIG_DB_TEST_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static CONFIG_DB_TEST_GUARD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 async fn ensure_asyncevents_schema(pool: &PgPool) {
     let dsn = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string());
@@ -142,7 +142,7 @@ async fn ensure_asyncevents_schema(pool: &PgPool) {
 /// Migrates BOTH the asyncevents plane (so the config trigger's
 /// `asyncevents.append_event` call resolves on every `config.settings` write) and the
 /// config schema, on top of the shared pool.
-async fn test_pool() -> Option<PgPool> {
+pub(crate) async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
     ensure_asyncevents_schema(&pool).await;
     let ctx = Context::with_db(pool.clone());
@@ -154,7 +154,7 @@ async fn test_pool() -> Option<PgPool> {
 }
 
 /// A fresh, unique namespace that is a VALID identifier (uuid hyphens stripped).
-async fn unique_ns(pool: &PgPool) -> String {
+pub(crate) async fn unique_ns(pool: &PgPool) -> String {
     let (ns,): (String,) =
         sqlx::query_as("SELECT 'test_' || replace(gen_random_uuid()::text, '-', '')")
             .fetch_one(pool)
@@ -163,7 +163,7 @@ async fn unique_ns(pool: &PgPool) -> String {
     ns
 }
 
-async fn cleanup(pool: &PgPool, ns: &str) {
+pub(crate) async fn cleanup(pool: &PgPool, ns: &str) {
     let _ = sqlx::query("DELETE FROM config.settings WHERE namespace = $1")
         .bind(ns)
         .execute(pool)

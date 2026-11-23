@@ -103,8 +103,8 @@ fn run_diff_refuses_a_crawl_without_its_clean_marker() {
 fn run_diff_refuses_a_pending_page() {
     let repo = FakeRepo::new("diff-pending", &mock_html(&body(true)));
     let dir = crawl_dir("diff-pending-crawl", &portal_html(&body(true)), true);
-    let e = format!("{:#}", run_diff(repo.path(), &LISTS, "config", dir.path(), false).expect_err("pending"));
-    assert!(e.contains("page config is pending"), "{e}");
+    let e = format!("{:#}", run_diff(repo.path(), &LISTS, "audit", dir.path(), false).expect_err("pending"));
+    assert!(e.contains("page audit is pending"), "{e}");
 }
 
 #[test]

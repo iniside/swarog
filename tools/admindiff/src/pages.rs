@@ -427,7 +427,15 @@ pub const PAGE_MAP: &[Page] = &[
         modal: None,
         force: false,
     },
-    Page { page: "config", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
+    Page {
+        page: "config",
+        route: Route::Mapped("/admin/p/config/settings"),
+        search: "",
+        tab: None,
+        menu: None,
+        modal: None,
+        force: false,
+    },
     Page { page: "audit", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
     Page {
         page: "economy",

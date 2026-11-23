@@ -922,6 +922,7 @@ dependencies = [
  "configapi",
  "configevents",
  "configrpc",
+ "controlplane",
  "edge",
  "lifecycle",
  "opsapi",

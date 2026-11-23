@@ -39,6 +39,9 @@ use std::sync::{Arc, OnceLock, RwLock};
 use lifecycle::{Context, Ddl, Module};
 use sqlx::{PgConnection, PgPool};
 
+mod admin;
+mod store;
+
 /// Fallback DSN — same default as the shared pool. Test-only now that the module owns
 /// no listener connection (the lazy-pool unit tests never issue a query).
 #[cfg(test)]
@@ -384,44 +387,6 @@ impl Service {
         guard.revision = revision;
         guard.map = map;
     }
-
-    /// Clones one coherent cache snapshot and sorts its settings by
-    /// `(namespace, key)` for a stable render. Revision and map are copied while
-    /// holding the same read guard, so the hidden concurrency token always names the
-    /// visible fields beside it.
-    #[expect(
-        dead_code,
-        reason = "Step 23: the Config & flags page renders it \
-                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2371)"
-    )]
-    fn cached_snapshot(&self) -> (i64, Vec<Setting>) {
-        let (revision, mut out): (i64, Vec<Setting>) = {
-            let guard = self.cache.read().unwrap();
-            (
-                guard.revision,
-                guard
-                    .map
-                    .iter()
-                    .map(|((ns, key), value)| Setting {
-                        namespace: ns.clone(),
-                        key: key.clone(),
-                        value: value.clone(),
-                    })
-                    .collect(),
-            )
-        };
-        out.sort_by(|a, b| a.namespace.cmp(&b.namespace).then(a.key.cmp(&b.key)));
-        (revision, out)
-    }
-
-    #[expect(
-        dead_code,
-        reason = "Step 23: the Config & flags page lists it \
-                  (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2371)"
-    )]
-    fn all(&self) -> Vec<Setting> {
-        self.cached_snapshot().1
-    }
 }
 
 /// Reads `(revision, settings)` from ONE statement over `pool`. A free function so the
@@ -591,9 +556,9 @@ impl Module for Config {
         Ok(())
     }
 
-    /// Only wires up — no DB I/O (#8). Contributes the edge face, and registers the
-    /// authoritative-refresh callback on the `config_changed`
-    /// invalidation channel (REFRESH role only — the boot-fill stays in `start`).
+    /// Only wires up — no DB I/O (#8). Contributes the edge face and the admin provider, and
+    /// registers the authoritative-refresh callback on the `config_changed` invalidation
+    /// channel (REFRESH role only — the boot-fill stays in `start`).
     fn init(&self, ctx: &Context) -> anyhow::Result<()> {
         // Edge exposure, contributed UNCONDITIONALLY — topology-blind (Step 3 seam):
         // config's wire-only `ConfigSnapshot` face rides `edge::EDGE_SLOT`; `app::run`
@@ -606,6 +571,9 @@ impl Module for Config {
                 configrpc::config_snapshot_rpc::register_server(server, snap);
             }),
         );
+
+        let provider: Arc<dyn controlplane::Provider> = Arc::new(admin::ConfigAdmin::new(self.svc().pool.clone()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
 
         // Broadcast-invalidation REFRESH: every committed `config_changed` NOTIFY (from
         // the trigger — a service write OR a raw psql edit) re-runs this authoritative
