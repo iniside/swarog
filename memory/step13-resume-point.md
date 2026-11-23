@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-23T16:35:04.414Z
+  modified: 2026-11-23T17:48:36.959Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -87,3 +87,7 @@ a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "
 - F2 35fc40e0 canonical validate_policy + Multi required:false — ACCEPT. Note: old non-canonical rows in dev DBs → DROP SCHEMA apikeys + fresh boot if it matters.
 - F3 ed050bae revoked re-role guard + shared KEY_COLUMNS/ROLE_COUNTS; review-fix cf17e7b6 (same-role revoked test) — ACCEPT.
 - Next: F1 review-fix (owner decision), then 21t (announce run count/time), then 21b.
+- F1 review-fix 34e284de (route drops ONLY empty; FilterView.value Option; wallet/inventory copies removed) — ACCEPT (owner: "ok niech odrzuca").
+- 21t DONE: b5019978 + review-fix 2f6e00b1 (cleanup on every exit, AD3b searched row, AD4 csrf body, AD6g outcome pairs). Splitproof green both topologies (279 pass / 35 expected-red). core-reviewer ACCEPT, proof-auditor sound. Comment nits left: apikeys_admin_checks.rs:39-52 hop/break-run wording, :41 long line; view_tests.rs:99 "filter at any".
+- Owner question pending: role-delete 409 shows generic portal conflict banner (core/admin/src/routes.rs:1297/1326) not the provider message — bug?
+- Next: 21b (mockup-implementer sonnet: crawls monolith+split, accept files) — ask owner go.
