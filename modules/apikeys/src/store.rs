@@ -146,16 +146,27 @@ impl ColumnCap {
     }
 }
 
-/// Loose policy validation (Decision 4): within [`MAX_POLICY_BYTES`], non-empty, and
-/// either the literal `full` or a comma-separated list whose every entry is non-blank.
-/// Deliberately NOT a strict method-name check — ops evolve, and an operator may
-/// pre-authorize a method no process serves yet. The byte cap is an ADDITIONAL upper
-/// bound on the loose rule, not a replacement.
+/// Policy validation (Decision 4): within [`MAX_POLICY_BYTES`] and canonical — exactly
+/// `full`, or a comma-separated list of distinct, non-empty entries with no surrounding
+/// whitespace and no `full` entry. Canonical because the gateway matcher grants all only
+/// for exactly `full` and compares listed entries verbatim, while the admin form folds and
+/// trims: a stored policy both read differently would change meaning on an untouched save.
+/// A method NAME is still only "non-blank", not checked against a catalog — ops evolve, and
+/// an operator may pre-authorize a method no process serves yet. The byte cap is an
+/// ADDITIONAL upper bound, not a replacement.
 pub(crate) fn validate_policy(policy: &str) -> Result<(), WriteError> {
     ROLE_POLICY.check(policy)?;
-    if policy.trim().is_empty() || policy.split(',').any(|m| m.trim().is_empty()) {
+    if policy == "full" {
+        return Ok(());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    let canonical = policy
+        .split(',')
+        .all(|m| !m.trim().is_empty() && m.trim() == m && m != "full" && seen.insert(m));
+    if !canonical {
         return Err(WriteError::Invalid(format!(
-            "apikeys: invalid policy {policy:?} (must be `full` or a comma-separated method list)"
+            "apikeys: invalid policy {policy:?} (must be exactly `full` or a comma-separated list of \
+             distinct methods, with no blank or padded entry and no `full` entry)"
         )));
     }
     Ok(())

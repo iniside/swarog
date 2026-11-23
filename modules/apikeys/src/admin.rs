@@ -737,7 +737,10 @@ pub(crate) fn role_form(roles: &[RoleRow], role: Option<&RoleRow>) -> FormSpec {
         ..field(FIELD_NAME, "Name", FieldKind::String)
     };
     let picked = role.map(|r| policy_methods(&r.policy).into_iter().map(String::from).collect::<Vec<_>>());
+    // Optional here: a role may hold only typed methods; `compose_policy` is the one rule
+    // that a policy names `full` or at least one method.
     let methods = Field {
+        required: false,
         default: picked.map(|p| encode_field(&kind, &FieldValue::Multi(p))),
         ..field(FIELD_METHODS, "Allowed methods", kind)
     };

@@ -438,9 +438,48 @@ async fn invalid_policy_rejected() {
 
     assert!(matches!(store.create_role(&role, "   ").await, Err(WriteError::Invalid(_))));
     assert!(matches!(store.create_role(&role, "a,,b").await, Err(WriteError::Invalid(_))));
+    assert!(matches!(store.create_role(&role, "match.report,full").await, Err(WriteError::Invalid(_))));
     assert!(role_policy(&store, &role).await.is_none(), "no role written on invalid policy");
+    store.create_role(&role, "a,b").await.unwrap();
+    let revision = role_revision(&pool, &role).await.unwrap();
+    assert!(matches!(store.set_role_policy(&role, revision, "a,a").await, Err(WriteError::Invalid(_))));
+    assert_eq!(role_policy(&store, &role).await.as_deref(), Some("a,b"), "an invalid edit writes nothing");
 
     cleanup(&pool, &base).await;
+}
+
+/// Only canonical policies are stored: the gateway matcher reads `full` and the listed
+/// entries verbatim while the admin form trims and folds, so a non-canonical policy would
+/// change meaning when saved back untouched.
+#[test]
+fn only_canonical_policies_are_valid() {
+    for ok in ["full", "a", "match.report,accounts.login", "x.y,fully", "Full,a"] {
+        assert!(crate::store::validate_policy(ok).is_ok(), "{ok:?}");
+    }
+    for (bad, why) in [
+        ("", "empty"),
+        ("   ", "blank"),
+        (" full", "padded full"),
+        ("full ", "full with trailing space"),
+        ("a,,b", "blank entry"),
+        ("a,", "trailing comma"),
+        (" a", "leading space"),
+        ("a ,b", "padded entry"),
+        ("a,a", "duplicate"),
+        ("match.report,full", "listed full"),
+        ("full,full", "full twice"),
+    ] {
+        assert!(matches!(crate::store::validate_policy(bad), Err(WriteError::Invalid(_))), "{bad:?}: {why}");
+    }
+}
+
+/// The dev seed bypasses `validate_policy` (`upsert_seed_role`), so its policies are held to
+/// the same canonical rule here.
+#[test]
+fn every_dev_seed_policy_is_canonical() {
+    for (name, policy) in DEV_SEED_ROLES {
+        assert!(crate::store::validate_policy(policy).is_ok(), "seed role {name}: {policy:?}");
+    }
 }
 
 /// An over-cap policy string is an `Invalid` (never Conflict/NotFound) and writes nothing

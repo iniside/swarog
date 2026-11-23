@@ -272,7 +272,7 @@ fn the_role_form_offers_full_the_catalog_and_in_use_methods_and_creates_by_name(
     want.push("zz.custom".to_string());
     assert_eq!(options, &want, "full, the catalog, then the in-use methods it lacks, once each");
     assert_eq!(form.fields[1].label, "Allowed methods");
-    assert!(form.fields[0].required && form.fields[1].required && !form.fields[2].required);
+    assert!(form.fields[0].required && !form.fields[1].required && !form.fields[2].required);
     assert!(!form.fields[0].readonly && form.fields[0].default.is_none() && form.fields[1].default.is_none());
     assert_eq!(form.fields[2].label, "Additional methods");
     assert_eq!(form.fields[2].kind, FieldKind::String);
@@ -820,6 +820,31 @@ async fn create_edit_and_delete_roles_through_the_provider() {
     assert_eq!(e.status, Status::NotFound);
     let e = p.prepare(role_prepare("role.edit", &missing)).await.unwrap_err();
     assert_eq!(e.status, Status::NotFound);
+
+    // A role may hold only typed methods: the Multi is optional (core/admin rejects a blank
+    // required field before invoke) and `compose_policy` alone asks for full or a method.
+    let typed_only = format!("{base}-typed");
+    let Then::Form(form) = p.prepare(prepare_call("role.create", None)).await.unwrap() else { panic!("a form") };
+    assert!(!form.fields[1].required, "the create form's Allowed methods is optional");
+    let mut input = policy_input(&[], Some(&custom));
+    input.insert("name".into(), typed_only.clone());
+    let created = p.invoke(call("role.create", input)).await.unwrap();
+    assert_eq!(created, InvokeOutcome::Ok { message: "Role created".into(), reveal: None, redirect: None });
+    let typed = store.role(&typed_only).await.unwrap().expect("the typed-only role is stored");
+    assert_eq!(typed.policy, custom);
+    let Then::Form(form) = p.prepare(role_prepare("role.edit", &typed_only)).await.unwrap() else { panic!("a form") };
+    assert!(!form.fields[1].required, "the edit form's Allowed methods is optional");
+    let edit_typed = policy_input(&[], Some(&format!("{custom},x.y")));
+    let saved = p.invoke(role_call("role.edit", &typed_only, edit_typed, Some(typed.revision))).await.unwrap();
+    assert_eq!(saved, InvokeOutcome::Ok { message: "Policy saved".into(), reveal: None, redirect: None });
+    let typed = store.role(&typed_only).await.unwrap().unwrap();
+    assert_eq!(typed.policy, format!("{custom},x.y"));
+    let nothing = p.invoke(role_call("role.edit", &typed_only, BTreeMap::new(), Some(typed.revision))).await.unwrap();
+    assert_eq!(nothing, InvokeOutcome::FieldErrors(BTreeMap::from([("methods".into(), "pick full or at least one method".into())])));
+    let mut nothing = BTreeMap::new();
+    nothing.insert("name".to_string(), format!("{base}-empty"));
+    let refused = p.invoke(call("role.create", nothing)).await.unwrap();
+    assert_eq!(refused, InvokeOutcome::FieldErrors(BTreeMap::from([("methods".into(), "pick full or at least one method".into())])));
 
     let Then::Confirm(confirm) = p.prepare(role_prepare("role.delete", &name)).await.unwrap() else {
         panic!("a confirm")
