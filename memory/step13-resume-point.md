@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-23T13:19:06.816Z
+  modified: 2026-11-23T14:04:15.420Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -77,3 +77,6 @@ Owner: "1a, 2 tez popraw". ccf270e3 core/admin filter_views draws an undeclared 
 
 ## State 2026-11-23 (21a2 part 1 done, part 2 running)
 a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "any" decided in 6 places, wallet treats it as a value -> owner asked a) strip empty/"any" in the core/admin panel route (recommended), b) "any" means nothing, c) revert + todo. 21a2 part 1: 587af4de store D1 + review-fix 7e9ab020 (one-snapshot revoke, delete_role retries when count is 0) — review ACCEPT. Owner open: shared KeyRow column list (key() vs keys_page), set_key_role allows a revoked key. 21a2 part 2 (key.create/change-role/revoke + K17 probe) dispatched; then part 3 (roles), part 4 (P2-9, goldens, pages.rs), 21t, 21b.
+
+## State 2026-11-23 (21a2 done)
+3b67dd76 part 2 (key.create/change-role/revoke, probe), 0e34a361 part 3 (role.create/edit/delete, APIKEYS-01 closed), b9204689 test review-fix (refusal messages pinned), d682a01d part 4 (form foot no span.muted P2-9, pages.rs create-key + revoke modal rows, apirole/role/change-role exclusions, ADMIN2-61..63). All reviews ACCEPT. Owner open: S1 any a/b/c; Multi required:false (typed-only policy impossible from portal); canonical validate_policy (gateway vs admin read "full" differently, latent widen); admindiff test fixtures restate prod rules (claim_inventory built from PAGE_MAP) — stop-polishing applies. Next: 21t (test-author opus, splitproof D5, fleet runs — say count/time) then 21b (mockup-implementer sonnet, crawl + accept files).
