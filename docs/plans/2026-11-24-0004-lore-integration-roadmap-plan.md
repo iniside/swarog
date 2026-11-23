@@ -20,15 +20,22 @@ review, comments and merge requests.
 - "weles narazie zostaw w spokoju. jak kto sobie zainstaluje lore to jego problem":
   no Weles or installer work. Swarog only knows the loreserver address.
 - "samego serwera lore nigdy nie bedziemy modyfikowac": stock `loreserver` v0.14.0.
-- October P1–P5 (`docs/research/2026-10-22-1539-lore-hosting-exploration-summary.md`
-  §Decyzje):
-  - P1 wipe;
-  - P2 stock server with `Subscribe` bridged to durable `lore.*` topics;
-  - P3/P4 one studio = one deployment, studio users are `accounts` users and
-    `lore` grants their roles, no tenant or `studios` module;
-  - P5 the device-approval page uses whatever provider `accounts` has
-    configured, plus production email-and-password registration and accounts
-    created by an admin, described as "kroki, a nie blokery".
+- RBAC is a separate module and service, `authz` (2026-11-24): "ok to rbac
+  bedzie osobnym modules/service". Modules own their action catalogs (code);
+  `authz` owns roles (named action sets, operator data) and grants (global or
+  per resource), and answers "which actions has user U on resource R of kind K".
+  Modules never see role names.
+
+**Research leads, not decisions.** October P1–P5
+(`docs/research/2026-10-22-1539-lore-hosting-exploration-summary.md`) is research.
+Each phase plan re-checks a lead before relying on it. The owner corrected
+2026-11-24: "to nie byla decyzja tylko resreach". The leads are:
+- wipe (already a repo-wide rule, AGENTS.md);
+- `Subscribe` bridged to `lore.*`;
+- one studio per deployment with no tenant module;
+- grants in the `lore` module (superseded by `authz` above);
+- a provider-independent device approval page plus production password login
+  and admin-created accounts.
 
 **Explicit exclusions:**
 - Weles/installer integration.
@@ -124,8 +131,9 @@ Sources:
 | Swarog-API tokens for the portal | the existing opaque sessions | Already verified by the gateway | **Kept.** The token endpoint returns the opaque session for audience = Swarog, so the gateway stays unchanged. Only tokens whose audience is the Lore host are ES256 JWTs (loreserver verifies JWTs, `jwt.rs:315-389`) |
 | Auth-code / device state | `accounts.oauth_states` (Epic) | Client-side Epic state, replica-safe via `DELETE … RETURNING` | Pattern copied into new issuer tables; the Epic table is not reused |
 | client_credentials secrets | `apikeys` | Keys for kinds of client, with a gateway method allow-list | Not used. Lore service accounts need `is_service_account` and Lore actions. Clients live in an `accounts` table; only the digest-and-one-time-reveal pattern is copied |
-| Per-repo grants | apikeys roles; `controlplane::Role` | Gateway methods; operator ordering | Not used. Grants are `lore`'s own schema (P3/P4) |
-| Grants inside token exchange | `accounts` importing `loreapi` | Would make accounts depend on a feature module | Rejected. Alternatives in owner question 1. A trait in `accountsapi` that lore serves is ruled out by archcheck: `modules/X` may not depend on a foreign rpc crate (`tools/archcheck/src/main.rs:6`) |
+| Per-repo grants | apikeys roles; `controlplane::Role` | Gateway method allow-lists; operator ordering for the admin panel | Not used. Grants live in the new `authz` module (owner decision) |
+| Grants inside token exchange | grants in `lore`, served to `accounts` | `lore` would have to serve a trait from `accountsapi`, which archcheck forbids: `modules/X` may not depend on a foreign rpc crate (`tools/archcheck/src/main.rs:6`) | Rejected. `accounts`, `lore` and `review` consume `authzapi`, the ordinary consumer direction (like `friends` → `accountsapi::Directory`) |
+| RBAC in `core/` | a core contract like `controlplane::Provider` | Makes it mandatory in every process; `core/` holds mechanisms, not operator-configured data | Not now. Only if `core/admin` itself consumes RBAC (operators); then the contract moves to `core/` and `authz` provides it |
 | Review state | `lore` module tables | Review is a separate domain (MRs, comments, reviews) and a separate deploy unit | A `review` module. It reads lore facts only from `lore.*` events and `loreapi`, never by import |
 | Subscribe bridge | scheduler loop | Ticks and emits; holds no stream | Copies the supervision and advisory-lock pattern; no dependency |
 | gRPC for `user_url` | edge transport | QUIC JSON, not gRPC | A tonic service mounted with `ctx.mount` on lore's HTTP routes (h2c, verified above) |
@@ -215,38 +223,69 @@ split proof checks its endpoints through gateway-svc.
   client id and secret through typed config.
 - (d) `[opus]`.
 
-### B. The `lore` module
+### B. RBAC and the `lore` module
 
-**Step 5: `lore` skeleton, repositories and grants.**
+**Step 5a: `authz` module (RBAC).**
+- (a) Built per `add-game-module`: `api/authz/{api,rpc,events}`,
+  `modules/authz` and `cmd/authz-svc`, plus every registration point.
+  - Schema `authz`:
+    - `catalog` (kind → actions), declared by each consuming module at boot
+      through `authzapi` as an idempotent upsert;
+    - `roles` (kind, name, actions[]), operator data;
+    - `global_roles` (kind, user, role);
+    - `grants` (kind, resource, user, role);
+    - purge tombstones.
+  - Wire API:
+    - `actions(user, kind, resource)`;
+    - `grant`/`revoke`;
+    - `drop_resource(kind, resource)`;
+    - `declare_kind(kind, actions)`.
+  - Admin `Provider`: role matrix per kind, global assignment, per-resource
+    overrides, effective preview (from `UILayout/redesign/lore-permissions.html`,
+    made kind-generic).
+  - `player.deleted` subscription: Genesis tombstone + `player-purge` sweep.
+- (b) `lore`, the token exchange and `review` all ask it. It holds no knowledge
+  of Lore.
+- (c) The result is the global role's actions plus the resource role's actions.
+  A role may only hold actions from its kind's catalog. Kept minimal: no groups,
+  conditions or inheritance until a real need appears. Changing a role re-scopes
+  every holder at once. Already issued Lore tokens keep their actions until they
+  expire, so per-repo tokens are short-lived (5–15 min, fixed in the 5c plan).
+- (d) `[opus]`.
+
+**Step 5b: `lore` skeleton and repositories.**
 - (a) Per `add-game-module` (the ~12 touch points the patterns report lists):
   - `api/lore/{api,rpc,events}`, `modules/lore`, `cmd/lore-svc`;
   - registration in `cmd/server`, `checkmodules`, the processctl fleet,
     conformance, admin-svc `peer_face` and splitproof.
-  - Schema `lore`: `repositories` (id, name, description, default branch),
-    `roles` (name → actions), `grants` (user, role or repo override), purge
-    tombstones.
+  - Schema `lore`: `repositories` (id, name, description, default branch).
+    It holds no permission tables.
   - Typed config: loreserver gRPC address, service client id and secret.
-  - Answers the grants seam from Step 5b (the shape is owner question 1).
-  - A repository's creator gets an owner grant. Who may create repositories is a
-    global-role action (`create-repo`).
-  - Subscribes `player.deleted` (Genesis tombstone + `player-purge` sweep).
-- (b) Step 5b's exchange and every later lore phase need the grant authority.
-- (c) Action vocabulary: `read, write, owner, admin, migrate, push-protected,
-  obliterate, presign`. The effective set is the global role plus the repo
-  override.
+  - Declares kind `lore` in `authz` at boot.
+  - A repository's creator gets an `owner` grant through `authzapi`. Creating a
+    repository requires the `create-repo` action. Removing a repository calls
+    `drop_resource`.
+- (b) Step 5c's exchange and every later lore phase need the repository inventory.
+- (c) Action catalog: `read, write, owner, admin, migrate, push-protected,
+  obliterate, presign, create-repo`.
 - (d) `[opus]`.
 
-**Step 5b: Token exchange (Tier 2).**
-- (a) RFC 8693 exchange with RFC 8707 `resource` in `accounts`, plus the grants
-  seam (owner question 1).
-- (b) It needs `lore` grants (Step 5). Splitting it from Step 4 lets the split
-  proof run accounts-svc against a real lore-svc.
-- (c) The seam is optional: when no grants provider is present, the exchange
-  answers `invalid_target`, so accounts boots without lore. The optional lookup
-  is `registry::try_require` (`core/registry/src/lib.rs:103`). The minted token
-  carries `resources` per loreserver's `resource_claim`/`resource_template`
-  and the repo's actions.
-- (d) `[opus]`. The split proof covers accounts-svc → lore-svc.
+**Step 5c: Token exchange (Tier 2).**
+- (a) RFC 8693 exchange with RFC 8707 `resource` in `accounts`. The exchange
+  maps the resource (`urc-42`) to kind `lore` and resource `42` and asks
+  `authzapi::actions`.
+- (b) It needs `authz` (5a) and repositories (5b). Splitting it from Step 4
+  lets the split proof run accounts-svc against a real authz-svc.
+- (c) Error answers:
+  - `authz` absent: `invalid_target`, so accounts boots without it (optional
+    lookup `registry::try_require`, `core/registry/src/lib.rs:103`);
+  - `authz` unreachable: `temporarily_unavailable`. Never a token without
+    grants;
+  - empty action list: `access_denied`.
+
+  The minted token carries `resources` per loreserver's
+  `resource_claim`/`resource_template`.
+- (d) `[opus]`. The split proof covers accounts-svc → authz-svc.
 
 **Step 6: `lore.user.v1` server for loreserver's `user_url`.**
 - (a) A vendored crate `vendor/lore-wire` (outside `api/`, `core/` and
@@ -297,7 +336,7 @@ split proof checks its endpoints through gateway-svc.
   - `repository_catalog`/`repository_catalog_url`. Run
   `lore login` → `lore clone` → `lore push` → `lore repo list`, with a denied
   push for a read-only grant, in the monolith and then the split.
-- (b) It proves A + 5 + 6 against the real server before building on them.
+- (b) It proves A + 5a–5c + 6 against the real server before building on them.
 - (c) Swarog side: a short setup note in `docs/reference/` (`lore.md`).
 - (d) `[docs]` plus an owner check.
 
@@ -322,14 +361,15 @@ split proof checks its endpoints through gateway-svc.
 **Step 9: Admin pages for lore.**
 - (a) `modules/lore/src/admin.rs` `Provider`, ported from `UILayout/redesign/lore-*.html`:
   - repos and repo tabs (branches + protect, locks, access, events);
-  - permissions (role matrix, assignment, overrides, effective preview);
+  - the repo Access tab reads effective actions from `authz` and links to the
+    `authz` permissions page (Step 5a); lore itself has no permissions page;
   - locks with force unlock;
   - events;
   - server (HTTP health probe only, no process control: Weles is excluded);
   - billing (seats = users with a Lore grant, store size if loreserver reports it,
     hourly `lore.billing_snapshot` schedule).
 - (b) Operators assign grants before studio members can work. It can run in
-  parallel with Step 8 after Step 5.
+  parallel with Step 8 after Step 5b.
 - (c) Writes such as force unlock and BranchProtect call loreserver with the
   service token. Mockup items that need process control (restart) are dropped and
   listed for the owner.
@@ -351,8 +391,7 @@ split proof checks its endpoints through gateway-svc.
 - (c) Merged detection: a `lore.branch_pushed` subscription marks an open MR
   merged when the target's new head contains the source head (ancestry checked
   over loreserver `RevisionList` with a service token). Authorization: the caller
-  needs `read` on the repo, resolved over `loreapi` (a sync check in `api/lore`),
-  never by import. Approvals are advisory ("2 approvals expected", lore repo
+  needs `read` on the repo, resolved over `authzapi` (kind `lore`), never by import. Approvals are advisory ("2 approvals expected", lore repo
   setting).
 - (d) `[opus]`.
 
@@ -406,7 +445,9 @@ split proof checks its endpoints through gateway-svc.
 
 ## Owner questions before Phase A starts
 
-1. **Grants seam for token exchange (Step 5b, structural).** `accounts` signs the
+Resolved 2026-11-24: grants live in a separate `authz` module (Step 5a).
+
+1. ~~**Grants seam for token exchange (Step 5b, structural).** `accounts` signs the
    per-repo token, but the grants belong to `lore`. `lore` cannot serve a trait
    from `accountsapi` in the split, because archcheck rule 2 forbids a module
    depending on another module's rpc crate. Options:
@@ -419,7 +460,7 @@ split proof checks its endpoints through gateway-svc.
      `accounts` keeps a `resource_grants` table. The exchange is local, but
      `accounts` holds a copy of lore's data, with a lag window.
    - **(C)** An explicit archcheck exception for this one dependency. Not
-     recommended: it is the first such exception.
+     recommended: it is the first such exception.~~ Resolved: `authz` module.
 2. **Login for studio members (Step 1).** P5 lists email-and-password
    self-registration and operator-created accounts. Proposal: build
    operator-created accounts first and self-registration as Step 1b. Federated
@@ -435,4 +476,6 @@ split proof checks its endpoints through gateway-svc.
 - `player_id → user_id` (October §7: independent of Lore; a separate plan).
 - The merge worker, the upstream Lore merge and asset previews (`docs/todo/lore.md` Deferred).
 - Weles/installer and loreserver process control.
+- Operator roles (`controlplane::Role`) moving onto `authz`. When that happens, the
+  `authz` contract moves to `core/` so `core/admin` can consume it.
 - Account suspension (no `player.suspended` exists; lore would react to it when it lands).
