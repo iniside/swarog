@@ -2366,10 +2366,19 @@ The ports:
   - The reveal hint uses the gateway's real API-key header (read `modules/gateway`), not the
     mockup's `Authorization: Bearer` text.
   - Writer.
-  - **21a1** (Na1): the page reads, search provider `apikey` and its kind; rotate/expiry as
-    `implemented: false` with todo items.
-  - **21a2** (Na2): the key writes with the show-once reveal and its gateway-header hint, the
-    probe; a create without an idempotency key is a `request_id` Leftover (template Na2).
+  - Checklist `docs/plans/2026-11-23-step21-apikeys-checklist.md`, owner decisions in its §11
+    (2026-11-23: D1-D5, and every open K item as recommended). Parts:
+  - **21a1** `[opus]` core-implementer (Na1): the page reads, search provider `apikey` and its
+    kinds, the store reads (checklist K2), the `PROVIDER_SLOT` wiring, `Cargo.toml`, the
+    `pages.rs` page and menu rows; rotate/expiry as `implemented: false` with todo items.
+  - **21a2** `[opus]` core-implementer (Na2): the key and role writes with the show-once reveal
+    and its gateway-header hint, the revoke and delete-role rewrite of D1, the P2-9 template
+    change and goldens, the probe; a create without an idempotency key is a `request_id`
+    Leftover (template Na2).
+  - **21t** `[opus]` test-author: `apikeys_admin_checks.rs` and the re-pointed M3a, AD3b, AD4
+    and AD6b-g in both topologies (checklist §9), each with a recorded break run.
+  - **21b** `[sonnet]` mockup-implementer: the monolith and split crawls and the accept files
+    of checklist §7.
   - Contract gaps from `docs/research/2026-11-21-0848-admin-ports-21-24-contract-gaps.md` (owner, 2026-11-21, every recommendation adopted):
     - P2-1: the apikey menu's "Requests by this key" is a static link to the unfiltered audit
       page; a row-bound link (`bind` into a `Link::Page`) is a todo item.
