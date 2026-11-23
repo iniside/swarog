@@ -212,7 +212,7 @@ window.REG = (() => {
     document.body.innerHTML = `<div class="app">${sidebar(pageMeta.nav)}${topbar(pageMeta.crumbs)}<main class="main"><div class="page"><div class="annot-legend"></div>${content}</div></main></div>`;
     document.querySelector(".annot-legend").innerHTML = legend();
     document.querySelector(".main").scrollTop = scroll;
-    document.title = `${pageMeta.crumbs[pageMeta.crumbs.length - 1][0].replace(/<[^>]+>/g, "")} · Swarog Admin`;
+    document.title = `${document.querySelector(".topbar .cur").textContent} · Swarog Admin`;
     pageMeta.after?.();
   }
 

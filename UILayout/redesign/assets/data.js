@@ -221,7 +221,8 @@ window.DATA = (() => {
   };
 
   const byId = Object.fromEntries(users.map(u => [u.id, u]));
-  const stamp = (day, i) => `${day}T${String(8 + i * 5 % 12).padStart(2, "0")}:${String(i * 17 % 60).padStart(2, "0")}:${String(i * 29 % 60).padStart(2, "0")}Z`;
+  const now = "2026-10-22";
+  const stamp = (day, i) => `${day}T${String(8 + i * 5 % (day < now ? 12 : 6)).padStart(2, "0")}:${String(i * 17 % 60).padStart(2, "0")}:${String(i * 29 % 60).padStart(2, "0")}Z`;
   const addDays = (day, n) => new Date(Date.parse(day + "T00:00:00Z") + n * 86400000).toISOString().slice(0, 10);
 
   const characterNames = {
@@ -241,7 +242,7 @@ window.DATA = (() => {
   const characters = [];
   users.forEach(u => (characterNames[u.handle] || []).forEach(([name, cls], k) => {
     const i = characters.length;
-    characters.push({ id: uuid("character:" + u.handle + ":" + name), player_id: u.id, name, class: cls, created_at: stamp(addDays(u.created, (k + 1) * 9), i) });
+    characters.push({ id: uuid("character:" + u.handle + ":" + name), player_id: u.id, name, class: cls, created_at: stamp(addDays(u.created, (k + 1) * 9) < now ? addDays(u.created, (k + 1) * 9) : now, i) });
   }));
 
   const items = [
@@ -276,14 +277,14 @@ window.DATA = (() => {
   });
 
   const groupSeed = [
-    ["Frostreach Playtesters", "request", "aiko.tanaka", "2025-04-02", [["aiko.tanaka", "member", "admin", "2025-04-02"], ["jonas.l", "member", "member", "2025-04-03"], ["Volkhv", "member", "member", "2025-10-20"], ["MiraVoss", "member", "admin", "2025-12-05"], ["NightOwl_77", "member", "member", "2026-02-12"], ["kestrel", "requested", "", "2026-10-21"], ["guest-28be71f5", "requested", "", "2026-10-23"]]],
-    ["Emberline Staff", "invite", "marta.k", "2025-03-11", [["marta.k", "member", "admin", "2025-03-11"], ["aiko.tanaka", "member", "member", "2025-03-12"], ["jonas.l", "member", "member", "2025-03-12"], ["diego.r", "member", "member", "2025-03-14"], ["priya.n", "member", "member", "2025-03-14"], ["tomasz.w", "member", "member", "2025-05-07"], ["sam.o", "member", "member", "2025-07-31"], ["elena.p", "invited", "", "2026-08-20"]]],
+    ["Frostreach Playtesters", "request", "aiko.tanaka", "2025-04-02", [["aiko.tanaka", "member", "admin", "2025-04-02"], ["jonas.l", "member", "member", "2025-04-03"], ["Volkhv", "member", "member", "2025-10-20"], ["MiraVoss", "member", "admin", "2025-12-05"], ["NightOwl_77", "member", "member", "2026-02-12"], ["kestrel", "requested", "", "2026-10-21"], ["guest-28be71f5", "requested", "", "2026-10-22"]]],
+    ["Emberline Staff", "invite", "marta.k", "2025-03-11", [["marta.k", "member", "admin", "2025-03-11"], ["aiko.tanaka", "member", "member", "2025-03-12"], ["jonas.l", "member", "member", "2025-03-12"], ["diego.r", "member", "member", "2025-03-14"], ["priya.n", "member", "member", "2025-03-14"], ["tomasz.w", "member", "member", "2025-05-07"], ["sam.o", "member", "member", "2025-07-31"], ["elena.p", "invited", "", "2026-10-02"]]],
     ["Night Watch", "open", "NightOwl_77", "2026-02-20", [["NightOwl_77", "member", "admin", "2026-02-20"], ["MiraVoss", "member", "member", "2026-03-01"], ["Volkhv", "member", "member", "2026-03-02"], ["kestrel", "member", "member", "2026-04-20"]]],
-    ["Kestrel's Flight", "request", "kestrel", "2026-05-01", [["kestrel", "member", "admin", "2026-05-01"], ["NightOwl_77", "requested", "", "2026-10-30"]]],
-    ["Ashborn", "invite", "ash_and_ember", "2026-02-10", [["ash_and_ember", "member", "admin", "2026-02-10"], ["Volkhv", "invited", "", "2026-02-11"], ["MiraVoss", "invited", "", "2026-02-11"]]],
-    ["Voss Trading Co", "request", "MiraVoss", "2025-12-20", [["MiraVoss", "member", "admin", "2025-12-20"], ["Volkhv", "member", "admin", "2025-12-21"], ["NightOwl_77", "member", "member", "2026-02-09"], ["kestrel", "requested", "", "2026-11-02"], ["guest-28be71f5", "requested", "", "2026-11-10"]]],
+    ["Kestrel's Flight", "request", "kestrel", "2026-05-01", [["kestrel", "member", "admin", "2026-05-01"], ["NightOwl_77", "requested", "", "2026-10-14"]]],
+    ["Ashborn", "invite", "ash_and_ember", "2026-02-10", [["ash_and_ember", "member", "admin", "2026-02-10"], ["Volkhv", "invited", "", "2026-09-28"], ["MiraVoss", "invited", "", "2026-10-05"]]],
+    ["Voss Trading Co", "request", "MiraVoss", "2025-12-20", [["MiraVoss", "member", "admin", "2025-12-20"], ["Volkhv", "member", "admin", "2025-12-21"], ["NightOwl_77", "member", "member", "2026-02-09"], ["kestrel", "requested", "", "2026-10-08"], ["guest-28be71f5", "requested", "", "2026-10-22"]]],
     ["Slavic Myth Club", "open", "Volkhv", "2025-11-01", [["Volkhv", "member", "admin", "2025-11-01"], ["tomasz.w", "member", "member", "2025-11-04"], ["marta.k", "member", "member", "2025-11-05"], ["MiraVoss", "member", "member", "2025-12-03"]]],
-    ["Lore Reviewers", "invite", "jonas.l", "2025-02-01", [["jonas.l", "member", "admin", "2025-02-01"], ["diego.r", "member", "member", "2025-02-02"], ["priya.n", "member", "member", "2025-02-15"], ["aiko.tanaka", "member", "admin", "2025-03-12"], ["elena.p", "invited", "", "2026-09-01"]]],
+    ["Lore Reviewers", "invite", "jonas.l", "2025-02-01", [["jonas.l", "member", "admin", "2025-02-01"], ["diego.r", "member", "member", "2025-02-02"], ["priya.n", "member", "member", "2025-02-15"], ["aiko.tanaka", "member", "admin", "2025-03-12"], ["elena.p", "invited", "", "2026-09-26"]]],
     ["Weekend Raiders", "open", "diego.r", "2025-06-14", [["diego.r", "member", "admin", "2025-06-14"], ["ash_and_ember", "member", "member", "2026-01-30"], ["NightOwl_77", "member", "member", "2026-02-14"], ["kestrel", "member", "member", "2026-04-18"]]],
     ["Polish Players", "open", "tomasz.w", "2025-06-01", [["tomasz.w", "member", "admin", "2025-06-01"], ["marta.k", "member", "member", "2025-06-02"], ["MiraVoss", "member", "member", "2025-12-02"]]],
   ];
