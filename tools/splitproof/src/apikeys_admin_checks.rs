@@ -517,7 +517,7 @@ async fn audit_since(pool: &PgPool, mark: i64) -> Result<Vec<(String, String)>> 
 /// Sends the request `build` makes until the answer is not a 429 (ten tries, a growing pause
 /// between them); answers the last response. A 429 is the gateway's rate limit refusing the
 /// request before the portal sees it, so the retry never repeats an action.
-async fn patient(build: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response> {
+pub(super) async fn patient(build: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response> {
     let mut tries = 0;
     loop {
         let r = build().send().await?;
@@ -535,7 +535,7 @@ async fn keyed(build: impl Fn() -> reqwest::RequestBuilder) -> Result<u16> {
 }
 
 /// GET `url` past the gateway's 429s; answers (status, body).
-async fn fetch(admin: &reqwest::Client, url: &str) -> Result<(u16, String)> {
+pub(super) async fn fetch(admin: &reqwest::Client, url: &str) -> Result<(u16, String)> {
     let r = patient(|| admin.get(url)).await.with_context(|| format!("GET {url}"))?;
     Ok((r.status().as_u16(), r.text().await.unwrap_or_default()))
 }
