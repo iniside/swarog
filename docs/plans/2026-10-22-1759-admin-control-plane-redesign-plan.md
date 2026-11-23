@@ -2411,34 +2411,45 @@ The ports:
     topologies; proof-auditor audits.
   - **22b**: accept files after the crawls.
 - **Step 23 — config.**
-  - Config & flags page (`pages-platform.js:88-109`).
-  - Edit via `cp.invoke` with `expected_revision` = the global revision. The edit form is
-    a `Primitive::Form` panel whose edit action has point
-    `ActionPoint::PanelForm(<that contribution>)` (Step 8a).
-  - The Revisions timeline is FAKE except for the current value and revision. Writes the
-    restore-link `contract gap` accept entry of ADMIN2-39 (`docs/todo/admin-second-pass.md`).
-  - Writer.
-  - **23a0**: T6, moved from Step 13d: an admindiff page map entry can run a JS prelude
-    before mount, paired with a portal route parameter, for a client-side default
-    selection. Files: `tools/admindiff/src/{pages.rs,mock.rs}`, `core/admin/src/routes.rs`.
-  - **23t** (`[opus]` test-author, after 23a0): the prelude option reaches the harness
-    (`tools/admindiff/src/mock_tests.rs`, `pages_tests.rs`); proof-auditor audits.
-  - **23a1** (Na1), after 23a0: the page reads, the FAKE Revisions timeline and the
-    ADMIN2-39 accept entry, and the key selection through `PageDecl.params` (K20).
-  - **23a2** (Na2): the PanelForm edit with `expected_revision`, the probe. Config has no
-    compare-and-swap write today: the provider checks `expected_revision` itself under the
-    revision row lock, so an edit to any other key since the form loaded is a Conflict.
-  - **23r0** (Na0, owner 2026-11-21, P2-8 (b) of `docs/research/2026-11-21-0848-admin-ports-21-24-contract-gaps.md`; before 23a2): a `FormSpec` reason
-    field the portal sends as `InvokeCall.reason`, so the change note lands in the
+  - Config & flags page (`pages-platform.js:88-109`). Checklist:
+    `docs/plans/2026-11-23-step23-config-checklist.md` (owner decisions D1-D7 in its §11,
+    proposals C1-C9 under "Gaps as proposed").
+  - Owner decisions 2026-11-23:
+    - D1: a per-key revision. `config.settings` gains `revision bigint`, the global
+      revision of the write that last wrote the row (etcd-style), stamped by the trigger for
+      every writer. The edit's compare-and-swap is
+      `UPDATE … WHERE namespace = $ns AND key = $k AND revision = $expected`; zero rows is a
+      Conflict. Schema change is DROP + boot fresh. The `configapi` wire and the
+      `config.changed` v1 event do not change.
+    - D2: no JS prelude (T6 dropped, with 23a0 and its 23t). The provider selects a
+      deterministic default key; the field-kind difference against the mockup's json
+      default is a `data difference` accept entry.
+    - D3: "+ Key" is a real create (a modal form), insert-only, so an existing key is a
+      Conflict with nothing written.
+    - D4: the Type filter (type derived from the stored value) and the "Key prefix" search
+      are drawn.
+    - D5: 23r0 below; the "Pending change vs rev N" preamble is a `contract gap` plus a
+      todo item; the Revisions timeline is FAKE except the current value and revision;
+      ADMIN2-39 (`docs/todo/admin-second-pass.md`) widened per P2-6; CONFIG-04 closes in
+      23a1.
+  - Writer. Parts, in order:
+  - **23s** (`[opus]` core-implementer, core-reviewer): the per-key `revision` column and
+    its stamping trigger (D1), with `modules/config/src/tests.rs` cases; first, before every
+    other part.
+  - **23r0** (Na0, owner 2026-11-21, P2-8 (b) of
+    `docs/research/2026-11-21-0848-admin-ports-21-24-contract-gaps.md`): a `FormSpec`
+    reason field the portal sends as `InvokeCall.reason`, so the change note lands in the
     `admin.action` detail and on the audit page. `[opus]` core-implementer, core-reviewer
-    plus proof-auditor (public surface).
-  - P2-6: the existing ADMIN2-39 restore-link `contract gap` entry also covers the revision
-    meta's `span.mono` value. P2-7: the "Pending change vs rev N" preamble and its diff
-    block are a `contract gap` accept line plus a todo item. The "+ Key" head action is in
-    this step, `implemented: false` with a todo item when the provider has no create.
-  - **Owner decision before dispatch (23a0):** research P says "per-key revisions NEW"; the
-    plan's decision stays `expected_revision` = the global revision. Whether research P
-    means new storage is open; if it does, that storage is its own step before 23a0.
+    plus proof-auditor (public surface; regenerate the controlplane public-API baseline in
+    the same commit).
+  - **23a1** (Na1): the page reads, provider and page (Keys, Edit, FAKE Revisions), the key
+    selection through `PageDecl.params` (K20), `pages.rs` route, todo items, CONFIG-04.
+  - **23a2** (Na2): the PanelForm edit with the per-key compare-and-swap, the "+ Key" create,
+    the conformance probe, `EXCLUDED_MODALS`.
+  - **23t** (`[opus]` test-author, after 23a2): config admin splitproof checks in both
+    topologies (checklist §9); proof-auditor audits.
+  - **23b**: accept files after the crawls, including the nav `#ecbb9a` re-count now that
+    Config & flags is ported.
 - **Step 24 — audit.** Audit log page (`pages-platform.js:112-126`), and the dashboard
   "Recent operator activity" panel. Once every port has landed, admincheck also reports
   any peer admin-svc dials whose `<peer>-svc` hosts no provider (owner, 2026-11-10; held
@@ -2844,9 +2855,8 @@ the crawl's status-only row-menu check (T3 replaces it with a diffed menu body).
   mockup draws only down or stale (wallet) is compared in its ok shape; hard-coded demo
   markup the force cannot reach is a declared deviation, and golden cases pin each ok shape.
 - T5: `select > option` collapses like `tbody > tr`.
-- T6 (moved to Step 23a0, revision 2026-11-18 step size, audit recommendation, owner to
-  confirm: config is its only user and it
-  touches `core/admin`): a page map entry can run a JS prelude before mount, paired with a
+- T6 (dropped by the owner 2026-11-23, Step 23 D2: the provider selects a deterministic
+  default key instead): a page map entry could run a JS prelude before mount, paired with a
   portal route parameter, for a client-side default selection (config).
 - G6 of the Step 14 checklist: the harness never runs `meta.after`, so a contributed
   list-column header diffs as `th.num` against the portal's `th.num > span`. That line is a
@@ -3002,7 +3012,7 @@ gate.
   tests and the harness (`tools/admindiff/src/{crawl_tests.rs,mock_tests.rs,skeleton_tests.rs,
   pages_tests.rs}`): a tab target fetches `?tab=`, a modal and a menu target are written and
   diffed, an unreachable target fails the crawl, `option` collapse, and the force option
-  reaches the harness (the prelude's test is Step 23t).
+  reaches the harness (the prelude T6 was dropped, Step 23 D2).
 - **Step 13d6 — skill.** `[docs]` docs-writer: `.agents/skills/mockup-implementation/SKILL.md`
   §1 (with G6's sentence), §6 and §7; prose, no review. After 13d4; file-disjoint from 13d5.
   It settles the header-shape sentence of §1 (today: hand-check) against G6 (the diff reports
