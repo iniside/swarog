@@ -2860,6 +2860,7 @@ dependencies = [
  "asyncevents",
  "base64 0.22.1",
  "bus",
+ "controlplane",
  "edge",
  "friendsevents",
  "futures",

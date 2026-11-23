@@ -1,6 +1,6 @@
 # Admin second pass
 
-Last updated: 2026-11-22
+Last updated: 2026-11-23
 
 The admin redesign ships mockup elements the backend cannot back as deterministic fakes
 (`// FAKE: <why>`, plan R1) and not-yet-possible actions as `implemented: false`, rendered
@@ -259,6 +259,15 @@ The four downloads and Delete are drawn disabled; storage's manifest declares `w
   Source: Step 13c.1a proof audit.
 
 ### Contract gaps admindiff cannot see
+
+- [ ] **"Today" day label on timelines**
+  ADMIN2-57. Mockup: the Inbox tab labels the current day "Today"
+  (UILayout/redesign/assets/pages-core.js:144-145). The portal labels every day "Mon D"
+  (`day_and_time`, core/admin/src/render/tiles.rs:128), so the Inbox tab of
+  modules/notifications/src/admin.rs (`days: true`) draws "Nov 23" there. admindiff compares
+  no text, so no accept entry covers it; checklist
+  docs/plans/2026-11-22-step20-notifications-checklist.md N4/H4. Closed by: a "Today" label
+  for the reader's current UTC day in the portal's timeline renderer.
 
 - [ ] **Per-page toolbar search width** (low priority, owner 2026-11-17)
   ADMIN2-35. Mockup: `searchWidth: 280` for players (UILayout/redesign/assets/pages-core.js:98),

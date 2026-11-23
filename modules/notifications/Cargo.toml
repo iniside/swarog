@@ -35,6 +35,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 futures = { workspace = true }
 tracing = { workspace = true }
+# The control-plane contract: `admin.rs` provides the player's Inbox tab and the purge backlog item.
+controlplane = { workspace = true }
 # The opaque paging cursor is base64url-no-pad over `"{created_at}|{id}"`.
 base64 = { workspace = true }
 anyhow = { workspace = true }

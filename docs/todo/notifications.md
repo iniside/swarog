@@ -1,6 +1,6 @@
 # Notifications
 
-Last updated: 2026-10-23
+Last updated: 2026-11-23
 
 ## In progress
 
@@ -22,7 +22,3 @@ _None._
   NOTIFICATIONS-04. Every module wanting an inbox row edits notifications; mail
   closed this for itself with `mail.send_requested`. Source:
   docs/plans/2026-09-05-1921-friends-module-plan.md:591 (2026-09-05).
-- [ ] **`admin_data` must never return `Err`**
-  NOTIFICATIONS-05. modules/notifications/src/admin.rs:457-460 maps a build error to
-  `opsapi::Error::internal`. Source: modules/notifications/src/admin.rs:454
-  (2026-08-31); docs/plans/2026-09-05-1921-friends-module-plan.md:593.

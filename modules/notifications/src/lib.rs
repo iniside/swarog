@@ -6,10 +6,13 @@
 //! pool-owned transaction) and the durable fan-in (the event plane's handed delivery
 //! transaction) share one implementation and one input policy.
 
+mod admin;
 pub mod conformance;
 mod projection;
 mod service;
 mod store;
+#[cfg(test)]
+mod admin_tests;
 #[cfg(test)]
 mod tests;
 
@@ -244,6 +247,10 @@ impl Module for NotificationsModule {
             opsapi::DESCRIBE_SLOT,
             notificationsrpc::player_rpc::describe(),
         );
+
+        // Contributed unconditionally: whichever process hosts notifications serves its admin panels.
+        let provider: Arc<dyn controlplane::Provider> = Arc::new(admin::NotificationsAdmin::new(self.svc()));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
         Ok(())
     }
 }

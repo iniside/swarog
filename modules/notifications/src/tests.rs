@@ -29,7 +29,7 @@ const DEFAULT_DSN: &str =
 /// `retention_days_from_env`'s cases mutate a process-global variable that
 /// `NotificationsModule::init` reads — so these serialize here rather than depending on the
 /// caller having passed `--test-threads=1`.
-static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static DB_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 use testdb::test_pool;
 
@@ -48,7 +48,7 @@ async fn ensure_schema(pool: &PgPool) {
 
 /// `register` only — the pool-path fixture for the ops, the store and operator mail. No
 /// subscription is recorded, so these tests never touch the shared checkpoints.
-async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
+pub(crate) async fn wired(pool: &PgPool) -> (Context, Arc<Service>) {
     ensure_schema(pool).await;
     let ctx = Context::with_db(pool.clone());
     let m = NotificationsModule::new();
@@ -88,7 +88,7 @@ async fn wired_for_delivery(
     (ctx, m.svc(), transport)
 }
 
-async fn unique_player(pool: &PgPool) -> String {
+pub(crate) async fn unique_player(pool: &PgPool) -> String {
     let (id,): (String,) = sqlx::query_as("SELECT gen_random_uuid()::text")
         .fetch_one(pool)
         .await
@@ -98,7 +98,7 @@ async fn unique_player(pool: &PgPool) -> String {
 
 /// A dedup key in the exact [`OPERATOR_DEDUP_PREFIX`] shape, hand-built so the tests prove
 /// the SHAPE check.
-async fn operator_key(pool: &PgPool) -> String {
+pub(crate) async fn operator_key(pool: &PgPool) -> String {
     let (hex,): (String,) =
         sqlx::query_as("SELECT replace(gen_random_uuid()::text, '-', '')")
             .fetch_one(pool)
@@ -147,7 +147,7 @@ async fn rows_of(pool: &PgPool, player_id: &str) -> Vec<(String, String, String)
     .unwrap()
 }
 
-async fn cleanup(pool: &PgPool, players: &[&str]) {
+pub(crate) async fn cleanup(pool: &PgPool, players: &[&str]) {
     for pid in players {
         let _ = sqlx::query("DELETE FROM notifications.messages WHERE player_id = $1::uuid")
             .bind(pid)
