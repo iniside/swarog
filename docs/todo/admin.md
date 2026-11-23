@@ -1,6 +1,6 @@
 # Admin
 
-Last updated: 2026-11-23
+Last updated: 2026-11-24
 
 ## In progress
 
@@ -23,6 +23,36 @@ _None._
   from the handle (`modules/accounts/src/admin.rs:560`) and swaps the header in place
   (`primitives.html.tmpl:416`, `hx-swap-oob`), so the first-render colour can differ from the
   swapped one, and a mixed-case id gives another colour (review of 2fdcfd93).
+
+### Known limits (admin-control-plane-redesign step 23)
+
+- [ ] **admindiff tests red on the new redesign screens**
+  `cargo test -p admindiff` fails 8 tests (`the_page_map_matches_the_real_mockup`,
+  `the_harness_records_every_real_registry_menu`, `the_real_mockup_draws_only_declared_*`
+  and others) since the redesign mockup commits 4fa3b2e0, 0390ec07 and b4303e23
+  (2026-11-23) added the character, characters, group, groups and items screens and the
+  `players.menu.user` menu, which `tools/admindiff/src/pages.rs` `PAGE_MAP` and its menu
+  lists do not declare. Fix: declare them (Pending or mapped) in one PAGE_MAP pass.
+- [ ] **Two change-note inputs with different behaviour**
+  The confirm dialog's note (`core/admin/src/templates/modal.html.tmpl:19`, gated by
+  `data-reason-required` in admin.js) and the form note (`reason_field`,
+  `primitives.html.tmpl:285`, browser `required`) differ in markup, error style and how
+  they block submit (6856ea04). Fix: one shared note macro for both.
+- [ ] **Macro-coverage gate checks one signature per macro, not each branch**
+  `golden_cases_cover_every_macro_variant_and_state` (`core/admin/src/golden_tests/macros.rs`)
+  passes when any case renders a macro's signature, so `{% if %}` branches can stay
+  unrendered: the disabled `reason_field` of a read-only panel form has no golden. Fix:
+  read each macro's branches from the template source and require a case per branch, or
+  rename the test to what it checks; then add a read-only `panel_form` case with a note.
+- [ ] **Change-note test and golden weaknesses**
+  The Optional-note test's `!raw.contains(r#"autocomplete="off" required"#)`
+  (`core/admin/src/tests.rs`) depends on attribute order; assert no `required` inside the
+  `_reason` input tag instead. The `panel_form_reason` golden builds on `moded_form()`,
+  which already has a field labelled "Reason", so it shows two "Reason" labels; give the
+  fixture a `reason_label`.
+- [ ] **Panel form has no banner for unmatched errors**
+  A provider `FieldErrors` on a key the panel form does not draw is not shown on the panel
+  re-render; only the modal has an error banner (`core/admin/src/render/modal.rs:114-121`).
 
 ### Known limits (admin-control-plane-redesign step 22)
 

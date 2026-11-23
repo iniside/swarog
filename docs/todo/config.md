@@ -35,3 +35,17 @@ _None._
   `modules/config/src/lib.rs:93-97` says any two concurrent multi-row
   statements can deadlock; a multi-row DELETE locks all its rows before its
   AFTER bumps and cannot. Comment only.
+- [ ] **Byte-order default-key test is weak on non-C collations**
+  `no_key_param_selects_the_first_key_in_byte_order` (`modules/config/src/admin_tests.rs`,
+  0007e9e5) expects `a_z, ab, k`; ICU and Windows collations also sort `a_z` first, so
+  dropping `COLLATE "C"` (`modules/config/src/store.rs`) stays green there. Fix: add keys
+  `0x` and `_x` and expect `0x, _x, a_z, ab, k`, with a literal expected key instead of the
+  test's own ORDER BY.
+- [ ] **Revisions entry order not checked on rendered HTML**
+  The config tests assert the `TimelineEntry` carriers (summary "rev N by", one User badge),
+  not the drawn text, so a reorder of the `timeline` macro (`core/admin/src/templates/primitives.html.tmpl:264`)
+  would stay green. Fix: a golden of a summary-plus-badge timeline entry in core/admin.
+- [ ] **500-key read bound proven only in memory**
+  `the_type_filter_sees_past_the_drawn_rows` proves the store read goes past 100 rows, not
+  that it reaches `MAX_READ` (500); a SQL limit of 101 passes it. The unit test pins the
+  in-memory side only.
