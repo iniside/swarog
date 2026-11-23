@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::mock::mock_tests::FakeRepo;
 use crate::pages::{
-    Lists, MockModalExclusion, MockOpener, Modal, ModalWhy, Page, PortalModal, EXCLUDED_MOCK_APPENDS, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS,
+    Lists, MockModalExclusion, MockOpener, Modal, ModalWhy, Page, PortalModal, Route, EXCLUDED_MOCK_APPENDS, EXCLUDED_MOCK_MENUS, EXCLUDED_MOCK_MODALS, EXCLUDED_TABS,
     LISTS, NON_TAB_KEYS, PAGE_MAP, PALETTE_ONCLICK,
 };
 use crate::{crawl, parse_args, run_diff, validate_renders, validated_mockup, Command, DEFAULT_BASE_URL, DEFAULT_USER};
@@ -101,10 +101,13 @@ fn run_diff_refuses_a_crawl_without_its_clean_marker() {
 
 #[test]
 fn run_diff_refuses_a_pending_page() {
-    let repo = FakeRepo::new("diff-pending", &mock_html(&body(true)));
+    let pending = Page { page: "zzz", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false };
+    let map: Vec<Page> = PAGE_MAP.iter().copied().chain([pending]).collect();
+    let repo = FakeRepo::with_map("diff-pending", &mock_html(&body(true)), &map);
     let dir = crawl_dir("diff-pending-crawl", &portal_html(&body(true)), true);
-    let e = format!("{:#}", run_diff(repo.path(), &LISTS, "audit", dir.path(), false).expect_err("pending"));
-    assert!(e.contains("page audit is pending"), "{e}");
+    let lists = Lists { page_map: &map, ..LISTS };
+    let e = format!("{:#}", run_diff(repo.path(), &lists, "zzz", dir.path(), false).expect_err("pending"));
+    assert!(e.contains("page zzz is pending"), "{e}");
 }
 
 #[test]

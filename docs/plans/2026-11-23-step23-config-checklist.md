@@ -148,10 +148,12 @@ Method: targeted reads with line numbers and scoped ripgrep (each a lower bound)
 |---|---|---|---|
 | Title "Revisions", `flush` | `pp:102` | `ContributionDecl.title` | ok |
 | Preamble "Pending change vs rev N" + diff block | `pp:101-102` | none | **contract gap** (D6, P2-7): accept line + todo item |
-| Entry 1: time, "rev N by actor", icon edit, tone accent | `pp:103` | `TimelineEntry{at = updated_at, verb "rev N by", actor Cell User (FAKE), icon "edit", tone Accent}` | rev, time and value REAL; actor **FAKE** |
+| Entry 1: time, "rev N by actor", icon edit, tone accent | `pp:103` | `TimelineEntry{at = updated_at, summary "rev N by", badges [Cell User] (FAKE), actor None, verb "", icon "edit", tone Accent}` | rev, time and value REAL; writer **FAKE** |
 | Entry 1 meta: `span.mono` value | `pp:103` | `detail = value` (plain) | value REAL; mono span **contract gap** (ADMIN2-39 via P2-6) |
-| Entries 2-3: rev N-1, N-2, old value, "restore" | `pp:104-105` | `TimelineEntry` ×2 | **data: FAKE** (D6; C2); restore link **contract gap** ADMIN2-39 |
+| Entries 2-3: rev N-1, N-2, old value, "restore" | `pp:104-105` | `TimelineEntry` ×2, mapped as entry 1 | **data: FAKE** (D6; C2); restore link **contract gap** ADMIN2-39 |
 | Date labels "Oct 14" | `pp:104-105` | `Timeline.date_only: true` | H6 |
+
+The timeline draws `actor` before `verb`, so a mockup verb+actor pair whose text precedes the actor ("rev N by <user>") maps onto `summary` + `badges`, which draw in that order.
 
 ## 2. States per panel, and URLs
 
@@ -262,6 +264,7 @@ Owner decisions D1-D7 are in §11; C1-C9 under "Gaps decided" were accepted by t
 - Revisions:
   - `mock-only` preamble `div.muted` + `div.code` with diff spans: `contract gap` (P2-7/D6, todo item);
   - `mock-only ×2 a` restore and `×3 span.mono` in `div.meta`: `contract gap` ADMIN2-39 (P2-6);
+  - the writer after the "rev N by" summary: mock `P.actor`/`userCell` markup vs the portal's badge `span.user-cell`, if they differ (data difference, FAKE writer; as the Keys Updated actor);
   - with no keys: `portal-only div.state` and `mock-only ul.tl` (data difference).
 
 Every existing accept file with the `#ecbb9a` line (15 files, grep V):

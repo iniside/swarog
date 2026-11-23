@@ -198,6 +198,12 @@ fn keys_body_filters_the_read_then_caps_the_draw() {
     assert!(table(&ints).rows.iter().all(|r| r.cells[1].value == "int"));
     assert!(ints.foot.is_some());
     assert_eq!(ints.meta.as_deref(), Some("300"));
+    // The strings are the last 150 rows: a cap before the filter would draw none of them.
+    let strings = keys_body(&page, Some(ValueType::String), None, None);
+    assert_eq!(table(&strings).rows.len(), MAX_ROWS);
+    assert!(table(&strings).rows.iter().all(|r| r.cells[1].value == "string"));
+    assert_eq!(table(&strings).rows[0].cells[0].value, "b.s000");
+    assert!(strings.foot.is_some());
 
     let json = keys_body(&page, Some(ValueType::Json), None, None);
     assert!(table(&json).rows.is_empty());
@@ -259,11 +265,15 @@ fn selected(display_key: &str, value: &str, revision: i64) -> Selected {
 fn revisions_body_draws_the_current_then_fake_priors() {
     let body = revisions_body(&selected("game.limit", "42", 30));
     let tl = timeline(&body);
+    // The timeline draws actor, title, verb, summary, then badges (primitives.html.tmpl
+    // `timeline`): with only a summary and one badge an entry reads "rev N by <writer>".
     assert!(tl.date_only && !tl.live && tl.cursor_before.is_none());
     let current = &tl.entries[0];
     assert_eq!(current.at, "day-0");
-    assert_eq!(current.verb, "rev 30 by");
-    assert_eq!(current.actor.as_ref().map(|a| (a.kind, a.value.as_str())), Some((CellKind::User, fake_by("game.limit"))));
+    assert_eq!((current.verb.as_str(), current.summary.as_str()), ("", "rev 30 by"));
+    assert!(current.actor.is_none() && current.title.is_none() && current.target.is_none());
+    let writer: Vec<(CellKind, &str)> = current.badges.iter().map(|b| (b.kind, b.value.as_str())).collect();
+    assert_eq!(writer, [(CellKind::User, fake_by("game.limit"))]);
     assert_eq!(current.detail.as_deref(), Some("42"));
     assert_eq!((current.icon.as_str(), current.tone), ("edit", Some(Tone::Accent)));
 
@@ -273,11 +283,14 @@ fn revisions_body_draws_the_current_then_fake_priors() {
     assert!(prior[0].0 < 30 && prior[1].0 < prior[0].0);
     assert!(prior[0].1 >= 1 && prior[1].1 > prior[0].1 && prior[1].1 <= store::MAX_DAYS_BACK as usize);
     for (entry, (revision, days)) in tl.entries[1..].iter().zip(&prior) {
-        assert_eq!(entry.verb, format!("rev {revision} by"));
+        assert_eq!((entry.verb.as_str(), entry.summary.clone()), ("", format!("rev {revision} by")));
+        assert!(entry.actor.is_none());
         assert_eq!(entry.at, format!("day-{days}"));
         assert_eq!(entry.detail.as_deref(), Some("42"));
         assert!(entry.tone.is_none());
-        assert!(FAKE_LOGINS.contains(&entry.actor.as_ref().unwrap().value.as_str()));
+        assert_eq!(entry.badges.len(), 1);
+        assert_eq!(entry.badges[0].kind, CellKind::User);
+        assert!(FAKE_LOGINS.contains(&entry.badges[0].value.as_str()));
     }
     assert_eq!(revisions_body(&selected("game.limit", "42", 30)), body, "stable across reloads");
 
@@ -366,7 +379,8 @@ async fn panels_read_the_store() {
     let revisions = admin.panel(query(REVISIONS, None, &[("key", &limit_key)])).await.unwrap();
     let entries = &timeline(&revisions).entries;
     assert_eq!(entries[0].at, limit_at);
-    assert_eq!(entries[0].verb, format!("rev {limit_rev} by"));
+    assert_eq!(entries[0].summary, format!("rev {limit_rev} by"));
+    assert!(entries[0].verb.is_empty() && entries[0].actor.is_none());
     assert_eq!(entries[0].detail.as_deref(), Some("42"));
     for entry in &entries[1..] {
         assert!(entry.at < limit_at, "a prior revision is dated before the current one: {}", entry.at);
@@ -386,7 +400,10 @@ async fn no_key_param_selects_the_first_key_in_byte_order() {
     let _guard = CONFIG_DB_TEST_GUARD.lock().await;
     let Some(pool) = test_pool().await else { return };
     let ns = unique_ns(&pool).await;
-    Service::new(pool.clone()).set(&ns, "k", "v").await.unwrap();
+    let svc = Service::new(pool.clone());
+    for key in ["k", "ab", "a_z"] {
+        svc.set(&ns, key, "v").await.unwrap();
+    }
     let (first,): (String,) = sqlx::query_as(
         r#"SELECT namespace || '.' || key FROM config.settings ORDER BY namespace COLLATE "C", key COLLATE "C" LIMIT 1"#,
     )
@@ -400,5 +417,35 @@ async fn no_key_param_selects_the_first_key_in_byte_order() {
     let highlighted: Vec<&str> =
         table(&keys).rows.iter().filter(|r| r.highlight).map(|r| r.cells[0].value.as_str()).collect();
     assert_eq!(highlighted, [first.as_str()]);
+    // Byte order puts '_' (0x5F) before 'b'; a linguistic collation ignores '_' and sorts
+    // "ab" before "a_z".
+    let prefix = format!("{ns}.");
+    let ours = admin.panel(query(KEYS, Some(&prefix), &[])).await.unwrap();
+    let names: Vec<&str> = table(&ours).rows.iter().map(|r| r.cells[0].value.as_str()).collect();
+    let want = ["a_z", "ab", "k"].map(|k| format!("{ns}.{k}"));
+    assert_eq!(names, want.iter().map(String::as_str).collect::<Vec<_>>());
+    cleanup(&pool, &ns).await;
+}
+
+#[tokio::test]
+async fn the_type_filter_sees_past_the_drawn_rows() {
+    let _guard = CONFIG_DB_TEST_GUARD.lock().await;
+    let Some(pool) = test_pool().await else { return };
+    let ns = unique_ns(&pool).await;
+    let svc = Service::new(pool.clone());
+    for i in 0..=MAX_ROWS {
+        svc.set(&ns, &format!("s{i:03}"), "text").await.unwrap();
+    }
+    svc.set(&ns, "zz", "7").await.unwrap();
+    let admin = ConfigAdmin::new(pool.clone());
+    let prefix = format!("{ns}.");
+    let int_key = format!("{ns}.zz");
+
+    let all = admin.panel(query(KEYS, Some(&prefix), &[])).await.unwrap();
+    assert_eq!(table(&all).rows.len(), MAX_ROWS);
+    assert!(table(&all).rows.iter().all(|r| r.cells[0].value != int_key), "the int key sorts past the drawn rows");
+    let ints = admin.panel(query(KEYS, Some(&prefix), &[("type", "int")])).await.unwrap();
+    let names: Vec<&str> = table(&ints).rows.iter().map(|r| r.cells[0].value.as_str()).collect();
+    assert_eq!(names, [int_key.as_str()], "the filter reads up to MAX_READ keys, not the drawn MAX_ROWS");
     cleanup(&pool, &ns).await;
 }

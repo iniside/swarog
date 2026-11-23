@@ -68,7 +68,9 @@ fn mockup_pages_reads_html_stems_and_fails_on_a_page_without_boot() {
 #[test]
 fn lookup_returns_mapped_first_row_and_pending_pages_and_refuses_excluded_and_unknown() {
     assert_eq!(lookup(&LISTS, "index").expect("mapped").route, Route::Mapped("/admin"));
-    assert_eq!(lookup(&LISTS, "audit").expect("pending pages resolve").route, Route::Pending);
+    let pending = [Page { page: "zzz", ..PENDING }];
+    let lists = Lists { page_map: &pending, ..LISTS };
+    assert_eq!(lookup(&lists, "zzz").expect("pending pages resolve").route, Route::Pending);
     let entity = lookup(&LISTS, "player").expect("first-row pages resolve");
     assert_eq!(entity.route, Route::FirstRow("players"));
     assert_eq!(entity.search, "?u=aiko.tanaka", "an entity page carries its fixed entity");

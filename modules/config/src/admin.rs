@@ -325,15 +325,17 @@ pub(crate) fn edit_body(row: &KeyRow) -> PanelBody {
     body
 }
 
+/// One Revisions entry, read "rev N by <writer>": the timeline draws the actor before the verb,
+/// so the text is the summary and the writer the one badge, which draw after it.
 fn revision_entry(at: &str, revision: i64, by: &str, value: &str, tone: Option<Tone>) -> TimelineEntry {
     TimelineEntry {
         at: at.to_string(),
-        actor: Some(cell(CellKind::User, by)),
+        actor: None,
         title: None,
-        verb: format!("rev {revision} by"),
+        verb: String::new(),
         target: None,
-        summary: String::new(),
-        badges: Vec::new(),
+        summary: format!("rev {revision} by"),
+        badges: vec![cell(CellKind::User, by)],
         detail: Some(value.to_string()),
         icon: "edit".to_string(),
         tone,
