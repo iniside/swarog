@@ -233,7 +233,7 @@ New `todo` items:
 
 ## 6. Gaps and decisions
 
-Owner decisions D1-D7 are in §11; proposals the owner has not settled are C1-C9 under "Gaps as proposed". The plan's Step 23 block cites this numbering.
+Owner decisions D1-D7 are in §11; C1-C9 under "Gaps decided" were accepted by the owner as recommended (2026-11-23). The plan's Step 23 block cites this numbering.
 
 ## 7. Accept-file plan (predicted; exact text needs a crawl)
 
@@ -366,7 +366,7 @@ Owner 2026-11-23:
 
 Parts in order: **23s** → **23r0** → **23a1** → **23a2** → **23t** → **23b**, with lanes and files as in §10.
 
-## Gaps as proposed (not yet decided)
+## Gaps decided (owner 2026-11-23, as recommended)
 
 - **C1. Page id.** `PAGE = "settings"`, route `/admin/p/config/settings` (noun per page, as `keys`, `outbox`, `schedules`). An unknown `key` param shows Empty in Edit and Revisions; it does not fall back to the default.
 - **C2. FAKE prior revisions.** Two entries below the real one:
@@ -374,9 +374,9 @@ Parts in order: **23s** → **23r0** → **23a1** → **23a2** → **23t** → *
   - actor from config's own fixed login list via `fake_hash("config.by", key)`;
   - time = `updated_at - make_interval(days => h)` in SQL;
   - value = the current value, marked `// FAKE: no history is kept`. Alternative: "—".
-- **C3. Create write.** A new insert-only store fn (`INSERT … ON CONFLICT DO NOTHING`, rows = 0 → Conflict). It shares `validate_ident` and the trigger path. "Existing set" is an upsert and would overwrite.
+- **C3. Create write.** A new insert-only store fn (`INSERT … ON CONFLICT DO NOTHING`; rows = 0 → the `key` field error of §3 rule 5). It shares `validate_ident` and the trigger path. "Existing set" is an upsert and would overwrite.
 - **C4. Change note text.** The mockup's placeholder says "stored with the revision", but the note lands in the audit log (`act:593-611`). Proposal: label "Change note", placeholder "Why? (recorded in the audit log)", plus hand-check H9.
-- **C5. Crawl data.** A fresh fleet probably has 0 keys, and no public API can seed config (seed rule, skill §5). Either accept three empty-state data differences for good, or let the orchestrator create keys through the portal's "+ Key" before the crawl (that is a seed, which needs the owner's leave).
+- **C5. Crawl data.** A fresh fleet probably has 0 keys, and no public API can seed config (seed rule, skill §5). Either accept three empty-state data differences for good, or let the orchestrator create keys through the portal's "+ Key" before the crawl (that is a seed, which needs the owner's leave). **Decided: accept the empty states (no seeding).**
 - **C6. Edit keeps type.** A value that derives to another type is a field error; changing a key's type is out of scope (no delete action in the mockup).
 - **C7. `updated_at`.** Let the 23s BEFORE trigger also set `updated_at = now()`, so raw-SQL updates (`sp:1053` upsert sets no `updated_at`) stay truthful in the Updated column.
 - **C8. Large values.** Values over 4096 bytes (`cp:205`; splitproof writes one, `sp:4373`) cannot be edited from the portal. Known-limit todo item.
