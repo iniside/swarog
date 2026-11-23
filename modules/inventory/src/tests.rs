@@ -1951,7 +1951,7 @@ fn admin_cursor_and_owner_select_are_checked() {
     for bad in ["", "player", "player:x", "guild:x:coin", "player::coin", "player:x:"] {
         assert_eq!(admin::parse_cursor(bad).unwrap_err().status, Status::Invalid, "{bad:?}");
     }
-    assert_eq!(admin::owner_filter(Some("")).unwrap(), None, "the empty option narrows nothing");
+    assert_eq!(admin::owner_filter(None).unwrap(), None, "no owner narrows nothing");
     assert_eq!(admin::owner_filter(Some("character")).unwrap(), Some("character"));
     assert_eq!(admin::owner_filter(Some("guild")).unwrap_err().status, Status::Invalid);
 }

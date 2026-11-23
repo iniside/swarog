@@ -676,9 +676,10 @@ async fn panel(
     let before = query.remove(render::QUERY_BEFORE);
     let queue_state = query.remove(render::QUERY_STATE);
     let declared = panels::declared_params(manifest, decl);
-    // The one place deciding that an empty or `"any"` filter value narrows nothing: it never
-    // reaches a provider's `PanelQuery.params`, local or remote, nor the panel's own URLs.
-    query.retain(|key, value| declared.contains(key.as_str()) && !value.is_empty() && value != "any");
+    // The one place deciding that an empty filter value (a select's "all" option) narrows
+    // nothing: it never reaches a provider's `PanelQuery.params`, local or remote, nor the
+    // panel's own URLs. Every non-empty value is a real value, `"any"` included.
+    query.retain(|key, value| declared.contains(key.as_str()) && !value.is_empty());
     let mut kept = query.clone();
     let typed = [
         (panels::QUERY_RANGE, &raw_range),

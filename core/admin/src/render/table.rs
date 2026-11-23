@@ -38,7 +38,8 @@ pub(crate) struct RowView {
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct FilterView {
     pub(crate) label: String,
-    pub(crate) value: String,
+    /// The filter's current value; `None` when it narrows nothing.
+    pub(crate) value: Option<String>,
     /// A `FilterKind::Select` draws a select; every other kind a chip.
     pub(crate) select: Option<SelectView>,
 }
@@ -90,8 +91,8 @@ pub(super) fn page_label(page: &controlplane::PageInfo, ctx: &Ctx<'_>) -> Option
     }
 }
 
-/// An absent filter value reads as `"any"` and a Select draws its "all" placeholder (the panel
-/// route drops an empty or `"any"` value before it gets here). A Select's current value
+/// An absent filter value is `None` and a Select draws its "all" placeholder (the panel route
+/// drops an empty value before it gets here). A Select's current value
 /// outside its declared options is drawn as one more selected option, so the select shows
 /// what the table is filtered by rather than its "all" placeholder.
 pub(super) fn filter_views(filters: &[controlplane::FilterDef], ctx: &Ctx<'_>) -> Vec<FilterView> {
@@ -117,7 +118,7 @@ pub(super) fn filter_views(filters: &[controlplane::FilterDef], ctx: &Ctx<'_>) -
                 }
                 FilterKind::Enum(_) | FilterKind::Text | FilterKind::Range | FilterKind::Bool | FilterKind::Ref(_) => None,
             };
-            FilterView { label: f.label.clone(), value: current.unwrap_or("any").to_string(), select }
+            FilterView { label: f.label.clone(), value: current.map(str::to_string), select }
         })
         .collect()
 }

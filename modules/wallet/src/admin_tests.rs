@@ -586,8 +586,6 @@ async fn the_ledger_narrows_by_search_reason_and_currency_and_counts_the_selecti
     let in_two = read(Some(&a), &[("currency", two.as_str())]).await.unwrap();
     assert_eq!(reasons(&in_two), [crate::projection::REASON]);
     assert_eq!(table(&in_two).page.total, Some(1));
-    let empty_select = read(Some(&a), &[("currency", ""), ("reason", "")]).await.unwrap();
-    assert_eq!(table(&empty_select).page.total, Some(4), "an empty select narrows nothing");
 
     let tx = t.rows[3].cells[6].value.clone();
     let by_tx = read(Some(&tx), &[]).await.unwrap();

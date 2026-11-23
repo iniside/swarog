@@ -2889,20 +2889,20 @@ async fn a_select_filter_draws_an_undeclared_current_value_selected() {
     cleanup_user(&pool, &user).await;
 }
 
-/// A Select filter value of `any` narrows nothing, so the select draws its "all" placeholder
-/// with no option selected and no extra option.
+/// An empty Select filter value (its "all" option) narrows nothing, so the select draws its
+/// "all" placeholder with no option selected and no extra option.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_select_filter_reads_any_as_no_filter() {
+async fn a_select_filter_reads_empty_as_no_filter() {
     let Some(pool) = test_pool().await else { return };
     let (_ctx, st) = wired(&pool, false, true).await;
-    let user = uniq("t-select-any");
+    let user = uniq("t-select-empty");
     let cookie = operator_cookie(&pool, &user).await;
     let engine = region_select_engine().await;
 
-    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/support/list?region=any").await;
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/support/list?region=").await;
     assert_eq!(status, StatusCode::OK, "{raw}");
     let drawn = r#"<option value="">Region: all</option><option>eu</option><option>us</option></select>"#;
-    assert!(raw.contains(drawn), "any draws the declared options only, none selected: {raw}");
+    assert!(raw.contains(drawn), "an empty value draws the declared options only, none selected: {raw}");
 
     cleanup_user(&pool, &user).await;
 }
@@ -2990,9 +2990,11 @@ async fn only_declared_page_params_reach_the_panel_query() {
     assert_eq!(status, StatusCode::OK, "{raw}");
     let calls = recording.calls();
     let req = calls.last().expect("the panel reaches its provider");
-    assert!(req.params.is_empty(), "an any value reaches the provider as absent: {:?}", req.params);
-    assert!(!raw.contains("=any"), "an any value stays out of the panel's URLs: {raw}");
-    assert!(raw.contains("<option>eu</option><option>us</option>"), "any selects no option: {raw}");
+    let any = BTreeMap::from([("region".to_string(), "any".to_string()), ("tier".to_string(), "any".to_string())]);
+    assert_eq!(req.params, any, "\"any\" is a real value and reaches the provider");
+    assert!(raw.contains("region=any") && raw.contains("tier=any"), "an any value stays in the panel's URLs: {raw}");
+    assert!(raw.contains("<option>eu</option><option>us</option><option selected>any</option>"), "any is the selected option: {raw}");
+    assert!(raw.contains("Tier: <b>any</b>"), "the chip shows the any value: {raw}");
 
     let uri = "/admin/_panel/support/load?shard=s1&region=eu&range=7d";
     let (status, raw) = portal_get(&engine, &st, &cookie, uri).await;

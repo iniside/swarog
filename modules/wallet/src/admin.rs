@@ -190,7 +190,7 @@ impl WalletAdmin {
     /// id) and the Currency and Reason selects, counted for the foot.
     async fn ledger(&self, req: &PanelQuery) -> Result<PanelBody, Error> {
         let after = req.cursor.as_deref().map(parse_cursor).transpose()?;
-        let param = |key: &str| req.params.get(key).map(String::as_str).filter(|v| !v.is_empty());
+        let param = |key: &str| req.params.get(key).map(String::as_str);
         let (reason, key_prefix) = reason_filter(param(PARAM_REASON))?;
         let filter = LedgerFilter {
             player: None,

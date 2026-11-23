@@ -59,7 +59,7 @@ impl InventoryAdmin {
         let id = player_id(req)?;
         let owner_type = owner_filter(req.params.get(PARAM_OWNER).map(String::as_str))?;
         let kinds = self.inner.store.item_kinds().await.map_err(crate::internal)?;
-        let kind = match selected(req.params.get(PARAM_TYPE).map(String::as_str)) {
+        let kind = match req.params.get(PARAM_TYPE).map(String::as_str) {
             Some(k) if !kinds.iter().any(|known| known == k) => {
                 return Err(Error::invalid(format!("{MODULE}: unknown item type {k:?}")));
             }
@@ -117,14 +117,9 @@ fn player_id(req: &PanelQuery) -> Result<&str, Error> {
     }
 }
 
-/// A select's value; the empty first option narrows nothing.
-fn selected(value: Option<&str>) -> Option<&str> {
-    value.filter(|v| !v.is_empty())
-}
-
 /// The Owner select: an owner type, or nothing.
 pub(crate) fn owner_filter(value: Option<&str>) -> Result<Option<&str>, Error> {
-    match selected(value) {
+    match value {
         Some(v) if !OWNER_TYPES.contains(&v) => Err(Error::invalid(format!("{MODULE}: unknown owner type {v:?}"))),
         v => Ok(v),
     }
