@@ -296,6 +296,8 @@ Every existing accept file with the `#ecbb9a` line (15 files, grep V):
 
 ## 9. Splitproof (23t)
 
+**Dropped by the owner (2026-11-24):** 23t is not done; nothing below is executed. The split write path is a known limit in `docs/todo/config.md`.
+
 New `tools/splitproof/src/config_admin_checks.rs`, on the `apikeys_admin_checks.rs` pattern (`spa:57-108` `assertions`/`cleanup`, `open :406`, `post :420`, `fetch :538`, `audit_mark/since :496-518`). Run in both topologies, plus the break run (admin-svc without its config peer: the page renders the panel error state, not a 500).
 
 - Seed namespace `proof_cfgadmin`: `DELETE … WHERE namespace = 'proof_cfgadmin'` before and after each pass. Every check re-reads its row's revision, never a global one, so other checks' writes cannot race it (D1).
@@ -365,9 +367,9 @@ Owner 2026-11-23:
   - Drawn in the panel form and the modal form as `name="_reason"`. `Required` is enforced for `Form` in `build_submission` (`act:507`).
   - The plumbing exists (`act:386-397,479,586-611`; `rt:1196-1203`). Public surface: regenerate `pab/controlplane.txt` in the same commit.
 - **D6 —** "Pending change vs rev N" and its diff block are a `contract gap` accept entry plus a todo item. The Revisions timeline is FAKE except the current value and revision. ADMIN2-39 (`todo:418-424`) covers the restore link and, per P2-6, the `span.mono` value.
-- **D7 — CONFIG-04 (`ctodo:23-28`) is stale.** Its seams no longer exist (the adminapi page was razed in plan step 1, `plan:500-501`; `cl:522-524` is now the edge contribution). 23a1 moves it to `config-done.md` as "(2026-11-2x, admin-control-plane-redesign step 23)". Note that split writes go through `cp.invoke` (23a2) and are proven by 23t CF2-CF4. `config-done.md` is `_None._` today (V).
+- **D7 — CONFIG-04 (`ctodo:23-28`) is stale.** Its seams no longer exist (the adminapi page was razed in plan step 1, `plan:500-501`; `cl:522-524` is now the edge contribution). 23a1 moves it to `config-done.md` as "(2026-11-2x, admin-control-plane-redesign step 23)". Note that split writes go through `cp.invoke` (23a2); 23t, which would have proven them (CF2-CF4), was dropped (owner 2026-11-24). `config-done.md` is `_None._` today (V).
 
-Parts in order: **23s** → **23r0** → **23a1** → **23a2** → **23t** → **23b**, with lanes and files as in §10.
+Parts in order: **23s** → **23r0** → **23a1** → **23a2** → **23b** (23t dropped, owner 2026-11-24), with lanes and files as in §10.
 
 ## Gaps decided (owner 2026-11-23, as recommended)
 

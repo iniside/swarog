@@ -2445,8 +2445,9 @@ The ports:
     selection through `PageDecl.params` (K20), `pages.rs` route, todo items, CONFIG-04.
   - **23a2** (Na2): the PanelForm edit with the per-key compare-and-swap, the "+ Key" create,
     the conformance probe, `EXCLUDED_MODALS`.
-  - **23t** (`[opus]` test-author, after 23a2): config admin splitproof checks in both
-    topologies (checklist §9); proof-auditor audits.
+  - **23t** — dropped by the owner (2026-11-24): no config admin splitproof. Checklist §9
+    stays as the unexecuted spec; the split write path is a known limit in
+    `docs/todo/config.md`.
   - **23b**: accept files after the crawls, including the nav `#ecbb9a` re-count now that
     Config & flags is ported.
 - **Step 24 — audit.** Audit log page (`pages-platform.js:112-126`), and the dashboard

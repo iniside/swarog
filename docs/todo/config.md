@@ -49,3 +49,9 @@ _None._
   `the_type_filter_sees_past_the_drawn_rows` proves the store read goes past 100 rows, not
   that it reaches `MAX_READ` (500); a SQL limit of 101 passes it. The unit test pins the
   in-memory side only.
+- [ ] **Config admin writes are not proven in the split**
+  The config page's edit and create go through `cp.invoke` from admin-svc to config-svc
+  (part 23a2), but no splitproof drives them: part 23t was dropped (owner 2026-11-24). Not
+  proven in the split: the page render, the edit and its `admin.action` change note, the
+  stale-revision 409, the duplicate-key 422, the refusals, and admin-svc without its config
+  peer. Spec: docs/plans/2026-11-23-step23-config-checklist.md §9 (CF1-CF5).
