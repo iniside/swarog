@@ -20,7 +20,7 @@
 {%- if m.type_to_confirm %}<div style="margin-top:10px"><div style="font-size:12px;margin-bottom:4px">Type <b class="mono">{{ m.type_to_confirm }}</b> to confirm</div><input class="input mono" style="width:100%" name="_confirm" data-confirm-type="{{ m.type_to_confirm }}" autocomplete="off"></div>{% endif -%}
 {%- endif -%}
 </div>
-<div class="modal-foot"><span class="muted" style="margin-right:auto;font-size:12px;align-self:center"></span><button type="button" class="btn" data-modal-close>Cancel</button><button type="submit" class="btn {{ m.go }} go"{% if gated or m.locked %} disabled{% endif %}>{{ m.form.submit_label if m.form else m.confirm_label }}</button></div>
+<div class="modal-foot">{% if not m.form %}<span class="muted" style="margin-right:auto;font-size:12px;align-self:center"></span>{% endif %}<button type="button" class="btn" data-modal-close>Cancel</button><button type="submit" class="btn {{ m.go }} go"{% if gated or m.locked %} disabled{% endif %}>{{ m.form.submit_label if m.form else m.confirm_label }}</button></div>
 </form>
 </div>
 {%- endmacro %}

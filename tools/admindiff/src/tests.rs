@@ -929,14 +929,23 @@ fn the_wallet_claims_hold_on_the_drawn_user_menu() {
 
 /// The inventory a clean [`crate::pages::validate_mock_modals`] call of the production lists sees:
 /// `mail` draws its excluded `cancelMail`, `events` its mapped `skipPoison`, and each the shell
-/// palette; every other host of an `EXCLUDED_MODALS` claim that is no excluded menu, a menu
-/// target, draws no opener.
+/// palette; every other host of an `EXCLUDED_MODALS` claim that is no excluded menu, a page or
+/// menu target, draws the openers of the `PAGE_MAP` modal entries it hosts and no other.
 fn claim_inventory() -> Vec<(String, Vec<MockOpener<String>>)> {
     let drawn = |name: &str| vec![MockOpener::Pages(name.to_string()), MockOpener::Onclick(PALETTE_ONCLICK.to_string())];
     let mut inventory = vec![("mail".to_string(), drawn("cancelMail")), ("events".to_string(), drawn("skipPoison"))];
     for (host, _, _) in crate::pages::EXCLUDED_MODALS {
         if !host.contains(".excluded-menu.") && !inventory.iter().any(|(h, _)| h == host) {
             inventory.push((host.to_string(), Vec::new()));
+        }
+    }
+    for p in crate::pages::PAGE_MAP {
+        let Some(modal) = p.modal else { continue };
+        let opener = MockOpener::Pages(modal.opener.to_string());
+        if let Some((_, openers)) = inventory.iter_mut().find(|(h, _)| *h == p.host().id()) {
+            if !openers.contains(&opener) {
+                openers.push(opener);
+            }
         }
     }
     inventory

@@ -395,8 +395,26 @@ pub const PAGE_MAP: &[Page] = &[
         route: Route::Mapped("/admin/p/apikeys/keys"),
         search: "",
         tab: None,
+        menu: None,
+        modal: Some(Modal { id: "create-key", opener: "createKey", args: &[], module: "apikeys", action: "key.create" }),
+        force: false,
+    },
+    Page {
+        page: "apikeys",
+        route: Route::Mapped("/admin/p/apikeys/keys"),
+        search: "",
+        tab: None,
         menu: Some(Menu { mock: "apikey", kind: "apikey" }),
         modal: None,
+        force: false,
+    },
+    Page {
+        page: "apikeys",
+        route: Route::Mapped("/admin/p/apikeys/keys"),
+        search: "",
+        tab: None,
+        menu: Some(Menu { mock: "apikey", kind: "apikey" }),
+        modal: Some(Modal { id: "revoke", opener: "revokeKey", args: &["ak_9f2c"], module: "apikeys", action: "key.revoke" }),
         force: false,
     },
     Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None, modal: None, force: false },
@@ -449,6 +467,7 @@ pub const EXCLUDED_MENUS: &[(&str, &str, &str)] = &[
     ),
     ("player.inventory", "holding", "the mockup's inventory row button has no handler (pages-core.js:133)"),
     ("player.friends", "friendship", "the mockup's friends row button has no handler (pages-core.js:135)"),
+    ("apikeys", "apirole", "the mockup's Roles row button has no handler (pages-platform.js:35)"),
 ];
 
 /// Modal actions the portal draws on a compared page or tab, or in a menu target's or excluded
@@ -469,6 +488,22 @@ pub const EXCLUDED_MODALS: &[(&str, &str, ModalWhy)] = &[
         "events.excluded-menu.subscription",
         "core.events/sub.pause",
         ModalWhy { why: "the mockup draws no subscription menu and no pause opener: its events row button only toasts (pages-platform.js P.events)" },
+    ),
+    ("apikeys", "apikeys/role.create", ModalWhy { why: "the mockup's + Role tool has no onclick, so the mockup has no modal (pages-platform.js:34)" }),
+    (
+        "apikeys.excluded-menu.apirole",
+        "apikeys/role.edit",
+        ModalWhy { why: "the mockup defines no apirole menu: its Roles row button has no handler, so it has no modal (pages-platform.js:35)" },
+    ),
+    (
+        "apikeys.excluded-menu.apirole",
+        "apikeys/role.delete",
+        ModalWhy { why: "the mockup defines no apirole menu: its Roles row button has no handler, so it has no modal (pages-platform.js:35)" },
+    ),
+    (
+        "apikeys.menu.apikey",
+        "apikeys/key.change-role",
+        ModalWhy { why: "the mockup's Change role… only toasts 'Role picker…', so the mockup has no modal (pages-platform.js:13)" },
     ),
     (
         "players.menu.user",
@@ -866,8 +901,6 @@ pub const EXCLUDED_MOCK_MODALS: &[MockModalExclusion] = &[
         PortalModal::Disabled("apikeys/key.rotate"),
         "no rotation exists: the portal draws Rotate secret… disabled as not implemented",
     ),
-    mock_modal("apikeys", MockOpener::Pages("createKey"), PortalModal::Absent("apikeys"), "apikeys/key.create lands in Step 21a2"),
-    mock_modal("apikeys.menu.apikey", MockOpener::Pages("revokeKey"), PortalModal::Absent("apikeys"), "apikeys/key.revoke lands in Step 21a2"),
 ];
 
 /// Accounts' row menu suspend and delete-account actions (`modules/accounts/src/admin.rs`).

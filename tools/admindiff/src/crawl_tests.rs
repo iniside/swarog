@@ -2116,7 +2116,7 @@ async fn a_claim_on_an_unfetched_host_is_reported_unchecked() {
         .map(|x| format!("EXCLUDED_MOCK_MODALS {} {}", x.host, x.opener))
         .collect();
     let fetched: Vec<&str> = EXCLUDED_MOCK_MODALS.iter().map(|x| x.host).filter(|h| !skipped.iter().any(|s| s == h)).collect();
-    assert_eq!(fetched, ["mail", "apikeys.menu.apikey", "apikeys", "apikeys.menu.apikey"], "every other claim is on a skipped host");
+    assert_eq!(fetched, ["mail", "apikeys.menu.apikey"], "every other claim is on a skipped host");
     assert_eq!(c.unchecked, want);
 }
 

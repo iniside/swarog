@@ -580,7 +580,9 @@ fn the_production_modal_exclusions_are_valid() {
     validate_mock_modal_hosts(&LISTS).expect("every EXCLUDED_MOCK_MODALS claim names a compared target");
     assert!(PAGE_MAP.iter().any(|p| p.modal.is_some()), "PAGE_MAP names a modal");
     for p in PAGE_MAP.iter().filter(|p| p.modal.is_some()) {
-        assert!(p.id().contains(".modal.") && PAGE_MAP.iter().any(|q| q.hosts(&p.host())), "{}", p.id());
+        let host = p.host();
+        let hosted = PAGE_MAP.iter().any(|q| q.hosts(&host) || (q.is_menu() && *q == host));
+        assert!(p.id().contains(".modal.") && hosted, "{}", p.id());
     }
 }
 

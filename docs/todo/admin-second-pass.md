@@ -239,19 +239,38 @@ modules/apikeys/src/admin.rs, as committed in admin-control-plane-redesign step 
 
 - [ ] **API key created by**
   ADMIN2-58. Mockup: the Keys panel's "Created by" operator login. Fake:
-  modules/apikeys/src/admin.rs:290 (`fake_creator`, a login from `FAKE_CREATORS` picked by
+  modules/apikeys/src/admin.rs:414 (`fake_creator`, a login from `FAKE_CREATORS` picked by
   `controlplane::fake_hash("apikeys.created_by", name)`): keys record no creator. Replaced by:
   a creator column written from the admin session on create.
 - [ ] **API key last used**
   ADMIN2-59. Mockup: the Keys panel's "Last used" column. Fake:
-  modules/apikeys/src/admin.rs:297 (`fake_last_used`, a "now" badge or a `FAKE_LAST_USED`
+  modules/apikeys/src/admin.rs:421 (`fake_last_used`, a "now" badge or a `FAKE_LAST_USED`
   time picked by `controlplane::fake_hash("apikeys.last_used", name)`): the gateway records
   no key use. Replaced by: a last-use timestamp the verifier records, bounded in write rate.
 - [ ] **Row-bound "Requests by this key" link**
   ADMIN2-60. Mockup: the apikey row menu's "Requests by this key". Action `key.requests`
-  (modules/apikeys/src/admin.rs:661) is a static `Link::Page` to the unfiltered audit log
-  (:594), contract gap P2-1: a `Link::Page` cannot `bind` the row's key. Replaced by: a
+  (modules/apikeys/src/admin.rs:863) is a static `Link::Page` to the unfiltered audit log
+  (:796), contract gap P2-1: a `Link::Page` cannot `bind` the row's key. Replaced by: a
   row-bound link param and an audit log filter by key.
+- [ ] **Revoked key's row menu offers Revoke**
+  ADMIN2-61. Mockup: a revoked key's row menu holds one disabled "Already revoked" item
+  ("revoked keys cannot be restored", UILayout/redesign/assets/pages-platform.js:11). The
+  portal draws the same enabled "Revoke…" on every row (modules/apikeys/src/admin.rs:861) and
+  answers a revoked key with a no-op "already revoked" (:190), contract gap P2-2: a row
+  action cannot be disabled or replaced per entity. Replaced by: a per-entity refusal on a
+  row action, drawn as the mockup's disabled item.
+- [ ] **API key requests in the last 24 hours**
+  ADMIN2-62. Mockup: the revoke confirm's "Requests (24 h)" impact row. Fake:
+  modules/apikeys/src/admin.rs:432 (`fake_requests`, a number below `FAKE_REQUESTS_CAP`
+  picked by `controlplane::fake_hash("apikeys.requests_24h", name)`, drawn at :710): the
+  gateway counts no requests per key. Replaced by: a per-key request count the gateway
+  records, bounded in write rate.
+- [ ] **Create form role help follows the chosen role**
+  ADMIN2-63. Mockup: the create-key form's Role help, the chosen role's scopes as tags
+  (UILayout/redesign/assets/pages-platform.js:26). The portal draws the first role's policy
+  as plain text (modules/apikeys/src/admin.rs:649), contract gap P2-5: a form field's help is
+  static text, neither tags nor bound to the selected option. Replaced by: a per-option
+  help on an Enum field.
 
 ### Pages without a mockup
 
