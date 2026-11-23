@@ -90,7 +90,9 @@ pub(super) fn page_label(page: &controlplane::PageInfo, ctx: &Ctx<'_>) -> Option
     }
 }
 
-/// An empty filter value narrows nothing, so it reads as `"any"`.
+/// An empty filter value narrows nothing, so it reads as `"any"`. A Select's current value
+/// outside its declared options is drawn as one more selected option, so the select shows
+/// what the table is filtered by rather than its "all" placeholder.
 pub(super) fn filter_views(filters: &[controlplane::FilterDef], ctx: &Ctx<'_>) -> Vec<FilterView> {
     filters
         .iter()
@@ -98,14 +100,20 @@ pub(super) fn filter_views(filters: &[controlplane::FilterDef], ctx: &Ctx<'_>) -
             seen::record(&f.kind);
             let current = ctx.param(&f.key).filter(|v| !v.is_empty());
             let select = match &f.kind {
-                FilterKind::Select(options) => Some(SelectView {
-                    key: f.key.clone(),
-                    url: with_param(ctx.path, ctx.query, &f.key, None),
-                    options: options
+                FilterKind::Select(options) => {
+                    let mut views: Vec<OptionView> = options
                         .iter()
                         .map(|o| OptionView { value: o.clone(), selected: current == Some(o.as_str()) })
-                        .collect(),
-                }),
+                        .collect();
+                    if let Some(value) = current.filter(|v| !options.iter().any(|o| o == v)) {
+                        views.push(OptionView { value: value.to_string(), selected: true });
+                    }
+                    Some(SelectView {
+                        key: f.key.clone(),
+                        url: with_param(ctx.path, ctx.query, &f.key, None),
+                        options: views,
+                    })
+                }
                 FilterKind::Enum(_) | FilterKind::Text | FilterKind::Range | FilterKind::Bool | FilterKind::Ref(_) => None,
             };
             FilterView { label: f.label.clone(), value: current.unwrap_or("any").to_string(), select }

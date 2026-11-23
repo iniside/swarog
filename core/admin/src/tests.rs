@@ -2848,6 +2848,42 @@ async fn a_search_hit_opens_its_entity_or_its_page() {
     cleanup_user(&pool, &user).await;
 }
 
+/// A Select filter's current value outside its declared options (a stale bookmark) is drawn
+/// as a selected option of its own, so the select does not read "all" over a filtered table.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_select_filter_draws_an_undeclared_current_value_selected() {
+    let Some(pool) = test_pool().await else { return };
+    let (_ctx, st) = wired(&pool, false, true).await;
+    let user = uniq("t-select-undeclared");
+    let cookie = operator_cookie(&pool, &user).await;
+    let page = controlplane::PageDecl {
+        id: "queue".to_string(),
+        title: "Queue".to_string(),
+        subtitle: String::new(),
+        head_actions: Vec::new(),
+        tiles: Vec::new(),
+        layout: controlplane::Layout::Stack(vec!["list".to_string()]),
+        params: vec!["region".to_string()],
+    };
+    let list = contribution("list", Point::Page("queue".to_string()), Role::Viewer);
+    let manifest = Manifest { pages: vec![page], ..module("support", vec![list], Vec::new(), false) };
+    let mut table = players_table(vec![table_row(None, "Anna")]);
+    if let Primitive::DataTable(t) = &mut table {
+        let kind = controlplane::FilterKind::Select(vec!["eu".to_string(), "us".to_string()]);
+        t.filters = vec![controlplane::FilterDef { key: "region".to_string(), label: "Region".to_string(), kind }];
+    }
+    let recording = Recording::new(manifest, &[("list", answer(table))]);
+    let engine = Arc::new(sourced(vec![recording as Arc<dyn controlplane::Provider>]).await);
+
+    let (status, raw) = portal_get(&engine, &st, &cookie, "/admin/_panel/support/list?region=apac").await;
+    assert_eq!(status, StatusCode::OK, "{raw}");
+    let drawn = r#"<option value="">Region: all</option><option>eu</option><option>us</option><option selected>apac</option>"#;
+    assert!(raw.contains(drawn), "the undeclared current value is the one selected option: {raw}");
+    assert!(!raw.contains("<option selected>eu") && !raw.contains("<option selected>us"), "{raw}");
+
+    cleanup_user(&pool, &user).await;
+}
+
 /// A page passes to its panels, and the panel route to its provider, only the URL keys a
 /// page placing the contribution declares in `PageDecl::params`; an undeclared key is
 /// dropped while the portal's own keys keep their typed fields. A blank filter value reads
