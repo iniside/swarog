@@ -1,11 +1,11 @@
 ---
 name: step13-resume-point
-description: "Admin redesign resume point 2026-11-23: Step 21a1 (apikeys reads) landed; owner decisions pending, then 21a2"
+description: "Admin redesign resume point 2026-11-23: Step 21 (apikeys) complete; next Step 22 scheduler — ask owner first"
 metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-23T17:48:36.959Z
+  modified: 2026-11-23T18:58:33.284Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -91,3 +91,10 @@ a9094615 ("any" = no filter in core filter_views) review REJECT structural S1: "
 - 21t DONE: b5019978 + review-fix 2f6e00b1 (cleanup on every exit, AD3b searched row, AD4 csrf body, AD6g outcome pairs). Splitproof green both topologies (279 pass / 35 expected-red). core-reviewer ACCEPT, proof-auditor sound. Comment nits left: apikeys_admin_checks.rs:39-52 hop/break-run wording, :41 long line; view_tests.rs:99 "filter at any".
 - Owner question pending: role-delete 409 shows generic portal conflict banner (core/admin/src/routes.rs:1297/1326) not the provider message — bug?
 - Next: 21b (mockup-implementer sonnet: crawls monolith+split, accept files) — ask owner go.
+
+## State 2026-11-23 (Step 21 complete)
+- 21b: 91013217 accept files (4 apikeys targets + #ecbb9a nav line re-derived on 13 pages), review-fixes e7013d98 + ef313be8 (core-reviewer round 2 last finding = sample-key count, fixed and checked by hand; review cap reached).
+- All 4 apikeys targets clean monolith (crawl-1795457986) + split (crawl-1795458889). Reds left, owner Q2 leave: index Mail queue tile, mail empty Outbox, player.friends tr#dd6dc9 (monolith only), player.inbox li#8e97b6, events split-only lag/Max lag (seed data).
+- Owner questions still open: (1) role-delete 409 generic banner routes.rs:1297/1326; (2) filter chip "any" for both real value and no filter; (3) comment nits (apikeys_admin_checks.rs:39-52,:41; view_tests.rs:99).
+- Accept nit, pre-existing: #ecbb9a reason files "Events" under Lore (registry.js:20-24 says Lore = Permissions, Server instance, Billing).
+- Next: Step 22 (scheduler) — ask owner before starting.
