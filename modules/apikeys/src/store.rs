@@ -47,6 +47,10 @@ pub(crate) fn secret_hash(input: &str) -> String {
 /// remaining ~250 bits of entropy keep the secret unguessable.
 const PREFIX_CHARS: usize = 12;
 
+/// How many times [`Store::delete_role`] runs its DELETE when the FK fires but the count
+/// that follows finds no key on the role.
+const DELETE_ROLE_ATTEMPTS: usize = 3;
+
 /// Mints a fresh API-key secret: 32 cryptographically random bytes rendered as
 /// `ak_<base64url>`, its [`secret_hash`], and its display `prefix`. The generated secret
 /// is guarded against [`apikeysapi::MAX_KEY_BYTES`] — the SAME cap the gateway enforces
@@ -369,28 +373,40 @@ impl Store {
     /// revoked or not, raises the FK (`23503`) → a [`WriteError::Conflict`] naming how many
     /// keys use it. The FK, not a pre-check, is the authority against a
     /// create_key↔delete_role race; revoked keys keep their role so their audit trail does.
+    /// The count is a second statement, so a key moved off the role in between can leave it
+    /// at 0: then the DELETE runs again, at most [`DELETE_ROLE_ATTEMPTS`] times in all.
     pub async fn delete_role(&self, name: &str) -> Result<bool, WriteError> {
         validate_name(&ROLE_NAME, name)?;
-        let result = sqlx::query("DELETE FROM apikeys.roles WHERE name = $1")
-            .bind(name)
-            .execute(&self.pool)
-            .await;
-        match result {
-            Ok(done) => Ok(done.rows_affected() == 1),
-            Err(sqlx::Error::Database(db)) if db.code().as_deref() == Some("23503") => {
-                let keys: i64 =
-                    sqlx::query_scalar("SELECT count(*) FROM apikeys.keys WHERE role = $1")
-                        .bind(name)
-                        .fetch_one(&self.pool)
-                        .await?;
-                Err(WriteError::Conflict(format!(
-                    "role {name} is still used by {keys} key(s), revoked keys included"
-                )))
-            }
-            Err(e) => {
-                Err(WriteError::from_db(e, format!("apikeys: role {name:?} could not be deleted")))
+        for _ in 0..DELETE_ROLE_ATTEMPTS {
+            let result = sqlx::query("DELETE FROM apikeys.roles WHERE name = $1")
+                .bind(name)
+                .execute(&self.pool)
+                .await;
+            match result {
+                Ok(done) => return Ok(done.rows_affected() == 1),
+                Err(sqlx::Error::Database(db)) if db.code().as_deref() == Some("23503") => {
+                    let keys: i64 =
+                        sqlx::query_scalar("SELECT count(*) FROM apikeys.keys WHERE role = $1")
+                            .bind(name)
+                            .fetch_one(&self.pool)
+                            .await?;
+                    if keys > 0 {
+                        return Err(WriteError::Conflict(format!(
+                            "role {name} is still used by {keys} key(s), revoked keys included"
+                        )));
+                    }
+                }
+                Err(e) => {
+                    return Err(WriteError::from_db(
+                        e,
+                        format!("apikeys: role {name:?} could not be deleted"),
+                    ));
+                }
             }
         }
+        Err(WriteError::Conflict(format!(
+            "role {name} could not be deleted: its keys kept moving to other roles; try again"
+        )))
     }
 
     // --- Keys ---------------------------------------------------------------
@@ -534,28 +550,29 @@ impl Store {
     }
 
     /// Revokes a key (sets `revoked_at`), after which [`Store::lookup`] returns `None`.
-    /// The `revoked_at IS NULL` guard makes a repeat write nothing; when no row changed, one
-    /// existence read tells [`Revoke::AlreadyRevoked`] from [`Revoke::Absent`].
+    /// The `revoked_at IS NULL` guard makes a repeat write nothing. The existence read that
+    /// tells [`Revoke::AlreadyRevoked`] from [`Revoke::Absent`] is in the same statement as
+    /// the UPDATE, so both share one snapshot: a key created in between is never reported
+    /// as already revoked.
     pub async fn revoke_key(&self, name: &str) -> Result<Revoke, WriteError> {
         validate_name(&KEY_NAME, name)?;
-        let affected = sqlx::query(
-            "UPDATE apikeys.keys \
-                SET revoked_at = now(), revision = revision + 1, updated_at = now() \
-              WHERE name = $1 AND revoked_at IS NULL",
+        let (revoked, exists): (bool, bool) = sqlx::query_as(
+            "WITH u AS ( \
+                UPDATE apikeys.keys \
+                   SET revoked_at = now(), revision = revision + 1, updated_at = now() \
+                 WHERE name = $1 AND revoked_at IS NULL \
+             RETURNING 1) \
+             SELECT EXISTS (SELECT 1 FROM u), \
+                    EXISTS (SELECT 1 FROM apikeys.keys WHERE name = $1)",
         )
         .bind(name)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
-        if affected == 1 {
-            return Ok(Revoke::Revoked);
-        }
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM apikeys.keys WHERE name = $1)")
-                .bind(name)
-                .fetch_one(&self.pool)
-                .await?;
-        Ok(if exists { Revoke::AlreadyRevoked } else { Revoke::Absent })
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(match (revoked, exists) {
+            (true, _) => Revoke::Revoked,
+            (false, true) => Revoke::AlreadyRevoked,
+            (false, false) => Revoke::Absent,
+        })
     }
 
     // --- Dev seed (self-healing upsert) -------------------------------------

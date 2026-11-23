@@ -155,12 +155,13 @@ impl apikeysapi::Keys for Service {
 }
 
 // Async CRUD wrappers over the store. Each preserves the store's [`WriteError`]
-// classification (Conflict vs Invalid vs Db) so a caller can map a domain conflict to 409
-// and NEVER to NotFound (finding #2).
+// classification (Conflict vs Invalid vs Db) so a caller can map a domain conflict to 409;
+// a WriteError never maps to NotFound (finding #2). A missing row is an outcome, not an
+// error: revoke_key answers Revoke::Absent and delete_role Ok(false).
 #[expect(
     dead_code,
     reason = "Step 21a2 parts 2-3: the API keys page reads and writes through them \
-              (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2346)"
+              (docs/plans/2026-10-22-1759-admin-control-plane-redesign-plan.md:2363)"
 )]
 impl Service {
     pub(crate) async fn create_role(&self, name: &str, policy: &str) -> Result<(), WriteError> {
