@@ -37,6 +37,7 @@ mod friends_admin_checks;
 mod groups_admin_checks;
 mod idp;
 mod inventory_admin_checks;
+mod notifications_admin_checks;
 mod party_checks;
 mod pushws;
 mod storage_admin_checks;
@@ -595,6 +596,8 @@ async fn monolith_parity(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> 
     groups_admin_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
     // Boxed: `run`'s future sits on the main thread's stack under `block_on`.
     Box::pin(storage_admin_checks::assertions(ctx, pool, p, &m, &jar, "m")).await?;
+    // Boxed inside `assertions`, out of line: see its doc.
+    notifications_admin_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
     wallet_ledger_checks::assertions(ctx, pool, p, &m, &jar, "m").await?;
     deletion_assertions(ctx, pool, p, &m, None, "m").await?;
     party_checks::deletion_assertion(ctx, pool, p, &m, "m").await?;
@@ -6194,6 +6197,8 @@ async fn assertions(ctx: &Ctx, pool: &PgPool, idp: &Idp, p: &mut Proof) -> Resul
     groups_admin_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
     // Boxed: `run`'s future sits on the main thread's stack under `block_on`.
     Box::pin(storage_admin_checks::assertions(ctx, pool, p, &g, &cfg, "")).await?;
+    // Boxed inside `assertions`, out of line: see its doc.
+    notifications_admin_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
     wallet_ledger_checks::assertions(ctx, pool, p, &g, &cfg, "").await?;
 
     // --- Parties over the multiplexed socket: every invoke is Remote-dispatched from
