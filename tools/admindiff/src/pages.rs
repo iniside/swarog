@@ -418,7 +418,15 @@ pub const PAGE_MAP: &[Page] = &[
         force: false,
     },
     Page { page: "mail", route: Route::Mapped("/admin/p/mail/outbox"), search: "", tab: None, menu: None, modal: None, force: false },
-    Page { page: "scheduler", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
+    Page {
+        page: "scheduler",
+        route: Route::Mapped("/admin/p/scheduler/schedules"),
+        search: "",
+        tab: None,
+        menu: None,
+        modal: None,
+        force: false,
+    },
     Page { page: "config", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
     Page { page: "audit", route: Route::Pending, search: "", tab: None, menu: None, modal: None, force: false },
     Page {
@@ -468,6 +476,11 @@ pub const EXCLUDED_MENUS: &[(&str, &str, &str)] = &[
     ("player.inventory", "holding", "the mockup's inventory row button has no handler (pages-core.js:133)"),
     ("player.friends", "friendship", "the mockup's friends row button has no handler (pages-core.js:135)"),
     ("apikeys", "apirole", "the mockup's Roles row button has no handler (pages-platform.js:35)"),
+    (
+        "scheduler",
+        "schedule",
+        "the mockup draws no schedule menu: its row button only toasts 'Fire now · Edit · Delete' (pages-platform.js:80)",
+    ),
 ];
 
 /// Modal actions the portal draws on a compared page or tab, or in a menu target's or excluded

@@ -24,6 +24,9 @@ async-trait = { workspace = true }
 # catch_unwind supervision wrapper (futures::FutureExt) — remediation round-3 4b.
 httpmw = { workspace = true }
 futures = { workspace = true }
+# The Scheduler admin page: the control-plane provider contributed to PROVIDER_SLOT.
+controlplane = { workspace = true }
+opsapi = { workspace = true }
 
 [dev-dependencies]
 testdb = { workspace = true }

@@ -19,7 +19,7 @@ const DEFAULT_DSN: &str =
 
 /// Tests that drive a global due scan/run loop must not see each other's temporary
 /// schedules. Direct per-name `fire` tests do not need this serialization.
-static TICK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static TICK_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct DropFlag(Arc<AtomicBool>);
 
@@ -33,7 +33,7 @@ fn dsn() -> String {
     std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DSN.to_string())
 }
 
-async fn test_pool() -> Option<PgPool> {
+pub(crate) async fn test_pool() -> Option<PgPool> {
     let pool = testdb::test_pool().await?;
     Scheduler::new()
         .migrate(&Context::with_db(pool.clone()))
@@ -66,7 +66,7 @@ async fn seed_schedule(pool: &PgPool, name: &str, interval_seconds: i64) {
     .expect("seed schedule");
 }
 
-async fn cleanup(pool: &PgPool, name: &str) {
+pub(crate) async fn cleanup(pool: &PgPool, name: &str) {
     let _ = sqlx::query("DELETE FROM scheduler.schedules WHERE name = $1")
         .bind(name)
         .execute(pool)

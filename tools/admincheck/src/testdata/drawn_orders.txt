@@ -3,6 +3,7 @@ nav players | accounts | players | 10
 nav economy | wallet | economy | 10
 nav platform | apikeys | apikeys | 10
 nav platform | mail | outbox | 20
+nav platform | scheduler | scheduler | 30
 nav platform | core.events | events | 60
 dashboard_attention | portal | attention.services | 10
 dashboard_attention | core.events | attention.paused | 20
@@ -68,6 +69,9 @@ row_action player | wallet | currency.revoke | 40
 row_action player | inventory | item.grant | 50
 row_action player | notifications | send | 60
 row_action player | storage | player.download-saves | 80
+row_action schedule | scheduler | schedule.fire | 10
+row_action schedule | scheduler | schedule.edit | 20
+row_action schedule | scheduler | schedule.delete | 30
 row_action subscription | core.events | sub.pause | 10
 row_action subscription | core.events | sub.resume | 20
 row_action subscription | core.events | sub.retry | 30

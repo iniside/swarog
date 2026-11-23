@@ -82,6 +82,9 @@ use sqlx::{Connection, PgConnection, PgPool};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+mod admin;
+mod store;
+
 /// Dedicated Postgres sessions the scheduler holds beyond the shared pool: each
 /// `fire` runs on ONE dedicated per-fire connection opened from the pool's connect
 /// options (see the module docs on why the advisory lock must ride a session the
@@ -661,6 +664,15 @@ impl Module for Scheduler {
         if !enabled {
             tracing::warn!("scheduler DISABLED (SCHEDULER_ENABLED=false) — no schedules will fire");
         }
+
+        // Contributed unconditionally: whichever process hosts scheduler serves its admin page.
+        let pool = self
+            .pool
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("scheduler.init ran before register"))?
+            .clone();
+        let provider: Arc<dyn controlplane::Provider> = Arc::new(admin::SchedulerAdmin::new(pool, enabled));
+        ctx.contribute(controlplane::PROVIDER_SLOT, provider);
 
         // Loop liveness → `/readyz`, contributed only when the loop will actually run
         // (a deliberately disabled scheduler must not surface a readiness check). The
