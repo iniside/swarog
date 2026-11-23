@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 0af9025c-b620-41bb-9924-cba26bbf9324
-  modified: 2026-11-23T11:57:30.868Z
+  modified: 2026-11-23T12:12:11.841Z
 ---
 
 Run `git log --oneline` first ([[verify-repo-state-before-resuming]]).
@@ -71,3 +71,6 @@ Checklist docs/plans/2026-11-23-step21-apikeys-checklist.md committed a95748c8 (
 
 ## State 2026-11-23 (21a1 landed)
 21a1 commits: ef55f591 store reads, d8f6c456 checklist fix, 4a0cbc14 admin.rs reads, 2ea885d8 tie test, 4bd7ba7b admindiff map (interim Absent rows for createKey/revokeKey — 21a2 deletes), 794fe9ff role filter (unknown role = zero rows), 5a7c81aa todo ids (APIKEYS-09 rotate, -10 expiry). Tests: apikeys 38, admindiff 237, clippy clean. Review of 794fe9ff: REJECT structural — core/admin/src/render/table.rs filter_views drops a current Select value not in options, template shows "Role: all" over the empty table (all Select filters). Asked owner: fix in core/admin (renderer + test) or todo; revoked-key FAKE "now" fix. Next: owner answers, then 21a2.
+
+## State 2026-11-23 (21a1f done)
+Owner: "1a, 2 tez popraw". ccf270e3 core/admin filter_views draws an undeclared Select value selected; dbaf8764 revoked key never "now"; review-fix 25a0fb4d (review ACCEPT). Open for owner: "any" = no-filter rule duplicated (apikeys filter_value admin.rs:100, core events_provider.rs:444, template :329) vs core filter_views empty-only -> ?role=any shows option "any" selected. Next: owner answer, then 21a2.
